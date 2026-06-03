@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <set>
@@ -597,9 +598,16 @@ void VulkanContext::createSyncObjects()
 // ═════════════════════════════════════════════════════════════════════════════
 VkShaderModule VulkanContext::loadShader(const std::string &path)
 {
-    std::ifstream f(path, std::ios::ate | std::ios::binary);
+    // Resolve relative paths against the exe directory so the app can be run from any CWD.
+    std::filesystem::path resolved = path;
+    if (resolved.is_relative()) {
+        char *pgm = nullptr;
+        _get_pgmptr(&pgm);
+        resolved = std::filesystem::path(pgm).parent_path() / resolved;
+    }
+    std::ifstream f(resolved, std::ios::ate | std::ios::binary);
     if (!f.is_open())
-        throw std::runtime_error("Cannot open shader: " + path);
+        throw std::runtime_error("Cannot open shader: " + resolved.string());
     size_t sz = f.tellg();
     std::vector<char> buf(sz);
     f.seekg(0);

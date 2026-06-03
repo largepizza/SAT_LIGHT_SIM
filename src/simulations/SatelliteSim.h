@@ -204,6 +204,78 @@ struct GpuGlowBuf
     glm::vec4 entries[kMaxGlows]; // xyz = ENU unit dir, w = effectFlare intensity
 };
 
+// ── GPU orbital parameters (uploaded once per buildOrbits, device-local) ─────
+// 28 × 4-byte fields = 112 bytes.  All plain floats/uints — no vec3 — so
+// C++ struct packing matches GLSL std430 without any alignment padding.
+// Must match the SatOrbit struct in sat_orbit.comp exactly.
+struct GpuSatOrbit
+{
+    float raan;              // right ascension of ascending node at epoch
+    float u0;                // epoch-baked initial phase: fmod(orig_u0 + meanMot*epochT0, 2π)
+    float R_sat;             // kEarthRadius + altM (meters)
+    float meanMot;           // sqrt(GM/R³) (rad/s)
+
+    float cosI;              // cos(inclination)
+    float sinI;              // sin(inclination)
+    float cosRaan;           // cos(raan); valid when !alignTerminator
+    float sinRaan;           // sin(raan); valid when !alignTerminator
+
+    float tumbleRate;        // rotation rate (rad/s); 0 if not tumbling
+    float tumblePhase;       // epoch-baked angle: fmod(phase + rate*epochT0, 2π)
+    float alignTerminator;   // 1.0 = SSO (RAAN precesses); 0.0 = fixed RAAN
+    float tumbleAxisX;
+
+    float tumbleAxisY;
+    float tumbleAxisZ;
+    uint32_t primaryAttitude;   // AttitudeMode cast to uint
+    uint32_t secondaryAttitude;
+
+    float baseColorR;
+    float baseColorG;
+    float baseColorB;
+    float crossSection;      // sqrt(crossSectionM2 / 10)
+
+    float specExp0;
+    float specExp1;
+    float w1;                // secondary surface weight
+    float diffuse;
+
+    float mirrorFrac;
+    uint32_t constIdx;       // constellation index for enabled/highlight masks
+    uint32_t pad0;
+    uint32_t pad1;
+    // Total: 112 bytes
+};
+static_assert(sizeof(GpuSatOrbit) == 112, "GpuSatOrbit layout mismatch");
+
+// ── Per-frame reflector target upload (host-visible, 201 × 16 bytes) ─────────
+// Written by CPU in updatePositions(); read by sat_orbit.comp each frame.
+struct GpuReflectorTarget
+{
+    glm::vec3 posECI; // Earth-radius-scaled ECI position
+    float valid;      // 1.0 = night-side (valid target), 0.0 = dayside
+};
+static_assert(sizeof(GpuReflectorTarget) == 16, "GpuReflectorTarget layout mismatch");
+
+// ── Push constants for sat_orbit.comp ────────────────────────────────────────
+// Offsets verified against the push_constant block in sat_orbit.comp.
+// Total: 96 bytes.
+struct SatOrbitPC
+{
+    glm::vec4 enuX;          // East  basis in ECI (w unused) — offset 0
+    glm::vec4 enuY;          // North basis in ECI (w unused) — offset 16
+    glm::vec4 enuZ;          // Up    basis in ECI (w unused) — offset 32
+    glm::vec3 sunDirECI;     // unit vector toward sun — offset 48
+    float deltaT;            // simTime - epochT0 (float precision) — offset 60
+    glm::vec3 obsECI;        // observer ECI position (meters) — offset 64
+    uint32_t satCount;       // total satellite count — offset 76
+    uint32_t highlightMask;  // bit i = constellation i in highlight mode — offset 80
+    uint32_t enabledMask;    // bit i = constellation i is enabled — offset 84
+    float simDt;             // simulated seconds this frame (mirror slew) — offset 88
+    float pad;               // — offset 92
+}; // 96 bytes
+static_assert(sizeof(SatOrbitPC) == 96, "SatOrbitPC layout mismatch");
+
 // ── Sky camera ────────────────────────────────────────────────────────────────
 // Azimuth/elevation look direction in the local ENU frame.
 // Right-click to capture mouse; WASD-style look via mouse deltas.
@@ -299,16 +371,31 @@ public:
 
 private:
     // ── SSBOs ─────────────────────────────────────────────────────────────────
-    VkBuffer satInputBuf = VK_NULL_HANDLE; // host-visible, CPU writes
+    VkBuffer satInputBuf = VK_NULL_HANDLE; // device-local; sat_orbit.comp writes, sat_flare.comp reads
     VkDeviceMemory satInputMem = VK_NULL_HANDLE;
-    void *satInputMapped = nullptr;
-    VkBuffer satVisibleBuf = VK_NULL_HANDLE; // device-local, compute→vertex
+    VkBuffer satVisibleBuf = VK_NULL_HANDLE; // device-local, sat_flare.comp→vertex
     VkDeviceMemory satVisibleMem = VK_NULL_HANDLE;
 
-    // ── Descriptors ───────────────────────────────────────────────────────────
+    // ── Orbit pipeline buffers ────────────────────────────────────────────────
+    VkBuffer satOrbitBuf = VK_NULL_HANDLE;       // device-local, uploaded once at init
+    VkDeviceMemory satOrbitMem = VK_NULL_HANDLE;
+    VkBuffer mirrorNormalsBuf = VK_NULL_HANDLE;  // device-local, persistent slew state
+    VkDeviceMemory mirrorNormalsMem = VK_NULL_HANDLE;
+    VkBuffer reflectorTargetsBuf = VK_NULL_HANDLE; // host-visible, updated each frame
+    VkDeviceMemory reflectorTargetsMem = VK_NULL_HANDLE;
+    void *reflectorTargetsMapped = nullptr;
+
+    // ── sat_flare.comp descriptors / pipeline ─────────────────────────────────
     VkDescriptorSetLayout descLayout = VK_NULL_HANDLE;
     VkDescriptorPool descPool = VK_NULL_HANDLE;
     VkDescriptorSet descSet = VK_NULL_HANDLE;
+
+    // ── sat_orbit.comp descriptors / pipeline ─────────────────────────────────
+    VkDescriptorSetLayout orbitDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool orbitDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet orbitDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout orbitPipeLayout = VK_NULL_HANDLE;
+    VkPipeline orbitPipeline = VK_NULL_HANDLE;
 
     // ── Pipelines ─────────────────────────────────────────────────────────────
     VkPipelineLayout compPipeLayout = VK_NULL_HANDLE;
@@ -343,8 +430,15 @@ private:
 
     // ── Simulation state ──────────────────────────────────────────────────────
     SkyCamera camera;
-    double simTime = 0.0;
-    double simTimeAtInit = 0.0;
+    // simTime is split into an integer day counter and a double-precision
+    // seconds-within-day value.  This avoids accumulated float precision loss
+    // when a large J2000 epoch base is added to a small per-frame delta.
+    // simSecInDay is re-based to [0, 86400) each frame so it stays small.
+    // Use simTimeDouble() wherever a full-precision double is needed.
+    int64_t simDayJ2000  = 0;      // integer days since J2000 (2000-01-01 12:00 TT)
+    double  simSecInDay  = 0.0;    // seconds within current day [0, 86400)
+    int64_t simInitDayJ2000 = 0;   // values at construction — used for display
+    double  simInitSecInDay = 0.0;
     int timeScaleIdx = 1;
     bool timePaused = false;
     float timeDir = 1.0f; // +1 = forward, -1 = reverse
@@ -478,10 +572,17 @@ private:
     // ── Satellite type catalogue (defined once in initConstellation) ──────────
     std::vector<SatelliteType> satTypes;
 
-    // ── Orbital parameters (fixed at init, positions updated each frame) ──────
+    // ── Orbital parameters (fixed at init, positions computed by GPU) ─────────
     std::vector<ConstellationConfig> constellations;
     std::vector<SatOrbit> satOrbits;
-    std::vector<GpuSatInput> satInputData;
+
+    // Re-bake satOrbitBuf when the sim has advanced more than this many days from
+    // the baked epoch, keeping float deltaT < 7×86400 = 604800 s (float ULP ≈ 0.07 s).
+    static constexpr int64_t kOrbitRebakeDays = 7;
+    // Epoch at which satOrbitBuf was last baked (two-part, matches simTime representation).
+    // uploadSatOrbits() re-bakes if |simDayJ2000 - orbitEpochDay| > kOrbitRebakeDays.
+    int64_t orbitEpochDay = 0;
+    double  orbitEpochSec = 0.0;
 
     // ── Mouse state / window handle ───────────────────────────────────────────
     GLFWwindow *win = nullptr;
@@ -529,6 +630,9 @@ private:
     // ── Private helpers ───────────────────────────────────────────────────────
     void createBuffers(VulkanContext &ctx);
     void createDescriptors(VulkanContext &ctx);
+    void createOrbitDescriptors(VulkanContext &ctx);
+    void createOrbitPipeline(VulkanContext &ctx);
+    void uploadSatOrbits(VulkanContext &ctx);
     void createGlowResources(VulkanContext &ctx);
     void createComputePipeline(VulkanContext &ctx);
     void createSkyBgPipeline(VulkanContext &ctx);
