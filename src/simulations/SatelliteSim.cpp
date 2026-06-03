@@ -648,7 +648,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
     };
 
-    static char latBuf[20], lonBuf[20], statFpsBuf[24], statVisBuf[32];
+    static char latBuf[20], lonBuf[20], statFpsBuf[24], statVisBuf[32], statLoopBuf[24];
     {
         float absLat = fabsf(obsLatDeg);
         float absLon = fabsf(obsLonDeg);
@@ -656,11 +656,13 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         snprintf(lonBuf, sizeof(lonBuf), "%.1f\xc2\xb0 %c", absLon, obsLonDeg >= 0.0f ? 'E' : 'W');
         snprintf(statFpsBuf, sizeof(statFpsBuf), "%.0f fps", dt > 0.0f ? 1.0f / dt : 0.0f);
         snprintf(statVisBuf, sizeof(statVisBuf), "%u vis", gpuSatCount);
+        snprintf(statLoopBuf, sizeof(statLoopBuf), "%.2f ms", loopMs);
     }
     Clay_String latStr{false, (int32_t)strlen(latBuf), latBuf};
     Clay_String lonStr{false, (int32_t)strlen(lonBuf), lonBuf};
     Clay_String statFpsStr{false, (int32_t)strlen(statFpsBuf), statFpsBuf};
     Clay_String statVisStr{false, (int32_t)strlen(statVisBuf), statVisBuf};
+    Clay_String statLoopStr{false, (int32_t)strlen(statLoopBuf), statLoopBuf};
 
     // ── Time controls (bottom-left) ───────────────────────────────────────────
     // Shows UTC time, a slow/pause|play/fast icon button row, speed label, and reverse indicator.
@@ -878,6 +880,16 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             }
 
             CLAY(CLAY_ID("SBDiv4"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
+                                     .backgroundColor = Pal::divider}) {}
+
+            CLAY(CLAY_ID("SBLoop"), {.layout = {
+                                         .sizing = {CLAY_SIZING_FIXED(62), CLAY_SIZING_FIT(0)},
+                                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+            {
+                CLAY_TEXT(statLoopStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
+            }
+
+            CLAY(CLAY_ID("SBDiv5"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
                                      .backgroundColor = Pal::divider}) {}
 
             // ── Settings gear button ──────────────────────────────────────────
@@ -3390,6 +3402,7 @@ void SatelliteSim::updatePositions(double t, float dt)
                      cosf(camAzRad) * cosf(camElRad),
                      sinf(camElRad)};
     float cosCullThresh = cosf(glm::radians(camera.fovYDeg * 0.5f + 20.0f));
+    auto loopT0 = std::chrono::high_resolution_clock::now();
     for (const ConstellationConfig &c : constellations)
     {
         if (!c.enabled) continue;
@@ -3761,4 +3774,6 @@ void SatelliteSim::updatePositions(double t, float dt)
             }
         }
     }
+    loopMs = std::chrono::duration<float, std::milli>(
+                 std::chrono::high_resolution_clock::now() - loopT0).count();
 }
