@@ -42,6 +42,12 @@ enum class AttitudeMode
                        // normal is: normalize(sunDir + toTarget), so that reflected sunlight
                        // hits the chosen surface spot.  Multiple satellites sharing the same
                        // angle converge their beams onto one ground location — focused illumination.
+    KnifeEdge,         // roll around the along-track (velocity) axis to put the sun edge-on
+                       // to the flat panel, minimising its reflective cross-section.
+                       // Picks whichever of the two edge-on orientations requires less roll
+                       // from nadir, then clamps to ±kKnifeMaxRollDeg (solar panel gimbal limit).
+                       // Models the SpaceX roll-angle adjustment adopted in 2020 (Mallama 2023):
+                       // ~90% brightness reduction at standard distance when unclamped.
 };
 
 // ── Orbit distribution type ────────────────────────────────────────────────────
@@ -158,8 +164,14 @@ struct SatFlarePC
     uint32_t satCount;
     glm::vec3 obsECI; // observer ECI position (meters) for shadow test
     float pad;
-}; // total: 80 bytes
-static_assert(sizeof(SatFlarePC) == 80, "SatFlarePC layout mismatch");
+    // Photometry tuning — runtime-adjustable via the settings window.
+    float brightnessScale; // global flux multiplier (mirrors BRIGHTNESS_SCALE in shader)
+    float daySuppression;  // sky background suppression ratio (mirrors DAY_SUPPRESSION)
+    float mirrorBoost;     // mirror peak multiplier (mirrors MIRROR_BOOST)
+    float visThresh;       // visibility cull threshold (mirrors VIS_THRESH)
+    float highlightFlare;  // fixed flare for constellation census (mirrors HIGHLIGHT_FLARE)
+}; // total: 100 bytes
+static_assert(sizeof(SatFlarePC) == 100, "SatFlarePC layout mismatch");
 
 // Draw push constants (passed to sat_point.vert and both sky shaders).
 // GLSL std430 layout:
@@ -376,6 +388,12 @@ private:
     float masterVol_ = 0.8f; // mirrors AudioSystem default (display fallback)
     float musicVol_ = 0.6f;
     float sfxVol_ = 1.0f;
+    // ── Photometry tuning (synced to SatFlarePC each frame) ───────────────────
+    float brightnessScale = 2.0f;
+    float daySuppression  = 50.0f;
+    float mirrorBoost     = 300.0f;
+    float visThresh       = 0.008f;
+    float highlightFlare  = 0.05f;
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
     std::string exeDir_;           // directory containing the exe; set in init()
@@ -436,6 +454,13 @@ private:
     // one takes over).  The mirror physically slews toward the goal direction.
     static constexpr float kMirrorRotRateDegPerSec = 1.0f;
 
+    // Maximum body roll for KnifeEdge attitude (degrees from nadir-pointing).
+    // Real Starlink solar panels counter-rotate around the along-track axis to
+    // compensate body roll.  At 80° the panels still receive ~17% of peak
+    // irradiance; beyond this the gimbal runs out of range and power drops
+    // sharply.  Limits knife-edge effectiveness when the geometry demands >80°.
+    static constexpr float kKnifeMaxRollDeg = 80.0f;
+
     // Per-satellite current mirror normal in ECI (TargetedReflector only).
     // Persistent between frames; slews toward the ideal target normal at
     // kMirrorRotRateDegPerSec.  Zero-vector = uninitialized (snaps on first frame).
@@ -484,6 +509,13 @@ private:
     bool hovSfxVolPlus = false;
     bool hovRebind[KB_COUNT] = {}; // per keybinding row — sized to match keybindings vector
     bool hovFullscreen = false;
+    bool hovPhotoMinus[5] = {};
+    bool hovPhotoPlus[5]  = {};
+    bool draggingPhoto[5] = {};
+    // ── Settings window position (persisted; -1 = uninitialized, centers on first open) ─
+    float settingsWinX    = -1.0f;
+    float settingsWinY    = -1.0f;
+    bool settingsDragging = false;
 
     // ── Private helpers ───────────────────────────────────────────────────────
     void createBuffers(VulkanContext &ctx);
@@ -499,6 +531,8 @@ private:
     void loadDefinitions();                          // reads constellations.json; falls back to hardcoded defaults
     void loadHardcoded();                            // hardcoded satTypes + constellations (used as fallback)
     void buildOrbits();                              // populates satOrbits from satTypes + constellations
+    void loadSettings();                             // reads settings.json; silently uses defaults if missing
+    void saveSettings();                             // writes settings.json next to exe
     void updatePositions(double t, float dt = 0.0f); // called each frame: fills satInputData + eci2enu
                                                      // dt = simulated seconds elapsed this frame (0 when paused);
                                                      // used for mirror slew rate so behaviour is consistent at all time scales

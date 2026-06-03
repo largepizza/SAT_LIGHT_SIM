@@ -133,19 +133,17 @@ add_custom_command(TARGET ShaderFun POST_BUILD
     COMMENT "Copying shaders to output directory"
 )
 
-# Copy moddable data files next to the executable.
-# constellations.schema.json: copied unconditionally (never user-edited).
-# constellations.json:        copied only if it does not already exist at the destination
-#                             so that user edits are preserved across rebuilds.
+# Copy data files next to the executable on every build when the source changes.
+# Both files are tracked in source control; copy_if_different keeps the output
+# in sync without unnecessary writes when nothing has changed.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data")
     add_custom_command(TARGET ShaderFun POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/data/constellations.schema.json"
             "$<TARGET_FILE_DIR:ShaderFun>/constellations.schema.json"
-        COMMAND ${CMAKE_COMMAND}
-            -DFILE="${CMAKE_CURRENT_SOURCE_DIR}/data/constellations.json"
-            -DDEST="$<TARGET_FILE_DIR:ShaderFun>/constellations.json"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyIfMissing.cmake"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/constellations.json"
+            "$<TARGET_FILE_DIR:ShaderFun>/constellations.json"
         COMMENT "Copying data files to output directory"
     )
 endif()

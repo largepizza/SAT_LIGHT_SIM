@@ -72,20 +72,26 @@ layout(set = 0, binding = 1) writeonly buffer SatVisibleBuf {
 // ── Push constants ────────────────────────────────────────────────────────────
 // GLSL std430 vec3 alignment = 16.  Offsets verified against C++ SatFlarePC.
 layout(push_constant) uniform PC {
-    vec4  enuX;       // East  basis in ECI (w unused) — offset 0
-    vec4  enuY;       // North basis in ECI (w unused) — offset 16
-    vec4  enuZ;       // Up    basis in ECI (w unused) — offset 32
-    vec3  sunDirECI;  // unit vector from Earth toward Sun — offset 48
-    uint  satCount;   // — offset 60
-    vec3  obsECI;     // observer ECI position (meters) — offset 64
-    float pad;        // — offset 76
+    vec4  enuX;            // East  basis in ECI (w unused) — offset 0
+    vec4  enuY;            // North basis in ECI (w unused) — offset 16
+    vec4  enuZ;            // Up    basis in ECI (w unused) — offset 32
+    vec3  sunDirECI;       // unit vector from Earth toward Sun — offset 48
+    uint  satCount;        // — offset 60
+    vec3  obsECI;          // observer ECI position (meters) — offset 64
+    float pad;             // — offset 76
+    float brightnessScale; // global flux multiplier — offset 80
+    float daySuppression;  // sky background suppression ratio — offset 84
+    float mirrorBoost;     // mirror peak multiplier — offset 88
+    float visThresh;       // visibility cull threshold — offset 92
+    float highlightFlare;  // fixed flare for census highlight mode — offset 96
 } pc;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const float R_EARTH      = 6371000.0;   // Earth radius (meters)
 const float HORIZON_EL   = -0.01;       // cull if elevation < ~0.6° below horizon
 const float REF_RANGE    = 500000.0;    // 500 km reference distance for 1/r² normalisation
-const float VIS_THRESH   = 0.008;       // flare intensity below this → invisible/clipped
+// VIS_THRESH, HIGHLIGHT_FLARE, BRIGHTNESS_SCALE, MIRROR_BOOST, DAY_SUPPRESSION
+// are now runtime values in pc — see push_constant block above.
 
 // ── Highlight mode ────────────────────────────────────────────────────────────
 // When sat.diffuse > 1.0 the CPU has flagged this satellite for highlight mode
@@ -94,7 +100,7 @@ const float VIS_THRESH   = 0.008;       // flare intensity below this → invisi
 // attitude-dependent specular so the full orbital distribution is always visible.
 // HIGHLIGHT_FLARE ≈ magnitude 5.3 — clearly visible without being blinding.
 const float HIGHLIGHT_SENTINEL = 1.5;  // diffuse values above this trigger the mode
-const float HIGHLIGHT_FLARE    = 0.05; // fixed effectFlare for every highlighted sat
+// HIGHLIGHT_FLARE is now pc.highlightFlare
 
 // ── Brightness scale ──────────────────────────────────────────────────────────
 // Global linear multiplier applied to every satellite's computed flux before
@@ -110,7 +116,7 @@ const float HIGHLIGHT_FLARE    = 0.05; // fixed effectFlare for every highlighte
 //
 // IMPORTANT: kBrightnessScale in SatelliteSim.cpp must mirror this value
 // so the CPU-side magnitude readout stays consistent with the GPU render.
-const float BRIGHTNESS_SCALE = 3.0;
+// BRIGHTNESS_SCALE is now pc.brightnessScale
 
 // ── Magnitude calibration ─────────────────────────────────────────────────────
 // Apparent magnitude is derived from effectFlare via the photometric scale:
@@ -154,7 +160,7 @@ const float MAG_REF       = 12.0;
 //   Starlink (mirrorFrac=0.05): spec0 ≈ 11   → effectFlare ≈ 27  → mag ≈ -2.7
 //   ISS      (mirrorFrac=0.15): spec0 ≈ 32   → effectFlare ≈ 1260 → mag ≈ -7.5
 //   GEO      (mirrorFrac=0.10): spec0 ≈ 22   → GEO distFactor ≈ 2e-4 → mag ≈ +4.6
-const float MIRROR_BOOST = 300.0;
+// MIRROR_BOOST is now pc.mirrorBoost
 
 // ── Daytime sky suppression ───────────────────────────────────────────────────
 // Models sky background glare washing out dim satellites.
@@ -175,7 +181,7 @@ const float MIRROR_BOOST = 300.0;
 //   Starlink peak Phong      (flare ≈ 0.6  ): effectFlare ≈ 0.004  → invisible ✓
 //   Starlink mirror peak     (flare ≈ 30   ): effectFlare ≈ 0.20   → visible   ✓
 //   ISS mirror peak          (flare ≈ 480  ): effectFlare ≈ 3.2    → brilliant ✓
-const float DAY_SUPPRESSION = 50.0;
+// DAY_SUPPRESSION is now pc.daySuppression
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
@@ -207,9 +213,9 @@ void main() {
     if (sat.diffuse > HIGHLIGHT_SENTINEL) {
         float rangeMm  = sat.range / 1.0e6;
         float baseSize = max(1.5, 2.5 - rangeMm * 0.4);
-        float angSize  = baseSize * 2.5 + 10.0 * log(HIGHLIGHT_FLARE * 54.0);
+        float angSize  = baseSize * 2.5 + 10.0 * log(pc.highlightFlare * 54.0);
         visible[idx].skyDir         = skyDir;
-        visible[idx].flareIntensity = HIGHLIGHT_FLARE;
+        visible[idx].flareIntensity = pc.highlightFlare;
         visible[idx].baseColor      = sat.baseColor;
         visible[idx].angularSize    = angSize;
         return;
@@ -282,15 +288,15 @@ void main() {
     // Added on top of spec0 (primary Phong lobe).  Only fires when the
     // sun-satellite-observer triangle is almost perfectly aligned.
     // mirrorExp ≫ specExp0 → sub-degree angular width (vs. ~15° for Phong lobe).
-    float mirrorExp  = max(sat.specExp0 * 300.0, 8000.0);
+    float mirrorExp  = max(sat.specExp0 * pc.mirrorBoost, 8000.0);
     float mirrorDot  = max(0.0, dot(refl0, satToObs));
-    float mirrorPeak = irr0 * pow(mirrorDot, mirrorExp) * MIRROR_BOOST;
+    float mirrorPeak = irr0 * pow(mirrorDot, mirrorExp) * pc.mirrorBoost;
     spec0 += mirrorPeak * sat.mirrorFrac;
 
     // crossSection = sqrt(area_m² / 10): larger structures reflect proportionally more flux.
     // A 10 m² satellite has crossSection≈1; a 50 000 m² space datacenter ≈70×.
     float specular = spec0 + spec1 * sat.w1 + sat.diffuse;
-    float flare    = specular * litFactor * distFactor * sat.crossSection * BRIGHTNESS_SCALE;
+    float flare    = specular * litFactor * distFactor * sat.crossSection * pc.brightnessScale;
 
     // ── Daytime sky suppression ───────────────────────────────────────────────
     // sunElev = sin(sun elevation angle above observer's horizon).
@@ -301,10 +307,10 @@ void main() {
     float sunElev     = dot(pc.sunDirECI, normalize(pc.obsECI));
     float t           = clamp((sunElev + 0.05) / 0.39, 0.0, 1.0);
     float dayBright   = t * t;
-    float effectFlare = flare / (1.0 + dayBright * DAY_SUPPRESSION);
+    float effectFlare = flare / (1.0 + dayBright * pc.daySuppression);
 
     // ── Cull if below visibility threshold ────────────────────────────────────
-    if (effectFlare < VIS_THRESH) {
+    if (effectFlare < pc.visThresh) {
         visible[idx].flareIntensity = 0.0;
         visible[idx].skyDir         = vec3(0.0, 0.0, 1.0);
         visible[idx].baseColor      = vec3(0.0);
