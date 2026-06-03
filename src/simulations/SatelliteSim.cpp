@@ -230,7 +230,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         return;
 
     // Upload input positions to the GPU-visible buffer.
-    memcpy(satInputMapped, satInputData.data(), activeSatCount * sizeof(GpuSatInput));
+    memcpy(satInputMapped, satInputData.data(), gpuSatCount * sizeof(GpuSatInput));
 
     // ECI→ENU matrix, sun direction, and observer position — all from updatePositions().
     SatFlarePC pc{};
@@ -238,7 +238,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pc.enuY = eci2enuY;
     pc.enuZ = eci2enuZ;
     pc.sunDirECI = sunDirECI;
-    pc.satCount = activeSatCount;
+    pc.satCount = gpuSatCount;
     pc.obsECI = obsECI;
     pc.pad = 0.0f;
     pc.brightnessScale = brightnessScale;
@@ -253,7 +253,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     vkCmdPushConstants(cmd, compPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(pc), &pc);
 
-    uint32_t groups = (activeSatCount + 63) / 64;
+    uint32_t groups = (gpuSatCount + 63) / 64;
     vkCmdDispatch(cmd, groups, 1, 1);
 
     // Barrier: compute SSBO write → vertex shader SSBO read.
@@ -293,14 +293,14 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
     vkCmdDraw(cmd, 3, 1, 0, 0);
 
     // ── Pass 2: satellite points (additive blending) ──────────────────────────
-    if (activeSatCount > 0)
+    if (gpuSatCount > 0)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, drawPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 drawPipeLayout, 0, 1, &descSet, 0, nullptr);
         vkCmdPushConstants(cmd, drawPipeLayout, VK_SHADER_STAGE_VERTEX_BIT,
                            0, sizeof(pc), &pc);
-        vkCmdDraw(cmd, activeSatCount, 1, 0, 0);
+        vkCmdDraw(cmd, gpuSatCount, 1, 0, 0);
     }
 
     // ── Pass 3: background stars (additive blending) ──────────────────────────
@@ -655,7 +655,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         snprintf(latBuf, sizeof(latBuf), "%.1f\xc2\xb0 %c", absLat, obsLatDeg >= 0.0f ? 'N' : 'S');
         snprintf(lonBuf, sizeof(lonBuf), "%.1f\xc2\xb0 %c", absLon, obsLonDeg >= 0.0f ? 'E' : 'W');
         snprintf(statFpsBuf, sizeof(statFpsBuf), "%.0f fps", dt > 0.0f ? 1.0f / dt : 0.0f);
-        snprintf(statVisBuf, sizeof(statVisBuf), "%u vis", visibleCount);
+        snprintf(statVisBuf, sizeof(statVisBuf), "%u vis", gpuSatCount);
     }
     Clay_String latStr{false, (int32_t)strlen(latBuf), latBuf};
     Clay_String lonStr{false, (int32_t)strlen(lonBuf), lonBuf};
@@ -3226,6 +3226,21 @@ void SatelliteSim::buildOrbits()
                 satOrbits.size(), MAX_SATELLITES);
         satOrbits.resize(MAX_SATELLITES);
     }
+    // Precompute frame-invariant constants into each SatOrbit so updatePositions()
+    // doesn't recompute them every frame (saves sqrt + 4 trig calls per satellite).
+    for (SatOrbit &orb : satOrbits)
+    {
+        orb.R_sat   = kEarthRadius + orb.altM;
+        orb.meanMot = (float)sqrt(kGM / ((double)orb.R_sat * orb.R_sat * orb.R_sat));
+        orb.cosI    = cosf(orb.incl);
+        orb.sinI    = sinf(orb.incl);
+        if (!orb.alignTerminator)
+        {
+            orb.cosRaan = cosf(orb.raan);
+            orb.sinRaan = sinf(orb.raan);
+        }
+    }
+
     activeSatCount = (uint32_t)satOrbits.size();
     satInputData.resize(activeSatCount);
     // Zero-initialize mirror normals — zero-length vector is the sentinel that triggers
@@ -3362,52 +3377,67 @@ void SatelliteSim::updatePositions(double t, float dt)
 
     // ── Per-constellation satellite geometry ──────────────────────────────────
     visibleCount = 0;
+    gpuSatCount = 0;
     peakMagnitude = 99.0f; // reset each frame; updated below for each visible sat
     glowEntryCount = 0;
     glowMinIntensity = 0.0f;
+
+    // Camera frustum: forward vector + cos(half-cone) threshold.
+    // fovYDeg/2 + 20° margin covers horizontal FOV on widescreen displays with padding.
+    float camAzRad = glm::radians(camera.azDeg);
+    float camElRad = glm::radians(camera.elDeg);
+    glm::vec3 camFwd{sinf(camAzRad) * cosf(camElRad),
+                     cosf(camAzRad) * cosf(camElRad),
+                     sinf(camElRad)};
+    float cosCullThresh = cosf(glm::radians(camera.fovYDeg * 0.5f + 20.0f));
     for (const ConstellationConfig &c : constellations)
     {
+        if (!c.enabled) continue;
         for (uint32_t i = c.orbitStart; i < c.orbitStart + c.orbitCount; ++i)
         {
-            if (!c.enabled)
-            {
-                satInputData[i].elevation = -glm::half_pi<float>(); // force-cull
-                continue;
-            }
-
             const SatOrbit &orb = satOrbits[i];
             const SatelliteType &type = satTypes[orb.typeIdx];
 
-            // Per-satellite altitude and mean motion (allows jitter for debris shells).
-            float R_sat = kEarthRadius + orb.altM;
-            float meanMot = (float)sqrt(kGM / ((double)R_sat * R_sat * R_sat));
-
-            float cosI = cosf(orb.incl), sinI = sinf(orb.incl);
-
             // Double-precision phase then fmod to [0,2π) keeps float trig accurate.
-            float u = (float)fmod((double)orb.u0 + (double)meanMot * t,
+            float u = (float)fmod((double)orb.u0 + (double)orb.meanMot * t,
                                   glm::two_pi<double>());
             float cosU = cosf(u), sinU = sinf(u);
 
-            // alignTerminator: precess RAAN at the SSO rate from the J2000-epoch reference RAAN.
+            // Non-SSO RAAN is constant (precomputed). SSO precesses at kSSOPrecRate.
             // Using absolute t (J2000 seconds) makes the orbit position deterministic at any
             // simulation date — changing the init time now produces a different sky position.
-            float liveRaan = orb.alignTerminator
-                                 ? (float)fmod((double)orb.raan + kSSOPrecRate * t, glm::two_pi<double>())
-                                 : orb.raan;
-            float cosR = cosf(liveRaan), sinR = sinf(liveRaan);
+            float cosR, sinR;
+            if (orb.alignTerminator)
+            {
+                float liveRaan = (float)fmod((double)orb.raan + kSSOPrecRate * t, glm::two_pi<double>());
+                cosR = cosf(liveRaan);
+                sinR = sinf(liveRaan);
+            }
+            else
+            {
+                cosR = orb.cosRaan;
+                sinR = orb.sinRaan;
+            }
 
             // Satellite ECI position (Rz(RAAN) · Rx(incl) · perifocal).
-            float ex = cosR * cosU - sinR * sinU * cosI;
-            float ey = sinR * cosU + cosR * sinU * cosI;
-            float ez = sinU * sinI;
+            float ex = cosR * cosU - sinR * sinU * orb.cosI;
+            float ey = sinR * cosU + cosR * sinU * orb.cosI;
+            float ez = sinU * orb.sinI;
 
-            glm::vec3 satECI{ex * R_sat, ey * R_sat, ez * R_sat};
+            glm::vec3 satECI{ex * orb.R_sat, ey * orb.R_sat, ez * orb.R_sat};
             glm::vec3 relPos = satECI - obsECI;
-            float range = glm::length(relPos);
 
-            float sinEl = glm::dot(relPos / range, up);
-            float el = asinf(glm::clamp(sinEl, -1.0f, 1.0f));
+            // Horizon cull without sqrt: sinEl = dotUp/range; sinEl < -0.01 iff
+            // dotUp < 0 and dotUp² > 0.0001×lenSq. Avoids sqrt+asinf for ~96% of sats.
+            float dotUp = glm::dot(relPos, up);
+            float lenSq = glm::dot(relPos, relPos);
+            if (dotUp < 0.0f && dotUp * dotUp > 0.0001f * lenSq) continue;
+            float range = sqrtf(lenSq);
+            float sinEl = dotUp / range;
+            float el    = asinf(glm::clamp(sinEl, -1.0f, 1.0f));
+
+            if (el < -0.01f) continue;
+            ++visibleCount;
 
             glm::vec3 satECI_abs = obsECI + relPos;
             glm::vec3 satNadir = glm::normalize(-satECI_abs); // unit vector toward Earth centre
@@ -3418,9 +3448,9 @@ void SatelliteSim::updatePositions(double t, float dt)
             // length (derivative of a unit-speed parametric curve), so no normalize needed.
             // Used only by KnifeEdge attitude; harmless to compute for all satellites.
             glm::vec3 velHat{
-                -sinU * cosR - cosU * cosI * sinR,
-                -sinU * sinR + cosU * cosI * cosR,
-                cosU * sinI};
+                -sinU * cosR - cosU * orb.cosI * sinR,
+                -sinU * sinR + cosU * orb.cosI * cosR,
+                cosU * orb.sinI};
 
             // ── Compute surface normals ───────────────────────────────────────
             // surfN0 = primary surface (solar panels, antenna face, tumbling body).
@@ -3605,126 +3635,128 @@ void SatelliteSim::updatePositions(double t, float dt)
 
             glm::vec3 surfN1 = computeNormal(type.secondary.attitude, surfN0);
 
-            satInputData[i].eciRelPos = relPos;
-            satInputData[i].range = range;
-            satInputData[i].surfN0 = surfN0;
-            satInputData[i].elevation = el;
-            satInputData[i].surfN1 = surfN1;
-            satInputData[i].specExp0 = type.primary.specExp;
-            satInputData[i].baseColor = type.baseColor;
-            satInputData[i].specExp1 = type.secondary.specExp;
-            satInputData[i].crossSection = sqrtf(type.crossSectionM2 / 10.0f);
-            satInputData[i].w1 = type.secondary.weight;
-            // Highlight sentinel: diffuse > 1.0 is out-of-range physically; the shader
-            // detects it and renders the satellite at a fixed brightness, bypassing
-            // shadow, daytime suppression, and attitude-dependent specular entirely.
-            satInputData[i].diffuse = constellations[orb.constIdx].highlight ? 2.0f : type.diffuse;
-            satInputData[i].mirrorFrac = type.mirrorFrac;
+            // ── ENU direction: shared by FOV cull and sky-glow entry ─────────
+            glm::vec3 skyDirENU = glm::normalize(glm::vec3(
+                glm::dot(relPos, east),
+                glm::dot(relPos, north),
+                glm::dot(relPos, up)));
 
-            if (el > -0.01f)
+            // ── GPU write: only satellites inside the camera frustum ─────────
+            if (glm::dot(skyDirENU, camFwd) >= cosCullThresh)
             {
-                ++visibleCount;
+                GpuSatInput &out = satInputData[gpuSatCount++];
+                out.eciRelPos = relPos;
+                out.range = range;
+                out.surfN0 = surfN0;
+                out.elevation = el;
+                out.surfN1 = surfN1;
+                out.specExp0 = type.primary.specExp;
+                out.baseColor = type.baseColor;
+                out.specExp1 = type.secondary.specExp;
+                out.crossSection = sqrtf(type.crossSectionM2 / 10.0f);
+                out.w1 = type.secondary.weight;
+                // Highlight sentinel: diffuse > 1.0 is out-of-range physically; the shader
+                // detects it and renders the satellite at a fixed brightness, bypassing
+                // shadow, daytime suppression, and attitude-dependent specular entirely.
+                out.diffuse = constellations[orb.constIdx].highlight ? 2.0f : type.diffuse;
+                out.mirrorFrac = type.mirrorFrac;
+            }
 
-                // ── Steady-state apparent magnitude ───────────────────────────
-                // Mirrors the GPU formula (sat_flare.comp) using only the diffuse
-                // floor — no specular — giving the baseline brightness of the sat
-                // when not actively flaring.  Cheap: no powf/reflect, just dot+sqrt.
-                //
-                // We skip the full specular term here to avoid an extra ~10 float
-                // ops per satellite at 100k scale (~1 ms CPU budget risk).
-                // Flaring satellites are transiently brighter; the readout shows
-                // the floor so it changes smoothly rather than flickering.
-                float distFactor = kRefRange / std::max(range, kRefRange);
-                distFactor *= distFactor; // 1/r²
-                float crossSection = sqrtf(type.crossSectionM2 / 10.0f);
-                float t = glm::clamp((glm::dot(sunDirECI, up) + 0.05f) / 0.39f, 0.0f, 1.0f);
-                float dayBright = t * t;
-                // kMagDiffuseFloor: zero-diffuse types (Starlink) scatter faintly from
-                // structural body panels; prevents the readout from always showing "--".
-                float effectiveDiffuse = std::max(type.diffuse, kMagDiffuseFloor);
-                float baseFlare = effectiveDiffuse * distFactor * crossSection * brightnessScale / (1.0f + dayBright * daySuppression);
-                if (baseFlare > 1e-9f)
+            // ── Steady-state apparent magnitude ───────────────────────────
+            // Mirrors the GPU formula (sat_flare.comp) using only the diffuse
+            // floor — no specular — giving the baseline brightness of the sat
+            // when not actively flaring.  Cheap: no powf/reflect, just dot+sqrt.
+            //
+            // We skip the full specular term here to avoid an extra ~10 float
+            // ops per satellite at 100k scale (~1 ms CPU budget risk).
+            // Flaring satellites are transiently brighter; the readout shows
+            // the floor so it changes smoothly rather than flickering.
+            float distFactor = kRefRange / std::max(range, kRefRange);
+            distFactor *= distFactor; // 1/r²
+            float crossSection = sqrtf(type.crossSectionM2 / 10.0f);
+            float t = glm::clamp((glm::dot(sunDirECI, up) + 0.05f) / 0.39f, 0.0f, 1.0f);
+            float dayBright = t * t;
+            // kMagDiffuseFloor: zero-diffuse types (Starlink) scatter faintly from
+            // structural body panels; prevents the readout from always showing "--".
+            float effectiveDiffuse = std::max(type.diffuse, kMagDiffuseFloor);
+            float baseFlare = effectiveDiffuse * distFactor * crossSection * brightnessScale / (1.0f + dayBright * daySuppression);
+            if (baseFlare > 1e-9f)
+            {
+                float mag = kMagRef - 2.5f * log10f(baseFlare / kMagRefFlare);
+                peakMagnitude = std::min(peakMagnitude, mag);
+            }
+
+            // ── Full-specular peak tracking for sky glow ──────────────
+            // Mirrors the compute shader to detect transient specular
+            // flares (including mirror peaks) for the sky glow effect.
+            // Mirror peak computation guarded by alignment threshold so
+            // the expensive pow() only fires when geometry is close.
+            glm::vec3 satToObs = glm::normalize(-relPos);
+
+            // Shadow factor (same formula as compute shader).
+            glm::vec3 shadowDir = -sunDirECI;
+            float proj = glm::dot(satECI_abs, shadowDir);
+            glm::vec3 perpV = satECI_abs - proj * shadowDir;
+            float perpLen = glm::length(perpV);
+            float litF = (proj > 0.0f)
+                             ? glm::smoothstep(-kEarthRadius * 0.01f,
+                                               kEarthRadius * 0.01f,
+                                               perpLen - kEarthRadius)
+                             : 1.0f;
+
+            // Primary surface specular.
+            float irr0 = fabsf(glm::dot(sunDirECI, surfN0));
+            glm::vec3 n0 = (glm::dot(sunDirECI, surfN0) >= 0.0f) ? surfN0 : -surfN0;
+            glm::vec3 refl0 = glm::reflect(-sunDirECI, n0);
+            float cosR0 = std::max(0.0f, glm::dot(refl0, satToObs));
+            float spec0 = (type.primary.specExp < 0.01f)
+                              ? irr0 * std::max(0.0f, glm::dot(sunDirECI, satToObs))
+                              : irr0 * powf(cosR0, type.primary.specExp);
+
+            // Mirror peak: only compute when near perfect alignment.
+            if (cosR0 > 0.9f && type.mirrorFrac > 0.0f)
+            {
+                float mExp = std::max(type.primary.specExp * mirrorBoost, 8000.0f);
+                spec0 += irr0 * powf(cosR0, mExp) * mirrorBoost * type.mirrorFrac;
+            }
+
+            // Secondary surface specular.
+            float irr1 = fabsf(glm::dot(sunDirECI, surfN1));
+            glm::vec3 n1 = (glm::dot(sunDirECI, surfN1) >= 0.0f) ? surfN1 : -surfN1;
+            glm::vec3 refl1 = glm::reflect(-sunDirECI, n1);
+            float cosR1 = std::max(0.0f, glm::dot(refl1, satToObs));
+            float spec1 = (type.secondary.specExp < 0.01f)
+                              ? irr1 * std::max(0.0f, glm::dot(sunDirECI, satToObs))
+                              : irr1 * powf(cosR1, type.secondary.specExp);
+
+            float specular = spec0 + spec1 * type.secondary.weight + type.diffuse;
+            float flareSpec = specular * litF * distFactor * crossSection * brightnessScale;
+            float effectSpec = flareSpec / (1.0f + dayBright * daySuppression);
+
+            if (effectSpec > 0.5f)
+            {
+                glm::vec4 entry{skyDirENU, effectSpec};
+                if (glowEntryCount < kMaxGlows)
                 {
-                    float mag = kMagRef - 2.5f * log10f(baseFlare / kMagRefFlare);
-                    peakMagnitude = std::min(peakMagnitude, mag);
-                }
-
-                // ── Full-specular peak tracking for sky glow ──────────────
-                // Mirrors the compute shader to detect transient specular
-                // flares (including mirror peaks) for the sky glow effect.
-                // Mirror peak computation guarded by alignment threshold so
-                // the expensive pow() only fires when geometry is close.
-                glm::vec3 satToObs = glm::normalize(-relPos);
-
-                // Shadow factor (same formula as compute shader).
-                glm::vec3 shadowDir = -sunDirECI;
-                float proj = glm::dot(satECI_abs, shadowDir);
-                glm::vec3 perpV = satECI_abs - proj * shadowDir;
-                float perpLen = glm::length(perpV);
-                float litF = (proj > 0.0f)
-                                 ? glm::smoothstep(-kEarthRadius * 0.01f,
-                                                   kEarthRadius * 0.01f,
-                                                   perpLen - kEarthRadius)
-                                 : 1.0f;
-
-                // Primary surface specular.
-                float irr0 = fabsf(glm::dot(sunDirECI, surfN0));
-                glm::vec3 n0 = (glm::dot(sunDirECI, surfN0) >= 0.0f) ? surfN0 : -surfN0;
-                glm::vec3 refl0 = glm::reflect(-sunDirECI, n0);
-                float cosR0 = std::max(0.0f, glm::dot(refl0, satToObs));
-                float spec0 = (type.primary.specExp < 0.01f)
-                                  ? irr0 * std::max(0.0f, glm::dot(sunDirECI, satToObs))
-                                  : irr0 * powf(cosR0, type.primary.specExp);
-
-                // Mirror peak: only compute when near perfect alignment.
-                if (cosR0 > 0.9f && type.mirrorFrac > 0.0f)
-                {
-                    float mExp = std::max(type.primary.specExp * mirrorBoost, 8000.0f);
-                    spec0 += irr0 * powf(cosR0, mExp) * mirrorBoost * type.mirrorFrac;
-                }
-
-                // Secondary surface specular.
-                float irr1 = fabsf(glm::dot(sunDirECI, surfN1));
-                glm::vec3 n1 = (glm::dot(sunDirECI, surfN1) >= 0.0f) ? surfN1 : -surfN1;
-                glm::vec3 refl1 = glm::reflect(-sunDirECI, n1);
-                float cosR1 = std::max(0.0f, glm::dot(refl1, satToObs));
-                float spec1 = (type.secondary.specExp < 0.01f)
-                                  ? irr1 * std::max(0.0f, glm::dot(sunDirECI, satToObs))
-                                  : irr1 * powf(cosR1, type.secondary.specExp);
-
-                float specular = spec0 + spec1 * type.secondary.weight + type.diffuse;
-                float flareSpec = specular * litF * distFactor * crossSection * brightnessScale;
-                float effectSpec = flareSpec / (1.0f + dayBright * daySuppression);
-
-                if (effectSpec > 0.5f)
-                {
-                    glm::vec4 entry{glm::normalize(glm::vec3(
-                                        glm::dot(relPos, east),
-                                        glm::dot(relPos, north),
-                                        glm::dot(relPos, up))),
-                                    effectSpec};
-                    if (glowEntryCount < kMaxGlows)
+                    glowEntries[glowEntryCount++] = entry;
+                    if (glowEntryCount == kMaxGlows)
                     {
-                        glowEntries[glowEntryCount++] = entry;
-                        if (glowEntryCount == kMaxGlows)
-                        {
-                            glowMinIntensity = FLT_MAX;
-                            for (int gi = 0; gi < kMaxGlows; ++gi)
-                                glowMinIntensity = std::min(glowMinIntensity, glowEntries[gi].w);
-                        }
-                    }
-                    else if (effectSpec > glowMinIntensity)
-                    {
-                        // Replace the weakest entry.
-                        int minIdx = 0;
-                        for (int gi = 1; gi < kMaxGlows; ++gi)
-                            if (glowEntries[gi].w < glowEntries[minIdx].w)
-                                minIdx = gi;
-                        glowEntries[minIdx] = entry;
                         glowMinIntensity = FLT_MAX;
                         for (int gi = 0; gi < kMaxGlows; ++gi)
                             glowMinIntensity = std::min(glowMinIntensity, glowEntries[gi].w);
                     }
+                }
+                else if (effectSpec > glowMinIntensity)
+                {
+                    // Replace the weakest entry.
+                    int minIdx = 0;
+                    for (int gi = 1; gi < kMaxGlows; ++gi)
+                        if (glowEntries[gi].w < glowEntries[minIdx].w)
+                            minIdx = gi;
+                    glowEntries[minIdx] = entry;
+                    glowMinIntensity = FLT_MAX;
+                    for (int gi = 0; gi < kMaxGlows; ++gi)
+                        glowMinIntensity = std::min(glowMinIntensity, glowEntries[gi].w);
                 }
             }
         }

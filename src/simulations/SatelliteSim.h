@@ -265,7 +265,14 @@ struct SatOrbit
     float tumblePhase;                  // initial rotation angle (radians)
     glm::vec3 tumbleAxis;               // fixed body tumble axis (unit vector in ECI)
     bool alignTerminator;               // if true, incl/raan are recomputed from sunDirECI each frame
-    float targetTerminatorAngle = 0.0f; // TargetedReflector: angle (rad) along the terminator great-circle
+    float targetTerminatorAngle = 0.0f;
+    // ── Precomputed frame-invariant constants (set once in buildOrbits) ────────
+    float R_sat   = 0.0f;  // kEarthRadius + altM
+    float meanMot = 0.0f;  // sqrt(kGM / R_sat^3)
+    float cosI    = 0.0f;  // cos(incl)
+    float sinI    = 0.0f;  // sin(incl)
+    float cosRaan = 0.0f;  // cos(raan) — valid when !alignTerminator
+    float sinRaan = 0.0f;  // sin(raan) — valid when !alignTerminator // TargetedReflector: angle (rad) along the terminator great-circle
     uint32_t constIdx = 0;              // index into constellations[] — set by buildOrbits()
                                         // that selects the ground target this mirror aims at.
                                         // Terminator basis: t1=cross(sunDir,ref), t2=cross(sunDir,t1).
@@ -353,7 +360,8 @@ private:
     float obsLatDeg = -67.0f;                         // display cache — derived from obsDir
     float obsLonDeg = -67.0f;                         // display cache — derived from obsDir
     uint32_t activeSatCount = 0;
-    uint32_t visibleCount = 0;
+    uint32_t visibleCount = 0;  // above-horizon sats this frame (UI display)
+    uint32_t gpuSatCount  = 0;  // in-frustum sats written to GPU buffer
     float peakMagnitude = 99.0f; // brightest steady-state sat magnitude this frame
 
     // ── Sky glow: top-N brightest flares ──────────────────────────────────────
