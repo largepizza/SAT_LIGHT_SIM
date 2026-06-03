@@ -362,6 +362,7 @@ private:
     uint32_t activeSatCount = 0;
     uint32_t visibleCount = 0;  // above-horizon sats this frame (UI display)
     uint32_t gpuSatCount  = 0;  // in-frustum sats written to GPU buffer
+    float    loopMs       = 0.0f; // satellite loop time last frame (milliseconds)
     float peakMagnitude = 99.0f; // brightest steady-state sat magnitude this frame
 
     // ── Sky glow: top-N brightest flares ──────────────────────────────────────
