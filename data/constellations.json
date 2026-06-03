@@ -169,6 +169,27 @@
       },
       "diffuse": 0.80,
       "mirror_frac": 0.06
+    },
+    {
+      "name": "Starlink KE",
+      "base_color": [
+        0.80,
+        0.87,
+        1.00
+      ],
+      "cross_section_m2": 10.0,
+      "primary": {
+        "attitude": "KnifeEdge",
+        "spec_exp": 18.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "Perpendicular",
+        "spec_exp": 0.0,
+        "weight": 0.0
+      },
+      "diffuse": 0.01,
+      "mirror_frac": 0.05
     }
   ],
   "constellations": [
@@ -184,7 +205,7 @@
     },
     {
       "name": "Starlink Gen2",
-      "type": "Starlink",
+      "type": "Starlink KE",
       "alt_km": 525.0,
       "incl_deg": 53.2,
       "num_planes": 120,

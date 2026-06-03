@@ -135,6 +135,9 @@ Each `SatelliteType` composes two surfaces + a diffuse floor:
 | `AntiNadir` | -satNadir | Radiators facing deep space; brighter near horizon |
 | `FlatMirror45` | normalize(sunDir + satNadir) | Flat mirror reflecting sunlight straight down |
 | `TargetedReflector` | normalize(sunDir + toTarget) | Mirror aimed at nearest valid night-side ground target |
+| `KnifeEdge` | roll around velHat; clamped ±80° | Starlink post-2020 roll-angle policy (Mallama 2023) |
+
+`velHat` is computed in `updatePositions` from the orbital trig already in scope: `{-sinU·cosR - cosU·cosI·sinR, -sinU·sinR + cosU·cosI·cosR, cosU·sinI}` — already unit length for circular orbits.
 
 ### Satellite type catalogue (typeIdx)
 | Idx | Name | Area (m²) | Primary attitude | mirrorFrac |
@@ -145,6 +148,8 @@ Each `SatelliteType` composes two surfaces + a diffuse floor:
 | 3 | ISS | 250 | SunTracking, spec=12 | 0.05 |
 | 4 | SpaceX AI Sats | ~600 | SunTracking, spec=18 | 0.01 |
 | 5 | Reflect Mirror | 2376 | TargetedReflector, spec=200 | 0.97 |
+| 6 | Debris | 1 | Tumbling, spec=6 | 0.03 |
+| 7 | Starlink KE | 10 | KnifeEdge, spec=18 | 0.05 |
 
 `crossSection = sqrt(crossSectionM2 / 10.0)` — so 10 m² → 1.0, 2376 m² → ~15.4.
 

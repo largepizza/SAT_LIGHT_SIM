@@ -49,11 +49,11 @@ static constexpr double kSSOPrecRate = 2.0 * 3.14159265358979323846 / kYearSec; 
 // ── Photometry (must mirror sat_flare.comp constants) ────────────────────────
 // kBrightnessScale MUST stay in sync with BRIGHTNESS_SCALE in sat_flare.comp.
 // kMagRef and kMagRefFlare define the calibration anchor for the magnitude readout.
-static constexpr float kBrightnessScale = 6.0f;  // mirror BRIGHTNESS_SCALE in sat_flare.comp
-static constexpr float kDaySuppression = 150.0f; // mirror DAY_SUPPRESSION in sat_flare.comp
-static constexpr float kRefRange = 500'000.0f;   // 500 km normalisation range (m)
-static constexpr float kMagRef = 6.0f;           // apparent magnitude at kMagRefFlare
-static constexpr float kMagRefFlare = 0.008f;    // effectFlare corresponding to kMagRef
+// kBrightnessScale / kDaySuppression removed — now runtime members on SatelliteSim,
+// synced to SatFlarePC each frame so CPU magnitude readout matches GPU render.
+static constexpr float kRefRange = 500'000.0f; // 500 km normalisation range (m)
+static constexpr float kMagRef = 6.0f;         // apparent magnitude at kMagRefFlare
+static constexpr float kMagRefFlare = 0.008f;  // effectFlare corresponding to kMagRef
 // Virtual diffuse floor for the magnitude readout only (not sent to GPU).
 // Zero-diffuse satellites (Starlink) are only visible via transient specular flares;
 // this floor lets them appear in the readout as a meaningful steady-state estimate.
@@ -155,6 +155,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     updatePositions(simTime); // must run first — initConstellation reads sunDirECI
     initConstellation();
     initStars(ctx);
+    loadSettings(); // override defaults with any previously saved values
 }
 
 // ─── onResize ─────────────────────────────────────────────────────────────────
@@ -240,6 +241,11 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pc.satCount = activeSatCount;
     pc.obsECI = obsECI;
     pc.pad = 0.0f;
+    pc.brightnessScale = brightnessScale;
+    pc.daySuppression = daySuppression;
+    pc.mirrorBoost = mirrorBoost;
+    pc.visThresh = visThresh;
+    pc.highlightFlare = highlightFlare;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -900,8 +906,24 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     {
         const float kWinW = 500.0f;
         const float kWinH = 500.0f;
-        const float kWinX = (inp.screenW - kWinW) * 0.5f;
-        const float kWinY = (inp.screenH - kWinH) * 0.5f;
+
+        // Centre on first open this session; restore saved position afterward.
+        if (settingsWinX < 0.0f)
+        {
+            settingsWinX = (inp.screenW - kWinW) * 0.5f;
+            settingsWinY = (inp.screenH - kWinH) * 0.5f;
+        }
+
+        // Apply drag delta before Clay layout so position is correct this frame.
+        if (!inp.lmbDown)
+            settingsDragging = false;
+        if (settingsDragging)
+        {
+            settingsWinX += inp.dMouseX;
+            settingsWinY += inp.dMouseY;
+        }
+        settingsWinX = glm::clamp(settingsWinX, 0.0f, inp.screenW - kWinW);
+        settingsWinY = glm::clamp(settingsWinY, 0.0f, inp.screenH - kWinH);
 
         CLAY(CLAY_ID("SettingsWin"), {.layout = {
                                           .sizing = {CLAY_SIZING_FIXED(kWinW), CLAY_SIZING_FIXED(kWinH)},
@@ -910,7 +932,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                                           .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                       .backgroundColor = Pal::panelSolid,
                                       .cornerRadius = CLAY_CORNER_RADIUS(8),
-                                      .floating = {.offset = {kWinX, kWinY}, .zIndex = 10, .attachTo = CLAY_ATTACH_TO_ROOT}})
+                                      .floating = {.offset = {settingsWinX, settingsWinY}, .zIndex = 10, .attachTo = CLAY_ATTACH_TO_ROOT}})
         {
             // Title bar
             CLAY(CLAY_ID("SettingsTitleBar"), {.layout = {
@@ -922,6 +944,13 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                                                .backgroundColor = Pal::titleBar,
                                                .cornerRadius = {8, 8, 0, 0}})
             {
+                // Start drag when the title bar is clicked outside the close button.
+                {
+                    bool n = Clay_Hovered();
+                    if (n && inp.lmbPressed && !hovSettingsClose)
+                        settingsDragging = true;
+                }
+
                 CLAY_TEXT(CLAY_STRING("Settings"),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(16)}));
 
@@ -944,7 +973,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                         hovSettingsClose = n;
                     }
                     if (hovSettingsClose && inp.lmbPressed)
+                    {
                         settingsOpen = false;
+                        saveSettings();
+                    }
                     CLAY_TEXT(CLAY_STRING("X"),
                               CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
                 }
@@ -1365,6 +1397,132 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     }
                 }
 
+                // ── Photometry ────────────────────────────────────────────────
+                CLAY(CLAY_ID("PhotoTopSep"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                                         .padding = {0, 0, 6, 4}},
+                                              .backgroundColor = Pal::sectionHdr}) {}
+                CLAY_TEXT(CLAY_STRING("Photometry"),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(14)}));
+                CLAY(CLAY_ID("PhotoSep"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                                      .padding = {0, 0, 4, 4}},
+                                           .backgroundColor = Pal::sectionHdr}) {}
+
+                // Layout constants — must match Clay sizing declarations exactly for slider hit-test.
+                // Row: [Label(110)] [Slider(228)] [Value(58)] [-(22)] [+(22)]  childGap=6 (×4=24)
+                // Row padding left=4; scroll padding left=14 → slider abs x = settingsWinX + 14 + 4 + 110 + 6
+                const float kPhotoSliderAbsX = settingsWinX + 134.0f;
+                const float kPhotoSliderW = 228.0f;
+
+                struct PhotoParam
+                {
+                    const char *label;
+                    float *val;
+                    float vmin, vmax, step;
+                    const char *fmt;
+                    int idx;
+                };
+                static char photoBufs[5][12];
+                PhotoParam photoParams[] = {
+                    {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
+                    {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
+                    {"Mirror boost", &mirrorBoost, 50.0f, 1000.0f, 25.0f, "%.0f", 2},
+                    {"Vis threshold", &visThresh, 0.001f, 0.1f, 0.001f, "%.3f", 3},
+                    {"Hlgt flare", &highlightFlare, 0.01f, 1.0f, 0.01f, "%.2f", 4},
+                };
+                for (auto &pp : photoParams)
+                {
+                    int pi = pp.idx;
+                    snprintf(photoBufs[pi], sizeof(photoBufs[pi]), pp.fmt, *pp.val);
+                    Clay_String valStr{false, (int32_t)strlen(photoBufs[pi]), photoBufs[pi]};
+                    float t = glm::clamp((*pp.val - pp.vmin) / (pp.vmax - pp.vmin), 0.0f, 1.0f);
+
+                    CLAY(CLAY_IDI("PhotoRow", pi), {.layout = {
+                                                        .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                                        .padding = {4, 4, 4, 4},
+                                                        .childGap = 6,
+                                                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                    {
+                        // Label
+                        CLAY(CLAY_IDI("PhotoLbl", pi), {.layout = {.sizing = {CLAY_SIZING_FIXED(110), CLAY_SIZING_FIT(0)}}})
+                        {
+                            Clay_String lblStr{false, (int32_t)strlen(pp.label), pp.label};
+                            CLAY_TEXT(lblStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+                        }
+
+                        // Slider track — draggable, filled bar shows current value
+                        CLAY(CLAY_IDI("PhotoSlider", pi), {.layout = {
+                                                               .sizing = {CLAY_SIZING_FIXED(kPhotoSliderW), CLAY_SIZING_FIXED(16)},
+                                                               .childGap = 0,
+                                                               .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                                           .backgroundColor = {22, 22, 24, 255},
+                                                           .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                        {
+                            {
+                                bool hov = Clay_Hovered();
+                                if (hov && inp.lmbPressed)
+                                    draggingPhoto[pi] = true;
+                                if (!inp.lmbDown)
+                                    draggingPhoto[pi] = false;
+                                if (draggingPhoto[pi])
+                                {
+                                    float nt = (inp.mouseX - kPhotoSliderAbsX) / kPhotoSliderW;
+                                    *pp.val = glm::clamp(pp.vmin + nt * (pp.vmax - pp.vmin), pp.vmin, pp.vmax);
+                                }
+                            }
+                            float fillW = t * kPhotoSliderW;
+                            if (fillW >= 1.0f)
+                            {
+                                CLAY(CLAY_IDI("PhotoFill", pi), {.layout = {.sizing = {CLAY_SIZING_FIXED(fillW), CLAY_SIZING_GROW(0)}},
+                                                                 .backgroundColor = Pal::btnAccent,
+                                                                 .cornerRadius = CLAY_CORNER_RADIUS(3)}) {}
+                            }
+                        }
+
+                        // Value readout
+                        CLAY(CLAY_IDI("PhotoVal", pi), {.layout = {
+                                                            .sizing = {CLAY_SIZING_FIXED(58), CLAY_SIZING_FIT(0)},
+                                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+                        {
+                            CLAY_TEXT(valStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
+                        }
+
+                        // − button
+                        Clay_Color cMinus = hovPhotoMinus[pi] ? Pal::btnHover : Pal::btnIdle;
+                        CLAY(CLAY_IDI("PhotoMinus", pi), {.layout = {
+                                                              .sizing = {CLAY_SIZING_FIXED(22), CLAY_SIZING_FIXED(22)},
+                                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                                          .backgroundColor = cMinus,
+                                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
+                        {
+                            bool n = Clay_Hovered();
+                            sndRollover(n, hovPhotoMinus[pi]);
+                            sndClick(n);
+                            hovPhotoMinus[pi] = n;
+                            if (hovPhotoMinus[pi] && inp.lmbPressed)
+                                *pp.val = glm::clamp(*pp.val - pp.step, pp.vmin, pp.vmax);
+                            CLAY_TEXT(CLAY_STRING("-"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
+                        }
+
+                        // + button
+                        Clay_Color cPlus = hovPhotoPlus[pi] ? Pal::btnHover : Pal::btnIdle;
+                        CLAY(CLAY_IDI("PhotoPlus", pi), {.layout = {
+                                                             .sizing = {CLAY_SIZING_FIXED(22), CLAY_SIZING_FIXED(22)},
+                                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                                         .backgroundColor = cPlus,
+                                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
+                        {
+                            bool n = Clay_Hovered();
+                            sndRollover(n, hovPhotoPlus[pi]);
+                            sndClick(n);
+                            hovPhotoPlus[pi] = n;
+                            if (hovPhotoPlus[pi] && inp.lmbPressed)
+                                *pp.val = glm::clamp(*pp.val + pp.step, pp.vmin, pp.vmax);
+                            CLAY_TEXT(CLAY_STRING("+"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
+                        }
+                    }
+                }
+
                 // ── Attributions ──────────────────────────────────────────────
                 CLAY(CLAY_ID("AttrGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(8)}}}) {}
                 CLAY(CLAY_ID("AttrHdr"), {.layout = {
@@ -1438,9 +1596,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     ui.addMouseCaptureRect(inp.screenW - 460.0f, inp.screenH - 52.0f,
                            450.0f, 44.0f); // status bar (bottom-right)
     if (settingsOpen)
-        ui.addMouseCaptureRect((inp.screenW - 500.0f) * 0.5f,
-                               (inp.screenH - 500.0f) * 0.5f,
-                               500.0f, 500.0f); // settings window
+        ui.addMouseCaptureRect(settingsWinX, settingsWinY, 500.0f, 500.0f); // settings window
 
     // ── Cinematic intro overlay ───────────────────────────────────────────────
     if (showIntro)
@@ -1547,11 +1703,16 @@ void SatelliteSim::setAudio(AudioSystem *audio)
     audio_->addTrack("assets/sound/music/gravity_wave.mp3");
     audio_->addTrack("assets/sound/music/fuse.mp3");
     audio_->startMusic();
+    // Apply any volumes loaded from settings.json before the audio system was ready.
+    audio_->setMasterVolume(masterVol_);
+    audio_->setMusicVolume(musicVol_);
+    audio_->setSfxVolume(sfxVol_);
 }
 
 // ─── cleanup ──────────────────────────────────────────────────────────────────
 void SatelliteSim::cleanup(VkDevice device)
 {
+    saveSettings();
     vkDestroyPipeline(device, compPipeline, nullptr);
     vkDestroyPipeline(device, skyBgPipeline, nullptr);
     vkDestroyPipeline(device, drawPipeline, nullptr);
@@ -2388,6 +2549,8 @@ static AttitudeMode parseAttitudeMode(const std::string &s)
         return AttitudeMode::FlatMirror45;
     if (s == "TargetedReflector")
         return AttitudeMode::TargetedReflector;
+    if (s == "KnifeEdge")
+        return AttitudeMode::KnifeEdge;
     fprintf(stderr, "[SatelliteSim] Unknown AttitudeMode '%s'; using NadirPointing.\n", s.c_str());
     return AttitudeMode::NadirPointing;
 }
@@ -2596,6 +2759,20 @@ void SatelliteSim::loadHardcoded()
          {AttitudeMode::Perpendicular, 6.0f, 0.0f}, // no secondary surface
          0.001f,                                    // high diffuse floor — structural clutter scatters everywhere
          0.03f},                                    // rare metallic glints from exposed foil or polished surfaces
+        {                                           // 7 — Starlink (knife-edge): SpaceX roll-angle policy adopted 2020.
+         // Body rolls around the along-track axis so the phased-array face is
+         // edge-on to the sun; solar panel gimbals counter-rotate to compensate.
+         // Roll is clamped to ±kKnifeMaxRollDeg (80°) — solar power constraint.
+         // Measured effect: ~90% brightness reduction vs. NadirPointing at standard
+         // distance (Mallama & Respler 2023, 2303.01431).  Residual brightness at
+         // the clamp limit: specular ∝ cos(80°) ≈ 0.17 of fully-lit nadir face.
+         "Starlink KE",
+         {0.80f, 0.87f, 1.00f},                     // same cool blue-white as Starlink
+         10.0f,                                     // same bus area
+         {AttitudeMode::KnifeEdge, 18.0f, 1.0f},    // sharp specular; normal set by roll solver
+         {AttitudeMode::Perpendicular, 0.0f, 0.0f}, // no secondary surface
+         0.01f,                                     // visor-darkened diffuse floor
+         0.05f},                                    // same polished array face as baseline Starlink
     };
 
     // ── Constellation shells ───────────────────────────────────────────────────
@@ -2627,12 +2804,13 @@ void SatelliteSim::loadHardcoded()
          OrbitDistribution::Walker},
 
         // SpaceX Starlink Gen2 — FCC filing: 30,456 sats; 120 planes × 254 = 30,480
+        // Uses knife-edge roll (type 7) to model SpaceX's 2020 roll-angle policy.
         {"Starlink Gen2",
          525'000.0f,          // altM:      525 km (slightly lower than Gen1)
          glm::radians(53.2f), // incl:      53.2°
          120,                 // numPlanes: orbital planes
          254,                 // perPlane:  sats per plane (120×254 = 30,480)
-         0u,                  // typeIdx:   Starlink (NadirPointing)
+         7u,                  // typeIdx:   Starlink KE (KnifeEdge roll)
          true,                // enabled
          OrbitDistribution::Walker},
 
@@ -2735,6 +2913,174 @@ void SatelliteSim::loadHardcoded()
 
     hovConst.assign(constellations.size(), false);
     hovHighlightConst.assign(constellations.size(), false);
+}
+
+// ─── loadSettings ─────────────────────────────────────────────────────────────
+// Reads settings.json from the exe directory.  Silently skips if the file is
+// missing (first run).  Logs a warning and returns on parse error.
+// Must be called after initConstellation() so constellations[] is populated.
+void SatelliteSim::loadSettings()
+{
+    auto path = (std::filesystem::path(exeDir_) / "settings.json").string();
+    std::ifstream f(path);
+    if (!f.is_open())
+        return; // first run — silently use defaults
+
+    nlohmann::json j;
+    try
+    {
+        f >> j;
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        fprintf(stderr, "[SatelliteSim] Failed to parse settings.json: %s\n", e.what());
+        return;
+    }
+
+    if (j.contains("photometry"))
+    {
+        auto &p = j["photometry"];
+        brightnessScale = p.value("brightness_scale", brightnessScale);
+        daySuppression = p.value("day_suppression", daySuppression);
+        mirrorBoost = p.value("mirror_boost", mirrorBoost);
+        visThresh = p.value("vis_thresh", visThresh);
+        highlightFlare = p.value("highlight_flare", highlightFlare);
+    }
+
+    if (j.contains("display"))
+    {
+        uiScale = j["display"].value("ui_scale", uiScale);
+        settingsWinX = j["display"].value("win_x", settingsWinX);
+        settingsWinY = j["display"].value("win_y", settingsWinY);
+    }
+
+    if (j.contains("audio"))
+    {
+        auto &a = j["audio"];
+        masterVol_ = a.value("master_vol", masterVol_);
+        musicVol_ = a.value("music_vol", musicVol_);
+        sfxVol_ = a.value("sfx_vol", sfxVol_);
+        // audio_ is null here (setAudio not called yet); volumes are applied there.
+    }
+
+    if (j.contains("camera"))
+    {
+        auto &c = j["camera"];
+        camera.azDeg = c.value("az_deg", camera.azDeg);
+        camera.elDeg = c.value("el_deg", camera.elDeg);
+        camera.fovYDeg = c.value("fov_y_deg", camera.fovYDeg);
+    }
+
+    if (j.contains("observer"))
+    {
+        float latDeg = j["observer"].value("lat_deg", obsLatDeg);
+        float lonDeg = j["observer"].value("lon_deg", obsLonDeg);
+        float lat = glm::radians(latDeg);
+        float lon = glm::radians(lonDeg);
+        obsDir = {cosf(lat) * cosf(lon), cosf(lat) * sinf(lon), sinf(lat)};
+        obsFacing = {-sinf(lat) * cosf(lon), -sinf(lat) * sinf(lon), cosf(lat)};
+        obsLatDeg = latDeg;
+        obsLonDeg = lonDeg;
+    }
+
+    if (j.contains("time"))
+    {
+        timeScaleIdx = j["time"].value("scale_idx", timeScaleIdx);
+        timeScaleIdx = std::clamp(timeScaleIdx, 0, kNumTimeScales - 1);
+    }
+
+    if (j.contains("controls") && j["controls"].contains("keybindings"))
+    {
+        std::unordered_map<std::string, int> actionKey;
+        for (const auto &kb : j["controls"]["keybindings"])
+            if (kb.contains("action") && kb.contains("key"))
+                actionKey[kb["action"].get<std::string>()] = kb["key"].get<int>();
+        for (auto &kb : keybindings)
+        {
+            auto it = actionKey.find(kb.action);
+            if (it != actionKey.end())
+                kb.key = it->second;
+        }
+    }
+
+    if (j.contains("constellations"))
+    {
+        std::unordered_map<std::string, const nlohmann::json *> byName;
+        for (const auto &jc : j["constellations"])
+            if (jc.contains("name"))
+                byName[jc["name"].get<std::string>()] = &jc;
+        for (auto &c : constellations)
+        {
+            auto it = byName.find(c.name);
+            if (it != byName.end())
+            {
+                c.enabled = it->second->value("enabled", c.enabled);
+                c.highlight = it->second->value("highlight", c.highlight);
+            }
+        }
+    }
+
+    fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
+}
+
+// ─── saveSettings ─────────────────────────────────────────────────────────────
+// Writes the current runtime state to settings.json next to the exe.
+// Called on cleanup() and when the settings window is closed.
+void SatelliteSim::saveSettings()
+{
+    if (exeDir_.empty())
+        return;
+
+    nlohmann::json j;
+
+    j["photometry"] = {
+        {"brightness_scale", brightnessScale},
+        {"day_suppression", daySuppression},
+        {"mirror_boost", mirrorBoost},
+        {"vis_thresh", visThresh},
+        {"highlight_flare", highlightFlare}};
+
+    j["display"] = {{"ui_scale", uiScale}};
+    if (settingsWinX >= 0.0f)
+    {
+        j["display"]["win_x"] = settingsWinX;
+        j["display"]["win_y"] = settingsWinY;
+    }
+
+    j["audio"] = {
+        {"master_vol", audio_ ? audio_->getMasterVolume() : masterVol_},
+        {"music_vol", audio_ ? audio_->getMusicVolume() : musicVol_},
+        {"sfx_vol", audio_ ? audio_->getSfxVolume() : sfxVol_}};
+
+    j["camera"] = {
+        {"az_deg", camera.azDeg},
+        {"el_deg", camera.elDeg},
+        {"fov_y_deg", camera.fovYDeg}};
+
+    j["observer"] = {{"lat_deg", obsLatDeg}, {"lon_deg", obsLonDeg}};
+
+    j["time"] = {{"scale_idx", timeScaleIdx}};
+
+    nlohmann::json kbArr = nlohmann::json::array();
+    for (const auto &kb : keybindings)
+        kbArr.push_back({{"action", kb.action}, {"key", kb.key}});
+    j["controls"]["keybindings"] = kbArr;
+
+    nlohmann::json constArr = nlohmann::json::array();
+    for (const auto &c : constellations)
+        constArr.push_back({{"name", c.name}, {"enabled", c.enabled}, {"highlight", c.highlight}});
+    j["constellations"] = constArr;
+
+    auto path = (std::filesystem::path(exeDir_) / "settings.json").string();
+    try
+    {
+        std::ofstream f(path);
+        f << j.dump(4) << '\n';
+    }
+    catch (const std::exception &e)
+    {
+        fprintf(stderr, "[SatelliteSim] Failed to save settings.json: %s\n", e.what());
+    }
 }
 
 // ─── buildOrbits ──────────────────────────────────────────────────────────────
@@ -3066,6 +3412,16 @@ void SatelliteSim::updatePositions(double t, float dt)
             glm::vec3 satECI_abs = obsECI + relPos;
             glm::vec3 satNadir = glm::normalize(-satECI_abs); // unit vector toward Earth centre
 
+            // Along-track velocity direction for a circular orbit — the derivative of
+            // the ECI position with respect to mean anomaly u, using the same
+            // Rz(RAAN)·Rx(incl) rotation applied to [-sinU, cosU, 0].  Already unit
+            // length (derivative of a unit-speed parametric curve), so no normalize needed.
+            // Used only by KnifeEdge attitude; harmless to compute for all satellites.
+            glm::vec3 velHat{
+                -sinU * cosR - cosU * cosI * sinR,
+                -sinU * sinR + cosU * cosI * cosR,
+                cosU * sinI};
+
             // ── Compute surface normals ───────────────────────────────────────
             // surfN0 = primary surface (solar panels, antenna face, tumbling body).
             // surfN1 = secondary surface (radiators, body panels).
@@ -3166,6 +3522,35 @@ void SatelliteSim::updatePositions(double t, float dt)
                     float nlen = glm::length(n);
                     return (nlen > 1e-5f) ? n / nlen : satNadir;
                 }
+                case AttitudeMode::KnifeEdge:
+                {
+                    // Roll the body around the along-track (velocity) axis so the sun
+                    // falls edge-on to the flat panel.  surfN spans the roll plane:
+                    //   N(θ) = cos(θ)·satNadir + sin(θ)·crossTrack
+                    // where crossTrack = cross(velHat, satNadir) is already unit length
+                    // because velHat ⊥ satNadir for circular orbits.
+                    //
+                    // dot(sunDir, N(θ)) = 0  has two solutions per revolution.  Pick
+                    // the one requiring less roll from nadir (smaller |θ|) — equivalent
+                    // to minimising attitude fuel and keeping panel tilt modest.
+                    //
+                    // Clamp to ±kKnifeMaxRollDeg: beyond this the solar array gimbals
+                    // can no longer counter-rotate to keep the panels sun-facing, so
+                    // power generation would fall below the operational margin.  The
+                    // clamp means knife-edge is only partial when the sun is nearly
+                    // nadir-on (e.g. satellite at subsolar point), leaving a small
+                    // residual specular contribution of cos(kKnifeMaxRollDeg) ≈ 0.17.
+                    glm::vec3 ct = glm::cross(velHat, satNadir); // unit: velHat ⊥ satNadir
+                    float a = glm::dot(sunDirECI, satNadir);
+                    float b = glm::dot(sunDirECI, ct);
+                    float theta1 = atan2f(-a, b);
+                    // The alternate edge-on angle is θ₁ ± π; pick whichever is closer to 0.
+                    float theta2 = theta1 + (theta1 < 0.0f ? glm::pi<float>() : -glm::pi<float>());
+                    float theta = (fabsf(theta1) <= fabsf(theta2)) ? theta1 : theta2;
+                    theta = glm::clamp(theta, -glm::radians(kKnifeMaxRollDeg),
+                                       glm::radians(kKnifeMaxRollDeg));
+                    return cosf(theta) * satNadir + sinf(theta) * ct;
+                }
                 default: // SunTracking
                 {
                     // Two-axis sun-tracking: panel normal points directly at the sun.
@@ -3257,7 +3642,7 @@ void SatelliteSim::updatePositions(double t, float dt)
                 // kMagDiffuseFloor: zero-diffuse types (Starlink) scatter faintly from
                 // structural body panels; prevents the readout from always showing "--".
                 float effectiveDiffuse = std::max(type.diffuse, kMagDiffuseFloor);
-                float baseFlare = effectiveDiffuse * distFactor * crossSection * kBrightnessScale / (1.0f + dayBright * kDaySuppression);
+                float baseFlare = effectiveDiffuse * distFactor * crossSection * brightnessScale / (1.0f + dayBright * daySuppression);
                 if (baseFlare > 1e-9f)
                 {
                     float mag = kMagRef - 2.5f * log10f(baseFlare / kMagRefFlare);
@@ -3294,8 +3679,8 @@ void SatelliteSim::updatePositions(double t, float dt)
                 // Mirror peak: only compute when near perfect alignment.
                 if (cosR0 > 0.9f && type.mirrorFrac > 0.0f)
                 {
-                    float mExp = std::max(type.primary.specExp * 300.0f, 8000.0f);
-                    spec0 += irr0 * powf(cosR0, mExp) * 300.0f * type.mirrorFrac;
+                    float mExp = std::max(type.primary.specExp * mirrorBoost, 8000.0f);
+                    spec0 += irr0 * powf(cosR0, mExp) * mirrorBoost * type.mirrorFrac;
                 }
 
                 // Secondary surface specular.
@@ -3308,8 +3693,8 @@ void SatelliteSim::updatePositions(double t, float dt)
                                   : irr1 * powf(cosR1, type.secondary.specExp);
 
                 float specular = spec0 + spec1 * type.secondary.weight + type.diffuse;
-                float flareSpec = specular * litF * distFactor * crossSection * kBrightnessScale;
-                float effectSpec = flareSpec / (1.0f + dayBright * kDaySuppression);
+                float flareSpec = specular * litF * distFactor * crossSection * brightnessScale;
+                float effectSpec = flareSpec / (1.0f + dayBright * daySuppression);
 
                 if (effectSpec > 0.5f)
                 {
