@@ -1,0 +1,308 @@
+// ── sat_orbit.comp ────────────────────────────────────────────────────────────
+// Compute shader: per-satellite orbital mechanics + attitude normals.
+// Runs before sat_flare.comp each frame; replaces the CPU updatePositions() loop.
+//
+// Reads:
+//   binding 0  satOrbitBuf     — GpuSatOrbit array, uploaded once at init
+//   binding 2  mirrorNormalsBuf — persistent mirror slew state (TargetedReflector)
+//   binding 3  reflectorTargetBuf — valid night-side ground targets, updated each frame
+//
+// Writes:
+//   binding 1  SatInputBuf     — GpuSatInput array consumed by sat_flare.comp
+//   binding 2  mirrorNormalsBuf — updated slew state written back in-place
+//
+// Below-horizon and disabled satellites write elevation = -π/2 and return early.
+// sat_flare.comp's existing horizon cull (elevation < -0.01 rad) discards them.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#version 450
+layout(local_size_x = 64) in;
+
+// ── GpuSatOrbit: all floats/uints, no vec3 (avoids std430 padding) ─────────
+// 28 × 4-byte fields = 112 bytes. Must match GpuSatOrbit in SatelliteSim.h.
+struct SatOrbit {
+    float raan;               // right ascension of ascending node at epoch
+    float u0;                 // epoch-baked initial phase: fmod(orig_u0 + meanMot*epochT0, 2π)
+    float R_sat;              // kEarthRadius + altM (meters)
+    float meanMot;            // sqrt(GM/R³) (rad/s)
+
+    float cosI;               // cos(inclination)
+    float sinI;               // sin(inclination)
+    float cosRaan;            // cos(raan) — used when alignTerminator < 0.5
+    float sinRaan;            // sin(raan) — used when alignTerminator < 0.5
+
+    float tumbleRate;         // rotation rate (rad/s); 0 = not tumbling
+    float tumblePhase;        // epoch-baked tumble angle: fmod(phase + rate*epochT0, 2π)
+    float alignTerminator;    // 1.0 = SSO (RAAN precesses); 0.0 = fixed RAAN
+    float tumbleAxisX;        // tumble axis unit vector x
+
+    float tumbleAxisY;        // tumble axis unit vector y
+    float tumbleAxisZ;        // tumble axis unit vector z
+    uint  primaryAttitude;    // AttitudeMode enum value (see constants below)
+    uint  secondaryAttitude;  // AttitudeMode enum value
+
+    float baseColorR;         // satellite tint (r)
+    float baseColorG;         // satellite tint (g)
+    float baseColorB;         // satellite tint (b)
+    float crossSection;       // sqrt(area_m² / 10)
+
+    float specExp0;           // primary specular exponent
+    float specExp1;           // secondary specular exponent
+    float w1;                 // secondary surface weight
+    float diffuse;            // isotropic Lambertian floor
+
+    float mirrorFrac;         // near-perfect mirror fraction
+    uint  constIdx;           // constellation index (for enabledMask/highlightMask)
+    uint  pad0;               // padding
+    uint  pad1;               // padding
+};
+
+layout(set = 0, binding = 0) readonly buffer SatOrbitBuf {
+    SatOrbit orbits[];
+};
+
+// ── GpuSatInput output: consumed by sat_flare.comp ───────────────────────────
+// std430 layout: each vec3+float pair packs into one 16-byte block.
+// Must match GpuSatInput (80 bytes) in SatelliteSim.h and sat_flare.comp.
+struct SatInput {
+    vec3  eciRelPos;    // observer-relative ECI position (meters)
+    float range;
+    vec3  surfN0;       // primary surface normal (ECI)
+    float elevation;    // radians; -π/2 = below-horizon sentinel
+    vec3  surfN1;       // secondary surface normal (ECI)
+    float specExp0;
+    vec3  baseColor;
+    float specExp1;
+    float crossSection;
+    float w1;
+    float diffuse;
+    float mirrorFrac;
+};
+layout(set = 0, binding = 1) buffer SatInputBuf {
+    SatInput satellites[];
+};
+
+// ── Mirror normals: persistent slew state for TargetedReflector ──────────────
+// xyz = current mirror normal in ECI, w = 0 (uninitialized) or 1 (active).
+layout(set = 0, binding = 2) buffer MirrorNormalBuf {
+    vec4 mirrorNormals[];
+};
+
+// ── Reflector ground targets: updated each frame by CPU ───────────────────────
+// xyz = ECI position (Earth-radius-scaled), w = 1.0 valid / 0.0 invalid.
+layout(set = 0, binding = 3) readonly buffer ReflectorTargetBuf {
+    vec4 reflTargets[];  // xyz=posECI, w=valid
+};
+
+// ── Push constants ────────────────────────────────────────────────────────────
+// Offsets verified against SatOrbitPC in SatelliteSim.h.
+layout(push_constant) uniform PC {
+    vec4  enuX;          // East  basis in ECI (w unused) — offset 0
+    vec4  enuY;          // North basis in ECI (w unused) — offset 16
+    vec4  enuZ;          // Up    basis in ECI (w unused) — offset 32
+    vec3  sunDirECI;     // unit vector toward sun — offset 48
+    float deltaT;        // simTime - epochT0 (float) — offset 60
+    vec3  obsECI;        // observer ECI position (meters) — offset 64
+    uint  satCount;      // total satellite count — offset 76
+    uint  highlightMask; // bit i set = constellation i in highlight mode — offset 80
+    uint  enabledMask;   // bit i set = constellation i is enabled — offset 84
+    float simDt;         // simulated seconds this frame (mirror slew) — offset 88
+    float pad;           // — offset 92
+} pc;
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const float PI            = 3.14159265358979;
+const float TWO_PI        = 6.28318530717959;
+const float SSO_PREC_RATE = TWO_PI / (365.25 * 86400.0); // rad/s
+const float MIRROR_ROT_RATE = 0.01745329251994; // 1 degree per second in radians
+const float KNIFE_MAX_ROLL  = 1.39626340159546; // 80 degrees in radians
+
+// AttitudeMode enum values — must match C++ enum in SatelliteSim.h.
+const uint AM_NADIR_POINTING     = 0u;
+const uint AM_SUN_TRACKING       = 1u;
+const uint AM_TUMBLING           = 2u;
+const uint AM_PERPENDICULAR      = 3u;
+const uint AM_ANTI_NADIR         = 4u;
+const uint AM_FLAT_MIRROR_45     = 5u;
+const uint AM_TARGETED_REFLECTOR = 6u;
+const uint AM_KNIFE_EDGE         = 7u;
+
+// Number of reflector targets — must match kNumReflectorTargets in SatelliteSim.h.
+const int NUM_TARGETS = 201;
+
+// ── Compute a surface normal for non-TargetedReflector attitude modes ─────────
+vec3 computeNormal(uint mode, SatOrbit orb, vec3 satNadir, vec3 velHat, vec3 primary)
+{
+    if (mode == AM_NADIR_POINTING)  return satNadir;
+    if (mode == AM_ANTI_NADIR)      return -satNadir;
+    if (mode == AM_SUN_TRACKING)    return pc.sunDirECI;
+
+    if (mode == AM_TUMBLING) {
+        float angle = orb.tumblePhase + orb.tumbleRate * pc.deltaT;
+        vec3  ax    = vec3(orb.tumbleAxisX, orb.tumbleAxisY, orb.tumbleAxisZ);
+        vec3  ref   = (abs(ax.z) < 0.9) ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+        vec3  axA   = normalize(cross(ax, ref));
+        vec3  axB   = cross(ax, axA); // already unit length
+        return cos(angle) * axA + sin(angle) * axB;
+    }
+
+    if (mode == AM_PERPENDICULAR) {
+        vec3  perp = cross(primary, satNadir);
+        float len  = length(perp);
+        return (len > 1e-5) ? perp / len : satNadir;
+    }
+
+    if (mode == AM_FLAT_MIRROR_45) {
+        vec3  n   = pc.sunDirECI + satNadir;
+        float len = length(n);
+        return (len > 1e-5) ? n / len : satNadir;
+    }
+
+    if (mode == AM_KNIFE_EDGE) {
+        vec3  ct     = cross(velHat, satNadir); // unit: velHat ⊥ satNadir for circular orbits
+        float a      = dot(pc.sunDirECI, satNadir);
+        float b      = dot(pc.sunDirECI, ct);
+        float theta1 = atan(-a, b);
+        float theta2 = theta1 + (theta1 < 0.0 ? PI : -PI);
+        float theta  = (abs(theta1) <= abs(theta2)) ? theta1 : theta2;
+        theta = clamp(theta, -KNIFE_MAX_ROLL, KNIFE_MAX_ROLL);
+        return cos(theta) * satNadir + sin(theta) * ct;
+    }
+
+    // Default / AM_SUN_TRACKING fallback
+    return pc.sunDirECI;
+}
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.satCount) return;
+
+    SatOrbit orb = orbits[i];
+
+    // ── Disabled constellation: write sentinel and skip ───────────────────────
+    if (((pc.enabledMask >> orb.constIdx) & 1u) == 0u) {
+        satellites[i].elevation = -1.5708; // -π/2 sentinel
+        return;
+    }
+
+    // ── Orbital phase (epoch-delta trick for float precision) ─────────────────
+    // orb.u0 = fmod(original_u0 + meanMot*epochT0, 2π), so phase = u0 + meanMot*deltaT.
+    // Float precision of deltaT limits accuracy; re-upload GpuSatOrbit to reset when needed.
+    float u    = mod(orb.u0 + orb.meanMot * pc.deltaT, TWO_PI);
+    float cosU = cos(u);
+    float sinU = sin(u);
+
+    // ── RAAN ──────────────────────────────────────────────────────────────────
+    float cosR, sinR;
+    if (orb.alignTerminator > 0.5) {
+        float liveRaan = mod(orb.raan + SSO_PREC_RATE * pc.deltaT, TWO_PI);
+        cosR = cos(liveRaan);
+        sinR = sin(liveRaan);
+    } else {
+        cosR = orb.cosRaan;
+        sinR = orb.sinRaan;
+    }
+
+    // ── Satellite ECI position (Rz(RAAN) · Rx(incl) · perifocal) ─────────────
+    float ex = cosR * cosU - sinR * sinU * orb.cosI;
+    float ey = sinR * cosU + cosR * sinU * orb.cosI;
+    float ez = sinU * orb.sinI;
+    vec3 satECI = vec3(ex, ey, ez) * orb.R_sat;
+    vec3 relPos = satECI - pc.obsECI;
+
+    // ── Sqrt-free horizon cull ────────────────────────────────────────────────
+    vec3  up    = pc.enuZ.xyz;
+    float dotUp = dot(relPos, up);
+    float lenSq = dot(relPos, relPos);
+    if (dotUp < 0.0 && dotUp * dotUp > 0.0001 * lenSq) {
+        satellites[i].elevation = -1.5708;
+        return;
+    }
+    float range = sqrt(lenSq);
+    float sinEl = dotUp / range;
+    float el    = asin(clamp(sinEl, -1.0, 1.0));
+    if (el < -0.01) {
+        satellites[i].elevation = -1.5708;
+        return;
+    }
+
+    // ── Attitude vectors ──────────────────────────────────────────────────────
+    vec3 satNadir = -normalize(satECI);
+    // Along-track velocity direction — derivative of ECI position w.r.t. mean anomaly.
+    // Already unit length for circular orbits; used by KnifeEdge attitude.
+    vec3 velHat = vec3(
+        -sinU * cosR - cosU * orb.cosI * sinR,
+        -sinU * sinR + cosU * orb.cosI * cosR,
+         cosU * orb.sinI
+    );
+
+    // ── Primary surface normal ────────────────────────────────────────────────
+    vec3 surfN0;
+    if (orb.primaryAttitude == AM_TARGETED_REFLECTOR) {
+        // Scan all valid night-side targets; pick nearest by dot(satZenith, targetDir).
+        int   bestIdx = -1;
+        float bestCos = -2.0;
+        vec3  satZenith = -satNadir; // from Earth center toward satellite
+        for (int ti = 0; ti < NUM_TARGETS; ++ti) {
+            vec4 td = reflTargets[ti];
+            if (td.w < 0.5) continue;
+            float c = dot(satZenith, normalize(td.xyz));
+            if (c > bestCos) { bestCos = c; bestIdx = ti; }
+        }
+
+        vec3 ideal;
+        if (bestIdx < 0) {
+            // No valid targets: fall back to FlatMirror45 (reflect straight down).
+            vec3  n   = pc.sunDirECI + satNadir;
+            float len = length(n);
+            ideal = (len > 1e-5) ? n / len : satNadir;
+        } else {
+            vec3 toTarget = normalize(reflTargets[bestIdx].xyz - satECI);
+            vec3 n   = pc.sunDirECI + toTarget;
+            float nl = length(n);
+            ideal = (nl > 1e-5) ? n / nl : satNadir;
+        }
+
+        // Rate-limit mirror slew toward ideal direction.
+        vec4 state = mirrorNormals[i];
+        if (state.w < 0.5) {
+            // Uninitialized: snap to ideal on first frame.
+            surfN0 = ideal;
+        } else {
+            vec3  cur      = state.xyz;
+            float maxAngle = MIRROR_ROT_RATE * pc.simDt;
+            float cosA     = clamp(dot(cur, ideal), -1.0, 1.0);
+            float angle    = acos(cosA);
+            if (angle <= maxAngle) {
+                surfN0 = ideal;
+            } else {
+                surfN0 = normalize(mix(cur, ideal, maxAngle / angle));
+            }
+        }
+        mirrorNormals[i] = vec4(surfN0, 1.0);
+    } else {
+        surfN0 = computeNormal(orb.primaryAttitude, orb, satNadir, velHat, vec3(0.0));
+    }
+
+    // ── Secondary surface normal ──────────────────────────────────────────────
+    vec3 surfN1 = computeNormal(orb.secondaryAttitude, orb, satNadir, velHat, surfN0);
+
+    // ── Highlight mode sentinel ───────────────────────────────────────────────
+    bool  highlight = bool((pc.highlightMask >> orb.constIdx) & 1u);
+    float diffuse   = highlight ? 2.0 : orb.diffuse;
+
+    // ── Write GpuSatInput ─────────────────────────────────────────────────────
+    satellites[i].eciRelPos    = relPos;
+    satellites[i].range        = range;
+    satellites[i].surfN0       = surfN0;
+    satellites[i].elevation    = el;
+    satellites[i].surfN1       = surfN1;
+    satellites[i].specExp0     = orb.specExp0;
+    satellites[i].baseColor    = vec3(orb.baseColorR, orb.baseColorG, orb.baseColorB);
+    satellites[i].specExp1     = orb.specExp1;
+    satellites[i].crossSection = orb.crossSection;
+    satellites[i].w1           = orb.w1;
+    satellites[i].diffuse      = diffuse;
+    satellites[i].mirrorFrac   = orb.mirrorFrac;
+}

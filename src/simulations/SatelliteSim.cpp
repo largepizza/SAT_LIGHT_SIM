@@ -127,7 +127,13 @@ void SatelliteSim::init(VulkanContext &ctx)
     // Fixed start time: 2026-03-30 05:53:58 UTC
     // J2000.0 = 2000-01-01 12:00:00 UTC = Unix 946728000
     // 2026-03-30 05:53:58 UTC = Unix 1774849038
-    simTime = simTimeAtInit = 1774849038.0 - 946728000.0 + 11 * 3600 + 20 * 60; // 828121038 s from J2000
+    // Fixed start time: 828121038 seconds from J2000 = 9584 days + 63438 s.
+    // Stored split so float deltaT stays small regardless of time-warp distance.
+    constexpr int64_t kInitWholeSec = 828121038LL;
+    simDayJ2000     = kInitWholeSec / 86400LL;       // 9584
+    simSecInDay     = (double)(kInitWholeSec % 86400LL); // 63438.0
+    simInitDayJ2000 = simDayJ2000;
+    simInitSecInDay = simSecInDay;
 
     ctx_ = &ctx;
 
@@ -150,10 +156,13 @@ void SatelliteSim::init(VulkanContext &ctx)
     createDescriptors(ctx);
     createGlowResources(ctx);
     createComputePipeline(ctx);
+    createOrbitDescriptors(ctx);
+    createOrbitPipeline(ctx);
     createSkyBgPipeline(ctx);
     createDrawPipeline(ctx);
-    updatePositions(simTime); // must run first — initConstellation reads sunDirECI
+    updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay); // must run first — initConstellation reads sunDirECI
     initConstellation();
+    uploadSatOrbits(ctx);     // bake + upload GpuSatOrbit data after orbits are built
     initStars(ctx);
     loadSettings(); // override defaults with any previously saved values
 }
@@ -213,62 +222,118 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     }
 
     float simDt = timePaused ? 0.0f : fabsf(dt * kTimeScales[timeScaleIdx]);
-    if (!timePaused)
-        simTime += (double)dt * kTimeScales[timeScaleIdx] * timeDir;
-    updatePositions(simTime, simDt);
+    if (!timePaused) {
+        simSecInDay += (double)dt * kTimeScales[timeScaleIdx] * timeDir;
+        // Re-base to [0, 86400) and carry whole-day overflow into simDayJ2000.
+        // Using a loop (not fmod) so timeDir reversal is handled cleanly.
+        while (simSecInDay >= 86400.0) { simSecInDay -= 86400.0; ++simDayJ2000; }
+        while (simSecInDay <      0.0) { simSecInDay += 86400.0; --simDayJ2000; }
+    }
+
+    // Auto-rebake orbit buffer if the epoch has drifted more than kOrbitRebakeDays.
+    // Keeps float deltaT < kOrbitRebakeDays*86400 s (float ULP ≈ 0.07 s at 7 days).
+    if (std::abs(simDayJ2000 - orbitEpochDay) >= kOrbitRebakeDays)
+        uploadSatOrbits(ctx);
+
+    updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, simDt);
     updateStars();
 
-    // Upload top-N glow entries to the sky shader's SSBO.
+    // Upload glow SSBO (frozen in Phase 1 — no CPU-side specular scan).
     {
         GpuGlowBuf *gb = static_cast<GpuGlowBuf *>(glowMapped);
-        gb->count = glowEntryCount;
-        for (int gi = 0; gi < glowEntryCount; ++gi)
-            gb->entries[gi] = glowEntries[gi];
+        gb->count = 0;
     }
 
     if (activeSatCount == 0)
         return;
 
-    // Upload input positions to the GPU-visible buffer.
-    memcpy(satInputMapped, satInputData.data(), gpuSatCount * sizeof(GpuSatInput));
+    // Build enabled / highlight masks from constellation config (one bit per constellation).
+    uint32_t enabledMask = 0, highlightMask = 0;
+    for (uint32_t ci = 0; ci < (uint32_t)constellations.size() && ci < 32; ++ci)
+    {
+        if (constellations[ci].enabled)   enabledMask   |= (1u << ci);
+        if (constellations[ci].highlight) highlightMask |= (1u << ci);
+    }
 
-    // ECI→ENU matrix, sun direction, and observer position — all from updatePositions().
+    // ── Dispatch 1: sat_orbit.comp — orbital mechanics + attitude ─────────────
+    SatOrbitPC orbitPc{};
+    orbitPc.enuX         = eci2enuX;
+    orbitPc.enuY         = eci2enuY;
+    orbitPc.enuZ         = eci2enuZ;
+    orbitPc.sunDirECI    = sunDirECI;
+    // Two-part subtraction: integer day difference (exact) + double seconds (precise).
+    // After auto-rebake, dDays < kOrbitRebakeDays so the float cast loses < 0.07 s.
+    int64_t dDays = simDayJ2000 - orbitEpochDay;
+    double  dSec  = simSecInDay - orbitEpochSec;
+    if (dSec < 0.0) { --dDays; dSec += 86400.0; } // borrow from day if frac is negative
+    orbitPc.deltaT = (float)((double)dDays * 86400.0 + dSec);
+    orbitPc.obsECI       = obsECI;
+    orbitPc.satCount     = activeSatCount;
+    orbitPc.highlightMask = highlightMask;
+    orbitPc.enabledMask  = enabledMask;
+    orbitPc.simDt        = simDt;
+    orbitPc.pad          = 0.0f;
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, orbitPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            orbitPipeLayout, 0, 1, &orbitDescSet, 0, nullptr);
+    vkCmdPushConstants(cmd, orbitPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(orbitPc), &orbitPc);
+    vkCmdDispatch(cmd, (activeSatCount + 63) / 64, 1, 1);
+
+    // Barrier: sat_orbit.comp writes satInputBuf → sat_flare.comp reads it.
+    {
+        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        bmb.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.buffer = satInputBuf;
+        bmb.offset = 0;
+        bmb.size   = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 1, &bmb, 0, nullptr);
+    }
+
+    // ── Dispatch 2: sat_flare.comp — lighting + visibility ────────────────────
     SatFlarePC pc{};
-    pc.enuX = eci2enuX;
-    pc.enuY = eci2enuY;
-    pc.enuZ = eci2enuZ;
-    pc.sunDirECI = sunDirECI;
-    pc.satCount = gpuSatCount;
-    pc.obsECI = obsECI;
-    pc.pad = 0.0f;
+    pc.enuX           = eci2enuX;
+    pc.enuY           = eci2enuY;
+    pc.enuZ           = eci2enuZ;
+    pc.sunDirECI      = sunDirECI;
+    pc.satCount       = activeSatCount;
+    pc.obsECI         = obsECI;
+    pc.pad            = 0.0f;
     pc.brightnessScale = brightnessScale;
-    pc.daySuppression = daySuppression;
-    pc.mirrorBoost = mirrorBoost;
-    pc.visThresh = visThresh;
-    pc.highlightFlare = highlightFlare;
+    pc.daySuppression  = daySuppression;
+    pc.mirrorBoost     = mirrorBoost;
+    pc.visThresh       = visThresh;
+    pc.highlightFlare  = highlightFlare;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             compPipeLayout, 0, 1, &descSet, 0, nullptr);
     vkCmdPushConstants(cmd, compPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(pc), &pc);
+    vkCmdDispatch(cmd, (activeSatCount + 63) / 64, 1, 1);
 
-    uint32_t groups = (gpuSatCount + 63) / 64;
-    vkCmdDispatch(cmd, groups, 1, 1);
-
-    // Barrier: compute SSBO write → vertex shader SSBO read.
-    VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-    bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    bmb.buffer = satVisibleBuf;
-    bmb.offset = 0;
-    bmb.size = VK_WHOLE_SIZE;
-    vkCmdPipelineBarrier(cmd,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-                         0, 0, nullptr, 1, &bmb, 0, nullptr);
+    // Barrier: sat_flare.comp writes satVisibleBuf → vertex shader reads it.
+    {
+        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        bmb.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.buffer = satVisibleBuf;
+        bmb.offset = 0;
+        bmb.size   = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+                             0, 0, nullptr, 1, &bmb, 0, nullptr);
+    }
 }
 
 // ─── recordDraw ───────────────────────────────────────────────────────────────
@@ -293,14 +358,14 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
     vkCmdDraw(cmd, 3, 1, 0, 0);
 
     // ── Pass 2: satellite points (additive blending) ──────────────────────────
-    if (gpuSatCount > 0)
+    if (activeSatCount > 0)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, drawPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 drawPipeLayout, 0, 1, &descSet, 0, nullptr);
         vkCmdPushConstants(cmd, drawPipeLayout, VK_SHADER_STAGE_VERTEX_BIT,
                            0, sizeof(pc), &pc);
-        vkCmdDraw(cmd, gpuSatCount, 1, 0, 0);
+        vkCmdDraw(cmd, activeSatCount, 1, 0, 0);
     }
 
     // ── Pass 3: background stars (additive blending) ──────────────────────────
@@ -618,7 +683,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // ── Simulated UTC time string ─────────────────────────────────────────────
     static char timeBuf[32];
     {
-        time_t unixSim = (time_t)(simTime) + 946738000;
+        time_t unixSim = (time_t)(simDayJ2000 * 86400LL + (int64_t)simSecInDay) + 946738000;
         struct tm *utc = gmtime(&unixSim);
         if (utc)
             snprintf(timeBuf, sizeof(timeBuf), "UTC %04d-%02d-%02d %02d:%02d:%02d",
@@ -1725,6 +1790,12 @@ void SatelliteSim::setAudio(AudioSystem *audio)
 void SatelliteSim::cleanup(VkDevice device)
 {
     saveSettings();
+    // ── Orbit pipeline ─────────────────────────────────────────────────────────
+    vkDestroyPipeline(device, orbitPipeline, nullptr);
+    vkDestroyPipelineLayout(device, orbitPipeLayout, nullptr);
+    vkDestroyDescriptorPool(device, orbitDescPool, nullptr);
+    vkDestroyDescriptorSetLayout(device, orbitDescLayout, nullptr);
+    // ── Flare + draw + sky pipelines ───────────────────────────────────────────
     vkDestroyPipeline(device, compPipeline, nullptr);
     vkDestroyPipeline(device, skyBgPipeline, nullptr);
     vkDestroyPipeline(device, drawPipeline, nullptr);
@@ -1778,11 +1849,19 @@ void SatelliteSim::cleanup(VkDevice device)
     }
     vkDestroyBuffer(device, glowBuf, nullptr);
     vkFreeMemory(device, glowMem, nullptr);
-    vkUnmapMemory(device, satInputMem);
+    // satInputBuf is now device-local (no host mapping to release).
     vkDestroyBuffer(device, satInputBuf, nullptr);
     vkFreeMemory(device, satInputMem, nullptr);
     vkDestroyBuffer(device, satVisibleBuf, nullptr);
     vkFreeMemory(device, satVisibleMem, nullptr);
+    vkDestroyBuffer(device, satOrbitBuf, nullptr);
+    vkFreeMemory(device, satOrbitMem, nullptr);
+    vkDestroyBuffer(device, mirrorNormalsBuf, nullptr);
+    vkFreeMemory(device, mirrorNormalsMem, nullptr);
+    if (reflectorTargetsMapped)
+        vkUnmapMemory(device, reflectorTargetsMem);
+    vkDestroyBuffer(device, reflectorTargetsBuf, nullptr);
+    vkFreeMemory(device, reflectorTargetsMem, nullptr);
 
     vkDestroyPipeline(device, starPipeline, nullptr);
     vkDestroyPipelineLayout(device, starPipeLayout, nullptr);
@@ -1885,19 +1964,44 @@ void SatelliteSim::onCursorPos(GLFWwindow *w, double x, double y)
 // ─── createBuffers ────────────────────────────────────────────────────────────
 void SatelliteSim::createBuffers(VulkanContext &ctx)
 {
-    // satInputBuf: host-visible + coherent, persistently mapped.
+    // satInputBuf: device-local. sat_orbit.comp writes each frame; sat_flare.comp reads.
     ctx.createBuffer(sizeof(GpuSatInput) * MAX_SATELLITES,
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                      satInputBuf, satInputMem);
-    vkMapMemory(ctx.device, satInputMem, 0,
-                sizeof(GpuSatInput) * MAX_SATELLITES, 0, &satInputMapped);
 
-    // satVisibleBuf: device-local. Compute writes, vertex reads.
+    // satVisibleBuf: device-local. sat_flare.comp writes, vertex reads.
     ctx.createBuffer(sizeof(GpuSatVisible) * MAX_SATELLITES,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                      satVisibleBuf, satVisibleMem);
+
+    // satOrbitBuf: device-local, uploaded once. sat_orbit.comp reads every frame.
+    ctx.createBuffer(sizeof(GpuSatOrbit) * MAX_SATELLITES,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                     satOrbitBuf, satOrbitMem);
+
+    // mirrorNormalsBuf: device-local, read-write each frame by sat_orbit.comp.
+    // Zero-initialised so w=0 triggers the snap-to-target path on first invocation.
+    ctx.createBuffer(sizeof(glm::vec4) * MAX_SATELLITES,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                     mirrorNormalsBuf, mirrorNormalsMem);
+    {
+        VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+        vkCmdFillBuffer(cmd, mirrorNormalsBuf, 0, VK_WHOLE_SIZE, 0);
+        ctx.endOneTimeCommands(cmd);
+    }
+
+    // reflectorTargetsBuf: host-visible + coherent, updated every frame by CPU.
+    VkDeviceSize reflSize = sizeof(GpuReflectorTarget) * kNumReflectorTargets;
+    ctx.createBuffer(reflSize,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     reflectorTargetsBuf, reflectorTargetsMem);
+    vkMapMemory(ctx.device, reflectorTargetsMem, 0, reflSize, 0, &reflectorTargetsMapped);
+    memset(reflectorTargetsMapped, 0, reflSize);
 }
 
 // ─── createDescriptors ────────────────────────────────────────────────────────
@@ -1964,6 +2068,168 @@ void SatelliteSim::createComputePipeline(VulkanContext &ctx)
         throw std::runtime_error("SatelliteSim: failed to create compute pipeline");
 
     vkDestroyShaderModule(ctx.device, mod, nullptr);
+}
+
+// ─── createOrbitDescriptors ───────────────────────────────────────────────────
+// Descriptor set for sat_orbit.comp:
+//   binding 0  satOrbitBuf       (readonly  SSBO)
+//   binding 1  satInputBuf       (write     SSBO — same buffer that sat_flare.comp reads)
+//   binding 2  mirrorNormalsBuf  (readwrite SSBO)
+//   binding 3  reflectorTargetsBuf (readonly SSBO)
+void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
+{
+    VkDescriptorSetLayoutBinding bindings[4] = {};
+    bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = 4;
+    li.pBindings = bindings;
+    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &orbitDescLayout);
+
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.poolSizeCount = 1;
+    pi.pPoolSizes = &ps;
+    pi.maxSets = 1;
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &orbitDescPool);
+
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = orbitDescPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &orbitDescLayout;
+    vkAllocateDescriptorSets(ctx.device, &ai, &orbitDescSet);
+
+    VkDescriptorBufferInfo orbitInfo{satOrbitBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo inputInfo{satInputBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo mirrorInfo{mirrorNormalsBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo reflInfo{reflectorTargetsBuf, 0, VK_WHOLE_SIZE};
+
+    VkWriteDescriptorSet writes[4] = {};
+    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 0, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &orbitInfo, nullptr};
+    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 1, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &inputInfo, nullptr};
+    writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 2, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &mirrorInfo, nullptr};
+    writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 3, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &reflInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 4, writes, 0, nullptr);
+}
+
+// ─── createOrbitPipeline ──────────────────────────────────────────────────────
+void SatelliteSim::createOrbitPipeline(VulkanContext &ctx)
+{
+    VkShaderModule mod = ctx.loadShader("shaders/sat_orbit.comp.spv");
+
+    VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = mod;
+    stage.pName = "main";
+
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SatOrbitPC)};
+
+    VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    li.setLayoutCount = 1;
+    li.pSetLayouts = &orbitDescLayout;
+    li.pushConstantRangeCount = 1;
+    li.pPushConstantRanges = &pcr;
+    vkCreatePipelineLayout(ctx.device, &li, nullptr, &orbitPipeLayout);
+
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage = stage;
+    ci.layout = orbitPipeLayout;
+    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &orbitPipeline) != VK_SUCCESS)
+        throw std::runtime_error("SatelliteSim: failed to create orbit compute pipeline");
+
+    vkDestroyShaderModule(ctx.device, mod, nullptr);
+}
+
+// ─── uploadSatOrbits ─────────────────────────────────────────────────────────
+// Bakes GpuSatOrbit data from satOrbits+satTypes and uploads to satOrbitBuf.
+// Stores orbitEpochDay/Sec = current simTime so deltaT resets to 0.
+// Auto-called from recordCompute when |simDayJ2000-orbitEpochDay| >= kOrbitRebakeDays.
+void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
+{
+    if (satOrbits.empty()) return;
+
+    orbitEpochDay = simDayJ2000;
+    orbitEpochSec = simSecInDay;
+    const double orbitEpochT0 = (double)orbitEpochDay * 86400.0 + orbitEpochSec;
+
+    std::vector<GpuSatOrbit> gpuOrbits(activeSatCount);
+    for (uint32_t ci = 0; ci < (uint32_t)constellations.size(); ++ci)
+    {
+        const ConstellationConfig &c = constellations[ci];
+        for (uint32_t i = c.orbitStart; i < c.orbitStart + c.orbitCount; ++i)
+        {
+            if (i >= activeSatCount) break;
+            const SatOrbit &src = satOrbits[i];
+            const SatelliteType &type = satTypes[src.typeIdx];
+            GpuSatOrbit &dst = gpuOrbits[i];
+
+            // For SSO satellites bake the epoch offset into RAAN exactly like u0/tumblePhase,
+            // so GPU formula liveRaan = dst.raan + PREC_RATE*deltaT equals the CPU formula
+            // liveRaan = raan_j2000 + PREC_RATE*simTime.
+            dst.raan    = src.alignTerminator
+                              ? (float)fmod((double)src.raan + kSSOPrecRate * orbitEpochT0,
+                                            glm::two_pi<double>())
+                              : src.raan;
+            dst.u0      = (float)fmod((double)src.u0 + (double)src.meanMot * orbitEpochT0,
+                                      glm::two_pi<double>());
+            dst.R_sat   = src.R_sat;
+            dst.meanMot = src.meanMot;
+            dst.cosI    = src.cosI;
+            dst.sinI    = src.sinI;
+            dst.cosRaan = src.cosRaan;
+            dst.sinRaan = src.sinRaan;
+
+            dst.tumbleRate  = src.tumbleRate;
+            dst.tumblePhase = (float)fmod((double)src.tumblePhase +
+                                          (double)src.tumbleRate * orbitEpochT0,
+                                          glm::two_pi<double>());
+            dst.alignTerminator = src.alignTerminator ? 1.0f : 0.0f;
+            dst.tumbleAxisX = src.tumbleAxis.x;
+            dst.tumbleAxisY = src.tumbleAxis.y;
+            dst.tumbleAxisZ = src.tumbleAxis.z;
+
+            dst.primaryAttitude   = (uint32_t)type.primary.attitude;
+            dst.secondaryAttitude = (uint32_t)type.secondary.attitude;
+
+            dst.baseColorR   = type.baseColor.r;
+            dst.baseColorG   = type.baseColor.g;
+            dst.baseColorB   = type.baseColor.b;
+            dst.crossSection = sqrtf(type.crossSectionM2 / 10.0f);
+            dst.specExp0     = type.primary.specExp;
+            dst.specExp1     = type.secondary.specExp;
+            dst.w1           = type.secondary.weight;
+            dst.diffuse      = type.diffuse;
+            dst.mirrorFrac   = type.mirrorFrac;
+            dst.constIdx     = src.constIdx;
+            dst.pad0 = dst.pad1 = 0;
+        }
+    }
+
+    VkDeviceSize bufSize = activeSatCount * sizeof(GpuSatOrbit);
+    VkBuffer staging; VkDeviceMemory stagingMem;
+    ctx.createBuffer(bufSize,
+                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     staging, stagingMem);
+    void *mapped;
+    vkMapMemory(ctx.device, stagingMem, 0, bufSize, 0, &mapped);
+    memcpy(mapped, gpuOrbits.data(), bufSize);
+    vkUnmapMemory(ctx.device, stagingMem);
+
+    VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+    VkBufferCopy region{0, 0, bufSize};
+    vkCmdCopyBuffer(cmd, staging, satOrbitBuf, 1, &region);
+    ctx.endOneTimeCommands(cmd);
+
+    vkDestroyBuffer(ctx.device, staging, nullptr);
+    vkFreeMemory(ctx.device, stagingMem, nullptr);
 }
 
 // ─── createSkyBgPipeline ──────────────────────────────────────────────────────
@@ -3254,10 +3520,8 @@ void SatelliteSim::buildOrbits()
     }
 
     activeSatCount = (uint32_t)satOrbits.size();
-    satInputData.resize(activeSatCount);
-    // Zero-initialize mirror normals — zero-length vector is the sentinel that triggers
-    // a snap-to-target on the first frame rather than slewing from a stale direction.
-    satMirrorNormals.assign(activeSatCount, glm::vec3(0.0f));
+    // Mirror normals are now stored in mirrorNormalsBuf (device-local, zeroed at init).
+    // satMirrorNormals is kept as an empty placeholder; GPU handles slew state.
 }
 
 // ─── updatePositions ──────────────────────────────────────────────────────────
@@ -3367,413 +3631,31 @@ void SatelliteSim::updatePositions(double t, float dt)
     // spread all the way from the dusk terminator to the dawn terminator.  As Earth
     // rotates under the constellation, different geographic points enter/exit the
     // night side and the flare directions visibly sweep across the sky.
-    glm::vec3 reflectorTargetECI[kNumReflectorTargets];
-    bool reflectorTargetValid[kNumReflectorTargets];
+    // ── TargetedReflector targets: ECEF→ECI + validity → upload to GPU ─────────
+    // Written to reflectorTargetsMapped (host-coherent); read by sat_orbit.comp.
     {
         float gmst = (float)fmod(kOmegaEarth * t, glm::two_pi<double>());
         float cosG = cosf(gmst), sinG = sinf(gmst);
+        GpuReflectorTarget *targets = static_cast<GpuReflectorTarget *>(reflectorTargetsMapped);
         for (int ti = 0; ti < kNumReflectorTargets; ++ti)
         {
             const glm::vec3 &ef = reflectorTargetsECEF[ti];
-            reflectorTargetECI[ti] = kEarthRadius * glm::vec3(
-                                                        cosG * ef.x - sinG * ef.y,
-                                                        sinG * ef.x + cosG * ef.y,
-                                                        ef.z);
-            // Valid on the full night side — not just the terminator strip.
-            // This ensures targets are spread across a wide range of sky azimuths
-            // so the Earth-rotation effect is visually apparent.
-            float sunDot = glm::dot(glm::normalize(reflectorTargetECI[ti]), sunDirECI);
-            reflectorTargetValid[ti] = (sunDot < 0.0f);
+            glm::vec3 eci = kEarthRadius * glm::vec3(
+                cosG * ef.x - sinG * ef.y,
+                sinG * ef.x + cosG * ef.y,
+                ef.z);
+            float sunDot = glm::dot(glm::normalize(eci), sunDirECI);
+            targets[ti].posECI = eci;
+            targets[ti].valid  = (sunDot < 0.0f) ? 1.0f : 0.0f;
         }
     }
 
-    // ── Per-constellation satellite geometry ──────────────────────────────────
-    visibleCount = 0;
-    gpuSatCount = 0;
-    peakMagnitude = 99.0f; // reset each frame; updated below for each visible sat
+    // ── Satellite loop moved to GPU (sat_orbit.comp) ───────────────────────────
+    // Counters kept for UI display; glow/magnitude frozen until GPU readback is added.
+    visibleCount  = activeSatCount;
+    gpuSatCount   = activeSatCount;
+    peakMagnitude = 99.0f;
     glowEntryCount = 0;
     glowMinIntensity = 0.0f;
-
-    // Camera frustum: forward vector + cos(half-cone) threshold.
-    // fovYDeg/2 + 20° margin covers horizontal FOV on widescreen displays with padding.
-    float camAzRad = glm::radians(camera.azDeg);
-    float camElRad = glm::radians(camera.elDeg);
-    glm::vec3 camFwd{sinf(camAzRad) * cosf(camElRad),
-                     cosf(camAzRad) * cosf(camElRad),
-                     sinf(camElRad)};
-    float cosCullThresh = cosf(glm::radians(camera.fovYDeg * 0.5f + 20.0f));
-    auto loopT0 = std::chrono::high_resolution_clock::now();
-    for (const ConstellationConfig &c : constellations)
-    {
-        if (!c.enabled) continue;
-        for (uint32_t i = c.orbitStart; i < c.orbitStart + c.orbitCount; ++i)
-        {
-            const SatOrbit &orb = satOrbits[i];
-            const SatelliteType &type = satTypes[orb.typeIdx];
-
-            // Double-precision phase then fmod to [0,2π) keeps float trig accurate.
-            float u = (float)fmod((double)orb.u0 + (double)orb.meanMot * t,
-                                  glm::two_pi<double>());
-            float cosU = cosf(u), sinU = sinf(u);
-
-            // Non-SSO RAAN is constant (precomputed). SSO precesses at kSSOPrecRate.
-            // Using absolute t (J2000 seconds) makes the orbit position deterministic at any
-            // simulation date — changing the init time now produces a different sky position.
-            float cosR, sinR;
-            if (orb.alignTerminator)
-            {
-                float liveRaan = (float)fmod((double)orb.raan + kSSOPrecRate * t, glm::two_pi<double>());
-                cosR = cosf(liveRaan);
-                sinR = sinf(liveRaan);
-            }
-            else
-            {
-                cosR = orb.cosRaan;
-                sinR = orb.sinRaan;
-            }
-
-            // Satellite ECI position (Rz(RAAN) · Rx(incl) · perifocal).
-            float ex = cosR * cosU - sinR * sinU * orb.cosI;
-            float ey = sinR * cosU + cosR * sinU * orb.cosI;
-            float ez = sinU * orb.sinI;
-
-            glm::vec3 satECI{ex * orb.R_sat, ey * orb.R_sat, ez * orb.R_sat};
-            glm::vec3 relPos = satECI - obsECI;
-
-            // Horizon cull without sqrt: sinEl = dotUp/range; sinEl < -0.01 iff
-            // dotUp < 0 and dotUp² > 0.0001×lenSq. Avoids sqrt+asinf for ~96% of sats.
-            float dotUp = glm::dot(relPos, up);
-            float lenSq = glm::dot(relPos, relPos);
-            if (dotUp < 0.0f && dotUp * dotUp > 0.0001f * lenSq) continue;
-            float range = sqrtf(lenSq);
-            float sinEl = dotUp / range;
-            float el    = asinf(glm::clamp(sinEl, -1.0f, 1.0f));
-
-            if (el < -0.01f) continue;
-            ++visibleCount;
-
-            glm::vec3 satECI_abs = obsECI + relPos;
-            glm::vec3 satNadir = glm::normalize(-satECI_abs); // unit vector toward Earth centre
-
-            // Along-track velocity direction for a circular orbit — the derivative of
-            // the ECI position with respect to mean anomaly u, using the same
-            // Rz(RAAN)·Rx(incl) rotation applied to [-sinU, cosU, 0].  Already unit
-            // length (derivative of a unit-speed parametric curve), so no normalize needed.
-            // Used only by KnifeEdge attitude; harmless to compute for all satellites.
-            glm::vec3 velHat{
-                -sinU * cosR - cosU * orb.cosI * sinR,
-                -sinU * sinR + cosU * orb.cosI * cosR,
-                cosU * orb.sinI};
-
-            // ── Compute surface normals ───────────────────────────────────────
-            // surfN0 = primary surface (solar panels, antenna face, tumbling body).
-            // surfN1 = secondary surface (radiators, body panels).
-            //   AntiNadir  — normal = -satNadir (faces deep space, away from Earth)
-            //   Perpendicular — normal = cross(surfN0, satNadir) (along orbital track)
-            // The irradiance term in sat_flare.comp gates each surface by solar flux received.
-            auto computeNormal = [&](AttitudeMode mode,
-                                     const glm::vec3 &primary) -> glm::vec3
-            {
-                switch (mode)
-                {
-                case AttitudeMode::NadirPointing:
-                    return satNadir;
-                case AttitudeMode::Tumbling:
-                {
-                    // Spin around a body-fixed random axis; angle advances with simTime.
-                    // fmod before float cast: simTime ≈ 8e8 s gives only ~96 s float precision,
-                    // causing (float)t * rate to jump by ~96 rad between frames → staggering.
-                    float angle = orb.tumblePhase +
-                                  (float)fmod((double)orb.tumbleRate * t, glm::two_pi<double>());
-                    glm::vec3 ax = orb.tumbleAxis;
-                    glm::vec3 ref = (fabsf(ax.z) < 0.9f) ? glm::vec3(0, 0, 1) : glm::vec3(1, 0, 0);
-                    glm::vec3 axA = glm::normalize(glm::cross(ax, ref));
-                    glm::vec3 axB = glm::cross(ax, axA); // already unit length
-                    return cosf(angle) * axA + sinf(angle) * axB;
-                }
-                case AttitudeMode::Perpendicular:
-                {
-                    // 90° to primary panel normal in the nadir plane, along the orbital track.
-                    glm::vec3 perp = glm::cross(primary, satNadir);
-                    float len = glm::length(perp);
-                    return (len > 1e-5f) ? perp / len : satNadir;
-                }
-                case AttitudeMode::AntiNadir:
-                {
-                    // Thermal radiators facing deep space (away from Earth center).
-                    // From the ground: edge-on to observers directly beneath the satellite
-                    // (zenith pass) — they see the back of the panel; horizon observers
-                    // see the face tilted toward them, making flares more likely at low elevation.
-                    return -satNadir;
-                }
-                case AttitudeMode::FlatMirror45:
-                {
-                    // Mirror normal is the bisector of the sun-incoming and nadir-outgoing
-                    // directions: n = normalize(sunDir + satNadir).
-                    // By construction reflect(-sunDir, n) = satNadir, so sunlight reflects
-                    // straight toward Earth center below the satellite.
-                    // irr0 = dot(sunDir, n) = |sunDir+satNadir|/2 (always > 0 when sun
-                    // is above satellite's orbital horizon) — mirror always receives flux.
-                    glm::vec3 n = sunDirECI + satNadir;
-                    float len = glm::length(n);
-                    return (len > 1e-5f) ? n / len : satNadir;
-                }
-                case AttitudeMode::TargetedReflector:
-                {
-                    // Find the nearest valid target to this satellite's ground-track position.
-                    // "Valid" = night side and within 30° of the terminator (pre-filtered above).
-                    //
-                    // Nearest is defined by angular distance from the satellite's sub-point
-                    // (i.e. largest dot-product between the satellite's nadir-opposite direction
-                    // and the target's ground direction).
-                    //
-                    // Mirror normal derivation:
-                    //   Incoming sunlight direction (toward surface): -sunDirECI
-                    //   Desired reflected direction (toward target):   toTarget
-                    //   Normal = normalize(sunDirECI + toTarget)
-                    //   Proof: reflect(-sunDirECI, n) = toTarget when n = normalize(sunDirECI + toTarget)
-                    //   because reflect(I,N) = I - 2·dot(N,I)·N and the half-vector of two
-                    //   unit vectors is their normalized sum.
-                    //
-                    // Falls back to FlatMirror45 (straight-down reflection) if no valid target
-                    // exists (e.g., all targets happen to be in daylight).
-                    int bestIdx = -1;
-                    float bestCos = -2.0f; // maximise cosine = minimise angular distance
-                    // -satNadir points from Earth center toward the satellite = satellite's
-                    // zenith direction; dot with target ground dir gives angular proximity.
-                    glm::vec3 satZenith = -satNadir;
-                    for (int ti = 0; ti < kNumReflectorTargets; ++ti)
-                    {
-                        if (!reflectorTargetValid[ti])
-                            continue;
-                        float c = glm::dot(satZenith, glm::normalize(reflectorTargetECI[ti]));
-                        if (c > bestCos)
-                        {
-                            bestCos = c;
-                            bestIdx = ti;
-                        }
-                    }
-                    if (bestIdx < 0)
-                    {
-                        // No valid targets — fall back to FlatMirror45 (reflect straight down).
-                        glm::vec3 n = sunDirECI + satNadir;
-                        float len = glm::length(n);
-                        return (len > 1e-5f) ? n / len : satNadir;
-                    }
-                    glm::vec3 toTarget = glm::normalize(reflectorTargetECI[bestIdx] - satECI_abs);
-                    glm::vec3 n = sunDirECI + toTarget;
-                    float nlen = glm::length(n);
-                    return (nlen > 1e-5f) ? n / nlen : satNadir;
-                }
-                case AttitudeMode::KnifeEdge:
-                {
-                    // Roll the body around the along-track (velocity) axis so the sun
-                    // falls edge-on to the flat panel.  surfN spans the roll plane:
-                    //   N(θ) = cos(θ)·satNadir + sin(θ)·crossTrack
-                    // where crossTrack = cross(velHat, satNadir) is already unit length
-                    // because velHat ⊥ satNadir for circular orbits.
-                    //
-                    // dot(sunDir, N(θ)) = 0  has two solutions per revolution.  Pick
-                    // the one requiring less roll from nadir (smaller |θ|) — equivalent
-                    // to minimising attitude fuel and keeping panel tilt modest.
-                    //
-                    // Clamp to ±kKnifeMaxRollDeg: beyond this the solar array gimbals
-                    // can no longer counter-rotate to keep the panels sun-facing, so
-                    // power generation would fall below the operational margin.  The
-                    // clamp means knife-edge is only partial when the sun is nearly
-                    // nadir-on (e.g. satellite at subsolar point), leaving a small
-                    // residual specular contribution of cos(kKnifeMaxRollDeg) ≈ 0.17.
-                    glm::vec3 ct = glm::cross(velHat, satNadir); // unit: velHat ⊥ satNadir
-                    float a = glm::dot(sunDirECI, satNadir);
-                    float b = glm::dot(sunDirECI, ct);
-                    float theta1 = atan2f(-a, b);
-                    // The alternate edge-on angle is θ₁ ± π; pick whichever is closer to 0.
-                    float theta2 = theta1 + (theta1 < 0.0f ? glm::pi<float>() : -glm::pi<float>());
-                    float theta = (fabsf(theta1) <= fabsf(theta2)) ? theta1 : theta2;
-                    theta = glm::clamp(theta, -glm::radians(kKnifeMaxRollDeg),
-                                       glm::radians(kKnifeMaxRollDeg));
-                    return cosf(theta) * satNadir + sinf(theta) * ct;
-                }
-                default: // SunTracking
-                {
-                    // Two-axis sun-tracking: panel normal points directly at the sun.
-                    // reflect(-sunDir, sunDir) = sunDir, so specular peaks when
-                    // satToObs ≈ sunDir — i.e. when the satellite is at the antisolar
-                    // point of the sky.  irr0 = 1.0 (panel always fully lit).
-                    return sunDirECI;
-                }
-                }
-            };
-
-            glm::vec3 surfN0 = computeNormal(type.primary.attitude, glm::vec3(0.0f));
-
-            // ── Mirror slew rate (TargetedReflector only) ─────────────────────
-            // computeNormal returns the instantaneous ideal normal (the direction
-            // that perfectly reflects sunlight toward the nearest valid target).
-            // Rate-limit the change so the mirror physically slews toward that goal
-            // rather than snapping the moment a new target becomes nearest.
-            //
-            // satMirrorNormals[i] holds the current physical mirror orientation,
-            // persistent between frames.  Zero-length = uninitialized; snap on
-            // the first frame, then slew at kMirrorRotRateDegPerSec thereafter.
-            if (type.primary.attitude == AttitudeMode::TargetedReflector &&
-                i < (uint32_t)satMirrorNormals.size())
-            {
-                glm::vec3 &cur = satMirrorNormals[i];
-                if (glm::dot(cur, cur) < 0.25f)
-                {
-                    // First frame for this satellite: snap to initial target direction.
-                    cur = surfN0;
-                }
-                else
-                {
-                    // Rotate cur toward surfN0 by at most maxAngle this frame.
-                    float maxAngle = glm::radians(kMirrorRotRateDegPerSec) * dt;
-                    float cosA = glm::clamp(glm::dot(cur, surfN0), -1.0f, 1.0f);
-                    float angle = acosf(cosA);
-                    if (angle <= maxAngle)
-                    {
-                        cur = surfN0; // target reached this frame
-                    }
-                    else
-                    {
-                        // Linear interpolation in 3D then re-normalise ≈ spherical
-                        // interpolation (exact for the small angular steps involved).
-                        float blend = maxAngle / angle;
-                        cur = glm::normalize(glm::mix(cur, surfN0, blend));
-                    }
-                }
-                surfN0 = cur; // feed smoothed normal to the GPU
-            }
-
-            glm::vec3 surfN1 = computeNormal(type.secondary.attitude, surfN0);
-
-            // ── ENU direction: shared by FOV cull and sky-glow entry ─────────
-            glm::vec3 skyDirENU = glm::normalize(glm::vec3(
-                glm::dot(relPos, east),
-                glm::dot(relPos, north),
-                glm::dot(relPos, up)));
-
-            // ── GPU write: only satellites inside the camera frustum ─────────
-            if (glm::dot(skyDirENU, camFwd) >= cosCullThresh)
-            {
-                GpuSatInput &out = satInputData[gpuSatCount++];
-                out.eciRelPos = relPos;
-                out.range = range;
-                out.surfN0 = surfN0;
-                out.elevation = el;
-                out.surfN1 = surfN1;
-                out.specExp0 = type.primary.specExp;
-                out.baseColor = type.baseColor;
-                out.specExp1 = type.secondary.specExp;
-                out.crossSection = sqrtf(type.crossSectionM2 / 10.0f);
-                out.w1 = type.secondary.weight;
-                // Highlight sentinel: diffuse > 1.0 is out-of-range physically; the shader
-                // detects it and renders the satellite at a fixed brightness, bypassing
-                // shadow, daytime suppression, and attitude-dependent specular entirely.
-                out.diffuse = constellations[orb.constIdx].highlight ? 2.0f : type.diffuse;
-                out.mirrorFrac = type.mirrorFrac;
-            }
-
-            // ── Steady-state apparent magnitude ───────────────────────────
-            // Mirrors the GPU formula (sat_flare.comp) using only the diffuse
-            // floor — no specular — giving the baseline brightness of the sat
-            // when not actively flaring.  Cheap: no powf/reflect, just dot+sqrt.
-            //
-            // We skip the full specular term here to avoid an extra ~10 float
-            // ops per satellite at 100k scale (~1 ms CPU budget risk).
-            // Flaring satellites are transiently brighter; the readout shows
-            // the floor so it changes smoothly rather than flickering.
-            float distFactor = kRefRange / std::max(range, kRefRange);
-            distFactor *= distFactor; // 1/r²
-            float crossSection = sqrtf(type.crossSectionM2 / 10.0f);
-            float t = glm::clamp((glm::dot(sunDirECI, up) + 0.05f) / 0.39f, 0.0f, 1.0f);
-            float dayBright = t * t;
-            // kMagDiffuseFloor: zero-diffuse types (Starlink) scatter faintly from
-            // structural body panels; prevents the readout from always showing "--".
-            float effectiveDiffuse = std::max(type.diffuse, kMagDiffuseFloor);
-            float baseFlare = effectiveDiffuse * distFactor * crossSection * brightnessScale / (1.0f + dayBright * daySuppression);
-            if (baseFlare > 1e-9f)
-            {
-                float mag = kMagRef - 2.5f * log10f(baseFlare / kMagRefFlare);
-                peakMagnitude = std::min(peakMagnitude, mag);
-            }
-
-            // ── Full-specular peak tracking for sky glow ──────────────
-            // Mirrors the compute shader to detect transient specular
-            // flares (including mirror peaks) for the sky glow effect.
-            // Mirror peak computation guarded by alignment threshold so
-            // the expensive pow() only fires when geometry is close.
-            glm::vec3 satToObs = glm::normalize(-relPos);
-
-            // Shadow factor (same formula as compute shader).
-            glm::vec3 shadowDir = -sunDirECI;
-            float proj = glm::dot(satECI_abs, shadowDir);
-            glm::vec3 perpV = satECI_abs - proj * shadowDir;
-            float perpLen = glm::length(perpV);
-            float litF = (proj > 0.0f)
-                             ? glm::smoothstep(-kEarthRadius * 0.01f,
-                                               kEarthRadius * 0.01f,
-                                               perpLen - kEarthRadius)
-                             : 1.0f;
-
-            // Primary surface specular.
-            float irr0 = fabsf(glm::dot(sunDirECI, surfN0));
-            glm::vec3 n0 = (glm::dot(sunDirECI, surfN0) >= 0.0f) ? surfN0 : -surfN0;
-            glm::vec3 refl0 = glm::reflect(-sunDirECI, n0);
-            float cosR0 = std::max(0.0f, glm::dot(refl0, satToObs));
-            float spec0 = (type.primary.specExp < 0.01f)
-                              ? irr0 * std::max(0.0f, glm::dot(sunDirECI, satToObs))
-                              : irr0 * powf(cosR0, type.primary.specExp);
-
-            // Mirror peak: only compute when near perfect alignment.
-            if (cosR0 > 0.9f && type.mirrorFrac > 0.0f)
-            {
-                float mExp = std::max(type.primary.specExp * mirrorBoost, 8000.0f);
-                spec0 += irr0 * powf(cosR0, mExp) * mirrorBoost * type.mirrorFrac;
-            }
-
-            // Secondary surface specular.
-            float irr1 = fabsf(glm::dot(sunDirECI, surfN1));
-            glm::vec3 n1 = (glm::dot(sunDirECI, surfN1) >= 0.0f) ? surfN1 : -surfN1;
-            glm::vec3 refl1 = glm::reflect(-sunDirECI, n1);
-            float cosR1 = std::max(0.0f, glm::dot(refl1, satToObs));
-            float spec1 = (type.secondary.specExp < 0.01f)
-                              ? irr1 * std::max(0.0f, glm::dot(sunDirECI, satToObs))
-                              : irr1 * powf(cosR1, type.secondary.specExp);
-
-            float specular = spec0 + spec1 * type.secondary.weight + type.diffuse;
-            float flareSpec = specular * litF * distFactor * crossSection * brightnessScale;
-            float effectSpec = flareSpec / (1.0f + dayBright * daySuppression);
-
-            if (effectSpec > 0.5f)
-            {
-                glm::vec4 entry{skyDirENU, effectSpec};
-                if (glowEntryCount < kMaxGlows)
-                {
-                    glowEntries[glowEntryCount++] = entry;
-                    if (glowEntryCount == kMaxGlows)
-                    {
-                        glowMinIntensity = FLT_MAX;
-                        for (int gi = 0; gi < kMaxGlows; ++gi)
-                            glowMinIntensity = std::min(glowMinIntensity, glowEntries[gi].w);
-                    }
-                }
-                else if (effectSpec > glowMinIntensity)
-                {
-                    // Replace the weakest entry.
-                    int minIdx = 0;
-                    for (int gi = 1; gi < kMaxGlows; ++gi)
-                        if (glowEntries[gi].w < glowEntries[minIdx].w)
-                            minIdx = gi;
-                    glowEntries[minIdx] = entry;
-                    glowMinIntensity = FLT_MAX;
-                    for (int gi = 0; gi < kMaxGlows; ++gi)
-                        glowMinIntensity = std::min(glowMinIntensity, glowEntries[gi].w);
-                }
-            }
-        }
-    }
-    loopMs = std::chrono::duration<float, std::milli>(
-                 std::chrono::high_resolution_clock::now() - loopT0).count();
+    loopMs = 0.0f;
 }

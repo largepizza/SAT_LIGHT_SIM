@@ -208,8 +208,8 @@
       "type": "Starlink KE",
       "alt_km": 525.0,
       "incl_deg": 53.2,
-      "num_planes": 120,
-      "per_plane": 254,
+      "num_planes": 1200,
+      "per_plane": 2540,
       "enabled": true,
       "distribution": "Walker"
     },
