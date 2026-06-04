@@ -15,7 +15,7 @@
 #include <cmath>
 
 // ── Maximum satellites per frame ──────────────────────────────────────────────
-static constexpr uint32_t MAX_SATELLITES = 1'000'000;
+static constexpr uint32_t MAX_SATELLITES = 10'000'000;
 
 // ── Satellite attitude model ───────────────────────────────────────────────────
 enum class AttitudeMode
@@ -199,7 +199,7 @@ static_assert(sizeof(SatDrawPC) == 112, "SatDrawPC layout mismatch");
 static constexpr int kMaxGlows = 64;
 struct GpuGlowBuf
 {
-    int32_t count;
+    uint32_t count;
     float pad[3];
     glm::vec4 entries[kMaxGlows]; // xyz = ENU unit dir, w = effectFlare intensity
 };
@@ -210,38 +210,38 @@ struct GpuGlowBuf
 // Must match the SatOrbit struct in sat_orbit.comp exactly.
 struct GpuSatOrbit
 {
-    float raan;              // right ascension of ascending node at epoch
-    float u0;                // epoch-baked initial phase: fmod(orig_u0 + meanMot*epochT0, 2π)
-    float R_sat;             // kEarthRadius + altM (meters)
-    float meanMot;           // sqrt(GM/R³) (rad/s)
+    float raan;    // right ascension of ascending node at epoch
+    float u0;      // epoch-baked initial phase: fmod(orig_u0 + meanMot*epochT0, 2π)
+    float R_sat;   // kEarthRadius + altM (meters)
+    float meanMot; // sqrt(GM/R³) (rad/s)
 
-    float cosI;              // cos(inclination)
-    float sinI;              // sin(inclination)
-    float cosRaan;           // cos(raan); valid when !alignTerminator
-    float sinRaan;           // sin(raan); valid when !alignTerminator
+    float cosI;    // cos(inclination)
+    float sinI;    // sin(inclination)
+    float cosRaan; // cos(raan); valid when !alignTerminator
+    float sinRaan; // sin(raan); valid when !alignTerminator
 
-    float tumbleRate;        // rotation rate (rad/s); 0 if not tumbling
-    float tumblePhase;       // epoch-baked angle: fmod(phase + rate*epochT0, 2π)
-    float alignTerminator;   // 1.0 = SSO (RAAN precesses); 0.0 = fixed RAAN
+    float tumbleRate;      // rotation rate (rad/s); 0 if not tumbling
+    float tumblePhase;     // epoch-baked angle: fmod(phase + rate*epochT0, 2π)
+    float alignTerminator; // 1.0 = SSO (RAAN precesses); 0.0 = fixed RAAN
     float tumbleAxisX;
 
     float tumbleAxisY;
     float tumbleAxisZ;
-    uint32_t primaryAttitude;   // AttitudeMode cast to uint
+    uint32_t primaryAttitude; // AttitudeMode cast to uint
     uint32_t secondaryAttitude;
 
     float baseColorR;
     float baseColorG;
     float baseColorB;
-    float crossSection;      // sqrt(crossSectionM2 / 10)
+    float crossSection; // sqrt(crossSectionM2 / 10)
 
     float specExp0;
     float specExp1;
-    float w1;                // secondary surface weight
+    float w1; // secondary surface weight
     float diffuse;
 
     float mirrorFrac;
-    uint32_t constIdx;       // constellation index for enabled/highlight masks
+    uint32_t constIdx; // constellation index for enabled/highlight masks
     uint32_t pad0;
     uint32_t pad1;
     // Total: 112 bytes
@@ -262,17 +262,17 @@ static_assert(sizeof(GpuReflectorTarget) == 16, "GpuReflectorTarget layout misma
 // Total: 96 bytes.
 struct SatOrbitPC
 {
-    glm::vec4 enuX;          // East  basis in ECI (w unused) — offset 0
-    glm::vec4 enuY;          // North basis in ECI (w unused) — offset 16
-    glm::vec4 enuZ;          // Up    basis in ECI (w unused) — offset 32
-    glm::vec3 sunDirECI;     // unit vector toward sun — offset 48
-    float deltaT;            // simTime - epochT0 (float precision) — offset 60
-    glm::vec3 obsECI;        // observer ECI position (meters) — offset 64
-    uint32_t satCount;       // total satellite count — offset 76
-    uint32_t highlightMask;  // bit i = constellation i in highlight mode — offset 80
-    uint32_t enabledMask;    // bit i = constellation i is enabled — offset 84
-    float simDt;             // simulated seconds this frame (mirror slew) — offset 88
-    float pad;               // — offset 92
+    glm::vec4 enuX;         // East  basis in ECI (w unused) — offset 0
+    glm::vec4 enuY;         // North basis in ECI (w unused) — offset 16
+    glm::vec4 enuZ;         // Up    basis in ECI (w unused) — offset 32
+    glm::vec3 sunDirECI;    // unit vector toward sun — offset 48
+    float deltaT;           // simTime - epochT0 (float precision) — offset 60
+    glm::vec3 obsECI;       // observer ECI position (meters) — offset 64
+    uint32_t satCount;      // total satellite count — offset 76
+    uint32_t highlightMask; // bit i = constellation i in highlight mode — offset 80
+    uint32_t enabledMask;   // bit i = constellation i is enabled — offset 84
+    float simDt;            // simulated seconds this frame (mirror slew) — offset 88
+    float pad;              // — offset 92
 }; // 96 bytes
 static_assert(sizeof(SatOrbitPC) == 96, "SatOrbitPC layout mismatch");
 
@@ -328,27 +328,27 @@ struct SkyCamera
 // ── Fixed orbital parameters (one per satellite, computed once at init) ───────
 struct SatOrbit
 {
-    float raan;                         // right ascension of ascending node (radians)
-    float incl;                         // inclination (radians) — per-satellite so RandomShell can vary
-    float u0;                           // initial mean argument of latitude (radians)
-    uint32_t typeIdx;                   // index into satTypes[]
-    float altM;                         // orbital altitude above surface (meters) — per-satellite
-    float tumbleRate;                   // rotation rate (rad/s); 0 = not tumbling
-    float tumblePhase;                  // initial rotation angle (radians)
-    glm::vec3 tumbleAxis;               // fixed body tumble axis (unit vector in ECI)
-    bool alignTerminator;               // if true, incl/raan are recomputed from sunDirECI each frame
+    float raan;           // right ascension of ascending node (radians)
+    float incl;           // inclination (radians) — per-satellite so RandomShell can vary
+    float u0;             // initial mean argument of latitude (radians)
+    uint32_t typeIdx;     // index into satTypes[]
+    float altM;           // orbital altitude above surface (meters) — per-satellite
+    float tumbleRate;     // rotation rate (rad/s); 0 = not tumbling
+    float tumblePhase;    // initial rotation angle (radians)
+    glm::vec3 tumbleAxis; // fixed body tumble axis (unit vector in ECI)
+    bool alignTerminator; // if true, incl/raan are recomputed from sunDirECI each frame
     float targetTerminatorAngle = 0.0f;
     // ── Precomputed frame-invariant constants (set once in buildOrbits) ────────
-    float R_sat   = 0.0f;  // kEarthRadius + altM
+    float R_sat = 0.0f;    // kEarthRadius + altM
     float meanMot = 0.0f;  // sqrt(kGM / R_sat^3)
-    float cosI    = 0.0f;  // cos(incl)
-    float sinI    = 0.0f;  // sin(incl)
+    float cosI = 0.0f;     // cos(incl)
+    float sinI = 0.0f;     // sin(incl)
     float cosRaan = 0.0f;  // cos(raan) — valid when !alignTerminator
     float sinRaan = 0.0f;  // sin(raan) — valid when !alignTerminator // TargetedReflector: angle (rad) along the terminator great-circle
-    uint32_t constIdx = 0;              // index into constellations[] — set by buildOrbits()
-                                        // that selects the ground target this mirror aims at.
-                                        // Terminator basis: t1=cross(sunDir,ref), t2=cross(sunDir,t1).
-                                        // Target = kEarthRadius × (cos(angle)×t1 + sin(angle)×t2).
+    uint32_t constIdx = 0; // index into constellations[] — set by buildOrbits()
+                           // that selects the ground target this mirror aims at.
+                           // Terminator basis: t1=cross(sunDir,ref), t2=cross(sunDir,t1).
+                           // Target = kEarthRadius × (cos(angle)×t1 + sin(angle)×t2).
 };
 
 // ── SatelliteSim ──────────────────────────────────────────────────────────────
@@ -377,9 +377,9 @@ private:
     VkDeviceMemory satVisibleMem = VK_NULL_HANDLE;
 
     // ── Orbit pipeline buffers ────────────────────────────────────────────────
-    VkBuffer satOrbitBuf = VK_NULL_HANDLE;       // device-local, uploaded once at init
+    VkBuffer satOrbitBuf = VK_NULL_HANDLE; // device-local, uploaded once at init
     VkDeviceMemory satOrbitMem = VK_NULL_HANDLE;
-    VkBuffer mirrorNormalsBuf = VK_NULL_HANDLE;  // device-local, persistent slew state
+    VkBuffer mirrorNormalsBuf = VK_NULL_HANDLE; // device-local, persistent slew state
     VkDeviceMemory mirrorNormalsMem = VK_NULL_HANDLE;
     VkBuffer reflectorTargetsBuf = VK_NULL_HANDLE; // host-visible, updated each frame
     VkDeviceMemory reflectorTargetsMem = VK_NULL_HANDLE;
@@ -435,10 +435,10 @@ private:
     // when a large J2000 epoch base is added to a small per-frame delta.
     // simSecInDay is re-based to [0, 86400) each frame so it stays small.
     // Use simTimeDouble() wherever a full-precision double is needed.
-    int64_t simDayJ2000  = 0;      // integer days since J2000 (2000-01-01 12:00 TT)
-    double  simSecInDay  = 0.0;    // seconds within current day [0, 86400)
-    int64_t simInitDayJ2000 = 0;   // values at construction — used for display
-    double  simInitSecInDay = 0.0;
+    int64_t simDayJ2000 = 0;     // integer days since J2000 (2000-01-01 12:00 TT)
+    double simSecInDay = 0.0;    // seconds within current day [0, 86400)
+    int64_t simInitDayJ2000 = 0; // values at construction — used for display
+    double simInitSecInDay = 0.0;
     int timeScaleIdx = 1;
     bool timePaused = false;
     float timeDir = 1.0f; // +1 = forward, -1 = reverse
@@ -454,9 +454,9 @@ private:
     float obsLatDeg = -67.0f;                         // display cache — derived from obsDir
     float obsLonDeg = -67.0f;                         // display cache — derived from obsDir
     uint32_t activeSatCount = 0;
-    uint32_t visibleCount = 0;  // above-horizon sats this frame (UI display)
-    uint32_t gpuSatCount  = 0;  // in-frustum sats written to GPU buffer
-    float    loopMs       = 0.0f; // satellite loop time last frame (milliseconds)
+    uint32_t visibleCount = 0;   // above-horizon sats this frame (UI display)
+    uint32_t gpuSatCount = 0;    // in-frustum sats written to GPU buffer
+    float loopMs = 0.0f;         // satellite loop time last frame (milliseconds)
     float peakMagnitude = 99.0f; // brightest steady-state sat magnitude this frame
 
     // ── Sky glow: top-N brightest flares ──────────────────────────────────────
@@ -493,10 +493,10 @@ private:
     float sfxVol_ = 1.0f;
     // ── Photometry tuning (synced to SatFlarePC each frame) ───────────────────
     float brightnessScale = 2.0f;
-    float daySuppression  = 50.0f;
-    float mirrorBoost     = 300.0f;
-    float visThresh       = 0.008f;
-    float highlightFlare  = 0.05f;
+    float daySuppression = 50.0f;
+    float mirrorBoost = 300.0f;
+    float visThresh = 0.008f;
+    float highlightFlare = 0.05f;
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
     std::string exeDir_;           // directory containing the exe; set in init()
@@ -582,7 +582,7 @@ private:
     // Epoch at which satOrbitBuf was last baked (two-part, matches simTime representation).
     // uploadSatOrbits() re-bakes if |simDayJ2000 - orbitEpochDay| > kOrbitRebakeDays.
     int64_t orbitEpochDay = 0;
-    double  orbitEpochSec = 0.0;
+    double orbitEpochSec = 0.0;
 
     // ── Mouse state / window handle ───────────────────────────────────────────
     GLFWwindow *win = nullptr;
@@ -620,11 +620,11 @@ private:
     bool hovRebind[KB_COUNT] = {}; // per keybinding row — sized to match keybindings vector
     bool hovFullscreen = false;
     bool hovPhotoMinus[5] = {};
-    bool hovPhotoPlus[5]  = {};
+    bool hovPhotoPlus[5] = {};
     bool draggingPhoto[5] = {};
     // ── Settings window position (persisted; -1 = uninitialized, centers on first open) ─
-    float settingsWinX    = -1.0f;
-    float settingsWinY    = -1.0f;
+    float settingsWinX = -1.0f;
+    float settingsWinY = -1.0f;
     bool settingsDragging = false;
 
     // ── Private helpers ───────────────────────────────────────────────────────

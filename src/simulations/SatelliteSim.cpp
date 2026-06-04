@@ -153,8 +153,8 @@ void SatelliteSim::init(VulkanContext &ctx)
     static_assert(KB_COUNT == 8, "KB enum and keybindings initializer are out of sync");
 
     createBuffers(ctx);
-    createDescriptors(ctx);
     createGlowResources(ctx);
+    createDescriptors(ctx);
     createComputePipeline(ctx);
     createOrbitDescriptors(ctx);
     createOrbitPipeline(ctx);
@@ -238,10 +238,18 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, simDt);
     updateStars();
 
-    // Upload glow SSBO (frozen in Phase 1 — no CPU-side specular scan).
+    // Read previous frame's GPU glow results for the magnitude UI.
+    // glowBuf is HOST_COHERENT; by the time recordCompute is called the previous
+    // frame's queue work is complete, so the atomic writes from sat_flare.comp are visible.
     {
-        GpuGlowBuf *gb = static_cast<GpuGlowBuf *>(glowMapped);
-        gb->count = 0;
+        const GpuGlowBuf *gb = static_cast<const GpuGlowBuf *>(glowMapped);
+        int cnt = (int)std::min(gb->count, (uint32_t)kMaxGlows);
+        float maxFlare = 0.0f;
+        for (int g = 0; g < cnt; ++g)
+            maxFlare = std::max(maxFlare, gb->entries[g].w);
+        peakMagnitude = (maxFlare > 0.0f)
+            ? kMagRef - 2.5f * std::log10f(maxFlare / kMagRefFlare)
+            : 99.0f;
     }
 
     if (activeSatCount == 0)
@@ -293,6 +301,24 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         bmb.size   = VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 1, &bmb, 0, nullptr);
+    }
+
+    // Zero glowBuf.count so this frame's flare shader starts from slot 0.
+    // vkCmdFillBuffer writes 4 bytes (the uint count) via a transfer op.
+    vkCmdFillBuffer(cmd, glowBuf, 0, sizeof(uint32_t), 0);
+    {
+        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        bmb.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+        bmb.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.buffer = glowBuf;
+        bmb.offset = 0;
+        bmb.size   = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 0, nullptr, 1, &bmb, 0, nullptr);
     }
@@ -2007,18 +2033,20 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
 // ─── createDescriptors ────────────────────────────────────────────────────────
 void SatelliteSim::createDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[2] = {};
+    VkDescriptorSetLayoutBinding bindings[3] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+    bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                   VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // glowBuf: atomic writes from flare shader
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 2;
+    li.bindingCount = 3;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &ps;
@@ -2033,13 +2061,16 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
 
     VkDescriptorBufferInfo inpInfo{satInputBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo visInfo{satVisibleBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo glowInfo{glowBuf,     0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[2] = {};
+    VkWriteDescriptorSet writes[3] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &inpInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &visInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 2, writes, 0, nullptr);
+    writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                 descSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &glowInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 3, writes, 0, nullptr);
 }
 
 // ─── createComputePipeline ────────────────────────────────────────────────────
@@ -2241,7 +2272,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // ── SSBO: top-N glow entries written every frame ──────────────────────────
     VkDeviceSize bufSize = sizeof(GpuGlowBuf);
     ctx.createBuffer(bufSize,
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      glowBuf, glowMem);
     vkMapMemory(ctx.device, glowMem, 0, bufSize, 0, &glowMapped);
@@ -3650,11 +3681,10 @@ void SatelliteSim::updatePositions(double t, float dt)
         }
     }
 
-    // ── Satellite loop moved to GPU (sat_orbit.comp) ───────────────────────────
-    // Counters kept for UI display; glow/magnitude frozen until GPU readback is added.
+    // ── Satellite loop runs on GPU (sat_orbit.comp + sat_flare.comp) ─────────────
+    // peakMagnitude is computed in recordCompute() from the previous frame's glowBuf.
     visibleCount  = activeSatCount;
     gpuSatCount   = activeSatCount;
-    peakMagnitude = 99.0f;
     glowEntryCount = 0;
     glowMinIntensity = 0.0f;
     loopMs = 0.0f;

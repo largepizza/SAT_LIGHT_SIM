@@ -4,358 +4,145 @@
   "satellite_types": [
     {
       "name": "Starlink",
-      "base_color": [
-        0.80,
-        0.87,
-        1.00
-      ],
+      "base_color": [0.80, 0.87, 1.00],
       "cross_section_m2": 10.0,
-      "primary": {
-        "attitude": "NadirPointing",
-        "spec_exp": 18.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "Perpendicular",
-        "spec_exp": 0.0,
-        "weight": 0.0
-      },
+      "primary": { "attitude": "NadirPointing", "spec_exp": 18.0, "weight": 1.0 },
+      "secondary": { "attitude": "Perpendicular", "spec_exp": 0.0, "weight": 0.0 },
       "diffuse": 0.02,
       "mirror_frac": 0.05
     },
     {
       "name": "LEO Broadband",
-      "base_color": [
-        1.00,
-        0.92,
-        0.75
-      ],
+      "base_color": [1.00, 0.92, 0.75],
       "cross_section_m2": 5.0,
-      "primary": {
-        "attitude": "SunTracking",
-        "spec_exp": 18.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "Perpendicular",
-        "spec_exp": 0.0,
-        "weight": 0.0
-      },
+      "primary": { "attitude": "SunTracking", "spec_exp": 18.0, "weight": 1.0 },
+      "secondary": { "attitude": "Perpendicular", "spec_exp": 0.0, "weight": 0.0 },
       "diffuse": 0.02,
       "mirror_frac": 0.02
     },
     {
       "name": "GEO Comsat",
-      "base_color": [
-        0.95,
-        0.95,
-        1.00
-      ],
+      "base_color": [0.95, 0.95, 1.00],
       "cross_section_m2": 50.0,
-      "primary": {
-        "attitude": "SunTracking",
-        "spec_exp": 3.0,
-        "weight": 1.00
-      },
-      "secondary": {
-        "attitude": "AntiNadir",
-        "spec_exp": 2.0,
-        "weight": 0.10
-      },
+      "primary": { "attitude": "SunTracking", "spec_exp": 3.0, "weight": 1.00 },
+      "secondary": { "attitude": "AntiNadir", "spec_exp": 2.0, "weight": 0.10 },
       "diffuse": 0.05,
       "mirror_frac": 0.10
     },
     {
       "name": "ISS",
-      "base_color": [
-        1.00,
-        0.85,
-        0.70
-      ],
+      "base_color": [1.00, 0.85, 0.70],
       "cross_section_m2": 250.0,
-      "primary": {
-        "attitude": "SunTracking",
-        "spec_exp": 12.0,
-        "weight": 1.00
-      },
-      "secondary": {
-        "attitude": "AntiNadir",
-        "spec_exp": 4.0,
-        "weight": 0.35
-      },
+      "primary": { "attitude": "SunTracking", "spec_exp": 12.0, "weight": 1.00 },
+      "secondary": { "attitude": "AntiNadir", "spec_exp": 4.0, "weight": 0.35 },
       "diffuse": 0.04,
       "mirror_frac": 0.05
     },
     {
       "name": "SpaceX AI Sats",
-      "base_color": [
-        0.94,
-        0.94,
-        1.00
-      ],
+      "base_color": [0.60, 0.60, 1.00],
       "cross_section_m2": 1158.28,
-      "primary": {
-        "attitude": "SunTracking",
-        "spec_exp": 10.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "NadirPointing",
-        "spec_exp": 8.0,
-        "weight": 0.25
-      },
-      "diffuse": 0.00,
-      "mirror_frac": 0.5
+      "primary": { "attitude": "SunTracking", "spec_exp": 25.0, "weight": 1.0 },
+      "secondary": { "attitude": "AntiNadir", "spec_exp": 10.0, "weight": 0.25 },
+      "diffuse": 0.001,
+      "mirror_frac": 0.01
     },
     {
       "name": "Reflect Mirror",
-      "base_color": [
-        1.00,
-        0.97,
-        0.94
-      ],
+      "base_color": [1.00, 0.97, 0.94],
       "cross_section_m2": 2376.0,
-      "primary": {
-        "attitude": "TargetedReflector",
-        "spec_exp": 200.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "Perpendicular",
-        "spec_exp": 0.0,
-        "weight": 0.0
-      },
+      "primary": { "attitude": "TargetedReflector", "spec_exp": 200.0, "weight": 1.0 },
+      "secondary": { "attitude": "Perpendicular", "spec_exp": 0.0, "weight": 0.0 },
       "diffuse": 0.001,
       "mirror_frac": 0.97
     },
     {
-      "name": "Infrared Laser",
-      "base_color": [
-        1.00,
-        0.1,
-        0.1
-      ],
-      "cross_section_m2": 10000000000.0,
-      "primary": {
-        "attitude": "TargetedReflector",
-        "spec_exp": 2000.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "Perpendicular",
-        "spec_exp": 0.0,
-        "weight": 0.0
-      },
-      "diffuse": 0.00,
-      "mirror_frac": 0.9999
-    },
-    {
       "name": "Debris",
-      "base_color": [
-        0.78,
-        0.74,
-        0.68
-      ],
+      "base_color": [0.78, 0.74, 0.68],
       "cross_section_m2": 0.05,
-      "primary": {
-        "attitude": "Tumbling",
-        "spec_exp": 10.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "Perpendicular",
-        "spec_exp": 6.0,
-        "weight": 0.0
-      },
+      "primary": { "attitude": "Tumbling", "spec_exp": 10.0, "weight": 1.0 },
+      "secondary": { "attitude": "Perpendicular", "spec_exp": 6.0, "weight": 0.0 },
       "diffuse": 0.0,
       "mirror_frac": 0.03
     },
     {
       "name": "Ring Debris",
-      "base_color": [
-        0.93,
-        0.91,
-        0.87
-      ],
+      "base_color": [0.93, 0.91, 0.87],
       "cross_section_m2": 13000.0,
-      "primary": {
-        "attitude": "Tumbling",
-        "spec_exp": 10.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "Perpendicular",
-        "spec_exp": 0.0,
-        "weight": 0.0
-      },
+      "primary": { "attitude": "Tumbling", "spec_exp": 10.0, "weight": 1.0 },
+      "secondary": { "attitude": "Perpendicular", "spec_exp": 0.0, "weight": 0.0 },
       "diffuse": 0.80,
       "mirror_frac": 0.06
     },
     {
       "name": "Starlink KE",
-      "base_color": [
-        0.80,
-        0.87,
-        1.00
-      ],
+      "base_color": [0.80, 0.87, 1.00],
       "cross_section_m2": 10.0,
-      "primary": {
-        "attitude": "KnifeEdge",
-        "spec_exp": 18.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "Perpendicular",
-        "spec_exp": 0.0,
-        "weight": 0.0
-      },
+      "primary": { "attitude": "KnifeEdge", "spec_exp": 18.0, "weight": 1.0 },
+      "secondary": { "attitude": "Perpendicular", "spec_exp": 0.0, "weight": 0.0 },
       "diffuse": 0.01,
       "mirror_frac": 0.05
     },
     {
       "name": "Space Hotel",
-      "base_color": [
-        1.00,
-        0.90,
-        0.72
-      ],
+      "base_color": [1.00, 0.90, 0.72],
       "cross_section_m2": 520.0,
-      "primary": {
-        "attitude": "SunTracking",
-        "spec_exp": 10.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "NadirPointing",
-        "spec_exp": 5.0,
-        "weight": 0.35
-      },
+      "primary": { "attitude": "SunTracking", "spec_exp": 10.0, "weight": 1.0 },
+      "secondary": { "attitude": "NadirPointing", "spec_exp": 5.0, "weight": 0.35 },
       "diffuse": 0.08,
       "mirror_frac": 0.04
     },
     {
       "name": "Propellant Depot",
-      "base_color": [
-        0.88,
-        0.91,
-        0.97
-      ],
+      "base_color": [0.88, 0.91, 0.97],
       "cross_section_m2": 80.0,
-      "primary": {
-        "attitude": "SunTracking",
-        "spec_exp": 12.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "NadirPointing",
-        "spec_exp": 8.0,
-        "weight": 0.20
-      },
+      "primary": { "attitude": "SunTracking", "spec_exp": 12.0, "weight": 1.0 },
+      "secondary": { "attitude": "NadirPointing", "spec_exp": 8.0, "weight": 0.20 },
       "diffuse": 0.04,
       "mirror_frac": 0.18
     },
     {
       "name": "Solar Power Sat",
-      "base_color": [
-        1.00,
-        0.95,
-        0.50
-      ],
+      "base_color": [1.00, 0.95, 0.50],
       "cross_section_m2": 20000.0,
-      "primary": {
-        "attitude": "SunTracking",
-        "spec_exp": 30.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "NadirPointing",
-        "spec_exp": 20.0,
-        "weight": 0.40
-      },
+      "primary": { "attitude": "SunTracking", "spec_exp": 30.0, "weight": 1.0 },
+      "secondary": { "attitude": "NadirPointing", "spec_exp": 20.0, "weight": 0.40 },
       "diffuse": 0.005,
       "mirror_frac": 0.30
     },
     {
       "name": "Debris Remover",
-      "base_color": [
-        0.65,
-        0.70,
-        0.60
-      ],
+      "base_color": [0.65, 0.70, 0.60],
       "cross_section_m2": 4.0,
-      "primary": {
-        "attitude": "Tumbling",
-        "spec_exp": 6.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "NadirPointing",
-        "spec_exp": 2.0,
-        "weight": 0.15
-      },
+      "primary": { "attitude": "Tumbling", "spec_exp": 6.0, "weight": 1.0 },
+      "secondary": { "attitude": "NadirPointing", "spec_exp": 2.0, "weight": 0.15 },
       "diffuse": 0.15,
       "mirror_frac": 0.02
     },
     {
       "name": "SAR Satellite",
-      "base_color": [
-        0.72,
-        0.76,
-        0.82
-      ],
+      "base_color": [0.72, 0.76, 0.82],
       "cross_section_m2": 2.5,
-      "primary": {
-        "attitude": "NadirPointing",
-        "spec_exp": 8.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "SunTracking",
-        "spec_exp": 3.0,
-        "weight": 0.20
-      },
+      "primary": { "attitude": "NadirPointing", "spec_exp": 8.0, "weight": 1.0 },
+      "secondary": { "attitude": "SunTracking", "spec_exp": 3.0, "weight": 0.20 },
       "diffuse": 0.03,
       "mirror_frac": 0.01
     },
     {
       "name": "Cislunar Ferry",
-      "base_color": [
-        0.92,
-        0.94,
-        0.97
-      ],
+      "base_color": [0.92, 0.94, 0.97],
       "cross_section_m2": 350.0,
-      "primary": {
-        "attitude": "SunTracking",
-        "spec_exp": 10.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "AntiNadir",
-        "spec_exp": 4.0,
-        "weight": 0.25
-      },
+      "primary": { "attitude": "SunTracking", "spec_exp": 10.0, "weight": 1.0 },
+      "secondary": { "attitude": "AntiNadir", "spec_exp": 4.0, "weight": 0.25 },
       "diffuse": 0.05,
       "mirror_frac": 0.06
     },
     {
       "name": "IoT Nanosat",
-      "base_color": [
-        0.75,
-        0.75,
-        0.78
-      ],
+      "base_color": [0.75, 0.75, 0.78],
       "cross_section_m2": 0.02,
-      "primary": {
-        "attitude": "Tumbling",
-        "spec_exp": 4.0,
-        "weight": 1.0
-      },
-      "secondary": {
-        "attitude": "Perpendicular",
-        "spec_exp": 0.0,
-        "weight": 0.0
-      },
+      "primary": { "attitude": "Tumbling", "spec_exp": 4.0, "weight": 1.0 },
+      "secondary": { "attitude": "Perpendicular", "spec_exp": 0.0, "weight": 0.0 },
       "diffuse": 0.08,
       "mirror_frac": 0.01
     }
@@ -464,17 +251,17 @@
     {
       "name": "SpaceX AI Sat",
       "type": "SpaceX AI Sats",
-      "alt_km": 1500.0,
+      "alt_km": 1250.0,
       "incl_deg": 0.0,
-      "num_planes": 5,
-      "per_plane": 100000,
+      "num_planes": 2000,
+      "per_plane": 1000,
       "enabled": true,
       "distribution": "Disk",
       "alt_jitter_km": 0.05,
       "raan_deg": 0.0,
       "align_terminator": true,
       "num_rings": 2000,
-      "ring_spacing_km": 1
+      "ring_spacing_km": 0.75
     },
     {
       "name": "Commercial Space Stations",
@@ -516,26 +303,11 @@
       "per_plane": 4,
       "enabled": true,
       "distribution": "Disk",
-      "alt_jitter_km": 0.0,
+      "alt_jitter_km": 50.0,
       "raan_deg": 0.0,
       "align_terminator": true,
       "num_rings": 6,
-      "ring_spacing_km": 10.0
-    },
-    {
-      "name": "SPS Infrared",
-      "type": "Infrared Laser",
-      "alt_km": 700.0,
-      "incl_deg": 0.0,
-      "num_planes": 6,
-      "per_plane": 4,
-      "enabled": true,
-      "distribution": "Disk",
-      "alt_jitter_km": 0.0,
-      "raan_deg": 0.0,
-      "align_terminator": true,
-      "num_rings": 6,
-      "ring_spacing_km": 10.0
+      "ring_spacing_km": 100.0
     },
     {
       "name": "Active Debris Sweepers",
