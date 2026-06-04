@@ -69,6 +69,18 @@ layout(set = 0, binding = 1) writeonly buffer SatVisibleBuf {
     SatVisible visible[];
 };
 
+// ── Glow buffer: top-N brightest flares for sky bloom ────────────────────────
+// Matches GpuGlowBuf (std430): uint count + uint pad[3] + vec4 entries[64].
+// count is zeroed each frame by vkCmdFillBuffer before this dispatch;
+// invocations claim slots atomically and write ENU direction + effectFlare.
+const uint GLOW_MAX    = 64u;
+const float GLOW_THRESH = 0.5;  // effectFlare threshold (~mag 3.6 at brightnessScale=2)
+layout(set = 0, binding = 2) buffer GlowBuf {
+    uint  glowCount;
+    uint  glowPad[3];
+    vec4  glowEntries[64]; // xyz = ENU unit dir, w = effectFlare
+};
+
 // ── Push constants ────────────────────────────────────────────────────────────
 // GLSL std430 vec3 alignment = 16.  Offsets verified against C++ SatFlarePC.
 layout(push_constant) uniform PC {
@@ -322,6 +334,15 @@ void main() {
     float rangeMm  = sat.range / 1.0e6;
     float baseSize = max(1.5, 2.5 - rangeMm * 0.4);
     float angSize  = baseSize * 2.5 + 10 * log(effectFlare * 54.0);
+
+    // ── Glow buffer: claim a slot atomically for bright flares ───────────────
+    // Only fires for effectFlare >= GLOW_THRESH (much brighter than vis threshold).
+    // Slots 0..GLOW_MAX-1 are assigned uniquely per invocation; overflow is dropped.
+    if (effectFlare >= GLOW_THRESH) {
+        uint slot = atomicAdd(glowCount, 1u);
+        if (slot < GLOW_MAX)
+            glowEntries[slot] = vec4(skyDir, effectFlare);
+    }
 
     // ── Output ───────────────────────────────────────────────────────────────
     visible[idx].skyDir         = skyDir;
