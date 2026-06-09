@@ -240,13 +240,19 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
     // Read previous frame's GPU glow results for the magnitude UI.
     // glowBuf is HOST_COHERENT; by the time recordCompute is called the previous
-    // frame's queue work is complete, so the atomic writes from sat_flare.comp are visible.
+    // frame's queue work is complete, so the atomicMax writes from sat_flare.comp are visible.
     {
         const GpuGlowBuf *gb = static_cast<const GpuGlowBuf *>(glowMapped);
-        int cnt = (int)std::min(gb->count, (uint32_t)kMaxGlows);
         float maxFlare = 0.0f;
-        for (int g = 0; g < cnt; ++g)
-            maxFlare = std::max(maxFlare, gb->entries[g].w);
+        for (int i = 0; i < kGlowBins; ++i)
+        {
+            if (gb->bins[i] != 0u)
+            {
+                float f;
+                memcpy(&f, &gb->bins[i], sizeof(float));
+                maxFlare = std::max(maxFlare, f);
+            }
+        }
         peakMagnitude = (maxFlare > 0.0f)
             ? kMagRef - 2.5f * std::log10f(maxFlare / kMagRefFlare)
             : 99.0f;
@@ -305,9 +311,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              0, 0, nullptr, 1, &bmb, 0, nullptr);
     }
 
-    // Zero glowBuf.count so this frame's flare shader starts from slot 0.
-    // vkCmdFillBuffer writes 4 bytes (the uint count) via a transfer op.
-    vkCmdFillBuffer(cmd, glowBuf, 0, sizeof(uint32_t), 0);
+    // Zero all glow bins so this frame's flare shader starts with an empty histogram.
+    // floatBitsToUint(0.0) == 0u, so filling with 0 correctly marks every bin empty.
+    vkCmdFillBuffer(cmd, glowBuf, 0, sizeof(GpuGlowBuf), 0);
     {
         VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         bmb.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -2715,11 +2721,12 @@ void SatelliteSim::initStars(VulkanContext &ctx)
 }
 
 // ─── createStarPipeline ───────────────────────────────────────────────────────
-// Reuses sat_point.vert/frag with a separate descriptor layout (binding=1 only).
+// Uses sat_point.vert (shared vertex layout) + star_point.frag (tight core only,
+// no satellite-style outer glow — prevents bright stars from becoming blobs).
 void SatelliteSim::createStarPipeline(VulkanContext &ctx)
 {
     VkShaderModule vert = ctx.loadShader("shaders/sat_point.vert.spv");
-    VkShaderModule frag = ctx.loadShader("shaders/sat_point.frag.spv");
+    VkShaderModule frag = ctx.loadShader("shaders/star_point.frag.spv");
 
     VkPipelineShaderStageCreateInfo stages[2] = {};
     stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
@@ -3683,9 +3690,7 @@ void SatelliteSim::updatePositions(double t, float dt)
 
     // ── Satellite loop runs on GPU (sat_orbit.comp + sat_flare.comp) ─────────────
     // peakMagnitude is computed in recordCompute() from the previous frame's glowBuf.
-    visibleCount  = activeSatCount;
-    gpuSatCount   = activeSatCount;
-    glowEntryCount = 0;
-    glowMinIntensity = 0.0f;
-    loopMs = 0.0f;
+    visibleCount = activeSatCount;
+    gpuSatCount  = activeSatCount;
+    loopMs       = 0.0f;
 }

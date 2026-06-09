@@ -69,16 +69,20 @@ layout(set = 0, binding = 1) writeonly buffer SatVisibleBuf {
     SatVisible visible[];
 };
 
-// ── Glow buffer: top-N brightest flares for sky bloom ────────────────────────
-// Matches GpuGlowBuf (std430): uint count + uint pad[3] + vec4 entries[64].
-// count is zeroed each frame by vkCmdFillBuffer before this dispatch;
-// invocations claim slots atomically and write ENU direction + effectFlare.
-const uint GLOW_MAX    = 64u;
-const float GLOW_THRESH = 0.5;  // effectFlare threshold (~mag 3.6 at brightnessScale=2)
+// ── Glow + flare buffer — matches GpuGlowBuf (std430, 784 bytes) ─────────────
+//   bins[64]         sky glow histogram: floatBitsToUint(max effectFlare) per bin.
+//   flareCount       atomic counter for per-satellite lens flare slot claim.
+//   flarePad[3]      align to vec4 boundary.
+//   flareEntries[8] per-satellite ENU dir + effectFlare for lensFlare() in sky shader.
+// Zeroed each frame by vkCmdFillBuffer(sizeof(GpuGlowBuf)).
+const float GLOW_THRESH  = 1.0;
+const float FLARE_THRESH = 1.0;
+const uint  FLARE_MAX    = 8u;
 layout(set = 0, binding = 2) buffer GlowBuf {
-    uint  glowCount;
-    uint  glowPad[3];
-    vec4  glowEntries[64]; // xyz = ENU unit dir, w = effectFlare
+    uint  bins[64];
+    uint  flareCount;
+    uint  flarePad[3];
+    vec4  flareEntries[8]; // xyz=ENU dir, w=effectFlare
 };
 
 // ── Push constants ────────────────────────────────────────────────────────────
@@ -330,18 +334,40 @@ void main() {
         return;
     }
 
-    // ── Point size: grows with flare intensity; capped to avoid giant sprites ─
-    float rangeMm  = sat.range / 1.0e6;
-    float baseSize = max(1.5, 2.5 - rangeMm * 0.4);
-    float angSize  = baseSize * 2.5 + 10 * log(effectFlare * 54.0);
+    // ── Point size ───────────────────────────────────────────────────────────
+    // The outer glow in sat_point.frag uses a Lorentzian (1/(1+r²)) with the
+    // formula:  glowSigmaPx = log2(effectFlare) * 10   (half-max radius in pixels).
+    // This value MUST match the formula in sat_point.frag exactly.
+    //
+    // The sprite is sized to 7× glowSigmaPx so the smoothstep edge fade (applied
+    // over the full sprite diameter) has enough room to taper the Lorentzian tail
+    // to zero — no hard circular boundary is visible at any brightness.
+    // For dim sats (effectFlare ≤ 1) the base log formula governs.
+    float rangeMm     = sat.range / 1.0e6;
+    float baseSize    = max(1.5, 2.5 - rangeMm * 0.4);
+    float glowSigmaPx = max(0.0, log2(effectFlare) * 10.0); // 0 at ef=1, 30px at ef=8
+    float angSizeBase = baseSize * 2.5 + 10.0 * log(effectFlare * 54.0);
+    float angSizeGlow = baseSize * 2.0 + glowSigmaPx * 7.0;
+    // Hard cap: individual sprite cannot grow beyond 120px regardless of effectFlare.
+    // Aggregate cluster glow is handled by the sky glow bins, not per-sat sprites.
+    float angSize     = min(max(angSizeBase, angSizeGlow), 120.0);
 
-    // ── Glow buffer: claim a slot atomically for bright flares ───────────────
-    // Only fires for effectFlare >= GLOW_THRESH (much brighter than vis threshold).
-    // Slots 0..GLOW_MAX-1 are assigned uniquely per invocation; overflow is dropped.
+    // ── Sky glow: bin this satellite (stable, no flicker) ────────────────────
     if (effectFlare >= GLOW_THRESH) {
-        uint slot = atomicAdd(glowCount, 1u);
-        if (slot < GLOW_MAX)
-            glowEntries[slot] = vec4(skyDir, effectFlare);
+        const float TWO_PI = 6.28318530718;
+        float az   = mod(atan(skyDir.x, skyDir.y) + TWO_PI, TWO_PI);
+        uint azBin = uint(az * (8.0 / TWO_PI)) & 7u;
+        uint elBin = min(uint(max(skyDir.z, 0.0) * 8.0), 7u);
+        atomicMax(bins[azBin * 8u + elBin], floatBitsToUint(effectFlare));
+    }
+
+    // ── Lens flares: claim a slot with the real satellite sky direction ───────
+    // sat_sky.frag calls lensFlare() for each entry — spiky corona + ghost artifacts.
+    // First FLARE_MAX bright-enough sats claim slots; overflow is dropped.
+    if (effectFlare >= FLARE_THRESH) {
+        uint slot = atomicAdd(flareCount, 1u);
+        if (slot < FLARE_MAX)
+            flareEntries[slot] = vec4(skyDir, effectFlare);
     }
 
     // ── Output ───────────────────────────────────────────────────────────────

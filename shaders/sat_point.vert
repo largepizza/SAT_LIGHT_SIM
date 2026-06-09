@@ -25,6 +25,7 @@ layout(push_constant) uniform PC {
 
 layout(location = 0) out vec3  fragColor;
 layout(location = 1) out float fragIntensity;
+layout(location = 2) out float fragAngSize;  // sprite size in pixels, for abs-pixel glow
 
 void main() {
     SatVisible sat = satellites[gl_VertexIndex];
@@ -40,6 +41,7 @@ void main() {
         gl_PointSize = 0.001;
         fragColor     = vec3(0.0);
         fragIntensity = 0.0;
+        fragAngSize   = 0.001;
         return;
     }
 
@@ -49,6 +51,7 @@ void main() {
         gl_PointSize = 0.001;
         fragColor     = vec3(0.0);
         fragIntensity = 0.0;
+        fragAngSize   = 0.001;
         return;
     }
 
@@ -66,4 +69,5 @@ void main() {
 
     fragColor     = sat.baseColor;
     fragIntensity = sat.flareIntensity;
+    fragAngSize   = sat.angularSize;
 }
