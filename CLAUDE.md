@@ -131,11 +131,12 @@ Each `SatelliteType` composes two surfaces + a diffuse floor:
 | `NadirPointing` | satNadir | Antenna/array face toward Earth (Starlink) |
 | `SunTracking` | sunDirECI | Solar panels track sun (LEO Broadband, ISS) |
 | `Tumbling` | spinning around random body axis | Debris, uncontrolled objects |
-| `Perpendicular` | cross(surfN0, satNadir) | Secondary only — along orbital track |
+| `Perpendicular` | cross(surfN0, satNadir) | Secondary only — derived from primary normal |
 | `AntiNadir` | -satNadir | Radiators facing deep space; brighter near horizon |
 | `FlatMirror45` | normalize(sunDir + satNadir) | Flat mirror reflecting sunlight straight down |
 | `TargetedReflector` | normalize(sunDir + toTarget) | Mirror aimed at nearest valid night-side ground target |
 | `KnifeEdge` | roll around velHat; clamped ±80° | Starlink post-2020 roll-angle policy (Mallama 2023) |
+| `SunPerp` | normalize(cross(sunDirECI, satNadir)) | Thermal radiator edge-on to sun; irr=0 always (correct thermal design — never receives direct sunlight). Visual contribution via diffuse. Used for AI1 datacenter radiators. |
 
 `velHat` is computed in `updatePositions` from the orbital trig already in scope: `{-sinU·cosR - cosU·cosI·sinR, -sinU·sinR + cosU·cosI·cosR, cosU·sinI}` — already unit length for circular orbits.
 
@@ -146,7 +147,7 @@ Each `SatelliteType` composes two surfaces + a diffuse floor:
 | 1 | LEO Broadband | 5 | SunTracking, spec=18 | 0.02 |
 | 2 | GEO Comsat | 50 | SunTracking, spec=3 | 0.10 |
 | 3 | ISS | 250 | SunTracking, spec=12 | 0.05 |
-| 4 | SpaceX AI Sats | ~600 | SunTracking, spec=18 | 0.01 |
+| 4 | SpaceX AI Sats | 600 | SunTracking, spec=25 + SunPerp secondary (radiators, w1=0.18) | 0.01 |
 | 5 | Reflect Mirror | 2376 | TargetedReflector, spec=200 | 0.97 |
 | 6 | Debris | 1 | Tumbling, spec=6 | 0.03 |
 | 7 | Starlink KE | 10 | KnifeEdge, spec=18 | 0.05 |

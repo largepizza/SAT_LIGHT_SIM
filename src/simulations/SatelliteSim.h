@@ -48,6 +48,14 @@ enum class AttitudeMode
                        // from nadir, then clamps to ±kKnifeMaxRollDeg (solar panel gimbal limit).
                        // Models the SpaceX roll-angle adjustment adopted in 2020 (Mallama 2023):
                        // ~90% brightness reduction at standard distance when unclamped.
+    SunPerp,           // normal = normalize(cross(sunDirECI, satNadir))
+                       // Panel is edge-on to the sun AND edge-on to nadir; normal points
+                       // perpendicular to the sun-nadir plane.  Used for thermal radiator panels
+                       // on nadir-locked buses (e.g. AI1 datacenter): the bus yaws so solar
+                       // panels face the sun, which constrains the hard-mounted radiators to
+                       // this orientation.  irr = |dot(sun, normal)| = 0 always — the radiator
+                       // intentionally never receives direct sunlight (correct thermal design).
+                       // Visual contribution is through the overall diffuse scatter parameter.
 };
 
 // ── Orbit distribution type ────────────────────────────────────────────────────

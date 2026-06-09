@@ -126,6 +126,7 @@ const uint AM_ANTI_NADIR         = 4u;
 const uint AM_FLAT_MIRROR_45     = 5u;
 const uint AM_TARGETED_REFLECTOR = 6u;
 const uint AM_KNIFE_EDGE         = 7u;
+const uint AM_SUN_PERP           = 8u;  // cross(sunDir, satNadir) — thermal radiator edge-on to sun
 
 // Number of reflector targets — must match kNumReflectorTargets in SatelliteSim.h.
 const int NUM_TARGETS = 201;
@@ -167,6 +168,16 @@ vec3 computeNormal(uint mode, SatOrbit orb, vec3 satNadir, vec3 velHat, vec3 pri
         float theta  = (abs(theta1) <= abs(theta2)) ? theta1 : theta2;
         theta = clamp(theta, -KNIFE_MAX_ROLL, KNIFE_MAX_ROLL);
         return cos(theta) * satNadir + sin(theta) * ct;
+    }
+
+    if (mode == AM_SUN_PERP) {
+        // Thermal radiator panel on a nadir-locked bus whose yaw is constrained by
+        // sun-tracking solar wings.  Normal is perpendicular to both sun and nadir,
+        // so the panel is always edge-on to the sun (dot(sun, normal) = 0 exactly).
+        // Falls back to satNadir when sun is nearly parallel to nadir (subsolar point).
+        vec3  n   = cross(pc.sunDirECI, satNadir);
+        float len = length(n);
+        return (len > 1e-5) ? n / len : satNadir;
     }
 
     // Default / AM_SUN_TRACKING fallback

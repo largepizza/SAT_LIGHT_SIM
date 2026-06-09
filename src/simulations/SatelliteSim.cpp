@@ -2867,6 +2867,8 @@ static AttitudeMode parseAttitudeMode(const std::string &s)
         return AttitudeMode::TargetedReflector;
     if (s == "KnifeEdge")
         return AttitudeMode::KnifeEdge;
+    if (s == "SunPerp")
+        return AttitudeMode::SunPerp;
     fprintf(stderr, "[SatelliteSim] Unknown AttitudeMode '%s'; using NadirPointing.\n", s.c_str());
     return AttitudeMode::NadirPointing;
 }
@@ -3031,18 +3033,23 @@ void SatelliteSim::loadHardcoded()
          {AttitudeMode::AntiNadir, 4.0f, 0.35f},    // large radiator panels (ITS) face deep space
          0.04f,                                     // complex truss/module body
          0.05f},                                    // mirrorFrac: highly polished solar panel glass → mag ~-7.5 at peak
-        {                                           // 4 — SpaceX ODC (FCC filing Jan 2026): Starlink-class bus with large radiator panels
-         // for compute heat rejection. Nadir-pointing phased array + deep-space-facing radiators.
-         // Flat compute/antenna face produces brief nadir flares; radiator face brightens near
-         // the horizon (AntiNadir face tilts toward the observer as satellite descends).
+        {                                           // 4 — SpaceX AI1 datacenter satellite (revealed 2026).
+         // Bus: nadir-pointing (phased-array antenna faces Earth). Modeled via diffuse.
+         // Solar arrays: ~600 m², two-axis tracked (bus yaw + panel gimbal) → always face sun.
+         // Radiators: 110 m² deployable liquid panels, hard-mounted perpendicular to bus.
+         //   The bus yaws to let solar wings track the sun, which constrains the radiators
+         //   to normal = cross(sunDir, satNadir) — always edge-on to the sun by design.
+         //   irr = 0 always (correct: radiator must never see the sun to reject heat).
+         //   Visual contribution is through the diffuse parameter (large structure scatter).
+         // crossSection = sqrt(600/10) ≈ 7.75 for the dominant solar wing area.
 
          "SpaceX AI Sats",
          {1.00f, 1.00f, 0.92f},                    // cyan-teal (distinct from Starlink blue-white)
-         ai_sat_panel_area,                        // ~15 m² — Starlink-class bus + extra radiator area
-         {AttitudeMode::SunTracking, 25.0f, 1.0f}, // phased-array/compute face toward Earth
-         {AttitudeMode::AntiNadir, 10.0f, 0.25f},  // large radiator panels face deep space
-         0.04f,                                    // minimal structural body scatter
-         0.01f},                                   // mirrorFrac: similar to Starlink — polished compute face
+         600.0f,                                   // 600 m² solar array area (150 kW / 250 W/m²)
+         {AttitudeMode::SunTracking, 25.0f, 1.0f}, // solar wings — always face sun, sharp specular
+         {AttitudeMode::SunPerp, 3.0f, 0.18f},     // radiators 110 m² — edge-on to sun, irr=0
+         0.06f,                                    // bus body + radiator structure bulk scatter
+         0.01f},                                   // mirrorFrac: polished solar panel glass
         {                                          // 5 — Reflect Orbital mirror (speculative, 55 m diameter flat mirror).
          // FlatMirror45: normal = normalize(sunDir + satNadir).
          // By construction reflect(-sunDir, n) = satNadir — reflected sunlight
@@ -3450,22 +3457,20 @@ void SatelliteSim::buildOrbits()
         }
         else if (c.distribution == OrbitDistribution::Disk)
         {
-            // Determine orbital plane.
+            // Determine orbital plane.  For alignTerminator, RAAN is shared across all rings
+            // but inclination is computed per-ring from each ring's actual altitude.
             float incl_d = c.incl;
             float raan_d = c.raan;
+            glm::vec3 sunJ2000{};
             if (c.alignTerminator)
             {
-                // Physically correct SSO inclination from the J2 nodal precession formula.
-                // Depends only on orbit altitude (~100.6° at 1250 km); does NOT vary with season.
-                incl_d = computeSSOInclination(c.altM);
-
                 // Reference RAAN anchored at J2000 epoch (2000-01-01 12:00 TT).
                 // At J2000 the orbit is at the dawn-dusk terminator.  updatePositions()
                 // then applies liveRaan = raan_j2000 + kSSOPrecRate * t (absolute J2000 s),
                 // giving a fully deterministic sky position at any simulation date.
-                glm::vec3 sunJ2000 = sunDirECIAtJ2000();
-                float sinI = sinf(incl_d);
-                raan_d = (sinI > 1e-5f) ? atan2f(sunJ2000.x, -sunJ2000.y) : 0.0f;
+                // RAAN is the same for all rings; inclination is computed per-ring below.
+                sunJ2000 = sunDirECIAtJ2000();
+                raan_d = atan2f(sunJ2000.x, -sunJ2000.y);
             }
 
             // Distribute satellites across numRings concentric rings.
@@ -3478,7 +3483,10 @@ void SatelliteSim::buildOrbits()
             {
                 // Altitude: centre-offset each ring around c.altM.
                 float ringAlt = c.altM + (r - (nr - 1) * 0.5f) * c.ringSpacingM;
-                float ringIncl = incl_d; // same inclination for all rings (flat disk)
+                // For SSO constellations compute the exact J2 inclination for each ring's
+                // altitude rather than using the centre altitude for all rings.  A 1500 km
+                // span (e.g. 500–2000 km) otherwise biases every ring by up to ±3.7°.
+                float ringIncl = c.alignTerminator ? computeSSOInclination(ringAlt) : incl_d;
 
                 // Model incomplete constellation, vary number of sats per ring to fill totalSats without exceeding it.
                 int satsInThisRing = glm::min(perRing, totalSats - r * perRing);
