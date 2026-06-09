@@ -17,11 +17,13 @@ layout(location = 0) in  vec3 enuDir;           // interpolated ENU view ray (no
 layout(location = 1) in flat vec4 sunDirENU;    // passed through from vertex (same as pc.sunDirENU)
 layout(location = 2) in flat vec4 moonDirENU;   // moon dir + phase pass-through
 
-// Top-N bright satellite flares -- written by CPU each frame, no smoothing.
-// kMaxGlows must match the constant in SatelliteSim.h.
+// Sky glow + lens flare data, written by sat_flare.comp each frame.
+// Must match GpuGlowBuf (SatelliteSim.h) exactly.
 layout(std430, set = 0, binding = 0) readonly buffer GlowBuf {
-    int  count;
-    vec4 entries[128]; // xyz = ENU unit dir, w = effectFlare intensity
+    uint  bins[64];          // sky glow: floatBitsToUint(max effectFlare) per bin
+    uint  flareCount;        // lens flares: number of valid per-satellite entries
+    uint  flarePad[3];
+    vec4  flareEntries[8];  // lens flares: xyz=ENU dir, w=effectFlare
 } glowBuf;
 
 // RGBA noise texture (binding 1): tiled REPEAT sampler, used for angular corona
@@ -328,8 +330,9 @@ void main() {
         float bm    = dot(oc, dirR);
         float cm    = 1.0 - kMoonAngR * kMoonAngR;
         float discm = bm * bm - cm;
-        if (discm >= 0.0) {
-            vec3  hp = (-bm - sqrt(discm)) * dirR;
+        float tm    = -bm - sqrt(max(discm, 0.0));
+        if (discm >= 0.0 && tm > 0.0) {
+            vec3  hp = tm * dirR;
             vec3  n  = normalize(hp - moonDir3);
             float diffuse  = max(0.0, dot(n, sunDir)) * moonDirENU.w;
             float mu       = max(0.0, dot(n, -moonDir3));
@@ -364,24 +367,30 @@ void main() {
     }
 
     // ── Satellite constellation sky glow (pre-tonemap) ────────────────────────
-    // Wide Gaussian (kSig = 0.90 rad ~= 51 deg) summed over all glowBuf entries.
-    // This is aggregate light-pollution glow from whole constellations, NOT
-    // per-satellite bloom.  Many satellites together produce a diffuse brightening
-    // of the sky dome above them -- analogous to urban skyglow.
+    // Wide Gaussian (kSig = 0.90 rad ~= 51 deg) over 64 sky bins.
+    // Each occupied bin represents the brightest satellite in that 45°×11.25° cell.
     // Runs pre-tonemap so the exposure system scales it: invisible at noon,
     // visible at dusk, prominent at night.
-    if (glowBuf.count > 0) {
+    {
+        const float TWO_PI = 6.28318530718;
         vec3  flareAttn = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
         float hClip     = smoothstep(-0.02, 0.03, dir.z);
-        const float kSig = 0.90; // wide sigma -- aggregate constellation glow, not per-sat
-        for (int gi = 0; gi < glowBuf.count; ++gi) {
-            vec4  e      = glowBuf.entries[gi];
-            if (e.z < -0.08) continue;
-            vec3  fd     = normalize(e.xyz);
+        const float kSig = 0.90;
+        for (int gi = 0; gi < 64; ++gi) {
+            uint fluxBits = glowBuf.bins[gi];
+            if (fluxBits == 0u) continue;
+            float flux   = uintBitsToFloat(fluxBits);
+            // Derive bin-centre ENU direction from bin index.
+            // azBin=0 is North, increasing toward East (matches atan(x,y) convention).
+            float az     = (float(gi / 8) + 0.5) * (TWO_PI / 8.0);
+            float elSin  = (float(gi % 8) + 0.5) / 8.0; // z = sin(elevation)
+            float elCos  = sqrt(max(0.0, 1.0 - elSin * elSin));
+            vec3  fd     = vec3(sin(az) * elCos, cos(az) * elCos, elSin);
+            if (fd.z < -0.08) continue;
             float angle  = acos(clamp(dot(dir, fd), -1.0, 1.0));
             float glow   = exp(-angle * angle / (2.0 * kSig * kSig)) * 0.01;
-            float gElev  = smoothstep(-0.08, 0.02, e.z);
-            float intens = clamp(log2(max(e.w, 1.0)) / 4.0, 0.0, 1.5);
+            float gElev  = smoothstep(-0.08, 0.02, fd.z);
+            float intens = clamp(log2(max(flux, 1.0)) / 4.0, 0.0, 1.5);
             color += hClip * gElev * glow * intens * 0.06 * vec3(1.0, 0.96, 0.88) * flareAttn;
         }
     }
@@ -462,46 +471,27 @@ void main() {
 
         vec3 flareAccum = vec3(0.0);
 
-        // ── Satellite flares ────────────────────────────────────────────────────
-        // Threshold kFlareThreshold: below this effectFlare value the satellite is
-        // too dim to generate visible lens artifacts.  The Gaussian sky-glow loop
-        // above handles dim-to-medium satellites as aggregate light pollution.
-        //
-        // Intensity curve: log2(e.w) / log2(16) maps [1..16] -> [0..1], compressed
-        // so a cluster of moderate-bright sats each contribute modestly while a
-        // single very bright sat (ISS-class) gets close to full intensity.
-        //
-        // kFlareThreshold is intentionally LOW (1.0) so that satellites approaching
-        // flare brightness fade in gradually rather than popping on all at once.
-        // The per-entry entryScale (intens^1.5) means a satellite just above threshold
-        // contributes almost nothing; only truly bright ones dominate.
-        //
-        // entryScale curve (intens = log2(e.w) / log2(16)):
-        //   e.w =  1.0 (at threshold):     intens = 0.00,  entryScale = 0.000
-        //   e.w =  1.5:                     intens = 0.14,  entryScale = 0.007
-        //   e.w =  2.0:                     intens = 0.25,  entryScale = 0.031
-        //   e.w =  4.0:                     intens = 0.50,  entryScale = 0.177
-        //   e.w = 16.0 (ISS-class):         intens = 1.00,  entryScale = 1.000
-        // This matches the gradual visibility increase of the old point-sprite spikes
-        // while avoiding any hard threshold pop.
-        const float kFlareThreshold = 1.0;
-        for (int gi = 0; gi < glowBuf.count; ++gi) {
-            vec4 e = glowBuf.entries[gi];
-            if (e.z < -0.05) continue;
-            if (e.w < kFlareThreshold) continue;
+        // ── Satellite lens flares ───────────────────────────────────────────────
+        // Per-satellite positions from flareEntries[] — real sky directions, not
+        // bin centres. The smooth outer glow is in sat_point.frag; lensFlare()
+        // here adds the spiky noise-driven corona (f0) and ghost artifacts (f1–f6).
+        {
+            const float kFlareThr = 1.0;
+            int nFlares = int(min(glowBuf.flareCount, 8u));
+            for (int gi = 0; gi < nFlares; ++gi) {
+                vec4 e = glowBuf.flareEntries[gi];
+                if (e.z < -0.05) continue;
+                if (e.w < kFlareThr) continue;
 
-            vec3 satCam = mat3(pc.skyView) * normalize(e.xyz);
-            if (satCam.z >= -0.01) continue;
-            vec2 satUV = vec2(satCam.x, -satCam.y) / (-satCam.z * tanHF * 2.0);
+                vec3 satCam = mat3(pc.skyView) * normalize(e.xyz);
+                if (satCam.z >= -0.01) continue;
+                vec2 satUV = vec2(satCam.x, -satCam.y) / (-satCam.z * tanHF * 2.0);
 
-            float intens = clamp(log2(max(e.w, 1.0)) / log2(16.0), 0.0, 1.0);
-            // Smooth entry: intens^1.5 gives near-zero contribution just above threshold,
-            // growing naturally to 1.0 at ISS-class brightness.
-            float entryScale = intens * sqrt(intens); // = intens^1.5
-
-            // Warm white tint; lensFlare() adds its own chromatic aberration on ghosts.
-            vec3 tint = vec3(1.3, 1.15, 1.0);
-            flareAccum += lensFlare(fragUV, satUV, intens, 0.3) * tint * entryScale * 0.35;
+                float intens     = clamp(log2(max(e.w, 1.0)) / log2(16.0), 0.0, 1.0);
+                float entryScale = intens * sqrt(intens); // intens^1.5, smooth fade-in
+                vec3  tint       = vec3(1.3, 1.15, 1.0);
+                flareAccum += lensFlare(fragUV, satUV, intens, 0.3) * tint * entryScale * 0.25;
+            }
         }
 
         // ── Sun lens flare ──────────────────────────────────────────────────────

@@ -193,16 +193,28 @@ struct SatDrawPC
 }; // total: 112 bytes
 static_assert(sizeof(SatDrawPC) == 112, "SatDrawPC layout mismatch");
 
-// Per-frame satellite sky glow: top-N brightest flares written to a small SSBO.
-// std430 layout: int count + 3-float pad + N × vec4 (xyz=ENU dir, w=effectFlare).
-// kMaxGlows must match the array size declared in sat_sky.frag.
-static constexpr int kMaxGlows = 64;
+// Per-frame sky glow + lens flare data, written by sat_flare.comp each frame.
+//
+//   bins[64]         — Spatial histogram (45°×11.25° cells, 8 az × 8 el).
+//                      atomicMax(floatBitsToUint(effectFlare)) per bin.
+//                      Used for the wide-Gaussian aggregate sky glow pass.
+//
+//   flareCount / flareEntries[32]  — Per-satellite sequential slot claim.
+//                      Used by sat_sky.frag to call lensFlare() at the real
+//                      satellite screen position (spiky corona + ghost artifacts).
+//
+// std430: bins[64]×uint(256) + flareCount+pad×uint(16) + flareEntries[32]×vec4(512)
+//       = 784 bytes total.
+static constexpr int kGlowBins  = 64;
+static constexpr int kMaxFlares = 8;
 struct GpuGlowBuf
 {
-    uint32_t count;
-    float pad[3];
-    glm::vec4 entries[kMaxGlows]; // xyz = ENU unit dir, w = effectFlare intensity
+    uint32_t  bins[kGlowBins];
+    uint32_t  flareCount;
+    uint32_t  flarePad[3];
+    glm::vec4 flareEntries[kMaxFlares]; // xyz=ENU dir, w=effectFlare
 };
+static_assert(sizeof(GpuGlowBuf) == kGlowBins*4 + 16 + kMaxFlares*16, "GpuGlowBuf layout mismatch");
 
 // ── GPU orbital parameters (uploaded once per buildOrbits, device-local) ─────
 // 28 × 4-byte fields = 112 bytes.  All plain floats/uints — no vec3 — so
@@ -459,12 +471,8 @@ private:
     float loopMs = 0.0f;         // satellite loop time last frame (milliseconds)
     float peakMagnitude = 99.0f; // brightest steady-state sat magnitude this frame
 
-    // ── Sky glow: top-N brightest flares ──────────────────────────────────────
-    // Collected by updatePositions(); uploaded to glowBuf each frame.
-    // The sky shader sums Gaussian contributions from all N entries.
-    glm::vec4 glowEntries[kMaxGlows]{}; // xyz = ENU unit dir, w = effectFlare
-    int glowEntryCount = 0;
-    float glowMinIntensity = 0.0f; // min intensity in glowEntries (for efficient replacement)
+    // ── Sky glow SSBO ─────────────────────────────────────────────────────────
+    // Written by sat_flare.comp each frame via binned atomicMax; read by sat_sky.frag.
     VkBuffer glowBuf = VK_NULL_HANDLE;
     VkDeviceMemory glowMem = VK_NULL_HANDLE;
     void *glowMapped = nullptr;

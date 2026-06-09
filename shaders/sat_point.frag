@@ -1,26 +1,20 @@
 // ── sat_point.frag ────────────────────────────────────────────────────────────
 // Point-sprite fragment shader for satellite rendering.
 //
-// This shader deliberately handles ONLY the tight unresolved core of each
-// satellite point source.  Camera-style lens flare effects for bright satellites
-// are rendered separately in sat_sky.frag using the glowBuf SSBO — that pass
-// runs first and draws into the sky/background layer.  This shader draws on top
-// of that (additive blend), anchoring the precise satellite position.
+// Two layers per sprite, both Gaussians that naturally reach ~0 before the edge:
 //
-// fragIntensity range: ~0 (invisible) to ~10+ (ISS-class event).
+//   inner — tight relative-sigma Gaussian (4.5% of sprite radius).
+//           Stays tiny regardless of sprite size — looks like a true point source.
+//           Log2-compressed brightness so ISS-class sats don't blow out.
 //
-// Two layers:
+//   glow  — outer soft Gaussian in absolute pixel units (fragAngSize converts).
+//           Sigma grows with log2(intensity); sprite is sized to 6σ in
+//           sat_flare.comp so the Gaussian is ~1% at the sprite boundary —
+//           no smoothstep needed, no hard circular edge visible.
+//           Zero for intensity ≤ 1; fades in log-scale above that.
 //
-//   inner — tight Gaussian pinpoint (sigmaInner = 4.5% of sprite radius).
-//           Log2 brightness compression prevents ISS-class objects from
-//           producing an oversized white blob; they still appear brighter than
-//           dim satellites but don't blow out.  The lens flare in sat_sky.frag
-//           is the primary "this is a very bright object" signal.
-//
-//   halo  — very soft, dim Gaussian envelope (sigma = 13% of sprite radius).
-//           Provides anti-aliased feathering so dim dots don't look like hard
-//           pixel squares.  Brightness is tightly capped so it stays invisible
-//           on bright objects (lens flare handles bloom there).
+// Lens flare corona + ghost artifacts are rendered by sat_sky.frag via lensFlare()
+// using per-satellite positions from glowBuf.flareEntries.
 //
 // Output is (rgb*brightness, brightness) for additive blend accumulation.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,6 +23,7 @@
 
 layout(location = 0) in vec3  fragColor;
 layout(location = 1) in float fragIntensity;
+layout(location = 2) in float fragAngSize;
 
 layout(location = 0) out vec4 outColor;
 
@@ -41,42 +36,47 @@ void main() {
     if (d > 0.5) discard;
 
     // ── Inner core: tight pinpoint, log-compressed brightness ─────────────────
-    //
-    // sigmaInner = 0.045:
-    //   Core radius is 4.5% of sprite half-width.  At a typical 30 px sprite
-    //   this is only a 1-2 px radius -- indistinguishable from a true point
-    //   source.  Fixed size so the core doesn't grow into a blob on bright sats.
-    //
-    // coreScale = 0.9 + log2(1 + intensity) * 0.45:
-    //   Calibrated so dim satellites (intensity~0) give coreScale~0.90, and
-    //   intensity=1 gives ~1.35.  Above that the log2 curve compresses:
-    //     intensity =  1 -> 1.35
-    //     intensity =  5 -> 1.94
-    //     intensity = 10 -> 2.32  (would be 5.2 with a linear multiplier)
-    //   The sat_sky.frag lens flare handles the "this is very bright" signal.
+    // sigmaInner = 0.045 (relative): 4.5% of sprite half-width.
+    // exp(-(0.5)²/(2×0.045²)) ≈ 0 — naturally reaches zero at sprite edge, no cutoff.
+    // Stays visually small regardless of sprite size; lensFlare() adds the corona.
     const float sigmaInner = 0.045;
-    float coreScale = 0.9 + log2(1.0 + fragIntensity) * 0.45;
+    // Sigmoid ramp: x²/(1+x²) where x = intensity × scale.
+    // Near-zero at visThresh → smooth fade in/out.
+    // Half-max at intensity ≈ 1/scale = 0.05 → ramps quickly above that.
+    // Full brightness (3.0) by intensity ≈ 0.2; capped there for bright sats.
+    //   intensity=0.008 (visThresh) → coreScale ≈ 0.008  (nearly invisible)
+    //   intensity=0.05              → coreScale ≈ 1.75   (comfortably bright)
+    //   intensity=0.15              → coreScale ≈ 2.93   (near-full)
+    //   intensity=0.5+              → coreScale = 3.0    (capped)
+    // Tune scale: higher = ramp starts earlier (brighter at threshold).
+    float x = fragIntensity * 30.0;
+    float coreScale = min((x * x / (1.0 + x * x)) * 3.5, 3.0);
     float inner = exp(-d * d / (2.0 * sigmaInner * sigmaInner)) * coreScale;
 
-    // ── Soft anti-aliasing halo: wide but very dim ─────────────────────────────
-    //
-    // sigmaHalo = 0.13:
-    //   Blurs the hard circular sprite boundary into a smooth taper.
-    //   Wide enough to feather cleanly; narrow enough to not look like bloom.
-    //
-    // haloScale cap at 0.20:
-    //   A dim satellite (intensity~0.3) gets just enough halo to look like a
-    //   round disc rather than a hard pixel square.  Bright satellites' halos
-    //   stay tiny -- the lens flare halos in sat_sky.frag dominate instead.
-    //
-    // smoothstep(0.50, 0.15, d):
-    //   Fade to zero in the outer 35% of the disc so the sprite boundary is
-    //   never visible even at large sprite sizes.
-    const float sigmaHalo = 0.13;
-    float haloScale = clamp(fragIntensity * 0.18, 0.0, 0.20);
-    float halo = exp(-d * d / (2.0 * sigmaHalo * sigmaHalo)) * haloScale;
-    halo *= smoothstep(0.50, 0.15, d);
+    // ── Outer glow: absolute-pixel Gaussian, independent of sprite size ────────
+    // pixelDist converts gl_PointCoord distance to real pixels via the sprite size.
+    // glowSigmaPx MUST match sat_flare.comp (log2(intensity)*7) so the sprite is
+    // sized to exactly 6σ — the Gaussian hits ~1% at the boundary, no edge visible.
+    // glowBrightness = 0 for intensity ≤ 1, so dim sats have no soft halo.
+    // glowSigmaPx MUST match sat_flare.comp (log2(effectFlare)*10) so the sprite
+    // is correctly sized relative to the glow.
+    // Lorentzian 1/(1+r²) has a heavier tail than Gaussian — glow spreads more
+    // gradually with no abrupt dropoff that could read as a hard circular edge.
+    // Full-sprite smoothstep drives glow to exactly 0.0 at the sprite boundary,
+    // eliminating any residual circle artifact at any intensity.
+    // kGlowMax caps peak brightness so the halo is always dimmer than the inner
+    // core — the bright point stays distinguishable inside the diffuse glow.
+    // Keep low: many overlapping sprites stack additively; aggregate cluster glow
+    // comes from the sky glow bins pass, not from individual sprites.
+    // Tune: 0.05 = very subtle, 0.08 = moderate, 0.15 = dramatic single-sat.
+    const float kGlowMax = 0.08;
+    float pixelDist      = d * fragAngSize;
+    float glowSigmaPx    = max(0.5, log2(max(fragIntensity, 1e-4)) * 10.0);
+    float glowBrightness = clamp(log2(max(fragIntensity, 1.0)) * 0.5, 0.0, kGlowMax);
+    float r              = pixelDist / glowSigmaPx;
+    float glow           = (1.0 / (1.0 + r * r)) * glowBrightness;
+    glow                *= 1.0 - smoothstep(0.0, 0.5, d);
 
-    float brightness = inner + halo;
+    float brightness = inner + glow;
     outColor = vec4(fragColor * brightness, brightness);
 }
