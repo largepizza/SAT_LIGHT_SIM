@@ -248,6 +248,8 @@ void main() {
     // sectional radius is from R_Earth. Smoothstep over ±1% R_Earth (~64 km)
     // gives a realistic penumbra instead of a hard binary switch.
     vec3  satAbs    = sat.eciRelPos + pc.obsECI;   // absolute ECI position
+    float R_sat     = length(satAbs);
+    vec3  satNadir  = -satAbs / R_sat;             // unit vector: satellite → Earth center
     vec3  shadowDir = -pc.sunDirECI;               // points away from sun
     float proj      = dot(satAbs, shadowDir);       // + = on the night side
     vec3  perpVec   = satAbs - proj * shadowDir;    // component ⊥ shadow axis
@@ -255,6 +257,18 @@ void main() {
     float litFactor = (proj > 0.0)
         ? smoothstep(-R_EARTH * 0.01, R_EARTH * 0.01, perpLen - R_EARTH)
         : 1.0;
+
+    // ── Earthshine irradiance (analytical horizon correction) ─────────────────
+    // illumFrac: fraction of the visible Earth cap that lies on the lit side.
+    // Transitions in cosAlpha space over the angular width of the cap (2×sinEta),
+    // replacing the naive sinusoid that treats Earth as a point source.
+    const float EARTH_ALBEDO = 0.3;
+    float cosAlpha      = dot(-satNadir, pc.sunDirECI); // cos(sat-zenith / sun angle)
+    float cosEta        = R_EARTH / R_sat;              // cos of Earth's angular radius
+    float sinEta        = sqrt(max(0.0, 1.0 - cosEta * cosEta));
+    float illumFrac     = clamp((cosAlpha + sinEta) / (2.0 * sinEta), 0.0, 1.0);
+    float solidAngleFrac = (1.0 - cosEta) * 0.5;       // fraction of upward hemisphere
+    float earthIrr      = EARTH_ALBEDO * solidAngleFrac * illumFrac;
 
     // ── Multi-surface specular model ──────────────────────────────────────────
     // Three contributions are summed:
@@ -309,10 +323,28 @@ void main() {
     float mirrorPeak = irr0 * pow(mirrorDot, mirrorExp) * pc.mirrorBoost;
     spec0 += mirrorPeak * sat.mirrorFrac;
 
+    // ── Earthshine BRDF — Earth illuminates from nadir direction ─────────────
+    // Not multiplied by litFactor: eclipsed satellites still receive earthshine
+    // from the illuminated hemisphere below (this is the dominant source of
+    // residual brightness for satellites crossing into shadow near the terminator).
+    float irrE0        = max(0.0, dot(satNadir, sat.surfN0));
+    vec3  nE0          = (dot(satNadir, sat.surfN0) >= 0.0) ? sat.surfN0 : -sat.surfN0;
+    vec3  reflE0       = reflect(-satNadir, nE0);
+    float specE0       = irrE0 * ((sat.specExp0 < 0.01)
+                         ? max(0.0, dot(satNadir, satToObs))
+                         : pow(max(0.0, dot(reflE0, satToObs)), sat.specExp0));
+    float irrE0b       = max(0.0, dot(satNadir, -sat.surfN0)); // back face: diffuse only
+    float specE0b      = irrE0b * sat.diffuse;
+    float irrE1        = max(0.0, dot(satNadir, sat.surfN1));
+    float specE1_earth = irrE1 * sat.w1 * sat.diffuse;
+    float earthSpecular = specE0 + specE0b + specE1_earth;
+    float earthFlare    = earthSpecular * earthIrr * distFactor * sat.crossSection * pc.brightnessScale;
+
     // crossSection = sqrt(area_m² / 10): larger structures reflect proportionally more flux.
     // A 10 m² satellite has crossSection≈1; a 50 000 m² space datacenter ≈70×.
-    float specular = spec0 + spec1 * sat.w1 + sat.diffuse;
-    float flare    = specular * litFactor * distFactor * sat.crossSection * pc.brightnessScale;
+    float specular   = spec0 + spec1 * sat.w1 + sat.diffuse;
+    float solarFlare = specular * litFactor * distFactor * sat.crossSection * pc.brightnessScale;
+    float flare      = solarFlare + earthFlare;
 
     // ── Daytime sky suppression ───────────────────────────────────────────────
     // sunElev = sin(sun elevation angle above observer's horizon).
