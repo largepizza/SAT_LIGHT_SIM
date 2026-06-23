@@ -77,23 +77,6 @@ static inline float computeSSOInclination(float altM)
     return (float)acos(glm::clamp(cosI, -1.0, 1.0));
 }
 
-// Sun direction in ECI at J2000.0 (2000-01-01 12:00 TT), using the same
-// low-accuracy Astronomical Almanac formula as updatePositions() at t=0.
-// This is a fixed reference used to anchor the SSO epoch RAAN.
-static glm::vec3 sunDirECIAtJ2000()
-{
-    constexpr double L = 280.46;   // mean longitude at J2000 (degrees)
-    constexpr double g = 357.528;  // mean anomaly at J2000 (degrees)
-    constexpr double eps = 23.439; // obliquity at J2000 (degrees)
-    const double pi180 = glm::pi<double>() / 180.0;
-    const double gR = g * pi180;
-    const double lamR = (L + 1.915 * sin(gR) + 0.020 * sin(2.0 * gR)) * pi180;
-    const double epsR = eps * pi180;
-    return glm::normalize(glm::vec3{float(cos(lamR)),
-                                    float(sin(lamR) * cos(epsR)),
-                                    float(sin(lamR) * sin(epsR))});
-}
-
 static std::filesystem::path resolveExeDir()
 {
 #if defined(_WIN32)
@@ -124,14 +107,14 @@ void SatelliteSim::init(VulkanContext &ctx)
     // Resolve directory that contains the executable so we can find constellations.json.
     exeDir_ = resolveExeDir().string();
 
-    // Fixed start time: 2026-03-30 05:53:58 UTC
+    // Fixed start time: 2036-06-21 00:00:00 UTC
     // J2000.0 = 2000-01-01 12:00:00 UTC = Unix 946728000
-    // 2026-03-30 05:53:58 UTC = Unix 1774849038
-    // Fixed start time: 828121038 seconds from J2000 = 9584 days + 63438 s.
+    // 2036-06-21 00:00:00 UTC = Unix 2097619200
+    // Fixed start time: 1150891200 seconds from J2000 = 13320 days + 43200 s.
     // Stored split so float deltaT stays small regardless of time-warp distance.
-    constexpr int64_t kInitWholeSec = 828121038LL;
-    simDayJ2000 = kInitWholeSec / 86400LL;           // 9584
-    simSecInDay = (double)(kInitWholeSec % 86400LL); // 63438.0
+    constexpr int64_t kInitWholeSec = 1150891200LL - 3 * 30 * 24 * 60 * 60 + 17.5 * 60 * 60;
+    simDayJ2000 = kInitWholeSec / 86400LL;           // 13320
+    simSecInDay = (double)(kInitWholeSec % 86400LL); // 43200.0
     simInitDayJ2000 = simDayJ2000;
     simInitSecInDay = simSecInDay;
 
@@ -730,7 +713,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // ── Simulated UTC time string ─────────────────────────────────────────────
     static char timeBuf[32];
     {
-        time_t unixSim = (time_t)(simDayJ2000 * 86400LL + (int64_t)simSecInDay) + 946738000;
+        time_t unixSim = (time_t)(simDayJ2000 * 86400LL + (int64_t)simSecInDay) + 946728000;
         struct tm *utc = gmtime(&unixSim);
         if (utc)
             snprintf(timeBuf, sizeof(timeBuf), "UTC %04d-%02d-%02d %02d:%02d:%02d",
@@ -2211,6 +2194,8 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
     orbitEpochDay = simDayJ2000;
     orbitEpochSec = simSecInDay;
     const double orbitEpochT0 = (double)orbitEpochDay * 86400.0 + orbitEpochSec;
+    // SSO RAAN is anchored at sim-start, so bake only the precession since then.
+    const double t_start = (double)simInitDayJ2000 * 86400.0 + simInitSecInDay;
 
     std::vector<GpuSatOrbit> gpuOrbits(activeSatCount);
     for (uint32_t ci = 0; ci < (uint32_t)constellations.size(); ++ci)
@@ -2223,12 +2208,8 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
             const SatOrbit &src = satOrbits[i];
             const SatelliteType &type = satTypes[src.typeIdx];
             GpuSatOrbit &dst = gpuOrbits[i];
-
-            // For SSO satellites bake the epoch offset into RAAN exactly like u0/tumblePhase,
-            // so GPU formula liveRaan = dst.raan + PREC_RATE*deltaT equals the CPU formula
-            // liveRaan = raan_j2000 + PREC_RATE*simTime.
             dst.raan = src.alignTerminator
-                           ? (float)fmod((double)src.raan + kSSOPrecRate * orbitEpochT0,
+                           ? (float)fmod((double)src.raan + kSSOPrecRate * (orbitEpochT0 - t_start),
                                          glm::two_pi<double>())
                            : src.raan;
             dst.u0 = (float)fmod((double)src.u0 + (double)src.meanMot * orbitEpochT0,
@@ -3479,16 +3460,15 @@ void SatelliteSim::buildOrbits()
             // but inclination is computed per-ring from each ring's actual altitude.
             float incl_d = c.incl;
             float raan_d = c.raan;
-            glm::vec3 sunJ2000{};
             if (c.alignTerminator)
             {
-                // Reference RAAN anchored at J2000 epoch (2000-01-01 12:00 TT).
-                // At J2000 the orbit is at the dawn-dusk terminator.  updatePositions()
-                // then applies liveRaan = raan_j2000 + kSSOPrecRate * t (absolute J2000 s),
-                // giving a fully deterministic sky position at any simulation date.
-                // RAAN is the same for all rings; inclination is computed per-ring below.
-                sunJ2000 = sunDirECIAtJ2000();
-                raan_d = atan2f(sunJ2000.x, -sunJ2000.y);
+                // Anchor RAAN at the simulation start time using the sun direction already
+                // computed by updatePositions().  uploadSatOrbits() then precesses only
+                // (orbitEpochT0 - t_start) seconds forward, so liveRaan = raan_start +
+                // kSSOPrecRate*(simTime - t_start).  Anchoring here rather than at J2000
+                // eliminates the ~3° obliquity-driven phase error that accumulates when
+                // extrapolating 36+ years with a constant precession rate.
+                raan_d = atan2f(sunDirECI.x, -sunDirECI.y);
             }
 
             // Distribute satellites across numRings concentric rings.
@@ -3661,10 +3641,8 @@ void SatelliteSim::updatePositions(double t, float dt)
     // Period: 27.3217 days. The moon orbits in the ecliptic plane (~5° tilt);
     // for rendering purposes an equatorial approximation is sufficient.
     static constexpr double kMoonPeriodSec = 27.3217 * 86400.0;
-    // Phase offset calibrated so the moon is 91% illuminated (waxing gibbous) at the
-    // fixed sim start epoch 2026-03-30 05:53:58 UTC (t=828121038 J2000 s).
-    // Derived: sun at ecliptic lon ~14°, moon must be at ~158° for dot=-0.82.
-    // At t_start the bare formula gives ~294°; offset = 158°-294° = +224° = 3.916 rad.
+    // Phase offset originally calibrated for 2026-03-30 epoch; at 2036-06-21 the moon
+    // will be at a different phase (recalibrate if accurate phase is needed).
     static constexpr double kMoonPhaseOffsetRad = 3.916;
     double moonAngle = fmod(2.0 * glm::pi<double>() * (t) / kMoonPeriodSec + kMoonPhaseOffsetRad,
                             glm::two_pi<double>());
