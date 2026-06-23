@@ -383,6 +383,7 @@ void main() {
     // Hard cap: individual sprite cannot grow beyond 120px regardless of effectFlare.
     // Aggregate cluster glow is handled by the sky glow bins, not per-sat sprites.
     float angSize     = min(max(angSizeBase, angSizeGlow), 120.0);
+    angSize           = max(angSize, 0.05);  // floor: sub-pixel sprites alias badly as center drifts across pixel boundaries
 
     // ── Sky glow: bin this satellite (stable, no flicker) ────────────────────
     if (effectFlare >= GLOW_THRESH) {

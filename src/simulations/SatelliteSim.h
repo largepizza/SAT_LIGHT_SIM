@@ -213,16 +213,16 @@ static_assert(sizeof(SatDrawPC) == 112, "SatDrawPC layout mismatch");
 //
 // std430: bins[64]×uint(256) + flareCount+pad×uint(16) + flareEntries[32]×vec4(512)
 //       = 784 bytes total.
-static constexpr int kGlowBins  = 64;
+static constexpr int kGlowBins = 64;
 static constexpr int kMaxFlares = 8;
 struct GpuGlowBuf
 {
-    uint32_t  bins[kGlowBins];
-    uint32_t  flareCount;
-    uint32_t  flarePad[3];
+    uint32_t bins[kGlowBins];
+    uint32_t flareCount;
+    uint32_t flarePad[3];
     glm::vec4 flareEntries[kMaxFlares]; // xyz=ENU dir, w=effectFlare
 };
-static_assert(sizeof(GpuGlowBuf) == kGlowBins*4 + 16 + kMaxFlares*16, "GpuGlowBuf layout mismatch");
+static_assert(sizeof(GpuGlowBuf) == kGlowBins * 4 + 16 + kMaxFlares * 16, "GpuGlowBuf layout mismatch");
 
 // ── GPU orbital parameters (uploaded once per buildOrbits, device-local) ─────
 // 28 × 4-byte fields = 112 bytes.  All plain floats/uints — no vec3 — so
@@ -508,10 +508,10 @@ private:
     float musicVol_ = 0.6f;
     float sfxVol_ = 1.0f;
     // ── Photometry tuning (synced to SatFlarePC each frame) ───────────────────
-    float brightnessScale = 2.0f;
-    float daySuppression = 50.0f;
+    float brightnessScale = 1.0f;
+    float daySuppression = 500.0f;
     float mirrorBoost = 300.0f;
-    float visThresh = 0.008f;
+    float visThresh = 0.00f;
     float highlightFlare = 0.05f;
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()

@@ -51,7 +51,9 @@ void main() {
     // Tune scale: higher = ramp starts earlier (brighter at threshold).
     float x = fragIntensity * 30.0;
     float coreScale = min((x * x / (1.0 + x * x)) * 3.5, 3.0);
-    float inner = exp(-d * d / (2.0 * sigmaInner * sigmaInner)) * coreScale;
+    float sigmaAbsPx = max(sigmaInner * fragAngSize, 0.4);  // floor at 1px absolute so adjacent pixels always get contribution
+    float pixD       = d * fragAngSize;
+    float inner      = exp(-pixD * pixD / (2.0 * sigmaAbsPx * sigmaAbsPx)) * coreScale;
 
     // ── Outer glow: absolute-pixel Gaussian, independent of sprite size ────────
     // pixelDist converts gl_PointCoord distance to real pixels via the sprite size.
