@@ -130,8 +130,8 @@ void SatelliteSim::init(VulkanContext &ctx)
     // Fixed start time: 828121038 seconds from J2000 = 9584 days + 63438 s.
     // Stored split so float deltaT stays small regardless of time-warp distance.
     constexpr int64_t kInitWholeSec = 828121038LL;
-    simDayJ2000     = kInitWholeSec / 86400LL;       // 9584
-    simSecInDay     = (double)(kInitWholeSec % 86400LL); // 63438.0
+    simDayJ2000 = kInitWholeSec / 86400LL;           // 9584
+    simSecInDay = (double)(kInitWholeSec % 86400LL); // 63438.0
     simInitDayJ2000 = simDayJ2000;
     simInitSecInDay = simSecInDay;
 
@@ -162,7 +162,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     createDrawPipeline(ctx);
     updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay); // must run first — initConstellation reads sunDirECI
     initConstellation();
-    uploadSatOrbits(ctx);     // bake + upload GpuSatOrbit data after orbits are built
+    uploadSatOrbits(ctx); // bake + upload GpuSatOrbit data after orbits are built
     initStars(ctx);
     loadSettings(); // override defaults with any previously saved values
 }
@@ -222,12 +222,21 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     }
 
     float simDt = timePaused ? 0.0f : fabsf(dt * kTimeScales[timeScaleIdx]);
-    if (!timePaused) {
+    if (!timePaused)
+    {
         simSecInDay += (double)dt * kTimeScales[timeScaleIdx] * timeDir;
         // Re-base to [0, 86400) and carry whole-day overflow into simDayJ2000.
         // Using a loop (not fmod) so timeDir reversal is handled cleanly.
-        while (simSecInDay >= 86400.0) { simSecInDay -= 86400.0; ++simDayJ2000; }
-        while (simSecInDay <      0.0) { simSecInDay += 86400.0; --simDayJ2000; }
+        while (simSecInDay >= 86400.0)
+        {
+            simSecInDay -= 86400.0;
+            ++simDayJ2000;
+        }
+        while (simSecInDay < 0.0)
+        {
+            simSecInDay += 86400.0;
+            --simDayJ2000;
+        }
     }
 
     // Auto-rebake orbit buffer if the epoch has drifted more than kOrbitRebakeDays.
@@ -254,8 +263,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             }
         }
         peakMagnitude = (maxFlare > 0.0f)
-            ? kMagRef - 2.5f * std::log10f(maxFlare / kMagRefFlare)
-            : 99.0f;
+                            ? kMagRef - 2.5f * std::log10f(maxFlare / kMagRefFlare)
+                            : 99.0f;
     }
 
     if (activeSatCount == 0)
@@ -265,28 +274,34 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     uint32_t enabledMask = 0, highlightMask = 0;
     for (uint32_t ci = 0; ci < (uint32_t)constellations.size() && ci < 32; ++ci)
     {
-        if (constellations[ci].enabled)   enabledMask   |= (1u << ci);
-        if (constellations[ci].highlight) highlightMask |= (1u << ci);
+        if (constellations[ci].enabled)
+            enabledMask |= (1u << ci);
+        if (constellations[ci].highlight)
+            highlightMask |= (1u << ci);
     }
 
     // ── Dispatch 1: sat_orbit.comp — orbital mechanics + attitude ─────────────
     SatOrbitPC orbitPc{};
-    orbitPc.enuX         = eci2enuX;
-    orbitPc.enuY         = eci2enuY;
-    orbitPc.enuZ         = eci2enuZ;
-    orbitPc.sunDirECI    = sunDirECI;
+    orbitPc.enuX = eci2enuX;
+    orbitPc.enuY = eci2enuY;
+    orbitPc.enuZ = eci2enuZ;
+    orbitPc.sunDirECI = sunDirECI;
     // Two-part subtraction: integer day difference (exact) + double seconds (precise).
     // After auto-rebake, dDays < kOrbitRebakeDays so the float cast loses < 0.07 s.
     int64_t dDays = simDayJ2000 - orbitEpochDay;
-    double  dSec  = simSecInDay - orbitEpochSec;
-    if (dSec < 0.0) { --dDays; dSec += 86400.0; } // borrow from day if frac is negative
+    double dSec = simSecInDay - orbitEpochSec;
+    if (dSec < 0.0)
+    {
+        --dDays;
+        dSec += 86400.0;
+    } // borrow from day if frac is negative
     orbitPc.deltaT = (float)((double)dDays * 86400.0 + dSec);
-    orbitPc.obsECI       = obsECI;
-    orbitPc.satCount     = activeSatCount;
+    orbitPc.obsECI = obsECI;
+    orbitPc.satCount = activeSatCount;
     orbitPc.highlightMask = highlightMask;
-    orbitPc.enabledMask  = enabledMask;
-    orbitPc.simDt        = simDt;
-    orbitPc.pad          = 0.0f;
+    orbitPc.enabledMask = enabledMask;
+    orbitPc.simDt = simDt;
+    orbitPc.pad = 0.0f;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, orbitPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -298,13 +313,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // Barrier: sat_orbit.comp writes satInputBuf → sat_flare.comp reads it.
     {
         VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        bmb.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-        bmb.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+        bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         bmb.buffer = satInputBuf;
         bmb.offset = 0;
-        bmb.size   = VK_WHOLE_SIZE;
+        bmb.size = VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -316,13 +331,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     vkCmdFillBuffer(cmd, glowBuf, 0, sizeof(GpuGlowBuf), 0);
     {
         VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        bmb.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
-        bmb.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
         bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         bmb.buffer = glowBuf;
         bmb.offset = 0;
-        bmb.size   = VK_WHOLE_SIZE;
+        bmb.size = VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -331,18 +346,18 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
     // ── Dispatch 2: sat_flare.comp — lighting + visibility ────────────────────
     SatFlarePC pc{};
-    pc.enuX           = eci2enuX;
-    pc.enuY           = eci2enuY;
-    pc.enuZ           = eci2enuZ;
-    pc.sunDirECI      = sunDirECI;
-    pc.satCount       = activeSatCount;
-    pc.obsECI         = obsECI;
-    pc.pad            = 0.0f;
+    pc.enuX = eci2enuX;
+    pc.enuY = eci2enuY;
+    pc.enuZ = eci2enuZ;
+    pc.sunDirECI = sunDirECI;
+    pc.satCount = activeSatCount;
+    pc.obsECI = obsECI;
+    pc.pad = 0.0f;
     pc.brightnessScale = brightnessScale;
-    pc.daySuppression  = daySuppression;
-    pc.mirrorBoost     = mirrorBoost;
-    pc.visThresh       = visThresh;
-    pc.highlightFlare  = highlightFlare;
+    pc.daySuppression = daySuppression;
+    pc.mirrorBoost = mirrorBoost;
+    pc.visThresh = visThresh;
+    pc.highlightFlare = highlightFlare;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -354,13 +369,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // Barrier: sat_flare.comp writes satVisibleBuf → vertex shader reads it.
     {
         VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        bmb.srcAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-        bmb.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+        bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         bmb.buffer = satVisibleBuf;
         bmb.offset = 0;
-        bmb.size   = VK_WHOLE_SIZE;
+        bmb.size = VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
@@ -1535,7 +1550,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
                     {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
                     {"Mirror boost", &mirrorBoost, 50.0f, 1000.0f, 25.0f, "%.0f", 2},
-                    {"Vis threshold", &visThresh, 0.001f, 0.1f, 0.001f, "%.3f", 3},
+                    {"Vis threshold", &visThresh, 0.0001f, 0.1f, 0.0001f, "%.3f", 3},
                     {"Hlgt flare", &highlightFlare, 0.01f, 1.0f, 0.01f, "%.2f", 4},
                 };
                 for (auto &pp : photoParams)
@@ -2067,7 +2082,7 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
 
     VkDescriptorBufferInfo inpInfo{satInputBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo visInfo{satVisibleBuf, 0, VK_WHOLE_SIZE};
-    VkDescriptorBufferInfo glowInfo{glowBuf,     0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo glowInfo{glowBuf, 0, VK_WHOLE_SIZE};
 
     VkWriteDescriptorSet writes[3] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
@@ -2190,7 +2205,8 @@ void SatelliteSim::createOrbitPipeline(VulkanContext &ctx)
 // Auto-called from recordCompute when |simDayJ2000-orbitEpochDay| >= kOrbitRebakeDays.
 void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
 {
-    if (satOrbits.empty()) return;
+    if (satOrbits.empty())
+        return;
 
     orbitEpochDay = simDayJ2000;
     orbitEpochSec = simSecInDay;
@@ -2202,7 +2218,8 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
         const ConstellationConfig &c = constellations[ci];
         for (uint32_t i = c.orbitStart; i < c.orbitStart + c.orbitCount; ++i)
         {
-            if (i >= activeSatCount) break;
+            if (i >= activeSatCount)
+                break;
             const SatOrbit &src = satOrbits[i];
             const SatelliteType &type = satTypes[src.typeIdx];
             GpuSatOrbit &dst = gpuOrbits[i];
@@ -2210,47 +2227,48 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
             // For SSO satellites bake the epoch offset into RAAN exactly like u0/tumblePhase,
             // so GPU formula liveRaan = dst.raan + PREC_RATE*deltaT equals the CPU formula
             // liveRaan = raan_j2000 + PREC_RATE*simTime.
-            dst.raan    = src.alignTerminator
-                              ? (float)fmod((double)src.raan + kSSOPrecRate * orbitEpochT0,
-                                            glm::two_pi<double>())
-                              : src.raan;
-            dst.u0      = (float)fmod((double)src.u0 + (double)src.meanMot * orbitEpochT0,
-                                      glm::two_pi<double>());
-            dst.R_sat   = src.R_sat;
+            dst.raan = src.alignTerminator
+                           ? (float)fmod((double)src.raan + kSSOPrecRate * orbitEpochT0,
+                                         glm::two_pi<double>())
+                           : src.raan;
+            dst.u0 = (float)fmod((double)src.u0 + (double)src.meanMot * orbitEpochT0,
+                                 glm::two_pi<double>());
+            dst.R_sat = src.R_sat;
             dst.meanMot = src.meanMot;
-            dst.cosI    = src.cosI;
-            dst.sinI    = src.sinI;
+            dst.cosI = src.cosI;
+            dst.sinI = src.sinI;
             dst.cosRaan = src.cosRaan;
             dst.sinRaan = src.sinRaan;
 
-            dst.tumbleRate  = src.tumbleRate;
+            dst.tumbleRate = src.tumbleRate;
             dst.tumblePhase = (float)fmod((double)src.tumblePhase +
-                                          (double)src.tumbleRate * orbitEpochT0,
+                                              (double)src.tumbleRate * orbitEpochT0,
                                           glm::two_pi<double>());
             dst.alignTerminator = src.alignTerminator ? 1.0f : 0.0f;
             dst.tumbleAxisX = src.tumbleAxis.x;
             dst.tumbleAxisY = src.tumbleAxis.y;
             dst.tumbleAxisZ = src.tumbleAxis.z;
 
-            dst.primaryAttitude   = (uint32_t)type.primary.attitude;
+            dst.primaryAttitude = (uint32_t)type.primary.attitude;
             dst.secondaryAttitude = (uint32_t)type.secondary.attitude;
 
-            dst.baseColorR   = type.baseColor.r;
-            dst.baseColorG   = type.baseColor.g;
-            dst.baseColorB   = type.baseColor.b;
+            dst.baseColorR = type.baseColor.r;
+            dst.baseColorG = type.baseColor.g;
+            dst.baseColorB = type.baseColor.b;
             dst.crossSection = sqrtf(type.crossSectionM2 / 10.0f);
-            dst.specExp0     = type.primary.specExp;
-            dst.specExp1     = type.secondary.specExp;
-            dst.w1           = type.secondary.weight;
-            dst.diffuse      = type.diffuse;
-            dst.mirrorFrac   = type.mirrorFrac;
-            dst.constIdx     = src.constIdx;
+            dst.specExp0 = type.primary.specExp;
+            dst.specExp1 = type.secondary.specExp;
+            dst.w1 = type.secondary.weight;
+            dst.diffuse = type.diffuse;
+            dst.mirrorFrac = type.mirrorFrac;
+            dst.constIdx = src.constIdx;
             dst.pad0 = dst.pad1 = 0;
         }
     }
 
     VkDeviceSize bufSize = activeSatCount * sizeof(GpuSatOrbit);
-    VkBuffer staging; VkDeviceMemory stagingMem;
+    VkBuffer staging;
+    VkDeviceMemory stagingMem;
     ctx.createBuffer(bufSize,
                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -3554,10 +3572,10 @@ void SatelliteSim::buildOrbits()
     // doesn't recompute them every frame (saves sqrt + 4 trig calls per satellite).
     for (SatOrbit &orb : satOrbits)
     {
-        orb.R_sat   = kEarthRadius + orb.altM;
+        orb.R_sat = kEarthRadius + orb.altM;
         orb.meanMot = (float)sqrt(kGM / ((double)orb.R_sat * orb.R_sat * orb.R_sat));
-        orb.cosI    = cosf(orb.incl);
-        orb.sinI    = sinf(orb.incl);
+        orb.cosI = cosf(orb.incl);
+        orb.sinI = sinf(orb.incl);
         if (!orb.alignTerminator)
         {
             orb.cosRaan = cosf(orb.raan);
@@ -3687,18 +3705,18 @@ void SatelliteSim::updatePositions(double t, float dt)
         {
             const glm::vec3 &ef = reflectorTargetsECEF[ti];
             glm::vec3 eci = kEarthRadius * glm::vec3(
-                cosG * ef.x - sinG * ef.y,
-                sinG * ef.x + cosG * ef.y,
-                ef.z);
+                                               cosG * ef.x - sinG * ef.y,
+                                               sinG * ef.x + cosG * ef.y,
+                                               ef.z);
             float sunDot = glm::dot(glm::normalize(eci), sunDirECI);
             targets[ti].posECI = eci;
-            targets[ti].valid  = (sunDot < 0.0f) ? 1.0f : 0.0f;
+            targets[ti].valid = (sunDot < 0.0f) ? 1.0f : 0.0f;
         }
     }
 
     // ── Satellite loop runs on GPU (sat_orbit.comp + sat_flare.comp) ─────────────
     // peakMagnitude is computed in recordCompute() from the previous frame's glowBuf.
     visibleCount = activeSatCount;
-    gpuSatCount  = activeSatCount;
-    loopMs       = 0.0f;
+    gpuSatCount = activeSatCount;
+    loopMs = 0.0f;
 }
