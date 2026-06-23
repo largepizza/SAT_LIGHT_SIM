@@ -36,9 +36,16 @@ Three layers (stable → frequently changed):
 ```
 ui.beginFrame()          → resets Clay, saves prevMouseOverUI
 sim->buildUI(dt, ui)     → Clay layout; camera look; mouse capture rects
-sim->recordCompute(cmd)  → WASD movement; simTime advance; updatePositions(); compute dispatch + barriers
+sim->recordCompute(cmd)  → WASD movement; simTime advance;
+                           CPU updatePositions() — sun/moon/obsECI/eci2enu/reflector targets only;
+                           orbit rebake check (every 7 sim-days);
+                           GPU dispatch 1: sat_orbit.comp (orbital mechanics + attitude normals);
+                           buffer barrier satInputBuf (SHADER_WRITE → SHADER_READ, compute→compute);
+                           vkCmdFillBuffer(glowBuf, 0) + barrier (clear per-frame histogram);
+                           GPU dispatch 2: sat_flare.comp (lighting + visibility culling);
+                           buffer barrier satVisibleBuf (SHADER_WRITE → SHADER_READ, compute→vertex)
 vkCmdBeginRenderPass     → owned by App
-sim->recordDraw(cmd)     → sky pass → satellite points → stars
+sim->recordDraw(cmd)     → sky/ground background → satellite points → stars
 ui.record(cmd)           → Clay → Vulkan quads/text/icons on top
 vkCmdEndRenderPass       → owned by App
 ```
@@ -97,7 +104,8 @@ enum KB {
     KB_REVERSE    = 4,   // R      — event
     KB_MOVE_BOOST = 5,   // LShift — held
     KB_MOVE_FINE  = 6,   // LCtrl  — held
-    KB_COUNT      = 7,
+    KB_CINEMATIC  = 7,   // LAlt   — event (toggle cinematic pan mode while RMB held)
+    KB_COUNT      = 8,
 };
 ```
 
@@ -109,7 +117,7 @@ enum KB {
    - **Event** (`held=false`): `if (pressed(KB_NEWNAME)) { ... }` in `onKey()`
    - **Held** (`held=true`): `glfwGetKey(win, keybindings[KB_NEWNAME].key) == GLFW_PRESS` in `recordCompute()`
 
-Settings display, rebinding, hover state, and `keyDisplayName()` all work automatically. `hovRebind[KB_COUNT]` and `kbKeyBuf[KB_COUNT]` are sized by the enum so no array changes are needed.
+Settings display, rebinding, hover state, and `keyDisplayName()` all work automatically. `hovRebind[KB_COUNT]` is sized by the enum so no array changes are needed.
 
 `keyDisplayName()` handles: letters, digits, Space, Tab, Enter, Esc, Bksp, modifier keys (LShift/RShift/LCtrl/RCtrl/LAlt/RAlt), F-keys (F1–F12), arrow keys, nav cluster (PgUp/PgDn/Home/End/Ins/Del), and common punctuation.
 
@@ -138,26 +146,29 @@ Each `SatelliteType` composes two surfaces + a diffuse floor:
 | `KnifeEdge` | roll around velHat; clamped ±80° | Starlink post-2020 roll-angle policy (Mallama 2023) |
 | `SunPerp` | normalize(cross(sunDirECI, satNadir)) | Thermal radiator edge-on to sun; irr=0 always (correct thermal design — never receives direct sunlight). Visual contribution via diffuse. Used for AI1 datacenter radiators. |
 
-`velHat` is computed in `updatePositions` from the orbital trig already in scope: `{-sinU·cosR - cosU·cosI·sinR, -sinU·sinR + cosU·cosI·cosR, cosU·sinI}` — already unit length for circular orbits.
+`velHat` is computed in `sat_orbit.comp` from the orbital trig already in scope: `{-sinU·cosR - cosU·cosI·sinR, -sinU·sinR + cosU·cosI·cosR, cosU·sinI}` — already unit length for circular orbits.
 
 ### Satellite type catalogue (typeIdx)
-| Idx | Name | Area (m²) | Primary attitude | mirrorFrac |
-|-----|------|-----------|-----------------|------------|
-| 0 | Starlink | 10 | NadirPointing, spec=18 | 0.05 |
-| 1 | LEO Broadband | 5 | SunTracking, spec=18 | 0.02 |
-| 2 | GEO Comsat | 50 | SunTracking, spec=3 | 0.10 |
-| 3 | ISS | 250 | SunTracking, spec=12 | 0.05 |
-| 4 | SpaceX AI Sats | 600 | SunTracking, spec=25 + SunPerp secondary (radiators, w1=0.18) | 0.01 |
-| 5 | Reflect Mirror | 2376 | TargetedReflector, spec=200 | 0.97 |
-| 6 | Debris | 1 | Tumbling, spec=6 | 0.03 |
-| 7 | Starlink KE | 10 | KnifeEdge, spec=18 | 0.05 |
+| Idx | Name | Area (m²) | Primary attitude | Secondary | mirrorFrac |
+|-----|------|-----------|-----------------|-----------|------------|
+| 0 | Starlink | 10 | NadirPointing, spec=18 | — | 0.05 |
+| 1 | LEO Broadband | 5 | SunTracking, spec=18 | — | 0.02 |
+| 2 | GEO Comsat | 50 | SunTracking, spec=3 | AntiNadir, w=0.10 | 0.10 |
+| 3 | ISS | 250 | SunTracking, spec=12 | AntiNadir, w=0.35 | 0.05 |
+| 4 | SpaceX AI Sats | 600 | SunTracking, spec=25 | SunPerp, w=0.18 (radiators) | 0.01 |
+| 5 | Reflect Mirror | 2376 | TargetedReflector, spec=200 | — | 0.97 |
+| 6 | Debris | 1 | Tumbling, spec=6 | — | 0.03 |
+| 7 | Starlink KE | 10 | KnifeEdge, spec=18 | — | 0.05 |
 
 `crossSection = sqrt(crossSectionM2 / 10.0)` — so 10 m² → 1.0, 2376 m² → ~15.4.
 
+### Satellite type data source
+Types and constellations are loaded from `constellations.json` next to the exe. If the file is missing or malformed, `loadHardcoded()` provides the catalogue above as a fallback. The JSON schema is in `constellations.schema.json`.
+
 ### Adding a new satellite type
-1. Add a `SatelliteType` entry to `satTypes` in `initConstellation()` — new typeIdx = last index + 1
+1. Add to `satTypes` in `constellations.json` (or `loadHardcoded()` as fallback)
 2. No GPU struct changes needed; all fields map to existing `GpuSatInput` members
-3. Reference the new typeIdx in a `ConstellationConfig`
+3. Reference the new typeIdx in a constellation entry
 
 ---
 
@@ -181,66 +192,149 @@ Each `SatelliteType` composes two surfaces + a diffuse floor:
 - `incl` is ignored when `alignTerminator=true`
 
 ### Adding a new constellation
-1. Add a `ConstellationConfig` entry to `constellations` in `initConstellation()`
-2. Add a hover bool to `hovConst[]` and bump the loop cap if needed (currently `ci < 10`)
-3. Check total satellite count against `MAX_SATELLITES` (currently 200,000)
+1. Add a `ConstellationConfig` entry to `constellations.json` (or `loadHardcoded()`)
+2. `hovConst` and `hovHighlightConst` are `std::vector<bool>` and auto-size to `constellations.size()` — no manual hover bool management needed
+3. `MAX_SATELLITES = 10,000,000` — cap is generous; only relevant for very large test configs
 
-### Current constellation roster (11 total)
-| Name | Sats | Alt (km) | Incl | Dist |
-|------|------|----------|------|------|
-| Starlink Gen1 | 4,392 | 550 | 53° | Walker |
-| Starlink Gen2 | 30,480 | 525 | 53.2° | Walker |
-| OneWeb | 648 | 1,200 | 87.9° | Walker |
-| Amazon LEO | 7,742 | 630 | 51.9° | Walker |
-| Guowang | 13,920 | 508 | 85° | Walker |
-| ISS | 1 | 408 | 51.6° | Walker |
-| SpaceX AI Sat | 20,000 | 575–1,925 km | SSO | Disk+terminator |
-| Reflect Orbital | 1,000 | 500 | SSO | Disk+terminator, **disabled** |
+### Current constellation roster (9 total, hardcoded fallback)
+| Name | Sats | Alt (km) | Incl | Dist | TypeIdx |
+|------|------|----------|------|------|---------|
+| Starlink Gen1 | 4,392 | 550 | 53° | Walker | 0 |
+| Starlink Gen2 | 30,480 | 525 | 53.2° | Walker | 7 (KnifeEdge) |
+| OneWeb | 648 | 1,200 | 87.9° | Walker | 1 |
+| Amazon LEO | 7,742 | 630 | 51.9° | Walker | 1 |
+| Guowang | 13,920 | 508 | 85° | Walker | 1 |
+| ISS | 1 | 408 | 51.6° | Walker | 3 |
+| SpaceX AI Sat | 20,000 | 575–1,925 | SSO | Disk+terminator, 10 rings | 4 |
+| Reflect Orbital | 1,000 | 500 | SSO | Disk+terminator, 10 rings | 5 |
+| Space Junk | 3,000 | ~1,000 | random 0–180° | RandomShell | 6 |
 
-`updatePositions()` is O(N) CPU every frame. ~10 ms at 100k sats.
+CPU `updatePositions()` is now **O(1)** — it only updates sun/moon/obsECI/eci2enu and uploads `reflectorTargetsBuf`. All orbital mechanics run on GPU via `sat_orbit.comp`.
 
 ### SSO precession model (alignTerminator=true)
 Inclination from J2 formula: `cos(i) = -kSSOPrecRate / (1.5 × n × kJ2 × (Re/a)²)`
-RAAN anchored at J2000 epoch (sunDirECIAtJ2000), precesses as `raan_j2000 + kSSOPrecRate × t`.
-Call `updatePositions(simTime)` **before** `initConstellation()` so sunDirECI is populated.
+RAAN anchored at **sim-start** using `sunDirECI` (set by `updatePositions()` before `initConstellation()`): `raan_start = atan2(sunDirECI.x, -sunDirECI.y)`. GPU formula: `liveRaan = raan_start + kSSOPrecRate × (simTime − t_start)`. Anchoring at sim-start avoids the ~3° obliquity-driven phase error that accumulates when extrapolating from J2000 to a solstice epoch.
+
+---
+
+## Subsystem: GPU Orbital Pipeline
+
+All per-satellite orbital mechanics and attitude computation runs on the GPU. The CPU only manages the small reflector targets buffer and triggers a rebake when needed.
+
+### Two-dispatch pattern (recordCompute)
+```
+sat_orbit.comp dispatch   → reads satOrbitBuf; writes satInputBuf + mirrorNormalsBuf
+barrier satInputBuf       → SHADER_WRITE → SHADER_READ, compute→compute
+vkCmdFillBuffer(glowBuf)  → zeros the glow histogram for this frame
+barrier glowBuf           → TRANSFER_WRITE → SHADER_READ|SHADER_WRITE, transfer→compute
+sat_flare.comp dispatch   → reads satInputBuf; writes satVisibleBuf + glowBuf (atomicMax)
+barrier satVisibleBuf     → SHADER_WRITE → SHADER_READ, compute→vertex
+```
+
+### Buffers
+| Buffer | Memory | Lifetime | Updated by |
+|--------|--------|----------|------------|
+| `satOrbitBuf` | device-local | uploaded once; rebaked every 7 sim-days | `uploadSatOrbits()` |
+| `satInputBuf` | device-local | per-frame | `sat_orbit.comp` |
+| `satVisibleBuf` | device-local | per-frame | `sat_flare.comp` |
+| `mirrorNormalsBuf` | device-local | persistent (slew state) | `sat_orbit.comp` read+write |
+| `reflectorTargetsBuf` | host-visible, mapped | per-frame | `updatePositions()` CPU |
+| `glowBuf` | host-coherent, mapped | per-frame | `sat_flare.comp` write; App reads back |
+
+### Orbit rebake
+`kOrbitRebakeDays = 7`. Each `GpuSatOrbit` bakes `u0 = fmod(orig_u0 + meanMot × epochT0, 2π)` so the shader only adds `meanMot × deltaT` where deltaT < 7×86400 s. Float ULP at that scale ≈ 0.07 s, well within tolerable orbital error. `uploadSatOrbits()` auto-triggers in `recordCompute()` when `|simDayJ2000 - orbitEpochDay| >= 7`.
+
+### simTime representation
+Split into `simDayJ2000` (int64_t days) + `simSecInDay` (double, re-based to [0, 86400) each frame). Avoids accumulated float precision loss when a large J2000 base is added to a small per-frame delta. The shader receives `deltaT = float((dDays × 86400) + dSec)` where dDays < 7 (ensured by rebake).
+
+### GpuSatOrbit layout (112 bytes, std430)
+All plain floats/uints — no vec3 — so C++ struct packing matches GLSL std430 with no padding.
+Must match `SatOrbit` in `sat_orbit.comp` exactly.
+```
+[ 0] raan, u0, R_sat, meanMot
+[16] cosI, sinI, cosRaan, sinRaan
+[32] tumbleRate, tumblePhase, alignTerminator, tumbleAxisX
+[48] tumbleAxisY, tumbleAxisZ, primaryAttitude (uint), secondaryAttitude (uint)
+[64] baseColorR, baseColorG, baseColorB, crossSection
+[80] specExp0, specExp1, w1, diffuse
+[96] mirrorFrac, constIdx (uint), pad0, pad1
+```
+`static_assert(sizeof(GpuSatOrbit) == 112)` — do not change field order without updating both structs.
+
+### GpuSatVisible layout (32 bytes, std430)
+Output of `sat_flare.comp`; read by `sat_point.vert`.
+```
+[ 0] skyDir (vec3) + flareIntensity (float)  — ENU unit vector + intensity [0,1+]
+[16] baseColor (vec3) + angularSize (float)  — tint + point sprite size hint (pixels)
+```
+`static_assert(sizeof(GpuSatVisible) == 32)`
+
+### Push constants
+
+**SatOrbitPC** (96 bytes) — sat_orbit.comp:
+```
+enuX (vec4), enuY (vec4), enuZ (vec4)  — ECI→ENU basis, offsets 0/16/32
+sunDirECI (vec3), deltaT (float)       — offset 48/60
+obsECI (vec3), satCount (uint)         — offset 64/76
+highlightMask (uint), enabledMask (uint), simDt (float), pad (float)  — offset 80/84/88/92
+```
+
+**SatFlarePC** (100 bytes) — sat_flare.comp:
+```
+enuX (vec4), enuY (vec4), enuZ (vec4)  — offsets 0/16/32
+sunDirECI (vec3), satCount (uint)      — offset 48/60
+obsECI (vec3), pad (float)             — offset 64/76
+brightnessScale, daySuppression, mirrorBoost, visThresh, highlightFlare  — offsets 80–96
+```
+
+**SatDrawPC** (112 bytes) — sat_point.vert + both sky shaders:
+```
+skyView (mat4)                          — offset 0
+fovYRad, aspect, pad[2]                 — offsets 64/68/72/76
+sunDirENU (vec4) — xyz=dir, w=sin(el)  — offset 80
+moonDirENU (vec4) — xyz=dir, w=illum   — offset 96
+```
 
 ---
 
 ## Subsystem: TargetedReflector / Mirror Ground Targets
 
-Mirrors in `TargetedReflector` mode aim at the nearest valid night-side ground target.
+Mirrors in `TargetedReflector` mode aim at the nearest valid night-side ground target. All per-satellite selection and slew computation runs in `sat_orbit.comp`.
 
 ### Target generation (once at init)
 `kNumReflectorTargets = 201` random ECEF unit vectors, uniformly distributed on sphere.
 Last slot (index 200) is fixed at the observer spawn point (67°S, 67°W) — always aimed here when in darkness.
 
-### Per-frame update (updatePositions, before satellite loop)
-ECEF → ECI: rotate by GMST = `kOmegaEarth × t` around Z axis.
-Valid = night side only: `dot(normalize(targetECI), sunDirECI) < 0`.
+### Per-frame CPU update (updatePositions)
+Rotates targets from ECEF to ECI via GMST = `kOmegaEarth × t`.
+Marks each target valid (night-side only): `dot(normalize(targetECI), sunDirECI) < 0`.
+Uploads `GpuReflectorTarget[201]` to `reflectorTargetsBuf` (host-visible, mapped).
 
-### Per-satellite normal computation
+### Per-satellite (GPU, sat_orbit.comp)
 Scans all 201 targets, picks nearest by `dot(satZenith, normalize(targetECI))`.
 Mirror normal = `normalize(sunDirECI + toTarget)` — reflects sunlight toward target by half-vector identity.
 Falls back to FlatMirror45 (straight down) if no valid targets exist.
+Slew state persists in `mirrorNormalsBuf` (device-local, read+write in place each dispatch).
 
 ### Mirror slew rate
-`kMirrorRotRateDegPerSec = 1.0f` degrees per **simulated** second (not real-time — consistent across all time warp levels).
-`satMirrorNormals[i]` stores current physical orientation per satellite.
-Zero-vector = uninitialized; snaps to target on first frame, then slews.
+`kMirrorRotRateDegPerSec = 1.0f` degrees per **simulated** second — consistent across all time warp levels.
+Zero-vector in `mirrorNormalsBuf` = uninitialized; snaps to target on first frame, then slews at the clamped rate.
 
 ---
 
 ## Subsystem: Photometry / Shader Constants
 
-**CPU–GPU constant mirror pairs** (must stay in sync):
-| C++ constant | GLSL constant | Value |
-|---|---|---|
-| `kBrightnessScale = 6.0f` | `BRIGHTNESS_SCALE = 4.0` | global flux multiplier |
-| `kDaySuppression = 150.0f` | `DAY_SUPPRESSION = 50.0` | sky background ratio |
+Photometry values are **runtime members** on `SatelliteSim`, synced to `SatFlarePC` each frame. They are persisted in `settings.json` and adjustable in the settings window.
 
-Note: these are intentionally different — the C++ value is used only for the magnitude readout UI; the GLSL value drives actual rendering.
+| Member | Default | Description |
+|--------|---------|-------------|
+| `brightnessScale` | 1.0 | global flux multiplier |
+| `daySuppression` | 500.0 | sky background suppression ratio |
+| `mirrorBoost` | 300.0 | mirror peak multiplier (MIRROR_BOOST) |
+| `visThresh` | 0.0 | visibility cull threshold |
+| `highlightFlare` | 0.05 | fixed flare for highlight/census mode |
 
-`effectFlare = flare / (1 + dayBright × DAY_SUPPRESSION)`
+`effectFlare = flare / (1 + dayBright × daySuppression)`
 `magnitude = kMagRef - 2.5 × log10(effectFlare / kMagRefFlare)` where `kMagRef=6.0`, `kMagRefFlare=0.008`
 
 `MIRROR_BOOST = 300` — peak multiplier for near-perfect mirror alignment. `mirrorExp = max(specExp0 × 300, 8000)` gives sub-degree angular width (matches solar disc ~0.26°).
@@ -249,9 +343,11 @@ Note: these are intentionally different — the C++ value is used only for the m
 
 ## Subsystem: GpuSatInput Layout (80 bytes, std430)
 
+Written by `sat_orbit.comp`, read by `sat_flare.comp`.
+
 ```
 [  0] eciRelPos (vec3) + range (float)
-[ 16] surfN0    (vec3) + elevation (float)   — primary surface normal
+[ 16] surfN0    (vec3) + elevation (float)   — primary surface normal; elevation = -π/2 for below-horizon/disabled
 [ 32] surfN1    (vec3) + specExp0 (float)    — secondary surface normal
 [ 48] baseColor (vec3) + specExp1 (float)
 [ 64] crossSection + w1 + diffuse + mirrorFrac (float×4)
@@ -259,17 +355,30 @@ Note: these are intentionally different — the C++ value is used only for the m
 
 `static_assert(sizeof(GpuSatInput) == 80)` — do not change field order without updating both the C++ struct and the GLSL `SatInput` struct in `sat_flare.comp`.
 
+Below-horizon and disabled satellites write `elevation = -π/2` and return early. `sat_flare.comp`'s horizon cull (`elevation < -0.01 rad`) discards them at zero cost.
+
 ---
 
 ## Subsystem: Sky Glow SSBO
 
-Top-64 brightest flares per frame → host-coherent SSBO (`glowBuf`) → sky fragment shader.
+`sat_flare.comp` writes a spatial histogram + per-satellite flare list each frame → `sat_sky.frag` reads them.
 
-`GpuGlowBuf` (std430): `int count; float pad[3]; vec4 entries[64];` (xyz=ENU dir, w=effectFlare)
-`kMaxGlows = 64` must match array size in both `SatelliteSim.h` and `sat_sky.frag`.
+### GpuGlowBuf layout (std430)
+```cpp
+static constexpr int kGlowBins  = 64;   // 8 azimuth × 8 elevation cells (45° × 11.25°)
+static constexpr int kMaxFlares = 8;    // per-satellite lens-flare slots
 
-CPU top-N: threshold > 0.5; linear scan replaces minimum when array is full.
-Shader: `if (e.z < -0.08) continue;` skips below-horizon; log2 intensity scale.
+struct GpuGlowBuf {
+    uint32_t bins[kGlowBins];           // atomicMax(floatBitsToUint(effectFlare)) per bin — wide Gaussian glow
+    uint32_t flareCount;                // number of entries claimed (capped at kMaxFlares)
+    uint32_t flarePad[3];
+    glm::vec4 flareEntries[kMaxFlares]; // xyz=ENU dir, w=effectFlare — spiky corona + lens artifacts
+};
+// sizeof = kGlowBins*4 + 16 + kMaxFlares*16
+```
+`static_assert(sizeof(GpuGlowBuf) == kGlowBins * 4 + 16 + kMaxFlares * 16)`
+
+`kGlowBins` and `kMaxFlares` must match constants in `sat_sky.frag`. `glowBuf` must be zeroed with `vkCmdFillBuffer` before each `sat_flare.comp` dispatch (floatBitsToUint(0.0) == 0u, so fill value 0 correctly marks bins empty).
 
 ---
 
@@ -289,12 +398,24 @@ ctx.findMemoryType(filter, props)
 Key Vulkan design decisions:
 - Single command buffer, single frame in flight
 - `VK_ACCESS_SHADER_READ_BIT` + `VK_PIPELINE_STAGE_VERTEX_SHADER_BIT` for compute→vertex SSBO barriers (not `VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT`)
+- Compute→compute SSBO barriers use `VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT` on both sides
 - `onResize` must recreate graphics pipelines (viewport baked in); compute pipelines are viewport-independent
+- `glowBuf` is `HOST_COHERENT` so CPU can read back peak flare for magnitude UI without an explicit flush; previous frame's data is safe to read at the start of `recordCompute` (single frame in flight means queue is idle)
+
+---
+
+## Subsystem: Persistent Settings
+
+`settings.json` is written next to the exe on settings-window close and on `cleanup()`, loaded in `init()` after `initConstellation()`.
+
+Persisted fields: photometry params, `ui_scale`, settings window position, audio volumes, camera orientation (`az_deg`, `el_deg`, `fov_y_deg`), observer lat/lon, time scale index, keybindings (action → GLFW key code), constellation `enabled` + `highlight` state per name.
+
+If the file is missing (first run) all defaults are used silently.
 
 ---
 
 ## Fixed Simulation State
 
-**Start epoch**: UTC 2026-03-30 05:53:58 → J2000 seconds = `1774849038 - 946728000 + 11×3600 + 20×60 = 828121038`
+**Start epoch**: UTC 2036-06-21 00:00:00 → J2000 seconds = 1,150,891,200 (stored split: day 13,320 + 43,200 s)
 **Observer**: 67°S 67°W → ECEF `obsDir = {0.1527, -0.3596, -0.9205}`, facing north
-**Moon phase offset**: `kMoonPhaseOffsetRad = 3.916 rad` → ~91% waxing gibbous at start epoch
+**Moon phase offset**: `kMoonPhaseOffsetRad = 3.916 rad` → originally calibrated for 2026-03-30; moon phase at new epoch will differ
