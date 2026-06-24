@@ -633,13 +633,13 @@ uint32_t VulkanContext::findMemoryType(uint32_t filter, VkMemoryPropertyFlags pr
 }
 
 void VulkanContext::createImage(uint32_t w, uint32_t h, VkFormat fmt, VkImageUsageFlags usage,
-                                VkImage &img, VkDeviceMemory &mem)
+                                VkImage &img, VkDeviceMemory &mem, uint32_t mipLevels)
 {
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ci.imageType = VK_IMAGE_TYPE_2D;
     ci.format = fmt;
     ci.extent = {w, h, 1};
-    ci.mipLevels = 1;
+    ci.mipLevels = mipLevels;
     ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -657,6 +657,71 @@ void VulkanContext::createImage(uint32_t w, uint32_t h, VkFormat fmt, VkImageUsa
     if (vkAllocateMemory(device, &ai, nullptr, &mem) != VK_SUCCESS)
         throw std::runtime_error("vkAllocateMemory (image) failed.");
     vkBindImageMemory(device, img, mem, 0);
+}
+
+void VulkanContext::generateMipmaps(VkCommandBuffer cmd, VkImage img, VkFormat /*fmt*/,
+                                     uint32_t w, uint32_t h, uint32_t mipLevels)
+{
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.image = img;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.baseArrayLayer = 0;
+    b.subresourceRange.layerCount = 1;
+    b.subresourceRange.levelCount = 1;
+
+    int32_t mipW = (int32_t)w;
+    int32_t mipH = (int32_t)h;
+
+    for (uint32_t i = 1; i < mipLevels; ++i) {
+        // Transition previous mip TRANSFER_DST → TRANSFER_SRC
+        b.subresourceRange.baseMipLevel = i - 1;
+        b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &b);
+
+        // Blit mip i-1 → mip i
+        int32_t nextW = mipW > 1 ? mipW / 2 : 1;
+        int32_t nextH = mipH > 1 ? mipH / 2 : 1;
+        VkImageBlit blit{};
+        blit.srcOffsets[0] = {0, 0, 0};
+        blit.srcOffsets[1] = {mipW, mipH, 1};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1};
+        blit.dstOffsets[0] = {0, 0, 0};
+        blit.dstOffsets[1] = {nextW, nextH, 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+        vkCmdBlitImage(cmd,
+            img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &blit, VK_FILTER_LINEAR);
+
+        // Transition previous mip TRANSFER_SRC → SHADER_READ_ONLY
+        b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &b);
+
+        mipW = nextW;
+        mipH = nextH;
+    }
+
+    // Transition the last mip TRANSFER_DST → SHADER_READ_ONLY
+    b.subresourceRange.baseMipLevel = mipLevels - 1;
+    b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
 void VulkanContext::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,

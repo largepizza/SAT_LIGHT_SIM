@@ -94,7 +94,7 @@ layout(push_constant) uniform PC {
     vec3  sunDirECI;       // unit vector from Earth toward Sun — offset 48
     uint  satCount;        // — offset 60
     vec3  obsECI;          // observer ECI position (meters) — offset 64
-    float pad;             // — offset 76
+    float elevCutoff;      // sin(Earth-limb angle); horizon cull threshold (≤ -0.01) — offset 76
     float brightnessScale; // global flux multiplier — offset 80
     float daySuppression;  // sky background suppression ratio — offset 84
     float mirrorBoost;     // mirror peak multiplier — offset 88
@@ -104,7 +104,7 @@ layout(push_constant) uniform PC {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const float R_EARTH      = 6371000.0;   // Earth radius (meters)
-const float HORIZON_EL   = -0.01;       // cull if elevation < ~0.6° below horizon
+// Horizon cull threshold comes from pc.elevCutoff (dynamic: opens to Earth limb at altitude).
 const float REF_RANGE    = 500000.0;    // 500 km reference distance for 1/r² normalisation
 // VIS_THRESH, HIGHLIGHT_FLARE, BRIGHTNESS_SCALE, MIRROR_BOOST, DAY_SUPPRESSION
 // are now runtime values in pc — see push_constant block above.
@@ -206,7 +206,7 @@ void main() {
     SatInput sat = satellites[idx];
 
     // ── Horizon cull ─────────────────────────────────────────────────────────
-    if (sat.elevation < HORIZON_EL) {
+    if (sat.elevation < pc.elevCutoff) {
         visible[idx].flareIntensity = 0.0;
         visible[idx].skyDir         = vec3(0.0, 0.0, 1.0);
         visible[idx].baseColor      = vec3(0.0);
@@ -352,10 +352,13 @@ void main() {
     //   At the terminator (sunElev=0): t=0.13, dayBright≈0.017 → ~2.5% suppression.
     //   At +20° sun elevation:         t=1.0,  dayBright=1.0   → full suppression.
     // Squaring gives a slow start (gentle twilight glow) and faster mid-day ramp.
+    // atmFrac: atmosphere thins exponentially — suppression ≈ 0 above ~400 km.
     float sunElev     = dot(pc.sunDirECI, normalize(pc.obsECI));
     float t           = clamp((sunElev + 0.05) / 0.39, 0.0, 1.0);
     float dayBright   = t * t;
-    float effectFlare = flare / (1.0 + dayBright * pc.daySuppression);
+    float obsHeight   = max(0.0, length(pc.obsECI) - R_EARTH);
+    float atmFrac     = exp(-obsHeight / 80000.0); // 1 at sea level → ~0 at 400 km
+    float effectFlare = flare / (1.0 + dayBright * pc.daySuppression * atmFrac);
 
     // ── Cull if below visibility threshold ────────────────────────────────────
     if (effectFlare < pc.visThresh) {

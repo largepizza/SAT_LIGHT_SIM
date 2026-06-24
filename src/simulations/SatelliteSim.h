@@ -171,7 +171,7 @@ struct SatFlarePC
     glm::vec3 sunDirECI; // unit vector toward sun in ECI
     uint32_t satCount;
     glm::vec3 obsECI; // observer ECI position (meters) for shadow test
-    float pad;
+    float elevCutoff; // sin(Earth-limb angle) — horizon cull threshold (≤ -0.01)
     // Photometry tuning — runtime-adjustable via the settings window.
     float brightnessScale; // global flux multiplier (mirrors BRIGHTNESS_SCALE in shader)
     float daySuppression;  // sky background suppression ratio (mirrors DAY_SUPPRESSION)
@@ -186,20 +186,25 @@ static_assert(sizeof(SatFlarePC) == 100, "SatFlarePC layout mismatch");
 //   skyView    (mat4):  offset 0
 //   fovYRad    (float): offset 64
 //   aspect     (float): offset 68
-//   pad[2]     (float[2]): offsets 72, 76
+//   gmst       (float): offset 72  — Greenwich Mean Sidereal Time (radians)
+//   pad        (float): offset 76
 //   sunDirENU  (vec4):  offset 80   xyz=direction, w=sin(elevation)
 //   moonDirENU (vec4):  offset 96   xyz=moon dir in ENU, w=illuminated fraction
-//   total: 112 bytes
+//   obsECEFDir (vec4):  offset 112  xyz=observer ECEF unit vector (for ENU→ECEF→lat/lon), w=unused
+//   total: 128 bytes
 struct SatDrawPC
 {
-    glm::mat4 skyView;    // ENU → camera space
-    float fovYRad;        // vertical field of view (radians)
-    float aspect;         // viewport width / height
-    float pad[2];         // pad to 16-byte boundary before sunDirENU
-    glm::vec4 sunDirENU;  // sun direction in ENU (xyz unit vec, w = sin(elevation))
-    glm::vec4 moonDirENU; // moon direction in ENU (xyz unit vec, w = illuminated fraction)
-}; // total: 112 bytes
-static_assert(sizeof(SatDrawPC) == 112, "SatDrawPC layout mismatch");
+    glm::mat4 skyView;     // ENU → camera space
+    float fovYRad;         // vertical field of view (radians)
+    float aspect;          // viewport width / height
+    float gmst;            // Greenwich Mean Sidereal Time (radians)
+    float pad;             // pad to 16-byte boundary before sunDirENU
+    glm::vec4 sunDirENU;   // sun direction in ENU (xyz unit vec, w = sin(elevation))
+    glm::vec4 moonDirENU;  // moon direction in ENU (xyz unit vec, w = illuminated fraction)
+    glm::vec4 obsECEFDir;  // observer ECEF unit vector (xyz); w unused.
+                           // Lets sat_sky.frag convert ENU hit → ECEF → geographic lat/lon for texture UV.
+}; // total: 128 bytes
+static_assert(sizeof(SatDrawPC) == 128, "SatDrawPC layout mismatch");
 
 // Per-frame sky glow + lens flare data, written by sat_flare.comp each frame.
 //
@@ -292,7 +297,7 @@ struct SatOrbitPC
     uint32_t highlightMask; // bit i = constellation i in highlight mode — offset 80
     uint32_t enabledMask;   // bit i = constellation i is enabled — offset 84
     float simDt;            // simulated seconds this frame (mirror slew) — offset 88
-    float pad;              // — offset 92
+    float elevCutoff;       // sin(Earth-limb angle) — horizon cull threshold (≤ -0.01) — offset 92
 }; // 96 bytes
 static_assert(sizeof(SatOrbitPC) == 96, "SatOrbitPC layout mismatch");
 
@@ -473,6 +478,8 @@ private:
     glm::vec3 obsFacing = {1, 0, 0};                  // unit tangent (forward direction, north)
     float obsLatDeg = -67.0f;                         // display cache — derived from obsDir
     float obsLonDeg = -67.0f;                         // display cache — derived from obsDir
+    float obsTerrainH = 0.0f;                         // terrain elevation at observer lat/lon (m)
+    float obsHeightOffset = 0.0f;                     // user-controlled height above terrain (m, Q/E/Z)
     uint32_t activeSatCount = 0;
     uint32_t visibleCount = 0;   // above-horizon sats this frame (UI display)
     uint32_t gpuSatCount = 0;    // in-frustum sats written to GPU buffer
@@ -497,6 +504,28 @@ private:
     VkDeviceMemory moonTexMem = VK_NULL_HANDLE;
     VkImageView moonTexView = VK_NULL_HANDLE;
     VkSampler moonSampler = VK_NULL_HANDLE;
+    // Earth day texture (binding 3): 8K equirectangular colour map.
+    VkImage earthDayImg = VK_NULL_HANDLE;
+    VkDeviceMemory earthDayMem = VK_NULL_HANDLE;
+    VkImageView earthDayView = VK_NULL_HANDLE;
+    VkSampler earthDaySampler = VK_NULL_HANDLE;
+    uint32_t earthDayMips = 1;
+    // Earth night texture (binding 4): 8K equirectangular night-lights map.
+    VkImage earthNightImg = VK_NULL_HANDLE;
+    VkDeviceMemory earthNightMem = VK_NULL_HANDLE;
+    VkImageView earthNightView = VK_NULL_HANDLE;
+    VkSampler earthNightSampler = VK_NULL_HANDLE;
+    uint32_t earthNightMips = 1;
+    // Earth elevation texture (binding 5): 21600×10800 R8_UNORM ETOPO1 DEM.
+    // Pixel p → elevation_m = max(0, p*19746 − 10898); terrain shell = R_EARTH + 9000 m.
+    VkImage earthElevImg = VK_NULL_HANDLE;
+    VkDeviceMemory earthElevMem = VK_NULL_HANDLE;
+    VkImageView earthElevView = VK_NULL_HANDLE;
+    VkSampler earthElevSampler = VK_NULL_HANDLE;
+    uint32_t earthElevMips = 1;
+    // CPU-side downsampled elevation for observer height lookup (2160×1080, ~18km/px)
+    std::vector<uint8_t> earthElevCpu;
+    int earthElevCpuW = 0, earthElevCpuH = 0;
 
     // ── UI visibility & settings ──────────────────────────────────────────────
     bool showIntro = true; // cinematic intro overlay; dismissed on click or any key
@@ -545,8 +574,11 @@ private:
         KB_REVERSE = 4,
         KB_MOVE_BOOST = 5, // held
         KB_MOVE_FINE = 6,  // held
-        KB_CINEMATIC = 7,  // event — toggles camera drift mode while panning
-        KB_COUNT = 8,
+        KB_CINEMATIC  = 7,  // event — toggles camera drift mode while panning
+        KB_RAISE_ELEV = 8,  // Q — held — raise observer above terrain
+        KB_LOWER_ELEV = 9,  // E — held — lower observer toward terrain
+        KB_RESET_ELEV = 10, // Z — event — snap observer back to terrain elevation
+        KB_COUNT = 11,
     };
 
     // ── ECI → ENU rotation (updated each frame in updatePositions) ────────────

@@ -12,15 +12,13 @@ layout(set = 0, binding = 1) readonly buffer SatVisibleBuf {
 };
 
 // ── Camera push constants ─────────────────────────────────────────────────────
-// skyView: transforms ENU direction vectors into camera space.
-//   Camera convention: +X=right, +Y=up, -Z=forward.
-// fovYRad: vertical field of view in radians.
-// aspect:  viewport width / height.
+// Declares only the fields this shader reads; total SatDrawPC is 128 bytes.
 layout(push_constant) uniform PC {
     mat4  skyView;
     float fovYRad;
     float aspect;
-    float pad[2];
+    float gmst;  // offset 72 — unused here, declared for layout consistency
+    float pad;   // offset 76
 } pc;
 
 layout(location = 0) out vec3  fragColor;

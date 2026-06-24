@@ -419,3 +419,21 @@ If the file is missing (first run) all defaults are used silently.
 **Start epoch**: UTC 2036-06-21 00:00:00 → J2000 seconds = 1,150,891,200 (stored split: day 13,320 + 43,200 s)
 **Observer**: 67°S 67°W → ECEF `obsDir = {0.1527, -0.3596, -0.9205}`, facing north
 **Moon phase offset**: `kMoonPhaseOffsetRad = 3.916 rad` → originally calibrated for 2026-03-30; moon phase at new epoch will differ
+
+---
+
+## Active Development: Earth / Terrain Rendering
+
+See `TERRAIN_PLAN.md` in the project root for the full step checklist and session log.
+Read it at the start of any terrain-related session before making changes.
+
+**Current state (as of 2026-06-23, session 3):**
+- Steps 1, 2, 3, 4, 5, 5b, 8 complete
+- `SatDrawPC` is 128 bytes: `obsECEFDir (vec4)` at offset 112 (observer ECEF unit vector)
+- Earth day + night loaded as SRGB with full mip chains; sky descriptor set has 6 bindings (0-5)
+- Elevation map (`earth_elevation.jpg`) loaded as `VK_FORMAT_R8_UNORM` with full mip chain (binding 5)
+- `sat_sky.frag` ground path: 48-step terrain march + 8-step binary search refinement;
+  terrain hits shade same as sea-level (sphere-normal Lambertian + day/night textures);
+  sea-level sphere fallback for ocean / low-lying terrain; flat colour if no sphere hit
+- Ocean waves (Step 6) deferred until after elevation is reviewed in simulation
+- Next: Step 6 (ocean specular mask + wave normals), or Step 2 (verify elevation map)

@@ -107,7 +107,7 @@ layout(push_constant) uniform PC {
     uint  highlightMask; // bit i set = constellation i in highlight mode — offset 80
     uint  enabledMask;   // bit i set = constellation i is enabled — offset 84
     float simDt;         // simulated seconds this frame (mirror slew) — offset 88
-    float pad;           // — offset 92
+    float elevCutoff;    // sin(Earth-limb angle); horizon cull threshold (≤ -0.01) — offset 92
 } pc;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -222,20 +222,39 @@ void main()
     vec3 satECI = vec3(ex, ey, ez) * orb.R_sat;
     vec3 relPos = satECI - pc.obsECI;
 
-    // ── Sqrt-free horizon cull ────────────────────────────────────────────────
+    // ── Earth occultation cull ────────────────────────────────────────────────
+    // When sinEl < elevCutoff the infinite line of sight passes through Earth
+    // (follows from the limb-angle definition). The satellite is still visible if
+    // it lies BETWEEN the observer and Earth (e.g. observer at 500 km looking down
+    // at a satellite at 400 km). That case has the closest-approach point beyond
+    // the satellite: t_min = obsR·|sinEl| ≥ range  ↔  obsR²·dotUp² ≥ lenSq²
+    // Squaring avoids a sqrt while remaining exact.
     vec3  up    = pc.enuZ.xyz;
     float dotUp = dot(relPos, up);
     float lenSq = dot(relPos, relPos);
-    if (dotUp < 0.0 && dotUp * dotUp > 0.0001 * lenSq) {
-        satellites[i].elevation = -1.5708;
-        return;
+
+    if (dotUp < 0.0) {
+        float ecutSq = pc.elevCutoff * pc.elevCutoff;
+        if (dotUp * dotUp > ecutSq * lenSq) {
+            // sinEl < elevCutoff: the infinite ray passes inside Earth.
+            // Cull only if the closest approach is before the satellite (t_min < range).
+            float obsR2 = dot(pc.obsECI, pc.obsECI);
+            if (obsR2 * dotUp * dotUp < lenSq * lenSq) {
+                satellites[i].elevation = -1.5708; // occulted by Earth
+                return;
+            }
+            // Closest approach is beyond the satellite: satellite is between
+            // observer and Earth, not behind it. Fall through and render it.
+        }
     }
+
     float range = sqrt(lenSq);
     float sinEl = dotUp / range;
     float el    = asin(clamp(sinEl, -1.0, 1.0));
-    if (el < -0.01) {
-        satellites[i].elevation = -1.5708;
-        return;
+    if (el < pc.elevCutoff) {
+        // Passed the occultation test: satellite is between observer and Earth.
+        // Bump elevation just above the threshold so sat_flare.comp renders it too.
+        el = pc.elevCutoff + 0.001;
     }
 
     // ── Attitude vectors ──────────────────────────────────────────────────────
