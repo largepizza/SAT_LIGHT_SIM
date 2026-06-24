@@ -1,13 +1,15 @@
 #version 450
 
-// ── Camera + sun push constants (matches C++ SatDrawPC, 112 bytes) ────────────
+// ── Camera + sun push constants (matches C++ SatDrawPC, 128 bytes) ────────────
 layout(push_constant) uniform PC {
     mat4  skyView;    // ENU → camera space             — offset 0
     float fovYRad;    //                                 — offset 64
     float aspect;     //                                 — offset 68
-    float pad[2];     //                                 — offsets 72, 76
+    float gmst;       // Greenwich Mean Sidereal Time   — offset 72
+    float pad;        //                                 — offset 76
     vec4  sunDirENU;  // xyz = sun direction in ENU, w = sin(elevation) — offset 80
     vec4  moonDirENU; // xyz = moon direction in ENU, w = illuminated fraction — offset 96
+    vec4  obsECEFDir; // xyz = observer ECEF unit vector — offset 112 (unused in vert)
 } pc;
 
 layout(location = 0) out vec3 enuDir;           // interpolated ENU ray direction (not normalized)

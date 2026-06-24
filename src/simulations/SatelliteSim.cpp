@@ -132,8 +132,11 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Move Fast", GLFW_KEY_LEFT_SHIFT, true, false},    // KB_MOVE_BOOST (held)
         {"Move Fine", GLFW_KEY_LEFT_CONTROL, true, false},  // KB_MOVE_FINE  (held)
         {"Cinematic Pan", GLFW_KEY_LEFT_ALT, false, false}, // KB_CINEMATIC  (event, toggle)
+        {"Raise Elevation", GLFW_KEY_Q, true, false},        // KB_RAISE_ELEV (held)
+        {"Lower Elevation", GLFW_KEY_E, true, false},        // KB_LOWER_ELEV (held)
+        {"Reset Elevation", GLFW_KEY_Z, false, false},       // KB_RESET_ELEV (event)
     };
-    static_assert(KB_COUNT == 8, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 11, "KB enum and keybindings initializer are out of sync");
 
     createBuffers(ctx);
     createGlowResources(ctx);
@@ -201,6 +204,19 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             // Refresh display caches (atan2(0,0)==0 at poles — fine for display only)
             obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
             obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+        }
+
+        // Q/E: raise/lower observer relative to terrain; rate scales with height offset
+        // (faster when high up, 10m/s minimum near the surface).
+        bool raise = glfwGetKey(win, keybindings[KB_RAISE_ELEV].key) == GLFW_PRESS;
+        bool lower = glfwGetKey(win, keybindings[KB_LOWER_ELEV].key) == GLFW_PRESS;
+        if (raise || lower) {
+            float rate = std::max(10.0f, obsHeightOffset * 0.5f);
+            if (boost) rate *= 10.0f;
+            if (fine)  rate *= 0.1f;
+            obsHeightOffset += (raise ? 1.0f : -1.0f) * rate * dt;
+            // Clamp so observer never sinks below the terrain surface (only reset via Z)
+            obsHeightOffset = std::max(0.0f, obsHeightOffset);
         }
     }
 
@@ -284,7 +300,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     orbitPc.highlightMask = highlightMask;
     orbitPc.enabledMask = enabledMask;
     orbitPc.simDt = simDt;
-    orbitPc.pad = 0.0f;
+    // Horizon cull threshold: open up to Earth limb for elevated observers.
+    // limbSin = -sqrt(1 - (R_EARTH/obsR)²); always clamped to at most -0.01.
+    {
+        float obsR = glm::length(obsECI);
+        float r = kEarthRadius / obsR;
+        float limbSin = -sqrtf(std::max(0.0f, 1.0f - r * r));
+        orbitPc.elevCutoff = std::min(-0.01f, limbSin);
+    }
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, orbitPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -335,7 +358,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pc.sunDirECI = sunDirECI;
     pc.satCount = activeSatCount;
     pc.obsECI = obsECI;
-    pc.pad = 0.0f;
+    pc.elevCutoff = orbitPc.elevCutoff; // same threshold computed above
     pc.brightnessScale = brightnessScale;
     pc.daySuppression = daySuppression;
     pc.mirrorBoost = mirrorBoost;
@@ -374,9 +397,23 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
     pc.skyView = camera.viewMatrix();
     pc.fovYRad = glm::radians(camera.fovYDeg);
     pc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
-    pc.pad[0] = pc.pad[1] = 0.0f;
+    pc.gmst = (float)fmod(kOmegaEarth * (simDayJ2000 * 86400.0 + simSecInDay), glm::two_pi<double>());
+    pc.pad = 0.0f;
     pc.sunDirENU = sunDirENU;
     pc.moonDirENU = moonDirENU; // xyz = moon dir in ENU, w = illuminated fraction
+    // Sample terrain elevation at observer lat/lon from the CPU downsampled map.
+    if (!earthElevCpu.empty()) {
+        float latRad = glm::radians(obsLatDeg);
+        float lonRad = glm::radians(obsLonDeg);
+        float u = (lonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
+        float v = (0.5f * glm::pi<float>() - latRad) / glm::pi<float>();
+        int px = (int)(u * (float)earthElevCpuW) % earthElevCpuW;
+        int py = std::min((int)(v * (float)earthElevCpuH), earthElevCpuH - 1);
+        float pixVal = earthElevCpu[py * earthElevCpuW + px] / 255.0f;
+        obsTerrainH = std::max(0.0f, pixVal * 19746.0f - 10898.0f);
+    }
+    float obsEffectiveH = obsTerrainH + obsHeightOffset; // metres above sea level
+    pc.obsECEFDir = glm::vec4(obsDir, obsEffectiveH); // w = total observer height (m above sea)
 
     // ── Pass 1: sky/ground background (fullscreen triangle, opaque) ──────────
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyBgPipeline);
@@ -1877,6 +1914,18 @@ void SatelliteSim::cleanup(VkDevice device)
         vkFreeMemory(device, moonTexMem, nullptr);
         moonTexMem = VK_NULL_HANDLE;
     }
+    if (earthDaySampler) { vkDestroySampler(device, earthDaySampler, nullptr); earthDaySampler = VK_NULL_HANDLE; }
+    if (earthDayView)    { vkDestroyImageView(device, earthDayView, nullptr);  earthDayView    = VK_NULL_HANDLE; }
+    if (earthDayImg)     { vkDestroyImage(device, earthDayImg, nullptr);       earthDayImg     = VK_NULL_HANDLE; }
+    if (earthDayMem)     { vkFreeMemory(device, earthDayMem, nullptr);         earthDayMem     = VK_NULL_HANDLE; }
+    if (earthNightSampler) { vkDestroySampler(device, earthNightSampler, nullptr); earthNightSampler = VK_NULL_HANDLE; }
+    if (earthNightView)    { vkDestroyImageView(device, earthNightView, nullptr);  earthNightView    = VK_NULL_HANDLE; }
+    if (earthNightImg)     { vkDestroyImage(device, earthNightImg, nullptr);       earthNightImg     = VK_NULL_HANDLE; }
+    if (earthNightMem)     { vkFreeMemory(device, earthNightMem, nullptr);         earthNightMem     = VK_NULL_HANDLE; }
+    if (earthElevSampler)  { vkDestroySampler(device, earthElevSampler, nullptr);  earthElevSampler  = VK_NULL_HANDLE; }
+    if (earthElevView)     { vkDestroyImageView(device, earthElevView, nullptr);   earthElevView     = VK_NULL_HANDLE; }
+    if (earthElevImg)      { vkDestroyImage(device, earthElevImg, nullptr);        earthElevImg      = VK_NULL_HANDLE; }
+    if (earthElevMem)      { vkFreeMemory(device, earthElevMem, nullptr);          earthElevMem      = VK_NULL_HANDLE; }
     vkDestroyBuffer(device, glowBuf, nullptr);
     vkFreeMemory(device, glowMem, nullptr);
     // satInputBuf is now device-local (no host mapping to release).
@@ -1954,7 +2003,9 @@ void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
         timeDir = -timeDir;
     if (pressed(KB_CINEMATIC) && camera.captured)
         cinematicMode = !cinematicMode;
-    // KB_MOVE_BOOST and KB_MOVE_FINE are held keys — polled in recordCompute, not here.
+    if (pressed(KB_RESET_ELEV))
+        obsHeightOffset = 0.0f;
+    // KB_MOVE_BOOST, KB_MOVE_FINE, KB_RAISE_ELEV, KB_LOWER_ELEV are held keys — polled in recordCompute.
 
     // F11: toggle fullscreen
     if (key == GLFW_KEY_F11)
@@ -2415,19 +2466,241 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         vkCreateSampler(ctx.device, &sci, nullptr, &moonSampler);
     }
 
-    // ── Descriptor set layout: binding 0 = SSBO, 1 = noise sampler, 2 = moon tex
-    VkDescriptorSetLayoutBinding bindings[3] = {};
+    // ── Earth day texture (binding 3): 8K equirectangular colour map ─────────
+    {
+        int w = 0, h = 0, ch = 0;
+        stbi_uc *pixels = stbi_load("assets/textures/8k_earth_daymap.jpg", &w, &h, &ch, 4);
+        if (!pixels)
+            throw std::runtime_error("SatelliteSim: failed to load assets/textures/8k_earth_daymap.jpg");
+
+        earthDayMips = (uint32_t)std::floor(std::log2((float)std::max(w, h))) + 1;
+        VkDeviceSize imgBytes = (VkDeviceSize)w * h * 4;
+
+        VkBuffer stageBuf;
+        VkDeviceMemory stageMem;
+        ctx.createBuffer(imgBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         stageBuf, stageMem);
+        void *mapped;
+        vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
+        memcpy(mapped, pixels, (size_t)imgBytes);
+        vkUnmapMemory(ctx.device, stageMem);
+        stbi_image_free(pixels);
+
+        ctx.createImage((uint32_t)w, (uint32_t)h, VK_FORMAT_R8G8B8A8_SRGB,
+                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                        earthDayImg, earthDayMem, earthDayMips);
+
+        {
+            auto cmd = ctx.beginOneTimeCommands();
+            // Transition ALL mips to TRANSFER_DST_OPTIMAL for upload + blit
+            VkImageMemoryBarrier allMips{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            allMips.srcAccessMask = 0;
+            allMips.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            allMips.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            allMips.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            allMips.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            allMips.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            allMips.image = earthDayImg;
+            allMips.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, earthDayMips, 0, 1};
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &allMips);
+            VkBufferImageCopy region{};
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+            vkCmdCopyBufferToImage(cmd, stageBuf, earthDayImg,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            ctx.generateMipmaps(cmd, earthDayImg, VK_FORMAT_R8G8B8A8_SRGB,
+                                 (uint32_t)w, (uint32_t)h, earthDayMips);
+            ctx.endOneTimeCommands(cmd);
+        }
+        vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+        vkFreeMemory(ctx.device, stageMem, nullptr);
+
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = earthDayImg;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = VK_FORMAT_R8G8B8A8_SRGB;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, earthDayMips, 0, 1};
+        vkCreateImageView(ctx.device, &vci, nullptr, &earthDayView);
+
+        VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        sci.magFilter = VK_FILTER_LINEAR;
+        sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.maxLod = (float)earthDayMips;
+        vkCreateSampler(ctx.device, &sci, nullptr, &earthDaySampler);
+    }
+
+    // ── Earth night texture (binding 4): 8K equirectangular night-lights map ─
+    {
+        int w = 0, h = 0, ch = 0;
+        stbi_uc *pixels = stbi_load("assets/textures/8k_earth_nightmap.jpg", &w, &h, &ch, 4);
+        if (!pixels)
+            throw std::runtime_error("SatelliteSim: failed to load assets/textures/8k_earth_nightmap.jpg");
+
+        earthNightMips = (uint32_t)std::floor(std::log2((float)std::max(w, h))) + 1;
+        VkDeviceSize imgBytes = (VkDeviceSize)w * h * 4;
+
+        VkBuffer stageBuf;
+        VkDeviceMemory stageMem;
+        ctx.createBuffer(imgBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         stageBuf, stageMem);
+        void *mapped;
+        vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
+        memcpy(mapped, pixels, (size_t)imgBytes);
+        vkUnmapMemory(ctx.device, stageMem);
+        stbi_image_free(pixels);
+
+        ctx.createImage((uint32_t)w, (uint32_t)h, VK_FORMAT_R8G8B8A8_SRGB,
+                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                        earthNightImg, earthNightMem, earthNightMips);
+
+        {
+            auto cmd = ctx.beginOneTimeCommands();
+            VkImageMemoryBarrier allMips{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            allMips.srcAccessMask = 0;
+            allMips.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            allMips.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            allMips.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            allMips.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            allMips.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            allMips.image = earthNightImg;
+            allMips.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, earthNightMips, 0, 1};
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &allMips);
+            VkBufferImageCopy region{};
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+            vkCmdCopyBufferToImage(cmd, stageBuf, earthNightImg,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            ctx.generateMipmaps(cmd, earthNightImg, VK_FORMAT_R8G8B8A8_SRGB,
+                                 (uint32_t)w, (uint32_t)h, earthNightMips);
+            ctx.endOneTimeCommands(cmd);
+        }
+        vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+        vkFreeMemory(ctx.device, stageMem, nullptr);
+
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = earthNightImg;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = VK_FORMAT_R8G8B8A8_SRGB;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, earthNightMips, 0, 1};
+        vkCreateImageView(ctx.device, &vci, nullptr, &earthNightView);
+
+        VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        sci.magFilter = VK_FILTER_LINEAR;
+        sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.maxLod = (float)earthNightMips;
+        vkCreateSampler(ctx.device, &sci, nullptr, &earthNightSampler);
+    }
+
+    // ── Load earth elevation map (binding 5): 21600×10800 R8_UNORM ETOPO1 DEM ──
+    {
+        int w, h, ch;
+        unsigned char *pixels = stbi_load("assets/textures/earth_elevation.jpg", &w, &h, &ch, 1);
+        if (pixels) {
+            earthElevMips = (uint32_t)std::floor(std::log2((float)std::max(w, h))) + 1;
+            VkDeviceSize imgBytes = (VkDeviceSize)w * h * 1;
+
+            VkBuffer stageBuf; VkDeviceMemory stageMem;
+            ctx.createBuffer(imgBytes,
+                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             stageBuf, stageMem);
+            void *mapped; vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
+            memcpy(mapped, pixels, imgBytes);
+            vkUnmapMemory(ctx.device, stageMem);
+
+            // Downsample to 2160×1080 (10:1 each axis, ~18 km/pixel) for CPU observer height
+            earthElevCpuW = 2160; earthElevCpuH = 1080;
+            earthElevCpu.resize((size_t)earthElevCpuW * earthElevCpuH);
+            for (int cy = 0; cy < earthElevCpuH; ++cy) {
+                for (int cx = 0; cx < earthElevCpuW; ++cx) {
+                    int sx = std::min(cx * w / earthElevCpuW, w - 1);
+                    int sy = std::min(cy * h / earthElevCpuH, h - 1);
+                    earthElevCpu[cy * earthElevCpuW + cx] = pixels[sy * w + sx];
+                }
+            }
+            stbi_image_free(pixels);
+
+            ctx.createImage((uint32_t)w, (uint32_t)h,
+                            VK_FORMAT_R8_UNORM,
+                            VK_IMAGE_USAGE_SAMPLED_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            earthElevImg, earthElevMem, earthElevMips);
+
+            VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+            VkImageMemoryBarrier allMips{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            allMips.srcAccessMask = 0;
+            allMips.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            allMips.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            allMips.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            allMips.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            allMips.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            allMips.image = earthElevImg;
+            allMips.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, earthElevMips, 0, 1};
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &allMips);
+            VkBufferImageCopy region{};
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+            vkCmdCopyBufferToImage(cmd, stageBuf, earthElevImg,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            ctx.generateMipmaps(cmd, earthElevImg, VK_FORMAT_R8_UNORM,
+                                 (uint32_t)w, (uint32_t)h, earthElevMips);
+            ctx.endOneTimeCommands(cmd);
+            vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+            vkFreeMemory(ctx.device, stageMem, nullptr);
+
+            VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            vci.image = earthElevImg;
+            vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            vci.format = VK_FORMAT_R8_UNORM;
+            vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, earthElevMips, 0, 1};
+            vkCreateImageView(ctx.device, &vci, nullptr, &earthElevView);
+
+            VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+            sci.magFilter = VK_FILTER_LINEAR;
+            sci.minFilter = VK_FILTER_LINEAR;
+            sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+            sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.maxLod = (float)earthElevMips;
+            vkCreateSampler(ctx.device, &sci, nullptr, &earthElevSampler);
+        } else {
+            fprintf(stderr, "Warning: could not load earth_elevation.jpg; terrain march disabled\n");
+        }
+    }
+
+    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev
+    VkDescriptorSetLayoutBinding bindings[6] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[3] = {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[4] = {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[5] = {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 3;
+    li.bindingCount = 6;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
     VkDescriptorPoolSize ps[2] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5},
     };
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 2;
@@ -2441,30 +2714,43 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     ai.pSetLayouts = &skyDescLayout;
     vkAllocateDescriptorSets(ctx.device, &ai, &skyDescSet);
 
+    // Use a 1×1 white placeholder for elevation if the file failed to load
+    VkSampler elevSamplerFinal = earthElevSampler ? earthElevSampler : noiseSampler;
+    VkImageView elevViewFinal  = earthElevView    ? earthElevView    : noiseTexView;
+
     VkDescriptorBufferInfo bufInfo{glowBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo noiseImgInfo{noiseSampler, noiseTexView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo moonImgInfo{moonSampler, moonTexView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo dayImgInfo{earthDaySampler, earthDayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo nightImgInfo{earthNightSampler, earthNightView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo elevImgInfo{elevSamplerFinal, elevViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    VkWriteDescriptorSet writes[3] = {};
+    VkWriteDescriptorSet writes[6] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = skyDescSet;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[0].dstSet = skyDescSet; writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[0].pBufferInfo = &bufInfo;
     writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = skyDescSet;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].dstSet = skyDescSet; writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[1].pImageInfo = &noiseImgInfo;
     writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = skyDescSet;
-    writes[2].dstBinding = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].dstSet = skyDescSet; writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1; writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[2].pImageInfo = &moonImgInfo;
-    vkUpdateDescriptorSets(ctx.device, 3, writes, 0, nullptr);
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = skyDescSet; writes[3].dstBinding = 3;
+    writes[3].descriptorCount = 1; writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].pImageInfo = &dayImgInfo;
+    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet = skyDescSet; writes[4].dstBinding = 4;
+    writes[4].descriptorCount = 1; writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[4].pImageInfo = &nightImgInfo;
+    writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[5].dstSet = skyDescSet; writes[5].dstBinding = 5;
+    writes[5].descriptorCount = 1; writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[5].pImageInfo = &elevImgInfo;
+    vkUpdateDescriptorSets(ctx.device, 6, writes, 0, nullptr);
 }
 
 // Fullscreen triangle that colors pixels sky or ground based on camera elevation.
@@ -2816,6 +3102,17 @@ void SatelliteSim::updateStars()
     // sin(elevation) = sunDirENU.w: 0 at horizon, -0.2 at ~11.5° below.
     float nightFactor = glm::clamp(-sunDirENU.w * 5.0f, 0.0f, 1.0f);
 
+    // In space the sky is dark regardless of sun angle — no atmosphere to scatter.
+    // atmFrac decays with the same 80 km scale height used for sat daytime suppression.
+    float obsR       = glm::length(obsECI);
+    float obsHeight  = obsR - kEarthRadius;
+    float atmFrac    = glm::clamp(glm::exp(-obsHeight / 80000.0f), 0.0f, 1.0f);
+    float nightFactorEff = glm::mix(1.0f, nightFactor, atmFrac); // 1.0 in space
+
+    // Earth-limb elevation cutoff: from altitude, stars are visible below the 0° horizon.
+    float r       = kEarthRadius / obsR;
+    float limbSin = (obsHeight > 1.0f) ? -sqrtf(glm::max(0.0f, 1.0f - r * r)) : 0.0f;
+
     auto *dst = static_cast<GpuSatVisible *>(starMapped);
     for (uint32_t i = 0; i < starCount; ++i)
     {
@@ -2826,9 +3123,8 @@ void SatelliteSim::updateStars()
                       glm::dot(rec.eciDir, glm::vec3(eci2enuY)),
                       glm::dot(rec.eciDir, glm::vec3(eci2enuZ))};
 
-        // Stars below the local horizon are discarded by the vertex shader
-        // (flareIntensity ≤ 0 → position pushed out of clip space).
-        float intensity = (enu.z >= 0.0f) ? rec.rawIntensity * nightFactor : 0.0f;
+        // Above the Earth limb: visible. Below: culled.
+        float intensity = (enu.z >= limbSin) ? rec.rawIntensity * nightFactorEff : 0.0f;
 
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;
@@ -3605,9 +3901,10 @@ void SatelliteSim::updatePositions(double t, float dt)
     obsLonDeg = glm::degrees(obsLonRad);
     float cosLon = cosf(theta), sinLon = sinf(theta);
 
-    obsECI = glm::vec3{kEarthRadius * cosLat * cosLon,
-                       kEarthRadius * cosLat * sinLon,
-                       kEarthRadius * sinLat};
+    float obsRadius = kEarthRadius + obsTerrainH + obsHeightOffset;
+    obsECI = glm::vec3{obsRadius * cosLat * cosLon,
+                       obsRadius * cosLat * sinLon,
+                       obsRadius * sinLat};
 
     // ── ECI → ENU basis vectors ───────────────────────────────────────────────
     glm::vec3 east{-sinLon, cosLon, 0.0f};

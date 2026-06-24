@@ -1,16 +1,18 @@
 #version 450
 
-// ── Camera + sun push constants (same layout as C++ SatDrawPC, 112 bytes) ─────
+// ── Camera + sun push constants (same layout as C++ SatDrawPC, 128 bytes) ─────
 // The pipeline layout declares VK_SHADER_STAGE_VERTEX_BIT|FRAGMENT_BIT so both
 // stages share one push constant range.  The fragment uses skyView/fovYRad to
 // project glowBuf ENU directions into screen UV for the lens flare pass.
 layout(push_constant) uniform PC {
-    mat4  skyView;    // ENU -> camera space (rotation, no translation)
-    float fovYRad;    // vertical field of view in radians
-    float aspect;     // viewport width / height
-    float pad[2];
-    vec4  sunDirENU;  // xyz = sun dir in ENU, w = sin(sun elevation)
-    vec4  moonDirENU; // xyz = moon dir in ENU, w = illuminated fraction
+    mat4  skyView;     // ENU -> camera space (rotation, no translation)
+    float fovYRad;     // vertical field of view in radians
+    float aspect;      // viewport width / height
+    float gmst;        // Greenwich Mean Sidereal Time (radians)
+    float pad;
+    vec4  sunDirENU;   // xyz = sun dir in ENU, w = sin(sun elevation)
+    vec4  moonDirENU;  // xyz = moon dir in ENU, w = illuminated fraction
+    vec4  obsECEFDir;  // xyz = observer ECEF unit vector; w unused
 } pc;
 
 layout(location = 0) in  vec3 enuDir;           // interpolated ENU view ray (not normalised)
@@ -34,6 +36,15 @@ layout(set = 0, binding = 1) uniform sampler2D noiseTex;
 // Sampled with an orthographic projection of the surface normal onto the moon's
 // local face frame — maps the near hemisphere to the full [0,1] UV range.
 layout(set = 0, binding = 2) uniform sampler2D moonTex;
+
+// Earth textures (bindings 3-5): 8K equirectangular maps.
+// UV derived from ENU hit point → ECEF → geographic lat/lon.
+// earthDayTex: SRGB-encoded colour map (auto-linearised on read).
+// earthNightTex: SRGB-encoded city-light map.
+// earthElevTex: R8_UNORM ETOPO1 height field. p → max(0, p*19746−10898) metres.
+layout(set = 0, binding = 3) uniform sampler2D earthDayTex;
+layout(set = 0, binding = 4) uniform sampler2D earthNightTex;
+layout(set = 0, binding = 5) uniform sampler2D earthElevTex;
 
 layout(location = 0) out vec4 outColor;
 
@@ -254,10 +265,114 @@ void main() {
     vec3 dir    = normalize(enuDir);
     vec3 sunDir = normalize(sunDirENU.xyz);
 
-    vec3 obsPos = vec3(0.0, 0.0, R_EARTH + 1.0);
+    // ENU→ECEF rotation built from observer ECEF direction (needed early for terrain UV).
+    vec3 enuZ = normalize(pc.obsECEFDir.xyz); // observer Up in ECEF
+    vec3 enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ)); // East
+    vec3 enuY = cross(enuZ, enuX);            // North
 
+    // Observer position: terrain elevation (m) from CPU lookup, packed in obsECEFDir.w.
+    // +2 m eye height above the surface.
+    vec3 obsPos = vec3(0.0, 0.0, R_EARTH + max(0.0, pc.obsECEFDir.w) + 2.0);
+
+    // For elevated observers the visible region extends below the geometric horizon.
+    // limbZ = sin(Earth-limb depression angle) — negative, approaches 0 at sea level.
+    float obsR  = length(obsPos);
+    float limbZ = (obsR > R_EARTH) ? -sqrt(max(0.0, 1.0 - (R_EARTH / obsR) * (R_EARTH / obsR))) : 0.0;
+    float hClip = smoothstep(limbZ - 0.02, limbZ + 0.03, dir.z);
+
+    // ── Phase 1: terrain march (runs before atmosphere so we can truncate tEnd) ─
+    // ETOPO1 R8_UNORM elevation encoding: max(0, p*19746 − 10898) metres.
+    const float kElevRange  = 19746.0;
+    const float kElevMin    = -10898.0;
+    const float kMaxTerrain =  9000.0;
+
+    vec2 tBase  = raySphere(obsPos, dir, R_EARTH);
+    vec2 tShell = raySphere(obsPos, dir, R_EARTH + kMaxTerrain);
+
+    // March for rays that could plausibly intersect terrain (up to ~44° above horizon).
+    // Beyond that angle no terrain on Earth is geometrically reachable from any altitude.
+    float tHit      = -1.0;
+    float tSeaLvl   = (tBase.x > 0.0) ? tBase.x : -1.0;
+    vec2  hitUV     = vec2(0.0);
+    vec3  terrainNorm = vec3(0.0, 0.0, 1.0); // overwritten on terrain hit
+
+    if (dir.z < 0.7 && tShell.y > 0.0) {
+        float tExit = (tBase.x > 0.0) ? tBase.x
+                    : (tShell.y > 0.0  ? tShell.y : 0.0);
+        tExit = min(tExit, 300000.0);
+
+        const int kN      = 48;
+        float stepLen2    = tExit / float(kN);
+        float tJitter     = textureLod(noiseTex, gl_FragCoord.xy * (1.0/128.0), 0.0).r;
+        float tPrev       = 2.0; // 2 m minimum avoids self-intersection at the terrain surface
+
+        for (int i = 0; i < kN; ++i) {
+            if (tHit >= 0.0) break;
+            float t = (float(i) + 1.0 + tJitter) * stepLen2;
+            if (t > tExit) break;
+            vec3  p = obsPos + t * dir;
+            float rayH = length(p) - R_EARTH;
+            if (rayH <= 0.0) break;
+
+            vec3  pE  = p.x * enuX + p.y * enuY + p.z * enuZ;
+            float pL  = length(pE);
+            float lat = asin(clamp(pE.z / pL, -1.0, 1.0));
+            float lon = atan(pE.y, pE.x);
+            vec2  uv  = vec2((lon + PI) / (2.0 * PI), (0.5 * PI - lat) / PI);
+            float terrainH = max(0.0, textureLod(earthElevTex, uv, 0.0).r * kElevRange + kElevMin);
+
+            if (rayH < terrainH) {
+                float tLo = tPrev, tHi = t;
+                for (int j = 0; j < 8; ++j) {
+                    float tM  = (tLo + tHi) * 0.5;
+                    vec3  pm  = obsPos + tM * dir;
+                    float mH  = length(pm) - R_EARTH;
+                    vec3  pmE = pm.x * enuX + pm.y * enuY + pm.z * enuZ;
+                    float mL  = length(pmE);
+                    float mLat = asin(clamp(pmE.z / mL, -1.0, 1.0));
+                    float mLon = atan(pmE.y, pmE.x);
+                    vec2  mUV  = vec2((mLon + PI) / (2.0*PI), (0.5*PI - mLat) / PI);
+                    float mT   = max(0.0, textureLod(earthElevTex, mUV, 0.0).r * kElevRange + kElevMin);
+                    if (mH < mT) tHi = tM; else tLo = tM;
+                }
+                tHit = (tLo + tHi) * 0.5;
+                vec3  ph  = obsPos + tHit * dir;
+                vec3  phE = ph.x * enuX + ph.y * enuY + ph.z * enuZ;
+                float phL = length(phE);
+                hitUV = vec2((atan(phE.y, phE.x) + PI) / (2.0*PI),
+                             (0.5*PI - asin(clamp(phE.z / phL, -1.0, 1.0))) / PI);
+
+                // Terrain normal from elevation gradient (central differences).
+                // Builds hit-point local East/North/Up in ECEF, then maps to observer ENU.
+                {
+                    const float kTexU = 1.0 / 21600.0;
+                    const float kTexV = 1.0 / 10800.0;
+                    float hE2 = max(0.0, textureLod(earthElevTex, hitUV + vec2(kTexU, 0.0), 0.0).r * kElevRange + kElevMin);
+                    float hW2 = max(0.0, textureLod(earthElevTex, hitUV - vec2(kTexU, 0.0), 0.0).r * kElevRange + kElevMin);
+                    float hN2 = max(0.0, textureLod(earthElevTex, hitUV - vec2(0.0, kTexV), 0.0).r * kElevRange + kElevMin);
+                    float hS2 = max(0.0, textureLod(earthElevTex, hitUV + vec2(0.0, kTexV), 0.0).r * kElevRange + kElevMin);
+                    float hitLat2 = PI * 0.5 - hitUV.y * PI;
+                    float texLon  = max(100.0, 2.0 * PI * R_EARTH * abs(cos(hitLat2)) / 21600.0);
+                    float texLat  = PI * R_EARTH / 10800.0; // ~1853 m/texel
+                    float dE2     = (hE2 - hW2) / (2.0 * texLon);
+                    float dN2     = (hN2 - hS2) / (2.0 * texLat);
+                    vec3 hUpE     = phE / phL;
+                    vec3 hEsE     = normalize(vec3(-hUpE.y, hUpE.x, 0.0)); // East in ECEF
+                    vec3 hNrE     = cross(hUpE, hEsE);                      // North in ECEF
+                    vec3 nECEF    = normalize(-dE2 * hEsE + -dN2 * hNrE + hUpE);
+                    terrainNorm   = normalize(vec3(dot(nECEF, enuX), dot(nECEF, enuY), dot(nECEF, enuZ)));
+                }
+            }
+            tPrev = t;
+        }
+    }
+
+    // Effective surface distance: terrain if found, else sea level
+    float tSurface = (tHit > 0.0) ? tHit : tSeaLvl;
+
+    // ── Phase 2: atmosphere integration, truncated at the surface ─────────────
     vec2  tAtmos = raySphere(obsPos, dir, R_ATMOS);
-    float tEnd   = tAtmos.y;
+    float tEnd   = (tSurface > 0.0) ? min(tAtmos.y, tSurface) : tAtmos.y;
 
     float segLen = tEnd / float(N_VIEW);
     float cosA   = dot(dir, sunDir);
@@ -303,7 +418,7 @@ void main() {
     const float kMoonTexRotDeg = 180.0;
     const float kMoonAngR      = 0.004578 * 3.0;
     const float kMoonBright    = 0.54;
-    if (moonDirENU.z > -kMoonAngR * 2.0) {
+    if (moonDirENU.z > limbZ - kMoonAngR * 2.0) {
         vec3  moonDir3 = normalize(moonDirENU.xyz);
 
         // ── Atmospheric refraction squish ─────────────────────────────────────
@@ -360,9 +475,10 @@ void main() {
 
             vec3 texColor = texture(moonTex, moonUV).rgb;
 
+            float discFade = smoothstep(limbZ - 0.006, limbZ + 0.002, moonDirENU.z);
             vec3 moonColor = texColor * (diffuse + kEarth) * limbDark * kMoonBright;
             vec3 moonAttn  = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
-            color += moonColor * moonAttn;
+            color += discFade * moonColor * moonAttn;
         }
     }
 
@@ -374,7 +490,6 @@ void main() {
     {
         const float TWO_PI = 6.28318530718;
         vec3  flareAttn = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
-        float hClip     = smoothstep(-0.02, 0.03, dir.z);
         const float kSig = 0.90;
         for (int gi = 0; gi < 64; ++gi) {
             uint fluxBits = glowBuf.bins[gi];
@@ -386,7 +501,7 @@ void main() {
             float elSin  = (float(gi % 8) + 0.5) / 8.0; // z = sin(elevation)
             float elCos  = sqrt(max(0.0, 1.0 - elSin * elSin));
             vec3  fd     = vec3(sin(az) * elCos, cos(az) * elCos, elSin);
-            if (fd.z < -0.08) continue;
+            if (fd.z < limbZ - 0.05) continue;
             float angle  = acos(clamp(dot(dir, fd), -1.0, 1.0));
             float glow   = exp(-angle * angle / (2.0 * kSig * kSig)) * 0.01;
             float gElev  = smoothstep(-0.08, 0.02, fd.z);
@@ -395,12 +510,44 @@ void main() {
         }
     }
 
-    // ── Ground blend ──────────────────────────────────────────────────────────
-    float skyBlend = smoothstep(-0.05, 0.03, dir.z);
-    if (skyBlend < 1.0) {
-        float daylight = clamp(sunDirENU.w * 4.0 + 0.3, 0.0, 1.0);
-        vec3  ground   = vec3(0.035, 0.028, 0.022) * daylight;
-        color = mix(ground, color, skyBlend);
+    // ── Phase 3: ground / terrain composite ──────────────────────────────────
+    // The atmosphere was truncated at tSurface, so odR_cam/odM_cam represent
+    // optical depth from the observer to the surface. Transmittance = e^(-tau).
+    // We ADD attenuated surface colour to the atmosphere scatter already in `color`.
+    if (tSurface > 0.0) {
+        vec3 surfAttn = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
+
+        vec2 uvSurf;
+        vec3 hitPt;
+        if (tHit > 0.0) {
+            uvSurf = hitUV;
+            hitPt  = obsPos + tHit * dir;
+        } else {
+            hitPt        = obsPos + tSeaLvl * dir;
+            vec3  hE     = hitPt.x * enuX + hitPt.y * enuY + hitPt.z * enuZ;
+            float geoLat = asin(clamp(hE.z / R_EARTH, -1.0, 1.0));
+            float geoLon = atan(hE.y, hE.x);
+            uvSurf = vec2((geoLon + PI) / (2.0*PI), (0.5*PI - geoLat) / PI);
+        }
+
+        vec3  shadingN = (tHit > 0.0) ? terrainNorm : normalize(hitPt);
+        float sunDot   = dot(shadingN, sunDir);
+        float dayFrac  = smoothstep(-0.1, 0.3, sunDot);
+        // Antimeridian seam fix: longitude wraps at ±PI so dFdx(uvSurf.x) jumps by ~1.0
+        // across that boundary. The GPU would pick the highest mip level, blurring a
+        // vertical strip. Clamp the derivative to the small expected value instead.
+        vec2 uvd_dx = dFdx(uvSurf);
+        vec2 uvd_dy = dFdy(uvSurf);
+        if (uvd_dx.x >  0.5) uvd_dx.x -= 1.0;
+        if (uvd_dx.x < -0.5) uvd_dx.x += 1.0;
+        if (uvd_dy.x >  0.5) uvd_dy.x -= 1.0;
+        if (uvd_dy.x < -0.5) uvd_dy.x += 1.0;
+        vec3 dayColor   = textureGrad(earthDayTex,   uvSurf, uvd_dx, uvd_dy).rgb;
+        vec3 nightColor = textureGrad(earthNightTex, uvSurf, uvd_dx, uvd_dy).rgb;
+        vec3 surfColor  = mix(nightColor * 0.12,
+                              dayColor * clamp(sunDot * 1.5, 0.05, 1.0),
+                              dayFrac);
+        color += surfColor * surfAttn;
     }
 
     // ── Auto-exposure tone mapping ─────────────────────────────────────────────
@@ -418,11 +565,10 @@ void main() {
     color += vec3(0.0025, 0.003, 0.004) * moonIllum * moonEl * nightAmt;
 
     // ── Moon glow: tight corona + wide diffuse halo ───────────────────────────
-    if (moonDirENU.z > -0.05) {
+    if (moonDirENU.z > limbZ - 0.05) {
         vec3  moonDir3  = normalize(moonDirENU.xyz);
         float moonAngle = acos(clamp(dot(dir, moonDir3), -1.0, 1.0));
-        float moonFade  = smoothstep(-0.05, 0.02, moonDirENU.z);
-        float hClip     = smoothstep(-0.02, 0.03, dir.z);
+        float moonFade  = smoothstep(limbZ - 0.006, limbZ + 0.002, moonDirENU.z);
 
         // Tight inner corona — peaks at the disc edge (~0.014 rad), falls to ~8% at 3× disc radius.
         // sigma = 0.012 rad ≈ 0.7°; gives a crisp bloom ring without polluting the wider sky.
@@ -437,12 +583,12 @@ void main() {
     }
 
     // ── Sun disc + atmospheric corona ─────────────────────────────────────────
-    if (sunDirENU.w > -0.1) {
+    if (sunDirENU.w > limbZ - 0.1) {
         float angle     = acos(clamp(cosA, -1.0, 1.0));
         float disc      = 1.0 - smoothstep(0.007, 0.010, angle);
         float corona    = exp(-angle * angle / (2.0 * 0.035 * 0.035));
-        float fade      = smoothstep(-0.12, 0.02, sunDirENU.w);
-        float horizClip = smoothstep(-0.02, 0.03, dir.z);
+        float fade      = smoothstep(limbZ - 0.006, limbZ + 0.002, sunDirENU.w);
+        float horizClip = hClip;
         vec3  sunCol    = vec3(1.5, 1.3, 1.0);
         color += horizClip * fade * (disc * sunCol + corona * sunCol * 0.12);
     }
@@ -480,7 +626,7 @@ void main() {
             int nFlares = int(min(glowBuf.flareCount, 8u));
             for (int gi = 0; gi < nFlares; ++gi) {
                 vec4 e = glowBuf.flareEntries[gi];
-                if (e.z < -0.05) continue;
+                if (e.z < limbZ - 0.02) continue;
                 if (e.w < kFlareThr) continue;
 
                 vec3 satCam = mat3(pc.skyView) * normalize(e.xyz);
