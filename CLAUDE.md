@@ -427,14 +427,38 @@ If the file is missing (first run) all defaults are used silently.
 See `TERRAIN_PLAN.md` in the project root for the full step checklist and session log.
 Read it at the start of any terrain-related session before making changes.
 
-**Current state (as of 2026-06-24, session 4):**
+**Current state (as of 2026-06-25, session 7):**
 - Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete
 - `SatDrawPC` is 128 bytes: `obsECEFDir (vec4)` at offset 112 (observer ECEF unit vector)
 - Sky descriptor set has 7 bindings (0-6): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec
-- Elevation encoding fixed: land-only [0 m, 8848 m]; GPU-side observer ground height lookup added
+- GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
 - `sat_sky.frag` ground path: 96-step quadratic terrain march + 12-step binary search;
   terrain hits use gradient-computed normals; sea-level sphere fallback; satellites/stars
   depth-tested against terrain (gl_FragDepth: close terrain → [0, 0.5), sky → 1.0)
 - Ocean wave material: specular map (binding 6) gates two-octave noise wave normals +
   Blinn-Phong sun glint (exp=300) + Schlick Fresnel on sea-level sphere hits
 - Next: Step 7 (night lights → sky glow) or Step 9 (cloud layer)
+
+### Elevation texture encoding — READ THIS BEFORE TOUCHING TERRAIN CODE
+
+**File:** `assets/textures/earth_elevation.png` (R8_UNORM, 21600×10800, land-only DEM)
+
+**This is NOT ETOPO1 and has NO bathymetry / below-sea-level data.** Do not assume
+pixel=0 means sea level — it does not. The actual encoding is:
+
+| Pixel value | Meaning |
+|-------------|---------|
+| 0–14/255    | Compression noise in ocean regions — treat as sea level |
+| **15/255**  | **Ocean / sea level baseline** |
+| 16–255/255  | Land elevation, linearly scaled above sea level |
+| 255/255     | ≈ 8848 m (Everest) |
+
+**Correct formula used in `sat_sky.frag` and `SatelliteSim.cpp`:**
+```
+kElevOffset = 15.0/255.0 * kElevRange          // ≈ 529 m baseline
+terrainH    = max(0, pixel * kElevRange − kElevOffset)
+```
+Failing to subtract `kElevOffset` makes every coastline on Earth appear as a ~530 m vertical
+cliff because sea-level land reads as 529 m above the ocean sphere. This bug has been
+introduced and re-introduced across multiple sessions. The ocean sphere sits at exactly
+`R_EARTH`; the terrain height formula must produce 0 m for ocean-baseline pixels.

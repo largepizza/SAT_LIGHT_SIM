@@ -60,10 +60,12 @@ alias badly without full mip chains. Need a `createImageWithMips()` variant that
   Done session 2026-06-22.
 
 - [x] **Step 2** — Confirm / add elevation map asset  
-  `earth_elevation.jpg` confirmed: 21600×10800 grayscale 8-bit land-only DEM.  
-  Encoding: pixel=0 → 0 m (sea level), pixel=1.0 → 8848 m (Everest). No bathymetry.  
-  Ocean texels are stored as 0, but JPEG DCT artifacts introduce 1–4/255 noise → false  
-  terrain hits. Fixed by gating terrain checks with earthSpecTex (ocean mask).
+  `earth_elevation.png` (converted from .jpg session 7): 21600×10800 grayscale 8-bit land-only DEM.  
+  **NOT ETOPO1. NO bathymetry. pixel=0 is NOT sea level.**  
+  Actual encoding: pixel=15/255 → sea level (0 m); pixel=255/255 → ~8848 m (Everest).  
+  Ocean region stores ~15/255 as baseline. Shader corrects with `kElevOffset = 15/255 × kElevRange ≈ 529 m`.  
+  Formula: `terrainH = max(0, pixel × kElevRange − kElevOffset)`.  
+  Omitting the offset creates a ~530 m cliff at every coastline worldwide.
 
 - [x] **Step 4** — Mip-chain support in `createImage()` / add `generateMipmaps()`  
   `VulkanContext::createImage` now accepts optional `mipLevels = 1` param.  
@@ -162,7 +164,7 @@ alias badly without full mip chains. Need a `createImageWithMips()` variant that
 - Build clean; `earth_elevation.jpg` present (needs inspection for Step 2 / Step 8)
 
 ### 2026-06-23 (session 3)
-- Step 2: Confirmed `earth_elevation.jpg` is 21600×10800 8-bit grayscale ETOPO1 1-arcmin DEM
+- Step 2: Confirmed `earth_elevation.jpg` is 21600×10800 8-bit grayscale land-only DEM (NOT ETOPO1; see Step 2 above for correct encoding)
 - Step 8: Elevation terrain raymarching implemented in `sat_sky.frag`
   - Elevation texture (R8_UNORM, full mip chain) added as binding 5; sky desc set 5→6 bindings
   - Ground section refactored: 48-step coarse march + 8-step binary search
@@ -196,10 +198,20 @@ alias badly without full mip chains. Need a `createImageWithMips()` variant that
 - Satellite occlusion from ground: `gl_FragDepth` in sky shader (terrain < 150 km → [0, 0.5); sky → 1.0)
   Sky pipeline depth write ALWAYS; sat/star pipelines depth test LESS. Satellites/stars now
   hidden behind mountains.
-- Elevation encoding bug resolved: kElevMin 0→correct, kElevRange 19746→8848.
-  Land-only encoding (pixel=0 → 0 m, pixel=1 → 8848 m). CPU formula also fixed.
-  GPU-side observer ground height lookup added (single textureLod at observer lat/lon).
+- Elevation encoding: kElevRange set to 9000. GPU-side observer ground height lookup added.
+  NOTE: the "pixel=0 → 0 m" assumption recorded here was WRONG — see session 7 correction below.
 - Terrain march improvements: quadratic step distribution (96 steps), 12-step binary search,
   adaptive marchCap (250 km ground, up to 3000 km from orbit), jitter in normalised fraction.
 - Sun/Moon Earth-limb sharp cutoff (8° fade → 0.008 sinEl window), antimeridian seam fix.
 - Step 6: Ocean wave material complete (see checklist above).
+
+### 2026-06-25 (session 7)
+- **Elevation encoding bug fixed (global coastline cliff):**
+  Every shoreline on Earth had a ~530 m vertical cliff. Root cause: the DEM stores its
+  ocean/sea-level baseline as pixel=15/255, NOT pixel=0. The shader was computing
+  `terrainH = pixel × 9000`, giving 529 m for sea-level land.
+  Fix: added `kElevOffset = 15.0/255.0 × kElevRange` (≈ 529 m) and subtracted it from
+  all 6 elevation reads in `sat_sky.frag` plus the CPU observer-height formula in
+  `SatelliteSim.cpp`. Threshold in CPU code corrected from `< 5/255` to `<= 15/255`.
+  **The DEM is NOT ETOPO1 and has NO bathymetry. pixel=0 ≠ sea level. pixel=15/255 = sea level.**
+- `earth_elevation.jpg` → `earth_elevation.png` (lossless; loader updated in SatelliteSim.cpp)
