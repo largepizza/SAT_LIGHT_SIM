@@ -398,7 +398,9 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
     pc.fovYRad = glm::radians(camera.fovYDeg);
     pc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
     pc.gmst = (float)fmod(kOmegaEarth * (simDayJ2000 * 86400.0 + simSecInDay), glm::two_pi<double>());
-    pc.pad = 0.0f;
+    // Wave time relative to sim epoch: pauses when paused, scales with time warp.
+    pc.waveTime = (float)((simDayJ2000 - simInitDayJ2000) * 86400LL)
+                + (float)(simSecInDay - simInitSecInDay);
     pc.sunDirENU = sunDirENU;
     pc.moonDirENU = moonDirENU; // xyz = moon dir in ENU, w = illuminated fraction
     // Sample terrain elevation at observer lat/lon from the CPU downsampled map.
@@ -410,10 +412,11 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         int px = (int)(u * (float)earthElevCpuW) % earthElevCpuW;
         int py = std::min((int)(v * (float)earthElevCpuH), earthElevCpuH - 1);
         float pixVal = earthElevCpu[py * earthElevCpuW + px] / 255.0f;
-        obsTerrainH = std::max(0.0f, pixVal * 19746.0f - 10898.0f);
+        // JPEG compression gives ocean pixels 1–4/255 instead of exactly 0.
+        // Treat anything below 5/255 as sea level so ocean observers aren't elevated.
+        obsTerrainH = (pixVal < 5.0f / 255.0f) ? 0.0f : std::max(0.0f, pixVal * 8848.0f);
     }
-    float obsEffectiveH = obsTerrainH + obsHeightOffset; // metres above sea level
-    pc.obsECEFDir = glm::vec4(obsDir, obsEffectiveH); // w = total observer height (m above sea)
+    pc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset); // w = user altitude offset above terrain (m); GPU computes ground height
 
     // ── Pass 1: sky/ground background (fullscreen triangle, opaque) ──────────
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyBgPipeline);
@@ -1926,6 +1929,10 @@ void SatelliteSim::cleanup(VkDevice device)
     if (earthElevView)     { vkDestroyImageView(device, earthElevView, nullptr);   earthElevView     = VK_NULL_HANDLE; }
     if (earthElevImg)      { vkDestroyImage(device, earthElevImg, nullptr);        earthElevImg      = VK_NULL_HANDLE; }
     if (earthElevMem)      { vkFreeMemory(device, earthElevMem, nullptr);          earthElevMem      = VK_NULL_HANDLE; }
+    if (earthSpecSampler)  { vkDestroySampler(device, earthSpecSampler, nullptr);  earthSpecSampler  = VK_NULL_HANDLE; }
+    if (earthSpecView)     { vkDestroyImageView(device, earthSpecView, nullptr);   earthSpecView     = VK_NULL_HANDLE; }
+    if (earthSpecImg)      { vkDestroyImage(device, earthSpecImg, nullptr);        earthSpecImg      = VK_NULL_HANDLE; }
+    if (earthSpecMem)      { vkFreeMemory(device, earthSpecMem, nullptr);          earthSpecMem      = VK_NULL_HANDLE; }
     vkDestroyBuffer(device, glowBuf, nullptr);
     vkFreeMemory(device, glowMem, nullptr);
     // satInputBuf is now device-local (no host mapping to release).
@@ -2685,22 +2692,92 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         }
     }
 
-    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev
-    VkDescriptorSetLayoutBinding bindings[6] = {};
+    // ── Load earth specular map (binding 6): 8K R8_UNORM ocean mask ──────────────
+    {
+        int w, h, ch;
+        unsigned char *pixels = stbi_load("assets/textures/8k_earth_specular_map.png", &w, &h, &ch, 1);
+        if (pixels) {
+            earthSpecMips = (uint32_t)std::floor(std::log2((float)std::max(w, h))) + 1;
+            VkDeviceSize imgBytes = (VkDeviceSize)w * h;
+
+            VkBuffer stageBuf; VkDeviceMemory stageMem;
+            ctx.createBuffer(imgBytes,
+                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             stageBuf, stageMem);
+            void *mapped; vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
+            memcpy(mapped, pixels, (size_t)imgBytes);
+            vkUnmapMemory(ctx.device, stageMem);
+            stbi_image_free(pixels);
+
+            ctx.createImage((uint32_t)w, (uint32_t)h,
+                            VK_FORMAT_R8_UNORM,
+                            VK_IMAGE_USAGE_SAMPLED_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            earthSpecImg, earthSpecMem, earthSpecMips);
+
+            VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+            VkImageMemoryBarrier allMips{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            allMips.srcAccessMask = 0;
+            allMips.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            allMips.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            allMips.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            allMips.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            allMips.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            allMips.image = earthSpecImg;
+            allMips.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, earthSpecMips, 0, 1};
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &allMips);
+            VkBufferImageCopy region{};
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+            vkCmdCopyBufferToImage(cmd, stageBuf, earthSpecImg,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            ctx.generateMipmaps(cmd, earthSpecImg, VK_FORMAT_R8_UNORM,
+                                 (uint32_t)w, (uint32_t)h, earthSpecMips);
+            ctx.endOneTimeCommands(cmd);
+            vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+            vkFreeMemory(ctx.device, stageMem, nullptr);
+
+            VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            vci.image = earthSpecImg;
+            vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            vci.format = VK_FORMAT_R8_UNORM;
+            vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, earthSpecMips, 0, 1};
+            vkCreateImageView(ctx.device, &vci, nullptr, &earthSpecView);
+
+            VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+            sci.magFilter = VK_FILTER_LINEAR;
+            sci.minFilter = VK_FILTER_LINEAR;
+            sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+            sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.maxLod = (float)earthSpecMips;
+            vkCreateSampler(ctx.device, &sci, nullptr, &earthSpecSampler);
+        } else {
+            fprintf(stderr, "Warning: could not load 8k_earth_specular_map.png; ocean shader disabled\n");
+        }
+    }
+
+    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec
+    VkDescriptorSetLayoutBinding bindings[7] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[3] = {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[4] = {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[5] = {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[6] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 6;
+    li.bindingCount = 7;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
     VkDescriptorPoolSize ps[2] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6},
     };
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 2;
@@ -2714,9 +2791,11 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     ai.pSetLayouts = &skyDescLayout;
     vkAllocateDescriptorSets(ctx.device, &ai, &skyDescSet);
 
-    // Use a 1×1 white placeholder for elevation if the file failed to load
+    // Use noise texture as 1×1 placeholder if optional textures failed to load
     VkSampler elevSamplerFinal = earthElevSampler ? earthElevSampler : noiseSampler;
     VkImageView elevViewFinal  = earthElevView    ? earthElevView    : noiseTexView;
+    VkSampler specSamplerFinal = earthSpecSampler ? earthSpecSampler : noiseSampler;
+    VkImageView specViewFinal  = earthSpecView    ? earthSpecView    : noiseTexView;
 
     VkDescriptorBufferInfo bufInfo{glowBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo noiseImgInfo{noiseSampler, noiseTexView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -2724,8 +2803,9 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     VkDescriptorImageInfo dayImgInfo{earthDaySampler, earthDayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo nightImgInfo{earthNightSampler, earthNightView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo elevImgInfo{elevSamplerFinal, elevViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo specImgInfo{specSamplerFinal, specViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    VkWriteDescriptorSet writes[6] = {};
+    VkWriteDescriptorSet writes[7] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = skyDescSet; writes[0].dstBinding = 0;
     writes[0].descriptorCount = 1; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -2750,7 +2830,11 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     writes[5].dstSet = skyDescSet; writes[5].dstBinding = 5;
     writes[5].descriptorCount = 1; writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[5].pImageInfo = &elevImgInfo;
-    vkUpdateDescriptorSets(ctx.device, 6, writes, 0, nullptr);
+    writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[6].dstSet = skyDescSet; writes[6].dstBinding = 6;
+    writes[6].descriptorCount = 1; writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[6].pImageInfo = &specImgInfo;
+    vkUpdateDescriptorSets(ctx.device, 7, writes, 0, nullptr);
 }
 
 // Fullscreen triangle that colors pixels sky or ground based on camera elevation.
@@ -2787,10 +2871,12 @@ void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    // No depth test — background overwrites the clear color.
+    // Write terrain depth so satellite/star passes can test against it with LESS.
+    // ALWAYS compare op so the sky background always wins (it's the first pass).
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    ds.depthTestEnable = VK_FALSE;
-    ds.depthWriteEnable = VK_FALSE;
+    ds.depthTestEnable  = VK_TRUE;
+    ds.depthWriteEnable = VK_TRUE;
+    ds.depthCompareOp   = VK_COMPARE_OP_ALWAYS;
 
     // Opaque: simply overwrite what the clear left.
     VkPipelineColorBlendAttachmentState cba{};
@@ -2867,10 +2953,12 @@ void SatelliteSim::createDrawPipeline(VulkanContext &ctx)
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    // No depth test — satellite points are a sky overlay.
+    // Depth test against terrain written by the sky background pass (gl_FragDepth).
+    // Satellites at fixed depth 0.5 fail LESS where terrain depth < 0.5 (close terrain hits).
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    ds.depthTestEnable = VK_FALSE;
+    ds.depthTestEnable  = VK_TRUE;
     ds.depthWriteEnable = VK_FALSE;
+    ds.depthCompareOp   = VK_COMPARE_OP_LESS;
 
     // Additive blending.
     VkPipelineColorBlendAttachmentState cba{};
@@ -3040,9 +3128,11 @@ void SatelliteSim::createStarPipeline(VulkanContext &ctx)
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
+    // Same depth test as satellites: stars at fixed depth 0.5 are culled by close terrain.
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    ds.depthTestEnable = VK_FALSE;
+    ds.depthTestEnable  = VK_TRUE;
     ds.depthWriteEnable = VK_FALSE;
+    ds.depthCompareOp   = VK_COMPARE_OP_LESS;
 
     VkPipelineColorBlendAttachmentState cba{};
     cba.blendEnable = VK_TRUE;

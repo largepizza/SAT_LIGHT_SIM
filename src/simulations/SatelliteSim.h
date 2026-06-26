@@ -187,7 +187,7 @@ static_assert(sizeof(SatFlarePC) == 100, "SatFlarePC layout mismatch");
 //   fovYRad    (float): offset 64
 //   aspect     (float): offset 68
 //   gmst       (float): offset 72  — Greenwich Mean Sidereal Time (radians)
-//   pad        (float): offset 76
+//   waveTime   (float): offset 76  — wall-clock seconds (glfwGetTime); constant speed regardless of time warp
 //   sunDirENU  (vec4):  offset 80   xyz=direction, w=sin(elevation)
 //   moonDirENU (vec4):  offset 96   xyz=moon dir in ENU, w=illuminated fraction
 //   obsECEFDir (vec4):  offset 112  xyz=observer ECEF unit vector (for ENU→ECEF→lat/lon), w=unused
@@ -198,7 +198,7 @@ struct SatDrawPC
     float fovYRad;         // vertical field of view (radians)
     float aspect;          // viewport width / height
     float gmst;            // Greenwich Mean Sidereal Time (radians)
-    float pad;             // pad to 16-byte boundary before sunDirENU
+    float waveTime;        // wall-clock seconds for wave animation (glfwGetTime)
     glm::vec4 sunDirENU;   // sun direction in ENU (xyz unit vec, w = sin(elevation))
     glm::vec4 moonDirENU;  // moon direction in ENU (xyz unit vec, w = illuminated fraction)
     glm::vec4 obsECEFDir;  // observer ECEF unit vector (xyz); w unused.
@@ -516,8 +516,15 @@ private:
     VkImageView earthNightView = VK_NULL_HANDLE;
     VkSampler earthNightSampler = VK_NULL_HANDLE;
     uint32_t earthNightMips = 1;
-    // Earth elevation texture (binding 5): 21600×10800 R8_UNORM ETOPO1 DEM.
-    // Pixel p → elevation_m = max(0, p*19746 − 10898); terrain shell = R_EARTH + 9000 m.
+    // Earth specular texture (binding 6): 8K R8_UNORM ocean mask (white=ocean, black=land).
+    // Used to gate the wave normal + specular glint material on sea-level sphere hits.
+    VkImage earthSpecImg = VK_NULL_HANDLE;
+    VkDeviceMemory earthSpecMem = VK_NULL_HANDLE;
+    VkImageView earthSpecView = VK_NULL_HANDLE;
+    VkSampler earthSpecSampler = VK_NULL_HANDLE;
+    uint32_t earthSpecMips = 1;
+    // Earth elevation texture (binding 5): 21600×10800 R8_UNORM land-elevation DEM.
+    // Pixel p → elevation_m = p * 8848; ocean stored as 0. Terrain shell = R_EARTH + 9000 m.
     VkImage earthElevImg = VK_NULL_HANDLE;
     VkDeviceMemory earthElevMem = VK_NULL_HANDLE;
     VkImageView earthElevView = VK_NULL_HANDLE;

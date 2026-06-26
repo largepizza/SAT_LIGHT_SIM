@@ -27,12 +27,12 @@ clouds, and orbital camera mode. Read this at the start of any terrain-related s
 | 0 | GlowBuf SSBO | GlowBuf SSBO |
 | 1 | noiseTex sampler | noiseTex sampler |
 | 2 | moonTex sampler | moonTex sampler |
-| 3 | — | earthDay sampler (8K RGBA8) |
-| 4 | — | earthNight sampler (8K RGBA8) |
-| 5 | — | earthSpecular sampler (8K R8, ocean mask) |
-| 6 | — | earthNormal sampler (8K RGBA8 tangent-space) |
-| 7 | — | earthClouds sampler (8K R8) |
-| 8 | — | earthElevation sampler (8K R16 or R8) |
+| 3 | earthDay sampler (8K SRGB) | earthDay sampler |
+| 4 | earthNight sampler (8K SRGB) | earthNight sampler |
+| 5 | earthElev sampler (R8_UNORM) | earthElev sampler |
+| 6 | earthSpec sampler (R8_UNORM) | earthSpec sampler |
+| 7 | — | earthNormal sampler (8K RGBA8 tangent-space) |
+| 8 | — | earthClouds sampler (8K R8) |
 
 Adding bindings requires rebuilding `skyDescLayout`, `skyDescPool`, and `skyDescSet`.
 See `createDescriptors()` area ~line 2418 in `SatelliteSim.cpp`.
@@ -60,8 +60,10 @@ alias badly without full mip chains. Need a `createImageWithMips()` variant that
   Done session 2026-06-22.
 
 - [x] **Step 2** — Confirm / add elevation map asset  
-  `earth_elevation.jpg` confirmed: 21600×10800 grayscale 8-bit ETOPO1 1-arcmin DEM.  
-  Encoding: elev_m = pixel/255.0 × 19746 − 10898; max(0, elev_m) = above-sea terrain.
+  `earth_elevation.jpg` confirmed: 21600×10800 grayscale 8-bit land-only DEM.  
+  Encoding: pixel=0 → 0 m (sea level), pixel=1.0 → 8848 m (Everest). No bathymetry.  
+  Ocean texels are stored as 0, but JPEG DCT artifacts introduce 1–4/255 noise → false  
+  terrain hits. Fixed by gating terrain checks with earthSpecTex (ocean mask).
 
 - [x] **Step 4** — Mip-chain support in `createImage()` / add `generateMipmaps()`  
   `VulkanContext::createImage` now accepts optional `mipLevels = 1` param.  
@@ -84,9 +86,20 @@ alias badly without full mip chains. Need a `createImageWithMips()` variant that
   Night city lights at 12% intensity; fallback to flat colour if no sphere hit.  
   Done session 2026-06-22.
 
-- [ ] **Step 6** — Ocean wave material  
-  In ground branch: sample specular map (white=ocean). Ocean pixels get animated wave
-  normals (two FBM scrolling octaves) + Schlick Fresnel + specular highlight.
+- [x] **Step 6** — Ocean wave material (redesigned session 5)  
+  `earthSpecTex` loaded as R8_UNORM with mips (binding 6); sky desc set 6→7 bindings.  
+  In Phase 3 (sea-level hits only, tHit < 0): sample specular mask → for ocean pixels:  
+  - `pc.pad` → `pc.waveTime` (wall-clock seconds, constant speed regardless of time warp)  
+  - 4-octave wave normals in ENU metric space (hitPt.xy metres, not lat/lon):  
+    50 m / 180 m / 650 m / 2300 m; exponential distance fade per octave  
+    Octaves beyond 12 km flatten via smoothstep → only glint/Fresnel visible from orbit  
+  - Sky reflection: 6-sample atmosphere loop in reflect(dir, waveN) direction  
+    Fresnel-mixes reflected sky color (or dark Earth absorption if reflDir.z < 0)  
+    Fades to approximate color beyond 30 km  
+  - Deep-water albedo 5%; Blinn-Phong glint (exp=300) always active for orbit glitter  
+  Depth-occlusion for satellites/stars behind terrain also added this session:  
+  - `gl_FragDepth` written in `sat_sky.frag` (terrain < 150 km → [0,0.5); sky → 1.0)  
+  - Sky pipeline: depthWrite=true, ALWAYS; sat+star pipelines: depthTest=true, LESS.
 
 - [ ] **Step 7** — Night lights → sky glow  
   In sky glow loop: for bins near the horizon, sample earthNight at the geographic
@@ -157,3 +170,36 @@ alias badly without full mip chains. Need a `createImageWithMips()` variant that
   - Terrain hits shade with sphere-normal Lambertian (same as sea-level path)
   - Graceful fallback: if elevation file missing, placeholder sampler used (march finds no hits)
   - Build clean
+
+### 2026-06-24 (session 5)
+- Step 6 redesigned: ocean wave material fully rewritten
+  - `pc.pad` → `pc.waveTime` (wall-clock, constant speed regardless of time warp)
+  - Wave UV basis: ENU `hitPt.xy` (metres) → physically correct scale at all altitudes
+  - 4 octaves: 50 m, 180 m, 650 m, 2300 m; exponential distance fade
+  - Sky reflection: 6-sample atmosphere loop in reflected direction; Fresnel mix
+  - Deep-water albedo 5%; glint (exp=300) active from orbit
+- Build clean; sat_sky.frag.spv regenerated
+
+### 2026-06-25 (session 6)
+- Step 6 wave upgrade: analytic Seascape FBM + Earth-fixed coordinates
+  - Replaced 4-octave noise-texture approach with ShaderToy "Seascape" (Ms2SD1) analytic model
+  - `seaOctave(uv, choppy)`: 1−|sin(uv)| shape + low-mip noiseTex perturbation to break tiling
+  - `seaHeight(posM, t)`: 5-octave FBM, ~628 m → ~3 m wavelengths; kWaveRot×1.9 per octave
+  - Wave UV basis: **ECEF-XY** (`hitECEF.xy`) instead of ENU `hitPt.xy`
+    Waves now stationary relative to Earth surface — fix for pattern sliding with observer
+  - Normal from central differences on seaHeight; wEps adapts with distance
+  - ECEF gradient projected to ENU via `vec3(enuX.x, enuY.x, enuZ.x)` and `.y` equivalents
+  - Reverted debug threshold `tHit < 5000.0` → `tHit < 0.0` (specMask JPEG fix is in place)
+  - Build clean
+
+### 2026-06-24 (session 4)
+- Satellite occlusion from ground: `gl_FragDepth` in sky shader (terrain < 150 km → [0, 0.5); sky → 1.0)
+  Sky pipeline depth write ALWAYS; sat/star pipelines depth test LESS. Satellites/stars now
+  hidden behind mountains.
+- Elevation encoding bug resolved: kElevMin 0→correct, kElevRange 19746→8848.
+  Land-only encoding (pixel=0 → 0 m, pixel=1 → 8848 m). CPU formula also fixed.
+  GPU-side observer ground height lookup added (single textureLod at observer lat/lon).
+- Terrain march improvements: quadratic step distribution (96 steps), 12-step binary search,
+  adaptive marchCap (250 km ground, up to 3000 km from orbit), jitter in normalised fraction.
+- Sun/Moon Earth-limb sharp cutoff (8° fade → 0.008 sinEl window), antimeridian seam fix.
+- Step 6: Ocean wave material complete (see checklist above).
