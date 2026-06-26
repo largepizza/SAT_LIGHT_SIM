@@ -427,13 +427,14 @@ If the file is missing (first run) all defaults are used silently.
 See `TERRAIN_PLAN.md` in the project root for the full step checklist and session log.
 Read it at the start of any terrain-related session before making changes.
 
-**Current state (as of 2026-06-23, session 3):**
-- Steps 1, 2, 3, 4, 5, 5b, 8 complete
+**Current state (as of 2026-06-24, session 4):**
+- Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete
 - `SatDrawPC` is 128 bytes: `obsECEFDir (vec4)` at offset 112 (observer ECEF unit vector)
-- Earth day + night loaded as SRGB with full mip chains; sky descriptor set has 6 bindings (0-5)
-- Elevation map (`earth_elevation.jpg`) loaded as `VK_FORMAT_R8_UNORM` with full mip chain (binding 5)
-- `sat_sky.frag` ground path: 48-step terrain march + 8-step binary search refinement;
-  terrain hits shade same as sea-level (sphere-normal Lambertian + day/night textures);
-  sea-level sphere fallback for ocean / low-lying terrain; flat colour if no sphere hit
-- Ocean waves (Step 6) deferred until after elevation is reviewed in simulation
-- Next: Step 6 (ocean specular mask + wave normals), or Step 2 (verify elevation map)
+- Sky descriptor set has 7 bindings (0-6): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec
+- Elevation encoding fixed: land-only [0 m, 8848 m]; GPU-side observer ground height lookup added
+- `sat_sky.frag` ground path: 96-step quadratic terrain march + 12-step binary search;
+  terrain hits use gradient-computed normals; sea-level sphere fallback; satellites/stars
+  depth-tested against terrain (gl_FragDepth: close terrain → [0, 0.5), sky → 1.0)
+- Ocean wave material: specular map (binding 6) gates two-octave noise wave normals +
+  Blinn-Phong sun glint (exp=300) + Schlick Fresnel on sea-level sphere hits
+- Next: Step 7 (night lights → sky glow) or Step 9 (cloud layer)

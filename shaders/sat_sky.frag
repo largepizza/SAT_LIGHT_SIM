@@ -9,7 +9,7 @@ layout(push_constant) uniform PC {
     float fovYRad;     // vertical field of view in radians
     float aspect;      // viewport width / height
     float gmst;        // Greenwich Mean Sidereal Time (radians)
-    float pad;
+    float waveTime;    // wall-clock seconds for wave animation
     vec4  sunDirENU;   // xyz = sun dir in ENU, w = sin(sun elevation)
     vec4  moonDirENU;  // xyz = moon dir in ENU, w = illuminated fraction
     vec4  obsECEFDir;  // xyz = observer ECEF unit vector; w unused
@@ -37,14 +37,16 @@ layout(set = 0, binding = 1) uniform sampler2D noiseTex;
 // local face frame — maps the near hemisphere to the full [0,1] UV range.
 layout(set = 0, binding = 2) uniform sampler2D moonTex;
 
-// Earth textures (bindings 3-5): 8K equirectangular maps.
+// Earth textures (bindings 3-6): 8K equirectangular maps.
 // UV derived from ENU hit point → ECEF → geographic lat/lon.
-// earthDayTex: SRGB-encoded colour map (auto-linearised on read).
-// earthNightTex: SRGB-encoded city-light map.
-// earthElevTex: R8_UNORM ETOPO1 height field. p → max(0, p*19746−10898) metres.
+// earthDayTex:   SRGB colour map (auto-linearised on read).
+// earthNightTex: SRGB city-light map.
+// earthElevTex:  R8_UNORM land elevation. p → p * 8848 metres. Ocean stored as 0.
+// earthSpecTex:  R8_UNORM ocean mask (white=ocean, black=land). Used for wave material.
 layout(set = 0, binding = 3) uniform sampler2D earthDayTex;
 layout(set = 0, binding = 4) uniform sampler2D earthNightTex;
 layout(set = 0, binding = 5) uniform sampler2D earthElevTex;
+layout(set = 0, binding = 6) uniform sampler2D earthSpecTex;
 
 layout(location = 0) out vec4 outColor;
 
@@ -261,6 +263,76 @@ vec3 lensFlare(vec2 uv, vec2 pos, float intens, float bokehMult) {
     return max(c, vec3(0.0));
 }
 
+// ── Ocean wave functions (adapted from "Seascape" by Alexander Alekseev aka TDM, 2014)
+// License: CC-BY-NC-SA 3.0 — tdmaav@gmail.com
+// posM = ENU East/North metres + geographic phase offset (observer-relative, ~Earth-fixed);
+// pHeight = metres above R_EARTH; seaTime = 1.0 + pc.waveTime * kSeaSpeed.
+
+const mat2  kOctaveM       = mat2(1.6, 1.2, -1.2, 1.6);
+const float kSeaFreq       = 0.056;
+const float kSeaHeight     = 2;
+const float kSeaChoppy     = 3.0;   // 4.0 → 2.0: rounder crests, less plateau cliffs
+const float kSeaSpeed      = 1.5;
+const vec3  kSeaBase = vec3(0.0, 0.03, 0.18);   // dark, desaturated blue
+const vec3  kSeaWaterColor = vec3(0.2, 0.50, 0.85) * 0.1;
+
+// Hash without Sine (Dave Hoskins, MIT): stable for all float input magnitudes.
+// The original fract(sin(dot(p, large_vec))*large_num) loses GPU sin() precision
+// once the dot product exceeds ~10^4 (happens at 4th-5th octave where kOctaveM
+// doubles UV scale each iteration), producing the angular banding artifact.
+float seaHash(vec2 p) {
+    vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.x + q.y) * q.z);
+}
+float seaNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return -1.0 + 2.0 * mix(
+        mix(seaHash(i + vec2(0.0, 0.0)), seaHash(i + vec2(1.0, 0.0)), u.x),
+        mix(seaHash(i + vec2(0.0, 1.0)), seaHash(i + vec2(1.0, 1.0)), u.x),
+        u.y);
+}
+
+float seaOctave(vec2 uv, float choppy) {
+    uv += seaNoise(uv);
+    vec2 wv  = 1.0 - abs(sin(uv));
+    vec2 swv = abs(cos(uv));
+    wv = mix(wv, swv, wv);
+    return pow(1.0 - pow(wv.x * wv.y, 0.65), choppy);
+}
+
+// Geometry pass (3 octaves): used in height-map trace.
+float seaMap(vec2 posM, float pHeight, float seaTime) {
+    float freq = kSeaFreq, amp = kSeaHeight, choppy = kSeaChoppy;
+    vec2  uv   = posM; uv.x *= 0.75;
+    float h    = 0.0;
+    for (int i = 0; i < 3; i++) {
+        float d  = seaOctave((uv + seaTime) * freq, choppy);
+              d += seaOctave((uv - seaTime) * freq, choppy);
+        h  += d * amp;
+        uv *= kOctaveM; freq *= 1.9; amp *= 0.22;
+        choppy = mix(choppy, 1.0, 0.2);
+    }
+    return pHeight - h;
+}
+
+// Fragment pass (5 octaves): used for high-quality normal computation.
+float seaMapDetail(vec2 posM, float pHeight, float seaTime) {
+    float freq = kSeaFreq, amp = kSeaHeight, choppy = kSeaChoppy;
+    vec2  uv   = posM; uv.x *= 0.75;
+    float h    = 0.0;
+    for (int i = 0; i < 5; i++) {
+        float d  = seaOctave((uv + seaTime) * freq, choppy);
+              d += seaOctave((uv - seaTime) * freq, choppy);
+        h  += d * amp;
+        uv *= kOctaveM; freq *= 1.9; amp *= 0.22;
+        choppy = mix(choppy, 1.0, 0.2);
+    }
+    return pHeight - h;
+}
+
 void main() {
     vec3 dir    = normalize(enuDir);
     vec3 sunDir = normalize(sunDirENU.xyz);
@@ -270,9 +342,33 @@ void main() {
     vec3 enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ)); // East
     vec3 enuY = cross(enuZ, enuX);            // North
 
-    // Observer position: terrain elevation (m) from CPU lookup, packed in obsECEFDir.w.
-    // +2 m eye height above the surface.
-    vec3 obsPos = vec3(0.0, 0.0, R_EARTH + max(0.0, pc.obsECEFDir.w) + 2.0);
+    // ── Elevation encoding constants ──────────────────────────────────────────────
+    // Land-only normalized DEM: pixel=0 → 0 m (sea level), pixel=1 → 8848 m (Everest).
+    // Ocean texels are stored as 0, but JPEG compression introduces DCT artifacts
+    // (typically 1–4 out of 255 levels = 34–140 m) that cause false terrain hits.
+    // All elevation reads are gated by earthSpecTex (ocean mask): if specMask > 0.5
+    // the texel is ocean and terrainH is forced to 0 regardless of the elevation pixel.
+    const float kElevRange  = 8848.0;
+    const float kMaxTerrain = 9000.0;  // terrain shell height (m) — just above Everest
+
+    // GPU-side observer ground height: single texture fetch at the observer's lat/lon.
+    // This matches the terrain march formula exactly, so the observer never sinks into
+    // terrain regardless of what the CPU computed.  pc.obsECEFDir.w is the CPU's total
+    // height above sea level (obsTerrainH + obsHeightOffset); we take the max of the
+    // GPU ground height and the CPU value so user-controlled altitude offsets still work.
+    float obsGroundH;
+    {
+        vec3  od  = normalize(pc.obsECEFDir.xyz);
+        float lat = asin(clamp(od.z, -1.0, 1.0));
+        float lon = atan(od.y, od.x);
+        vec2  uv  = vec2((lon + PI) / (2.0*PI), (0.5*PI - lat) / PI);
+        float obsSpec = textureLod(earthSpecTex, uv, 0.0).r;
+        obsGroundH = (obsSpec > 0.5) ? 0.0 : max(0.0, textureLod(earthElevTex, uv, 0.0).r * kElevRange);
+    }
+    float obsEffH = max(obsGroundH, max(0.0, pc.obsECEFDir.w));
+
+    // Observer position: +2 m eye height above ground.
+    vec3 obsPos = vec3(0.0, 0.0, R_EARTH + obsEffH + 2.0);
 
     // For elevated observers the visible region extends below the geometric horizon.
     // limbZ = sin(Earth-limb depression angle) — negative, approaches 0 at sea level.
@@ -281,10 +377,6 @@ void main() {
     float hClip = smoothstep(limbZ - 0.02, limbZ + 0.03, dir.z);
 
     // ── Phase 1: terrain march (runs before atmosphere so we can truncate tEnd) ─
-    // ETOPO1 R8_UNORM elevation encoding: max(0, p*19746 − 10898) metres.
-    const float kElevRange  = 19746.0;
-    const float kElevMin    = -10898.0;
-    const float kMaxTerrain =  9000.0;
 
     vec2 tBase  = raySphere(obsPos, dir, R_EARTH);
     vec2 tShell = raySphere(obsPos, dir, R_EARTH + kMaxTerrain);
@@ -299,16 +391,24 @@ void main() {
     if (dir.z < 0.7 && tShell.y > 0.0) {
         float tExit = (tBase.x > 0.0) ? tBase.x
                     : (tShell.y > 0.0  ? tShell.y : 0.0);
-        tExit = min(tExit, 300000.0);
+        tExit = min(tExit, 250000.0);
 
-        const int kN      = 48;
-        float stepLen2    = tExit / float(kN);
-        float tJitter     = textureLod(noiseTex, gl_FragCoord.xy * (1.0/128.0), 0.0).r;
-        float tPrev       = 2.0; // 2 m minimum avoids self-intersection at the terrain surface
+        // Quadratic step distribution: steps grow proportionally to their index so
+        // near terrain gets fine resolution (~40 m at step 0) while far terrain gets
+        // coarser (~5 km at step 95). This catches low/mid-altitude ranges (Rockies,
+        // Alps) that uniform spacing misses when tExit is hundreds of km.
+        // Jitter is kept as a normalised fraction [0,1] so its absolute magnitude
+        // scales with tExit — sample positions stay proportional to the march range
+        // regardless of view direction, eliminating the per-frame drift that causes
+        // flickering when panning.
+        const int kN  = 96;
+        float jitter  = textureLod(noiseTex, gl_FragCoord.xy * (1.0/128.0), 0.0).r;
+        float tPrev   = 2.0;
 
         for (int i = 0; i < kN; ++i) {
             if (tHit >= 0.0) break;
-            float t = (float(i) + 1.0 + tJitter) * stepLen2;
+            float frac = (float(i) + jitter) / float(kN);
+            float t    = 2.0 + (tExit - 2.0) * frac * frac;
             if (t > tExit) break;
             vec3  p = obsPos + t * dir;
             float rayH = length(p) - R_EARTH;
@@ -319,11 +419,12 @@ void main() {
             float lat = asin(clamp(pE.z / pL, -1.0, 1.0));
             float lon = atan(pE.y, pE.x);
             vec2  uv  = vec2((lon + PI) / (2.0 * PI), (0.5 * PI - lat) / PI);
-            float terrainH = max(0.0, textureLod(earthElevTex, uv, 0.0).r * kElevRange + kElevMin);
+            float specPx   = textureLod(earthSpecTex, uv, 0.0).r;
+            float terrainH = (specPx > 0.5) ? 0.0 : max(0.0, textureLod(earthElevTex, uv, 0.0).r * kElevRange);
 
             if (rayH < terrainH) {
                 float tLo = tPrev, tHi = t;
-                for (int j = 0; j < 8; ++j) {
+                for (int j = 0; j < 12; ++j) {
                     float tM  = (tLo + tHi) * 0.5;
                     vec3  pm  = obsPos + tM * dir;
                     float mH  = length(pm) - R_EARTH;
@@ -332,7 +433,8 @@ void main() {
                     float mLat = asin(clamp(pmE.z / mL, -1.0, 1.0));
                     float mLon = atan(pmE.y, pmE.x);
                     vec2  mUV  = vec2((mLon + PI) / (2.0*PI), (0.5*PI - mLat) / PI);
-                    float mT   = max(0.0, textureLod(earthElevTex, mUV, 0.0).r * kElevRange + kElevMin);
+                    float mSpec = textureLod(earthSpecTex, mUV, 0.0).r;
+                    float mT    = (mSpec > 0.5) ? 0.0 : max(0.0, textureLod(earthElevTex, mUV, 0.0).r * kElevRange);
                     if (mH < mT) tHi = tM; else tLo = tM;
                 }
                 tHit = (tLo + tHi) * 0.5;
@@ -347,10 +449,10 @@ void main() {
                 {
                     const float kTexU = 1.0 / 21600.0;
                     const float kTexV = 1.0 / 10800.0;
-                    float hE2 = max(0.0, textureLod(earthElevTex, hitUV + vec2(kTexU, 0.0), 0.0).r * kElevRange + kElevMin);
-                    float hW2 = max(0.0, textureLod(earthElevTex, hitUV - vec2(kTexU, 0.0), 0.0).r * kElevRange + kElevMin);
-                    float hN2 = max(0.0, textureLod(earthElevTex, hitUV - vec2(0.0, kTexV), 0.0).r * kElevRange + kElevMin);
-                    float hS2 = max(0.0, textureLod(earthElevTex, hitUV + vec2(0.0, kTexV), 0.0).r * kElevRange + kElevMin);
+                    float hE2 = max(0.0, textureLod(earthElevTex, hitUV + vec2(kTexU, 0.0), 0.0).r * kElevRange);
+                    float hW2 = max(0.0, textureLod(earthElevTex, hitUV - vec2(kTexU, 0.0), 0.0).r * kElevRange);
+                    float hN2 = max(0.0, textureLod(earthElevTex, hitUV - vec2(0.0, kTexV), 0.0).r * kElevRange);
+                    float hS2 = max(0.0, textureLod(earthElevTex, hitUV + vec2(0.0, kTexV), 0.0).r * kElevRange);
                     float hitLat2 = PI * 0.5 - hitUV.y * PI;
                     float texLon  = max(100.0, 2.0 * PI * R_EARTH * abs(cos(hitLat2)) / 21600.0);
                     float texLat  = PI * R_EARTH / 10800.0; // ~1853 m/texel
@@ -434,7 +536,7 @@ void main() {
             float ehi = elDeg + r;                      // upper limb elevation
             float Rlo = 1.02 / tan(radians(elo + 10.3 / (elo + 5.11))); // arcmin
             float Rhi = 1.02 / tan(radians(ehi + 10.3 / (ehi + 5.11)));
-            squish = clamp((Rlo - Rhi) / (2.0 * r * 60.0), 0.0, 0.5);
+            squish = 0; //clamp((Rlo - Rhi) / (2.0 * r * 60.0), 0.0, 0.5);
         }
         // Stretching dir.z before intersection maps screen pixels into a
         // vertically compressed disc-space — the silhouette becomes a physical
@@ -547,6 +649,145 @@ void main() {
         vec3 surfColor  = mix(nightColor * 0.12,
                               dayColor * clamp(sunDot * 1.5, 0.05, 1.0),
                               dayFrac);
+
+        // ── Ocean wave material (sea-level hits only, not terrain) ─────────────
+        // ShaderToy "Seascape" by TDM adapted to Earth ENU/ECEF space.
+        // heightMapTracing: 8-step secant refinement around the sea-sphere hit.
+        // getNormal: central differences on seaMapDetail (5 octaves).
+        // getSeaColor: kSeaBase refraction + atmosphere reflection + specular.
+        float oceanMask = textureGrad(earthSpecTex, uvSurf, uvd_dx, uvd_dy).r;
+        if (oceanMask > 0.5 && tHit < 0.0) {
+            vec3  surfUp  = normalize(hitPt);
+            float dist    = tSeaLvl;
+            float seaTime = 1.0 + pc.waveTime * kSeaSpeed;
+
+            // Altitude fade: full 3D waves at low altitude, smooth specular from orbit.
+            float altFade = 1.0 - smoothstep(3000.0, 8000.0, obsEffH);
+
+            // Wave UV strategy:
+            //   posM = hitPt.xy (ENU East/North metres from observer nadir) — always small,
+            //   so the 0.5 m normal epsilon is hundreds of float steps above ULP.
+            //   An observer-geographic phase offset (modulo first-octave wave period ≈ 39.3 m)
+            //   is added so the pattern is approximately Earth-fixed without accumulating
+            //   large absolute coordinates. Derived entirely from enuZ (observer ECEF unit vec).
+            vec2 obsPhase = vec2(0.0);
+            if (altFade > 0.01) {
+                const float wvScale = 2.0 * PI / kSeaFreq;
+                float oLat  = asin(clamp(enuZ.z, -1.0, 1.0));
+                float oLon  = atan(enuZ.y, enuZ.x);
+                obsPhase.x  = fract(oLon * R_EARTH * cos(oLat) / wvScale) * wvScale;
+                obsPhase.y  = fract(oLat * R_EARTH           / wvScale) * wvScale;
+            }
+            vec2 posM = hitPt.xy + obsPhase;
+
+            // ── heightMapTracing (low altitude only) ──────────────────────────
+            // Bracket: ±2.5 m vertical around the sea-sphere intersection.
+            // hm > 0 at the near end (above waves), hx < 0 at the far end (inside).
+            if (altFade > 0.01 && dist < 5000.0) {
+                float cosEl  = max(0.05, abs(dot(dir, surfUp)));
+                float traceR = min(60.0, 2.5 / cosEl);
+                float tm     = tSeaLvl - traceR;
+                float tx     = tSeaLvl + traceR;
+
+                // Height above sea level computed as obsEffH + 2 + t*dir.z — avoids
+                // catastrophic cancellation in length(p)-R_EARTH at sea level (float
+                // ULP at 6.37 M m is 0.76 m, which quantises 1.5 m waves into ~2 steps).
+                vec3  plo = obsPos + tm * dir;
+                float hm  = seaMap(plo.xy + obsPhase, obsEffH + 2.0 + tm * dir.z, seaTime);
+                vec3  phi = obsPos + tx * dir;
+                float hx  = seaMap(phi.xy + obsPhase, obsEffH + 2.0 + tx * dir.z, seaTime);
+
+                if (hx < 0.0) {
+                    for (int i = 0; i < 8; i++) {
+                        float tmid = mix(tm, tx, hm / (hm - hx));
+                        vec3  pm   = obsPos + tmid * dir;
+                        float hmid = seaMap(pm.xy + obsPhase, obsEffH + 2.0 + tmid * dir.z, seaTime);
+                        if (hmid < 0.0) { tx = tmid; hx = hmid; }
+                        else             { tm = tmid; hm = hmid; }
+                        if (abs(hmid) < 0.001) break;
+                    }
+                    float tWave = mix(tm, tx, hm / (hm - hx));
+                    hitPt  = obsPos + tWave * dir;
+                    surfUp = normalize(hitPt);
+                    posM   = hitPt.xy + obsPhase;
+                    dist   = tWave;
+                }
+            }
+
+            // Same precision fix: obsEffH + 2 + dist*dir.z instead of length(hitPt)-R_EARTH.
+            float pHeight = obsEffH + 2.0 + dist * dir.z;
+            vec3  viewDir = normalize(-dir);
+
+            // ── getNormal (central differences on seaMapDetail) ───────────────
+            // posM is in ENU East/North metres, so +eps in x = East, +eps in y = North.
+            // Normal in ENU = normalize(East_slope, North_slope, Up_component).
+            vec3 waveN = surfUp;
+            if (altFade > 0.01) {
+                float eps = max(0.5, dist * 0.0008);
+                float n0  = seaMapDetail(posM,                    pHeight, seaTime);
+                float nX  = seaMapDetail(posM + vec2(eps, 0.0),  pHeight, seaTime) - n0;
+                float nY  = seaMapDetail(posM + vec2(0.0,  eps), pHeight, seaTime) - n0;
+                waveN = normalize(vec3(nX, nY, 0.0) + eps * surfUp);
+                float distFade = smoothstep(3000.0, 8000.0, dist);
+                waveN = normalize(mix(waveN, surfUp, max(distFade, 1.0 - altFade)));
+            }
+
+            // ── getSeaColor ────────────────────────────────────────────────────
+            // Fresnel: cubic ramp, capped at 0.5 (ShaderToy formula)
+            float fresnel = min(pow(clamp(1.0 - dot(waveN, viewDir), 0.0, 1.0), 3.0), 0.5);
+
+            // Sky reflection — 6-sample atmosphere, distance-gated
+            vec3 reflDir   = reflect(dir, waveN);
+            vec3 reflColor = vec3(0.12, 0.28, 0.50) * dayFrac;
+            float reflStr  = fresnel * exp(-dist / 40000.0);
+            if (dot(reflDir, surfUp) > 0.0 && reflStr > 0.005) {
+                vec2 tAR = raySphere(hitPt, reflDir, R_ATMOS);
+                if (tAR.y > 0.0) {
+                    const int N_REFL = 6;
+                    float rStart = max(0.0, tAR.x);
+                    float rSeg   = (tAR.y - rStart) / float(N_REFL);
+                    float rcosA  = dot(reflDir, sunDir);
+                    float rpR    = phaseR(rcosA);
+                    float rpM    = phaseM(rcosA);
+                    vec3  rAccR  = vec3(0.0);
+                    float rAccM  = 0.0;
+                    float rodR   = 0.0, rodM = 0.0;
+                    for (int ri = 0; ri < N_REFL; ++ri) {
+                        vec3  rp   = hitPt + reflDir * (rStart + (float(ri) + 0.5) * rSeg);
+                        float rh   = max(0.0, length(rp) - R_EARTH);
+                        float rdR  = exp(-rh / H_R) * rSeg;
+                        float rdM  = exp(-rh / H_M) * rSeg;
+                        rodR += rdR; rodM += rdM;
+                        vec2 tSE  = raySphere(rp, sunDir, R_EARTH);
+                        if (tSE.x > 0.0 && tSE.y > 0.0) continue;
+                        vec2 tSun = raySphere(rp, sunDir, R_ATMOS);
+                        vec2 sOD  = (tSun.y > 0.0) ? optDepth(rp, sunDir, tSun.y) : vec2(0.0);
+                        vec3 rtau  = BETA_R * (rodR + sOD.x) + BETA_M * 1.1 * (rodM + sOD.y);
+                        vec3 rattn = exp(-rtau);
+                        rAccR += rattn * rdR;
+                        rAccM += dot(rattn, vec3(1.0 / 3.0)) * rdM;
+                    }
+                    reflColor = SUN_INTENSITY * (rpR * BETA_R * rAccR + vec3(rpM * BETA_M * rAccM));
+                }
+            }
+
+            // Refracted subsurface color (SEA_BASE + diffuse * SEA_WATER_COLOR)
+            float diff    = pow(max(0.0, dot(waveN, sunDir)) * 0.4 + 0.6, 80.0) * dayFrac;
+            vec3 refracted = kSeaBase * dayFrac + diff * kSeaWaterColor * 0.12;
+
+            // Fresnel blend (distance-attenuated to prevent orbit-scale glowing ring)
+            surfColor = mix(refracted, reflColor, reflStr);
+
+            // Wave-height crest shading: raised crests catch more water-color light
+            float atten = max(1.0 - dist * dist * 1e-5, 0.0);
+            surfColor += kSeaWaterColor * max(pHeight - kSeaHeight, 0.0) * 0.18 * atten * dayFrac;
+
+            // Specular: shininess narrows close-up, broadens with distance
+            float specPow = clamp(600.0 / max(1.0, sqrt(dist)), 8.0, 600.0);
+            float nrm     = (specPow + 8.0) / (PI * 8.0);
+            surfColor    += pow(max(0.0, dot(reflect(dir, waveN), sunDir)), specPow) * nrm * dayFrac;
+        }
+
         color += surfColor * surfAttn;
     }
 
@@ -660,4 +901,13 @@ void main() {
     }
 
     outColor = vec4(color, 1.0);
+
+    // Terrain occlusion depth for subsequent satellite/star passes.
+    // Satellites and stars are drawn with gl_Position.z = 0.5 (fixed) and tested with LESS.
+    // Close terrain hits write [0, 0.5) so they block those overlays; sky writes 1.0 so they pass.
+    // The 150 km cap prevents space-view terrain from incorrectly culling near satellites.
+    const float kOcclusionCap = 150000.0;
+    gl_FragDepth = (tHit >= 0.0 && tHit < kOcclusionCap)
+                   ? tHit / (kOcclusionCap * 2.0)
+                   : 1.0;
 }
