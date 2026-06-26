@@ -23,9 +23,10 @@ layout(location = 2) in flat vec4 moonDirENU;   // moon dir + phase pass-through
 // Must match GpuGlowBuf (SatelliteSim.h) exactly.
 layout(std430, set = 0, binding = 0) readonly buffer GlowBuf {
     uint  bins[64];          // sky glow: floatBitsToUint(max effectFlare) per bin
-    uint  flareCount;        // lens flares: number of valid per-satellite entries
+    uint  flareCount;        // unused; kept for layout compat
     uint  flarePad[3];
-    vec4  flareEntries[8];  // lens flares: xyz=ENU dir, w=effectFlare
+    vec4  flareEntries[8];   // xyz=ENU dir per sector (last-writer within 45°-az sector)
+    uint  sectorBright[8];   // floatBitsToUint(max effectFlare) per sector — stable
 } glowBuf;
 
 // RGBA noise texture (binding 1): tiled REPEAT sampler, used for angular corona
@@ -41,7 +42,7 @@ layout(set = 0, binding = 2) uniform sampler2D moonTex;
 // UV derived from ENU hit point → ECEF → geographic lat/lon.
 // earthDayTex:   SRGB colour map (auto-linearised on read).
 // earthNightTex: SRGB city-light map.
-// earthElevTex:  R8_UNORM land elevation. p → p * 8848 metres. Ocean stored as 0.
+// earthElevTex:  R8_UNORM land elevation. Ocean baseline = 15/255; land = (p - 15/255) * 8848 m.
 // earthSpecTex:  R8_UNORM ocean mask (white=ocean, black=land). Used for wave material.
 layout(set = 0, binding = 3) uniform sampler2D earthDayTex;
 layout(set = 0, binding = 4) uniform sampler2D earthNightTex;
@@ -57,13 +58,13 @@ const float R_EARTH = 6371000.0;
 const float R_ATMOS = 6471000.0;   // 100 km above surface
 
 // ── Rayleigh scattering (wavelength-dependent: R=650nm, G=510nm, B=440nm) ─────
-const vec3  BETA_R = vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level
+const vec3  BETA_R = vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level //vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level
 const float H_R    = 7994.0;   // Rayleigh scale height (m)
 
 // ── Mie scattering (aerosols, wavelength-independent) ─────────────────────────
 const float BETA_M = 2.1e-5;   // 1/m, sea level
-const float H_M    = 1200.0;   // Mie scale height (m)
-const float G_MIE  = 0.76;     // forward-scatter asymmetry (higher = sharper corona)
+const float H_M    = 12.0;   // Mie scale height (m)
+const float G_MIE  = 0.26;     // forward-scatter asymmetry (higher = sharper corona)
 
 // ── Lighting / tone mapping ────────────────────────────────────────────────────
 const float SUN_INTENSITY  = 1.0;
@@ -71,8 +72,8 @@ const float EXPOSURE_DAY   =  1.8;   // sun at zenith -- prevents white washout
 const float EXPOSURE_NIGHT = 10.0;   // below horizon -- amplifies dim twilight glow
 
 // ── Ray march quality ──────────────────────────────────────────────────────────
-const int N_VIEW  = 12;   // view ray samples
-const int N_LIGHT = 4;    // sun-direction samples per view sample
+const int N_VIEW  = 124;   // view ray samples
+const int N_LIGHT = 12;    // sun-direction samples per view sample
 
 float phaseR(float cosA) {
     return 0.75 * (1.0 + cosA * cosA);
@@ -273,7 +274,7 @@ const float kSeaFreq       = 0.056;
 const float kSeaHeight     = 2;
 const float kSeaChoppy     = 3.0;   // 4.0 → 2.0: rounder crests, less plateau cliffs
 const float kSeaSpeed      = 1.5;
-const vec3  kSeaBase = vec3(0.0, 0.03, 0.18);   // dark, desaturated blue
+const vec3  kSeaBase = vec3(0.01, 0.04, 0.08);   // dark, desaturated blue
 const vec3  kSeaWaterColor = vec3(0.2, 0.50, 0.85) * 0.1;
 
 // Hash without Sine (Dave Hoskins, MIT): stable for all float input magnitudes.
@@ -281,7 +282,7 @@ const vec3  kSeaWaterColor = vec3(0.2, 0.50, 0.85) * 0.1;
 // once the dot product exceeds ~10^4 (happens at 4th-5th octave where kOctaveM
 // doubles UV scale each iteration), producing the angular banding artifact.
 float seaHash(vec2 p) {
-    vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973) * 0.1); //vec3(0.1031, 0.1030, 0.0973)
     q += dot(q, q.yzx + 33.33);
     return fract((q.x + q.y) * q.z);
 }
@@ -297,8 +298,8 @@ float seaNoise(vec2 p) {
 
 float seaOctave(vec2 uv, float choppy) {
     uv += seaNoise(uv);
-    vec2 wv  = 1.0 - abs(sin(uv));
-    vec2 swv = abs(cos(uv));
+    vec2 wv  = 1.0 - abs(sin(mod(uv, vec2(2.0 * PI, 2.0 * PI))));
+    vec2 swv = abs(cos(mod(uv, vec2(2.0 * PI, 2.0 * PI))));
     wv = mix(wv, swv, wv);
     return pow(1.0 - pow(wv.x * wv.y, 0.65), choppy);
 }
@@ -348,8 +349,9 @@ void main() {
     // (typically 1–4 out of 255 levels = 34–140 m) that cause false terrain hits.
     // All elevation reads are gated by earthSpecTex (ocean mask): if specMask > 0.5
     // the texel is ocean and terrainH is forced to 0 regardless of the elevation pixel.
-    const float kElevRange  = 8848.0;
+    const float kElevRange  = 9000.0;
     const float kMaxTerrain = 9000.0;  // terrain shell height (m) — just above Everest
+    const float kElevOffset = 15.0 / 255.0 * kElevRange;  // DEM ocean baseline (~529 m)
 
     // GPU-side observer ground height: single texture fetch at the observer's lat/lon.
     // This matches the terrain march formula exactly, so the observer never sinks into
@@ -363,7 +365,7 @@ void main() {
         float lon = atan(od.y, od.x);
         vec2  uv  = vec2((lon + PI) / (2.0*PI), (0.5*PI - lat) / PI);
         float obsSpec = textureLod(earthSpecTex, uv, 0.0).r;
-        obsGroundH = (obsSpec > 0.5) ? 0.0 : max(0.0, textureLod(earthElevTex, uv, 0.0).r * kElevRange);
+        obsGroundH = (obsSpec > 0.5) ? 0.0 : max(0.0, textureLod(earthElevTex, uv, 0.0).r * kElevRange - kElevOffset);
     }
     float obsEffH = max(obsGroundH, max(0.0, pc.obsECEFDir.w));
 
@@ -420,7 +422,7 @@ void main() {
             float lon = atan(pE.y, pE.x);
             vec2  uv  = vec2((lon + PI) / (2.0 * PI), (0.5 * PI - lat) / PI);
             float specPx   = textureLod(earthSpecTex, uv, 0.0).r;
-            float terrainH = (specPx > 0.5) ? 0.0 : max(0.0, textureLod(earthElevTex, uv, 0.0).r * kElevRange);
+            float terrainH = (specPx > 0.5) ? 0.0 : max(0.0, textureLod(earthElevTex, uv, 0.0).r * kElevRange - kElevOffset);
 
             if (rayH < terrainH) {
                 float tLo = tPrev, tHi = t;
@@ -434,7 +436,7 @@ void main() {
                     float mLon = atan(pmE.y, pmE.x);
                     vec2  mUV  = vec2((mLon + PI) / (2.0*PI), (0.5*PI - mLat) / PI);
                     float mSpec = textureLod(earthSpecTex, mUV, 0.0).r;
-                    float mT    = (mSpec > 0.5) ? 0.0 : max(0.0, textureLod(earthElevTex, mUV, 0.0).r * kElevRange);
+                    float mT    = (mSpec > 0.5) ? 0.0 : max(0.0, textureLod(earthElevTex, mUV, 0.0).r * kElevRange - kElevOffset);
                     if (mH < mT) tHi = tM; else tLo = tM;
                 }
                 tHit = (tLo + tHi) * 0.5;
@@ -449,10 +451,10 @@ void main() {
                 {
                     const float kTexU = 1.0 / 21600.0;
                     const float kTexV = 1.0 / 10800.0;
-                    float hE2 = max(0.0, textureLod(earthElevTex, hitUV + vec2(kTexU, 0.0), 0.0).r * kElevRange);
-                    float hW2 = max(0.0, textureLod(earthElevTex, hitUV - vec2(kTexU, 0.0), 0.0).r * kElevRange);
-                    float hN2 = max(0.0, textureLod(earthElevTex, hitUV - vec2(0.0, kTexV), 0.0).r * kElevRange);
-                    float hS2 = max(0.0, textureLod(earthElevTex, hitUV + vec2(0.0, kTexV), 0.0).r * kElevRange);
+                    float hE2 = max(0.0, textureLod(earthElevTex, hitUV + vec2(kTexU, 0.0), 0.0).r * kElevRange - kElevOffset);
+                    float hW2 = max(0.0, textureLod(earthElevTex, hitUV - vec2(kTexU, 0.0), 0.0).r * kElevRange - kElevOffset);
+                    float hN2 = max(0.0, textureLod(earthElevTex, hitUV - vec2(0.0, kTexV), 0.0).r * kElevRange - kElevOffset);
+                    float hS2 = max(0.0, textureLod(earthElevTex, hitUV + vec2(0.0, kTexV), 0.0).r * kElevRange - kElevOffset);
                     float hitLat2 = PI * 0.5 - hitUV.y * PI;
                     float texLon  = max(100.0, 2.0 * PI * R_EARTH * abs(cos(hitLat2)) / 21600.0);
                     float texLat  = PI * R_EARTH / 10800.0; // ~1853 m/texel
@@ -554,12 +556,18 @@ void main() {
             float diffuse  = max(0.0, dot(n, sunDir)) * moonDirENU.w;
             float mu       = max(0.0, dot(n, -moonDir3));
             float limbDark = 0.35 + 0.65 * sqrt(mu);
-            const float kEarth = 0.018 * 0.2;
+            // Earthshine inversely follows moon phase: new moon (full Earth) = maximum.
+            float earthshine = 0.018 * mu * (1.0 - moonDirENU.w);
 
             // Build the moon's local face frame: moonZ points toward the observer
             // (tidally locked near side), moonX/moonY span the visible face plane.
+            // refUp = celestial north pole in ENU: converts ECEF (0,0,1) to observer ENU
+            // by dotting with the ENU basis vectors (enuX/Y/Z are in ECEF-space).
+            // This correctly rotates the texture with parallactic angle as the observer
+            // moves across Earth, instead of always aligning north with local zenith.
             vec3 moonZ = -moonDir3;
-            vec3 refUp = abs(moonZ.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+            vec3 northCelENU = vec3(enuX.z, enuY.z, enuZ.z);
+            vec3 refUp = (abs(dot(northCelENU, moonZ)) < 0.99) ? northCelENU : vec3(1.0, 0.0, 0.0);
             vec3 moonX = normalize(cross(refUp, moonZ));
             vec3 moonY = cross(moonZ, moonX);
 
@@ -577,8 +585,8 @@ void main() {
 
             vec3 texColor = texture(moonTex, moonUV).rgb;
 
-            float discFade = smoothstep(limbZ - 0.006, limbZ + 0.002, moonDirENU.z);
-            vec3 moonColor = texColor * (diffuse + kEarth) * limbDark * kMoonBright;
+            float discFade = (tSurface > 0.0) ? 0.0 : 1.0;
+            vec3 moonColor = texColor * (diffuse + earthshine) * limbDark * kMoonBright;
             vec3 moonAttn  = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             color += discFade * moonColor * moonAttn;
         }
@@ -608,7 +616,8 @@ void main() {
             float glow   = exp(-angle * angle / (2.0 * kSig * kSig)) * 0.01;
             float gElev  = smoothstep(-0.08, 0.02, fd.z);
             float intens = clamp(log2(max(flux, 1.0)) / 4.0, 0.0, 1.5);
-            color += hClip * gElev * glow * intens * 0.06 * vec3(1.0, 0.96, 0.88) * flareAttn;
+            float atmosW = 1.0 - exp(-odR_cam / 5000.0);
+            color += hClip * gElev * glow * intens * 0.06 * vec3(1.0, 0.96, 0.88) * flareAttn * atmosW;
         }
     }
 
@@ -660,6 +669,8 @@ void main() {
             vec3  surfUp  = normalize(hitPt);
             float dist    = tSeaLvl;
             float seaTime = 1.0 + pc.waveTime * kSeaSpeed;
+
+            
 
             // Altitude fade: full 3D waves at low altitude, smooth specular from orbit.
             float altFade = 1.0 - smoothstep(3000.0, 8000.0, obsEffH);
@@ -786,6 +797,31 @@ void main() {
             float specPow = clamp(600.0 / max(1.0, sqrt(dist)), 8.0, 600.0);
             float nrm     = (specPow + 8.0) / (PI * 8.0);
             surfColor    += pow(max(0.0, dot(reflect(dir, waveN), sunDir)), specPow) * nrm * dayFrac;
+
+            // Moon glint on ocean — nighttime only, dims with phase (new moon = brightest Earth).
+            if (moonDirENU.z > limbZ && moonDirENU.w > 0.01) {
+                vec3  moonDir3o = normalize(moonDirENU.xyz);
+                float mSpecPow  = 120.0;
+                float mNrm      = (mSpecPow + 8.0) / (PI * 8.0);
+                surfColor += pow(max(0.0, dot(reflect(dir, waveN), moonDir3o)), mSpecPow)
+                           * mNrm * moonDirENU.w * clamp(moonDirENU.z, 0.0, 1.0)
+                           * 0.006 * (1.0 - dayFrac);
+            }
+            // Mirror satellite flare glints — sector-stable selection via sectorBright.
+            {
+                for (int fi = 0; fi < 8; ++fi) {
+                    if (glowBuf.sectorBright[fi] == 0u) continue;
+                    float flux = uintBitsToFloat(glowBuf.sectorBright[fi]);
+                    if (flux < 2.0) continue;
+                    vec3 fe = normalize(glowBuf.flareEntries[fi].xyz);
+                    if (fe.z < limbZ - 0.02) continue;
+                    float fSpecPow = 80.0;
+                    float fNrm     = (fSpecPow + 8.0) / (PI * 8.0);
+                    float fIntens  = clamp(log2(max(flux, 1.0)) / 10.0, 0.0, 1.0);
+                    surfColor += pow(max(0.0, dot(reflect(dir, waveN), fe)), fSpecPow)
+                               * fNrm * fIntens * 0.008 * vec3(1.2, 1.1, 1.0) * (1.0 - dayFrac);
+                }
+            }
         }
 
         color += surfColor * surfAttn;
@@ -803,35 +839,41 @@ void main() {
     // ── Moonlight ambient ──────────────────────────────────────────────────────
     float moonEl    = clamp(moonDirENU.z, 0.0, 1.0);
     float moonIllum = moonDirENU.w;
-    color += vec3(0.0025, 0.003, 0.004) * moonIllum * moonEl * nightAmt;
+    // Atmosphere weight: glow and ambient fade to zero above the atmosphere.
+    float atmosWeight = 1.0 - exp(-odR_cam / 5000.0);
+    color += vec3(0.0025, 0.003, 0.004) * moonIllum * moonEl * nightAmt * atmosWeight;
 
-    // ── Moon glow: tight corona + wide diffuse halo ───────────────────────────
+    // ── Moon glow: tight corona + wide diffuse halo (atmosphere-only) ─────────
     if (moonDirENU.z > limbZ - 0.05) {
         vec3  moonDir3  = normalize(moonDirENU.xyz);
         float moonAngle = acos(clamp(dot(dir, moonDir3), -1.0, 1.0));
         float moonFade  = smoothstep(limbZ - 0.006, limbZ + 0.002, moonDirENU.z);
 
-        // Tight inner corona — peaks at the disc edge (~0.014 rad), falls to ~8% at 3× disc radius.
-        // sigma = 0.012 rad ≈ 0.7°; gives a crisp bloom ring without polluting the wider sky.
+        // Tight inner corona — peaks at disc edge, falls off quickly.
         float corona = exp(-moonAngle * moonAngle / (2.0 * 0.012 * 0.012)) * nightAmt;
-        color += hClip * moonFade * corona * vec3(0.92, 0.94, 1.00) * moonIllum * 0.04;
+        color += hClip * moonFade * corona * vec3(0.92, 0.94, 1.00) * moonIllum * 0.04 * atmosWeight;
 
-        // Wide diffuse halo — very broad Gaussian (sigma ≈ 1.8 rad) that lifts the whole
-        // night sky slightly around the moon, matching the real scattered moonlight glow.
+        // Wide diffuse halo — scattered moonlight glow, atmosphere-only.
         float scale = 100.0;
         float halo  = exp(-moonAngle * moonAngle / (2.0 * 0.018 * 0.018 * scale * scale));
-        color += hClip * moonFade * halo * vec3(0.88, 0.90, 1.00) * moonIllum * 0.012;
+        color += hClip * moonFade * halo * vec3(0.88, 0.90, 1.00) * moonIllum * 0.012 * atmosWeight;
     }
 
     // ── Sun disc + atmospheric corona ─────────────────────────────────────────
     if (sunDirENU.w > limbZ - 0.1) {
-        float angle     = acos(clamp(cosA, -1.0, 1.0));
-        float disc      = 1.0 - smoothstep(0.007, 0.010, angle);
-        float corona    = exp(-angle * angle / (2.0 * 0.035 * 0.035));
-        float fade      = smoothstep(limbZ - 0.006, limbZ + 0.002, sunDirENU.w);
-        float horizClip = hClip;
-        vec3  sunCol    = vec3(1.5, 1.3, 1.0);
-        color += horizClip * fade * (disc * sunCol + corona * sunCol * 0.12);
+        float angle      = acos(clamp(cosA, -1.0, 1.0));
+        const float kSunAngR = 0.00466; // solar angular radius (~0.267°)
+        // Geometric fade: smooth transition as sun centre crosses the geometric limb.
+        float geomFade   = smoothstep(limbZ - kSunAngR, limbZ + kSunAngR, sunDirENU.w);
+        // Disc pixel: hard-clipped by terrain/ocean hit for this fragment direction.
+        float discVis    = (1.0 - smoothstep(0.007, 0.010, angle))
+                         * (tSurface > 0.0 ? 0.0 : 1.0);
+        // Sunset shift: redden and widen corona as sun approaches the limb.
+        float sunsetT    = clamp(1.0 - (sunDirENU.w - limbZ) / 0.15, 0.0, 1.0);
+        vec3  sunCol     = mix(vec3(1.5, 1.3, 1.0), vec3(1.8, 0.7, 0.2), sunsetT * 0.7);
+        float coronaSig  = mix(0.035, 0.08, sunsetT * sunsetT);
+        float corona     = exp(-angle * angle / (2.0 * coronaSig * coronaSig));
+        color += discVis * geomFade * sunCol + corona * geomFade * sunCol * 0.12;
     }
 
     // ── Camera lens flares (post-tonemap) ─────────────────────────────────────
@@ -859,23 +901,24 @@ void main() {
         vec3 flareAccum = vec3(0.0);
 
         // ── Satellite lens flares ───────────────────────────────────────────────
-        // Per-satellite positions from flareEntries[] — real sky directions, not
-        // bin centres. The smooth outer glow is in sat_point.frag; lensFlare()
-        // here adds the spiky noise-driven corona (f0) and ghost artifacts (f1–f6).
+        // One entry per 45°-az sector; sectorBright holds the stable atomicMax
+        // brightness so the flare intensity doesn't flicker even when many
+        // bright satellites compete within the same sector.
         {
             const float kFlareThr = 1.0;
-            int nFlares = int(min(glowBuf.flareCount, 8u));
-            for (int gi = 0; gi < nFlares; ++gi) {
-                vec4 e = glowBuf.flareEntries[gi];
-                if (e.z < limbZ - 0.02) continue;
-                if (e.w < kFlareThr) continue;
+            for (int gi = 0; gi < 8; ++gi) {
+                if (glowBuf.sectorBright[gi] == 0u) continue;
+                float bright = uintBitsToFloat(glowBuf.sectorBright[gi]);
+                if (bright < kFlareThr) continue;
+                vec3 satDir = normalize(glowBuf.flareEntries[gi].xyz);
+                if (satDir.z < limbZ - 0.02) continue;
 
-                vec3 satCam = mat3(pc.skyView) * normalize(e.xyz);
+                vec3 satCam = mat3(pc.skyView) * satDir;
                 if (satCam.z >= -0.01) continue;
                 vec2 satUV = vec2(satCam.x, -satCam.y) / (-satCam.z * tanHF * 2.0);
 
-                float intens     = clamp(log2(max(e.w, 1.0)) / log2(16.0), 0.0, 1.0);
-                float entryScale = intens * sqrt(intens); // intens^1.5, smooth fade-in
+                float intens     = clamp(log2(max(bright, 1.0)) / log2(16.0), 0.0, 1.0);
+                float entryScale = intens * sqrt(intens);
                 vec3  tint       = vec3(1.3, 1.15, 1.0);
                 flareAccum += lensFlare(fragUV, satUV, intens, 0.3) * tint * entryScale * 0.25;
             }
@@ -902,12 +945,14 @@ void main() {
 
     outColor = vec4(color, 1.0);
 
-    // Terrain occlusion depth for subsequent satellite/star passes.
+    // Terrain/ocean occlusion depth for subsequent satellite/star passes.
     // Satellites and stars are drawn with gl_Position.z = 0.5 (fixed) and tested with LESS.
-    // Close terrain hits write [0, 0.5) so they block those overlays; sky writes 1.0 so they pass.
+    // Close surface hits write [0, 0.5) so they block those overlays; sky writes 1.0 so they pass.
     // The 150 km cap prevents space-view terrain from incorrectly culling near satellites.
+    // tSeaLvl covers ocean pixels that have no terrain hit but still block satellites.
     const float kOcclusionCap = 150000.0;
-    gl_FragDepth = (tHit >= 0.0 && tHit < kOcclusionCap)
-                   ? tHit / (kOcclusionCap * 2.0)
+    float tOcclude = (tHit >= 0.0) ? tHit : tSeaLvl;
+    gl_FragDepth = (tOcclude >= 0.0 && tOcclude < kOcclusionCap)
+                   ? tOcclude / (kOcclusionCap * 2.0)
                    : 1.0;
 }

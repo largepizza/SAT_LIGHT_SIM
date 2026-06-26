@@ -216,18 +216,21 @@ static_assert(sizeof(SatDrawPC) == 128, "SatDrawPC layout mismatch");
 //                      Used by sat_sky.frag to call lensFlare() at the real
 //                      satellite screen position (spiky corona + ghost artifacts).
 //
-// std430: bins[64]×uint(256) + flareCount+pad×uint(16) + flareEntries[32]×vec4(512)
-//       = 784 bytes total.
+// std430: bins[64]×uint(256) + flareCount+pad×uint(16) + flareEntries[8]×vec4(128)
+//       + sectorBright[8]×uint(32) = 432 bytes total.
+// sectorBright[8]: atomicMax per 45°-azimuth sector — stable between frames.
+// flareEntries[8]: last-written direction per sector (xyz only; w unused).
 static constexpr int kGlowBins = 64;
 static constexpr int kMaxFlares = 8;
 struct GpuGlowBuf
 {
     uint32_t bins[kGlowBins];
-    uint32_t flareCount;
+    uint32_t flareCount;        // unused; kept for layout compat
     uint32_t flarePad[3];
-    glm::vec4 flareEntries[kMaxFlares]; // xyz=ENU dir, w=effectFlare
+    glm::vec4 flareEntries[kMaxFlares]; // xyz=ENU dir per sector (last-writer)
+    uint32_t sectorBright[kMaxFlares];  // floatBitsToUint(max effectFlare) per sector
 };
-static_assert(sizeof(GpuGlowBuf) == kGlowBins * 4 + 16 + kMaxFlares * 16, "GpuGlowBuf layout mismatch");
+static_assert(sizeof(GpuGlowBuf) == kGlowBins * 4 + 16 + kMaxFlares * 16 + kMaxFlares * 4, "GpuGlowBuf layout mismatch");
 
 // ── GPU orbital parameters (uploaded once per buildOrbits, device-local) ─────
 // 28 × 4-byte fields = 112 bytes.  All plain floats/uints — no vec3 — so

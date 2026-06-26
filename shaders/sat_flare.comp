@@ -80,9 +80,10 @@ const float FLARE_THRESH = 1.0;
 const uint  FLARE_MAX    = 8u;
 layout(set = 0, binding = 2) buffer GlowBuf {
     uint  bins[64];
-    uint  flareCount;
+    uint  flareCount;       // unused; kept for layout compat
     uint  flarePad[3];
-    vec4  flareEntries[8]; // xyz=ENU dir, w=effectFlare
+    vec4  flareEntries[8];  // xyz=ENU dir per sector (last-writer wins within sector)
+    uint  sectorBright[8];  // atomicMax(floatBitsToUint(effectFlare)) per 45°-az sector
 };
 
 // ── Push constants ────────────────────────────────────────────────────────────
@@ -397,13 +398,22 @@ void main() {
         atomicMax(bins[azBin * 8u + elBin], floatBitsToUint(effectFlare));
     }
 
-    // ── Lens flares: claim a slot with the real satellite sky direction ───────
-    // sat_sky.frag calls lensFlare() for each entry — spiky corona + ghost artifacts.
-    // First FLARE_MAX bright-enough sats claim slots; overflow is dropped.
+    // ── Lens flares: sector-based stable selection ───────────────────────────
+    // Sky divided into 8 azimuth sectors (45° each). Each sector keeps the
+    // brightest satellite via atomicMax on sectorBright[sector]. Direction is
+    // written only if this satellite beat the previous max — ensures the stored
+    // direction belongs to the actual brightest satellite, not a random last-writer.
     if (effectFlare >= FLARE_THRESH) {
-        uint slot = atomicAdd(flareCount, 1u);
-        if (slot < FLARE_MAX)
-            flareEntries[slot] = vec4(skyDir, effectFlare);
+        const float TWO_PI = 6.28318530718;
+        float az    = mod(atan(skyDir.x, skyDir.y) + TWO_PI, TWO_PI);
+        uint sector = uint(az * (8.0 / TWO_PI)) & 7u;
+        uint oldBright = atomicMax(sectorBright[sector], floatBitsToUint(effectFlare));
+        if (floatBitsToUint(effectFlare) > oldBright) {
+            // We beat the previous max — store our direction.
+            // Minor race: another thread at the same brightness may also write here,
+            // but both represent the true sector-max, so the direction stays stable.
+            flareEntries[sector] = vec4(skyDir, effectFlare);
+        }
     }
 
     // ── Output ───────────────────────────────────────────────────────────────
