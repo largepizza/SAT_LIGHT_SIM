@@ -403,7 +403,7 @@ void main() {
         // scales with tExit — sample positions stay proportional to the march range
         // regardless of view direction, eliminating the per-frame drift that causes
         // flickering when panning.
-        const int kN  = 96;
+        const int kN  = 196;
         float jitter  = textureLod(noiseTex, gl_FragCoord.xy * (1.0/128.0), 0.0).r;
         float tPrev   = 2.0;
 
@@ -925,22 +925,25 @@ void main() {
         }
 
         // ── Sun lens flare ──────────────────────────────────────────────────────
-        // The sun is always at intens=1.0 when above the horizon.
-        // A separate horizon fade ensures the flare vanishes as the sun sets.
-        // The sun disc and atmospheric corona are handled above (physics-based);
-        // this adds only the camera optical artifact layer on top.
-        if (pc.sunDirENU.w > -0.01) {
-            float sunIntensity = 10 * clamp(pc.sunDirENU.w, 0, 1.0);
+        // Gate on limbZ (sin of geometric limb depression, already accounts for observer
+        // altitude) so the flare correctly persists when the sun is visible past the
+        // curved Earth from orbit — not just when sunDirENU.w > 0.
+        if (pc.sunDirENU.w > limbZ - 0.05) {
+            float above        = pc.sunDirENU.w - limbZ;
+            float sunIntensity = 10.0 * clamp(above / 0.5, 0.0, 1.0);
             vec3 sunCam = mat3(pc.skyView) * normalize(pc.sunDirENU.xyz);
             if (sunCam.z < -0.01) {
                 vec2 sunUV    = vec2(sunCam.x, -sunCam.y) / (-sunCam.z * tanHF * 2.0);
-                float sunFade = clamp(pc.sunDirENU.w * 5.0 + 0.5, 0.0, 1.0);
+                float sunFade = clamp(above * 8.0, 0.0, 1.0);
                 vec3  sunTint = vec3(1.4, 1.2, 0.9);
                 flareAccum += lensFlare(fragUV, sunUV, sunIntensity, 2.0) * sunTint * sunFade * 0.45;
             }
         }
 
-        color += flareAccum;
+        // Occlude lens flares on terrain: if this fragment direction hits land (tHit > 0)
+        // the source is behind that terrain from the camera, so no flare should form.
+        // Ocean (tSeaLvl hit, tHit = -1) is excluded — ghost artifacts on water are real.
+        color += flareAccum * (tHit > 0.0 ? 0.0 : 1.0);
     }
 
     outColor = vec4(color, 1.0);

@@ -1,13 +1,20 @@
 // ── star_point.frag ───────────────────────────────────────────────────────────
 // Fragment shader for background stars.
 //
-// Stars are genuine point sources: no outer glow, no satellite-style bloom.
-// A tight Gaussian core with log2-compressed brightness renders them as sharp
-// pinpoints across the full dynamic range from naked-eye limit (~mag 6) down
-// to bright stars like Sirius (-1.46) without any visible sprite artefacts.
+// Minimum-size Gaussian (same technique as sat_point.frag):
+//   sigmaAbsPx has a 0.7 px floor so even the faintest, smallest sprite
+//   spreads across ~2-3 pixels instead of concentrating all flux in one
+//   aliased pixel.  For dim stars, coreScale is small → soft dim blob.
+//   For bright stars, coreScale is large → bright, still soft core.
 //
-// Atmospheric scintillation (twinkling) can be layered on top in a future pass
-// once a per-frame time value is exposed in the push constants.
+// Brightness follows sqrt(intensity): correct 0→0 for invisible stars, and
+// gives perceptually even compression across the Sirius-to-naked-eye range.
+//
+// Desaturation: faint stars mix toward white — their B-V colour is
+// imperceptible at low flux, and the white tint reduces "coloured pixel" artefacts.
+//
+// fragTwinkle (from star_point.vert): per-star atmospheric scintillation
+// modulator.  Computed in the vertex stage so it is constant across the sprite.
 //
 // Output: (rgb*brightness, brightness) for additive blend accumulation.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -16,7 +23,8 @@
 
 layout(location = 0) in vec3  fragColor;
 layout(location = 1) in float fragIntensity;
-layout(location = 2) in float fragAngSize; // from sat_point.vert — unused for stars
+layout(location = 2) in float fragAngSize;
+layout(location = 3) in float fragTwinkle;  // scintillation modulator [0,~2]; 1 = no twinkle
 
 layout(location = 0) out vec4 outColor;
 
@@ -26,14 +34,26 @@ void main() {
 
     if (d > 0.5) discard;
 
-    // Tight Gaussian core — naturally reaches ~0 at sprite edge, no cutoff.
-    // sigmaInner = 0.045 (relative): inner radius is 4.5% of sprite half-width.
-    // exp(-(0.5)²/(2×0.045²)) ≈ 0 so no boundary is visible.
+    // ── Minimum-size Gaussian in absolute pixel units ──────────────────────────
+    // 0.7 px sigma floor → ~1.65 px FWHM.  Even a 6 px faint-star sprite
+    // spreads its flux across 2-3 pixels rather than one harsh spike.
     const float sigmaInner = 0.045;
-    // Same scale-from-zero formula as sat_point.frag — dim stars fade in
-    // smoothly rather than snapping from a bright dot to invisible.
-    float coreScale = min(log2(2.0 + fragIntensity) * 1.5, 3.0);
-    float brightness = exp(-d * d / (2.0 * sigmaInner * sigmaInner)) * coreScale;
+    float sigmaAbsPx = max(sigmaInner * fragAngSize, 0.2);
+    float pixD       = d * fragAngSize;
+    float gaussian   = exp(-pixD * pixD / (2.0 * sigmaAbsPx * sigmaAbsPx));
 
-    outColor = vec4(fragColor * brightness, brightness);
+    // ── Brightness: sqrt compression, correct zero for invisible stars ─────────
+    // log2(2 + x) * 1.5 never reaches 0 and makes all stars equally bright;
+    // sqrt(x) * 2.8 properly attenuates faint stars so they appear as dim blobs
+    // rather than bright pinpoints.
+    float coreScale = clamp(sqrt(fragIntensity) * 2.8, 0.0, 3.0);
+
+    // ── Colour desaturation for dim stars ─────────────────────────────────────
+    // Bright stars (Betelgeuse, Sirius) keep their B-V tint; faint stars
+    // fade toward white since their colour is below perceptual threshold anyway.
+    float saturation = clamp(sqrt(fragIntensity) * 1.5, 0.0, 1.0);
+    vec3  starColor  = mix(vec3(1.0), fragColor, saturation);
+
+    float brightness = gaussian * coreScale * fragTwinkle;
+    outColor = vec4(starColor * brightness, brightness);
 }
