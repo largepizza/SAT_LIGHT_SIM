@@ -819,7 +819,7 @@ void main() {
                     float fNrm     = (fSpecPow + 8.0) / (PI * 8.0);
                     float fIntens  = clamp(log2(max(flux, 1.0)) / 10.0, 0.0, 1.0);
                     surfColor += pow(max(0.0, dot(reflect(dir, waveN), fe)), fSpecPow)
-                               * fNrm * fIntens * 0.008 * vec3(1.2, 1.1, 1.0) * (1.0 - dayFrac);
+                               * fNrm * fIntens * 0.008 * vec3(1.2, 1.1, 1.0) * (1.0 - dayFrac) * altFade;
                 }
             }
         }
