@@ -402,6 +402,8 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
     pc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
     pc.gmst = (float)fmod(kOmegaEarth * (simDayJ2000 * 86400.0 + simSecInDay), glm::two_pi<double>());
     // Wave time relative to sim epoch: pauses when paused, scales with time warp.
+    // Sim sec works great as it resets before any crazy floating point issues happen. Great for any animations that need a time variable.
+    // There is probably a looping artifact when it rolls over but who cares it's a tiny blip that most won't notice
     pc.waveTime = simSecInDay * 1.0;
     pc.sunDirENU = sunDirENU;
     pc.moonDirENU = moonDirENU; // xyz = moon dir in ENU, w = illuminated fraction
@@ -3188,11 +3190,11 @@ void SatelliteSim::initStars(VulkanContext &ctx)
 }
 
 // ─── createStarPipeline ───────────────────────────────────────────────────────
-// Uses sat_point.vert (shared vertex layout) + star_point.frag (tight core only,
+// Uses star_point.vert (twinkling + shared layout) + star_point.frag (tight core only,
 // no satellite-style outer glow — prevents bright stars from becoming blobs).
 void SatelliteSim::createStarPipeline(VulkanContext &ctx)
 {
-    VkShaderModule vert = ctx.loadShader("shaders/sat_point.vert.spv");
+    VkShaderModule vert = ctx.loadShader("shaders/star_point.vert.spv");
     VkShaderModule frag = ctx.loadShader("shaders/star_point.frag.spv");
 
     VkPipelineShaderStageCreateInfo stages[2] = {};
