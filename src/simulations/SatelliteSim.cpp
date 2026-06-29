@@ -139,6 +139,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     static_assert(KB_COUNT == 11, "KB enum and keybindings initializer are out of sync");
 
     createBuffers(ctx);
+    createCloudNoisePipeline(ctx);
     createGlowResources(ctx);
     createDescriptors(ctx);
     createComputePipeline(ctx);
@@ -422,6 +423,30 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         obsTerrainH = (pixVal <= kSeaLevel) ? 0.0f : std::max(0.0f, (pixVal - kSeaLevel) * 8848.0f);
     }
     pc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset); // w = user altitude offset above terrain (m); GPU computes ground height
+
+    // ── Update cloud params UBO (binding 9) ──────────────────────────────────
+    if (cloudParamsMapped)
+    {
+        GpuCloudParams cp{};
+        cp.coverage    = cloudCoverage;
+        cp.density     = cloudDensity;
+        cp.driftRate   = cloudDriftRate;
+        cp.sunGain     = cloudSunGain;
+        cp.ambientGain = cloudAmbientGain;
+        cp.hgG         = cloudHgG;
+        cp.marchSteps  = cloudMarchSteps;
+        cp.lightSteps  = cloudLightSteps;
+        cp.cloudPhase  = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
+                                     glm::two_pi<double>());
+        // Layer 0: low cloud / stratus shell
+        cp.layers[0] = { cloudBaseAltM, 1.0f, 0.80f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f };
+        // Layer 1: high cirrus shell
+        cp.layers[1] = { cloudTopAltM,  2.0f, 0.15f, 2.0f, 0.5f, 0.4f, 1.0f, 0.0f };
+        // Layers 2-3: unused
+        cp.layers[2] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+        cp.layers[3] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+        memcpy(cloudParamsMapped, &cp, sizeof(cp));
+    }
 
     // ── Pass 1: sky/ground background (fullscreen triangle, opaque) ──────────
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyBgPipeline);
@@ -1675,6 +1700,126 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     }
                 }
 
+                // ── Clouds ────────────────────────────────────────────────────
+                CLAY(CLAY_ID("CloudTopSep"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                                          .padding = {0, 0, 6, 4}},
+                                              .backgroundColor = Pal::sectionHdr}) {}
+                CLAY_TEXT(CLAY_STRING("Clouds"),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(14)}));
+                CLAY(CLAY_ID("CloudSep"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                                       .padding = {0, 0, 4, 4}},
+                                           .backgroundColor = Pal::sectionHdr}) {}
+
+                struct CloudSlider
+                {
+                    const char *label;
+                    float *val;
+                    float vmin, vmax, step;
+                    const char *fmt;
+                    int idx;
+                };
+                static char cloudBufs[10][16];
+                CloudSlider cloudSliders[] = {
+                    {"Coverage",    &cloudCoverage,    0.0f,  1.0f,    0.05f,  "%.2f", 0},
+                    {"Density",     &cloudDensity,     0.1f,  10.0f,   0.1f,   "%.1f", 1},
+                    {"L0 alt (m)",  &cloudBaseAltM,    100.0f, 6000.0f, 100.0f, "%.0f", 2},
+                    {"L1 alt (m)",  &cloudTopAltM,     4000.0f,15000.0f,250.0f, "%.0f", 3},
+                    {"Drift (1e-6)",&cloudDriftRate,   0.0f,  20e-6f,  0.5e-6f,"%.1e", 4},
+                    {"Sun gain",    &cloudSunGain,     0.0f,  5.0f,    0.1f,   "%.2f", 5},
+                    {"Ambient",     &cloudAmbientGain, 0.0f,  2.0f,    0.05f,  "%.2f", 6},
+                    {"HG g",        &cloudHgG,         0.0f,  0.99f,   0.05f,  "%.2f", 7},
+                    {"March steps", &cloudMarchSteps,  4.0f,  128.0f,  4.0f,   "%.0f", 8},
+                    {"Light steps", &cloudLightSteps,  1.0f,  16.0f,   1.0f,   "%.0f", 9},
+                };
+                for (auto &cs : cloudSliders)
+                {
+                    int ci = cs.idx;
+                    snprintf(cloudBufs[ci], sizeof(cloudBufs[ci]), cs.fmt, *cs.val);
+                    Clay_String valStr{false, (int32_t)strlen(cloudBufs[ci]), cloudBufs[ci]};
+                    float t = glm::clamp((*cs.val - cs.vmin) / (cs.vmax - cs.vmin), 0.0f, 1.0f);
+
+                    CLAY(CLAY_IDI("CloudRow", ci), {.layout = {
+                                                        .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                                        .padding = {4, 4, 4, 4},
+                                                        .childGap = 6,
+                                                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                    {
+                        CLAY(CLAY_IDI("CloudLbl", ci), {.layout = {.sizing = {CLAY_SIZING_FIXED(110), CLAY_SIZING_FIT(0)}}})
+                        {
+                            Clay_String lblStr{false, (int32_t)strlen(cs.label), cs.label};
+                            CLAY_TEXT(lblStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+                        }
+
+                        CLAY(CLAY_IDI("CloudSlider", ci), {.layout = {
+                                                               .sizing = {CLAY_SIZING_FIXED(kPhotoSliderW), CLAY_SIZING_FIXED(16)},
+                                                               .childGap = 0,
+                                                               .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                                           .backgroundColor = {22, 22, 24, 255},
+                                                           .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                        {
+                            {
+                                bool hov = Clay_Hovered();
+                                if (hov && inp.lmbPressed)
+                                    draggingCloud[ci] = true;
+                                if (!inp.lmbDown)
+                                    draggingCloud[ci] = false;
+                                if (draggingCloud[ci])
+                                {
+                                    float nt = (inp.mouseX - kPhotoSliderAbsX) / kPhotoSliderW;
+                                    *cs.val = glm::clamp(cs.vmin + nt * (cs.vmax - cs.vmin), cs.vmin, cs.vmax);
+                                }
+                            }
+                            float fillW = t * kPhotoSliderW;
+                            if (fillW >= 1.0f)
+                            {
+                                CLAY(CLAY_IDI("CloudFill", ci), {.layout = {.sizing = {CLAY_SIZING_FIXED(fillW), CLAY_SIZING_GROW(0)}},
+                                                                  .backgroundColor = Pal::btnAccent,
+                                                                  .cornerRadius = CLAY_CORNER_RADIUS(3)}) {}
+                            }
+                        }
+
+                        CLAY(CLAY_IDI("CloudVal", ci), {.layout = {
+                                                            .sizing = {CLAY_SIZING_FIXED(58), CLAY_SIZING_FIT(0)},
+                                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+                        {
+                            CLAY_TEXT(valStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
+                        }
+
+                        Clay_Color cMinus = hovCloudMinus[ci] ? Pal::btnHover : Pal::btnIdle;
+                        CLAY(CLAY_IDI("CloudMinus", ci), {.layout = {
+                                                              .sizing = {CLAY_SIZING_FIXED(22), CLAY_SIZING_FIXED(22)},
+                                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                                          .backgroundColor = cMinus,
+                                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
+                        {
+                            bool n = Clay_Hovered();
+                            sndRollover(n, hovCloudMinus[ci]);
+                            sndClick(n);
+                            hovCloudMinus[ci] = n;
+                            if (hovCloudMinus[ci] && inp.lmbPressed)
+                                *cs.val = glm::clamp(*cs.val - cs.step, cs.vmin, cs.vmax);
+                            CLAY_TEXT(CLAY_STRING("-"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
+                        }
+
+                        Clay_Color cPlus = hovCloudPlus[ci] ? Pal::btnHover : Pal::btnIdle;
+                        CLAY(CLAY_IDI("CloudPlus", ci), {.layout = {
+                                                             .sizing = {CLAY_SIZING_FIXED(22), CLAY_SIZING_FIXED(22)},
+                                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                                         .backgroundColor = cPlus,
+                                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
+                        {
+                            bool n = Clay_Hovered();
+                            sndRollover(n, hovCloudPlus[ci]);
+                            sndClick(n);
+                            hovCloudPlus[ci] = n;
+                            if (hovCloudPlus[ci] && inp.lmbPressed)
+                                *cs.val = glm::clamp(*cs.val + cs.step, cs.vmin, cs.vmax);
+                            CLAY_TEXT(CLAY_STRING("+"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
+                        }
+                    }
+                }
+
                 // ── Attributions ──────────────────────────────────────────────
                 CLAY(CLAY_ID("AttrGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(8)}}}) {}
                 CLAY(CLAY_ID("AttrHdr"), {.layout = {
@@ -2001,6 +2146,56 @@ void SatelliteSim::cleanup(VkDevice device)
     {
         vkFreeMemory(device, earthSpecMem, nullptr);
         earthSpecMem = VK_NULL_HANDLE;
+    }
+    if (earthCloudsSampler)
+    {
+        vkDestroySampler(device, earthCloudsSampler, nullptr);
+        earthCloudsSampler = VK_NULL_HANDLE;
+    }
+    if (earthCloudsView)
+    {
+        vkDestroyImageView(device, earthCloudsView, nullptr);
+        earthCloudsView = VK_NULL_HANDLE;
+    }
+    if (earthCloudsImg)
+    {
+        vkDestroyImage(device, earthCloudsImg, nullptr);
+        earthCloudsImg = VK_NULL_HANDLE;
+    }
+    if (earthCloudsMem)
+    {
+        vkFreeMemory(device, earthCloudsMem, nullptr);
+        earthCloudsMem = VK_NULL_HANDLE;
+    }
+    if (cloudNoiseSampler)
+    {
+        vkDestroySampler(device, cloudNoiseSampler, nullptr);
+        cloudNoiseSampler = VK_NULL_HANDLE;
+    }
+    if (cloudNoiseView)
+    {
+        vkDestroyImageView(device, cloudNoiseView, nullptr);
+        cloudNoiseView = VK_NULL_HANDLE;
+    }
+    if (cloudNoiseImg)
+    {
+        vkDestroyImage(device, cloudNoiseImg, nullptr);
+        cloudNoiseImg = VK_NULL_HANDLE;
+    }
+    if (cloudNoiseMem)
+    {
+        vkFreeMemory(device, cloudNoiseMem, nullptr);
+        cloudNoiseMem = VK_NULL_HANDLE;
+    }
+    if (cloudParamsBuf)
+    {
+        vkDestroyBuffer(device, cloudParamsBuf, nullptr);
+        cloudParamsBuf = VK_NULL_HANDLE;
+    }
+    if (cloudParamsMem)
+    {
+        vkFreeMemory(device, cloudParamsMem, nullptr);
+        cloudParamsMem = VK_NULL_HANDLE;
     }
     vkDestroyBuffer(device, glowBuf, nullptr);
     vkFreeMemory(device, glowMem, nullptr);
@@ -2393,6 +2588,144 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
 
     vkDestroyBuffer(ctx.device, staging, nullptr);
     vkFreeMemory(ctx.device, stagingMem, nullptr);
+}
+
+// ─── createCloudNoisePipeline ────────────────────────────────────────────────
+// Allocates the 128³ RGBA cloud noise volume, dispatches cloud_noise.comp to bake
+// Perlin-Worley + Worley channels into it in one shot, transitions to
+// SHADER_READ_ONLY_OPTIMAL, then destroys the bake pipeline/descriptor set.
+// Must be called before createGlowResources() so cloudNoiseView+Sampler exist
+// when the sky descriptor writes are assembled.
+void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
+{
+    static constexpr uint32_t kSz = 128;
+
+    // ── Create 128³ RGBA8 3D image (storage + sampled) ───────────────────────
+    ctx.createImage(kSz, kSz, VK_FORMAT_R8G8B8A8_UNORM,
+                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    cloudNoiseImg, cloudNoiseMem,
+                    1,    // mipLevels
+                    kSz); // depth > 1 → createImage produces VK_IMAGE_TYPE_3D
+
+    // 3D image view (layerCount=1; depth lives in extent, not array layers)
+    {
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image    = cloudNoiseImg;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_3D;
+        vci.format   = VK_FORMAT_R8G8B8A8_UNORM;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCreateImageView(ctx.device, &vci, nullptr, &cloudNoiseView);
+    }
+
+    // Trilinear REPEAT sampler — noise must tile seamlessly across UVW [0,1)
+    {
+        VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        sci.magFilter    = VK_FILTER_LINEAR;
+        sci.minFilter    = VK_FILTER_LINEAR;
+        sci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.maxLod       = 1.0f;
+        vkCreateSampler(ctx.device, &sci, nullptr, &cloudNoiseSampler);
+    }
+
+    // ── Bake descriptor set layout: single STORAGE_IMAGE binding 0 ───────────
+    VkDescriptorSetLayout bakeDescLayout = VK_NULL_HANDLE;
+    {
+        VkDescriptorSetLayoutBinding b{};
+        b.binding         = 0;
+        b.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b.descriptorCount = 1;
+        b.stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+        VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        li.bindingCount = 1;
+        li.pBindings    = &b;
+        vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &bakeDescLayout);
+    }
+
+    VkDescriptorPool bakePool = VK_NULL_HANDLE;
+    {
+        VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
+        VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pi.poolSizeCount = 1;
+        pi.pPoolSizes    = &ps;
+        pi.maxSets       = 1;
+        vkCreateDescriptorPool(ctx.device, &pi, nullptr, &bakePool);
+    }
+
+    VkDescriptorSet bakeSet = VK_NULL_HANDLE;
+    {
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool     = bakePool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts        = &bakeDescLayout;
+        vkAllocateDescriptorSets(ctx.device, &ai, &bakeSet);
+    }
+
+    // ── Pipeline layout + compute pipeline ────────────────────────────────────
+    VkPipelineLayout bakePipeLayout = VK_NULL_HANDLE;
+    {
+        VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        li.setLayoutCount = 1;
+        li.pSetLayouts    = &bakeDescLayout;
+        vkCreatePipelineLayout(ctx.device, &li, nullptr, &bakePipeLayout);
+    }
+
+    VkPipeline bakePipeline = VK_NULL_HANDLE;
+    {
+        VkShaderModule mod = ctx.loadShader("shaders/cloud_noise.comp.spv");
+        VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage.module = mod;
+        stage.pName  = "main";
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage  = stage;
+        ci.layout = bakePipeLayout;
+        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &bakePipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create cloud_noise bake pipeline");
+        vkDestroyShaderModule(ctx.device, mod, nullptr);
+    }
+
+    // ── One-shot bake: barrier → bind → dispatch → barrier ───────────────────
+    {
+        auto cmd = ctx.beginOneTimeCommands();
+
+        // Transition UNDEFINED → GENERAL so the compute shader can write
+        ctx.imageBarrier(cmd, cloudNoiseImg,
+                         0, VK_ACCESS_SHADER_WRITE_BIT,
+                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        // Descriptor write: STORAGE_IMAGE pointing at cloudNoiseView in GENERAL layout
+        VkDescriptorImageInfo imgInfo{VK_NULL_HANDLE, cloudNoiseView, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstSet          = bakeSet;
+        w.dstBinding      = 0;
+        w.descriptorCount = 1;
+        w.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        w.pImageInfo      = &imgInfo;
+        vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, bakePipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                bakePipeLayout, 0, 1, &bakeSet, 0, nullptr);
+        vkCmdDispatch(cmd, 16, 16, 16); // 16×8=128 threads per axis
+
+        // Transition GENERAL → SHADER_READ_ONLY_OPTIMAL for use by sat_sky.frag
+        ctx.imageBarrier(cmd, cloudNoiseImg,
+                         VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                         VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+        ctx.endOneTimeCommands(cmd);
+    }
+
+    // ── Destroy bake-only Vulkan objects (view+sampler are kept as members) ───
+    vkDestroyPipeline(ctx.device, bakePipeline, nullptr);
+    vkDestroyPipelineLayout(ctx.device, bakePipeLayout, nullptr);
+    vkDestroyDescriptorPool(ctx.device, bakePool, nullptr);
+    vkDestroyDescriptorSetLayout(ctx.device, bakeDescLayout, nullptr);
 }
 
 // ─── createSkyBgPipeline ──────────────────────────────────────────────────────
@@ -2843,26 +3176,115 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         }
     }
 
-    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec
-    VkDescriptorSetLayoutBinding bindings[7] = {};
-    bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // ── Load earth cloud map (binding 7): 8K R8_UNORM grayscale coverage ─────────
+    {
+        int w, h, ch;
+        unsigned char *pixels = stbi_load("assets/textures/8k_earth_clouds.jpg", &w, &h, &ch, 1);
+        if (pixels)
+        {
+            earthCloudsMips = (uint32_t)std::floor(std::log2((float)std::max(w, h))) + 1;
+            VkDeviceSize imgBytes = (VkDeviceSize)w * h;
+
+            VkBuffer stageBuf;
+            VkDeviceMemory stageMem;
+            ctx.createBuffer(imgBytes,
+                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             stageBuf, stageMem);
+            void *mapped;
+            vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
+            memcpy(mapped, pixels, (size_t)imgBytes);
+            vkUnmapMemory(ctx.device, stageMem);
+            stbi_image_free(pixels);
+
+            ctx.createImage((uint32_t)w, (uint32_t)h,
+                            VK_FORMAT_R8_UNORM,
+                            VK_IMAGE_USAGE_SAMPLED_BIT |
+                                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            earthCloudsImg, earthCloudsMem, earthCloudsMips);
+
+            VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+            VkImageMemoryBarrier allMips{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            allMips.srcAccessMask = 0;
+            allMips.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            allMips.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            allMips.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            allMips.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            allMips.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            allMips.image = earthCloudsImg;
+            allMips.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, earthCloudsMips, 0, 1};
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &allMips);
+            VkBufferImageCopy region{};
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+            vkCmdCopyBufferToImage(cmd, stageBuf, earthCloudsImg,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            ctx.generateMipmaps(cmd, earthCloudsImg, VK_FORMAT_R8_UNORM,
+                                (uint32_t)w, (uint32_t)h, earthCloudsMips);
+            ctx.endOneTimeCommands(cmd);
+            vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+            vkFreeMemory(ctx.device, stageMem, nullptr);
+
+            VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            vci.image = earthCloudsImg;
+            vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            vci.format = VK_FORMAT_R8_UNORM;
+            vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, earthCloudsMips, 0, 1};
+            vkCreateImageView(ctx.device, &vci, nullptr, &earthCloudsView);
+
+            VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+            sci.magFilter = VK_FILTER_LINEAR;
+            sci.minFilter = VK_FILTER_LINEAR;
+            sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+            sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.maxLod = (float)earthCloudsMips;
+            vkCreateSampler(ctx.device, &sci, nullptr, &earthCloudsSampler);
+        }
+        else
+        {
+            fprintf(stderr, "Warning: could not load 8k_earth_clouds.jpg; cloud map disabled\n");
+        }
+    }
+
+    // ── Cloud params UBO (binding 9): host-visible, persistently mapped ──────────
+    {
+        VkDeviceSize sz = sizeof(GpuCloudParams);
+        ctx.createBuffer(sz,
+                         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         cloudParamsBuf, cloudParamsMem);
+        vkMapMemory(ctx.device, cloudParamsMem, 0, sz, 0, &cloudParamsMapped);
+        memset(cloudParamsMapped, 0, sz);
+    }
+
+    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO
+    VkDescriptorSetLayoutBinding bindings[10] = {};
+    bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[3] = {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[4] = {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[5] = {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[6] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[7] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[8] = {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudNoise sampler3D
+    bindings[9] = {9, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 7;
+    li.bindingCount = 10;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
-    VkDescriptorPoolSize ps[2] = {
+    VkDescriptorPoolSize ps[3] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
     };
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.poolSizeCount = 2;
+    pi.poolSizeCount = 3;
     pi.pPoolSizes = ps;
     pi.maxSets = 1;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &skyDescPool);
@@ -2878,6 +3300,8 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     VkImageView elevViewFinal = earthElevView ? earthElevView : noiseTexView;
     VkSampler specSamplerFinal = earthSpecSampler ? earthSpecSampler : noiseSampler;
     VkImageView specViewFinal = earthSpecView ? earthSpecView : noiseTexView;
+    VkSampler cloudsSamplerFinal = earthCloudsSampler ? earthCloudsSampler : noiseSampler;
+    VkImageView cloudsViewFinal = earthCloudsView ? earthCloudsView : noiseTexView;
 
     VkDescriptorBufferInfo bufInfo{glowBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo noiseImgInfo{noiseSampler, noiseTexView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -2886,8 +3310,11 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     VkDescriptorImageInfo nightImgInfo{earthNightSampler, earthNightView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo elevImgInfo{elevSamplerFinal, elevViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo specImgInfo{specSamplerFinal, specViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo cloudsImgInfo{cloudsSamplerFinal, cloudsViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo cloudNoiseImgInfo{cloudNoiseSampler, cloudNoiseView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo cloudParamsInfo{cloudParamsBuf, 0, sizeof(GpuCloudParams)};
 
-    VkWriteDescriptorSet writes[7] = {};
+    VkWriteDescriptorSet writes[10] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = skyDescSet;
     writes[0].dstBinding = 0;
@@ -2930,7 +3357,25 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     writes[6].descriptorCount = 1;
     writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[6].pImageInfo = &specImgInfo;
-    vkUpdateDescriptorSets(ctx.device, 7, writes, 0, nullptr);
+    writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[7].dstSet = skyDescSet;
+    writes[7].dstBinding = 7;
+    writes[7].descriptorCount = 1;
+    writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[7].pImageInfo = &cloudsImgInfo;
+    writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[8].dstSet = skyDescSet;
+    writes[8].dstBinding = 8;
+    writes[8].descriptorCount = 1;
+    writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[8].pImageInfo = &cloudNoiseImgInfo;
+    writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[9].dstSet = skyDescSet;
+    writes[9].dstBinding = 9;
+    writes[9].descriptorCount = 1;
+    writes[9].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[9].pBufferInfo = &cloudParamsInfo;
+    vkUpdateDescriptorSets(ctx.device, 10, writes, 0, nullptr);
 }
 
 // Fullscreen triangle that colors pixels sky or ground based on camera elevation.
@@ -3824,6 +4269,21 @@ void SatelliteSim::loadSettings()
         }
     }
 
+    if (j.contains("clouds"))
+    {
+        auto &c = j["clouds"];
+        cloudCoverage    = c.value("coverage",     cloudCoverage);
+        cloudDensity     = c.value("density",      cloudDensity);
+        cloudBaseAltM    = c.value("base_alt_m",   cloudBaseAltM);
+        cloudTopAltM     = c.value("top_alt_m",    cloudTopAltM);
+        cloudDriftRate   = c.value("drift_rate",   cloudDriftRate);
+        cloudSunGain     = c.value("sun_gain",     cloudSunGain);
+        cloudAmbientGain = c.value("ambient_gain", cloudAmbientGain);
+        cloudHgG         = c.value("hg_g",         cloudHgG);
+        cloudMarchSteps  = c.value("march_steps",  cloudMarchSteps);
+        cloudLightSteps  = c.value("light_steps",  cloudLightSteps);
+    }
+
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
 }
 
@@ -3864,6 +4324,18 @@ void SatelliteSim::saveSettings()
     j["observer"] = {{"lat_deg", obsLatDeg}, {"lon_deg", obsLonDeg}};
 
     j["time"] = {{"scale_idx", timeScaleIdx}};
+
+    j["clouds"] = {
+        {"coverage",     cloudCoverage},
+        {"density",      cloudDensity},
+        {"base_alt_m",   cloudBaseAltM},
+        {"top_alt_m",    cloudTopAltM},
+        {"drift_rate",   cloudDriftRate},
+        {"sun_gain",     cloudSunGain},
+        {"ambient_gain", cloudAmbientGain},
+        {"hg_g",         cloudHgG},
+        {"march_steps",  cloudMarchSteps},
+        {"light_steps",  cloudLightSteps}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

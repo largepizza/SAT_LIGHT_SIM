@@ -77,7 +77,8 @@ struct VulkanContext {
     void createImage(uint32_t w, uint32_t h, VkFormat fmt,
                      VkImageUsageFlags usage,
                      VkImage& img, VkDeviceMemory& mem,
-                     uint32_t mipLevels = 1);
+                     uint32_t mipLevels = 1,
+                     uint32_t depth = 1);
     // Generates mip levels 1..mipLevels-1 from mip 0 via linear blit.
     // Mip 0 must be in TRANSFER_DST_OPTIMAL on entry; all mips will be
     // in SHADER_READ_ONLY_OPTIMAL on return.

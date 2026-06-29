@@ -633,12 +633,13 @@ uint32_t VulkanContext::findMemoryType(uint32_t filter, VkMemoryPropertyFlags pr
 }
 
 void VulkanContext::createImage(uint32_t w, uint32_t h, VkFormat fmt, VkImageUsageFlags usage,
-                                VkImage &img, VkDeviceMemory &mem, uint32_t mipLevels)
+                                VkImage &img, VkDeviceMemory &mem, uint32_t mipLevels,
+                                uint32_t depth)
 {
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.imageType = (depth > 1) ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
     ci.format = fmt;
-    ci.extent = {w, h, 1};
+    ci.extent = {w, h, depth};
     ci.mipLevels = mipLevels;
     ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;

@@ -194,15 +194,15 @@ static_assert(sizeof(SatFlarePC) == 100, "SatFlarePC layout mismatch");
 //   total: 128 bytes
 struct SatDrawPC
 {
-    glm::mat4 skyView;     // ENU → camera space
-    float fovYRad;         // vertical field of view (radians)
-    float aspect;          // viewport width / height
-    float gmst;            // Greenwich Mean Sidereal Time (radians)
-    float waveTime;        // wall-clock seconds for wave animation (glfwGetTime)
-    glm::vec4 sunDirENU;   // sun direction in ENU (xyz unit vec, w = sin(elevation))
-    glm::vec4 moonDirENU;  // moon direction in ENU (xyz unit vec, w = illuminated fraction)
-    glm::vec4 obsECEFDir;  // observer ECEF unit vector (xyz); w unused.
-                           // Lets sat_sky.frag convert ENU hit → ECEF → geographic lat/lon for texture UV.
+    glm::mat4 skyView;    // ENU → camera space
+    float fovYRad;        // vertical field of view (radians)
+    float aspect;         // viewport width / height
+    float gmst;           // Greenwich Mean Sidereal Time (radians)
+    float waveTime;       // wall-clock seconds for wave animation (glfwGetTime)
+    glm::vec4 sunDirENU;  // sun direction in ENU (xyz unit vec, w = sin(elevation))
+    glm::vec4 moonDirENU; // moon direction in ENU (xyz unit vec, w = illuminated fraction)
+    glm::vec4 obsECEFDir; // observer ECEF unit vector (xyz); w unused.
+                          // Lets sat_sky.frag convert ENU hit → ECEF → geographic lat/lon for texture UV.
 }; // total: 128 bytes
 static_assert(sizeof(SatDrawPC) == 128, "SatDrawPC layout mismatch");
 
@@ -225,7 +225,7 @@ static constexpr int kMaxFlares = 8;
 struct GpuGlowBuf
 {
     uint32_t bins[kGlowBins];
-    uint32_t flareCount;        // unused; kept for layout compat
+    uint32_t flareCount; // unused; kept for layout compat
     uint32_t flarePad[3];
     glm::vec4 flareEntries[kMaxFlares]; // xyz=ENU dir per sector (last-writer)
     uint32_t sectorBright[kMaxFlares];  // floatBitsToUint(max effectFlare) per sector
@@ -284,6 +284,46 @@ struct GpuReflectorTarget
     float valid;      // 1.0 = night-side (valid target), 0.0 = dayside
 };
 static_assert(sizeof(GpuReflectorTarget) == 16, "GpuReflectorTarget layout mismatch");
+
+// ── Per-layer cloud shell descriptor (std140: 32 bytes, 2 × vec4) ─────────────
+// Each layer is an infinitely thin sphere-shell sample of earthCloudsTex.
+// Layers 0+ are evaluated in order; disabled layers (enabled=0) are skipped.
+struct GpuCloudLayerParams
+{
+    float shellAltM;    // sphere-shell altitude above R_EARTH (m)
+    float driftMult;    // cloudPhase longitude multiplier (1.0 = same speed as surface)
+    float alphaMax;     // maximum opacity of this layer [0,1]
+    float mipLod;       // fixed texture LOD (0=sharp, 2=soft/wispy)
+    float coverageMult; // scales global coverage for this layer
+    float densityMult;  // scales global density for this layer
+    float enabled;      // 1.0 = active, 0.0 = skip
+    float pad;
+};
+static_assert(sizeof(GpuCloudLayerParams) == 32, "GpuCloudLayerParams layout mismatch");
+
+static constexpr int kNumCloudLayers = 4;
+
+// ── Cloud parameters UBO (binding 9 in sky descriptor set) ───────────────────
+// Matches the layout(binding=9) uniform CloudParams block in sat_sky.frag.
+// Global tunables + per-layer descriptors.  cloudPhase is CPU-computed each frame.
+// std140 layout: 48-byte global section (3×vec4) + 4 × 32-byte layer = 176 bytes.
+struct GpuCloudParams
+{
+    // Global controls — shared across all layers
+    float coverage;         // global coverage gate [0,1]
+    float density;          // global density sharpness scale
+    float driftRate;        // base longitude drift rate (rad/s sim-time)
+    float sunGain;          // global sun brightness multiplier
+    float ambientGain;      // night-side ambient (for future use in volumetrics)
+    float hgG;              // Henyey-Greenstein g (C7+ volumetric march)
+    float marchSteps;       // volumetric march step count (C7+)
+    float lightSteps;       // volumetric light-cone step count (C7+)
+    float cloudPhase;       // CPU: fmod(driftRate * simTime, 2π) — uploaded each frame
+    float pad0, pad1, pad2; // pad to 48 bytes (3 × vec4)
+    // Per-layer descriptors
+    GpuCloudLayerParams layers[kNumCloudLayers];
+};
+static_assert(sizeof(GpuCloudParams) == 176, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -526,6 +566,21 @@ private:
     VkImageView earthSpecView = VK_NULL_HANDLE;
     VkSampler earthSpecSampler = VK_NULL_HANDLE;
     uint32_t earthSpecMips = 1;
+    // Earth cloud map (binding 7): 8K R8_UNORM grayscale cloud coverage map.
+    VkImage earthCloudsImg = VK_NULL_HANDLE;
+    VkDeviceMemory earthCloudsMem = VK_NULL_HANDLE;
+    VkImageView earthCloudsView = VK_NULL_HANDLE;
+    VkSampler earthCloudsSampler = VK_NULL_HANDLE;
+    uint32_t earthCloudsMips = 1;
+    // Cloud 3D noise volume (binding 8): 128³ RGBA Perlin-Worley/Worley, baked once at init.
+    VkImage cloudNoiseImg = VK_NULL_HANDLE;
+    VkDeviceMemory cloudNoiseMem = VK_NULL_HANDLE;
+    VkImageView cloudNoiseView = VK_NULL_HANDLE;
+    VkSampler cloudNoiseSampler = VK_NULL_HANDLE;
+    // Cloud params UBO (binding 9): host-visible, persistently mapped, updated each frame.
+    VkBuffer cloudParamsBuf = VK_NULL_HANDLE;
+    VkDeviceMemory cloudParamsMem = VK_NULL_HANDLE;
+    void *cloudParamsMapped = nullptr;
     // Earth elevation texture (binding 5): 21600×10800 R8_UNORM land-elevation DEM.
     // Pixel p → elevation_m = p * 8848; ocean stored as 0. Terrain shell = R_EARTH + 9000 m.
     VkImage earthElevImg = VK_NULL_HANDLE;
@@ -552,6 +607,17 @@ private:
     float mirrorBoost = 300.0f;
     float visThresh = 0.00f;
     float highlightFlare = 0.05f;
+    // Cloud tunables (CPU-side; uploaded to cloudParamsBuf each frame)
+    float cloudCoverage = 0.5f;
+    float cloudDensity = 2.0f;
+    float cloudBaseAltM = 2000.0f; // layer 0 shell altitude (low cloud / stratus)
+    float cloudTopAltM = 11000.0f; // layer 1 shell altitude (high cirrus)
+    float cloudDriftRate = 3e-6f;  // ~1°/day extra vs surface
+    float cloudSunGain = 1.5f;
+    float cloudAmbientGain = 0.02f;
+    float cloudHgG = 0.6f;
+    float cloudMarchSteps = 124.0f;
+    float cloudLightSteps = 6.0f;
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
     std::string exeDir_;           // directory containing the exe; set in init()
@@ -582,9 +648,9 @@ private:
         KB_SLOWER = 2,
         KB_FASTER = 3,
         KB_REVERSE = 4,
-        KB_MOVE_BOOST = 5, // held
-        KB_MOVE_FINE = 6,  // held
-        KB_CINEMATIC  = 7,  // event — toggles camera drift mode while panning
+        KB_MOVE_BOOST = 5,  // held
+        KB_MOVE_FINE = 6,   // held
+        KB_CINEMATIC = 7,   // event — toggles camera drift mode while panning
         KB_RAISE_ELEV = 8,  // Q — held — raise observer above terrain
         KB_LOWER_ELEV = 9,  // E — held — lower observer toward terrain
         KB_RESET_ELEV = 10, // Z — event — snap observer back to terrain elevation
@@ -680,6 +746,9 @@ private:
     bool hovPhotoMinus[5] = {};
     bool hovPhotoPlus[5] = {};
     bool draggingPhoto[5] = {};
+    bool hovCloudMinus[10] = {};
+    bool hovCloudPlus[10] = {};
+    bool draggingCloud[10] = {};
     // ── Settings window position (persisted; -1 = uninitialized, centers on first open) ─
     float settingsWinX = -1.0f;
     float settingsWinY = -1.0f;
@@ -691,6 +760,7 @@ private:
     void createOrbitDescriptors(VulkanContext &ctx);
     void createOrbitPipeline(VulkanContext &ctx);
     void uploadSatOrbits(VulkanContext &ctx);
+    void createCloudNoisePipeline(VulkanContext &ctx);
     void createGlowResources(VulkanContext &ctx);
     void createComputePipeline(VulkanContext &ctx);
     void createSkyBgPipeline(VulkanContext &ctx);

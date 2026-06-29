@@ -48,6 +48,38 @@ layout(set = 0, binding = 3) uniform sampler2D earthDayTex;
 layout(set = 0, binding = 4) uniform sampler2D earthNightTex;
 layout(set = 0, binding = 5) uniform sampler2D earthElevTex;
 layout(set = 0, binding = 6) uniform sampler2D earthSpecTex;
+layout(set = 0, binding = 7) uniform sampler2D earthCloudsTex;
+
+// Cloud 3D noise volume (binding 8): 128³ RGBA, baked by cloud_noise.comp at init.
+// R = Perlin-Worley FBM (base shape), G/B/A = inverted Worley erosion octaves.
+layout(set = 0, binding = 8) uniform sampler3D cloudNoiseTex;
+
+// Cloud / volumetrics tunables (binding 9).
+// cloudPhase is CPU-computed fmod(driftRate * simTime, 2π) and uploaded each frame.
+// std140: 48-byte global section (3×vec4) + 4×32-byte CloudLayer = 176 bytes total.
+struct CloudLayer {
+    float shellAltM;    // sphere-shell altitude above R_EARTH (m)
+    float driftMult;    // cloudPhase longitude multiplier
+    float alphaMax;     // maximum opacity [0,1]
+    float mipLod;       // fixed texture LOD
+    float coverageMult; // per-layer coverage scale
+    float densityMult;  // per-layer density scale
+    float enabled;      // 1.0 = active
+    float pad;
+};
+layout(set = 0, binding = 9) uniform CloudParams {
+    float coverage;
+    float density;
+    float driftRate;
+    float sunGain;
+    float ambientGain;
+    float hgG;
+    float marchSteps;
+    float lightSteps;
+    float cloudPhase;
+    float pad0, pad1, pad2;
+    CloudLayer layers[4];
+} cloud;
 
 layout(location = 0) out vec4 outColor;
 
@@ -83,6 +115,17 @@ float phaseM(float cosA) {
     float den = pow(max(1e-4, 1.0 + g2 - 2.0 * G_MIE * cosA), 1.5);
     return 1.5 * ((1.0 - g2) / (2.0 + g2)) * (1.0 + cosA * cosA) / den;
 }
+// Cloud dual-lobe HG: strong forward scatter (g=0.8) + weak backscatter (g=-0.5).
+// Droplets scatter far more forward than atmospheric aerosols (G_MIE=0.26).
+float phaseCloud(float cosA) {
+    const float gF = 0.8, gB = -0.5;
+    float g2f = gF * gF, g2b = gB * gB;
+    float fwd = 1.5 * ((1.0 - g2f) / (2.0 + g2f)) * (1.0 + cosA * cosA)
+                / pow(max(1e-4, 1.0 + g2f - 2.0 * gF * cosA), 1.5);
+    float bwd = 1.5 * ((1.0 - g2b) / (2.0 + g2b)) * (1.0 + cosA * cosA)
+                / pow(max(1e-4, 1.0 + g2b - 2.0 * gB * cosA), 1.5);
+    return mix(fwd, bwd, 0.3);
+}
 vec2 raySphere(vec3 ro, vec3 rd, float r) {
     float b  = dot(ro, rd);
     float c  = dot(ro, ro) - r * r;
@@ -100,6 +143,10 @@ vec2 optDepth(vec3 p, vec3 d, float segTotal) {
         odM += exp(-h / H_M);
     }
     return vec2(odR, odM) * sLen;
+}
+
+float remap(float v, float lo, float hi, float newLo, float newHi) {
+    return newLo + clamp((v - lo) / (hi - lo), 0.0, 1.0) * (newHi - newLo);
 }
 
 // ── Lens flare (adapted from "Lens Flare Example" by peterekepeter, public domain)
@@ -334,6 +381,327 @@ float seaMapDetail(vec2 posM, float pHeight, float seaTime) {
     return pHeight - h;
 }
 
+// ── Thin-shell cloud layer evaluator ─────────────────────────────────────────
+// Intersects a sphere shell at R_EARTH + shellAltM, samples earthCloudsTex at the
+// hit point's geographic lat/lon (Earth-fixed UV + per-layer longitude drift), and
+// blends the result into `color`.
+//
+// Lighting uses dot(normalize(cloudPointECEF), sunDirECEF) — the sun angle at the
+// cloud's own geographic location, NOT the observer's sun elevation.  This ensures
+// clouds on the dark side of Earth are dark regardless of where the observer is.
+void evalCloudLayer(
+    vec3  obsPos,  vec3 dir,  float tSurface,
+    vec3  enuX,    vec3 enuY, vec3  enuZ,
+    vec3  sunDirECEF,
+    float odRcam,  float odMcam,
+    float coverage, float density, float sunGain,
+    float shellAltM, float driftMult, float alphaMax, float mipLod,
+    float cloudPhase,
+    inout vec3 color)
+{
+    vec2  tc = raySphere(obsPos, dir, R_EARTH + shellAltM);
+    float t  = (tc.x > 0.001) ? tc.x : tc.y;
+    if (t <= 0.001) return;
+    if (tSurface > 0.0 && t >= tSurface) return;
+
+    // Hit point in ENU → convert to ECEF for geographic UV and sun-dot
+    vec3  hitENU = obsPos + t * dir;
+    vec3  cECEF  = hitENU.x * enuX + hitENU.y * enuY + hitENU.z * enuZ;
+    float cL     = length(cECEF);
+    float cLon   = atan(cECEF.y, cECEF.x);
+    float cLat   = asin(clamp(cECEF.z / cL, -1.0, 1.0));
+
+    // Earth-fixed UV with per-layer longitude drift
+    vec2  uv    = vec2(fract((cLon + PI) / (2.0*PI) + cloudPhase * driftMult / (2.0*PI)),
+                       (0.5*PI - cLat) / PI);
+    float raw   = textureLod(earthCloudsTex, uv, mipLod).r;
+    float alpha = clamp((raw - (1.0 - coverage)) * density, 0.0, alphaMax);
+    if (alpha <= 0.0) return;
+
+    // Sun angle at the cloud's geographic position — independent of observer location
+    float cloudSunDot  = dot(normalize(cECEF), sunDirECEF);
+    float cloudDayFrac = smoothstep(-0.1, 0.15, cloudSunDot);
+    vec3  cloudColor   = vec3(max(0.0, cloudSunDot + 0.1) * sunGain) * cloudDayFrac;
+
+    vec3 attn = exp(-(BETA_R * odRcam + BETA_M * 1.1 * odMcam));
+    color = mix(color, cloudColor * attn, alpha);
+}
+
+// ── Volumetric cloud density (Nubis remap + erosion) ─────────────────────────
+float cloudDensity(vec3 noiseUVW, float coverage, float density, float heightProfile) {
+    vec4  ns   = texture(cloudNoiseTex, fract(noiseUVW));  // full 3D sample — Z varies with altitude
+    float base = remap(ns.r, 1.0 - coverage, 1.0, 0.0, 1.0);
+    if (base <= 0.0) return 0.0;
+    vec4  nsF     = texture(cloudNoiseTex, fract(noiseUVW * 1.5 + vec3(0.37, 0.53, 0.71)));
+    float erosion = nsF.g * 0.625 + nsF.b * 0.25 + nsF.a * 0.125;
+    float eroded  = remap(base, 0.2 * erosion, 1.0, 0.0, 1.0);  // erosion floor fixed; density is a linear scale
+    return clamp(eroded * heightProfile * density, 0.0, 1.0);
+}
+
+// ── Cloud raymarch diagnostics ────────────────────────────────────────────────
+// Set CLOUD_DEBUG to 1-4 to replace cloud output with a diagnostic overlay.
+// Set to 0 for normal rendering.
+//
+//  1 = 2D coverage at column entry — white=overcast, black=clear.
+//      Question: Is the coverage map causing a solid overcast everywhere?
+//
+//  2 = hNorm of FIRST cloud hit — red=hit near base, green=hit near top, dark-blue=no hit.
+//      Question: Are all clouds at the same altitude (should show varying colour if 3D)?
+//
+//  3 = Fraction of march steps where d>0 — white=solid cloud in this column, black=clear.
+//      Question: Is the march mostly in cloud (overcast) or mostly clear (scattered)?
+//
+//  4 = noiseUVW at march midpoint — R=X, G=Y, B=Z noise coords.
+//      Question: Is the noise actually varying in 3D, or is one axis stuck constant?
+#define CLOUD_DEBUG 2
+
+// ── Volumetric cloud shell march (C7) ────────────────────────────────────────
+// Marches the cloud-shell annulus [cloudBase, cloudTop] along the view ray.
+// Gray extinction + single-lobe HG in-scatter (full lighting deferred to C8).
+// Cross-fades with the 2D overlay via cloudAltFade (mirrors ocean altFade).
+void cloudMarch(
+    vec3  obsPos,  vec3  dir,         float tSurface,
+    vec3  enuX,    vec3  enuY,        vec3  enuZ,
+    vec3  sunDir,  vec3  sunDirECEF,  float obsEffH,
+    inout vec3  color)
+{
+    if (cloud.layers[0].enabled < 0.5) return;
+
+    float cloudBaseAlt = cloud.layers[0].shellAltM;
+    float cloudTopAlt  = cloud.layers[1].shellAltM;
+    float shellThick   = cloudTopAlt - cloudBaseAlt;
+    float cloudBase    = R_EARTH + cloudBaseAlt;
+    float cloudTop     = R_EARTH + cloudTopAlt;
+
+    vec2 shellB = raySphere(obsPos, dir, cloudBase);
+    vec2 shellT = raySphere(obsPos, dir, cloudTop);
+
+    float tEnter, tExit;
+
+    if (obsEffH < cloudBaseAlt) {
+        // In ENU geometry |obsPos| = R_EARTH + obsEffH < R_EARTH + cloudBaseAlt = cloudBase, so the
+        // observer is inside the cloudBase sphere. raySphere(inside) returns (negative, positive),
+        // so shellB.x < 0 always. Use shellB.y (forward exit through cloud base = layer entry)
+        // and shellT.y (forward exit through cloud top = layer exit).
+        tEnter = shellB.y;
+        tExit  = shellT.y;
+    } else if (obsEffH <= cloudTopAlt) {
+        // Inside cloud shell — start now, exit at nearest shell boundary
+        tEnter = 0.001;
+        tExit  = shellT.y; // forward exit through cloud top (always > 0 when inside)
+        if (shellB.x > 0.001 && shellB.x < tExit) tExit = shellB.x; // or down through cloud base
+    } else {
+        // Above cloud shell: enter through cloud top, exit at base.
+        // cloudAltFade = 0 at these altitudes so the composite is suppressed regardless.
+        if (shellT.x < 0.0) return;
+        tEnter = shellT.x;
+        tExit  = (shellB.x > 0.0) ? shellB.x : shellT.y;
+    }
+
+    if (tSurface > 0.0) tExit = min(tExit, tSurface);
+    // Cap march distance so near-horizon rays don't traverse 100+ km of shell with
+    // coarse steps; clouds beyond 80 km are indistinguishable anyway.
+    tExit = min(tExit, tEnter + 80000.0);
+    if (tEnter >= tExit || tExit <= 0.0) return;
+
+    // Diagnostic tracking variables — zero cost when CLOUD_DEBUG == 0 (compiler eliminates them).
+    float dbg_entryLocalCov = 0.0;
+    float dbg_firstHitHNorm = -1.0;
+    int   dbg_stepsInCloud  = 0;
+    vec3  dbg_midNoise      = vec3(0.5);
+
+    // Gate 3D march with earthCloudsTex at the column entry point so volumetric clouds
+    // only form where the 2D coverage map also shows clouds.
+    {
+        vec3  ePt   = obsPos + tEnter * dir;
+        vec3  eECEF = ePt.x * enuX + ePt.y * enuY + ePt.z * enuZ;
+        float eLen  = length(eECEF);
+        float eLon  = atan(eECEF.y, eECEF.x);
+        float eLat  = asin(clamp(eECEF.z / eLen, -1.0, 1.0));
+        vec2  eUV   = vec2(fract((eLon + PI) / (2.0*PI)
+                                 + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                           (0.5*PI - eLat) / PI);
+        float cMap  = textureLod(earthCloudsTex, eUV, 2.0).r;
+        dbg_entryLocalCov = cloud.coverage * cMap;
+        if (dbg_entryLocalCov < 0.02) return;
+    }
+
+    // Re-evaluate coverage mask per-step from earthCloudsTex for accurate gating.
+    // This is cheaper to recompute than to pass through a closure, and avoids large
+    // regions of the march being fired in cloud-free sky.
+    vec3  cloudTransmittance = vec3(1.0);
+    vec3  cloudScatter       = vec3(0.0);
+    int   N       = max(48, int(cloud.marchSteps));
+    float stepLen = (tExit - tEnter) / float(N);
+    // When the observer is inside the cloud shell, tEnter=0.001 so the march starts
+    // at the camera. The bigStep optimization flips step size when d crosses 0.001,
+    // which changes which geographic samples are tested each frame and causes the
+    // cloud pattern to strobe as the camera moves. Use uniform steps inside the shell.
+    bool  insideShell = (obsEffH >= cloudBaseAlt && obsEffH <= cloudTopAlt);
+    float bigStep = insideShell ? stepLen : stepLen * 2.0;
+    float t       = tEnter;
+    bool  inCloud = false;
+
+    float cosA = dot(dir, sunDir);
+    float ph   = phaseCloud(cosA);
+
+    for (int i = 0; i < 512 && t < tExit; ++i) {
+        float step = inCloud ? stepLen : bigStep;
+        step = min(step, tExit - t);
+        vec3  p = obsPos + (t + step * 0.5) * dir;
+        float h = length(p) - R_EARTH;
+        if (h < cloudBaseAlt || h > cloudTopAlt) { inCloud = false; t += step; continue; }
+
+        float hNorm = (h - cloudBaseAlt) / shellThick;
+        vec3  pECEF = p.x * enuX + p.y * enuY + p.z * enuZ;
+
+        // Coverage from 2D texture at this sample's geographic position.
+        float pLen  = length(pECEF);
+        float pLon  = atan(pECEF.y, pECEF.x);
+        float pLat  = asin(clamp(pECEF.z / pLen, -1.0, 1.0));
+        vec2  pUV   = vec2(fract((pLon + PI) / (2.0*PI)
+                                 + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                           (0.5*PI - pLat) / PI);
+        float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, 2.0).r;
+
+        // Column-height map: large-scale (80 km) noise gives each cloud system a
+        // different maximum tower height.  kColTiles=500 → ~80 km/tile, Perlin
+        // freq=4 → ~20 km cloud-system footprints (much wider than the 3 km detail
+        // features, so there's a clean hierarchy without micro-banding).
+        const float kColTiles = 500.0;
+        float colNoise = texture(cloudNoiseTex,
+                                 fract(vec3(pUV.x * kColTiles,
+                                            pUV.y * kColTiles, 0.25))).r;
+        float colH = remap(colNoise, 1.0 - localCov, 1.0, 0.0, 1.0);
+
+        // Soft top fade: density smoothly approaches zero over the top 5% of the
+        // column height rather than cutting off abruptly (no visible ceiling planes).
+        float topFade = 1.0 - smoothstep(colH - 0.05, colH + 0.05, hNorm);
+        // Soft floor fade over the bottom 5% of the shell.
+        float hFade = smoothstep(0.0, 0.05, hNorm) * topFade;
+        if (hFade < 0.001) { inCloud = false; t += step; continue; }
+
+        // 3D noise in geographic space, co-drifts with earthCloudsTex.
+        // kHorizTiles=3000 → ~3 km detail features (visible cumulus puffs at low altitude).
+        // kVertTiles=1.5 → non-integer so the tiling seam doesn't create a visible floor/ceiling.
+        // posZ: per-position irrational Z-phase offset scrambles the altitude at which the
+        // 1.5-tile noise period repeats, eliminating global horizontal banding.
+        // Shear (0.15/0.10) is intentionally tiny — large shear destroys vertical correlation,
+        // making each altitude sample a different horizontal noise region and creating
+        // disconnected horizontal cloud slices instead of connected 3D towers.
+        const float kHorizTiles = 3000.0;
+        const float kVertTiles  = 1.5;
+        // posZ frequency: ~150 km period so zero-crossings of the Perlin Z-axis land at
+        // different altitudes in each cloud system, breaking global horizontal banding.
+        // Range * 2.0 spans more than one full Perlin Z-cell period (1/kVertTiles ≈ 0.67 hNorm).
+        float posZ    = fract(pUV.x * 340.0 + pUV.y * 460.0);
+        vec3  noiseUVW = fract(vec3(
+            pUV.x * kHorizTiles + hNorm * 0.15,
+            pUV.y * kHorizTiles + hNorm * 0.10,
+            hNorm * kVertTiles + posZ * 2.0));
+        float d = cloudDensity(noiseUVW, localCov, cloud.density, hFade);
+
+        // Capture diagnostics regardless of CLOUD_DEBUG value (compiler eliminates unused vars).
+        if (d > 0.001 && dbg_firstHitHNorm < 0.0) dbg_firstHitHNorm = hNorm;
+        if (d > 0.001) dbg_stepsInCloud++;
+        if (i == N / 2) dbg_midNoise = noiseUVW;
+
+        if (d > 0.001) {
+            inCloud = true;
+            float extinction = d * step * 3e-3;
+            vec3  stepT      = exp(-vec3(extinction));
+            // Beer-Powder: brightens dense interiors that pure Beer would darken to charcoal.
+            float powder     = 1.0 - exp(-extinction * 2.0);
+
+            // Sun cone: 6 steps toward sun accumulate cloud optical depth above this sample,
+            // giving lit tops / dark bases from actual cloud structure rather than a fixed gradient.
+            float sunOptDepth = 0.0;
+            {
+                const int N_CONE = 6;
+                vec2  tConeExit = raySphere(p, sunDir, cloudTop);
+                float coneLen   = min((tConeExit.y > 0.0) ? tConeExit.y : shellThick, shellThick * 2.0);
+                float coneSeg   = coneLen / float(N_CONE);
+                for (int ci = 0; ci < N_CONE; ++ci) {
+                    vec3  cp    = p + sunDir * (float(ci) + 0.5) * coneSeg;
+                    float ch    = length(cp) - R_EARTH;
+                    if (ch < cloudBaseAlt || ch > cloudTopAlt) continue;
+                    float chN   = (ch - cloudBaseAlt) / shellThick;
+                    vec3  cpE   = cp.x * enuX + cp.y * enuY + cp.z * enuZ;
+                    float cpL   = length(cpE);
+                    float cpLon = atan(cpE.y, cpE.x);
+                    float cpLat = asin(clamp(cpE.z / cpL, -1.0, 1.0));
+                    vec2  cpUV  = vec2(fract((cpLon + PI) / (2.0*PI)
+                                        + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                                       (0.5*PI - cpLat) / PI);
+                    float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, 3.0).r;
+                    float cPosZ = fract(cpUV.x * 340.0 + cpUV.y * 460.0);
+                    vec3  cUVW  = fract(vec3(cpUV.x * kHorizTiles + chN * 0.15,
+                                             cpUV.y * kHorizTiles + chN * 0.10,
+                                             chN    * kVertTiles   + cPosZ * 2.0));
+                    float chFade = smoothstep(0.0, 0.05, chN) * (1.0 - smoothstep(0.95, 1.0, chN));
+                    // Cone σ = view σ / 8: cone steps are ~16× longer than view steps so using
+                    // the same σ compresses all in-cloud samples to near-zero transmittance.
+                    sunOptDepth += cloudDensity(cUVW, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
+                }
+            }
+            // Floor at 5%: approximates multi-scattered light reaching deep cloud interiors.
+            float sunTransmittance = max(exp(-sunOptDepth), 0.05);
+
+            float sunElev    = max(0.0, dot(normalize(pECEF), sunDirECEF));
+            float selfShadow = mix(0.7, 1.0, hNorm);  // mild contact shadow; cone handles the main gradient
+            float sunLit     = sunElev * sunTransmittance * selfShadow;
+            vec3  inScatter  = vec3(cloud.sunGain  * sunLit * ph * (1.0 + powder)
+                                  + cloud.ambientGain * mix(0.15, 0.4, hNorm));
+            cloudScatter       += cloudTransmittance * (1.0 - stepT) * inScatter;
+            cloudTransmittance *= stepT;
+            if (cloudTransmittance.r < 0.01) break;
+        } else {
+            inCloud = false;
+        }
+        t += step;
+    }
+
+    float cloudAltFade = 1.0 - smoothstep(0.0, 180000.0, obsEffH);
+    if (cloudAltFade < 0.001) return;
+
+#if CLOUD_DEBUG == 0
+    // ── Normal rendering ──────────────────────────────────────────────────────
+    vec3 cloudT = mix(vec3(1.0), cloudTransmittance, cloudAltFade);
+    color = color * cloudT + cloudScatter * cloudAltFade;
+
+#else
+    // ── Diagnostic overlay ────────────────────────────────────────────────────
+    // Dark-blue background = ray entered the cloud shell but hit nothing.
+    vec3 dbgCol = vec3(0.05, 0.05, 0.25);
+
+#if CLOUD_DEBUG == 1
+    // Coverage map at column entry: white = overcast, black = clear.
+    // If most of the sky shows white, the 2D coverage map is causing solid overcast.
+    dbgCol = vec3(dbg_entryLocalCov);
+
+#elif CLOUD_DEBUG == 2
+    // Altitude of first cloud hit: RED = near cloud base (hNorm≈0), GREEN = near top (hNorm≈1).
+    // If the whole sky is a single uniform colour → all clouds at the same altitude = flat layer.
+    // Variation across the image means genuine 3D structure.
+    if (dbg_firstHitHNorm >= 0.0)
+        dbgCol = vec3(1.0 - dbg_firstHitHNorm, dbg_firstHitHNorm, 0.0);
+
+#elif CLOUD_DEBUG == 3
+    // Step occupancy fraction: WHITE = every step in cloud (solid overcast column),
+    // BLACK = no steps in cloud (clear column), GREY = scattered.
+    dbgCol = vec3(float(dbg_stepsInCloud) / float(N));
+
+#elif CLOUD_DEBUG == 4
+    // noiseUVW at march midpoint: R=X, G=Y, B=Z.
+    // All channels should vary across the image AND across elevation angles.
+    // If B is constant = altitude axis stuck; if R/G constant = horizontal sampling broken.
+    dbgCol = dbg_midNoise;
+
+#endif
+    color = mix(color, dbgCol, cloudAltFade * 0.9);
+#endif
+}
+
 void main() {
     vec3 dir    = normalize(enuDir);
     vec3 sunDir = normalize(sunDirENU.xyz);
@@ -342,6 +710,11 @@ void main() {
     vec3 enuZ = normalize(pc.obsECEFDir.xyz); // observer Up in ECEF
     vec3 enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ)); // East
     vec3 enuY = cross(enuZ, enuX);            // North
+
+    // Sun direction in ECEF — used by evalCloudLayer for per-cloud-point illumination.
+    // Transforms ENU sunDir into ECEF so cloud day/night is geographically correct,
+    // not relative to the observer's view of the sun.
+    vec3 sunDirECEF = sunDir.x * enuX + sunDir.y * enuY + sunDir.z * enuZ;
 
     // ── Elevation encoding constants ──────────────────────────────────────────────
     // Land-only normalized DEM: pixel=0 → 0 m (sea level), pixel=1 → 8848 m (Everest).
@@ -826,6 +1199,31 @@ void main() {
 
         color += surfColor * surfAttn;
     }
+
+    // ── Cloud layers (C3/C4 unified: thin-shell 2D overlays) ─────────────────
+    // From ground (obsEffH < 8 km): layers 0/1 are handled by cloudMarch (C7) for
+    // genuine 3D volumetrics; evalCloudLayer is used only for cirrus overlays (li>=2).
+    // From orbit (obsEffH >= 8 km): cloudMarch fades to zero and evalCloudLayer
+    // renders all four layers so clouds are visible on Earth from space.
+    for (int li = 0; li < 4; ++li) {
+        if (cloud.layers[li].enabled < 0.5) continue;
+        if (li < 2 && obsEffH < 8000.0) continue;
+        evalCloudLayer(
+            obsPos, dir, tSurface, enuX, enuY, enuZ, sunDirECEF,
+            odR_cam, odM_cam,
+            cloud.coverage * cloud.layers[li].coverageMult,
+            cloud.density  * cloud.layers[li].densityMult,
+            cloud.sunGain,
+            cloud.layers[li].shellAltM,
+            cloud.layers[li].driftMult,
+            cloud.layers[li].alphaMax,
+            cloud.layers[li].mipLod,
+            cloud.cloudPhase,
+            color);
+    }
+
+    // ── Volumetric cloud march (C7) ──────────────────────────────────────────────
+    cloudMarch(obsPos, dir, tSurface, enuX, enuY, enuZ, sunDir, sunDirECEF, obsEffH, color);
 
     // ── Auto-exposure tone mapping ─────────────────────────────────────────────
     float dayness  = clamp((sunDirENU.w + 0.2) / 1.2, 0.0, 1.0);
