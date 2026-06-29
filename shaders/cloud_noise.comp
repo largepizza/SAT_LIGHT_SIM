@@ -1,0 +1,112 @@
+#version 450
+
+// Bake a 128³ RGBA noise volume for the Nubis cloud model.
+// R = Perlin-Worley FBM (base cloud macrostructure).
+// G,B,A = inverted Worley F1 at three increasing frequencies (erosion octaves).
+// All channels tile seamlessly at the volume boundary.
+// Dispatch (16,16,16) with local_size (8,8,8) → 128³ threads.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(rgba8, set = 0, binding = 0) writeonly uniform image3D cloudNoiseTex;
+
+// --- helpers ----------------------------------------------------------------
+
+// Tiling gradient hash: wraps cell c within [0,N) before hashing so the
+// noise is seamlessly periodic at the volume boundary.
+vec3 gradHash(ivec3 c, int N)
+{
+    int x = c.x % N; if (x < 0) x += N;
+    int y = c.y % N; if (y < 0) y += N;
+    int z = c.z % N; if (z < 0) z += N;
+    vec3 p = vec3(x, y, z);
+    p = vec3(dot(p, vec3(127.1, 311.7,  74.7)),
+             dot(p, vec3(269.5, 183.3, 246.1)),
+             dot(p, vec3(113.5, 271.9, 124.6)));
+    return normalize(-1.0 + 2.0 * fract(sin(p) * 43758.5453));
+}
+
+// 3D tiling Perlin noise with N gradient cells per axis.
+// Returns values roughly in [-1, 1].
+float perlinTile(vec3 uvw, int N)
+{
+    vec3 p = uvw * float(N);
+    ivec3 i = ivec3(floor(p));
+    vec3 f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);   // smoothstep
+
+    float v000 = dot(gradHash(i,                   N), f               );
+    float v100 = dot(gradHash(i + ivec3(1,0,0),    N), f - vec3(1,0,0) );
+    float v010 = dot(gradHash(i + ivec3(0,1,0),    N), f - vec3(0,1,0) );
+    float v110 = dot(gradHash(i + ivec3(1,1,0),    N), f - vec3(1,1,0) );
+    float v001 = dot(gradHash(i + ivec3(0,0,1),    N), f - vec3(0,0,1) );
+    float v101 = dot(gradHash(i + ivec3(1,0,1),    N), f - vec3(1,0,1) );
+    float v011 = dot(gradHash(i + ivec3(0,1,1),    N), f - vec3(0,1,1) );
+    float v111 = dot(gradHash(i + ivec3(1,1,1),    N), f - vec3(1,1,1) );
+
+    return mix(mix(mix(v000, v100, u.x), mix(v010, v110, u.x), u.y),
+               mix(mix(v001, v101, u.x), mix(v011, v111, u.x), u.y), u.z);
+}
+
+// 3D tiling Worley (cellular) F1 noise with N cells per axis.
+// Returns the distance to the nearest point, clamped to [0, 1].
+// Uses the unwrapped cell for distance computation but the wrapped cell for
+// hashing so the random point pattern is seamlessly periodic.
+float worleyTile(vec3 uvw, float N)
+{
+    vec3 p = uvw * N;
+    ivec3 i = ivec3(floor(p));
+    float minDist = 4.0;
+    for (int dz = -1; dz <= 1; dz++)
+    for (int dy = -1; dy <= 1; dy++)
+    for (int dx = -1; dx <= 1; dx++) {
+        ivec3 cell = i + ivec3(dx, dy, dz);
+        // Wrapped cell for hash (tiling)
+        int wx = cell.x % int(N); if (wx < 0) wx += int(N);
+        int wy = cell.y % int(N); if (wy < 0) wy += int(N);
+        int wz = cell.z % int(N); if (wz < 0) wz += int(N);
+        vec3 wc = vec3(wx, wy, wz);
+        // Hash to random point position within the cell [0, 1)
+        vec3 h = fract(sin(vec3(dot(wc, vec3(127.1, 311.7,  74.7)),
+                                dot(wc, vec3(269.5, 183.3, 246.1)),
+                                dot(wc, vec3(113.5, 271.9, 124.6)))) * 43758.5453);
+        // Distance uses the actual (unwrapped) cell position for correct geometry
+        vec3 pt = vec3(cell) + h;
+        minDist = min(minDist, length(p - pt));
+    }
+    return clamp(minDist, 0.0, 1.0);
+}
+
+// Remap v from [lo, hi] into [newLo, newHi].
+float remap(float v, float lo, float hi, float newLo, float newHi)
+{
+    return newLo + clamp((v - lo) / max(hi - lo, 1e-6), 0.0, 1.0) * (newHi - newLo);
+}
+
+// --- main -------------------------------------------------------------------
+
+void main()
+{
+    ivec3 coord = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(coord, ivec3(128)))) return;
+
+    // Normalised [0, 1] position, texel-centered
+    vec3 uvw = (vec3(coord) + 0.5) / 128.0;
+
+    // R: Perlin-Worley FBM — large-scale cloud macrostructure
+    // Three-octave Perlin FBM remapped by an inverted Worley field so the
+    // result has cauliflower-like bulges (the Nubis Perlin-Worley channel).
+    float pln  = perlinTile(uvw, 4) * 0.5 + 0.5;
+    pln += (perlinTile(uvw, 8)  * 0.5 + 0.5) * 0.5;
+    pln += (perlinTile(uvw, 16) * 0.5 + 0.5) * 0.25;
+    pln /= 1.75;                                        // normalise octave sum → [0,1]
+    float w0  = 1.0 - worleyTile(uvw, 4.0);            // inverted: high = far from cell centres
+    float perlinWorley = remap(pln, 0.0, 1.0, w0, 1.0);
+
+    // G, B, A: inverted Worley at three increasing frequencies (erosion octaves)
+    float worleyG = 1.0 - worleyTile(uvw,  6.0);
+    float worleyB = 1.0 - worleyTile(uvw, 10.0);
+    float worleyA = 1.0 - worleyTile(uvw, 14.0);
+
+    imageStore(cloudNoiseTex, coord, vec4(perlinWorley, worleyG, worleyB, worleyA));
+}
