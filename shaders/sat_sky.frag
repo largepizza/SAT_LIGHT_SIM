@@ -126,25 +126,36 @@ float phaseCloud(float cosA) {
                 / pow(max(1e-4, 1.0 + g2b - 2.0 * gB * cosA), 1.5);
     return mix(fwd, bwd, 0.3);
 }
+// Analytic ray-sphere intersection. Returns (tNear, tFar) along the ray.
+// Solves |ro + t*rd|² = r²  →  t² + 2bt + c = 0  where b=dot(ro,rd), c=|ro|²-r².
+// When ro is inside the sphere, tNear < 0 and tFar > 0 (one root behind, one ahead).
+// Both components are negative (vec2(-1)) on a miss (discriminant < 0).
 vec2 raySphere(vec3 ro, vec3 rd, float r) {
-    float b  = dot(ro, rd);
-    float c  = dot(ro, ro) - r * r;
-    float d  = b * b - c;
+    float b  = dot(ro, rd);           // half the t^1 coefficient of the quadratic
+    float c  = dot(ro, ro) - r * r;   // constant term; negative when ro is inside the sphere
+    float d  = b * b - c;             // discriminant; negative = ray misses sphere entirely
     if (d < 0.0) return vec2(-1.0);
     float sq = sqrt(d);
-    return vec2(-b - sq, -b + sq);
+    return vec2(-b - sq, -b + sq);    // tNear = entry distance, tFar = exit distance
 }
+// Marches N_LIGHT steps from point p toward direction d over distance segTotal
+// and returns (Rayleigh optical depth, Mie optical depth) — i.e. ∫ρ(h) ds for each species.
+// Multiply by BETA_R / BETA_M in the caller to convert to actual extinction coefficients.
+// Called once per view sample to accumulate the sun-side transmittance at that altitude.
 vec2 optDepth(vec3 p, vec3 d, float segTotal) {
-    float sLen = segTotal / float(N_LIGHT);
+    float sLen = segTotal / float(N_LIGHT);  // length of each sun-ray sub-step
     float odR = 0.0, odM = 0.0;
     for (int i = 0; i < N_LIGHT; ++i) {
-        float h = max(0.0, length(p + d * (float(i) + 0.5) * sLen) - R_EARTH);
-        odR += exp(-h / H_R);
-        odM += exp(-h / H_M);
+        float h = max(0.0, length(p + d * (float(i) + 0.5) * sLen) - R_EARTH);  // altitude at sub-step midpoint
+        odR += exp(-h / H_R);  // Rayleigh density (exponential profile, scale height H_R)
+        odM += exp(-h / H_M);  // Mie density (exponential profile, scale height H_M)
     }
-    return vec2(odR, odM) * sLen;
+    return vec2(odR, odM) * sLen;  // multiply summed densities by step length → optical depth units
 }
 
+// Clamp-and-scale: maps v from [lo,hi] → [newLo,newHi], clamped to the output range.
+// Used throughout cloud density to shift where the noise "zero floor" lands —
+// changing lo raises or lowers the threshold at which noise starts contributing density.
 float remap(float v, float lo, float hi, float newLo, float newHi) {
     return newLo + clamp((v - lo) / (hi - lo), 0.0, 1.0) * (newHi - newLo);
 }
@@ -428,18 +439,51 @@ void evalCloudLayer(
 }
 
 // ── Volumetric cloud density (Nubis remap + erosion) ─────────────────────────
+// Returns a density value [0,1] at the given 3D noise coordinate.
+//   noiseUVW:      3D texture coordinate into cloudNoiseTex (see cloudMarch for construction)
+//   coverage:      per-sample 2D coverage map value × global coverage slider — controls threshold
+//   density:       global linear scale from CloudParams UBO (user-tunable at runtime)
+//   heightProfile: caller-supplied soft fade [0,1] — 0 at shell base/top, 1 in mid-layer
 float cloudDensity(vec3 noiseUVW, float coverage, float density, float heightProfile) {
+    // ── Stage 1: Base shape from low-frequency Perlin-Worley FBM (R channel) ──
+    // cloudNoiseTex.r = Perlin-Worley blend baked at init time:
+    //   values near 1.0 = inside a cloud blob; values near 0.0 = clear sky.
+    // remap remaps the noise range [1-coverage, 1.0] → [0, 1]:
+    //   coverage=0.4 → threshold at 0.6 (only top 40% of noise field = cloud)
+    //   coverage=0.8 → threshold at 0.2 (80% of noise field = cloud, very overcast)
+    // Noise below the threshold produces base=0 and is immediately returned as clear sky.
     vec4  ns   = texture(cloudNoiseTex, fract(noiseUVW));  // full 3D sample — Z varies with altitude
     float base = remap(ns.r, 1.0 - coverage, 1.0, 0.0, 1.0);
-    if (base <= 0.0) return 0.0;
+    if (base <= 0.0) return 0.0;  // clear sky at this point — skip the more expensive erosion fetch
+
+    // ── Stage 2: High-frequency erosion detail (G/B/A channels) ─────────────
+    // Sampled at 1.5× the base frequency with a prime-fraction UV offset so the
+    // erosion sample is spatially uncorrelated with the base blob shape.
+    // G/B/A = inverted Worley cells at three successive octave scales:
+    //   G (weight 0.625): coarse Worley — chews large bites from cloud edges (cumulus cauliflower)
+    //   B (weight 0.25):  medium Worley — adds mid-scale texture to edge fraying
+    //   A (weight 0.125): fine Worley   — adds wispy tendrils at the very edge
     vec4  nsF     = texture(cloudNoiseTex, fract(noiseUVW * 1.5 + vec3(0.37, 0.53, 0.71)));
     float erosion = nsF.g * 0.625 + nsF.b * 0.25 + nsF.a * 0.125;
+
+    // ── Stage 3: Apply erosion by raising the base shape's lower floor ────────
+    // remap(base, 0.2*erosion, 1.0, 0.0, 1.0):
+    //   New lower cutoff = 0.2 * erosion (ranges 0.0 to ~0.2 depending on Worley cells).
+    //   Cloud edges (small base values near the threshold) get their floor pushed up →
+    //   they drop below the new floor and disappear = the edge is eroded away.
+    //   Cloud interiors (base near 1.0) are far above the floor → unaffected → stay dense.
+    // Net visual effect: large rounded blobs develop wispy edges and cauliflower surfaces.
     float eroded  = remap(base, 0.2 * erosion, 1.0, 0.0, 1.0);  // erosion floor fixed; density is a linear scale
+
+    // ── Stage 4: Modulate by height profile and global density ────────────────
+    // heightProfile fades density to zero at the base and top of the cloud shell,
+    // preventing hard horizontal planes from being visible when looking through a layer.
+    // density is a linear user-tunable scale applied last so it doesn't shift the erosion logic.
     return clamp(eroded * heightProfile * density, 0.0, 1.0);
 }
 
 // ── Cloud raymarch diagnostics ────────────────────────────────────────────────
-// Set CLOUD_DEBUG to 1-4 to replace cloud output with a diagnostic overlay.
+// Set CLOUD_DEBUG to 1-5 to replace cloud output with a diagnostic overlay.
 // Set to 0 for normal rendering.
 //
 //  1 = 2D coverage at column entry — white=overcast, black=clear.
@@ -453,6 +497,12 @@ float cloudDensity(vec3 noiseUVW, float coverage, float density, float heightPro
 //
 //  4 = noiseUVW at march midpoint — R=X, G=Y, B=Z noise coords.
 //      Question: Is the noise actually varying in 3D, or is one axis stuck constant?
+//
+//  5 = posZ value at first cloud hit — greyscale [0,1].
+//      Question: Is posZ (the Z anti-banding offset) actually varying across the image?
+//      UNIFORM GREY = posZ is constant for all visible pixels = geographic UV barely changes
+//      within the visible cloud footprint from ground level. This confirms the Z-layer
+//      banding is caused by posZ not spanning enough geographic range from the surface.
 #define CLOUD_DEBUG 2
 
 // ── Volumetric cloud shell march (C7) ────────────────────────────────────────
@@ -509,6 +559,7 @@ void cloudMarch(
     float dbg_firstHitHNorm = -1.0;
     int   dbg_stepsInCloud  = 0;
     vec3  dbg_midNoise      = vec3(0.5);
+    float dbg_firstHitPosZ  = -1.0;   // posZ value captured at the first cloud hit (mode 5)
 
     // Gate 3D march with earthCloudsTex at the column entry point so volumetric clouds
     // only form where the 2D coverage map also shows clouds.
@@ -542,26 +593,43 @@ void cloudMarch(
     float t       = tEnter;
     bool  inCloud = false;
 
-    float cosA = dot(dir, sunDir);
-    float ph   = phaseCloud(cosA);
+    float cosA = dot(dir, sunDir);  // cosine of view-sun angle — constant for all steps on this ray
+    float ph   = phaseCloud(cosA);  // pre-compute dual-lobe HG phase for this ray direction
 
+    // 512-iteration hard cap prevents infinite loops on grazing rays that traverse a long shell arc.
+    // The nominal step count N (min 48) fits well inside this; the bigStep/stepLen dual-speed
+    // uses any remaining budget efficiently rather than wasting it on empty air.
     for (int i = 0; i < 512 && t < tExit; ++i) {
+        // ── Adaptive step size: coarse in clear air, fine inside cloud ─────────
+        // When the previous sample was clear (inCloud=false), use bigStep (2× normal) to
+        // traverse empty sky quickly.  The instant a sample lands inside a cloud (d>0.001),
+        // inCloud flips to true and all subsequent steps shrink to stepLen for full detail.
+        // This is an "empty-space skipping" strategy: most of the shell is empty, so 2×
+        // steps there halve the total sample count with no visible quality loss.
         float step = inCloud ? stepLen : bigStep;
-        step = min(step, tExit - t);
-        vec3  p = obsPos + (t + step * 0.5) * dir;
-        float h = length(p) - R_EARTH;
-        if (h < cloudBaseAlt || h > cloudTopAlt) { inCloud = false; t += step; continue; }
+        step = min(step, tExit - t);             // clamp so we don't overshoot the shell exit boundary
+        vec3  p = obsPos + (t + step * 0.5) * dir;  // midpoint of this step (midpoint-rule integration)
+        float h = length(p) - R_EARTH;              // altitude of sample midpoint above Earth surface (metres)
+        if (h < cloudBaseAlt || h > cloudTopAlt) { inCloud = false; t += step; continue; }  // outside shell: skip
 
+        // hNorm: normalized position within the cloud shell — 0.0 = cloud base, 1.0 = cloud top.
+        // Used to smoothly fade density at the boundaries and to blend ambient light (tops are brighter).
         float hNorm = (h - cloudBaseAlt) / shellThick;
+        // Convert ENU sample position to ECEF so we can compute geographic lat/lon for texture UV.
         vec3  pECEF = p.x * enuX + p.y * enuY + p.z * enuZ;
 
         // Coverage from 2D texture at this sample's geographic position.
         float pLen  = length(pECEF);
-        float pLon  = atan(pECEF.y, pECEF.x);
-        float pLat  = asin(clamp(pECEF.z / pLen, -1.0, 1.0));
+        float pLon  = atan(pECEF.y, pECEF.x);   // geographic longitude [-PI, PI]
+        float pLat  = asin(clamp(pECEF.z / pLen, -1.0, 1.0));  // geographic latitude [-PI/2, PI/2]
+        // Equirectangular UV: u wraps longitude [0,1], v maps latitude pole-to-pole [0,1].
+        // Adding cloudPhase*driftMult shifts the cloud pattern eastward each frame → wind advection.
         vec2  pUV   = vec2(fract((pLon + PI) / (2.0*PI)
                                  + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                            (0.5*PI - pLat) / PI);
+        // localCov: earthCloudsTex value at this geographic position, scaled by global coverage slider.
+        // This per-step 2D gate means volumetric cloud only accumulates where the cloud atlas
+        // actually shows cloud.  mipLod=2 blurs the mask to avoid aliasing at fine sample spacing.
         float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, 2.0).r;
 
         // Column-height map: large-scale (80 km) noise gives each cloud system a
@@ -572,14 +640,21 @@ void cloudMarch(
         float colNoise = texture(cloudNoiseTex,
                                  fract(vec3(pUV.x * kColTiles,
                                             pUV.y * kColTiles, 0.25))).r;
+        // colH: the maximum normalized height [0,1] this particular cloud column can reach.
+        // remap mirrors the coverage threshold: high colNoise + high localCov → tall cumulonimbus;
+        // low colNoise or low coverage → colH near 0 → flat stratus or no cloud at all.
+        // This gives each cloud system a different tower height without a global flat ceiling.
         float colH = remap(colNoise, 1.0 - localCov, 1.0, 0.0, 1.0);
 
         // Soft top fade: density smoothly approaches zero over the top 5% of the
         // column height rather than cutting off abruptly (no visible ceiling planes).
+        // smoothstep transitions from 1→0 as hNorm approaches colH, so cloud density
+        // tapers down toward the top of each individual cloud tower.
         float topFade = 1.0 - smoothstep(colH - 0.05, colH + 0.05, hNorm);
-        // Soft floor fade over the bottom 5% of the shell.
+        // Soft floor fade over the bottom 5% of the shell height (hNorm 0→0.05).
+        // Multiplied with topFade to produce a final profile that is 0 at both boundaries.
         float hFade = smoothstep(0.0, 0.05, hNorm) * topFade;
-        if (hFade < 0.001) { inCloud = false; t += step; continue; }
+        if (hFade < 0.001) { inCloud = false; t += step; continue; }  // outside active column height: skip
 
         // 3D noise in geographic space, co-drifts with earthCloudsTex.
         // kHorizTiles=3000 → ~3 km detail features (visible cumulus puffs at low altitude).
@@ -594,38 +669,79 @@ void cloudMarch(
         // posZ frequency: ~150 km period so zero-crossings of the Perlin Z-axis land at
         // different altitudes in each cloud system, breaking global horizontal banding.
         // Range * 2.0 spans more than one full Perlin Z-cell period (1/kVertTiles ≈ 0.67 hNorm).
-        float posZ    = fract(pUV.x * 340.0 + pUV.y * 460.0);
+        float posZ    = fract(pUV.x * 340.0 + pUV.y * 460.0);  // irrational per-column Z-phase offset
+        // ── 3D noise coordinate for cloudNoiseTex ────────────────────────────
+        // noiseUVW maps this geographic sample point to a coordinate within the 3D noise volume.
+        //
+        //   X/Y axes (horizontal): pUV * kHorizTiles
+        //     kHorizTiles=3000 → one noise tile spans ~(Earth circumference/3000) ≈ 13 km.
+        //     This puts visible cumulus puff detail at ~3 km scale (a few tiles per degree).
+        //
+        //   Altitude shear (+ hNorm * 0.15 / 0.10):
+        //     Tilts cloud columns very slightly — different altitudes sample slightly different
+        //     horizontal noise regions.  The shear is intentionally tiny (< 0.15 per shell):
+        //     large shear would make each altitude a completely different horizontal slice,
+        //     destroying vertical continuity and producing horizontal "layer cake" banding.
+        //
+        //   Z axis (altitude within cloud layer): hNorm * kVertTiles + posZ * 2.0
+        //     kVertTiles=1.5 → the noise volume tiles 1.5 times across the cloud shell height.
+        //     Non-integer to avoid a hard visible seam at the repeat boundary.
+        //     posZ * 2.0 adds a per-column phase offset so the Z period repeats at a different
+        //     altitude in each geographic column — breaks global horizontal banding where all
+        //     columns would otherwise sync their noise phase at the same hNorm value.
+        //
+        //   fract() wraps all three axes into [0,1] for the repeating 3D texture.
         vec3  noiseUVW = fract(vec3(
-            pUV.x * kHorizTiles + hNorm * 0.15,
-            pUV.y * kHorizTiles + hNorm * 0.10,
-            hNorm * kVertTiles + posZ * 2.0));
-        float d = cloudDensity(noiseUVW, localCov, cloud.density, hFade);
+            pUV.x * kHorizTiles + hNorm * 0.15,   // east geographic position + altitude shear
+            pUV.y * kHorizTiles + hNorm * 0.10,   // north geographic position + altitude shear
+            posZ));                                // per-column constant — no altitude sweep into Z
+        float d = cloudDensity(noiseUVW, localCov, cloud.density, hFade);  // density [0,1] at this sample
 
         // Capture diagnostics regardless of CLOUD_DEBUG value (compiler eliminates unused vars).
         if (d > 0.001 && dbg_firstHitHNorm < 0.0) dbg_firstHitHNorm = hNorm;
+        if (d > 0.001 && dbg_firstHitPosZ  < 0.0) dbg_firstHitPosZ  = posZ;
         if (d > 0.001) dbg_stepsInCloud++;
         if (i == N / 2) dbg_midNoise = noiseUVW;
 
-        if (d > 0.001) {
+        if (d > 0.001) {  // this sample is inside a cloud; accumulate extinction and scattered light
             inCloud = true;
+            // Optical depth (τ) for this step:  τ = density × path_length × σ_ext
+            // 3e-3 is the extinction coefficient (σ_ext); tune this to control how quickly
+            // clouds become opaque.  Higher → denser/darker clouds; lower → wispy transparent ones.
+            // d is already [0,1] from cloudDensity; multiplying by step (metres) gives path length.
             float extinction = d * step * 3e-3;
+
+            // Beer-Lambert transmittance through this slab: T = e^(-τ).
+            // stepT < 1 means this slab blocks some fraction of the light coming from behind it.
+            // stepT near 1.0 → nearly transparent; stepT near 0.0 → opaque.
             vec3  stepT      = exp(-vec3(extinction));
-            // Beer-Powder: brightens dense interiors that pure Beer would darken to charcoal.
+
+            // Beer-Powder (Wrenninge et al. 2013): compensates for multiple forward scattering.
+            // Pure Beer would make deep cloud interiors nearly black (τ accumulates to 5-10+).
+            // powder = 1 - e^(-2τ) grows faster than τ for small τ, plateaus near 1 for large τ.
+            // Used as a BRIGHTENING multiplier in inScatter (see below) so dense interiors
+            // look silver-white rather than charcoal from backlit forward scatter.
             float powder     = 1.0 - exp(-extinction * 2.0);
 
-            // Sun cone: 6 steps toward sun accumulate cloud optical depth above this sample,
-            // giving lit tops / dark bases from actual cloud structure rather than a fixed gradient.
+            // ── Sun shadow cone: short shadow ray toward the sun ──────────────
+            // Casts N_CONE=6 steps from this sample point toward the sun and accumulates
+            // cloud density to find how much sunlight is blocked by overlying cloud.
+            // Produces genuine self-shadowing: lit cloud tops / dark shadowed bases.
+            // Only 6 samples — far fewer than the view ray — because we only need to
+            // distinguish "mostly clear overhead" from "a lot of cloud overhead"; fine
+            // structure in the sun shadow doesn't significantly change perceived lighting.
             float sunOptDepth = 0.0;
             {
                 const int N_CONE = 6;
-                vec2  tConeExit = raySphere(p, sunDir, cloudTop);
+                vec2  tConeExit = raySphere(p, sunDir, cloudTop);  // find where the sun ray exits the cloud shell
                 float coneLen   = min((tConeExit.y > 0.0) ? tConeExit.y : shellThick, shellThick * 2.0);
-                float coneSeg   = coneLen / float(N_CONE);
+                float coneSeg   = coneLen / float(N_CONE);  // divide sun ray into N_CONE equal segments
                 for (int ci = 0; ci < N_CONE; ++ci) {
-                    vec3  cp    = p + sunDir * (float(ci) + 0.5) * coneSeg;
-                    float ch    = length(cp) - R_EARTH;
-                    if (ch < cloudBaseAlt || ch > cloudTopAlt) continue;
-                    float chN   = (ch - cloudBaseAlt) / shellThick;
+                    vec3  cp    = p + sunDir * (float(ci) + 0.5) * coneSeg;  // midpoint of this cone segment
+                    float ch    = length(cp) - R_EARTH;     // altitude of this cone sample
+                    if (ch < cloudBaseAlt || ch > cloudTopAlt) continue;  // outside cloud shell: no contribution
+                    float chN   = (ch - cloudBaseAlt) / shellThick;  // normalized altitude of cone sample
+                    // Geographic UV for cone sample — same drift offset as view ray samples
                     vec3  cpE   = cp.x * enuX + cp.y * enuY + cp.z * enuZ;
                     float cpL   = length(cpE);
                     float cpLon = atan(cpE.y, cpE.x);
@@ -633,32 +749,61 @@ void cloudMarch(
                     vec2  cpUV  = vec2(fract((cpLon + PI) / (2.0*PI)
                                         + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                                        (0.5*PI - cpLat) / PI);
-                    float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, 3.0).r;
+                    float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, 3.0).r;  // mip=3: coarser (cone is approximate)
                     float cPosZ = fract(cpUV.x * 340.0 + cpUV.y * 460.0);
                     vec3  cUVW  = fract(vec3(cpUV.x * kHorizTiles + chN * 0.15,
                                              cpUV.y * kHorizTiles + chN * 0.10,
-                                             chN    * kVertTiles   + cPosZ * 2.0));
+                                             cPosZ));  // matches primary march: no altitude in Z
                     float chFade = smoothstep(0.0, 0.05, chN) * (1.0 - smoothstep(0.95, 1.0, chN));
                     // Cone σ = view σ / 8: cone steps are ~16× longer than view steps so using
                     // the same σ compresses all in-cloud samples to near-zero transmittance.
+                    // 3.75e-4 = 3e-3 / 8 — same extinction coefficient, scaled for the longer step.
                     sunOptDepth += cloudDensity(cUVW, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
                 }
             }
-            // Floor at 5%: approximates multi-scattered light reaching deep cloud interiors.
+            // sunTransmittance: fraction of sunlight that survives the overhead cloud column.
+            //   exp(-sunOptDepth) → 1.0 at cloud tops (clear overhead) → 0.0 deep inside thick clouds.
+            // Floored at 5% to approximate multiple scattering keeping cloud interiors non-black.
             float sunTransmittance = max(exp(-sunOptDepth), 0.05);
 
+            // sunElev: geographic sun angle at the cloud sample point in ECEF space.
+            // dot(normalize(pECEF), sunDirECEF) > 0 means this cloud point is on the sunlit side
+            // of Earth — independent of the observer's sun elevation.  Ensures clouds on Earth's
+            // night side are dark even if the observer's local sun is above the horizon.
             float sunElev    = max(0.0, dot(normalize(pECEF), sunDirECEF));
             float selfShadow = mix(0.7, 1.0, hNorm);  // mild contact shadow; cone handles the main gradient
+            // sunLit: total direct-sun lighting factor for this sample:
+            //   sunElev          → geographic illumination (0 at terminator, 1 at sub-solar point)
+            //   sunTransmittance → how much sunlight survives the overlying cloud column
+            //   selfShadow       → mild darkening at cloud base (geometric gradient complement)
             float sunLit     = sunElev * sunTransmittance * selfShadow;
+
+            // inScatter: total light added to each unit of cloud density at this sample.
+            //   Sun term:     sunGain × sunLit × phaseCloud × (1 + powder)
+            //     phaseCloud: dual-lobe HG phase — forward scatter peaks toward the sun
+            //                 (silver lining when looking sunward), slight backscatter away from sun.
+            //     (1 + powder): Beer-Powder brightening so dense interiors stay luminous.
+            //   Ambient term: ambientGain × mix(0.15, 0.4, hNorm)
+            //     Cloud tops receive more ambient sky light than bases → brightened by 0.4 at top, 0.15 at base.
             vec3  inScatter  = vec3(cloud.sunGain  * sunLit * ph * (1.0 + powder)
                                   + cloud.ambientGain * mix(0.15, 0.4, hNorm));
+
+            // ── Accumulate scattered light into cloudScatter ──────────────────
+            // cloudTransmittance: product of all stepT values from the camera to HERE (path transmittance).
+            // (1 - stepT): fraction of step optical depth that scattered toward the camera (absorbed here).
+            // Together: contribution = (light from camera reaching this depth) × (fraction scattered here) × (light at sample).
             cloudScatter       += cloudTransmittance * (1.0 - stepT) * inScatter;
+
+            // Attenuate path transmittance through this slab for all future (deeper) samples.
             cloudTransmittance *= stepT;
+
+            // Early exit: when < 1% of path transmittance remains, the cloud is fully opaque.
+            // No further background or scatter contributions can reach the camera through this column.
             if (cloudTransmittance.r < 0.01) break;
         } else {
-            inCloud = false;
+            inCloud = false;  // density below threshold: mark clear sky, revert to big steps next iteration
         }
-        t += step;
+        t += step;  // advance ray position to the end of this step
     }
 
     float cloudAltFade = 1.0 - smoothstep(0.0, 180000.0, obsEffH);
@@ -696,6 +841,16 @@ void cloudMarch(
     // All channels should vary across the image AND across elevation angles.
     // If B is constant = altitude axis stuck; if R/G constant = horizontal sampling broken.
     dbgCol = dbg_midNoise;
+
+#elif CLOUD_DEBUG == 5
+    // posZ at first cloud hit: greyscale [0,1].
+    // posZ is the geographic Z-phase anti-banding offset derived from pUV (equirectangular UV).
+    // EXPECTED if working:  varies noticeably across the image (different grey values per column).
+    // EXPECTED if broken:   nearly uniform grey — posZ is constant because pUV barely changes
+    //                       within the ~2-3 km geographic footprint of visible clouds from ground level.
+    //                       Uniform grey here = confirmed root cause of the discrete altitude layers.
+    if (dbg_firstHitPosZ >= 0.0)
+        dbgCol = vec3(dbg_firstHitPosZ);
 
 #endif
     color = mix(color, dbgCol, cloudAltFade * 0.9);
@@ -861,29 +1016,49 @@ void main() {
     float odR_cam = 0.0;
     float odM_cam = 0.0;
 
+    // ── Single-scattering atmosphere integration (Rayleigh + Mie) ────────────
+    // N_VIEW uniform steps from the observer toward the atmosphere exit (or truncated at
+    // the surface).  At each step the scattered sunlight is accumulated using:
+    //   - Two running totals (odR_cam, odM_cam): optical depth from the CAMERA to this step.
+    //     These are also read back after the loop to attenuate the surface/moon/cloud colours.
+    //   - Per-step sun optical depth (sunOD): optical depth from THIS STEP to the SUN,
+    //     computed by calling optDepth along the sun direction.
+    //   - Phase functions pR/pM: angular weighting of how much scatter points toward the camera.
     for (int i = 0; i < N_VIEW; ++i) {
-        vec3  sp  = obsPos + dir * ((float(i) + 0.5) * segLen);
+        vec3  sp  = obsPos + dir * ((float(i) + 0.5) * segLen);  // midpoint of this atmosphere step
         float len = length(sp);
-        if (len < R_EARTH) sp *= R_EARTH / len;
-        float h = max(0.0, length(sp) - R_EARTH);
+        if (len < R_EARTH) sp *= R_EARTH / len;  // clamp underground samples to Earth surface
+        float h = max(0.0, length(sp) - R_EARTH);  // altitude above sea level (metres)
 
-        float densR = exp(-h / H_R) * segLen;
-        float densM = exp(-h / H_M) * segLen;
+        // Running camera-side optical depth: accumulated from step 0 to this step.
+        // densR/densM = density × step length = optical depth contribution of this step alone.
+        float densR = exp(-h / H_R) * segLen;   // Rayleigh: peaks at sea level, scale height H_R
+        float densM = exp(-h / H_M) * segLen;   // Mie: concentrated near surface, scale height H_M
         odR_cam += densR;
         odM_cam += densM;
 
+        // Shadow test: skip samples in Earth's shadow.
+        // If the sun-ray from this point has TWO positive intersections with R_EARTH, the sun
+        // is behind Earth from here → no direct sunlight → no in-scatter contribution.
         vec2 tSunEarth = raySphere(sp, sunDir, R_EARTH);
         if (tSunEarth.x > 0.0 && tSunEarth.y > 0.0) continue;
 
+        // Compute sun-side optical depth from this sample to the atmosphere boundary.
         vec2 tSun  = raySphere(sp, sunDir, R_ATMOS);
         vec2 sunOD = (tSun.y > 0.0) ? optDepth(sp, sunDir, tSun.y) : vec2(0.0);
 
+        // Combined transmittance τ = BETA × (cam_depth + sun_depth):
+        //   cam_depth: how much atmosphere light must traverse from here to the camera.
+        //   sun_depth: how much atmosphere sunlight must traverse from the sun to here.
+        // Mie multiplied by 1.1 to account for aerosol absorption (σ_ext > σ_scat).
         vec3 tau  = BETA_R       * (odR_cam + sunOD.x)
                   + BETA_M * 1.1 * (odM_cam + sunOD.y);
-        vec3 attn = exp(-tau);
+        vec3 attn = exp(-tau);  // total transmittance: sun → this sample → camera
 
-        accumR += attn * densR;
-        accumM += dot(attn, vec3(1.0 / 3.0)) * densM;
+        // Accumulate in-scattered radiance for each particle type.
+        // Multiplying by density (densR/densM) weights by how many particles are at this altitude.
+        accumR += attn * densR;                              // Rayleigh: wavelength-dependent (blue sky)
+        accumM += dot(attn, vec3(1.0 / 3.0)) * densM;       // Mie: wavelength-neutral (white haze/corona)
     }
 
     vec3 color = SUN_INTENSITY * (pR * BETA_R * accumR + vec3(pM * BETA_M * accumM));
