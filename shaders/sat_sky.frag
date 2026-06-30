@@ -48,6 +48,34 @@ layout(set = 0, binding = 3) uniform sampler2D earthDayTex;
 layout(set = 0, binding = 4) uniform sampler2D earthNightTex;
 layout(set = 0, binding = 5) uniform sampler2D earthElevTex;
 layout(set = 0, binding = 6) uniform sampler2D earthSpecTex;
+layout(set = 0, binding = 7) uniform sampler2D earthCloudsTex;
+
+// Cloud / volumetrics tunables (binding 9; binding 8 reserved for cloudNoise 3D, C6).
+// cloudPhase is CPU-computed fmod(driftRate * simTime, 2π) and uploaded each frame.
+// std140: 48-byte global section (3×vec4) + 4×32-byte CloudLayer = 176 bytes total.
+struct CloudLayer {
+    float shellAltM;    // sphere-shell altitude above R_EARTH (m)
+    float driftMult;    // cloudPhase longitude multiplier
+    float alphaMax;     // maximum opacity [0,1]
+    float mipLod;       // fixed texture LOD
+    float coverageMult; // per-layer coverage scale
+    float densityMult;  // per-layer density scale
+    float enabled;      // 1.0 = active
+    float pad;
+};
+layout(set = 0, binding = 9) uniform CloudParams {
+    float coverage;
+    float density;
+    float driftRate;
+    float sunGain;
+    float ambientGain;
+    float hgG;
+    float marchSteps;
+    float lightSteps;
+    float cloudPhase;
+    float pad0, pad1, pad2;
+    CloudLayer layers[4];
+} cloud;
 
 layout(location = 0) out vec4 outColor;
 
@@ -334,6 +362,52 @@ float seaMapDetail(vec2 posM, float pHeight, float seaTime) {
     return pHeight - h;
 }
 
+// ── Thin-shell cloud layer evaluator ─────────────────────────────────────────
+// Intersects a sphere shell at R_EARTH + shellAltM, samples earthCloudsTex at the
+// hit point's geographic lat/lon (Earth-fixed UV + per-layer longitude drift), and
+// blends the result into `color`.
+//
+// Lighting uses dot(normalize(cloudPointECEF), sunDirECEF) — the sun angle at the
+// cloud's own geographic location, NOT the observer's sun elevation.  This ensures
+// clouds on the dark side of Earth are dark regardless of where the observer is.
+void evalCloudLayer(
+    vec3  obsPos,  vec3 dir,  float tSurface,
+    vec3  enuX,    vec3 enuY, vec3  enuZ,
+    vec3  sunDirECEF,
+    float odRcam,  float odMcam,
+    float coverage, float density, float sunGain,
+    float shellAltM, float driftMult, float alphaMax, float mipLod,
+    float cloudPhase,
+    inout vec3 color)
+{
+    vec2  tc = raySphere(obsPos, dir, R_EARTH + shellAltM);
+    float t  = (tc.x > 0.001) ? tc.x : tc.y;
+    if (t <= 0.001) return;
+    if (tSurface > 0.0 && t >= tSurface) return;
+
+    // Hit point in ENU → convert to ECEF for geographic UV and sun-dot
+    vec3  hitENU = obsPos + t * dir;
+    vec3  cECEF  = hitENU.x * enuX + hitENU.y * enuY + hitENU.z * enuZ;
+    float cL     = length(cECEF);
+    float cLon   = atan(cECEF.y, cECEF.x);
+    float cLat   = asin(clamp(cECEF.z / cL, -1.0, 1.0));
+
+    // Earth-fixed UV with per-layer longitude drift
+    vec2  uv    = vec2(fract((cLon + PI) / (2.0*PI) + cloudPhase * driftMult / (2.0*PI)),
+                       (0.5*PI - cLat) / PI);
+    float raw   = textureLod(earthCloudsTex, uv, mipLod).r;
+    float alpha = clamp((raw - (1.0 - coverage)) * density, 0.0, alphaMax);
+    if (alpha <= 0.0) return;
+
+    // Sun angle at the cloud's geographic position — independent of observer location
+    float cloudSunDot  = dot(normalize(cECEF), sunDirECEF);
+    float cloudDayFrac = smoothstep(-0.1, 0.15, cloudSunDot);
+    vec3  cloudColor   = vec3(max(0.0, cloudSunDot + 0.1) * sunGain) * cloudDayFrac;
+
+    vec3 attn = exp(-(BETA_R * odRcam + BETA_M * 1.1 * odMcam));
+    color = mix(color, cloudColor * attn, alpha);
+}
+
 void main() {
     vec3 dir    = normalize(enuDir);
     vec3 sunDir = normalize(sunDirENU.xyz);
@@ -342,6 +416,11 @@ void main() {
     vec3 enuZ = normalize(pc.obsECEFDir.xyz); // observer Up in ECEF
     vec3 enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ)); // East
     vec3 enuY = cross(enuZ, enuX);            // North
+
+    // Sun direction in ECEF — used by evalCloudLayer for per-cloud-point illumination.
+    // Transforms ENU sunDir into ECEF so cloud day/night is geographically correct,
+    // not relative to the observer's view of the sun.
+    vec3 sunDirECEF = sunDir.x * enuX + sunDir.y * enuY + sunDir.z * enuZ;
 
     // ── Elevation encoding constants ──────────────────────────────────────────────
     // Land-only normalized DEM: pixel=0 → 0 m (sea level), pixel=1 → 8848 m (Everest).
@@ -825,6 +904,28 @@ void main() {
         }
 
         color += surfColor * surfAttn;
+    }
+
+    // ── Cloud layers (C3/C4 unified: thin-shell 2D overlays) ─────────────────
+    // Each active layer is evaluated via evalCloudLayer(), which:
+    //   • intersects a sphere shell at the layer's altitude
+    //   • samples earthCloudsTex at the cloud's geographic lat/lon + drift offset
+    //   • shades using dot(cloudECEF, sunDirECEF) — correct regardless of observer position
+    // Layers are composited front-to-back (low cloud first so cirrus appears on top).
+    for (int li = 0; li < 4; ++li) {
+        if (cloud.layers[li].enabled < 0.5) continue;
+        evalCloudLayer(
+            obsPos, dir, tSurface, enuX, enuY, enuZ, sunDirECEF,
+            odR_cam, odM_cam,
+            cloud.coverage * cloud.layers[li].coverageMult,
+            cloud.density  * cloud.layers[li].densityMult,
+            cloud.sunGain,
+            cloud.layers[li].shellAltM,
+            cloud.layers[li].driftMult,
+            cloud.layers[li].alphaMax,
+            cloud.layers[li].mipLod,
+            cloud.cloudPhase,
+            color);
     }
 
     // ── Auto-exposure tone mapping ─────────────────────────────────────────────
