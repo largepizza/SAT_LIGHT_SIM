@@ -444,26 +444,28 @@ void evalCloudLayer(
 //   coverage:      per-sample 2D coverage map value × global coverage slider — controls threshold
 //   density:       global linear scale from CloudParams UBO (user-tunable at runtime)
 //   heightProfile: caller-supplied soft fade [0,1] — 0 at shell base/top, 1 in mid-layer
-float cloudDensity(vec3 noiseUVW, float coverage, float density, float heightProfile) {
-    // ── Stage 1: Base shape from low-frequency Perlin-Worley FBM (R channel) ──
-    // cloudNoiseTex.r = Perlin-Worley blend baked at init time:
-    //   values near 1.0 = inside a cloud blob; values near 0.0 = clear sky.
-    // remap remaps the noise range [1-coverage, 1.0] → [0, 1]:
-    //   coverage=0.4 → threshold at 0.6 (only top 40% of noise field = cloud)
-    //   coverage=0.8 → threshold at 0.2 (80% of noise field = cloud, very overcast)
-    // Noise below the threshold produces base=0 and is immediately returned as clear sky.
-    vec4  ns   = texture(cloudNoiseTex, fract(noiseUVW));  // full 3D sample — Z varies with altitude
+// uvwPresence: Z=posZ (constant per column) — gates WHERE cloud exists; no altitude sweep so no Z-axis slabs.
+// uvwDetail:   Z=hNorm*kVertTiles+... (full 3D) — only used for Worley erosion, which creates 3D blob structure
+//              rather than horizontal bands (Worley cells are spherical, not gradient-aligned slabs).
+float cloudDensity(vec3 uvwPresence, vec3 uvwDetail, float coverage, float density, float heightProfile) {
+    // ── Stage 1: Base shape from Perlin-Worley R channel at Z=posZ ───────────
+    // Using the 2D-ish coordinate (Z fixed per column) ensures cloud presence is
+    // determined by the XY noise structure (horizontal patchiness) only.
+    // No altitude sweep in Z → the Perlin's 3 positive Z-lobes don't create slabs.
+    vec4  ns   = texture(cloudNoiseTex, fract(uvwPresence));
     float base = remap(ns.r, 1.0 - coverage, 1.0, 0.0, 1.0);
     if (base <= 0.0) return 0.0;  // clear sky at this point — skip the more expensive erosion fetch
 
-    // ── Stage 2: High-frequency erosion detail (G/B/A channels) ─────────────
-    // Sampled at 1.5× the base frequency with a prime-fraction UV offset so the
-    // erosion sample is spatially uncorrelated with the base blob shape.
+    // ── Stage 2: High-frequency erosion detail (G/B/A channels at full 3D Z) ──
+    // Uses uvwDetail (altitude in Z) so the Worley erosion varies with height,
+    // giving each cloud tower 3D interior structure (bumpy surface, wispy edges).
+    // Worley cells are spherical, not gradient-plane-aligned, so this does NOT
+    // re-introduce the horizontal slab problem that afflicted the Perlin R channel.
     // G/B/A = inverted Worley cells at three successive octave scales:
     //   G (weight 0.625): coarse Worley — chews large bites from cloud edges (cumulus cauliflower)
     //   B (weight 0.25):  medium Worley — adds mid-scale texture to edge fraying
     //   A (weight 0.125): fine Worley   — adds wispy tendrils at the very edge
-    vec4  nsF     = texture(cloudNoiseTex, fract(noiseUVW * 1.5 + vec3(0.37, 0.53, 0.71)));
+    vec4  nsF     = texture(cloudNoiseTex, fract(uvwDetail * 1.5 + vec3(0.37, 0.53, 0.71)));
     float erosion = nsF.g * 0.625 + nsF.b * 0.25 + nsF.a * 0.125;
 
     // ── Stage 3: Apply erosion by raising the base shape's lower floor ────────
@@ -503,7 +505,7 @@ float cloudDensity(vec3 noiseUVW, float coverage, float density, float heightPro
 //      UNIFORM GREY = posZ is constant for all visible pixels = geographic UV barely changes
 //      within the visible cloud footprint from ground level. This confirms the Z-layer
 //      banding is caused by posZ not spanning enough geographic range from the surface.
-#define CLOUD_DEBUG 2
+#define CLOUD_DEBUG 0
 
 // ── Volumetric cloud shell march (C7) ────────────────────────────────────────
 // Marches the cloud-shell annulus [cloudBase, cloudTop] along the view ray.
@@ -691,17 +693,23 @@ void cloudMarch(
         //     columns would otherwise sync their noise phase at the same hNorm value.
         //
         //   fract() wraps all three axes into [0,1] for the repeating 3D texture.
-        vec3  noiseUVW = fract(vec3(
-            pUV.x * kHorizTiles + hNorm * 0.15,   // east geographic position + altitude shear
-            pUV.y * kHorizTiles + hNorm * 0.10,   // north geographic position + altitude shear
-            posZ));                                // per-column constant — no altitude sweep into Z
-        float d = cloudDensity(noiseUVW, localCov, cloud.density, hFade);  // density [0,1] at this sample
+        // Two UVW coordinates: presence uses fixed Z (no altitude slabs),
+        // detail uses full 3D Z (Worley erosion gives 3D interior structure).
+        vec3  uvwPresence = fract(vec3(
+            pUV.x * kHorizTiles + hNorm * 0.15,
+            pUV.y * kHorizTiles + hNorm * 0.10,
+            posZ));                                        // Z=posZ: constant per column, no slab structure
+        vec3  uvwDetail   = fract(vec3(
+            pUV.x * kHorizTiles + hNorm * 0.15,
+            pUV.y * kHorizTiles + hNorm * 0.10,
+            hNorm * kVertTiles + posZ * 2.0));             // Z=altitude: Worley erosion varies with height
+        float d = cloudDensity(uvwPresence, uvwDetail, localCov, cloud.density, hFade);
 
         // Capture diagnostics regardless of CLOUD_DEBUG value (compiler eliminates unused vars).
         if (d > 0.001 && dbg_firstHitHNorm < 0.0) dbg_firstHitHNorm = hNorm;
         if (d > 0.001 && dbg_firstHitPosZ  < 0.0) dbg_firstHitPosZ  = posZ;
         if (d > 0.001) dbg_stepsInCloud++;
-        if (i == N / 2) dbg_midNoise = noiseUVW;
+        if (i == N / 2) dbg_midNoise = uvwDetail;  // debug 4: show the 3D detail UVW variation
 
         if (d > 0.001) {  // this sample is inside a cloud; accumulate extinction and scattered light
             inCloud = true;
@@ -751,14 +759,17 @@ void cloudMarch(
                                        (0.5*PI - cpLat) / PI);
                     float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, 3.0).r;  // mip=3: coarser (cone is approximate)
                     float cPosZ = fract(cpUV.x * 340.0 + cpUV.y * 460.0);
-                    vec3  cUVW  = fract(vec3(cpUV.x * kHorizTiles + chN * 0.15,
-                                             cpUV.y * kHorizTiles + chN * 0.10,
-                                             cPosZ));  // matches primary march: no altitude in Z
+                    vec3  cUVWPresence = fract(vec3(cpUV.x * kHorizTiles + chN * 0.15,
+                                                    cpUV.y * kHorizTiles + chN * 0.10,
+                                                    cPosZ));
+                    vec3  cUVWDetail   = fract(vec3(cpUV.x * kHorizTiles + chN * 0.15,
+                                                    cpUV.y * kHorizTiles + chN * 0.10,
+                                                    chN * kVertTiles + cPosZ * 2.0));
                     float chFade = smoothstep(0.0, 0.05, chN) * (1.0 - smoothstep(0.95, 1.0, chN));
                     // Cone σ = view σ / 8: cone steps are ~16× longer than view steps so using
                     // the same σ compresses all in-cloud samples to near-zero transmittance.
                     // 3.75e-4 = 3e-3 / 8 — same extinction coefficient, scaled for the longer step.
-                    sunOptDepth += cloudDensity(cUVW, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
+                    sunOptDepth += cloudDensity(cUVWPresence, cUVWDetail, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
                 }
             }
             // sunTransmittance: fraction of sunlight that survives the overhead cloud column.
