@@ -94,13 +94,20 @@ void main()
     vec3 uvw = (vec3(coord) + 0.5) / 128.0;
 
     // R: Perlin-Worley FBM — large-scale cloud macrostructure
-    // Three-octave Perlin FBM remapped by an inverted Worley field so the
-    // result has cauliflower-like bulges (the Nubis Perlin-Worley channel).
-    float pln  = perlinTile(uvw, 4) * 0.5 + 0.5;
-    pln += (perlinTile(uvw, 8)  * 0.5 + 0.5) * 0.5;
-    pln += (perlinTile(uvw, 16) * 0.5 + 0.5) * 0.25;
+    // Z compressed to 0.25 of the XY scale so each Perlin cell spans the full
+    // cloud shell height vertically.  This prevents the isotropic N=4 Perlin from
+    // producing ~3 positive Z lobes across kVertTiles=1.5, which manifested as
+    // exactly 3 discrete altitude slabs when the shader threshold-gated on ns.r.
+    // With Z compressed, cloud presence is determined by the XY Perlin structure
+    // (horizontal patchiness at ~3 km world-space scale) while the hFade/colH
+    // system in the shader controls the vertical extent of each cloud tower.
+    // G/B/A erosion channels remain fully 3D for surface detail variation.
+    vec3 uvwR = vec3(uvw.xy, uvw.z * 0.25);
+    float pln  = perlinTile(uvwR, 4) * 0.5 + 0.5;
+    pln += (perlinTile(uvwR, 8)  * 0.5 + 0.5) * 0.5;
+    pln += (perlinTile(uvwR, 16) * 0.5 + 0.5) * 0.25;
     pln /= 1.75;                                        // normalise octave sum → [0,1]
-    float w0  = 1.0 - worleyTile(uvw, 4.0);            // inverted: high = far from cell centres
+    float w0  = 1.0 - worleyTile(uvwR, 4.0);           // inverted: high = far from cell centres
     float perlinWorley = remap(pln, 0.0, 1.0, w0, 1.0);
 
     // G, B, A: inverted Worley at three increasing frequencies (erosion octaves)
