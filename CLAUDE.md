@@ -427,17 +427,27 @@ If the file is missing (first run) all defaults are used silently.
 See `TERRAIN_PLAN.md` in the project root for the full step checklist and session log.
 Read it at the start of any terrain-related session before making changes.
 
-**Current state (as of 2026-06-25, session 7):**
-- Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete
+**Current state (as of 2026-07-01, session 19):**
+- Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete; C1–C8 complete
 - `SatDrawPC` is 128 bytes: `obsECEFDir (vec4)` at offset 112 (observer ECEF unit vector)
-- Sky descriptor set has 7 bindings (0-6): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec
+- Sky descriptor set has 10 bindings (0-9): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
 - `sat_sky.frag` ground path: 96-step quadratic terrain march + 12-step binary search;
   terrain hits use gradient-computed normals; sea-level sphere fallback; satellites/stars
   depth-tested against terrain (gl_FragDepth: close terrain → [0, 0.5), sky → 1.0)
 - Ocean wave material: specular map (binding 6) gates two-octave noise wave normals +
   Blinn-Phong sun glint (exp=300) + Schlick Fresnel on sea-level sphere hits
-- Next: Step 7 (night lights → sky glow) or Step 9 (cloud layer)
+- **Volumetric clouds (C7+C8):** shell march with full C8 lighting:
+  - `cloudDensity` takes two UVW args — `uvwPresence` (Z=posZ) for Perlin R threshold,
+    `uvwDetail` (Z=hNorm×kVertTiles) for Worley erosion. Keeps cloud-existence horizontal only.
+  - **Altitude-stratified stepping:** `stepLen = (shellThick/N) / max(abs(dir.z), 0.02)`.
+    Equal altitude per step regardless of ray angle — no oblique-angle slab artifacts.
+  - **Spectral sun color:** `sunColorCloud` from `optDepth` at shell entry → orange/red at sunset.
+    Night-side gated by Earth shadow test. Replaces old gray `vec3(1.0)` lighting.
+  - **Night darkening:** ambient transitions from blue day dome to near-zero at night using
+    per-sample `dot(normalize(pECEF), sunDirECEF)` geographic terminator check.
+  - **City upwelling:** `earthNightTex` at mip 3 contributes warm orange into cloud bases at night.
+- **Next:** C9 (composite + performance), or noise improvements (repetition, time evolution)
 
 ### Elevation texture encoding — READ THIS BEFORE TOUCHING TERRAIN CODE
 

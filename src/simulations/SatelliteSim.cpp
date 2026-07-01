@@ -428,23 +428,23 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
     if (cloudParamsMapped)
     {
         GpuCloudParams cp{};
-        cp.coverage    = cloudCoverage;
-        cp.density     = cloudDensity;
-        cp.driftRate   = cloudDriftRate;
-        cp.sunGain     = cloudSunGain;
+        cp.coverage = cloudCoverage;
+        cp.density = cloudDensity;
+        cp.driftRate = cloudDriftRate;
+        cp.sunGain = cloudSunGain;
         cp.ambientGain = cloudAmbientGain;
-        cp.hgG         = cloudHgG;
-        cp.marchSteps  = cloudMarchSteps;
-        cp.lightSteps  = cloudLightSteps;
-        cp.cloudPhase  = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
-                                     glm::two_pi<double>());
+        cp.hgG = cloudHgG;
+        cp.marchSteps = cloudMarchSteps;
+        cp.lightSteps = cloudLightSteps;
+        cp.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
+                                    glm::two_pi<double>());
         // Layer 0: low cloud / stratus shell
-        cp.layers[0] = { cloudBaseAltM, 1.0f, 0.80f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f };
+        cp.layers[0] = {cloudBaseAltM, 1.0f, 0.80f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f};
         // Layer 1: high cirrus shell
-        cp.layers[1] = { cloudTopAltM,  2.0f, 0.15f, 2.0f, 0.5f, 0.4f, 1.0f, 0.0f };
+        cp.layers[1] = {cloudTopAltM, 2.0f, 0.15f, 2.0f, 0.5f, 0.4f, 1.0f, 0.0f};
         // Layers 2-3: unused
-        cp.layers[2] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-        cp.layers[3] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+        cp.layers[2] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        cp.layers[3] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
         memcpy(cloudParamsMapped, &cp, sizeof(cp));
     }
 
@@ -1702,12 +1702,12 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
                 // ── Clouds ────────────────────────────────────────────────────
                 CLAY(CLAY_ID("CloudTopSep"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                                          .padding = {0, 0, 6, 4}},
+                                                         .padding = {0, 0, 6, 4}},
                                               .backgroundColor = Pal::sectionHdr}) {}
                 CLAY_TEXT(CLAY_STRING("Clouds"),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(14)}));
                 CLAY(CLAY_ID("CloudSep"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                                       .padding = {0, 0, 4, 4}},
+                                                      .padding = {0, 0, 4, 4}},
                                            .backgroundColor = Pal::sectionHdr}) {}
 
                 struct CloudSlider
@@ -1720,16 +1720,16 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                 };
                 static char cloudBufs[10][16];
                 CloudSlider cloudSliders[] = {
-                    {"Coverage",    &cloudCoverage,    0.0f,  1.0f,    0.05f,  "%.2f", 0},
-                    {"Density",     &cloudDensity,     0.1f,  10.0f,   0.1f,   "%.1f", 1},
-                    {"L0 alt (m)",  &cloudBaseAltM,    100.0f, 6000.0f, 100.0f, "%.0f", 2},
-                    {"L1 alt (m)",  &cloudTopAltM,     4000.0f,15000.0f,250.0f, "%.0f", 3},
-                    {"Drift (1e-6)",&cloudDriftRate,   0.0f,  20e-6f,  0.5e-6f,"%.1e", 4},
-                    {"Sun gain",    &cloudSunGain,     0.0f,  5.0f,    0.1f,   "%.2f", 5},
-                    {"Ambient",     &cloudAmbientGain, 0.0f,  2.0f,    0.05f,  "%.2f", 6},
-                    {"HG g",        &cloudHgG,         0.0f,  0.99f,   0.05f,  "%.2f", 7},
-                    {"March steps", &cloudMarchSteps,  4.0f,  128.0f,  4.0f,   "%.0f", 8},
-                    {"Light steps", &cloudLightSteps,  1.0f,  16.0f,   1.0f,   "%.0f", 9},
+                    {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
+                    {"Density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
+                    {"L0 alt (m)", &cloudBaseAltM, 100.0f, 6000.0f, 100.0f, "%.0f", 2},
+                    {"L1 alt (m)", &cloudTopAltM, 4000.0f, 15000.0f, 250.0f, "%.0f", 3},
+                    {"Drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
+                    {"Sun gain", &cloudSunGain, 0.0f, 5.0f, 0.1f, "%.2f", 5},
+                    {"Ambient", &cloudAmbientGain, 0.0f, 2.0f, 0.05f, "%.2f", 6},
+                    {"HG g", &cloudHgG, 0.0f, 0.99f, 0.05f, "%.2f", 7},
+                    {"March steps", &cloudMarchSteps, 4.0f, 1024.0f, 4.0f, "%.0f", 8},
+                    {"Light steps", &cloudLightSteps, 1.0f, 16.0f, 1.0f, "%.0f", 9},
                 };
                 for (auto &cs : cloudSliders)
                 {
@@ -1774,8 +1774,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                             if (fillW >= 1.0f)
                             {
                                 CLAY(CLAY_IDI("CloudFill", ci), {.layout = {.sizing = {CLAY_SIZING_FIXED(fillW), CLAY_SIZING_GROW(0)}},
-                                                                  .backgroundColor = Pal::btnAccent,
-                                                                  .cornerRadius = CLAY_CORNER_RADIUS(3)}) {}
+                                                                 .backgroundColor = Pal::btnAccent,
+                                                                 .cornerRadius = CLAY_CORNER_RADIUS(3)}) {}
                             }
                         }
 
@@ -2610,9 +2610,9 @@ void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
     // 3D image view (layerCount=1; depth lives in extent, not array layers)
     {
         VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        vci.image    = cloudNoiseImg;
+        vci.image = cloudNoiseImg;
         vci.viewType = VK_IMAGE_VIEW_TYPE_3D;
-        vci.format   = VK_FORMAT_R8G8B8A8_UNORM;
+        vci.format = VK_FORMAT_R8G8B8A8_UNORM;
         vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCreateImageView(ctx.device, &vci, nullptr, &cloudNoiseView);
     }
@@ -2620,13 +2620,13 @@ void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
     // Trilinear REPEAT sampler — noise must tile seamlessly across UVW [0,1)
     {
         VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-        sci.magFilter    = VK_FILTER_LINEAR;
-        sci.minFilter    = VK_FILTER_LINEAR;
-        sci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sci.magFilter = VK_FILTER_LINEAR;
+        sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
         sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        sci.maxLod       = 1.0f;
+        sci.maxLod = 1.0f;
         vkCreateSampler(ctx.device, &sci, nullptr, &cloudNoiseSampler);
     }
 
@@ -2634,13 +2634,13 @@ void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
     VkDescriptorSetLayout bakeDescLayout = VK_NULL_HANDLE;
     {
         VkDescriptorSetLayoutBinding b{};
-        b.binding         = 0;
-        b.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b.binding = 0;
+        b.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         b.descriptorCount = 1;
-        b.stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
+        b.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         li.bindingCount = 1;
-        li.pBindings    = &b;
+        li.pBindings = &b;
         vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &bakeDescLayout);
     }
 
@@ -2649,17 +2649,17 @@ void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
         VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.poolSizeCount = 1;
-        pi.pPoolSizes    = &ps;
-        pi.maxSets       = 1;
+        pi.pPoolSizes = &ps;
+        pi.maxSets = 1;
         vkCreateDescriptorPool(ctx.device, &pi, nullptr, &bakePool);
     }
 
     VkDescriptorSet bakeSet = VK_NULL_HANDLE;
     {
         VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        ai.descriptorPool     = bakePool;
+        ai.descriptorPool = bakePool;
         ai.descriptorSetCount = 1;
-        ai.pSetLayouts        = &bakeDescLayout;
+        ai.pSetLayouts = &bakeDescLayout;
         vkAllocateDescriptorSets(ctx.device, &ai, &bakeSet);
     }
 
@@ -2668,7 +2668,7 @@ void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
     {
         VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         li.setLayoutCount = 1;
-        li.pSetLayouts    = &bakeDescLayout;
+        li.pSetLayouts = &bakeDescLayout;
         vkCreatePipelineLayout(ctx.device, &li, nullptr, &bakePipeLayout);
     }
 
@@ -2676,11 +2676,11 @@ void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
     {
         VkShaderModule mod = ctx.loadShader("shaders/cloud_noise.comp.spv");
         VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-        stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         stage.module = mod;
-        stage.pName  = "main";
+        stage.pName = "main";
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-        ci.stage  = stage;
+        ci.stage = stage;
         ci.layout = bakePipeLayout;
         if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &bakePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create cloud_noise bake pipeline");
@@ -2700,11 +2700,11 @@ void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
         // Descriptor write: STORAGE_IMAGE pointing at cloudNoiseView in GENERAL layout
         VkDescriptorImageInfo imgInfo{VK_NULL_HANDLE, cloudNoiseView, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        w.dstSet          = bakeSet;
-        w.dstBinding      = 0;
+        w.dstSet = bakeSet;
+        w.dstBinding = 0;
         w.descriptorCount = 1;
-        w.descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        w.pImageInfo      = &imgInfo;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        w.pImageInfo = &imgInfo;
         vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, bakePipeline);
@@ -3263,7 +3263,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 
     // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO
     VkDescriptorSetLayoutBinding bindings[10] = {};
-    bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[3] = {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -3272,7 +3272,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     bindings[6] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[7] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[8] = {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudNoise sampler3D
-    bindings[9] = {9, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[9] = {9, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     li.bindingCount = 10;
     li.pBindings = bindings;
@@ -4272,16 +4272,16 @@ void SatelliteSim::loadSettings()
     if (j.contains("clouds"))
     {
         auto &c = j["clouds"];
-        cloudCoverage    = c.value("coverage",     cloudCoverage);
-        cloudDensity     = c.value("density",      cloudDensity);
-        cloudBaseAltM    = c.value("base_alt_m",   cloudBaseAltM);
-        cloudTopAltM     = c.value("top_alt_m",    cloudTopAltM);
-        cloudDriftRate   = c.value("drift_rate",   cloudDriftRate);
-        cloudSunGain     = c.value("sun_gain",     cloudSunGain);
+        cloudCoverage = c.value("coverage", cloudCoverage);
+        cloudDensity = c.value("density", cloudDensity);
+        cloudBaseAltM = c.value("base_alt_m", cloudBaseAltM);
+        cloudTopAltM = c.value("top_alt_m", cloudTopAltM);
+        cloudDriftRate = c.value("drift_rate", cloudDriftRate);
+        cloudSunGain = c.value("sun_gain", cloudSunGain);
         cloudAmbientGain = c.value("ambient_gain", cloudAmbientGain);
-        cloudHgG         = c.value("hg_g",         cloudHgG);
-        cloudMarchSteps  = c.value("march_steps",  cloudMarchSteps);
-        cloudLightSteps  = c.value("light_steps",  cloudLightSteps);
+        cloudHgG = c.value("hg_g", cloudHgG);
+        cloudMarchSteps = c.value("march_steps", cloudMarchSteps);
+        cloudLightSteps = c.value("light_steps", cloudLightSteps);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -4326,16 +4326,16 @@ void SatelliteSim::saveSettings()
     j["time"] = {{"scale_idx", timeScaleIdx}};
 
     j["clouds"] = {
-        {"coverage",     cloudCoverage},
-        {"density",      cloudDensity},
-        {"base_alt_m",   cloudBaseAltM},
-        {"top_alt_m",    cloudTopAltM},
-        {"drift_rate",   cloudDriftRate},
-        {"sun_gain",     cloudSunGain},
+        {"coverage", cloudCoverage},
+        {"density", cloudDensity},
+        {"base_alt_m", cloudBaseAltM},
+        {"top_alt_m", cloudTopAltM},
+        {"drift_rate", cloudDriftRate},
+        {"sun_gain", cloudSunGain},
         {"ambient_gain", cloudAmbientGain},
-        {"hg_g",         cloudHgG},
-        {"march_steps",  cloudMarchSteps},
-        {"light_steps",  cloudLightSteps}};
+        {"hg_g", cloudHgG},
+        {"march_steps", cloudMarchSteps},
+        {"light_steps", cloudLightSteps}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)
