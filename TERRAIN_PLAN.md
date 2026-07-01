@@ -254,9 +254,42 @@ The jpg is the **coverage signal**; the 3D noise supplies **shape/detail**; heig
   above the shell (seamless all-altitude). `cloudDensity(p)` = coverage × heightProfile × detail(3D)
   with remap + erosion. Adaptive stepping + empty-space skip; gray extinction only; cross-fade with
   C3 overlay via `altFade`. *Done when:* shapes track the map, no march artifacts, seamless ground↔orbit.
-- [ ] **C8 — Cloud lighting.** Beer-Powder transmittance + dual-lobe HG + sun cone light-march (~6
+
+  **C7 tuning notes (2026-06-30):**
+  - `cloudDensity` now takes two UVW coordinates: `uvwPresence` (Z=posZ, constant per column) for the
+    Perlin-Worley R channel presence threshold, and `uvwDetail` (Z=hNorm×kVertTiles, original formula)
+    for the Worley erosion G/B/A channels. This separates the cloud-existence decision (horizontal
+    patchiness from XY noise) from the cloud-interior texture (3D Worley blobs from altitude variation).
+    The Perlin R channel has ~3 positive Z-lobes across kVertTiles=1.5 that create horizontal altitude
+    slabs when used for presence; Worley cells are spherical and do not share this slab problem.
+  - **March steps are the primary quality lever from sea level.** With the default ~48 steps, each
+    step is ~62.5 m on a vertical ray but far larger for oblique rays. The coarse sampling causes hard
+    discontinuities between noise density levels, which project as discrete "oval slab" layers visible
+    in debug mode 2. At **~150 steps** the sampling is fine enough to resolve continuous density
+    gradients and clouds appear volumetric with no visible layers from sea level.
+  - 150 steps is the **practical minimum** for glitchless clouds from ground level. The 512-step hard
+    cap in the march loop provides headroom; the `marchSteps` UBO field exposes this as a slider.
+    A default of 150 is recommended; lower values are acceptable from orbit where the shell is shallower.
+- [x] **C8 — Cloud lighting.** Beer-Powder transmittance + dual-lobe HG + sun cone light-march (~6
   samples, reuse `optDepth` structure) + N-octave multi-scatter + sky ambient; front-to-back in-scatter/
   transmittance accumulation. *Done when:* lit tops, dark bases, silver lining, believable dawn/dusk/night.
+
+  **C8 implementation (2026-07-01, session 19):**
+  - **Altitude-stratified march stepping:** replaced `stepLen = (tExit-tEnter)/N` with
+    `stepLen = (shellThick/N) / max(abs(dir.z), 0.02)`. Each step now advances exactly
+    `shellThick/N` in altitude regardless of ray angle, making oblique-angle quality match
+    vertical-ray quality without increasing step count.
+  - **Spectral sun color:** `sunColorCloud` pre-computed once per cloudMarch call using
+    `optDepth(p0, sunDir, tSA.y)` at the shell entry point. Clouds receive orange/red
+    light at sunrise/sunset; night-side clouds (Earth's shadow check via raySphere) receive
+    zero direct sun. `sunColorCloud` replaces the old implicit `vec3(1.0)` white.
+  - **Night darkening:** `sampleDayness = clamp((dot(normalize(pECEF), sunDirECEF) + 0.15) / 0.3, 0, 1)`
+    per sample gates the ambient sky dome term. Day ambient = blue-tinted `vec3(0.35, 0.55, 0.85)`;
+    night ambient ≈ `vec3(0.001)`. Transition spans ±15° around the geographic terminator.
+  - **City light upwelling:** at night (sampleDayness < 0.9) and cloud base (hNorm < 0.5),
+    samples `earthNightTex` at mip 3 at the cloud's geographic position. After stripping
+    0.06 baseline noise, contributes warm orange tint upward into overcast cloud undersides.
+    Fades linearly to zero at hNorm = 0.5.
 - [ ] **C9 — Composite & performance.** Blend cloud `(T, inscatter)` with atmosphere + terrain in
   order; write `gl_FragDepth` so satellites/stars behind dense cloud are occluded (mirror terrain depth
   `sat_sky.frag:951-961`). Step counts in UBO; optional half-res buffer + upsample / temporal jitter.
@@ -438,6 +471,41 @@ The jpg is the **coverage signal**; the 3D noise supplies **shape/detail**; heig
   - Layer 0: low cloud shell at ~2km, alphaMax=0.80, mipLod=0.0, coverageMult=1.0
   - Layer 1: cirrus shell at ~11km, alphaMax=0.15, mipLod=2.0, coverageMult=0.5, densityMult=0.4
   - Slider labels: "L0 alt (m)" / "L1 alt (m)" with updated ranges
+
+### 2026-07-01 (session 19)
+- **C8 complete:** Cloud lighting upgraded from placeholder gray to physically-based spectral model.
+  - `sunColorCloud` = atmospheric sun color at shell entry (`optDepth` toward sun, same formula as
+    main atmosphere loop). Gives orange/red clouds at sunset/sunrise. Night-side clouds gated by
+    Earth shadow check (raySphere R_EARTH) → zero direct sun on dark side of planet.
+  - `sampleDayness` per march sample from geographic `dot(pECEF, sunDirECEF)` → ambient sky dome
+    transitions from `vec3(0.35, 0.55, 0.85)` (blue day dome) to `vec3(0.001)` (near-zero night).
+    Cloud tops (hNorm=1) get 2.7× more ambient than bases (hNorm=0).
+  - City light upwelling: `textureLod(earthNightTex, pUV, 3.0)` at night in lower half of cloud
+    shell (hNorm < 0.5); warm orange tint into overcast bases over city regions.
+  - Altitude-stratified march stepping: `stepLen = (shellThick/N) / max(abs(dir.z), 0.02)`.
+    Each step advances equal altitude regardless of ray angle → no more oblique-angle slab artifacts
+    without increasing step count. Replaces `stepLen = (tExit - tEnter) / N`.
+  - Build clean.
+
+### 2026-06-30 (session 18)
+- **C7 cloud debugging — root cause identified and architectural fix applied:**
+  - Investigated discrete altitude slab artifacts (debug mode 2 showing stacked uniform-color ovals
+    instead of smooth 3D blob volumes). Long investigation ruled out: terrain march geometry, raySphere
+    precision, LOD step-size, distance-based effects (those would produce observer-concentric rings,
+    not Earth-altitude-parallel layers).
+  - **Root cause 1 (architectural):** `cloudDensity` used the 3D noise R channel (Perlin-Worley) for
+    cloud *presence* with Z driven by altitude (hNorm × kVertTiles). The Perlin R channel has ~3
+    positive Z-lobes across 1.5 kVertTiles, producing exactly 3 cloud altitude bands when threshold-gated.
+  - **Fix applied:** split `cloudDensity` into two UVW coordinates — `uvwPresence` (Z=posZ, constant
+    per column) for the Perlin R threshold, and `uvwDetail` (Z=hNorm×kVertTiles) for Worley erosion
+    G/B/A only. Worley cells are spherical and do not create horizontal slabs. Cloud existence is now
+    purely horizontal-noise-driven; vertical extent from hFade/colH.
+  - **Root cause 2 (performance):** insufficient march steps. At default ≈48 steps, coarse sampling
+    creates hard density discontinuities that project as discrete slab layers at all elevation angles.
+    **150+ steps resolves the layering from sea level.** The step count is the primary quality lever.
+  - Several noise/threshold experiments were attempted and reverted: Z-compressed texture bake in
+    cloud_noise.comp (made towers worse), fixed threshold (removed horizontal breaks), coverage
+    multiplier. These are documented here as non-solutions. cloud_noise.comp is at original values.
 
 ### 2026-06-28 (session 13)
 - **C4 complete:** High cirrus 2D layer in `sat_sky.frag` (shader-only).

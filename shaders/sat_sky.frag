@@ -505,18 +505,22 @@ float cloudDensity(vec3 uvwPresence, vec3 uvwDetail, float coverage, float densi
 //      UNIFORM GREY = posZ is constant for all visible pixels = geographic UV barely changes
 //      within the visible cloud footprint from ground level. This confirms the Z-layer
 //      banding is caused by posZ not spanning enough geographic range from the surface.
-#define CLOUD_DEBUG 0
+#define CLOUD_DEBUG 2
 
-// ── Volumetric cloud shell march (C7) ────────────────────────────────────────
+// ── Volumetric cloud shell march (C7+C8) ─────────────────────────────────────
 // Marches the cloud-shell annulus [cloudBase, cloudTop] along the view ray.
-// Gray extinction + single-lobe HG in-scatter (full lighting deferred to C8).
-// Cross-fades with the 2D overlay via cloudAltFade (mirrors ocean altFade).
+// Full C8 lighting: spectral sun color, night darkening, city upwelling.
+// Returns cloudTOut (transmittance) and tCloudOcclude (cloud depth for satellite occlusion).
 void cloudMarch(
     vec3  obsPos,  vec3  dir,         float tSurface,
     vec3  enuX,    vec3  enuY,        vec3  enuZ,
     vec3  sunDir,  vec3  sunDirECEF,  float obsEffH,
-    inout vec3  color)
+    inout vec3  color,
+    out   vec3  cloudTOut,     // final cloud transmittance (vec3(1.0) = fully clear)
+    out   float tCloudOcclude) // tEnter when cloud is ≥50% opaque, else -1.0
 {
+    cloudTOut = vec3(1.0);
+    tCloudOcclude = -1.0;
     if (cloud.layers[0].enabled < 0.5) return;
 
     float cloudBaseAlt = cloud.layers[0].shellAltM;
@@ -579,13 +583,32 @@ void cloudMarch(
         if (dbg_entryLocalCov < 0.02) return;
     }
 
+    // Atmospheric sun color at shell entry — gives orange/red at low sun angles.
+    // Computed once; varies negligibly over the 9 km shell height.
+    vec3 sunColorCloud = vec3(0.0);
+    {
+        vec3 p0  = obsPos + tEnter * dir;
+        vec2 tSE = raySphere(p0, sunDir, R_EARTH);
+        if (!(tSE.x > 0.0 && tSE.y > 0.0)) {  // not in Earth's shadow
+            vec2 tSA = raySphere(p0, sunDir, R_ATMOS);
+            if (tSA.y > 0.0) {
+                vec2 sOD = optDepth(p0, sunDir, tSA.y);
+                sunColorCloud = SUN_INTENSITY * exp(-(BETA_R * sOD.x + BETA_M * 1.1 * sOD.y));
+            }
+        }
+    }
+
     // Re-evaluate coverage mask per-step from earthCloudsTex for accurate gating.
     // This is cheaper to recompute than to pass through a closure, and avoids large
     // regions of the march being fired in cloud-free sky.
     vec3  cloudTransmittance = vec3(1.0);
     vec3  cloudScatter       = vec3(0.0);
     int   N       = max(48, int(cloud.marchSteps));
-    float stepLen = (tExit - tEnter) / float(N);
+    // Altitude-stratified step size: advances shellThick/N in altitude per step regardless
+    // of ray angle. Vertical rays: stepLen = 60 m. Oblique rays: larger steps covering
+    // the same altitude increment but more geographic area. Quality is now angle-independent.
+    float dh_dt   = max(abs(dir.z), 0.02);   // altitude rate along ray; min 0.02 caps step at 50× vertical
+    float stepLen = (shellThick / float(N)) / dh_dt;
     // When the observer is inside the cloud shell, tEnter=0.001 so the march starts
     // at the camera. The bigStep optimization flips step size when d crosses 0.001,
     // which changes which geographic samples are tested each frame and causes the
@@ -594,9 +617,6 @@ void cloudMarch(
     float bigStep = insideShell ? stepLen : stepLen * 2.0;
     float t       = tEnter;
     bool  inCloud = false;
-
-    float cosA = dot(dir, sunDir);  // cosine of view-sun angle — constant for all steps on this ray
-    float ph   = phaseCloud(cosA);  // pre-compute dual-lobe HG phase for this ray direction
 
     // 512-iteration hard cap prevents infinite loops on grazing rays that traverse a long shell arc.
     // The nominal step count N (min 48) fits well inside this; the bigStep/stepLen dual-speed
@@ -731,73 +751,44 @@ void cloudMarch(
             // look silver-white rather than charcoal from backlit forward scatter.
             float powder     = 1.0 - exp(-extinction * 2.0);
 
-            // ── Sun shadow cone: short shadow ray toward the sun ──────────────
-            // Casts N_CONE=6 steps from this sample point toward the sun and accumulates
-            // cloud density to find how much sunlight is blocked by overlying cloud.
-            // Produces genuine self-shadowing: lit cloud tops / dark shadowed bases.
-            // Only 6 samples — far fewer than the view ray — because we only need to
-            // distinguish "mostly clear overhead" from "a lot of cloud overhead"; fine
-            // structure in the sun shadow doesn't significantly change perceived lighting.
-            float sunOptDepth = 0.0;
-            {
-                const int N_CONE = 6;
-                vec2  tConeExit = raySphere(p, sunDir, cloudTop);  // find where the sun ray exits the cloud shell
-                float coneLen   = min((tConeExit.y > 0.0) ? tConeExit.y : shellThick, shellThick * 2.0);
-                float coneSeg   = coneLen / float(N_CONE);  // divide sun ray into N_CONE equal segments
-                for (int ci = 0; ci < N_CONE; ++ci) {
-                    vec3  cp    = p + sunDir * (float(ci) + 0.5) * coneSeg;  // midpoint of this cone segment
-                    float ch    = length(cp) - R_EARTH;     // altitude of this cone sample
-                    if (ch < cloudBaseAlt || ch > cloudTopAlt) continue;  // outside cloud shell: no contribution
-                    float chN   = (ch - cloudBaseAlt) / shellThick;  // normalized altitude of cone sample
-                    // Geographic UV for cone sample — same drift offset as view ray samples
-                    vec3  cpE   = cp.x * enuX + cp.y * enuY + cp.z * enuZ;
-                    float cpL   = length(cpE);
-                    float cpLon = atan(cpE.y, cpE.x);
-                    float cpLat = asin(clamp(cpE.z / cpL, -1.0, 1.0));
-                    vec2  cpUV  = vec2(fract((cpLon + PI) / (2.0*PI)
-                                        + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
-                                       (0.5*PI - cpLat) / PI);
-                    float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, 3.0).r;  // mip=3: coarser (cone is approximate)
-                    float cPosZ = fract(cpUV.x * 340.0 + cpUV.y * 460.0);
-                    vec3  cUVWPresence = fract(vec3(cpUV.x * kHorizTiles + chN * 0.15,
-                                                    cpUV.y * kHorizTiles + chN * 0.10,
-                                                    cPosZ));
-                    vec3  cUVWDetail   = fract(vec3(cpUV.x * kHorizTiles + chN * 0.15,
-                                                    cpUV.y * kHorizTiles + chN * 0.10,
-                                                    chN * kVertTiles + cPosZ * 2.0));
-                    float chFade = smoothstep(0.0, 0.05, chN) * (1.0 - smoothstep(0.95, 1.0, chN));
-                    // Cone σ = view σ / 8: cone steps are ~16× longer than view steps so using
-                    // the same σ compresses all in-cloud samples to near-zero transmittance.
-                    // 3.75e-4 = 3e-3 / 8 — same extinction coefficient, scaled for the longer step.
-                    sunOptDepth += cloudDensity(cUVWPresence, cUVWDetail, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
-                }
-            }
-            // sunTransmittance: fraction of sunlight that survives the overhead cloud column.
-            //   exp(-sunOptDepth) → 1.0 at cloud tops (clear overhead) → 0.0 deep inside thick clouds.
-            // Floored at 5% to approximate multiple scattering keeping cloud interiors non-black.
-            float sunTransmittance = max(exp(-sunOptDepth), 0.05);
+            // No shadow cone: directional sun lighting via sunElev (geographic dot) + height gradient.
+            // The cone march caused a spotlight artifact — only cloud in the camera-sun axis looked
+            // lit. All cloud in the sun-facing hemisphere receives equal direct illumination.
+            float sunTransmittance = 1.0;
 
-            // sunElev: geographic sun angle at the cloud sample point in ECEF space.
-            // dot(normalize(pECEF), sunDirECEF) > 0 means this cloud point is on the sunlit side
-            // of Earth — independent of the observer's sun elevation.  Ensures clouds on Earth's
-            // night side are dark even if the observer's local sun is above the horizon.
+            // Geographic sun angle at this sample — independent of observer sun elevation.
             float sunElev    = max(0.0, dot(normalize(pECEF), sunDirECEF));
-            float selfShadow = mix(0.7, 1.0, hNorm);  // mild contact shadow; cone handles the main gradient
-            // sunLit: total direct-sun lighting factor for this sample:
-            //   sunElev          → geographic illumination (0 at terminator, 1 at sub-solar point)
-            //   sunTransmittance → how much sunlight survives the overlying cloud column
-            //   selfShadow       → mild darkening at cloud base (geometric gradient complement)
+            float selfShadow = mix(0.7, 1.0, hNorm);
             float sunLit     = sunElev * sunTransmittance * selfShadow;
 
-            // inScatter: total light added to each unit of cloud density at this sample.
-            //   Sun term:     sunGain × sunLit × phaseCloud × (1 + powder)
-            //     phaseCloud: dual-lobe HG phase — forward scatter peaks toward the sun
-            //                 (silver lining when looking sunward), slight backscatter away from sun.
-            //     (1 + powder): Beer-Powder brightening so dense interiors stay luminous.
-            //   Ambient term: ambientGain × mix(0.15, 0.4, hNorm)
-            //     Cloud tops receive more ambient sky light than bases → brightened by 0.4 at top, 0.15 at base.
-            vec3  inScatter  = vec3(cloud.sunGain  * sunLit * ph * (1.0 + powder)
-                                  + cloud.ambientGain * mix(0.15, 0.4, hNorm));
+            // Day/night blend at this sample's geographic position (not the observer's).
+            // cloudSunDotRaw < 0 = night side; > 0 = day side; transition ±0.15 around terminator.
+            float cloudSunDotRaw = dot(normalize(pECEF), sunDirECEF);
+            float sampleDayness  = clamp((cloudSunDotRaw + 0.15) / 0.3, 0.0, 1.0);
+
+            // Ambient sky dome: blue-tinted during day, near-zero at night.
+            // Top of cloud (hNorm=1) receives more dome light than shadowed base (hNorm=0).
+            vec3 skyAmbient = mix(vec3(0.001, 0.001, 0.002),
+                                  vec3(0.35, 0.55, 0.85),
+                                  sampleDayness) * cloud.ambientGain * mix(0.15, 0.4, hNorm);
+
+            // City light upwelling: warm orange from below into the cloud base at night.
+            // Only the bottom half of the shell receives meaningful city light (hNorm < 0.5).
+            vec3 cityUp = vec3(0.0);
+            if (sampleDayness < 0.9 && hNorm < 0.5) {
+                vec3  cityRgb = textureLod(earthNightTex, pUV, 3.0).rgb;
+                float cityLum = dot(cityRgb, vec3(0.2126, 0.7152, 0.0722));
+                cityUp = cityRgb * max(0.0, cityLum - 0.06)
+                       * (1.0 - sampleDayness) * (0.5 - hNorm) * cloud.ambientGain * 0.8;
+            }
+
+            // C8 inscatter: spectral sun color (orange/red at low angles) × direct term,
+            // plus daytime sky dome ambient, plus city upwelling at night.
+            // No phase function: isotropic scattering so all cloud is equally lit by the sun,
+            // not just cloud on the camera-sun axis.
+            vec3  inScatter  = sunColorCloud * sunLit * (1.0 + powder) * cloud.sunGain
+                             + skyAmbient
+                             + cityUp;
 
             // ── Accumulate scattered light into cloudScatter ──────────────────
             // cloudTransmittance: product of all stepT values from the camera to HERE (path transmittance).
@@ -820,10 +811,13 @@ void cloudMarch(
     float cloudAltFade = 1.0 - smoothstep(0.0, 180000.0, obsEffH);
     if (cloudAltFade < 0.001) return;
 
+    cloudTOut = mix(vec3(1.0), cloudTransmittance, cloudAltFade);
+    // Cloud occludes satellites when it is ≥50% opaque (average RGB transmittance < 0.5).
+    if (dot(cloudTOut, vec3(1.0/3.0)) < 0.5 && cloudAltFade > 0.1) tCloudOcclude = tEnter;
+
 #if CLOUD_DEBUG == 0
     // ── Normal rendering ──────────────────────────────────────────────────────
-    vec3 cloudT = mix(vec3(1.0), cloudTransmittance, cloudAltFade);
-    color = color * cloudT + cloudScatter * cloudAltFade;
+    color = color * cloudTOut + cloudScatter * cloudAltFade;
 
 #else
     // ── Diagnostic overlay ────────────────────────────────────────────────────
@@ -1408,8 +1402,11 @@ void main() {
             color);
     }
 
-    // ── Volumetric cloud march (C7) ──────────────────────────────────────────────
-    cloudMarch(obsPos, dir, tSurface, enuX, enuY, enuZ, sunDir, sunDirECEF, obsEffH, color);
+    // ── Volumetric cloud march (C7+C8) ───────────────────────────────────────────
+    vec3  cloudTFinal   = vec3(1.0);
+    float tCloudOcclude = -1.0;
+    cloudMarch(obsPos, dir, tSurface, enuX, enuY, enuZ, sunDir, sunDirECEF, obsEffH,
+               color, cloudTFinal, tCloudOcclude);
 
     // ── Auto-exposure tone mapping ─────────────────────────────────────────────
     float dayness  = clamp((sunDirENU.w + 0.2) / 1.2, 0.0, 1.0);
@@ -1457,7 +1454,9 @@ void main() {
         vec3  sunCol     = mix(vec3(1.5, 1.3, 1.0), vec3(1.8, 0.7, 0.2), sunsetT * 0.7);
         float coronaSig  = mix(0.035, 0.08, sunsetT * sunsetT);
         float corona     = exp(-angle * angle / (2.0 * coronaSig * coronaSig));
-        color += discVis * geomFade * sunCol + corona * geomFade * sunCol * 0.12;
+        // Attenuate sun disc and corona by cloud transmittance on this view ray.
+        float cloudBlock = dot(cloudTFinal, vec3(1.0/3.0));
+        color += (discVis * geomFade * sunCol + corona * geomFade * sunCol * 0.12) * cloudBlock;
     }
 
     // ── Camera lens flares (post-tonemap) ─────────────────────────────────────
@@ -1539,6 +1538,9 @@ void main() {
     // tSeaLvl covers ocean pixels that have no terrain hit but still block satellites.
     const float kOcclusionCap = 150000.0;
     float tOcclude = (tHit >= 0.0) ? tHit : tSeaLvl;
+    // Opaque cloud also occludes satellites/stars behind it (cloud is above terrain so
+    // tCloudOcclude is only used when no terrain/ocean is closer).
+    if (tOcclude < 0.0 && tCloudOcclude >= 0.0) tOcclude = tCloudOcclude;
     gl_FragDepth = (tOcclude >= 0.0 && tOcclude < kOcclusionCap)
                    ? tOcclude / (kOcclusionCap * 2.0)
                    : 1.0;
