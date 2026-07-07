@@ -115,10 +115,11 @@ float phaseM(float cosA) {
     float den = pow(max(1e-4, 1.0 + g2 - 2.0 * G_MIE * cosA), 1.5);
     return 1.5 * ((1.0 - g2) / (2.0 + g2)) * (1.0 + cosA * cosA) / den;
 }
-// Cloud dual-lobe HG: strong forward scatter (g=0.8) + weak backscatter (g=-0.5).
-// Droplets scatter far more forward than atmospheric aerosols (G_MIE=0.26).
+// Cloud dual-lobe HG: mild forward scatter (g=0.3) + very weak backscatter (g=-0.1).
+// gF=0.3 gives ~5x forward vs perpendicular — enough for a silver lining without a spotlight.
+// The old gF=0.8 (div near cosA=1) caused the "cone of light" artifact.
 float phaseCloud(float cosA) {
-    const float gF = 0.8, gB = -0.5;
+    const float gF = 0.3, gB = -0.1;
     float g2f = gF * gF, g2b = gB * gB;
     float fwd = 1.5 * ((1.0 - g2f) / (2.0 + g2f)) * (1.0 + cosA * cosA)
                 / pow(max(1e-4, 1.0 + g2f - 2.0 * gF * cosA), 1.5);
@@ -507,6 +508,50 @@ float cloudDensity(vec3 uvwPresence, vec3 uvwDetail, float coverage, float densi
 //      banding is caused by posZ not spanning enough geographic range from the surface.
 #define CLOUD_DEBUG 0
 
+// ── Cloud shadow on terrain/ocean ────────────────────────────────────────────
+// Marches the sun ray upward from a surface hit point through the cloud shell.
+// Returns transmittance [0,1]: 1.0 = no cloud shadow, ~0 = fully overcast.
+// Called once per terrain/ocean pixel — 8 steps, coverage-gated, Perlin only.
+float cloudShadowFactor(vec3 hitPt, vec3 sunDir, vec3 enuX, vec3 enuY, vec3 enuZ) {
+    if (cloud.layers[0].enabled < 0.5) return 1.0;
+    float baseAlt = cloud.layers[0].shellAltM;
+    float topAlt  = cloud.layers[1].shellAltM;
+    vec2 shellB   = raySphere(hitPt, sunDir, R_EARTH + baseAlt);
+    vec2 shellT   = raySphere(hitPt, sunDir, R_EARTH + topAlt);
+    // shellB.y = forward distance from hitPt to cloud base; shellT.y = to cloud top.
+    // hitPt is inside the cloudBase sphere so shellB.x < 0 — shellB.y is the far exit.
+    if (shellT.y <= 0.0 || shellB.y >= shellT.y) return 1.0;
+    float tEnter = shellB.y;
+    float tExit  = shellT.y;
+    const int N  = 8;
+    float segLen = (tExit - tEnter) / float(N);
+    float T      = 1.0;
+    for (int i = 0; i < N; ++i) {
+        vec3  p   = hitPt + sunDir * (tEnter + (float(i) + 0.5) * segLen);
+        float h   = length(p) - R_EARTH;
+        if (h < baseAlt || h > topAlt) continue;
+        float hN  = (h - baseAlt) / (topAlt - baseAlt);
+        float hFade = smoothstep(0.0, 0.08, hN) * (1.0 - smoothstep(0.92, 1.0, hN));
+        vec3  pE  = p.x * enuX + p.y * enuY + p.z * enuZ;
+        float pL  = length(pE);
+        float lat = asin(clamp(pE.z / pL, -1.0, 1.0));
+        float lon = atan(pE.y, pE.x);
+        vec2  uv  = vec2(fract((lon + PI) / (2.0*PI)
+                               + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                         (0.5*PI - lat) / PI);
+        float cov = cloud.coverage * textureLod(earthCloudsTex, uv, 3.0).r;
+        if (cov < 0.01) continue;
+        float posZ = fract(uv.x * 340.0 + uv.y * 460.0);
+        const float kHT = 3000.0;
+        vec3  uvwP = fract(vec3(uv.x * kHT + hN * 0.15,
+                                uv.y * kHT + hN * 0.10, posZ));
+        float d = cloudDensity(uvwP, uvwP, cov, cloud.density, hFade);
+        T *= exp(-d * segLen * 3.0e-3);
+        if (T < 0.02) return 0.02;
+    }
+    return T;
+}
+
 // ── Volumetric cloud shell march (C7+C8) ─────────────────────────────────────
 // Marches the cloud-shell annulus [cloudBase, cloudTop] along the view ray.
 // Full C8 lighting: spectral sun color, night darkening, city upwelling.
@@ -617,6 +662,8 @@ void cloudMarch(
     float bigStep = insideShell ? stepLen : stepLen * 2.0;
     float t       = tEnter;
     bool  inCloud = false;
+    float cosA    = dot(dir, sunDir);       // view→sun angle for phase function (const per ray)
+    float ph      = phaseCloud(cosA);       // angular forward-scatter weight; ~5× forward vs perp
 
     // 512-iteration hard cap prevents infinite loops on grazing rays that traverse a long shell arc.
     // The nominal step count N (min 48) fits well inside this; the bigStep/stepLen dual-speed
@@ -751,29 +798,90 @@ void cloudMarch(
             // look silver-white rather than charcoal from backlit forward scatter.
             float powder     = 1.0 - exp(-extinction * 2.0);
 
-            // No shadow cone: directional sun lighting via sunElev (geographic dot) + height gradient.
-            // The cone march caused a spotlight artifact — only cloud in the camera-sun axis looked
-            // lit. All cloud in the sun-facing hemisphere receives equal direct illumination.
-            float sunTransmittance = 1.0;
+            // ── Sun shadow cone: rays from this sample toward the sun accumulate cloud density.
+            // View-direction independent — shoots toward sunDir (not the camera), so it gives
+            // correct top-lit / base-shadowed cloud. The old spotlight artifact was from the
+            // HG phase function (which was view-dependent), not from this cone.
+            float sunOptDepth = 0.0;
+            {
+                const int N_CONE = 6;
+                vec2  tConeExit = raySphere(p, sunDir, cloudTop);
+                float coneLen   = min((tConeExit.y > 0.0) ? tConeExit.y : shellThick, shellThick * 2.0);
+                float coneSeg   = coneLen / float(N_CONE);
+                for (int ci = 0; ci < N_CONE; ++ci) {
+                    vec3  cp    = p + sunDir * (float(ci) + 0.5) * coneSeg;
+                    float ch    = length(cp) - R_EARTH;
+                    if (ch < cloudBaseAlt || ch > cloudTopAlt) continue;
+                    float chN   = (ch - cloudBaseAlt) / shellThick;
+                    vec3  cpE   = cp.x * enuX + cp.y * enuY + cp.z * enuZ;
+                    float cpL   = length(cpE);
+                    float cpLon = atan(cpE.y, cpE.x);
+                    float cpLat = asin(clamp(cpE.z / cpL, -1.0, 1.0));
+                    vec2  cpUV  = vec2(fract((cpLon + PI) / (2.0*PI)
+                                       + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                                      (0.5*PI - cpLat) / PI);
+                    float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, 3.0).r;
+                    float cPosZ = fract(cpUV.x * 340.0 + cpUV.y * 460.0);
+                    vec3  cUVWP = fract(vec3(cpUV.x * kHorizTiles + chN * 0.15,
+                                             cpUV.y * kHorizTiles + chN * 0.10, cPosZ));
+                    vec3  cUVWD = fract(vec3(cpUV.x * kHorizTiles + chN * 0.15,
+                                             cpUV.y * kHorizTiles + chN * 0.10,
+                                             chN * kVertTiles + cPosZ * 2.0));
+                    float chFade = smoothstep(0.0, 0.05, chN) * (1.0 - smoothstep(0.95, 1.0, chN));
+                    sunOptDepth += cloudDensity(cUVWP, cUVWD, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
+                }
+            }
 
-            // Geographic sun angle at this sample — independent of observer sun elevation.
-            float sunElev    = max(0.0, dot(normalize(pECEF), sunDirECEF));
-            float selfShadow = mix(0.7, 1.0, hNorm);
-            float sunLit     = sunElev * sunTransmittance * selfShadow;
+            // 3-octave multiple-scattering: halve extinction and weight each octave.
+            // Approximates light bouncing through cloud before reaching this sample.
+            // At sunOptDepth=2 (moderate): direct=14%, ms2=18%, ms3=15% → total 27% vs pure 14%.
+            // Prevents afternoon cloud interiors from going unrealistically dark.
+            float ms1 = exp(-sunOptDepth);
+            float ms2 = exp(-sunOptDepth * 0.5) * 0.5;
+            float ms3 = exp(-sunOptDepth * 0.25) * 0.25;
+            float sunTransmittance = max((ms1 + ms2 + ms3) / 1.75, 0.05);
 
-            // Day/night blend at this sample's geographic position (not the observer's).
-            // cloudSunDotRaw < 0 = night side; > 0 = day side; transition ±0.15 around terminator.
+            // Geographic sun angle and direct sun illumination.
             float cloudSunDotRaw = dot(normalize(pECEF), sunDirECEF);
-            float sampleDayness  = clamp((cloudSunDotRaw + 0.15) / 0.3, 0.0, 1.0);
+            float sunElev        = max(0.0, cloudSunDotRaw);
+            // pow(0.7): softens the low-angle falloff so 10° elevation reads ~30% instead of 17%.
+            // Prevents afternoon clouds from going near-black while still going dark at night.
+            float sunElevSoft    = pow(sunElev, 0.7);
+            // Wider range: 0.4 (base) → 1.0 (top) gives ~16:1 contrast when combined with cone shadow.
+            float selfShadow     = mix(0.1, 1.0, hNorm);
+            float sunLit         = sunElevSoft * sunTransmittance * selfShadow;
 
-            // Ambient sky dome: blue-tinted during day, near-zero at night.
-            // Top of cloud (hNorm=1) receives more dome light than shadowed base (hNorm=0).
-            vec3 skyAmbient = mix(vec3(0.001, 0.001, 0.002),
-                                  vec3(0.35, 0.55, 0.85),
-                                  sampleDayness) * cloud.ambientGain * mix(0.15, 0.4, hNorm);
+            // Day/night blend — extended to cover civil twilight (~12° below horizon).
+            // Wider than the previous ±8.6° window so ambient stays warm through sunset.
+            float sampleDayness = clamp((cloudSunDotRaw + 0.2) / 0.5, 0.0, 1.0);
 
-            // City light upwelling: warm orange from below into the cloud base at night.
-            // Only the bottom half of the shell receives meaningful city light (hNorm < 0.5).
+            // Twilight ambient: transitions blue day sky → warm orange/pink at sunset → dark night.
+            float twilightFac = smoothstep(-0.2, 0.0, cloudSunDotRaw)
+                              * smoothstep(0.25, 0.0, cloudSunDotRaw);
+            // Derive sunset hue from sunColorCloud (already atmosphere-filtered, same spectrum
+            // the sky actually has at this sun angle) so sunset ambient matches the real sky.
+            vec3 sunsetHue  = normalize(max(sunColorCloud, vec3(0.001)));
+            vec3 ambientSky = mix(vec3(0.35, 0.55, 0.85), sunsetHue * 0.55, twilightFac);
+            vec3 skyAmbient = mix(vec3(0.001, 0.001, 0.002), ambientSky, sampleDayness)
+                            * cloud.ambientGain * mix(0.15, 0.4, hNorm);
+
+            // Moon: directional light using the same framework as the sun.
+            // moonDirENU.xyz = ENU unit vector toward moon; .w = phase/illuminance [0,1].
+            // moonElevGeog is the geometric angle (cloud facing the moon is bright, far side dark).
+            // No shadow cone — moon is too dim for self-shadow contrast to be perceptible.
+            // selfShadow applies: moon lights cloud tops more than bases, just like the sun.
+            // nightFac gates moon out quickly at dawn/dusk so daytime clouds aren't moonlit.
+            vec3  moonD         = normalize(moonDirENU.xyz);
+            vec3  moonECEF_c    = moonD.x * enuX + moonD.y * enuY + moonD.z * enuZ;
+            float moonElevGeog  = max(0.0, dot(normalize(pECEF), moonECEF_c));
+            float moonLit       = moonElevGeog * moonDirENU.w * selfShadow * (1.0 + powder);
+            float nightFac      = 1.0 - min(sampleDayness * 3.0, 1.0);
+            // Moon is a fixed-scale light source — decoupled from cloud.sunGain so tuning day
+            // clouds doesn't make moonlit clouds blow out. Scale 0.015 = roughly full-moon
+            // illuminance relative to sun, boosted for night-exposure artistic balance.
+            vec3  moonContrib   = vec3(0.92, 0.95, 1.0) * moonLit * 0.015 * nightFac;
+
+            // City light upwelling into cloud base at night.
             vec3 cityUp = vec3(0.0);
             if (sampleDayness < 0.9 && hNorm < 0.5) {
                 vec3  cityRgb = textureLod(earthNightTex, pUV, 3.0).rgb;
@@ -782,11 +890,10 @@ void cloudMarch(
                        * (1.0 - sampleDayness) * (0.5 - hNorm) * cloud.ambientGain * 0.8;
             }
 
-            // C8 inscatter: spectral sun color (orange/red at low angles) × direct term,
-            // plus daytime sky dome ambient, plus city upwelling at night.
-            // No phase function: isotropic scattering so all cloud is equally lit by the sun,
-            // not just cloud on the camera-sun axis.
-            vec3  inScatter  = sunColorCloud * sunLit * (1.0 + powder) * cloud.sunGain
+            // Inscatter: spectral sun (orange at sunset) + moon (silver-blue at night)
+            // + sky dome ambient (blue→orange twilight→dark) + city upwelling.
+            vec3  inScatter  = sunColorCloud * sunLit * ph * (1.0 + powder) * cloud.sunGain
+                             + moonContrib
                              + skyAmbient
                              + cityUp;
 
@@ -815,9 +922,15 @@ void cloudMarch(
     // Cloud occludes satellites when it is ≥50% opaque (average RGB transmittance < 0.5).
     if (dot(cloudTOut, vec3(1.0/3.0)) < 0.5 && cloudAltFade > 0.1) tCloudOcclude = tEnter;
 
+    // Atmospheric extinction from observer to cloud entry.
+    // Without this, horizon clouds are too crisp — no blue haze between obs and cloud.
+    // Same formula used for surface attenuation (surfAttn) in the terrain composite.
+    vec2 odAtmCloud = optDepth(obsPos, dir, tEnter);
+    vec3 cloudAttn  = exp(-(BETA_R * odAtmCloud.x + BETA_M * 1.1 * odAtmCloud.y));
+
 #if CLOUD_DEBUG == 0
     // ── Normal rendering ──────────────────────────────────────────────────────
-    color = color * cloudTOut + cloudScatter * cloudAltFade;
+    color = color * cloudTOut + cloudScatter * cloudAltFade * cloudAttn;
 
 #else
     // ── Diagnostic overlay ────────────────────────────────────────────────────
@@ -1194,9 +1307,13 @@ void main() {
             uvSurf = vec2((geoLon + PI) / (2.0*PI), (0.5*PI - geoLat) / PI);
         }
 
-        vec3  shadingN = (tHit > 0.0) ? terrainNorm : normalize(hitPt);
-        float sunDot   = dot(shadingN, sunDir);
-        float dayFrac  = smoothstep(-0.1, 0.3, sunDot);
+        vec3  shadingN   = (tHit > 0.0) ? terrainNorm : normalize(hitPt);
+        float sunDot     = dot(shadingN, sunDir);
+        float dayFrac    = smoothstep(-0.1, 0.3, sunDot);
+        // cloudShadow: sun-ray transmittance through cloud shell above this surface point.
+        // directSun combines day/night blend with cloud shadow for all sun-driven contributions.
+        float cloudShadow = cloudShadowFactor(hitPt, sunDir, enuX, enuY, enuZ);
+        float directSun   = dayFrac * cloudShadow;
         // Antimeridian seam fix: longitude wraps at ±PI so dFdx(uvSurf.x) jumps by ~1.0
         // across that boundary. The GPU would pick the highest mip level, blurring a
         // vertical strip. Clamp the derivative to the small expected value instead.
@@ -1209,7 +1326,7 @@ void main() {
         vec3 dayColor   = textureGrad(earthDayTex,   uvSurf, uvd_dx, uvd_dy).rgb;
         vec3 nightColor = textureGrad(earthNightTex, uvSurf, uvd_dx, uvd_dy).rgb;
         vec3 surfColor  = mix(nightColor * 0.12,
-                              dayColor * clamp(sunDot * 1.5, 0.05, 1.0),
+                              dayColor * clamp(sunDot * 1.5 * cloudShadow, 0.05, 1.0),
                               dayFrac);
 
         // ── Ocean wave material (sea-level hits only, not terrain) ─────────────
@@ -1336,20 +1453,21 @@ void main() {
             }
 
             // Refracted subsurface color (SEA_BASE + diffuse * SEA_WATER_COLOR)
-            float diff    = pow(max(0.0, dot(waveN, sunDir)) * 0.4 + 0.6, 80.0) * dayFrac;
-            vec3 refracted = kSeaBase * dayFrac + diff * kSeaWaterColor * 0.12;
+            // directSun replaces dayFrac for all sun-driven contributions so clouds shadow the ocean.
+            float diff    = pow(max(0.0, dot(waveN, sunDir)) * 0.4 + 0.6, 80.0) * directSun;
+            vec3 refracted = kSeaBase * directSun + diff * kSeaWaterColor * 0.12;
 
             // Fresnel blend (distance-attenuated to prevent orbit-scale glowing ring)
             surfColor = mix(refracted, reflColor, reflStr);
 
             // Wave-height crest shading: raised crests catch more water-color light
             float atten = max(1.0 - dist * dist * 1e-5, 0.0);
-            surfColor += kSeaWaterColor * max(pHeight - kSeaHeight, 0.0) * 0.18 * atten * dayFrac;
+            surfColor += kSeaWaterColor * max(pHeight - kSeaHeight, 0.0) * 0.18 * atten * directSun;
 
             // Specular: shininess narrows close-up, broadens with distance
             float specPow = clamp(600.0 / max(1.0, sqrt(dist)), 8.0, 600.0);
             float nrm     = (specPow + 8.0) / (PI * 8.0);
-            surfColor    += pow(max(0.0, dot(reflect(dir, waveN), sunDir)), specPow) * nrm * dayFrac;
+            surfColor    += pow(max(0.0, dot(reflect(dir, waveN), sunDir)), specPow) * nrm * directSun;
 
             // Moon glint on ocean — nighttime only, dims with phase (new moon = brightest Earth).
             if (moonDirENU.z > limbZ && moonDirENU.w > 0.01) {
