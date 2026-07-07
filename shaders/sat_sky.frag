@@ -505,7 +505,7 @@ float cloudDensity(vec3 uvwPresence, vec3 uvwDetail, float coverage, float densi
 //      UNIFORM GREY = posZ is constant for all visible pixels = geographic UV barely changes
 //      within the visible cloud footprint from ground level. This confirms the Z-layer
 //      banding is caused by posZ not spanning enough geographic range from the surface.
-#define CLOUD_DEBUG 2
+#define CLOUD_DEBUG 0
 
 // ── Volumetric cloud shell march (C7+C8) ─────────────────────────────────────
 // Marches the cloud-shell annulus [cloudBase, cloudTop] along the view ray.
@@ -1110,7 +1110,7 @@ void main() {
             float mu       = max(0.0, dot(n, -moonDir3));
             float limbDark = 0.35 + 0.65 * sqrt(mu);
             // Earthshine inversely follows moon phase: new moon (full Earth) = maximum.
-            float earthshine = 0.018 * mu * (1.0 - moonDirENU.w);
+            float earthshine = 0.0008 * mu * (1.0 - moonDirENU.w);
 
             // Build the moon's local face frame: moonZ points toward the observer
             // (tidally locked near side), moonX/moonY span the visible face plane.

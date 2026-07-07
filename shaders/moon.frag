@@ -52,7 +52,7 @@ void main() {
     float diffuse = max(0.0, dot(n, pc.sunDirCam)) * pc.moonPhase;
 
     // ── Earthshine: faint illumination on the unlit limb ─────────────────────
-    const float kEarthshine = 0.018;
+    const float kEarthshine = 0.001;
 
     // ── Lunar albedo (gray regolith, slightly warm) ───────────────────────────
     const vec3 kAlbedo = vec3(0.88, 0.85, 0.82);
@@ -62,7 +62,7 @@ void main() {
     float mu       = max(0.0, dot(n, camDir));
     float limbDark = 0.35 + 0.65 * pow(mu, 0.5);
 
-    vec3 color = kAlbedo * (diffuse + kEarthshine) * limbDark * 2.2;
+    vec3 color = kAlbedo * (diffuse * + kEarthshine) * limbDark * 2.2;
 
     // ── Atmospheric extinction and horizon reddening ──────────────────────────
     float moonEl   = clamp(pc.moonSinEl, 0.01, 1.0);
