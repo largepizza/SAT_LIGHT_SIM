@@ -89,6 +89,20 @@ const float PI = 3.14159265359;
 const float R_EARTH = 6371000.0;
 const float R_ATMOS = 6471000.0;   // 100 km above surface
 
+// ── Cloud noise domain frequencies ─────────────────────────────────────────────
+// Cloud procedural noise (cloudNoiseTex) is sampled by TRUE 3D unit-sphere position
+// (dirECEF = normalize(pECEF)), not by lat/lon UV. A sphere embedded in R^3 carries its
+// natural induced metric, so this has no pole singularity and no latitude-dependent scale
+// distortion — unlike an equirectangular UV, whose atan2/asin derivatives blow up at the
+// poles (causing both the visible polar noise compression and a real perf hit, since the
+// raymarch's empty-air skip gets defeated by aliased density near the poles).
+// dirECEF is also altitude-invariant by construction (same value straight up/down at a
+// given lat/lon), so cloud "presence" shape naturally has no unwanted Z-sweep with no hack
+// needed. Frequencies are ~(old UV-space tile count)/(2*PI), since dirECEF isn't normalized
+// to a 0-1 globe fraction the way pUV was — retune visually, these are starting points.
+const float kCloudHorizFreq = 480.0;   // ~13 km detail features (was kHorizTiles=3000 in pUV space)
+const float kCloudColFreq   = 80.0;    // ~20 km cloud-system footprints (was kColTiles=500)
+
 // ── Rayleigh scattering (wavelength-dependent: R=650nm, G=510nm, B=440nm) ─────
 const vec3  BETA_R = vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level //vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level
 const float H_R    = 7994.0;   // Rayleigh scale height (m)
@@ -541,15 +555,19 @@ float cloudShadowFactor(vec3 hitPt, vec3 sunDir, vec3 enuX, vec3 enuY, vec3 enuZ
                          (0.5*PI - lat) / PI);
         float cov = cloud.coverage * textureLod(earthCloudsTex, uv, 3.0).r;
         if (cov < 0.01) continue;
-        float posZ = fract(uv.x * 340.0 + uv.y * 460.0);
-        const float kHT = 3000.0;
-        vec3  uvwP = fract(vec3(uv.x * kHT + hN * 0.15,
-                                uv.y * kHT + hN * 0.10, posZ));
+        // dirE: true 3D unit-sphere position — pole-safe noise domain (see kCloudHorizFreq comment).
+        vec3  dirE = pE / pL;
+        vec3  uvwP = fract(dirE * kCloudHorizFreq);
         float d = cloudDensity(uvwP, uvwP, cov, cloud.density, hFade);
+        // Skip density below visual threshold — same gate the view march uses.
+        // Prevents invisible noise from casting shadows.
+        if (d < 0.001) continue;
         T *= exp(-d * segLen * 3.0e-3);
-        if (T < 0.02) return 0.02;
+        if (T < 0.02) break;  // converged; let soft-floor apply below
     }
-    return T;
+    // Soft shadow: max 85% darkening so overcast still leaves 15% ambient.
+    // mix(1.0, T, 0.85) = 0.15 + 0.85*T — proportional, never pitch-black.
+    return mix(1.0, T, 0.85);
 }
 
 // ── Volumetric cloud shell march (C7+C8) ─────────────────────────────────────
@@ -701,14 +719,15 @@ void cloudMarch(
         // actually shows cloud.  mipLod=2 blurs the mask to avoid aliasing at fine sample spacing.
         float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, 2.0).r;
 
-        // Column-height map: large-scale (80 km) noise gives each cloud system a
-        // different maximum tower height.  kColTiles=500 → ~80 km/tile, Perlin
-        // freq=4 → ~20 km cloud-system footprints (much wider than the 3 km detail
-        // features, so there's a clean hierarchy without micro-banding).
-        const float kColTiles = 500.0;
+        // dirECEF: true 3D unit-sphere position — pole-safe noise domain (see kCloudHorizFreq).
+        vec3  dirECEF = pECEF / pLen;
+
+        // Column-height map: large-scale noise gives each cloud system a different
+        // maximum tower height (much wider footprint than the 3 km detail features,
+        // so there's a clean hierarchy without micro-banding). Fixed +0.25 Z offset
+        // decorrelates it from the presence/detail fetches below.
         float colNoise = texture(cloudNoiseTex,
-                                 fract(vec3(pUV.x * kColTiles,
-                                            pUV.y * kColTiles, 0.25))).r;
+                                 fract(dirECEF * kCloudColFreq + vec3(0.0, 0.0, 0.25))).r;
         // colH: the maximum normalized height [0,1] this particular cloud column can reach.
         // remap mirrors the coverage threshold: high colNoise + high localCov → tall cumulonimbus;
         // low colNoise or low coverage → colH near 0 → flat stratus or no cloud at all.
@@ -725,51 +744,19 @@ void cloudMarch(
         float hFade = smoothstep(0.0, 0.05, hNorm) * topFade;
         if (hFade < 0.001) { inCloud = false; t += step; continue; }  // outside active column height: skip
 
-        // 3D noise in geographic space, co-drifts with earthCloudsTex.
-        // kHorizTiles=3000 → ~3 km detail features (visible cumulus puffs at low altitude).
-        // kVertTiles=1.5 → non-integer so the tiling seam doesn't create a visible floor/ceiling.
-        // posZ: per-position irrational Z-phase offset scrambles the altitude at which the
-        // 1.5-tile noise period repeats, eliminating global horizontal banding.
-        // Shear (0.15/0.10) is intentionally tiny — large shear destroys vertical correlation,
-        // making each altitude sample a different horizontal noise region and creating
-        // disconnected horizontal cloud slices instead of connected 3D towers.
-        const float kHorizTiles = 3000.0;
-        const float kVertTiles  = 1.5;
-        // posZ frequency: ~150 km period so zero-crossings of the Perlin Z-axis land at
-        // different altitudes in each cloud system, breaking global horizontal banding.
-        // Range * 2.0 spans more than one full Perlin Z-cell period (1/kVertTiles ≈ 0.67 hNorm).
-        float posZ    = fract(pUV.x * 340.0 + pUV.y * 460.0);  // irrational per-column Z-phase offset
-        // ── 3D noise coordinate for cloudNoiseTex ────────────────────────────
-        // noiseUVW maps this geographic sample point to a coordinate within the 3D noise volume.
-        //
-        //   X/Y axes (horizontal): pUV * kHorizTiles
-        //     kHorizTiles=3000 → one noise tile spans ~(Earth circumference/3000) ≈ 13 km.
-        //     This puts visible cumulus puff detail at ~3 km scale (a few tiles per degree).
-        //
-        //   Altitude shear (+ hNorm * 0.15 / 0.10):
-        //     Tilts cloud columns very slightly — different altitudes sample slightly different
-        //     horizontal noise regions.  The shear is intentionally tiny (< 0.15 per shell):
-        //     large shear would make each altitude a completely different horizontal slice,
-        //     destroying vertical continuity and producing horizontal "layer cake" banding.
-        //
-        //   Z axis (altitude within cloud layer): hNorm * kVertTiles + posZ * 2.0
-        //     kVertTiles=1.5 → the noise volume tiles 1.5 times across the cloud shell height.
-        //     Non-integer to avoid a hard visible seam at the repeat boundary.
-        //     posZ * 2.0 adds a per-column phase offset so the Z period repeats at a different
-        //     altitude in each geographic column — breaks global horizontal banding where all
-        //     columns would otherwise sync their noise phase at the same hNorm value.
-        //
-        //   fract() wraps all three axes into [0,1] for the repeating 3D texture.
-        // Two UVW coordinates: presence uses fixed Z (no altitude slabs),
-        // detail uses full 3D Z (Worley erosion gives 3D interior structure).
-        vec3  uvwPresence = fract(vec3(
-            pUV.x * kHorizTiles + hNorm * 0.15,
-            pUV.y * kHorizTiles + hNorm * 0.10,
-            posZ));                                        // Z=posZ: constant per column, no slab structure
-        vec3  uvwDetail   = fract(vec3(
-            pUV.x * kHorizTiles + hNorm * 0.15,
-            pUV.y * kHorizTiles + hNorm * 0.10,
-            hNorm * kVertTiles + posZ * 2.0));             // Z=altitude: Worley erosion varies with height
+        // 3D noise sampled by true unit-sphere position (dirECEF), not lat/lon UV — see
+        // kCloudHorizFreq comment for why this is pole-safe (no atan2/asin distortion).
+        // dirECEF is altitude-invariant by construction, so uvwPresence naturally has no
+        // Z-sweep (no hack needed to keep cloud shape constant with height per column).
+        const float kVertTiles = 1.5;   // non-integer so the Z tiling seam isn't a visible floor/ceiling
+        // posZ: irrational per-column Z-phase hash (from pUV — fine as a hash seed even though
+        // pUV itself is pole-distorted, since it's not used as a spatial noise coordinate here).
+        // Scrambles the altitude at which the 1.5-tile Z period repeats, breaking any global
+        // sync where all columns would otherwise cross the erosion Z-seam at the same hNorm.
+        float posZ = fract(pUV.x * 340.0 + pUV.y * 460.0);
+        vec3  uvwPresence = fract(dirECEF * kCloudHorizFreq);
+        vec3  uvwDetail   = fract(dirECEF * kCloudHorizFreq
+                                 + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0));  // Z=altitude: erosion varies with height
         float d = cloudDensity(uvwPresence, uvwDetail, localCov, cloud.density, hFade);
 
         // Capture diagnostics regardless of CLOUD_DEBUG value (compiler eliminates unused vars).
@@ -822,11 +809,10 @@ void cloudMarch(
                                       (0.5*PI - cpLat) / PI);
                     float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, 3.0).r;
                     float cPosZ = fract(cpUV.x * 340.0 + cpUV.y * 460.0);
-                    vec3  cUVWP = fract(vec3(cpUV.x * kHorizTiles + chN * 0.15,
-                                             cpUV.y * kHorizTiles + chN * 0.10, cPosZ));
-                    vec3  cUVWD = fract(vec3(cpUV.x * kHorizTiles + chN * 0.15,
-                                             cpUV.y * kHorizTiles + chN * 0.10,
-                                             chN * kVertTiles + cPosZ * 2.0));
+                    vec3  cDir  = cpE / cpL;   // pole-safe noise domain, see kCloudHorizFreq comment
+                    vec3  cUVWP = fract(cDir * kCloudHorizFreq);
+                    vec3  cUVWD = fract(cDir * kCloudHorizFreq
+                                       + vec3(0.0, 0.0, chN * kVertTiles + cPosZ * 2.0));
                     float chFade = smoothstep(0.0, 0.05, chN) * (1.0 - smoothstep(0.95, 1.0, chN));
                     sunOptDepth += cloudDensity(cUVWP, cUVWD, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
                 }
@@ -919,8 +905,10 @@ void cloudMarch(
     if (cloudAltFade < 0.001) return;
 
     cloudTOut = mix(vec3(1.0), cloudTransmittance, cloudAltFade);
-    // Cloud occludes satellites when it is ≥50% opaque (average RGB transmittance < 0.5).
-    if (dot(cloudTOut, vec3(1.0/3.0)) < 0.5 && cloudAltFade > 0.1) tCloudOcclude = tEnter;
+    // Cloud hard-occludes satellites only when it is ≥90% opaque (transmittance < 0.1).
+    // A lower threshold (was 0.5) prevents wispy and moderate cloud from snapping satellites
+    // to fully invisible the moment any opacity crosses the threshold.
+    if (dot(cloudTOut, vec3(1.0/3.0)) < 0.1 && cloudAltFade > 0.1) tCloudOcclude = tEnter;
 
     // Atmospheric extinction from observer to cloud entry.
     // Without this, horizon clouds are too crisp — no blue haze between obs and cloud.
