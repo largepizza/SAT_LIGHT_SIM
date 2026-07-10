@@ -104,6 +104,32 @@ const float R_ATMOS = 6471000.0;   // 100 km above surface
 const float kCloudHorizFreq = 480.0;   // ~13 km detail features (was kHorizTiles=3000 in pUV space)
 const float kCloudColFreq   = 80.0;    // ~20 km cloud-system footprints (was kColTiles=500)
 
+// ── Domain warp: breaks single-frequency tiling + gives weather-system curviness ──────────
+// The 192³ baked noise volume is reused at ONE fixed frequency (kCloudHorizFreq/kCloudColFreq)
+// across the ENTIRE globe. From ground level you never see enough footprint at once to notice
+// the repeat, but from LEO the same tile period becomes an obvious repeating pattern. Standard
+// fix (Inigo Quilez's domain-warping technique): offset the sampling coordinate by a second,
+// much LOWER-frequency noise field before the main frequency multiply. This also naturally
+// gives cloud systems a swept/curved silhouette instead of the raw round Worley-cell blob
+// shape — closer to how real weather systems look, without needing true curl noise.
+// The warp field's own sample coordinate is advected by cloudPhase, so it slowly drifts over
+// time — this is what gives the 3D noise itself genuine flow, not just the existing 2D
+// coverage-map UV slide (cloudPhase*driftMult elsewhere), which only reveals/hides a STATIC 3D
+// volume and never displaces the volume's own internal structure.
+const float kWarpFreq      = 0.5;    // low relative to kCloudColFreq=80 — large-scale sweep only
+// kWarpStrength UNITS FIXED: this used to be a dirECEF-space offset applied BEFORE the
+// kCloudHorizFreq(480)/kCloudColFreq(80) multiply, which silently amplified it by whichever
+// frequency it fed into — at the old semantics, strength=0.3 shifted the fine-detail sample by
+// up to 0.3*480=144 texels, 75% of the entire 192-texel tile, tearing across the texture's own
+// REPEAT period (the reported seams/grid artifacts, worse at higher strength because the
+// amplification is linear in it). Now cloudWarpOffset() returns a UVW-TEXEL-space offset
+// applied AFTER the frequency multiply instead, so this value means "texels of displacement,"
+// identical at every target frequency, with no hidden amplification. Old dirECEF-space tuning
+// does not carry over 1:1 — retune from scratch; ~8-16 is a reasonable starting range.
+const float kWarpStrength  = 16.0;
+const float kWarpDriftRate = 0.08;   // independent multiplier on cloudPhase for the warp field's
+                                      // own drift speed, separate from the coverage map's rate
+
 // ── 3D volumetric ↔ flat 2D crossfade band ─────────────────────────────────────
 // cloudMarch (expensive per-sample 3D shell march) and evalCloudLayer (cheap flat-texture
 // paste at layers[0]/[1]'s shellAltM, i.e. the same physical cloud base/top) render the SAME
@@ -124,8 +150,8 @@ const float kCloud3DFadeEnd   = 3000000.0;
 // cost anywhere satellites actually orbit — the reported "LEO cloud perf is awful" case sits
 // entirely inside the always-full-3D zone below kCloud3DFadeStart. This band supplies the
 // actual LEO-perf lever: steps ramp from full ground quality down to a floor well before 800 km.
-const float kMarchStepsAltStart = 20000.0;    // below this: full cloud.marchSteps (ground/aircraft)
-const float kMarchStepsAltEnd   = 600000.0;   // at/above this: kMarchStepsFloor (LEO and up)
+const float kMarchStepsAltStart = 2000.0;    // below this: full cloud.marchSteps (ground/aircraft)
+const float kMarchStepsAltEnd   = 200000.0;   // at/above this: kMarchStepsFloor (LEO and up)
 const float kMarchStepsFloor    = 12.0;       // minimum steps once the shell is angularly tiny
 
 // ── Cloud-shadow marginal-density floor ─────────────────────────────────────────
@@ -234,11 +260,41 @@ vec2 optDepth(vec3 p, vec3 d, float segTotal) {
     return vec2(odR, odM) * sLen;  // multiply summed densities by step length → optical depth units
 }
 
+// Rotates a direction vector around the Z (polar) axis by angle theta — used to advect the 3D
+// cloud noise's sampling position in lockstep with the 2D coverage map's own longitude drift
+// (cloud.cloudPhase * driftMult). Without this, the coverage silhouette slides while the 3D
+// structure underneath stays fixed in place — a static blob's leading edge gets progressively
+// uncovered (reads as "growing") and its trailing edge gets covered back up (reads as
+// "shrinking"), instead of the whole cloud genuinely translating. Rotating dirECEF by the same
+// angle the 2D UV shifts by keeps the two locked together.
+vec3 rotateZ(vec3 v, float theta) {
+    float c = cos(theta), s = sin(theta);
+    return vec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
+}
+
 // Clamp-and-scale: maps v from [lo,hi] → [newLo,newHi], clamped to the output range.
 // Used throughout cloud density to shift where the noise "zero floor" lands —
 // changing lo raises or lowers the threshold at which noise starts contributing density.
 float remap(float v, float lo, float hi, float newLo, float newHi) {
     return newLo + clamp((v - lo) / (hi - lo), 0.0, 1.0) * (newHi - newLo);
+}
+
+// Low-frequency domain-warp offset for cloud noise sampling — see kWarpFreq/Strength/DriftRate
+// comment above. Returns a UVW-TEXEL-space offset (see kWarpStrength units note) — callers add
+// it AFTER multiplying their dirECEF by kCloudHorizFreq/kCloudColFreq, not before, so the same
+// absolute texel displacement applies at every target frequency with no hidden amplification.
+// One extra vec4 texture3D fetch, reused as three independent-ish scalar offsets (R/G/B are
+// different noise generators baked into the same volume, decorrelated enough at this unrelated
+// sampling frequency to serve as a pseudo-random vector field).
+vec3 cloudWarpOffset(vec3 dirECEF) {
+    vec3 windOfs = vec3(cloud.cloudPhase * kWarpDriftRate, 0.0, cloud.cloudPhase * kWarpDriftRate * 0.7);
+    vec3 wUVW    = dirECEF * kWarpFreq + windOfs;
+    // textureLod(...,0.0) instead of texture(): this is called inside data-dependent adaptive-
+    // stepping raymarch loops (bigStep/stepLen switches on whether the previous sample was in
+    // cloud), where neighboring-pixel loop divergence makes automatic screen-space-derivative
+    // LOD selection unreliable. Forcing LOD 0 sidesteps that failure mode entirely.
+    vec3 wNoise  = textureLod(cloudNoiseTex, wUVW, 0.0).rgb * 2.0 - 1.0;   // [-1,1] per channel
+    return wNoise * kWarpStrength;
 }
 
 // ── Lens flare (adapted from "Lens Flare Example" by peterekepeter, public domain)
@@ -676,8 +732,12 @@ float cloudShadowFactor(vec3 hitPt, vec3 sunDir, vec3 enuX, vec3 enuY, vec3 enuZ
         float cov = cloud.coverage * textureLod(earthCloudsTex, uv, 4.0).r;
         if (cov < 0.01) continue;
         // dirE: true 3D unit-sphere position — pole-safe noise domain (see kCloudHorizFreq comment).
-        vec3  dirE  = pE / pL;
-        vec3  uvwXY = dirE * kCloudHorizFreq;
+        // Drifted + warped the same way cloudMarch treats dirECEF (see rotateZ/cloudWarpOffset)
+        // — otherwise this shadow's presence test would drift out of alignment with the now-
+        // moving visible cloud structure.
+        vec3  dirE      = pE / pL;
+        vec3  dirEDrift = rotateZ(dirE, cloud.cloudPhase * cloud.layers[0].driftMult);
+        vec3  uvwXY     = dirEDrift * kCloudHorizFreq + cloudWarpOffset(dirEDrift);
         // BUG FOUND: cloudDensity returns clamp(eroded * heightProfile * density, 0, 1) — the
         // user's `cloud.density` slider (default 2.0, up to 10.0) multiplies in BEFORE the
         // clamp. At density > 1, plenty of thin/marginal shape (eroded*heightProfile well under
@@ -915,14 +975,24 @@ void cloudMarch(
         float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, 4.0).r;
 
         // dirECEF: true 3D unit-sphere position — pole-safe noise domain (see kCloudHorizFreq).
-        vec3  dirECEF = pECEF / pLen;
+        // dirECEFDrift: rotated in lockstep with the 2D coverage map's longitude drift (see
+        // rotateZ comment) so the 3D structure actually translates instead of just having its
+        // coverage mask slide over a static volume.
+        // warpUVW: domain-warp offset in raw texel/UVW space (see cloudWarpOffset comment) —
+        // added AFTER each target frequency multiply below, not before, so the same absolute
+        // displacement applies at kCloudHorizFreq and kCloudColFreq with no amplification.
+        // Computed once and reused for both so presence, erosion, and column-height all warp
+        // together, staying spatially glued to each other.
+        vec3  dirECEF      = pECEF / pLen;
+        vec3  dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[0].driftMult);
+        vec3  warpUVW      = cloudWarpOffset(dirECEFDrift);
 
         // Column-height map: large-scale noise gives each cloud system a different
         // maximum tower height (much wider footprint than the 3 km detail features,
         // so there's a clean hierarchy without micro-banding). Fixed +0.25 Z offset
         // decorrelates it from the presence/detail fetches below.
         float colNoise = texture(cloudNoiseTex,
-                                 dirECEF * kCloudColFreq + vec3(0.0, 0.0, 0.25)).r;
+                                 dirECEFDrift * kCloudColFreq + warpUVW + vec3(0.0, 0.0, 0.25)).r;
         // colH: the maximum normalized height [0,1] this particular cloud column can reach.
         // remap mirrors the coverage threshold: high colNoise + high localCov → tall cumulonimbus;
         // low colNoise or low coverage → colH near 0 → flat stratus or no cloud at all.
@@ -957,7 +1027,7 @@ void cloudMarch(
         // grid aligned with lines of constant lat/lon, at ~1.06 deg / ~0.39 deg spacing. sin()
         // is smooth everywhere, so this can't introduce a seam of its own.
         float posZ    = sin(pUV.x * 21.3 + pUV.y * 17.7) * 0.5 + 0.5;
-        vec3  uvwXY   = dirECEF * kCloudHorizFreq;
+        vec3  uvwXY   = dirECEFDrift * kCloudHorizFreq + warpUVW;
         vec3  uvwDetail = uvwXY
                                + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0);  // Z=altitude: erosion varies with height
         float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade);
