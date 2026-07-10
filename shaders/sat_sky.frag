@@ -167,7 +167,7 @@ const float kShadowHardCutoff = 0.1;
 // the full segLen) to a scale close to what the coefficient was tuned for. A genuinely large,
 // continuous overcast system still darkens fully because MANY consecutive samples each add
 // their own capped contribution; an isolated speck now only dims by one small increment.
-const float kShadowStepPathCapM = 80.0;
+const float kShadowStepPathCapM = 20.0;
 
 // ── Rayleigh scattering (wavelength-dependent: R=650nm, G=510nm, B=440nm) ─────
 const vec3  BETA_R = vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level //vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level
