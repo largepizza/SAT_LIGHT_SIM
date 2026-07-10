@@ -103,6 +103,18 @@ const float R_ATMOS = 6471000.0;   // 100 km above surface
 const float kCloudHorizFreq = 480.0;   // ~13 km detail features (was kHorizTiles=3000 in pUV space)
 const float kCloudColFreq   = 80.0;    // ~20 km cloud-system footprints (was kColTiles=500)
 
+// ── 3D volumetric ↔ flat 2D crossfade band ─────────────────────────────────────
+// cloudMarch (expensive per-sample 3D shell march) and evalCloudLayer (cheap flat-texture
+// paste at layers[0]/[1]'s shellAltM, i.e. the same physical cloud base/top) render the SAME
+// shell at two different fidelities. Below kCloud3DFadeStart: pure 3D. Above kCloud3DFadeEnd:
+// pure flat 2D (cheap enough for orbit). Both sides read this same pair of constants so the
+// crossfade is symmetric — previously the flat paste used a hard `obsEffH < 8000` boolean while
+// the volumetric fade didn't reach zero until 180 km, so 8-180 km altitude showed both the flat
+// shell AND the still-near-full-strength 3D volume composited at once (visible as the flat
+// texture "shell" intersecting the volumetric clouds).
+const float kCloud3DFadeStart = 800000.0;
+const float kCloud3DFadeEnd   = 3000000.0;
+
 // ── Rayleigh scattering (wavelength-dependent: R=650nm, G=510nm, B=440nm) ─────
 const vec3  BETA_R = vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level //vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level
 const float H_R    = 7994.0;   // Rayleigh scale height (m)
@@ -551,7 +563,7 @@ float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, floa
 //                         Tests whether the shadow cone's parallel copy of the sampling logic
 //                         contributes to the seam, independent of the main density march.
 #define CLOUD_ISOLATE_COLH   0
-#define CLOUD_ISOLATE_SHADOW 0
+#define CLOUD_ISOLATE_SHADOW 1
 
 // ── Cloud shadow on terrain/ocean ────────────────────────────────────────────
 // Marches the sun ray upward from a surface hit point through the cloud shell.
@@ -625,6 +637,15 @@ void cloudMarch(
     cloudTOut = vec3(1.0);
     tCloudOcclude = -1.0;
     if (cloud.layers[0].enabled < 0.5) return;
+
+    // Altitude crossfade computed and gated FIRST, before any shell/march work: above
+    // kCloud3DFadeEnd the flat evalCloudLayer paste (composited separately at the call site)
+    // fully replaces this march. Previously this fade was computed only AFTER the full
+    // 48-512-iteration march loop below had already run to completion, so orbital views —
+    // where the fade is already ~0 — still paid for the entire expensive march every frame
+    // before discarding the result. This early-out is the fix for that LEO performance cost.
+    float cloudAltFade = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
+    if (cloudAltFade < 0.001) return;
 
     float cloudBaseAlt = cloud.layers[0].shellAltM;
     float cloudTopAlt  = cloud.layers[1].shellAltM;
@@ -700,6 +721,45 @@ void cloudMarch(
                 vec2 sOD = optDepth(p0, sunDir, tSA.y);
                 sunColorCloud = SUN_INTENSITY * exp(-(BETA_R * sOD.x + BETA_M * 1.1 * sOD.y));
             }
+        }
+    }
+
+    // Sky ambient base at shell entry: Rayleigh scatter from the atmosphere above the cloud.
+    // 6-step integration toward zenith (same method as the main atmosphere loop in main()).
+    // Naturally produces blue sky at noon, warm-orange at sunset, near-zero at night.
+    // Replaces the hand-coded vec3(0.35, 0.55, 0.85) day sky color.
+    vec3 skyAmbientBase = vec3(0.0);
+    {
+        vec3 p0     = obsPos + tEnter * dir;
+        vec3 zenith = normalize(p0);           // upward direction at cloud entry (ECEF)
+        vec2 tSA    = raySphere(p0, zenith, R_ATMOS);
+        if (tSA.y > 0.0) {
+            const int N_Z = 6;
+            float zSeg    = tSA.y / float(N_Z);
+            float cosAUp  = dot(zenith, sunDir);
+            float pR_up   = 0.75 * (1.0 + cosAUp * cosAUp);  // Rayleigh phase toward zenith
+            float odR_z = 0.0, odM_z = 0.0;
+            float skyAmbientBaseM = 0.0;
+            for (int zi = 0; zi < N_Z; ++zi) {
+                vec3  sp = p0 + zenith * ((float(zi) + 0.5) * zSeg);
+                float h  = max(0.0, length(sp) - R_EARTH);
+                float dR = exp(-h / H_R) * zSeg;
+                float dM = exp(-h / H_M) * zSeg;
+                odR_z += dR;  odM_z += dM;
+                vec2 tSE = raySphere(sp, sunDir, R_EARTH);
+                if (tSE.x > 0.0 && tSE.y > 0.0) continue;  // sample in Earth shadow
+                vec2 tSun = raySphere(sp, sunDir, R_ATMOS);
+                vec2 sunOD = (tSun.y > 0.0) ? optDepth(sp, sunDir, tSun.y) : vec2(0.0);
+                vec3 tau      = BETA_R * (odR_z + sunOD.x) + BETA_M * 1.1 * (odM_z + sunOD.y);
+                vec3 attnStep = exp(-tau);
+                skyAmbientBase  += attnStep * dR;
+                skyAmbientBaseM += dot(attnStep, vec3(1.0 / 3.0)) * dM;  // Mie: grey, no wavelength peak
+            }
+            // Adding Mie fills the spectral gap between Rayleigh red and blue at sunset,
+            // preventing the green-channel peak that pure Rayleigh produces at twilight.
+            float pM_up = phaseM(cosAUp);
+            skyAmbientBase = SUN_INTENSITY * (pR_up * BETA_R * skyAmbientBase
+                                            + vec3(pM_up * BETA_M * skyAmbientBaseM));
         }
     }
 
@@ -894,27 +954,31 @@ void cloudMarch(
 
             // Geographic sun angle and direct sun illumination.
             float cloudSunDotRaw = dot(normalize(pECEF), sunDirECEF);
-            float sunElev        = max(0.0, cloudSunDotRaw);
+            // +0.04 offset: clouds at 5–11 km see the sun ~2–3° beyond the observer's geographic
+            // terminator due to altitude advantage. Ramp over 0.06 avoids the abrupt "lights out"
+            // clamp and lets undersides show the orange underside glow when the sun is just setting.
+            float sunElev     = clamp((cloudSunDotRaw + 0.04) / 0.06, 0.0, 1.0);
             // pow(0.7): softens the low-angle falloff so 10° elevation reads ~30% instead of 17%.
-            // Prevents afternoon clouds from going near-black while still going dark at night.
-            float sunElevSoft    = pow(sunElev, 0.7);
-            // Wider range: 0.4 (base) → 1.0 (top) gives ~16:1 contrast when combined with cone shadow.
-            float selfShadow     = mix(0.1, 1.0, hNorm);
-            float sunLit         = sunElevSoft * sunTransmittance * selfShadow;
+            float sunElevSoft = pow(sunElev, 0.7);
+            // selfShadow height gradient: at high sun angles, bases are strongly shadowed from above
+            // (steep 0.1→1.0). At low sun angles the sun comes in sideways and illuminates all heights
+            // more equally — relax the gradient toward 0.5→1.0 near the horizon.
+            float shadowFloor = mix(0.1, 0.5, clamp(1.0 - sunElev * 4.0, 0.0, 1.0));
+            float selfShadow  = mix(shadowFloor, 1.0, hNorm);
+            float sunLit      = sunElevSoft * sunTransmittance * selfShadow;
 
             // Day/night blend — extended to cover civil twilight (~12° below horizon).
             // Wider than the previous ±8.6° window so ambient stays warm through sunset.
             float sampleDayness = clamp((cloudSunDotRaw + 0.2) / 0.5, 0.0, 1.0);
 
-            // Twilight ambient: transitions blue day sky → warm orange/pink at sunset → dark night.
-            float twilightFac = smoothstep(-0.2, 0.0, cloudSunDotRaw)
-                              * smoothstep(0.25, 0.0, cloudSunDotRaw);
-            // Derive sunset hue from sunColorCloud (already atmosphere-filtered, same spectrum
-            // the sky actually has at this sun angle) so sunset ambient matches the real sky.
-            vec3 sunsetHue  = normalize(max(sunColorCloud, vec3(0.001)));
-            vec3 ambientSky = mix(vec3(0.35, 0.55, 0.85), sunsetHue * 0.55, twilightFac);
-            vec3 skyAmbient = mix(vec3(0.001, 0.001, 0.002), ambientSky, sampleDayness)
-                            * cloud.ambientGain * mix(0.15, 0.4, hNorm);
+            // Sky ambient: physically-derived Rayleigh+Mie scatter from the atmosphere above the cloud.
+            // No sampleDayness gate — skyAmbientBase already goes to zero when the entire atmospheric
+            // column is in Earth's shadow (deep night). At civil/nautical twilight the zenith atmosphere
+            // is still lit, correctly illuminating overcast clouds with the warm orange glow.
+            // hNorm gradient: tops see more of the sky hemisphere than bases (0.3 → 0.9).
+            vec3 skyAmbient = skyAmbientBase
+                            * (mix(0.3, 0.9, hNorm)                          // physical base
+                            +  mix(0.1, 0.3, hNorm) * cloud.ambientGain);    // user-tunable boost
 
             // Moon: directional light using the same framework as the sun.
             // moonDirENU.xyz = ENU unit vector toward moon; .w = phase/illuminance [0,1].
@@ -966,9 +1030,6 @@ void cloudMarch(
         t += step;  // advance ray position to the end of this step
     }
 
-    float cloudAltFade = 1.0 - smoothstep(0.0, 180000.0, obsEffH);
-    if (cloudAltFade < 0.001) return;
-
     cloudTOut = mix(vec3(1.0), cloudTransmittance, cloudAltFade);
     // Cloud hard-occludes satellites only when it is ≥90% opaque (transmittance < 0.1).
     // A lower threshold (was 0.5) prevents wispy and moderate cloud from snapping satellites
@@ -983,7 +1044,13 @@ void cloudMarch(
 
 #if CLOUD_DEBUG == 0
     // ── Normal rendering ──────────────────────────────────────────────────────
-    color = color * cloudTOut + cloudScatter * cloudAltFade * cloudAttn;
+    // Correct atmospheric composite for a cloud at distance tEnter:
+    //   output = L_near(obs→cloud) + T_near * [cloudScatter + T_cloud * L_background]
+    // Approximating L_near ≈ color*(1-cloudAttn) and L_background ≈ color yields:
+    //   output = color*(1 - cloudAttn*(1-cloudTOut)) + cloudAttn*cloudScatter
+    // This prevents horizon clouds from going dark: when cloudAttn→0 (thick atmosphere),
+    // the term collapses to `color` (the existing haze) regardless of cloudTOut.
+    color = color * (1.0 - cloudAttn * (1.0 - cloudTOut)) + cloudAttn * cloudScatter * cloudAltFade;
 
 #else
     // ── Diagnostic overlay ────────────────────────────────────────────────────
@@ -1564,13 +1631,17 @@ void main() {
     }
 
     // ── Cloud layers (C3/C4 unified: thin-shell 2D overlays) ─────────────────
-    // From ground (obsEffH < 8 km): layers 0/1 are handled by cloudMarch (C7) for
-    // genuine 3D volumetrics; evalCloudLayer is used only for cirrus overlays (li>=2).
-    // From orbit (obsEffH >= 8 km): cloudMarch fades to zero and evalCloudLayer
-    // renders all four layers so clouds are visible on Earth from space.
+    // Layers 0/1 double as the volumetric shell's base/top (same shellAltM values cloudMarch
+    // reads below), so their flat paste here must crossfade against cloudMarch's own fade using
+    // the SAME kCloud3DFadeStart/End band — not an independent threshold — or the two renders
+    // overlap. Layers 2/3 (e.g. a standalone high cirrus deck) are always flat, at full weight.
     for (int li = 0; li < 4; ++li) {
         if (cloud.layers[li].enabled < 0.5) continue;
-        if (li < 2 && obsEffH < 8000.0) continue;
+        float fadeWeight = 1.0;
+        if (li < 2) {
+            fadeWeight = smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
+            if (fadeWeight < 0.001) continue;
+        }
         evalCloudLayer(
             obsPos, dir, tSurface, enuX, enuY, enuZ, sunDirECEF,
             odR_cam, odM_cam,
@@ -1579,7 +1650,7 @@ void main() {
             cloud.sunGain,
             cloud.layers[li].shellAltM,
             cloud.layers[li].driftMult,
-            cloud.layers[li].alphaMax,
+            cloud.layers[li].alphaMax * fadeWeight,
             cloud.layers[li].mipLod,
             cloud.cloudPhase,
             color);
