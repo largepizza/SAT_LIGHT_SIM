@@ -77,7 +77,8 @@ layout(set = 0, binding = 9) uniform CloudParams {
     float marchSteps;
     float lightSteps;
     float cloudPhase;
-    float pad0, pad1, pad2;
+    float shadowSteps;   // terrain/ocean cloudShadowFactor march step count (was pad0)
+    float pad1, pad2;
     CloudLayer layers[4];
 } cloud;
 
@@ -114,6 +115,59 @@ const float kCloudColFreq   = 80.0;    // ~20 km cloud-system footprints (was kC
 // texture "shell" intersecting the volumetric clouds).
 const float kCloud3DFadeStart = 800000.0;
 const float kCloud3DFadeEnd   = 3000000.0;
+
+// ── View-march step count vs. altitude ──────────────────────────────────────────
+// Step count needed for a glitchless march scales with the shell's ANGULAR size on screen,
+// which shrinks with observer altitude — LEO (400-600 km) can look correct with far fewer
+// steps than ground level needs. This band is intentionally separate from kCloud3DFadeStart
+// (800 km): that constant now sits above typical LEO, so opacity fading alone doesn't reduce
+// cost anywhere satellites actually orbit — the reported "LEO cloud perf is awful" case sits
+// entirely inside the always-full-3D zone below kCloud3DFadeStart. This band supplies the
+// actual LEO-perf lever: steps ramp from full ground quality down to a floor well before 800 km.
+const float kMarchStepsAltStart = 20000.0;    // below this: full cloud.marchSteps (ground/aircraft)
+const float kMarchStepsAltEnd   = 600000.0;   // at/above this: kMarchStepsFloor (LEO and up)
+const float kMarchStepsFloor    = 12.0;       // minimum steps once the shell is angularly tiny
+
+// ── Cloud-shadow marginal-density floor ─────────────────────────────────────────
+// cloudDensity's presence remap has a natural soft penumbra: noise values just past the
+// 1-coverage threshold return a small nonzero d rather than snapping straight to 1. Near a
+// real cloud's base (hNorm≈0, where hFade in cloudDensity's heightProfile is still ramping up
+// from 0), that soft penumbra plus the height taper together produce many isolated d values
+// of a few percent — real, but individually far too faint to read as cloud from any single
+// viewing angle (CLOUD_DEBUG=2 shows these as short red-tinted speckles ringing the solid
+// cloud cores: "hit" registers because d clears the old 0.001 skip, but the hit sits right at
+// the base where hFade barely lifted it over that bar). cloudMarch's view ray only ever
+// crosses one ~10 km-thick column, so this penumbra is invisible there. cloudShadowFactor's
+// sun ray sweeps up to 60 km of DIFFERENT geographic columns, encountering many more of these
+// specks — individually negligible extinction, but summed over dozens of samples it reads as
+// shadow extending well past the cloud's actual visible silhouette. Squashing d through this
+// smoothstep before accumulating extinction suppresses the penumbra tail while leaving solid
+// cloud (d saturates near 1 well above kShadowFloorHi) essentially untouched.
+//
+// TEMP DIAGNOSTIC (current): the soft smoothstep squash above wasn't enough to kill the
+// phantom shadows — replaced below with a single hard cutoff, deliberately set high so only
+// the densest cloud cores cast any shadow at all. Confirm this actually eliminates the
+// cloudless-shadow artifact, then walk kShadowHardCutoff back down (feathering back toward a
+// softer/lower bar, or reintroducing the smoothstep below this cutoff) until thin real cloud
+// starts casting shadow again without the speckle halo returning.
+const float kShadowFloorLo   = 0.02;
+const float kShadowFloorHi   = 0.12;
+const float kShadowHardCutoff = 0.1;
+
+// ── Cloud-shadow per-sample extinction-length cap ───────────────────────────────
+// segLen in cloudShadowFactor is (tExit-tEnter)/N — up to 60000/24 = 2500 m per sample, vs.
+// cloudMarch's view-ray step length of ~60-300 m (the scale the 3e-3 extinction coefficient
+// was actually tuned against). Multiplying a single point sample's density by the FULL segLen
+// silently assumes the cloud is uniformly solid across that entire multi-km gap — false for
+// Worley-cell noise, which is inherently patchy at far finer scale. One borderline/isolated hit
+// (d just over the cutoff) at segLen=2500m produces extinction≈4.5 → T≈0.01, i.e. a single
+// sample alone can black out the whole ray — this, not the density-threshold bug fixed earlier,
+// is why isolated cloud specks were still casting shadow far heavier than their real extent.
+// Cap the PATH LENGTH credited to each hit (not the sample spacing itself — jitter still walks
+// the full segLen) to a scale close to what the coefficient was tuned for. A genuinely large,
+// continuous overcast system still darkens fully because MANY consecutive samples each add
+// their own capped contribution; an isolated speck now only dims by one small increment.
+const float kShadowStepPathCapM = 80.0;
 
 // ── Rayleigh scattering (wavelength-dependent: R=650nm, G=510nm, B=440nm) ─────
 const vec3  BETA_R = vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level //vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level
@@ -568,7 +622,11 @@ float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, floa
 // ── Cloud shadow on terrain/ocean ────────────────────────────────────────────
 // Marches the sun ray upward from a surface hit point through the cloud shell.
 // Returns transmittance [0,1]: 1.0 = no cloud shadow, ~0 = fully overcast.
-// Called once per terrain/ocean pixel — 8 steps, coverage-gated, Perlin only.
+// Called once per terrain/ocean pixel. Step count is cloud.shadowSteps (UBO-tunable,
+// "Shadow steps" slider) — was previously a hardcoded 8, completely decoupled from any
+// slider (including cloud.marchSteps, which only affects the separate view-ray march in
+// cloudMarch and has zero effect here). That fixed low count against up to a 60 km path is
+// what produced the blobby/blocky look with the underlying cloud noise "slices" exposed.
 float cloudShadowFactor(vec3 hitPt, vec3 sunDir, vec3 enuX, vec3 enuY, vec3 enuZ) {
     if (cloud.layers[0].enabled < 0.5) return 1.0;
     float baseAlt = cloud.layers[0].shellAltM;
@@ -581,17 +639,20 @@ float cloudShadowFactor(vec3 hitPt, vec3 sunDir, vec3 enuX, vec3 enuY, vec3 enuZ
     float tEnter = shellB.y;
     // Cap the sun-ray march distance through the shell. Uncapped, a near-tangent/grazing sun
     // ray (routine at high latitude, where the sun sits low for long stretches — not just
-    // exactly at the poles) can traverse a shell arc of hundreds of km, and this still divides
-    // it into a fixed 8 samples — each sample then represents a huge, badly undersampled chunk
-    // of the shell, which is exactly what reads as blocky/distorted shadow patches, and wastes
-    // work on grazing geometry that contributes little. Mirrors the view march's tExit cap in
-    // cloudMarch.
+    // exactly at the poles) can traverse a shell arc of hundreds of km, which would otherwise
+    // dilute a fixed step budget across a huge, badly undersampled span. Mirrors the view
+    // march's tExit cap in cloudMarch.
     float tExit  = min(shellT.y, tEnter + 60000.0);
-    const int N  = 8;
+    int   N      = max(2, int(cloud.shadowSteps));
     float segLen = (tExit - tEnter) / float(N);
-    float T      = 1.0;
+    // Per-pixel dither on the sample offset (same noiseTex-hash convention as the terrain
+    // march jitter below): turns residual under-sampling into fine grain instead of hard,
+    // moving "slice" bands — the aliasing pattern shifts pixel-to-pixel rather than lining up
+    // into a single coherent stripe, which is what read as blobby/racing shadow artifacts.
+    float jitter  = textureLod(noiseTex, gl_FragCoord.xy * (1.0/128.0), 0.0).r;
+    float T       = 1.0;
     for (int i = 0; i < N; ++i) {
-        vec3  p   = hitPt + sunDir * (tEnter + (float(i) + 0.5) * segLen);
+        vec3  p   = hitPt + sunDir * (tEnter + (float(i) + jitter) * segLen);
         float h   = length(p) - R_EARTH;
         if (h < baseAlt || h > topAlt) continue;
         float hN  = (h - baseAlt) / (topAlt - baseAlt);
@@ -603,18 +664,39 @@ float cloudShadowFactor(vec3 hitPt, vec3 sunDir, vec3 enuX, vec3 enuY, vec3 enuZ
         vec2  uv  = vec2(fract((lon + PI) / (2.0*PI)
                                + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                          (0.5*PI - lat) / PI);
-        // LOD 5 (was 3): see localCov comment in cloudMarch — coverage sets a hard threshold,
-        // so per-texel noise must be blurred out here too or ground shadows get the same seam.
-        float cov = cloud.coverage * textureLod(earthCloudsTex, uv, 5.0).r;
+        // LOD 4 — MUST match cloudMarch's localCov sample exactly (same texture, same mip).
+        // This used to be LOD 5, a full extra octave blurrier than the view march's LOD 4
+        // localCov. Since `coverage` directly sets cloudDensity's presence threshold via
+        // remap(noise, 1-coverage, 1, 0, 1), a blurrier mip doesn't just soften the value —
+        // it spreads nonzero coverage (and therefore shadow-casting presence) across a much
+        // wider geographic footprint than the sharper mip the visible cloud is thresholded
+        // against. That mismatch is what let shadows extend well past the cloud's visible
+        // edge: this ray could read cov>0 (and cast shadow) at points where the view march's
+        // LOD-4 sample already reads 0 (and renders no cloud at all).
+        float cov = cloud.coverage * textureLod(earthCloudsTex, uv, 4.0).r;
         if (cov < 0.01) continue;
         // dirE: true 3D unit-sphere position — pole-safe noise domain (see kCloudHorizFreq comment).
         vec3  dirE  = pE / pL;
         vec3  uvwXY = dirE * kCloudHorizFreq;
-        float d = cloudDensity(uvwXY, uvwXY, hN, cov, cloud.density, hFade);
-        // Skip density below visual threshold — same gate the view march uses.
-        // Prevents invisible noise from casting shadows.
-        if (d < 0.001) continue;
-        T *= exp(-d * segLen * 3.0e-3);
+        // BUG FOUND: cloudDensity returns clamp(eroded * heightProfile * density, 0, 1) — the
+        // user's `cloud.density` slider (default 2.0, up to 10.0) multiplies in BEFORE the
+        // clamp. At density > 1, plenty of thin/marginal shape (eroded*heightProfile well under
+        // 1.0) still saturates to exactly d=1.0 once multiplied and clamped — indistinguishable
+        // from genuinely solid cloud. That's why even kShadowHardCutoff=1.0 (the maximum
+        // possible value) still let phantom shadow through: the cutoff was comparing against a
+        // value the density slider can inflate to its ceiling regardless of true solidity.
+        // Fix: call with density FIXED at 1.0 to get the density-INDEPENDENT shape value —
+        // exactly eroded*heightProfile, which is already <=1 by construction (product of two
+        // <=1 terms), so this multiply never clamps and never loses information. Gate on THIS.
+        float rawShape = cloudDensity(uvwXY, uvwXY, hN, cov, 1.0, hFade);
+        if (rawShape < kShadowHardCutoff) continue;
+        // Actual tuned extinction, recovered from rawShape with a cheap scalar op — no second
+        // texture read needed since rawShape already carries the full noise evaluation.
+        float d = clamp(rawShape * cloud.density, 0.0, 1.0);
+        // Credit this hit with at most kShadowStepPathCapM of physical thickness (see comment
+        // above) instead of the full inter-sample segLen, so one isolated hit can't stand in
+        // for multiple km of assumed-uniform density.
+        T *= exp(-d * min(segLen, kShadowStepPathCapM) * 3.0e-3);
         if (T < 0.02) break;  // converged; let soft-floor apply below
     }
     // Soft shadow: max 85% darkening so overcast still leaves 15% ambient.
@@ -768,7 +850,13 @@ void cloudMarch(
     // regions of the march being fired in cloud-free sky.
     vec3  cloudTransmittance = vec3(1.0);
     vec3  cloudScatter       = vec3(0.0);
-    int   N       = max(48, int(cloud.marchSteps));
+    // Interpolate ground-quality step count down to kMarchStepsFloor across the altitude band
+    // above. groundSteps keeps the existing 48-step floor for the ground-level end of the ramp
+    // (matches the old unconditional minimum); the high-altitude end can go below that once
+    // stepAltT ramps in, since fewer steps are genuinely sufficient at LEO+ altitudes.
+    float groundSteps = max(48.0, cloud.marchSteps);
+    float stepAltT    = smoothstep(kMarchStepsAltStart, kMarchStepsAltEnd, obsEffH);
+    int   N           = max(8, int(mix(groundSteps, kMarchStepsFloor, stepAltT)));
     // Altitude-stratified step size: advances shellThick/N in altitude per step regardless
     // of ray angle. Vertical rays: stepLen = 60 m. Oblique rays: larger steps covering
     // the same altitude increment but more geographic area. Quality is now angle-independent.
@@ -954,12 +1042,12 @@ void cloudMarch(
 
             // Geographic sun angle and direct sun illumination.
             float cloudSunDotRaw = dot(normalize(pECEF), sunDirECEF);
-            // +0.04 offset: clouds at 5–11 km see the sun ~2–3° beyond the observer's geographic
-            // terminator due to altitude advantage. Ramp over 0.06 avoids the abrupt "lights out"
-            // clamp and lets undersides show the orange underside glow when the sun is just setting.
-            float sunElev     = clamp((cloudSunDotRaw + 0.04) / 0.06, 0.0, 1.0);
-            // pow(0.7): softens the low-angle falloff so 10° elevation reads ~30% instead of 17%.
-            float sunElevSoft = pow(sunElev, 0.7);
+            // smoothstep ramp over [-0.04, 0.12]: extends 2.3° past the geographic terminator
+            // (altitude advantage for 5 km clouds) and tapers over a 9° zone so the orange
+            // boundary fades gradually rather than snapping. Zero derivative at both endpoints
+            // eliminates any visible kink in the transition.
+            float sunElev     = smoothstep(-0.04, 0.12, cloudSunDotRaw);
+            float sunElevSoft = sunElev;  // smoothstep already shapes the onset; no extra pow needed
             // selfShadow height gradient: at high sun angles, bases are strongly shadowed from above
             // (steep 0.1→1.0). At low sun angles the sun comes in sideways and illuminates all heights
             // more equally — relax the gradient toward 0.5→1.0 near the horizon.
@@ -1171,17 +1259,20 @@ void main() {
     if (dir.z < 0.7 && tShell.y > 0.0) {
         float tExit = (tBase.x > 0.0) ? tBase.x
                     : (tShell.y > 0.0  ? tShell.y : 0.0);
-        tExit = min(tExit, 250000.0);
+        // Cap scales with observer altitude so terrain is visible from LEO.
+        // At ground the old 250 km limit is preserved (horizon is close anyway).
+        // At LEO (400 km) it extends to 900 km, covering ~65° off-nadir views.
+        // Limb-grazing rays that would otherwise generate very long tShell paths
+        // are still clamped so the march stays bounded.
+        float tCap = mix(250000.0, 3600000.0, clamp(obsEffH / 400000.0, 0.0, 1.0));
+        tExit = min(tExit, tCap);
 
         // Quadratic step distribution: steps grow proportionally to their index so
-        // near terrain gets fine resolution (~40 m at step 0) while far terrain gets
-        // coarser (~5 km at step 95). This catches low/mid-altitude ranges (Rockies,
-        // Alps) that uniform spacing misses when tExit is hundreds of km.
-        // Jitter is kept as a normalised fraction [0,1] so its absolute magnitude
-        // scales with tExit — sample positions stay proportional to the march range
-        // regardless of view direction, eliminating the per-frame drift that causes
-        // flickering when panning.
-        const int kN  = 196;
+        // near terrain gets fine resolution while far terrain gets coarser steps.
+        // Step count scales with altitude: 196 at ground (terrain is close),
+        // up to 320 at LEO so the last steps near Earth are ~2.8 km — fine enough
+        // to detect Himalayan-scale terrain from 400 km nadir.
+        int kN = int(mix(320.0, 320.0, clamp(obsEffH / 800000.0, 0.0, 1.0)));
         float jitter  = textureLod(noiseTex, gl_FragCoord.xy * (1.0/128.0), 0.0).r;
         float tPrev   = 2.0;
 
@@ -1441,7 +1532,16 @@ void main() {
 
         vec3  shadingN   = (tHit > 0.0) ? terrainNorm : normalize(hitPt);
         float sunDot     = dot(shadingN, sunDir);
-        float dayFrac    = smoothstep(-0.1, 0.3, sunDot);
+        // Geographic horizon gate: dot(normalize(hitPt), sunDir) is the sun's elevation above
+        // the local horizon at the TERRAIN POINT's geographic location.  The slope normal
+        // (shadingN) cannot be used for this — a steep slope can face toward the sun even
+        // when the terrain point is on the night side of Earth.  Gate dayFrac by the radial
+        // direction so no illumination leaks past the terminator regardless of slope angle.
+        // Margin [-0.03, 0.02]: thin alpenglow zone for mountain peaks that see the sun just
+        // past the flat horizon; anything below -1.7° geographic is forced to zero.
+        float geoSunDot   = dot(normalize(hitPt), sunDir);
+        float horizonGate = smoothstep(-0.03, 0.02, geoSunDot);
+        float dayFrac     = smoothstep(-0.1, 0.3, sunDot) * horizonGate;
         // cloudShadow: sun-ray transmittance through cloud shell above this surface point.
         // directSun combines day/night blend with cloud shadow for all sun-driven contributions.
         float cloudShadow = cloudShadowFactor(hitPt, sunDir, enuX, enuY, enuZ);
@@ -1457,8 +1557,62 @@ void main() {
         if (uvd_dy.x < -0.5) uvd_dy.x += 1.0;
         vec3 dayColor   = textureGrad(earthDayTex,   uvSurf, uvd_dx, uvd_dy).rgb;
         vec3 nightColor = textureGrad(earthNightTex, uvSurf, uvd_dx, uvd_dy).rgb;
+
+        // ── Spectral sun color at terrain hit ─────────────────────────────────
+        // Sun light arriving at the terrain is orange at low angles (long atmospheric path).
+        // Normalized so the brightest channel = 1.0 (preserves hue; noon ≈ warm white).
+        vec3 sunSpecTint = vec3(1.0);
+        {
+            vec2 tSET = raySphere(hitPt, sunDir, R_EARTH);
+            if (!(tSET.x > 0.0 && tSET.y > 0.0)) {  // terrain not in Earth's shadow
+                vec2 tSAT = raySphere(hitPt, sunDir, R_ATMOS);
+                if (tSAT.y > 0.0) {
+                    vec2 sODT    = optDepth(hitPt, sunDir, tSAT.y);
+                    vec3 attnT   = exp(-(BETA_R * sODT.x + BETA_M * 1.1 * sODT.y));
+                    float maxAttn = max(max(attnT.r, attnT.g), max(attnT.b, 0.001));
+                    sunSpecTint  = attnT / maxAttn;  // hue-normalized: max channel → 1.0
+                }
+            }
+        }
+
+        // ── Sky ambient at terrain hit ─────────────────────────────────────────
+        // 4-step zenith integration gives the scattered sky color illuminating terrain
+        // faces: blue during day, warm-orange during twilight. Mirrors the cloud skyAmbientBase.
+        vec3 skyAmbientTerrain = vec3(0.0);
+        {
+            vec3  zenT = normalize(hitPt);  // terrain zenith (radially outward)
+            vec2  tSAT = raySphere(hitPt, zenT, R_ATMOS);
+            if (tSAT.y > 0.0) {
+                const int N_ZT = 4;
+                float zSegT    = tSAT.y / float(N_ZT);
+                float cosAT    = dot(zenT, sunDir);
+                float pR_upT   = 0.75 * (1.0 + cosAT * cosAT);
+                float pM_upT   = phaseM(cosAT);
+                float odR_zt = 0.0, odM_zt = 0.0;
+                float skyAmbTM = 0.0;
+                for (int zi = 0; zi < N_ZT; ++zi) {
+                    vec3  sp = hitPt + zenT * ((float(zi) + 0.5) * zSegT);
+                    float h  = max(0.0, length(sp) - R_EARTH);
+                    float dR = exp(-h / H_R) * zSegT;
+                    float dM = exp(-h / H_M) * zSegT;
+                    odR_zt += dR;  odM_zt += dM;
+                    vec2 tSE  = raySphere(sp, sunDir, R_EARTH);
+                    if (tSE.x > 0.0 && tSE.y > 0.0) continue;
+                    vec2 tSun = raySphere(sp, sunDir, R_ATMOS);
+                    vec2 sunOD = (tSun.y > 0.0) ? optDepth(sp, sunDir, tSun.y) : vec2(0.0);
+                    vec3 tau      = BETA_R * (odR_zt + sunOD.x) + BETA_M * 1.1 * (odM_zt + sunOD.y);
+                    vec3 attnStep = exp(-tau);
+                    skyAmbientTerrain += attnStep * dR;
+                    skyAmbTM         += dot(attnStep, vec3(1.0 / 3.0)) * dM;
+                }
+                skyAmbientTerrain = SUN_INTENSITY * (pR_upT * BETA_R * skyAmbientTerrain
+                                                   + vec3(pM_upT * BETA_M * skyAmbTM));
+            }
+        }
+
         vec3 surfColor  = mix(nightColor * 0.12,
-                              dayColor * clamp(sunDot * 1.5 * cloudShadow, 0.05, 1.0),
+                              dayColor * sunSpecTint * clamp(sunDot * 1.5 * cloudShadow, 0.05, 1.0)
+                            + dayColor * skyAmbientTerrain * 0.4,  // sky ambient fill (blue day, orange dusk)
                               dayFrac);
 
         // ── Ocean wave material (sea-level hits only, not terrain) ─────────────

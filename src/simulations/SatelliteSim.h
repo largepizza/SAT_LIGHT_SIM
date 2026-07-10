@@ -319,7 +319,8 @@ struct GpuCloudParams
     float marchSteps;       // volumetric march step count (C7+)
     float lightSteps;       // volumetric light-cone step count (C7+)
     float cloudPhase;       // CPU: fmod(driftRate * simTime, 2π) — uploaded each frame
-    float pad0, pad1, pad2; // pad to 48 bytes (3 × vec4)
+    float shadowSteps;      // terrain/ocean cloudShadowFactor march step count (was pad0)
+    float pad1, pad2;       // pad to 48 bytes (3 × vec4)
     // Per-layer descriptors
     GpuCloudLayerParams layers[kNumCloudLayers];
 };
@@ -618,6 +619,7 @@ private:
     float cloudHgG = 0.6f;
     float cloudMarchSteps = 124.0f;
     float cloudLightSteps = 6.0f;
+    float cloudShadowSteps = 24.0f; // terrain/ocean cloud-shadow march step count (separate scale from lightSteps: this covers up to ~60 km, lightSteps covers one shell thickness)
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
     std::string exeDir_;           // directory containing the exe; set in init()
@@ -746,9 +748,9 @@ private:
     bool hovPhotoMinus[5] = {};
     bool hovPhotoPlus[5] = {};
     bool draggingPhoto[5] = {};
-    bool hovCloudMinus[10] = {};
-    bool hovCloudPlus[10] = {};
-    bool draggingCloud[10] = {};
+    bool hovCloudMinus[11] = {};
+    bool hovCloudPlus[11] = {};
+    bool draggingCloud[11] = {};
     // ── Settings window position (persisted; -1 = uninitialized, centers on first open) ─
     float settingsWinX = -1.0f;
     float settingsWinY = -1.0f;

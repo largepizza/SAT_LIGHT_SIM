@@ -436,6 +436,7 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         cp.hgG = cloudHgG;
         cp.marchSteps = cloudMarchSteps;
         cp.lightSteps = cloudLightSteps;
+        cp.shadowSteps = cloudShadowSteps;
         cp.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
                                     glm::two_pi<double>());
         // Layer 0: low cloud / stratus shell
@@ -1718,7 +1719,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     const char *fmt;
                     int idx;
                 };
-                static char cloudBufs[10][16];
+                static char cloudBufs[11][16];
                 CloudSlider cloudSliders[] = {
                     {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
                     {"Density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
@@ -1730,6 +1731,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     {"HG g", &cloudHgG, 0.0f, 0.99f, 0.05f, "%.2f", 7},
                     {"March steps", &cloudMarchSteps, 4.0f, 1024.0f, 4.0f, "%.0f", 8},
                     {"Light steps", &cloudLightSteps, 1.0f, 16.0f, 1.0f, "%.0f", 9},
+                    {"Shadow steps", &cloudShadowSteps, 4.0f, 64.0f, 2.0f, "%.0f", 10},
                 };
                 for (auto &cs : cloudSliders)
                 {
@@ -4282,6 +4284,7 @@ void SatelliteSim::loadSettings()
         cloudHgG = c.value("hg_g", cloudHgG);
         cloudMarchSteps = c.value("march_steps", cloudMarchSteps);
         cloudLightSteps = c.value("light_steps", cloudLightSteps);
+        cloudShadowSteps = c.value("shadow_steps", cloudShadowSteps);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -4335,7 +4338,8 @@ void SatelliteSim::saveSettings()
         {"ambient_gain", cloudAmbientGain},
         {"hg_g", cloudHgG},
         {"march_steps", cloudMarchSteps},
-        {"light_steps", cloudLightSteps}};
+        {"light_steps", cloudLightSteps},
+        {"shadow_steps", cloudShadowSteps}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)
