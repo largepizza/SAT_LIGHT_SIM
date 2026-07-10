@@ -455,20 +455,37 @@ void evalCloudLayer(
 
 // ── Volumetric cloud density (Nubis remap + erosion) ─────────────────────────
 // Returns a density value [0,1] at the given 3D noise coordinate.
-//   noiseUVW:      3D texture coordinate into cloudNoiseTex (see cloudMarch for construction)
+//   uvwXY:         dirECEF * kCloudHorizFreq, UNFRACTED — horizontal noise position; two fixed
+//                  Z-offsets are added internally to sample a "base" and "top" archetype slice.
+//   uvwDetail:     full 3D coordinate (Z=altitude) for the Worley erosion channels
+//   hNorm:         normalized height within the cloud shell [0,1] — blends base→top presence
 //   coverage:      per-sample 2D coverage map value × global coverage slider — controls threshold
 //   density:       global linear scale from CloudParams UBO (user-tunable at runtime)
 //   heightProfile: caller-supplied soft fade [0,1] — 0 at shell base/top, 1 in mid-layer
-// uvwPresence: Z=posZ (constant per column) — gates WHERE cloud exists; no altitude sweep so no Z-axis slabs.
-// uvwDetail:   Z=hNorm*kVertTiles+... (full 3D) — only used for Worley erosion, which creates 3D blob structure
-//              rather than horizontal bands (Worley cells are spherical, not gradient-aligned slabs).
-float cloudDensity(vec3 uvwPresence, vec3 uvwDetail, float coverage, float density, float heightProfile) {
-    // ── Stage 1: Base shape from Perlin-Worley R channel at Z=posZ ───────────
-    // Using the 2D-ish coordinate (Z fixed per column) ensures cloud presence is
-    // determined by the XY noise structure (horizontal patchiness) only.
-    // No altitude sweep in Z → the Perlin's 3 positive Z-lobes don't create slabs.
-    vec4  ns   = texture(cloudNoiseTex, fract(uvwPresence));
-    float base = remap(ns.r, 1.0 - coverage, 1.0, 0.0, 1.0);
+float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, float density, float heightProfile) {
+    // ── Stage 1: Base shape — blend two fixed-Z archetype slices by hNorm ─────
+    // Sampling two DIFFERENT fixed Z-slices of the Perlin-Worley R channel gives the cloud
+    // footprint genuine width variation with height instead of the "perfect cylinder" a single
+    // constant-Z slice produced. Threshold EACH slice independently, then blend the resulting
+    // (post-threshold) alpha values — not the raw noise values. Blending raw values first would
+    // regress the mid-height sample toward the mean of two decorrelated fields, which can only
+    // ever shrink coverage monotonically (a smooth cone) — it can never produce a region present
+    // in one slice but absent in the other, which is exactly what a real overhang/concavity is.
+    // Post-threshold blending preserves each slice's independent shape so those regions can
+    // appear/disappear across height non-monotonically. mix() is still smooth in hNorm, so this
+    // remains immune to the raymarch-step banding a raw continuous Z-sweep caused (see
+    // project_cloud_march_steps memory) — there's no threshold crossing along hNorm to alias.
+    const float kPresenceZBase = 0.0;
+    const float kPresenceZTop  = 0.5;
+    // No manual fract() here: cloudNoiseSampler is already REPEAT-addressed, which wraps the
+    // raw coordinate correctly. Pre-wrapping with fract() creates an artificial sawtooth
+    // discontinuity in the coordinate as seen by the GPU's automatic screen-space derivative
+    // computation (used for LOD/filtering), which manual wrapping does not need to introduce.
+    float nsBaseR = texture(cloudNoiseTex, uvwXY + vec3(0.0, 0.0, kPresenceZBase)).r;
+    float nsTopR  = texture(cloudNoiseTex, uvwXY + vec3(0.0, 0.0, kPresenceZTop)).r;
+    float baseA   = remap(nsBaseR, 1.0 - coverage, 1.0, 0.0, 1.0);
+    float topA    = remap(nsTopR,  1.0 - coverage, 1.0, 0.0, 1.0);
+    float base    = mix(baseA, topA, clamp(hNorm, 0.0, 1.0));
     if (base <= 0.0) return 0.0;  // clear sky at this point — skip the more expensive erosion fetch
 
     // ── Stage 2: High-frequency erosion detail (G/B/A channels at full 3D Z) ──
@@ -480,7 +497,7 @@ float cloudDensity(vec3 uvwPresence, vec3 uvwDetail, float coverage, float densi
     //   G (weight 0.625): coarse Worley — chews large bites from cloud edges (cumulus cauliflower)
     //   B (weight 0.25):  medium Worley — adds mid-scale texture to edge fraying
     //   A (weight 0.125): fine Worley   — adds wispy tendrils at the very edge
-    vec4  nsF     = texture(cloudNoiseTex, fract(uvwDetail * 1.5 + vec3(0.37, 0.53, 0.71)));
+    vec4  nsF     = texture(cloudNoiseTex, uvwDetail * 1.5 + vec3(0.37, 0.53, 0.71));
     float erosion = nsF.g * 0.625 + nsF.b * 0.25 + nsF.a * 0.125;
 
     // ── Stage 3: Apply erosion by raising the base shape's lower floor ────────
@@ -522,6 +539,20 @@ float cloudDensity(vec3 uvwPresence, vec3 uvwDetail, float coverage, float densi
 //      banding is caused by posZ not spanning enough geographic range from the surface.
 #define CLOUD_DEBUG 0
 
+// ── Seam isolation switches (see CLOUD_SEAM_BUG.md open questions #2/#3) ────
+// Toggle ONE at a time, rebuild, and check whether the lat/lon-aligned seam grid
+// specifically disappears. Both default OFF (0) — normal rendering.
+//   CLOUD_ISOLATE_COLH:   bypass colH/topFade — every column reaches full shell height
+//                         uniformly, instead of the noise-driven per-column tower height.
+//                         Tests whether colH (built from kCloudColFreq=80 noise, a
+//                         frequency NEVER touched by the earlier kCloudHorizFreq=2.0 test)
+//                         is the source of the reported cloud-TOP silhouette discontinuity.
+//   CLOUD_ISOLATE_SHADOW: hardcode sunOptDepth=0.0, skipping the self-shadow cone entirely.
+//                         Tests whether the shadow cone's parallel copy of the sampling logic
+//                         contributes to the seam, independent of the main density march.
+#define CLOUD_ISOLATE_COLH   0
+#define CLOUD_ISOLATE_SHADOW 0
+
 // ── Cloud shadow on terrain/ocean ────────────────────────────────────────────
 // Marches the sun ray upward from a surface hit point through the cloud shell.
 // Returns transmittance [0,1]: 1.0 = no cloud shadow, ~0 = fully overcast.
@@ -536,7 +567,14 @@ float cloudShadowFactor(vec3 hitPt, vec3 sunDir, vec3 enuX, vec3 enuY, vec3 enuZ
     // hitPt is inside the cloudBase sphere so shellB.x < 0 — shellB.y is the far exit.
     if (shellT.y <= 0.0 || shellB.y >= shellT.y) return 1.0;
     float tEnter = shellB.y;
-    float tExit  = shellT.y;
+    // Cap the sun-ray march distance through the shell. Uncapped, a near-tangent/grazing sun
+    // ray (routine at high latitude, where the sun sits low for long stretches — not just
+    // exactly at the poles) can traverse a shell arc of hundreds of km, and this still divides
+    // it into a fixed 8 samples — each sample then represents a huge, badly undersampled chunk
+    // of the shell, which is exactly what reads as blocky/distorted shadow patches, and wastes
+    // work on grazing geometry that contributes little. Mirrors the view march's tExit cap in
+    // cloudMarch.
+    float tExit  = min(shellT.y, tEnter + 60000.0);
     const int N  = 8;
     float segLen = (tExit - tEnter) / float(N);
     float T      = 1.0;
@@ -553,12 +591,14 @@ float cloudShadowFactor(vec3 hitPt, vec3 sunDir, vec3 enuX, vec3 enuY, vec3 enuZ
         vec2  uv  = vec2(fract((lon + PI) / (2.0*PI)
                                + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                          (0.5*PI - lat) / PI);
-        float cov = cloud.coverage * textureLod(earthCloudsTex, uv, 3.0).r;
+        // LOD 5 (was 3): see localCov comment in cloudMarch — coverage sets a hard threshold,
+        // so per-texel noise must be blurred out here too or ground shadows get the same seam.
+        float cov = cloud.coverage * textureLod(earthCloudsTex, uv, 5.0).r;
         if (cov < 0.01) continue;
         // dirE: true 3D unit-sphere position — pole-safe noise domain (see kCloudHorizFreq comment).
-        vec3  dirE = pE / pL;
-        vec3  uvwP = fract(dirE * kCloudHorizFreq);
-        float d = cloudDensity(uvwP, uvwP, cov, cloud.density, hFade);
+        vec3  dirE  = pE / pL;
+        vec3  uvwXY = dirE * kCloudHorizFreq;
+        float d = cloudDensity(uvwXY, uvwXY, hN, cov, cloud.density, hFade);
         // Skip density below visual threshold — same gate the view march uses.
         // Prevents invisible noise from casting shadows.
         if (d < 0.001) continue;
@@ -627,7 +667,7 @@ void cloudMarch(
     float dbg_entryLocalCov = 0.0;
     float dbg_firstHitHNorm = -1.0;
     int   dbg_stepsInCloud  = 0;
-    vec3  dbg_midNoise      = vec3(0.5);
+    vec3  dbg_midNoise      = vec3(-1.0);   // sentinel: not yet captured
     float dbg_firstHitPosZ  = -1.0;   // posZ value captured at the first cloud hit (mode 5)
 
     // Gate 3D march with earthCloudsTex at the column entry point so volumetric clouds
@@ -641,7 +681,9 @@ void cloudMarch(
         vec2  eUV   = vec2(fract((eLon + PI) / (2.0*PI)
                                  + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                            (0.5*PI - eLat) / PI);
-        float cMap  = textureLod(earthCloudsTex, eUV, 2.0).r;
+        // LOD 4 (was 2): blurs per-texel coverage noise before it reaches cloudDensity's hard
+        // threshold — see kCloudCoverageLod comment near localCov below.
+        float cMap  = textureLod(earthCloudsTex, eUV, 4.0).r;
         dbg_entryLocalCov = cloud.coverage * cMap;
         if (dbg_entryLocalCov < 0.02) return;
     }
@@ -716,8 +758,13 @@ void cloudMarch(
                            (0.5*PI - pLat) / PI);
         // localCov: earthCloudsTex value at this geographic position, scaled by global coverage slider.
         // This per-step 2D gate means volumetric cloud only accumulates where the cloud atlas
-        // actually shows cloud.  mipLod=2 blurs the mask to avoid aliasing at fine sample spacing.
-        float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, 2.0).r;
+        // actually shows cloud. mipLod=4 (was 2): coverage isn't just displayed, it POSITIONS a
+        // hard threshold in cloudDensity's Stage 1 remap — any per-texel noise in a coarser LOD
+        // still jitters that threshold pixel-to-pixel, flipping cloud presence on/off exactly at
+        // the coverage texture's own texel grid (visible as a seam aligned to the equirect
+        // asset's rows/columns, i.e. lat/lon). LOD 4 blurs that away while still preserving
+        // tens-of-km cloud-system-scale variation, which is the scale that's meant to matter.
+        float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, 4.0).r;
 
         // dirECEF: true 3D unit-sphere position — pole-safe noise domain (see kCloudHorizFreq).
         vec3  dirECEF = pECEF / pLen;
@@ -727,7 +774,7 @@ void cloudMarch(
         // so there's a clean hierarchy without micro-banding). Fixed +0.25 Z offset
         // decorrelates it from the presence/detail fetches below.
         float colNoise = texture(cloudNoiseTex,
-                                 fract(dirECEF * kCloudColFreq + vec3(0.0, 0.0, 0.25))).r;
+                                 dirECEF * kCloudColFreq + vec3(0.0, 0.0, 0.25)).r;
         // colH: the maximum normalized height [0,1] this particular cloud column can reach.
         // remap mirrors the coverage threshold: high colNoise + high localCov → tall cumulonimbus;
         // low colNoise or low coverage → colH near 0 → flat stratus or no cloud at all.
@@ -742,28 +789,45 @@ void cloudMarch(
         // Soft floor fade over the bottom 5% of the shell height (hNorm 0→0.05).
         // Multiplied with topFade to produce a final profile that is 0 at both boundaries.
         float hFade = smoothstep(0.0, 0.05, hNorm) * topFade;
+#if CLOUD_ISOLATE_COLH
+        // Bypass colH entirely — uniform full-height columns. See switch comment above.
+        hFade = smoothstep(0.0, 0.05, hNorm) * (1.0 - smoothstep(0.95, 1.0, hNorm));
+#endif
         if (hFade < 0.001) { inCloud = false; t += step; continue; }  // outside active column height: skip
 
         // 3D noise sampled by true unit-sphere position (dirECEF), not lat/lon UV — see
         // kCloudHorizFreq comment for why this is pole-safe (no atan2/asin distortion).
-        // dirECEF is altitude-invariant by construction, so uvwPresence naturally has no
-        // Z-sweep (no hack needed to keep cloud shape constant with height per column).
+        // dirECEF is altitude-invariant by construction (same value straight up/down at a
+        // given lat/lon), so uvwXY carries no Z-sweep on its own — cloudDensity blends its
+        // own base/top archetype slices from it (see cloudDensity Stage 1).
         const float kVertTiles = 1.5;   // non-integer so the Z tiling seam isn't a visible floor/ceiling
-        // posZ: irrational per-column Z-phase hash (from pUV — fine as a hash seed even though
-        // pUV itself is pole-distorted, since it's not used as a spatial noise coordinate here).
-        // Scrambles the altitude at which the 1.5-tile Z period repeats, breaking any global
-        // sync where all columns would otherwise cross the erosion Z-seam at the same hNorm.
-        float posZ = fract(pUV.x * 340.0 + pUV.y * 460.0);
-        vec3  uvwPresence = fract(dirECEF * kCloudHorizFreq);
-        vec3  uvwDetail   = fract(dirECEF * kCloudHorizFreq
-                                 + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0));  // Z=altitude: erosion varies with height
-        float d = cloudDensity(uvwPresence, uvwDetail, localCov, cloud.density, hFade);
+        // posZ: per-region Z-phase offset — scrambles the altitude at which the 1.5-tile Z
+        // period repeats, breaking any global sync where all columns would otherwise cross the
+        // erosion Z-seam at the same hNorm. MUST be continuous in position: this gets added
+        // directly into the noise lookup's Z-coordinate, so a discontinuous source (the old
+        // fract(pUV.x*340+pUV.y*460) sawtooth) leaks a hard seam at every wrap — visible as a
+        // grid aligned with lines of constant lat/lon, at ~1.06 deg / ~0.39 deg spacing. sin()
+        // is smooth everywhere, so this can't introduce a seam of its own.
+        float posZ    = sin(pUV.x * 21.3 + pUV.y * 17.7) * 0.5 + 0.5;
+        vec3  uvwXY   = dirECEF * kCloudHorizFreq;
+        vec3  uvwDetail = uvwXY
+                               + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0);  // Z=altitude: erosion varies with height
+        float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade);
 
         // Capture diagnostics regardless of CLOUD_DEBUG value (compiler eliminates unused vars).
         if (d > 0.001 && dbg_firstHitHNorm < 0.0) dbg_firstHitHNorm = hNorm;
         if (d > 0.001 && dbg_firstHitPosZ  < 0.0) dbg_firstHitPosZ  = posZ;
         if (d > 0.001) dbg_stepsInCloud++;
-        if (i == N / 2) dbg_midNoise = uvwDetail;  // debug 4: show the 3D detail UVW variation
+        // debug 4: re-sample the RAW presence noise (R=nsBaseR at kPresenceZBase=0.0) at the
+        // EXACT same point/sample as d, instead of an unrelated fixed march step — the earlier
+        // "smooth" test captured noise at i==N/2 while d is captured at the first d>0.001 hit,
+        // which could be a completely different sample. This tests the real suspect location.
+        // G = base (post-threshold/blend Stage 1 output), B = d (final, post-erosion).
+        if (d > 0.001 && dbg_midNoise.r < 0.0) {
+            float dbgNsBaseR = texture(cloudNoiseTex, uvwXY).r;
+            float dbgBaseA   = remap(dbgNsBaseR, 1.0 - localCov, 1.0, 0.0, 1.0);
+            dbg_midNoise = vec3(dbgNsBaseR, dbgBaseA, d);
+        }
 
         if (d > 0.001) {  // this sample is inside a cloud; accumulate extinction and scattered light
             inCloud = true;
@@ -790,6 +854,7 @@ void cloudMarch(
             // correct top-lit / base-shadowed cloud. The old spotlight artifact was from the
             // HG phase function (which was view-dependent), not from this cone.
             float sunOptDepth = 0.0;
+#if !CLOUD_ISOLATE_SHADOW
             {
                 const int N_CONE = 6;
                 vec2  tConeExit = raySphere(p, sunDir, cloudTop);
@@ -807,16 +872,16 @@ void cloudMarch(
                     vec2  cpUV  = vec2(fract((cpLon + PI) / (2.0*PI)
                                        + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                                       (0.5*PI - cpLat) / PI);
-                    float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, 3.0).r;
-                    float cPosZ = fract(cpUV.x * 340.0 + cpUV.y * 460.0);
-                    vec3  cDir  = cpE / cpL;   // pole-safe noise domain, see kCloudHorizFreq comment
-                    vec3  cUVWP = fract(cDir * kCloudHorizFreq);
-                    vec3  cUVWD = fract(cDir * kCloudHorizFreq
-                                       + vec3(0.0, 0.0, chN * kVertTiles + cPosZ * 2.0));
+                    float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, 5.0).r;  // LOD 5 (was 3), see localCov comment
+                    float cPosZ = sin(cpUV.x * 21.3 + cpUV.y * 17.7) * 0.5 + 0.5;  // see posZ comment above — must be continuous
+                    vec3  cDir   = cpE / cpL;   // pole-safe noise domain, see kCloudHorizFreq comment
+                    vec3  cUVWXY = cDir * kCloudHorizFreq;
+                    vec3  cUVWD  = cUVWXY + vec3(0.0, 0.0, chN * kVertTiles + cPosZ * 2.0);
                     float chFade = smoothstep(0.0, 0.05, chN) * (1.0 - smoothstep(0.95, 1.0, chN));
-                    sunOptDepth += cloudDensity(cUVWP, cUVWD, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
+                    sunOptDepth += cloudDensity(cUVWXY, cUVWD, chN, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
                 }
             }
+#endif
 
             // 3-octave multiple-scattering: halve extinction and weight each octave.
             // Approximates light bouncing through cloud before reaching this sample.
@@ -943,9 +1008,9 @@ void cloudMarch(
     dbgCol = vec3(float(dbg_stepsInCloud) / float(N));
 
 #elif CLOUD_DEBUG == 4
-    // noiseUVW at march midpoint: R=X, G=Y, B=Z.
-    // All channels should vary across the image AND across elevation angles.
-    // If B is constant = altitude axis stuck; if R/G constant = horizontal sampling broken.
+    // At the first in-cloud hit per column: R=raw presence noise sample, G=post-threshold Stage 1
+    // base, B=final density d. All three re-sampled at the SAME point (unlike the earlier test).
+    // If R is smooth but G/B show the seam, the bug is in the threshold/blend math, not sampling.
     dbgCol = dbg_midNoise;
 
 #elif CLOUD_DEBUG == 5
@@ -971,6 +1036,18 @@ void main() {
     vec3 enuZ = normalize(pc.obsECEFDir.xyz); // observer Up in ECEF
     vec3 enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ)); // East
     vec3 enuY = cross(enuZ, enuX);            // North
+
+#if CLOUD_DEBUG == 6
+    // Minimal, direct test: sample cloudNoiseTex straight from the view direction, bypassing
+    // the entire raymarch/threshold/lighting pipeline entirely. If the seam still appears here,
+    // it's unambiguously baked into the volume itself (or in this one-line coordinate build);
+    // if it's clean, something between here and the raymarch is still the culprit.
+    {
+        vec3 dirECEFView = normalize(dir.x * enuX + dir.y * enuY + dir.z * enuZ);
+        outColor = vec4(texture(cloudNoiseTex, dirECEFView * kCloudHorizFreq).rgb, 1.0);
+        return;
+    }
+#endif
 
     // Sun direction in ECEF — used by evalCloudLayer for per-cloud-point illumination.
     // Transforms ENU sunDir into ECEF so cloud day/night is geographically correct,

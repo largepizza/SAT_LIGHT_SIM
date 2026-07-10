@@ -2598,9 +2598,9 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
 // when the sky descriptor writes are assembled.
 void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
 {
-    static constexpr uint32_t kSz = 128;
+    static constexpr uint32_t kSz = 192;
 
-    // ── Create 128³ RGBA8 3D image (storage + sampled) ───────────────────────
+    // ── Create 192³ RGBA8 3D image (storage + sampled) ───────────────────────
     ctx.createImage(kSz, kSz, VK_FORMAT_R8G8B8A8_UNORM,
                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     cloudNoiseImg, cloudNoiseMem,
@@ -2710,7 +2710,7 @@ void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, bakePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 bakePipeLayout, 0, 1, &bakeSet, 0, nullptr);
-        vkCmdDispatch(cmd, 16, 16, 16); // 16×8=128 threads per axis
+        vkCmdDispatch(cmd, 24, 24, 24); // 24×8=192 threads per axis
 
         // Transition GENERAL → SHADER_READ_ONLY_OPTIMAL for use by sat_sky.frag
         ctx.imageBarrier(cmd, cloudNoiseImg,
