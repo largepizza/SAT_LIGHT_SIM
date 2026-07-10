@@ -25,3 +25,6 @@ Thumbs.db
 *.exe
 *.lib
 *.dll
+
+# - Debug
+.renderDoc_captures/
