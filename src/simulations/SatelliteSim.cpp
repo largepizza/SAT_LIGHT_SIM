@@ -368,6 +368,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pc.mirrorBoost = mirrorBoost;
     pc.visThresh = visThresh;
     pc.highlightFlare = highlightFlare;
+    pc.lightPollution = lightPollution; // computed in updateStars(), called above
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -2966,6 +2967,23 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
         memcpy(mapped, pixels, (size_t)imgBytes);
         vkUnmapMemory(ctx.device, stageMem);
+
+        // CPU-side downsample to 2160×1080 (~18km/px, matches earthElevCpu) for the observer
+        // light-pollution lookup — stores precomputed Rec.709 luminance, one byte per texel.
+        earthNightCpuW = 2160;
+        earthNightCpuH = 1080;
+        earthNightCpu.resize((size_t)earthNightCpuW * earthNightCpuH);
+        for (int cy = 0; cy < earthNightCpuH; ++cy)
+        {
+            for (int cx = 0; cx < earthNightCpuW; ++cx)
+            {
+                int sx = std::min(cx * w / earthNightCpuW, w - 1);
+                int sy = std::min(cy * h / earthNightCpuH, h - 1);
+                const stbi_uc *px = &pixels[((size_t)sy * w + sx) * 4];
+                float lum = 0.2126f * px[0] + 0.7152f * px[1] + 0.0722f * px[2];
+                earthNightCpu[cy * earthNightCpuW + cx] = (uint8_t)std::clamp(lum, 0.0f, 255.0f);
+            }
+        }
         stbi_image_free(pixels);
 
         ctx.createImage((uint32_t)w, (uint32_t)h, VK_FORMAT_R8G8B8A8_SRGB,
@@ -3746,6 +3764,35 @@ void SatelliteSim::updateStars()
     float r = kEarthRadius / obsR;
     float limbSin = (obsHeight > 1.0f) ? -sqrtf(glm::max(0.0f, 1.0f - r * r)) : 0.0f;
 
+    // Light pollution: dims stars (and satellites, via SatFlarePC.lightPollution set from this
+    // member in recordCompute) when the observer is at low altitude near a brightly-lit city.
+    // Reuses the same earthNightCpu lookup pattern as the terrain elevation lookup in
+    // recordDraw(), and the same brightness-response curve (kNightFloor/kCityCompressK) as the
+    // sky-glow/cloud city-light effects in sat_sky.frag, so all of these read one consistent
+    // "how bright is this city" signal instead of drifting out of tune with each other.
+    lightPollution = 0.0f;
+    if (!earthNightCpu.empty())
+    {
+        float latRad = glm::radians(obsLatDeg);
+        float lonRad = glm::radians(obsLonDeg);
+        float u = (lonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
+        float v = (0.5f * glm::pi<float>() - latRad) / glm::pi<float>();
+        int px = (int)(u * (float)earthNightCpuW) % earthNightCpuW;
+        int py = std::min((int)(v * (float)earthNightCpuH), earthNightCpuH - 1);
+        float lum = earthNightCpu[py * earthNightCpuW + px] / 255.0f;
+        const float kNightFloor = 0.06f, kCityCompressK = 0.08f;
+        float raw = std::max(0.0f, lum - kNightFloor);
+        float cityBrightness = raw / (raw + kCityCompressK);
+        // Altitude falloff: light pollution's visible skyglow washes out within a few km — a
+        // much tighter scale than atmFrac's 80km Rayleigh height above (that's "does the
+        // atmosphere still exist"; this is "is the observer still down in the glow dome").
+        // Effectively zero by aircraft cruise altitude, let alone orbit.
+        float altFalloff = glm::clamp(glm::exp(-obsHeight / 3000.0f), 0.0f, 1.0f);
+        lightPollution = cityBrightness * altFalloff;
+    }
+    const float kStarPollutionMaxDim = 0.85f; // caps max dimming so the brightest stars/planets
+                                               // still peek through even in a lit city, like reality
+
     auto *dst = static_cast<GpuSatVisible *>(starMapped);
     for (uint32_t i = 0; i < starCount; ++i)
     {
@@ -3757,7 +3804,9 @@ void SatelliteSim::updateStars()
                       glm::dot(rec.eciDir, glm::vec3(eci2enuZ))};
 
         // Above the Earth limb: visible. Below: culled.
-        float intensity = (enu.z >= limbSin) ? rec.rawIntensity * nightFactorEff : 0.0f;
+        float intensity = (enu.z >= limbSin)
+                         ? rec.rawIntensity * nightFactorEff * (1.0f - lightPollution * kStarPollutionMaxDim)
+                         : 0.0f;
 
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;

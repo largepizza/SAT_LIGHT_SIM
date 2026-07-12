@@ -23,6 +23,8 @@ private:
     AudioSystem              audio;
     float                    scrollX  = 0.0f; // accumulated scroll for Clay
     float                    scrollY  = 0.0f;
+    double                   uiMouseX = 0.0; // last cursor pos while GLFW_CURSOR_NORMAL
+    double                   uiMouseY = 0.0; // (frozen during camera-look capture; see drawFrame)
 
     void initWindow();
     void mainLoop();
