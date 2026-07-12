@@ -116,7 +116,7 @@ const float kCloudColFreq   = 80.0;    // ~20 km cloud-system footprints (was kC
 // time — this is what gives the 3D noise itself genuine flow, not just the existing 2D
 // coverage-map UV slide (cloudPhase*driftMult elsewhere), which only reveals/hides a STATIC 3D
 // volume and never displaces the volume's own internal structure.
-const float kWarpFreq      = 0.5;    // low relative to kCloudColFreq=80 — large-scale sweep only
+const float kWarpFreq      = 6;    // low relative to kCloudColFreq=80 — large-scale sweep only
 // kWarpStrength UNITS FIXED: this used to be a dirECEF-space offset applied BEFORE the
 // kCloudHorizFreq(480)/kCloudColFreq(80) multiply, which silently amplified it by whichever
 // frequency it fed into — at the old semantics, strength=0.3 shifted the fine-detail sample by
@@ -126,9 +126,44 @@ const float kWarpFreq      = 0.5;    // low relative to kCloudColFreq=80 — lar
 // applied AFTER the frequency multiply instead, so this value means "texels of displacement,"
 // identical at every target frequency, with no hidden amplification. Old dirECEF-space tuning
 // does not carry over 1:1 — retune from scratch; ~8-16 is a reasonable starting range.
-const float kWarpStrength  = 16.0;
+const float kWarpStrength  = 32.0;
 const float kWarpDriftRate = 0.08;   // independent multiplier on cloudPhase for the warp field's
                                       // own drift speed, separate from the coverage map's rate
+const float kWarpEvolveRate = 0.00002; // pc.waveTime (wall-clock sec) multiplier — the actual
+                                      // visible boiling rate; see windOfs comment in
+                                      // cloudWarpOffset for why cloudPhase alone was too slow
+
+// City upwelling baseline scale — see comment at its use site (cloudMarch, cityUp) for why the
+// old code (cloud.ambientGain alone, default 0.02) was effectively invisible. This constant
+// gives it a real baseline; cloud.ambientGain still scales it further from the settings UI.
+// NOTE: 50.0 blew out to solid white — this contribution accumulates across every march sample
+// with hNorm<0.45 along a column (potentially dozens for a thick cloud), not just once, so the
+// per-sample value compounds a lot more than a single-sample estimate suggests. Cut by ~8x;
+// nudge from here rather than jumping back toward the old value.
+const float kCityUpwellStrength = 0.004;
+
+// City-brightness response curve, shared by the cloud upwelling (below) and the atmospheric
+// city-glow term (see kNightGlowScale) so both read the same "how bright is this city" signal
+// consistently. earthNightTex luminance varies enormously between a small town and a major
+// metro core — a LINEAR response (the old cityMask = max(0,cityLum-kNightFloor)) means bright
+// cities dominate completely while small towns barely clear the floor and contribute nothing.
+// Reinhard-style compression (raw/(raw+k)) has a steep slope near 0 (small towns get a real,
+// visible response) and naturally saturates toward 1.0 for large raw values (major metros can't
+// run away and blow out) — compresses the huge input dynamic range into a much narrower, more
+// even output range. Smaller k = more aggressive compression (steeper low-end boost, earlier
+// high-end saturation).
+const float kNightFloor    = 0.002;
+const float kCityCompressK = 0.08;
+float cityBrightness(float lum) {
+    float raw = max(0.0, lum - kNightFloor);
+    return raw / (raw + kCityCompressK);
+}
+// Atmospheric city-glow strength (Step 7 / C10 in TERRAIN_PLAN.md — previously deferred,
+// implemented here alongside the cloud upwelling fix so both read the same brightness curve
+// and sell as one consistent light source instead of bright clouds over a flat-black sky).
+// First-pass value, deliberately conservative — kCityUpwellStrength's first guess (50) blew
+// out badly, so start low here and raise if the glow reads as too subtle.
+const float kNightGlowScale = 0.0000002;
 
 // ── 3D volumetric ↔ flat 2D crossfade band ─────────────────────────────────────
 // cloudMarch (expensive per-sample 3D shell march) and evalCloudLayer (cheap flat-texture
@@ -279,22 +314,68 @@ float remap(float v, float lo, float hi, float newLo, float newHi) {
     return newLo + clamp((v - lo) / (hi - lo), 0.0, 1.0) * (newHi - newLo);
 }
 
+// ── Analytic 3D gradient noise for the cloud domain warp ───────────────────────
+// The warp used to read cloudNoiseTex (a 192³ DISCRETELY STORED texture) at kWarpFreq=0.1,
+// which spans only ~38 texels across the whole visible range. Trilinear filtering between
+// stored texel values is piecewise-multilinear, not truly smooth — each grid cell interpolates
+// as a flat-ish shard, not a curved surface. That's invisible at the texture's intended dense
+// sampling rate (kCloudHorizFreq=480+), but reading it this sparsely exposed the underlying
+// voxel grid directly as faceted, straight-edged geometry — the reported "tessellating"
+// artifacts, baked into the cloud edge wherever the warp perturbed the presence threshold.
+// Fix: evaluate gradient noise ANALYTICALLY at the exact continuous query point instead of
+// interpolating a coarse discrete grid — same hash/gradient technique cloud_noise.comp uses to
+// bake the volume, just run live here instead of pre-baked to a fixed low resolution. No
+// texture, no discretization, no grid to facet against, and (bonus) no REPEAT-wrap seam class
+// of bug possible at all, since there's no stored tile to wrap.
+uvec3 warpHashU(uvec3 v) {
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    return v;
+}
+vec3 warpGradHash(ivec3 c) {
+    return normalize(-1.0 + 2.0 * (vec3(warpHashU(uvec3(c))) * (1.0 / 4294967296.0)));
+}
+float warpPerlin3(vec3 p) {
+    ivec3 i = ivec3(floor(p));
+    vec3  f = fract(p);
+    vec3  u = f * f * (3.0 - 2.0 * f);   // smoothstep — gives C1-continuous interpolation
+    float v000 = dot(warpGradHash(i),                   f              );
+    float v100 = dot(warpGradHash(i + ivec3(1,0,0)), f - vec3(1,0,0));
+    float v010 = dot(warpGradHash(i + ivec3(0,1,0)), f - vec3(0,1,0));
+    float v110 = dot(warpGradHash(i + ivec3(1,1,0)), f - vec3(1,1,0));
+    float v001 = dot(warpGradHash(i + ivec3(0,0,1)), f - vec3(0,0,1));
+    float v101 = dot(warpGradHash(i + ivec3(1,0,1)), f - vec3(1,0,1));
+    float v011 = dot(warpGradHash(i + ivec3(0,1,1)), f - vec3(0,1,1));
+    float v111 = dot(warpGradHash(i + ivec3(1,1,1)), f - vec3(1,1,1));
+    return mix(mix(mix(v000, v100, u.x), mix(v010, v110, u.x), u.y),
+               mix(mix(v001, v101, u.x), mix(v011, v111, u.x), u.y), u.z);
+}
+
 // Low-frequency domain-warp offset for cloud noise sampling — see kWarpFreq/Strength/DriftRate
 // comment above. Returns a UVW-TEXEL-space offset (see kWarpStrength units note) — callers add
 // it AFTER multiplying their dirECEF by kCloudHorizFreq/kCloudColFreq, not before, so the same
 // absolute texel displacement applies at every target frequency with no hidden amplification.
-// One extra vec4 texture3D fetch, reused as three independent-ish scalar offsets (R/G/B are
-// different noise generators baked into the same volume, decorrelated enough at this unrelated
-// sampling frequency to serve as a pseudo-random vector field).
+// Three warpPerlin3 evaluations (offset to decorrelate) build a pseudo-random vector field —
+// pure ALU cost, no texture bandwidth, and no grid to facet against at any zoom level.
+//
+// windOfs evolution: driven by pc.waveTime (wall-clock seconds, constant rate regardless of
+// sim time-warp — same push constant already used for ocean wave animation), not cloud.cloudPhase.
+// cloudPhase advances at cloud.driftRate*simTime (~3e-6 rad/sim-second, calibrated for a
+// realistic "~1 deg/day" weather drift) — a full cycle takes ~24 days of SIMULATED time, so at
+// normal time scales the warp was effectively frozen over any real observation window. A small
+// residual cloudPhase term is kept so the warp's long-run drift direction still tracks the
+// coherent weather-system motion; pc.waveTime supplies the actual visible boiling motion.
 vec3 cloudWarpOffset(vec3 dirECEF) {
-    vec3 windOfs = vec3(cloud.cloudPhase * kWarpDriftRate, 0.0, cloud.cloudPhase * kWarpDriftRate * 0.7);
-    vec3 wUVW    = dirECEF * kWarpFreq + windOfs;
-    // textureLod(...,0.0) instead of texture(): this is called inside data-dependent adaptive-
-    // stepping raymarch loops (bigStep/stepLen switches on whether the previous sample was in
-    // cloud), where neighboring-pixel loop divergence makes automatic screen-space-derivative
-    // LOD selection unreliable. Forcing LOD 0 sidesteps that failure mode entirely.
-    vec3 wNoise  = textureLod(cloudNoiseTex, wUVW, 0.0).rgb * 2.0 - 1.0;   // [-1,1] per channel
-    return wNoise * kWarpStrength;
+    vec3 windOfs = vec3(cloud.cloudPhase * kWarpDriftRate + pc.waveTime * kWarpEvolveRate,
+                         pc.waveTime * kWarpEvolveRate * 0.6,
+                         cloud.cloudPhase * kWarpDriftRate * 0.7 + pc.waveTime * kWarpEvolveRate * 0.8);
+    vec3 p       = dirECEF * kWarpFreq + windOfs;
+    float wx = warpPerlin3(p);
+    float wy = warpPerlin3(p + vec3(11.3, 47.7,  5.9));
+    float wz = warpPerlin3(p + vec3(71.9,  3.1, 29.4));
+    return vec3(wx, wy, wz) * kWarpStrength;
 }
 
 // ── Lens flare (adapted from "Lens Flare Example" by peterekepeter, public domain)
@@ -932,6 +1013,11 @@ void cloudMarch(
     bool  inCloud = false;
     float cosA    = dot(dir, sunDir);       // view→sun angle for phase function (const per ray)
     float ph      = phaseCloud(cosA);       // angular forward-scatter weight; ~5× forward vs perp
+    // Same treatment for the moon — previously missing entirely, which is why moonlit clouds
+    // read as flat/ambient instead of getting a silver-lining edge like sunlit clouds do.
+    vec3  moonDir3 = normalize(moonDirENU.xyz);
+    float cosAMoon = dot(dir, moonDir3);
+    float phMoon   = phaseCloud(cosAMoon);
 
     // 512-iteration hard cap prevents infinite loops on grazing rays that traverse a long shell arc.
     // The nominal step count N (min 48) fits well inside this; the bigStep/stepLen dual-speed
@@ -964,6 +1050,11 @@ void cloudMarch(
         vec2  pUV   = vec2(fract((pLon + PI) / (2.0*PI)
                                  + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                            (0.5*PI - pLat) / PI);
+        // Undrifted geographic UV — for Earth-FIXED features (city lights) that must NOT move
+        // with the cloud pattern's phase offset. Reusing pUV here was the bug behind city glow
+        // visibly rotating/tracking with the clouds: pUV is deliberately drift-shifted for the
+        // cloud coverage texture, but cities are real, stationary geography.
+        vec2  pUVGeo = vec2(fract((pLon + PI) / (2.0*PI)), (0.5*PI - pLat) / PI);
         // localCov: earthCloudsTex value at this geographic position, scaled by global coverage slider.
         // This per-step 2D gate means volumetric cloud only accumulates where the cloud atlas
         // actually shows cloud. mipLod=4 (was 2): coverage isn't just displayed, it POSITIONS a
@@ -1144,23 +1235,45 @@ void cloudMarch(
             // No shadow cone — moon is too dim for self-shadow contrast to be perceptible.
             // selfShadow applies: moon lights cloud tops more than bases, just like the sun.
             // nightFac gates moon out quickly at dawn/dusk so daytime clouds aren't moonlit.
-            vec3  moonD         = normalize(moonDirENU.xyz);
-            vec3  moonECEF_c    = moonD.x * enuX + moonD.y * enuY + moonD.z * enuZ;
+            // phMoon (computed once per ray above, alongside the sun's ph) adds the forward-
+            // scatter silver-lining edge that was previously missing — moonlit clouds used to
+            // only get a geographic day/night gate + the SUN's height gradient, with nothing
+            // making the moon-facing edge pop the way sunlit edges do via ph.
+            vec3  moonECEF_c    = moonDir3.x * enuX + moonDir3.y * enuY + moonDir3.z * enuZ;
             float moonElevGeog  = max(0.0, dot(normalize(pECEF), moonECEF_c));
             float moonLit       = moonElevGeog * moonDirENU.w * selfShadow * (1.0 + powder);
             float nightFac      = 1.0 - min(sampleDayness * 3.0, 1.0);
             // Moon is a fixed-scale light source — decoupled from cloud.sunGain so tuning day
             // clouds doesn't make moonlit clouds blow out. Scale 0.015 = roughly full-moon
             // illuminance relative to sun, boosted for night-exposure artistic balance.
-            vec3  moonContrib   = vec3(0.92, 0.95, 1.0) * moonLit * 0.015 * nightFac;
+            vec3  moonContrib   = vec3(0.92, 0.95, 1.0) * moonLit * phMoon * 0.015 * nightFac;
 
             // City light upwelling into cloud base at night.
+            // Previously this had no baseline of its own — cloud.ambientGain (default 0.02) was
+            // its ONLY scale, and unlike skyAmbient (where ambientGain is a small boost ON TOP
+            // of an already-substantial physical Rayleigh/Mie base), cityUp had nothing to lean
+            // on. Worse, brightness was counted twice: cityRgb's own magnitude already scales
+            // with brightness, then multiplied again by a cityLum-derived mask. Net result at a
+            // typical bright-city sample (cityLum~0.15): ~0.00003 — below any visible threshold.
+            // kCityUpwellStrength gives it a real baseline so the DEFAULT ambientGain setting is
+            // actually visible; ambientGain still scales it further for live tuning.
             vec3 cityUp = vec3(0.0);
-            if (sampleDayness < 0.9 && hNorm < 0.5) {
-                vec3  cityRgb = textureLod(earthNightTex, pUV, 3.0).rgb;
-                float cityLum = dot(cityRgb, vec3(0.2126, 0.7152, 0.0722));
-                cityUp = cityRgb * max(0.0, cityLum - 0.06)
-                       * (1.0 - sampleDayness) * (0.5 - hNorm) * cloud.ambientGain * 0.8;
+            if (sampleDayness < 0.9 && hNorm < 0.45) {
+                vec3  cityRgb  = textureLod(earthNightTex, pUVGeo, 3.0).rgb;
+                float cityLum  = dot(cityRgb, vec3(0.2126, 0.7152, 0.0722));
+                // cityTint: color normalized to unit luminance, decoupled from magnitude. Using
+                // raw cityRgb as both tint AND (via cityLum) magnitude double-counted brightness
+                // — a dim town's pixel color is dim by definition, so multiplying it by an
+                // (even compressed) brightness mask still left it suppressed. Normalizing keeps
+                // each city's actual color (warm sodium vs cooler LED districts) while letting
+                // cityBrightness() alone control how strong the contribution is.
+                vec3  cityTint = cityRgb / max(cityLum, 0.001);
+                // smoothstep instead of the old linear (0.5-hNorm) taper: front-loads brightness
+                // right at the base (where the light source physically originates) instead of
+                // spreading it thin and thus fainter everywhere across the whole taper range.
+                float heightFalloff = smoothstep(0.45, 0.0, hNorm);
+                cityUp = cityTint * cityBrightness(cityLum) * heightFalloff * (1.0 - sampleDayness)
+                       * kCityUpwellStrength * cloud.ambientGain;
             }
 
             // Inscatter: spectral sun (orange at sunset) + moon (silver-blue at night)
@@ -1424,6 +1537,7 @@ void main() {
 
     vec3  accumR  = vec3(0.0);
     float accumM  = 0.0;
+    float accumCity = 0.0;
     float odR_cam = 0.0;
     float odM_cam = 0.0;
 
@@ -1447,6 +1561,24 @@ void main() {
         float densM = exp(-h / H_M) * segLen;   // Mie: concentrated near surface, scale height H_M
         odR_cam += densR;
         odM_cam += densM;
+
+        // City light-pollution upwelling (Step 7 / C10, TERRAIN_PLAN.md). An INDEPENDENT light
+        // source, not derived from sunlight, so it's computed here — BEFORE the sun-shadow test
+        // below, which specifically triggers when this sample is in Earth's shadow (i.e. at
+        // night, exactly when city glow matters). Uses camera-side attenuation only (no
+        // sun-side optical depth term — irrelevant for a non-solar light source). densR weights
+        // near-surface atmosphere heavily, so an observer directly over a city gets strong
+        // zenith glow while a distant observer only picks up dim glow from low horizon samples
+        // — both fall out naturally from the same accumulation used for Rayleigh/Mie above.
+        {
+            vec3  spECEF  = sp.x * enuX + sp.y * enuY + sp.z * enuZ;
+            float spLat   = asin(clamp(spECEF.z / length(spECEF), -1.0, 1.0));
+            float spLon   = atan(spECEF.y, spECEF.x);
+            vec2  spUV    = vec2((spLon + PI) / (2.0*PI), (0.5*PI - spLat) / PI);
+            float spLum   = dot(textureLod(earthNightTex, spUV, 4.0).rgb, vec3(0.2126, 0.7152, 0.0722));
+            vec3  attnCam = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
+            accumCity += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0));
+        }
 
         // Shadow test: skip samples in Earth's shadow.
         // If the sun-ray from this point has TWO positive intersections with R_EARTH, the sun
@@ -1473,6 +1605,12 @@ void main() {
     }
 
     vec3 color = SUN_INTENSITY * (pR * BETA_R * accumR + vec3(pM * BETA_M * accumM));
+
+    // City light-pollution glow dome, composited once here (see accumCity comment in the loop
+    // above). nightFactor fades it out through the day — cheap local gate rather than reusing
+    // any later-computed day/night variable, since none exists yet at this point in main().
+    float nightFactor = 1.0 - smoothstep(-0.05, 0.1, sunDirENU.w);
+    color += accumCity * vec3(1.0, 0.72, 0.42) * nightFactor * kNightGlowScale;
 
     // ── Moon disc ─────────────────────────────────────────────────────────────
     // kMoonTexRotDeg: rotates the texture CW in the UV plane to align the image's

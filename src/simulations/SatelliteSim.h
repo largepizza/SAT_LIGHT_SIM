@@ -178,8 +178,10 @@ struct SatFlarePC
     float mirrorBoost;     // mirror peak multiplier (mirrors MIRROR_BOOST)
     float visThresh;       // visibility cull threshold (mirrors VIS_THRESH)
     float highlightFlare;  // fixed flare for constellation census (mirrors HIGHLIGHT_FLARE)
-}; // total: 100 bytes
-static_assert(sizeof(SatFlarePC) == 100, "SatFlarePC layout mismatch");
+    float lightPollution;  // 0=none..1=full; dims (not culls) satellite brightness near
+                            // brightly-lit cities at low altitude — see SatelliteSim::updateStars
+}; // total: 104 bytes
+static_assert(sizeof(SatFlarePC) == 104, "SatFlarePC layout mismatch");
 
 // Draw push constants (passed to sat_point.vert and both sky shaders).
 // GLSL std430 layout:
@@ -592,6 +594,11 @@ private:
     // CPU-side downsampled elevation for observer height lookup (2160×1080, ~18km/px)
     std::vector<uint8_t> earthElevCpu;
     int earthElevCpuW = 0, earthElevCpuH = 0;
+    // CPU-side downsampled night-lights luminance for observer light-pollution lookup
+    // (2160×1080, ~18km/px) — single byte per texel, precomputed Rec.709 luminance.
+    std::vector<uint8_t> earthNightCpu;
+    int earthNightCpuW = 0, earthNightCpuH = 0;
+    float lightPollution = 0.0f; // 0=none .. 1=full; computed each frame in recordCompute()
 
     // ── UI visibility & settings ──────────────────────────────────────────────
     bool showIntro = true; // cinematic intro overlay; dismissed on click or any key

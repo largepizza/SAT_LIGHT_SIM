@@ -70,6 +70,20 @@ void App::drawFrame() {
     int  ww, wh;
     glfwGetWindowSize(window, &ww, &wh);
 
+    // While the camera has the cursor captured (GLFW_CURSOR_DISABLED, used for
+    // RMB mouse-look), GLFW reports an unbounded "virtual" position that free-drifts
+    // far outside the window as the user pans. Feeding that raw value to the UI made
+    // Clay's hit-testing register phantom hovers/clicks (rollover blips, accidental
+    // keybind rebinds) on whatever always-visible panel the drifted coordinate landed
+    // on. Freeze the UI-facing cursor at its last known on-screen position instead.
+    if (glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_DISABLED) {
+        mx = uiMouseX;
+        my = uiMouseY;
+    } else {
+        uiMouseX = mx;
+        uiMouseY = my;
+    }
+
     // Prepare Clay layout for this frame — simulation may call CLAY() in buildUI()
     ui.beginFrame((float)ww, (float)wh,
                   (float)mx, (float)my, lmb, rmb,

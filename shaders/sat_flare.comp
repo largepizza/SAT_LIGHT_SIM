@@ -101,6 +101,7 @@ layout(push_constant) uniform PC {
     float mirrorBoost;     // mirror peak multiplier — offset 88
     float visThresh;       // visibility cull threshold — offset 92
     float highlightFlare;  // fixed flare for census highlight mode — offset 96
+    float lightPollution;  // 0=none..1=full; dims satellite brightness near lit cities — offset 100
 } pc;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -360,6 +361,14 @@ void main() {
     float obsHeight   = max(0.0, length(pc.obsECI) - R_EARTH);
     float atmFrac     = exp(-obsHeight / 80000.0); // 1 at sea level → ~0 at 400 km
     float effectFlare = flare / (1.0 + dayBright * pc.daySuppression * atmFrac);
+
+    // Light pollution: dims (scales down) rather than culls — matches the observation that
+    // scaling brightness reads as more convincing than pushing satellites past visThresh.
+    // pc.lightPollution is 0..1 (city brightness × altitude falloff, computed CPU-side in
+    // SatelliteSim::updateStars); kSatPollutionMaxDim caps how dark it can go so the very
+    // brightest flares/mirrors still peek through even in a maximally lit city.
+    const float kSatPollutionMaxDim = 0.85;
+    effectFlare *= 1.0 - pc.lightPollution * kSatPollutionMaxDim;
 
     // ── Cull if below visibility threshold ────────────────────────────────────
     if (effectFlare < pc.visThresh) {

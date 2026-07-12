@@ -18,6 +18,8 @@ Run: `build/Debug/ShaderFun.exe`
 
 Shaders: auto-detected glob (`shaders/*.vert|.frag|.comp`), compiled by `glslc`, copied as `shaders/*.spv`. New shader files are picked up automatically on next build.
 
+**Do not launch or run the app yourself** (no `run` skill, no invoking the exe) to verify changes, especially UI behavior. Verifying UI/UX changes (opening the program, panning the camera, clicking through menus, etc.) is an involved manual process — the user runs and audits the app themselves after you build. Just build (and typecheck/compile-check) and report what changed; let the user test it.
+
 **Requirements**: Vulkan SDK + `VULKAN_SDK` env var, CMake 3.20+, MSVC C++20.
 
 ---

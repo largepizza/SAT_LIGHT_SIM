@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(cmake --build build)",
-      "Bash(cmake --build build --target CompileShaders)"
+      "Bash(cmake --build build --target CompileShaders)",
+      "Bash(grep -iE \"\\\\.\\(png|jpg|jpeg|ktx|dds\\)$\")"
     ]
   }
 }
