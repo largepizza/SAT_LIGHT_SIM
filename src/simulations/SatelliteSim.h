@@ -308,7 +308,7 @@ static constexpr int kNumCloudLayers = 4;
 // ── Cloud parameters UBO (binding 9 in sky descriptor set) ───────────────────
 // Matches the layout(binding=9) uniform CloudParams block in sat_sky.frag.
 // Global tunables + per-layer descriptors.  cloudPhase is CPU-computed each frame.
-// std140 layout: 64-byte global section (4×vec4) + 4 × 32-byte layer = 192 bytes.
+// std140 layout: 80-byte global section (5×vec4) + 4 × 32-byte layer = 208 bytes.
 struct GpuCloudParams
 {
     // Global controls — shared across all layers
@@ -328,10 +328,14 @@ struct GpuCloudParams
     float airglowGreenGain;   // C15: green (557.7nm) band gain
     float airglowRedGain;     // C15: red (630.0nm) band gain
     float airglowSodiumGain;  // C15: sodium (589.3nm) band gain — keep dim relative to green
+    float shadowMaxDistM;     // cloudMarch's sun self-shadow cone fades out beyond this distance (m)
+    float maxRenderDistM;     // cloudMarch's tExit distance cap (was a hardcoded 80km)
+    float pad2;               // reserved
+    float pad3;               // reserved
     // Per-layer descriptors
     GpuCloudLayerParams layers[kNumCloudLayers];
 };
-static_assert(sizeof(GpuCloudParams) == 192, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 208, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -642,6 +646,8 @@ private:
     float airglowGreenGain = 0.05263f;    // C15: green (557.7nm) band gain
     float airglowRedGain = 0.01316f;      // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
     float airglowSodiumGain = 0.06579f;   // C15: sodium (589.3nm) band gain — kept dim relative to green
+    float cloudShadowMaxDistM = 15000.0f; // sun self-shadow cone (N_CONE) fades out beyond this distance
+    float cloudMaxRenderDistM = 150000.0f; // cloudMarch tExit distance cap (was a hardcoded 80km)
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
     std::string exeDir_;           // directory containing the exe; set in init()
@@ -770,9 +776,9 @@ private:
     bool hovPhotoMinus[5] = {};
     bool hovPhotoPlus[5] = {};
     bool draggingPhoto[5] = {};
-    bool hovCloudMinus[17] = {};
-    bool hovCloudPlus[17] = {};
-    bool draggingCloud[17] = {};
+    bool hovCloudMinus[19] = {};
+    bool hovCloudPlus[19] = {};
+    bool draggingCloud[19] = {};
     // ── Settings window position (persisted; -1 = uninitialized, centers on first open) ─
     float settingsWinX = -1.0f;
     float settingsWinY = -1.0f;
