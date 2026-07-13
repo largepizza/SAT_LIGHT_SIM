@@ -511,6 +511,47 @@ structural change.
     per-layer math, only composite order — low risk.
   - Build clean (`cmake --build build`) after both fixes. Not run — per CLAUDE.md, user tests
     interactively.
+- **Unrelated satellite-flare regression found and fixed the same session (build hygiene +
+  a real latent shader bug, NOT a cirrus-code bug):**
+  - User reported the peak specular of some satellite flares (most visible on the SpaceX AI
+    datacenter constellation's Phong disk, viewed from orbit near the anti-solar point where the
+    whole disk should light up) rendering as pure black — a "hole" punched in the brightest part
+    of the flare. Reported as starting "around the cirrus change," but persisted even after
+    reverting 2 commits of source and after resetting/rescaling the day-suppression and
+    mirror-boost settings — ruling out both a cirrus-code regression and a settings/tuning issue.
+  - **Found a genuinely stale build artifact:** `build/shaders/sat_flare_smooth.comp.spv` (and its
+    `build/Debug` copy) had no corresponding source file anywhere (`shaders/sat_flare_smooth.comp`
+    doesn't exist, no git history for that filename, unreferenced in `src/`) — leftover from some
+    earlier abandoned experiment, never cleaned up because the CMake shader pipeline's
+    `copy_directory` step only ever adds/overwrites, never prunes outputs whose source is gone.
+  - Deleted `build/shaders`, `build/Debug/shaders`, `build/Release/shaders` and did a full rebuild,
+    forcing every shader (`sat_flare.comp`, `sat_orbit.comp`, `sat_point.vert/frag` included) to
+    recompile from current source — confirmed this was NOT simply stale-vs-source drift for the
+    files that matter (CMake's `DEPENDS`-based incremental compile was already correctly picking up
+    real source changes), but doing the clean rebuild is what actually resolved the visual bug,
+    pointing to some kind of incremental-build/link inconsistency rather than pure staleness.
+  - **Also fixed a real latent bug while investigating** (`shaders/sat_flare.comp`, mirror-peak +
+    Phong specular terms): `dot(refl0, satToObs)` and the secondary-surface equivalent were only
+    lower-clamped (`max(0.0, …)`), never upper-clamped to 1.0. These dot products are between
+    vectors that are supposed to be unit length, so they should be mathematically bounded to
+    `[-1,1]` — but float rounding can push them a hair above 1.0. Invisible at low `specExp0`, but
+    `mirrorExp = max(specExp0 * mirrorBoost, 8000)` can reach the tens of thousands (up to 200,000
+    for the Reflect Mirror type at max slider), where even a ~0.01% overshoot in the `pow()` base
+    blows up to `+Infinity` in float32 — propagating through `spec0`/`flare`/`effectFlare` and
+    rendering as a black hole exactly at the flare's peak. This is also why no amount of scaling
+    `brightnessScale`/`mirrorBoost` could fix it: any finite multiplier of `Infinity` is still
+    `Infinity`. Changed both `spec0`'s and `mirrorPeak`'s dot products to `clamp(dot(...), 0.0,
+    1.0)` — since `pow(x, N)` for `x` clamped to `[0,1]` can never exceed 1.0 regardless of how
+    large `N` is, this is a complete, provably-bounded fix for this overflow class, kept
+    permanently regardless of whether it was the actual trigger this time.
+  - **Lesson for future sessions:** if a rendering regression persists across source reverts AND
+    setting changes, suspect the build directory before spending more time on shader-source
+    theories — this project's `file(GLOB CONFIGURE_DEPENDS ...)` + per-file `add_custom_command`
+    shader pipeline is generally sound for content changes, but doesn't prune orphaned outputs, and
+    at least one incremental-build inconsistency was observed that a full shader-output wipe fixed
+    outright. Cleaning is cheap (just `build/*/shaders`, not the whole `build/` tree — that would
+    force a slow FetchContent re-fetch of glfw/glm/miniaudio) and should be an early diagnostic
+    step, not a last resort.
 
 ### 2026-07-12 (session 20)
 - Planning-only session, no code changes. Discussed four next volumetric layers (from a prior
