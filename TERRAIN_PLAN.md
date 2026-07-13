@@ -529,6 +529,55 @@ structural change.
     the same elevation-climb path that surfaced the red-band bug).
   - Build clean (`cmake --build build`). Not run interactively — per CLAUDE.md, the user verifies.
 
+- **Follow-up: cloud banding "viewed from the side" — third, distinct root cause found in
+  `cloudMarch`'s stepping, not `raySphere`.** The two fixes above resolved airglow but the user
+  reported cloud banding was still "significant for all clouds viewed from the side" — i.e. common
+  low-to-moderate viewing elevations, not just the extreme near-horizon grazing case `raySphere`'s
+  precision fix targets. Root cause: the C8 "altitude-stratified stepping" formula
+  (`stepLen = (shellThick/N) / max(abs(dir.z), 0.02)`) keeps VERTICAL resolution constant across
+  ray angles by inflating the REAL 3D step length for oblique rays — uncapped, up to 50× the
+  vertical step at the `0.02` floor. Cloud noise has comparable structure scale horizontally and
+  vertically, so a ray looking at a cloud tower from the side takes real 3D steps up to 50× coarser
+  than a straight-up ray, badly undersampling the noise field along that ray — this is what more
+  march steps "fixes," because raising `cloud.marchSteps` shrinks the vertical step (and therefore
+  the inflated oblique step too) for *every* ray, including already-fine vertical ones, which is
+  why it was expensive.
+  - **Fix:** cap the real step length at a **fixed absolute distance** (`kCloudMaxStepM = 250.0`),
+    not a multiple of `shellThick/N`. Steep/vertical rays are unaffected — their natural step is
+    already well under 250m at any reasonable `marchSteps` setting. Oblique/side-view rays trade
+    extra loop iterations for a bounded real step size instead of an ever-widening one. The cap is
+    deliberately a fixed meters value rather than e.g. `4×vertStep`: a multiple-based cap would
+    shrink in lockstep with `vertStep` at high `marchSteps` slider settings, and the worst-case
+    grazing-ray iteration count (~80km cap / step size) would grow unboundedly with the slider
+    instead of staying bounded — risking silently exceeding the loop's 512-iteration hard cap
+    (truncating the march) at the slider's upper range. The fixed-meters cap keeps worst-case
+    iterations bounded at ~80000/250=320, safely under 512, regardless of the `marchSteps` slider.
+  - This only affects `cloudMarch` (the reported bug). `cirrusMarch` uses plain uniform real-
+    distance stepping (`segLen = (tExit-tEnter)/N_CIRRUS`, no altitude-stratification), so it
+    doesn't share this specific failure mode — not touched.
+  - Build clean (`cmake --build build`). Not run interactively — per CLAUDE.md, the user verifies.
+
+- **Follow-up: "Light steps" slider found to be completely dead — wired up.** User reported that
+  even at `march steps=4, light steps=1` the sim held at 20fps, while quality stayed surprisingly
+  good — suspicious, since that combination should be cheap if those sliders actually controlled
+  cost. Root cause: `cloud.lightSteps` (the `CloudParams` UBO field the "Light steps" slider writes)
+  was declared but **never read anywhere in `sat_sky.frag`** — the sun self-shadow cone inside
+  `cloudMarch` hardcoded `const int N_CONE = 6` regardless of it. This cone runs on every outer
+  march sample that lands inside a cloud (not gated by `cloud.marchSteps` either), each doing up to
+  6 more `cloudDensity()` calls (2-3 3D texture fetches apiece) plus an `earthCloudsTex` fetch —
+  this dead slider was very likely the dominant, previously-uncontrollable cost, and explains both
+  symptoms: quality stayed good because the real shadow-quality knob was silently stuck at 6, and
+  performance stayed bad for the same reason. Fixed: `N_CONE = max(1, int(cloud.lightSteps))`, so
+  the existing slider (range 1-16) now genuinely trades shadow quality for FPS.
+  - **Related, not fixed this session — flagged for the user to decide:** the outer march step
+    count also has a floor independent of the slider: `groundSteps = max(48.0, cloud.marchSteps)`
+    (ground-level branch, i.e. `obsEffH < kMarchStepsAltStart = 2000m`) means `marchSteps` values
+    below 48 have **zero effect** at ground level — the slider's 4-47 range is currently dead too.
+    This is a pre-existing, seemingly deliberate floor (comment: "matches the old unconditional
+    minimum"), not something introduced this session, so left as-is pending user input on whether
+    to lower/remove it.
+  - Build clean (`cmake --build build`). Not run interactively — per CLAUDE.md, the user verifies.
+
 ### 2026-07-12 (session 21)
 - **C13 complete:** Cirrus promoted from a flat 2D decal to a genuine volumetric shell march.
   - **Architecture mismatch found before writing code:** the session-20 kickoff prompt assumed
