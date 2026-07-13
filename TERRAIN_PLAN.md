@@ -5,6 +5,17 @@ clouds, and orbital camera mode. Read this at the start of any terrain-related s
 
 ---
 
+## Immediate Next Step
+
+**C14 — Anvil height-profile spread.** See Phase E below for the full spec: tune `hFade`/`topFade`/
+`colH` in `cloudMarch` (`sat_sky.frag`) so high-density/coverage columns spread laterally near the
+shell top instead of tapering to zero, gated by new `anvilThreshold`/`anvilSpread` `CloudParams`
+fields. C13 (cirrus) is complete — see session log entry below before starting, since the cloud
+architecture has diverged from earlier assumptions (`cloudMarch` merges layers[0]/[1] into one
+low/mid shell; cirrus is now its own independent `cirrusMarch`).
+
+---
+
 ## Architecture Summary (from design session 2026-06-22)
 
 ### Rendering approach
@@ -309,6 +320,85 @@ The jpg is the **coverage signal**; the 3D noise supplies **shape/detail**; heig
   `phase(view·beam) × proximity(dist to beam line) × mediumDensity(p) × shadow(cloud/terrain)`.
   *Done when:* visible shafts from sunlit Reflect sats to night-side targets, occluded by cloud/terrain.
 
+#### Phase E — Cirrus rework, Anvil, Airglow, Aurora (design locked 2026-07-12)
+
+Takes priority over finishing C9/C11/C12 per the 2026-07-12 planning session — these four are
+independent of composite/performance work and were sequenced ahead of it by user decision. Do
+C13 → C14 → C15 → C16 in order; each is a self-contained session with its own "Done when" gate,
+matching the C1-C12 convention. Airglow (C15) intentionally precedes Aurora (C16) to prove out the
+"new emissive layer riding the N_VIEW loop" pattern on the simpler case before aurora's bigger
+structural change.
+
+- [x] **C13 — Cirrus volumetric rework.** Promote cirrus from the C4 flat 2D shell paste
+  (`evalCloudLayer`, layer[1], ~11km) into the shell-march path (`cloudMarch`/`cloudDensity`), same
+  architecture as the low cloud layer, so cirrus gets real depth/self-shadowing instead of a flat
+  decal. Needs a wispier/more stretched noise than `cloudNoiseTex` provides (C6's volume is isotropic
+  Worley — reads as blobby cumulus, not fibrous cirrus). Two paths, try (a) first:
+  - (a) Anisotropic domain warp: stretch the UVW sampling coordinate along a wind-direction vector
+    before sampling the existing `cloudNoiseTex` (binding 8). Shader-only, no new bake/binding.
+  - (b) Fallback if (a) doesn't read as fibrous: bake a dedicated `cloud_noise_cirrus.comp` volume
+    with elongated Worley cell jitter along one axis, mirroring the C6 `createCloudNoisePipeline`
+    pattern exactly. Needs one new descriptor binding (next free slot = 10; 0-9 are all occupied).
+  Fixed altitude shell confirmed (no change to shell-intersection geometry, only what feeds the
+  density function). *Done when:* cirrus shows filament/streak structure from both ground and orbit
+  altitude, no new layering artifacts.
+  **Done (2026-07-12, session 21) — see session log for the architecture-mismatch discovery and
+  final approach: a genuinely separate `cirrusMarch` function, not a second `cloudMarch` call.**
+
+- [ ] **C14 — Anvil height-profile spread.** Tune the per-column height profile (`hFade`/`topFade`/
+  `colH` in `sat_sky.frag:1097-1100`) so columns above a coverage/density threshold spread laterally
+  near the top instead of tapering to zero at `colH` (blend in a lower-frequency/wider coverage sample
+  as `hNorm → colH`). Threshold-gated — ordinary cumulus columns are untouched; only high-density
+  "storm cell" columns get the anvil treatment. New `CloudParams` UBO fields: `anvilThreshold`,
+  `anvilSpread` (mirrors the existing 10-slider pattern; persist via `settings.json`; add a settings-
+  window slider for each). No new texture, no new binding. *Done when:* tall/dense columns visibly
+  flatten and spread near the shell top; ordinary cumulus unaffected.
+
+- [ ] **C15 — Airglow (emissive N_VIEW layers).** Three altitude-banded emissive terms riding the
+  existing `N_VIEW` atmosphere loop (`sat_sky.frag` ~lines 491-514) — same architectural slot as the
+  still-unimplemented C10 city-upwelling term. Density per layer: `exp(-((h - peakAltM)/halfWidthM)^2)`,
+  gated to night-side only (reuse the day/night dot-product test already used for cloud sun-visibility).
+  Researched reference parameters (real airglow physics — use as defaults, tune from there):
+
+  | Layer | Peak alt | Half-width (FWHM) | Color | Falloff character |
+  |---|---|---|---|---|
+  | Green (O I 557.7nm) | ~96 km | ~8-10 km | yellow-green | medium — dominant visible band |
+  | Red (O I 630.0nm) | ~250-300 km | ~50-100 km | deep red | low/broad — diffuse halo above green |
+  | Sodium (Na D 589.3nm) | ~90 km | ~5-8 km | orange-yellow | sharp/thin — keep brightness low relative to green |
+
+  (OH Meinel hydroxyl ~87km is the physically strongest nightglow layer but is overwhelmingly
+  near-IR — skip it for a visible-light renderer.) Time-domain banding: warp the horizontal sampling
+  coordinate with a slow flow field (domain warp), not a simple scroll, to avoid a visible repeat
+  period — reuse the technique already queued for cloud noise repetition (see "Pending after C6" /
+  [[project-cloud-next-session]] item 1). Reuses `noiseTex` (binding 1) for the warp field; no new
+  texture, no new binding. *Done when:* three independently-colored glow bands visible at night from
+  ground and orbit, banding drifts/folds without an obvious repeat, zero cost impact in daylight.
+
+- [ ] **C16 — Aurora (geomagnetic curtain primitive).** Most novel step — new geometry, likely a new
+  emissive-only shell march (no Beer-Powder transmittance, additive glow only) distinct from
+  `cloudMarch`. Centered on the **geomagnetic** pole, not geographic:
+  - North geomagnetic pole ≈ 80.7°N, 72.7°W; south ≈ 80.7°S, 107.3°E (current epoch; drift
+    ~0.05-0.1°/yr is negligible at sim epoch 2036 — a fixed ECEF constant is fine, no secular-
+    variation model needed).
+  Build one reusable **curtain primitive**: a band at a fixed angular offset (colatitude) from the
+  geomagnetic pole direction, ripple-displaced along its own tangent via domain-warped noise (arc
+  shape) plus a second finer octave for vertical striation (curtain folds). Future aurora types
+  (diffuse patches, sharp arcs, substorm spirals) should be different noise configs of this one
+  primitive, not new code paths — this generality was an explicit requirement.
+  `stormStrength` slider (new `CloudParams`-style UBO field, 0-1) drives: oval equatorward expansion
+  (wider colatitude band), brightness, and structure chaos (more warp octaves/amplitude at high
+  activity). Occlusion: reuse the `raySphere` Earth-shadow self-occlusion test (same one used for
+  cloud sun-visibility) so aurora doesn't render through the planet on the far side. Day suppression:
+  gate on the **observer's local sky brightness** (`daySuppression`, same term used for satellite
+  flare/glow), not sun-on-surface — aurora emission itself isn't sunlight-dependent, but the daytime
+  sky background would drown it out, so it must be invisible from the ground in daylight. Depth:
+  emissive-only, no depth *write* needed, but must respect the existing depth *test* so it doesn't
+  draw in front of near geometry it shouldn't. Noise: try reusing `noiseTex` (binding 1) or
+  `cloudNoiseTex` (binding 8) at a different scale for curtain structure before adding a new binding —
+  only reach for a new slot (10, or 11 if C13(b) already claimed 10) if neither reads convincingly.
+  *Done when:* a curtain-shaped glow band tracks the geomagnetic pole, intensity responds to the
+  storm-strength slider, invisible at daytime ground level, doesn't render through the planet.
+
 #### Notes for a smaller model picking this up
 - Do C1→C12 **in order**; each is a self-contained session with a "Done when" gate. A/B ship before C
   exists. **Don't start C7 before C5/C6 (3D noise) are proven.**
@@ -343,6 +433,101 @@ The jpg is the **coverage signal**; the 3D noise supplies **shape/detail**; heig
 ---
 
 ## Session Log
+
+### 2026-07-12 (session 21)
+- **C13 complete:** Cirrus promoted from a flat 2D decal to a genuine volumetric shell march.
+  - **Architecture mismatch found before writing code:** the session-20 kickoff prompt assumed
+    cirrus (`layers[1]`, ~11km) was a separate flat paste sitting next to an independent low-cloud
+    volumetric shell, and suggested "wire a second `cloudMarch` call reusing the ~11km shell
+    height." Reality (from commits since session 20, not yet logged here): `cloudMarch` already
+    treats `layers[0].shellAltM` (2km) as its base and `layers[1].shellAltM` (11km) as its TOP —
+    i.e. the entire 2-11km span is ONE merged low/mid volumetric shell, with per-column tower
+    height (`colH`) determining how many columns actually reach 11km. There is no independent
+    volumetric cirrus band to extend — the flat `evalCloudLayer` paste at `layers[1]` was the
+    *only* cirrus-specific representation, and it only renders far/high (crossfaded out near the
+    ground via `kCloud3DFadeStart/End`), so ground-level cirrus effectively didn't exist as its
+    own phenomenon before this session.
+  - **Approach taken:** new standalone `cirrusMarch()` function (`sat_sky.frag`, right before
+    `main()`), decoupled from `cloudMarch` entirely. Own thin shell (`kCirrusThicknessM = 700m`
+    centered on `layers[1].shellAltM`), own short march (`N_CIRRUS = 14` — thin shells need far
+    fewer samples), own low extinction coefficient (8e-5 vs. the low-cloud deck's 3e-3 — reads as
+    translucent even across a full traversal). Crossfades against the same `evalCloudLayer`
+    layer[1] flat paste using the identical `kCloud3DFadeStart/End` band cloudMarch/layer0 use.
+  - **Anisotropic stretch — one dead end, one working approach:** first attempt was a per-sample
+    tangent-plane decomposition (build local East/North tangent basis at each sample point, project
+    the noise argument onto it, scale, recombine). This is mathematically a no-op: the argument fed
+    to `cloudNoiseTex` is `direction * frequency`, which is purely radial from the sample point's
+    own tangent frame's perspective, so it has zero projection onto that frame's tangent axes by
+    construction. Fix: use a single FIXED global wind axis (`cloud.cirrusWindAngle`, equatorial-
+    plane azimuth) and compress the sampling direction's component along that fixed axis
+    (`dirStretched = dir + windAxis * dot(dir, windAxis) * (1/stretch - 1)`) before the frequency
+    multiply — this is well-defined globally (not degenerate per-sample) and genuinely compresses
+    noise-space distance per geographic degree traveled along the wind axis, producing elongated
+    features. Reuses the existing isotropic `cloudNoiseTex` (binding 8) — no new bake, no new
+    binding, per the "cheap path first" plan; fallback (b), a dedicated elongated-Worley bake, was
+    not needed.
+  - **Lighting kept deliberately simple:** sun-only, matching `evalCloudLayer`'s existing formula
+    exactly (`max(0,cloudSunDot+0.1)*sunGain*dayFrac`), rather than porting `cloudMarch`'s full
+    Beer-Powder/multi-scatter/sky-ambient/city-upwelling model. Reasoning: a thin high deck is
+    dominated by direct/scattered sunlight, and matching the flat paste's exact lighting formula
+    means the two renders color-match at the crossfade boundary instead of visibly shifting tone.
+  - **New `CloudParams` fields:** repurposed the two unused `pad1`/`pad2` floats (both C++
+    `GpuCloudParams` and the GLSL `CloudParams` UBO) as `cirrusWindAngle` (radians) and
+    `cirrusStretch` (elongation factor) — no struct size change, no descriptor rebuild needed.
+    New CPU members `cloudCirrusWindDeg` (default 40°) / `cloudCirrusStretch` (default 4.0),
+    two new "Clouds" section sliders ("Cirrus wind (deg)", "Cirrus stretch"), persisted in
+    `settings.json` under `clouds.cirrus_wind_deg`/`clouds.cirrus_stretch`. `hovCloudMinus/Plus`/
+    `draggingCloud` arrays and `cloudBufs` bumped from `[11]` to `[13]` to match.
+  - Build clean (`cmake --build build`): shader compiled, C++ compiled, link succeeded. Not run —
+    per CLAUDE.md, the user tests interactively.
+  - **Note for next session:** the session-20 log below is stale relative to the actual shader —
+    several commits ("Kind of fixed shadows", "Update", "Nice clouds!", "Night glow effects",
+    "Fixed issue with sun flare") landed real cloud-shadow/lighting/domain-warp work between
+    session 20 and this one without corresponding log entries. Don't trust this file's session log
+    as a complete history of `sat_sky.frag` — read the current code for ground truth on anything
+    architecture-sensitive before planning C14-C16.
+- **C13 follow-up fixes (same session, after user feedback on the first pass):**
+  - **Curved streaks:** the original fixed global `cloud.cirrusWindAngle` stretched every streak
+    on the dome in the same literal direction, reading as repetitive/uniform. Fixed by perturbing
+    the wind angle itself per-sample with a new low-frequency curl-like noise, `cirrusWindAngleAt`
+    (reuses the existing `warpPerlin3` analytic noise from `cloudWarpOffset`, own frequency/drift
+    tuned for jet-stream-scale curl rather than cloud-shape scale) — `wa = cloud.cirrusWindAngle +
+    cirrusWindAngleAt(dirECEFDrift)`, recomputed every march sample so the stretch axis bends
+    smoothly across the sky. Also added `cirrusDomainWarp` (a second, lower-frequency warp octave
+    layered on `cloudWarpOffset`, cirrus-only) since cirrus samples the same 128-voxel
+    `cloudNoiseTex` at a coarser frequency than cumulus, leaving proportionally less of the baked
+    volume's own period to hide the repeat behind — the single warp octave tuned for cumulus
+    wasn't enough at cirrus's scale. Both reuse existing noise infra; no new texture/binding.
+  - **Depth-order bug (cirrus rendering in front of nearer cumulus):** found the same bug in TWO
+    places. (1) `cirrusMarch`/`cloudMarch` are plain sequential alpha-composites into `color` with
+    no true depth test — whichever runs LAST always draws on top regardless of actual distance.
+    Cirrus (~11km) is always farther than the merged low/mid deck (2-11km) for a ground-level
+    observer (concentric-shell exit distance grows monotonically with shell radius for an
+    observer inside both), so `cirrusMarch` must run BEFORE `cloudMarch`, not after — swapped the
+    call order in `main()`. (2) The flat `evalCloudLayer` loop had the identical bug: it iterated
+    `li = 0..3` ascending, drawing layer0 (low/near) before layer1 (cirrus/far) — backwards for
+    the same reason. Fixed by iterating `li = 3..0` descending (layers are conventionally ordered
+    low-to-high altitude by index, so high-to-low index draws far-to-near). Neither fix changes
+    per-layer math, only composite order — low risk.
+  - Build clean (`cmake --build build`) after both fixes. Not run — per CLAUDE.md, user tests
+    interactively.
+
+### 2026-07-12 (session 20)
+- Planning-only session, no code changes. Discussed four next volumetric layers (from a prior
+  session's rough estimate: Cirrus rework, Anvil, Airglow, Aurora) and locked design decisions for
+  each, added as Phase E (C13-C16) above:
+  - **Cirrus:** volumetric rework of the C4 flat overlay; needs a wispier/stretched noise (anisotropic
+    domain warp on existing `cloudNoiseTex` first, dedicated bake as fallback); fixed altitude shell.
+  - **Anvil:** threshold-gated lateral spread near `colH` in the existing height-profile code;
+    new `anvilThreshold`/`anvilSpread` sliders in `CloudParams`.
+  - **Airglow:** three emissive altitude bands (green/red/sodium) riding the existing `N_VIEW` loop;
+    researched real airglow altitudes/widths/colors as defaults (see C15); time-domain domain-warped
+    banding to avoid repetition.
+  - **Aurora:** most novel — new emissive-only curtain-shell march centered on the geomagnetic pole
+    (80.7°N/72.7°W north, 80.7°S/107.3°E south), storm-strength slider, generalized curtain primitive
+    for future aurora types, day-suppression + Earth-occlusion requirements locked.
+  Phase E sequenced ahead of finishing C9/C11/C12 by user decision. Kickoff prompt for C13 added at
+  the top of this file under "Immediate Next Step."
 
 ### 2026-06-22 (session 1)
 - Architecture design discussion covering all 10 steps
