@@ -842,7 +842,7 @@ float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, floa
 //                         Tests whether the shadow cone's parallel copy of the sampling logic
 //                         contributes to the seam, independent of the main density march.
 #define CLOUD_ISOLATE_COLH   0
-#define CLOUD_ISOLATE_SHADOW 1
+#define CLOUD_ISOLATE_SHADOW 0
 
 // ── Cloud shadow on terrain/ocean ────────────────────────────────────────────
 // Marches the sun ray upward from a surface hit point through the cloud shell.
@@ -1086,11 +1086,23 @@ void cloudMarch(
     float groundSteps = max(48.0, cloud.marchSteps);
     float stepAltT    = smoothstep(kMarchStepsAltStart, kMarchStepsAltEnd, obsEffH);
     int   N           = max(8, int(mix(groundSteps, kMarchStepsFloor, stepAltT)));
-    // Altitude-stratified step size: advances shellThick/N in altitude per step regardless
-    // of ray angle. Vertical rays: stepLen = 60 m. Oblique rays: larger steps covering
-    // the same altitude increment but more geographic area. Quality is now angle-independent.
-    float dh_dt   = max(abs(dir.z), 0.02);   // altitude rate along ray; min 0.02 caps step at 50× vertical
-    float stepLen = (shellThick / float(N)) / dh_dt;
+    // Altitude-stratified step size (C8): advances shellThick/N in altitude per step regardless
+    // of ray angle, keeping VERTICAL resolution constant. Left uncapped, this inflates the REAL
+    // 3D step length by up to 1/0.02=50x for near-horizontal rays. Cloud noise has comparable
+    // structure scale horizontally and vertically, so a 50x-larger real step badly undersamples
+    // exactly the "viewed from the side" case — a distant cloud tower seen at a shallow elevation
+    // angle, not just the extreme grazing-horizon case — which read as banding that only cranking
+    // up cloud.marchSteps (globally, for every ray including already-fine vertical ones) fixed.
+    // Fix: cap the REAL step length at a fixed absolute distance instead of letting it grow
+    // unboundedly. Steep/vertical rays are unaffected (their natural step is already under the
+    // cap at any reasonable march-step setting). A FIXED cap (not a multiple of shellThick/N) is
+    // deliberate: it keeps the worst-case iteration count for a grazing/side-view ray bounded by
+    // ~(80km cap)/kCloudMaxStepM regardless of how high cloud.marchSteps is set — a cap expressed
+    // as a multiple of the vertical step would shrink along with it at high N, and could exceed
+    // the 512 hard cap below (silently truncating the march) at the slider's upper range.
+    float dh_dt       = max(abs(dir.z), 0.02);        // altitude rate along ray
+    const float kCloudMaxStepM = 250.0;               // real step capped at 250 m regardless of angle
+    float stepLen = min((shellThick / float(N)) / dh_dt, kCloudMaxStepM);
     // When the observer is inside the cloud shell, tEnter=0.001 so the march starts
     // at the camera. The bigStep optimization flips step size when d crosses 0.001,
     // which changes which geographic samples are tested each frame and causes the
@@ -1253,7 +1265,14 @@ void cloudMarch(
             float sunOptDepth = 0.0;
 #if !CLOUD_ISOLATE_SHADOW
             {
-                const int N_CONE = 6;
+                // cloud.lightSteps (the "Light steps" settings slider) was declared in the
+                // CloudParams UBO but never actually read anywhere in this shader — this cone
+                // was hardcoded to 6 samples regardless of the slider, which is why lowering
+                // it had no effect on performance. This is the dominant, previously-uncontrollable
+                // cost: it runs on every outer march sample that lands inside a cloud (not gated
+                // by cloud.marchSteps at all), each doing up to N_CONE more cloudDensity() calls
+                // (2-3 3D texture fetches each) plus an earthCloudsTex fetch.
+                int   N_CONE    = max(1, int(cloud.lightSteps));
                 vec2  tConeExit = raySphere(p, sunDir, cloudTop);
                 float coneLen   = min((tConeExit.y > 0.0) ? tConeExit.y : shellThick, shellThick * 2.0);
                 float coneSeg   = coneLen / float(N_CONE);
