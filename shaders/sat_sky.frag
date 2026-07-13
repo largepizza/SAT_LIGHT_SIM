@@ -80,6 +80,10 @@ layout(set = 0, binding = 9) uniform CloudParams {
     float shadowSteps;      // terrain/ocean cloudShadowFactor march step count (was pad0)
     float cirrusWindAngle;  // C13: cirrus streak wind axis, radians (was pad1)
     float cirrusStretch;    // C13: cirrus noise anisotropic elongation factor (was pad2)
+    float anvilThreshold;   // C14: fraction of storm-cell grid cells left inactive (higher = sparser)
+    float anvilSpread;      // C14: how far the anvil disc extends beyond each storm's coverage core
+    float pad0;
+    float pad1;
     CloudLayer layers[4];
 } cloud;
 
@@ -789,8 +793,12 @@ float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, floa
 //   CLOUD_ISOLATE_SHADOW: hardcode sunOptDepth=0.0, skipping the self-shadow cone entirely.
 //                         Tests whether the shadow cone's parallel copy of the sampling logic
 //                         contributes to the seam, independent of the main density march.
+//   CLOUD_ISOLATE_ANVIL:  force stormAnvilFalloff=1.0 everywhere, bypassing storm-cell placement
+//                         entirely, so the anvil disc's altitude gate/edge noise renders across
+//                         the whole map. Use to inspect the disc shape in isolation from gating.
 #define CLOUD_ISOLATE_COLH   0
 #define CLOUD_ISOLATE_SHADOW 1
+#define CLOUD_ISOLATE_ANVIL  0
 
 // ── Cloud shadow on terrain/ocean ────────────────────────────────────────────
 // Marches the sun ray upward from a surface hit point through the cloud shell.
@@ -951,7 +959,10 @@ void cloudMarch(
     float dbg_firstHitPosZ  = -1.0;   // posZ value captured at the first cloud hit (mode 5)
 
     // Gate 3D march with earthCloudsTex at the column entry point so volumetric clouds
-    // only form where the 2D coverage map also shows clouds.
+    // only form where the 2D coverage map also shows clouds, OR a sparse storm-cell anvil
+    // reaches this geographic area (storms can spread cloud into map-clear regions — see below).
+    float stormCoverageBoost = 0.0;   // C14: added to localCov every step — grows the storm core
+    float stormAnvilFalloff  = 0.0;   // C14: radial falloff feeding the flat anvil disc near shell top
     {
         vec3  ePt   = obsPos + tEnter * dir;
         vec3  eECEF = ePt.x * enuX + ePt.y * enuY + ePt.z * enuZ;
@@ -965,7 +976,65 @@ void cloudMarch(
         // threshold — see kCloudCoverageLod comment near localCov below.
         float cMap  = textureLod(earthCloudsTex, eUV, 4.0).r;
         dbg_entryLocalCov = cloud.coverage * cMap;
-        if (dbg_entryLocalCov < 0.02) return;
+
+        // ── C14: Storm cell centers ────────────────────────────────────────────
+        // Anvil storms sit at a SPARSE set of drifting center points instead of being derived
+        // from a per-sample noise threshold (the earlier approach: gate individual columns by
+        // their own colH. That could only reshape a column's own vertical density — it could
+        // never make cloud appear in a neighboring column that had none, so it either read as a
+        // uniform texture-wide effect when the gate was loose, or as isolated spikes with no
+        // lateral extent when tight, and never produced an actual flat cap). Reuses eUV (already
+        // carries the same cloud.cloudPhase drift as the rest of the cloud pattern) so storm
+        // centers drift with the wind for free — no extra state, no new noise field.
+        // Evaluated ONCE per ray, not per march step: storms are large (tens of km) regional
+        // features, so the shell-entry horizontal position stands in fine for "this column's"
+        // position, and a per-step 3x3 cell search would be ~9x the cost for no visible benefit.
+        // cloud.anvilThreshold sets the fraction of grid cells that become active storms (a cell
+        // is active when its hash exceeds the threshold, so P(active) = 1-threshold — higher
+        // threshold = sparser). cloud.anvilSpread scales how far the anvil plate extends beyond
+        // each storm's coverage-boosted core.
+        // Sizes are chosen in real kilometres, then converted to cell (sUV) units for the
+        // distance test below — tuning "0.32 cell units" directly (the original approach) is
+        // deceptive because it silently scales with kStormCellFreq: at freq=8 a 0.32-cell radius
+        // is ~1600 km, continent-sized, which is what made anvils look huge even at
+        // cloud.anvilSpread=0. Working in km keeps the two knobs (cell spacing vs. storm size)
+        // independently readable.
+        const float kEarthCircumKm     = 40075.0;
+        const float kStormCellFreq     = 20.0;  // grid cells across the longitude wrap → ~2000 km spacing
+        const float kStormCellKm       = kEarthCircumKm / kStormCellFreq;
+        const float kStormCoreRadiusKm = 60.0;  // storm core (coverage-boosted cumulus footprint) radius
+        const float kStormAnvilScaleKm = 120.0; // extra anvil radius per unit of cloud.anvilSpread
+        const float kStormCoreRadius   = kStormCoreRadiusKm / kStormCellKm;  // cell units
+        if (cloud.coverage > 0.01) {
+            vec2  sUV      = eUV * kStormCellFreq;
+            vec2  sCell    = floor(sUV);
+            float bestDist = 1.0e6;
+            for (int oy = -1; oy <= 1; oy++) {
+                for (int ox = -1; ox <= 1; ox++) {
+                    vec2  nCell      = sCell + vec2(float(ox), float(oy));
+                    float activeHash = seaHash(nCell + vec2(91.7, 51.3));
+                    if (activeHash < cloud.anvilThreshold) continue;  // inactive cell — no storm here
+                    vec2  jitter = vec2(seaHash(nCell), seaHash(nCell + vec2(17.7, 37.1)));
+                    vec2  point  = nCell + 0.15 + jitter * 0.7;  // keep the point off the cell edge
+                    bestDist = min(bestDist, length(sUV - point));
+                }
+            }
+            // Core: boosts localCov (below) so the ordinary cumulus tower under a storm center
+            // naturally grows taller via the existing colH mechanism — no separate "tallness" hack.
+            stormCoverageBoost = (1.0 - smoothstep(0.0, kStormCoreRadius, bestDist)) * 0.6 * cloud.coverage;
+            // Anvil: extends kStormAnvilScaleKm * anvilSpread beyond the core radius. At
+            // anvilSpread=0 this equals the core radius exactly — no extra spread at all.
+            float anvilRadiusKm = kStormCoreRadiusKm + kStormAnvilScaleKm * max(cloud.anvilSpread, 0.0);
+            float anvilRadius   = anvilRadiusKm / kStormCellKm;
+            stormAnvilFalloff = (1.0 - smoothstep(kStormCoreRadius * 0.5, anvilRadius, bestDist)) * cloud.coverage;
+        }
+#if CLOUD_ISOLATE_ANVIL
+        // Force full anvil presence everywhere, bypassing storm placement entirely — inspect the
+        // anvil band's altitude gate/edge noise in isolation. See switch comment above.
+        stormAnvilFalloff = 1.0;
+#endif
+
+        if (dbg_entryLocalCov < 0.02 && stormAnvilFalloff < 0.001 && stormCoverageBoost < 0.001) return;
     }
 
     // Atmospheric sun color at shell entry — gives orange/red at low sun angles.
@@ -1100,6 +1169,10 @@ void cloudMarch(
         // asset's rows/columns, i.e. lat/lon). LOD 4 blurs that away while still preserving
         // tens-of-km cloud-system-scale variation, which is the scale that's meant to matter.
         float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, 4.0).r;
+        // C14: storm-cell core boost (see the entry-point storm search above) — grows the
+        // ordinary cumulus tower under a storm center by raising the coverage it sees, so it
+        // naturally reaches higher via the existing colH/remap mechanism below.
+        localCov = clamp(localCov + stormCoverageBoost, 0.0, 1.0);
 
         // dirECEF: true 3D unit-sphere position — pole-safe noise domain (see kCloudHorizFreq).
         // dirECEFDrift: rotated in lockstep with the 2D coverage map's longitude drift (see
@@ -1138,7 +1211,22 @@ void cloudMarch(
         // Bypass colH entirely — uniform full-height columns. See switch comment above.
         hFade = smoothstep(0.0, 0.05, hNorm) * (1.0 - smoothstep(0.95, 1.0, hNorm));
 #endif
-        if (hFade < 0.001) { inCloud = false; t += step; continue; }  // outside active column height: skip
+
+        // C14: Anvil disc altitude gate — a FIXED band near the shell top (like a real
+        // tropopause cap), independent of this particular column's own colH ceiling. That fixed
+        // altitude is what gives the anvil an actual flat top instead of following each column's
+        // individually-tapered tower shape. Combined with stormAnvilFalloff (computed once per
+        // ray at shell entry, see above) so it only turns on near an active storm center.
+        const float kAnvilAltStart = 0.72;
+        float anvilAltGate = smoothstep(kAnvilAltStart, kAnvilAltStart + 0.06, hNorm)
+                            * (1.0 - smoothstep(0.96, 1.0, hNorm));
+        float anvilActive  = stormAnvilFalloff * anvilAltGate;
+
+        // Outside active column height AND outside the anvil disc: skip. The anvil disc can
+        // still fire here even when hFade==0 (this column's own coverage/colH reads as clear) —
+        // that is the whole point: it lets the disc spread laterally into columns that have no
+        // cumulus tower of their own, rather than only reshaping columns that already had cloud.
+        if (hFade < 0.001 && anvilActive < 0.001) { inCloud = false; t += step; continue; }
 
         // 3D noise sampled by true unit-sphere position (dirECEF), not lat/lon UV — see
         // kCloudHorizFreq comment for why this is pole-safe (no atan2/asin distortion).
@@ -1158,6 +1246,19 @@ void cloudMarch(
         vec3  uvwDetail = uvwXY
                                + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0);  // Z=altitude: erosion varies with height
         float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade);
+
+        // C14: Anvil disc — flat, wide, radially-decaying density plate near the shell top,
+        // merged in independently of this column's own coverage gate (cloudDensity returns 0
+        // outright when localCov/colH read as clear here). This is what lets it spread beyond
+        // the parent storm's own cumulus footprint into otherwise-clear columns — genuine
+        // lateral spread, not just a reshaped taper on columns that already had cloud.
+        if (anvilActive > 0.001) {
+            // Reuse the detail-noise sample position for an organic (non-circular) disc edge —
+            // no extra texture binding needed.
+            float anvilEdge = texture(cloudNoiseTex, uvwDetail * 0.5 + vec3(0.0, 0.0, 0.6)).r;
+            float anvilPresence = anvilActive * mix(0.35, 1.0, anvilEdge);
+            d = max(d, clamp(anvilPresence * cloud.density, 0.0, 1.0));
+        }
 
         // Capture diagnostics regardless of CLOUD_DEBUG value (compiler eliminates unused vars).
         if (d > 0.001 && dbg_firstHitHNorm < 0.0) dbg_firstHitHNorm = hNorm;

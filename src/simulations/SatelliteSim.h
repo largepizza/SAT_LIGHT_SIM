@@ -324,10 +324,17 @@ struct GpuCloudParams
     float shadowSteps;      // terrain/ocean cloudShadowFactor march step count (was pad0)
     float cirrusWindAngle;  // C13: cirrus streak wind axis, radians (was pad1)
     float cirrusStretch;    // C13: cirrus noise anisotropic elongation factor (was pad2)
+    // C14: Anvil spread — see cloudMarch() in sat_sky.frag. Grows the global section from 48 to
+    // 56 bytes, which is NOT a 16-byte std140 boundary; 2 explicit pad floats bring it back to
+    // 64 bytes so layers[4] starts at the same offset in both the C++ struct and the GLSL block.
+    float anvilThreshold;   // fraction of storm-cell grid cells left inactive (higher = sparser)
+    float anvilSpread;      // how far the anvil disc extends beyond each storm's coverage core
+    float pad0;
+    float pad1;
     // Per-layer descriptors
     GpuCloudLayerParams layers[kNumCloudLayers];
 };
-static_assert(sizeof(GpuCloudParams) == 176, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 192, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -630,6 +637,8 @@ private:
     float cloudShadowSteps = 24.0f; // terrain/ocean cloud-shadow march step count (separate scale from lightSteps: this covers up to ~60 km, lightSteps covers one shell thickness)
     float cloudCirrusWindDeg = 40.0f; // C13: cirrus streak wind azimuth (degrees, converted to radians for the UBO)
     float cloudCirrusStretch = 4.0f;  // C13: cirrus noise anisotropic elongation factor (1 = no stretch)
+    float cloudAnvilThreshold = 0.85f; // C14: fraction of storm-cell grid cells left INACTIVE (higher = sparser storms)
+    float cloudAnvilSpread = 1.0f;     // C14: how far the anvil disc extends beyond each storm's coverage core
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
     std::string exeDir_;           // directory containing the exe; set in init()
@@ -758,9 +767,9 @@ private:
     bool hovPhotoMinus[5] = {};
     bool hovPhotoPlus[5] = {};
     bool draggingPhoto[5] = {};
-    bool hovCloudMinus[13] = {};
-    bool hovCloudPlus[13] = {};
-    bool draggingCloud[13] = {};
+    bool hovCloudMinus[15] = {};
+    bool hovCloudPlus[15] = {};
+    bool draggingCloud[15] = {};
     // ── Settings window position (persisted; -1 = uninitialized, centers on first open) ─
     float settingsWinX = -1.0f;
     float settingsWinY = -1.0f;

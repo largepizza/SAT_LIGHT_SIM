@@ -7,12 +7,28 @@ clouds, and orbital camera mode. Read this at the start of any terrain-related s
 
 ## Immediate Next Step
 
-**C14 — Anvil height-profile spread.** See Phase E below for the full spec: tune `hFade`/`topFade`/
-`colH` in `cloudMarch` (`sat_sky.frag`) so high-density/coverage columns spread laterally near the
-shell top instead of tapering to zero, gated by new `anvilThreshold`/`anvilSpread` `CloudParams`
-fields. C13 (cirrus) is complete — see session log entry below before starting, since the cloud
-architecture has diverged from earlier assumptions (`cloudMarch` merges layers[0]/[1] into one
-low/mid shell; cirrus is now its own independent `cirrusMarch`).
+**C15 — Airglow (emissive N_VIEW layers).** Copy-paste prompt to start the next session:
+
+```
+Begin C15 — Airglow (emissive N_VIEW layers) (see TERRAIN_PLAN.md Phase E for full context; read
+CLAUDE.md's "Active Development: Earth / Terrain Rendering" section first, then the session 21-22
+log entries in TERRAIN_PLAN.md — the cloud architecture and this file's own session log have
+drifted out of sync more than once, so verify against current shader source, not just this doc).
+
+Goal: three altitude-banded emissive nightglow layers (green O I 557.7nm ~96km, red O I 630.0nm
+~250-300km, sodium Na D 589.3nm ~90km — see the C15 checklist entry in Phase E for peak
+alt/half-width/color table), riding the existing N_VIEW atmosphere loop (`sat_sky.frag` ~lines
+491-514), night-side only, with slow domain-warped horizontal banding (not a simple scroll) so it
+doesn't show an obvious repeat period. Reuses `noiseTex` (binding 1); no new texture, no new
+binding needed unless that proves insufficient. Full detail, density formula, and done-when gate
+are in the C15 checklist item in Phase E — read that section before writing code.
+
+Build and sanity-check compilation; do not launch the app — the user tests interactively per
+CLAUDE.md's "Do not launch or run the app yourself" rule.
+
+Update TERRAIN_PLAN.md's C15 checkbox and add a session log entry when done, per the existing
+convention.
+```
 
 ---
 
@@ -345,14 +361,20 @@ structural change.
   **Done (2026-07-12, session 21) — see session log for the architecture-mismatch discovery and
   final approach: a genuinely separate `cirrusMarch` function, not a second `cloudMarch` call.**
 
-- [ ] **C14 — Anvil height-profile spread.** Tune the per-column height profile (`hFade`/`topFade`/
-  `colH` in `sat_sky.frag:1097-1100`) so columns above a coverage/density threshold spread laterally
-  near the top instead of tapering to zero at `colH` (blend in a lower-frequency/wider coverage sample
+- [x] **C14 — Anvil height-profile spread.** Tune the per-column height profile (`hFade`/`topFade`/
+  `colH` in `cloudMarch`, `sat_sky.frag` — line numbers drift, ~1121-1136 as of session 21, verify
+  against current source) so columns above a coverage/density threshold spread laterally near the
+  top instead of tapering to zero at `colH` (blend in a lower-frequency/wider coverage sample
   as `hNorm → colH`). Threshold-gated — ordinary cumulus columns are untouched; only high-density
   "storm cell" columns get the anvil treatment. New `CloudParams` UBO fields: `anvilThreshold`,
-  `anvilSpread` (mirrors the existing 10-slider pattern; persist via `settings.json`; add a settings-
-  window slider for each). No new texture, no new binding. *Done when:* tall/dense columns visibly
-  flatten and spread near the shell top; ordinary cumulus unaffected.
+  `anvilSpread` — **growing the global section past 48 bytes needs 2 explicit pad floats to stay
+  16-byte aligned before `layers[4]`; see the session-21 "Immediate Next Step" kickoff prompt above
+  for the exact byte math** (mirrors the existing 13-slider pattern; persist via `settings.json`;
+  add a settings-window slider for each). No new texture, no new binding. *Done when:* tall/dense
+  columns visibly flatten and spread near the shell top; ordinary cumulus unaffected.
+  **Done (2026-07-12, session 22) — see session log for the soft-gate-ramp mechanism (gate width
+  scaled by `anvilSpread`, not a hard cutoff) used to reconcile per-column gating with the
+  "spreads to neighboring columns" requirement.**
 
 - [ ] **C15 — Airglow (emissive N_VIEW layers).** Three altitude-banded emissive terms riding the
   existing `N_VIEW` atmosphere loop (`sat_sky.frag` ~lines 491-514) — same architectural slot as the
@@ -434,7 +456,84 @@ structural change.
 
 ## Session Log
 
-### 2026-07-12 (session 21)
+### 2026-07-12 (session 22)
+- **C14 complete:** Anvil height-profile spread, in `cloudMarch()` (`sat_sky.frag`). Went through
+  two designs in this session — the first (per-column `colH` threshold gate on `topFade`) shipped,
+  then was rejected on user feedback before ever being tested as looking wrong, and was replaced
+  with a second, structurally different design. Both are recorded here since the failure mode of
+  the first explains why the second is shaped the way it is.
+  - **First attempt (superseded) — per-column `topFade` gate:** gated each column on its own
+    `colH > anvilThreshold` (softened to a ramp so near-threshold columns partially qualified) and
+    blended in a low-frequency noise sample in place of the hard top taper. **Why it failed:**
+    `topFade`/`hFade` only shape the *vertical* density envelope of a column that
+    `cloudDensity()`'s Stage 1 has already decided has cloud at all (via `localCov`/`coverage`
+    thresholding, evaluated independently of `topFade`). Reshaping a column's own vertical profile
+    can never make cloud appear in a *different* column that had none — there is no mechanism in
+    that design for actual lateral spread. In practice this meant: gate wide → nearly every
+    already-cloudy column also got tagged an "anvil" (looked like everything was an anvil); gate
+    narrow → only isolated columns that individually spiked past threshold got it, each tapering
+    to its own separate point with no connective tissue between them (isolated peaks, not a
+    spread plate). Also produced no genuine flat top, since the blended density still tapered
+    against each column's own noise-driven `colH` rather than sitting at a fixed altitude.
+  - **Second attempt (shipped) — sparse drifting storm-cell centers:** matches real anvil
+    meteorology much more directly: place a *sparse set of storm center points* (grid + jittered
+    feature point per cell, standard Worley/cellular placement, using `seaHash` — already in the
+    file for ocean noise, reused rather than adding a new hash) at a coarse frequency
+    (`kStormCellFreq = 8.0` cells across the longitude wrap). `cloud.anvilThreshold` sets what
+    fraction of grid cells are *active* storms (`activeHash < threshold` → inactive; higher
+    threshold = sparser — this is the "sparse set" the user asked for, not a per-sample density
+    threshold). Evaluated **once per ray at shell entry**, not per march step — storms are
+    tens-of-km regional features, so re-running a 3×3 cell search every one of up to ~500 march
+    steps would be pure waste for no visible gain.
+    - **Core (cumulus intensification):** `stormCoverageBoost`, a radial falloff from the nearest
+      active center (`1 - smoothstep(0, kStormCoreRadius, dist)`), is added directly to `localCov`
+      every step. This makes the ordinary cumulus tower under a storm center grow taller through
+      the *existing* `colH`/remap mechanism — no separate "make it tall" hack, just feeding more
+      coverage into the same pipeline that already governs tower height.
+    - **Anvil (lateral spread):** `stormAnvilFalloff` is a *wider* radial falloff
+      (`kStormCoreRadius + 0.6*anvilSpread`) around the same center. Unlike the first attempt, this
+      is merged into the final density via `d = max(d, anvilPresence)` **after** `cloudDensity()`
+      returns — including in columns where `cloudDensity()` returned exactly 0 (no coverage at
+      all). That's what makes lateral spread actually possible: the anvil disc is a second,
+      independent presence field, not a reshaping of the first. The early-out
+      `if (hFade < 0.001) return/continue` (both the whole-ray entry gate and the per-step skip)
+      had to be widened to `hFade < 0.001 && anvilActive < 0.001`, otherwise the pre-existing
+      coverage-map gate would kill the march before the anvil term ever got a chance to render in
+      a map-clear area.
+    - **Genuine flat top:** the anvil disc is gated by a *fixed* altitude band
+      (`kAnvilAltStart = 0.72` to just under the shell top), not by each column's own `colH` —
+      this is what actually produces a flat cap (real anvils flatten at the tropopause, a fixed
+      altitude, not at each storm's individually-varying top), fixing the "straight vertical, no
+      flattened portion" complaint directly.
+    - **Drift:** storm centers are placed in `eUV`, which already carries the same
+      `cloud.cloudPhase * driftMult` term the rest of the cloud pattern drifts by — so storms drift
+      with the wind for free, no new state or timer needed.
+    - **Organic edge:** disc opacity is modulated by a `cloudNoiseTex` sample at the existing
+      `uvwDetail` position (no new texture/binding) so the disc silhouette isn't a hard circle.
+  - **`CloudParams` fields (byte layout unchanged from the first attempt):** `anvilThreshold`
+    (default raised 0.55→0.85 to read as genuinely sparse under the new "fraction of cells
+    inactive" semantics) + `anvilSpread` (default 1.0), + 2 explicit pad floats for the 64-byte
+    std140 boundary before `layers[4]` (`GpuCloudParams`/`CloudParams` both 192 bytes). Slider
+    relabeled "Storm sparsity" (range widened to 0–0.99) to match the new meaning.
+  - **Debug switch:** `CLOUD_ISOLATE_ANVIL` repointed to force `stormAnvilFalloff = 1.0` (bypasses
+    storm placement so the disc's altitude gate/edge noise can be inspected map-wide), replacing
+    its old "force anvilGate=1" meaning from the superseded design.
+  - Build verified (shader compiles via `glslc`, `static_assert`s pass, no MSVC errors) after both
+    the initial implementation and the redesign; user tests the visual result interactively per
+    the "do not launch the app" rule.
+  - **Follow-up fix (same session) — size calibration:** user reported anvils were "way too big
+    — even at spread=0, tops are continent size." Root cause: the storm/anvil radii were tuned in
+    `sUV` "cell units" (a fraction of `kStormCellFreq`'s grid spacing), which silently scales with
+    that frequency — `kStormCoreRadius = 0.32` at the original `kStormCellFreq = 8.0` (cell size
+    ≈ 40075/8 ≈ 5009 km) works out to a ~1600 km core *radius* (~3200 km diameter), continent-scale
+    by construction, regardless of the `anvilSpread` slider. Fixed by re-deriving both constants
+    from real kilometres: `kStormCellFreq` raised to 20 (~2000 km spacing between storm centers),
+    `kStormCoreRadiusKm = 60`, `kStormAnvilScaleKm = 120` (extra anvil radius per unit of
+    `anvilSpread`, so `anvilRadius == coreRadius` exactly at `anvilSpread = 0`, per the report),
+    each converted to cell units via `/ (kEarthCircumKm / kStormCellFreq)` only at the point of use
+    in the distance test. Keeps the two knobs (cell spacing vs. storm physical size) independently
+    tunable in an intuitive unit instead of a frequency-coupled fraction — if these need retuning
+    again, adjust the `*Km` constants directly rather than the cell-unit fraction.
 - **C13 complete:** Cirrus promoted from a flat 2D decal to a genuine volumetric shell march.
   - **Architecture mismatch found before writing code:** the session-20 kickoff prompt assumed
     cirrus (`layers[1]`, ~11km) was a separate flat paste sitting next to an independent low-cloud

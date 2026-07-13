@@ -341,6 +341,16 @@ Photometry values are **runtime members** on `SatelliteSim`, synced to `SatFlare
 
 `MIRROR_BOOST = 300` — peak multiplier for near-perfect mirror alignment. `mirrorExp = max(specExp0 × 300, 8000)` gives sub-degree angular width (matches solar disc ~0.26°).
 
+**Specular dot products must be upper-clamped to 1.0, not just lower-clamped.** `dot(refl0, satToObs)`
+(and the secondary-surface equivalent) in `sat_flare.comp` feeds `pow(x, mirrorExp)` where `mirrorExp`
+can reach the tens of thousands (`specExp0 × mirrorBoost`, e.g. 200×1000 for Reflect Mirror at max
+slider). `refl0`/`satToObs` are supposed to be unit vectors so this dot is mathematically bounded to
+`[-1,1]`, but float rounding can push it a hair over 1.0 — invisible at low `specExp0`, but at these
+exponents even a ~0.01% overshoot overflows `pow()` to `+Infinity` in float32, which renders as a
+black hole exactly at the flare's peak and can't be fixed by scaling any brightness/mirror slider
+(any finite multiple of `Infinity` is still `Infinity`). Fix: `clamp(dot(...), 0.0, 1.0)`, not
+`max(0.0, dot(...))` — found and fixed 2026-07-12 (session 21); see `TERRAIN_PLAN.md` session 21 log.
+
 ---
 
 ## Subsystem: GpuSatInput Layout (80 bytes, std430)
@@ -429,8 +439,8 @@ If the file is missing (first run) all defaults are used silently.
 See `TERRAIN_PLAN.md` in the project root for the full step checklist and session log.
 Read it at the start of any terrain-related session before making changes.
 
-**Current state (as of 2026-07-12, session 21):**
-- Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete; C1–C8, C13 complete
+**Current state (as of 2026-07-12, session 22):**
+- Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete; C1–C8, C13, C14 complete
 - Phase E in progress (C13–C16: Cirrus rework, Anvil, Airglow, Aurora), sequenced ahead of
   C9/C11/C12. Full spec in `TERRAIN_PLAN.md`.
 - **Cirrus (C13):** own standalone `cirrusMarch()` in `sat_sky.frag`, NOT a second `cloudMarch`
@@ -441,6 +451,27 @@ Read it at the start of any terrain-related session before making changes.
   decomposition (that's a no-op: the noise argument is purely radial from its own tangent frame).
   Sun-only lighting matching `evalCloudLayer`'s formula so it colour-matches the flat paste it
   crossfades against. See `TERRAIN_PLAN.md` session 21 log for the full writeup.
+- **Anvil spread (C14):** sparse, drifting **storm-cell center points** (Worley/cellular
+  placement via `seaHash`, evaluated once per ray at shell entry — NOT a per-sample noise
+  threshold; that first design couldn't produce real lateral spread, since `topFade`/`hFade` only
+  reshape a column's own vertical profile and can't add cloud to a neighboring column). Two radial
+  falloffs from the nearest active center: a narrow one (`stormCoverageBoost`) added into
+  `localCov` so the storm's own cumulus tower grows taller via the existing `colH` mechanism, and a
+  wider one (`stormAnvilFalloff`) that gates an independent flat disc merged in via
+  `d = max(d, anvilPresence)` **after** `cloudDensity()` — including in columns with zero coverage
+  of their own, which is what makes it spread laterally. The disc sits in a FIXED altitude band
+  (`kAnvilAltStart=0.72` to just under shell top), not each column's own `colH`, giving it a real
+  flat top. `cloud.anvilThreshold` = fraction of storm grid cells left inactive (sparsity);
+  `cloud.anvilSpread` = how far the disc extends beyond the storm core. Storm centers drift for
+  free by reusing the existing cloud-drift UV. **Storm/anvil radii are tuned in real km**
+  (`kStormCellFreq`=20 → ~2000km center spacing, `kStormCoreRadiusKm`=60, `kStormAnvilScaleKm`=120
+  per unit of `anvilSpread`), converted to `sUV` cell units only at the distance-test call site —
+  do NOT tune the radius as a raw cell-unit fraction again, that silently scales with
+  `kStormCellFreq` and was the cause of a "continent-sized anvils even at spread=0" bug fixed the
+  same session (see `TERRAIN_PLAN.md` session 22 log's "Follow-up fix"). New UBO fields
+  `anvilThreshold`/`anvilSpread` + 2 explicit pad floats (`GpuCloudParams`/`CloudParams` now 192
+  bytes). Debug switch `CLOUD_ISOLATE_ANVIL`. See `TERRAIN_PLAN.md` session 22 log for the full
+  writeup, including the superseded first design and why it was rejected.
 - `SatDrawPC` is 128 bytes: `obsECEFDir (vec4)` at offset 112 (observer ECEF unit vector)
 - Sky descriptor set has 10 bindings (0-9): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
@@ -459,7 +490,7 @@ Read it at the start of any terrain-related session before making changes.
   - **Night darkening:** ambient transitions from blue day dome to near-zero at night using
     per-sample `dot(normalize(pECEF), sunDirECEF)` geographic terminator check.
   - **City upwelling:** `earthNightTex` at mip 3 contributes warm orange into cloud bases at night.
-- **Next:** C14 — Anvil height-profile spread (see `TERRAIN_PLAN.md` "Immediate Next Step").
+- **Next:** C15 — Airglow (emissive N_VIEW layers) (see `TERRAIN_PLAN.md` "Immediate Next Step").
   Phase E (C13–C16: Cirrus, Anvil, Airglow, Aurora) takes priority over C9/C11/C12 and
   noise-repetition cleanup per the 2026-07-12 planning session.
 
