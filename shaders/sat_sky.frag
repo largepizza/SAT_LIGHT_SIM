@@ -77,8 +77,9 @@ layout(set = 0, binding = 9) uniform CloudParams {
     float marchSteps;
     float lightSteps;
     float cloudPhase;
-    float shadowSteps;   // terrain/ocean cloudShadowFactor march step count (was pad0)
-    float pad1, pad2;
+    float shadowSteps;      // terrain/ocean cloudShadowFactor march step count (was pad0)
+    float cirrusWindAngle;  // C13: cirrus streak wind axis, radians (was pad1)
+    float cirrusStretch;    // C13: cirrus noise anisotropic elongation factor (was pad2)
     CloudLayer layers[4];
 } cloud;
 
@@ -376,6 +377,41 @@ vec3 cloudWarpOffset(vec3 dirECEF) {
     float wy = warpPerlin3(p + vec3(11.3, 47.7,  5.9));
     float wz = warpPerlin3(p + vec3(71.9,  3.1, 29.4));
     return vec3(wx, wy, wz) * kWarpStrength;
+}
+
+// ── Cirrus-specific domain warp (C13 follow-up) ───────────────────────────────
+// cirrusMarch originally used a single FIXED global wind axis (cloud.cirrusWindAngle) to
+// anisotropically stretch the noise domain, which produces genuinely elongated streaks but
+// makes EVERY streak on the whole dome point the same direction — visually reads as repetitive/
+// uniform rather than like real cirrus (whose streak direction curves and drifts with the local
+// upper-level wind field). Fix: perturb the wind ANGLE itself with a low-frequency curl-like
+// noise field (same warpPerlin3 analytic noise as cloudWarpOffset, no new texture) so the
+// stretch axis smoothly curves across the sky instead of staying constant.
+const float kCirrusWindWarpFreq  = 1.5;   // much lower than kWarpFreq=6 — jet-stream-scale curl, not cloud-shape scale
+const float kCirrusWindWarpAmp   = 1.2;   // radians of angle perturbation (~69 deg swing)
+const float kCirrusWindDriftRate = 0.05;  // independent of kWarpDriftRate so the curl drifts at its own pace
+float cirrusWindAngleAt(vec3 dirECEF) {
+    vec3 p = dirECEF * kCirrusWindWarpFreq
+           + vec3(pc.waveTime * kWarpEvolveRate * 1.7,
+                   cloud.cloudPhase * kCirrusWindDriftRate,
+                   91.0);
+    return warpPerlin3(p) * kCirrusWindWarpAmp;
+}
+
+// A second, lower-frequency warp octave layered on top of cloudWarpOffset, cirrus-only. Cirrus
+// samples the same 128-voxel baked cloudNoiseTex as cumulus but at a coarser frequency
+// (kCloudHorizFreq*kCirrusFreqScale), which means proportionally FEWER voxels of period are
+// available to hide the volume's own repeat behind — the single kWarpFreq=6 octave (tuned for
+// cumulus's finer frequency) wasn't breaking it up enough. This adds large-scale variation the
+// first octave alone doesn't cover, at negligible extra cost (three more analytic noise evals).
+vec3 cirrusDomainWarp(vec3 dirECEF) {
+    vec3 w1 = cloudWarpOffset(dirECEF);
+    vec3 p2 = dirECEF * (kWarpFreq * 0.35) + vec3(19.0, -7.0, 41.0)
+            + vec3(pc.waveTime * kWarpEvolveRate * 0.5);
+    vec3 w2 = vec3(warpPerlin3(p2),
+                    warpPerlin3(p2 + vec3(5.2, 1.1, 9.3)),
+                    warpPerlin3(p2 + vec3(3.3, 8.8, 2.2))) * (kWarpStrength * 1.5);
+    return w1 + w2;
 }
 
 // ── Lens flare (adapted from "Lens Flare Example" by peterekepeter, public domain)
@@ -1366,6 +1402,135 @@ void cloudMarch(
 #endif
 }
 
+// ── Cirrus volumetric shell march (C13) ──────────────────────────────────────
+// Independent thin high-altitude deck at layers[1].shellAltM. cloudMarch above only uses
+// layers[1].shellAltM as the TOP of its tall-convective-tower volume (layers[0]..[1] form ONE
+// merged low/mid shell) — it has no genuinely separate cirrus representation. This gives cirrus
+// its own thin shell with real depth/self-shadowing instead of the flat evalCloudLayer decal
+// that previously stood in for it at close range (that flat paste is still used far/high via
+// the same kCloud3DFadeStart/End crossfade band cloudMarch/layer0 already use).
+//
+// Streaks come from an anisotropic domain stretch: the sampling direction's component along a
+// FIXED global wind axis (cloud.cirrusWindAngle, an equatorial-plane azimuth) is compressed by
+// cloud.cirrusStretch before the existing isotropic cloudNoiseTex lookup. A PER-SAMPLE tangent-
+// plane decomposition was tried first and rejected: the noise argument fed to cloudNoiseTex is
+// `direction * frequency`, which is purely radial, so it has zero projection onto any tangent
+// basis built from that same direction — stretching it that way is a no-op. Scaling one
+// component of the direction vector itself against a fixed axis instead compresses noise-space
+// distance per geographic degree traveled along that axis, i.e. genuinely elongates features —
+// with no new texture bake or descriptor binding, per the "cheap path first" plan.
+//
+// Lighting deliberately mirrors evalCloudLayer's simple sun-only model (no sky-ambient/moon/
+// city terms — a thin high deck is dominated by direct/scattered sunlight) so this volumetric
+// march colour-matches the flat paste it crossfades against instead of visibly changing tone
+// at the crossfade boundary.
+const float kCirrusThicknessM = 700.0;   // physical shell thickness — real cirrus decks are thin
+const float kCirrusFreqScale  = 0.4;     // coarser than the low-cloud deck; cirrus systems span 10s-100s of km
+void cirrusMarch(
+    vec3  obsPos,  vec3  dir,         float tSurface,
+    vec3  enuX,    vec3  enuY,        vec3  enuZ,
+    vec3  sunDir,  vec3  sunDirECEF,  float obsEffH,
+    inout vec3  color)
+{
+    if (cloud.layers[1].enabled < 0.5) return;
+    // Same crossfade band as cloudMarch/evalCloudLayer so all three cloud renders agree on
+    // where flat-2D ends and volumetric begins.
+    float cirrusAltFade = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
+    if (cirrusAltFade < 0.001) return;
+
+    float cirrusAlt  = cloud.layers[1].shellAltM;
+    float shellBAlt  = cirrusAlt - kCirrusThicknessM * 0.5;
+    float shellTAlt  = cirrusAlt + kCirrusThicknessM * 0.5;
+    vec2  shellB     = raySphere(obsPos, dir, R_EARTH + shellBAlt);
+    vec2  shellT     = raySphere(obsPos, dir, R_EARTH + shellTAlt);
+
+    float tEnter, tExit;
+    if (obsEffH < shellBAlt) {
+        tEnter = shellB.y;
+        tExit  = shellT.y;
+    } else if (obsEffH <= shellTAlt) {
+        tEnter = 0.001;
+        tExit  = shellT.y;
+        if (shellB.x > 0.001 && shellB.x < tExit) tExit = shellB.x;
+    } else {
+        if (shellT.x < 0.0) return;
+        tEnter = shellT.x;
+        tExit  = (shellB.x > 0.0) ? shellB.x : shellT.y;
+    }
+    if (tSurface > 0.0) tExit = min(tExit, tSurface);
+    tExit = min(tExit, tEnter + 200000.0);   // cirrus is visible much further than low cloud
+    if (tEnter >= tExit || tExit <= 0.0) return;
+
+    const int N_CIRRUS = 14;   // thin shell — far fewer samples needed than the low-cloud march
+    float segLen = (tExit - tEnter) / float(N_CIRRUS);
+    float jitter  = textureLod(noiseTex, gl_FragCoord.xy * (1.0/128.0), 0.0).r;
+
+    float invStretch   = 1.0 / max(cloud.cirrusStretch, 1.0);
+
+    vec3  cirrusTransmittance = vec3(1.0);
+    vec3  cirrusScatter       = vec3(0.0);
+    float cosA = dot(dir, sunDir);
+    float ph   = phaseCloud(cosA);
+
+    for (int i = 0; i < N_CIRRUS; ++i) {
+        float t = tEnter + (float(i) + jitter) * segLen;
+        vec3  p = obsPos + t * dir;
+        float h = length(p) - R_EARTH;
+        if (h < shellBAlt || h > shellTAlt) continue;
+        float hNorm = (h - shellBAlt) / kCirrusThicknessM;
+
+        vec3  pECEF = p.x * enuX + p.y * enuY + p.z * enuZ;
+        float pLen  = length(pECEF);
+        float pLon  = atan(pECEF.y, pECEF.x);
+        float pLat  = asin(clamp(pECEF.z / pLen, -1.0, 1.0));
+        vec2  pUV   = vec2(fract((pLon + PI) / (2.0*PI)
+                                 + cloud.cloudPhase * cloud.layers[1].driftMult / (2.0*PI)),
+                           (0.5*PI - pLat) / PI);
+        float localCov = cloud.coverage * cloud.layers[1].coverageMult
+                        * textureLod(earthCloudsTex, pUV, cloud.layers[1].mipLod).r;
+        if (localCov < 0.02) continue;
+
+        vec3 dirECEF      = pECEF / pLen;
+        vec3 dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[1].driftMult);
+        // Anisotropic stretch: compress the sampling direction's component along the wind axis
+        // before the frequency multiply — see the function-level comment above. The wind angle
+        // itself is curved per-sample via cirrusWindAngleAt (curl-like low-freq noise) instead
+        // of staying at one fixed global angle, so streaks bend into flowing bands rather than
+        // all pointing the same direction (see cirrusWindAngleAt comment).
+        float wa       = cloud.cirrusWindAngle + cirrusWindAngleAt(dirECEFDrift);
+        vec3  windAxis = vec3(cos(wa), sin(wa), 0.0);
+        vec3 dirStretched = dirECEFDrift
+                           + windAxis * dot(dirECEFDrift, windAxis) * (invStretch - 1.0);
+
+        float hFade = smoothstep(0.0, 0.15, hNorm) * (1.0 - smoothstep(0.85, 1.0, hNorm));
+        vec3  uvwXY     = dirStretched * kCloudHorizFreq * kCirrusFreqScale
+                        + cirrusDomainWarp(dirECEFDrift);
+        vec3  uvwDetail = uvwXY + vec3(0.0, 0.0, hNorm * 1.5);
+        float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov,
+                                cloud.density * cloud.layers[1].densityMult, hFade);
+        if (d < 0.001) continue;
+
+        // Thin/wispy extinction coefficient — well below the low-cloud deck's 3e-3 so a full
+        // shell traversal still reads translucent rather than an opaque overcast plane.
+        float extinction = d * segLen * 8e-5;
+        vec3  stepT = exp(-vec3(extinction));
+
+        // Sun-only lighting matching evalCloudLayer's model exactly (see function comment).
+        float cloudSunDot  = dot(normalize(pECEF), sunDirECEF);
+        float cloudDayFrac = smoothstep(-0.1, 0.15, cloudSunDot);
+        vec3  inScatter     = vec3(max(0.0, cloudSunDot + 0.1) * cloud.sunGain) * cloudDayFrac * ph * 2.0;
+
+        cirrusScatter       += cirrusTransmittance * (1.0 - stepT) * inScatter;
+        cirrusTransmittance *= stepT;
+        if (cirrusTransmittance.r < 0.02) break;
+    }
+
+    vec2 odAtmCirrus = optDepth(obsPos, dir, tEnter);
+    vec3 cirrusAttn  = exp(-(BETA_R * odAtmCirrus.x + BETA_M * 1.1 * odAtmCirrus.y));
+    vec3 cirrusT     = mix(vec3(1.0), cirrusTransmittance, cirrusAltFade);
+    color = color * (1.0 - cirrusAttn * (1.0 - cirrusT)) + cirrusAttn * cirrusScatter * cirrusAltFade;
+}
+
 void main() {
     vec3 dir    = normalize(enuDir);
     vec3 sunDir = normalize(sunDirENU.xyz);
@@ -1997,7 +2162,14 @@ void main() {
     // reads below), so their flat paste here must crossfade against cloudMarch's own fade using
     // the SAME kCloud3DFadeStart/End band — not an independent threshold — or the two renders
     // overlap. Layers 2/3 (e.g. a standalone high cirrus deck) are always flat, at full weight.
-    for (int li = 0; li < 4; ++li) {
+    //
+    // Iterate HIGH INDEX -> LOW INDEX: layers are conventionally ordered by increasing altitude
+    // (layer0 = low/near, layer1 = cirrus/far, and any future layer2/3 should follow the same
+    // convention). evalCloudLayer composites each call ON TOP of whatever `color` already holds,
+    // so the farthest-from-a-ground-observer shell must be drawn FIRST (as background) and the
+    // nearest drawn LAST (on top) for correct back-to-front compositing — ascending-index order
+    // had this backwards (cirrus drew over the low deck regardless of which was actually nearer).
+    for (int li = 3; li >= 0; --li) {
         if (cloud.layers[li].enabled < 0.5) continue;
         float fadeWeight = 1.0;
         if (li < 2) {
@@ -2017,6 +2189,15 @@ void main() {
             cloud.cloudPhase,
             color);
     }
+
+    // ── Cirrus volumetric march (C13) ────────────────────────────────────────────
+    // Drawn BEFORE cloudMarch: cirrus sits at a higher altitude (further along any upward ray
+    // from a ground observer, since concentric-shell exit distance grows monotonically with
+    // shell radius for an observer inside both shells) than the merged low/mid deck below, so it
+    // must composite as the farther "background" layer — cloudMarch then composites the nearer
+    // low/mid clouds on top of it. The reverse order (as originally written) made cirrus always
+    // draw in front of cumulus regardless of which was actually closer to the camera.
+    cirrusMarch(obsPos, dir, tSurface, enuX, enuY, enuZ, sunDir, sunDirECEF, obsEffH, color);
 
     // ── Volumetric cloud march (C7+C8) ───────────────────────────────────────────
     vec3  cloudTFinal   = vec3(1.0);

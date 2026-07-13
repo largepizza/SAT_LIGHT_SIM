@@ -429,8 +429,18 @@ If the file is missing (first run) all defaults are used silently.
 See `TERRAIN_PLAN.md` in the project root for the full step checklist and session log.
 Read it at the start of any terrain-related session before making changes.
 
-**Current state (as of 2026-07-01, session 19):**
-- Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete; C1–C8 complete
+**Current state (as of 2026-07-12, session 21):**
+- Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete; C1–C8, C13 complete
+- Phase E in progress (C13–C16: Cirrus rework, Anvil, Airglow, Aurora), sequenced ahead of
+  C9/C11/C12. Full spec in `TERRAIN_PLAN.md`.
+- **Cirrus (C13):** own standalone `cirrusMarch()` in `sat_sky.frag`, NOT a second `cloudMarch`
+  call — `cloudMarch` already merges `layers[0]`/`[1]` (2-11km) into one low/mid shell, so there
+  was no separate volumetric band to extend. Thin shell (700m) at `layers[1].shellAltM`,
+  anisotropic streaks via a fixed global wind-axis compression (`cloud.cirrusWindAngle`/
+  `cirrusStretch`, repurposed from the UBO's former `pad1`/`pad2`) — NOT a per-sample tangent
+  decomposition (that's a no-op: the noise argument is purely radial from its own tangent frame).
+  Sun-only lighting matching `evalCloudLayer`'s formula so it colour-matches the flat paste it
+  crossfades against. See `TERRAIN_PLAN.md` session 21 log for the full writeup.
 - `SatDrawPC` is 128 bytes: `obsECEFDir (vec4)` at offset 112 (observer ECEF unit vector)
 - Sky descriptor set has 10 bindings (0-9): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
@@ -449,7 +459,9 @@ Read it at the start of any terrain-related session before making changes.
   - **Night darkening:** ambient transitions from blue day dome to near-zero at night using
     per-sample `dot(normalize(pECEF), sunDirECEF)` geographic terminator check.
   - **City upwelling:** `earthNightTex` at mip 3 contributes warm orange into cloud bases at night.
-- **Next:** C9 (composite + performance), or noise improvements (repetition, time evolution)
+- **Next:** C14 — Anvil height-profile spread (see `TERRAIN_PLAN.md` "Immediate Next Step").
+  Phase E (C13–C16: Cirrus, Anvil, Airglow, Aurora) takes priority over C9/C11/C12 and
+  noise-repetition cleanup per the 2026-07-12 planning session.
 
 ### Elevation texture encoding — READ THIS BEFORE TOUCHING TERRAIN CODE
 
