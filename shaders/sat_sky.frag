@@ -56,7 +56,7 @@ layout(set = 0, binding = 8) uniform sampler3D cloudNoiseTex;
 
 // Cloud / volumetrics tunables (binding 9).
 // cloudPhase is CPU-computed fmod(driftRate * simTime, 2π) and uploaded each frame.
-// std140: 48-byte global section (3×vec4) + 4×32-byte CloudLayer = 176 bytes total.
+// std140: 64-byte global section (4×vec4) + 4×32-byte CloudLayer = 192 bytes total.
 struct CloudLayer {
     float shellAltM;    // sphere-shell altitude above R_EARTH (m)
     float driftMult;    // cloudPhase longitude multiplier
@@ -80,6 +80,10 @@ layout(set = 0, binding = 9) uniform CloudParams {
     float shadowSteps;      // terrain/ocean cloudShadowFactor march step count (was pad0)
     float cirrusWindAngle;  // C13: cirrus streak wind axis, radians (was pad1)
     float cirrusStretch;    // C13: cirrus noise anisotropic elongation factor (was pad2)
+    float airglowGain;        // C15: master airglow brightness multiplier
+    float airglowGreenGain;   // C15: green (557.7nm) band gain
+    float airglowRedGain;     // C15: red (630.0nm) band gain
+    float airglowSodiumGain;  // C15: sodium (589.3nm) band gain — keep dim relative to green
     CloudLayer layers[4];
 } cloud;
 
@@ -165,6 +169,39 @@ float cityBrightness(float lum) {
 // First-pass value, deliberately conservative — kCityUpwellStrength's first guess (50) blew
 // out badly, so start low here and raise if the glow reads as too subtle.
 const float kNightGlowScale = 0.0000002;
+
+// ── Airglow (C15, TERRAIN_PLAN.md Phase E) ──────────────────────────────────────
+// Three altitude-banded emissive nightglow layers, riding the N_VIEW atmosphere loop
+// where their peak altitude falls inside it (green/sodium), or a small supplemental
+// march where it doesn't (red — peaks at 275km, well past N_VIEW's ~100km ceiling;
+// see the airglowRed march after the N_VIEW loop in main()). Density per layer is a
+// Gaussian in altitude: exp(-((h-peakAltM)/halfWidthM)^2). Real airglow altitudes are
+// near-constant physical constants (not scene-dependent), so they're hardcoded here
+// rather than exposed as CloudParams sliders — only per-band brightness (which is a
+// legitimate first-pass visual guess, unlike the altitudes) is user-tunable.
+const float kAirglowGreenPeakM      = 96000.0;   // O I 557.7nm — dominant visible band
+const float kAirglowGreenHalfWidthM = 9000.0;
+const vec3  kAirglowGreenColor      = vec3(0.35, 1.0, 0.25);
+const float kAirglowSodiumPeakM      = 90000.0;  // Na D 589.3nm — sharp/thin
+const float kAirglowSodiumHalfWidthM = 6500.0;
+const vec3  kAirglowSodiumColor      = vec3(1.0, 0.65, 0.15);
+const float kAirglowRedPeakM      = 275000.0;    // O I 630.0nm — diffuse/broad halo
+const float kAirglowRedHalfWidthM = 75000.0;
+const vec3  kAirglowRedColor      = vec3(1.0, 0.12, 0.05);
+// Horizontal patchiness so the bands don't read as a perfectly flat, featureless ring
+// around the sky (a pure function of altitude alone has zero horizontal variation).
+// Reuses the analytic warpPerlin3 noise already used for cloud domain warp — no new
+// texture/binding, matches the "reuse existing noise infra" C15 design directive
+// (which pre-dates the cloud warp's migration from a noiseTex lookup to this analytic
+// evaluator — see cloudWarpOffset's comment; follow the current code, not the stale plan).
+const float kAirglowNoiseFreq = 4.0;
+const float kAirglowDriftRate = 0.015; // wall-clock rad/s (pc.waveTime), slow independent drift
+// First-pass brightness scale, same convention as kNightGlowScale/kCityUpwellStrength
+// above: raw accumulation (density × segLen, summed over qualifying march samples) is
+// a large unnormalized number, this brings it into visible range. Deliberately
+// conservative — real airglow is famously faint. Tune via cloud.airglowGain (settings
+// slider) rather than editing this constant.
+const float kAirglowScale = 0.0000005;
 
 // ── 3D volumetric ↔ flat 2D crossfade band ─────────────────────────────────────
 // cloudMarch (expensive per-sample 3D shell march) and evalCloudLayer (cheap flat-texture
@@ -273,10 +310,25 @@ float phaseCloud(float cosA) {
 // Solves |ro + t*rd|² = r²  →  t² + 2bt + c = 0  where b=dot(ro,rd), c=|ro|²-r².
 // When ro is inside the sphere, tNear < 0 and tFar > 0 (one root behind, one ahead).
 // Both components are negative (vec2(-1)) on a miss (discriminant < 0).
+//
+// c is deliberately computed as (|ro|-r)*(|ro|+r), NOT dot(ro,ro)-r*r. At this project's scale
+// |ro| and r are both ~R_EARTH (~6.37e6 m), so dot(ro,ro) and r*r are both ~1e13-magnitude
+// float32 numbers — subtracting two nearly-equal huge numbers to get a value that should be much
+// smaller (near the horizon, the true discriminant is small) destroys precision catastrophically
+// right where every shell march (clouds, cirrus, airglow, atmosphere) needs it most: grazing/
+// near-tangent rays, i.e. the horizon. (|ro|-r) is instead a direct small-number subtraction —
+// |ro| and r are each independently accurate to ~1 part in 2^24, so their difference retains
+// that same relative precision instead of inheriting the ~1e6-magnitude absolute error that
+// squaring-then-subtracting would produce. This is the standard fix for planetary-scale
+// ray-sphere tests in single precision; it does not fully eliminate float32's inherent precision
+// floor exactly AT true tangency (b*b itself is still a large number there), but it removes the
+// much larger, unconditional cancellation error that was present at every distance, not just
+// exact tangency.
 vec2 raySphere(vec3 ro, vec3 rd, float r) {
-    float b  = dot(ro, rd);           // half the t^1 coefficient of the quadratic
-    float c  = dot(ro, ro) - r * r;   // constant term; negative when ro is inside the sphere
-    float d  = b * b - c;             // discriminant; negative = ray misses sphere entirely
+    float b     = dot(ro, rd);           // half the t^1 coefficient of the quadratic
+    float roLen = length(ro);
+    float c     = (roLen - r) * (roLen + r);  // |ro|²-r², cancellation-safe form
+    float d     = b * b - c;             // discriminant; negative = ray misses sphere entirely
     if (d < 0.0) return vec2(-1.0);
     float sq = sqrt(d);
     return vec2(-b - sq, -b + sq);    // tNear = entry distance, tFar = exit distance
@@ -1693,7 +1745,12 @@ void main() {
 
     // ── Phase 2: atmosphere integration, truncated at the surface ─────────────
     vec2  tAtmos = raySphere(obsPos, dir, R_ATMOS);
-    float tEnd   = (tSurface > 0.0) ? min(tAtmos.y, tSurface) : tAtmos.y;
+    // Clamped to 0: when the observer is above R_ATMOS (reachable via the uncapped "Raise
+    // Elevation" control) and looking outward/away from Earth, raySphere's forward root
+    // (tAtmos.y) goes negative — the 100km shell is now entirely behind the camera. Without
+    // this clamp, segLen would go negative and the whole loop below would march backward from
+    // the observer instead of contributing nothing, corrupting the sky colour along that ray.
+    float tEnd   = max(0.0, (tSurface > 0.0) ? min(tAtmos.y, tSurface) : tAtmos.y);
 
     float segLen = tEnd / float(N_VIEW);
     float cosA   = dot(dir, sunDir);
@@ -1703,6 +1760,7 @@ void main() {
     vec3  accumR  = vec3(0.0);
     float accumM  = 0.0;
     float accumCity = 0.0;
+    vec3  accumAirglow = vec3(0.0); // green + sodium bands (C15) — ride these same samples
     float odR_cam = 0.0;
     float odM_cam = 0.0;
 
@@ -1736,13 +1794,37 @@ void main() {
         // zenith glow while a distant observer only picks up dim glow from low horizon samples
         // — both fall out naturally from the same accumulation used for Rayleigh/Mie above.
         {
-            vec3  spECEF  = sp.x * enuX + sp.y * enuY + sp.z * enuZ;
-            float spLat   = asin(clamp(spECEF.z / length(spECEF), -1.0, 1.0));
-            float spLon   = atan(spECEF.y, spECEF.x);
-            vec2  spUV    = vec2((spLon + PI) / (2.0*PI), (0.5*PI - spLat) / PI);
-            float spLum   = dot(textureLod(earthNightTex, spUV, 4.0).rgb, vec3(0.2126, 0.7152, 0.0722));
-            vec3  attnCam = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
+            vec3  spECEF    = sp.x * enuX + sp.y * enuY + sp.z * enuZ;
+            float spLen     = length(spECEF);
+            vec3  spDirECEF = spECEF / spLen;
+            float spLat     = asin(clamp(spDirECEF.z, -1.0, 1.0));
+            float spLon     = atan(spDirECEF.y, spDirECEF.x);
+            vec2  spUV      = vec2((spLon + PI) / (2.0*PI), (0.5*PI - spLat) / PI);
+            float spLum     = dot(textureLod(earthNightTex, spUV, 4.0).rgb, vec3(0.2126, 0.7152, 0.0722));
+            vec3  attnCam   = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             accumCity += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0));
+
+            // Airglow (C15): green (96km) + sodium (90km) bands both fall inside this loop's
+            // own altitude range (h spans 0..~100km along an open-sky ray), so they ride these
+            // existing samples for free — no dedicated march needed (unlike red, see below the
+            // loop). Gated by the SAMPLE's own geographic day/night (not the observer's), same
+            // dot-product test cloud lighting uses (evalCloudLayer/cloudMarch sampleDayness) —
+            // physically correct since the glow originates at that geographic point, not at the
+            // observer. Horizontal patchiness from a slow analytic domain warp avoids a flat,
+            // featureless ring (a pure function of altitude alone has none).
+            float airDayness = clamp((dot(spDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
+            float airNight   = 1.0 - airDayness;
+            if (airNight > 0.001) {
+                float airPatch = 0.6 + 0.4 * warpPerlin3(spDirECEF * kAirglowNoiseFreq
+                                    + vec3(pc.waveTime * kAirglowDriftRate, 17.0, -5.0));
+                float dzG = (h - kAirglowGreenPeakM) / kAirglowGreenHalfWidthM;
+                float dzS = (h - kAirglowSodiumPeakM) / kAirglowSodiumHalfWidthM;
+                float densAirG = exp(-dzG * dzG) * segLen;
+                float densAirS = exp(-dzS * dzS) * segLen;
+                accumAirglow += (kAirglowGreenColor  * cloud.airglowGreenGain  * densAirG
+                                + kAirglowSodiumColor * cloud.airglowSodiumGain * densAirS)
+                                * airNight * airPatch;
+            }
         }
 
         // Shadow test: skip samples in Earth's shadow.
@@ -1776,6 +1858,70 @@ void main() {
     // any later-computed day/night variable, since none exists yet at this point in main().
     float nightFactor = 1.0 - smoothstep(-0.05, 0.1, sunDirENU.w);
     color += accumCity * vec3(1.0, 0.72, 0.42) * nightFactor * kNightGlowScale;
+
+    // ── Airglow (C15) ─────────────────────────────────────────────────────────
+    // Green + sodium bands (accumAirglow) rode the N_VIEW loop above for free.
+    color += accumAirglow * kAirglowScale * cloud.airglowGain;
+
+    // Red band (630nm) supplemental march: peaks at 275km, well past N_VIEW's ~100km
+    // ceiling (R_ATMOS), so it can't ride those samples the way green/sodium do — a
+    // dedicated small march covers the [100km, 500km] altitude band instead.
+    //
+    // Entry/exit uses the same below/inside/above shell-relative classification cloudMarch and
+    // cirrusMarch already use, keyed on obsEffH (the observer's actual altitude) rather than
+    // blindly assuming the observer is always below the band. The uncapped "Raise Elevation"
+    // control (climb rate scales with current height, no ceiling) makes it easy to fly up INTO
+    // this 100-500km band — and once obsEffH exceeds ~100km and the view ray points outward/away
+    // from Earth, raySphere's forward root on the inner (100km) sphere goes negative (that sphere
+    // is now behind the camera). The original version of this march always started at tAtmos.y
+    // regardless, so in that configuration it began marching from a negative t — behind the
+    // camera — sweeping back through the observer's own position. That was the "red glow above
+    // the observer" bug: looking toward zenith while elevated into the band is exactly the
+    // outward-ray case that triggers it.
+    {
+        const float kAirglowInnerM = 100000.0; // = R_ATMOS - R_EARTH, shared with the N_VIEW loop
+        const float kAirglowFarM   = 500000.0;
+        vec2 tAirFar = raySphere(obsPos, dir, R_EARTH + kAirglowFarM);
+
+        float rtEnter, rtExit;
+        if (obsEffH < kAirglowInnerM) {
+            // Typical ground-based case: enter where the primary N_VIEW loop already stopped.
+            rtEnter = tAtmos.y;
+            rtExit  = tAirFar.y;
+        } else if (obsEffH <= kAirglowFarM) {
+            // Observer is inside the band itself — start marching immediately instead of at
+            // tAtmos.y, which can be behind the camera here.
+            rtEnter = 0.0;
+            rtExit  = tAirFar.y;
+            if (tAtmos.x > 0.0 && tAtmos.x < rtExit) rtExit = tAtmos.x; // or down through the inner boundary
+        } else {
+            // Above the band entirely: enter through the outer sphere, exit at the inner one.
+            rtEnter = tAirFar.x;
+            rtExit  = (tAtmos.x > 0.0) ? tAtmos.x : tAirFar.y;
+        }
+        if (tSurface > 0.0) rtExit = min(rtExit, tSurface);
+
+        if (rtEnter < rtExit && rtExit > 0.0) {
+            const int N_AIRGLOW_RED = 16;
+            float rSegLen = (rtExit - rtEnter) / float(N_AIRGLOW_RED);
+            vec3  accumAirglowRed = vec3(0.0);
+            for (int i = 0; i < N_AIRGLOW_RED; ++i) {
+                vec3  rp        = obsPos + dir * (rtEnter + (float(i) + 0.5) * rSegLen);
+                float rh        = length(rp) - R_EARTH;
+                vec3  rDirECEF  = normalize(rp.x * enuX + rp.y * enuY + rp.z * enuZ);
+                float rDayness  = clamp((dot(rDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
+                float rNight    = 1.0 - rDayness;
+                if (rNight > 0.001) {
+                    float rPatch = 0.6 + 0.4 * warpPerlin3(rDirECEF * kAirglowNoiseFreq
+                                        + vec3(pc.waveTime * kAirglowDriftRate, 17.0, -5.0));
+                    float dzR    = (rh - kAirglowRedPeakM) / kAirglowRedHalfWidthM;
+                    float densAirR = exp(-dzR * dzR) * rSegLen;
+                    accumAirglowRed += kAirglowRedColor * cloud.airglowRedGain * densAirR * rNight * rPatch;
+                }
+            }
+            color += accumAirglowRed * kAirglowScale * cloud.airglowGain;
+        }
+    }
 
     // ── Moon disc ─────────────────────────────────────────────────────────────
     // kMoonTexRotDeg: rotates the texture CW in the UV plane to align the image's
