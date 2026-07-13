@@ -56,7 +56,7 @@ layout(set = 0, binding = 8) uniform sampler3D cloudNoiseTex;
 
 // Cloud / volumetrics tunables (binding 9).
 // cloudPhase is CPU-computed fmod(driftRate * simTime, 2π) and uploaded each frame.
-// std140: 64-byte global section (4×vec4) + 4×32-byte CloudLayer = 192 bytes total.
+// std140: 80-byte global section (5×vec4) + 4×32-byte CloudLayer = 208 bytes total.
 struct CloudLayer {
     float shellAltM;    // sphere-shell altitude above R_EARTH (m)
     float driftMult;    // cloudPhase longitude multiplier
@@ -84,6 +84,10 @@ layout(set = 0, binding = 9) uniform CloudParams {
     float airglowGreenGain;   // C15: green (557.7nm) band gain
     float airglowRedGain;     // C15: red (630.0nm) band gain
     float airglowSodiumGain;  // C15: sodium (589.3nm) band gain — keep dim relative to green
+    float shadowMaxDistM;     // cloudMarch's sun self-shadow cone fades out beyond this distance (m)
+    float maxRenderDistM;     // cloudMarch's tExit distance cap (was a hardcoded 80km)
+    float pad2;               // reserved
+    float pad3;               // reserved
     CloudLayer layers[4];
 } cloud;
 
@@ -990,9 +994,12 @@ void cloudMarch(
     }
 
     if (tSurface > 0.0) tExit = min(tExit, tSurface);
-    // Cap march distance so near-horizon rays don't traverse 100+ km of shell with
-    // coarse steps; clouds beyond 80 km are indistinguishable anyway.
-    tExit = min(tExit, tEnter + 80000.0);
+    // Cap march distance so near-horizon rays don't traverse an unbounded shell arc. Used to be a
+    // hardcoded 80km ("clouds beyond that are indistinguishable anyway"), but with the shadow-cone
+    // distance fade below freeing up per-sample cost for far clouds, and the 250m real-step cap
+    // (see kCloudMaxStepM) resolving detail well past that range too, far clouds ARE distinguishable
+    // now — the old cap was causing visible pop-in right at the 80km boundary. Now UBO-tunable.
+    tExit = min(tExit, tEnter + cloud.maxRenderDistM);
     if (tEnter >= tExit || tExit <= 0.0) return;
 
     // Diagnostic tracking variables — zero cost when CLOUD_DEBUG == 0 (compiler eliminates them).
@@ -1119,10 +1126,16 @@ void cloudMarch(
     float cosAMoon = dot(dir, moonDir3);
     float phMoon   = phaseCloud(cosAMoon);
 
-    // 512-iteration hard cap prevents infinite loops on grazing rays that traverse a long shell arc.
-    // The nominal step count N (min 48) fits well inside this; the bigStep/stepLen dual-speed
-    // uses any remaining budget efficiently rather than wasting it on empty air.
-    for (int i = 0; i < 512 && t < tExit; ++i) {
+    // Hard cap prevents infinite loops on grazing rays that traverse a long shell arc. Scaled from
+    // cloud.maxRenderDistM/kCloudMaxStepM (worst-case iterations to cover the full render distance
+    // at the smallest permitted real step) plus margin, instead of a fixed 512 — a fixed cap sized
+    // for the old 80km render distance would silently truncate the march before reaching tExit
+    // once maxRenderDistM is raised, undoing the render-distance extension for exactly the grazing
+    // rays that need it most. Clamped to a sane ceiling so an extreme slider value can't create a
+    // pathologically expensive loop. The nominal step count N fits well inside this in the common
+    // case; the bigStep/stepLen dual-speed uses any remaining budget efficiently on empty air.
+    int hardCap = min(2048, int(cloud.maxRenderDistM / kCloudMaxStepM) + 32);
+    for (int i = 0; i < hardCap && t < tExit; ++i) {
         // ── Adaptive step size: coarse in clear air, fine inside cloud ─────────
         // When the previous sample was clear (inCloud=false), use bigStep (2× normal) to
         // traverse empty sky quickly.  The instant a sample lands inside a cloud (d>0.001),
@@ -1262,16 +1275,26 @@ void cloudMarch(
             // View-direction independent — shoots toward sunDir (not the camera), so it gives
             // correct top-lit / base-shadowed cloud. The old spotlight artifact was from the
             // HG phase function (which was view-dependent), not from this cone.
+            //
+            // Distance-gated: this cone is the dominant per-sample cost (up to N_CONE more
+            // cloudDensity() calls, each 2-3 3D texture fetches). Self-shadow detail is much less
+            // perceptually important for distant clouds — they subtend far fewer screen pixels,
+            // and aerial-perspective attenuation (odAtmCloud, applied after this march returns)
+            // already dims them — so fade it out smoothly with distance from the camera instead of
+            // paying for it uniformly across the whole march. This frees the budget spent on far
+            // samples, which is what makes it affordable to raise maxRenderDistM (reduces cloud
+            // pop-in near the horizon) without a net performance cost. sampleDist reuses the same
+            // t+step*0.5 that built `p` above. Fades over [0.6, 1.0]×shadowMaxDistM so there's no
+            // hard lighting seam at the cutoff distance.
+            float sampleDist = t + step * 0.5;
+            float shadowFade = 1.0 - smoothstep(cloud.shadowMaxDistM * 0.6, cloud.shadowMaxDistM, sampleDist);
             float sunOptDepth = 0.0;
 #if !CLOUD_ISOLATE_SHADOW
-            {
+            if (shadowFade > 0.01) {
                 // cloud.lightSteps (the "Light steps" settings slider) was declared in the
                 // CloudParams UBO but never actually read anywhere in this shader — this cone
                 // was hardcoded to 6 samples regardless of the slider, which is why lowering
-                // it had no effect on performance. This is the dominant, previously-uncontrollable
-                // cost: it runs on every outer march sample that lands inside a cloud (not gated
-                // by cloud.marchSteps at all), each doing up to N_CONE more cloudDensity() calls
-                // (2-3 3D texture fetches each) plus an earthCloudsTex fetch.
+                // it had no effect on performance. Now wired up.
                 int   N_CONE    = max(1, int(cloud.lightSteps));
                 vec2  tConeExit = raySphere(p, sunDir, cloudTop);
                 float coneLen   = min((tConeExit.y > 0.0) ? tConeExit.y : shellThick, shellThick * 2.0);
@@ -1296,6 +1319,7 @@ void cloudMarch(
                     float chFade = smoothstep(0.0, 0.05, chN) * (1.0 - smoothstep(0.95, 1.0, chN));
                     sunOptDepth += cloudDensity(cUVWXY, cUVWD, chN, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
                 }
+                sunOptDepth *= shadowFade;
             }
 #endif
 

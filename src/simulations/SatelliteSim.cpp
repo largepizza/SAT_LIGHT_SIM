@@ -444,6 +444,8 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         cp.airglowGreenGain = airglowGreenGain;
         cp.airglowRedGain = airglowRedGain;
         cp.airglowSodiumGain = airglowSodiumGain;
+        cp.shadowMaxDistM = cloudShadowMaxDistM;
+        cp.maxRenderDistM = cloudMaxRenderDistM;
         cp.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
                                     glm::two_pi<double>());
         // Layer 0: low cloud / stratus shell
@@ -1726,7 +1728,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     const char *fmt;
                     int idx;
                 };
-                static char cloudBufs[17][16];
+                static char cloudBufs[19][16];
                 CloudSlider cloudSliders[] = {
                     {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
                     {"Density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
@@ -1745,6 +1747,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     {"Airglow green", &airglowGreenGain, 0.0f, 3.0f, 0.1f, "%.2f", 14},
                     {"Airglow red", &airglowRedGain, 0.0f, 3.0f, 0.1f, "%.2f", 15},
                     {"Airglow sodium", &airglowSodiumGain, 0.0f, 3.0f, 0.1f, "%.2f", 16},
+                    {"Shadow max dist (m)", &cloudShadowMaxDistM, 1000.0f, 60000.0f, 1000.0f, "%.0f", 17},
+                    {"Render dist (m)", &cloudMaxRenderDistM, 20000.0f, 400000.0f, 10000.0f, "%.0f", 18},
                 };
                 for (auto &cs : cloudSliders)
                 {
@@ -4352,6 +4356,8 @@ void SatelliteSim::loadSettings()
         airglowGreenGain = c.value("airglow_green_gain", airglowGreenGain);
         airglowRedGain = c.value("airglow_red_gain", airglowRedGain);
         airglowSodiumGain = c.value("airglow_sodium_gain", airglowSodiumGain);
+        cloudShadowMaxDistM = c.value("shadow_max_dist_m", cloudShadowMaxDistM);
+        cloudMaxRenderDistM = c.value("max_render_dist_m", cloudMaxRenderDistM);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -4412,7 +4418,9 @@ void SatelliteSim::saveSettings()
         {"airglow_gain", airglowGain},
         {"airglow_green_gain", airglowGreenGain},
         {"airglow_red_gain", airglowRedGain},
-        {"airglow_sodium_gain", airglowSodiumGain}};
+        {"airglow_sodium_gain", airglowSodiumGain},
+        {"shadow_max_dist_m", cloudShadowMaxDistM},
+        {"max_render_dist_m", cloudMaxRenderDistM}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

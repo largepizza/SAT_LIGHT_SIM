@@ -578,6 +578,41 @@ structural change.
     to lower/remove it.
   - Build clean (`cmake --build build`). Not run interactively — per CLAUDE.md, the user verifies.
 
+- **Follow-up: distance-gated cloud self-shadow cone + extended render distance.** With `lightSteps`
+  now live, the user asked to go further: restrict the shadow cone (the dominant per-sample cost) to
+  *close* clouds only, and spend the freed budget extending `cloudMarch`'s render-distance cap to
+  reduce visible pop-in near the horizon/stratosphere.
+  - `sampleDist = t + step*0.5` (the real distance from the camera to the current march sample,
+    same value already used to build `p`) drives `shadowFade = 1 - smoothstep(shadowMaxDistM*0.6,
+    shadowMaxDistM, sampleDist)`. The `N_CONE` sub-march is skipped entirely once `shadowFade` drops
+    near 0 (default `shadowMaxDistM = 15000m`), and its result is scaled by `shadowFade` inside the
+    fade band `[0.6, 1.0]×shadowMaxDistM` so there's no hard lighting seam at the cutoff — distant
+    clouds still get *some* self-shadow going into the transition, easing toward flat/fully-lit
+    rather than snapping.
+  - Nice side-effect for the user's other open concern ("LEO is still tough"): `sampleDist` is
+    camera-relative, not observer-altitude-relative, so an orbital camera (400km+ from any surface
+    cloud) puts effectively every sample beyond `shadowMaxDistM` automatically — the shadow cone is
+    now essentially free from orbit too, not just for distant ground-level clouds.
+  - `tExit = min(tExit, tEnter + 80000.0)` (hardcoded 80km) replaced with `cloud.maxRenderDistM`
+    (new UBO field, default 150000m = 150km — was too conservative once the 250m step cap and the
+    shadow-cone fade freed up per-far-sample cost; the old value was the direct cause of the
+    reported pop-in).
+  - The march's hard iteration cap (`for (int i=0; i<512 && t<tExit; ++i)`) was **also** a fixed
+    512, sized for the old 80km cap at the 250m step-length floor (worst case 80000/250=320,
+    comfortably under 512). Raising `maxRenderDistM` to 150km pushes the worst case to 600 —
+    **would have exceeded 512 and silently truncated the march**, undoing the render-distance
+    extension for exactly the grazing rays that need it. Replaced with a cap derived from
+    `cloud.maxRenderDistM/kCloudMaxStepM + 32`, clamped to a 2048 ceiling so an extreme slider value
+    can't create a pathological loop.
+  - Two new `CloudParams` UBO fields (`shadowMaxDistM`, `maxRenderDistM`) + 2 explicit pad reserves
+    to keep the global section's std140 alignment a multiple of 16 bytes (176→192 was already tight
+    from C15; adding exactly 2 meaningful fields needed 2 more to stay 16-byte-aligned before the
+    `layers[4]` array) — struct grew 192→208 bytes, `static_assert` updated in lockstep. New sliders:
+    "Shadow max dist (m)" (1000-60000, default 15000), "Render dist (m)" (20000-400000, default
+    150000). `cloudBufs`/`hovCloudMinus`/`hovCloudPlus`/`draggingCloud` bumped `[17]`→`[19]`.
+    Persisted under `clouds.shadow_max_dist_m`/`clouds.max_render_dist_m`.
+  - Build clean (`cmake --build build`). Not run interactively — per CLAUDE.md, the user verifies.
+
 ### 2026-07-12 (session 21)
 - **C13 complete:** Cirrus promoted from a flat 2D decal to a genuine volumetric shell march.
   - **Architecture mismatch found before writing code:** the session-20 kickoff prompt assumed

@@ -461,6 +461,17 @@ Read it at the start of any terrain-related session before making changes.
   outward, where the "always below" forward root goes negative. Fixed to match the established
   pattern. Any future shell march (Aurora/C16) needs this from the start — see
   `TERRAIN_PLAN.md` session 22 log.
+- **Cloud march perf (session 22 follow-ups):** (1) `cloudMarch`'s C8 altitude-stratified stepping
+  uncapped the real 3D step length for oblique rays (up to 50× the vertical step) — this is what
+  made "clouds viewed from the side" undersample and band; now capped at a fixed `kCloudMaxStepM =
+  250` (meters, not a multiple of the vertical step — see comment on why that matters at high
+  `marchSteps`). (2) `cloud.lightSteps` (the "Light steps" slider) was declared but never read
+  anywhere — the sun self-shadow cone hardcoded `N_CONE = 6` regardless; now wired up, and it's the
+  dominant per-inCloud-sample cost. (3) That shadow cone is now also distance-gated
+  (`cloud.shadowMaxDistM`, camera-relative) so far/orbital clouds skip it almost entirely, which
+  paid for raising the render-distance cap (`cloud.maxRenderDistM`, replaces a hardcoded 80km) to
+  reduce horizon pop-in. `CloudParams` grew again, 192→208 bytes. See `TERRAIN_PLAN.md` session 22
+  log (multiple entries) for the full history.
 - `SatDrawPC` is 128 bytes: `obsECEFDir (vec4)` at offset 112 (observer ECEF unit vector)
 - Sky descriptor set has 10 bindings (0-9): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
