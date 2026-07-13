@@ -2139,10 +2139,16 @@ void main() {
             }
         }
 
-        // Occlude lens flares on terrain: if this fragment direction hits land (tHit > 0)
-        // the source is behind that terrain from the camera, so no flare should form.
-        // Ocean (tSeaLvl hit, tHit = -1) is excluded — ghost artifacts on water are real.
-        color += flareAccum * (tHit > 0.0 ? 0.0 : 1.0);
+        // Lens flares are a screen-space camera-optics artifact, not light literally travelling
+        // to each pixel — source visibility is already handled per-source above (sun: limbZ
+        // gate at its `if`; satellites: satDir.z horizon cull + camera-facing check). Do NOT
+        // gate flareAccum by this fragment's OWN terrain hit (tHit): that tests whether THIS
+        // pixel's unrelated view ray hit land, not whether the source is occluded. The old
+        // `tHit > 0.0 ? 0.0 : 1.0` mask zeroed the flare's additive glow on every terrain pixel
+        // anywhere on screen — invisible at ground level (terrain only fills the lower frame),
+        // but at LEO twilight, where terrain fills most of the screen under a large sun flare,
+        // it hard-clipped the raymarched terrain silhouette out of the middle of the glow.
+        color += flareAccum;
     }
 
     outColor = vec4(color, 1.0);
