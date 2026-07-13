@@ -308,7 +308,7 @@ static constexpr int kNumCloudLayers = 4;
 // ── Cloud parameters UBO (binding 9 in sky descriptor set) ───────────────────
 // Matches the layout(binding=9) uniform CloudParams block in sat_sky.frag.
 // Global tunables + per-layer descriptors.  cloudPhase is CPU-computed each frame.
-// std140 layout: 48-byte global section (3×vec4) + 4 × 32-byte layer = 176 bytes.
+// std140 layout: 64-byte global section (4×vec4) + 4 × 32-byte layer = 192 bytes.
 struct GpuCloudParams
 {
     // Global controls — shared across all layers
@@ -324,10 +324,14 @@ struct GpuCloudParams
     float shadowSteps;      // terrain/ocean cloudShadowFactor march step count (was pad0)
     float cirrusWindAngle;  // C13: cirrus streak wind axis, radians (was pad1)
     float cirrusStretch;    // C13: cirrus noise anisotropic elongation factor (was pad2)
+    float airglowGain;        // C15: master airglow brightness multiplier
+    float airglowGreenGain;   // C15: green (557.7nm) band gain
+    float airglowRedGain;     // C15: red (630.0nm) band gain
+    float airglowSodiumGain;  // C15: sodium (589.3nm) band gain — keep dim relative to green
     // Per-layer descriptors
     GpuCloudLayerParams layers[kNumCloudLayers];
 };
-static_assert(sizeof(GpuCloudParams) == 176, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 192, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -611,25 +615,33 @@ private:
     float musicVol_ = 0.6f;
     float sfxVol_ = 1.0f;
     // ── Photometry tuning (synced to SatFlarePC each frame) ───────────────────
-    float brightnessScale = 1.0f;
-    float daySuppression = 500.0f;
-    float mirrorBoost = 300.0f;
-    float visThresh = 0.00f;
-    float highlightFlare = 0.05f;
+    // Defaults below are the user-tuned values as of the C15 (airglow) commit — baked in from
+    // settings.json rather than the original placeholder guesses.
+    float brightnessScale = 1.275f;
+    float daySuppression = 1516.64f;
+    float mirrorBoost = 429.17f;
+    float visThresh = 0.0001f;
+    float highlightFlare = 0.17066f;
     // Cloud tunables (CPU-side; uploaded to cloudParamsBuf each frame)
-    float cloudCoverage = 0.5f;
-    float cloudDensity = 2.0f;
-    float cloudBaseAltM = 2000.0f; // layer 0 shell altitude (low cloud / stratus)
-    float cloudTopAltM = 11000.0f; // layer 1 shell altitude (high cirrus)
-    float cloudDriftRate = 3e-6f;  // ~1°/day extra vs surface
-    float cloudSunGain = 1.5f;
-    float cloudAmbientGain = 0.02f;
-    float cloudHgG = 0.6f;
-    float cloudMarchSteps = 124.0f;
-    float cloudLightSteps = 6.0f;
-    float cloudShadowSteps = 24.0f; // terrain/ocean cloud-shadow march step count (separate scale from lightSteps: this covers up to ~60 km, lightSteps covers one shell thickness)
+    // Defaults below are the user-tuned values as of the C15 (airglow) commit — baked in from
+    // settings.json rather than the original placeholder guesses.
+    float cloudCoverage = 0.87281f;
+    float cloudDensity = 3.26974f;
+    float cloudBaseAltM = 6000.0f; // layer 0 shell altitude (low cloud / stratus)
+    float cloudTopAltM = 15000.0f; // layer 1 shell altitude (high cirrus)
+    float cloudDriftRate = 1.04386e-5f;
+    float cloudSunGain = 1.14035f;
+    float cloudAmbientGain = 2.0f;
+    float cloudHgG = 0.15632f;
+    float cloudMarchSteps = 138.21053f;
+    float cloudLightSteps = 4.02632f;
+    float cloudShadowSteps = 8.21053f; // terrain/ocean cloud-shadow march step count (separate scale from lightSteps: this covers up to ~60 km, lightSteps covers one shell thickness)
     float cloudCirrusWindDeg = 40.0f; // C13: cirrus streak wind azimuth (degrees, converted to radians for the UBO)
     float cloudCirrusStretch = 4.0f;  // C13: cirrus noise anisotropic elongation factor (1 = no stretch)
+    float airglowGain = 0.06579f;         // C15: master airglow brightness multiplier
+    float airglowGreenGain = 0.05263f;    // C15: green (557.7nm) band gain
+    float airglowRedGain = 0.01316f;      // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
+    float airglowSodiumGain = 0.06579f;   // C15: sodium (589.3nm) band gain — kept dim relative to green
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
     std::string exeDir_;           // directory containing the exe; set in init()
@@ -758,9 +770,9 @@ private:
     bool hovPhotoMinus[5] = {};
     bool hovPhotoPlus[5] = {};
     bool draggingPhoto[5] = {};
-    bool hovCloudMinus[13] = {};
-    bool hovCloudPlus[13] = {};
-    bool draggingCloud[13] = {};
+    bool hovCloudMinus[17] = {};
+    bool hovCloudPlus[17] = {};
+    bool draggingCloud[17] = {};
     // ── Settings window position (persisted; -1 = uninitialized, centers on first open) ─
     float settingsWinX = -1.0f;
     float settingsWinY = -1.0f;

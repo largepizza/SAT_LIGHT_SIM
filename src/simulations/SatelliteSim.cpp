@@ -440,6 +440,10 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         cp.shadowSteps = cloudShadowSteps;
         cp.cirrusWindAngle = glm::radians(cloudCirrusWindDeg);
         cp.cirrusStretch = cloudCirrusStretch;
+        cp.airglowGain = airglowGain;
+        cp.airglowGreenGain = airglowGreenGain;
+        cp.airglowRedGain = airglowRedGain;
+        cp.airglowSodiumGain = airglowSodiumGain;
         cp.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
                                     glm::two_pi<double>());
         // Layer 0: low cloud / stratus shell
@@ -1722,7 +1726,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     const char *fmt;
                     int idx;
                 };
-                static char cloudBufs[13][16];
+                static char cloudBufs[17][16];
                 CloudSlider cloudSliders[] = {
                     {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
                     {"Density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
@@ -1737,6 +1741,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     {"Shadow steps", &cloudShadowSteps, 4.0f, 64.0f, 2.0f, "%.0f", 10},
                     {"Cirrus wind (deg)", &cloudCirrusWindDeg, 0.0f, 360.0f, 5.0f, "%.0f", 11},
                     {"Cirrus stretch", &cloudCirrusStretch, 1.0f, 10.0f, 0.5f, "%.1f", 12},
+                    {"Airglow gain", &airglowGain, 0.0f, 5.0f, 0.1f, "%.2f", 13},
+                    {"Airglow green", &airglowGreenGain, 0.0f, 3.0f, 0.1f, "%.2f", 14},
+                    {"Airglow red", &airglowRedGain, 0.0f, 3.0f, 0.1f, "%.2f", 15},
+                    {"Airglow sodium", &airglowSodiumGain, 0.0f, 3.0f, 0.1f, "%.2f", 16},
                 };
                 for (auto &cs : cloudSliders)
                 {
@@ -4340,6 +4348,10 @@ void SatelliteSim::loadSettings()
         cloudShadowSteps = c.value("shadow_steps", cloudShadowSteps);
         cloudCirrusWindDeg = c.value("cirrus_wind_deg", cloudCirrusWindDeg);
         cloudCirrusStretch = c.value("cirrus_stretch", cloudCirrusStretch);
+        airglowGain = c.value("airglow_gain", airglowGain);
+        airglowGreenGain = c.value("airglow_green_gain", airglowGreenGain);
+        airglowRedGain = c.value("airglow_red_gain", airglowRedGain);
+        airglowSodiumGain = c.value("airglow_sodium_gain", airglowSodiumGain);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -4396,7 +4408,11 @@ void SatelliteSim::saveSettings()
         {"light_steps", cloudLightSteps},
         {"shadow_steps", cloudShadowSteps},
         {"cirrus_wind_deg", cloudCirrusWindDeg},
-        {"cirrus_stretch", cloudCirrusStretch}};
+        {"cirrus_stretch", cloudCirrusStretch},
+        {"airglow_gain", airglowGain},
+        {"airglow_green_gain", airglowGreenGain},
+        {"airglow_red_gain", airglowRedGain},
+        {"airglow_sodium_gain", airglowSodiumGain}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

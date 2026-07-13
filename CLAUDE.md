@@ -429,8 +429,8 @@ If the file is missing (first run) all defaults are used silently.
 See `TERRAIN_PLAN.md` in the project root for the full step checklist and session log.
 Read it at the start of any terrain-related session before making changes.
 
-**Current state (as of 2026-07-12, session 21):**
-- Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete; C1–C8, C13 complete
+**Current state (as of 2026-07-12, session 22):**
+- Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete; C1–C8, C13, C15 complete
 - Phase E in progress (C13–C16: Cirrus rework, Anvil, Airglow, Aurora), sequenced ahead of
   C9/C11/C12. Full spec in `TERRAIN_PLAN.md`.
 - **Cirrus (C13):** own standalone `cirrusMarch()` in `sat_sky.frag`, NOT a second `cloudMarch`
@@ -441,6 +441,26 @@ Read it at the start of any terrain-related session before making changes.
   decomposition (that's a no-op: the noise argument is purely radial from its own tangent frame).
   Sun-only lighting matching `evalCloudLayer`'s formula so it colour-matches the flat paste it
   crossfades against. See `TERRAIN_PLAN.md` session 21 log for the full writeup.
+- **Airglow (C15):** three emissive bands (green 96km, sodium 90km, red 275km) gated by per-sample
+  geographic day/night, not observer's. Green+sodium accumulate inside the existing `N_VIEW`
+  atmosphere loop for free (their peaks fall inside its ~100km ceiling); red needs its own small
+  16-step supplemental march out to `R_EARTH+500km` since its peak/half-width sit well past that
+  ceiling — extending the primary loop's far bound for one band would have coarsened the
+  near-surface Rayleigh/Mie sampling everything else depends on. `CloudParams` UBO grew 176→192
+  bytes (all 3 pad slots were already consumed by C13) for 4 new gain fields (`airglowGain` master +
+  per-band); peak altitude/width/color are hardcoded physical constants, not UBO fields. Reuses the
+  analytic `warpPerlin3` noise (same one `cloudWarpOffset` uses) for horizontal patchiness — no new
+  texture/binding. See `TERRAIN_PLAN.md` session 22 log for the full writeup.
+- **Raymarch-from-inside-a-volume fix (session 22):** `raySphere` reformulates `c = dot(ro,ro)-r*r`
+  as `c = (|ro|-r)*(|ro|+r)` — the naive form catastrophically cancels at R_EARTH scale (~1e13
+  float32 magnitude) exactly at grazing/near-tangent rays, i.e. every horizon, across all 29 call
+  sites. Also: any shell march must classify the observer as below/inside/above the shell (keyed on
+  `obsEffH`) rather than assuming a fixed forward root — `cloudMarch`/`cirrusMarch` already did this;
+  the new airglow red-band march didn't, and broke (bright zenith band + horizon seams) once the
+  observer flew (via the uncapped "Raise Elevation"/Q control) into or above the shell and looked
+  outward, where the "always below" forward root goes negative. Fixed to match the established
+  pattern. Any future shell march (Aurora/C16) needs this from the start — see
+  `TERRAIN_PLAN.md` session 22 log.
 - `SatDrawPC` is 128 bytes: `obsECEFDir (vec4)` at offset 112 (observer ECEF unit vector)
 - Sky descriptor set has 10 bindings (0-9): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
@@ -459,9 +479,11 @@ Read it at the start of any terrain-related session before making changes.
   - **Night darkening:** ambient transitions from blue day dome to near-zero at night using
     per-sample `dot(normalize(pECEF), sunDirECEF)` geographic terminator check.
   - **City upwelling:** `earthNightTex` at mip 3 contributes warm orange into cloud bases at night.
-- **Next:** C14 — Anvil height-profile spread (see `TERRAIN_PLAN.md` "Immediate Next Step").
-  Phase E (C13–C16: Cirrus, Anvil, Airglow, Aurora) takes priority over C9/C11/C12 and
-  noise-repetition cleanup per the 2026-07-12 planning session.
+- **Next:** C16 — Aurora, geomagnetic curtain primitive (see `TERRAIN_PLAN.md` "Immediate Next
+  Step"). C14 (Anvil) remains deferred — pushed back again in favor of C15 per the 2026-07-12
+  session — and can be picked up whenever; it has no dependency on C15/C16. Phase E (C13–C16:
+  Cirrus, Anvil, Airglow, Aurora) takes priority over C9/C11/C12 and noise-repetition cleanup per
+  the 2026-07-12 planning session.
 
 ### Elevation texture encoding — READ THIS BEFORE TOUCHING TERRAIN CODE
 

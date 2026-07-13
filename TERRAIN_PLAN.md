@@ -7,12 +7,14 @@ clouds, and orbital camera mode. Read this at the start of any terrain-related s
 
 ## Immediate Next Step
 
-**C14 — Anvil height-profile spread.** See Phase E below for the full spec: tune `hFade`/`topFade`/
-`colH` in `cloudMarch` (`sat_sky.frag`) so high-density/coverage columns spread laterally near the
-shell top instead of tapering to zero, gated by new `anvilThreshold`/`anvilSpread` `CloudParams`
-fields. C13 (cirrus) is complete — see session log entry below before starting, since the cloud
-architecture has diverged from earlier assumptions (`cloudMarch` merges layers[0]/[1] into one
-low/mid shell; cirrus is now its own independent `cirrusMarch`).
+**C16 — Aurora (geomagnetic curtain primitive).** See Phase E below for the full spec. C15
+(airglow) is complete — see session log entry below before starting; note the actual
+implementation deviated from the original "ride the N_VIEW loop for all three bands" plan (red
+needed its own supplemental march — see log for why) and C16 should expect a similar need to
+re-derive the concrete approach from the current shader rather than the original C13-era plan text.
+
+C14 (anvil) remains not started; it was deliberately deferred again in favor of C15 per the
+2026-07-12 session, and can be picked up whenever — it has no dependency on C15/C16.
 
 ---
 
@@ -354,7 +356,7 @@ structural change.
   window slider for each). No new texture, no new binding. *Done when:* tall/dense columns visibly
   flatten and spread near the shell top; ordinary cumulus unaffected.
 
-- [ ] **C15 — Airglow (emissive N_VIEW layers).** Three altitude-banded emissive terms riding the
+- [x] **C15 — Airglow (emissive N_VIEW layers).** Three altitude-banded emissive terms riding the
   existing `N_VIEW` atmosphere loop (`sat_sky.frag` ~lines 491-514) — same architectural slot as the
   still-unimplemented C10 city-upwelling term. Density per layer: `exp(-((h - peakAltM)/halfWidthM)^2)`,
   gated to night-side only (reuse the day/night dot-product test already used for cloud sun-visibility).
@@ -373,6 +375,9 @@ structural change.
   [[project-cloud-next-session]] item 1). Reuses `noiseTex` (binding 1) for the warp field; no new
   texture, no new binding. *Done when:* three independently-colored glow bands visible at night from
   ground and orbit, banding drifts/folds without an obvious repeat, zero cost impact in daylight.
+  **Done (2026-07-12, session 22) — see session log for the altitude-range architecture mismatch
+  (red band's peak sits outside the N_VIEW loop's ~100km ceiling — only green/sodium actually ride
+  it) and the final per-band gain design.**
 
 - [ ] **C16 — Aurora (geomagnetic curtain primitive).** Most novel step — new geometry, likely a new
   emissive-only shell march (no Beer-Powder transmittance, additive glow only) distinct from
@@ -433,6 +438,96 @@ structural change.
 ---
 
 ## Session Log
+
+### 2026-07-12 (session 22)
+- **C15 complete:** Airglow implemented as three altitude-banded emissive terms in `sat_sky.frag`.
+  - **Altitude-range architecture mismatch found before finishing:** the design doc's directive to
+    have all three bands "ride the existing N_VIEW atmosphere loop" only holds for green (peak
+    96km) and sodium (peak 90km) — both fall inside the loop's own altitude ceiling, since
+    `tEnd = min(tAtmos.y, tSurface)` where `tAtmos = raySphere(obsPos, dir, R_ATMOS)` and
+    `R_ATMOS = R_EARTH + 100000`, i.e. no sample in that loop ever exceeds ~100km altitude. Red
+    (peak 275km, half-width up to 100km) needs samples out to ~350-500km — genuinely unreachable
+    from that loop's sample set. Extending the primary loop's far bound to cover it would have
+    kept the same 124-step budget spread over a ~5x longer march, coarsening the near-surface
+    Rayleigh/Mie resolution that the existing sky color already depends on (most of that signal is
+    packed into the first ~50km via the exponential scale-height falloff) — not an acceptable
+    trade for one new secondary band.
+  - **Resolution:** green + sodium accumulate directly inside the existing N_VIEW loop (added to
+    the same per-sample block that already computes `spECEF`/`spUV` for city upwelling — reuses
+    those geographic coordinates instead of recomputing them). Red gets its own small supplemental
+    march (16 steps) that starts where the primary loop's far bound already ends (`tAtmos.y`) and
+    extends out to a `R_EARTH + 500000` sphere exit, only when the sky is open above (`tSurface <=
+    0.0` — no ground/terrain blocking the view). This mirrors the C13 lesson (cirrus also needed a
+    genuinely separate march once the "ride an existing pass" assumption broke down on contact with
+    the actual code) — noting it again here since it recurred on the very next Phase E step.
+  - **Night gating:** per-sample geographic day/night dot product (`dot(sampleDirECEF,
+    sunDirECEF)`, same `±0.15` smoothstep window `cloudMarch`'s `sampleDayness` uses), not the
+    observer's sun elevation — physically correct since the glow originates at the sample's own
+    geographic position along the view ray, which can differ from the observer's local time of day
+    for grazing/limb rays.
+  - **Horizontal patchiness:** reused the existing analytic `warpPerlin3` noise (the same evaluator
+    `cloudWarpOffset`/`cirrusDomainWarp` use) rather than a `noiseTex` lookup as the original C15
+    design note specified — that note pre-dates the cloud domain warp's migration from a texture
+    read to this analytic evaluator (see `cloudWarpOffset`'s own comment on why), so this follows
+    the current code's established pattern instead of the stale plan text. No new texture, no new
+    binding either way.
+  - **Physics constants hardcoded, brightness exposed:** peak altitude/half-width/color per band
+    are compile-time constants (real, near-fixed physical values, not scene-dependent) rather than
+    `CloudParams` fields — only per-band gain (`airglowGain` master + `airglowGreenGain`/
+    `airglowRedGain`/`airglowSodiumGain`) is UBO-exposed, since brightness is a genuine first-pass
+    visual guess that needs tuning after seeing it render, unlike the altitudes.
+  - **`CloudParams` UBO grew 176→192 bytes:** all three previous pad slots (`shadowSteps`/
+    `cirrusWindAngle`/`cirrusStretch`) were already consumed by C13, so the 4 new airglow gain
+    floats needed a real size increase, not a repurposed pad — kept the global section a multiple
+    of 16 bytes (12→16 floats) so the `layers[4]` array's std140 alignment doesn't shift. Both the
+    GLSL `CloudParams` block and the C++ `GpuCloudParams` struct (`SatelliteSim.h`) were updated in
+    lockstep; `static_assert(sizeof(GpuCloudParams) == 192)` catches future drift.
+  - New settings-window sliders: "Airglow gain" (master, 0-5), "Airglow green"/"Airglow red"/
+    "Airglow sodium" (per-band, 0-3 each). `hovCloudMinus`/`hovCloudPlus`/`draggingCloud` arrays and
+    `cloudBufs` bumped `[13]`→`[17]`. Persisted in `settings.json` under `clouds.airglow_*`.
+  - One build-time snag: GLSL reserves `patch` as a tessellation-shader keyword — a local variable
+    named `patch` (for the domain-warp brightness multiplier) failed to compile with a cryptic
+    "syntax error, unexpected PATCH" at the point of first use; renamed to `airPatch`.
+  - Build clean (`cmake --build build`). Not run — per CLAUDE.md, the user tests interactively;
+    brightness constants (`kAirglowScale` and the three default gains) are first-pass guesses and
+    will likely need visual tuning via the new sliders.
+  - **Defaults baked in from the user's tuned `settings.json`** after visual approval, same session:
+    all `clouds.*` (coverage/density/altitudes/drift/sun+ambient gain/HG g/march+light+shadow
+    steps/airglow gains) and `photometry.*` (brightness/day suppression/mirror boost/vis
+    threshold/highlight flare) members in `SatelliteSim.h` now default to those values instead of
+    the original placeholder guesses. Camera/observer/audio/UI-scale settings were deliberately
+    left as-is (session state, not tuning) per explicit user scoping.
+
+- **Raymarch-from-inside-a-volume bug found and fixed** (reported by the user after visually
+  approving C15): "odd banding patterns, placing red glow above the observer" plus "seams" at the
+  horizon, worst with the new red airglow band but present in cloud/cirrus rendering too. Two
+  distinct root causes, both in `sat_sky.frag`:
+  1. **`raySphere` numerical fragility (shared by all 29 call sites).** `c = dot(ro,ro) - r*r`
+     subtracts two ~1e13-magnitude float32 numbers (`ro`/`r` are both ~R_EARTH≈6.37e6 m) — precision
+     collapses catastrophically exactly at grazing/near-tangent rays, i.e. every horizon, in every
+     shell march that calls it (clouds, cirrus, airglow, atmosphere, ocean, terrain). Fixed by
+     reformulating `c` as `(|ro|-r)*(|ro|+r)` — a direct small-number subtraction instead of a
+     squared-magnitude cancellation — the standard fix for planetary-scale ray-sphere tests in
+     single precision. Does not fully eliminate float32's precision floor at exact tangency (`b*b`
+     is still large there), but removes the much larger, unconditional cancellation error that was
+     present at every distance, not just exact tangency.
+  2. **Missing above/inside/below handling in the new red-band march (a real bug introduced this
+     session, not pre-existing).** The march unconditionally started at `tAtmos.y` (the 100km
+     sphere's forward exit), assuming the observer is always below that boundary. The "Raise
+     Elevation" (Q) control has no altitude cap and its climb rate scales with current height, so
+     it's easy to fly up INTO the 100-500km band to inspect the new layer up close — exactly what
+     motivated this bug report. Once `obsEffH` exceeds ~100km and the view ray points outward/away
+     from Earth, `raySphere`'s forward root on the inner sphere goes negative (that sphere is now
+     behind the camera), so the march began marching from behind the camera, sweeping back through
+     the observer's own position — reproducing "red glow above the observer" exactly (zenith is the
+     outward-ray case). Fixed by giving the red march the same below/inside/above shell-relative
+     classification `cloudMarch`/`cirrusMarch` already use, keyed on `obsEffH` against the band's
+     [100km, 500km] bounds, instead of assuming a fixed relationship to the observer.
+  - Also added a defensive `max(0.0, ...)` clamp on the primary `N_VIEW` loop's `tEnd` (same
+    negative-forward-root scenario applies to the base atmosphere march itself when the observer is
+    above `R_ATMOS` looking outward — not previously reachable in normal play, but now reachable via
+    the same elevation-climb path that surfaced the red-band bug).
+  - Build clean (`cmake --build build`). Not run interactively — per CLAUDE.md, the user verifies.
 
 ### 2026-07-12 (session 21)
 - **C13 complete:** Cirrus promoted from a flat 2D decal to a genuine volumetric shell march.
