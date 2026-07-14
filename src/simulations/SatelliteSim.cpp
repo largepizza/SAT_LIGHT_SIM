@@ -342,6 +342,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.hgG = cloudHgG;
         cp.marchSteps = cloudMarchSteps;
         cp.lightSteps = cloudLightSteps;
+        cp.extinctionCoeff = extinctionCoeff;
         cp.cirrusWindAngle = glm::radians(cloudCirrusWindDeg);
         cp.cirrusStretch = cloudCirrusStretch;
         cp.airglowGain = airglowGain;
@@ -359,6 +360,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.moonGain = moonGain;
         cp.pad1 = 0.0f;
         cp.pad2 = 0.0f;
+        cp.mwBasisRow0 = glm::vec4(mwRow0, 1.0f); // .w = milky way gain (fixed; no longer user-tunable)
+        cp.mwBasisRow1 = glm::vec4(mwRow1, 0.0f);
+        cp.mwBasisRow2 = glm::vec4(mwRow2, 0.0f);
         cp.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
                                     glm::two_pi<double>());
         // Layer 0: low cloud / stratus shell
@@ -2230,6 +2234,26 @@ void SatelliteSim::cleanup(VkDevice device)
         vkFreeMemory(device, earthDayMem, nullptr);
         earthDayMem = VK_NULL_HANDLE;
     }
+    if (milkyWaySampler)
+    {
+        vkDestroySampler(device, milkyWaySampler, nullptr);
+        milkyWaySampler = VK_NULL_HANDLE;
+    }
+    if (milkyWayView)
+    {
+        vkDestroyImageView(device, milkyWayView, nullptr);
+        milkyWayView = VK_NULL_HANDLE;
+    }
+    if (milkyWayImg)
+    {
+        vkDestroyImage(device, milkyWayImg, nullptr);
+        milkyWayImg = VK_NULL_HANDLE;
+    }
+    if (milkyWayMem)
+    {
+        vkFreeMemory(device, milkyWayMem, nullptr);
+        milkyWayMem = VK_NULL_HANDLE;
+    }
     if (earthNightSampler)
     {
         vkDestroySampler(device, earthNightSampler, nullptr);
@@ -3290,6 +3314,78 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         vkCreateSampler(ctx.device, &sci, nullptr, &earthDaySampler);
     }
 
+    // ── Milky Way skybox texture (binding 13): 8K equirectangular galactic panorama ──
+    // Same load pattern as earthDay (SRGB, mipmapped). Sampled in sat_sky.frag against a
+    // CPU-computed ENU->galactic direction; see the "Milky Way skybox basis" block in
+    // updatePositions().
+    {
+        int w = 0, h = 0, ch = 0;
+        stbi_uc *pixels = stbi_load("assets/textures/8k_stars_milky_way.jpg", &w, &h, &ch, 4);
+        if (!pixels)
+            throw std::runtime_error("SatelliteSim: failed to load assets/textures/8k_stars_milky_way.jpg");
+
+        milkyWayMips = (uint32_t)std::floor(std::log2((float)std::max(w, h))) + 1;
+        VkDeviceSize imgBytes = (VkDeviceSize)w * h * 4;
+
+        VkBuffer stageBuf;
+        VkDeviceMemory stageMem;
+        ctx.createBuffer(imgBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         stageBuf, stageMem);
+        void *mapped;
+        vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
+        memcpy(mapped, pixels, (size_t)imgBytes);
+        vkUnmapMemory(ctx.device, stageMem);
+        stbi_image_free(pixels);
+
+        ctx.createImage((uint32_t)w, (uint32_t)h, VK_FORMAT_R8G8B8A8_SRGB,
+                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                        milkyWayImg, milkyWayMem, milkyWayMips);
+
+        {
+            auto cmd = ctx.beginOneTimeCommands();
+            VkImageMemoryBarrier allMips{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            allMips.srcAccessMask = 0;
+            allMips.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            allMips.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            allMips.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            allMips.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            allMips.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            allMips.image = milkyWayImg;
+            allMips.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, milkyWayMips, 0, 1};
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &allMips);
+            VkBufferImageCopy region{};
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+            vkCmdCopyBufferToImage(cmd, stageBuf, milkyWayImg,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            ctx.generateMipmaps(cmd, milkyWayImg, VK_FORMAT_R8G8B8A8_SRGB,
+                                (uint32_t)w, (uint32_t)h, milkyWayMips);
+            ctx.endOneTimeCommands(cmd);
+        }
+        vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+        vkFreeMemory(ctx.device, stageMem, nullptr);
+
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = milkyWayImg;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = VK_FORMAT_R8G8B8A8_SRGB;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, milkyWayMips, 0, 1};
+        vkCreateImageView(ctx.device, &vci, nullptr, &milkyWayView);
+
+        VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        sci.magFilter = VK_FILTER_LINEAR;
+        sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.maxLod = (float)milkyWayMips;
+        vkCreateSampler(ctx.device, &sci, nullptr, &milkyWaySampler);
+    }
+
     // ── Earth night texture (binding 4): 8K equirectangular night-lights map ─
     {
         int w = 0, h = 0, ch = 0;
@@ -3623,8 +3719,8 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         memset(cloudParamsMapped, 0, sz);
     }
 
-    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B
-    VkDescriptorSetLayoutBinding bindings[12] = {};
+    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex
+    VkDescriptorSetLayoutBinding bindings[14] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -3637,14 +3733,18 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     bindings[9] = {9, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[10] = {10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // half-res cloud march target A
     bindings[11] = {11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // half-res cloud march target B
+    // lightDomeBuf: same buffer as sat_flare.comp's binding 3 — sat_sky.frag needs its own read of
+    // it to dim the Milky Way directionally, matching how satellites/stars are already dimmed.
+    bindings[12] = {12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[13] = {13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // milky way skybox
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 12;
+    li.bindingCount = 14;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
     VkDescriptorPoolSize ps[3] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 11},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
     };
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -3679,8 +3779,10 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     VkDescriptorBufferInfo cloudParamsInfo{cloudParamsBuf, 0, sizeof(GpuCloudParams)};
     VkDescriptorImageInfo cloudMarchAImgInfo{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cloudMarchBImgInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo lightDomeInfo{lightDomeBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorImageInfo milkyWayImgInfo{milkyWaySampler, milkyWayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    VkWriteDescriptorSet writes[12] = {};
+    VkWriteDescriptorSet writes[14] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = skyDescSet;
     writes[0].dstBinding = 0;
@@ -3753,7 +3855,19 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     writes[11].descriptorCount = 1;
     writes[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[11].pImageInfo = &cloudMarchBImgInfo;
-    vkUpdateDescriptorSets(ctx.device, 12, writes, 0, nullptr);
+    writes[12].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[12].dstSet = skyDescSet;
+    writes[12].dstBinding = 12;
+    writes[12].descriptorCount = 1;
+    writes[12].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[12].pBufferInfo = &lightDomeInfo;
+    writes[13].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[13].dstSet = skyDescSet;
+    writes[13].dstBinding = 13;
+    writes[13].descriptorCount = 1;
+    writes[13].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[13].pImageInfo = &milkyWayImgInfo;
+    vkUpdateDescriptorSets(ctx.device, 14, writes, 0, nullptr);
 }
 
 // Fullscreen triangle that colors pixels sky or ground based on camera elevation.
@@ -5146,6 +5260,37 @@ void SatelliteSim::updatePositions(double t, float dt)
     eci2enuX = glm::vec4(east, 0.0f);
     eci2enuY = glm::vec4(north, 0.0f);
     eci2enuZ = glm::vec4(up, 0.0f);
+
+    // ── Milky Way skybox basis: ENU -> galactic, recomputed each frame ───────────────────────
+    // The base ECI->Galactic rotation only depends on fixed IAU constants (galX/Y/Z below are
+    // static in ECI, which is itself inertial), so this could be cached — recomputing is cheap
+    // (a handful of dot/cross products) and keeps it self-contained alongside eci2enu above,
+    // which is rebuilt every frame for the same reason despite most of its own inputs (lat/lon)
+    // changing slowly too.
+    // Alignment was confirmed by eye against assets/textures/8k_stars_milky_way.jpg: the only
+    // correction needed versus the raw IAU rotation was a longitude mirror (galY negated) — no
+    // yaw/pitch/roll tweak or V-flip. That was previously exposed as runtime sliders/toggles;
+    // removed once confirmed correct, this is just the fixed result.
+    {
+        auto raDecToVec = [](float raDeg, float decDeg) {
+            float ra = glm::radians(raDeg);
+            float dec = glm::radians(decDeg);
+            return glm::vec3{cosf(dec) * cosf(ra), cosf(dec) * sinf(ra), sinf(dec)};
+        };
+        // IAU 1958 galactic coordinate system constants (J2000 equatorial).
+        glm::vec3 galZ = raDecToVec(192.859508f, 27.128336f);   // North Galactic Pole
+        glm::vec3 gcDir = raDecToVec(266.405100f, -28.936175f); // Galactic center direction
+        glm::vec3 galX = glm::normalize(gcDir - glm::dot(gcDir, galZ) * galZ);
+        glm::vec3 galY = -glm::cross(galZ, galX); // negated: confirmed longitude mirror (was "Flip U")
+
+        // dirGal = M * dirECI where M's rows are (galX,galY,galZ) expressed in ECI coords, and
+        // dirECI = east*enu.x + north*enu.y + up*enu.z, so each row dotted against enuDir in the
+        // shader needs to already be expressed in the ENU basis — project each gal axis onto
+        // east/north/up here so the shader can do a single dot(enuDir, mwRowN).
+        mwRow0 = glm::vec3(glm::dot(galX, east), glm::dot(galX, north), glm::dot(galX, up));
+        mwRow1 = glm::vec3(glm::dot(galY, east), glm::dot(galY, north), glm::dot(galY, up));
+        mwRow2 = glm::vec3(glm::dot(galZ, east), glm::dot(galZ, north), glm::dot(galZ, up));
+    }
 
     // ── Sun direction in ECI (low-accuracy Astronomical Almanac) ─────────────
     double dJ2000 = t / 86400.0;

@@ -345,9 +345,10 @@ struct GpuCloudParams
     float marchSteps;       // volumetric march step count (C7+)
     float lightSteps;       // volumetric light-cone step count (C7+)
     float cloudPhase;       // CPU: fmod(driftRate * simTime, 2π) — uploaded each frame
-    float pad0;             // reserved — was shadowSteps (cloudShadowFactor's step count); that
-                            // function was removed session 23 (dominant surface cloud cost,
-                            // cloud shadowing on terrain/ocean unused), freeing this slot again
+    float extinctionCoeff;  // was pad0 (freed session 23 when cloudShadowFactor was removed); now
+                            // carries the same atmospheric-extinction coefficient sat_flare.comp
+                            // gets via push constant, so sat_sky.frag's Milky Way term can apply
+                            // identical Kasten & Young dimming without its own push-constant field
     float cirrusWindAngle;  // C13: cirrus streak wind axis, radians (was pad1)
     float cirrusStretch;    // C13: cirrus noise anisotropic elongation factor (was pad2)
     float airglowGain;        // C15: master airglow brightness multiplier
@@ -371,10 +372,17 @@ struct GpuCloudParams
                                // calibrated to the same brightness instead of drifting apart
     float pad1;               // reserved
     float pad2;               // reserved
+    // Milky Way skybox (session 27): CPU-computed ENU->galactic basis rows (fixed orientation,
+    // confirmed by eye against the real star field), mirroring the eciX/Y/Z basis-vector
+    // convention already used for SatOrbitPC/SatFlarePC. dirGal = dot(enuDir, mwBasisRowN.xyz)
+    // for N=0,1,2. .w of row0 carries a fixed gain of 1.0 (spare otherwise).
+    glm::vec4 mwBasisRow0;
+    glm::vec4 mwBasisRow1;
+    glm::vec4 mwBasisRow2;
     // Per-layer descriptors
     GpuCloudLayerParams layers[kNumCloudLayers];
 };
-static_assert(sizeof(GpuCloudParams) == 240, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 288, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -642,6 +650,12 @@ private:
     VkDeviceMemory cloudNoiseMem = VK_NULL_HANDLE;
     VkImageView cloudNoiseView = VK_NULL_HANDLE;
     VkSampler cloudNoiseSampler = VK_NULL_HANDLE;
+    // Milky Way skybox texture (binding 13): 8K equirectangular galactic panorama.
+    VkImage milkyWayImg = VK_NULL_HANDLE;
+    VkDeviceMemory milkyWayMem = VK_NULL_HANDLE;
+    VkImageView milkyWayView = VK_NULL_HANDLE;
+    VkSampler milkyWaySampler = VK_NULL_HANDLE;
+    uint32_t milkyWayMips = 1;
     // Cloud params UBO (binding 9): host-visible, persistently mapped, updated each frame.
     VkBuffer cloudParamsBuf = VK_NULL_HANDLE;
     VkDeviceMemory cloudParamsMem = VK_NULL_HANDLE;
@@ -703,6 +717,13 @@ private:
                                       // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
                                       // in both sat_flare.comp and updateStars() so a star and a
                                       // satellite at the same elevation dim identically
+    // ── Milky Way skybox basis (session 27) ────────────────────────────────────
+    // ENU->galactic rotation, recomputed each frame in updatePositions() and uploaded to
+    // CloudParams. Orientation confirmed by eye against the real star field — no runtime
+    // tuning knobs needed (see updatePositions() for the fixed longitude-mirror correction).
+    glm::vec3 mwRow0{1.0f, 0.0f, 0.0f};
+    glm::vec3 mwRow1{0.0f, 1.0f, 0.0f};
+    glm::vec3 mwRow2{0.0f, 0.0f, 1.0f};
     // Cloud tunables (CPU-side; uploaded to cloudParamsBuf each frame)
     // Defaults below are the user-tuned values as of the C15 (airglow) commit — baked in from
     // settings.json rather than the original placeholder guesses.
