@@ -86,6 +86,15 @@ layout(set = 0, binding = 2) buffer GlowBuf {
     uint  sectorBright[8];  // atomicMax(floatBitsToUint(effectFlare)) per 45°-az sector
 };
 
+// ── Light pollution dome — 16 azimuth sectors (22.5° each), interpolated between sector
+// centers below rather than hard-binned. CPU-written each frame in
+// SatelliteSim::updateLightPollutionDome() from earthNightCpu samples around the observer;
+// host-visible + coherent, no barrier needed (mirrors reflectorTargetsBuf's established pattern).
+// Values are intentionally NOT pre-clamped to [0,1] — see the clamp comment at the use site.
+layout(set = 0, binding = 3) readonly buffer LightDomeBuf {
+    float lightDome[16];
+};
+
 // ── Push constants ────────────────────────────────────────────────────────────
 // GLSL std430 vec3 alignment = 16.  Offsets verified against C++ SatFlarePC.
 layout(push_constant) uniform PC {
@@ -101,7 +110,11 @@ layout(push_constant) uniform PC {
     float mirrorBoost;     // mirror peak multiplier — offset 88
     float visThresh;       // visibility cull threshold — offset 92
     float highlightFlare;  // fixed flare for census highlight mode — offset 96
-    float lightPollution;  // 0=none..1=full; dims satellite brightness near lit cities — offset 100
+    float extinctionCoeff; // atmospheric extinction, magnitudes per airmass — offset 100
+    float moonSuppression; // sky background suppression ratio from moonlight — offset 104
+    float pad0;            // reserved — offset 108
+    vec3  moonDirECI;      // unit vector from Earth toward Moon in ECI — offset 112
+    float pad1;            // reserved — offset 124
 } pc;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -368,15 +381,62 @@ void main() {
     float dayBright   = t * t;
     float obsHeight   = max(0.0, length(pc.obsECI) - R_EARTH);
     float atmFrac     = exp(-obsHeight / 80000.0); // 1 at sea level → ~0 at 400 km
-    float effectFlare = flare / (1.0 + dayBright * pc.daySuppression * atmFrac);
+
+    // ── Moonlight sky suppression ───────────────────────────────────────────
+    // Same shape as dayBright above (elevation ramp × atmFrac), scaled by moon phase
+    // illumination since a crescent moon brightens the sky far less than a full moon.
+    // Uniform across the sky (not direction-dependent) — same simplification dayBright
+    // already makes; a real light-dome/near-moon-halo model is future scope.
+    // moonElev uses the same "dot with observer zenith" trick as sunElev above.
+    float moonElev    = dot(pc.moonDirECI, normalize(pc.obsECI));
+    float moonIllum   = (1.0 - dot(pc.sunDirECI, pc.moonDirECI)) * 0.5; // 0=new, 1=full
+    float tm          = clamp(moonElev / 0.5, 0.0, 1.0); // ramps horizon → ~30° elevation
+    float moonBright  = tm * tm * moonIllum;
+
+    float effectFlare = flare / (1.0 + (dayBright * pc.daySuppression
+                                       + moonBright * pc.moonSuppression) * atmFrac);
+
+    // ── Atmospheric extinction (airmass) ──────────────────────────────────────
+    // Real horizon dimming: airmass increases sharply at low elevation, scattering/absorbing
+    // light along the much longer low-elevation atmospheric path. Independent of light
+    // pollution/moon — this is the "always on" baseline the light-pollution dome's directional
+    // variation should read as modulation on top of, not the only source of horizon-vs-zenith
+    // brightness difference (that gap was the direct cause of the dome's sector transitions
+    // reading as unsubtle pops rather than a smooth gradient).
+    // Kasten & Young 1989 approximation — stays finite down to the true horizon (unlike the
+    // naive 1/sin(el), which diverges to infinity at el=0).
+    float sinElClamped = clamp(skyDir.z, 0.0, 1.0);
+    float elDeg      = degrees(asin(sinElClamped));
+    float airmass    = 1.0 / (sinElClamped + 0.50572 * pow(elDeg + 6.07995, -1.6364));
+    // atmFrac-gated: from orbit there's no atmospheric column along the line of sight at all,
+    // regardless of the satellite's apparent "elevation" in the observer's local frame.
+    float extinctMag = pc.extinctionCoeff * (airmass - 1.0) * atmFrac;
+    effectFlare *= pow(10.0, -0.4 * extinctMag);
 
     // Light pollution: dims (scales down) rather than culls — matches the observation that
     // scaling brightness reads as more convincing than pushing satellites past visThresh.
-    // pc.lightPollution is 0..1 (city brightness × altitude falloff, computed CPU-side in
-    // SatelliteSim::updateStars); kSatPollutionMaxDim caps how dark it can go so the very
-    // brightest flares/mirrors still peek through even in a maximally lit city.
+    // Directional dome: lightDome[] holds unclamped city-brightness values sampled around the
+    // observer in 16 compass sectors (computed CPU-side in SatelliteSim::updateLightPollutionDome).
+    // Interpolated between the two nearest sector CENTERS (not hard-binned) — 16 discrete wedges
+    // still showed visible blocky transitions over wide, fairly uniform bright regions.
+    float azLP = mod(atan(skyDir.x, skyDir.y) + 6.283185307, 6.283185307);
+    float secF = azLP * (16.0 / 6.283185307) - 0.5;
+    int   sec0 = int(floor(secF));
+    float secFrac = secF - float(sec0);
+    int   sec0w = ((sec0 % 16) + 16) % 16;
+    int   sec1w = (sec0w + 1) % 16;
+    float domeAz = mix(lightDome[sec0w], lightDome[sec1w], secFrac);
+    // 0.35 (not 0.15): the steeper curve crushed the effect to near-zero above ~20° elevation —
+    // most satellites/stars a user actually looks at aren't sitting right on the horizon.
+    float elevFalloff = 0.35 / (max(skyDir.z, 0.0) + 0.35); // 1.0 at horizon, ~0.26 at zenith
+    // domeAz is intentionally unclamped upstream — the clamp only happens here, after elevFalloff,
+    // so high lightPollutionGain can compensate for elevFalloff's reduction at non-horizon angles
+    // instead of saturating uselessly before elevFalloff is even applied (session 26 bug).
+    float domeVal = clamp(domeAz * elevFalloff, 0.0, 1.0);
+    // kSatPollutionMaxDim caps how dark it can go so the brightest flares/mirrors still peek
+    // through even in a maximally lit city.
     const float kSatPollutionMaxDim = 0.85;
-    effectFlare *= 1.0 - pc.lightPollution * kSatPollutionMaxDim;
+    effectFlare *= 1.0 - domeVal * kSatPollutionMaxDim;
 
     // ── Cull if below visibility threshold ────────────────────────────────────
     if (effectFlare < pc.visThresh) {

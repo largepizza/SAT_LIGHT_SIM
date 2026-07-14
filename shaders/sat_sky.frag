@@ -94,6 +94,11 @@ layout(set = 0, binding = 9) uniform CloudParams {
     float oceanDetailOctaves; // perf (session 24): seaMapDetail() octave count (wave normal)
     float oceanReflSamples;   // perf (session 24): ocean sky-reflection loop sample count (N_REFL)
     float viewSamplesMax;     // perf (session 24 round 2): N_VIEW ceiling for long/grazing rays (was pad4)
+    float pad3;               // reserved — was nightAmbientGain, removed session 26 (see SatelliteSim.h)
+    float moonGain;           // shared moonlight brightness master — terrain direct term AND
+                              // cloud_march.comp's moonContrib both read this (see that file)
+    float pad1;               // reserved
+    float pad2;               // reserved
     CloudLayer layers[4];
 } cloud;
 
@@ -1368,10 +1373,24 @@ void main() {
             }
         }
 
+        // ── Moonlight at terrain hit ────────────────────────────────────────────
+        // Mirrors the sun's own direct-light pattern above (shadingN·dir Lambertian +
+        // geographic horizon gate) rather than cloud_march.comp's self-shadow/phase model —
+        // terrain has no volumetric self-occlusion to model, so the sun scaffolding already
+        // in this block is the closer fit. cloud.moonGain is shared with cloud_march.comp's
+        // moonContrib so terrain and moonlit clouds stay calibrated to the same brightness.
+        vec3  moonDir3t        = normalize(moonDirENU.xyz);
+        float moonDot          = dot(shadingN, moonDir3t);
+        float geoMoonDot       = dot(normalize(hitPt), moonDir3t);
+        float moonHorizonGate  = smoothstep(-0.03, 0.02, geoMoonDot);
+        float moonLitTerrain   = max(0.0, moonDot) * moonHorizonGate * moonDirENU.w;
+        vec3  moonContribTerrain = dayColor * vec3(0.92, 0.95, 1.0) * moonLitTerrain * cloud.moonGain;
+
         vec3 surfColor  = mix(nightColor * 0.12,
                               dayColor * sunSpecTint * clamp(sunDot * 1.5, 0.05, 1.0)
                             + dayColor * skyAmbientTerrain * 0.4,  // sky ambient fill (blue day, orange dusk)
-                              dayFrac);
+                              dayFrac)
+                        + moonContribTerrain;
 
         // ── Ocean wave material (sea-level hits only, not terrain) ─────────────
         // ShaderToy "Seascape" by TDM adapted to Earth ENU/ECEF space.

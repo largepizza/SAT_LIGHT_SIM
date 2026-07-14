@@ -281,13 +281,18 @@ obsECI (vec3), satCount (uint)         — offset 64/76
 highlightMask (uint), enabledMask (uint), simDt (float), pad (float)  — offset 80/84/88/92
 ```
 
-**SatFlarePC** (100 bytes) — sat_flare.comp:
+**SatFlarePC** (128 bytes) — sat_flare.comp:
 ```
 enuX (vec4), enuY (vec4), enuZ (vec4)  — offsets 0/16/32
 sunDirECI (vec3), satCount (uint)      — offset 48/60
-obsECI (vec3), pad (float)             — offset 64/76
-brightnessScale, daySuppression, mirrorBoost, visThresh, highlightFlare  — offsets 80–96
+obsECI (vec3), elevCutoff (float)      — offset 64/76
+brightnessScale, daySuppression, mirrorBoost, visThresh, highlightFlare,
+pad2, moonSuppression, pad0            — offsets 80–108
+moonDirECI (vec3), pad1 (float)        — offset 112/124
 ```
+`pad2` was `lightPollution` — superseded (session 26) by the directional `lightDomeBuf` SSBO
+(binding 3 in the sat_flare.comp descriptor set, 8 floats, host-visible/mapped), which doesn't
+need push-constant space. See "Subsystem: Light Pollution Dome" below.
 
 **SatDrawPC** (112 bytes) — sat_point.vert + both sky shaders:
 ```
@@ -331,13 +336,105 @@ Photometry values are **runtime members** on `SatelliteSim`, synced to `SatFlare
 | Member | Default | Description |
 |--------|---------|-------------|
 | `brightnessScale` | 1.0 | global flux multiplier |
-| `daySuppression` | 500.0 | sky background suppression ratio |
+| `daySuppression` | 500.0 | sky background suppression ratio (sun) |
 | `mirrorBoost` | 300.0 | mirror peak multiplier (MIRROR_BOOST) |
 | `visThresh` | 0.0 | visibility cull threshold |
 | `highlightFlare` | 0.05 | fixed flare for highlight/census mode |
+| `moonSuppression` | 4.0 | sky background suppression ratio (moon) |
+| `lightPollutionGain` | 1.0 | multiplies the light-pollution dome at its source — see "Subsystem: Light Pollution Dome" |
+| `extinctionCoeff` | 0.25 | atmospheric extinction, magnitudes per airmass — see "Subsystem: Atmospheric Extinction" |
 
-`effectFlare = flare / (1 + dayBright × daySuppression)`
+`effectFlare = flare / (1 + (dayBright × daySuppression + moonBright × moonSuppression) × atmFrac)`,
+then `×= extinction` (airmass), then `×= (1 − domeVal × 0.85)` (light pollution)
 `magnitude = kMagRef - 2.5 × log10(effectFlare / kMagRefFlare)` where `kMagRef=6.0`, `kMagRefFlare=0.008`
+
+`dayBright`/`moonBright` are elevation-ramp scalars (squared linear, sun/moon dot observer-zenith)
+computed once per frame — **uniform across the sky, not per-satellite-direction**. This is an
+accepted simplification for both (unlike light pollution below, neither has been made directional).
+`moonBright` additionally omits the near-moon sky-brightening halo (real moonlight scatters more
+strongly close to the moon's disc) — not built, no current plan to.
+
+Stars (`SatelliteSim::updateStars`, CPU-side) apply the same three suppression sources
+independently, with their own fixed (non-slider) response caps: `kStarPollutionMaxDim=0.85`,
+`kStarMoonMaxDim=0.9`. Day suppression for stars is `nightFactorEff` (sun-elevation ramp), not
+`dayBright`/`daySuppression` — a separate, older formula; the two were never unified.
+
+## Subsystem: Light Pollution Dome
+
+Session 26 replaced a single scalar (city brightness at the *observer's own* lat/lon — correct
+about moving with the observer, wrong about being uniform across every direction of the sky) with
+a 16-azimuth-sector dome, interpolated between sector centers, brighter near the horizon toward
+nearby cities and fainter elsewhere — consumed identically by both satellites and stars.
+
+**`SatelliteSim::updateLightPollutionDome()`** (CPU, called each frame in `recordCompute()` right
+before `updateStars()`): for each of 16 sectors (22.5° each, bearing clockwise from North —
+independent of `sat_flare.comp`'s unrelated `GlowBuf` 8-sector `azBin`, decoupled on purpose),
+samples `earthNightCpu` at 4 radii (2/8/20/45 km) along that bearing using a flat-Earth
+tangent-plane lat/lon offset (adequate at this scale), combined via **weighted max** (a single
+nearby bright city should dominate that direction, not get averaged down by darker samples at
+other radii in the same sector) with `exp(-D/20000)` distance weighting. The 2 km near sample
+exists because the observer's own position can sit inside a bright pixel while every 8+ km ring
+around it is already dark countryside (small/isolated towns) — without it the dome could miss the
+pollution source entirely, the direct analog of the old scalar's distance-0 sample. Response curve
+(`kNightFloor`/`kCityCompressK`) and the observer's own altitude falloff (`exp(-obsHeight/3000)`)
+match the pre-session-26 scalar's constants exactly — only the sampling geometry changed. Result
+scaled by `lightPollutionGain` (settings-window slider "Pollution gain", default 1.0, user-widened
+range) applied once here at the source — **intentionally left unclamped**, not `clamp`ed to `[0,1]`
+— so satellites and stars stay coherently scaled by construction (same array). A 5-tap circular
+blur (`[0.1, 0.2, 0.4, 0.2, 0.1]`, ~±45°) then smooths the 16 raw per-sector values before storing:
+each sector is a single bearing ray, so a real city's edge (which doesn't line up with 22.5° sector
+boundaries) could put a bright sector directly next to a dark one — sampling noise, not genuine
+geography, and the direct cause of "stars/satellites suddenly get much brighter" pops reported
+when panning across a sector boundary near the horizon (worst there because `elevFalloff` is
+largest at the horizon, fully exposing the noise). Result: `lightDomeAz[16]`, a CPU member array.
+
+**Delivery:** `lightDomeAz` is memcpy'd into `lightDomeBuf` (host-visible/coherent, 16 floats,
+binding 3 in the sat_flare.comp descriptor set — same `reflectorTargetsBuf`-style "CPU writes,
+GPU reads this frame, single frame in flight" pattern, no barrier needed) for `sat_flare.comp`.
+`updateStars()` reads the `lightDomeAz` CPU array directly, no upload round-trip needed.
+
+**Per-consumer lookup** (both `sat_flare.comp` and `updateStars()` compute this the same way, GLSL
+and C++ mirrors of each other): rather than a hard `azBin` lookup, interpolates between the two
+nearest sector *centers* — `secF = bearing/22.5° - 0.5`, `sec0 = floor(secF)`,
+`domeAz = mix(lightDomeAz[sec0], lightDomeAz[sec0+1], frac(secF))` (both indices wrapped mod 16).
+Hard-binning (even at 16 sectors) showed visible blocky transitions over wide, fairly uniform
+bright regions (e.g. flying over Europe) — the interpolation, not the sector count, is what fixes
+that. Then `elevFalloff = 0.35 / (max(skyDir.z, 0) + 0.35)` (1.0 at the horizon, ~0.26 at zenith —
+city glow hangs low in the sky, not overhead). **The only clamp is here**, after `elevFalloff`:
+`domeVal = clamp(domeAz * elevFalloff, 0, 1)` — clamping `lightDomeAz` itself upstream was a real
+bug (fixed same session): it let `elevFalloff` (≤1 off the horizon) silently cap the *effective*
+max well below 1.0 at every non-horizon angle, no matter how high `lightPollutionGain` went, so
+gain past the point where it first saturated the pre-`elevFalloff` value (~5) looked identical to
+gain=500. `domeVal` feeds the existing `1 - domeVal × kPollutionMaxDim` dimming multiplier
+unchanged (`kSatPollutionMaxDim` = 0.85 in `sat_flare.comp`, `kStarPollutionMaxDim` = 0.99 in
+`updateStars()`, both user-tuned — still a hard ceiling on max dimming regardless of gain).
+
+**Not built:** the elevation falloff shape is a fixed analytic curve, not itself sampled/measured —
+a true 2D (azimuth × elevation) dome would need real atmospheric-scattering-height modeling, judged
+not worth the complexity over the fixed-curve approximation.
+
+## Subsystem: Atmospheric Extinction
+
+Session 26 follow-up: the light-pollution dome's `elevFalloff` was, until this was added, the
+*only* term anywhere that varied a star's or satellite's brightness by its own viewing elevation —
+there was no real horizon-dimming baseline, which is part of why the dome's directional noise (see
+above) read as unsubtle: nothing else was smoothly dimming things toward the horizon for it to
+modulate on top of.
+
+**Formula** (identical in `sat_flare.comp` and `updateStars()` — a star and a satellite at the same
+elevation must dim by the same amount, since this represents real atmospheric transmission, not a
+stylized brightness knob): Kasten & Young 1989 airmass approximation,
+`airmass = 1 / (sin(el) + 0.50572 × (elDeg + 6.07995)^-1.6364)` — stays finite down to the true
+horizon (elDeg=0 → airmass≈38), unlike the naive `1/sin(el)` which diverges to infinity. Then
+`extinctMag = extinctionCoeff × (airmass - 1) × atmFrac` (magnitudes of dimming beyond the zenith
+baseline; `atmFrac`-gated since an orbiting observer has no atmospheric column along the line of
+sight regardless of apparent "elevation" in their local frame) and
+`extinction = 10^(-0.4 × extinctMag)`, multiplied directly into `effectFlare`/star `intensity`.
+
+**Tunable:** `extinctionCoeff` (magnitudes per airmass; ~0.2-0.3 is typical clear-sky sea-level;
+default 0.25), settings slider "Extinction". Reuses `SatFlarePC`'s `pad2` slot (the one freed by
+`lightPollution`'s move to `lightDomeBuf`) rather than growing the struct — stars read the same
+`extinctionCoeff` C++ member directly, no separate push-constant path needed for the CPU side.
 
 `MIRROR_BOOST = 300` — peak multiplier for near-perfect mirror alignment. `mirrorExp = max(specExp0 × 300, 8000)` gives sub-degree angular width (matches solar disc ~0.26°).
 

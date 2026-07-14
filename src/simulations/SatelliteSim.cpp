@@ -285,6 +285,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         uploadSatOrbits(ctx);
 
     updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, simDt);
+    updateLightPollutionDome();
     updateStars();
 
     // Read previous frame's GPU glow results for the magnitude UI.
@@ -355,6 +356,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.oceanSeaOctaves = oceanSeaOctaves;
         cp.oceanDetailOctaves = oceanDetailOctaves;
         cp.oceanReflSamples = oceanReflSamples;
+        cp.moonGain = moonGain;
+        cp.pad1 = 0.0f;
+        cp.pad2 = 0.0f;
         cp.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
                                     glm::two_pi<double>());
         // Layer 0: low cloud / stratus shell
@@ -516,7 +520,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pc.mirrorBoost = mirrorBoost;
     pc.visThresh = visThresh;
     pc.highlightFlare = highlightFlare;
-    pc.lightPollution = lightPollution; // computed in updateStars(), called above
+    pc.moonSuppression = moonSuppression;
+    pc.moonDirECI = moonDirECI; // computed in updatePositions(), called earlier this frame
+    pc.extinctionCoeff = extinctionCoeff;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1712,13 +1718,16 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     const char *fmt;
                     int idx;
                 };
-                static char photoBufs[5][12];
+                static char photoBufs[8][12];
                 PhotoParam photoParams[] = {
                     {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
                     {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
                     {"Mirror boost", &mirrorBoost, 50.0f, 1000.0f, 25.0f, "%.0f", 2},
                     {"Vis threshold", &visThresh, 0.0001f, 0.1f, 0.0001f, "%.3f", 3},
                     {"Hlgt flare", &highlightFlare, 0.01f, 1.0f, 0.01f, "%.2f", 4},
+                    {"Moon suppress", &moonSuppression, 0.0f, 500.0f, 5.0f, "%.0f", 5},
+                    {"Pollution gain", &lightPollutionGain, 0.0f, 100.0f, 0.1f, "%.2f", 6},
+                    {"Extinction", &extinctionCoeff, 0.0f, 1.0f, 0.02f, "%.2f", 7},
                 };
                 for (auto &pp : photoParams)
                 {
@@ -1832,7 +1841,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     const char *fmt;
                     int idx;
                 };
-                static char cloudBufs[24][16];
+                static char cloudBufs[25][16];
                 CloudSlider cloudSliders[] = {
                     {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
                     {"Density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
@@ -1858,6 +1867,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     {"Sea octaves", &oceanSeaOctaves, 1.0f, 3.0f, 1.0f, "%.0f", 21},
                     {"Detail octaves", &oceanDetailOctaves, 1.0f, 5.0f, 1.0f, "%.0f", 22},
                     {"Refl samples", &oceanReflSamples, 1.0f, 6.0f, 1.0f, "%.0f", 23},
+                    {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
                 };
                 for (auto &cs : cloudSliders)
                 {
@@ -2372,6 +2382,10 @@ void SatelliteSim::cleanup(VkDevice device)
     vkFreeMemory(device, satInputMem, nullptr);
     vkDestroyBuffer(device, satVisibleBuf, nullptr);
     vkFreeMemory(device, satVisibleMem, nullptr);
+    if (lightDomeMapped)
+        vkUnmapMemory(device, lightDomeMem);
+    vkDestroyBuffer(device, lightDomeBuf, nullptr);
+    vkFreeMemory(device, lightDomeMem, nullptr);
     vkDestroyBuffer(device, satOrbitBuf, nullptr);
     vkFreeMemory(device, satOrbitMem, nullptr);
     vkDestroyBuffer(device, mirrorNormalsBuf, nullptr);
@@ -2496,6 +2510,14 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                      satVisibleBuf, satVisibleMem);
 
+    // lightDomeBuf: host-visible, updated each frame by updateLightPollutionDome().
+    ctx.createBuffer(sizeof(float) * kNumLightSectors,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     lightDomeBuf, lightDomeMem);
+    vkMapMemory(ctx.device, lightDomeMem, 0, sizeof(float) * kNumLightSectors, 0, &lightDomeMapped);
+    memset(lightDomeMapped, 0, sizeof(float) * kNumLightSectors);
+
     // satOrbitBuf: device-local, uploaded once. sat_orbit.comp reads every frame.
     ctx.createBuffer(sizeof(GpuSatOrbit) * MAX_SATELLITES,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -2527,20 +2549,22 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
 // ─── createDescriptors ────────────────────────────────────────────────────────
 void SatelliteSim::createDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[3] = {};
+    VkDescriptorSetLayoutBinding bindings[4] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // glowBuf: atomic writes from flare shader
+    bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                   VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // lightDomeBuf: host-visible, CPU-written
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 3;
+    li.bindingCount = 4;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &ps;
@@ -2556,15 +2580,18 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
     VkDescriptorBufferInfo inpInfo{satInputBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo visInfo{satVisibleBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo glowInfo{glowBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo domeInfo{lightDomeBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[3] = {};
+    VkWriteDescriptorSet writes[4] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &inpInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &visInfo, nullptr};
     writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &glowInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 3, writes, 0, nullptr);
+    writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                 descSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &domeInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 4, writes, 0, nullptr);
 }
 
 // ─── createComputePipeline ────────────────────────────────────────────────────
@@ -4072,6 +4099,113 @@ void SatelliteSim::createStarPipeline(VulkanContext &ctx)
     vkDestroyShaderModule(ctx.device, frag, nullptr);
 }
 
+// ─── updateLightPollutionDome ────────────────────────────────────────────────
+// Builds an 8-azimuth-sector "how much city glow is in this compass direction" dome around
+// the observer, replacing the old single-scalar "brightness at the observer's own position"
+// approximation that dimmed stars/satellites uniformly regardless of which way they appeared
+// in the sky (session 25 follow-up per user feedback). Each sector samples earthNightCpu at a
+// few radii along that bearing — a flat-Earth tangent-plane lat/lon offset, adequate at the
+// tens-of-km scale light pollution actually reaches — and combines them with a weighted max
+// (one nearby bright city should dominate that direction's glow, not get averaged away by
+// darker samples at other radii in the same sector). Sector convention matches GlowBuf's
+// existing 8-sector azBin in sat_flare.comp exactly (bearing clockwise from North, 45° each)
+// so both consumers read consistent geometry. Uploaded to lightDomeBuf for sat_flare.comp;
+// updateStars() (called right after this) reads lightDomeAz[] directly, no upload needed there.
+void SatelliteSim::updateLightPollutionDome()
+{
+    float obsR = glm::length(obsECI);
+    float obsHeight = obsR - kEarthRadius;
+    // Altitude falloff: light pollution's visible skyglow washes out within a few km — a much
+    // tighter scale than the atmosphere's own 80km Rayleigh height. Effectively zero by aircraft
+    // cruise altitude, let alone orbit. Same for every sector (observer's own altitude).
+    float altFalloff = glm::clamp(glm::exp(-obsHeight / 3000.0f), 0.0f, 1.0f);
+
+    if (earthNightCpu.empty() || altFalloff <= 0.0f)
+    {
+        for (int i = 0; i < kNumLightSectors; ++i)
+            lightDomeAz[i] = 0.0f;
+        memcpy(lightDomeMapped, lightDomeAz, sizeof(lightDomeAz));
+        return;
+    }
+
+    // Same brightness-response curve (kNightFloor/kCityCompressK) as the sky-glow/cloud
+    // city-light effects in sat_sky.frag, so all of these read one consistent "how bright is
+    // this city" signal instead of drifting out of tune with each other.
+    const float kNightFloor = 0.06f, kCityCompressK = 0.08f;
+    // 2 km near sample added (session 26 follow-up): the observer's *own* position can sit inside
+    // a bright pixel while every 8+ km ring around it is already dark countryside (small/isolated
+    // towns) — without a near sample the dome can miss the pollution source entirely and read as
+    // "no effect" even directly under city lights. This is the direct analog of the old scalar's
+    // distance-0 sample, which this replaced.
+    const float kSampleRadiiM[4] = {2000.0f, 8000.0f, 20000.0f, 45000.0f};
+    const float kRadiusFalloffM = 20000.0f;
+    float obsLatRad = glm::radians(obsLatDeg);
+    float obsLonRad = glm::radians(obsLonDeg);
+    float cosObsLat = std::max(0.05f, cosf(obsLatRad)); // guard near the poles
+
+    for (int sec = 0; sec < kNumLightSectors; ++sec)
+    {
+        float bearing = (float(sec) + 0.5f) * (2.0f * glm::pi<float>() / float(kNumLightSectors));
+        float domeRaw = 0.0f;
+        for (float D : kSampleRadiiM)
+        {
+            float dLat = (D / kEarthRadius) * cosf(bearing);
+            float dLon = (D / kEarthRadius) * sinf(bearing) / cosObsLat;
+            float sampleLatRad = glm::clamp(obsLatRad + dLat, -glm::half_pi<float>(), glm::half_pi<float>());
+            float sampleLonRad = obsLonRad + dLon;
+            while (sampleLonRad > glm::pi<float>())
+                sampleLonRad -= 2.0f * glm::pi<float>();
+            while (sampleLonRad < -glm::pi<float>())
+                sampleLonRad += 2.0f * glm::pi<float>();
+
+            float u = (sampleLonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
+            float v = (0.5f * glm::pi<float>() - sampleLatRad) / glm::pi<float>();
+            int px = (int)(u * (float)earthNightCpuW) % earthNightCpuW;
+            int py = std::min((int)(v * (float)earthNightCpuH), earthNightCpuH - 1);
+            float lum = earthNightCpu[py * earthNightCpuW + px] / 255.0f;
+            float raw = std::max(0.0f, lum - kNightFloor);
+            float weight = expf(-D / kRadiusFalloffM);
+            domeRaw = std::max(domeRaw, raw * weight);
+        }
+        float cityBrightness = domeRaw / (domeRaw + kCityCompressK);
+        // lightPollutionGain applied once at the source so satellites (via lightDomeBuf) and
+        // stars (reading lightDomeAz[] directly) stay coherently scaled by construction — same
+        // array, not two separately-tuned gains that could drift apart like daySuppression vs.
+        // the stars' fixed kStarPollutionMaxDim did.
+        // NOT clamped to 1.0 here (session 26 follow-up — this was a real bug): elevFalloff
+        // (applied downstream by each consumer, ≤1 for anything off the horizon) was multiplying
+        // an already-saturated value, so no gain above the point where cityBrightness*altFalloff*
+        // gain first hit 1.0 (around gain≈5) could push non-horizon directions any brighter —
+        // gain=500 read identically to gain=5. Leaving this unclamped lets high gain compensate
+        // for elevFalloff's reduction; the final domeVal clamp downstream still bounds the result.
+        lightDomeAz[sec] = cityBrightness * altFalloff * lightPollutionGain;
+    }
+
+    // Circular smoothing pass (session 26 follow-up): each sector is a single bearing ray, so a
+    // real city's edge — which doesn't line up with 22.5° sector boundaries — can put a bright
+    // sector directly next to a dark one. Center-to-center interpolation (in the consumers) only
+    // smooths *within* a sector's span; it doesn't reduce how different two neighboring raw
+    // values are, so sharp swings still read as fast, unsubtle pops when panning across a sector
+    // boundary — worst exactly at the horizon, where elevFalloff is largest and fully exposes any
+    // sampling noise. 5-tap blur (~±45°) trades a little directional sharpness for removing that
+    // noise while keeping the broad "city here, dark ocean there" structure intact.
+    float smoothed[kNumLightSectors];
+    const float kBlurWeights[5] = {0.1f, 0.2f, 0.4f, 0.2f, 0.1f};
+    for (int i = 0; i < kNumLightSectors; ++i)
+    {
+        float acc = 0.0f;
+        for (int k = -2; k <= 2; ++k)
+        {
+            int idx = ((i + k) % kNumLightSectors + kNumLightSectors) % kNumLightSectors;
+            acc += lightDomeAz[idx] * kBlurWeights[k + 2];
+        }
+        smoothed[i] = acc;
+    }
+    memcpy(lightDomeAz, smoothed, sizeof(smoothed));
+
+    memcpy(lightDomeMapped, lightDomeAz, sizeof(lightDomeAz));
+}
+
 // ─── updateStars ──────────────────────────────────────────────────────────────
 // Transforms star ECI unit vectors into ENU each frame (Earth rotates under stars).
 // Stars fade out during civil/nautical twilight — invisible in full daylight.
@@ -4095,34 +4229,22 @@ void SatelliteSim::updateStars()
     float r = kEarthRadius / obsR;
     float limbSin = (obsHeight > 1.0f) ? -sqrtf(glm::max(0.0f, 1.0f - r * r)) : 0.0f;
 
-    // Light pollution: dims stars (and satellites, via SatFlarePC.lightPollution set from this
-    // member in recordCompute) when the observer is at low altitude near a brightly-lit city.
-    // Reuses the same earthNightCpu lookup pattern as the terrain elevation lookup in
-    // recordDraw(), and the same brightness-response curve (kNightFloor/kCityCompressK) as the
-    // sky-glow/cloud city-light effects in sat_sky.frag, so all of these read one consistent
-    // "how bright is this city" signal instead of drifting out of tune with each other.
-    lightPollution = 0.0f;
-    if (!earthNightCpu.empty())
-    {
-        float latRad = glm::radians(obsLatDeg);
-        float lonRad = glm::radians(obsLonDeg);
-        float u = (lonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
-        float v = (0.5f * glm::pi<float>() - latRad) / glm::pi<float>();
-        int px = (int)(u * (float)earthNightCpuW) % earthNightCpuW;
-        int py = std::min((int)(v * (float)earthNightCpuH), earthNightCpuH - 1);
-        float lum = earthNightCpu[py * earthNightCpuW + px] / 255.0f;
-        const float kNightFloor = 0.06f, kCityCompressK = 0.08f;
-        float raw = std::max(0.0f, lum - kNightFloor);
-        float cityBrightness = raw / (raw + kCityCompressK);
-        // Altitude falloff: light pollution's visible skyglow washes out within a few km — a
-        // much tighter scale than atmFrac's 80km Rayleigh height above (that's "does the
-        // atmosphere still exist"; this is "is the observer still down in the glow dome").
-        // Effectively zero by aircraft cruise altitude, let alone orbit.
-        float altFalloff = glm::clamp(glm::exp(-obsHeight / 3000.0f), 0.0f, 1.0f);
-        lightPollution = cityBrightness * altFalloff;
-    }
-    const float kStarPollutionMaxDim = 0.85f; // caps max dimming so the brightest stars/planets
-                                               // still peek through even in a lit city, like reality
+    // Light pollution dome caps: kStarPollutionMaxDim caps how dark the directional dome
+    // (lightDomeAz[], filled by updateLightPollutionDome() just above) can push a star, so the
+    // brightest stars/planets still peek through even in a maximally lit city, like reality.
+    const float kStarPollutionMaxDim = 0.99f;
+
+    // Moonlight sky-brightness dimming: same physical ramp (elevation × phase illumination) as
+    // sat_flare.comp's moonBright term, computed here CPU-side since stars are drawn from this
+    // same per-frame pass. Reuses moonDirENU.w (illuminated fraction, already computed this frame
+    // in updatePositions()) instead of re-deriving it from sunDirECI/moonDirECI. Unlike satellites'
+    // user-tunable moonSuppression gain, this uses a fixed response cap — mirrors how nightFactor
+    // above and kStarPollutionMaxDim are both fixed formulas with no settings-window knob; stars
+    // have never exposed per-suppression-source sliders, only the geometry-driven inputs.
+    float moonElevStar = glm::dot(moonDirECI, glm::normalize(obsECI));
+    float tmStar = glm::clamp(moonElevStar / 0.5f, 0.0f, 1.0f);
+    float moonBrightStar = tmStar * tmStar * moonDirENU.w;
+    const float kStarMoonMaxDim = 0.9f; // full moon dims naked-eye stars but never Venus/Jupiter/Sirius
 
     auto *dst = static_cast<GpuSatVisible *>(starMapped);
     for (uint32_t i = 0; i < starCount; ++i)
@@ -4134,10 +4256,44 @@ void SatelliteSim::updateStars()
                       glm::dot(rec.eciDir, glm::vec3(eci2enuY)),
                       glm::dot(rec.eciDir, glm::vec3(eci2enuZ))};
 
+        // Directional light pollution: same interpolated-dome/elevFalloff formula as
+        // sat_flare.comp, so stars and satellites read the same dome consistently in a given
+        // direction. Interpolated between the two nearest sector CENTERS (not hard-binned) —
+        // 16 discrete wedges still showed visible blocky transitions over wide, fairly uniform
+        // bright regions (e.g. flying over Europe).
+        float bearing = atan2f(enu.x, enu.y); // matches GPU's atan(skyDir.x, skyDir.y) convention
+        if (bearing < 0.0f)
+            bearing += 2.0f * glm::pi<float>();
+        float secF = bearing * (float(kNumLightSectors) / (2.0f * glm::pi<float>())) - 0.5f;
+        int sec0 = (int)floorf(secF);
+        float secFrac = secF - float(sec0);
+        int sec0w = ((sec0 % kNumLightSectors) + kNumLightSectors) % kNumLightSectors;
+        int sec1w = (sec0w + 1) % kNumLightSectors;
+        float domeAz = glm::mix(lightDomeAz[sec0w], lightDomeAz[sec1w], secFrac);
+        // 0.35 (not 0.15): matches the sat_flare.comp softening — the steeper curve crushed the
+        // effect to near-zero above ~20° elevation, where most visible stars actually sit.
+        float elevFalloff = 0.35f / (std::max(enu.z, 0.0f) + 0.35f); // 1.0 at horizon, ~0.26 at zenith
+        // domeAz is intentionally unclamped upstream — the clamp only happens here, after
+        // elevFalloff, so high lightPollutionGain can compensate for elevFalloff's reduction at
+        // non-horizon angles instead of saturating uselessly before elevFalloff is even applied.
+        float domeVal = glm::clamp(domeAz * elevFalloff, 0.0f, 1.0f);
+
+        // Atmospheric extinction (airmass) — same Kasten & Young 1989 approximation as
+        // sat_flare.comp, applied identically so a star and a satellite at the same elevation
+        // dim by the same amount. Independent of light pollution/moon; this is what gives the
+        // pollution dome's directional variation a smooth baseline to sit on top of instead of
+        // being the only source of horizon-vs-zenith brightness difference.
+        float sinElClamped = glm::clamp(enu.z, 0.0f, 1.0f);
+        float elDeg = glm::degrees(asinf(sinElClamped));
+        float airmass = 1.0f / (sinElClamped + 0.50572f * powf(elDeg + 6.07995f, -1.6364f));
+        float extinctMag = extinctionCoeff * (airmass - 1.0f) * atmFrac;
+        float extinction = powf(10.0f, -0.4f * extinctMag);
+
         // Above the Earth limb: visible. Below: culled.
         float intensity = (enu.z >= limbSin)
-                         ? rec.rawIntensity * nightFactorEff * (1.0f - lightPollution * kStarPollutionMaxDim)
-                         : 0.0f;
+                              ? rec.rawIntensity * nightFactorEff * extinction
+                                * (1.0f - domeVal * kStarPollutionMaxDim) * (1.0f - moonBrightStar * kStarMoonMaxDim)
+                              : 0.0f;
 
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;
@@ -4576,6 +4732,9 @@ void SatelliteSim::loadSettings()
         mirrorBoost = p.value("mirror_boost", mirrorBoost);
         visThresh = p.value("vis_thresh", visThresh);
         highlightFlare = p.value("highlight_flare", highlightFlare);
+        moonSuppression = p.value("moon_suppression", moonSuppression);
+        lightPollutionGain = p.value("light_pollution_gain", lightPollutionGain);
+        extinctionCoeff = p.value("extinction_coeff", extinctionCoeff);
     }
 
     if (j.contains("display"))
@@ -4678,6 +4837,7 @@ void SatelliteSim::loadSettings()
         oceanSeaOctaves = c.value("ocean_sea_octaves", oceanSeaOctaves);
         oceanDetailOctaves = c.value("ocean_detail_octaves", oceanDetailOctaves);
         oceanReflSamples = c.value("ocean_refl_samples", oceanReflSamples);
+        moonGain = c.value("moon_gain", moonGain);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -4698,7 +4858,10 @@ void SatelliteSim::saveSettings()
         {"day_suppression", daySuppression},
         {"mirror_boost", mirrorBoost},
         {"vis_thresh", visThresh},
-        {"highlight_flare", highlightFlare}};
+        {"highlight_flare", highlightFlare},
+        {"moon_suppression", moonSuppression},
+        {"light_pollution_gain", lightPollutionGain},
+        {"extinction_coeff", extinctionCoeff}};
 
     j["display"] = {{"ui_scale", uiScale}};
     if (settingsWinX >= 0.0f)
@@ -4745,7 +4908,8 @@ void SatelliteSim::saveSettings()
         {"light_samples", lightSamples},
         {"ocean_sea_octaves", oceanSeaOctaves},
         {"ocean_detail_octaves", oceanDetailOctaves},
-        {"ocean_refl_samples", oceanReflSamples}};
+        {"ocean_refl_samples", oceanReflSamples},
+        {"moon_gain", moonGain}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)
