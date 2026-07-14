@@ -429,7 +429,7 @@ If the file is missing (first run) all defaults are used silently.
 See `TERRAIN_PLAN.md` in the project root for the full step checklist and session log.
 Read it at the start of any terrain-related session before making changes.
 
-**Current state (as of 2026-07-12, session 22):**
+**Current state (as of 2026-07-13, session 24):**
 - Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete; C1–C8, C13, C15 complete
 - Phase E in progress (C13–C16: Cirrus rework, Anvil, Airglow, Aurora), sequenced ahead of
   C9/C11/C12. Full spec in `TERRAIN_PLAN.md`.
@@ -472,13 +472,51 @@ Read it at the start of any terrain-related session before making changes.
   paid for raising the render-distance cap (`cloud.maxRenderDistM`, replaces a hardcoded 80km) to
   reduce horizon pop-in. `CloudParams` grew again, 192→208 bytes. See `TERRAIN_PLAN.md` session 22
   log (multiple entries) for the full history.
+- **Half-resolution cloud compute pass (session 23) — `cloudMarch()`/`cirrusMarch()` no longer live
+  in `sat_sky.frag`.** They moved to `shaders/cloud_march.comp`, a new compute shader dispatched
+  once per frame in `recordCompute()` at half `ctx.swapExtent` (1/4 the pixels). `sat_sky.frag`
+  samples two `RGBA16_SFLOAT` targets (bindings 10/11) instead of marching per full-res pixel.
+  Restructured (not just relocated): the compute-shader copies return an `(A, B)` affine-composite
+  pair instead of mutating `color` in place, so cirrus-then-cloud combine into one exact
+  `(A_total, B_total)` algebraically. No terrain data in the compute shader — `sat_sky.frag` does a
+  post-hoc terrain-occlusion suppression using its own accurate `tSurface` against the sampled
+  occlusion distance (exact for full occlusion, not for mid-shell partial truncation — accepted
+  approximation). New `CloudMarchPC` push constant, new `cloudMarchDescSet` (7 bindings), 2 new
+  `skyDescSet` bindings. See `TERRAIN_PLAN.md` session 23 log for the full design (why two targets,
+  the barrier sequencing, the `init()` ordering constraints — several real mistakes were caught and
+  fixed during design review before any code was written, don't repeat them).
+- **Terrain-bleed bug fix + `cloudShadowFactor()` removed (session 23 follow-ups):** the terrain-
+  suppression gate above initially used the opacity-gated `tCloudOcclude` (≥90% opaque only, meant
+  for satellite depth), so most non-solid cloud rendered through terrain regardless of depth — a
+  real bug, not the documented approximation. Fixed with a second, always-valid entry distance
+  (`tEnterOut` from both march functions, combined via `min()`) stored in Target B's alpha;
+  `cloudBlock` (displaced from that slot) is now derived from Target B's RGB instead. Separately:
+  Release-build FPS testing showed the half-res compute move hadn't changed SURFACE performance at
+  all (unchanged across the whole session, through every cloud-march fix) — `coverage=0` testing
+  confirmed clouds were still the dominant surface cost anyway, pointing at `cloudShadowFactor()`
+  (full-res cloud-shadow-on-terrain/ocean, untouched all session) as the real bottleneck. Removed
+  outright per user decision (cloud shadowing on terrain isn't in use) rather than optimized — its
+  `CloudParams` UBO slot reverted to `pad0`. See `TERRAIN_PLAN.md` session 23 log for both fixes.
+- **Terrain/ocean/atmosphere perf follow-up (session 24):** fixed a real regression — the terrain
+  march's altitude-scaled step count was `mix(320.0, 320.0, ...)` (a no-op, always paid the
+  LEO-tuned 320-step budget at ground level too), restored to `mix(196.0, 320.0, ...)` matching its
+  own comment. Also made 5 previously-hardcoded quality constants UBO-tunable (new sliders, all
+  defaulting to prior fixed behavior): `N_VIEW`/`N_LIGHT` (main atmosphere loop, `cloud.viewSamples`/
+  `lightSamples` — this loop runs on **every pixel unconditionally**, terrain/ocean/cloud/satellite/
+  empty space alike, and is the current lead suspect for the biggest remaining cost, pending the
+  user's slider test) and ocean's `seaMap`/`seaMapDetail` octave counts + reflection sample count
+  (`cloud.oceanSeaOctaves`/`oceanDetailOctaves`/`oceanReflSamples`). `CloudParams` grew 208→224
+  bytes. A transmittance LUT (replacing `optDepth`'s inner march with a texture fetch) is the
+  natural next step **if** the `lightSamples` slider test confirms it's worth it — not built
+  speculatively. See `TERRAIN_PLAN.md` session 24 log.
 - `SatDrawPC` is 128 bytes: `obsECEFDir (vec4)` at offset 112 (observer ECEF unit vector)
-- Sky descriptor set has 10 bindings (0-9): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO
+- Sky descriptor set has 12 bindings (0-11): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
-- `sat_sky.frag` ground path: 96-step quadratic terrain march + 12-step binary search;
-  terrain hits use gradient-computed normals; sea-level sphere fallback; satellites/stars
-  depth-tested against terrain (gl_FragDepth: close terrain → [0, 0.5), sky → 1.0)
-- Ocean wave material: specular map (binding 6) gates two-octave noise wave normals +
+- `sat_sky.frag` ground path: up to 196 (ground) to 320 (LEO+) altitude-scaled quadratic terrain
+  march steps + 12-step binary search; terrain hits use gradient-computed normals; sea-level sphere
+  fallback; satellites/stars depth-tested against terrain (gl_FragDepth: close terrain → [0, 0.5),
+  sky → 1.0)
+- Ocean wave material: specular map (binding 6) gates UBO-tunable-octave noise wave normals +
   Blinn-Phong sun glint (exp=300) + Schlick Fresnel on sea-level sphere hits
 - **Volumetric clouds (C7+C8):** shell march with full C8 lighting:
   - `cloudDensity` takes two UVW args — `uvwPresence` (Z=posZ) for Perlin R threshold,

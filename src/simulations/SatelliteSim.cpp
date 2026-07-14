@@ -140,11 +140,14 @@ void SatelliteSim::init(VulkanContext &ctx)
 
     createBuffers(ctx);
     createCloudNoisePipeline(ctx);
+    createCloudMarchResources(ctx); // images must exist before createGlowResources' writes (bindings 10/11)
     createGlowResources(ctx);
     createDescriptors(ctx);
     createComputePipeline(ctx);
     createOrbitDescriptors(ctx);
     createOrbitPipeline(ctx);
+    createCloudMarchDescriptors(ctx); // needs cloudParamsBuf from createGlowResources above
+    createCloudMarchPipeline(ctx);
     createSkyBgPipeline(ctx);
     createDrawPipeline(ctx);
     updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay); // must run first — initConstellation reads sunDirECI
@@ -168,6 +171,40 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     vkDestroyPipeline(ctx.device, starPipeline, nullptr);
     starPipeline = VK_NULL_HANDLE;
     createStarPipeline(ctx);
+
+    // ── Half-res cloud march targets (C15-perf) — the only swapchain-size-dependent images this
+    // class owns; recreate at the new half-extent, then patch the two descriptor sets that point
+    // at their views (the sampler is resolution-independent and kept as-is). Safe with no extra
+    // synchronization: this app has exactly one frame in flight (single fence, waited on at the
+    // top of every drawFrame), matching the unsynchronized pipeline recreation just above.
+    vkDestroyImageView(ctx.device, cloudMarchTargetAView, nullptr);
+    vkDestroyImage(ctx.device, cloudMarchTargetAImg, nullptr);
+    vkFreeMemory(ctx.device, cloudMarchTargetAMem, nullptr);
+    vkDestroyImageView(ctx.device, cloudMarchTargetBView, nullptr);
+    vkDestroyImage(ctx.device, cloudMarchTargetBImg, nullptr);
+    vkFreeMemory(ctx.device, cloudMarchTargetBMem, nullptr);
+    cloudMarchTargetAImg = cloudMarchTargetBImg = VK_NULL_HANDLE;
+    cloudMarchTargetAMem = cloudMarchTargetBMem = VK_NULL_HANDLE;
+    cloudMarchTargetAView = cloudMarchTargetBView = VK_NULL_HANDLE;
+    createCloudMarchResources(ctx); // recreates images/views; leaves both in SHADER_READ_ONLY_OPTIMAL
+
+    VkDescriptorImageInfo skyAInfo{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo skyBInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet skyWrites[2] = {};
+    skyWrites[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, skyDescSet, 10, 0, 1,
+                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &skyAInfo, nullptr, nullptr};
+    skyWrites[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, skyDescSet, 11, 0, 1,
+                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &skyBInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 2, skyWrites, 0, nullptr);
+
+    VkDescriptorImageInfo storageAInfo{VK_NULL_HANDLE, cloudMarchTargetAView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo storageBInfo{VK_NULL_HANDLE, cloudMarchTargetBView, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet computeWrites[2] = {};
+    computeWrites[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 5, 0, 1,
+                        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &storageAInfo, nullptr, nullptr};
+    computeWrites[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 6, 0, 1,
+                        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &storageBInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 2, computeWrites, 0, nullptr);
 }
 
 // ─── recordCompute ────────────────────────────────────────────────────────────
@@ -268,6 +305,116 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         peakMagnitude = (maxFlare > 0.0f)
                             ? kMagRef - 2.5f * std::log10f(maxFlare / kMagRefFlare)
                             : 99.0f;
+    }
+
+    // ── Observer terrain height + cloud params UBO fill (relocated from recordDraw) ─────────
+    // cloud_march.comp's dispatch below needs fresh CloudParams/obsEffH data, but it must run
+    // before the render pass begins (recordCompute), which is BEFORE recordDraw used to compute
+    // either of these. Both are pure CPU/mapped-memory state with no dependency on anything else
+    // in recordDraw, so relocating them here is a straightforward move — and both must run before
+    // the `activeSatCount == 0` early-out above's return would otherwise skip clouds entirely
+    // whenever no satellites are active. Note: pc.obsECEFDir.w (used by both this dispatch and
+    // recordDraw's SatDrawPC) is obsHeightOffset ONLY, not obsTerrainH+obsHeightOffset — obsEffH
+    // below computes the max explicitly rather than trusting that combination.
+    if (!earthElevCpu.empty())
+    {
+        float latRad = glm::radians(obsLatDeg);
+        float lonRad = glm::radians(obsLonDeg);
+        float u = (lonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
+        float v = (0.5f * glm::pi<float>() - latRad) / glm::pi<float>();
+        int px = (int)(u * (float)earthElevCpuW) % earthElevCpuW;
+        int py = std::min((int)(v * (float)earthElevCpuH), earthElevCpuH - 1);
+        float pixVal = earthElevCpu[py * earthElevCpuW + px] / 255.0f;
+        // DEM ocean baseline is 15/255; subtract it so sea-level land maps to 0 m.
+        const float kSeaLevel = 15.0f / 255.0f;
+        obsTerrainH = (pixVal <= kSeaLevel) ? 0.0f : std::max(0.0f, (pixVal - kSeaLevel) * 8848.0f);
+    }
+
+    if (cloudParamsMapped)
+    {
+        GpuCloudParams cp{};
+        cp.coverage = cloudCoverage;
+        cp.density = cloudDensity;
+        cp.driftRate = cloudDriftRate;
+        cp.sunGain = cloudSunGain;
+        cp.ambientGain = cloudAmbientGain;
+        cp.hgG = cloudHgG;
+        cp.marchSteps = cloudMarchSteps;
+        cp.lightSteps = cloudLightSteps;
+        cp.cirrusWindAngle = glm::radians(cloudCirrusWindDeg);
+        cp.cirrusStretch = cloudCirrusStretch;
+        cp.airglowGain = airglowGain;
+        cp.airglowGreenGain = airglowGreenGain;
+        cp.airglowRedGain = airglowRedGain;
+        cp.airglowSodiumGain = airglowSodiumGain;
+        cp.shadowMaxDistM = cloudShadowMaxDistM;
+        cp.maxRenderDistM = cloudMaxRenderDistM;
+        cp.viewSamples = viewSamples;
+        cp.lightSamples = lightSamples;
+        cp.oceanSeaOctaves = oceanSeaOctaves;
+        cp.oceanDetailOctaves = oceanDetailOctaves;
+        cp.oceanReflSamples = oceanReflSamples;
+        cp.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
+                                    glm::two_pi<double>());
+        // Layer 0: low cloud / stratus shell
+        cp.layers[0] = {cloudBaseAltM, 1.0f, 0.80f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f};
+        // Layer 1: high cirrus shell
+        cp.layers[1] = {cloudTopAltM, 2.0f, 0.15f, 2.0f, 0.5f, 0.4f, 1.0f, 0.0f};
+        // Layers 2-3: unused
+        cp.layers[2] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        cp.layers[3] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+        memcpy(cloudParamsMapped, &cp, sizeof(cp));
+    }
+
+    // ── Dispatch: cloud_march.comp — half-resolution cloud/cirrus march (C15-perf) ──────────
+    // Runs at half ctx.swapExtent, writing cloudMarchTargetA/B; sat_sky.frag samples them
+    // (skyDescSet bindings 10/11) in place of the old inline cirrusMarch()/cloudMarch() calls.
+    {
+        CloudMarchPC cpc{};
+        cpc.skyView = camera.viewMatrix();
+        cpc.fovYRad = glm::radians(camera.fovYDeg);
+        cpc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
+        cpc.waveTime = (float)(simSecInDay * 1.0);
+        cpc.obsEffH = std::max(obsTerrainH, obsHeightOffset);
+        cpc.sunDirENU = sunDirENU;
+        cpc.moonDirENU = moonDirENU;
+        cpc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
+
+        uint32_t halfW = (ctx.swapExtent.width + 1) / 2;
+        uint32_t halfH = (ctx.swapExtent.height + 1) / 2;
+
+        // Pre-dispatch: both targets are left in SHADER_READ_ONLY_OPTIMAL after the previous
+        // frame's post-dispatch barrier below (or by createCloudMarchResources on the first frame
+        // / after an onResize recreation) — transition back to GENERAL, required for storage-image
+        // writes (imageStore).
+        ctx.imageBarrier(cmd, cloudMarchTargetAImg,
+                         VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        ctx.imageBarrier(cmd, cloudMarchTargetBImg,
+                         VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cloudMarchPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                cloudMarchPipeLayout, 0, 1, &cloudMarchDescSet, 0, nullptr);
+        vkCmdPushConstants(cmd, cloudMarchPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(cpc), &cpc);
+        vkCmdDispatch(cmd, (halfW + 15) / 16, (halfH + 15) / 16, 1);
+
+        // Post-dispatch: transition both targets back to SHADER_READ_ONLY_OPTIMAL for
+        // sat_sky.frag to sample. Explicit layout-transition barriers — the render pass's
+        // existing VK_SUBPASS_EXTERNAL dependency (used for glowBuf) has no layout fields and
+        // cannot perform a layout transition on its own.
+        ctx.imageBarrier(cmd, cloudMarchTargetAImg,
+                         VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                         VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        ctx.imageBarrier(cmd, cloudMarchTargetBImg,
+                         VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                         VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
 
     if (activeSatCount == 0)
@@ -409,54 +556,10 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
     pc.waveTime = simSecInDay * 1.0;
     pc.sunDirENU = sunDirENU;
     pc.moonDirENU = moonDirENU; // xyz = moon dir in ENU, w = illuminated fraction
-    // Sample terrain elevation at observer lat/lon from the CPU downsampled map.
-    if (!earthElevCpu.empty())
-    {
-        float latRad = glm::radians(obsLatDeg);
-        float lonRad = glm::radians(obsLonDeg);
-        float u = (lonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
-        float v = (0.5f * glm::pi<float>() - latRad) / glm::pi<float>();
-        int px = (int)(u * (float)earthElevCpuW) % earthElevCpuW;
-        int py = std::min((int)(v * (float)earthElevCpuH), earthElevCpuH - 1);
-        float pixVal = earthElevCpu[py * earthElevCpuW + px] / 255.0f;
-        // DEM ocean baseline is 15/255; subtract it so sea-level land maps to 0 m.
-        const float kSeaLevel = 15.0f / 255.0f;
-        obsTerrainH = (pixVal <= kSeaLevel) ? 0.0f : std::max(0.0f, (pixVal - kSeaLevel) * 8848.0f);
-    }
+    // obsTerrainH and the CloudParams UBO fill both moved to recordCompute() — the new
+    // cloud_march.comp dispatch there needs them before this function even runs. See the
+    // comment at that relocation site for why.
     pc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset); // w = user altitude offset above terrain (m); GPU computes ground height
-
-    // ── Update cloud params UBO (binding 9) ──────────────────────────────────
-    if (cloudParamsMapped)
-    {
-        GpuCloudParams cp{};
-        cp.coverage = cloudCoverage;
-        cp.density = cloudDensity;
-        cp.driftRate = cloudDriftRate;
-        cp.sunGain = cloudSunGain;
-        cp.ambientGain = cloudAmbientGain;
-        cp.hgG = cloudHgG;
-        cp.marchSteps = cloudMarchSteps;
-        cp.lightSteps = cloudLightSteps;
-        cp.shadowSteps = cloudShadowSteps;
-        cp.cirrusWindAngle = glm::radians(cloudCirrusWindDeg);
-        cp.cirrusStretch = cloudCirrusStretch;
-        cp.airglowGain = airglowGain;
-        cp.airglowGreenGain = airglowGreenGain;
-        cp.airglowRedGain = airglowRedGain;
-        cp.airglowSodiumGain = airglowSodiumGain;
-        cp.shadowMaxDistM = cloudShadowMaxDistM;
-        cp.maxRenderDistM = cloudMaxRenderDistM;
-        cp.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
-                                    glm::two_pi<double>());
-        // Layer 0: low cloud / stratus shell
-        cp.layers[0] = {cloudBaseAltM, 1.0f, 0.80f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f};
-        // Layer 1: high cirrus shell
-        cp.layers[1] = {cloudTopAltM, 2.0f, 0.15f, 2.0f, 0.5f, 0.4f, 1.0f, 0.0f};
-        // Layers 2-3: unused
-        cp.layers[2] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-        cp.layers[3] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-        memcpy(cloudParamsMapped, &cp, sizeof(cp));
-    }
 
     // ── Pass 1: sky/ground background (fullscreen triangle, opaque) ──────────
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyBgPipeline);
@@ -1728,7 +1831,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     const char *fmt;
                     int idx;
                 };
-                static char cloudBufs[19][16];
+                static char cloudBufs[23][16];
                 CloudSlider cloudSliders[] = {
                     {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
                     {"Density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
@@ -1740,15 +1843,19 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     {"HG g", &cloudHgG, 0.0f, 0.99f, 0.05f, "%.2f", 7},
                     {"March steps", &cloudMarchSteps, 4.0f, 1024.0f, 4.0f, "%.0f", 8},
                     {"Light steps", &cloudLightSteps, 1.0f, 16.0f, 1.0f, "%.0f", 9},
-                    {"Shadow steps", &cloudShadowSteps, 4.0f, 64.0f, 2.0f, "%.0f", 10},
-                    {"Cirrus wind (deg)", &cloudCirrusWindDeg, 0.0f, 360.0f, 5.0f, "%.0f", 11},
-                    {"Cirrus stretch", &cloudCirrusStretch, 1.0f, 10.0f, 0.5f, "%.1f", 12},
-                    {"Airglow gain", &airglowGain, 0.0f, 5.0f, 0.1f, "%.2f", 13},
-                    {"Airglow green", &airglowGreenGain, 0.0f, 3.0f, 0.1f, "%.2f", 14},
-                    {"Airglow red", &airglowRedGain, 0.0f, 3.0f, 0.1f, "%.2f", 15},
-                    {"Airglow sodium", &airglowSodiumGain, 0.0f, 3.0f, 0.1f, "%.2f", 16},
-                    {"Shadow max dist (m)", &cloudShadowMaxDistM, 1000.0f, 60000.0f, 1000.0f, "%.0f", 17},
-                    {"Render dist (m)", &cloudMaxRenderDistM, 20000.0f, 400000.0f, 10000.0f, "%.0f", 18},
+                    {"Cirrus wind (deg)", &cloudCirrusWindDeg, 0.0f, 360.0f, 5.0f, "%.0f", 10},
+                    {"Cirrus stretch", &cloudCirrusStretch, 1.0f, 10.0f, 0.5f, "%.1f", 11},
+                    {"Airglow gain", &airglowGain, 0.0f, 5.0f, 0.1f, "%.2f", 12},
+                    {"Airglow green", &airglowGreenGain, 0.0f, 3.0f, 0.1f, "%.2f", 13},
+                    {"Airglow red", &airglowRedGain, 0.0f, 3.0f, 0.1f, "%.2f", 14},
+                    {"Airglow sodium", &airglowSodiumGain, 0.0f, 3.0f, 0.1f, "%.2f", 15},
+                    {"Shadow max dist (m)", &cloudShadowMaxDistM, 1000.0f, 60000.0f, 1000.0f, "%.0f", 16},
+                    {"Render dist (m)", &cloudMaxRenderDistM, 20000.0f, 400000.0f, 10000.0f, "%.0f", 17},
+                    {"View samples", &viewSamples, 8.0f, 124.0f, 4.0f, "%.0f", 18},
+                    {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 19},
+                    {"Sea octaves", &oceanSeaOctaves, 1.0f, 3.0f, 1.0f, "%.0f", 20},
+                    {"Detail octaves", &oceanDetailOctaves, 1.0f, 5.0f, 1.0f, "%.0f", 21},
+                    {"Refl samples", &oceanReflSamples, 1.0f, 6.0f, 1.0f, "%.0f", 22},
                 };
                 for (auto &cs : cloudSliders)
                 {
@@ -2034,6 +2141,11 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyPipelineLayout(device, orbitPipeLayout, nullptr);
     vkDestroyDescriptorPool(device, orbitDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, orbitDescLayout, nullptr);
+    // ── Cloud march pipeline (C15-perf) ────────────────────────────────────────
+    vkDestroyPipeline(device, cloudMarchPipeline, nullptr);
+    vkDestroyPipelineLayout(device, cloudMarchPipeLayout, nullptr);
+    vkDestroyDescriptorPool(device, cloudMarchDescPool, nullptr);
+    vkDestroyDescriptorSetLayout(device, cloudMarchDescLayout, nullptr);
     // ── Flare + draw + sky pipelines ───────────────────────────────────────────
     vkDestroyPipeline(device, compPipeline, nullptr);
     vkDestroyPipeline(device, skyBgPipeline, nullptr);
@@ -2215,6 +2327,41 @@ void SatelliteSim::cleanup(VkDevice device)
     {
         vkFreeMemory(device, cloudParamsMem, nullptr);
         cloudParamsMem = VK_NULL_HANDLE;
+    }
+    if (cloudMarchSampler)
+    {
+        vkDestroySampler(device, cloudMarchSampler, nullptr);
+        cloudMarchSampler = VK_NULL_HANDLE;
+    }
+    if (cloudMarchTargetAView)
+    {
+        vkDestroyImageView(device, cloudMarchTargetAView, nullptr);
+        cloudMarchTargetAView = VK_NULL_HANDLE;
+    }
+    if (cloudMarchTargetAImg)
+    {
+        vkDestroyImage(device, cloudMarchTargetAImg, nullptr);
+        cloudMarchTargetAImg = VK_NULL_HANDLE;
+    }
+    if (cloudMarchTargetAMem)
+    {
+        vkFreeMemory(device, cloudMarchTargetAMem, nullptr);
+        cloudMarchTargetAMem = VK_NULL_HANDLE;
+    }
+    if (cloudMarchTargetBView)
+    {
+        vkDestroyImageView(device, cloudMarchTargetBView, nullptr);
+        cloudMarchTargetBView = VK_NULL_HANDLE;
+    }
+    if (cloudMarchTargetBImg)
+    {
+        vkDestroyImage(device, cloudMarchTargetBImg, nullptr);
+        cloudMarchTargetBImg = VK_NULL_HANDLE;
+    }
+    if (cloudMarchTargetBMem)
+    {
+        vkFreeMemory(device, cloudMarchTargetBMem, nullptr);
+        cloudMarchTargetBMem = VK_NULL_HANDLE;
     }
     vkDestroyBuffer(device, glowBuf, nullptr);
     vkFreeMemory(device, glowMem, nullptr);
@@ -2745,6 +2892,156 @@ void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
     vkDestroyPipelineLayout(ctx.device, bakePipeLayout, nullptr);
     vkDestroyDescriptorPool(ctx.device, bakePool, nullptr);
     vkDestroyDescriptorSetLayout(ctx.device, bakeDescLayout, nullptr);
+}
+
+// ─── createCloudMarchResources ────────────────────────────────────────────────
+// Two half-resolution RGBA16F storage+sampled images written by cloud_march.comp each frame.
+// Unlike cloudNoiseImg's bake-once volume, these are swapchain-size-dependent — recreated in
+// onResize (see there for the matching descriptor-set patch).
+void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
+{
+    uint32_t w = (ctx.swapExtent.width + 1) / 2;
+    uint32_t h = (ctx.swapExtent.height + 1) / 2;
+
+    auto createTarget = [&](VkImage &img, VkDeviceMemory &mem, VkImageView &view)
+    {
+        ctx.createImage(w, h, VK_FORMAT_R16G16B16A16_SFLOAT,
+                        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                        img, mem);
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = img;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCreateImageView(ctx.device, &vci, nullptr, &view);
+    };
+    createTarget(cloudMarchTargetAImg, cloudMarchTargetAMem, cloudMarchTargetAView);
+    createTarget(cloudMarchTargetBImg, cloudMarchTargetBMem, cloudMarchTargetBView);
+
+    // Bilinear, clamp-to-edge — resolution-independent, created once and reused across resizes.
+    if (!cloudMarchSampler)
+    {
+        VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        sci.magFilter = VK_FILTER_LINEAR;
+        sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.maxLod = 0.0f;
+        vkCreateSampler(ctx.device, &sci, nullptr, &cloudMarchSampler);
+    }
+
+    // Leave both images in SHADER_READ_ONLY_OPTIMAL — the layout createGlowResources' descriptor
+    // write (bindings 10/11) declares and the layout recordCompute's per-frame pre-dispatch
+    // barrier expects to transition FROM (see recordCompute: SHADER_READ_ONLY_OPTIMAL → GENERAL
+    // before each dispatch, back to SHADER_READ_ONLY_OPTIMAL after — this call only establishes
+    // that starting state once, for both init and after an onResize recreation).
+    auto cmd = ctx.beginOneTimeCommands();
+    ctx.imageBarrier(cmd, cloudMarchTargetAImg, 0, VK_ACCESS_SHADER_READ_BIT,
+                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    ctx.imageBarrier(cmd, cloudMarchTargetBImg, 0, VK_ACCESS_SHADER_READ_BIT,
+                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    ctx.endOneTimeCommands(cmd);
+}
+
+// ─── createCloudMarchDescriptors ──────────────────────────────────────────────
+// Descriptor set for cloud_march.comp:
+//   binding 0  earthCloudsTex  (sampler2D)
+//   binding 1  cloudNoiseTex   (sampler3D)
+//   binding 2  earthNightTex   (sampler2D)
+//   binding 3  noiseTex        (sampler2D)
+//   binding 4  CloudParams UBO (same underlying buffer as skyDescSet binding 9)
+//   binding 5  targetA (storage image, rgba16f)
+//   binding 6  targetB (storage image, rgba16f)
+// Requires createGlowResources() to already have run (needs cloudParamsBuf, earthClouds/Night
+// textures) — see init() ordering.
+void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
+{
+    VkDescriptorSetLayoutBinding bindings[7] = {};
+    bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[3] = {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[4] = {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[6] = {6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = 7;
+    li.pBindings = bindings;
+    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &cloudMarchDescLayout);
+
+    VkDescriptorPoolSize ps[3] = {
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2}};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.poolSizeCount = 3;
+    pi.pPoolSizes = ps;
+    pi.maxSets = 1;
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &cloudMarchDescPool);
+
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = cloudMarchDescPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &cloudMarchDescLayout;
+    vkAllocateDescriptorSets(ctx.device, &ai, &cloudMarchDescSet);
+
+    VkDescriptorImageInfo cloudsInfo{earthCloudsSampler, earthCloudsView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo noise3DInfo{cloudNoiseSampler, cloudNoiseView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo nightInfo{earthNightSampler, earthNightView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo noiseInfo{noiseSampler, noiseTexView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo cloudParamsInfo{cloudParamsBuf, 0, sizeof(GpuCloudParams)};
+    VkDescriptorImageInfo targetAInfo{VK_NULL_HANDLE, cloudMarchTargetAView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo targetBInfo{VK_NULL_HANDLE, cloudMarchTargetBView, VK_IMAGE_LAYOUT_GENERAL};
+
+    VkWriteDescriptorSet writes[7] = {};
+    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 0, 0, 1,
+                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudsInfo, nullptr, nullptr};
+    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 1, 0, 1,
+                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &noise3DInfo, nullptr, nullptr};
+    writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 2, 0, 1,
+                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &nightInfo, nullptr, nullptr};
+    writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 3, 0, 1,
+                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &noiseInfo, nullptr, nullptr};
+    writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 4, 0, 1,
+                 VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &cloudParamsInfo, nullptr};
+    writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 5, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &targetAInfo, nullptr, nullptr};
+    writes[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 6, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &targetBInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 7, writes, 0, nullptr);
+}
+
+// ─── createCloudMarchPipeline ──────────────────────────────────────────────────
+void SatelliteSim::createCloudMarchPipeline(VulkanContext &ctx)
+{
+    VkShaderModule mod = ctx.loadShader("shaders/cloud_march.comp.spv");
+
+    VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = mod;
+    stage.pName = "main";
+
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CloudMarchPC)};
+
+    VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    li.setLayoutCount = 1;
+    li.pSetLayouts = &cloudMarchDescLayout;
+    li.pushConstantRangeCount = 1;
+    li.pPushConstantRanges = &pcr;
+    vkCreatePipelineLayout(ctx.device, &li, nullptr, &cloudMarchPipeLayout);
+
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage = stage;
+    ci.layout = cloudMarchPipeLayout;
+    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &cloudMarchPipeline) != VK_SUCCESS)
+        throw std::runtime_error("SatelliteSim: failed to create cloud_march compute pipeline");
+
+    vkDestroyShaderModule(ctx.device, mod, nullptr);
 }
 
 // ─── createSkyBgPipeline ──────────────────────────────────────────────────────
@@ -3297,8 +3594,8 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         memset(cloudParamsMapped, 0, sz);
     }
 
-    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO
-    VkDescriptorSetLayoutBinding bindings[10] = {};
+    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B
+    VkDescriptorSetLayoutBinding bindings[12] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -3309,14 +3606,16 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     bindings[7] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[8] = {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudNoise sampler3D
     bindings[9] = {9, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[10] = {10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // half-res cloud march target A
+    bindings[11] = {11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // half-res cloud march target B
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 10;
+    li.bindingCount = 12;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
     VkDescriptorPoolSize ps[3] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
     };
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -3349,8 +3648,10 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     VkDescriptorImageInfo cloudsImgInfo{cloudsSamplerFinal, cloudsViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cloudNoiseImgInfo{cloudNoiseSampler, cloudNoiseView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo cloudParamsInfo{cloudParamsBuf, 0, sizeof(GpuCloudParams)};
+    VkDescriptorImageInfo cloudMarchAImgInfo{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo cloudMarchBImgInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    VkWriteDescriptorSet writes[10] = {};
+    VkWriteDescriptorSet writes[12] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = skyDescSet;
     writes[0].dstBinding = 0;
@@ -3411,7 +3712,19 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     writes[9].descriptorCount = 1;
     writes[9].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[9].pBufferInfo = &cloudParamsInfo;
-    vkUpdateDescriptorSets(ctx.device, 10, writes, 0, nullptr);
+    writes[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[10].dstSet = skyDescSet;
+    writes[10].dstBinding = 10;
+    writes[10].descriptorCount = 1;
+    writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[10].pImageInfo = &cloudMarchAImgInfo;
+    writes[11].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[11].dstSet = skyDescSet;
+    writes[11].dstBinding = 11;
+    writes[11].descriptorCount = 1;
+    writes[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[11].pImageInfo = &cloudMarchBImgInfo;
+    vkUpdateDescriptorSets(ctx.device, 12, writes, 0, nullptr);
 }
 
 // Fullscreen triangle that colors pixels sky or ground based on camera elevation.
@@ -4349,7 +4662,6 @@ void SatelliteSim::loadSettings()
         cloudHgG = c.value("hg_g", cloudHgG);
         cloudMarchSteps = c.value("march_steps", cloudMarchSteps);
         cloudLightSteps = c.value("light_steps", cloudLightSteps);
-        cloudShadowSteps = c.value("shadow_steps", cloudShadowSteps);
         cloudCirrusWindDeg = c.value("cirrus_wind_deg", cloudCirrusWindDeg);
         cloudCirrusStretch = c.value("cirrus_stretch", cloudCirrusStretch);
         airglowGain = c.value("airglow_gain", airglowGain);
@@ -4358,6 +4670,11 @@ void SatelliteSim::loadSettings()
         airglowSodiumGain = c.value("airglow_sodium_gain", airglowSodiumGain);
         cloudShadowMaxDistM = c.value("shadow_max_dist_m", cloudShadowMaxDistM);
         cloudMaxRenderDistM = c.value("max_render_dist_m", cloudMaxRenderDistM);
+        viewSamples = c.value("view_samples", viewSamples);
+        lightSamples = c.value("light_samples", lightSamples);
+        oceanSeaOctaves = c.value("ocean_sea_octaves", oceanSeaOctaves);
+        oceanDetailOctaves = c.value("ocean_detail_octaves", oceanDetailOctaves);
+        oceanReflSamples = c.value("ocean_refl_samples", oceanReflSamples);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -4412,7 +4729,6 @@ void SatelliteSim::saveSettings()
         {"hg_g", cloudHgG},
         {"march_steps", cloudMarchSteps},
         {"light_steps", cloudLightSteps},
-        {"shadow_steps", cloudShadowSteps},
         {"cirrus_wind_deg", cloudCirrusWindDeg},
         {"cirrus_stretch", cloudCirrusStretch},
         {"airglow_gain", airglowGain},
@@ -4420,7 +4736,12 @@ void SatelliteSim::saveSettings()
         {"airglow_red_gain", airglowRedGain},
         {"airglow_sodium_gain", airglowSodiumGain},
         {"shadow_max_dist_m", cloudShadowMaxDistM},
-        {"max_render_dist_m", cloudMaxRenderDistM}};
+        {"max_render_dist_m", cloudMaxRenderDistM},
+        {"view_samples", viewSamples},
+        {"light_samples", lightSamples},
+        {"ocean_sea_octaves", oceanSeaOctaves},
+        {"ocean_detail_octaves", oceanDetailOctaves},
+        {"ocean_refl_samples", oceanReflSamples}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

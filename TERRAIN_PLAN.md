@@ -7,14 +7,33 @@ clouds, and orbital camera mode. Read this at the start of any terrain-related s
 
 ## Immediate Next Step
 
-**C16 — Aurora (geomagnetic curtain primitive).** See Phase E below for the full spec. C15
-(airglow) is complete — see session log entry below before starting; note the actual
-implementation deviated from the original "ride the N_VIEW loop for all three bands" plan (red
-needed its own supplemental march — see log for why) and C16 should expect a similar need to
-re-derive the concrete approach from the current shader rather than the original C13-era plan text.
+**Performance data point needed (session 24 follow-up):** the user needs to re-benchmark ground-
+level FPS (Release build, same spots as before) now that `N_VIEW`/`N_LIGHT`/ocean quality are
+UBO-tunable sliders, and specifically test dropping `Light samples`. If that alone recovers a lot
+of FPS, the next task is a real transmittance LUT (2D texture, altitude × sun-angle, replacing
+`optDepth`'s inner march at its 4 call sites in `sat_sky.frag`) — see session 24 log for why this
+wasn't just built speculatively. Not yet started.
+
+**C16 — Aurora (geomagnetic curtain primitive)** remains the next content feature once perf work
+settles. See Phase E below for the full spec. C15 (airglow) is complete — see session log entry
+before starting; note the actual implementation deviated from the original "ride the N_VIEW loop
+for all three bands" plan (red needed its own supplemental march — see log for why) and C16 should
+expect a similar need to re-derive the concrete approach from the current shader rather than the
+original C13-era plan text. Also note `N_VIEW` is no longer a compile-time constant (session 24) —
+any new code referencing it must read `cloud.viewSamples` via the same locally-computed-`int`
+pattern the existing loop now uses, not assume a fixed 124.
 
 C14 (anvil) remains not started; it was deliberately deferred again in favor of C15 per the
 2026-07-12 session, and can be picked up whenever — it has no dependency on C15/C16.
+
+**Architecture note for any future cloud/C16 work (session 23, 2026-07-13):** `cloudMarch()` and
+`cirrusMarch()` no longer live in `sat_sky.frag` — they moved to a new half-resolution compute
+shader, `shaders/cloud_march.comp`, dispatched once per frame in `recordCompute()`. `sat_sky.frag`
+now samples two precomputed `RGBA16_SFLOAT` targets (bindings 10/11) instead of marching per full-
+res pixel. See the session log entry below for the full design (why two targets, the combined-
+attenuation algebra, the accepted terrain-occlusion approximation) before touching cloud code —
+the architecture changed enough that assumptions from C7-C15 sessions about "the cloud march runs
+in the sky fragment shader" no longer hold.
 
 ---
 
@@ -438,6 +457,174 @@ structural change.
 ---
 
 ## Session Log
+
+### 2026-07-13 (session 23)
+- **Half-resolution cloud compute pass — biggest architecture change to `sat_sky.frag` to date.**
+  User's core ask: clouds are soft/low-frequency, don't need full-res per-pixel marching; move the
+  march to a cheaper resolution and composite/upsample. Full design work happened in Plan mode
+  (two research passes — one direct codebase exploration, one independent design-validation pass
+  that caught two real bugs before any code was written) and the approved plan is preserved at
+  the session's plan file (not in this repo). Implementation:
+  - **New `shaders/cloud_march.comp`**, dispatched once per frame in `recordCompute()` (before the
+    render pass — required, since compute dispatches can't happen inside one) at half
+    `ctx.swapExtent` in each dimension (1/4 the pixels). `cloudMarch()`/`cirrusMarch()` (plus
+    `cirrusWindAngleAt`/`cirrusDomainWarp`, exclusive to cirrus) **moved** here wholesale, deleted
+    from `sat_sky.frag`. A handful of shared primitives (`raySphere`, `phaseM`, `phaseCloud`,
+    `optDepth`, `remap`, `rotateZ`, `cityBrightness`, `cloudDensity`, `cloudWarpOffset`, the
+    `warpPerlin3` noise chain) are **duplicated**, not moved — this codebase has no `#include`
+    mechanism, and every one of these is also used elsewhere in `sat_sky.frag` (verified by
+    grepping every call site before deleting anything — `cloudDensity`/`cloudWarpOffset` looked
+    cloud-exclusive but are also used by `cloudShadowFactor`, the ground/ocean cloud-shadow pass,
+    which stays in the fragment shader).
+  - **Restructured, not just relocated:** the original functions mutated an `inout vec3 color`.
+    The compute-shader copies (`cloudMarchCS`/`cirrusMarchCS`) instead **return** their affine
+    composite as an `(A, B)` pair (`color_out = color_in*A + B`), so cirrus-then-cloud combine
+    algebraically into one `(A_total, B_total)` — exact, not an approximation:
+    `A_total = A_cirrus*A_cloud`, `B_total = B_cirrus*A_cloud + B_cloud`.
+  - **Two `RGBA16_SFLOAT` output images** (`cloudMarchTargetA/B`, new members in
+    `SatelliteSim.h`): Target A = `B_total` (additive radiance) + `tCloudOcclude` (alpha, meters,
+    -1 = none — only `cloudMarch` sets this, only when ≥90% opaque). Target B = `A_total`
+    (multiplicative attenuation, kept full-color — reducing to scalar would desaturate sunset edge
+    tinting) + `cloudBlock` (alpha, `dot(cloudTOut, 1/3)`, feeds the existing post-tonemap sun-
+    disc-dimming term at `sat_sky.frag` line ~1746 exactly as the old `cloudTFinal` local did).
+  - **No terrain data in the compute shader** — it always marches the shell's full potential
+    extent (no `earthElevTex`/`earthSpecTex`, no terrain march, ~320 steps avoided). `sat_sky.frag`
+    does a post-hoc correction instead: if its own accurate `tSurface` is closer than the sampled
+    `tCloudOcclude`, suppress the whole cloud contribution for that pixel. **Known, accepted
+    approximation** (not a bug): exact for "terrain fully blocks an opaque cloud," not for a
+    mid-shell partial truncation (a mountain ridge poking into the shell — `cloudBaseAltM` default
+    6000m is well below Everest's 9000m) or for wispy/sub-90%-opacity cloud (which never sets
+    `tCloudOcclude` at all). Clouds can visibly extend slightly past a nearby ridge silhouette at
+    ground level; largely irrelevant for the primary orbit/LEO motivation.
+  - **CPU-side sequencing fix required**: the `CloudParams` UBO fill and the `obsTerrainH` CPU
+    elevation lookup both used to happen in `recordDraw()` — too late, since the new compute
+    dispatch needs them and runs in `recordCompute()`, which executes first. Both blocks
+    **relocated** into `recordCompute()` (placed before the `activeSatCount == 0` early-return, so
+    clouds don't silently stop rendering whenever no satellites are active). New `CloudMarchPC`
+    push-constant struct (128 bytes, mirrors `SatDrawPC`'s shape) carries `obsEffH =
+    max(obsTerrainH, obsHeightOffset)` explicitly — `pc.obsECEFDir.w` is `obsHeightOffset` *only*,
+    a stale comment elsewhere claiming otherwise was not trusted.
+  - **Two explicit `ctx.imageBarrier` calls per target, twice per frame** (before AND after the
+    dispatch — four barriers total): storage-image writes require `VK_IMAGE_LAYOUT_GENERAL`,
+    sampling requires `SHADER_READ_ONLY_OPTIMAL`, and the render pass's existing
+    `VK_SUBPASS_EXTERNAL` dependency (the one that already covers `glowBuf`) has no layout fields
+    and cannot perform this transition — confirmed by reading `VulkanContext.cpp`'s subpass
+    dependency struct before relying on it.
+  - New descriptor set (`cloudMarchDescLayout/Pool/Set`, 7 bindings: `earthCloudsTex`,
+    `cloudNoiseTex`, `earthNightTex`, `noiseTex`, `CloudParams` UBO, + 2 storage-image targets) and
+    2 new bindings (10/11) on the existing `skyDescSet`. `createCloudMarchResources` (images) must
+    run before `createGlowResources` (writes those 2 bindings); `createCloudMarchDescriptors`
+    (needs `cloudParamsBuf`) must run after it — see the `init()` ordering comment.
+  - `onResize` recreates both images at the new half-extent and patches both descriptor sets
+    (2 targeted `vkUpdateDescriptorSets` calls) — the only swapchain-size-dependent images this
+    class owns.
+  - Local workgroup size `16×16` (matches `game_of_life.comp`'s house convention for 2D per-pixel
+    compute, not the 1D `64` satellite shaders or the 3D `8×8×8` noise bake), dispatch
+    `((halfW+15)/16, (halfH+15)/16, 1)`.
+  - Both new shader files compiled clean standalone (`glslc`) before the full C++ integration was
+    written, and the full `cmake --build build` succeeded on the first attempt after all pieces
+    were wired up — no compile-error iteration needed this session.
+  - Not run interactively — per `CLAUDE.md`, the user verifies. Primary things to check: FPS
+    improvement from orbit/LEO and at a dense ground-level cloud deck; satellite/star occlusion
+    behind opaque cloud still works (edge softness from bilinear upsampling is expected and
+    accepted, not a bug); window resize doesn't crash or leave stale cloud data; the accepted
+    mountain-silhouette approximation isn't jarring in practice.
+
+- **Follow-up bug found by the user in testing: cloud lighting/scattering visibly bled through
+  terrain.** Root cause was worse than the documented "Known limitation" above — the terrain-
+  suppression gate used `tCloudOcclude` (Target A's alpha), which `cloudMarchCS` only sets when
+  the cloud is ≥90% opaque (that threshold exists for the SEPARATE satellite-occlusion use case,
+  to stop wispy cloud from snapping satellites invisible). Since most cloud coverage isn't ≥90%
+  opaque everywhere, the suppression check almost never fired — nearly all non-solid cloud
+  rendered through terrain regardless of depth, not just the documented rare mid-shell case.
+  **Fixed:** both `cloudMarchCS` and `cirrusMarchCS` now also return an always-valid `tEnterOut`
+  (set whenever the march genuinely runs, independent of opacity). The compute shader combines
+  both layers' entries via `min()` (nearest layer) and stores it in Target B's alpha — which
+  freed up Target A's alpha to keep the opacity-gated `tCloudOcclude` for its original satellite-
+  depth purpose. `cloudBlock` (the post-tonemap sun-dimming scalar that used to live in Target
+  B's alpha) is now derived from Target B's RGB (`dot(A_total, vec3(1/3))`) instead — a minor,
+  accepted approximation (A_total already tracks combined opacity closely) that was the only way
+  to free the channel within the existing 2-target budget. `sat_sky.frag`'s terrain-suppression
+  check now uses this always-valid distance instead.
+
+- **Follow-up: performance was unchanged (Release build tested) — root cause was a separate,
+  never-touched function, `cloudShadowFactor()`, now removed.** After the terrain-bleed fix, the
+  user tested Release-build FPS across several scenes: surface ~20fps, LEO horizon ~40fps, LEO
+  looking down at clouds ~28fps, satellites/empty-space 80-120fps. Critically, **surface FPS
+  (~20fps) was unchanged across the ENTIRE session** — before any cloud-march optimization, after
+  wiring `lightSteps`, after distance-gating the shadow cone, and after moving the march to
+  half-res compute. That convergent evidence (four different fixes, zero surface FPS movement)
+  pointed away from `cloudMarch`/`cirrusMarch` entirely. Setting `coverage=0` confirmed clouds
+  were still the dominant surface cost regardless (20fps → 40fps ocean / 58fps terrain) — so the
+  real cost had to be in cloud-related code NONE of this session's work had touched:
+  `cloudShadowFactor()`, which projects cloud shadows onto terrain/ocean, runs at full resolution
+  on essentially every terrain/ocean pixel (most of the screen at ground level), with its own
+  step-count march (`cloud.shadowSteps`, unrelated to `cloudMarch`'s `marchSteps`/`lightSteps`).
+  **User's call: remove it outright** — cloud shadowing on terrain/ocean isn't currently in use,
+  so this dominant remaining cost is simply gone rather than optimized. `directSun` (terrain sun
+  lighting) and the terrain specular highlight no longer multiply by it. Its `CloudParams` UBO
+  slot (`shadowSteps`) reverted to `pad0` (it was `pad0` originally, before C-something wired up
+  the now-removed slider) rather than leaving a dead-named field — matches this file's established
+  pad-slot convention. The `CLOUD_ISOLATE_COLH`/`CLOUD_ISOLATE_SHADOW` debug switches and the
+  `kShadowFloorLo/Hi`/`kShadowHardCutoff`/`kShadowStepPathCapM` constants — all exclusively used
+  by the removed function or already-orphaned by the half-res move earlier this session — went
+  with it. "Shadow steps" slider removed from settings UI; `cloudBufs`/`hovCloudMinus/Plus`/
+  `draggingCloud` shrunk `[19]`→`[18]`, all subsequent slider indices renumbered down by one.
+  Both Debug and Release builds clean. **Not yet re-tested by the user for the FPS impact of this
+  removal** — that's the natural next data point before scoping further optimization work.
+
+### 2026-07-13 (session 24)
+- **Terrain/ocean/atmosphere perf follow-up**, after the `cloudShadowFactor()` removal in session
+  23 confirmed real gains (20fps→30fps ocean/34fps terrain at ground, Release build) but fell short
+  of the user's 60fps@1080p target. FPS scaling almost linearly with pixel count (a smaller default
+  window hits 50s fps) confirmed the app is now purely GPU-bound on full-res per-pixel shader work
+  — clouds are no longer the bottleneck. Went through Plan mode again (direct exploration + an
+  independent validation pass) before touching code, per this session's established pattern.
+  - **Found and fixed a real regression**: the terrain march's altitude-scaled step count
+    (`sat_sky.frag` ~874) was `int kN = int(mix(320.0, 320.0, clamp(obsEffH/800000.0,0,1)));` — a
+    literal no-op that always paid the LEO-tuned 320-step budget even at ground level, directly
+    contradicting its own comment ("196 at ground... up to 320 at LEO"). Restored to
+    `mix(196.0, 320.0, ...)`. One line, no downside, matches documented intent exactly.
+  - **Bigger find from the validation pass**: the main atmosphere scattering loop
+    (`N_VIEW=124`/`N_LIGHT=12`, `sat_sky.frag` ~263) runs unconditionally on **every pixel of every
+    frame** — terrain, ocean, cloud, satellite, or empty space — before any surface-specific work,
+    with `optDepth()`'s inner `N_LIGHT` march reused at 4 call sites (main loop, terrain lighting,
+    ocean lighting, and *inside* the ocean's 6-sample reflection loop). No transmittance
+    precomputation exists anywhere. This better explains the benchmark data than terrain/ocean
+    alone: satellites (80fps) and empty space (120fps) have zero terrain/ocean work yet neither is
+    near a plausible GPU ceiling — that gap is this loop.
+  - **Methodology, not a rewrite yet**: rather than build a transmittance LUT speculatively (real
+    architecture work — new bake pass, new texture/binding, 4 call sites), made `N_VIEW`/`N_LIGHT`
+    UBO-tunable sliders first, same "make it tunable, let the user test on real hardware before
+    investing in structural rewrite" pattern already used twice this session. The LUT is the
+    natural next follow-up **only if** the user's slider test shows `lightSamples` is a big share
+    of the cost — not started yet.
+  - **Ocean quality knobs added the same way**: `seaMap`'s octave count (3, called up to 10x per
+    ocean pixel by `heightMapTracing`'s secant refinement), `seaMapDetail`'s octave count (5, used
+    by `getNormal`), and the sky-reflection loop's sample count (`N_REFL=6`) were all hardcoded
+    compile-time loop bounds with zero user control — now three more sliders. Considered and
+    rejected a half-res buffer specifically for the reflection color (genuinely low-frequency,
+    unlike wave height/normal) — the ocean mask is an irregular per-pixel silhouette, not a
+    contiguous full-screen region like sky/clouds, so a real half-res buffer needs its own
+    mask/reprojection plumbing; a tunable sample count captures nearly the same win far more cheaply.
+  - **Left the terrain hit's 12-step binary search alone** — confirmed it runs once per terrain-hit
+    pixel (not once per coarse-march iteration), ~24 texture fetches vs. the ~400-1280 the coarse
+    march already paid on the same pixel to find that hit — under 10% of the march's own cost,
+    directly controls silhouette/normal precision, not worth the risk for the expected gain.
+  - **`GpuCloudParams` grew 208→224 bytes**: `pad2`/`pad3` renamed to `viewSamples`/`lightSamples`
+    (defaults 124/12, exactly matching prior fixed behavior); a new trailing vec4 added
+    (`oceanSeaOctaves`=3, `oceanDetailOctaves`=5, `oceanReflSamples`=6, `pad5` reserved). Both GLSL
+    copies (`sat_sky.frag` binding 9, `cloud_march.comp` binding 4 — same underlying buffer,
+    independent struct declarations) updated in lockstep; the compute shader's copies of the 5 new
+    fields are unused there (ocean/main-atmosphere-loop quality is a `sat_sky.frag`-only concern)
+    but must exist for byte-offset parity. 5 new settings sliders added to the existing "Clouds"
+    section (not a separate header — kept the diff minimal); `cloudBufs`/`hovCloudMinus/Plus`/
+    `draggingCloud` grew `[18]`→`[23]`.
+  - Both Debug and Release builds clean on first attempt after full wiring. Not run interactively —
+    per `CLAUDE.md`, the user verifies. **Next data point needed**: re-benchmark the same surface
+    spots with defaults (should already show a real gain from the terrain `kN` fix alone, nothing
+    else visually changed), then empirically drop `Light samples` specifically to determine whether
+    the transmittance-LUT follow-up is worth scoping.
 
 ### 2026-07-12 (session 22)
 - **C15 complete:** Airglow implemented as three altitude-banded emissive terms in `sat_sky.frag`.

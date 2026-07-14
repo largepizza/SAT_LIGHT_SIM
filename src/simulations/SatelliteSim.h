@@ -208,6 +208,24 @@ struct SatDrawPC
 }; // total: 128 bytes
 static_assert(sizeof(SatDrawPC) == 128, "SatDrawPC layout mismatch");
 
+// ── Push constants for cloud_march.comp (half-res cloud compute pass, C15-perf) ──────────────
+// Matches the layout(push_constant) block in cloud_march.comp exactly. A separate struct from
+// SatDrawPC (own pipeline layout, own push-constant range) — carries only the fields the moved
+// cloudMarch/cirrusMarch bodies actually use, plus obsEffH (CPU-computed; the compute shader has
+// no elevation-texture lookup of its own, see recordCompute()).
+struct CloudMarchPC
+{
+    glm::mat4 skyView;
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    glm::vec4 sunDirENU;
+    glm::vec4 moonDirENU;
+    glm::vec4 obsECEFDir;
+}; // total: 128 bytes
+static_assert(sizeof(CloudMarchPC) == 128, "CloudMarchPC layout mismatch");
+
 // Per-frame sky glow + lens flare data, written by sat_flare.comp each frame.
 //
 //   bins[64]         — Spatial histogram (45°×11.25° cells, 8 az × 8 el).
@@ -308,7 +326,7 @@ static constexpr int kNumCloudLayers = 4;
 // ── Cloud parameters UBO (binding 9 in sky descriptor set) ───────────────────
 // Matches the layout(binding=9) uniform CloudParams block in sat_sky.frag.
 // Global tunables + per-layer descriptors.  cloudPhase is CPU-computed each frame.
-// std140 layout: 80-byte global section (5×vec4) + 4 × 32-byte layer = 208 bytes.
+// std140 layout: 96-byte global section (6×vec4) + 4 × 32-byte layer = 224 bytes.
 struct GpuCloudParams
 {
     // Global controls — shared across all layers
@@ -321,7 +339,9 @@ struct GpuCloudParams
     float marchSteps;       // volumetric march step count (C7+)
     float lightSteps;       // volumetric light-cone step count (C7+)
     float cloudPhase;       // CPU: fmod(driftRate * simTime, 2π) — uploaded each frame
-    float shadowSteps;      // terrain/ocean cloudShadowFactor march step count (was pad0)
+    float pad0;             // reserved — was shadowSteps (cloudShadowFactor's step count); that
+                            // function was removed session 23 (dominant surface cloud cost,
+                            // cloud shadowing on terrain/ocean unused), freeing this slot again
     float cirrusWindAngle;  // C13: cirrus streak wind axis, radians (was pad1)
     float cirrusStretch;    // C13: cirrus noise anisotropic elongation factor (was pad2)
     float airglowGain;        // C15: master airglow brightness multiplier
@@ -330,12 +350,16 @@ struct GpuCloudParams
     float airglowSodiumGain;  // C15: sodium (589.3nm) band gain — keep dim relative to green
     float shadowMaxDistM;     // cloudMarch's sun self-shadow cone fades out beyond this distance (m)
     float maxRenderDistM;     // cloudMarch's tExit distance cap (was a hardcoded 80km)
-    float pad2;               // reserved
-    float pad3;               // reserved
+    float viewSamples;        // perf (session 24): N_VIEW atmosphere-loop sample count (was pad2)
+    float lightSamples;       // perf (session 24): N_LIGHT optDepth sub-march count (was pad3)
+    float oceanSeaOctaves;    // perf (session 24): seaMap() octave count (height-trace geometry)
+    float oceanDetailOctaves; // perf (session 24): seaMapDetail() octave count (wave normal)
+    float oceanReflSamples;   // perf (session 24): ocean sky-reflection loop sample count (N_REFL)
+    float pad4;               // reserved
     // Per-layer descriptors
     GpuCloudLayerParams layers[kNumCloudLayers];
 };
-static_assert(sizeof(GpuCloudParams) == 208, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 224, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -593,6 +617,23 @@ private:
     VkBuffer cloudParamsBuf = VK_NULL_HANDLE;
     VkDeviceMemory cloudParamsMem = VK_NULL_HANDLE;
     void *cloudParamsMapped = nullptr;
+    // ── Half-resolution cloud march output (C15-perf) ─────────────────────────
+    // Written by cloud_march.comp each frame at half ctx.swapExtent; sampled by sat_sky.frag as
+    // bindings 10/11 (skyDescSet). Recreated in onResize (swapchain-size-dependent, unlike every
+    // other image in this class). Target A: rgb=B_total additive radiance, a=tCloudOcclude.
+    // Target B: rgb=A_total multiplicative attenuation, a=cloudBlock sun-dimming scalar.
+    VkImage cloudMarchTargetAImg = VK_NULL_HANDLE;
+    VkDeviceMemory cloudMarchTargetAMem = VK_NULL_HANDLE;
+    VkImageView cloudMarchTargetAView = VK_NULL_HANDLE;
+    VkImage cloudMarchTargetBImg = VK_NULL_HANDLE;
+    VkDeviceMemory cloudMarchTargetBMem = VK_NULL_HANDLE;
+    VkImageView cloudMarchTargetBView = VK_NULL_HANDLE;
+    VkSampler cloudMarchSampler = VK_NULL_HANDLE; // shared by both targets; resolution-independent
+    VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout cloudMarchPipeLayout = VK_NULL_HANDLE;
+    VkPipeline cloudMarchPipeline = VK_NULL_HANDLE;
     // Earth elevation texture (binding 5): 21600×10800 R8_UNORM land-elevation DEM.
     // Pixel p → elevation_m = p * 8848; ocean stored as 0. Terrain shell = R_EARTH + 9000 m.
     VkImage earthElevImg = VK_NULL_HANDLE;
@@ -639,7 +680,6 @@ private:
     float cloudHgG = 0.15632f;
     float cloudMarchSteps = 138.21053f;
     float cloudLightSteps = 4.02632f;
-    float cloudShadowSteps = 8.21053f; // terrain/ocean cloud-shadow march step count (separate scale from lightSteps: this covers up to ~60 km, lightSteps covers one shell thickness)
     float cloudCirrusWindDeg = 40.0f; // C13: cirrus streak wind azimuth (degrees, converted to radians for the UBO)
     float cloudCirrusStretch = 4.0f;  // C13: cirrus noise anisotropic elongation factor (1 = no stretch)
     float airglowGain = 0.06579f;         // C15: master airglow brightness multiplier
@@ -648,6 +688,13 @@ private:
     float airglowSodiumGain = 0.06579f;   // C15: sodium (589.3nm) band gain — kept dim relative to green
     float cloudShadowMaxDistM = 15000.0f; // sun self-shadow cone (N_CONE) fades out beyond this distance
     float cloudMaxRenderDistM = 150000.0f; // cloudMarch tExit distance cap (was a hardcoded 80km)
+    // Perf follow-up (session 24): main atmosphere loop + ocean wave quality, all previously
+    // hardcoded compile-time constants. Defaults match prior fixed behavior exactly.
+    float viewSamples = 124.0f;        // N_VIEW: main atmosphere-loop sample count
+    float lightSamples = 12.0f;        // N_LIGHT: optDepth sun-side sub-march count
+    float oceanSeaOctaves = 3.0f;      // seaMap() octave count (height-trace geometry)
+    float oceanDetailOctaves = 5.0f;   // seaMapDetail() octave count (wave normal)
+    float oceanReflSamples = 6.0f;     // ocean sky-reflection loop sample count (N_REFL)
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
     std::string exeDir_;           // directory containing the exe; set in init()
@@ -776,9 +823,9 @@ private:
     bool hovPhotoMinus[5] = {};
     bool hovPhotoPlus[5] = {};
     bool draggingPhoto[5] = {};
-    bool hovCloudMinus[19] = {};
-    bool hovCloudPlus[19] = {};
-    bool draggingCloud[19] = {};
+    bool hovCloudMinus[23] = {};
+    bool hovCloudPlus[23] = {};
+    bool draggingCloud[23] = {};
     // ── Settings window position (persisted; -1 = uninitialized, centers on first open) ─
     float settingsWinX = -1.0f;
     float settingsWinY = -1.0f;
@@ -791,6 +838,9 @@ private:
     void createOrbitPipeline(VulkanContext &ctx);
     void uploadSatOrbits(VulkanContext &ctx);
     void createCloudNoisePipeline(VulkanContext &ctx);
+    void createCloudMarchResources(VulkanContext &ctx);
+    void createCloudMarchDescriptors(VulkanContext &ctx);
+    void createCloudMarchPipeline(VulkanContext &ctx);
     void createGlowResources(VulkanContext &ctx);
     void createComputePipeline(VulkanContext &ctx);
     void createSkyBgPipeline(VulkanContext &ctx);
