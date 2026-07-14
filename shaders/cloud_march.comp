@@ -70,14 +70,14 @@ layout(set = 0, binding = 4) uniform CloudParams {
     float airglowSodiumGain;
     float shadowMaxDistM;
     float maxRenderDistM;
-    float viewSamples;        // unused here (N_VIEW belongs to the main atmosphere loop in
+    float viewSamplesMin;     // unused here (N_VIEW belongs to the main atmosphere loop in
                               // sat_sky.frag) — kept for layout parity, was pad2
     float lightSamples;       // unused here — was pad3
     float oceanSeaOctaves;    // unused here (ocean shading is in sat_sky.frag, not this compute
                               // shader) — kept for layout parity
     float oceanDetailOctaves; // unused here — layout parity
     float oceanReflSamples;   // unused here — layout parity
-    float pad4;               // reserved
+    float viewSamplesMax;     // unused here — layout parity, was pad4
     CloudLayer layers[4];
 } cloud;
 
