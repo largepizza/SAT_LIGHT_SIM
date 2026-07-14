@@ -61,7 +61,8 @@ layout(set = 0, binding = 4) uniform CloudParams {
     float marchSteps;
     float lightSteps;
     float cloudPhase;
-    float pad0; // reserved — was shadowSteps (cloudShadowFactor's step count, removed session 23)
+    float extinctionCoeff; // unused here (atmospheric extinction is sat_sky.frag-only) — was pad0,
+                           // now genuinely occupied there; kept named/positioned for layout parity
     float cirrusWindAngle;
     float cirrusStretch;
     float airglowGain;
@@ -84,6 +85,9 @@ layout(set = 0, binding = 4) uniform CloudParams {
                               // moonlight term reads the same field
     float pad1;               // reserved
     float pad2;               // reserved
+    vec4 mwBasisRow0;         // unused here (Milky Way skybox is sat_sky.frag-only) — layout parity
+    vec4 mwBasisRow1;         // unused here — layout parity
+    vec4 mwBasisRow2;         // unused here — layout parity
     CloudLayer layers[4];
 } cloud;
 
