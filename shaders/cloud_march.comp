@@ -1,0 +1,680 @@
+#version 450
+
+// ── Half-resolution cloud/cirrus compute march ────────────────────────────────
+// Moved out of sat_sky.frag's per-pixel fragment shader (where cloudMarch/cirrusMarch used to
+// live) into its own compute dispatch, run once per frame in recordCompute() at half the swap
+// extent in each dimension (1/4 the pixels). sat_sky.frag now just samples the two output
+// images below and composites the precomputed result — see TERRAIN_PLAN.md session 23 log and
+// the "velvet-rolling-squirrel" plan for the full design rationale (why two RGBA16F targets,
+// the combined-attenuation algebra, and the accepted terrain-occlusion approximation).
+//
+// This shader has NO terrain data (no earthElevTex/earthSpecTex, no terrain march) — it always
+// marches the cloud shell's full potential extent. sat_sky.frag does a post-hoc terrain-
+// occlusion correction using its own accurate tSurface against the tCloudOcclude distance
+// stored here (Target A alpha). See the "Known limitation" note in the plan: this is exact for
+// "terrain fully blocks the cloud" but does not replicate a mid-shell partial truncation.
+//
+// Everything below down to `cirrusMarchCS`/`cloudMarchCS` is a DUPLICATE of code that also still
+// exists in sat_sky.frag (this codebase has no #include mechanism — every shader file is self-
+// contained by convention). Keep both copies in sync if the shared math changes. Verified via
+// grep before duplicating: every one of these helpers has call sites in sat_sky.frag OTHER than
+// cloudMarch/cirrusMarch (cloudShadowFactor, the main atmosphere loop, or airglow), so none of
+// them could simply be deleted from sat_sky.frag.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// ── Push constants (128 bytes, matches C++ CloudMarchPC) ──────────────────────
+layout(push_constant) uniform PC {
+    mat4  skyView;     // ENU -> camera space (rotation, no translation) — same as SatDrawPC
+    float fovYRad;
+    float aspect;
+    float waveTime;    // wall-clock seconds — used by cloudWarpOffset/cirrusWindAngleAt/cirrusDomainWarp
+    float obsEffH;      // observer altitude above local terrain (m) — CPU-computed, see recordCompute
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;   // xyz = observer ECEF unit vector
+} pc;
+
+layout(set = 0, binding = 0) uniform sampler2D earthCloudsTex;
+layout(set = 0, binding = 1) uniform sampler3D cloudNoiseTex;
+layout(set = 0, binding = 2) uniform sampler2D earthNightTex;
+layout(set = 0, binding = 3) uniform sampler2D noiseTex;
+
+// Same CloudParams UBO layout as sat_sky.frag binding 9 — duplicated struct, same underlying
+// VkBuffer bound into this separate descriptor set.
+struct CloudLayer {
+    float shellAltM;
+    float driftMult;
+    float alphaMax;
+    float mipLod;
+    float coverageMult;
+    float densityMult;
+    float enabled;
+    float pad;
+};
+layout(set = 0, binding = 4) uniform CloudParams {
+    float coverage;
+    float density;
+    float driftRate;
+    float sunGain;
+    float ambientGain;
+    float hgG;
+    float marchSteps;
+    float lightSteps;
+    float cloudPhase;
+    float pad0; // reserved — was shadowSteps (cloudShadowFactor's step count, removed session 23)
+    float cirrusWindAngle;
+    float cirrusStretch;
+    float airglowGain;
+    float airglowGreenGain;
+    float airglowRedGain;
+    float airglowSodiumGain;
+    float shadowMaxDistM;
+    float maxRenderDistM;
+    float viewSamples;        // unused here (N_VIEW belongs to the main atmosphere loop in
+                              // sat_sky.frag) — kept for layout parity, was pad2
+    float lightSamples;       // unused here — was pad3
+    float oceanSeaOctaves;    // unused here (ocean shading is in sat_sky.frag, not this compute
+                              // shader) — kept for layout parity
+    float oceanDetailOctaves; // unused here — layout parity
+    float oceanReflSamples;   // unused here — layout parity
+    float pad4;               // reserved
+    CloudLayer layers[4];
+} cloud;
+
+// Target A: rgb = combined additive radiance (B_total), a = tCloudOcclude (m, -1 = none)
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D targetA;
+// Target B: rgb = combined multiplicative attenuation (A_total), a = cloudBlock (sun-dimming scalar)
+layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D targetB;
+
+const float PI = 3.14159265359;
+const float R_EARTH = 6371000.0;
+const float R_ATMOS = 6471000.0;
+
+const float kCloudHorizFreq = 480.0;
+const float kCloudColFreq   = 80.0;
+
+const float kWarpFreq       = 6.0;
+const float kWarpStrength   = 32.0;
+const float kWarpDriftRate  = 0.08;
+const float kWarpEvolveRate = 0.00002;
+
+const float kCityUpwellStrength = 0.004;
+const float kNightFloor    = 0.002;
+const float kCityCompressK = 0.08;
+
+const float kCloud3DFadeStart = 800000.0;
+const float kCloud3DFadeEnd   = 3000000.0;
+
+const float kMarchStepsAltStart = 2000.0;
+const float kMarchStepsAltEnd   = 200000.0;
+const float kMarchStepsFloor    = 12.0;
+
+const vec3  BETA_R = vec3(5.8e-6, 13.5e-6, 33.1e-6);
+const float H_R    = 7994.0;
+const float BETA_M = 2.1e-5;
+const float H_M    = 12.0;
+const float G_MIE  = 0.26;
+
+const float SUN_INTENSITY = 1.0;
+
+const int N_LIGHT = 12;
+
+const float kCirrusWindWarpFreq  = 1.5;
+const float kCirrusWindWarpAmp   = 1.2;
+const float kCirrusWindDriftRate = 0.05;
+
+const float kCirrusThicknessM = 700.0;
+const float kCirrusFreqScale  = 0.4;
+
+// ── Duplicated shared helpers (also present in sat_sky.frag — keep in sync) ───
+
+float phaseM(float cosA) {
+    float g2  = G_MIE * G_MIE;
+    float den = pow(max(1e-4, 1.0 + g2 - 2.0 * G_MIE * cosA), 1.5);
+    return 1.5 * ((1.0 - g2) / (2.0 + g2)) * (1.0 + cosA * cosA) / den;
+}
+
+float phaseCloud(float cosA) {
+    const float gF = 0.3, gB = -0.1;
+    float g2f = gF * gF, g2b = gB * gB;
+    float fwd = 1.5 * ((1.0 - g2f) / (2.0 + g2f)) * (1.0 + cosA * cosA)
+                / pow(max(1e-4, 1.0 + g2f - 2.0 * gF * cosA), 1.5);
+    float bwd = 1.5 * ((1.0 - g2b) / (2.0 + g2b)) * (1.0 + cosA * cosA)
+                / pow(max(1e-4, 1.0 + g2b - 2.0 * gB * cosA), 1.5);
+    return mix(fwd, bwd, 0.3);
+}
+
+// c computed as (|ro|-r)*(|ro|+r), not dot(ro,ro)-r*r — see sat_sky.frag's raySphere comment
+// for why (catastrophic cancellation at R_EARTH scale). Keep both copies in sync.
+vec2 raySphere(vec3 ro, vec3 rd, float r) {
+    float b     = dot(ro, rd);
+    float roLen = length(ro);
+    float c     = (roLen - r) * (roLen + r);
+    float d     = b * b - c;
+    if (d < 0.0) return vec2(-1.0);
+    float sq = sqrt(d);
+    return vec2(-b - sq, -b + sq);
+}
+
+vec2 optDepth(vec3 p, vec3 d, float segTotal) {
+    float sLen = segTotal / float(N_LIGHT);
+    float odR = 0.0, odM = 0.0;
+    for (int i = 0; i < N_LIGHT; ++i) {
+        float h = max(0.0, length(p + d * (float(i) + 0.5) * sLen) - R_EARTH);
+        odR += exp(-h / H_R);
+        odM += exp(-h / H_M);
+    }
+    return vec2(odR, odM) * sLen;
+}
+
+vec3 rotateZ(vec3 v, float theta) {
+    float c = cos(theta), s = sin(theta);
+    return vec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
+}
+
+float remap(float v, float lo, float hi, float newLo, float newHi) {
+    return newLo + clamp((v - lo) / (hi - lo), 0.0, 1.0) * (newHi - newLo);
+}
+
+uvec3 warpHashU(uvec3 v) {
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    return v;
+}
+vec3 warpGradHash(ivec3 c) {
+    return normalize(-1.0 + 2.0 * (vec3(warpHashU(uvec3(c))) * (1.0 / 4294967296.0)));
+}
+float warpPerlin3(vec3 p) {
+    ivec3 i = ivec3(floor(p));
+    vec3  f = fract(p);
+    vec3  u = f * f * (3.0 - 2.0 * f);
+    float v000 = dot(warpGradHash(i),                   f              );
+    float v100 = dot(warpGradHash(i + ivec3(1,0,0)), f - vec3(1,0,0));
+    float v010 = dot(warpGradHash(i + ivec3(0,1,0)), f - vec3(0,1,0));
+    float v110 = dot(warpGradHash(i + ivec3(1,1,0)), f - vec3(1,1,0));
+    float v001 = dot(warpGradHash(i + ivec3(0,0,1)), f - vec3(0,0,1));
+    float v101 = dot(warpGradHash(i + ivec3(1,0,1)), f - vec3(1,0,1));
+    float v011 = dot(warpGradHash(i + ivec3(0,1,1)), f - vec3(0,1,1));
+    float v111 = dot(warpGradHash(i + ivec3(1,1,1)), f - vec3(1,1,1));
+    return mix(mix(mix(v000, v100, u.x), mix(v010, v110, u.x), u.y),
+               mix(mix(v001, v101, u.x), mix(v011, v111, u.x), u.y), u.z);
+}
+
+vec3 cloudWarpOffset(vec3 dirECEF) {
+    vec3 windOfs = vec3(cloud.cloudPhase * kWarpDriftRate + pc.waveTime * kWarpEvolveRate,
+                         pc.waveTime * kWarpEvolveRate * 0.6,
+                         cloud.cloudPhase * kWarpDriftRate * 0.7 + pc.waveTime * kWarpEvolveRate * 0.8);
+    vec3 p       = dirECEF * kWarpFreq + windOfs;
+    float wx = warpPerlin3(p);
+    float wy = warpPerlin3(p + vec3(11.3, 47.7,  5.9));
+    float wz = warpPerlin3(p + vec3(71.9,  3.1, 29.4));
+    return vec3(wx, wy, wz) * kWarpStrength;
+}
+
+float cityBrightness(float lum) {
+    float raw = max(0.0, lum - kNightFloor);
+    return raw / (raw + kCityCompressK);
+}
+
+float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, float density, float heightProfile) {
+    const float kPresenceZBase = 0.0;
+    const float kPresenceZTop  = 0.5;
+    float nsBaseR = texture(cloudNoiseTex, uvwXY + vec3(0.0, 0.0, kPresenceZBase)).r;
+    float nsTopR  = texture(cloudNoiseTex, uvwXY + vec3(0.0, 0.0, kPresenceZTop)).r;
+    float baseA   = remap(nsBaseR, 1.0 - coverage, 1.0, 0.0, 1.0);
+    float topA    = remap(nsTopR,  1.0 - coverage, 1.0, 0.0, 1.0);
+    float base    = mix(baseA, topA, clamp(hNorm, 0.0, 1.0));
+    if (base <= 0.0) return 0.0;
+
+    vec4  nsF     = texture(cloudNoiseTex, uvwDetail * 1.5 + vec3(0.37, 0.53, 0.71));
+    float erosion = nsF.g * 0.625 + nsF.b * 0.25 + nsF.a * 0.125;
+
+    float eroded  = remap(base, 0.2 * erosion, 1.0, 0.0, 1.0);
+
+    return clamp(eroded * heightProfile * density, 0.0, 1.0);
+}
+
+// ── Moved (exclusive to cirrusMarch) ──────────────────────────────────────────
+
+float cirrusWindAngleAt(vec3 dirECEF) {
+    vec3 p = dirECEF * kCirrusWindWarpFreq
+           + vec3(pc.waveTime * kWarpEvolveRate * 1.7,
+                   cloud.cloudPhase * kCirrusWindDriftRate,
+                   91.0);
+    return warpPerlin3(p) * kCirrusWindWarpAmp;
+}
+
+vec3 cirrusDomainWarp(vec3 dirECEF) {
+    vec3 w1 = cloudWarpOffset(dirECEF);
+    vec3 p2 = dirECEF * (kWarpFreq * 0.35) + vec3(19.0, -7.0, 41.0)
+            + vec3(pc.waveTime * kWarpEvolveRate * 0.5);
+    vec3 w2 = vec3(warpPerlin3(p2),
+                    warpPerlin3(p2 + vec3(5.2, 1.1, 9.3)),
+                    warpPerlin3(p2 + vec3(3.3, 8.8, 2.2))) * (kWarpStrength * 1.5);
+    return w1 + w2;
+}
+
+// ── cloudMarchCS / cirrusMarchCS ───────────────────────────────────────────────
+// Restructured from sat_sky.frag's cloudMarch/cirrusMarch: instead of mutating an inout `color`,
+// each returns the (A, B) pair of its affine composite (`color_out = color_in*A + B`) directly,
+// so the caller can combine cirrus-then-cloud into one (A_total, B_total) pair algebraically —
+// see the plan's "Why two RGBA16F targets" section. No terrain clipping here (no tSurface param;
+// the `if (tSurface > 0.0) tExit = min(tExit, tSurface);` lines from the original are removed).
+// CLOUD_DEBUG diagnostic overlays from the original are not ported — always CLOUD_DEBUG==0 here.
+
+void cloudMarchCS(
+    vec3  obsPos,  vec3  dir,
+    vec3  enuX,    vec3  enuY,        vec3  enuZ,
+    vec3  sunDir,  vec3  sunDirECEF,  float obsEffH,
+    vec4  moonDirENU,
+    out   vec3  A_cloud, out vec3 B_cloud,
+    out   vec3  cloudTOut,
+    out   float tCloudOcclude,
+    out   float tEnterOut) // always valid whenever the march actually runs, unlike tCloudOcclude
+                            // (which only sets once ≥90% opaque) — see sat_sky.frag's terrain-
+                            // suppression comment for why both are needed.
+{
+    A_cloud = vec3(1.0);
+    B_cloud = vec3(0.0);
+    cloudTOut = vec3(1.0);
+    tCloudOcclude = -1.0;
+    tEnterOut = -1.0;
+    if (cloud.layers[0].enabled < 0.5) return;
+
+    float cloudAltFade = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
+    if (cloudAltFade < 0.001) return;
+
+    float cloudBaseAlt = cloud.layers[0].shellAltM;
+    float cloudTopAlt  = cloud.layers[1].shellAltM;
+    float shellThick   = cloudTopAlt - cloudBaseAlt;
+    float cloudBase    = R_EARTH + cloudBaseAlt;
+    float cloudTop     = R_EARTH + cloudTopAlt;
+
+    vec2 shellB = raySphere(obsPos, dir, cloudBase);
+    vec2 shellT = raySphere(obsPos, dir, cloudTop);
+
+    float tEnter, tExit;
+
+    if (obsEffH < cloudBaseAlt) {
+        tEnter = shellB.y;
+        tExit  = shellT.y;
+    } else if (obsEffH <= cloudTopAlt) {
+        tEnter = 0.001;
+        tExit  = shellT.y;
+        if (shellB.x > 0.001 && shellB.x < tExit) tExit = shellB.x;
+    } else {
+        if (shellT.x < 0.0) return;
+        tEnter = shellT.x;
+        tExit  = (shellB.x > 0.0) ? shellB.x : shellT.y;
+    }
+
+    tExit = min(tExit, tEnter + cloud.maxRenderDistM);
+    if (tEnter >= tExit || tExit <= 0.0) return;
+
+    {
+        vec3  ePt   = obsPos + tEnter * dir;
+        vec3  eECEF = ePt.x * enuX + ePt.y * enuY + ePt.z * enuZ;
+        float eLen  = length(eECEF);
+        float eLon  = atan(eECEF.y, eECEF.x);
+        float eLat  = asin(clamp(eECEF.z / eLen, -1.0, 1.0));
+        vec2  eUV   = vec2(fract((eLon + PI) / (2.0*PI)
+                                 + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                           (0.5*PI - eLat) / PI);
+        float cMap  = textureLod(earthCloudsTex, eUV, 4.0).r;
+        if (cloud.coverage * cMap < 0.02) return;
+    }
+
+    // Past this point the march genuinely runs — record the entry distance for terrain
+    // suppression regardless of how opaque the result turns out to be (tCloudOcclude, set later,
+    // stays gated at ≥90% opacity for the separate satellite-occlusion use case).
+    tEnterOut = tEnter;
+
+    vec3 sunColorCloud = vec3(0.0);
+    {
+        vec3 p0  = obsPos + tEnter * dir;
+        vec2 tSE = raySphere(p0, sunDir, R_EARTH);
+        if (!(tSE.x > 0.0 && tSE.y > 0.0)) {
+            vec2 tSA = raySphere(p0, sunDir, R_ATMOS);
+            if (tSA.y > 0.0) {
+                vec2 sOD = optDepth(p0, sunDir, tSA.y);
+                sunColorCloud = SUN_INTENSITY * exp(-(BETA_R * sOD.x + BETA_M * 1.1 * sOD.y));
+            }
+        }
+    }
+
+    vec3 skyAmbientBase = vec3(0.0);
+    {
+        vec3 p0     = obsPos + tEnter * dir;
+        vec3 zenith = normalize(p0);
+        vec2 tSA    = raySphere(p0, zenith, R_ATMOS);
+        if (tSA.y > 0.0) {
+            const int N_Z = 6;
+            float zSeg    = tSA.y / float(N_Z);
+            float cosAUp  = dot(zenith, sunDir);
+            float pR_up   = 0.75 * (1.0 + cosAUp * cosAUp);
+            float odR_z = 0.0, odM_z = 0.0;
+            float skyAmbientBaseM = 0.0;
+            for (int zi = 0; zi < N_Z; ++zi) {
+                vec3  sp = p0 + zenith * ((float(zi) + 0.5) * zSeg);
+                float h  = max(0.0, length(sp) - R_EARTH);
+                float dR = exp(-h / H_R) * zSeg;
+                float dM = exp(-h / H_M) * zSeg;
+                odR_z += dR;  odM_z += dM;
+                vec2 tSE = raySphere(sp, sunDir, R_EARTH);
+                if (tSE.x > 0.0 && tSE.y > 0.0) continue;
+                vec2 tSun = raySphere(sp, sunDir, R_ATMOS);
+                vec2 sunOD = (tSun.y > 0.0) ? optDepth(sp, sunDir, tSun.y) : vec2(0.0);
+                vec3 tau      = BETA_R * (odR_z + sunOD.x) + BETA_M * 1.1 * (odM_z + sunOD.y);
+                vec3 attnStep = exp(-tau);
+                skyAmbientBase  += attnStep * dR;
+                skyAmbientBaseM += dot(attnStep, vec3(1.0 / 3.0)) * dM;
+            }
+            float pM_up = phaseM(cosAUp);
+            skyAmbientBase = SUN_INTENSITY * (pR_up * BETA_R * skyAmbientBase
+                                            + vec3(pM_up * BETA_M * skyAmbientBaseM));
+        }
+    }
+
+    vec3  cloudTransmittance = vec3(1.0);
+    vec3  cloudScatter       = vec3(0.0);
+    float groundSteps = max(2.0, cloud.marchSteps);
+    float stepAltT    = smoothstep(kMarchStepsAltStart, kMarchStepsAltEnd, obsEffH);
+    int   N           = max(8, int(mix(groundSteps, kMarchStepsFloor, stepAltT)));
+    float dh_dt       = max(abs(dir.z), 0.02);
+    const float kCloudMaxStepM = 250.0;
+    float stepLen = min((shellThick / float(N)) / dh_dt, kCloudMaxStepM);
+    bool  insideShell = (obsEffH >= cloudBaseAlt && obsEffH <= cloudTopAlt);
+    float bigStep = insideShell ? stepLen : stepLen * 2.0;
+    float t       = tEnter;
+    bool  inCloud = false;
+    float cosA    = dot(dir, sunDir);
+    float ph      = phaseCloud(cosA);
+    vec3  moonDir3 = normalize(moonDirENU.xyz);
+    float cosAMoon = dot(dir, moonDir3);
+    float phMoon   = phaseCloud(cosAMoon);
+
+    int hardCap = min(2048, int(cloud.maxRenderDistM / kCloudMaxStepM) + 32);
+    for (int i = 0; i < hardCap && t < tExit; ++i) {
+        float step = inCloud ? stepLen : bigStep;
+        step = min(step, tExit - t);
+        vec3  p = obsPos + (t + step * 0.5) * dir;
+        float h = length(p) - R_EARTH;
+        if (h < cloudBaseAlt || h > cloudTopAlt) { inCloud = false; t += step; continue; }
+
+        float hNorm = (h - cloudBaseAlt) / shellThick;
+        vec3  pECEF = p.x * enuX + p.y * enuY + p.z * enuZ;
+
+        float pLen  = length(pECEF);
+        float pLon  = atan(pECEF.y, pECEF.x);
+        float pLat  = asin(clamp(pECEF.z / pLen, -1.0, 1.0));
+        vec2  pUV   = vec2(fract((pLon + PI) / (2.0*PI)
+                                 + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                           (0.5*PI - pLat) / PI);
+        vec2  pUVGeo = vec2(fract((pLon + PI) / (2.0*PI)), (0.5*PI - pLat) / PI);
+        float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, 4.0).r;
+
+        vec3  dirECEF      = pECEF / pLen;
+        vec3  dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[0].driftMult);
+        vec3  warpUVW      = cloudWarpOffset(dirECEFDrift);
+
+        float colNoise = texture(cloudNoiseTex,
+                                 dirECEFDrift * kCloudColFreq + warpUVW + vec3(0.0, 0.0, 0.25)).r;
+        float colH = remap(colNoise, 1.0 - localCov, 1.0, 0.0, 1.0);
+
+        float topFade = 1.0 - smoothstep(colH - 0.05, colH + 0.05, hNorm);
+        float hFade = smoothstep(0.0, 0.05, hNorm) * topFade;
+        if (hFade < 0.001) { inCloud = false; t += step; continue; }
+
+        const float kVertTiles = 1.5;
+        float posZ    = sin(pUV.x * 21.3 + pUV.y * 17.7) * 0.5 + 0.5;
+        vec3  uvwXY   = dirECEFDrift * kCloudHorizFreq + warpUVW;
+        vec3  uvwDetail = uvwXY
+                               + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0);
+        float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade);
+
+        if (d > 0.001) {
+            inCloud = true;
+            float extinction = d * step * 3e-3;
+            vec3  stepT      = exp(-vec3(extinction));
+            float powder     = 1.0 - exp(-extinction * 2.0);
+
+            float sampleDist = t + step * 0.5;
+            float shadowFade = 1.0 - smoothstep(cloud.shadowMaxDistM * 0.6, cloud.shadowMaxDistM, sampleDist);
+            float sunOptDepth = 0.0;
+            if (shadowFade > 0.01) {
+                int   N_CONE    = max(1, int(cloud.lightSteps));
+                vec2  tConeExit = raySphere(p, sunDir, cloudTop);
+                float coneLen   = min((tConeExit.y > 0.0) ? tConeExit.y : shellThick, shellThick * 2.0);
+                float coneSeg   = coneLen / float(N_CONE);
+                for (int ci = 0; ci < N_CONE; ++ci) {
+                    vec3  cp    = p + sunDir * (float(ci) + 0.5) * coneSeg;
+                    float ch    = length(cp) - R_EARTH;
+                    if (ch < cloudBaseAlt || ch > cloudTopAlt) continue;
+                    float chN   = (ch - cloudBaseAlt) / shellThick;
+                    vec3  cpE   = cp.x * enuX + cp.y * enuY + cp.z * enuZ;
+                    float cpL   = length(cpE);
+                    float cpLon = atan(cpE.y, cpE.x);
+                    float cpLat = asin(clamp(cpE.z / cpL, -1.0, 1.0));
+                    vec2  cpUV  = vec2(fract((cpLon + PI) / (2.0*PI)
+                                       + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                                      (0.5*PI - cpLat) / PI);
+                    float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, 5.0).r;
+                    float cPosZ = sin(cpUV.x * 21.3 + cpUV.y * 17.7) * 0.5 + 0.5;
+                    vec3  cDir   = cpE / cpL;
+                    vec3  cUVWXY = cDir * kCloudHorizFreq;
+                    vec3  cUVWD  = cUVWXY + vec3(0.0, 0.0, chN * kVertTiles + cPosZ * 2.0);
+                    float chFade = smoothstep(0.0, 0.05, chN) * (1.0 - smoothstep(0.95, 1.0, chN));
+                    sunOptDepth += cloudDensity(cUVWXY, cUVWD, chN, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
+                }
+                sunOptDepth *= shadowFade;
+            }
+
+            float ms1 = exp(-sunOptDepth);
+            float ms2 = exp(-sunOptDepth * 0.5) * 0.5;
+            float ms3 = exp(-sunOptDepth * 0.25) * 0.25;
+            float sunTransmittance = max((ms1 + ms2 + ms3) / 1.75, 0.05);
+
+            float cloudSunDotRaw = dot(normalize(pECEF), sunDirECEF);
+            float sunElev     = smoothstep(-0.04, 0.12, cloudSunDotRaw);
+            float sunElevSoft = sunElev;
+            float shadowFloor = mix(0.1, 0.5, clamp(1.0 - sunElev * 4.0, 0.0, 1.0));
+            float selfShadow  = mix(shadowFloor, 1.0, hNorm);
+            float sunLit      = sunElevSoft * sunTransmittance * selfShadow;
+
+            float sampleDayness = clamp((cloudSunDotRaw + 0.2) / 0.5, 0.0, 1.0);
+
+            vec3 skyAmbient = skyAmbientBase
+                            * (mix(0.3, 0.9, hNorm)
+                            +  mix(0.1, 0.3, hNorm) * cloud.ambientGain);
+
+            vec3  moonECEF_c    = moonDir3.x * enuX + moonDir3.y * enuY + moonDir3.z * enuZ;
+            float moonElevGeog  = max(0.0, dot(normalize(pECEF), moonECEF_c));
+            float moonLit       = moonElevGeog * moonDirENU.w * selfShadow * (1.0 + powder);
+            float nightFac      = 1.0 - min(sampleDayness * 3.0, 1.0);
+            vec3  moonContrib   = vec3(0.92, 0.95, 1.0) * moonLit * phMoon * 0.015 * nightFac;
+
+            vec3 cityUp = vec3(0.0);
+            if (sampleDayness < 0.9 && hNorm < 0.45) {
+                vec3  cityRgb  = textureLod(earthNightTex, pUVGeo, 3.0).rgb;
+                float cityLum  = dot(cityRgb, vec3(0.2126, 0.7152, 0.0722));
+                vec3  cityTint = cityRgb / max(cityLum, 0.001);
+                float heightFalloff = smoothstep(0.45, 0.0, hNorm);
+                cityUp = cityTint * cityBrightness(cityLum) * heightFalloff * (1.0 - sampleDayness)
+                       * kCityUpwellStrength * cloud.ambientGain;
+            }
+
+            vec3  inScatter  = sunColorCloud * sunLit * ph * (1.0 + powder) * cloud.sunGain
+                             + moonContrib
+                             + skyAmbient
+                             + cityUp;
+
+            cloudScatter       += cloudTransmittance * (1.0 - stepT) * inScatter;
+            cloudTransmittance *= stepT;
+
+            if (cloudTransmittance.r < 0.01) break;
+        } else {
+            inCloud = false;
+        }
+        t += step;
+    }
+
+    cloudTOut = mix(vec3(1.0), cloudTransmittance, cloudAltFade);
+    if (dot(cloudTOut, vec3(1.0/3.0)) < 0.1 && cloudAltFade > 0.1) tCloudOcclude = tEnter;
+
+    vec2 odAtmCloud = optDepth(obsPos, dir, tEnter);
+    vec3 cloudAttn  = exp(-(BETA_R * odAtmCloud.x + BETA_M * 1.1 * odAtmCloud.y));
+
+    A_cloud = vec3(1.0) - cloudAttn * (1.0 - cloudTOut);
+    B_cloud = cloudAttn * cloudScatter * cloudAltFade;
+}
+
+void cirrusMarchCS(
+    vec3  obsPos,  vec3  dir,
+    vec3  enuX,    vec3  enuY,        vec3  enuZ,
+    vec3  sunDir,  vec3  sunDirECEF,  float obsEffH,
+    out   vec3  A_cirrus, out vec3 B_cirrus,
+    out   float tEnterOut) // always valid whenever the march runs — see cloudMarchCS's tEnterOut
+{
+    A_cirrus = vec3(1.0);
+    B_cirrus = vec3(0.0);
+    tEnterOut = -1.0;
+    if (cloud.layers[1].enabled < 0.5) return;
+    float cirrusAltFade = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
+    if (cirrusAltFade < 0.001) return;
+
+    float cirrusAlt  = cloud.layers[1].shellAltM;
+    float shellBAlt  = cirrusAlt - kCirrusThicknessM * 0.5;
+    float shellTAlt  = cirrusAlt + kCirrusThicknessM * 0.5;
+    vec2  shellB     = raySphere(obsPos, dir, R_EARTH + shellBAlt);
+    vec2  shellT     = raySphere(obsPos, dir, R_EARTH + shellTAlt);
+
+    float tEnter, tExit;
+    if (obsEffH < shellBAlt) {
+        tEnter = shellB.y;
+        tExit  = shellT.y;
+    } else if (obsEffH <= shellTAlt) {
+        tEnter = 0.001;
+        tExit  = shellT.y;
+        if (shellB.x > 0.001 && shellB.x < tExit) tExit = shellB.x;
+    } else {
+        if (shellT.x < 0.0) return;
+        tEnter = shellT.x;
+        tExit  = (shellB.x > 0.0) ? shellB.x : shellT.y;
+    }
+    tExit = min(tExit, tEnter + 200000.0);
+    if (tEnter >= tExit || tExit <= 0.0) return;
+    tEnterOut = tEnter;
+
+    const int N_CIRRUS = 14;
+    float segLen = (tExit - tEnter) / float(N_CIRRUS);
+    float jitter  = textureLod(noiseTex, vec2(gl_GlobalInvocationID.xy) * (1.0/128.0), 0.0).r;
+
+    float invStretch   = 1.0 / max(cloud.cirrusStretch, 1.0);
+
+    vec3  cirrusTransmittance = vec3(1.0);
+    vec3  cirrusScatter       = vec3(0.0);
+    float cosA = dot(dir, sunDir);
+    float ph   = phaseCloud(cosA);
+
+    for (int i = 0; i < N_CIRRUS; ++i) {
+        float t = tEnter + (float(i) + jitter) * segLen;
+        vec3  p = obsPos + t * dir;
+        float h = length(p) - R_EARTH;
+        if (h < shellBAlt || h > shellTAlt) continue;
+        float hNorm = (h - shellBAlt) / kCirrusThicknessM;
+
+        vec3  pECEF = p.x * enuX + p.y * enuY + p.z * enuZ;
+        float pLen  = length(pECEF);
+        float pLon  = atan(pECEF.y, pECEF.x);
+        float pLat  = asin(clamp(pECEF.z / pLen, -1.0, 1.0));
+        vec2  pUV   = vec2(fract((pLon + PI) / (2.0*PI)
+                                 + cloud.cloudPhase * cloud.layers[1].driftMult / (2.0*PI)),
+                           (0.5*PI - pLat) / PI);
+        float localCov = cloud.coverage * cloud.layers[1].coverageMult
+                        * textureLod(earthCloudsTex, pUV, cloud.layers[1].mipLod).r;
+        if (localCov < 0.02) continue;
+
+        vec3 dirECEF      = pECEF / pLen;
+        vec3 dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[1].driftMult);
+        float wa       = cloud.cirrusWindAngle + cirrusWindAngleAt(dirECEFDrift);
+        vec3  windAxis = vec3(cos(wa), sin(wa), 0.0);
+        vec3 dirStretched = dirECEFDrift
+                           + windAxis * dot(dirECEFDrift, windAxis) * (invStretch - 1.0);
+
+        float hFade = smoothstep(0.0, 0.15, hNorm) * (1.0 - smoothstep(0.85, 1.0, hNorm));
+        vec3  uvwXY     = dirStretched * kCloudHorizFreq * kCirrusFreqScale
+                        + cirrusDomainWarp(dirECEFDrift);
+        vec3  uvwDetail = uvwXY + vec3(0.0, 0.0, hNorm * 1.5);
+        float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov,
+                                cloud.density * cloud.layers[1].densityMult, hFade);
+        if (d < 0.001) continue;
+
+        float extinction = d * segLen * 8e-5;
+        vec3  stepT = exp(-vec3(extinction));
+
+        float cloudSunDot  = dot(normalize(pECEF), sunDirECEF);
+        float cloudDayFrac = smoothstep(-0.1, 0.15, cloudSunDot);
+        vec3  inScatter     = vec3(max(0.0, cloudSunDot + 0.1) * cloud.sunGain) * cloudDayFrac * ph * 2.0;
+
+        cirrusScatter       += cirrusTransmittance * (1.0 - stepT) * inScatter;
+        cirrusTransmittance *= stepT;
+        if (cirrusTransmittance.r < 0.02) break;
+    }
+
+    vec2 odAtmCirrus = optDepth(obsPos, dir, tEnter);
+    vec3 cirrusAttn  = exp(-(BETA_R * odAtmCirrus.x + BETA_M * 1.1 * odAtmCirrus.y));
+    vec3 cirrusT     = mix(vec3(1.0), cirrusTransmittance, cirrusAltFade);
+    A_cirrus = vec3(1.0) - cirrusAttn * (1.0 - cirrusT);
+    B_cirrus = cirrusAttn * cirrusScatter * cirrusAltFade;
+}
+
+void main() {
+    ivec2 size  = imageSize(targetA);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    // Reconstruct the same view ray sat_sky.vert/sat_sky.frag build, evaluated directly at this
+    // half-res texel instead of via vertex interpolation — identical affine transform, just
+    // sampled at a coarser grid.
+    vec2 uv  = (vec2(coord) + 0.5) / vec2(size);
+    vec2 ndc = uv * 2.0 - 1.0;
+    float tanHalfFov = tan(pc.fovYRad * 0.5);
+    vec3  camDir = vec3(ndc.x * tanHalfFov * pc.aspect, -ndc.y * tanHalfFov, -1.0);
+    vec3  dir    = normalize(mat3(transpose(pc.skyView)) * camDir);
+    vec3  sunDir = normalize(pc.sunDirENU.xyz);
+
+    vec3 enuZ = normalize(pc.obsECEFDir.xyz);
+    vec3 enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+    vec3 enuY = cross(enuZ, enuX);
+    vec3 sunDirECEF = sunDir.x * enuX + sunDir.y * enuY + sunDir.z * enuZ;
+
+    vec3 obsPos = vec3(0.0, 0.0, R_EARTH + pc.obsEffH + 2.0);
+
+    vec3  A_cirrus, B_cirrus;
+    float tEnterCirrus;
+    cirrusMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, pc.obsEffH,
+                  A_cirrus, B_cirrus, tEnterCirrus);
+
+    vec3  A_cloud, B_cloud, cloudTOut;
+    float tCloudOcclude, tEnterCloud;
+    cloudMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, pc.obsEffH, pc.moonDirENU,
+                 A_cloud, B_cloud, cloudTOut, tCloudOcclude, tEnterCloud);
+
+    vec3  A_total = A_cirrus * A_cloud;
+    vec3  B_total = B_cirrus * A_cloud + B_cloud;
+
+    // Nearer of the two layers' entry distances — always valid whenever either layer actually
+    // rendered something, unlike tCloudOcclude (opacity-gated). Used by sat_sky.frag for terrain
+    // suppression: if terrain sits closer than this, the WHOLE combined contribution is hidden
+    // (both layers can't be independently suppressed once merged into one target — an accepted
+    // approximation for the rarer case where terrain sits geometrically between the two shells).
+    float tEnterCombined;
+    if (tEnterCirrus < 0.0) tEnterCombined = tEnterCloud;
+    else if (tEnterCloud < 0.0) tEnterCombined = tEnterCirrus;
+    else tEnterCombined = min(tEnterCirrus, tEnterCloud);
+
+    imageStore(targetA, coord, vec4(B_total, tCloudOcclude));
+    imageStore(targetB, coord, vec4(A_total, tEnterCombined));
+}
