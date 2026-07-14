@@ -77,9 +77,10 @@ layout(set = 0, binding = 9) uniform CloudParams {
     float marchSteps;
     float lightSteps;
     float cloudPhase;
-    float pad0;             // reserved — was shadowSteps (cloudShadowFactor's step count); that
-                            // function was removed session 23 (dominant surface cloud cost,
-                            // cloud shadowing on terrain/ocean unused), freeing this slot again
+    float extinctionCoeff;  // was pad0 (freed session 23 when cloudShadowFactor was removed); now
+                            // carries the same atmospheric-extinction coefficient sat_flare.comp
+                            // gets via push constant, so the Milky Way term below can apply
+                            // identical Kasten & Young dimming without its own push-constant field
     float cirrusWindAngle;  // C13: cirrus streak wind axis, radians (was pad1)
     float cirrusStretch;    // C13: cirrus noise anisotropic elongation factor (was pad2)
     float airglowGain;        // C15: master airglow brightness multiplier
@@ -99,6 +100,13 @@ layout(set = 0, binding = 9) uniform CloudParams {
                               // cloud_march.comp's moonContrib both read this (see that file)
     float pad1;               // reserved
     float pad2;               // reserved
+    // Milky Way skybox (session 27): CPU-computed ENU->galactic basis rows (fixed orientation,
+    // confirmed by eye against the real star field — see updatePositions() in SatelliteSim.cpp).
+    // dirGal = vec3(dot(enuDir, mwBasisRow0.xyz), dot(enuDir, mwBasisRow1.xyz), dot(enuDir, mwBasisRow2.xyz)).
+    // mwBasisRow0.w carries a fixed gain of 1.0 (rows 1/2 .w unused).
+    vec4 mwBasisRow0;
+    vec4 mwBasisRow1;
+    vec4 mwBasisRow2;
     CloudLayer layers[4];
 } cloud;
 
@@ -109,6 +117,18 @@ layout(set = 0, binding = 9) uniform CloudParams {
 // Target B: rgb = combined multiplicative attenuation (A_total), a = cloudBlock (sun-dim scalar).
 layout(set = 0, binding = 10) uniform sampler2D cloudTargetA;
 layout(set = 0, binding = 11) uniform sampler2D cloudTargetB;
+
+// Light pollution dome (binding 12): same buffer as sat_flare.comp's binding 3 (16 azimuth
+// sectors, CPU-written each frame). A second, independent read here so the Milky Way skybox can
+// be dimmed directionally the same way satellites/stars already are.
+layout(std430, set = 0, binding = 12) readonly buffer LightDomeBuf {
+    float lightDome[16];
+};
+
+// Milky Way skybox (binding 13): 8K equirectangular galactic panorama. Sampled against the
+// CPU-computed ENU->galactic basis in cloud.mwBasisRow0/1/2 (see updatePositions() in
+// SatelliteSim.cpp for how the fixed orientation, including the longitude mirror, is built).
+layout(set = 0, binding = 13) uniform sampler2D milkyWayTex;
 
 layout(location = 0) out vec4 outColor;
 
@@ -1648,6 +1668,75 @@ void main() {
     // ── Night ambient floor ────────────────────────────────────────────────────
     float nightAmt = 1.0 - clamp(dayness * 5.0, 0.0, 1.0);
     color += vec3(0.0008, 0.001, 0.002) * nightAmt;
+
+    // ── Milky Way skybox ───────────────────────────────────────────────────────
+    // Diffuse galactic-plane glow behind the discrete star catalog (star_point.vert/frag).
+    // Visible only from truly dark sites or space, using the same gating shape as CPU's
+    // updateStars(): sun-elevation/space detection, moonlight, directional light-pollution dome,
+    // and atmospheric extinction. Added post-tonemap like the ambient terms around it (comparably
+    // faint) rather than folded into the HDR atmosphere accumulation above.
+    {
+        // Space detection: same 80km atmospheric scale height as CPU's updateStars()/atmFrac.
+        float atmFracSky = clamp(exp(-obsEffH / 80000.0), 0.0, 1.0);
+        float nightFactorSky = clamp(-sunDirENU.w * 5.0, 0.0, 1.0);
+        float nightFactorEffSky = mix(1.0, nightFactorSky, atmFracSky);
+
+        // Moonlight suppression — same shape as CPU's moonBrightStar.
+        float tm = clamp(moonDirENU.z / 0.5, 0.0, 1.0);
+        float moonBrightSky = tm * tm * moonDirENU.w;
+        const float kMWMoonMaxDim = 0.95;
+
+        // Directional light-pollution dome — copied from sat_flare.comp's domeVal computation
+        // (session 26), using this fragment's own view direction (dir) in place of a satellite's
+        // skyDir. Third independent copy of this formula in the codebase (sat_flare.comp,
+        // CPU updateStars(), here), matching the existing precedent of duplicating it per-consumer
+        // rather than sharing a function across GLSL stages / CPU-GPU boundaries.
+        float azLP    = mod(atan(dir.x, dir.y) + 6.283185307, 6.283185307);
+        float secF    = azLP * (16.0 / 6.283185307) - 0.5;
+        int   sec0    = int(floor(secF));
+        float secFrac = secF - float(sec0);
+        int   sec0w   = ((sec0 % 16) + 16) % 16;
+        int   sec1w   = (sec0w + 1) % 16;
+        float domeAz  = mix(lightDome[sec0w], lightDome[sec1w], secFrac);
+        float elevFalloffMW = 0.35 / (max(dir.z, 0.0) + 0.35);
+        float domeVal = clamp(domeAz * elevFalloffMW, 0.0, 1.0);
+        const float kMWPollutionMaxDim = 0.99;
+
+        // Atmospheric extinction — same Kasten & Young 1989 airmass approximation used by
+        // sat_flare.comp/updateStars(), reusing cloud.extinctionCoeff (was pad0 — see CloudParams).
+        float sinElMW  = clamp(dir.z, 0.0, 1.0);
+        float elDegMW  = degrees(asin(sinElMW));
+        float airmassMW = 1.0 / (sinElMW + 0.50572 * pow(elDegMW + 6.07995, -1.6364));
+        float extinctMagMW = cloud.extinctionCoeff * (airmassMW - 1.0) * atmFracSky;
+        float extinctionMW = pow(10.0, -0.4 * extinctMagMW);
+
+        // Sun glare: even in space (where nightFactorEffSky doesn't suppress anything — there's
+        // no atmosphere to scatter sunlight into a uniform "day" sky), staring straight at the
+        // sun should still wash out the Milky Way — real eye/camera dazzle, not atmospheric
+        // scattering, so this is unconditional rather than atmFracSky-gated. On the ground it's
+        // mostly redundant with nightFactorEffSky already zeroing everything once the sun is up,
+        // but it also correctly dims the Milky Way near the sun during twilight, when the rest of
+        // the sky is still dark enough to show it.
+        float sunAngleMW = acos(clamp(dot(dir, sunDir), -1.0, 1.0));
+        float sunGlareSuppress = smoothstep(0.12, 0.5, sunAngleMW); // 0 within ~7deg, 1 beyond ~29deg
+
+        // Project the view ray into the galactic frame and sample the panorama.
+        vec3 dirGal = vec3(dot(dir, cloud.mwBasisRow0.xyz),
+                            dot(dir, cloud.mwBasisRow1.xyz),
+                            dot(dir, cloud.mwBasisRow2.xyz));
+        float lonGal = atan(dirGal.y, dirGal.x);
+        float latGal = asin(clamp(dirGal.z, -1.0, 1.0));
+        vec2  mwUV   = vec2(0.5 + lonGal / (2.0 * PI), 0.5 + latGal / PI);
+        vec3  mwColor = texture(milkyWayTex, mwUV).rgb * cloud.mwBasisRow0.w;
+
+        float visibility = nightFactorEffSky
+                          * (1.0 - domeVal * kMWPollutionMaxDim)
+                          * (1.0 - moonBrightSky * kMWMoonMaxDim)
+                          * extinctionMW
+                          * sunGlareSuppress
+                          * (tSurface > 0.0 ? 0.0 : 1.0); // blocked by terrain/ocean
+        color += mwColor * visibility;
+    }
 
     // ── Moonlight ambient ──────────────────────────────────────────────────────
     float moonEl    = clamp(moonDirENU.z, 0.0, 1.0);
