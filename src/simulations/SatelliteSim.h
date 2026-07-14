@@ -178,10 +178,16 @@ struct SatFlarePC
     float mirrorBoost;     // mirror peak multiplier (mirrors MIRROR_BOOST)
     float visThresh;       // visibility cull threshold (mirrors VIS_THRESH)
     float highlightFlare;  // fixed flare for constellation census (mirrors HIGHLIGHT_FLARE)
-    float lightPollution;  // 0=none..1=full; dims (not culls) satellite brightness near
-                            // brightly-lit cities at low altitude — see SatelliteSim::updateStars
-}; // total: 104 bytes
-static_assert(sizeof(SatFlarePC) == 104, "SatFlarePC layout mismatch");
+    float extinctionCoeff;  // atmospheric extinction, magnitudes per airmass (reuses the slot that
+                            // was lightPollution — see SatelliteSim::updateLightPollutionDome for
+                            // why that moved to the lightDomeBuf SSBO instead of push-constant space)
+    float moonSuppression;  // sky background suppression ratio from moonlight (mirrors daySuppression's
+                             // role, much smaller in practice — moon is ~14 magnitudes dimmer than the sun)
+    float pad0;              // reserved — pads moonDirECI to 16-byte (vec3) alignment
+    glm::vec3 moonDirECI;    // unit vector from Earth toward Moon in ECI
+    float pad1;              // reserved — rounds struct to 128 bytes
+}; // total: 128 bytes
+static_assert(sizeof(SatFlarePC) == 128, "SatFlarePC layout mismatch");
 
 // Draw push constants (passed to sat_point.vert and both sky shaders).
 // GLSL std430 layout:
@@ -356,10 +362,19 @@ struct GpuCloudParams
     float oceanDetailOctaves; // perf (session 24): seaMapDetail() octave count (wave normal)
     float oceanReflSamples;   // perf (session 24): ocean sky-reflection loop sample count (N_REFL)
     float viewSamplesMax;     // perf (session 24 round 2): N_VIEW ceiling for long/grazing rays (was pad4)
+    float pad3;               // reserved — was nightAmbientGain (terrain night-side sky ambient);
+                               // removed session 26, user found dayColor-lit ambient didn't read
+                               // right at 0 and preferred no term over tuning a nonzero value
+    float moonGain;           // shared moonlight brightness master — terrain direct term AND
+                               // cloud_march.comp's moonContrib (was a hardcoded 0.015 there) both
+                               // read this, so one slider keeps moonlit terrain and moonlit clouds
+                               // calibrated to the same brightness instead of drifting apart
+    float pad1;               // reserved
+    float pad2;               // reserved
     // Per-layer descriptors
     GpuCloudLayerParams layers[kNumCloudLayers];
 };
-static_assert(sizeof(GpuCloudParams) == 224, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 240, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -570,6 +585,20 @@ private:
     VkBuffer glowBuf = VK_NULL_HANDLE;
     VkDeviceMemory glowMem = VK_NULL_HANDLE;
     void *glowMapped = nullptr;
+
+    // ── Light pollution dome SSBO ─────────────────────────────────────────────
+    // Host-visible, updated each frame by updateLightPollutionDome() (CPU); read by
+    // sat_flare.comp (satellites) and directly by updateStars() (stars, no upload needed —
+    // same array, CPU already has it). 16 azimuth sectors (bumped from 8 — session 26 follow-up:
+    // 8 hard-edged 45° wedges showed visible blocky transitions over wide, fairly uniform bright
+    // regions like Europe); both consumers additionally interpolate between sector centers rather
+    // than hard-binning, so this no longer needs to match GlowBuf's own (unrelated) 8-sector
+    // azBin scheme — decoupled on purpose.
+    static constexpr int kNumLightSectors = 16;
+    VkBuffer lightDomeBuf = VK_NULL_HANDLE;
+    VkDeviceMemory lightDomeMem = VK_NULL_HANDLE;
+    void *lightDomeMapped = nullptr;
+    float lightDomeAz[kNumLightSectors]{}; // CPU-side copy, shared with updateStars()
     VkDescriptorSetLayout skyDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool skyDescPool = VK_NULL_HANDLE;
     VkDescriptorSet skyDescSet = VK_NULL_HANDLE;
@@ -648,7 +677,6 @@ private:
     // (2160×1080, ~18km/px) — single byte per texel, precomputed Rec.709 luminance.
     std::vector<uint8_t> earthNightCpu;
     int earthNightCpuW = 0, earthNightCpuH = 0;
-    float lightPollution = 0.0f; // 0=none .. 1=full; computed each frame in recordCompute()
 
     // ── UI visibility & settings ──────────────────────────────────────────────
     bool showIntro = true; // cinematic intro overlay; dismissed on click or any key
@@ -667,6 +695,14 @@ private:
     float mirrorBoost = 429.17f;
     float visThresh = 0.0001f;
     float highlightFlare = 0.17066f;
+    float moonSuppression = 4.0f; // sky background suppression from moonlight (mirrors daySuppression,
+                                   // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
+    float lightPollutionGain = 1.0f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
+                                      // so satellites + stars stay coherently scaled by construction
+    float extinctionCoeff = 0.25f;   // atmospheric extinction, magnitudes per airmass (Kasten & Young
+                                      // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
+                                      // in both sat_flare.comp and updateStars() so a star and a
+                                      // satellite at the same elevation dim identically
     // Cloud tunables (CPU-side; uploaded to cloudParamsBuf each frame)
     // Defaults below are the user-tuned values as of the C15 (airglow) commit — baked in from
     // settings.json rather than the original placeholder guesses.
@@ -703,6 +739,8 @@ private:
     float oceanSeaOctaves = 3.0f;      // seaMap() octave count (height-trace geometry)
     float oceanDetailOctaves = 5.0f;   // seaMapDetail() octave count (wave normal)
     float oceanReflSamples = 6.0f;     // ocean sky-reflection loop sample count (N_REFL)
+    float moonGain = 0.015f;           // shared moonlight brightness: terrain direct term + cloud
+                                        // moonContrib (default matches the prior hardcoded cloud value)
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
     std::string exeDir_;           // directory containing the exe; set in init()
@@ -828,12 +866,12 @@ private:
     bool hovSfxVolPlus = false;
     bool hovRebind[KB_COUNT] = {}; // per keybinding row — sized to match keybindings vector
     bool hovFullscreen = false;
-    bool hovPhotoMinus[5] = {};
-    bool hovPhotoPlus[5] = {};
-    bool draggingPhoto[5] = {};
-    bool hovCloudMinus[24] = {};
-    bool hovCloudPlus[24] = {};
-    bool draggingCloud[24] = {};
+    bool hovPhotoMinus[8] = {};
+    bool hovPhotoPlus[8] = {};
+    bool draggingPhoto[8] = {};
+    bool hovCloudMinus[25] = {};
+    bool hovCloudPlus[25] = {};
+    bool draggingCloud[25] = {};
     // ── Settings window position (persisted; -1 = uninitialized, centers on first open) ─
     float settingsWinX = -1.0f;
     float settingsWinY = -1.0f;
@@ -856,6 +894,8 @@ private:
     void initStars(VulkanContext &ctx);
     void createStarPipeline(VulkanContext &ctx);
     void updateStars();
+    void updateLightPollutionDome(); // called each frame before updateStars(): fills lightDomeAz[]
+                                      // + uploads to lightDomeBuf for sat_flare.comp
     void initConstellation();                        // called once: loads definitions then builds orbits
     void loadDefinitions();                          // reads constellations.json; falls back to hardcoded defaults
     void loadHardcoded();                            // hardcoded satTypes + constellations (used as fallback)

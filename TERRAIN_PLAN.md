@@ -7,6 +7,25 @@ clouds, and orbital camera mode. Read this at the start of any terrain-related s
 
 ## Immediate Next Step
 
+**Moonlight tuning is settled (sessions 25-26):** `moonSuppression=4.0` (satellites),
+`cloud.moonGain=0.015` (terrain+clouds), `kStarMoonMaxDim=0.9` (stars, user-tuned directly in the
+IDE) all confirmed good in-app. Terrain night ambient was tried and **removed** (session 26) —
+user found it should stick to 0, so the slider and shader term are both gone; don't re-add without
+new direction from the user.
+
+**Directional light-pollution dome — implemented (session 26), not yet seen in-app.** Replaced the
+old uniform `pc.lightPollution` scalar with an 8-azimuth-sector dome (`lightDomeAz[]` /
+`lightDomeBuf`) for both satellites and stars — see session 26 log and `CLAUDE.md`'s "Subsystem:
+Light Pollution Dome" for the full design. Build clean; needs an in-app look, especially from a
+city at low altitude where the directional effect should actually be visible (versus the old
+scalar's uniform dimming).
+
+`moonBright` (both satellite and star versions) is still uniform across the whole sky — unlike
+light pollution, it wasn't made directional this session and there's no current plan to.
+
+Satellite-reflected light (satellites as light sources onto terrain/clouds) and aurora ground-cast
+light remain fully unscoped (raised, not designed) — pick up whenever the user wants them.
+
 **Performance data point needed (session 24 follow-up):** the user needs to re-benchmark ground-
 level FPS (Release build, same spots as before) now that `N_VIEW`/`N_LIGHT`/ocean quality are
 UBO-tunable sliders, and specifically test dropping `Light samples`. If that alone recovers a lot
@@ -457,6 +476,199 @@ structural change.
 ---
 
 ## Session Log
+
+### 2026-07-13 (session 25)
+- **Terrain night ambient + moonlight — first two of four unscoped terrain light sources**
+  (ambient/lunar/satellite/aurora were all missing; satellite and aurora remain unscoped). Both
+  land in `sat_sky.frag`'s terrain block, adjacent to the existing sun/`skyAmbientTerrain` code
+  (~line 1295-1379), and both are additive — they replace nothing.
+  - **Night ambient:** `nightColor * 0.12` (city-light emission) was the only thing keeping
+    unlit terrain off pure black; there was no real reflected-ambient term. Added
+    `dayColor * kNightAmbientBase * cloud.nightAmbientGain` — lights true albedo, not the
+    night-lights texture, so rural terrain now gets a dim cool-toned floor independent of city
+    proximity. `kNightAmbientBase = vec3(0.12, 0.15, 0.24)` is a hardcoded physical-magnitude
+    constant (matches the `kNightFloor`/`kCityCompressK` convention elsewhere in this file);
+    `nightAmbientGain` is the UBO-tunable multiplier. Always present (not gated by `dayFrac` or
+    moon state) — real night-sky brightness (starlight/airglow/zodiacal) doesn't depend on the moon.
+  - **Moonlight:** mirrors the *sun's* own direct-light pattern in this same block
+    (`shadingN·dir` Lambertian + `geoSunDot`-style geographic horizon gate via
+    `dot(normalize(hitPt), moonDir)`) rather than `cloud_march.comp`'s self-shadow/phase model —
+    terrain has no volumetric self-occlusion to fake, and `hitPt`/`shadingN`/`sunDir` already
+    share one frame with no ECEF conversion needed (confirmed by reading the existing `geoSunDot`
+    comment), so the sun scaffolding was the closer, cheaper fit. `moonDirENU.w` (illuminated
+    fraction) reused directly, same as the moon-disc and cloud code already do.
+  - **Cloud/terrain coherence tie-in (explicit user ask):** `cloud_march.comp`'s `moonContrib` used
+    a hardcoded `0.015` scalar with no way to tune it without a shader edit. Replaced with the new
+    shared `cloud.moonGain` UBO field, which the new terrain moonlight term also reads — one
+    slider now controls moonlit terrain and moonlit clouds together, so they can't drift apart in
+    brightness. Default `0.015` preserves the prior cloud look exactly.
+  - `GpuCloudParams` grew 224→240 bytes: `nightAmbientGain`, `moonGain`, `pad1`, `pad2` (2 real +
+    2 reserved, matching the established padded-growth pattern). Struct is duplicated in
+    `cloud_march.comp` (no `#include` in this codebase) — updated both copies; a mismatch here is
+    silent garbage, not a compile error, since it's just a UBO layout. New settings sliders
+    "Night ambient" / "Moon gain" added (ids 24/25, `cloudBufs` resized 24→26); persisted to
+    `settings.json` under `clouds.terrain_night_ambient` / `clouds.moon_gain`.
+  - Build clean (shaders + C++). Not yet visually tuned by the user — defaults are physically-
+    motivated guesses (`terrainNightAmbient=0.02`, `moonGain=0.015` inherited from the old cloud
+    constant), expect slider adjustment once seen at night in-app.
+  - **Bugfix caught while extending this same slider array pattern:** the prior sliders-array
+    resize (24→26 for the two new cloud sliders above) missed 3 fixed-size hover/drag arrays —
+    `hovCloudMinus`/`hovCloudPlus`/`draggingCloud` in `SatelliteSim.h` were still `[24]`, an
+    out-of-bounds read/write for the new idx-24/25 sliders. Resized to `[26]`. Same class of bug
+    almost repeated moments later for the photometry sliders below (`hovPhotoMinus`/`hovPhotoPlus`/
+    `draggingPhoto` are separate `[N]` arrays parallel to the settings-window slider list, not
+    auto-sized by the array-of-struct + range-for loop the sliders themselves use) — caught before
+    building this time. Any future slider addition to either panel must grep for all of these
+    parallel hover/drag arrays, not just the visible `*Bufs`/params array.
+- **Satellite moonlight sky-brightness suppression (same session, `sat_flare.comp`).** Extends the
+  cloud/terrain moonlight coherence work above to satellite visibility: satellites were already
+  dimmed by daylight sky background (`dayBright × daySuppression`) and by city light pollution
+  (`pc.lightPollution`, a single CPU-computed scalar from `earthNightTex` at the observer's own
+  position — correctly varies by where the observer stands, but applies uniformly across the whole
+  sky regardless of which direction a satellite appears in), but had **no moonlight term at all**.
+  Added `moonBright` (same squared-elevation-ramp shape as `dayBright`, scaled by phase illumination
+  `(1-dot(sunDirECI,moonDirECI))/2`) into the *same* suppression denominator as `dayBright` — both
+  are the same physical mechanism (sky background raised, faint objects lose contrast), so they sum
+  before dividing, unlike the multiplicative `lightPollution` term which is a separate effect.
+  `moonSuppression` (user-tuned to 4.0 after seeing it in-app — daySuppression's ~1500 for scale
+  reference, the two aren't directly comparable since moonBright's ramp/illumination inputs differ
+  from dayBright's) is the new tunable, mirroring `daySuppression`'s role at realistically much
+  lower magnitude. `SatFlarePC` grew 104→128 bytes (`moonSuppression`, `pad0`, `moonDirECI`, `pad1`
+  — vec3 needs 16-byte alignment, hence the pads); new "Moon suppress" photometry slider (idx 5);
+  persisted to `settings.json` under `photometry.moon_suppression`. Build clean. User confirmed both
+  this and `cloud.moonGain`'s default (0.015, unchanged) look right in-app.
+  - **Explicitly deferred (user-scoped for later):** both `dayBright` and `moonBright` are uniform
+    across the sky — same simplification, not direction-dependent. A real light-pollution model
+    needs a light dome (brighter near the horizon toward nearby cities, fainter away/at zenith),
+    which would need a small azimuth-binned array sampled from `earthNightTex` around the observer,
+    built CPU-side before the compute dispatch (can't reuse `glowBuf` itself for this — it's an
+    *output* of `sat_flare.comp`, built from the very satellites this would need to dim, so using
+    it as an input is circular). Moonlight's near-disc sky-brightening halo (real moonlight scatters
+    more strongly close to the moon) was folded into this same deferred scope rather than built now.
+  - **Follow-up (same session): stars had no moonlight term either.** `updateStars()` (CPU-side,
+    `SatelliteSim.cpp`) already dimmed stars for light pollution (`kStarPollutionMaxDim=0.85` cap)
+    but had nothing for moonlight. Added `moonBrightStar` — same elevation-ramp shape as the
+    satellite/`sat_flare.comp` version, but reuses `moonDirENU.w` (illuminated fraction, already
+    computed that frame in `updatePositions()`, called immediately before `updateStars()`) instead
+    of re-deriving it from `sunDirECI`/`moonDirECI`. Applied as a fixed multiplicative cap
+    (`kStarMoonMaxDim=0.6`), **not** wired to the `moonSuppression` slider — stars' existing
+    day/pollution dimming (`nightFactor`, `kStarPollutionMaxDim`) are both fixed formulas with no
+    settings-window knob, so this follows that established star-specific pattern rather than the
+    satellite side's explicit-gain-slider pattern; the two subsystems use different suppression
+    *shapes* (multiplicative cap vs. additive-denominator) so the raw slider value isn't portable
+    between them anyway. Build clean.
+- **Remaining unscoped terrain light sources:** satellite-reflected light (satellites as light
+  sources illuminating terrain/clouds, not the moonlight-suppression work above, which is about
+  satellite *visibility*) and aurora ground-cast light were raised in the same conversation but
+  explicitly deferred — not designed, not started.
+
+### 2026-07-13 (session 26)
+- **Terrain night ambient removed — user feedback after seeing it in-app: it should stick to 0,
+  slider removed.** Reverted `sat_sky.frag`'s terrain block to its pre-session-25 form (plain
+  `nightColor * 0.12`, no `nightAmbientTerrain`/`kNightAmbientBase` addition). `GpuCloudParams`'
+  `nightAmbientGain` slot reverted to reserved pad in all three copies (`SatelliteSim.h`,
+  `sat_sky.frag`, `cloud_march.comp`) rather than shrinking the struct — same "was padN" convention
+  established when `cloudShadowFactor` was removed (session 23). Named the reclaimed slot `pad3` in
+  all three, since `pad0`/`pad1`/`pad2` were already taken by earlier reclaims in this same struct
+  (a duplicate-`pad0` name collision was caught by the shader compiler and the equivalent C++
+  duplicate-member error would have hit next — same struct, same slot, three copies to keep in
+  sync). Removed the "Night ambient" settings slider (was idx 24), renumbered "Moon gain" to
+  idx 24, shrank `cloudBufs`/`hovCloudMinus`/`hovCloudPlus`/`draggingCloud` back to 25. Removed
+  `terrainNightAmbient` member and its `settings.json` persistence. Build clean.
+- **`kStarMoonMaxDim` tuned by the user directly in the IDE, 0.6→0.9** (`SatelliteSim.cpp`,
+  `updateStars()`) — full moon dims naked-eye stars more aggressively than the initial guess, still
+  short of 1.0 so the very brightest (Venus/Jupiter/Sirius-class) still show through.
+- **Both `moonSuppression=4.0` (satellites) and `cloud.moonGain=0.015` (terrain+clouds) confirmed
+  good** — no changes needed to either this session.
+- **Directional light-pollution dome, implemented (the follow-up scoped at the end of session
+  25).** Replaces the single "city brightness at the observer's own lat/lon" scalar (correct about
+  moving with the observer, wrong about being uniform across the whole sky) with an 8-azimuth-sector
+  dome — brighter toward nearby cities, fainter elsewhere, and independently faded toward zenith vs.
+  horizon. Full design + formulas documented in `CLAUDE.md`'s new "Subsystem: Light Pollution Dome"
+  section rather than duplicated here — key points:
+  - New `SatelliteSim::updateLightPollutionDome()` (CPU, called each frame right before
+    `updateStars()`): 8 sectors × 3 sample radii (8/20/45 km) via flat-Earth tangent-plane lat/lon
+    offset into `earthNightCpu`, combined per-sector via **weighted max** (a single nearby bright
+    city should dominate that direction, not get averaged down by darker samples at other radii in
+    the same sector — a plain weighted average would defeat the point of sampling multiple radii).
+    Reuses the exact same response-curve/altitude-falloff constants as the old scalar; only the
+    sampling geometry is new.
+  - Sector convention (45° bearing clockwise from North) deliberately matches `sat_flare.comp`'s
+    *existing* `GlowBuf` `sectorBright`/`azBin` scheme exactly, rather than introducing a
+    differently-sized second directional binning in the same shader.
+  - New `lightDomeBuf` SSBO (binding 3 in the sat_flare.comp descriptor set — `bindings[]`/`ps`/
+    `writes[]` arrays all grew 3→4), host-visible/mapped, 8 floats, same "CPU writes this frame, GPU
+    reads it later this same frame, single frame in flight, no barrier" pattern as
+    `reflectorTargetsBuf`. `updateStars()` reads the CPU-side `lightDomeAz[]` array directly — no
+    upload round-trip needed for stars, only satellites need the GPU buffer.
+  - `pc.lightPollution` removed from `SatFlarePC` (reverted to `pad2` — another `padN`-collision
+    near-miss, same lesson as the terrain-ambient removal above: this struct now has reserved slots
+    at 3 different points from 3 different removed features, easy to reuse a name by accident).
+  - Old flat `lightPollution` member removed entirely from `SatelliteSim.h` (dead once both
+    consumers moved to the dome).
+  - Build clean.
+  - **Deferred, not built:** the elevation falloff is a fixed analytic curve, not a true 2D
+    (azimuth × elevation) sampled dome — judged not worth real atmospheric-scattering-height
+    modeling over the fixed-curve approximation. Not re-scoped as a "next step"; revisit only if
+    the fixed curve visibly looks wrong in-app.
+- **Light pollution dome follow-up, same session: user reported the effect was basically invisible
+  in-app.** Root causes (not one bug, three compounding factors) and fixes:
+  1. **No tunable gain existed at all** (by design, matching the old scalar's precedent) — added
+     `lightPollutionGain` (default 1.0, settings slider "Pollution gain"), applied once at the
+     source in `updateLightPollutionDome()` so both consumers stay coherent by construction.
+  2. **Missing near-field sample:** the 3 radii started at 8 km, so standing in/near a small or
+     isolated city (common — the default 67°S 67°W spawn point and most manually-picked spots
+     aren't inside a sprawling metro) could miss the pollution source if the immediate
+     surroundings within 8 km were already dark. Added a 2 km near sample (4 radii total:
+     2/8/20/45 km) — the direct analog of the old scalar's distance-0 sample.
+  3. **Elevation falloff too steep:** `0.15/(sin(el)+0.15)` crushed the effect to near-zero above
+     ~20° elevation — most satellites/stars a user actually looks at aren't sitting right on the
+     horizon. Softened to `0.35/(sin(el)+0.35)` in both `sat_flare.comp` and `updateStars()`
+     (kept identical between the two, as before). Build clean.
+- **Light pollution dome, second follow-up (same session): still blocky over Europe, and gain=500
+  looked identical to gain=5** (user had edited the slider's own `vmax` to 500 directly in the IDE
+  trying to compensate). Two real bugs, not a tuning problem:
+  1. **Saturation bug:** `lightDomeAz[sec]` was clamped to `[0,1]` *before* `elevFalloff` (≤1 off
+     the horizon) got applied downstream — so gain above the point where it first saturated
+     (~5) could push the pre-elevFalloff value arbitrarily higher with zero visible effect, since
+     it was already being multiplied by a fraction afterward. Fixed by removing the premature
+     clamp at the source; the final `domeVal = clamp(domeAz * elevFalloff, 0, 1)` downstream (in
+     both `sat_flare.comp` and `updateStars()`) is the only clamp now, so high gain can actually
+     compensate for elevFalloff's reduction at non-horizon angles. Tightened the slider's `vmax`
+     back from the user's temporary 500 to 10 — full saturation at every elevation now happens
+     around gain≈4-5, so 500 was 100× oversized for the useful range and made the slider nearly
+     unusable for fine control.
+  2. **Blocky sectors:** 8 hard-edged 45° wedges, each from a handful of point-samples along one
+     bearing ray — crossing a sector boundary was a discrete jump, visible over wide, fairly
+     uniform bright regions (flying over Europe). Fixed two ways together: bumped to 16 sectors
+     (22.5° each), and switched both consumers from hard `azBin` lookup to interpolating between
+     the two nearest sector *centers* (`mix(lightDome[sec0], lightDome[sec1], frac)`) — the
+     interpolation is the actual fix for "blocky transitions" (finer sectors alone would still
+     have hard edges, just more of them). No longer needs to match `GlowBuf`'s own 8-sector
+     `azBin` scheme (that reuse was for convenience, not a hard requirement) — decoupled.
+  Build clean.
+- **Light pollution dome, third follow-up + new atmospheric extinction feature (same session):**
+  user reported still-blocky transitions when flying over a large uniform region (Europe) even
+  after the 16-sector interpolation fix, and separately asked what horizon-elevation atmospheric
+  attenuation existed for satellites/stars — answer: none did.
+  - **Dome smoothing:** the 16-sector interpolation smooths *within* a sector's span but doesn't
+    reduce how different two neighboring *raw* sector values are — each sector is one bearing ray,
+    and a real city edge doesn't line up with 22.5° boundaries, so adjacent sectors could still
+    swing hard. Added a 5-tap circular blur (`[0.1,0.2,0.4,0.2,0.1]`, ~±45°) over the raw
+    `lightDomeAz[]` values before storing — this is the actual fix for "unsubtle pops when
+    panning," not the interpolation or sector count.
+  - **New: atmospheric extinction (airmass).** Kasten & Young 1989 approximation, identical formula
+    in `sat_flare.comp` and `updateStars()` (a star and satellite at the same elevation must dim
+    equally — this is real light transmission, not a stylized knob). Multiplies `effectFlare`/star
+    intensity directly, `atmFrac`-gated (no atmospheric column from orbit). New `extinctionCoeff`
+    tunable (default 0.25 mag/airmass, settings slider "Extinction") reuses `SatFlarePC`'s `pad2`
+    slot — no struct growth. This gives the pollution dome's directional noise a smooth baseline to
+    sit on top of, rather than being the *only* source of horizon-vs-zenith brightness variation
+    (part of why the dome felt unsubtle before this). Full design in `CLAUDE.md`'s new "Subsystem:
+    Atmospheric Extinction". Build clean.
+  - Noted in passing: the user has been tuning `kStarPollutionMaxDim` (now 0.99, was 0.85) and
+    slider ranges (`Moon suppress`/`Pollution gain` `vmax`) directly in the IDE between rounds —
+    left those as found, only touched what was needed for these fixes.
 
 ### 2026-07-13 (session 23)
 - **Half-resolution cloud compute pass — biggest architecture change to `sat_sky.frag` to date.**
