@@ -626,6 +626,62 @@ structural change.
     else visually changed), then empirically drop `Light samples` specifically to determine whether
     the transmittance-LUT follow-up is worth scoping.
 
+- **Round 2, same session: `viewSamples` slider testing revealed the atmosphere loop's real
+  problem — a fixed sample count over a wildly variable path length, not a single "right" value.**
+  User found `viewSamples=4` gives huge FPS gains and looks convincing from the ground looking up,
+  but needs progressively more samples at higher altitude/near the terminator, with low values
+  producing rainbow banding near the terminator and the atmosphere vanishing entirely past MEO.
+  User's hypothesis was floating-point precision breaking down at Earth-scale distances — **ruled
+  out**: precision loss doesn't recover just by raising the sample count, but this problem does,
+  which is the signature of undersampling, not precision. Root cause: `segLen = tEnd/N_VIEW` uses
+  a FIXED sample count over `tEnd`, and `tEnd` (distance to the atmosphere exit) varies enormously
+  with viewing geometry alone — ~100km straight up from the ground vs. 2000+km for a near-horizon
+  ray (the same geometry as looking toward a low sun near the terminator), and similarly long for
+  most rays hitting the shell at a grazing angle from orbit. A fixed low `N_VIEW` badly
+  under-resolves the ~8km Rayleigh scale height exactly on those long/grazing rays.
+  - **Fix: `N_VIEW` is now adaptive per-ray**, not a single value. `viewSamplesMin` (default 4, the
+    user's own validated "looks convincing" ground floor) and `viewSamplesMax` (default 124, the
+    prior universal fixed value — already proven correct at all altitudes before this round) are
+    both UBO-tunable; the shader derives a target step length from `kAtmosRefTEnd / viewSamplesMin`
+    (`kAtmosRefTEnd = 100000.0` = `R_ATMOS - R_EARTH`, the ground-level straight-up reference path)
+    and scales `N_VIEW` per-ray to hold that same step length for whatever `tEnd` that specific ray
+    actually has, clamped to `[viewSamplesMin, viewSamplesMax]`. Mirrors the terrain march's
+    altitude-scaled step count and the cloud march's step-length cap — same "target physical
+    resolution, adapt sample count to match" pattern used twice already this session.
+    `sat_sky.frag`'s `N_VIEW = int(max(8.0, cloud.viewSamples))` single-value line replaced with
+    this derivation; `CloudParams`' `viewSamples` field split into `viewSamplesMin`/`viewSamplesMax`
+    (struct size unchanged, 224 bytes — reused the existing `pad4` slot). "View samples" slider
+    split into "View samples (min)"/"View samples (max)"; `cloudBufs`/hover/dragging arrays grew
+    `[23]`→`[24]`.
+  - `lightSamples` (`N_LIGHT`, the `optDepth` sub-march) was NOT made adaptive — the user only
+    reported `viewSamples` as impactful; leave as a plain tunable unless similar artifacts show up.
+  - Both builds clean. Not run interactively — user verifies: should now get the ground-level FPS
+    win from a low `viewSamplesMin` AND correct terminator/MEO visuals simultaneously, without
+    manually cranking the slider per viewing situation.
+
+- **Round 3, same session: user confirmed the adaptive `N_VIEW` optimization works well** —
+  `viewSamplesMin=4` had visible artifacts, `6` was clean (new default); terrain FPS reached
+  40-50fps with other tuning. Remaining complaint: camera angle is now the single biggest FPS
+  factor — zenith/ground-facing views >80fps, horizon-facing views ~50fps. Expected (horizon rays
+  have both the longest atmosphere path, now correctly handled by the round-2 adaptive `N_VIEW`,
+  and the most visible ocean/terrain), but investigated for further low-angle-specific waste.
+  - **Found a real "compute expensive detail, then discard it" pattern in ocean's `getNormal`**
+    (`sat_sky.frag` ~1449, wave normal from `seaMapDetail` central differences): it always paid
+    the full cost of 3 `seaMapDetail` calls (5 octaves each = 15 octave evaluations) whenever
+    `altFade>0.01`, THEN blended the result back toward flat (`surfUp`) via
+    `mix(waveN, surfUp, max(distFade, 1-altFade))` for anything far away or high-altitude — i.e.
+    it always computed the detail even when the blend was about to throw nearly all of it away.
+    Horizon views are exactly the case with the most far-away, blended-to-flat ocean on screen
+    (`heightMapTracing` just above already correctly gates its own expense by `dist<5000`; this
+    one didn't have the equivalent gate). **Fix:** compute `blend` first (cheap — only needs
+    `dist`/`altFade`, both already known), skip the three `seaMapDetail` calls entirely when
+    `blend >= 0.99` (result would be ≥99% flat anyway). Bitwise-identical output below that
+    threshold; the skipped detail above it was already imperceptible.
+  - The terrain march's cost for horizon rays is more fundamentally tied to the search itself
+    (no equivalent "computed then discarded" pattern found) — flagged as a harder, lower-priority
+    follow-up if the ocean fix doesn't close enough of the gap.
+  - Both builds clean.
+
 ### 2026-07-12 (session 22)
 - **C15 complete:** Airglow implemented as three altitude-banded emissive terms in `sat_sky.frag`.
   - **Altitude-range architecture mismatch found before finishing:** the design doc's directive to

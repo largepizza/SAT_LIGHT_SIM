@@ -350,12 +350,12 @@ struct GpuCloudParams
     float airglowSodiumGain;  // C15: sodium (589.3nm) band gain — keep dim relative to green
     float shadowMaxDistM;     // cloudMarch's sun self-shadow cone fades out beyond this distance (m)
     float maxRenderDistM;     // cloudMarch's tExit distance cap (was a hardcoded 80km)
-    float viewSamples;        // perf (session 24): N_VIEW atmosphere-loop sample count (was pad2)
+    float viewSamplesMin;     // perf (session 24 round 2): N_VIEW floor for short rays (was pad2)
     float lightSamples;       // perf (session 24): N_LIGHT optDepth sub-march count (was pad3)
     float oceanSeaOctaves;    // perf (session 24): seaMap() octave count (height-trace geometry)
     float oceanDetailOctaves; // perf (session 24): seaMapDetail() octave count (wave normal)
     float oceanReflSamples;   // perf (session 24): ocean sky-reflection loop sample count (N_REFL)
-    float pad4;               // reserved
+    float viewSamplesMax;     // perf (session 24 round 2): N_VIEW ceiling for long/grazing rays (was pad4)
     // Per-layer descriptors
     GpuCloudLayerParams layers[kNumCloudLayers];
 };
@@ -689,8 +689,16 @@ private:
     float cloudShadowMaxDistM = 15000.0f; // sun self-shadow cone (N_CONE) fades out beyond this distance
     float cloudMaxRenderDistM = 150000.0f; // cloudMarch tExit distance cap (was a hardcoded 80km)
     // Perf follow-up (session 24): main atmosphere loop + ocean wave quality, all previously
-    // hardcoded compile-time constants. Defaults match prior fixed behavior exactly.
-    float viewSamples = 124.0f;        // N_VIEW: main atmosphere-loop sample count
+    // hardcoded compile-time constants.
+    // N_VIEW is now adaptive per-ray (round 2): a fixed sample count badly serves a loop whose
+    // path length (tEnd) varies from ~100km (straight up) to 2000+km (grazing/horizon/orbit) —
+    // see the adaptive-N_VIEW comment in sat_sky.frag for the full reasoning. viewSamplesMin is
+    // the user-validated "looks convincing" floor for short ground-level rays (4 showed visible
+    // artifacts in testing; 6 was clean — round 3); viewSamplesMax is the prior universal fixed
+    // value (124), kept as the ceiling for long/grazing rays since that was already proven
+    // correct at all altitudes before this change.
+    float viewSamplesMin = 6.0f;
+    float viewSamplesMax = 124.0f;
     float lightSamples = 12.0f;        // N_LIGHT: optDepth sun-side sub-march count
     float oceanSeaOctaves = 3.0f;      // seaMap() octave count (height-trace geometry)
     float oceanDetailOctaves = 5.0f;   // seaMapDetail() octave count (wave normal)
@@ -823,9 +831,9 @@ private:
     bool hovPhotoMinus[5] = {};
     bool hovPhotoPlus[5] = {};
     bool draggingPhoto[5] = {};
-    bool hovCloudMinus[23] = {};
-    bool hovCloudPlus[23] = {};
-    bool draggingCloud[23] = {};
+    bool hovCloudMinus[24] = {};
+    bool hovCloudPlus[24] = {};
+    bool draggingCloud[24] = {};
     // ── Settings window position (persisted; -1 = uninitialized, centers on first open) ─
     float settingsWinX = -1.0f;
     float settingsWinY = -1.0f;

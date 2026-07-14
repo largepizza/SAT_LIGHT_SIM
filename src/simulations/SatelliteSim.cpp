@@ -349,7 +349,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.airglowSodiumGain = airglowSodiumGain;
         cp.shadowMaxDistM = cloudShadowMaxDistM;
         cp.maxRenderDistM = cloudMaxRenderDistM;
-        cp.viewSamples = viewSamples;
+        cp.viewSamplesMin = viewSamplesMin;
+        cp.viewSamplesMax = viewSamplesMax;
         cp.lightSamples = lightSamples;
         cp.oceanSeaOctaves = oceanSeaOctaves;
         cp.oceanDetailOctaves = oceanDetailOctaves;
@@ -1831,7 +1832,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     const char *fmt;
                     int idx;
                 };
-                static char cloudBufs[23][16];
+                static char cloudBufs[24][16];
                 CloudSlider cloudSliders[] = {
                     {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
                     {"Density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
@@ -1851,11 +1852,12 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                     {"Airglow sodium", &airglowSodiumGain, 0.0f, 3.0f, 0.1f, "%.2f", 15},
                     {"Shadow max dist (m)", &cloudShadowMaxDistM, 1000.0f, 60000.0f, 1000.0f, "%.0f", 16},
                     {"Render dist (m)", &cloudMaxRenderDistM, 20000.0f, 400000.0f, 10000.0f, "%.0f", 17},
-                    {"View samples", &viewSamples, 8.0f, 124.0f, 4.0f, "%.0f", 18},
-                    {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 19},
-                    {"Sea octaves", &oceanSeaOctaves, 1.0f, 3.0f, 1.0f, "%.0f", 20},
-                    {"Detail octaves", &oceanDetailOctaves, 1.0f, 5.0f, 1.0f, "%.0f", 21},
-                    {"Refl samples", &oceanReflSamples, 1.0f, 6.0f, 1.0f, "%.0f", 22},
+                    {"View samples (min)", &viewSamplesMin, 2.0f, 32.0f, 1.0f, "%.0f", 18},
+                    {"View samples (max)", &viewSamplesMax, 32.0f, 256.0f, 4.0f, "%.0f", 19},
+                    {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 20},
+                    {"Sea octaves", &oceanSeaOctaves, 1.0f, 3.0f, 1.0f, "%.0f", 21},
+                    {"Detail octaves", &oceanDetailOctaves, 1.0f, 5.0f, 1.0f, "%.0f", 22},
+                    {"Refl samples", &oceanReflSamples, 1.0f, 6.0f, 1.0f, "%.0f", 23},
                 };
                 for (auto &cs : cloudSliders)
                 {
@@ -4670,7 +4672,8 @@ void SatelliteSim::loadSettings()
         airglowSodiumGain = c.value("airglow_sodium_gain", airglowSodiumGain);
         cloudShadowMaxDistM = c.value("shadow_max_dist_m", cloudShadowMaxDistM);
         cloudMaxRenderDistM = c.value("max_render_dist_m", cloudMaxRenderDistM);
-        viewSamples = c.value("view_samples", viewSamples);
+        viewSamplesMin = c.value("view_samples_min", viewSamplesMin);
+        viewSamplesMax = c.value("view_samples_max", viewSamplesMax);
         lightSamples = c.value("light_samples", lightSamples);
         oceanSeaOctaves = c.value("ocean_sea_octaves", oceanSeaOctaves);
         oceanDetailOctaves = c.value("ocean_detail_octaves", oceanDetailOctaves);
@@ -4737,7 +4740,8 @@ void SatelliteSim::saveSettings()
         {"airglow_sodium_gain", airglowSodiumGain},
         {"shadow_max_dist_m", cloudShadowMaxDistM},
         {"max_render_dist_m", cloudMaxRenderDistM},
-        {"view_samples", viewSamples},
+        {"view_samples_min", viewSamplesMin},
+        {"view_samples_max", viewSamplesMax},
         {"light_samples", lightSamples},
         {"ocean_sea_octaves", oceanSeaOctaves},
         {"ocean_detail_octaves", oceanDetailOctaves},

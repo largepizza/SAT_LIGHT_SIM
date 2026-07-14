@@ -88,12 +88,12 @@ layout(set = 0, binding = 9) uniform CloudParams {
     float airglowSodiumGain;  // C15: sodium (589.3nm) band gain — keep dim relative to green
     float shadowMaxDistM;     // cloudMarch's sun self-shadow cone fades out beyond this distance (m)
     float maxRenderDistM;     // cloudMarch's tExit distance cap (was a hardcoded 80km)
-    float viewSamples;        // perf (session 24): N_VIEW atmosphere-loop sample count (was pad2)
+    float viewSamplesMin;     // perf (session 24 round 2): N_VIEW floor for short rays (was pad2)
     float lightSamples;       // perf (session 24): N_LIGHT optDepth sub-march count (was pad3)
     float oceanSeaOctaves;    // perf (session 24): seaMap() octave count (height-trace geometry)
     float oceanDetailOctaves; // perf (session 24): seaMapDetail() octave count (wave normal)
     float oceanReflSamples;   // perf (session 24): ocean sky-reflection loop sample count (N_REFL)
-    float pad4;               // reserved
+    float viewSamplesMax;     // perf (session 24 round 2): N_VIEW ceiling for long/grazing rays (was pad4)
     CloudLayer layers[4];
 } cloud;
 
@@ -968,7 +968,28 @@ void main() {
     // the observer instead of contributing nothing, corrupting the sky colour along that ray.
     float tEnd   = max(0.0, (tSurface > 0.0) ? min(tAtmos.y, tSurface) : tAtmos.y);
 
-    int   N_VIEW = int(max(8.0, cloud.viewSamples));
+    // Adaptive N_VIEW (perf follow-up, session 24 round 2): a FIXED sample count over segLen =
+    // tEnd/N_VIEW badly serves this loop, because tEnd itself varies enormously with viewing
+    // geometry, not just altitude — a straight-up ray from the ground has tEnd~100km, but a
+    // near-horizon ray (the same geometry as looking toward a low sun near the terminator) can
+    // graze a chord of 2000+ km through the thin atmosphere shell, and most rays from orbit hit
+    // the shell at a similarly grazing angle. A fixed low N_VIEW gives a razor-thin, accurate
+    // step for the short case but a step many times the ~8km Rayleigh scale height (H_R) for the
+    // long case — under-resolving the exponential falloff exactly where it's most sensitive,
+    // which is what read as rainbow banding near the terminator and a vanishing atmosphere past
+    // MEO. This is undersampling, not a floating-point precision problem (precision loss
+    // wouldn't recover just by raising the sample count the way this does).
+    //
+    // Fix: derive a target step length from the user's validated "looks convincing" ground-level
+    // case (cloud.viewSamplesMin steps over the reference ~100km straight-up path — kAtmosRefTEnd
+    // below is exactly R_ATMOS-R_EARTH), then scale N_VIEW to hold that SAME step length for
+    // whatever tEnd this particular ray actually has, clamped to cloud.viewSamplesMax so a
+    // pathologically long grazing ray can't balloon the cost unboundedly.
+    const float kAtmosRefTEnd = 100000.0; // R_ATMOS - R_EARTH: ground-level straight-up reference path
+    float viewSamplesMin = max(2.0, cloud.viewSamplesMin);
+    float viewSamplesMax = max(viewSamplesMin, cloud.viewSamplesMax);
+    float targetStepLen  = kAtmosRefTEnd / viewSamplesMin;
+    int   N_VIEW = int(clamp(ceil(tEnd / targetStepLen), viewSamplesMin, viewSamplesMax));
     float segLen = tEnd / float(N_VIEW);
     float cosA   = dot(dir, sunDir);
     float pR     = phaseR(cosA);
@@ -1425,15 +1446,27 @@ void main() {
             // ── getNormal (central differences on seaMapDetail) ───────────────
             // posM is in ENU East/North metres, so +eps in x = East, +eps in y = North.
             // Normal in ENU = normalize(East_slope, North_slope, Up_component).
+            //
+            // Perf (session 24 round 3, low-angle/horizon views): the blend factor below only
+            // needs `dist`/`altFade`, both already known here — compute it FIRST and skip the
+            // three seaMapDetail calls (15 octave evaluations total) entirely when it's already
+            // ~1 (result blends back to flat `surfUp` regardless). The original version always
+            // paid full detail cost then discarded most of it for distant ocean — exactly the
+            // case that dominates horizon views, where most visible ocean is far past the 8km
+            // distance fade. Bitwise-identical result for blend<0.99; below that threshold the
+            // discarded detail was already imperceptible (>99% blended to flat).
             vec3 waveN = surfUp;
             if (altFade > 0.01) {
-                float eps = max(0.5, dist * 0.0008);
-                float n0  = seaMapDetail(posM,                    pHeight, seaTime);
-                float nX  = seaMapDetail(posM + vec2(eps, 0.0),  pHeight, seaTime) - n0;
-                float nY  = seaMapDetail(posM + vec2(0.0,  eps), pHeight, seaTime) - n0;
-                waveN = normalize(vec3(nX, nY, 0.0) + eps * surfUp);
                 float distFade = smoothstep(3000.0, 8000.0, dist);
-                waveN = normalize(mix(waveN, surfUp, max(distFade, 1.0 - altFade)));
+                float blend    = max(distFade, 1.0 - altFade);  // 0 = full detail, 1 = flat
+                if (blend < 0.99) {
+                    float eps = max(0.5, dist * 0.0008);
+                    float n0  = seaMapDetail(posM,                    pHeight, seaTime);
+                    float nX  = seaMapDetail(posM + vec2(eps, 0.0),  pHeight, seaTime) - n0;
+                    float nY  = seaMapDetail(posM + vec2(0.0,  eps), pHeight, seaTime) - n0;
+                    waveN = normalize(vec3(nX, nY, 0.0) + eps * surfUp);
+                    waveN = normalize(mix(waveN, surfUp, blend));
+                }
             }
 
             // ── getSeaColor ────────────────────────────────────────────────────
