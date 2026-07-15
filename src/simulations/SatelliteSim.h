@@ -642,6 +642,31 @@ private:
     VkImageView earthNightView = VK_NULL_HANDLE;
     VkSampler earthNightSampler = VK_NULL_HANDLE;
     uint32_t earthNightMips = 1;
+    // City-detail world-fixed offset (metres): the observer's own cumulative north/east
+    // displacement, accumulated every frame from consecutive obsLatDeg/obsLonDeg deltas. Added
+    // to hitPt.xy in sat_sky.frag's "City detail texture blend" to cancel that coordinate's
+    // observer-relative drift with a plain translation — see the comment there for why a
+    // translation is sufficient (no basis/anchor-snap machinery needed). Packed into CloudParams
+    // pad1/pad2. Double precision on CPU is cheap insurance against long play sessions; only
+    // cast to float when uploading.
+    double cityOffsetEastM = 0.0;
+    double cityOffsetNorthM = 0.0;
+    bool cityOffsetInit = false;
+    double cityPrevObsLatRad = 0.0;
+    double cityPrevObsLonRad = 0.0;
+    // City day/night detail textures (bindings 14/15): small tileable high-frequency maps,
+    // blended onto dayColor/nightColor near cities (see terrain block in sat_sky.frag). Hardcoded
+    // tiling scale + distance fade, no CloudParams UBO fields.
+    VkImage cityDayDetailImg = VK_NULL_HANDLE;
+    VkDeviceMemory cityDayDetailMem = VK_NULL_HANDLE;
+    VkImageView cityDayDetailView = VK_NULL_HANDLE;
+    VkSampler cityDayDetailSampler = VK_NULL_HANDLE;
+    uint32_t cityDayDetailMips = 1;
+    VkImage cityNightDetailImg = VK_NULL_HANDLE;
+    VkDeviceMemory cityNightDetailMem = VK_NULL_HANDLE;
+    VkImageView cityNightDetailView = VK_NULL_HANDLE;
+    VkSampler cityNightDetailSampler = VK_NULL_HANDLE;
+    uint32_t cityNightDetailMips = 1;
     // Earth specular texture (binding 6): 8K R8_UNORM ocean mask (white=ocean, black=land).
     // Used to gate the wave normal + specular glint material on sea-level sphere hits.
     VkImage earthSpecImg = VK_NULL_HANDLE;
