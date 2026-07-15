@@ -50,6 +50,12 @@ layout(set = 0, binding = 5) uniform sampler2D earthElevTex;
 layout(set = 0, binding = 6) uniform sampler2D earthSpecTex;
 layout(set = 0, binding = 7) uniform sampler2D earthCloudsTex;
 
+// City day/night detail textures (bindings 14/15): small tileable maps, REPEAT in both U and V.
+// Blended onto dayColor/nightColor near cities (bright earthNightTex pixels) within a fixed
+// distance of the observer — see the terrain block in main() below.
+layout(set = 0, binding = 14) uniform sampler2D cityDayDetailTex;
+layout(set = 0, binding = 15) uniform sampler2D cityNightDetailTex;
+
 // Cloud 3D noise volume (binding 8): 128³ RGBA, baked by cloud_noise.comp at init.
 // R = Perlin-Worley FBM (base shape), G/B/A = inverted Worley erosion octaves.
 layout(set = 0, binding = 8) uniform sampler3D cloudNoiseTex;
@@ -1340,6 +1346,53 @@ void main() {
         if (uvd_dy.x < -0.5) uvd_dy.x += 1.0;
         vec3 dayColor   = textureGrad(earthDayTex,   uvSurf, uvd_dx, uvd_dy).rgb;
         vec3 nightColor = textureGrad(earthNightTex, uvSurf, uvd_dx, uvd_dy).rgb;
+
+        // ── City detail texture blend ───────────────────────────────────────────
+        // Fades in a tileable high-frequency detail texture over bright earthNightTex pixels
+        // (cities) within a fixed distance of the observer: dayDetail replaces dayColor,
+        // nightDetail replaces the night emissive term. Beyond kCityFadeFarM, or over
+        // non-city terrain, this is a no-op and dayColor/nightColor pass through unchanged.
+        {
+            const float kCityDetailTileM = 20000.0;  // metres per texture tile repeat
+            const float kCityMaskLo      = 0.01;   // nightColor luminance where detail starts
+            const float kCityMaskHi      = 0.15;   // luminance where detail is fully blended in
+            const float kCityFadeNearM   = 3000.0; // full detail strength inside this distance
+            const float kCityFadeFarM    = 300000.0; // detail fully faded out beyond this distance
+            float cityDistFade = 1.0 - smoothstep(kCityFadeNearM, kCityFadeFarM, tSurface);
+            if (cityDistFade > 0.001)
+            {
+                float cityLum  = dot(nightColor, vec3(0.2126, 0.7152, 0.0722));
+                float cityMask = smoothstep(kCityMaskLo, kCityMaskHi, cityLum) * cityDistFade;
+                if (cityMask > 0.001)
+                {
+                    // hitPt.xy (observer-local ENU tangent plane) is a real orthogonal projection —
+                    // a physical square patch of ground always looks square in it, at any latitude,
+                    // any distance — unlike a lon/lat-derived (plate-carrée-style) UV, which is only
+                    // exactly square-scale at the one latitude its metric was evaluated at and
+                    // visibly skews elsewhere (tried; no derivative fix rescues it, it's the wrong
+                    // coordinate system). So a local ENU tangent plane is the right shape. hitPt.xy's
+                    // only flaw is being tied to the observer's live position (drifts as the observer
+                    // moves). A fixed-basis anchor was tried to cancel that exactly, but re-deriving
+                    // the basis at each grid-snap silently rotated the axes a little, not just
+                    // translated them — a visible pop at every snap instead of a seamless jump.
+                    //
+                    // The actual fix is simpler: hitPt.xy's drift, for any point near the observer,
+                    // is to leading order just a uniform shift equal to the observer's OWN north/east
+                    // motion (shifting the reference frame doesn't rotate nearby points relative to
+                    // each other, it moves them all together). So track the observer's cumulative
+                    // north/east displacement on the CPU (cityOffsetEastM/NorthM in
+                    // SatelliteSim.cpp, packed into cloud.pad1/pad2) and add it straight back —
+                    // a plain per-frame-constant translation, no basis, no trig, no snap events.
+                    vec2 detailUV = (hitPt.xy + vec2(cloud.pad1, cloud.pad2)) / kCityDetailTileM;
+                    vec2 duv_dx = dFdx(detailUV);
+                    vec2 duv_dy = dFdy(detailUV);
+                    vec3 dayDetail   = textureGrad(cityDayDetailTex,   detailUV, duv_dx, duv_dy).rgb;
+                    vec3 nightDetail = textureGrad(cityNightDetailTex, detailUV, duv_dx, duv_dy).rgb;
+                    dayColor   = mix(dayColor,   dayDetail,   cityMask);
+                    nightColor = mix(nightColor, nightDetail, cityMask);
+                }
+            }
+        }
 
         // ── Spectral sun color at terrain hit ─────────────────────────────────
         // Sun light arriving at the terrain is orange at low angles (long atmospheric path).

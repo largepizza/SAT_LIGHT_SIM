@@ -346,6 +346,37 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         obsTerrainH = (pixVal <= kSeaLevel) ? 0.0f : std::max(0.0f, (pixVal - kSeaLevel) * 8848.0f);
     }
 
+    // ── City-detail world-fixed offset ────────────────────────────────────────────────────────
+    // sat_sky.frag's "City detail texture blend" adds this (cityOffsetEastM/NorthM, packed into
+    // CloudParams pad1/pad2) straight onto hitPt.xy to cancel that coordinate's observer-relative
+    // drift with a plain translation. hitPt.xy's drift for any point near the observer is, to
+    // leading order, just a uniform shift equal to the observer's own north/east motion — moving
+    // the reference frame doesn't rotate nearby points relative to each other, it shifts them all
+    // together — so tracking the observer's own cumulative displacement is sufficient; no basis
+    // reconstruction or grid-snapping needed (an earlier version tried exactly-fixed local ENU
+    // bases snapped to a grid, but re-deriving the basis at each snap silently rotated the axes a
+    // little, not just translated them, causing a visible pop at every snap instead of the
+    // intended seamless tile-period jump).
+    {
+        double latRad = (double)glm::radians(obsLatDeg);
+        double lonRad = (double)glm::radians(obsLonDeg);
+        if (!cityOffsetInit)
+        {
+            cityPrevObsLatRad = latRad;
+            cityPrevObsLonRad = lonRad;
+            cityOffsetInit = true;
+        }
+        double dLat = latRad - cityPrevObsLatRad;
+        double dLon = lonRad - cityPrevObsLonRad;
+        if (dLon > glm::pi<double>())  dLon -= glm::two_pi<double>(); // antimeridian wrap guard
+        if (dLon < -glm::pi<double>()) dLon += glm::two_pi<double>();
+        double cosLat = std::max(0.05, cos(latRad)); // guards the /cosLat below near the poles
+        cityOffsetNorthM += dLat * (double)kEarthRadius;
+        cityOffsetEastM  += dLon * (double)kEarthRadius * cosLat;
+        cityPrevObsLatRad = latRad;
+        cityPrevObsLonRad = lonRad;
+    }
+
     if (cloudParamsMapped)
     {
         GpuCloudParams cp{};
@@ -373,8 +404,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.oceanDetailOctaves = oceanDetailOctaves;
         cp.oceanReflSamples = oceanReflSamples;
         cp.moonGain = moonGain;
-        cp.pad1 = 0.0f;
-        cp.pad2 = 0.0f;
+        cp.pad1 = (float)cityOffsetEastM;  // repurposed: city-detail world-fixed east offset (m)
+        cp.pad2 = (float)cityOffsetNorthM; // repurposed: city-detail world-fixed north offset (m)
         cp.mwBasisRow0 = glm::vec4(mwRow0, 1.0f); // .w = milky way gain (fixed; no longer user-tunable)
         cp.mwBasisRow1 = glm::vec4(mwRow1, 0.0f);
         cp.mwBasisRow2 = glm::vec4(mwRow2, 0.0f);
@@ -762,6 +793,46 @@ void SatelliteSim::cleanup(VkDevice device)
     {
         vkFreeMemory(device, earthNightMem, nullptr);
         earthNightMem = VK_NULL_HANDLE;
+    }
+    if (cityDayDetailSampler)
+    {
+        vkDestroySampler(device, cityDayDetailSampler, nullptr);
+        cityDayDetailSampler = VK_NULL_HANDLE;
+    }
+    if (cityDayDetailView)
+    {
+        vkDestroyImageView(device, cityDayDetailView, nullptr);
+        cityDayDetailView = VK_NULL_HANDLE;
+    }
+    if (cityDayDetailImg)
+    {
+        vkDestroyImage(device, cityDayDetailImg, nullptr);
+        cityDayDetailImg = VK_NULL_HANDLE;
+    }
+    if (cityDayDetailMem)
+    {
+        vkFreeMemory(device, cityDayDetailMem, nullptr);
+        cityDayDetailMem = VK_NULL_HANDLE;
+    }
+    if (cityNightDetailSampler)
+    {
+        vkDestroySampler(device, cityNightDetailSampler, nullptr);
+        cityNightDetailSampler = VK_NULL_HANDLE;
+    }
+    if (cityNightDetailView)
+    {
+        vkDestroyImageView(device, cityNightDetailView, nullptr);
+        cityNightDetailView = VK_NULL_HANDLE;
+    }
+    if (cityNightDetailImg)
+    {
+        vkDestroyImage(device, cityNightDetailImg, nullptr);
+        cityNightDetailImg = VK_NULL_HANDLE;
+    }
+    if (cityNightDetailMem)
+    {
+        vkFreeMemory(device, cityNightDetailMem, nullptr);
+        cityNightDetailMem = VK_NULL_HANDLE;
     }
     if (earthElevSampler)
     {
@@ -1961,6 +2032,87 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         vkCreateSampler(ctx.device, &sci, nullptr, &earthNightSampler);
     }
 
+    // ── City day/night detail textures (bindings 14/15): small tileable maps blended onto
+    // dayColor/nightColor near cities (see terrain block in sat_sky.frag).
+    {
+        struct { const char *path; VkImage *img; VkDeviceMemory *mem; VkImageView *view;
+                  VkSampler *sampler; uint32_t *mips; } detailTexes[2] = {
+            {"assets/textures/city_day_detail.png", &cityDayDetailImg, &cityDayDetailMem,
+             &cityDayDetailView, &cityDayDetailSampler, &cityDayDetailMips},
+            {"assets/textures/city_night_detail.png", &cityNightDetailImg, &cityNightDetailMem,
+             &cityNightDetailView, &cityNightDetailSampler, &cityNightDetailMips},
+        };
+        for (auto &t : detailTexes)
+        {
+            int w = 0, h = 0, ch = 0;
+            stbi_uc *pixels = stbi_load(t.path, &w, &h, &ch, 4);
+            if (!pixels)
+                throw std::runtime_error(std::string("SatelliteSim: failed to load ") + t.path);
+
+            *t.mips = (uint32_t)std::floor(std::log2((float)std::max(w, h))) + 1;
+            VkDeviceSize imgBytes = (VkDeviceSize)w * h * 4;
+
+            VkBuffer stageBuf;
+            VkDeviceMemory stageMem;
+            ctx.createBuffer(imgBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             stageBuf, stageMem);
+            void *mapped;
+            vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
+            memcpy(mapped, pixels, (size_t)imgBytes);
+            vkUnmapMemory(ctx.device, stageMem);
+            stbi_image_free(pixels);
+
+            ctx.createImage((uint32_t)w, (uint32_t)h, VK_FORMAT_R8G8B8A8_SRGB,
+                            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            *t.img, *t.mem, *t.mips);
+
+            {
+                auto cmd = ctx.beginOneTimeCommands();
+                VkImageMemoryBarrier allMips{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                allMips.srcAccessMask = 0;
+                allMips.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                allMips.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                allMips.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                allMips.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                allMips.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                allMips.image = *t.img;
+                allMips.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, *t.mips, 0, 1};
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &allMips);
+                VkBufferImageCopy region{};
+                region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+                vkCmdCopyBufferToImage(cmd, stageBuf, *t.img,
+                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                ctx.generateMipmaps(cmd, *t.img, VK_FORMAT_R8G8B8A8_SRGB,
+                                    (uint32_t)w, (uint32_t)h, *t.mips);
+                ctx.endOneTimeCommands(cmd);
+            }
+            vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+            vkFreeMemory(ctx.device, stageMem, nullptr);
+
+            VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            vci.image = *t.img;
+            vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            vci.format = VK_FORMAT_R8G8B8A8_SRGB;
+            vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, *t.mips, 0, 1};
+            vkCreateImageView(ctx.device, &vci, nullptr, t.view);
+
+            // Tileable in both U and V (unlike the equirect Earth maps, which only repeat U).
+            VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+            sci.magFilter = VK_FILTER_LINEAR;
+            sci.minFilter = VK_FILTER_LINEAR;
+            sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+            sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            sci.maxLod = (float)*t.mips;
+            vkCreateSampler(ctx.device, &sci, nullptr, t.sampler);
+        }
+    }
+
     // ── Load earth elevation map (binding 5): 21600×10800 R8_UNORM , 0 = sea level
     {
         int w, h, ch;
@@ -2208,8 +2360,8 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         memset(cloudParamsMapped, 0, sz);
     }
 
-    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex
-    VkDescriptorSetLayoutBinding bindings[14] = {};
+    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail
+    VkDescriptorSetLayoutBinding bindings[16] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -2226,14 +2378,16 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // it to dim the Milky Way directionally, matching how satellites/stars are already dimmed.
     bindings[12] = {12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[13] = {13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // milky way skybox
+    bindings[14] = {14, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // city day detail
+    bindings[15] = {15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // city night detail
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 14;
+    li.bindingCount = 16;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
     VkDescriptorPoolSize ps[3] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 11},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 13},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
     };
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -2270,8 +2424,10 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     VkDescriptorImageInfo cloudMarchBImgInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo lightDomeInfo{lightDomeBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo milkyWayImgInfo{milkyWaySampler, milkyWayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo cityDayDetailImgInfo{cityDayDetailSampler, cityDayDetailView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo cityNightDetailImgInfo{cityNightDetailSampler, cityNightDetailView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    VkWriteDescriptorSet writes[14] = {};
+    VkWriteDescriptorSet writes[16] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = skyDescSet;
     writes[0].dstBinding = 0;
@@ -2356,7 +2512,19 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     writes[13].descriptorCount = 1;
     writes[13].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[13].pImageInfo = &milkyWayImgInfo;
-    vkUpdateDescriptorSets(ctx.device, 14, writes, 0, nullptr);
+    writes[14].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[14].dstSet = skyDescSet;
+    writes[14].dstBinding = 14;
+    writes[14].descriptorCount = 1;
+    writes[14].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[14].pImageInfo = &cityDayDetailImgInfo;
+    writes[15].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[15].dstSet = skyDescSet;
+    writes[15].dstBinding = 15;
+    writes[15].descriptorCount = 1;
+    writes[15].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[15].pImageInfo = &cityNightDetailImgInfo;
+    vkUpdateDescriptorSets(ctx.device, 16, writes, 0, nullptr);
 }
 
 // Fullscreen triangle that colors pixels sky or ground based on camera elevation.
