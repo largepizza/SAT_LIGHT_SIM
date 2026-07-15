@@ -8,11 +8,14 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "../Simulation.h"
+#include "../UIRenderer.h" // WindowChrome — used by member state below (needs complete type)
 
 #include <string>
 #include <vector>
 #include <cstdint>
 #include <cmath>
+#include <algorithm>
+#include <functional>
 
 // ── Maximum satellites per frame ──────────────────────────────────────────────
 static constexpr uint32_t MAX_SATELLITES = 10'000'000;
@@ -56,6 +59,13 @@ enum class AttitudeMode
                        // this orientation.  irr = |dot(sun, normal)| = 0 always — the radiator
                        // intentionally never receives direct sunlight (correct thermal design).
                        // Visual contribution is through the overall diffuse scatter parameter.
+};
+
+// ── Display unit system (right HUD panel altitude readout, settings Display tab) ──
+enum class UnitSystem
+{
+    Metric,   // km
+    Imperial, // mi
 };
 
 // ── Orbit distribution type ────────────────────────────────────────────────────
@@ -695,7 +705,6 @@ private:
     // ── UI visibility & settings ──────────────────────────────────────────────
     bool showIntro = true; // cinematic intro overlay; dismissed on click or any key
     bool uiVisible = true;
-    bool settingsOpen = false;
     bool iconsLoaded = false;
     float uiScale = 1.5f;    // text/UI size multiplier (0.75 – 2.0)
     float masterVol_ = 0.8f; // mirrors AudioSystem default (display fallback)
@@ -873,10 +882,15 @@ private:
     bool hovTimeSlower = false;
     bool hovTimePause = false;
     bool hovTimeFaster = false;
-    bool hovLatSouth = false;
-    bool hovLatNorth = false;
+    bool hovTimeReverse = false;
     bool hovSettings = false;
     bool hovSettingsClose = false;
+    bool hovAltModeToggle = false;
+    bool hovViewControlsClose = false;
+    bool hovUnitMetric = false;
+    bool hovUnitImperial = false;
+    bool hovShowControlsStartup = false;
+    bool hovTab[8] = {}; // one per settings-window tab
     bool hovScaleMinus = false;
     bool hovScalePlus = false;
     bool hovMasterVolMinus = false;
@@ -893,10 +907,21 @@ private:
     bool hovCloudMinus[25] = {};
     bool hovCloudPlus[25] = {};
     bool draggingCloud[25] = {};
-    // ── Settings window position (persisted; -1 = uninitialized, centers on first open) ─
-    float settingsWinX = -1.0f;
-    float settingsWinY = -1.0f;
-    bool settingsDragging = false;
+
+    // ── Window chrome (drag+resize; see UIRenderer::WindowChrome) ──────────────
+    // x/y default to -1 (uninitialized, centers/places on first open); w/h are set
+    // once by the owning builder before the first updateWindowChrome() call.
+    // Only the two real windows (Settings, View Controls) have chrome — the left/right
+    // HUD panels are fixed to their screen corner (see buildLeftHudPanel/buildRightHudPanel),
+    // recomputed from screenW/H every frame so they track window resizes automatically.
+    WindowChrome settingsChrome;
+    WindowChrome viewControlsChrome;
+    int settingsActiveTab = 0; // index into the 8 settings tabs (persisted)
+
+    // ── Right HUD panel: altitude display mode + unit system ──────────────────
+    bool altModeSeaLevel = true;                        // true = MSL (sea level), false = AGL (above terrain)
+    UnitSystem unitSystem = UnitSystem::Metric;          // Display tab setting; affects altitude readout
+    bool showControlsOnStartup = true;                   // Display tab setting; gates viewControlsChrome.open in init()
 
     // ── Private helpers ───────────────────────────────────────────────────────
     void createBuffers(VulkanContext &ctx);
@@ -924,6 +949,48 @@ private:
     void loadSettings();                             // reads settings.json; silently uses defaults if missing
     void saveSettings();                             // writes settings.json next to exe
     void updatePositions(double t, float dt = 0.0f); // called each frame: fills satInputData + eci2enu
+    void toggleTimeDirection() { timeDir = -timeDir; } // shared by KB_REVERSE and the left-panel Reverse button
+
+    // ── Small UI helpers shared across every UI builder method ────────────────
+    // (formerly local lambdas inside the single monolithic buildUI(); now member
+    // functions since buildUI is split across buildLeftHudPanel/buildSettingsWindow/etc.)
+    uint16_t fs(int base) const { return (uint16_t)std::max(8, (int)(base * uiScale + 0.5f)); }
+    // Defined in SatelliteSimUI.cpp — need AudioSystem's complete type (only forward-declared here).
+    void sndRollover(bool nowHov, bool prevHov) const;
+    void sndClick(bool nowHov, bool lmbPressed) const;
+
+    // ── UI builders (defined in SatelliteSimUI.cpp) ────────────────────────────
+    void buildLeftHudPanel(const UIInput &inp, UIRenderer &ui);
+    void buildRightHudPanel(const UIInput &inp, UIRenderer &ui);
+
+    // Shared resizable+draggable+(optionally) closable window frame — title bar,
+    // 8-direction edge/corner resize, bevel border — used by both the settings
+    // window and the view-controls window so there is one window implementation,
+    // not two. `buildBody` declares whatever content goes inside (tabs+content for
+    // settings, a plain scroll list for view-controls). Returns true the frame the
+    // close button was clicked (closable windows only), so callers can react (e.g.
+    // save settings).
+    bool buildResizableWindow(const UIInput &inp, UIRenderer &ui, WindowChrome &chrome,
+                               int winId, const char *title, bool closable, bool &hovCloseFlag,
+                               float defaultX, float defaultY,
+                               float minW, float minH, float maxW, float maxH,
+                               const std::function<void()> &buildBody);
+
+    void buildSettingsWindow(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsConstellationsTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsCameraTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &ui);
+    void buildViewControlsWindow(const UIInput &inp, UIRenderer &ui);
+    void buildViewControlsBody(const UIInput &inp, UIRenderer &ui);
+    void buildIntroOverlay(const UIInput &inp, UIRenderer &ui);
+    void setLat(float newLatDeg); // moves observer to a new latitude; used by the right panel's lat display scroll-adjust
+    void adjustLon(float deltaDeg); // rotates observer around Earth's polar axis; right panel's lon display scroll-adjust
                                                      // dt = simulated seconds elapsed this frame (0 when paused);
                                                      // used for mirror slew rate so behaviour is consistent at all time scales
 };

@@ -4,6 +4,9 @@ layout(location = 0) in vec2 inPos;
 layout(location = 1) in vec2 inUV;
 layout(location = 2) in vec4 inColor;
 layout(location = 3) in float inMode;
+layout(location = 4) in vec2 inLocalPos;
+layout(location = 5) in vec2 inHalfSize;
+layout(location = 6) in vec4 inCornerRadius;
 
 layout(push_constant) uniform PC {
     vec2 screenSize;
@@ -12,12 +15,18 @@ layout(push_constant) uniform PC {
 layout(location = 0) out vec2 fragUV;
 layout(location = 1) out vec4 fragColor;
 layout(location = 2) out float fragMode;
+layout(location = 3) out vec2 fragLocalPos;
+layout(location = 4) out vec2 fragHalfSize;
+layout(location = 5) out vec4 fragCornerRadius;
 
 void main() {
     // Convert screen-space pixels (top-left origin) to Vulkan NDC (top-left = -1,-1)
     vec2 ndc = (inPos / pc.screenSize) * 2.0 - 1.0;
     gl_Position = vec4(ndc, 0.0, 1.0);
-    fragUV    = inUV;
-    fragColor = inColor;
-    fragMode  = inMode;
+    fragUV           = inUV;
+    fragColor        = inColor;
+    fragMode         = inMode;
+    fragLocalPos     = inLocalPos;
+    fragHalfSize     = inHalfSize;
+    fragCornerRadius = inCornerRadius;
 }
