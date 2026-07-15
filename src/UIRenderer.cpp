@@ -25,7 +25,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // init
 // ─────────────────────────────────────────────────────────────────────────────
-void UIRenderer::init(VulkanContext& ctx) {
+void UIRenderer::init(VulkanContext& ctx, GLFWwindow* window) {
+    window_ = window;
+    cursorEW   = glfwCreateStandardCursor(GLFW_RESIZE_EW_CURSOR);
+    cursorNS   = glfwCreateStandardCursor(GLFW_RESIZE_NS_CURSOR);
+    cursorNWSE = glfwCreateStandardCursor(GLFW_RESIZE_NWSE_CURSOR);
+    cursorNESW = glfwCreateStandardCursor(GLFW_RESIZE_NESW_CURSOR);
+
     // ── Clay memory ──────────────────────────────────────────────────────────
     clayMemorySize = 8 * 1024 * 1024; // 8 MB
     clayMemory     = new uint8_t[clayMemorySize];
@@ -322,7 +328,7 @@ void UIRenderer::createPipeline(VulkanContext& ctx) {
     vbd.stride    = sizeof(UIVertex);
     vbd.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    VkVertexInputAttributeDescription vad[4] = {};
+    VkVertexInputAttributeDescription vad[7] = {};
     // location 0: pos (vec2)
     vad[0].location = 0;
     vad[0].binding  = 0;
@@ -343,11 +349,26 @@ void UIRenderer::createPipeline(VulkanContext& ctx) {
     vad[3].binding  = 0;
     vad[3].format   = VK_FORMAT_R32_SFLOAT;
     vad[3].offset   = offsetof(UIVertex, mode);
+    // location 4: localPos (vec2) — rounded-rect SDF input
+    vad[4].location = 4;
+    vad[4].binding  = 0;
+    vad[4].format   = VK_FORMAT_R32G32_SFLOAT;
+    vad[4].offset   = offsetof(UIVertex, localPos);
+    // location 5: halfSize (vec2)
+    vad[5].location = 5;
+    vad[5].binding  = 0;
+    vad[5].format   = VK_FORMAT_R32G32_SFLOAT;
+    vad[5].offset   = offsetof(UIVertex, halfSize);
+    // location 6: cornerRadius (vec4)
+    vad[6].location = 6;
+    vad[6].binding  = 0;
+    vad[6].format   = VK_FORMAT_R32G32B32A32_SFLOAT;
+    vad[6].offset   = offsetof(UIVertex, cornerRadius);
 
     VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     vi.vertexBindingDescriptionCount   = 1;
     vi.pVertexBindingDescriptions      = &vbd;
-    vi.vertexAttributeDescriptionCount = 4;
+    vi.vertexAttributeDescriptionCount = 7;
     vi.pVertexAttributeDescriptions    = vad;
 
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -510,6 +531,12 @@ void UIRenderer::cleanup(VkDevice device) {
     if (iconView    != VK_NULL_HANDLE) { vkDestroyImageView(device, iconView, nullptr);   iconView    = VK_NULL_HANDLE; }
     if (iconImage   != VK_NULL_HANDLE) { vkDestroyImage(device, iconImage, nullptr);      iconImage   = VK_NULL_HANDLE; }
     if (iconMemory  != VK_NULL_HANDLE) { vkFreeMemory(device, iconMemory, nullptr);       iconMemory  = VK_NULL_HANDLE; }
+
+    if (cursorEW   != nullptr) { glfwDestroyCursor(cursorEW);   cursorEW   = nullptr; }
+    if (cursorNS   != nullptr) { glfwDestroyCursor(cursorNS);   cursorNS   = nullptr; }
+    if (cursorNWSE != nullptr) { glfwDestroyCursor(cursorNWSE); cursorNWSE = nullptr; }
+    if (cursorNESW != nullptr) { glfwDestroyCursor(cursorNESW); cursorNESW = nullptr; }
+    if (window_) glfwSetCursor(window_, nullptr);
 
     delete[] reinterpret_cast<uint8_t*>(clayMemory);
     clayMemory = nullptr;
@@ -708,6 +735,8 @@ void UIRenderer::beginFrame(float width, float height,
     // Save last frame's capture result, then reset for this frame's registrations.
     prevMouseOverUI = mouseIsOverUI;
     mouseIsOverUI = false;
+    tooltipSeq = 0;
+    pendingCursorShape = -1;
 
     Clay_SetLayoutDimensions(Clay_Dimensions{ width, height });
     Clay_SetPointerState(Clay_Vector2{ mouseX, mouseY }, lmbDown);
@@ -724,20 +753,255 @@ void UIRenderer::addMouseCaptureRect(float x, float y, float w, float h) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// cursorShapeForEdge — maps a resize-edge bitmask to a GLFW resize cursor shape
+// ─────────────────────────────────────────────────────────────────────────────
+static int cursorShapeForEdge(uint8_t edge) {
+    bool l = edge & kResizeLeft, r = edge & kResizeRight;
+    bool t = edge & kResizeTop,  b = edge & kResizeBottom;
+    if ((l && t) || (r && b)) return GLFW_RESIZE_NWSE_CURSOR;
+    if ((r && t) || (l && b)) return GLFW_RESIZE_NESW_CURSOR;
+    if (l || r) return GLFW_RESIZE_EW_CURSOR;
+    if (t || b) return GLFW_RESIZE_NS_CURSOR;
+    return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// updateWindowChrome — apply drag/resize deltas, clamp to screen, arm resize.
+// Full 8-direction (4 edges + 4 corners) hit test, each edge anchored so the
+// opposite edge stays fixed while dragging (matches standard OS window resize).
+//
+// Tracking is ABSOLUTE (anchored to the mouse position + window rect at the
+// moment the drag/resize began), not per-frame deltas accumulated onto the
+// current size. With per-frame deltas, once minW/maxW (or the screen-edge
+// clamp) caps the window for even one frame while the mouse keeps moving, a
+// permanent gap opens between the cursor and the window edge — the edge keeps
+// moving at the mouse's rate but never re-syncs, even after the mouse comes
+// back within range. Recomputing fresh from the anchor every frame is
+// self-correcting: as soon as the candidate size/position falls back inside
+// the clamp, it exactly matches the cursor again with zero residual drift.
+// ─────────────────────────────────────────────────────────────────────────────
+bool UIRenderer::updateWindowChrome(WindowChrome& c, const UIInput& inp,
+                                     float minW, float minH, float maxW, float maxH) {
+    if (!inp.lmbDown) {
+        c.dragging = false;
+        c.resizeEdge = kResizeNone;
+    }
+    if (!c.dragging) c.dragAnchored_ = false;
+    if (c.resizeEdge == kResizeNone) c.resizeAnchored_ = false;
+
+    if (c.dragging && !c.dragAnchored_) {
+        c.dragStartMouseX_ = inp.mouseX;
+        c.dragStartMouseY_ = inp.mouseY;
+        c.dragStartX_ = c.x;
+        c.dragStartY_ = c.y;
+        c.dragAnchored_ = true;
+    }
+    if (c.dragging) {
+        c.x = c.dragStartX_ + (inp.mouseX - c.dragStartMouseX_);
+        c.y = c.dragStartY_ + (inp.mouseY - c.dragStartMouseY_);
+    }
+
+    if (c.resizeEdge != kResizeNone && !c.resizeAnchored_) {
+        c.resizeStartMouseX_ = inp.mouseX;
+        c.resizeStartMouseY_ = inp.mouseY;
+        c.resizeStartX_ = c.x;
+        c.resizeStartY_ = c.y;
+        c.resizeStartW_ = c.w;
+        c.resizeStartH_ = c.h;
+        c.resizeAnchored_ = true;
+    }
+    if (c.resizeEdge != kResizeNone) {
+        float totalDX = inp.mouseX - c.resizeStartMouseX_;
+        float totalDY = inp.mouseY - c.resizeStartMouseY_;
+        if (c.resizeEdge & kResizeLeft) {
+            float right = c.resizeStartX_ + c.resizeStartW_;
+            c.w = glm::clamp(c.resizeStartW_ - totalDX, minW, maxW);
+            c.x = right - c.w;
+        }
+        if (c.resizeEdge & kResizeRight) {
+            c.w = glm::clamp(c.resizeStartW_ + totalDX, minW, maxW);
+        }
+        if (c.resizeEdge & kResizeTop) {
+            float bottom = c.resizeStartY_ + c.resizeStartH_;
+            c.h = glm::clamp(c.resizeStartH_ - totalDY, minH, maxH);
+            c.y = bottom - c.h;
+        }
+        if (c.resizeEdge & kResizeBottom) {
+            c.h = glm::clamp(c.resizeStartH_ + totalDY, minH, maxH);
+        }
+    }
+
+    c.x = glm::clamp(c.x, 0.0f, std::max(0.0f, inp.screenW - c.w));
+    c.y = glm::clamp(c.y, 0.0f, std::max(0.0f, inp.screenH - c.h));
+
+    // Edge/corner hit test: plain mouse-rect math (not Clay_Hovered()) so this can
+    // run before the window's CLAY() tree is declared, same idiom as the
+    // slider-track hit test. Skipped while already dragging the title bar.
+    if (!c.dragging) {
+        const float kMargin = 6.0f;
+        bool nearLeft   = fabsf(inp.mouseX - c.x)         <= kMargin && inp.mouseY >= c.y - kMargin && inp.mouseY <= c.y + c.h + kMargin;
+        bool nearRight  = fabsf(inp.mouseX - (c.x + c.w)) <= kMargin && inp.mouseY >= c.y - kMargin && inp.mouseY <= c.y + c.h + kMargin;
+        bool nearTop    = fabsf(inp.mouseY - c.y)         <= kMargin && inp.mouseX >= c.x - kMargin && inp.mouseX <= c.x + c.w + kMargin;
+        bool nearBottom = fabsf(inp.mouseY - (c.y + c.h)) <= kMargin && inp.mouseX >= c.x - kMargin && inp.mouseX <= c.x + c.w + kMargin;
+
+        uint8_t hoverEdge = kResizeNone;
+        if (nearLeft)   hoverEdge |= kResizeLeft;
+        if (nearRight)  hoverEdge |= kResizeRight;
+        if (nearTop)    hoverEdge |= kResizeTop;
+        if (nearBottom) hoverEdge |= kResizeBottom;
+
+        if (hoverEdge != kResizeNone) {
+            requestCursor(cursorShapeForEdge(hoverEdge));
+            if (inp.lmbPressed && c.resizeEdge == kResizeNone)
+                c.resizeEdge = hoverEdge;
+        }
+    }
+    if (c.resizeEdge != kResizeNone)
+        requestCursor(cursorShapeForEdge(c.resizeEdge));
+
+    return c.dragging || c.resizeEdge != kResizeNone;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// applyCursor — sets the OS cursor requested this frame by updateWindowChrome
+// (or resets to the default arrow if nothing requested one). Called once at
+// the end of record() so multiple windows' requests within a frame collapse
+// into a single glfwSetCursor call.
+// ─────────────────────────────────────────────────────────────────────────────
+void UIRenderer::applyCursor() {
+    if (!window_) return;
+    GLFWcursor* target = nullptr;
+    switch (pendingCursorShape) {
+    case GLFW_RESIZE_EW_CURSOR:   target = cursorEW;   break;
+    case GLFW_RESIZE_NS_CURSOR:   target = cursorNS;   break;
+    case GLFW_RESIZE_NWSE_CURSOR: target = cursorNWSE; break;
+    case GLFW_RESIZE_NESW_CURSOR: target = cursorNESW; break;
+    default: target = nullptr; break;
+    }
+    glfwSetCursor(window_, target);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// tooltip — small floating text box near the cursor, shown while `show` is true.
+// Flips to the opposite side of the cursor when the default placement would
+// clip off the right or bottom screen edge (estimated size — no post-layout
+// query available yet — just needs to be close enough to decide which side
+// has room, not pixel-exact).
+// ─────────────────────────────────────────────────────────────────────────────
+void UIRenderer::tooltip(const UIInput& inp, bool show, const char* text, uint16_t fontSize) {
+    if (!show || !text || !*text) return;
+
+    // Default: the tooltip's BOTTOM-RIGHT corner sits on the cursor (it grows
+    // up-and-left), matching the common bottom-right-of-screen usage (settings
+    // gear, etc.) — only flip a side away from that default when it's actually
+    // needed, i.e. the cursor is close enough to the LEFT or TOP screen edge that
+    // growing left/up would run off-screen. There's no equivalent check against
+    // the right/bottom edges: growing left/up from anywhere on screen can't
+    // overflow those edges by construction. Thresholds are generous fixed
+    // estimates of a tooltip's max width/height (no post-layout size query is
+    // available yet — see the CORNER-anchor comment below for why that's fine).
+    bool flipX = inp.mouseX < 220.0f; // too close to the left edge to grow left
+    bool flipY = inp.mouseY < 60.0f;  // too close to the top edge to grow up
+
+    // Which CORNER of the tooltip is anchored to the offset point (via
+    // attachPoints) is what's flipped — Clay then positions it using the actual
+    // measured size after layout, so no width/height estimate is needed for the
+    // positioning itself, only for the flip decision above.
+    Clay_FloatingAttachPointType elemAnchor;
+    if (!flipX && !flipY) elemAnchor = CLAY_ATTACH_POINT_RIGHT_BOTTOM;
+    else if (flipX && !flipY) elemAnchor = CLAY_ATTACH_POINT_LEFT_BOTTOM;
+    else if (!flipX && flipY) elemAnchor = CLAY_ATTACH_POINT_RIGHT_TOP;
+    else elemAnchor = CLAY_ATTACH_POINT_LEFT_TOP;
+
+    // Anchored exactly at the cursor position — no gap. Which corner of the
+    // tooltip sits there (picked above) is what keeps it from ever overlapping
+    // the cursor itself: e.g. bottom-right of screen anchors the tooltip's own
+    // bottom-right corner at the cursor, so the box grows up-and-left from it.
+    float tx = inp.mouseX;
+    float ty = inp.mouseY;
+
+    Clay_String s{ false, (int32_t)strlen(text), text };
+    CLAY(CLAY_IDI("UITooltip", tooltipSeq++), {
+        .layout = {
+            .sizing  = { CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0) },
+            .padding = { 7, 7, 5, 5 } },
+        .backgroundColor = { 18, 18, 20, 235 },
+        .cornerRadius = CLAY_CORNER_RADIUS(4),
+        .floating = {
+            .offset = { tx, ty },
+            .zIndex = 100,
+            .attachPoints = { .element = elemAnchor, .parent = CLAY_ATTACH_POINT_LEFT_TOP },
+            // PASSTHROUGH is required now that the tooltip is anchored exactly on the
+            // cursor: without it, the tooltip (topmost, zIndex 100) becomes the element
+            // Clay considers "hovered" the instant it appears, which un-hovers the
+            // button underneath, which hides the tooltip, which re-hovers the button —
+            // an every-other-frame flicker/oscillation on anything with a tooltip.
+            .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+            .attachTo = CLAY_ATTACH_TO_ROOT },
+        .border = { .color = {255, 255, 255, 40}, .width = CLAY_BORDER_ALL(1) } })
+    {
+        CLAY_TEXT(s, CLAY_TEXT_CONFIG({ .textColor = {225, 225, 230, 255}, .fontSize = fontSize }));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// scrollbar — thin vertical thumb along the right edge of a scroll container,
+// sized/positioned from Clay_GetScrollContainerData (viewport vs content height,
+// current scroll offset). No-op if the container isn't found or doesn't overflow.
+// ─────────────────────────────────────────────────────────────────────────────
+void UIRenderer::scrollbar(Clay_ElementId containerId) {
+    Clay_ScrollContainerData data = Clay_GetScrollContainerData(containerId);
+    if (!data.found) return;
+
+    float viewH = data.scrollContainerDimensions.height;
+    float contentH = data.contentDimensions.height;
+    float maxScroll = contentH - viewH;
+    if (maxScroll <= 1.0f) return; // content fits — nothing to indicate
+
+    float trackH = viewH;
+    float thumbH = std::max(24.0f, trackH * (viewH / contentH));
+    // Clay's scroll position is negative as content scrolls down (child offset
+    // shifts content up), so negate to get a positive [0, maxScroll] progress.
+    float scrolled = data.scrollPosition ? glm::clamp(-data.scrollPosition->y, 0.0f, maxScroll) : 0.0f;
+    float thumbY = (scrolled / maxScroll) * (trackH - thumbH);
+
+    CLAY(CLAY_IDI("UIScrollThumb", (int)containerId.id), {
+        .layout = {
+            .sizing = { CLAY_SIZING_FIXED(4), CLAY_SIZING_FIXED(thumbH) } },
+        .backgroundColor = { 255, 255, 255, 55 },
+        .cornerRadius = CLAY_CORNER_RADIUS(2),
+        .floating = {
+            .offset = { -3.0f, thumbY },
+            .parentId = containerId.id,
+            .zIndex = 20,
+            .attachPoints = { .element = CLAY_ATTACH_POINT_RIGHT_TOP, .parent = CLAY_ATTACH_POINT_RIGHT_TOP },
+            .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+            .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID } }) {}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // pushQuad — add two triangles for a rectangle
 // ─────────────────────────────────────────────────────────────────────────────
 void UIRenderer::pushQuad(float x, float y, float w, float h,
                            float u0, float v0, float u1, float v1,
-                           glm::vec4 color, float mode) {
+                           glm::vec4 color, float mode,
+                           glm::vec4 cornerRadius) {
     if (batchVertOffset + vertices.size() + 4 > MAX_VERTS)   return;
     if (batchIdxOffset  + indices.size()  + 6 > MAX_INDICES) return;
 
     uint32_t base = (uint32_t)vertices.size();
 
-    vertices.push_back({ {x,     y    }, {u0, v0}, color, mode });
-    vertices.push_back({ {x + w, y    }, {u1, v0}, color, mode });
-    vertices.push_back({ {x + w, y + h}, {u1, v1}, color, mode });
-    vertices.push_back({ {x,     y + h}, {u0, v1}, color, mode });
+    glm::vec2 halfSize = { w * 0.5f, h * 0.5f };
+    glm::vec2 center   = { x + halfSize.x, y + halfSize.y };
+    glm::vec2 tl = glm::vec2(x,     y    ) - center;
+    glm::vec2 tr = glm::vec2(x + w, y    ) - center;
+    glm::vec2 br = glm::vec2(x + w, y + h) - center;
+    glm::vec2 bl = glm::vec2(x,     y + h) - center;
+
+    vertices.push_back({ {x,     y    }, {u0, v0}, color, mode, tl, halfSize, cornerRadius });
+    vertices.push_back({ {x + w, y    }, {u1, v0}, color, mode, tr, halfSize, cornerRadius });
+    vertices.push_back({ {x + w, y + h}, {u1, v1}, color, mode, br, halfSize, cornerRadius });
+    vertices.push_back({ {x,     y + h}, {u0, v1}, color, mode, bl, halfSize, cornerRadius });
 
     indices.push_back(base + 0);
     indices.push_back(base + 1);
@@ -854,8 +1118,12 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
                 rd.backgroundColor.b / 255.0f,
                 rd.backgroundColor.a / 255.0f
             };
+            glm::vec4 radius{
+                rd.cornerRadius.topLeft, rd.cornerRadius.topRight,
+                rd.cornerRadius.bottomLeft, rd.cornerRadius.bottomRight
+            };
             pushQuad(bb.x, bb.y, bb.width, bb.height,
-                     0.0f, 0.0f, 1.0f, 1.0f, col, 0.0f);
+                     0.0f, 0.0f, 1.0f, 1.0f, col, 0.0f, radius);
             break;
         }
 
@@ -881,27 +1149,45 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
                 bd.color.b / 255.0f,
                 bd.color.a / 255.0f
             };
-            float bw;
-            // Top edge
-            bw = (float)bd.width.top;
-            if (bw > 0.0f)
-                pushQuad(bb.x, bb.y, bb.width, bw,
-                         0, 0, 1, 1, col, 0.0f);
-            // Bottom edge
-            bw = (float)bd.width.bottom;
-            if (bw > 0.0f)
-                pushQuad(bb.x, bb.y + bb.height - bw, bb.width, bw,
-                         0, 0, 1, 1, col, 0.0f);
-            // Left edge
-            bw = (float)bd.width.left;
-            if (bw > 0.0f)
-                pushQuad(bb.x, bb.y, bw, bb.height,
-                         0, 0, 1, 1, col, 0.0f);
-            // Right edge
-            bw = (float)bd.width.right;
-            if (bw > 0.0f)
-                pushQuad(bb.x + bb.width - bw, bb.y, bw, bb.height,
-                         0, 0, 1, 1, col, 0.0f);
+            glm::vec4 radius{
+                bd.cornerRadius.topLeft, bd.cornerRadius.topRight,
+                bd.cornerRadius.bottomLeft, bd.cornerRadius.bottomRight
+            };
+            if (radius.x > 0.0f || radius.y > 0.0f || radius.z > 0.0f || radius.w > 0.0f) {
+                // Rounded element: draw one full-bbox quad in "border ring" mode (3) instead
+                // of 4 straight strips — a straight-strip border on a rounded rect leaves the
+                // corners looking square even though the fill rounds correctly underneath.
+                // The ring's stroke width is carried through the (otherwise-unused-for-mode-3)
+                // UV channel rather than growing UIVertex further; assumes a uniform width
+                // across all 4 edges (true for every border this codebase currently declares
+                // via CLAY_BORDER_ALL()).
+                float bw = std::max(std::max((float)bd.width.top, (float)bd.width.bottom),
+                                     std::max((float)bd.width.left, (float)bd.width.right));
+                if (bw > 0.0f)
+                    pushQuad(bb.x, bb.y, bb.width, bb.height, bw, bw, bw, bw, col, 3.0f, radius);
+            } else {
+                float bw;
+                // Top edge
+                bw = (float)bd.width.top;
+                if (bw > 0.0f)
+                    pushQuad(bb.x, bb.y, bb.width, bw,
+                             0, 0, 1, 1, col, 0.0f);
+                // Bottom edge
+                bw = (float)bd.width.bottom;
+                if (bw > 0.0f)
+                    pushQuad(bb.x, bb.y + bb.height - bw, bb.width, bw,
+                             0, 0, 1, 1, col, 0.0f);
+                // Left edge
+                bw = (float)bd.width.left;
+                if (bw > 0.0f)
+                    pushQuad(bb.x, bb.y, bw, bb.height,
+                             0, 0, 1, 1, col, 0.0f);
+                // Right edge
+                bw = (float)bd.width.right;
+                if (bw > 0.0f)
+                    pushQuad(bb.x + bb.width - bw, bb.y, bw, bb.height,
+                             0, 0, 1, 1, col, 0.0f);
+            }
             break;
         }
 
@@ -944,4 +1230,6 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
 
     // Flush any remaining geometry
     flushBatch(cmd);
+
+    applyCursor();
 }
