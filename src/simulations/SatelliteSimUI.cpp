@@ -27,9 +27,9 @@ static constexpr int kIconPause = 3;    // pixel--pause.png
 static constexpr int kIconPlay = 4;     // pixel--play.png
 static constexpr int kIconSettings = 5; // pixel--settings.png
 
-static constexpr const char *kSettingsTabNames[8] = {
+static constexpr const char *kSettingsTabNames[11] = {
     "Constellations", "Sound", "Controls", "Camera",
-    "Display", "Photometry", "Clouds", "Attributions"};
+    "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Aurora", "Attributions"};
 
 // Helper: short display name for a GLFW key code (used in settings window + tooltips).
 static const char *keyDisplayName(int key)
@@ -831,7 +831,7 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
                                            .childGap = 2,
                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
-        for (int ti = 0; ti < 8; ++ti)
+        for (int ti = 0; ti < 11; ++ti)
         {
             bool active = settingsActiveTab == ti;
             Clay_Color tabBg = active ? Pal::btnAccent : (hovTab[ti] ? Pal::btnHover : Clay_Color{0, 0, 0, 0});
@@ -888,6 +888,15 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
             buildSettingsCloudsTab(inp, ui);
             break;
         case 7:
+            buildSettingsOceanTab(inp, ui);
+            break;
+        case 8:
+            buildSettingsTerrainTab(inp, ui);
+            break;
+        case 9:
+            buildSettingsAuroraTab(inp, ui);
+            break;
+        case 10:
             buildSettingsAttributionsTab(inp, ui);
             break;
         }
@@ -1448,54 +1457,21 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
     }
 }
 
-// ─── buildSettingsCloudsTab ──────────────────────────────────────────────────
-void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
+// ─── buildCloudSliderRows ────────────────────────────────────────────────────
+// Shared row-renderer for the Clouds/Ocean/Terrain/Aurora tabs (split from one combined "Clouds"
+// tab, session 28 follow-up #9 — 33 sliders in one list had become unmanageable). `idx` on each
+// CloudSlider keeps its ORIGINAL global value (0-32) regardless of which tab it's rendered from,
+// so the shared draggingCloud/hovCloudMinus/hovCloudPlus member arrays and the function-local
+// static text-buffer array below don't need per-tab remapping.
+void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, CloudSlider *sliders, int count)
 {
     const float kSliderAbsX = settingsChrome.x + kSliderFixedLeft;
     const float kSliderW = settingsSliderWidth(settingsChrome.w);
+    static char cloudBufs[33][16];
 
-    struct CloudSlider
+    for (int si = 0; si < count; ++si)
     {
-        const char *label;
-        float *val;
-        float vmin, vmax, step;
-        const char *fmt;
-        int idx;
-    };
-    static char cloudBufs[29][16];
-    CloudSlider cloudSliders[] = {
-        {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
-        {"Density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
-        {"L0 alt (m)", &cloudBaseAltM, 100.0f, 6000.0f, 100.0f, "%.0f", 2},
-        {"L1 alt (m)", &cloudTopAltM, 4000.0f, 15000.0f, 250.0f, "%.0f", 3},
-        {"Drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
-        {"Sun gain", &cloudSunGain, 0.0f, 5.0f, 0.1f, "%.2f", 5},
-        {"Ambient", &cloudAmbientGain, 0.0f, 2.0f, 0.05f, "%.2f", 6},
-        {"HG g", &cloudHgG, 0.0f, 0.99f, 0.05f, "%.2f", 7},
-        {"March steps", &cloudMarchSteps, 4.0f, 1024.0f, 4.0f, "%.0f", 8},
-        {"Light steps", &cloudLightSteps, 1.0f, 16.0f, 1.0f, "%.0f", 9},
-        {"Cirrus wind (deg)", &cloudCirrusWindDeg, 0.0f, 360.0f, 5.0f, "%.0f", 10},
-        {"Cirrus stretch", &cloudCirrusStretch, 1.0f, 10.0f, 0.5f, "%.1f", 11},
-        {"Airglow gain", &airglowGain, 0.0f, 5.0f, 0.1f, "%.2f", 12},
-        {"Airglow green", &airglowGreenGain, 0.0f, 3.0f, 0.1f, "%.2f", 13},
-        {"Airglow red", &airglowRedGain, 0.0f, 3.0f, 0.1f, "%.2f", 14},
-        {"Airglow sodium", &airglowSodiumGain, 0.0f, 3.0f, 0.1f, "%.2f", 15},
-        {"Shadow max dist (m)", &cloudShadowMaxDistM, 1000.0f, 60000.0f, 1000.0f, "%.0f", 16},
-        {"Render dist (m)", &cloudMaxRenderDistM, 20000.0f, 400000.0f, 10000.0f, "%.0f", 17},
-        {"View samples (min)", &viewSamplesMin, 2.0f, 32.0f, 1.0f, "%.0f", 18},
-        {"View samples (max)", &viewSamplesMax, 32.0f, 256.0f, 4.0f, "%.0f", 19},
-        {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 20},
-        {"Sea octaves", &oceanSeaOctaves, 1.0f, 3.0f, 1.0f, "%.0f", 21},
-        {"Detail octaves", &oceanDetailOctaves, 1.0f, 5.0f, 1.0f, "%.0f", 22},
-        {"Refl samples", &oceanReflSamples, 1.0f, 6.0f, 1.0f, "%.0f", 23},
-        {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
-        {"Storm strength", &stormStrength, 0.0f, 1.0f, 0.05f, "%.2f", 25},
-        {"Aurora gain", &auroraGain, 0.0f, 0.1f, 0.001f, "%.3f", 26},
-        {"Aurora ground gain", &auroraGroundGain, 0.0f, 0.1f, 0.001f, "%.3f", 27},
-        {"Aurora cloud gain", &auroraCloudGain, 0.0f, 0.1f, 0.001f, "%.3f", 28},
-    };
-    for (auto &cs : cloudSliders)
-    {
+        CloudSlider &cs = sliders[si];
         int ci = cs.idx;
         snprintf(cloudBufs[ci], sizeof(cloudBufs[ci]), cs.fmt, *cs.val);
         Clay_String valStr{false, (int32_t)strlen(cloudBufs[ci]), cloudBufs[ci]};
@@ -1580,6 +1556,75 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
             }
         }
     }
+}
+
+// ─── buildSettingsCloudsTab ──────────────────────────────────────────────────
+void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
+{
+    CloudSlider sliders[] = {
+        {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
+        {"Density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
+        {"L0 alt (m)", &cloudBaseAltM, 100.0f, 6000.0f, 100.0f, "%.0f", 2},
+        {"L1 alt (m)", &cloudTopAltM, 4000.0f, 15000.0f, 250.0f, "%.0f", 3},
+        {"Drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
+        {"Sun gain", &cloudSunGain, 0.0f, 5.0f, 0.1f, "%.2f", 5},
+        {"Ambient", &cloudAmbientGain, 0.0f, 2.0f, 0.05f, "%.2f", 6},
+        {"HG g", &cloudHgG, 0.0f, 0.99f, 0.05f, "%.2f", 7},
+        {"March steps", &cloudMarchSteps, 4.0f, 1024.0f, 4.0f, "%.0f", 8},
+        {"Light steps", &cloudLightSteps, 1.0f, 16.0f, 1.0f, "%.0f", 9},
+        {"Cirrus wind (deg)", &cloudCirrusWindDeg, 0.0f, 360.0f, 5.0f, "%.0f", 10},
+        {"Cirrus stretch", &cloudCirrusStretch, 1.0f, 10.0f, 0.5f, "%.1f", 11},
+        {"Shadow max dist (m)", &cloudShadowMaxDistM, 1000.0f, 60000.0f, 1000.0f, "%.0f", 16},
+        {"Render dist (m)", &cloudMaxRenderDistM, 20000.0f, 400000.0f, 10000.0f, "%.0f", 17},
+    };
+    buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
+}
+
+// ─── buildSettingsOceanTab ───────────────────────────────────────────────────
+void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
+{
+    CloudSlider sliders[] = {
+        {"Sea octaves", &oceanSeaOctaves, 1.0f, 3.0f, 1.0f, "%.0f", 21},
+        {"Detail octaves", &oceanDetailOctaves, 1.0f, 5.0f, 1.0f, "%.0f", 22},
+        {"Refl samples", &oceanReflSamples, 1.0f, 6.0f, 1.0f, "%.0f", 23},
+    };
+    buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
+}
+
+// ─── buildSettingsTerrainTab ─────────────────────────────────────────────────
+// Main atmosphere-loop quality (view/light samples) lives here rather than Clouds or Ocean —
+// N_VIEW/N_LIGHT run unconditionally on every pixel (terrain, ocean, cloud, sky alike), but
+// terrain/ground-level view is where this quality-vs-perf tradeoff matters most directly.
+void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
+{
+    CloudSlider sliders[] = {
+        {"View samples (min)", &viewSamplesMin, 2.0f, 32.0f, 1.0f, "%.0f", 18},
+        {"View samples (max)", &viewSamplesMax, 32.0f, 256.0f, 4.0f, "%.0f", 19},
+        {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 20},
+        {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
+    };
+    buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
+}
+
+// ─── buildSettingsAuroraTab ──────────────────────────────────────────────────
+// Airglow + aurora share this tab — both are emissive nightglow phenomena tuned together.
+void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
+{
+    CloudSlider sliders[] = {
+        {"Airglow gain", &airglowGain, 0.0f, 5.0f, 0.1f, "%.2f", 12},
+        {"Airglow green", &airglowGreenGain, 0.0f, 3.0f, 0.1f, "%.2f", 13},
+        {"Airglow red", &airglowRedGain, 0.0f, 3.0f, 0.1f, "%.2f", 14},
+        {"Airglow sodium", &airglowSodiumGain, 0.0f, 3.0f, 0.1f, "%.2f", 15},
+        {"Storm strength", &stormStrength, 0.0f, 1.0f, 0.05f, "%.2f", 25},
+        {"Aurora gain", &auroraGain, 0.0f, 0.1f, 0.001f, "%.3f", 26},
+        {"Aurora ground gain", &auroraGroundGain, 0.0f, 0.1f, 0.001f, "%.3f", 27},
+        {"Aurora cloud gain", &auroraCloudGain, 0.0f, 0.1f, 0.001f, "%.3f", 28},
+        {"Coverage freq", &auroraCoverageFreq, 0.05f, 2.0f, 0.05f, "%.2f", 29},
+        {"Coverage az freq", &auroraCoverageAzFreq, 0.0f, 6.0f, 0.1f, "%.1f", 30},
+        {"Coverage drift", &auroraCoverageDriftRate, 0.0f, 0.002f, 0.00002f, "%.1e", 31},
+        {"Fold shimmer rate", &auroraShimmerRate, 0.0f, 0.2f, 0.002f, "%.3f", 32},
+    };
+    buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
 
 // ─── buildSettingsAttributionsTab ───────────────────────────────────────────
@@ -1846,7 +1891,7 @@ void SatelliteSim::loadSettings()
         settingsChrome.y = d.value("win_y", settingsChrome.y);
         settingsChrome.w = d.value("win_w", settingsChrome.w);
         settingsChrome.h = d.value("win_h", settingsChrome.h);
-        settingsActiveTab = std::clamp(d.value("active_tab", settingsActiveTab), 0, 7);
+        settingsActiveTab = std::clamp(d.value("active_tab", settingsActiveTab), 0, 10);
         int unitVal = d.value("unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0);
         unitSystem = unitVal == 1 ? UnitSystem::Imperial : UnitSystem::Metric;
         showControlsOnStartup = d.value("show_controls_on_startup", showControlsOnStartup);
@@ -1955,6 +2000,10 @@ void SatelliteSim::loadSettings()
         auroraGain = c.value("aurora_gain", auroraGain);
         auroraGroundGain = c.value("aurora_ground_gain", auroraGroundGain);
         auroraCloudGain = c.value("aurora_cloud_gain", auroraCloudGain);
+        auroraCoverageFreq = c.value("aurora_coverage_freq", auroraCoverageFreq);
+        auroraCoverageAzFreq = c.value("aurora_coverage_az_freq", auroraCoverageAzFreq);
+        auroraCoverageDriftRate = c.value("aurora_coverage_drift_rate", auroraCoverageDriftRate);
+        auroraShimmerRate = c.value("aurora_shimmer_rate", auroraShimmerRate);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -2040,7 +2089,11 @@ void SatelliteSim::saveSettings()
         {"storm_strength", stormStrength},
         {"aurora_gain", auroraGain},
         {"aurora_ground_gain", auroraGroundGain},
-        {"aurora_cloud_gain", auroraCloudGain}};
+        {"aurora_cloud_gain", auroraCloudGain},
+        {"aurora_coverage_freq", auroraCoverageFreq},
+        {"aurora_coverage_az_freq", auroraCoverageAzFreq},
+        {"aurora_coverage_drift_rate", auroraCoverageDriftRate},
+        {"aurora_shimmer_rate", auroraShimmerRate}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)
