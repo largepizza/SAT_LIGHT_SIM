@@ -406,6 +406,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.moonGain = moonGain;
         cp.pad1 = (float)cityOffsetEastM;  // repurposed: city-detail world-fixed east offset (m)
         cp.pad2 = (float)cityOffsetNorthM; // repurposed: city-detail world-fixed north offset (m)
+        cp.stormStrength = stormStrength;
+        cp.auroraGain = auroraGain;
+        cp.auroraCloudGain = auroraCloudGain;
+        cp.auroraGroundGain = auroraGroundGain;
         cp.mwBasisRow0 = glm::vec4(mwRow0, 1.0f); // .w = milky way gain (fixed; no longer user-tunable)
         cp.mwBasisRow1 = glm::vec4(mwRow1, 0.0f);
         cp.mwBasisRow2 = glm::vec4(mwRow2, 0.0f);
@@ -1968,18 +1972,50 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 
         // CPU-side downsample to 2160×1080 (~18km/px, matches earthElevCpu) for the observer
         // light-pollution lookup — stores precomputed Rec.709 luminance, one byte per texel.
+        // Box-filtered (average every source pixel in each cell), not nearest-neighbor picking
+        // one corner pixel — the latter throws away ~93% of the source data per cell and bakes
+        // real aliasing/moiré into the array before updateLightPollutionDome() ever samples it.
         earthNightCpuW = 2160;
         earthNightCpuH = 1080;
         earthNightCpu.resize((size_t)earthNightCpuW * earthNightCpuH);
         for (int cy = 0; cy < earthNightCpuH; ++cy)
         {
+            int sy0 = cy * h / earthNightCpuH;
+            int sy1 = std::max(sy0 + 1, (cy + 1) * h / earthNightCpuH);
             for (int cx = 0; cx < earthNightCpuW; ++cx)
             {
-                int sx = std::min(cx * w / earthNightCpuW, w - 1);
-                int sy = std::min(cy * h / earthNightCpuH, h - 1);
-                const stbi_uc *px = &pixels[((size_t)sy * w + sx) * 4];
-                float lum = 0.2126f * px[0] + 0.7152f * px[1] + 0.0722f * px[2];
-                earthNightCpu[cy * earthNightCpuW + cx] = (uint8_t)std::clamp(lum, 0.0f, 255.0f);
+                int sx0 = cx * w / earthNightCpuW;
+                int sx1 = std::max(sx0 + 1, (cx + 1) * w / earthNightCpuW);
+                float sum = 0.0f;
+                int count = 0;
+                for (int sy = sy0; sy < sy1; ++sy)
+                {
+                    for (int sx = sx0; sx < sx1; ++sx)
+                    {
+                        const stbi_uc *px = &pixels[((size_t)sy * w + sx) * 4];
+                        sum += 0.2126f * px[0] + 0.7152f * px[1] + 0.0722f * px[2];
+                        ++count;
+                    }
+                }
+                earthNightCpu[cy * earthNightCpuW + cx] = (uint8_t)std::clamp(sum / (float)count, 0.0f, 255.0f);
+            }
+        }
+
+        // Half-resolution box-blur (~37km/px) — see the member comment in SatelliteSim.h. One 2×2
+        // averaging pass over the already-box-filtered earthNightCpu above.
+        earthNightCpuBlurW = earthNightCpuW / 2;
+        earthNightCpuBlurH = earthNightCpuH / 2;
+        earthNightCpuBlur.resize((size_t)earthNightCpuBlurW * earthNightCpuBlurH);
+        for (int by = 0; by < earthNightCpuBlurH; ++by)
+        {
+            for (int bx = 0; bx < earthNightCpuBlurW; ++bx)
+            {
+                int x0 = bx * 2, y0 = by * 2;
+                int sum = earthNightCpu[y0 * earthNightCpuW + x0]
+                        + earthNightCpu[y0 * earthNightCpuW + x0 + 1]
+                        + earthNightCpu[(y0 + 1) * earthNightCpuW + x0]
+                        + earthNightCpu[(y0 + 1) * earthNightCpuW + x0 + 1];
+                earthNightCpuBlur[by * earthNightCpuBlurW + bx] = (uint8_t)(sum / 4);
             }
         }
         stbi_image_free(pixels);
@@ -2874,9 +2910,10 @@ void SatelliteSim::createStarPipeline(VulkanContext &ctx)
 // Builds an 8-azimuth-sector "how much city glow is in this compass direction" dome around
 // the observer, replacing the old single-scalar "brightness at the observer's own position"
 // approximation that dimmed stars/satellites uniformly regardless of which way they appeared
-// in the sky (session 25 follow-up per user feedback). Each sector samples earthNightCpu at a
-// few radii along that bearing — a flat-Earth tangent-plane lat/lon offset, adequate at the
-// tens-of-km scale light pollution actually reaches — and combines them with a weighted max
+// in the sky (session 25 follow-up per user feedback). Each sector samples earthNightCpuBlur
+// (bilinearly) at a few radii along that bearing — a flat-Earth tangent-plane lat/lon offset,
+// adequate at the tens-of-km scale light pollution actually reaches — and combines them with a
+// weighted max
 // (one nearby bright city should dominate that direction's glow, not get averaged away by
 // darker samples at other radii in the same sector). Sector convention matches GlowBuf's
 // existing 8-sector azBin in sat_flare.comp exactly (bearing clockwise from North, 45° each)
@@ -2891,13 +2928,35 @@ void SatelliteSim::updateLightPollutionDome()
     // cruise altitude, let alone orbit. Same for every sector (observer's own altitude).
     float altFalloff = glm::clamp(glm::exp(-obsHeight / 3000.0f), 0.0f, 1.0f);
 
-    if (earthNightCpu.empty() || altFalloff <= 0.0f)
+    if (earthNightCpuBlur.empty() || altFalloff <= 0.0f)
     {
         for (int i = 0; i < kNumLightSectors; ++i)
             lightDomeAz[i] = 0.0f;
         memcpy(lightDomeMapped, lightDomeAz, sizeof(lightDomeAz));
         return;
     }
+
+    // Bilinear sample of earthNightCpuBlur (the coarser, box-blurred level — see the member
+    // comment in SatelliteSim.h) — previously a nearest-pixel lookup against the sharp array,
+    // which made each of the 4 per-sector radius samples snap between ~18km cells as the
+    // observer moved or as neighboring sectors sampled nearby bearings, reading as sharp,
+    // blocky transitions. Longitude wraps; latitude clamps at the poles.
+    auto sampleDomeLum = [this](float u, float v) -> float
+    {
+        float fx = u * (float)earthNightCpuBlurW - 0.5f;
+        float fy = v * (float)earthNightCpuBlurH - 0.5f;
+        int x0 = (int)floorf(fx), y0 = (int)floorf(fy);
+        float tx = fx - (float)x0, ty = fy - (float)y0;
+        auto wrapX = [this](int x) { return ((x % earthNightCpuBlurW) + earthNightCpuBlurW) % earthNightCpuBlurW; };
+        int x0w = wrapX(x0), x1w = wrapX(x0 + 1);
+        int y0c = std::clamp(y0, 0, earthNightCpuBlurH - 1);
+        int y1c = std::clamp(y0 + 1, 0, earthNightCpuBlurH - 1);
+        float v00 = earthNightCpuBlur[y0c * earthNightCpuBlurW + x0w] / 255.0f;
+        float v10 = earthNightCpuBlur[y0c * earthNightCpuBlurW + x1w] / 255.0f;
+        float v01 = earthNightCpuBlur[y1c * earthNightCpuBlurW + x0w] / 255.0f;
+        float v11 = earthNightCpuBlur[y1c * earthNightCpuBlurW + x1w] / 255.0f;
+        return glm::mix(glm::mix(v00, v10, tx), glm::mix(v01, v11, tx), ty);
+    };
 
     // Same brightness-response curve (kNightFloor/kCityCompressK) as the sky-glow/cloud
     // city-light effects in sat_sky.frag, so all of these read one consistent "how bright is
@@ -2931,9 +2990,7 @@ void SatelliteSim::updateLightPollutionDome()
 
             float u = (sampleLonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
             float v = (0.5f * glm::pi<float>() - sampleLatRad) / glm::pi<float>();
-            int px = (int)(u * (float)earthNightCpuW) % earthNightCpuW;
-            int py = std::min((int)(v * (float)earthNightCpuH), earthNightCpuH - 1);
-            float lum = earthNightCpu[py * earthNightCpuW + px] / 255.0f;
+            float lum = sampleDomeLum(u, v);
             float raw = std::max(0.0f, lum - kNightFloor);
             float weight = expf(-D / kRadiusFalloffM);
             domeRaw = std::max(domeRaw, raw * weight);

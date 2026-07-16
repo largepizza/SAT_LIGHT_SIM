@@ -33,14 +33,12 @@ of FPS, the next task is a real transmittance LUT (2D texture, altitude × sun-a
 `optDepth`'s inner march at its 4 call sites in `sat_sky.frag`) — see session 24 log for why this
 wasn't just built speculatively. Not yet started.
 
-**C16 — Aurora (geomagnetic curtain primitive)** remains the next content feature once perf work
-settles. See Phase E below for the full spec. C15 (airglow) is complete — see session log entry
-before starting; note the actual implementation deviated from the original "ride the N_VIEW loop
-for all three bands" plan (red needed its own supplemental march — see log for why) and C16 should
-expect a similar need to re-derive the concrete approach from the current shader rather than the
-original C13-era plan text. Also note `N_VIEW` is no longer a compile-time constant (session 24) —
-any new code referencing it must read `cloud.viewSamples` via the same locally-computed-`int`
-pattern the existing loop now uses, not assume a fixed 124.
+**C16 — Aurora (geomagnetic curtain primitive) — implemented (session 28), not yet seen in-app.**
+Build is clean; the user still needs to fly to a high geomagnetic latitude at night and tune
+`Storm strength`/`Aurora gain` in the settings window. See session 28 log for the full design
+(oval mask + anisotropic curtain-fold noise + emissive shell march) and Phase E below for the
+original spec. First-pass constants (oval width/colatitude, fold frequencies, altitude band) are
+reasonable guesses, not validated by eye yet — expect a tuning pass once it's actually visible.
 
 C14 (anvil) remains not started; it was deliberately deferred again in favor of C15 per the
 2026-07-12 session, and can be picked up whenever — it has no dependency on C15/C16.
@@ -417,7 +415,7 @@ structural change.
   (red band's peak sits outside the N_VIEW loop's ~100km ceiling — only green/sodium actually ride
   it) and the final per-band gain design.**
 
-- [ ] **C16 — Aurora (geomagnetic curtain primitive).** Most novel step — new geometry, likely a new
+- [x] **C16 — Aurora (geomagnetic curtain primitive).** Most novel step — new geometry, likely a new
   emissive-only shell march (no Beer-Powder transmittance, additive glow only) distinct from
   `cloudMarch`. Centered on the **geomagnetic** pole, not geographic:
   - North geomagnetic pole ≈ 80.7°N, 72.7°W; south ≈ 80.7°S, 107.3°E (current epoch; drift
@@ -441,6 +439,10 @@ structural change.
   only reach for a new slot (10, or 11 if C13(b) already claimed 10) if neither reads convincingly.
   *Done when:* a curtain-shaped glow band tracks the geomagnetic pole, intensity responds to the
   storm-strength slider, invisible at daytime ground level, doesn't render through the planet.
+  **Done (2026-07-15, session 28) — see session log for the final design (deviated in a few
+  places from the plan text above: day-gate uses `pc.sunDirENU.w` directly rather than a
+  `daySuppression`-style term, and occlusion is handled by clipping the march against `tSurface`
+  rather than a separate Earth-shadow test).**
 
 #### Notes for a smaller model picking this up
 - Do C1→C12 **in order**; each is a self-contained session with a "Done when" gate. A/B ship before C
@@ -477,7 +479,276 @@ structural change.
 
 ## Session Log
 
-### 2026-07-13 (session 25)
+### 2026-07-15 (session 28)
+- **C16 — Aurora, implemented.** New "curtain primitive" in `sat_sky.frag`: `auroraFrame()`
+  computes colatitude/azimuth (+ radial/tangent basis) of a point relative to whichever
+  geomagnetic pole it's nearer (`kGeomagPoleECEF = vec3(0.0481, -0.1543, 0.9868)`, 80.7°N/72.7°W;
+  south = negate, since geomagnetic poles are antipodal under a dipole model — one constant
+  covers both hemispheres). `auroraOvalMask()` is a colatitude band around `kAuroraOvalColatDeg`
+  whose centerline is ripple-displaced by azimuth+time (`warpPerlin3` sampled on `(cos az, sin
+  az)` to avoid a seam at az=±π — same trick `cloudWarpOffset` uses for its own seam-avoidance).
+  `auroraCurtainNoise()` is the part that actually sells it as aurora rather than a flat glow band:
+  two `warpPerlin3` samples with DIFFERENT frequencies on the tangent (azimuthal, high freq → many
+  separate folds) vs. radial (colatitude, low freq → each fold reads as a long unbroken streak
+  toward the pole, not a blob) axes — the same anisotropic-stretch idea cirrus streaks use, just
+  built from two explicit sample axes instead of a single stretched UV.
+- **Shell march** (`main()`, right after the airglow-red block): emissive-only, additive, no
+  Beer-Powder transmittance, altitude band 95-300km (green base → red/magenta fringe, color
+  mixed by height fraction). Entry/exit classification copies the airglow-red march's
+  `obsEffH`-keyed below/inside/above logic verbatim (same reason: the observer can fly into or
+  above the shell via the uncapped elevation control, and a fixed "always below" forward root
+  goes negative in that case) — clipped against `tSurface` so it doesn't render through solid
+  Earth on the far side.
+- **Day-gate — first pass used a single observer-based smoothstep on `pc.sunDirENU.w`, replaced
+  same-day after in-app testing (see follow-up entry below) with per-sample geographic day/night,
+  matching airglowRed's `rDayness`/`rNight` pattern.**
+- **New UBO fields:** `CloudParams` grew 288→304 bytes — `stormStrength` (drives oval expansion,
+  width, and fold frequency together — one slider, not three) and `auroraGain` (master
+  brightness), plus two reserved pad floats for next time. Mirrored in `cloud_march.comp` (marked
+  unused/layout-parity, per the standing rule that this UBO is hand-duplicated across both files
+  and must grow in lockstep or silently corrupt cloud rendering) and in `GpuCloudParams`
+  (`SatelliteSim.h`), with matching settings-window sliders ("Storm strength", "Aurora gain") and
+  `settings.json` persistence (`storm_strength`/`aurora_gain`) following the exact pattern the
+  airglow gains established in C15.
+- **Not yet seen in-app** — build is clean but the user hasn't flown to a high geomagnetic
+  latitude at night to look at it yet. First-pass constants (oval colatitude/width, fold
+  frequencies, altitude band, color) are physically-motivated guesses, not eye-tuned — expect a
+  tuning pass, same as every other C-step's first pass.
+- Generality check against the explicit "one curtain primitive, not per-type code paths"
+  requirement: future aurora types are parameter presets of the same two functions —
+  `auroraOvalMask`'s width/position (wide+low-freq ripple for diffuse patches, narrow for sharp
+  arcs) and `auroraCurtainNoise`'s tangent:radial frequency ratio (near 1:1 for a substorm
+  spiral's swirl) — no new code paths needed for any of the deferred variants.
+
+**Session 28 follow-up (same day) — two bugs found on first in-app look:**
+- **Blown out to solid white even at `auroraGain=0.01`.** `kAuroraScale` was 0.02 — roughly 10,000×
+  too large relative to `kAirglowScale` (5e-7), which multiplies an accumulation of the same order
+  (segLen in meters × ~24 samples). Cut to `0.000001` (1e-6), same order of magnitude as
+  `kAirglowScale` — the intended brightness difference between a faint nightglow and a prominent
+  aurora belongs on the gain slider default, not the base scale. Compounded downstream by
+  `EXPOSURE_NIGHT` (10×) and the Reinhard-style tonemap, which saturates every color channel to
+  white together once any one channel's post-exposure value gets large — this is *why* the failure
+  mode was "entirely white" rather than "overbright green."
+- **Aurora vanished entirely once the observer's own local sun angle read daylight — wrong for an
+  orbital view near the terminator**, where a large genuinely dark portion of the sky/limb can
+  still be visible even though the observer isn't in it. The single `pc.sunDirENU.w`-based gate
+  (applied once, outside the march) has been replaced with a per-SAMPLE geographic day/night test
+  inside `auroraSampleAt` — literally the same `dot(pDirECEF, sunDirECEF)` twilight-window formula
+  airglowRed's `rDayness`/`rNight` already uses — so each march sample fades in independently based
+  on whether *that point* is geographically dark, not whether the observer is. `sunDirECEF` is now
+  passed into `auroraSampleAt` (new parameter) instead of the removed observer-side smoothstep.
+- Both fixes are code/math corrections, not tuning guesses — but shape/oval position/fold
+  frequency still haven't been evaluated in-app since brightness was blocking any useful look at
+  them. Next in-app pass should look at shape now that it's not blown out.
+
+**Session 28 follow-up #2 (same day) — curtain fold axis was rotated 90° wrong.** With brightness
+fixed, the user could finally see shape: folds were long streaks pointing radially toward/away
+from the geomagnetic pole (described as looking like a "cornea"), not standing up vertically off
+the surface. Root cause: `auroraCurtainNoise`'s anisotropic axes were built on a wrong analogy —
+cirrus streaks stretch along a horizontal wind axis because cirrus is a flat, nearly-2D phenomenon,
+so "radial = long axis" made sense there. Aurora curtains are fundamentally a *vertical* structure;
+the long axis needs to be **altitude**, not colatitude (colatitude is a horizontal, toward/away-
+from-pole direction on the sky, unrelated to "up off the surface"). Fixed by swapping which
+coordinate carries the low frequency: `altM * kAuroraAltFreq` (now 0.00001, was tuned down slightly
+for longer streaks) moved to the axis that used to hold colatitude; colatitude now only gets a
+minor cross-band frequency (`kAuroraRadialFreq`, unchanged value) since the oval mask already
+confines it to a narrow range — it should never be the dominant elongation axis. Tangent
+(azimuthal) stays high-frequency, unchanged, since "many separate folds around the ring" was
+already correct. **Lesson:** don't port an anisotropy trick between features without re-deriving
+which physical axis is actually "long" for the new phenomenon — cirrus's 2D horizontal-wind
+intuition doesn't transfer to a vertical curtain.
+
+**Session 28 follow-up #3 (same day) — follow-up #2 didn't actually fix it; found the real cause.**
+User re-tested: folds still radiated toward the pole, described as "very stretched in the polar
+direction." The axis swap in follow-up #2 was necessary but not sufficient — it moved altitude
+onto the right noise-space slot, but didn't account for **colat and altitude living in completely
+different physical units**. `kAuroraRadialFreq` (6.0, unchanged since first pass) looked like a
+small, reasonably-fine "minor axis" frequency next to `kAuroraAltFreq` (0.00001) — but colatitude
+is in RADIANS, multiplied implicitly by Earth's radius (~6.57e6 m) to get actual physical arc
+length: `1/6 rad × 6.57e6 m ≈ 1.1 million meters` — a noise cell over 1000 km across, roughly
+**10x physically larger** than altitude's own ~100 km cell at the time. Numerically "low" doesn't
+mean physically "long" when one axis is an angle multiplied by a planet-sized radius and the other
+is already in meters — that mismatch is exactly why swapping slots didn't fix the visual: colat
+remained the physically longest axis by a wide margin regardless of which noise-space component it
+occupied. Fixed by recomputing all three frequencies from a target physical cell size (~50-170km)
+instead of picking numbers by feel: `kAuroraRadialFreq` 6→70 (cell ≈94km, physically short now),
+`kAuroraAltFreq` 0.00001→0.000006 (cell ≈167km, now unambiguously the longest), `kAuroraTangentFreq`
+left at 40 (already ≈55km, was fine by coincidence). See the frequency constants' block comment in
+`sat_sky.frag` for the physical-cell-size formulas. **Lesson (supersedes follow-up #2's):** when
+mixing angular and linear coordinates in one noise domain, convert to a common physical unit before
+judging whether a frequency is "high" or "low" — raw numeric comparison across unlike units is
+worthless and will silently reintroduce this exact bug if any of these three constants get
+retuned independently later without checking the others.
+
+**Session 28 follow-up #4 (same day) — user approved the shape/brightness ("looks amazing") and
+asked for three integration items before further noise tuning:**
+1. **Cloud occlusion.** The aurora march ran to completion before the "Half-resolution cloud
+   composite" section later in `main()`, so structurally it *was* subject to the standard
+   `color = color*cloudB.rgb + cloudA.rgb` attenuate-then-add composite — but low clouds cap at
+   `alphaMax=0.80` (never fully opaque by design), so up to 20% of a very bright pre-tonemap aurora
+   value still leaked through even a "fully covered" deck, with no competing brightness from the
+   cloud itself (nothing lit clouds from aurora yet — see item 2) to visually read as "in front."
+   Added an early, redundant sample of `cloudTargetA.a` (`tCloudOcclude`, only valid once cloud
+   crosses ~90% opacity) right at the top of the aurora block, clipping `atExit` by it exactly like
+   `tSurface` already is. Thin/broken cloud still leaks glow through via the existing multiply —
+   correct — only genuinely dense cloud now hard-cuts the march.
+2. **Ambient lighting for clouds/terrain/ocean.** Rather than duplicating the full oval-mask +
+   anisotropic-fold-noise curtain machinery (sat_sky.frag-only) into `cloud_march.comp` just for a
+   soft ambient wash, added a cheap CPU-side proxy: `SatelliteSim.cpp` now computes
+   `auroraGroundGlowRaw` once per frame from the OBSERVER's own position (mirrors
+   `kGeomagPoleECEF`/oval-mask math, ripple/fold omitted — unnecessary at ambient fidelity; reuses
+   `updateStars()`'s existing `nightFactor` shape for "how dark right now"). Uploaded via
+   `CloudParams.auroraGroundGlow` (renamed from the reserved `pad4`) alongside a new user slider
+   `auroraGroundGain` (renamed from `pad5`) — no UBO growth needed, both pads were still free.
+   `cloud_march.comp`'s `cloudMarchCS` adds an `auroraUp` term to `inScatter`, height-weighted
+   OPPOSITE to `cityUp` (aurora is 95-300km up, far above the 2-11km cloud shell, so it lights cloud
+   TOPS more than bases — cityUp washes bases from below). `sat_sky.frag`'s terrain block adds an
+   up-facing-weighted `auroraContribTerrain` to `surfColor`; the ocean block adds a flat,
+   `atten`-falloff-weighted term near the moon-glint code. Cirrus (`cirrusMarchCS`) was left out of
+   scope — it has no ambient-lighting infrastructure at all (sun-only inScatter) and is the much
+   less visually dominant layer (`alphaMax=0.15` vs. low cloud's `0.80`); can be added later if it
+   turns out to matter.
+3. **Evolution speed.** `kAuroraOvalDriftRate` 0.03→0.003 and `kAuroraShimmerRate` 0.25→0.025 (both
+   10x slower per explicit user ask) — the oval ripple and vertical shimmer were animating too fast
+   for something the size of a continent-spanning curtain.
+
+**Session 28 follow-up #5 (same day) — item 2's ambient lighting was rebuilt from scratch; the
+CPU-observer-based proxy was the wrong model entirely.** User tested from LEO: passing over the
+oval colored the ENTIRE VISIBLE EARTH green uniformly, and it snapped back to pitch black the
+instant the observer's orbit left the oval — regardless of what was actually under the curtain at
+any given point on the ground. Root cause: follow-up #4's `auroraGroundGlowRaw` was computed once
+from the OBSERVER's own position and applied as a single flat multiplier to every terrain/ocean/
+cloud sample in view. That's backwards — moonlight (the explicit model to match) is local: a
+`geoMoonDot`/horizon-gate check happens AT EACH SURFACE POINT using that point's own geometry, not
+the observer's. Rebuilt to match:
+- **Removed the CPU proxy entirely** — `SatelliteSim.cpp`'s `auroraGroundGlowRaw` computation
+  deleted, `CloudParams.auroraGroundGlow` reverted back to reserved `pad4` in all three mirrored
+  structs (`sat_sky.frag`, `cloud_march.comp`, `GpuCloudParams`). `auroraGroundGain` (the slider)
+  kept — its meaning shifted from "gain on a CPU scalar" to "gain on a per-point GPU evaluation."
+- **`sat_sky.frag`: new `auroraGlowAt(posDirECEF, sunDirECEF, t, storm)`.** Runs the SAME
+  `auroraFrame`/`auroraOvalMask`/`auroraCurtainNoise` the sky curtain itself uses, but keyed on
+  the ARGUMENT direction (a ground point's own `normalize(hitPt)`) instead of the observer's
+  position — same per-sample day/night gate `auroraSampleAt` already uses. Terrain and ocean
+  ambient terms now call this with their own hit point, so only ground actually under an active
+  curtain lights up, independent of where the observer is.
+- **Ocean also gained a genuine REFLECTION term**, per explicit user request ("visible in the
+  reflection shaders... local and interact with the existing lighting shaders"): inside the
+  existing sky-reflection block (the 6-sample atmosphere march along `reflDir`), added a second
+  small march (6 samples) using `auroraSampleAt` along that SAME reflected ray — the aurora is now
+  a literal mirror-like glint on wave faces that happen to reflect toward the curtain, not just a
+  flat wash, using `cloud.auroraGain` (the sky curtain's own brightness) since it's genuinely
+  reflecting that same light, not a separate ambient source.
+- **`cloud_march.comp`: new local `auroraOvalMaskLocal(posDirECEF, storm)`** — a deliberately
+  stripped-down oval mask (no ripple warp, no fold noise) since it evaluates once per IN-CLOUD
+  march sample, the hottest loop in the renderer; fold-noise fidelity wasn't worth the cost here.
+  Uses each sample's own `dirECEF` (already computed in the loop) instead of a CPU scalar, gated by
+  `sampleDayness` like `cityUp` already is.
+- **General lesson (same shape as follow-up #3's, different layer of the stack):** "evaluate once,
+  apply everywhere" only works when the phenomenon really is uniform across everything in view —
+  true for the observer's OWN sky brightness (a valid simplification used elsewhere in this
+  codebase), false for lighting that varies by GEOGRAPHIC location. Ground/cloud/ocean lighting
+  needs to be computed at the location being lit, not the location doing the looking. When in
+  doubt, check what the equivalent moonlight/sunlight code does — it was already doing this
+  correctly and should have been the template from the start instead of inventing a new
+  "CPU-computed scalar" pattern for aurora specifically.
+
+Not yet seen in-app — build is clean but neither follow-up #4's cloud-occlusion/evolution-speed
+changes nor follow-up #5's rebuilt lighting model have had an in-app look yet.
+
+**Session 28 follow-up #6 (same day) — first in-app look at follow-up #4/#5, four more issues:**
+1. **Aurora rendered behind clouds even from LEO looking down, where it should be in front.**
+   Root cause: the compositing model assumed a fixed depth order (aurora always farther than
+   clouds) baked into the code structure itself — the aurora march's contribution was unconditionally
+   folded into `color` BEFORE the later `color = color*cloudB.rgb + cloudA.rgb` cloud composite, so
+   clouds always got treated as being in front. True from the ground (clouds 2-11km sit between the
+   camera and the 95-300km aurora shell) but backwards from LEO+ looking down, where the aurora
+   shell is entered FIRST (closer to the camera) and clouds are much farther along the ray, near the
+   surface. Fixed by comparing the aurora march's own entry distance (`atEnter`) against the cloud
+   layer's entry distance (`tEnterCombined`, sampled early via a texture fetch purely for this
+   comparison) and branching: if aurora is farther than clouds, merge its contribution into `color`
+   as before (pre-composite, so the smooth multiply attenuates it correctly); if aurora is nearer,
+   defer it into `auroraContribDeferred` and add that AFTER the cloud composite line instead, so
+   clouds don't wrongly occlude an aurora that's actually in front of them.
+2. **Blocky aliasing at the cloud/aurora edge — this was follow-up #4's own `tCloudOcclude` hard
+   clip, and it was a mistake.** `tCloudOcclude` is a HALF-RESOLUTION, bilinearly-sampled field
+   that's discontinuous by construction (-1 where cloud isn't opaque enough, a real distance where
+   it is) — interpolating across that boundary produces bogus intermediate values, and using the
+   result as a hard `min()` cutoff for a full-resolution march bakes the half-res texel grid's
+   quantization directly into the aurora's visible edge. Removed entirely; the existing smooth
+   multiplicative composite (now correctly ordered per fix 1) is the only occlusion mechanism —
+   thin cloud lets some glow through, which is physically fine, and there's no longer a hard edge
+   to alias.
+3. **Cloud/terrain aurora brightness couldn't share one gain slider.** At a ground gain low enough
+   for clouds to look plausible (~0.004), terrain contribution was near-zero — because the cloud
+   formula has no albedo term at all (assumes ~full reflectivity) while terrain/ocean multiply by
+   the surface's own (often much darker) `dayColor`, so the same raw light value produces wildly
+   different visual magnitude through the two formulas. Split `auroraGroundGain` (terrain/ocean
+   only now) from a new `auroraCloudGain` (clouds only), using the CloudParams' last free pad slot
+   — no UBO growth. Defaults: `auroraCloudGain=0.02`, `auroraGroundGain` unchanged at `1.0`; both
+   will still need in-app tuning, this only unblocks independent control.
+4. **Erosion/patchiness, per explicit user request** ("cut this up and erode with another noise
+   pattern to emulate lines and curves of twisty turning aurora"). The existing `auroraCurtainNoise`
+   fold texture only varies brightness WITHIN an already-lit patch — it doesn't create large gaps
+   where NO aurora exists at all, which is why the oval read as evenly lit all the way around.
+   Added `auroraCoverage(az, t, storm)`: a much-lower-frequency (`kAuroraCoverageFreq=4` vs. fold's
+   `kAuroraTangentFreq=40`) `warpPerlin3` threshold gate multiplied into `auroraOvalMask` itself, so
+   whole multi-degree stretches of the ring can have zero aurora at all — real auroral activity does
+   look like broken arcs, not a solid ring, especially at lower storm strength (the threshold
+   `mix(0.2, -0.6, storm)` fills in gaps as storm strength rises, matching how strong substorms
+   really do brighten/fill the whole oval). Mirrored into `cloud_march.comp`'s
+   `auroraOvalMaskLocal` too (now takes `az` — computed via a small inline tangent-frame calc,
+   mirroring `auroraFrame`) for visual consistency between the sky curtain and cloud-underside
+   lighting; NOT mirrored into `auroraSampleAt`'s pole-relative math since that shares
+   `auroraOvalMask` directly and picks the change up for free.
+   **Implementation note:** `auroraOvalMaskLocal` had to move to right after `warpPerlin3`'s own
+   definition in `cloud_march.comp` — GLSL has no forward declarations, and the function now calls
+   `warpPerlin3` for the coverage noise.
+
+Not yet seen in-app.
+
+**Session 28 follow-up #7 (same day) — second in-app look at #6, three more findings:**
+1. **Aurora STILL rendered behind clouds wrongly, now at ground level too (not just LEO), and the
+   correct window narrowed to roughly 260-330km only.** The per-ray distance comparison from
+   follow-up #6 (`atEnter` vs. an early-sampled `tEnterCombined`) was replaced outright with a much
+   simpler, provably-correct rule: **the ordering is purely a function of the OBSERVER's own
+   altitude**, not a per-ray comparison at all. Clouds (2-11km) and the aurora (95-300km) occupy
+   fixed, non-overlapping altitude bands around Earth — below 95km, ANY ray that reaches both must
+   cross the (lower) cloud band before it can climb to the (higher) aurora band; at or above 95km,
+   any downward ray crosses the aurora band before it can reach the lower cloud band. There is no
+   ray-by-ray ambiguity once the observer's altitude is fixed, so `auroraBehindClouds = (obsEffH <
+   kAuroraShellInnerM)` replaces the whole distance-comparison block — cheaper (no extra texture
+   sample) and has no per-ray edge cases left to get wrong. The prior comparison's exact failure
+   mode was never fully root-caused (the ground case, in particular, looked correct when hand-traced
+   through the same math) — this fix sidesteps needing to find it rather than patching a fragile
+   mechanism further. This also explains the odd "260km perfect, above 330km fades wrong again"
+   window: 95-300km always forced `atEnter=0` (observer inside the shell), which coincidentally
+   produced the right answer only inside the aurora's own altitude band — the fix removes that
+   coincidence entirely by not depending on shell-relative branching for the comparison at all.
+2. **Erosion "cranking up frequency" produced lines tracing straight at the pole, not arcs parallel
+   to latitude.** Root cause fully understood this time (not a guess): `auroraCoverage` sampled
+   noise as `f(az)` only — CONSTANT along colatitude. A field that's constant along colat and varies
+   with az has its threshold crossings sitting on constant-azimuth CONTOURS — and constant-azimuth
+   lines are meridians, which by definition point straight at the pole. Any real coverage frequency
+   was always going to look like radial spokes; higher frequency just added more of them. Swapped
+   which coordinate dominates: `auroraCoverage` now varies primarily with COLATITUDE
+   (`kAuroraCoverageFreq=0.35`, per-degree, ~2 cells across a typical 6-15° band width) with only a
+   small azimuthal term (`kAuroraCoverageAzFreq=1.5`, a gentle large-scale wave so the boundary
+   isn't a perfect circle, not enough to reintroduce spokes). Threshold crossings now fall on
+   near-constant-colatitude contours — parallel to latitude circles, matching "large tracks...
+   parallel with latitude lines" exactly as asked. Mirrored in `cloud_march.comp`.
+3. **Milky Way also renders in front of clouds — NOT shared code with clouds, a separate pre-
+   existing design choice from session 27, unrelated to the aurora work.** The Milky Way skybox
+   term is added post-TONEMAP (see its own comment: "Added post-tonemap like the ambient terms
+   around it... rather than folded into the HDR atmosphere accumulation above") — it was never
+   composited against cloud opacity at all, by design, since it's meant to be a cheap, always-on-top
+   approximation. This wasn't visible as a problem before because clouds+visible-Milky-Way at the
+   same time wasn't something anyone was specifically testing until now. Fixing it properly means
+   moving the Milky Way's color computation to before the tonemap step and folding it into `color`
+   pre-cloud-composite (the same pattern the aurora fix above uses) — a distinct, separable change
+   from the aurora work, not yet done pending user confirmation they want it addressed now.
+
+Not yet seen in-app.
+
 - **Terrain night ambient + moonlight — first two of four unscoped terrain light sources**
   (ambient/lunar/satellite/aurora were all missing; satellite and aurora remain unscoped). Both
   land in `sat_sky.frag`'s terrain block, adjacent to the existing sun/`skyAmbientTerrain` code

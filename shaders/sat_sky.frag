@@ -114,6 +114,13 @@ layout(set = 0, binding = 9) uniform CloudParams {
     vec4 mwBasisRow1;
     vec4 mwBasisRow2;
     CloudLayer layers[4];
+    // Aurora (C16, TERRAIN_PLAN.md Phase E): geomagnetic curtain primitive.
+    float stormStrength;    // [0,1] drives oval equatorward expansion, brightness, fold chaos
+    float auroraGain;       // master aurora brightness multiplier (sky curtain itself)
+    float auroraCloudGain;  // unused here (cloud lighting is cloud_march.comp-only) — layout parity
+    float auroraGroundGain; // master gain for LOCAL, per-point aurora ambient/reflection lighting
+                             // on terrain/ocean — distinct from auroraGain (sky curtain) and
+                             // auroraCloudGain (clouds)
 } cloud;
 
 // Half-resolution cloud march output (written by cloud_march.comp, see the "velvet-rolling-
@@ -446,6 +453,186 @@ vec3 cloudWarpOffset(vec3 dirECEF) {
 
 // cirrusWindAngleAt/cirrusDomainWarp moved to shaders/cloud_march.comp (C15-perf, half-res cloud
 // pass) — they were exclusive to cirrusMarch, which moved there too.
+
+// ── Aurora (C16, TERRAIN_PLAN.md Phase E) ──────────────────────────────────────
+// Emissive-only "curtain primitive" centered on the geomagnetic pole (NOT the geographic pole —
+// see TERRAIN_PLAN.md C16 for why this matters). Geomagnetic poles are antipodal under a dipole
+// model, so one ECEF constant covers both hemispheres (negate for south). Derived with the same
+// cos(lat)cos(lon)/cos(lat)sin(lon)/sin(lat) formula the fixed observer ECEF constant in
+// CLAUDE.md uses. North geomagnetic pole ≈ 80.7°N, 72.7°W (current epoch; drift ~0.05-0.1°/yr is
+// negligible at sim epoch 2036).
+const vec3  kGeomagPoleECEF      = vec3(0.0481, -0.1543, 0.9868);
+const float kAuroraOvalColatDeg  = 20.0;     // oval centerline, degrees from the geomagnetic pole
+const float kAuroraOvalWidthDeg  = 6.0;      // base half-width before storm expansion
+const float kAuroraShellInnerM   = 95000.0;  // curtain base altitude (m)
+const float kAuroraShellOuterM   = 300000.0; // red-fringe top altitude (m)
+const vec3  kAuroraBaseColor     = vec3(0.15, 1.0, 0.35);  // green O I 557.7nm — matches airglow green family
+const vec3  kAuroraTopColor      = vec3(0.65, 0.15, 0.45); // red/magenta upper fringe
+const float kAuroraRingWarpFreq  = 3.0;   // oval-edge ripple spatial frequency (around the ring)
+const float kAuroraOvalWarpDeg   = 4.0;   // oval-edge ripple amplitude, degrees of colatitude
+const float kAuroraOvalDriftRate = 0.003; // wall-clock rad/s ripple drift (pc.waveTime) — 10x slower
+                                           // than first pass per user feedback (evolution read as
+                                           // too fast/frantic for something the size of a continent)
+// These three frequencies are NOT comparable as raw numbers — colat/az are RADIANS multiplied by
+// Earth's radius (~6.57e6 m) to get physical arc length, while altitude is already METERS. A colat
+// frequency of 6 looks "low" next to altitude's 0.00001, but 1/6 radian × 6.57e6 m ≈ 1100 km — a
+// physically enormous cell, ~10x longer than altitude's own ~100km cell at the time this was first
+// (wrongly) tuned. That's why swapping which noise-space SLOT held colat vs altitude didn't fix
+// the "streaks point at the pole" bug: colat was still the physically longest axis by a wide
+// margin. Values below are chosen so all three land in the same physical ballpark (~50-170km per
+// noise cell) with altitude deliberately the largest (long vertical streaks), tangent/radial both
+// short (many separate folds, no unwanted radial elongation).
+const float kAuroraTangentFreq   = 40.0;     // ~2π/40 rad cell × R·sin(colat)(~2.2e6 m) ≈ 55 km
+const float kAuroraRadialFreq    = 70.0;     // ~1/70 rad cell × R (~6.57e6 m) ≈ 94 km
+const float kAuroraAltFreq       = 0.000006; // ~1/0.000006 m cell ≈ 167 km — the long/coherent axis
+const float kAuroraShimmerRate   = 0.025;   // wall-clock rad/s vertical shimmer drift (pc.waveTime) — 10x slower
+// Raw accumulation → visible range, same convention as kAirglowScale. Same order of magnitude as
+// kAirglowScale (5e-7) despite aurora being a much brighter phenomenon than nightglow — the segLen
+// (meters) × sample-count accumulation this multiplies is the same order for both, so the
+// brightness difference belongs on cloud.auroraGain (a much higher default than airglowGain), not
+// here. First pass used 0.02 (1e4× too large) and blew out to solid white even at auroraGain=0.01 —
+// EXPOSURE_NIGHT (10x) compounds the error further downstream, and once any channel's post-exposure
+// value is large the Reinhard-style tonemap saturates every channel to 1.0 together, which reads as
+// white instead of an overbright green/red.
+const float kAuroraScale         = 0.000001;
+
+// Colatitude + azimuth of a direction relative to a geomagnetic pole, plus the local
+// tangent (azimuthal, "around the ring") and radial (colatitude, "toward/away from pole")
+// basis vectors so the curtain noise can be stretched anisotropically along each axis.
+void auroraFrame(vec3 dirECEF, vec3 poleDir, out float colat, out float az,
+                  out vec3 radialT, out vec3 tangentT) {
+    colat = acos(clamp(dot(dirECEF, poleDir), -1.0, 1.0));
+    vec3 ref = abs(poleDir.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    tangentT = normalize(cross(poleDir, ref));
+    radialT  = normalize(cross(tangentT, poleDir));
+    vec3 localDir = dirECEF - poleDir * dot(dirECEF, poleDir);
+    az = atan(dot(localDir, tangentT), dot(localDir, radialT));
+}
+
+// Large-scale "coverage" gate — breaks the oval into discrete arcs/patches instead of a solid,
+// uniformly lit ring. MUCH lower frequency than auroraCurtainNoise's fold texture (which only
+// varies the brightness WITHIN an already-lit patch); this decides whether a whole multi-degree
+// stretch of the ring has any aurora at all, which is what actually reads as "twisty curves that
+// come and go" rather than fine internal ray structure. storm strength lowers the threshold (fills
+// in gaps) — a strong substorm brightens/fills the whole oval, a quiet aurora is patchy — matching
+// real auroral behavior (calm-period aurora genuinely does look like broken arcs, not a full ring).
+//
+// Varies PRIMARILY with COLATITUDE, only mildly with azimuth — a first version did the opposite
+// (noise sampled purely as a function of az, constant across colat) and that was backwards: a
+// field that's constant along colat and varies with az has its threshold CROSSINGS at fixed-az
+// contours, and constant-azimuth lines are meridians — they point straight at the geomagnetic
+// pole by definition. At any real frequency that reads as "cranking up frequency, lines tracing up
+// to the pole" — exactly the reported bug. Swapping which coordinate dominates makes the threshold
+// crossings fall on near-constant-colatitude contours instead, which run parallel to latitude
+// circles — "large tracks... parallel with latitude lines", the explicit ask. The azimuthal term
+// is kept small purely to keep the boundary from being a perfect circle (a gentle wave instead).
+const float kAuroraCoverageFreq      = 0.35;  // per-degree colat frequency — ~2 cells across a
+                                               // typical ~6-15° band width
+const float kAuroraCoverageAzFreq    = 1.5;   // LOW azimuthal frequency — large-scale wave, not spokes
+const float kAuroraCoverageDriftRate = 0.008; // wall-clock rad/s — slow, patches drift not flicker
+const float kAuroraCoverageSoftness  = 0.45;  // smoothstep width of each patch's edge
+float auroraCoverage(float colat, float az, float t, float storm) {
+    vec2  azWarp = vec2(cos(az), sin(az)) * kAuroraCoverageAzFreq;
+    float n = warpPerlin3(vec3(azWarp, degrees(colat) * kAuroraCoverageFreq + t * kAuroraCoverageDriftRate));
+    float threshold = mix(0.2, -0.6, clamp(storm, 0.0, 1.0));
+    return smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
+}
+
+// Ripple-displaces the oval's centerline colatitude as a function of azimuth + time, so the
+// band isn't a perfect circle. Sampled on (cos az, sin az) rather than az directly — avoids a
+// seam at az=±π, same reason cloudWarpOffset feeds a 3D point into warpPerlin3 instead of a
+// raw angle. stormStrength widens the band and pushes it equatorward (larger colatitude),
+// matching real substorm behavior. Multiplied by auroraCoverage so the band itself is patchy,
+// not just internally textured — this is the "erosion" that turns a solid ring into broken arcs.
+float auroraOvalMask(float colat, float az, float t, float storm) {
+    vec2  ringP  = vec2(cos(az), sin(az)) * kAuroraRingWarpFreq;
+    float ripple = warpPerlin3(vec3(ringP, t * kAuroraOvalDriftRate)) * kAuroraOvalWarpDeg;
+    float centerDeg = kAuroraOvalColatDeg + ripple + storm * 8.0;
+    float widthDeg  = kAuroraOvalWidthDeg * (1.0 + storm * 1.5);
+    float band = smoothstep(1.0, 0.0, abs(degrees(colat) - centerDeg) / widthDeg);
+    return band * auroraCoverage(colat, az, t, storm);
+}
+
+// Curtain fold structure: many thin vertical sheets standing up off the surface, distributed
+// around the ring — NOT rays radiating toward/away from the pole (two earlier attempts produced
+// exactly that "spokes pointing at the pole" look: first by anisotropically stretching the wrong
+// pair of axes, then by picking a colat frequency that LOOKED small as a raw number but was still
+// physically enormous once multiplied by Earth's radius — see the frequency constants' comment
+// above for the physical-cell-size reasoning that fixed it for real). Built from two anisotropic
+// warpPerlin3 samples: HIGH frequency along the tangent (azimuthal) axis gives many separate folds
+// distributed around the ring; comparably HIGH frequency along colatitude keeps the band's
+// cross-section from adding unwanted radial coherence; LOW frequency along ALTITUDE is the one
+// genuinely long axis, keeping each fold an unbroken streak running vertically. storm increases
+// fold frequency (more chaotic structure).
+float auroraCurtainNoise(float colat, float az, float altM, float t, float storm) {
+    vec3 p = vec3(az * kAuroraTangentFreq * (1.0 + storm * 0.8),
+                  altM * kAuroraAltFreq + t * kAuroraShimmerRate,
+                  colat * kAuroraRadialFreq);
+    float base   = warpPerlin3(p);
+    float detail = warpPerlin3(p * vec3(3.1, 1.7, 2.0) + vec3(19.1, 4.7, 8.3)) * 0.5;
+    return remap(base + detail, -0.3, 0.9, 0.0, 1.0); // bias toward bright folds over dark gaps
+}
+
+// Combined density + color sample at a point given in the observer's local ENU-scaled frame
+// (rp; same frame obsPos/dir/main()'s march points use), converted to a true ECEF direction via
+// the enuX/enuY/enuZ basis — mirrors the rDirECEF idiom the airglowRed march already uses.
+// Picks whichever geomagnetic pole (north or south) the point is nearer to, so one code path
+// covers both hemispheres.
+//
+// Day-gated per-SAMPLE on that point's own geographic day/night state (same twilight window
+// airglowRed's rDayness/rNight uses), NOT on the observer's local sky brightness as originally
+// planned. The observer-based gate (a single smoothstep on pc.sunDirENU.w, applied once outside
+// the march) was wrong for an orbital view near the terminator: an observer whose own local sun
+// angle reads "daylight" can still be looking at a geographically dark limb with a large visible
+// night-side portion, and the old gate blacked out the aurora there entirely instead of letting
+// it fade in over the genuinely dark samples along that same ray.
+vec3 auroraSampleAt(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirECEF, float t, float storm) {
+    vec3 pDirECEF = normalize(rp.x * enuX + rp.y * enuY + rp.z * enuZ);
+    float dayness = clamp((dot(pDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
+    float night   = 1.0 - dayness;
+    if (night <= 0.001) return vec3(0.0); // cheapest test first: this patch of sky is in daylight
+    vec3 poleDir  = (dot(pDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
+    float colat, az; vec3 radialT, tangentT;
+    auroraFrame(pDirECEF, poleDir, colat, az, radialT, tangentT);
+    float oval = auroraOvalMask(colat, az, t, storm);
+    if (oval <= 0.001) return vec3(0.0); // cheap early-out before the pricier fold noise below
+    float altM = length(rp) - R_EARTH;
+    float vert = smoothstep(kAuroraShellInnerM, kAuroraShellInnerM + 15000.0, altM)
+               * smoothstep(kAuroraShellOuterM, kAuroraShellOuterM - 60000.0, altM);
+    if (vert <= 0.001) return vec3(0.0);
+    float fold = auroraCurtainNoise(colat, az, altM, t, storm);
+    vec3  col  = mix(kAuroraBaseColor, kAuroraTopColor,
+                      clamp(remap(altM, kAuroraShellInnerM, kAuroraShellOuterM, 0.0, 1.0), 0.0, 1.0));
+    return col * (oval * fold * vert * night);
+}
+
+// Representative altitude for auroraGlowAt's fold-noise texture — the ground-glow term doesn't
+// march a real altitude, it just needs *a* fixed altitude to sample the curtain's horizontal
+// structure at (mid-shell, roughly where the green base is brightest).
+const float kAuroraGroundGlowAltM = 150000.0;
+
+// Local aurora ambient light AT A GIVEN GEOGRAPHIC POINT (terrain/ocean hit point, ocean-reflection
+// sample, etc.) — evaluates the SAME oval mask + curtain-fold noise the sky curtain itself uses,
+// but keyed on that point's own geographic location instead of the observer's. This is what makes
+// aurora ground-lighting properly local, the same way moonlight is: a patch of ground directly
+// under an active curtain lights up regardless of where the observer is standing, and moving the
+// observer somewhere else doesn't turn it off. (The first implementation computed a single CPU-side
+// value from the OBSERVER's position and applied it to everything in view — from LEO that lit the
+// entire visible Earth uniformly green whenever the observer's orbit passed over the oval, and shut
+// off instantly the moment it didn't, regardless of what was actually under the curtain. See
+// TERRAIN_PLAN.md session 28 follow-up #5.)
+vec3 auroraGlowAt(vec3 posDirECEF, vec3 sunDirECEF, float t, float storm) {
+    float dayness = clamp((dot(posDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
+    float night   = 1.0 - dayness;
+    if (night <= 0.001) return vec3(0.0);
+    vec3 poleDir  = (dot(posDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
+    float colat, az; vec3 radialT, tangentT;
+    auroraFrame(posDirECEF, poleDir, colat, az, radialT, tangentT);
+    float oval = auroraOvalMask(colat, az, t, storm);
+    if (oval <= 0.001) return vec3(0.0);
+    float fold = auroraCurtainNoise(colat, az, kAuroraGroundGlowAltM, t, storm);
+    return kAuroraBaseColor * oval * fold * night;
+}
 
 // ── Lens flare (adapted from "Lens Flare Example" by peterekepeter, public domain)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1192,6 +1379,68 @@ void main() {
         }
     }
 
+    // ── Aurora (C16, TERRAIN_PLAN.md Phase E) ──────────────────────────────────
+    // Emissive-only shell march, additive — same obsEffH-keyed entry/exit classification the
+    // airglowRed march above uses (so it doesn't break if the observer flies into/above the
+    // shell). Day-gating is per-SAMPLE geographic day/night (auroraSampleAt, mirroring
+    // airglowRed's rDayness/rNight) — NOT a single observer-based gate — precisely so an orbital
+    // view near the terminator, where the observer's own local sun angle may read "daylight" but
+    // a large genuinely dark portion of the sky/limb is still visible, shows aurora over that
+    // dark portion instead of blacking it out everywhere.
+    //
+    // Depth order vs. clouds is NOT fixed: from the ground, clouds (2-11km) sit between the
+    // camera and the aurora (95-300km) — aurora is background, clouds are foreground. From LEO+
+    // looking down, it's the opposite — the aurora shell is entered first (closer to the camera),
+    // clouds are much further along the ray, near the surface. `accumAurora` is therefore NOT
+    // added to `color` unconditionally here; auroraBehindClouds decides whether it merges in now
+    // (so the later cloud composite's `color*cloudB.rgb+cloudA.rgb` correctly treats it as
+    // background) or gets deferred into auroraContribDeferred, added AFTER that composite so
+    // clouds don't wrongly occlude an aurora that's actually in front of them.
+    //
+    // The ordering decision is PURELY a function of the OBSERVER's own altitude, not a per-ray
+    // distance comparison — the clouds (2-11km) and aurora (95-300km) occupy fixed, non-
+    // overlapping altitude bands around Earth, so which one a ray reaches first is entirely
+    // determined by which side of 95km the observer sits on: below it, any ray that reaches both
+    // must pass through the (lower) cloud band before it can climb to the (higher) aurora band;
+    // at or above it, the reverse — any downward ray crosses the aurora band before it can reach
+    // the lower cloud band. A first version compared `atEnter` (the aurora march's own entry
+    // distance) against a per-ray-sampled cloud entry distance instead, which turned out unreliable
+    // in ways not fully tracked down (correct at some altitudes, wrong at the ground and again
+    // above ~330km) — this altitude-only rule has no per-ray edge cases to get wrong.
+    vec3 auroraContribDeferred = vec3(0.0);
+    bool auroraBehindClouds = (obsEffH < kAuroraShellInnerM);
+    {
+        vec2 tAuroraFar = raySphere(obsPos, dir, R_EARTH + kAuroraShellOuterM);
+        vec2 tAuroraIn  = raySphere(obsPos, dir, R_EARTH + kAuroraShellInnerM);
+
+        float atEnter, atExit;
+        if (obsEffH < kAuroraShellInnerM) {
+            atEnter = tAuroraIn.y;
+            atExit  = tAuroraFar.y;
+        } else if (obsEffH <= kAuroraShellOuterM) {
+            atEnter = 0.0;
+            atExit  = tAuroraFar.y;
+            if (tAuroraIn.x > 0.0 && tAuroraIn.x < atExit) atExit = tAuroraIn.x;
+        } else {
+            atEnter = tAuroraFar.x;
+            atExit  = (tAuroraIn.x > 0.0) ? tAuroraIn.x : tAuroraFar.y;
+        }
+        if (tSurface > 0.0) atExit = min(atExit, tSurface);
+
+        if (atEnter < atExit && atExit > 0.0) {
+            const int N_AURORA = 24;
+            float aSegLen = (atExit - atEnter) / float(N_AURORA);
+            vec3  accumAurora = vec3(0.0);
+            for (int i = 0; i < N_AURORA; ++i) {
+                vec3 ap = obsPos + dir * (atEnter + (float(i) + 0.5) * aSegLen);
+                accumAurora += auroraSampleAt(ap, enuX, enuY, enuZ, sunDirECEF, pc.waveTime, cloud.stormStrength);
+            }
+            vec3 auroraContrib = accumAurora * aSegLen * kAuroraScale * cloud.auroraGain;
+            if (auroraBehindClouds) color += auroraContrib;
+            else                    auroraContribDeferred = auroraContrib;
+        }
+    }
+
     // ── Moon disc ─────────────────────────────────────────────────────────────
     // kMoonTexRotDeg: rotates the texture CW in the UV plane to align the image's
     // north pole with the physical lunar north pole as seen from the observer.
@@ -1329,7 +1578,7 @@ void main() {
         // past the flat horizon; anything below -1.7° geographic is forced to zero.
         float geoSunDot   = dot(normalize(hitPt), sunDir);
         float horizonGate = smoothstep(-0.03, 0.02, geoSunDot);
-        float dayFrac     = smoothstep(-0.1, 0.3, sunDot) * horizonGate;
+        float dayFrac     = smoothstep(-0.15, -0.12, sunDot) * horizonGate;
         // directSun combines day/night blend for all sun-driven contributions. Used to also
         // multiply in cloud-shadow transmittance (cloudShadowFactor(), removed session 23 —
         // cloud shadowing on terrain/ocean isn't currently used, and it was the dominant
@@ -1355,14 +1604,73 @@ void main() {
         {
             const float kCityDetailTileM = 20000.0;  // metres per texture tile repeat
             const float kCityMaskLo      = 0.01;   // nightColor luminance where detail starts
-            const float kCityMaskHi      = 0.15;   // luminance where detail is fully blended in
+            const float kCityMaskHi      = 0.06;   // luminance where detail is fully blended in
             const float kCityFadeNearM   = 3000.0; // full detail strength inside this distance
             const float kCityFadeFarM    = 300000.0; // detail fully faded out beyond this distance
             float cityDistFade = 1.0 - smoothstep(kCityFadeNearM, kCityFadeFarM, tSurface);
             if (cityDistFade > 0.001)
             {
-                float cityLum  = dot(nightColor, vec3(0.2126, 0.7152, 0.0722));
-                float cityMask = smoothstep(kCityMaskLo, kCityMaskHi, cityLum) * cityDistFade;
+                // Cheap reject using the already-fetched, full-detail nightColor (no extra texture
+                // fetch) before paying for the blurred sample + noise below — most terrain within
+                // kCityFadeFarM isn't near a city at all.
+                float cityLumFast = dot(nightColor, vec3(0.2126, 0.7152, 0.0722));
+                float cityMask = 0.0;
+                vec2  worldXY  = vec2(0.0);
+                if (cityLumFast > kCityMaskLo - 0.05)
+                {
+                    // World-fixed ground coordinate — see the detailUV comment below for why this
+                    // (not hitPt.xy directly) is what stays glued to the terrain as the observer
+                    // moves. Computed here too so the edge-jitter noise below can share it.
+                    worldXY = hitPt.xy + vec2(cloud.pad1, cloud.pad2);
+
+                    // earthNightTex is only ~8K across the whole globe (~5 km/texel) — city
+                    // silhouettes are inherently blocky at that resolution, and no amount of
+                    // filtering recovers detail that was never captured. Two cheap tricks disguise
+                    // it instead of trying to resolve it:
+                    //   1. Sample luminance at a deliberately coarser LOD than nightColor's own
+                    //      (already-mip-selected) sample, so the mask transition isn't chasing the
+                    //      raw texel grid — a wider, softer step instead of a hard mip-block edge.
+                    //   2. Jitter the smoothstep threshold with the same analytic 3D Perlin noise
+                    //      the clouds use (warpPerlin3 — pure ALU, no texture, no tiling seam at any
+                    //      zoom), sampled in the world-fixed ground plane at a frequency well above
+                    //      the source texture's resolution. This breaks the mip-grid-aligned
+                    //      blockiness into an organic, irregular wobble. It can't recover the TRUE
+                    //      city boundary (there's no more data than the low-res mask has) — it's
+                    //      purely a masking/edge-shape disguise, independent of the (already
+                    //      world-fixed) detail texture UV below.
+                    const float kCityMaskLod          = 1.5;
+                    const float kCityEdgeNoiseFreqInv = 1.0 / 8000.0; // ~800 m noise period
+                    const float kCityEdgeNoiseAmt     = 0.05;        // threshold jitter (luminance units)
+                    float cityLumBlur = dot(textureLod(earthNightTex, uvSurf, kCityMaskLod).rgb,
+                                             vec3(0.2126, 0.7152, 0.0722));
+                    float edgeNoise = warpPerlin3(vec3(worldXY * kCityEdgeNoiseFreqInv, 0.0));
+                    float jitter    = edgeNoise * kCityEdgeNoiseAmt;
+                    // max(sharp, blurred), not blurred alone: blurring dilutes peak brightness (a
+                    // city core averaged with its darker surroundings at LOD 1.5 may never cross
+                    // kCityMaskHi on its own), which was capping cityMask well below 1.0 even deep
+                    // in bright cores — nightColor could never fully hand off to nightDetail, so the
+                    // detail pattern was always fighting a still-visible base underneath. The sharp
+                    // sample lets genuinely bright pixels reach full mask strength; the blurred+
+                    // jittered sample still governs the soft, noisy edge in between.
+                    float cityLumForMask = max(cityLumFast, cityLumBlur);
+                    // Once kCityEdgeNoiseAmt exceeds kCityMaskLo, jitter can push the lower
+                    // threshold below zero — and a negative lower threshold means truly-dark
+                    // (cityLumForMask≈0) pixels read as "above threshold", producing spurious light
+                    // patches in genuinely unpopulated areas. Shift the whole [lo,hi] band up
+                    // together when that would happen (rather than clamping loT alone, which would
+                    // narrow or invert the transition width) — preserves the organic per-edge jitter
+                    // everywhere it's safe, without ever letting true darkness read as lit.
+                    float loT = kCityMaskLo + jitter;
+                    float hiT = kCityMaskHi + jitter;
+                    const float kCityMaskLoFloor = kCityMaskLo * 0.5;
+                    if (loT < kCityMaskLoFloor)
+                    {
+                        float shift = kCityMaskLoFloor - loT;
+                        loT += shift;
+                        hiT += shift;
+                    }
+                    cityMask = smoothstep(loT, hiT, cityLumForMask) * cityDistFade;
+                }
                 if (cityMask > 0.001)
                 {
                     // hitPt.xy (observer-local ENU tangent plane) is a real orthogonal projection —
@@ -1383,7 +1691,9 @@ void main() {
                     // north/east displacement on the CPU (cityOffsetEastM/NorthM in
                     // SatelliteSim.cpp, packed into cloud.pad1/pad2) and add it straight back —
                     // a plain per-frame-constant translation, no basis, no trig, no snap events.
-                    vec2 detailUV = (hitPt.xy + vec2(cloud.pad1, cloud.pad2)) / kCityDetailTileM;
+                    // worldXY (computed above) is this same hitPt.xy + cloud.pad1/pad2 offset —
+                    // reused here rather than recomputed.
+                    vec2 detailUV = worldXY / kCityDetailTileM;
                     vec2 duv_dx = dFdx(detailUV);
                     vec2 duv_dy = dFdy(detailUV);
                     vec3 dayDetail   = textureGrad(cityDayDetailTex,   detailUV, duv_dx, duv_dy).rgb;
@@ -1459,11 +1769,22 @@ void main() {
         float moonLitTerrain   = max(0.0, moonDot) * moonHorizonGate * moonDirENU.w;
         vec3  moonContribTerrain = dayColor * vec3(0.92, 0.95, 1.0) * moonLitTerrain * cloud.moonGain;
 
+        // Aurora ground-glow: soft ambient wash from the curtain overhead, evaluated LOCALLY at
+        // this hit point (auroraGlowAt — same oval mask + fold noise the sky curtain itself uses)
+        // rather than a single observer-position proxy, so lighting is properly local like
+        // moonlight: only ground actually under an active curtain lights up. Modulated by how much
+        // the surface faces "up" (toward the glow), same spirit as skyAmbientTerrain's fill above.
+        vec3  auroraGlowTerrain    = auroraGlowAt(normalize(hitPt), sunDirECEF, pc.waveTime, cloud.stormStrength);
+        vec3  auroraContribTerrain = dayColor * auroraGlowTerrain
+                                    * max(dot(shadingN, normalize(hitPt)), 0.0)
+                                    * cloud.auroraGroundGain;
+
         vec3 surfColor  = mix(nightColor * 0.12,
                               dayColor * sunSpecTint * clamp(sunDot * 1.5, 0.05, 1.0)
                             + dayColor * skyAmbientTerrain * 0.4,  // sky ambient fill (blue day, orange dusk)
                               dayFrac)
-                        + moonContribTerrain;
+                        + moonContribTerrain
+                        + auroraContribTerrain;
 
         // ── Ocean wave material (sea-level hits only, not terrain) ─────────────
         // ShaderToy "Seascape" by TDM adapted to Earth ENU/ECEF space.
@@ -1598,6 +1919,27 @@ void main() {
                     }
                     reflColor = SUN_INTENSITY * (rpR * BETA_R * rAccR + vec3(rpM * BETA_M * rAccM));
                 }
+
+                // Aurora reflection: literally march the curtain shell along the REFLECTED ray
+                // instead of the camera ray — reuses the exact same auroraSampleAt() the primary
+                // sky view uses, so the aurora shows up as a genuine mirror-like glint on the
+                // water (visible in the reflection itself, not just a flat ambient wash) whenever
+                // a wave happens to reflect toward it. hitPt is always below the shell here (ocean
+                // surface), so only the "observer below shell" entry/exit case applies — no need
+                // for the full obsEffH-keyed classification the primary march uses.
+                vec2 rAuroraFar = raySphere(hitPt, reflDir, R_EARTH + kAuroraShellOuterM);
+                vec2 rAuroraIn  = raySphere(hitPt, reflDir, R_EARTH + kAuroraShellInnerM);
+                if (rAuroraIn.y > 0.0 && rAuroraIn.y < rAuroraFar.y) {
+                    const int N_AURORA_REFL = 6;
+                    float raSeg = (rAuroraFar.y - rAuroraIn.y) / float(N_AURORA_REFL);
+                    vec3  accumAuroraRefl = vec3(0.0);
+                    for (int ai = 0; ai < N_AURORA_REFL; ++ai) {
+                        vec3 rap = hitPt + reflDir * (rAuroraIn.y + (float(ai) + 0.5) * raSeg);
+                        accumAuroraRefl += auroraSampleAt(rap, enuX, enuY, enuZ, sunDirECEF,
+                                                           pc.waveTime, cloud.stormStrength);
+                    }
+                    reflColor += accumAuroraRefl * raSeg * kAuroraScale * cloud.auroraGain;
+                }
             }
 
             // Refracted subsurface color (SEA_BASE + diffuse * SEA_WATER_COLOR)
@@ -1626,6 +1968,13 @@ void main() {
                            * mNrm * moonDirENU.w * clamp(moonDirENU.z, 0.0, 1.0)
                            * 0.006 * (1.0 - dayFrac);
             }
+
+            // Aurora ground-glow: soft ambient tint from the curtain overhead, evaluated LOCALLY at
+            // this ocean point (auroraGlowAt — same function terrain uses) rather than a single
+            // observer-position proxy, distance-attenuated by the same `atten` the wave-crest
+            // shading above uses so it doesn't glow uniformly out to the horizon.
+            surfColor += auroraGlowAt(surfUp, sunDirECEF, pc.waveTime, cloud.stormStrength)
+                       * cloud.auroraGroundGain * 0.5 * atten;
             // Mirror satellite flare glints — sector-stable selection via sectorBright.
             {
                 for (int fi = 0; fi < 8; ++fi) {
@@ -1712,6 +2061,10 @@ void main() {
     if (!(tSurface > 0.0 && tEnterCombined >= 0.0 && tSurface < tEnterCombined)) {
         color = color * cloudB.rgb + cloudA.rgb;
     }
+    // Aurora that sat IN FRONT of the clouds (LEO+ looking down through the shell before reaching
+    // them) was deferred past the composite above instead of folded into `color` beforehand, so
+    // clouds don't incorrectly occlude/attenuate an aurora that's actually nearer the camera.
+    color += auroraContribDeferred;
 
     // ── Auto-exposure tone mapping ─────────────────────────────────────────────
     float dayness  = clamp((sunDirENU.w + 0.2) / 1.2, 0.0, 1.0);
