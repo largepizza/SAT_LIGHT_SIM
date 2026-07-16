@@ -121,6 +121,10 @@ layout(set = 0, binding = 9) uniform CloudParams {
     float auroraGroundGain; // master gain for LOCAL, per-point aurora ambient/reflection lighting
                              // on terrain/ocean — distinct from auroraGain (sky curtain) and
                              // auroraCloudGain (clouds)
+    float auroraCoverageFreq;      // coverage patch size (per-degree colat frequency)
+    float auroraCoverageAzFreq;    // coverage azimuthal wobble frequency
+    float auroraCoverageDriftRate; // coverage evolution speed (wall-clock rad/s)
+    float auroraShimmerRate;       // curtain fold noise evolution speed (wall-clock rad/s)
 } cloud;
 
 // Half-resolution cloud march output (written by cloud_march.comp, see the "velvet-rolling-
@@ -485,7 +489,8 @@ const float kAuroraOvalDriftRate = 0.003; // wall-clock rad/s ripple drift (pc.w
 const float kAuroraTangentFreq   = 40.0;     // ~2π/40 rad cell × R·sin(colat)(~2.2e6 m) ≈ 55 km
 const float kAuroraRadialFreq    = 70.0;     // ~1/70 rad cell × R (~6.57e6 m) ≈ 94 km
 const float kAuroraAltFreq       = 0.000006; // ~1/0.000006 m cell ≈ 167 km — the long/coherent axis
-const float kAuroraShimmerRate   = 0.025;   // wall-clock rad/s vertical shimmer drift (pc.waveTime) — 10x slower
+// Evolution speed is user-tunable — see cloud.auroraShimmerRate (settings window "Fold shimmer
+// rate"), mixed into the tangent/azimuthal axis in auroraCurtainNoise below, not here.
 // Raw accumulation → visible range, same convention as kAirglowScale. Same order of magnitude as
 // kAirglowScale (5e-7) despite aurora being a much brighter phenomenon than nightglow — the segLen
 // (meters) × sample-count accumulation this multiplies is the same order for both, so the
@@ -526,14 +531,21 @@ void auroraFrame(vec3 dirECEF, vec3 poleDir, out float colat, out float az,
 // crossings fall on near-constant-colatitude contours instead, which run parallel to latitude
 // circles — "large tracks... parallel with latitude lines", the explicit ask. The azimuthal term
 // is kept small purely to keep the boundary from being a perfect circle (a gentle wave instead).
-const float kAuroraCoverageFreq      = 0.35;  // per-degree colat frequency — ~2 cells across a
-                                               // typical ~6-15° band width
-const float kAuroraCoverageAzFreq    = 1.5;   // LOW azimuthal frequency — large-scale wave, not spokes
-const float kAuroraCoverageDriftRate = 0.008; // wall-clock rad/s — slow, patches drift not flicker
+// kAuroraCoverageSoftness stays a fixed constant (edge softness isn't worth its own slider);
+// frequency/az-frequency/drift-rate are user-tunable — see cloud.auroraCoverageFreq/AzFreq/
+// DriftRate below (settings window "Coverage freq"/"Coverage az freq"/"Coverage drift").
 const float kAuroraCoverageSoftness  = 0.45;  // smoothstep width of each patch's edge
 float auroraCoverage(float colat, float az, float t, float storm) {
-    vec2  azWarp = vec2(cos(az), sin(az)) * kAuroraCoverageAzFreq;
-    float n = warpPerlin3(vec3(azWarp, degrees(colat) * kAuroraCoverageFreq + t * kAuroraCoverageDriftRate));
+    // Time is mixed into the AZIMUTHAL embedding (x,y), NOT the colatitude axis (z) — an earlier
+    // version added t directly to the colat coordinate, which made the whole pattern visibly
+    // TRANSLATE toward/away from the pole over time (reported as "waves marching to the poles").
+    // colat here is a pure, time-independent spatial axis. (cos(az)+t·rate, sin(az)+t·rate) is no
+    // longer on the unit circle once translated, but that's fine — x,y are just an embedding of az
+    // chosen to avoid a seam at az=±π, not a meaningful physical direction, so drifting them
+    // doesn't create a directionally-biased slide the way drifting colat did; the noise value at
+    // any fixed (az,colat) point instead evolves/shimmers over time.
+    vec2  azWarp = vec2(cos(az), sin(az)) * cloud.auroraCoverageAzFreq + t * cloud.auroraCoverageDriftRate;
+    float n = warpPerlin3(vec3(azWarp, degrees(colat) * cloud.auroraCoverageFreq));
     float threshold = mix(0.2, -0.6, clamp(storm, 0.0, 1.0));
     return smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
 }
@@ -564,9 +576,18 @@ float auroraOvalMask(float colat, float az, float t, float storm) {
 // cross-section from adding unwanted radial coherence; LOW frequency along ALTITUDE is the one
 // genuinely long axis, keeping each fold an unbroken streak running vertically. storm increases
 // fold frequency (more chaotic structure).
+//
+// Time (cloud.auroraShimmerRate) is mixed into the TANGENT/azimuthal axis, NOT altitude — a first
+// version added it directly to the altitude coordinate, which made every fold visibly scroll
+// monotonically top-to-bottom (reported as "columns flicker from top to bottom pretty
+// consistently" — the same axis-conflation mistake auroraCoverage's colat/time bug was, one layer
+// down). Altitude is a real physical direction (up), so translating it with time reads as a
+// directional slide; azimuth here is already the high-frequency "many folds around the ring" axis,
+// so drifting it makes folds ripple/drift sideways over time instead — much closer to how real
+// curtains actually dance.
 float auroraCurtainNoise(float colat, float az, float altM, float t, float storm) {
-    vec3 p = vec3(az * kAuroraTangentFreq * (1.0 + storm * 0.8),
-                  altM * kAuroraAltFreq + t * kAuroraShimmerRate,
+    vec3 p = vec3(az * kAuroraTangentFreq * (1.0 + storm * 0.8) + t * cloud.auroraShimmerRate,
+                  altM * kAuroraAltFreq,
                   colat * kAuroraRadialFreq);
     float base   = warpPerlin3(p);
     float detail = warpPerlin3(p * vec3(3.1, 1.7, 2.0) + vec3(19.1, 4.7, 8.3)) * 0.5;
@@ -1428,8 +1449,20 @@ void main() {
         if (tSurface > 0.0) atExit = min(atExit, tSurface);
 
         if (atEnter < atExit && atExit > 0.0) {
-            const int N_AURORA = 24;
-            float aSegLen = (atExit - atEnter) / float(N_AURORA);
+            // Adaptive sample count (same fix class as cloudMarch's kCloudMaxStepM, session 22):
+            // a FIXED N_AURORA badly serves this march because path length varies enormously with
+            // viewing angle — a straight-up ray through the shell is ~205km, but a near-horizontal
+            // (grazing) ray can be thousands of km, and a fixed 24 steps spreads across whichever
+            // one it is. At grazing angles the resulting step length blew way past the fold noise's
+            // own ~55-170km physical cell size (see the frequency constants' comment), badly
+            // undersampling it — exactly the "banding, odd noise evolution at horizontal/steep
+            // angles" reported. Scales step count with path length instead, capped both ends.
+            const float kAuroraMaxStepM = 15000.0;
+            const int   kAuroraStepsMin = 24;
+            const int   kAuroraStepsMax = 160;
+            float aPathLen = atExit - atEnter;
+            int   N_AURORA = clamp(int(aPathLen / kAuroraMaxStepM), kAuroraStepsMin, kAuroraStepsMax);
+            float aSegLen = aPathLen / float(N_AURORA);
             vec3  accumAurora = vec3(0.0);
             for (int i = 0; i < N_AURORA; ++i) {
                 vec3 ap = obsPos + dir * (atEnter + (float(i) + 0.5) * aSegLen);
@@ -2140,7 +2173,14 @@ void main() {
                           * (1.0 - moonBrightSky * kMWMoonMaxDim)
                           * extinctionMW
                           * sunGlareSuppress
-                          * (tSurface > 0.0 ? 0.0 : 1.0); // blocked by terrain/ocean
+                          * (tSurface > 0.0 ? 0.0 : 1.0) // blocked by terrain/ocean
+                          * cloudBlock; // blocked by clouds — reuses the same opacity scalar the
+                                        // sun disc is already dimmed by (see "Sun/moon disc"
+                                        // above); this term is added post-tonemap (deliberately,
+                                        // see comment above) so it can't be folded into the HDR
+                                        // cloud composite the same way aurora/atmosphere are, but
+                                        // without ANY cloud suppression at all it showed straight
+                                        // through opaque cloud — same visual bug the aurora had.
         color += mwColor * visibility;
     }
 

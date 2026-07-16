@@ -749,6 +749,101 @@ Not yet seen in-app.
 
 Not yet seen in-app.
 
+**Session 28 follow-up #8 (same day) — erosion praised as "a lot better" after follow-up #7's
+axis swap, but one more bug and a tuning-workflow request:**
+1. **All coverage patches tracked from low latitude toward the poles ("waves of energy" instead of
+   undulation).** Same class of bug as follow-up #7's diagnosis, one layer deeper: `auroraCoverage`
+   built its `warpPerlin3` sample point as `vec3(azWarp, colatDeg*freq + t*driftRate)` — time was
+   added directly onto the SAME coordinate as colatitude. Advancing time was therefore
+   mathematically identical to advancing colatitude: the entire pattern visibly translated
+   toward/away from the pole every frame, which reads exactly as "waves marching to the poles."
+   Fixed by moving the time term onto the azimuthal embedding instead: `azWarp = vec2(cos(az),
+   sin(az))*azFreq + t*driftRate`. This is safe there in a way it wasn't on the colat axis — x/y
+   here are an arbitrary 2D embedding of azimuth (chosen only to avoid a seam at az=±π), not a
+   coordinate with real "distance from pole" meaning, so translating them doesn't correspond to any
+   recognizable directional slide; the noise at a fixed (az,colat) point instead genuinely
+   evolves/shimmers over time. **General pattern to watch for going forward: any time term MUST
+   land on an axis with no fixed physical meaning (or genuinely wants to slide, like the ripple's
+   own azimuthal drift) — never on an axis that represents a real direction (colatitude,
+   altitude) unless a directional slide is actually the intended look.**
+2. **User asked how to tune coverage frequency/speed** — previously hardcoded constants requiring a
+   shader recompile per attempt, too slow for iteration. Promoted `kAuroraCoverageFreq` (patch size,
+   per-degree colatitude frequency), `kAuroraCoverageAzFreq` (azimuthal wobble frequency), and
+   `kAuroraCoverageDriftRate` (evolution speed) from constants to `CloudParams` UBO fields — grew
+   304→320 bytes (4 new floats, one reserved pad) with matching settings-window
+   sliders ("Coverage freq"/"Coverage az freq"/"Coverage drift") and `settings.json` persistence.
+   Edge softness (`kAuroraCoverageSoftness`) stayed a fixed constant — not worth its own slider.
+   Defaults carried forward the values the user had already hand-tuned directly in
+   `cloud_march.comp` before this change (`freq=0.65`, `driftRate=0.00008`) rather than resetting
+   to the original guesses, so their prior tuning isn't lost.
+
+Not yet seen in-app.
+
+**Session 28 follow-up #9 (same day) — user's current in-app tuning promoted to defaults, plus
+four more fixes and a UI reorganization:**
+
+0. **Defaults promotion.** User: "my current debug settings should be our defaults going forward."
+   Read `build/Debug/settings.json` and copied every cloud/ocean/aurora/photometry value into the
+   corresponding member-variable initializer in `SatelliteSim.h` (not observer lat/lon, camera, or
+   other session-specific state — just the rendering/tuning parameters). Notable swings from the
+   old placeholder defaults: `cloudMarchSteps` 138→4, `auroraGain` 1.0→0.0785, `lightPollutionGain`
+   1.0→38.6, `daySuppression` 1516→574.6 — all intentional, all copied verbatim from the user's
+   tuned settings.json, not independently re-derived.
+1. **Aurora AND Milky Way still drew over clouds at ground level — user correctly guessed this was
+   related to clouds' own Mie-scattering ambient term, not a depth-order bug** (the altitude rule
+   from follow-up #7 is provably correct and wasn't the issue here). Found a real, concrete bug:
+   `cloud_march.comp`'s `skyAmbient` (the cloud's zenith Rayleigh+Mie ambient light) was the ONLY
+   ambient contributor NOT gated by day/night — `moonContrib` (via `nightFac`), `cityUp`, and
+   `auroraUp` all correctly fade at night; `skyAmbient` didn't. Physically it represents
+   zenith-scattered SUNLIGHT, which genuinely is zero at true night — leaving it ungated let unlit
+   clouds read as a lit, sky-colored haze instead of a dark silhouette, making them visually
+   indistinguishable from "more sky" rather than a solid foreground object occluding the aurora/
+   Milky Way behind them. Fixed by multiplying by `(1.0 - sampleDayness)`, matching cityUp/auroraUp's
+   existing gate. Separately, Milky Way's own "renders through clouds" issue has a different cause:
+   it's added post-TONEMAP by design (session 27, "comparably faint... rather than folded into the
+   HDR atmosphere accumulation") and was NEVER composited against cloud opacity — not shared code
+   with clouds, a distinct pre-existing simplification. Restructuring it to merge pre-tonemap (the
+   "correct" fix) was judged too large/risky to bundle in; instead multiplied its existing
+   post-tonemap contribution by `cloudBlock` (the same already-computed opacity scalar that already
+   dims the sun disc through clouds) — a contained, low-risk suppression that stops it showing
+   through opaque cloud without touching the tonemap pipeline.
+2. **No knob for curtain fold noise evolution, and columns "flicker top to bottom pretty
+   consistently" instead of undulating** — the SAME axis-conflation bug as follow-up #8's coverage
+   fix, one layer down: `auroraCurtainNoise` added `t * kAuroraShimmerRate` directly onto the
+   ALTITUDE coordinate (a real physical axis — "up"), so advancing time was mathematically
+   identical to sliding the fold pattern vertically. Moved the time term onto the TANGENT/azimuthal
+   axis instead (already high-frequency, "many folds around the ring" by design) — folds now
+   ripple/drift sideways over time instead of scrolling monotonically top-to-bottom, much closer to
+   how real curtains dance. Promoted `kAuroraShimmerRate` from a constant to `cloud.auroraShimmerRate`
+   (settings slider "Fold shimmer rate") using the CloudParams' last free pad slot — no UBO growth.
+   **Third occurrence of this exact bug class in this feature (colat in follow-up #8, altitude
+   here) — worth double-checking any remaining noise calls in this file for the same mistake before
+   adding more.**
+3. **Banding/artifacts at grazing (near-horizontal) and steep look-down angles** — same root cause
+   already fixed once for clouds (session 22, `kCloudMaxStepM`): the aurora march used a FIXED
+   `N_AURORA=24` regardless of path length through the shell, but that path length varies enormously
+   with viewing angle — ~205km looking straight up, potentially thousands of km near-horizontal.
+   A fixed step count spreads across whichever one it is, badly undersampling the fold noise's own
+   ~55-170km physical cell size at grazing angles. Made step count adaptive to path length
+   (`clamp(int(pathLen / 15000.0), 24, 160)`), capped both ends — matches the established pattern
+   from cloud march perf work rather than inventing a new one.
+4. **UI reorganization:** the "Clouds" settings tab had grown to 33 sliders spanning clouds, ocean,
+   terrain/atmosphere quality, airglow, and aurora — split into 4 tabs (Clouds/Ocean/Terrain/Aurora,
+   settings tab count 8→11). Extracted the shared per-row Clay rendering loop into
+   `buildCloudSliderRows()` (a private member taking a `CloudSlider*` array + count) so the split
+   didn't require 4 copies of ~80 lines of slider-widget code; each tab's slider list keeps its
+   ORIGINAL global `idx` (used to key the shared `draggingCloud`/`hovCloudMinus`/`hovCloudPlus`
+   arrays and a function-local static text-buffer), so no renumbering was needed despite splitting.
+   Shared-ownership sliders were assigned a single home: view/light sample counts (main atmosphere
+   loop, runs on every pixel) → Terrain; `moonGain` (terrain direct term AND cloud moonContrib) →
+   Terrain. **Also fixed a latent out-of-bounds bug found while doing this:** `hovCloudMinus`/
+   `hovCloudPlus` were still sized `[25]` from before the C16 aurora sliders were added, while
+   slider indices already went up to 32 — every aurora slider's +/- button was reading/writing past
+   the end of those arrays. Bumped both to `[33]`.
+
+Not yet seen in-app.
+
+### 2026-07-13 (session 25)
 - **Terrain night ambient + moonlight — first two of four unscoped terrain light sources**
   (ambient/lunar/satellite/aurora were all missing; satellite and aurora remain unscoped). Both
   land in `sat_sky.frag`'s terrain block, adjacent to the existing sun/`skyAmbientTerrain` code

@@ -404,8 +404,15 @@ struct GpuCloudParams
                               // lighting on TERRAIN/OCEAN (evaluated in-shader per pixel/sample,
                               // mirroring how moonlight is local) — distinct from auroraGain above
                               // (the sky curtain's own brightness) and auroraCloudGain (clouds).
+    // Aurora "erosion" coverage gate (session 28 follow-up #8) — breaks the oval into patchy arcs.
+    // See auroraCoverage() in sat_sky.frag/cloud_march.comp for the full design.
+    float auroraCoverageFreq;      // per-degree colatitude frequency — patch size across the band
+    float auroraCoverageAzFreq;    // azimuthal wobble frequency — keeps the boundary non-circular
+    float auroraCoverageDriftRate; // wall-clock rad/s evolution speed
+    float auroraShimmerRate;       // curtain fold noise evolution speed (wall-clock rad/s) — was a
+                                    // fixed kAuroraShimmerRate constant (session 28 follow-up #9)
 };
-static_assert(sizeof(GpuCloudParams) == 304, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 320, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -755,18 +762,18 @@ private:
     float musicVol_ = 0.6f;
     float sfxVol_ = 1.0f;
     // ── Photometry tuning (synced to SatFlarePC each frame) ───────────────────
-    // Defaults below are the user-tuned values as of the C15 (airglow) commit — baked in from
-    // settings.json rather than the original placeholder guesses.
-    float brightnessScale = 1.275f;
-    float daySuppression = 1516.64f;
+    // Defaults below are the user-tuned values as of the C16 (aurora) session-28 commit — baked
+    // in from settings.json rather than the original placeholder guesses.
+    float brightnessScale = 1.0125f;
+    float daySuppression = 574.605f;
     float mirrorBoost = 429.17f;
     float visThresh = 0.0001f;
     float highlightFlare = 0.17066f;
-    float moonSuppression = 4.0f; // sky background suppression from moonlight (mirrors daySuppression,
+    float moonSuppression = 6.57895f; // sky background suppression from moonlight (mirrors daySuppression,
                                    // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
-    float lightPollutionGain = 1.0f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
+    float lightPollutionGain = 38.5965f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
                                       // so satellites + stars stay coherently scaled by construction
-    float extinctionCoeff = 0.25f;   // atmospheric extinction, magnitudes per airmass (Kasten & Young
+    float extinctionCoeff = 0.36842f;   // atmospheric extinction, magnitudes per airmass (Kasten & Young
                                       // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
                                       // in both sat_flare.comp and updateStars() so a star and a
                                       // satellite at the same elevation dim identically
@@ -778,26 +785,26 @@ private:
     glm::vec3 mwRow1{0.0f, 1.0f, 0.0f};
     glm::vec3 mwRow2{0.0f, 0.0f, 1.0f};
     // Cloud tunables (CPU-side; uploaded to cloudParamsBuf each frame)
-    // Defaults below are the user-tuned values as of the C15 (airglow) commit — baked in from
-    // settings.json rather than the original placeholder guesses.
-    float cloudCoverage = 0.87281f;
-    float cloudDensity = 3.26974f;
-    float cloudBaseAltM = 6000.0f; // layer 0 shell altitude (low cloud / stratus)
+    // Defaults below are the user-tuned values as of the C16 (aurora) session-28 commit — baked
+    // in from settings.json rather than the original placeholder guesses.
+    float cloudCoverage = 0.69298f;
+    float cloudDensity = 10.0f;
+    float cloudBaseAltM = 5585.96f; // layer 0 shell altitude (low cloud / stratus)
     float cloudTopAltM = 15000.0f; // layer 1 shell altitude (high cirrus)
     float cloudDriftRate = 1.04386e-5f;
-    float cloudSunGain = 1.14035f;
+    float cloudSunGain = 3.35526f;
     float cloudAmbientGain = 2.0f;
     float cloudHgG = 0.15632f;
-    float cloudMarchSteps = 138.21053f;
-    float cloudLightSteps = 4.02632f;
+    float cloudMarchSteps = 4.0f;
+    float cloudLightSteps = 7.11842f;
     float cloudCirrusWindDeg = 40.0f; // C13: cirrus streak wind azimuth (degrees, converted to radians for the UBO)
     float cloudCirrusStretch = 4.0f;  // C13: cirrus noise anisotropic elongation factor (1 = no stretch)
     float airglowGain = 0.06579f;         // C15: master airglow brightness multiplier
     float airglowGreenGain = 0.05263f;    // C15: green (557.7nm) band gain
     float airglowRedGain = 0.01316f;      // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
     float airglowSodiumGain = 0.06579f;   // C15: sodium (589.3nm) band gain — kept dim relative to green
-    float cloudShadowMaxDistM = 15000.0f; // sun self-shadow cone (N_CONE) fades out beyond this distance
-    float cloudMaxRenderDistM = 150000.0f; // cloudMarch tExit distance cap (was a hardcoded 80km)
+    float cloudShadowMaxDistM = 37745.6f; // sun self-shadow cone (N_CONE) fades out beyond this distance
+    float cloudMaxRenderDistM = 165000.0f; // cloudMarch tExit distance cap (was a hardcoded 80km)
     // Perf follow-up (session 24): main atmosphere loop + ocean wave quality, all previously
     // hardcoded compile-time constants.
     // N_VIEW is now adaptive per-ray (round 2): a fixed sample count badly serves a loop whose
@@ -807,20 +814,24 @@ private:
     // artifacts in testing; 6 was clean — round 3); viewSamplesMax is the prior universal fixed
     // value (124), kept as the ceiling for long/grazing rays since that was already proven
     // correct at all altitudes before this change.
-    float viewSamplesMin = 6.0f;
-    float viewSamplesMax = 124.0f;
+    float viewSamplesMin = 5.68421f;
+    float viewSamplesMax = 135.15790f;
     float lightSamples = 12.0f;        // N_LIGHT: optDepth sun-side sub-march count
     float oceanSeaOctaves = 3.0f;      // seaMap() octave count (height-trace geometry)
     float oceanDetailOctaves = 5.0f;   // seaMapDetail() octave count (wave normal)
     float oceanReflSamples = 6.0f;     // ocean sky-reflection loop sample count (N_REFL)
-    float moonGain = 0.015f;           // shared moonlight brightness: terrain direct term + cloud
+    float moonGain = 0.00526f;         // shared moonlight brightness: terrain direct term + cloud
                                         // moonContrib (default matches the prior hardcoded cloud value)
-    float stormStrength = 0.3f;        // C16: aurora oval expansion/brightness/chaos [0,1]
-    float auroraGain = 1.0f;           // C16: master aurora brightness multiplier
-    float auroraCloudGain = 0.02f;     // C16: ambient aurora light on clouds only (no albedo term
+    float stormStrength = 0.35526f;    // C16: aurora oval expansion/brightness/chaos [0,1]
+    float auroraGain = 0.07851f;       // C16: master aurora brightness multiplier
+    float auroraCloudGain = 0.00395f;  // C16: ambient aurora light on clouds only (no albedo term
                                         // in that formula, so it needs a much lower default than
                                         // terrain/ocean to land in the same plausible range)
-    float auroraGroundGain = 1.0f;     // C16: ambient aurora light on terrain/ocean only
+    float auroraGroundGain = 0.00439f; // C16: ambient aurora light on terrain/ocean only
+    float auroraCoverageFreq = 0.64868f;      // C16: coverage patch size (per-degree colat frequency)
+    float auroraCoverageAzFreq = 4.02632f;    // C16: coverage azimuthal wobble frequency
+    float auroraCoverageDriftRate = 0.00039474f; // C16: coverage evolution speed (wall-clock rad/s)
+    float auroraShimmerRate = 0.025f;  // C16: curtain fold noise evolution speed (wall-clock rad/s)
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
     std::string exeDir_;           // directory containing the exe; set in init()
@@ -940,7 +951,7 @@ private:
     bool hovUnitMetric = false;
     bool hovUnitImperial = false;
     bool hovShowControlsStartup = false;
-    bool hovTab[8] = {}; // one per settings-window tab
+    bool hovTab[11] = {}; // one per settings-window tab
     bool hovScaleMinus = false;
     bool hovScalePlus = false;
     bool hovMasterVolMinus = false;
@@ -954,9 +965,9 @@ private:
     bool hovPhotoMinus[8] = {};
     bool hovPhotoPlus[8] = {};
     bool draggingPhoto[8] = {};
-    bool hovCloudMinus[25] = {};
-    bool hovCloudPlus[25] = {};
-    bool draggingCloud[29] = {};
+    bool hovCloudMinus[33] = {}; // was [25] — stale after C16 aurora sliders pushed indices to 32
+    bool hovCloudPlus[33] = {};
+    bool draggingCloud[33] = {};
 
     // ── Window chrome (drag+resize; see UIRenderer::WindowChrome) ──────────────
     // x/y default to -1 (uninitialized, centers/places on first open); w/h are set
@@ -1035,7 +1046,24 @@ private:
     void buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &ui);
+    // Shared slider-row struct/renderer for the Clouds/Ocean/Terrain/Aurora tabs (split from one
+    // combined "Clouds" tab, session 28 follow-up #9) — `idx` indexes the shared draggingCloud/
+    // hovCloudMinus/hovCloudPlus member arrays and a function-local static text-buffer array, so
+    // each tab's slider subset keeps its ORIGINAL global index (no renumbering needed) even though
+    // only a slice of the full 0-32 range is passed to any one call.
+    struct CloudSlider
+    {
+        const char *label;
+        float *val;
+        float vmin, vmax, step;
+        const char *fmt;
+        int idx;
+    };
+    void buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, CloudSlider *sliders, int count);
     void buildViewControlsWindow(const UIInput &inp, UIRenderer &ui);
     void buildViewControlsBody(const UIInput &inp, UIRenderer &ui);
     void buildIntroOverlay(const UIInput &inp, UIRenderer &ui);

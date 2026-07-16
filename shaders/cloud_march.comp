@@ -94,6 +94,10 @@ layout(set = 0, binding = 4) uniform CloudParams {
     float auroraGain;         // unused here (sky curtain brightness is sat_sky.frag-only) — layout parity
     float auroraCloudGain;    // USED here — master gain for the local per-sample cloud upwelling
     float auroraGroundGain;   // unused here (terrain/ocean lighting is sat_sky.frag-only) — layout parity
+    float auroraCoverageFreq;      // USED here — coverage patch size (per-degree colat frequency)
+    float auroraCoverageAzFreq;    // USED here — coverage azimuthal wobble frequency
+    float auroraCoverageDriftRate; // USED here — coverage evolution speed (wall-clock rad/s)
+    float auroraShimmerRate;       // unused here (curtain fold noise is sat_sky.frag-only) — layout parity
 } cloud;
 
 // Target A: rgb = combined additive radiance (B_total), a = tCloudOcclude (m, -1 = none)
@@ -136,9 +140,9 @@ const float kAuroraOvalWidthDeg = 6.0;
 // the intended "tracks parallel to latitude lines" look). Kept here despite the perf-sensitive
 // loop because dropping it would make cloud-underside lighting look like a uniform ring while the
 // sky curtain right above it is visibly patchy — worse than the extra warpPerlin3 call costs.
-const float kAuroraCoverageFreq      = 0.65;  // per-degree colat frequency, mirrors sat_sky.frag
-const float kAuroraCoverageAzFreq    = 1.5;   // LOW azimuthal frequency — large-scale wave, not spokes
-const float kAuroraCoverageDriftRate = 0.00008;
+// Frequency/az-frequency/drift-rate are now user-tunable (cloud.auroraCoverageFreq/AzFreq/
+// DriftRate, settings window "Coverage freq"/"Coverage az freq"/"Coverage drift") — only the edge
+// softness stays a fixed constant here.
 const float kAuroraCoverageSoftness  = 0.45;
 // auroraOvalMaskLocal itself is defined further down, right after warpPerlin3 (which it calls) —
 // GLSL has no forward declarations, and warpPerlin3 lives below the noise-warp block.
@@ -257,8 +261,11 @@ float auroraOvalMaskLocal(vec3 posDirECEF, float t, float storm) {
     vec3  localDir = posDirECEF - poleDir * dot(posDirECEF, poleDir);
     float az       = atan(dot(localDir, tangentT), dot(localDir, radialT));
 
-    vec2  azWarp = vec2(cos(az), sin(az)) * kAuroraCoverageAzFreq;
-    float n = warpPerlin3(vec3(azWarp, colatDeg * kAuroraCoverageFreq + t * kAuroraCoverageDriftRate));
+    // Time is mixed into the azimuthal embedding (x,y), NOT the colatitude axis (z) — see
+    // sat_sky.frag's auroraCoverage for why: adding t to colat directly made the pattern visibly
+    // slide toward/away from the pole over time instead of evolving in place.
+    vec2  azWarp = vec2(cos(az), sin(az)) * cloud.auroraCoverageAzFreq + t * cloud.auroraCoverageDriftRate;
+    float n = warpPerlin3(vec3(azWarp, colatDeg * cloud.auroraCoverageFreq));
     float threshold = mix(0.2, -0.6, clamp(storm, 0.0, 1.0));
     float coverage  = smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
     return band * coverage;
@@ -547,9 +554,16 @@ void cloudMarchCS(
 
             float sampleDayness = clamp((cloudSunDotRaw + 0.2) / 0.5, 0.0, 1.0);
 
+            // Gated by (1-sampleDayness) — every OTHER ambient term below (moonContrib via
+            // nightFac, cityUp, auroraUp) already fades out at night; skyAmbient was the one
+            // exception, left ungated. Physically it represents zenith-scattered SUNLIGHT
+            // (Rayleigh+Mie), which genuinely is zero at true night — leaving it ungated let
+            // unlit clouds read as a lit, sky-colored haze instead of a dark silhouette, which is
+            // what made them hard to visually distinguish from the sky behind an aurora/Milky Way.
             vec3 skyAmbient = skyAmbientBase
                             * (mix(0.3, 0.9, hNorm)
-                            +  mix(0.1, 0.3, hNorm) * cloud.ambientGain);
+                            +  mix(0.1, 0.3, hNorm) * cloud.ambientGain)
+                            * (1.0 - sampleDayness);
 
             vec3  moonECEF_c    = moonDir3.x * enuX + moonDir3.y * enuY + moonDir3.z * enuZ;
             float moonElevGeog  = max(0.0, dot(normalize(pECEF), moonECEF_c));

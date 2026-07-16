@@ -410,6 +410,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.auroraGain = auroraGain;
         cp.auroraCloudGain = auroraCloudGain;
         cp.auroraGroundGain = auroraGroundGain;
+        cp.auroraCoverageFreq = auroraCoverageFreq;
+        cp.auroraCoverageAzFreq = auroraCoverageAzFreq;
+        cp.auroraCoverageDriftRate = auroraCoverageDriftRate;
+        cp.auroraShimmerRate = auroraShimmerRate;
         cp.mwBasisRow0 = glm::vec4(mwRow0, 1.0f); // .w = milky way gain (fixed; no longer user-tunable)
         cp.mwBasisRow1 = glm::vec4(mwRow1, 0.0f);
         cp.mwBasisRow2 = glm::vec4(mwRow2, 0.0f);
