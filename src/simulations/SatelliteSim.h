@@ -391,8 +391,21 @@ struct GpuCloudParams
     glm::vec4 mwBasisRow2;
     // Per-layer descriptors
     GpuCloudLayerParams layers[kNumCloudLayers];
+    // Aurora (C16, TERRAIN_PLAN.md Phase E): geomagnetic curtain primitive.
+    float stormStrength;     // [0,1] drives oval equatorward expansion, brightness, fold chaos
+    float auroraGain;        // master aurora brightness multiplier (sky curtain itself)
+    float auroraCloudGain;   // master gain for LOCAL aurora ambient upwelling on CLOUDS only —
+                              // split from auroraGroundGain (session 28 follow-up #6) because the
+                              // two formulas' magnitudes aren't comparable: clouds have no albedo
+                              // term at all (roughly full reflectivity assumed) while terrain/ocean
+                              // multiply by the surface's own dark albedo, so one shared slider
+                              // couldn't hit "plausible" for both at once.
+    float auroraGroundGain;  // master gain for the LOCAL, per-point aurora ambient/reflection
+                              // lighting on TERRAIN/OCEAN (evaluated in-shader per pixel/sample,
+                              // mirroring how moonlight is local) — distinct from auroraGain above
+                              // (the sky curtain's own brightness) and auroraCloudGain (clouds).
 };
-static_assert(sizeof(GpuCloudParams) == 288, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 304, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -723,9 +736,15 @@ private:
     std::vector<uint8_t> earthElevCpu;
     int earthElevCpuW = 0, earthElevCpuH = 0;
     // CPU-side downsampled night-lights luminance for observer light-pollution lookup
-    // (2160×1080, ~18km/px) — single byte per texel, precomputed Rec.709 luminance.
+    // (2160×1080, ~18km/px) — single byte per texel, precomputed Rec.709 luminance. Box-filtered
+    // (not nearest-neighbor) so it doesn't itself alias before anything samples it.
     std::vector<uint8_t> earthNightCpu;
     int earthNightCpuW = 0, earthNightCpuH = 0;
+    // Half-resolution box-blur of earthNightCpu (~37km/px) — updateLightPollutionDome() samples
+    // this bilinearly instead of earthNightCpu directly, the CPU-array equivalent of picking a
+    // coarser mip level, to smooth the dome's blocky per-sector transitions.
+    std::vector<uint8_t> earthNightCpuBlur;
+    int earthNightCpuBlurW = 0, earthNightCpuBlurH = 0;
 
     // ── UI visibility & settings ──────────────────────────────────────────────
     bool showIntro = true; // cinematic intro overlay; dismissed on click or any key
@@ -796,6 +815,12 @@ private:
     float oceanReflSamples = 6.0f;     // ocean sky-reflection loop sample count (N_REFL)
     float moonGain = 0.015f;           // shared moonlight brightness: terrain direct term + cloud
                                         // moonContrib (default matches the prior hardcoded cloud value)
+    float stormStrength = 0.3f;        // C16: aurora oval expansion/brightness/chaos [0,1]
+    float auroraGain = 1.0f;           // C16: master aurora brightness multiplier
+    float auroraCloudGain = 0.02f;     // C16: ambient aurora light on clouds only (no albedo term
+                                        // in that formula, so it needs a much lower default than
+                                        // terrain/ocean to land in the same plausible range)
+    float auroraGroundGain = 1.0f;     // C16: ambient aurora light on terrain/ocean only
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
     std::string exeDir_;           // directory containing the exe; set in init()
@@ -931,7 +956,7 @@ private:
     bool draggingPhoto[8] = {};
     bool hovCloudMinus[25] = {};
     bool hovCloudPlus[25] = {};
-    bool draggingCloud[25] = {};
+    bool draggingCloud[29] = {};
 
     // ── Window chrome (drag+resize; see UIRenderer::WindowChrome) ──────────────
     // x/y default to -1 (uninitialized, centers/places on first open); w/h are set

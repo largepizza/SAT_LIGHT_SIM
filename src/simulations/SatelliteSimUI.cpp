@@ -1462,7 +1462,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         const char *fmt;
         int idx;
     };
-    static char cloudBufs[25][16];
+    static char cloudBufs[29][16];
     CloudSlider cloudSliders[] = {
         {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
         {"Density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
@@ -1489,6 +1489,10 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Detail octaves", &oceanDetailOctaves, 1.0f, 5.0f, 1.0f, "%.0f", 22},
         {"Refl samples", &oceanReflSamples, 1.0f, 6.0f, 1.0f, "%.0f", 23},
         {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
+        {"Storm strength", &stormStrength, 0.0f, 1.0f, 0.05f, "%.2f", 25},
+        {"Aurora gain", &auroraGain, 0.0f, 0.1f, 0.001f, "%.3f", 26},
+        {"Aurora ground gain", &auroraGroundGain, 0.0f, 0.1f, 0.001f, "%.3f", 27},
+        {"Aurora cloud gain", &auroraCloudGain, 0.0f, 0.1f, 0.001f, "%.3f", 28},
     };
     for (auto &cs : cloudSliders)
     {
@@ -1947,6 +1951,10 @@ void SatelliteSim::loadSettings()
         oceanDetailOctaves = c.value("ocean_detail_octaves", oceanDetailOctaves);
         oceanReflSamples = c.value("ocean_refl_samples", oceanReflSamples);
         moonGain = c.value("moon_gain", moonGain);
+        stormStrength = c.value("storm_strength", stormStrength);
+        auroraGain = c.value("aurora_gain", auroraGain);
+        auroraGroundGain = c.value("aurora_ground_gain", auroraGroundGain);
+        auroraCloudGain = c.value("aurora_cloud_gain", auroraCloudGain);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -2028,7 +2036,11 @@ void SatelliteSim::saveSettings()
         {"ocean_sea_octaves", oceanSeaOctaves},
         {"ocean_detail_octaves", oceanDetailOctaves},
         {"ocean_refl_samples", oceanReflSamples},
-        {"moon_gain", moonGain}};
+        {"moon_gain", moonGain},
+        {"storm_strength", stormStrength},
+        {"aurora_gain", auroraGain},
+        {"aurora_ground_gain", auroraGroundGain},
+        {"aurora_cloud_gain", auroraCloudGain}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

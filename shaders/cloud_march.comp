@@ -89,6 +89,11 @@ layout(set = 0, binding = 4) uniform CloudParams {
     vec4 mwBasisRow1;         // unused here — layout parity
     vec4 mwBasisRow2;         // unused here — layout parity
     CloudLayer layers[4];
+    float stormStrength;      // USED here — drives auroraOvalMaskLocal's oval expansion (mirrors
+                               // sat_sky.frag's storm-driven widening/equatorward shift)
+    float auroraGain;         // unused here (sky curtain brightness is sat_sky.frag-only) — layout parity
+    float auroraCloudGain;    // USED here — master gain for the local per-sample cloud upwelling
+    float auroraGroundGain;   // unused here (terrain/ocean lighting is sat_sky.frag-only) — layout parity
 } cloud;
 
 // Target A: rgb = combined additive radiance (B_total), a = tCloudOcclude (m, -1 = none)
@@ -111,6 +116,32 @@ const float kWarpEvolveRate = 0.00002;
 const float kCityUpwellStrength = 0.004;
 const float kNightFloor    = 0.002;
 const float kCityCompressK = 0.08;
+
+// Aurora ground-glow (C16 follow-up, redo — session 28 follow-up #5). Duplicates sat_sky.frag's
+// kGeomagPoleECEF/kAuroraOvalColatDeg/kAuroraOvalWidthDeg and a stripped-down oval mask (no
+// ripple warp, no fold noise — this evaluates once per IN-CLOUD march sample, the hottest loop in
+// the renderer, so kept as cheap as possible) rather than sharing code with the full curtain
+// primitive there. Evaluated LOCALLY using each sample's own dirECEF (already computed in the
+// march loop below), NOT a CPU-computed observer-position scalar — the first version lit the
+// whole visible cloud deck uniformly whenever the OBSERVER was under the oval and went dark
+// the instant they left it, regardless of what was actually under the curtain.
+const vec3  kAuroraGroundColor  = vec3(0.15, 1.0, 0.35);
+const vec3  kGeomagPoleECEF     = vec3(0.0481, -0.1543, 0.9868);
+const float kAuroraOvalColatDeg = 20.0;
+const float kAuroraOvalWidthDeg = 6.0;
+// Large-scale coverage gate — mirrors sat_sky.frag's auroraCoverage (see that file's comment for
+// the full "why patches, not a solid ring" reasoning, and why it varies primarily with COLATITUDE
+// rather than azimuth — a colat-constant/az-varying field's threshold crossings fall on
+// constant-azimuth contours, i.e. meridians pointing straight at the pole, which is backwards from
+// the intended "tracks parallel to latitude lines" look). Kept here despite the perf-sensitive
+// loop because dropping it would make cloud-underside lighting look like a uniform ring while the
+// sky curtain right above it is visibly patchy — worse than the extra warpPerlin3 call costs.
+const float kAuroraCoverageFreq      = 0.65;  // per-degree colat frequency, mirrors sat_sky.frag
+const float kAuroraCoverageAzFreq    = 1.5;   // LOW azimuthal frequency — large-scale wave, not spokes
+const float kAuroraCoverageDriftRate = 0.00008;
+const float kAuroraCoverageSoftness  = 0.45;
+// auroraOvalMaskLocal itself is defined further down, right after warpPerlin3 (which it calls) —
+// GLSL has no forward declarations, and warpPerlin3 lives below the noise-warp block.
 
 const float kCloud3DFadeStart = 800000.0;
 const float kCloud3DFadeEnd   = 3000000.0;
@@ -210,6 +241,27 @@ float warpPerlin3(vec3 p) {
     float v111 = dot(warpGradHash(i + ivec3(1,1,1)), f - vec3(1,1,1));
     return mix(mix(mix(v000, v100, u.x), mix(v010, v110, u.x), u.y),
                mix(mix(v001, v101, u.x), mix(v011, v111, u.x), u.y), u.z);
+}
+
+float auroraOvalMaskLocal(vec3 posDirECEF, float t, float storm) {
+    vec3  poleDir   = (dot(posDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
+    float colatDeg  = degrees(acos(clamp(dot(posDirECEF, poleDir), -1.0, 1.0)));
+    float centerDeg = kAuroraOvalColatDeg + storm * 8.0;
+    float widthDeg  = kAuroraOvalWidthDeg * (1.0 + storm * 1.5);
+    float band = clamp(1.0 - abs(colatDeg - centerDeg) / widthDeg, 0.0, 1.0);
+    if (band <= 0.001) return 0.0;
+
+    vec3  ref      = abs(poleDir.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3  tangentT = normalize(cross(poleDir, ref));
+    vec3  radialT  = normalize(cross(tangentT, poleDir));
+    vec3  localDir = posDirECEF - poleDir * dot(posDirECEF, poleDir);
+    float az       = atan(dot(localDir, tangentT), dot(localDir, radialT));
+
+    vec2  azWarp = vec2(cos(az), sin(az)) * kAuroraCoverageAzFreq;
+    float n = warpPerlin3(vec3(azWarp, colatDeg * kAuroraCoverageFreq + t * kAuroraCoverageDriftRate));
+    float threshold = mix(0.2, -0.6, clamp(storm, 0.0, 1.0));
+    float coverage  = smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
+    return band * coverage;
 }
 
 vec3 cloudWarpOffset(vec3 dirECEF) {
@@ -515,10 +567,19 @@ void cloudMarchCS(
                        * kCityUpwellStrength * cloud.ambientGain;
             }
 
+            // Aurora ground-glow: the curtain sits far above the cloud shell (95-300km vs. 2-11km),
+            // so unlike cityUp (which washes the cloud BASE from below), this lights cloud TOPS
+            // more than bases — opposite height falloff. Evaluated LOCALLY at this sample's own
+            // dirECEF (auroraOvalMaskLocal above), not a CPU-computed observer-position proxy.
+            float auroraLocalMask = auroraOvalMaskLocal(dirECEF, pc.waveTime, cloud.stormStrength);
+            vec3  auroraUp        = kAuroraGroundColor * auroraLocalMask * cloud.auroraCloudGain
+                                   * (1.0 - sampleDayness) * mix(0.2, 1.0, hNorm);
+
             vec3  inScatter  = sunColorCloud * sunLit * ph * (1.0 + powder) * cloud.sunGain
                              + moonContrib
                              + skyAmbient
-                             + cityUp;
+                             + cityUp
+                             + auroraUp;
 
             cloudScatter       += cloudTransmittance * (1.0 - stepT) * inScatter;
             cloudTransmittance *= stepT;

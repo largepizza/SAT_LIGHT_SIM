@@ -526,8 +526,8 @@ If the file is missing (first run) all defaults are used silently.
 See `TERRAIN_PLAN.md` in the project root for the full step checklist and session log.
 Read it at the start of any terrain-related session before making changes.
 
-**Current state (as of 2026-07-13, session 24):**
-- Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete; C1–C8, C13, C15 complete
+**Current state (as of 2026-07-15, session 28):**
+- Steps 1, 2, 3, 4, 5, 5b, 6, 8 complete; C1–C8, C13, C15, C16 complete
 - Phase E in progress (C13–C16: Cirrus rework, Anvil, Airglow, Aurora), sequenced ahead of
   C9/C11/C12. Full spec in `TERRAIN_PLAN.md`.
 - **Cirrus (C13):** own standalone `cirrusMarch()` in `sat_sky.frag`, NOT a second `cloudMarch`
@@ -625,11 +625,27 @@ Read it at the start of any terrain-related session before making changes.
   - **Night darkening:** ambient transitions from blue day dome to near-zero at night using
     per-sample `dot(normalize(pECEF), sunDirECEF)` geographic terminator check.
   - **City upwelling:** `earthNightTex` at mip 3 contributes warm orange into cloud bases at night.
-- **Next:** C16 — Aurora, geomagnetic curtain primitive (see `TERRAIN_PLAN.md` "Immediate Next
-  Step"). C14 (Anvil) remains deferred — pushed back again in favor of C15 per the 2026-07-12
-  session — and can be picked up whenever; it has no dependency on C15/C16. Phase E (C13–C16:
-  Cirrus, Anvil, Airglow, Aurora) takes priority over C9/C11/C12 and noise-repetition cleanup per
-  the 2026-07-12 planning session.
+- **Aurora (C16):** emissive-only "curtain primitive" shell march in `sat_sky.frag`, added right
+  after the airglow-red block. Centered on the geomagnetic pole (`kGeomagPoleECEF`, antipodal
+  dipole model covers both hemispheres with one constant), colatitude oval band (`auroraOvalMask`)
+  with ripple-warped centerline, anisotropic curtain-fold noise (`auroraCurtainNoise` — high freq
+  along azimuth for many separate folds, low freq along colatitude so each fold reads as a long
+  streak, not a blob). Day-gated PER-SAMPLE on that sample's own geographic day/night (mirrors
+  airglowRed's `rDayness`/`rNight`) — a first-pass observer-based gate (`pc.sunDirENU.w` alone)
+  was tried and replaced same-day: it blacked out the aurora for an orbital observer near the
+  terminator even when a large genuinely dark portion of sky/limb was still visible, since it only
+  checked the observer's own local sun angle, not the sample's. `CloudParams` grew 288→304 bytes
+  for `stormStrength` + `auroraGain` (mirrored in `cloud_march.comp`, which hand-duplicates this
+  UBO layout, and in `GpuCloudParams`). `kAuroraScale` was also corrected — first pass (0.02) was
+  ~10,000× too bright (same order-of-magnitude mistake as ignoring `EXPOSURE_NIGHT`'s 10× and the
+  tonemap's tendency to saturate all channels to white together once any one is overdriven); now
+  `0.000001`, same order as `kAirglowScale`. Build clean; shape/oval position still unverified
+  in-app since the brightness bug was blocking any useful look at it. See `TERRAIN_PLAN.md`
+  session 28 (+ same-day follow-up) log for the full design.
+- **Next:** C14 (Anvil) remains not started — deferred repeatedly in favor of C15/C16 per the
+  2026-07-12 session — and can be picked up whenever; it has no dependency on C15/C16. Otherwise
+  Phase E is complete; C9/C11/C12 and noise-repetition cleanup are next in line per the 2026-07-12
+  planning session's priority order.
 
 ### Elevation texture encoding — READ THIS BEFORE TOUCHING TERRAIN CODE
 
