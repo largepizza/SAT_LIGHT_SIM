@@ -415,7 +415,20 @@ void cloudMarchCS(
 
     vec3 skyAmbientBase = vec3(0.0);
     {
-        vec3 p0     = obsPos + tEnter * dir;
+        // Sampled at the OBSERVER's own position, NOT the cloud march's entry point (obsPos +
+        // tEnter*dir) — a first version used the entry point, which is fine for a steep/near-
+        // vertical ray (tEnter small, close to the observer) but for a GRAZING/near-horizontal ray
+        // tEnter can be hundreds of km out, putting p0 near the observer's own visual horizon.
+        // Earth's curvature means conditions THERE (day/night, twilight angle) can genuinely differ
+        // from the observer's own — and since skyAmbientBase is computed ONCE per pixel and then
+        // applied UNIFORMLY across the entire march (every in-cloud step from tEnter to tExit, now
+        // as far as ~400km after the render-distance extension), one potentially-unrepresentative
+        // sample from a single far point was getting smeared across the whole visible horizon
+        // band — reported as "aurora glow / sky Mie scattering dramatically overlays clouds at the
+        // horizon." Anchoring to obsPos instead makes this a stable read of the observer's own
+        // actual local conditions (the thing that's actually dark during an aurora-visible night),
+        // consistent across the whole march instead of picking up whatever a distant point sees.
+        vec3 p0     = obsPos;
         vec3 zenith = normalize(p0);
         vec2 tSA    = raySphere(p0, zenith, R_ATMOS);
         if (tSA.y > 0.0) {
@@ -464,7 +477,16 @@ void cloudMarchCS(
     float cosAMoon = dot(dir, moonDir3);
     float phMoon   = phaseCloud(cosAMoon);
 
-    int hardCap = min(2048, int(cloud.maxRenderDistM / kCloudMaxStepM) + 32);
+    // Raised 2048->4096 (session 28 follow-up #10): with maxRenderDistM pushed out to actually
+    // reach the cloud shell's own horizon (see that field's comment), the old 2048 ceiling could
+    // itself become the binding cutoff before maxRenderDistM did. Margin raised again (follow-up
+    // #14): at the 400km default, covering the full distance at kCloudMaxStepM=250m needs exactly
+    // 1600 steps — the flat "+32" margin left only 32 steps of slack, uncomfortably close to the
+    // exact requirement for a ray that's "in cloud" (the finer stepLen, not the coarser bigStep)
+    // continuously the whole way, which is precisely the dense-horizon-cloud case this exists to
+    // handle. A 15% multiplicative margin plus a larger flat floor scales proportionally instead of
+    // staying fixed as maxRenderDistM grows.
+    int hardCap = min(8192, int(cloud.maxRenderDistM / kCloudMaxStepM * 1.15) + 64);
     for (int i = 0; i < hardCap && t < tExit; ++i) {
         float step = inCloud ? stepLen : bigStep;
         step = min(step, tExit - t);
@@ -648,12 +670,30 @@ void cirrusMarchCS(
         tEnter = shellT.x;
         tExit  = (shellB.x > 0.0) ? shellB.x : shellT.y;
     }
-    tExit = min(tExit, tEnter + 200000.0);
+    // Render-distance cap raised 200km->450km (session 28 follow-up #10): cirrus sits at ~15km
+    // altitude by default, whose own geometric horizon distance is ~sqrt(2*R_EARTH*15000)≈437km —
+    // the old 200km cap cut the march off well short of that, letting stars/aurora/Milky Way show
+    // straight through cirrus near the horizon instead of the cirrus layer thinning out naturally.
+    tExit = min(tExit, tEnter + 450000.0);
     if (tEnter >= tExit || tExit <= 0.0) return;
     tEnterOut = tEnter;
 
-    const int N_CIRRUS = 14;
-    float segLen = (tExit - tEnter) / float(N_CIRRUS);
+    // Adaptive step count (same fix as the aurora march, session 28 follow-up #9): a FIXED
+    // N_CIRRUS badly serves a path length that now legitimately ranges from ~10km (steep look-down)
+    // to 450km (grazing/horizon) — a fixed 14 steps across the extended cap would badly undersample
+    // exactly the far, grazing case the render-distance increase above was meant to fix.
+    // kCirrusStepsMax must cover the full 450km cap above at kCirrusMaxStepM resolution
+    // (450000/3000=150) — the original value here (128) was computed before the render-distance
+    // cap was raised in the same edit and never rechecked against it, so it silently forced
+    // grazing/horizon rays into a COARSER-than-intended step size (450000/128≈3516m) right where
+    // the render-distance fix mattered most. Margin added on top for the same reason the low-cloud
+    // hardCap below now has more headroom too.
+    const float kCirrusMaxStepM = 3000.0;
+    const int   kCirrusStepsMin = 14;
+    const int   kCirrusStepsMax = 200;
+    float cirrusPathLen = tExit - tEnter;
+    int   N_CIRRUS = clamp(int(cirrusPathLen / kCirrusMaxStepM), kCirrusStepsMin, kCirrusStepsMax);
+    float segLen = cirrusPathLen / float(N_CIRRUS);
     float jitter  = textureLod(noiseTex, vec2(gl_GlobalInvocationID.xy) * (1.0/128.0), 0.0).r;
 
     float invStretch   = 1.0 / max(cloud.cirrusStretch, 1.0);

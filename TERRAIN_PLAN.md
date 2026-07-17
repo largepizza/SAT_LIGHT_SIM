@@ -843,6 +843,417 @@ four more fixes and a UI reorganization:**
 
 Not yet seen in-app.
 
+**Session 28 follow-up #10 (same day) — "so close": three more fixes, all from a single in-app
+pass, all previously-latent limitations rather than newly-introduced bugs:**
+1. **Clouds near the horizon let the aurora/Milky Way/stars straight through, even though they
+   correctly occlude at the zenith.** Not a per-step opacity bug — `cloudMarchCS`'s
+   `cloud.maxRenderDistM` (a hard cap on how far along the view ray the march continues) was
+   defaulting to 165km, but the low-cloud shell's own geometric horizon distance at 11km altitude
+   is `sqrt(2·R_EARTH·11000) ≈ 374km` — the march simply stopped accumulating optical depth barely
+   a third of the way to the shell's true horizon, so everything beyond that distance fell back to
+   "no cloud here" regardless of what the geometry actually looked like further out. Raised the
+   default to 400km and the settings slider ceiling 400km→800km; also raised the per-march
+   `hardCap` iteration ceiling 2048→4096 so it doesn't become the new binding limit once
+   `maxRenderDistM` is pushed that far. **Cirrus had the identical bug independently** — a
+   hardcoded, UBO-unrelated `200000.0` cap in `cirrusMarchCS`, while cirrus's own default 15km
+   altitude gives a horizon distance of `≈437km`. Raised to 450km — but doing that alone would have
+   traded "cirrus disappears at the horizon" for "cirrus bands at the horizon," since `N_CIRRUS` was
+   a FIXED 14 steps spread across whatever the path length turned out to be (the exact class of bug
+   already fixed for the aurora march in follow-up #9). Made `N_CIRRUS` adaptive to path length the
+   same way (`clamp(pathLen/3000, 14, 128)`) so extending the range doesn't reintroduce undersampling.
+2. **Green/sodium airglow had a hard edge where the aurora oval clipped against it** — both
+   occupy a similar altitude band, and the aurora's `auroraOvalMask` fell from full brightness to
+   exactly zero across its whole nominal width (`widthDeg`), while airglow has no matching cutoff
+   at all (it's a uniform whole-sky Gaussian-in-altitude term) — so stepping across the oval's edge
+   showed airglow's steady baseline plus a value that hit zero abruptly, reading as a seam. Fixed
+   by keeping the same-size bright "core" (now `widthDeg*0.5`) but extending the fade-out zone much
+   further before it reaches zero (`widthDeg*2.0` instead of `widthDeg*1.0`) — same overall footprint,
+   much gentler edge gradient, blends into airglow instead of clipping against it.
+3. **Aurora visibility from the ground wasn't affected by city light pollution or moonlight at
+   all**, unlike every other faint-sky-glow phenomenon in this renderer (stars, Milky Way, satellite
+   flares all dim under both). Added the identical suppression: the directional 16-sector
+   `lightDome[]` lookup (same buffer `sat_flare.comp`/`updateStars()` consume) using the aurora's
+   own view-ray bearing, and the same elevation²×illumination moon-brightness shape used elsewhere
+   — duplicated rather than shared (this runs earlier in `main()` than the Milky Way block that has
+   its own copy), matching this file's established one-copy-per-consumer precedent for this exact
+   formula. `kAuroraPollutionMaxDim=0.9`/`kAuroraMoonMaxDim=0.85` cap how much either source can dim
+   it, same "hard ceiling regardless of gain" convention `kSatPollutionMaxDim`/`kStarMoonMaxDim`
+   already use.
+
+Not yet seen in-app.
+
+**Session 28 follow-up #11 (same day) — user asked for a full audit after the extended render
+distance still didn't stop aurora/Milky Way showing through cloud, even off-horizon.** Traced the
+entire chain end to end: aurora's depth-order/merge logic (follow-up #10's altitude rule),
+the cloud composite (`color = color*cloudB.rgb + cloudA.rgb`), and the Milky Way's own
+`* cloudBlock` — all structurally correct, confirming the compositing ORDER wasn't the remaining
+problem. The real issue: **`cloudB.rgb`/`cloudBlock` is a LINEAR transmittance value, and aurora
+(HDR, further amplified by `EXPOSURE_NIGHT`'s 10x at night) and the Milky Way are bright enough
+that even a cloud reading as "mostly opaque" (transmittance ~0.25) still shows clearly through at
+a quarter strength** — a genuine, previously-unaddressed gap, not a depth-order or render-distance
+bug at all (extending the render distance in follow-up #10 was still correct and necessary, just
+not sufficient on its own). Fixed by applying an explicit CUBED suppression (`pow(transmittance,
+3.0)`) specifically to aurora and Milky Way — 0.25³≈0.016 (thick cloud now dramatically more opaque
+to them) vs. 0.9³≈0.73 (thin/absent cloud barely affected) — steepening the falloff without
+introducing a new discontinuity, since it's applied to the same continuous, smoothly-interpolated
+value the standard composite already uses (not the discontinuous `tCloudOcclude` distance field
+that caused aliasing in an earlier, since-reverted attempt at follow-up #7). Restructured aurora's
+own resolution to make this cleaner: it now ALWAYS resolves through `auroraContribDeferred` (added
+once, after the cloud composite), rather than sometimes merging into `color` pre-composite to pick
+up the linear multiply — avoids the two suppression mechanisms (linear composite + cubed factor)
+compounding unpredictably. When aurora is in front of clouds (LEO+ looking down), no cloud
+suppression is applied at all, unchanged from before.
+
+Not yet seen in-app.
+
+**Session 28 follow-up #12 (same day) — opacity fix confirmed working; two follow-on reports, one
+confirmed bug, one checked-and-clean.** After follow-up #11, clouds now properly occlude the aurora
+curtain and Milky Way. Remaining reports: (1) near the horizon, a residual aurora GLOW (not the
+volumetric curtain — that's correctly gone) still showed; user correctly diagnosed this as the
+ground-glow/ambient code, separately noting the noise pattern "stays fixed with the observer as
+they move, instead of following the terrain." (2) "A similar effect... within the cloud shadows...
+glued to the user perspective."
+
+**(1) Confirmed and fixed — a real coordinate-frame bug.** Terrain's `auroraContribTerrain` and
+ocean's ambient aurora tint both called `auroraGlowAt()` — which computes colatitude/azimuth
+relative to the FIXED geomagnetic-pole ECEF constant, so it needs a true ECEF direction — but
+passed `normalize(hitPt)` / `surfUp` directly. Both of those are in the observer-local ENU-ish
+frame (the same convention `obsPos`/`dir`/march points all use in this file), NOT ECEF. Every OTHER
+geographic lookup in this file (terrain lat/lon UV, `sunDirECEF`, the airglow/aurora sky march
+itself) explicitly converts through the `enuX`/`enuY`/`enuZ` basis first; this one skipped that
+step. The practical effect: the "geographic position" fed into the oval-mask/fold-noise math was
+actually the point's position *relative to the observer*, which shifts every time the observer
+moves — exactly "pattern follows the observer, not the terrain." Fixed by converting both to true
+ECEF (`hitDirECEF = normalize(hitPt.x*enuX + hitPt.y*enuY + hitPt.z*enuZ)`, same for `surfUpECEF`)
+before the `auroraGlowAt` calls. Note: the Lambertian weighting term right next to the terrain bug
+(`dot(shadingN, normalize(hitPt))`) was NOT part of this bug — `shadingN` is itself in the same
+local frame, so that dot product was already internally consistent; only the `auroraGlowAt` input
+needed the fix.
+
+**(2) Checked, not reproduced in code — cloud_march.comp's aurora upwelling term is already
+correctly ECEF-anchored.** Traced its `dirECEF` back to `pECEF = p.x*enuX + p.y*enuY + p.z*enuZ`
+where `p` is the current march sample position — this reconstructs the sample's TRUE geographic
+position every frame from the observer's actual current position/orientation, the same pattern
+confirmed correct for terrain above. No coordinate-frame bug found here on inspection. Plausible
+explanation: the terrain/ocean bug in (1) was prominent enough (glow visibly sliding with observer
+motion) that it read as affecting the whole scene, clouds included, even though the cloud-side code
+itself checks out. Flagged as unresolved — if the "glued to perspective" cloud effect persists after
+this build, it's a genuinely separate bug (self-shadow cone / cloud-shape drift synchronization is
+one candidate not yet investigated) rather than the same root cause as (1).
+
+Not yet seen in-app.
+
+**Session 28 follow-up #13 (same day) — terrain glow fix confirmed working; user reported one more,
+correctly self-diagnosing the mechanism.** "The auroral glow (and sky Mie scattering for the most
+part) dramatically overlays clouds over the horizon... I believe this bug is within our ambient
+skyglow + Mie scattering on clouds approach" — pointing directly at `skyAmbientBase` in
+`cloud_march.comp`. Confirmed: `skyAmbientBase` (the cloud's zenith Rayleigh+Mie ambient term,
+built from a small 6-step sub-march) was sampled from `p0 = obsPos + tEnter*dir` — the cloud
+march's ENTRY point — rather than the observer's own position. For a steep/near-vertical ray this
+is fine (`tEnter` small, close to the observer), but for a GRAZING/near-horizontal ray `tEnter` can
+be hundreds of km out, placing `p0` near the observer's own visual horizon. Earth's curvature means
+conditions there (day/night state, twilight angle) can genuinely differ from the observer's own —
+and since `skyAmbientBase` is computed ONCE per pixel and then applied UNIFORMLY to every in-cloud
+step across the whole march (now up to ~400km after follow-up #10's render-distance extension), a
+single potentially-unrepresentative sample from a distant point was getting smeared across the
+entire visible horizon band. This is exactly why it surfaced now: the render-distance fix that
+correctly stopped clouds from vanishing at the horizon simultaneously stretched how far this
+single-sample approximation gets applied, from ~165km (mild) to ~400km (dramatic). Fixed by
+anchoring `p0` to `obsPos` instead — a stable read of the observer's own actual local conditions
+(the thing that's genuinely dark during an aurora-visible night) rather than whatever a distant
+point along the ray happens to see. `sunColorCloud` has the identical `obsPos + tEnter*dir` pattern
+right above this block but was deliberately left unchanged: it computes DIRECT sun color reaching a
+specific cloud position (sunset/sunrise spectral shift), which is legitimately position-dependent —
+unlike ambient sky brightness, "moving" it to `obsPos` would make sunset cloud coloring LESS
+accurate, not more, and it isn't implicated in the reported symptom (aurora/Mie ambient glow at
+night, not daytime sun coloring).
+
+Not yet seen in-app.
+
+**Session 28 follow-up #14 (same day) — the skyAmbientBase fix didn't resolve the horizon
+transparency; two side findings and two confirmed march-budget bugs.**
+
+**Side finding #1 (resolved a false lead):** user reported aurora-looking noise "on the terrain,"
+distinct from the horizon-glow issue, unaffected by `auroraGroundGain=0`. Traced to the correct
+cause: the main aurora sky curtain march (gated by `cloud.auroraGain`, a completely different
+control from the ambient `auroraGroundGain`) clips at terrain (`atExit = min(atExit, tSurface)`)
+ONLY when terrain is closer than where the curtain begins — for terrain far enough away (past the
+curtain's own ~95-374km near boundary, i.e. most of the horizon), the march still runs and adds its
+result on top of that terrain's already-rendered color. User confirmed: setting the SKY `Aurora
+gain` (not ground gain) to 0 made the terrain-glow disappear too. Not a bug — this is the real
+curtain, correctly Earth-anchored, legitimately visible in the sky in front of distant terrain: a
+depth-legibility question (does it read as "floating above the distant landscape" vs. "painted on
+it"), not a compositing bug, and not pursued further this round since the user's follow-up moved on
+to the still-unresolved main issue.
+
+**Side finding #2 (redirected the investigation):** with the sky curtain ruled out as the cause of
+the terrain glow, the user's REMAINING, still-open report is specifically: clouds stay transparent
+near the horizon even after follow-up #10's render-distance extension. User asked directly: "are we
+not casting enough to determine a cloud is dense near the horizon?"
+
+Analysis: the front-to-back volumetric accumulation formula `cloudScatter = Σ Tᵢ·(1-stepTᵢ)·inScatter`
+is a telescoping sum — `Σ Tᵢ·(1-stepTᵢ) = 1 - T_final` REGARDLESS of step count, so per-step
+resolution shouldn't by itself change the FINAL accumulated opacity, only banding/noise quality
+(already addressed for aurora/cirrus in follow-up #9/#10). What DOES matter is whether the march
+covers the FULL intended distance before running out of iteration budget. Checked both budgets
+against their own render-distance caps and found two confirmed, fixable bugs:
+- **Cirrus: `kCirrusStepsMax=128`, set in the SAME edit that raised the render-distance cap to
+  450km, was never rechecked against it.** 450000m / kCirrusMaxStepM(3000m) = 150 steps needed to
+  cover the full distance at the intended resolution — 128 is short of that, silently forcing
+  grazing/horizon cirrus into a coarser-than-intended ~3516m step. Raised to 200 for margin.
+- **Low cloud: `hardCap`'s flat `+32` margin left only 32 spare iterations at the 400km default**
+  (1600 steps exactly needed to cover it at kCloudMaxStepM=250m, continuously in-cloud — precisely
+  the dense-horizon-cloud case this exists to handle). Changed to a 15% multiplicative margin plus a
+  larger flat floor (`+64`) so it scales with `maxRenderDistM` instead of staying fixed, and raised
+  the absolute ceiling 4096→8192.
+
+Both are real, confirmed budget-insufficiency bugs, not guesses — but whether they're THE
+explanation for the reported horizon transparency (vs. a coverage-texture/density-data issue, which
+would need different tuning rather than a code fix) is not yet confirmed in-app.
+
+Not yet seen in-app.
+
+**Session 28 follow-up #15 (same day) — user asked directly whether the aurora's own emissive
+magnitude, not cloud opacity, was the real culprit. It was — a genuinely missing physical effect,
+not a tuning number.** Checked whether the aurora's brightness respects atmospheric extinction the
+same way every other faint sky object in this renderer does (satellites via `sat_flare.comp`, stars
+via `updateStars()`, even the Milky Way's own block in this same file) — it didn't. The Kasten &
+Young 1989 airmass model (`cloud.extinctionCoeff`, already piped in and used by all three of those)
+had simply never been applied to the aurora's own emitted brightness. Real aurora viewed at low
+elevation, through dramatically more atmosphere, should dim (and redden) the same way — omitting
+this meant NOTHING reduced the curtain's own brightness for viewing angle, so a horizon view stayed
+exactly as bright as looking straight up. At `elDeg=0` the airmass formula gives ≈38 (vs. 1 at
+zenith); at the current tuned `extinctionCoeff≈0.37`, that's `extinctMag≈13.6`, i.e. a ~10⁵-10⁶×
+dimming factor right at the true horizon — this is very likely the dominant reason the curtain
+stayed visible through clouds even after follow-up #11's cubed cloud-suppression: the thing shining
+through was simply far too bright to begin with, not under-suppressed by the clouds. Added to both
+the primary sky march (using the view ray's own elevation, gated by `atmFracAurora` so it fades out
+for orbital observers with no atmospheric column left) and the ocean reflection glint added in
+follow-up #10-#11 (using the REFLECTED ray's elevation instead, since that's the direction the
+light actually traveled through the atmosphere before bouncing off the water — ocean views skew
+toward low-angle reflections by Fresnel construction, so this matters at least as much there).
+Considered but did NOT add a hard cap on the aurora march's own geometric chord length through the
+95-300km shell (unlike clouds' `maxRenderDistM`, the aurora march has none — a grazing ray's path
+through the much taller, much thicker shell can be far longer than a zenith ray's ~205km, and
+brightness scales roughly with that path length) — the extinction fix's magnitude at true-horizon
+angles is dramatic enough that this is very unlikely to still be needed, and adding an artificial
+cap without confirming it's actually still required would be scope creep with no in-app evidence
+yet to justify it.
+
+Not yet seen in-app.
+
+**Session 28 follow-up #16 (same day) — the extinction fix confirmed working (clouds now properly
+occlude the aurora at the horizon, airglow edge also reads better) — but the SAME fix introduced a
+new, narrower regression: aurora visibly fading out as the observer travels through the
+airglow/aurora altitude band (~90-100km), where it should stay strong.**
+
+Root cause: `atmFracAurora` (the gate that fades extinction out for elevated observers, since there's
+progressively less atmospheric column left to attenuate through) reused the SAME 80km scale height
+`sat_flare.comp`/`updateStars()`/the Milky Way block already use — but that value was calibrated for
+a completely different distinction (ground vs. LEO, ~400-600km observers), not for fading out by the
+aurora's own ~95km operating altitude. `exp(-95000/80000) ≈ 0.31` — nowhere near negligible — so an
+observer flying up toward or through the aurora/airglow shell saw the curtain progressively (and
+wrongly) dim as they approached it, exactly backwards: at 95-100km there is essentially NO
+atmospheric column left between the observer and nearby curtain material, so extinction should be
+close to zero right there, not 30% strength. Fixed by using a dedicated, much shorter 20km scale
+height for this specific gate (`exp(-95000/20000) ≈ 0.009`, negligible well before reaching the
+shell) — the 80km value elsewhere is untouched, this is a separate constant tuned for aurora/airglow
+specifically rather than reused from a use case with a different relevant altitude range.
+
+User separately noted a relative-brightness preference — aurora should read as more prominent than
+airglow where the two visually overlap — which may have been partly a symptom of the same
+over-extinguished-aurora bug (airglow has no equivalent extinction term at all, so it wasn't being
+dimmed the same way); worth a fresh look after this fix before treating it as a separate gain-tuning
+request.
+
+Not yet seen in-app.
+
+**Session 28 follow-up #17 (same day) — extinction-scale-height fix confirmed working, but exposed
+a DIFFERENT hard edge at the same ~95km altitude: the aurora's own inner shell boundary
+(`kAuroraShellInnerM`), a real, always-there limitation that had just been masked until now.**
+
+`auroraSampleAt`'s `vert` (vertical density) term was `smoothstep(kAuroraShellInnerM,
+kAuroraShellInnerM+15000, altM)` — a ONE-SIDED ramp: exactly zero at 95km, full by 110km, with
+ZERO tolerance below 95km at all. Airglow's green/sodium bands peak at 90-96km with real presence
+well below 95km (down to ~83-87km at their Gaussian half-widths) — no matching cutoff. Aurora going
+abruptly to nothing right at its own nominal base, with no soft entry, read as a seam against
+airglow's continued presence there — including the specific case the user called out, where Earth's
+curvature puts a lower-altitude portion of the visible curtain geometrically "behind" the airglow
+along a given sightline, where it should still show through fading rather than vanish outright.
+
+Two changes were needed, not one — softening the DENSITY FORMULA alone wasn't sufficient:
+1. **`vert`'s inner edge widened to a SYMMETRIC 15km transition** centered on `kAuroraShellInnerM`
+   (80-110km) instead of the one-sided 95-110km ramp.
+2. **The march's own geometric bounds (in `main()`) had to widen to match** — `tAuroraIn` (the
+   raySphere call determining the march's `atEnter`) was still using the unmodified
+   `R_EARTH+kAuroraShellInnerM`, meaning sample points were strictly bounded to `[atEnter,atExit]`
+   with atEnter sitting exactly at the 95km crossing — no sample would ever have `altM<95000`
+   regardless of how far the density formula's own falloff was widened, since there'd be nothing
+   below that altitude to evaluate it at. Widened the same 15km to `R_EARTH+kAuroraShellInnerM-15000`
+   so the march physically reaches down to where the softened density formula now has something to
+   find. **This is the same lesson as follow-up #9's original vertical fold-axis work: a march's
+   SAMPLE BOUNDS and its DENSITY FORMULA are two separate mechanisms that both have to agree on
+   where the phenomenon exists — softening one without the other is a no-op.**
+
+Not yet seen in-app.
+
+**Session 28 follow-up #18 (same day) — the widened-bounds fix from follow-up #17 was itself
+incomplete: it shrank the sphere radius but left the branch threshold unchanged, creating a
+genuinely broken 15km observer-altitude band (80-95km) — exactly where the user's two comparison
+screenshots (~94km vs. just above it) sat.**
+
+`tAuroraIn`'s raySphere radius was changed to `R_EARTH+kAuroraShellInnerM-15000` (80km), but the
+branch condition selecting how `atEnter` gets computed was left at `obsEffH < kAuroraShellInnerM`
+(95km, unchanged). For an observer between 80-95km, branch 1 (`atEnter = tAuroraIn.y`) fires — but
+that branch's entire premise is "observer is below/outside the sphere," which was true when the
+sphere was at 95km but is FALSE now that it's shrunk to 80km and the observer is already above that.
+`raySphere` for an outward-looking ray from just outside a sphere often returns a miss (both roots
+negative) rather than the "exiting from inside" root branch 1 expects — producing a negative
+`atEnter`, which puts the march's first sample points BEHIND the camera. Visually this is exactly
+"airglow sharply cutting the aurora" — not a blending issue, a geometry bug corrupting where the
+march even starts, in a narrow but real observer-altitude band. Fixed by introducing one
+`kAuroraMarchInnerM` constant (`kAuroraShellInnerM - 15000`) used consistently for BOTH the sphere
+radius and the branch threshold, so they can no longer disagree. **Lesson: introducing a second
+constant that's DERIVED from an existing one (here, "existing minus 15000") but only threading it
+through SOME of the places the original constant was used, not all, silently creates exactly this
+class of bug — grep for every use of the original constant when deriving a new one from it, don't
+just fix the specific line that was visibly wrong.**
+
+Build note: shader/executable compiled successfully; the subsequent asset-copy step failed
+(locked file, likely the app running live while the user captured comparison screenshots) — not a
+code issue, doesn't affect whether this fix is in the built exe.
+
+Not yet seen in-app.
+
+**Session 28 follow-up #19 (same day) — user reported the cut persisted even from 500km (well
+above both shells) and explicitly asked for a real blend, not another edge-width tweak: "we
+genuinely just need to blend the aurora and airglow together."**
+
+Reframed the diagnosis: all the PRIOR fixes (follow-up #17/#18) made the DENSITY/ALPHA transition
+at each shell edge genuinely smooth — but `auroraCurtainNoise`'s fold texture stayed at FULL
+CONTRAST all the way to where `vert` (the density term) hit exactly zero. Airglow, in the same
+altitude range, is a smooth, uniform Gaussian glow with no fold texture at all. So even with alpha
+fading correctly, the STRUCTURED, sharply-defined curtain folds handed off directly to airglow's
+featureless glow — a texture/character discontinuity, not a brightness one, and exactly why
+softening density alone never read as an actual blend no matter how wide the transition zone got.
+
+Two changes in `auroraSampleAt`:
+1. **Fold contrast now fades toward flat (`mix(1.0, fold, vert)`, not raw `fold`)** — as `vert`
+   approaches either edge, the curtain's own structure smooths out into a uniform glow BEFORE it
+   fades away, instead of staying sharply textured until the moment it vanishes.
+2. **Color also blends toward the adjacent airglow band's own color at each edge** — `innerVert`/
+   `outerVert` (previously pre-multiplied into one `vert`, now kept separate so each can drive its
+   own blend weight) mix `col` toward `mix(kAirglowSodiumColor, kAirglowGreenColor, 0.5)` near the
+   inner edge (matching green/sodium's real 83-105km presence) and toward `kAirglowRedColor` near
+   the outer edge (matching red's real 200-350km presence) — so the HUE transitions into airglow's
+   characteristic color too, not just aurora's own base-to-top internal gradient stopping short and
+   handing off to a totally differently-colored, unrelated glow.
+
+**Lesson for this specific bug pattern: "smooth the density/alpha" and "blend visually" are NOT the
+same fix — two independently-rendered volumetric phenomena sharing an altitude band need their
+STRUCTURE (noise contrast) and COLOR to converge toward each other near the shared boundary, not
+just their opacity.** Purely fading brightness to zero, however gradually, still reads as a hard
+edge if what's on both sides of that fade looks nothing alike.
+
+Not yet seen in-app.
+
+**Session 28 follow-up #20 (same day) — user confirmed the airglow blend now reads well, but found
+a NEW hard edge at exactly 80km, asking whether it was a different emissive layer or the atmosphere.
+It was the aurora's own inner boundary again — follow-up #19's "symmetric 15km widening" (80-110km)
+never actually removed the hard floor, it only relocated it from 95km to 80km.**
+
+Root cause, precisely: `smoothstep(edge0, edge1, x)` is mathematically EXACTLY zero at and below
+`edge0` regardless of how far `edge1` is from it — widening a smoothstep's span moves where its
+floor sits, it can never eliminate the floor itself. Every prior "widen the transition" fix in this
+sub-thread (follow-up #17, #19) was still built on smoothstep, so each one just relocated the wall
+rather than removing it — this session's actual fix.
+
+Replaced both `innerVert` and `outerVert` (in `auroraSampleAt`) with SIGMOID functions
+(`1/(1+exp(∓(altM-center)/falloff))`) instead of smoothstep. A sigmoid asymptotically approaches 0
+and 1 without ever exactly reaching either — there is no altitude at which it's mathematically zero,
+so there's no floor left to relocate. `kAuroraInnerFalloffM=7500`/`kAuroraOuterFalloffM=15000` set
+the transition's rough width (~4x this value spans ~12%-88%), playing the same role smoothstep's
+span used to.
+
+This alone wasn't sufficient, though — the march's own SAMPLE BOUNDS (raySphere radii in `main()`)
+were still fixed at the old hard boundaries, and sample points are strictly confined to
+`[atEnter,atExit]` regardless of what the density formula would compute further out. A sigmoid's
+tail is still practically negligible past some point (the existing `vert<=0.001` early-out still
+culls it), but that cull point needs to be REACHABLE by the march, not pre-clipped by bounds that
+still assume a hard floor exists. Extended both:
+- **Inner**: `kAuroraMarchInnerM = kAuroraShellInnerM - 55000` (~40km) — the inner sigmoid drops
+  below the 0.001 threshold around 43km, so the march bound needed to sit below that, not at it.
+- **Outer**: `kAuroraMarchOuterM = kAuroraShellOuterM + 110000` (~410km) — mirrored fix, proactive
+  rather than reported: the outer sigmoid has the identical issue around 300km that the inner one
+  had at 95km, just not yet hit in testing. Fixed both edges together rather than waiting for a
+  separate bug report on the outer one.
+- Both new constants drive BOTH the raySphere radius AND the corresponding branch threshold
+  together (same "must match or create a broken observer-altitude band" lesson as follow-up #18).
+
+**Lesson: `smoothstep` cannot produce a soft edge with no floor, no matter how it's parameterized —
+it's the wrong tool whenever "genuinely no hard edge, ever" is the actual requirement (as opposed to
+"a wide soft edge"), and reaching for "just widen it further" repeats the same mistake with a
+smaller error each time rather than fixing it. Should have looked for the parametrically-different
+tool (sigmoid, or any asymptotic curve) after the SECOND time widening didn't work, not stayed on
+the third attempt with the same function.**
+
+**Confirmed working in-app** — user: "the sigmoid change genuinely worked extremely well! Not only
+is the blend perfect with the aurora on the bottom, but I am now seeing a lot more pink detail at
+the top of the auroral columns." The pink/magenta detail is an expected, positive side effect of the
+SAME session's outer-edge fix (`kAuroraMarchOuterM`, extended proactively alongside the inner one):
+`col`'s altitude gradient mixes toward `kAuroraTopColor` (red/magenta) as altitude approaches
+`kAuroraShellOuterM`, but the old hard-floored outer edge (smoothstep, floor at exactly 300km) cut
+the march off before much of that upper, reddest portion of the gradient was ever sampled — the
+extended march bounds mean the march now actually reaches high enough to render it. Session 28
+Phase E aurora work (C16) is now visually confirmed solid at both shell edges — inner
+(blend-with-airglow) and outer (color gradient) — pending only further open-ended tuning, not more
+edge-geometry bug hunting.
+
+**Session 28 follow-up #21 (2026-07-16) — two enhancement requests on the now-solid aurora, both in
+`sat_sky.frag`:**
+
+1. **Per-column elevation variation.** Every aurora column previously spanned the full
+   `kAuroraShellInnerM`→`kAuroraShellOuterM` range (`vert`/`innerVert`/`outerVert` in
+   `auroraSampleAt` don't vary with colat/az), so every fold showed the identical complete
+   green-to-pink gradient — user wanted some columns low-altitude only, some high-altitude only,
+   some full-span. Added a NEW, separate windowing factor (`columnWindow`) rather than touching
+   `vert`/`innerVert`/`outerVert` themselves: those two still anchor the color blend and the
+   airglow hand-off to the TRUE shell bounds (needed for follow-up #20's fix to stay correct), so
+   disturbing them would have broken that. Sampled two decorrelated low-frequency `warpPerlin3`
+   values (`colA`/`colB`, `kAuroraColumnFreq=9.0`, well below the fold texture's own tangent/radial
+   frequencies) as a function of `(colat, az)` ONLY — no altitude, no time, so it's constant up the
+   full height of a given column and doesn't flicker frame to frame. Sorting the two samples into
+   lo/hi (`colLoFrac=min-0.08`, `colHiFrac=max+0.08`) rather than deriving a window from one
+   center+halfwidth value falls out naturally into the requested spread: when the two samples land
+   close together the window is narrow (low or high depending on where), when they land far apart
+   (near 0 and near 1) the window covers nearly the whole shell. Converted to altitude via
+   `mix(kAuroraShellInnerM, kAuroraShellOuterM, frac)`, gated by two more sigmoids
+   (`kAuroraColumnFalloffM=12000`, same asymptotic-no-floor reasoning as follow-up #20) multiplied
+   into the final return alongside `vert`. A "low-altitude-only" column now naturally shows only
+   the green base color (it fades to zero via `columnWindow` before `col`'s gradient ever reaches
+   the pink/red end) with no extra color-logic needed — the visibility windowing alone produces the
+   height-based color variation the user was asking for.
+
+2. **Organic shimmer evolution.** `auroraCurtainNoise`'s time term (`cloud.auroraShimmerRate`) was
+   added directly onto the azimuthal coordinate (`az * kAuroraTangentFreq + t * shimmerRate`) — a
+   pure linear translation. This had already been moved once before (originally on the altitude
+   axis, causing "columns flicker top to bottom," fixed by moving to azimuth), but a straight
+   additive shift is mechanical regardless of which axis carries it; user now reported it read as
+   "a spinning texture through the aurora itself, moving east to west" — correctly identified as
+   still just rigid translation, not organic motion. Replaced with the domain-warp technique already
+   established for cloud shape (`cloudWarpOffset`): a separate `warpPerlin3` evaluation
+   (`shimmerPhase`, inputs `colat`/`altM`/`t*shimmerRate`, scaled ×2.5) now produces the phase
+   offset fed into the main fold-noise sample, instead of `t*rate` being added directly. Because the
+   phase itself comes from a noise field rather than linear time, it evolves non-monotonically, and
+   because `colat`/`altM` feed the SAME warp evaluation the phase varies smoothly across the curtain
+   rather than shifting every fold by an identical amount in lockstep — reads as folds morphing
+   rather than the whole sheet sliding sideways at constant velocity.
+
+Both changes build clean (shader compiles, exe links); one `cmake --build` attempt hit the familiar
+transient asset-copy lock on `assets/sound/music/*.mp3` (not a code issue — individual file copies
+succeeded immediately after, and a subsequent full rebuild completed cleanly with no changes
+needed). Not yet seen in-app.
+
 ### 2026-07-13 (session 25)
 - **Terrain night ambient + moonlight — first two of four unscoped terrain light sources**
   (ambient/lunar/satellite/aurora were all missing; satellite and aurora remain unscoped). Both

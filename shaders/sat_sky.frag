@@ -561,7 +561,13 @@ float auroraOvalMask(float colat, float az, float t, float storm) {
     float ripple = warpPerlin3(vec3(ringP, t * kAuroraOvalDriftRate)) * kAuroraOvalWarpDeg;
     float centerDeg = kAuroraOvalColatDeg + ripple + storm * 8.0;
     float widthDeg  = kAuroraOvalWidthDeg * (1.0 + storm * 1.5);
-    float band = smoothstep(1.0, 0.0, abs(degrees(colat) - centerDeg) / widthDeg);
+    // Full brightness out to half of widthDeg, then a WIDE gradual fade out to 2x widthDeg —
+    // previously the whole 0..widthDeg span was the falloff, which hit exactly zero right at the
+    // oval's nominal edge. Airglow (green/sodium, similar altitude) has no such cutoff at all, so
+    // that hard zero read as a visible seam where the aurora clipped against it. Widening the fade
+    // zone (without changing the bright "core" size) blends the two smoothly instead.
+    float distDeg = abs(degrees(colat) - centerDeg);
+    float band = smoothstep(widthDeg * 2.0, widthDeg * 0.5, distDeg);
     return band * auroraCoverage(colat, az, t, storm);
 }
 
@@ -577,16 +583,28 @@ float auroraOvalMask(float colat, float az, float t, float storm) {
 // genuinely long axis, keeping each fold an unbroken streak running vertically. storm increases
 // fold frequency (more chaotic structure).
 //
-// Time (cloud.auroraShimmerRate) is mixed into the TANGENT/azimuthal axis, NOT altitude — a first
-// version added it directly to the altitude coordinate, which made every fold visibly scroll
-// monotonically top-to-bottom (reported as "columns flicker from top to bottom pretty
-// consistently" — the same axis-conflation mistake auroraCoverage's colat/time bug was, one layer
-// down). Altitude is a real physical direction (up), so translating it with time reads as a
-// directional slide; azimuth here is already the high-frequency "many folds around the ring" axis,
-// so drifting it makes folds ripple/drift sideways over time instead — much closer to how real
-// curtains actually dance.
+// Time (cloud.auroraShimmerRate) drives the TANGENT/azimuthal axis, NOT altitude — a first version
+// added it directly to the altitude coordinate, which made every fold visibly scroll monotonically
+// top-to-bottom (reported as "columns flicker from top to bottom" — the same axis-conflation
+// mistake auroraCoverage's colat/time bug was, one layer down). Altitude is a real physical
+// direction (up), so translating it with time reads as a directional slide.
+//
+// It's mixed in via a WARP PHASE (a separate warpPerlin3 evaluation with t as one of its inputs),
+// NOT added directly as `+ t*rate` — a second version did the direct-add version, which fixed the
+// top-to-bottom slide but was reported as looking like "a spinning texture moving east to west":
+// still a rigid, linear translation, just along a different (harmless-direction) axis instead of a
+// wrong one. A pure additive shift is mechanical regardless of which axis it's on — real curtains
+// don't slide sideways at constant velocity, they morph. Routing time through its own noise
+// evaluation first (same technique cloudWarpOffset already uses for cloud shape) means the phase
+// itself changes non-monotonically over time, and — since colat/altM feed the SAME warp evaluation
+// — varies smoothly across the curtain instead of shifting every fold by an identical amount in
+// lockstep, so it reads as evolving structure rather than the whole pattern sliding as one rigid
+// sheet.
 float auroraCurtainNoise(float colat, float az, float altM, float t, float storm) {
-    vec3 p = vec3(az * kAuroraTangentFreq * (1.0 + storm * 0.8) + t * cloud.auroraShimmerRate,
+    float shimmerPhase = warpPerlin3(vec3(colat * kAuroraRadialFreq * 0.3,
+                                           altM * kAuroraAltFreq * 0.3,
+                                           t * cloud.auroraShimmerRate)) * 2.5;
+    vec3 p = vec3(az * kAuroraTangentFreq * (1.0 + storm * 0.8) + shimmerPhase,
                   altM * kAuroraAltFreq,
                   colat * kAuroraRadialFreq);
     float base   = warpPerlin3(p);
@@ -618,13 +636,75 @@ vec3 auroraSampleAt(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirECEF, f
     float oval = auroraOvalMask(colat, az, t, storm);
     if (oval <= 0.001) return vec3(0.0); // cheap early-out before the pricier fold noise below
     float altM = length(rp) - R_EARTH;
-    float vert = smoothstep(kAuroraShellInnerM, kAuroraShellInnerM + 15000.0, altM)
-               * smoothstep(kAuroraShellOuterM, kAuroraShellOuterM - 60000.0, altM);
+    // Inner/outer edges kept as SEPARATE terms (not pre-multiplied into one `vert`) so both the
+    // fold-contrast fade and the color blend below can use each edge's own weight independently —
+    // innerVert also does double duty as the early-out gate via the combined `vert` product.
+    // SIGMOID falloff, not smoothstep — smoothstep(edge0,edge1,x) is EXACTLY zero at and below
+    // edge0 no matter how far apart edge0/edge1 are; widening the transition just moves where that
+    // hard floor sits; it can never remove it. That's why the previous fix (widening to 80-110km)
+    // just relocated the visible cut from 95km to exactly 80km instead of eliminating it. A sigmoid
+    // asymptotically approaches 0/1 without ever exactly reaching either — no floor to hit at any
+    // altitude, so there's nothing left to read as a hard edge. `kAuroraInnerFalloffM`/
+    // `kAuroraOuterFalloffM` set the transition's rough WIDTH (effective ~4x this value from ~12%
+    // to ~88%), analogous to smoothstep's old span but without the hard endpoint. The march's own
+    // bounds (main()) were extended further to match — a sigmoid's tail is still finite in practice
+    // (the vert<=0.001 early-out below still culls it eventually), but that cull point needs to
+    // actually be reachable by the march, not clipped off before the tail gets sampled at all.
+    const float kAuroraInnerFalloffM = 7500.0;
+    const float kAuroraOuterFalloffM = 15000.0;
+    float innerVert = 1.0 / (1.0 + exp(-(altM - kAuroraShellInnerM) / kAuroraInnerFalloffM));
+    float outerVert = 1.0 / (1.0 + exp((altM - kAuroraShellOuterM) / kAuroraOuterFalloffM));
+    float vert = innerVert * outerVert;
     if (vert <= 0.001) return vec3(0.0);
-    float fold = auroraCurtainNoise(colat, az, altM, t, storm);
+    // Fold contrast is blended toward a flat 1.0 as `vert` approaches its edges (mix(1.0,fold,vert),
+    // NOT raw fold) — softening `vert` alone (the earlier fix) made the DENSITY/ALPHA transition
+    // gradual, but the fold NOISE's own structure stayed at full contrast right up until vert hit
+    // zero, so the curtain's sharply-textured folds still snapped straight to airglow's smooth,
+    // uniform glow at the boundary — a texture/character discontinuity, not a brightness one, and
+    // exactly why softening the density alone didn't read as a real blend. Fading the structure
+    // itself alongside the density means the curtain smooths out into a uniform glow BEFORE it
+    // fades away, so it hands off to airglow's own uniform character instead of cutting to it.
+    // Per-column elevation window: without this, every column spans the FULL inner-to-outer shell
+    // (vert/innerVert/outerVert above are the same at every colat/az), so every fold shows the same
+    // complete base->top gradient — reads as suspiciously uniform. Real curtains vary in height: some
+    // barely lift off the ~95km base, others tower to the full ~300km extent. Sampled as a function of
+    // (colat, az) ONLY — no altitude, no time — so it's constant all the way up a given column (that's
+    // the definition of "this column's own height range") and stable frame to frame rather than
+    // flickering. Low frequency (kAuroraColumnFreq, well below the fold texture's own tangent/radial
+    // frequencies) so one "column" here bundles many individual fold-noise folds together, matching
+    // the real scale where dozens of thin folds share one taller or shorter structure.
+    //
+    // Deliberately kept SEPARATE from vert/innerVert/outerVert rather than replacing them — those two
+    // still drive the color blend and the airglow hand-off at the TRUE shell bounds (kAuroraShellInnerM/
+    // OuterM), which must stay physically anchored there regardless of any one column's random window.
+    // This only gates final visibility/opacity on top.
+    const float kAuroraColumnFreq = 9.0;
+    float colA = warpPerlin3(vec3(az * kAuroraColumnFreq, colat * kAuroraColumnFreq * 0.5, 11.3)) * 0.5 + 0.5;
+    float colB = warpPerlin3(vec3(az * kAuroraColumnFreq, colat * kAuroraColumnFreq * 0.5, 47.9)) * 0.5 + 0.5;
+    // Sorting two decorrelated samples into lo/hi (instead of deriving lo/hi from one center+halfwidth)
+    // naturally produces the full requested spread: when colA/colB land close together the window is
+    // narrow (low OR high depending on where), when they land far apart (near 0 and near 1) the window
+    // covers nearly the whole shell — "some just low, some just high, others span the full distance"
+    // falls out of this without needing separate special cases.
+    float colLoFrac = clamp(min(colA, colB) - 0.08, 0.0, 1.0);
+    float colHiFrac = clamp(max(colA, colB) + 0.08, 0.0, 1.0);
+    float colLoM = mix(kAuroraShellInnerM, kAuroraShellOuterM, colLoFrac);
+    float colHiM = mix(kAuroraShellInnerM, kAuroraShellOuterM, colHiFrac);
+    const float kAuroraColumnFalloffM = 12000.0;
+    float columnWindow = (1.0 / (1.0 + exp(-(altM - colLoM) / kAuroraColumnFalloffM)))
+                        * (1.0 / (1.0 + exp((altM - colHiM) / kAuroraColumnFalloffM)));
+    if (columnWindow <= 0.001) return vec3(0.0);
+    float fold = mix(1.0, auroraCurtainNoise(colat, az, altM, t, storm), vert);
     vec3  col  = mix(kAuroraBaseColor, kAuroraTopColor,
                       clamp(remap(altM, kAuroraShellInnerM, kAuroraShellOuterM, 0.0, 1.0), 0.0, 1.0));
-    return col * (oval * fold * vert * night);
+    // Hue also blends toward the nearby airglow band's own color in each edge zone — green/sodium
+    // near the inner edge (matching their real 83-105km presence), red near the outer edge (matching
+    // its real 200-350km presence) — instead of aurora's own base/top gradient just stopping short
+    // and handing off to a completely differently-colored airglow with no shared transition at all.
+    vec3 innerAirglowCol = mix(kAirglowSodiumColor, kAirglowGreenColor, 0.5);
+    col = mix(innerAirglowCol, col, innerVert);
+    col = mix(kAirglowRedColor, col, outerVert);
+    return col * (oval * fold * vert * columnWindow * night);
 }
 
 // Representative altitude for auroraGlowAt's fold-noise texture — the ground-glow term doesn't
@@ -1412,11 +1492,12 @@ void main() {
     // Depth order vs. clouds is NOT fixed: from the ground, clouds (2-11km) sit between the
     // camera and the aurora (95-300km) — aurora is background, clouds are foreground. From LEO+
     // looking down, it's the opposite — the aurora shell is entered first (closer to the camera),
-    // clouds are much further along the ray, near the surface. `accumAurora` is therefore NOT
-    // added to `color` unconditionally here; auroraBehindClouds decides whether it merges in now
-    // (so the later cloud composite's `color*cloudB.rgb+cloudA.rgb` correctly treats it as
-    // background) or gets deferred into auroraContribDeferred, added AFTER that composite so
-    // clouds don't wrongly occlude an aurora that's actually in front of them.
+    // clouds are much further along the ray, near the surface. `auroraBehindClouds` therefore
+    // decides how much cloud SUPPRESSION applies (see auroraCloudSuppress below) — but the
+    // contribution itself always resolves through auroraContribDeferred, added once AFTER the
+    // cloud composite runs (session 28 follow-up #11: merging into `color` pre-composite to pick
+    // up the standard linear cloudB.rgb multiply, tried first, wasn't strong enough — see that
+    // block's own comment).
     //
     // The ordering decision is PURELY a function of the OBSERVER's own altitude, not a per-ray
     // distance comparison — the clouds (2-11km) and aurora (95-300km) occupy fixed, non-
@@ -1430,15 +1511,52 @@ void main() {
     // above ~330km) — this altitude-only rule has no per-ray edge cases to get wrong.
     vec3 auroraContribDeferred = vec3(0.0);
     bool auroraBehindClouds = (obsEffH < kAuroraShellInnerM);
+    // Early, low-res sample of the cloud layer's own attenuation color (cloudTargetB.rgb) purely
+    // to steepen how hard clouds suppress aurora/Milky Way specifically — see the note where this
+    // is applied below for why the standard linear composite alone wasn't enough. Reads the same
+    // continuous, smoothly-interpolated color the main composite samples later (NOT the
+    // discontinuous tCloudOcclude distance field that caused aliasing when used as a hard cutoff
+    // in an earlier attempt), so this carries no aliasing risk.
+    float cloudBlockEarly = dot(texture(cloudTargetB,
+        gl_FragCoord.xy / (vec2(textureSize(cloudTargetB, 0)) * 2.0)).rgb, vec3(1.0 / 3.0));
     {
-        vec2 tAuroraFar = raySphere(obsPos, dir, R_EARTH + kAuroraShellOuterM);
-        vec2 tAuroraIn  = raySphere(obsPos, dir, R_EARTH + kAuroraShellInnerM);
+        // The march's own inner boundary is sampled at kAuroraShellInnerM MINUS the same 15km the
+        // vert density falloff (auroraSampleAt) now extends below kAuroraShellInnerM — see that
+        // function's comment. Without this, the march's atEnter would sit EXACTLY at 95km and no
+        // sample point would ever have altM<95000 regardless of how the density formula is
+        // softened, since sample positions are strictly bounded to [atEnter,atExit]. This is what
+        // caused the reported hard edge: airglow (green/sodium peak 90-96km) has real presence
+        // below 95km with no matching cutoff, so aurora's abrupt "nothing at all below 95km, full
+        // shell geometry aside" read as a seam against it, including in cases where Earth's
+        // curvature puts a lower-altitude portion of the visible aurora geometrically at a point
+        // the observer would expect to still see it.
+        // kAuroraMarchInnerM (not kAuroraShellInnerM) drives BOTH the sphere radius below AND the
+        // branch threshold just below it — they must match (a first version used the shrunk radius
+        // here but left the branch check at the unmodified kAuroraShellInnerM, leaving a genuinely
+        // broken observer-altitude band where the code assumed the observer was still below/outside
+        // the sphere — branch 1's whole premise — when they were actually already above it;
+        // raySphere then returns whatever an outward ray from just outside a sphere happens to give,
+        // often a miss, i.e. a negative atEnter putting the march's first samples BEHIND the camera).
+        // Set to ~40km: with auroraSampleAt's sigmoid falloff (center 95km, 7.5km scale), density
+        // drops below the vert<=0.001 early-out around ~43km — this needs to sit BELOW that point,
+        // not at it, so the march actually reaches far enough for the sigmoid's tail to be sampled
+        // at all instead of being clipped by the march bounds before the density formula's own
+        // (now-hard-floor-free) falloff gets a chance to run.
+        const float kAuroraMarchInnerM = kAuroraShellInnerM - 55000.0;
+        // Same reasoning as kAuroraMarchInnerM, mirrored for the outer edge: outerVert's sigmoid
+        // (center kAuroraShellOuterM, 15km scale) doesn't drop below the vert<=0.001 early-out
+        // until ~110km past kAuroraShellOuterM. Using the unmodified kAuroraShellOuterM for the
+        // march bound here would clip that tail off before it's ever sampled — the identical class
+        // of bug just fixed for the inner edge, just not yet reported for this one.
+        const float kAuroraMarchOuterM = kAuroraShellOuterM + 110000.0;
+        vec2 tAuroraFar = raySphere(obsPos, dir, R_EARTH + kAuroraMarchOuterM);
+        vec2 tAuroraIn  = raySphere(obsPos, dir, R_EARTH + kAuroraMarchInnerM);
 
         float atEnter, atExit;
-        if (obsEffH < kAuroraShellInnerM) {
+        if (obsEffH < kAuroraMarchInnerM) {
             atEnter = tAuroraIn.y;
             atExit  = tAuroraFar.y;
-        } else if (obsEffH <= kAuroraShellOuterM) {
+        } else if (obsEffH <= kAuroraMarchOuterM) {
             atEnter = 0.0;
             atExit  = tAuroraFar.y;
             if (tAuroraIn.x > 0.0 && tAuroraIn.x < atExit) atExit = tAuroraIn.x;
@@ -1468,9 +1586,75 @@ void main() {
                 vec3 ap = obsPos + dir * (atEnter + (float(i) + 0.5) * aSegLen);
                 accumAurora += auroraSampleAt(ap, enuX, enuY, enuZ, sunDirECEF, pc.waveTime, cloud.stormStrength);
             }
-            vec3 auroraContrib = accumAurora * aSegLen * kAuroraScale * cloud.auroraGain;
-            if (auroraBehindClouds) color += auroraContrib;
-            else                    auroraContribDeferred = auroraContrib;
+            // Light pollution + moonlight suppression — real aurora visibility from the ground is
+            // washed out by city glow and strong moonlight, same as stars/Milky Way. Reuses the
+            // directional light-pollution dome (lightDome[], same buffer sat_flare.comp/
+            // updateStars() consume) and the same moon-brightness shape the Milky Way block below
+            // uses — duplicated rather than shared (this runs earlier in main(), before that block
+            // computes its own copy), matching this codebase's established precedent of an
+            // independent copy per consumer for this exact formula.
+            float azLPAurora     = mod(atan(dir.x, dir.y) + 6.283185307, 6.283185307);
+            float secFAurora     = azLPAurora * (16.0 / 6.283185307) - 0.5;
+            int   sec0Aurora     = int(floor(secFAurora));
+            float secFracAurora  = secFAurora - float(sec0Aurora);
+            int   sec0wAurora    = ((sec0Aurora % 16) + 16) % 16;
+            int   sec1wAurora    = (sec0wAurora + 1) % 16;
+            float domeAzAurora   = mix(lightDome[sec0wAurora], lightDome[sec1wAurora], secFracAurora);
+            float elevFalloffAurora = 0.35 / (max(dir.z, 0.0) + 0.35);
+            float domeValAurora  = clamp(domeAzAurora * elevFalloffAurora, 0.0, 1.0);
+            const float kAuroraPollutionMaxDim = 0.9;
+
+            float tmAurora         = clamp(moonDirENU.z / 0.5, 0.0, 1.0);
+            float moonBrightAurora = tmAurora * tmAurora * moonDirENU.w;
+            const float kAuroraMoonMaxDim = 0.85;
+
+            float auroraVisSuppress = (1.0 - domeValAurora * kAuroraPollutionMaxDim)
+                                     * (1.0 - moonBrightAurora * kAuroraMoonMaxDim);
+
+            // Atmospheric extinction — same Kasten & Young 1989 airmass approximation already
+            // applied to satellites/stars/Milky Way (sat_flare.comp/updateStars()/the Milky Way
+            // block below), but never to the aurora's OWN emitted brightness until now. Real
+            // aurora, viewed at low elevation through much more atmosphere, dims (and reddens) the
+            // same way every other faint sky object here already does — omitting it meant nothing
+            // reduced the curtain's brightness for viewing angle at all, so at grazing/horizon
+            // angles it stayed exactly as bright as looking straight up, which is very likely why
+            // it stayed visible through clouds even after the clouds' own suppression was
+            // strengthened (follow-up #11) — the thing shining through was simply too bright to
+            // begin with, not under-suppressed. atmFracAurora fades this out for elevated observers
+            // (no atmospheric column left to attenuate through) — but uses a MUCH shorter scale
+            // height than the 80km satellites/Milky Way reuse elsewhere, which was calibrated for
+            // "ground vs. LEO" (~400-600km) and stays at ~30% even at 95km. That's a real problem
+            // specifically for aurora/airglow, which physically LIVE at 95-300km: an observer flying
+            // up toward or through that band would see the curtain progressively (and wrongly) dim
+            // as they approached it, reported as "aurora fades out while traveling through the
+            // airglow region." A 20km scale height instead is negligible (<1%) by 95km, so
+            // extinction has faded out well before the observer reaches the altitude where there's
+            // genuinely almost no atmosphere left between them and nearby curtain material.
+            float atmFracAurora    = clamp(exp(-obsEffH / 20000.0), 0.0, 1.0);
+            float sinElAurora      = clamp(dir.z, 0.0, 1.0);
+            float elDegAurora      = degrees(asin(sinElAurora));
+            float airmassAurora    = 1.0 / (sinElAurora + 0.50572 * pow(elDegAurora + 6.07995, -1.6364));
+            float extinctMagAurora = cloud.extinctionCoeff * (airmassAurora - 1.0) * atmFracAurora;
+            float extinctionAurora = pow(10.0, -0.4 * extinctMagAurora);
+
+            vec3 auroraContrib = accumAurora * aSegLen * kAuroraScale * cloud.auroraGain
+                                * auroraVisSuppress * extinctionAurora;
+            // Aurora is ALWAYS resolved through auroraContribDeferred now (added once, after the
+            // cloud composite runs — see that line below), rather than sometimes merging into
+            // `color` pre-composite to pick up the standard linear cloudB.rgb multiply. That linear
+            // multiply alone still let aurora show clearly through cloud that reads as visually
+            // solid: a transmittance of e.g. 0.25 ("mostly opaque") only cuts brightness to a
+            // quarter, and aurora's raw HDR value (further amplified by EXPOSURE_NIGHT's 10x at
+            // night) stays clearly visible even at a quarter strength. When behind clouds, apply an
+            // explicit CUBED suppression on the same continuous transmittance value instead — much
+            // steeper falloff (0.25^3≈0.016 vs. 0.9^3≈0.73) with no new discontinuity — and skip the
+            // separate linear multiply entirely so the two don't compound unpredictably. When in
+            // front of clouds (LEO+ looking down), no cloud suppression at all, as before.
+            const float kAuroraCloudSuppressPower = 3.0;
+            float auroraCloudSuppress = auroraBehindClouds
+                ? pow(clamp(cloudBlockEarly, 0.0, 1.0), kAuroraCloudSuppressPower)
+                : 1.0;
+            auroraContribDeferred = auroraContrib * auroraCloudSuppress;
         }
     }
 
@@ -1637,8 +1821,8 @@ void main() {
         {
             const float kCityDetailTileM = 20000.0;  // metres per texture tile repeat
             const float kCityMaskLo      = 0.01;   // nightColor luminance where detail starts
-            const float kCityMaskHi      = 0.06;   // luminance where detail is fully blended in
-            const float kCityFadeNearM   = 3000.0; // full detail strength inside this distance
+            const float kCityMaskHi      = 0.3;   // luminance where detail is fully blended in
+            const float kCityFadeNearM   = 30000.0; // full detail strength inside this distance
             const float kCityFadeFarM    = 300000.0; // detail fully faded out beyond this distance
             float cityDistFade = 1.0 - smoothstep(kCityFadeNearM, kCityFadeFarM, tSurface);
             if (cityDistFade > 0.001)
@@ -1807,7 +1991,18 @@ void main() {
         // rather than a single observer-position proxy, so lighting is properly local like
         // moonlight: only ground actually under an active curtain lights up. Modulated by how much
         // the surface faces "up" (toward the glow), same spirit as skyAmbientTerrain's fill above.
-        vec3  auroraGlowTerrain    = auroraGlowAt(normalize(hitPt), sunDirECEF, pc.waveTime, cloud.stormStrength);
+        //
+        // auroraGlowAt needs a TRUE ECEF direction (it compares against the fixed geomagnetic-pole
+        // ECEF constant) — hitPt itself is in the observer-local ENU-ish frame (same convention
+        // rp/obsPos/dir all use), so it must go through the enuX/enuY/enuZ basis first, same as
+        // every other geographic lookup in this file (e.g. the terrain-hit lat/lon UV above). A
+        // first version passed normalize(hitPt) directly, which is a fine "local up" vector for the
+        // Lambertian dot product just below (shadingN is in the SAME local frame, so that part was
+        // already correct) but wrong for auroraGlowAt specifically — it made the computed
+        // "geographic" position track the OBSERVER's own frame instead of the terrain point's true
+        // location, so the noise pattern appeared to follow the observer instead of the ground.
+        vec3  hitDirECEF           = normalize(hitPt.x * enuX + hitPt.y * enuY + hitPt.z * enuZ);
+        vec3  auroraGlowTerrain    = auroraGlowAt(hitDirECEF, sunDirECEF, pc.waveTime, cloud.stormStrength);
         vec3  auroraContribTerrain = dayColor * auroraGlowTerrain
                                     * max(dot(shadingN, normalize(hitPt)), 0.0)
                                     * cloud.auroraGroundGain;
@@ -1971,7 +2166,18 @@ void main() {
                         accumAuroraRefl += auroraSampleAt(rap, enuX, enuY, enuZ, sunDirECEF,
                                                            pc.waveTime, cloud.stormStrength);
                     }
-                    reflColor += accumAuroraRefl * raSeg * kAuroraScale * cloud.auroraGain;
+                    // Same atmospheric extinction as the primary sky march (see that block's
+                    // comment) — using the REFLECTED ray's own elevation, since that's the
+                    // direction the aurora's light actually traveled through the atmosphere before
+                    // bouncing off the water toward the camera. Ocean views skew toward low-angle
+                    // reflections by construction (Fresnel favors grazing angles), so this matters
+                    // here at least as much as it does for the direct view.
+                    float sinElAuroraRefl   = clamp(reflDir.z, 0.0, 1.0);
+                    float elDegAuroraRefl   = degrees(asin(sinElAuroraRefl));
+                    float airmassAuroraRefl = 1.0 / (sinElAuroraRefl + 0.50572 * pow(elDegAuroraRefl + 6.07995, -1.6364));
+                    float extinctMagAuroraRefl = cloud.extinctionCoeff * (airmassAuroraRefl - 1.0);
+                    float extinctionAuroraRefl = pow(10.0, -0.4 * extinctMagAuroraRefl);
+                    reflColor += accumAuroraRefl * raSeg * kAuroraScale * cloud.auroraGain * extinctionAuroraRefl;
                 }
             }
 
@@ -2006,7 +2212,12 @@ void main() {
             // this ocean point (auroraGlowAt — same function terrain uses) rather than a single
             // observer-position proxy, distance-attenuated by the same `atten` the wave-crest
             // shading above uses so it doesn't glow uniformly out to the horizon.
-            surfColor += auroraGlowAt(surfUp, sunDirECEF, pc.waveTime, cloud.stormStrength)
+            //
+            // surfUp is the observer-local "up" (same frame as hitPt/obsPos/dir) — auroraGlowAt
+            // needs a TRUE ECEF direction instead (see the terrain block's own comment on this same
+            // bug), so it goes through enuX/enuY/enuZ first rather than being passed straight in.
+            vec3 surfUpECEF = normalize(surfUp.x * enuX + surfUp.y * enuY + surfUp.z * enuZ);
+            surfColor += auroraGlowAt(surfUpECEF, sunDirECEF, pc.waveTime, cloud.stormStrength)
                        * cloud.auroraGroundGain * 0.5 * atten;
             // Mirror satellite flare glints — sector-stable selection via sectorBright.
             {
@@ -2094,9 +2305,10 @@ void main() {
     if (!(tSurface > 0.0 && tEnterCombined >= 0.0 && tSurface < tEnterCombined)) {
         color = color * cloudB.rgb + cloudA.rgb;
     }
-    // Aurora that sat IN FRONT of the clouds (LEO+ looking down through the shell before reaching
-    // them) was deferred past the composite above instead of folded into `color` beforehand, so
-    // clouds don't incorrectly occlude/attenuate an aurora that's actually nearer the camera.
+    // Aurora always resolves here, post-composite (see auroraContribDeferred's own comment above
+    // for why it no longer ever merges into `color` pre-composite) — already carries its own cloud
+    // suppression baked in (cubed transmittance when behind clouds, none when in front), so no
+    // further multiply against cloudB.rgb here.
     color += auroraContribDeferred;
 
     // ── Auto-exposure tone mapping ─────────────────────────────────────────────
@@ -2168,19 +2380,22 @@ void main() {
         vec2  mwUV   = vec2(0.5 + lonGal / (2.0 * PI), 0.5 + latGal / PI);
         vec3  mwColor = texture(milkyWayTex, mwUV).rgb * cloud.mwBasisRow0.w;
 
+        // Cloud suppression: CUBED, not linear — same reasoning as the aurora's auroraCloudSuppress
+        // above (session 28 follow-up #11). A plain `* cloudBlock` still let the Milky Way show
+        // clearly through cloud that reads as visually solid, since a "mostly opaque" transmittance
+        // of e.g. 0.25 only cuts brightness to a quarter. Reuses the same opacity scalar the sun
+        // disc is already dimmed by (see "Sun/moon disc" above); this term is added post-tonemap
+        // (deliberately, see comment above) so it can't be folded into the HDR cloud composite the
+        // same way aurora/atmosphere are, but a steeper power curve on the same continuous value
+        // works without needing that.
+        const float kMWCloudSuppressPower = 3.0;
         float visibility = nightFactorEffSky
                           * (1.0 - domeVal * kMWPollutionMaxDim)
                           * (1.0 - moonBrightSky * kMWMoonMaxDim)
                           * extinctionMW
                           * sunGlareSuppress
                           * (tSurface > 0.0 ? 0.0 : 1.0) // blocked by terrain/ocean
-                          * cloudBlock; // blocked by clouds — reuses the same opacity scalar the
-                                        // sun disc is already dimmed by (see "Sun/moon disc"
-                                        // above); this term is added post-tonemap (deliberately,
-                                        // see comment above) so it can't be folded into the HDR
-                                        // cloud composite the same way aurora/atmosphere are, but
-                                        // without ANY cloud suppression at all it showed straight
-                                        // through opaque cloud — same visual bug the aurora had.
+                          * pow(clamp(cloudBlock, 0.0, 1.0), kMWCloudSuppressPower);
         color += mwColor * visibility;
     }
 
