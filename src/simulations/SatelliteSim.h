@@ -804,7 +804,13 @@ private:
     float airglowRedGain = 0.01316f;      // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
     float airglowSodiumGain = 0.06579f;   // C15: sodium (589.3nm) band gain — kept dim relative to green
     float cloudShadowMaxDistM = 37745.6f; // sun self-shadow cone (N_CONE) fades out beyond this distance
-    float cloudMaxRenderDistM = 165000.0f; // cloudMarch tExit distance cap (was a hardcoded 80km)
+    float cloudMaxRenderDistM = 400000.0f; // cloudMarch tExit distance cap — raised to ~400km
+                                            // (session 28 follow-up #10): the low-cloud shell's own
+                                            // geometric horizon distance at 11km altitude is
+                                            // ~sqrt(2*R_EARTH*11000)≈374km; the prior 165km default
+                                            // cut the march off well short of that, letting
+                                            // aurora/Milky Way/stars show straight through clouds
+                                            // near the horizon instead of them thinning out naturally
     // Perf follow-up (session 24): main atmosphere loop + ocean wave quality, all previously
     // hardcoded compile-time constants.
     // N_VIEW is now adaptive per-ray (round 2): a fixed sample count badly serves a loop whose
