@@ -1762,6 +1762,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
         {"Sun gain", &cloudSunGain, 0.0f, 5.0f, 0.1f, "%.2f", 5},
         {"Ambient", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
+        {"Night ambient", &cloudNightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
         {"HG g", &cloudHgG, 0.0f, 0.99f, 0.05f, "%.2f", 7},
         {"March steps", &cloudMarchSteps, 4.0f, 1024.0f, 4.0f, "%.0f", 8},
         {"Light steps", &cloudLightSteps, 1.0f, 16.0f, 1.0f, "%.0f", 9},
@@ -2172,6 +2173,7 @@ void SatelliteSim::loadSettings()
         cloudDriftRate = c.value("drift_rate", cloudDriftRate);
         cloudSunGain = c.value("sun_gain", cloudSunGain);
         cloudAmbientGain = c.value("ambient_gain", cloudAmbientGain);
+        cloudNightAmbientGain = c.value("night_ambient_gain", cloudNightAmbientGain);
         cloudHgG = c.value("hg_g", cloudHgG);
         cloudMarchSteps = c.value("march_steps", cloudMarchSteps);
         cloudLightSteps = c.value("light_steps", cloudLightSteps);
@@ -2263,6 +2265,7 @@ void SatelliteSim::saveSettings()
         {"drift_rate", cloudDriftRate},
         {"sun_gain", cloudSunGain},
         {"ambient_gain", cloudAmbientGain},
+        {"night_ambient_gain", cloudNightAmbientGain},
         {"hg_g", cloudHgG},
         {"march_steps", cloudMarchSteps},
         {"light_steps", cloudLightSteps},

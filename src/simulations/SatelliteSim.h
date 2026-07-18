@@ -403,8 +403,11 @@ struct GpuCloudParams
                                // cloud_march.comp's moonContrib (was a hardcoded 0.015 there) both
                                // read this, so one slider keeps moonlit terrain and moonlit clouds
                                // calibrated to the same brightness instead of drifting apart
-    float pad1;               // reserved
-    float pad2;               // reserved
+    float pad1;               // ACTUALLY repurposed (see SatelliteSim.cpp) — city-detail world-fixed
+                               // east offset (m); kept named pad1 since sat_sky.frag/cloud_march.comp
+                               // don't need to read it (CPU computes the offset, GPU just samples the
+                               // resulting texture), name is stale but layout-critical, don't rename
+    float pad2;               // ACTUALLY repurposed — city-detail world-fixed north offset (m); see pad1
     // Milky Way skybox (session 27): CPU-computed ENU->galactic basis rows (fixed orientation,
     // confirmed by eye against the real star field), mirroring the eciX/Y/Z basis-vector
     // convention already used for SatOrbitPC/SatFlarePC. dirGal = dot(enuDir, mwBasisRowN.xyz)
@@ -434,8 +437,19 @@ struct GpuCloudParams
     float auroraCoverageDriftRate; // wall-clock rad/s evolution speed
     float auroraShimmerRate;       // curtain fold noise evolution speed (wall-clock rad/s) — was a
                                     // fixed kAuroraShimmerRate constant (session 28 follow-up #9)
+    // Struct grew 320->336 here (session 30): appended rather than reusing pad1/pad2 above, which
+    // turned out to already be repurposed (city-detail world offset, read by name as cloud.pad1/
+    // pad2 in sat_sky.frag) despite their stale "reserved" comments — do not repurpose those.
+    float cloudNightAmbientGain; // gain on cloud_march.comp's kNightSkyAmbientColor floor term —
+                                  // deliberately separate from ambientGain (which also drives city-
+                                  // light upwelling) so the two can be balanced independently.
+                                  // Unused in sat_sky.frag (cloud lighting is cloud_march.comp-only)
+                                  // — kept for layout parity.
+    float pad4;                  // reserved
+    float pad5;                  // reserved
+    float pad6;                  // reserved
 };
-static_assert(sizeof(GpuCloudParams) == 320, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 336, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -863,6 +877,9 @@ private:
     float cloudDriftRate = 1.04386e-5f;
     float cloudSunGain = 3.35526f;
     float cloudAmbientGain = 1.86842f;
+    float cloudNightAmbientGain = 1.0f; // decoupled night-sky floor on cloud tops (was piggybacking
+                                         // on cloudAmbientGain, which also drives city-light
+                                         // upwelling — see kNightSkyAmbientColor in cloud_march.comp)
     float cloudHgG = 0.27355f;
     float cloudMarchSteps = 75.57895f;
     float cloudLightSteps = 5.73684f;
@@ -1045,8 +1062,8 @@ private:
     bool hovPhotoMinus[8] = {};
     bool hovPhotoPlus[8] = {};
     bool draggingPhoto[8] = {};
-    bool hovCloudMinus[33] = {}; // was [25] — stale after C16 aurora sliders pushed indices to 32
-    bool hovCloudPlus[33] = {};
+    bool hovCloudMinus[34] = {}; // was [25] — stale after C16 aurora sliders pushed indices to 32
+    bool hovCloudPlus[34] = {};  // now 34: index 33 is the new Night Ambient slider
     bool draggingCloud[33] = {};
 
     // ── Window chrome (drag+resize; see UIRenderer::WindowChrome) ──────────────

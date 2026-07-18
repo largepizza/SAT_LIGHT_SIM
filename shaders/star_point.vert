@@ -19,9 +19,18 @@ layout(push_constant) uniform PC {
     float gmst;        // offset 72
     float waveTime;    // offset 76 — simSecInDay, used for twinkling
     vec4  sunDirENU;   // offset 80 — unused
-    vec4  moonDirENU;  // offset 96 — unused
+    vec4  moonDirENU;  // offset 96 — xyz=moon dir ENU, w=unused here (illuminated fraction)
     vec4  obsECEFDir;  // offset 112: xyz=obs ECEF, w=obsHeightOffset (m)
 } pc;
+
+// Matches kMoonAngR in sat_sky.frag's moon disc (0.004578 * 3.0) — the Moon is a real opaque
+// body much closer than any star, so stars angularly behind its disc must not draw over it.
+// The sky pass itself can't express this in the depth buffer: satellites and stars share a
+// single fixed clip depth (0.5) with no relative ordering, and giving the moon its own nearer
+// depth would incorrectly occlude satellites too (which really are nearer than the Moon and
+// should keep drawing over it). Culling here, per-star, sidesteps the shared-depth limitation
+// without touching that broader scheme.
+const float kMoonAngR = 0.004578 * 3.0;
 
 layout(location = 0) out vec3  fragColor;
 layout(location = 1) out float fragIntensity;
@@ -33,7 +42,10 @@ void main() {
 
     vec3 cam = (pc.skyView * vec4(sat.skyDir, 0.0)).xyz;
 
-    if (sat.flareIntensity <= 0.0 || cam.z >= -0.001) {
+    // Cull stars that fall within the Moon's angular disc — see kMoonAngR comment above.
+    bool behindMoon = dot(sat.skyDir, normalize(pc.moonDirENU.xyz)) > cos(kMoonAngR);
+
+    if (sat.flareIntensity <= 0.0 || cam.z >= -0.001 || behindMoon) {
         gl_Position  = vec4(0.0, 0.0, 2.0, 1.0);
         gl_PointSize = 0.001;
         fragColor     = vec3(0.0);
