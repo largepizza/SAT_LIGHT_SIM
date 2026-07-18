@@ -35,11 +35,13 @@ void VulkanContext::init(GLFWwindow *window)
     createDevice();
     createSwapchain(window);
     createRenderPass();
+    createRenderPassLoad();
     createDepthResources();
     createFramebuffers();
     createCommandPool();
     createCommandBuffer();
     createSyncObjects();
+    createQueryPool();
 }
 
 void VulkanContext::recreateSwapchain(GLFWwindow *window)
@@ -65,6 +67,9 @@ void VulkanContext::recreateSwapchain(GLFWwindow *window)
 void VulkanContext::cleanup()
 {
     cleanupSwapchain();
+    if (queryPool != VK_NULL_HANDLE)
+        vkDestroyQueryPool(device, queryPool, nullptr);
+    vkDestroyRenderPass(device, renderPassLoad, nullptr);
     vkDestroyRenderPass(device, renderPass, nullptr);
     vkDestroySemaphore(device, semImageAvailable, nullptr);
     vkDestroyFence(device, fenceFrame, nullptr);
@@ -501,6 +506,77 @@ void VulkanContext::createRenderPass()
         throw std::runtime_error("vkCreateRenderPass failed.");
 }
 
+// ─── Load-based render pass (resolution scaling support) ──────────────────────
+// Identical to createRenderPass() except: color attachment uses LOAD instead of CLEAR (the
+// simulation is expected to have pre-filled it via a blit in recordPrePass, see Simulation.h),
+// with initialLayout TRANSFER_DST_OPTIMAL to match the state a blit destination is left in
+// (rather than UNDEFINED, which LOAD would otherwise read as garbage). Depth still CLEARs
+// normally — this app does not blit depth (see SatelliteSim's resolution-scaling comments for
+// why: depth-format blit support isn't spec-guaranteed, a real portability concern specifically
+// on the lower-end hardware this feature targets), so depth keeps its normal UNDEFINED/CLEAR
+// behavior unchanged. Reuses the SAME ctx.framebuffers as renderPass — render pass compatibility
+// only requires matching attachment format/sample-count, not matching load/store ops or layouts.
+void VulkanContext::createRenderPassLoad()
+{
+    VkAttachmentDescription color{};
+    color.format = swapFormat;
+    color.samples = VK_SAMPLE_COUNT_1_BIT;
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    color.initialLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    color.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentDescription depth{};
+    depth.format = depthFormat;
+    depth.samples = VK_SAMPLE_COUNT_1_BIT;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+    VkSubpassDescription sub{};
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 1;
+    sub.pColorAttachments = &colorRef;
+    sub.pDepthStencilAttachment = &depthRef;
+
+    // Two dependencies: the usual compute->fragment one (unchanged from renderPass), plus a new
+    // TRANSFER->color-attachment one so the render pass's automatic initialLayout transition
+    // waits for recordPrePass's blit to actually finish writing before this pass reads/writes it.
+    VkSubpassDependency deps[2] = {};
+    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[0].dstSubpass = 0;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    deps[1].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[1].dstSubpass = 0;
+    deps[1].srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    deps[1].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    deps[1].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    VkAttachmentDescription attachments[] = {color, depth};
+    VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+    ci.attachmentCount = 2;
+    ci.pAttachments = attachments;
+    ci.subpassCount = 1;
+    ci.pSubpasses = &sub;
+    ci.dependencyCount = 2;
+    ci.pDependencies = deps;
+
+    if (vkCreateRenderPass(device, &ci, nullptr, &renderPassLoad) != VK_SUCCESS)
+        throw std::runtime_error("vkCreateRenderPass (load variant) failed.");
+}
+
 // ─── Depth resources ──────────────────────────────────────────────────────────
 void VulkanContext::createDepthResources()
 {
@@ -591,6 +667,55 @@ void VulkanContext::createSyncObjects()
     for (auto &sem : semRenderDone)
         if (vkCreateSemaphore(device, &si, nullptr, &sem) != VK_SUCCESS)
             throw std::runtime_error("Failed to create render-done semaphore.");
+}
+
+// ─── GPU timestamp query pool ──────────────────────────────────────────────────
+void VulkanContext::createQueryPool()
+{
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physicalDevice, &props);
+    // A zero period means the device reports no usable timestamp resolution;
+    // resolveTimestamps() checks this and no-ops rather than dividing by zero.
+    timestampPeriodNs = (double)props.limits.timestampPeriod;
+    if (timestampPeriodNs <= 0.0)
+        return;
+
+    VkQueryPoolCreateInfo qpci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    qpci.queryCount = kTimestampCount;
+    if (vkCreateQueryPool(device, &qpci, nullptr, &queryPool) != VK_SUCCESS)
+        queryPool = VK_NULL_HANDLE; // profiling is best-effort; app must run without it
+}
+
+void VulkanContext::resetTimestamps(VkCommandBuffer cmd)
+{
+    if (queryPool != VK_NULL_HANDLE)
+        vkCmdResetQueryPool(cmd, queryPool, 0, kTimestampCount);
+}
+
+void VulkanContext::writeTimestamp(VkCommandBuffer cmd, VkPipelineStageFlagBits stage, uint32_t slot)
+{
+    if (queryPool != VK_NULL_HANDLE)
+        vkCmdWriteTimestamp(cmd, stage, queryPool, slot);
+}
+
+// Called once per frame in App::drawFrame, right after the fence wait — with a
+// single frame in flight, the fence signaling guarantees the previous frame's
+// queries have already completed, so VK_QUERY_RESULT_WAIT_BIT never actually
+// blocks here (it's there for correctness, not as a stall).
+void VulkanContext::resolveTimestamps()
+{
+    if (queryPool == VK_NULL_HANDLE)
+        return;
+    uint64_t raw[kTimestampCount];
+    VkResult r = vkGetQueryPoolResults(device, queryPool, 0, kTimestampCount,
+                                       sizeof(raw), raw, sizeof(uint64_t),
+                                       VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+    if (r != VK_SUCCESS)
+        return;
+    for (uint32_t i = 0; i < kTimestampCount; ++i)
+        timestampMs[i] = (double)(raw[i] - raw[0]) * timestampPeriodNs / 1.0e6;
+    timestampsReady = true;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

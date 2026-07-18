@@ -45,6 +45,12 @@ void App::mainLoop() {
 void App::drawFrame() {
     vkWaitForFences(ctx.device, 1, &ctx.fenceFrame, VK_TRUE, UINT64_MAX);
 
+    // Resolve last frame's GPU timestamp queries now that the fence proves the GPU
+    // is done with them. Skipped on the very first call: the fence starts pre-signaled
+    // so nothing has actually been submitted yet, and there'd be no query data to read.
+    if (submittedOnce)
+        ctx.resolveTimestamps();
+
     uint32_t imgIdx;
     VkResult res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain, UINT64_MAX,
                                           ctx.semImageAvailable, VK_NULL_HANDLE, &imgIdx);
@@ -103,8 +109,19 @@ void App::drawFrame() {
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     vkBeginCommandBuffer(ctx.commandBuffer, &bi);
 
+    // GPU timestamp profiling: slot 0 marks frame start. Slots 1-3 are written inside
+    // sim->recordCompute() (compute-pass breakdown); slot 4 is written inside
+    // sim->recordDraw() (end of the sky background pass). Slots 5-6 mark the end of the
+    // satellite+star draw and the UI overlay respectively. See VulkanContext::kTimestampCount.
+    ctx.resetTimestamps(ctx.commandBuffer);
+    ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
+
     // 1. Simulation compute work (before render pass)
     sim->recordCompute(ctx.commandBuffer, ctx, dt);
+
+    // 1b. Optional offscreen pre-pass (e.g. a low-res background blitted into the swapchain
+    // image ahead of time) — must run before the main render pass begins. Default: no-op.
+    sim->recordPrePass(ctx.commandBuffer, ctx, dt, imgIdx);
 
     // 2. Begin render pass — App now owns this
     VkClearValue clearValues[2];
@@ -112,7 +129,7 @@ void App::drawFrame() {
     clearValues[1].depthStencil = {1.0f, 0};   // far depth = 1.0
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rbi.renderPass      = ctx.renderPass;
+    rbi.renderPass      = sim->activeRenderPass(ctx);
     rbi.framebuffer     = ctx.framebuffers[imgIdx];
     rbi.renderArea      = {{0, 0}, ctx.swapExtent};
     rbi.clearValueCount = 2;
@@ -121,15 +138,21 @@ void App::drawFrame() {
 
     // 3. Simulation draw calls (render pass is already open)
     sim->recordDraw(ctx.commandBuffer, ctx, dt);
+    ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
 
     // 4. UI draws on top of the simulation
     ui.record(ctx.commandBuffer, ctx);
+    ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 6);
 
     vkCmdEndRenderPass(ctx.commandBuffer);
     vkEndCommandBuffer(ctx.commandBuffer);
 
     // Submit
-    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    // Includes TRANSFER now (not just COLOR_ATTACHMENT_OUTPUT): a simulation's recordPrePass may
+    // blit directly into the swapchain image before the main render pass opens (resolution
+    // scaling) — that write must also wait for the presentation engine to be done with this
+    // image, the same guarantee the render pass itself already got from this semaphore.
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.waitSemaphoreCount   = 1;
     si.pWaitSemaphores      = &ctx.semImageAvailable;
@@ -140,6 +163,7 @@ void App::drawFrame() {
     si.pSignalSemaphores    = &ctx.semRenderDone[imgIdx];
     if (vkQueueSubmit(ctx.graphicsQueue, 1, &si, ctx.fenceFrame) != VK_SUCCESS)
         throw std::runtime_error("vkQueueSubmit failed.");
+    submittedOnce = true;
 
     // Present
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};

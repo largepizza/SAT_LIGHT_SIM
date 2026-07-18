@@ -28,3 +28,8 @@ Thumbs.db
 
 # - Debug
 .renderDoc_captures/
+
+# ── Python tooling (tools/perf_analysis, etc.) ─────────────────────────────────
+.venv/
+__pycache__/
+*.pyc

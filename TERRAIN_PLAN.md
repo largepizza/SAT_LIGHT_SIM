@@ -26,19 +26,28 @@ light pollution, it wasn't made directional this session and there's no current 
 Satellite-reflected light (satellites as light sources onto terrain/clouds) and aurora ground-cast
 light remain fully unscoped (raised, not designed) — pick up whenever the user wants them.
 
-**Performance data point needed (session 24 follow-up):** the user needs to re-benchmark ground-
-level FPS (Release build, same spots as before) now that `N_VIEW`/`N_LIGHT`/ocean quality are
-UBO-tunable sliders, and specifically test dropping `Light samples`. If that alone recovers a lot
-of FPS, the next task is a real transmittance LUT (2D texture, altitude × sun-angle, replacing
-`optDepth`'s inner march at its 4 call sites in `sat_sky.frag`) — see session 24 log for why this
-wasn't just built speculatively. Not yet started.
+**Performance: superseded by session 29's real profiling data.** The session-24 transmittance-LUT
+hypothesis (re-benchmark after the `N_VIEW`/`N_LIGHT` sliders, drop `Light samples`, see if that's
+the win) turned out to be the wrong target once real GPU-timestamp + knockout-toggle data existed:
+`optDepth`'s isolated cost was consistently near-zero. Terrain (a real step-count bug) and aurora
+(never resolution-scaled, never had its noise baked) were the actual dominant costs — both fixed
+this session. See session 29 log for the full profiling toolkit (in-app GPU timestamps, knockout
+toggles, `perf_profiles/profile_log.jsonl`, `tools/perf_analysis/`) and why the main atmosphere
+loop specifically is NOT a good candidate for the same half-res treatment (terrain-distance-coupled
+endpoint + feeds satellite glow attenuation). A transmittance LUT is not ruled out forever, just no
+longer the presumed next step without fresh data motivating it specifically.
 
-**C16 — Aurora (geomagnetic curtain primitive) — implemented (session 28), not yet seen in-app.**
-Build is clean; the user still needs to fly to a high geomagnetic latitude at night and tune
-`Storm strength`/`Aurora gain` in the settings window. See session 28 log for the full design
-(oval mask + anisotropic curtain-fold noise + emissive shell march) and Phase E below for the
-original spec. First-pass constants (oval width/colatitude, fold frequencies, altitude band) are
-reasonable guesses, not validated by eye yet — expect a tuning pass once it's actually visible.
+**C16 — Aurora (geomagnetic curtain primitive) — feature-complete since session 28; heavily
+re-architected for performance in session 29.** Visual design/tuning closed 2026-07-16 (session 28
+follow-up #22, see that entry for the full tuning history: brightness/exposure, day/night gating,
+fold axis calibration, cloud occlusion ordering, ambient lighting, extinction, light-
+pollution/moonlight suppression, edge blending, per-column variation, shimmer evolution). Session
+29 then moved the sky curtain march itself out of `sat_sky.frag` into `cloud_march.comp` (half
+resolution) and baked most of its noise into a texture (`aurora_noise.comp`) — a ~40fps-swing cost
+down to a minor one. `sat_sky.frag` still owns `auroraGlowAt` (terrain/ocean ambient) and the ocean
+reflection's aurora sample; `cloud_march.comp` owns the sky curtain itself. See session 29 log
+before touching aurora code — same "architecture changed, old assumptions may not hold" warning the
+session 23 cloud move below already gives.
 
 C14 (anvil) remains not started; it was deliberately deferred again in favor of C15 per the
 2026-07-12 session, and can be picked up whenever — it has no dependency on C15/C16.
@@ -478,6 +487,180 @@ structural change.
 ---
 
 ## Session Log
+
+### 2026-07-17 (session 29) — GPU performance profiling infrastructure + aurora/terrain/airglow optimization
+- **New: in-app GPU timestamp profiling.** `VulkanContext` gained a 7-slot `VK_QUERY_TYPE_TIMESTAMP`
+  query pool (single frame in flight, so results are resolved right after the fence wait in
+  `App::drawFrame` with no stall). Slot layout is a shared contract: App.cpp writes 0 (frame
+  start), 5 (satellite+star draw done), 6 (UI overlay done); `SatelliteSim` writes 1-3 in
+  `recordCompute` (cloud march / orbit compute / flare compute) and 4 in `recordDraw` (sky
+  background draw done) — this SPLIT what used to be one fused "sky_terrain_draw" bucket into
+  `sky_background_draw` (just the fullscreen atmosphere/terrain/ocean shader) and
+  `satellite_star_draw` (the point sprite passes), which turned out to be ~0.05ms — negligible even
+  with 1M+ active satellites, resolving an earlier open question about whether satellite draw cost
+  was a factor (it never was). `SatelliteSim::updateGpuTimingStats()` EMA-smooths the six deltas
+  into `gpuMsSmoothed[6]`, displayed in a new "GPU FRAME BREAKDOWN" section on the Display settings
+  tab, one-frame-stale by construction (same pattern as `peakMagnitude`).
+- **New: perf knockout toggles.** `SatDrawPC` grew 128→132 bytes for `debugDisableMask` (a
+  profiling-only bitmask consumed by `sat_sky.frag`'s `dbgSkip*()` helpers), later mirrored into
+  `CloudMarchPC` (128→132 bytes) once parts of the shader moved to `cloud_march.comp` mid-session.
+  Six checkboxes in the Display tab ("KNOCKOUT PROFILING") let each toggle disable one block —
+  terrain march, atmosphere loop, sun optical depth (`optDepth`, called from 4 sites), ocean sky
+  reflection, airglow red, aurora — with a mathematically-safe zero/no-op fallback per toggle (e.g.
+  terrain-skip leaves `tHit=-1`, the same value the "no hit" path already produces normally).
+  Default mask 0 is bit-identical to normal rendering.
+- **New: `perf_profiles/profile_log.jsonl` + "Save Snapshot" button.** Appends one JSON record
+  (GPU timing breakdown, resolution, observer lat/lon/altitude, sim time, active knockout mask, GPU
+  device name, quality settings) per button press — JSON Lines so the log grows by simple
+  appending across sessions. `SatelliteSim::savePerfSnapshot()`.
+- **New: `tools/perf_analysis/` Python toolkit** (gitignored `.venv`, `requirements.txt`: pandas +
+  matplotlib). `analyze_profile.py` reports GPU cost by resolution bucket, per-megapixel
+  normalization (tests whether a pass is purely resolution-bound), a matched-altitude resolution
+  ratio (isolates the resolution effect from confounding altitude/scene changes in the same
+  dataset), a knockout-toggle cost summary, and Pearson correlations — plus two PNG plots.
+- **Terrain march: fixed a real bug, not just a perf tweak.** Step count (`kN`) was purely a
+  function of OBSERVER ALTITUDE (`mix(196, 320, obsEffH/800000)`) — a grazing/horizon ray and a
+  steep near-vertical ray from the SAME ground-level observer got the identical step budget,
+  despite the grazing ray covering far more physical distance and needing proportionally more
+  steps to avoid undersampling (this was very likely a real contributor to reported terrain
+  jitter, not just wasted cost). Changed to scale off this ray's own `tExit` instead, working out
+  the quadratic-spacing math (`dt ≈ 2*(tExit-2)/kN` at the coarse far end) to hit the same
+  historical "~2.8km coarsest step" calibration. Range re-tuned by the user in-app from the
+  original 196-320 down to 64-164 (jittery-but-passable at the 64 floor). User confirmed: at a
+  near-terrain test spot, disabling terrain via the knockout toggle now costs ~1fps, down from
+  being one of the largest individual `sky_background_draw` contributors.
+- **Aurora: went from the single dominant cost (up to ~44fps swing toggled on/off) to a minor one,
+  across four rounds — user's own framing, "a full march across the planet for a very sparse
+  effect", drove the last two:**
+  1. Step cap `kAuroraStepsMax` 160→64 (`kAuroraStepsMin` 24→4, user-tested — briefly pinned to a
+     flat 4/4 to find the visual floor, which banded badly at grazing angles, then raised until
+     acceptable).
+  2. Two cheap pre-filters: a per-SAMPLE conservative colatitude bound inside `auroraOvalMask`
+     (skips its 2 `warpPerlin3` calls — ripple + coverage — for any sample farther than the
+     provably-unreachable 64° worst-case oval reach, derived from `stormStrength`'s slider-enforced
+     [0,1] range), and a per-RAY whole-march bounding pre-check (5 cheap position-only colatitude
+     samples spread across the ray's shell-crossing span; skips the ENTIRE march, not just
+     individual samples, for rays that never come near the oval at all — the direct fix for "most
+     of the sky, most of the time, even when standing in an aurora-active region").
+  3. **Baked 3 of the remaining ~6-7 live analytic `warpPerlin3` calls per sample into a texture**
+     (`aurora_noise.comp`, 1024×16×256 RGBA8, `createAuroraNoisePipeline` — same one-shot-bake-at-
+     init pattern as `cloud_noise.comp`/`createCloudNoisePipeline`). R = curtain fold `base`
+     (dropped the second "detail" octave first, then baked the remaining one); G/B = column-window
+     `colA`/`colB`. This is the direct answer to "why is aurora more expensive than clouds despite
+     looking simpler": clouds' noise was already moved off the live shading path into a texture in
+     a prior session (`cloud_noise.comp`); aurora's never was until now. U (azimuth) wraps — MUST
+     be power-of-2 cell count for the tiling hash to avoid a real seam (same lesson
+     `CLOUD_SEAM_BUG.md` already paid for) — 256 cells/loop for the curtain (vs. the live
+     `kAuroraTangentFreq(40)*2π≈251.3`), 64 for the column window (vs. `kAuroraColumnFreq(9)*2π≈
+     56.5`). V (altitude, curtain only) and W (colatitude, both) don't wrap — sampled with
+     CLAMP_TO_EDGE, never read across their own bake-volume edge. `shimmerPhase` (the animation
+     driver) stays live and cheap (1 call), offsetting the SAMPLE COORDINATE into the static baked
+     texture — same "warp the lookup, bake the detail" split `cloudWarpOffset` already uses.
+     Accepted approximations, flagged for the user to specifically check visually: fold
+     spacing/density is a power-of-2 approximation of the true frequency (small, ~2-13% drift);
+     `stormStrength`'s "more folds" effect now comes from wrapping the baked pattern more times
+     rather than genuinely new higher-frequency detail; column-window decorrelation now comes from
+     an additive coordinate offset instead of a true third noise axis. User tested and found no
+     meaningful visual difference.
+  4. **Moved the whole sky curtain march into `cloud_march.comp`**, running at half resolution
+     (1/4 pixels) in the same dispatch as clouds/cirrus instead of full-res in `sat_sky.frag` — the
+     single biggest win of the four, user-confirmed "night and day difference" via before/after
+     snapshots (deltas dropped from the 9-13ms range to 1-2.5ms at comparable locations). New
+     `auroraMarchCS`/`auroraCurtainSample`/`auroraOvalMask`/`auroraCoverage`/`auroraFrame` in
+     `cloud_march.comp` (near-verbatim ports); result folds additively into the same `B_total`
+     channel clouds already write, so `sat_sky.frag` needed no new sampling code at all — aurora
+     just rides along inside the cloud composite it already reads. Cloud-suppression
+     (`auroraBehindClouds`/cubed-transmittance-when-behind) now uses the LOCAL `A_total` computed
+     in the same shader invocation instead of the old cross-resolution texture pre-sample —
+     strictly more accurate, not just faster. `sat_sky.frag` keeps its own copies of
+     `auroraFrame`/`auroraCoverage`/`auroraOvalMask`/`auroraCurtainNoise`/`auroraSampleAt` — still
+     used by `auroraGlowAt` (terrain/ocean ambient) and the ocean sky-reflection's own aurora
+     sample, both legitimately full-resolution/terrain-coupled.
+  - **Real behavior change, not just perf:** aurora (and the airglow-red band, see below) now
+    respect terrain occlusion the same way clouds do, since they're folded into the same
+    terrain-gated composite branch in `sat_sky.frag` (`if (!(tSurface>0 && tEnterCombined>=0 &&
+    tSurface<tEnterCombined))`). Previously aurora ignored terrain entirely — visible "through" a
+    mountain that should have blocked the view. Judged more physically correct (terrain close
+    enough to block the much-nearer cloud layer necessarily blocks the far-higher aurora shell
+    along that same ray too) and accepted without further tuning.
+- **Airglow red band also moved to `cloud_march.comp`** (`airglowRedMarchCS`), same half-res
+  pattern, no cloud-suppression term (the original never had one). Much smaller win going in
+  (~1ms full-res, fixed 16 steps × 1 noise call/sample — nowhere near aurora's old worst case) but
+  free given the aurora infrastructure already existed. Green/sodium airglow bands stay in
+  `sat_sky.frag`'s main atmosphere loop (they ride its samples "for free," no separate march to
+  move) — moving just them would mean duplicating a chunk of that loop for near-zero marginal win.
+- **Corrected a stale assumption from session 24:** a transmittance LUT (replacing `optDepth`'s
+  inner march) was flagged there as "the natural next step" for perf, based on it being the
+  obvious textbook target for a nested O(N_VIEW×N_LIGHT) loop. This session's knockout-toggle data
+  showed the opposite: `optDepth`'s isolated cost was consistently near-zero (0.1-1.4ms deltas)
+  across every test location — terrain and aurora were the actual dominant costs, never this.
+  Treat that session-24 guidance as superseded; don't rebuild the LUT on the strength of the old
+  note without fresh data motivating it.
+- **Why the main atmosphere loop (N_VIEW, in `sat_sky.frag`) is NOT a similar half-res-move
+  candidate, unlike clouds/cirrus/aurora/airglow-red — two concrete reasons, not just caution:**
+  its endpoint is terrain-distance-coupled (`tEnd = min(tAtmos.y, tSurface)`, truncated at the
+  exact per-pixel terrain hit for correct aerial-perspective haze — the shell marches all
+  explicitly avoid this exact coupling, see `cloud_march.comp`'s own header comment on having "NO
+  terrain data"), and its accumulated `odR_cam`/`odM_cam` directly attenuates the satellite
+  glow/flare aggregate render (`sat_sky.frag` ~line 1660) — the literal content-fidelity concern
+  that ruled out whole-frame resolution scaling earlier this session. A move here would need to
+  split "pure sky gradient" (resolution-insensitive) from "terrain-exact haze + satellite
+  attenuation" (needs per-pixel precision) — a materially bigger, riskier redesign than anything
+  done this session. Not started; flag for a future session if pursued.
+- **Resolution scaling — implemented and shipped, same session.** Settings > Display > "Render
+  scale" (50%-100%, default 100%, moved to the top of the tab — a real user-facing option, not a
+  debug tool, so it doesn't live down by the knockout toggles). Only the sky/terrain/ocean/cloud-
+  composite background scales; satellites, stars, and UI always render at native resolution — the
+  design goal from the start, given the earlier-session concern about losing tiny satellite point
+  fidelity to a whole-frame downscale.
+  - **Safety-first architecture, since this can't be tested by the assistant directly:** at the
+    default `renderScale==1.0`, the code path is BYTE-IDENTICAL to before this feature existed —
+    `sat_sky.frag` draws inline in `recordDraw`'s existing Pass 1 exactly as always. Only when the
+    user actively drops below 100% does a new path activate: the background renders into a low-res
+    offscreen target (`skyLowResColorImg`, its own single-color-attachment render pass
+    `skyLowResRenderPass`, CLEAR each frame, `finalLayout=TRANSFER_SRC_OPTIMAL`), then gets
+    linearly upscaled via `vkCmdBlitImage` directly into the swapchain image BEFORE the main
+    render pass opens (`Simulation::recordPrePass`, a new hook — default no-op, so
+    GameOfLife/Particles/Scene3DDemo needed zero changes).
+  - **The load/clear render-pass problem:** the main render pass can't simply switch its color
+    attachment's loadOp from CLEAR to LOAD per-frame (baked into the VkRenderPass object at
+    creation). Solution: a second render pass object, `ctx.renderPassLoad` — identical attachment
+    formats/sample-counts to `ctx.renderPass` (so it stays compatible with the SAME
+    `ctx.framebuffers`, per Vulkan's render-pass-compatibility rules, which only check format/
+    samples, not load/store ops or layouts) but LOAD instead of CLEAR for color, with
+    `initialLayout=TRANSFER_DST_OPTIMAL` matching what the pre-pass blit leaves the swapchain
+    image in. `Simulation::activeRenderPass(ctx)` — another new hook, default returns
+    `ctx.renderPass` unchanged — lets `SatelliteSim` pick `ctx.renderPassLoad` only when scaled.
+  - **Depth is deliberately NOT blitted** — a considered, documented tradeoff, not an oversight.
+    Reasoning at the time: depth-format blit support isn't spec-guaranteed the way color-format
+    blit support effectively always is, and that gap is more likely on exactly the lower-end
+    hardware this feature targets; the assistant couldn't verify it either way without running the
+    app. Consequence: satellites/stars are not occluded by terrain while `renderScale<1.0`
+    specifically (a satellite that should hide behind a mountain may show through) — confirmed
+    acceptable, not revisited.
+  - **Real bug found and fixed same session: cloud composite drifted off-center as renderScale
+    dropped, fully distorted at 50%.** Root cause: `sat_sky.frag`'s cloud-target UV sample
+    (`gl_FragCoord.xy / (textureSize(cloudTargetA,0)*2.0)`) silently assumed `gl_FragCoord` always
+    spans the FULL swap extent — true before this feature existed, false once the background can
+    render into a smaller offscreen framebuffer (`cloud_march.comp`'s own dispatch is unaffected
+    by `renderScale`, always sized off the true swap extent, so the mismatch grows with scale).
+    Fixed by adding `screenSizePx` to `SatDrawPC` (128->144 bytes this time — needed an explicit
+    `pad0` float first, since GLSL's push_constant block requires 8-byte alignment for the `vec2`
+    that C++ doesn't insert automatically) carrying THIS draw's actual target size
+    (`skyLowResExtent` when pre-rendering the scaled background, `ctx.swapExtent` everywhere else)
+    — `cloudUV` now divides by that instead of the stale assumption. **Any future `gl_FragCoord`-
+    based UV/lookup math in `sat_sky.frag` must use `pc.screenSizePx`, not an assumed full-res
+    constant, or it will silently break the same way the moment resolution scaling is active** —
+    the terrain-march jitter lookup (`gl_FragCoord.xy * (1.0/128.0)`) was checked and is fine,
+    since it's a fixed-frequency noise seed with no total-resolution assumption baked in, not a
+    [0,1]-normalized UV.
+  - `buildSatDrawPC(ctx, targetExtent)` factors out the push-constant fill shared by
+    `recordPrePass` and `recordDraw`, parameterized on target extent specifically so `aspect`
+    (always the true screen aspect — the camera's real FOV never changes just because the sky pass
+    rendered smaller) and `screenSizePx` (always THIS draw's actual target) can't drift apart.
+  - `App.cpp`'s submit wait stage grew from `COLOR_ATTACHMENT_OUTPUT_BIT` alone to also include
+    `TRANSFER_BIT` — the pre-pass blit writes the swapchain image at the transfer stage, which the
+    old wait mask didn't gate, a real (if narrow) race against the presentation engine.
 
 ### 2026-07-15 (session 28)
 - **C16 — Aurora, implemented.** New "curtain primitive" in `sat_sky.frag`: `auroraFrame()`
@@ -1253,6 +1436,24 @@ Both changes build clean (shader compiles, exe links); one `cmake --build` attem
 transient asset-copy lock on `assets/sound/music/*.mp3` (not a code issue — individual file copies
 succeeded immediately after, and a subsequent full rebuild completed cleanly with no changes
 needed). Not yet seen in-app.
+
+**Session 28 follow-up #22 (2026-07-16) — user confirmed the two follow-up #21 changes worked well
+and declared aurora "done for now."** Promoted the current in-app-tuned `build/Debug/settings.json`
+values to `SatelliteSim.h` member-initializer defaults, same pattern as follow-up #9. Notable swings
+(debug tuning since follow-up #9, not new bugs): `cloudMarchSteps` 4→75.6 (quality raised
+substantially since the perf-budget work), `cloudDensity` 10→5.48, `cloudCoverage` 0.693→0.614,
+`cloudHgG` 0.156→0.274, `lightPollutionGain` 38.6→6.14, `extinctionCoeff` 0.368→0.399,
+`auroraShimmerRate` 0.025→0.00175 (much slower now that follow-up #21's warp-phase evolution reads
+as organic rather than a translating texture — a lower rate no longer needs to fight the old
+mechanical slide to look alive), `auroraCoverageDriftRate` 0.000395→0.00194,
+`auroraCoverageFreq` 0.649→0.426, `auroraCoverageAzFreq` 4.026→4.289, `auroraGain` 0.0785→0.1,
+`auroraGroundGain` 0.00439→0.00746, `stormStrength` 0.355→0.320. Left untouched (matched within
+rounding): `brightnessScale`, `daySuppression`, `mirrorBoost`, `visThresh`, `highlightFlare`,
+`moonSuppression`, all four airglow gains, `cloudBaseAltM`/`cloudTopAltM`/`cloudDriftRate`,
+`cloudSunGain`, cirrus wind/stretch, `viewSamplesMin`/`Max`, `lightSamples`, ocean octave/sample
+counts, `moonGain`, `auroraCloudGain`. Build clean. **Aurora (C16) is closed for now** — Phase E
+is functionally complete except C14 (Anvil), still deliberately deferred with no dependency on
+C15/C16.
 
 ### 2026-07-13 (session 25)
 - **Terrain night ambient + moonlight — first two of four unscoped terrain light sources**

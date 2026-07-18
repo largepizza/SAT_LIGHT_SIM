@@ -1,6 +1,6 @@
 #version 450
 
-// ── Camera + sun push constants (same layout as C++ SatDrawPC, 128 bytes) ─────
+// ── Camera + sun push constants (same layout as C++ SatDrawPC, 144 bytes) ─────
 // The pipeline layout declares VK_SHADER_STAGE_VERTEX_BIT|FRAGMENT_BIT so both
 // stages share one push constant range.  The fragment uses skyView/fovYRad to
 // project glowBuf ENU directions into screen UV for the lens flare pass.
@@ -12,8 +12,25 @@ layout(push_constant) uniform PC {
     float waveTime;    // wall-clock seconds for wave animation
     vec4  sunDirENU;   // xyz = sun dir in ENU, w = sin(sun elevation)
     vec4  moonDirENU;  // xyz = moon dir in ENU, w = illuminated fraction
-    vec4  obsECEFDir;  // xyz = observer ECEF unit vector; w unused
+    vec4  obsECEFDir;  // xyz = observer ECEF unit vector; w = obsHeightOffset (m)
+    uint  debugDisableMask; // profiling-only knockout toggles — see dbgSkip* helpers below
+    float pad0;         // explicit — matches C++ SatDrawPC's alignment padding before the vec2 below
+    vec2  screenSizePx; // CURRENT render target's pixel size (session 29, resolution scaling) —
+                        // gl_FragCoord.xy is relative to THIS draw's own framebuffer, not always
+                        // the full swapchain; any [0,1] UV derived from gl_FragCoord must divide
+                        // by this, not an assumed full-res constant. See cloud composite sample
+                        // below for why this matters.
 } pc;
+
+// ── Perf knockout toggles (profiling-only) ──────────────────────────────────────
+// Lets the Display settings tab measure the isolated GPU cost of individual blocks of
+// this shader via gpuMsSmoothed deltas (App::drawFrame's timestamp query), without a GPU
+// capture tool. Default (mask 0) is bit-identical to normal rendering — every dbgSkip*()
+// call compiles to a single AND+compare against a value that's 0 unless a checkbox is on.
+bool dbgSkipTerrain()    { return (pc.debugDisableMask & 1u) != 0u; }
+bool dbgSkipAtmosphere() { return (pc.debugDisableMask & 2u) != 0u; }
+bool dbgSkipSunOD()      { return (pc.debugDisableMask & 4u) != 0u; }
+bool dbgSkipOceanRefl()  { return (pc.debugDisableMask & 8u) != 0u; }
 
 layout(location = 0) in  vec3 enuDir;           // interpolated ENU view ray (not normalised)
 layout(location = 1) in flat vec4 sunDirENU;    // passed through from vertex (same as pc.sunDirENU)
@@ -55,6 +72,12 @@ layout(set = 0, binding = 7) uniform sampler2D earthCloudsTex;
 // distance of the observer — see the terrain block in main() below.
 layout(set = 0, binding = 14) uniform sampler2D cityDayDetailTex;
 layout(set = 0, binding = 15) uniform sampler2D cityNightDetailTex;
+
+// Aurora 3D noise volume (binding 16): 1024x16x256 RGBA8, baked by aurora_noise.comp at init.
+// R = curtain fold base, G/B = column-window colA/colB. See that file's header comment for the
+// exact UVW layout/frequencies — the sampling code near auroraCurtainNoise/auroraSampleAt below
+// must stay in sync with it.
+layout(set = 0, binding = 16) uniform sampler3D auroraNoiseTex;
 
 // Cloud 3D noise volume (binding 8): 128³ RGBA, baked by cloud_noise.comp at init.
 // R = Perlin-Worley FBM (base shape), G/B/A = inverted Worley erosion octaves.
@@ -245,8 +268,8 @@ const vec3  kAirglowGreenColor      = vec3(0.35, 1.0, 0.25);
 const float kAirglowSodiumPeakM      = 90000.0;  // Na D 589.3nm — sharp/thin
 const float kAirglowSodiumHalfWidthM = 6500.0;
 const vec3  kAirglowSodiumColor      = vec3(1.0, 0.65, 0.15);
-const float kAirglowRedPeakM      = 275000.0;    // O I 630.0nm — diffuse/broad halo
-const float kAirglowRedHalfWidthM = 75000.0;
+// kAirglowRedPeakM/HalfWidthM moved to cloud_march.comp with the red band's march itself —
+// kAirglowRedColor stays here too, still used by auroraSampleAt's color blend below.
 const vec3  kAirglowRedColor      = vec3(1.0, 0.12, 0.05);
 // Horizontal patchiness so the bands don't read as a perfectly flat, featureless ring
 // around the sky (a pure function of altitude alone has zero horizontal variation).
@@ -361,6 +384,12 @@ vec2 raySphere(vec3 ro, vec3 rd, float r) {
 // Multiply by BETA_R / BETA_M in the caller to convert to actual extinction coefficients.
 // Called once per view sample to accumulate the sun-side transmittance at that altitude.
 vec2 optDepth(vec3 p, vec3 d, float segTotal) {
+    // Perf knockout: zero optical depth = "sun ray unattenuated", the same fallback the
+    // callers already use when tSun.y <= 0 (no atmosphere intersection) — a safe, already-
+    // exercised code path, not a new one. Isolates every optDepth() call site (main N_VIEW
+    // loop, ocean sky-reflection loop, and both fixed-count supplemental marches) at once.
+    if (dbgSkipSunOD())
+        return vec2(0.0);
     int   N_LIGHT = int(max(2.0, cloud.lightSamples));
     float sLen = segTotal / float(N_LIGHT);  // length of each sun-ray sub-step
     float odR = 0.0, odM = 0.0;
@@ -557,6 +586,19 @@ float auroraCoverage(float colat, float az, float t, float storm) {
 // matching real substorm behavior. Multiplied by auroraCoverage so the band itself is patchy,
 // not just internally textured — this is the "erosion" that turns a solid ring into broken arcs.
 float auroraOvalMask(float colat, float az, float t, float storm) {
+    // Perf: cheap conservative pre-filter before the two warpPerlin3 calls below (ripple +
+    // auroraCoverage's own internal one) — auroraSampleAt calls this once per march step, so
+    // these 2 evaluations are paid by every sample whose colatitude is even plausibly near the
+    // oval, which is the majority of samples along a long oblique ray (the reason the aurora
+    // march dominated frame cost — see this session's profiling). centerDeg's worst-case range
+    // is [20-6, 20+6+8] = [14,34] (ripple bounded generously at ±1.5*kAuroraOvalWarpDeg=±6°,
+    // storm*8.0 up to +8° at storm's slider-enforced max of 1.0); the fade zone reaches
+    // widthDeg*2, worst case 2*(6*(1+1.5))=30° at storm=1. So no parameter combination can light
+    // any colatitude beyond 34+30=64°, worst case — 70° below is that bound plus margin, kept as
+    // a plain arithmetic comparison (no noise, no branches inside a loop already paid for) so it
+    // costs nothing on the samples that DO need the real calculation.
+    if (degrees(colat) > 70.0)
+        return 0.0;
     vec2  ringP  = vec2(cos(az), sin(az)) * kAuroraRingWarpFreq;
     float ripple = warpPerlin3(vec3(ringP, t * kAuroraOvalDriftRate)) * kAuroraOvalWarpDeg;
     float centerDeg = kAuroraOvalColatDeg + ripple + storm * 8.0;
@@ -607,9 +649,31 @@ float auroraCurtainNoise(float colat, float az, float altM, float t, float storm
     vec3 p = vec3(az * kAuroraTangentFreq * (1.0 + storm * 0.8) + shimmerPhase,
                   altM * kAuroraAltFreq,
                   colat * kAuroraRadialFreq);
-    float base   = warpPerlin3(p);
-    float detail = warpPerlin3(p * vec3(3.1, 1.7, 2.0) + vec3(19.1, 4.7, 8.3)) * 0.5;
-    return remap(base + detail, -0.3, 0.9, 0.0, 1.0); // bias toward bright folds over dark gaps
+    // Perf (this session): "base" is now a texture read against auroraNoiseTex's R channel
+    // (baked once by aurora_noise.comp) instead of a live warpPerlin3 call — the biggest single
+    // piece of "why is aurora so much more expensive than clouds, which look more complex"
+    // (clouds' noise was already baked in a prior session; aurora's never was). shimmerPhase above
+    // stays LIVE and cheap (1 call) — it's the animation driver, offsetting the sample coordinate
+    // into the static baked texture, same "warp the lookup, bake the detail" split cloudWarpOffset
+    // already uses for clouds. (Also dropped the "detail" octave earlier this session — one fewer
+    // call — before this replaced the remaining "base" call entirely.)
+    //
+    // U wraps at the TRUE physical period (kAuroraTangentFreq*2*PI≈251.3), independent of the
+    // bake's own internal resolution (256 cells/loop — a power-of-2 approximation of that period,
+    // required for correct tiling, see aurora_noise.comp). fract() here handles both the wrap AND
+    // storm's frequency-scaling of p.x correctly: a p.x that completes more physical cycles per
+    // loop (storm scales the az term) just wraps U more times, which reads as "more folds" — the
+    // same visual effect storm produced before, now via repetition of the baked pattern rather
+    // than genuinely new higher-frequency noise (an accepted approximation).
+    // V/W are clamped to the bake's fixed ranges (see aurora_noise.comp): p.y in [0.24, 2.46]
+    // (= [kAuroraMarchInnerM, kAuroraMarchOuterM] * kAuroraAltFreq), p.z in [0, 91.6]
+    // (= [0, 75deg] * kAuroraRadialFreq).
+    const float kAuroraCurtainPeriod = kAuroraTangentFreq * 2.0 * PI;
+    float texU = fract(p.x / kAuroraCurtainPeriod);
+    float texV = clamp((p.y - 0.24) / (2.46 - 0.24), 0.0, 1.0);
+    float texW = clamp(p.z / 91.6, 0.0, 1.0);
+    float base = texture(auroraNoiseTex, vec3(texU, texV, texW)).r * 2.0 - 1.0;
+    return remap(base, -0.3, 0.9, 0.0, 1.0); // bias toward bright folds over dark gaps
 }
 
 // Combined density + color sample at a point given in the observer's local ENU-scaled frame
@@ -679,8 +743,20 @@ vec3 auroraSampleAt(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirECEF, f
     // OuterM), which must stay physically anchored there regardless of any one column's random window.
     // This only gates final visibility/opacity on top.
     const float kAuroraColumnFreq = 9.0;
-    float colA = warpPerlin3(vec3(az * kAuroraColumnFreq, colat * kAuroraColumnFreq * 0.5, 11.3)) * 0.5 + 0.5;
-    float colB = warpPerlin3(vec3(az * kAuroraColumnFreq, colat * kAuroraColumnFreq * 0.5, 47.9)) * 0.5 + 0.5;
+    // Perf (this session): colA/colB are now a single texture read against auroraNoiseTex's G/B
+    // channels (baked by aurora_noise.comp) instead of 2 separate live warpPerlin3 calls — no
+    // per-frame animation here to preserve (the live version had none either: no altitude, no
+    // time — constant all the way up a given column, see the comment above), so this is a
+    // straightforward bake with no runtime coordinate warp needed. az's column-specific frequency
+    // (kAuroraColumnFreq) cancels out of the wrap-period division below (az*freq / (freq*2*PI) =
+    // az/(2*PI)), so the U mapping is independent of it; W reuses the exact same colatitude-
+    // fraction formula as the curtain sample above (colat / radians(75)) — both channels were
+    // baked over the identical [0,75deg] colatitude range, just at different internal frequencies.
+    float colTexU = fract(az / (2.0 * PI));
+    float colTexW = clamp(colat / radians(75.0), 0.0, 1.0);
+    vec2  colSample = texture(auroraNoiseTex, vec3(colTexU, 0.5, colTexW)).gb;
+    float colA = colSample.x;
+    float colB = colSample.y;
     // Sorting two decorrelated samples into lo/hi (instead of deriving lo/hi from one center+halfwidth)
     // naturally produces the full requested spread: when colA/colB land close together the window is
     // narrow (low OR high depending on where), when they land far apart (near 0 and near 1) the window
@@ -1188,7 +1264,7 @@ void main() {
     vec2  hitUV     = vec2(0.0);
     vec3  terrainNorm = vec3(0.0, 0.0, 1.0); // overwritten on terrain hit
 
-    if (dir.z < 0.7 && tShell.y > 0.0) {
+    if (!dbgSkipTerrain() && dir.z < 0.7 && tShell.y > 0.0) {
         float tExit = (tBase.x > 0.0) ? tBase.x
                     : (tShell.y > 0.0  ? tShell.y : 0.0);
         // Cap scales with observer altitude so terrain is visible from LEO.
@@ -1201,13 +1277,22 @@ void main() {
 
         // Quadratic step distribution: steps grow proportionally to their index so
         // near terrain gets fine resolution while far terrain gets coarser steps.
-        // Step count scales with altitude: 196 at ground (terrain is close),
-        // up to 320 at LEO so the last steps near Earth are ~2.8 km — fine enough
-        // to detect Himalayan-scale terrain from 400 km nadir.
-        // Was mix(320.0, 320.0, ...) — a literal no-op that always paid the LEO-tuned 320-step
-        // budget even at ground level, directly contradicting the "196 at ground" comment above.
-        // Restored to match documented intent (session 24 perf follow-up).
-        int kN = int(mix(196.0, 320.0, clamp(obsEffH / 800000.0, 0.0, 1.0)));
+        // Perf (this session): step count now scales with this RAY's actual march distance
+        // (tExit), not observer altitude — same principle as the aurora march's path-length
+        // scaling (N_AURORA/kAuroraMaxStepM). The old altitude-only mix() gave a steep near-
+        // vertical ray and a long grazing-horizon ray from the SAME observer altitude identical
+        // step budgets, even though the grazing ray covers far more ground and needs more steps
+        // to avoid undersampling, while the steep ray was overpaying. With quadratic spacing the
+        // COARSEST step lands at the far end (frac≈1): dt ≈ 2*(tExit-2)/kN, so solving for kN
+        // at a target coarsest-step size reproduces the same ~2.8km-at-far-end calibration the
+        // original altitude-based tuning aimed for (see the historical "up to 320 at LEO...
+        // ~2.8km" comment this replaced). Min/max (64/164) are the user-validated range from the
+        // preliminary altitude-only test — jittery-but-passable at 64, fine at 164 — kept as-is,
+        // only the scaling variable changed from obsEffH to tExit.
+        const float kTerrainStepTargetM = 2800.0;
+        const int   kTerrainStepsMin = 64;
+        const int   kTerrainStepsMax = 164;
+        int kN = clamp(int(2.0 * (tExit - 2.0) / kTerrainStepTargetM), kTerrainStepsMin, kTerrainStepsMax);
         float jitter  = textureLod(noiseTex, gl_FragCoord.xy * (1.0/128.0), 0.0).r;
         float tPrev   = 2.0;
 
@@ -1308,7 +1393,8 @@ void main() {
     float viewSamplesMin = max(2.0, cloud.viewSamplesMin);
     float viewSamplesMax = max(viewSamplesMin, cloud.viewSamplesMax);
     float targetStepLen  = kAtmosRefTEnd / viewSamplesMin;
-    int   N_VIEW = int(clamp(ceil(tEnd / targetStepLen), viewSamplesMin, viewSamplesMax));
+    int   N_VIEW = dbgSkipAtmosphere() ? 0
+                 : int(clamp(ceil(tEnd / targetStepLen), viewSamplesMin, viewSamplesMax));
     float segLen = tEnd / float(N_VIEW);
     float cosA   = dot(dir, sunDir);
     float pR     = phaseR(cosA);
@@ -1420,243 +1506,24 @@ void main() {
     // Green + sodium bands (accumAirglow) rode the N_VIEW loop above for free.
     color += accumAirglow * kAirglowScale * cloud.airglowGain;
 
-    // Red band (630nm) supplemental march: peaks at 275km, well past N_VIEW's ~100km
-    // ceiling (R_ATMOS), so it can't ride those samples the way green/sodium do — a
-    // dedicated small march covers the [100km, 500km] altitude band instead.
-    //
-    // Entry/exit uses the same below/inside/above shell-relative classification cloudMarch and
-    // cirrusMarch already use, keyed on obsEffH (the observer's actual altitude) rather than
-    // blindly assuming the observer is always below the band. The uncapped "Raise Elevation"
-    // control (climb rate scales with current height, no ceiling) makes it easy to fly up INTO
-    // this 100-500km band — and once obsEffH exceeds ~100km and the view ray points outward/away
-    // from Earth, raySphere's forward root on the inner (100km) sphere goes negative (that sphere
-    // is now behind the camera). The original version of this march always started at tAtmos.y
-    // regardless, so in that configuration it began marching from a negative t — behind the
-    // camera — sweeping back through the observer's own position. That was the "red glow above
-    // the observer" bug: looking toward zenith while elevated into the band is exactly the
-    // outward-ray case that triggers it.
-    {
-        const float kAirglowInnerM = 100000.0; // = R_ATMOS - R_EARTH, shared with the N_VIEW loop
-        const float kAirglowFarM   = 500000.0;
-        vec2 tAirFar = raySphere(obsPos, dir, R_EARTH + kAirglowFarM);
-
-        float rtEnter, rtExit;
-        if (obsEffH < kAirglowInnerM) {
-            // Typical ground-based case: enter where the primary N_VIEW loop already stopped.
-            rtEnter = tAtmos.y;
-            rtExit  = tAirFar.y;
-        } else if (obsEffH <= kAirglowFarM) {
-            // Observer is inside the band itself — start marching immediately instead of at
-            // tAtmos.y, which can be behind the camera here.
-            rtEnter = 0.0;
-            rtExit  = tAirFar.y;
-            if (tAtmos.x > 0.0 && tAtmos.x < rtExit) rtExit = tAtmos.x; // or down through the inner boundary
-        } else {
-            // Above the band entirely: enter through the outer sphere, exit at the inner one.
-            rtEnter = tAirFar.x;
-            rtExit  = (tAtmos.x > 0.0) ? tAtmos.x : tAirFar.y;
-        }
-        if (tSurface > 0.0) rtExit = min(rtExit, tSurface);
-
-        if (rtEnter < rtExit && rtExit > 0.0) {
-            const int N_AIRGLOW_RED = 16;
-            float rSegLen = (rtExit - rtEnter) / float(N_AIRGLOW_RED);
-            vec3  accumAirglowRed = vec3(0.0);
-            for (int i = 0; i < N_AIRGLOW_RED; ++i) {
-                vec3  rp        = obsPos + dir * (rtEnter + (float(i) + 0.5) * rSegLen);
-                float rh        = length(rp) - R_EARTH;
-                vec3  rDirECEF  = normalize(rp.x * enuX + rp.y * enuY + rp.z * enuZ);
-                float rDayness  = clamp((dot(rDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
-                float rNight    = 1.0 - rDayness;
-                if (rNight > 0.001) {
-                    float rPatch = 0.6 + 0.4 * warpPerlin3(rDirECEF * kAirglowNoiseFreq
-                                        + vec3(pc.waveTime * kAirglowDriftRate, 17.0, -5.0));
-                    float dzR    = (rh - kAirglowRedPeakM) / kAirglowRedHalfWidthM;
-                    float densAirR = exp(-dzR * dzR) * rSegLen;
-                    accumAirglowRed += kAirglowRedColor * cloud.airglowRedGain * densAirR * rNight * rPatch;
-                }
-            }
-            color += accumAirglowRed * kAirglowScale * cloud.airglowGain;
-        }
-    }
+    // Red band (630nm) supplemental march: peaks at 275km, well past N_VIEW's ~100km ceiling
+    // (R_ATMOS), so it never rode those samples the way green/sodium do above. Perf (this
+    // session): the dedicated march itself moved to cloud_march.comp (airglowRedMarchCS),
+    // alongside aurora — half resolution instead of full-res. Rides along inside cloudA.rgb
+    // (B_total) the same way aurora does now; no separate handling needed here. See that
+    // function for the full march logic and the entry/exit classification history.
 
     // ── Aurora (C16, TERRAIN_PLAN.md Phase E) ──────────────────────────────────
-    // Emissive-only shell march, additive — same obsEffH-keyed entry/exit classification the
-    // airglowRed march above uses (so it doesn't break if the observer flies into/above the
-    // shell). Day-gating is per-SAMPLE geographic day/night (auroraSampleAt, mirroring
-    // airglowRed's rDayness/rNight) — NOT a single observer-based gate — precisely so an orbital
-    // view near the terminator, where the observer's own local sun angle may read "daylight" but
-    // a large genuinely dark portion of the sky/limb is still visible, shows aurora over that
-    // dark portion instead of blacking it out everywhere.
-    //
-    // Depth order vs. clouds is NOT fixed: from the ground, clouds (2-11km) sit between the
-    // camera and the aurora (95-300km) — aurora is background, clouds are foreground. From LEO+
-    // looking down, it's the opposite — the aurora shell is entered first (closer to the camera),
-    // clouds are much further along the ray, near the surface. `auroraBehindClouds` therefore
-    // decides how much cloud SUPPRESSION applies (see auroraCloudSuppress below) — but the
-    // contribution itself always resolves through auroraContribDeferred, added once AFTER the
-    // cloud composite runs (session 28 follow-up #11: merging into `color` pre-composite to pick
-    // up the standard linear cloudB.rgb multiply, tried first, wasn't strong enough — see that
-    // block's own comment).
-    //
-    // The ordering decision is PURELY a function of the OBSERVER's own altitude, not a per-ray
-    // distance comparison — the clouds (2-11km) and aurora (95-300km) occupy fixed, non-
-    // overlapping altitude bands around Earth, so which one a ray reaches first is entirely
-    // determined by which side of 95km the observer sits on: below it, any ray that reaches both
-    // must pass through the (lower) cloud band before it can climb to the (higher) aurora band;
-    // at or above it, the reverse — any downward ray crosses the aurora band before it can reach
-    // the lower cloud band. A first version compared `atEnter` (the aurora march's own entry
-    // distance) against a per-ray-sampled cloud entry distance instead, which turned out unreliable
-    // in ways not fully tracked down (correct at some altitudes, wrong at the ground and again
-    // above ~330km) — this altitude-only rule has no per-ray edge cases to get wrong.
-    vec3 auroraContribDeferred = vec3(0.0);
-    bool auroraBehindClouds = (obsEffH < kAuroraShellInnerM);
-    // Early, low-res sample of the cloud layer's own attenuation color (cloudTargetB.rgb) purely
-    // to steepen how hard clouds suppress aurora/Milky Way specifically — see the note where this
-    // is applied below for why the standard linear composite alone wasn't enough. Reads the same
-    // continuous, smoothly-interpolated color the main composite samples later (NOT the
-    // discontinuous tCloudOcclude distance field that caused aliasing when used as a hard cutoff
-    // in an earlier attempt), so this carries no aliasing risk.
-    float cloudBlockEarly = dot(texture(cloudTargetB,
-        gl_FragCoord.xy / (vec2(textureSize(cloudTargetB, 0)) * 2.0)).rgb, vec3(1.0 / 3.0));
-    {
-        // The march's own inner boundary is sampled at kAuroraShellInnerM MINUS the same 15km the
-        // vert density falloff (auroraSampleAt) now extends below kAuroraShellInnerM — see that
-        // function's comment. Without this, the march's atEnter would sit EXACTLY at 95km and no
-        // sample point would ever have altM<95000 regardless of how the density formula is
-        // softened, since sample positions are strictly bounded to [atEnter,atExit]. This is what
-        // caused the reported hard edge: airglow (green/sodium peak 90-96km) has real presence
-        // below 95km with no matching cutoff, so aurora's abrupt "nothing at all below 95km, full
-        // shell geometry aside" read as a seam against it, including in cases where Earth's
-        // curvature puts a lower-altitude portion of the visible aurora geometrically at a point
-        // the observer would expect to still see it.
-        // kAuroraMarchInnerM (not kAuroraShellInnerM) drives BOTH the sphere radius below AND the
-        // branch threshold just below it — they must match (a first version used the shrunk radius
-        // here but left the branch check at the unmodified kAuroraShellInnerM, leaving a genuinely
-        // broken observer-altitude band where the code assumed the observer was still below/outside
-        // the sphere — branch 1's whole premise — when they were actually already above it;
-        // raySphere then returns whatever an outward ray from just outside a sphere happens to give,
-        // often a miss, i.e. a negative atEnter putting the march's first samples BEHIND the camera).
-        // Set to ~40km: with auroraSampleAt's sigmoid falloff (center 95km, 7.5km scale), density
-        // drops below the vert<=0.001 early-out around ~43km — this needs to sit BELOW that point,
-        // not at it, so the march actually reaches far enough for the sigmoid's tail to be sampled
-        // at all instead of being clipped by the march bounds before the density formula's own
-        // (now-hard-floor-free) falloff gets a chance to run.
-        const float kAuroraMarchInnerM = kAuroraShellInnerM - 55000.0;
-        // Same reasoning as kAuroraMarchInnerM, mirrored for the outer edge: outerVert's sigmoid
-        // (center kAuroraShellOuterM, 15km scale) doesn't drop below the vert<=0.001 early-out
-        // until ~110km past kAuroraShellOuterM. Using the unmodified kAuroraShellOuterM for the
-        // march bound here would clip that tail off before it's ever sampled — the identical class
-        // of bug just fixed for the inner edge, just not yet reported for this one.
-        const float kAuroraMarchOuterM = kAuroraShellOuterM + 110000.0;
-        vec2 tAuroraFar = raySphere(obsPos, dir, R_EARTH + kAuroraMarchOuterM);
-        vec2 tAuroraIn  = raySphere(obsPos, dir, R_EARTH + kAuroraMarchInnerM);
-
-        float atEnter, atExit;
-        if (obsEffH < kAuroraMarchInnerM) {
-            atEnter = tAuroraIn.y;
-            atExit  = tAuroraFar.y;
-        } else if (obsEffH <= kAuroraMarchOuterM) {
-            atEnter = 0.0;
-            atExit  = tAuroraFar.y;
-            if (tAuroraIn.x > 0.0 && tAuroraIn.x < atExit) atExit = tAuroraIn.x;
-        } else {
-            atEnter = tAuroraFar.x;
-            atExit  = (tAuroraIn.x > 0.0) ? tAuroraIn.x : tAuroraFar.y;
-        }
-        if (tSurface > 0.0) atExit = min(atExit, tSurface);
-
-        if (atEnter < atExit && atExit > 0.0) {
-            // Adaptive sample count (same fix class as cloudMarch's kCloudMaxStepM, session 22):
-            // a FIXED N_AURORA badly serves this march because path length varies enormously with
-            // viewing angle — a straight-up ray through the shell is ~205km, but a near-horizontal
-            // (grazing) ray can be thousands of km, and a fixed 24 steps spreads across whichever
-            // one it is. At grazing angles the resulting step length blew way past the fold noise's
-            // own ~55-170km physical cell size (see the frequency constants' comment), badly
-            // undersampling it — exactly the "banding, odd noise evolution at horizontal/steep
-            // angles" reported. Scales step count with path length instead, capped both ends.
-            const float kAuroraMaxStepM = 15000.0;
-            const int   kAuroraStepsMin = 24;
-            const int   kAuroraStepsMax = 160;
-            float aPathLen = atExit - atEnter;
-            int   N_AURORA = clamp(int(aPathLen / kAuroraMaxStepM), kAuroraStepsMin, kAuroraStepsMax);
-            float aSegLen = aPathLen / float(N_AURORA);
-            vec3  accumAurora = vec3(0.0);
-            for (int i = 0; i < N_AURORA; ++i) {
-                vec3 ap = obsPos + dir * (atEnter + (float(i) + 0.5) * aSegLen);
-                accumAurora += auroraSampleAt(ap, enuX, enuY, enuZ, sunDirECEF, pc.waveTime, cloud.stormStrength);
-            }
-            // Light pollution + moonlight suppression — real aurora visibility from the ground is
-            // washed out by city glow and strong moonlight, same as stars/Milky Way. Reuses the
-            // directional light-pollution dome (lightDome[], same buffer sat_flare.comp/
-            // updateStars() consume) and the same moon-brightness shape the Milky Way block below
-            // uses — duplicated rather than shared (this runs earlier in main(), before that block
-            // computes its own copy), matching this codebase's established precedent of an
-            // independent copy per consumer for this exact formula.
-            float azLPAurora     = mod(atan(dir.x, dir.y) + 6.283185307, 6.283185307);
-            float secFAurora     = azLPAurora * (16.0 / 6.283185307) - 0.5;
-            int   sec0Aurora     = int(floor(secFAurora));
-            float secFracAurora  = secFAurora - float(sec0Aurora);
-            int   sec0wAurora    = ((sec0Aurora % 16) + 16) % 16;
-            int   sec1wAurora    = (sec0wAurora + 1) % 16;
-            float domeAzAurora   = mix(lightDome[sec0wAurora], lightDome[sec1wAurora], secFracAurora);
-            float elevFalloffAurora = 0.35 / (max(dir.z, 0.0) + 0.35);
-            float domeValAurora  = clamp(domeAzAurora * elevFalloffAurora, 0.0, 1.0);
-            const float kAuroraPollutionMaxDim = 0.9;
-
-            float tmAurora         = clamp(moonDirENU.z / 0.5, 0.0, 1.0);
-            float moonBrightAurora = tmAurora * tmAurora * moonDirENU.w;
-            const float kAuroraMoonMaxDim = 0.85;
-
-            float auroraVisSuppress = (1.0 - domeValAurora * kAuroraPollutionMaxDim)
-                                     * (1.0 - moonBrightAurora * kAuroraMoonMaxDim);
-
-            // Atmospheric extinction — same Kasten & Young 1989 airmass approximation already
-            // applied to satellites/stars/Milky Way (sat_flare.comp/updateStars()/the Milky Way
-            // block below), but never to the aurora's OWN emitted brightness until now. Real
-            // aurora, viewed at low elevation through much more atmosphere, dims (and reddens) the
-            // same way every other faint sky object here already does — omitting it meant nothing
-            // reduced the curtain's brightness for viewing angle at all, so at grazing/horizon
-            // angles it stayed exactly as bright as looking straight up, which is very likely why
-            // it stayed visible through clouds even after the clouds' own suppression was
-            // strengthened (follow-up #11) — the thing shining through was simply too bright to
-            // begin with, not under-suppressed. atmFracAurora fades this out for elevated observers
-            // (no atmospheric column left to attenuate through) — but uses a MUCH shorter scale
-            // height than the 80km satellites/Milky Way reuse elsewhere, which was calibrated for
-            // "ground vs. LEO" (~400-600km) and stays at ~30% even at 95km. That's a real problem
-            // specifically for aurora/airglow, which physically LIVE at 95-300km: an observer flying
-            // up toward or through that band would see the curtain progressively (and wrongly) dim
-            // as they approached it, reported as "aurora fades out while traveling through the
-            // airglow region." A 20km scale height instead is negligible (<1%) by 95km, so
-            // extinction has faded out well before the observer reaches the altitude where there's
-            // genuinely almost no atmosphere left between them and nearby curtain material.
-            float atmFracAurora    = clamp(exp(-obsEffH / 20000.0), 0.0, 1.0);
-            float sinElAurora      = clamp(dir.z, 0.0, 1.0);
-            float elDegAurora      = degrees(asin(sinElAurora));
-            float airmassAurora    = 1.0 / (sinElAurora + 0.50572 * pow(elDegAurora + 6.07995, -1.6364));
-            float extinctMagAurora = cloud.extinctionCoeff * (airmassAurora - 1.0) * atmFracAurora;
-            float extinctionAurora = pow(10.0, -0.4 * extinctMagAurora);
-
-            vec3 auroraContrib = accumAurora * aSegLen * kAuroraScale * cloud.auroraGain
-                                * auroraVisSuppress * extinctionAurora;
-            // Aurora is ALWAYS resolved through auroraContribDeferred now (added once, after the
-            // cloud composite runs — see that line below), rather than sometimes merging into
-            // `color` pre-composite to pick up the standard linear cloudB.rgb multiply. That linear
-            // multiply alone still let aurora show clearly through cloud that reads as visually
-            // solid: a transmittance of e.g. 0.25 ("mostly opaque") only cuts brightness to a
-            // quarter, and aurora's raw HDR value (further amplified by EXPOSURE_NIGHT's 10x at
-            // night) stays clearly visible even at a quarter strength. When behind clouds, apply an
-            // explicit CUBED suppression on the same continuous transmittance value instead — much
-            // steeper falloff (0.25^3≈0.016 vs. 0.9^3≈0.73) with no new discontinuity — and skip the
-            // separate linear multiply entirely so the two don't compound unpredictably. When in
-            // front of clouds (LEO+ looking down), no cloud suppression at all, as before.
-            const float kAuroraCloudSuppressPower = 3.0;
-            float auroraCloudSuppress = auroraBehindClouds
-                ? pow(clamp(cloudBlockEarly, 0.0, 1.0), kAuroraCloudSuppressPower)
-                : 1.0;
-            auroraContribDeferred = auroraContrib * auroraCloudSuppress;
-        }
-    }
+    // Perf (this session): the sky curtain march itself moved to cloud_march.comp, alongside
+    // clouds/cirrus, so it runs at half resolution instead of full-res (one of the two big
+    // remaining levers from "why is aurora so much more expensive than clouds" — the other,
+    // baking its noise, is done too — see aurora_noise.comp). Its result now arrives already
+    // folded into cloudTargetA's B_total (additive radiance), composited below alongside
+    // cirrus/cloud with no separate handling needed here. auroraFrame/auroraCoverage/
+    // auroraOvalMask/auroraCurtainNoise/auroraSampleAt (above) and auroraGlowAt (below) STAY here
+    // — still used by terrain/ocean ambient lighting and the ocean sky-reflection's aurora sample,
+    // both full-resolution. dbgSkipAurora() now lives in CloudMarchPC (mirrors debugDisableMask)
+    // since that's where the actual march runs; see cloud_march.comp's auroraMarchCS.
 
     // ── Moon disc ─────────────────────────────────────────────────────────────
     // kMoonTexRotDeg: rotates the texture CW in the UV plane to align the image's
@@ -2118,7 +1985,7 @@ void main() {
             vec3 reflDir   = reflect(dir, waveN);
             vec3 reflColor = vec3(0.12, 0.28, 0.50) * dayFrac;
             float reflStr  = fresnel * exp(-dist / 40000.0);
-            if (dot(reflDir, surfUp) > 0.0 && reflStr > 0.005) {
+            if (!dbgSkipOceanRefl() && dot(reflDir, surfUp) > 0.0 && reflStr > 0.005) {
                 vec2 tAR = raySphere(hitPt, reflDir, R_ATMOS);
                 if (tAR.y > 0.0) {
                     int   N_REFL = int(max(1.0, cloud.oceanReflSamples)); // perf session 24, was const 6
@@ -2281,11 +2148,15 @@ void main() {
     // ALWAYS valid whenever either layer rendered anything, regardless of opacity — this is what
     // terrain suppression must use; tCloudOcclude's 90%-opacity gate meant most non-solid cloud
     // never got suppressed at all, a real bug, not just the documented mid-shell approximation).
-    // textureSize gives the half-res target's own dimensions; ×2 approximates the full-res frame
-    // size (exact when swapExtent is even, off by at most one texel otherwise — invisible for
-    // this soft, bilinearly-sampled data).
-    vec2  cloudHalfRes = vec2(textureSize(cloudTargetA, 0));
-    vec2  cloudUV      = gl_FragCoord.xy / (cloudHalfRes * 2.0);
+    // Perf (this session, resolution-scaling fix): was `gl_FragCoord.xy / (textureSize(
+    // cloudTargetA,0)*2.0)`, silently assuming gl_FragCoord always spans the full swap extent —
+    // true before renderScale existed, false once sat_sky.frag can render into a SMALLER low-res
+    // framebuffer (recordPrePass) while cloudTargetA/B stay sized off the TRUE swap extent
+    // (cloud_march.comp's own dispatch is unaffected by renderScale). Dividing by the wrong,
+    // larger denominator compressed cloudUV into a shrinking corner of [0,1] as renderScale
+    // dropped — reported as clouds drifting off-center and distorting. pc.screenSizePx is always
+    // this draw's OWN actual target size, so this now maps to [0,1] correctly regardless of scale.
+    vec2  cloudUV = gl_FragCoord.xy / pc.screenSizePx;
     vec4  cloudA       = texture(cloudTargetA, cloudUV);
     vec4  cloudB       = texture(cloudTargetB, cloudUV);
     // cloudBlock (post-tonemap sun-disc dimming, used below) derived from A_total's luminance
@@ -2302,14 +2173,13 @@ void main() {
     // between the cirrus and low-cloud layers specifically (both merged into one target, so they
     // can't be independently suppressed) — accepted approximations, see the half-res-cloud-pass
     // plan's "Known limitation" note.
+    // Aurora rides along inside cloudA.rgb (B_total) now — folded in by cloud_march.comp's
+    // auroraMarchCS, with its own cloud-suppression already applied there using the local cloud
+    // opacity. No separate aurora term needed here; it shares this same terrain-occlusion gate
+    // too (a deliberate behavior change from before — see the "Aurora" comment above main()).
     if (!(tSurface > 0.0 && tEnterCombined >= 0.0 && tSurface < tEnterCombined)) {
         color = color * cloudB.rgb + cloudA.rgb;
     }
-    // Aurora always resolves here, post-composite (see auroraContribDeferred's own comment above
-    // for why it no longer ever merges into `color` pre-composite) — already carries its own cloud
-    // suppression baked in (cubed transmittance when behind clouds, none when in front), so no
-    // further multiply against cloudB.rgb here.
-    color += auroraContribDeferred;
 
     // ── Auto-exposure tone mapping ─────────────────────────────────────────────
     float dayness  = clamp((sunDirENU.w + 0.2) / 1.2, 0.0, 1.0);
