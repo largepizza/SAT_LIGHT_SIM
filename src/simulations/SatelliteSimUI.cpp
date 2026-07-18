@@ -1203,6 +1203,80 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         }
     }
 
+    // ── Render scale (resolution scaling, session 29) ──────────────────────
+    // Below 100%, the sky/terrain/ocean background renders at reduced resolution and gets
+    // upscaled — satellites/stars/UI stay at native resolution always (see SatelliteSim.h's
+    // resolution-scaling member comment). A lower-end-hardware fallback, not the default.
+    // Placed near the top of Display (not down by the debug/knockout tools below) since this is
+    // a real user-facing performance option, not a profiling aid.
+    CLAY(CLAY_ID("RenderScaleRow"), {.layout = {
+                                         .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                         .padding = {4, 4, 4, 4},
+                                         .childGap = 8,
+                                         .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                         .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Render scale"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
+        CLAY(CLAY_ID("RenderScaleSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+
+        Clay_Color rsMinusBg = hovRenderScaleMinus ? Pal::btnHover : Pal::btnIdle;
+        CLAY(CLAY_ID("RenderScaleMinus"), {.layout = {
+                                               .sizing = {CLAY_SIZING_FIXED(22), CLAY_SIZING_FIXED(22)},
+                                               .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                           .backgroundColor = rsMinusBg,
+                                           .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovRenderScaleMinus);
+            sndClick(n, inp.lmbPressed);
+            hovRenderScaleMinus = n;
+            if (hovRenderScaleMinus && inp.lmbPressed)
+            {
+                renderScale = std::max(0.5f, renderScale - 0.05f);
+                if (ctx_)
+                {
+                    destroySkyLowResResources(ctx_->device);
+                    createSkyLowResResources(*ctx_);
+                }
+            }
+            CLAY_TEXT(CLAY_STRING("-"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(13)}));
+        }
+
+        static char renderScaleBuf[8];
+        snprintf(renderScaleBuf, sizeof(renderScaleBuf), "%.0f%%", renderScale * 100.0f);
+        Clay_String renderScaleStr{false, (int32_t)strlen(renderScaleBuf), renderScaleBuf};
+        CLAY(CLAY_ID("RenderScaleVal"), {.layout = {
+                                             .sizing = {CLAY_SIZING_FIXED(44), CLAY_SIZING_FIT(0)},
+                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+        {
+            CLAY_TEXT(renderScaleStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(13)}));
+        }
+
+        Clay_Color rsPlusBg = hovRenderScalePlus ? Pal::btnHover : Pal::btnIdle;
+        CLAY(CLAY_ID("RenderScalePlus"), {.layout = {
+                                              .sizing = {CLAY_SIZING_FIXED(22), CLAY_SIZING_FIXED(22)},
+                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                          .backgroundColor = rsPlusBg,
+                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovRenderScalePlus);
+            sndClick(n, inp.lmbPressed);
+            hovRenderScalePlus = n;
+            if (hovRenderScalePlus && inp.lmbPressed)
+            {
+                renderScale = std::min(1.0f, renderScale + 0.05f);
+                if (ctx_)
+                {
+                    destroySkyLowResResources(ctx_->device);
+                    createSkyLowResResources(*ctx_);
+                }
+            }
+            CLAY_TEXT(CLAY_STRING("+"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(13)}));
+        }
+    }
+
     // ── Fullscreen toggle ─────────────────────────────────────────
     bool isFs = win && glfwGetWindowMonitor(win) != nullptr;
     CLAY(CLAY_ID("WinModeRow"), {.layout = {
@@ -1323,6 +1397,125 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                 showControlsOnStartup = !showControlsOnStartup;
             CLAY_TEXT(showControlsOnStartup ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
                       CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+        }
+    }
+
+    // ── GPU frame breakdown (read-only) ────────────────────────────
+    // gpuMsSmoothed[]/gpuMsTotalSmoothed are EMA-smoothed GPU timestamp-query
+    // results, one frame stale (see the member comments in SatelliteSim.h).
+    CLAY(CLAY_ID("PerfDiv"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                         .padding = {0, 0, 6, 4}},
+                              .backgroundColor = {30, 30, 32, 255}}) {}
+    CLAY_TEXT(CLAY_STRING("GPU FRAME BREAKDOWN"),
+              CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
+
+    static const char *kPerfLabels[6] = {
+        "Cloud march", "Orbit compute", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
+    static char perfBufs[7][20];
+    for (int pi = 0; pi < 6; ++pi)
+    {
+        snprintf(perfBufs[pi], sizeof(perfBufs[pi]), "%.2f ms", gpuMsSmoothed[pi]);
+        Clay_String labelStr{false, (int32_t)strlen(kPerfLabels[pi]), kPerfLabels[pi]};
+        Clay_String valStr{false, (int32_t)strlen(perfBufs[pi]), perfBufs[pi]};
+        CLAY(CLAY_IDI("PerfRow", pi), {.layout = {
+                                           .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
+                                           .padding = {4, 4, 2, 2},
+                                           .childGap = 8,
+                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY_TEXT(labelStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            CLAY(CLAY_IDI("PerfSpacer", pi), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+            CLAY_TEXT(valStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
+        }
+    }
+    snprintf(perfBufs[6], sizeof(perfBufs[6]), "%.2f ms", gpuMsTotalSmoothed);
+    Clay_String totalStr{false, (int32_t)strlen(perfBufs[6]), perfBufs[6]};
+    CLAY(CLAY_ID("PerfTotalRow"), {.layout = {
+                                       .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
+                                       .padding = {4, 4, 2, 2},
+                                       .childGap = 8,
+                                       .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                       .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("GPU total"), CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        CLAY(CLAY_ID("PerfTotalSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+        CLAY_TEXT(totalStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+    }
+
+    // ── Knockout profiling toggles ──────────────────────────────────
+    // Each disables one block of sat_sky.frag (see dbgSkip* in the shader). Compare
+    // "Sky background draw" above with a toggle on vs. off to read off that block's
+    // isolated GPU cost directly, without a GPU capture tool. Bits match SatelliteSim.h's
+    // debugDisableMask comment: 1=terrain, 2=atmosphere, 4=sun optical depth, 8=ocean reflection.
+    CLAY_TEXT(CLAY_STRING("KNOCKOUT PROFILING (disables rendering correctness for cost isolation)"),
+              CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
+    static const char *kDebugToggleLabels[6] = {
+        "Terrain march", "Atmosphere loop (N_VIEW)", "Sun optical depth (N_LIGHT)", "Ocean sky reflection",
+        "Airglow red (16-step march)", "Aurora curtain march"};
+    static const uint32_t kDebugToggleBits[6] = {1u, 2u, 4u, 8u, 16u, 32u};
+    for (int ti = 0; ti < 6; ++ti)
+    {
+        bool on = (debugDisableMask & kDebugToggleBits[ti]) != 0u;
+        Clay_String lblStr{false, (int32_t)strlen(kDebugToggleLabels[ti]), kDebugToggleLabels[ti]};
+        CLAY(CLAY_IDI("DebugToggleRow", ti), {.layout = {
+                                                  .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26)},
+                                                  .padding = {4, 4, 2, 2},
+                                                  .childGap = 8,
+                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                  .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY_TEXT(lblStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            CLAY(CLAY_IDI("DebugToggleSpacer", ti), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+            Clay_Color chkBg = on ? Pal::btnAccent : (hovDebugToggle[ti] ? Pal::btnHover : Pal::btnIdle);
+            CLAY(CLAY_IDI("DebugToggleChk", ti), {.layout = {
+                                                      .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                                      .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                                  .backgroundColor = chkBg,
+                                                  .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovDebugToggle[ti]);
+                sndClick(n, inp.lmbPressed);
+                if (n && inp.lmbPressed)
+                    debugDisableMask ^= kDebugToggleBits[ti];
+                hovDebugToggle[ti] = n;
+                CLAY_TEXT(on ? CLAY_STRING("SKIP") : CLAY_STRING("ON"),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+            }
+        }
+    }
+
+    // ── Save snapshot ────────────────────────────────────────────
+    // Appends the current status + averaged GPU timing above to
+    // perf_profiles/profile_log.jsonl next to the exe (see savePerfSnapshot).
+    if (snapshotMsgTimer > 0.0f)
+        snapshotMsgTimer = std::max(0.0f, snapshotMsgTimer - inp.dt);
+    CLAY(CLAY_ID("SaveSnapshotRow"), {.layout = {
+                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(30)},
+                                          .padding = {4, 4, 4, 4},
+                                          .childGap = 8,
+                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        Clay_Color snapBtnBg = snapshotMsgTimer > 0.0f ? Pal::btnAccent
+                               : hovSaveSnapshot       ? Pal::btnHover
+                                                       : Pal::btnIdle;
+        CLAY(CLAY_ID("SaveSnapshotBtn"), {.layout = {
+                                              .sizing = {CLAY_SIZING_FIXED(140), CLAY_SIZING_FIXED(24)},
+                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                          .backgroundColor = snapBtnBg,
+                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovSaveSnapshot);
+            sndClick(n, inp.lmbPressed);
+            if (n && inp.lmbPressed)
+                savePerfSnapshot(inp.dt);
+            hovSaveSnapshot = n;
+            ui.tooltip(inp, n, "Append current status + GPU timing to perf_profiles/profile_log.jsonl", fs(11));
+            CLAY_TEXT(snapshotMsgTimer > 0.0f ? CLAY_STRING("Saved") : CLAY_STRING("Save Snapshot"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
         }
     }
 }
@@ -1568,7 +1761,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"L1 alt (m)", &cloudTopAltM, 4000.0f, 15000.0f, 250.0f, "%.0f", 3},
         {"Drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
         {"Sun gain", &cloudSunGain, 0.0f, 5.0f, 0.1f, "%.2f", 5},
-        {"Ambient", &cloudAmbientGain, 0.0f, 2.0f, 0.05f, "%.2f", 6},
+        {"Ambient", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
         {"HG g", &cloudHgG, 0.0f, 0.99f, 0.05f, "%.2f", 7},
         {"March steps", &cloudMarchSteps, 4.0f, 1024.0f, 4.0f, "%.0f", 8},
         {"Light steps", &cloudLightSteps, 1.0f, 16.0f, 1.0f, "%.0f", 9},
@@ -1887,6 +2080,7 @@ void SatelliteSim::loadSettings()
     {
         auto &d = j["display"];
         uiScale = d.value("ui_scale", uiScale);
+        renderScale = d.value("render_scale", renderScale);
         settingsChrome.x = d.value("win_x", settingsChrome.x);
         settingsChrome.y = d.value("win_y", settingsChrome.y);
         settingsChrome.w = d.value("win_w", settingsChrome.w);
@@ -2031,6 +2225,7 @@ void SatelliteSim::saveSettings()
 
     j["display"] = {
         {"ui_scale", uiScale},
+        {"render_scale", renderScale},
         {"active_tab", settingsActiveTab},
         {"unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0},
         {"show_controls_on_startup", showControlsOnStartup}};
@@ -2114,5 +2309,142 @@ void SatelliteSim::saveSettings()
     catch (const std::exception &e)
     {
         fprintf(stderr, "[SatelliteSim] Failed to save settings.json: %s\n", e.what());
+    }
+}
+
+// ─── savePerfSnapshot ───────────────────────────────────────────────────────
+// Appends one JSON record — system status + the EMA-averaged GPU pass timings
+// from gpuMsSmoothed[]/gpuMsTotalSmoothed (see updateGpuTimingStats in
+// SatelliteSim.cpp) — to perf_profiles/profile_log.jsonl next to the exe.
+// JSON Lines (one object per line) rather than a JSON array so the log can
+// grow across sessions/restarts by simple appending and be bulk-loaded later
+// (e.g. pandas.read_json(path, lines=True)) without ever re-parsing the whole
+// file to add an entry.
+void SatelliteSim::savePerfSnapshot(float cpuDt)
+{
+    if (exeDir_.empty())
+        return;
+
+    nlohmann::json j;
+
+    // Host wall-clock capture time — distinct from simulated UTC below — so
+    // records can be sorted/deduped by when they were actually taken.
+    {
+        time_t now = time(nullptr);
+        struct tm *utc = gmtime(&now);
+        char buf[32];
+        if (utc)
+            snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
+                     utc->tm_year + 1900, utc->tm_mon + 1, utc->tm_mday,
+                     utc->tm_hour, utc->tm_min, utc->tm_sec);
+        else
+            snprintf(buf, sizeof(buf), "unknown");
+        j["captured_at_utc"] = buf;
+        j["captured_at_unix"] = (int64_t)now;
+    }
+
+    // GPU device name is the main cross-hardware categorization key — without
+    // it, snapshots from different users' machines can't be told apart.
+    if (ctx_)
+    {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(ctx_->physicalDevice, &props);
+        j["gpu_device"] = props.deviceName;
+        j["resolution"] = {{"width", ctx_->swapExtent.width}, {"height", ctx_->swapExtent.height}};
+    }
+
+    j["observer"] = {
+        {"lat_deg", obsLatDeg},
+        {"lon_deg", obsLonDeg},
+        {"height_offset_m", obsHeightOffset},
+        {"terrain_h_m", obsTerrainH},
+        {"alt_mode", altModeSeaLevel ? "MSL" : "AGL"}};
+
+    j["camera"] = {
+        {"az_deg", camera.azDeg},
+        {"el_deg", camera.elDeg},
+        {"fov_y_deg", camera.fovYDeg}};
+
+    // Simulated UTC — same J2000-epoch conversion as the left HUD clock (buildLeftHudPanel).
+    {
+        time_t unixSim = (time_t)(simDayJ2000 * 86400LL + (int64_t)simSecInDay) + 946728000;
+        struct tm *utc = gmtime(&unixSim);
+        char buf[32];
+        if (utc)
+            snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
+                     utc->tm_year + 1900, utc->tm_mon + 1, utc->tm_mday,
+                     utc->tm_hour, utc->tm_min, utc->tm_sec);
+        else
+            snprintf(buf, sizeof(buf), "unknown");
+        j["sim_time"] = {
+            {"utc", buf},
+            {"day_j2000", simDayJ2000},
+            {"sec_in_day", simSecInDay}};
+    }
+
+    j["time_scale"] = {
+        {"idx", timeScaleIdx},
+        {"label", kTimeLabels[timeScaleIdx]},
+        {"multiplier", kTimeScales[timeScaleIdx]},
+        {"paused", timePaused},
+        {"reverse", timeDir < 0.0f}};
+
+    j["satellites"] = {
+        {"active_count", activeSatCount},
+        {"visible_count", visibleCount},
+        {"gpu_count", gpuSatCount},
+        {"peak_magnitude", peakMagnitude}};
+
+    nlohmann::json enabledConst = nlohmann::json::array();
+    for (const auto &c : constellations)
+        if (c.enabled)
+            enabledConst.push_back(c.name);
+    j["constellations_enabled"] = enabledConst;
+
+    // Settings that materially affect GPU cost — needed to tell "this location is
+    // slow" apart from "quality was cranked up when this was captured".
+    j["quality"] = {
+        {"cloud_march_steps", cloudMarchSteps},
+        {"cloud_light_steps", cloudLightSteps},
+        {"cloud_coverage", cloudCoverage},
+        {"view_samples_min", viewSamplesMin},
+        {"view_samples_max", viewSamplesMax},
+        {"light_samples", lightSamples},
+        {"ocean_sea_octaves", oceanSeaOctaves},
+        {"ocean_detail_octaves", oceanDetailOctaves},
+        {"ocean_refl_samples", oceanReflSamples}};
+
+    // GPU pass breakdown is already EMA-smoothed over recent frames (see the
+    // gpuMsSmoothed comments in SatelliteSim.h) — this is an averaged snapshot,
+    // not one noisy single-frame sample. CPU frame time is the current frame's
+    // raw dt (same source as the HUD fps badge), included for comparison against
+    // the GPU total (a gap between them points at CPU-side or present/vsync cost).
+    j["gpu_timing_ms"] = {
+        {"cloud_march", gpuMsSmoothed[0]},
+        {"orbit_compute", gpuMsSmoothed[1]},
+        {"flare_compute", gpuMsSmoothed[2]},
+        {"sky_background_draw", gpuMsSmoothed[3]},
+        {"satellite_star_draw", gpuMsSmoothed[4]},
+        {"ui_overlay", gpuMsSmoothed[5]},
+        {"total", gpuMsTotalSmoothed}};
+    j["cpu_frame"] = {
+        {"dt_ms", cpuDt * 1000.0f},
+        {"fps", cpuDt > 0.0f ? 1.0f / cpuDt : 0.0f}};
+    // Which knockout toggles (if any) were active when this snapshot was taken — a
+    // snapshot captured mid-profiling with bits set is only meaningful alongside this.
+    j["debug_disable_mask"] = debugDisableMask;
+
+    auto dir = std::filesystem::path(exeDir_) / "perf_profiles";
+    auto path = dir / "profile_log.jsonl";
+    try
+    {
+        std::filesystem::create_directories(dir);
+        std::ofstream f(path, std::ios::app);
+        f << j.dump() << '\n';
+        snapshotMsgTimer = 1.5f;
+    }
+    catch (const std::exception &e)
+    {
+        fprintf(stderr, "[SatelliteSim] Failed to save perf snapshot: %s\n", e.what());
     }
 }

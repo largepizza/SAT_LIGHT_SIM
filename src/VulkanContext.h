@@ -48,6 +48,11 @@ struct VulkanContext {
 
     // ── Render pass & framebuffers ─────────────────────────────────────────
     VkRenderPass                renderPass = VK_NULL_HANDLE;
+    // Same attachment formats/sample-counts as renderPass (so it stays compatible with the same
+    // framebuffers below), but LOAD instead of CLEAR for the color attachment — for simulations
+    // that pre-populate the swapchain image via a blit before the main pass begins (see
+    // Simulation::recordPrePass/activeRenderPass). Depth still CLEARs normally either way.
+    VkRenderPass                renderPassLoad = VK_NULL_HANDLE;
     std::vector<VkFramebuffer>  framebuffers;
 
     // ── Depth buffer (shared; recreated on resize) ─────────────────────────
@@ -62,6 +67,22 @@ struct VulkanContext {
     VkSemaphore              semImageAvailable  = VK_NULL_HANDLE;
     std::vector<VkSemaphore> semRenderDone;   // one per swapchain image
     VkFence                  fenceFrame         = VK_NULL_HANDLE;
+
+    // ── GPU timestamp profiling ────────────────────────────────────────────
+    // Single frame in flight, so it's safe to resolve the previous frame's
+    // query results right after the fence wait in App::drawFrame, before the
+    // command buffer is reset and re-recorded for the new frame. Slot layout
+    // is a shared contract between App.cpp (writes 0, 5, 6) and SatelliteSim
+    // (writes 1, 2, 3 in recordCompute; 4 in recordDraw) — see comments there.
+    static constexpr uint32_t kTimestampCount = 7;
+    VkQueryPool queryPool         = VK_NULL_HANDLE;
+    double      timestampPeriodNs = 0.0;   // ns/tick, from device limits; 0 = unsupported
+    bool        timestampsReady   = false; // false until one full frame has been resolved
+    double      timestampMs[kTimestampCount] = {}; // resolved, ms relative to slot 0
+
+    void resetTimestamps(VkCommandBuffer cmd);
+    void writeTimestamp(VkCommandBuffer cmd, VkPipelineStageFlagBits stage, uint32_t slot);
+    void resolveTimestamps();
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
     void init(GLFWwindow* window);
@@ -99,12 +120,14 @@ private:
     void createDevice();
     void createSwapchain(GLFWwindow* window);
     void createRenderPass();
+    void createRenderPassLoad();
     void createDepthResources();
     void destroyDepthResources();
     void createFramebuffers();
     void createCommandPool();
     void createCommandBuffer();
     void createSyncObjects();
+    void createQueryPool();
     void cleanupSwapchain();
     VkFormat findDepthFormat();
 

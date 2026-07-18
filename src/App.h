@@ -17,6 +17,7 @@ private:
     GLFWwindow*              window   = nullptr;
     bool                     resized  = false;
     double                   lastTime = 0.0;
+    bool                     submittedOnce = false; // guards the first-frame timestamp resolve (fence starts pre-signaled)
     VulkanContext            ctx;
     std::unique_ptr<Simulation> sim;
     UIRenderer               ui;

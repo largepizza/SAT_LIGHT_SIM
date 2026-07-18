@@ -29,6 +29,22 @@ public:
     // dt = seconds since last frame.
     virtual void recordCompute(VkCommandBuffer cmd, VulkanContext& ctx, float dt) {}
 
+    // Record work AFTER recordCompute but BEFORE the main render pass begins — e.g. an offscreen
+    // low-resolution pass whose result gets blitted into the swapchain image ahead of time, for
+    // simulations that pre-populate the framebuffer instead of letting the main render pass clear
+    // it (see activeRenderPass). imgIdx identifies which swapchain image this frame targets (the
+    // render pass itself only needs a framebuffer, but a pre-pass blit operates on the raw
+    // VkImage directly, outside the render pass abstraction). Default implementation does nothing.
+    virtual void recordPrePass(VkCommandBuffer cmd, VulkanContext& ctx, float dt, uint32_t imgIdx) {}
+
+    // Which render pass App should begin for this frame's main draw pass. Default: ctx.renderPass
+    // (the normal CLEAR-based pass). A simulation that used recordPrePass to pre-fill the
+    // framebuffer via a blit should return a LOAD-based render pass instead (same attachment
+    // formats, so it stays compatible with the existing ctx.framebuffers — render pass
+    // compatibility only requires matching format/sample-count, not matching load/store ops) so
+    // the pre-pass's contents survive into the main pass instead of being cleared away.
+    virtual VkRenderPass activeRenderPass(VulkanContext& ctx) { return ctx.renderPass; }
+
     // Record draw calls into an already-begun command buffer inside an open render pass.
     // The render pass is begun and ended by App; do NOT call vkCmdBeginRenderPass here.
     // dt = seconds since last frame.

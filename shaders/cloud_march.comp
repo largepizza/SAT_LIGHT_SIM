@@ -22,7 +22,7 @@
 // them could simply be deleted from sat_sky.frag.
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// ── Push constants (128 bytes, matches C++ CloudMarchPC) ──────────────────────
+// ── Push constants (132 bytes, matches C++ CloudMarchPC) ──────────────────────
 layout(push_constant) uniform PC {
     mat4  skyView;     // ENU -> camera space (rotation, no translation) — same as SatDrawPC
     float fovYRad;
@@ -32,6 +32,8 @@ layout(push_constant) uniform PC {
     vec4  sunDirENU;
     vec4  moonDirENU;
     vec4  obsECEFDir;   // xyz = observer ECEF unit vector
+    uint  debugDisableMask; // perf knockout toggles — mirrors SatDrawPC's; only bit 32 (aurora) is
+                            // meaningful here now that the sky curtain march lives in this shader
 } pc;
 
 layout(set = 0, binding = 0) uniform sampler2D earthCloudsTex;
@@ -104,6 +106,18 @@ layout(set = 0, binding = 4) uniform CloudParams {
 layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D targetA;
 // Target B: rgb = combined multiplicative attenuation (A_total), a = cloudBlock (sun-dimming scalar)
 layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D targetB;
+
+// Perf (this session): the aurora sky curtain march moved here from sat_sky.frag, alongside
+// clouds/cirrus, so it runs at this pass's half resolution instead of full-res — one of the two
+// remaining big levers identified from "why is aurora so much more expensive than clouds" (the
+// other, baking its noise, is already done — see aurora_noise.comp). Needs its own read of
+// lightDomeBuf (light-pollution suppression, same buffer sat_flare.comp/sat_sky.frag consume) and
+// auroraNoiseTex (binding 16 in sat_sky.frag's descriptor set, binding 8 here — separate
+// descriptor sets, same underlying resources).
+layout(std430, set = 0, binding = 7) readonly buffer LightDomeBuf {
+    float lightDome[16];
+};
+layout(set = 0, binding = 8) uniform sampler3D auroraNoiseTex;
 
 const float PI = 3.14159265359;
 const float R_EARTH = 6371000.0;
@@ -269,6 +283,266 @@ float auroraOvalMaskLocal(vec3 posDirECEF, float t, float storm) {
     float threshold = mix(0.2, -0.6, clamp(storm, 0.0, 1.0));
     float coverage  = smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
     return band * coverage;
+}
+
+// ── Aurora sky curtain (moved here from sat_sky.frag this session — perf) ──────────────────────
+// Full-featured versions (ripple warp, smoothstep fade zone) of the oval mask, distinct from
+// auroraOvalMaskLocal above (that stripped-down version stays sat_sky.frag-only-style, used just
+// for cloud-top upwelling here). These four are a near-verbatim duplicate of sat_sky.frag's own
+// auroraFrame/auroraCoverage/auroraOvalMask/auroraCurtainNoise — keep both copies in sync, same
+// convention this file already documents at the top for cloudMarch/cirrusMarch's shared helpers.
+// sat_sky.frag still needs its own copies too: auroraGlowAt (terrain/ocean ambient lighting) and
+// the ocean sky-reflection's aurora sample both stay full-resolution and keep calling them there.
+const float kAuroraShellInnerM  = 95000.0;
+const float kAuroraShellOuterM  = 300000.0;
+const float kAuroraRingWarpFreq = 3.0;
+const float kAuroraOvalWarpDeg  = 4.0;
+const float kAuroraOvalDriftRate = 0.003;
+const float kAuroraTangentFreq  = 40.0;
+const float kAuroraRadialFreq   = 70.0;
+const float kAuroraAltFreq      = 0.000006;
+const float kAuroraScale        = 0.000001;
+const vec3  kAuroraTopColor     = vec3(0.65, 0.15, 0.45);
+// kAuroraGroundColor (already declared above) is numerically identical to sat_sky.frag's
+// kAuroraBaseColor — reused directly below rather than redeclaring under a second name.
+const vec3  kAirglowGreenColor  = vec3(0.35, 1.0, 0.25);
+const vec3  kAirglowSodiumColor = vec3(1.0, 0.65, 0.15);
+const vec3  kAirglowRedColor    = vec3(1.0, 0.12, 0.05);
+
+void auroraFrame(vec3 dirECEF, vec3 poleDir, out float colat, out float az,
+                  out vec3 radialT, out vec3 tangentT) {
+    colat = acos(clamp(dot(dirECEF, poleDir), -1.0, 1.0));
+    vec3 ref = abs(poleDir.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    tangentT = normalize(cross(poleDir, ref));
+    radialT  = normalize(cross(tangentT, poleDir));
+    vec3 localDir = dirECEF - poleDir * dot(dirECEF, poleDir);
+    az = atan(dot(localDir, tangentT), dot(localDir, radialT));
+}
+
+float auroraCoverage(float colat, float az, float t, float storm) {
+    vec2  azWarp = vec2(cos(az), sin(az)) * cloud.auroraCoverageAzFreq + t * cloud.auroraCoverageDriftRate;
+    float n = warpPerlin3(vec3(azWarp, degrees(colat) * cloud.auroraCoverageFreq));
+    float threshold = mix(0.2, -0.6, clamp(storm, 0.0, 1.0));
+    return smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
+}
+
+float auroraOvalMask(float colat, float az, float t, float storm) {
+    // Same conservative 70deg pre-filter as sat_sky.frag's copy — see that file for the full
+    // worst-case-reach derivation.
+    if (degrees(colat) > 70.0)
+        return 0.0;
+    vec2  ringP  = vec2(cos(az), sin(az)) * kAuroraRingWarpFreq;
+    float ripple = warpPerlin3(vec3(ringP, t * kAuroraOvalDriftRate)) * kAuroraOvalWarpDeg;
+    float centerDeg = kAuroraOvalColatDeg + ripple + storm * 8.0;
+    float widthDeg  = kAuroraOvalWidthDeg * (1.0 + storm * 1.5);
+    float distDeg = abs(degrees(colat) - centerDeg);
+    float band = smoothstep(widthDeg * 2.0, widthDeg * 0.5, distDeg);
+    return band * auroraCoverage(colat, az, t, storm);
+}
+
+// "base" is a texture read against auroraNoiseTex's R channel (baked by aurora_noise.comp)
+// instead of a live warpPerlin3 call — see that file's header and sat_sky.frag's own copy of this
+// function for the full derivation of the UVW mapping and the storm/frequency approximation.
+float auroraCurtainNoise(float colat, float az, float altM, float t, float storm) {
+    float shimmerPhase = warpPerlin3(vec3(colat * kAuroraRadialFreq * 0.3,
+                                           altM * kAuroraAltFreq * 0.3,
+                                           t * cloud.auroraShimmerRate)) * 2.5;
+    vec3 p = vec3(az * kAuroraTangentFreq * (1.0 + storm * 0.8) + shimmerPhase,
+                  altM * kAuroraAltFreq,
+                  colat * kAuroraRadialFreq);
+    const float kAuroraCurtainPeriod = kAuroraTangentFreq * 2.0 * PI;
+    float texU = fract(p.x / kAuroraCurtainPeriod);
+    float texV = clamp((p.y - 0.24) / (2.46 - 0.24), 0.0, 1.0);
+    float texW = clamp(p.z / 91.6, 0.0, 1.0);
+    float base = texture(auroraNoiseTex, vec3(texU, texV, texW)).r * 2.0 - 1.0;
+    return remap(base, -0.3, 0.9, 0.0, 1.0);
+}
+
+// Per-sample curtain color/intensity — near-verbatim port of sat_sky.frag's auroraSampleAt, minus
+// the (unused here) enuX/enuY/enuZ basis-rebuild since the caller already works in ECEF-relative
+// terms consistent with the rest of this file.
+vec3 auroraCurtainSample(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirECEF, float t, float storm) {
+    vec3 pDirECEF = normalize(rp.x * enuX + rp.y * enuY + rp.z * enuZ);
+    float dayness = clamp((dot(pDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
+    float night   = 1.0 - dayness;
+    if (night <= 0.001) return vec3(0.0);
+    vec3 poleDir  = (dot(pDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
+    float colat, az; vec3 radialT, tangentT;
+    auroraFrame(pDirECEF, poleDir, colat, az, radialT, tangentT);
+    float oval = auroraOvalMask(colat, az, t, storm);
+    if (oval <= 0.001) return vec3(0.0);
+    float altM = length(rp) - R_EARTH;
+    const float kAuroraInnerFalloffM = 7500.0;
+    const float kAuroraOuterFalloffM = 15000.0;
+    float innerVert = 1.0 / (1.0 + exp(-(altM - kAuroraShellInnerM) / kAuroraInnerFalloffM));
+    float outerVert = 1.0 / (1.0 + exp((altM - kAuroraShellOuterM) / kAuroraOuterFalloffM));
+    float vert = innerVert * outerVert;
+    if (vert <= 0.001) return vec3(0.0);
+
+    // Column window colA/colB — same baked-texture read as sat_sky.frag's copy (G/B channels).
+    float colTexU = fract(az / (2.0 * PI));
+    float colTexW = clamp(colat / radians(75.0), 0.0, 1.0);
+    vec2  colSample = texture(auroraNoiseTex, vec3(colTexU, 0.5, colTexW)).gb;
+    float colA = colSample.x;
+    float colB = colSample.y;
+    float colLoFrac = clamp(min(colA, colB) - 0.08, 0.0, 1.0);
+    float colHiFrac = clamp(max(colA, colB) + 0.08, 0.0, 1.0);
+    float colLoM = mix(kAuroraShellInnerM, kAuroraShellOuterM, colLoFrac);
+    float colHiM = mix(kAuroraShellInnerM, kAuroraShellOuterM, colHiFrac);
+    const float kAuroraColumnFalloffM = 12000.0;
+    float columnWindow = (1.0 / (1.0 + exp(-(altM - colLoM) / kAuroraColumnFalloffM)))
+                        * (1.0 / (1.0 + exp((altM - colHiM) / kAuroraColumnFalloffM)));
+    if (columnWindow <= 0.001) return vec3(0.0);
+
+    float fold = mix(1.0, auroraCurtainNoise(colat, az, altM, t, storm), vert);
+    vec3  col  = mix(kAuroraGroundColor, kAuroraTopColor,
+                      clamp(remap(altM, kAuroraShellInnerM, kAuroraShellOuterM, 0.0, 1.0), 0.0, 1.0));
+    vec3 innerAirglowCol = mix(kAirglowSodiumColor, kAirglowGreenColor, 0.5);
+    col = mix(innerAirglowCol, col, innerVert);
+    col = mix(kAirglowRedColor, col, outerVert);
+    return col * (oval * fold * vert * columnWindow * night);
+}
+
+// Full sky curtain march: whole-ray bounding pre-check + adaptive-step march + light-pollution/
+// moonlight suppression + atmospheric extinction. Returns the raw contribution BEFORE cloud
+// suppression — main() applies that using the ALREADY-COMPUTED local cloud transmittance (A_total)
+// from this same pixel/frame, more accurate than sat_sky.frag's old "early" texture pre-sample
+// (which existed only because sat_sky.frag runs at full-res and needed a cheap same-frame proxy;
+// this compute shader already has the real value on hand).
+vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
+                    vec3 sunDir, vec3 sunDirECEF, float obsEffH, vec4 moonDirENU) {
+    const float kAuroraMarchInnerM = kAuroraShellInnerM - 55000.0;
+    const float kAuroraMarchOuterM = kAuroraShellOuterM + 110000.0;
+    vec2 tAuroraFar = raySphere(obsPos, dir, R_EARTH + kAuroraMarchOuterM);
+    vec2 tAuroraIn  = raySphere(obsPos, dir, R_EARTH + kAuroraMarchInnerM);
+
+    float atEnter, atExit;
+    if (obsEffH < kAuroraMarchInnerM) {
+        atEnter = tAuroraIn.y;
+        atExit  = tAuroraFar.y;
+    } else if (obsEffH <= kAuroraMarchOuterM) {
+        atEnter = 0.0;
+        atExit  = tAuroraFar.y;
+        if (tAuroraIn.x > 0.0 && tAuroraIn.x < atExit) atExit = tAuroraIn.x;
+    } else {
+        atEnter = tAuroraFar.x;
+        atExit  = (tAuroraIn.x > 0.0) ? tAuroraIn.x : tAuroraFar.y;
+    }
+    // No terrain clip here (no tSurface in this shader) — same accepted approximation
+    // cloudMarchCS/cirrusMarchCS already make; sat_sky.frag's post-hoc terrain-occlusion
+    // correction on the composited result covers gross occlusion for all three now.
+    if (atEnter >= atExit || atExit <= 0.0) return vec3(0.0);
+
+    // Whole-ray bounding pre-check (ported from sat_sky.frag this session) — same 80deg
+    // conservative bound (70deg worst-case oval reach + margin for 5-sample undersampling).
+    const int kAuroraBoundSamples = 5;
+    float minBoundColatDeg = 1e6;
+    for (int bi = 0; bi < kAuroraBoundSamples; ++bi) {
+        vec3 bp       = obsPos + dir * mix(atEnter, atExit, float(bi) / float(kAuroraBoundSamples - 1));
+        vec3 bDirECEF = normalize(bp.x * enuX + bp.y * enuY + bp.z * enuZ);
+        vec3 bPole    = (dot(bDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
+        minBoundColatDeg = min(minBoundColatDeg, degrees(acos(clamp(dot(bDirECEF, bPole), -1.0, 1.0))));
+    }
+    if (minBoundColatDeg > 80.0) return vec3(0.0);
+
+    const float kAuroraMaxStepM = 15000.0;
+    const int   kAuroraStepsMin = 4;
+    const int   kAuroraStepsMax = 64;
+    float aPathLen = atExit - atEnter;
+    int   N_AURORA = clamp(int(aPathLen / kAuroraMaxStepM), kAuroraStepsMin, kAuroraStepsMax);
+    float aSegLen = aPathLen / float(N_AURORA);
+    vec3  accumAurora = vec3(0.0);
+    for (int i = 0; i < N_AURORA; ++i) {
+        vec3 ap = obsPos + dir * (atEnter + (float(i) + 0.5) * aSegLen);
+        accumAurora += auroraCurtainSample(ap, enuX, enuY, enuZ, sunDirECEF, pc.waveTime, cloud.stormStrength);
+    }
+
+    // Light pollution + moonlight suppression — identical formula to sat_sky.frag's copy.
+    float azLPAurora    = mod(atan(dir.x, dir.y) + 6.283185307, 6.283185307);
+    float secFAurora    = azLPAurora * (16.0 / 6.283185307) - 0.5;
+    int   sec0Aurora    = int(floor(secFAurora));
+    float secFracAurora = secFAurora - float(sec0Aurora);
+    int   sec0wAurora   = ((sec0Aurora % 16) + 16) % 16;
+    int   sec1wAurora   = (sec0wAurora + 1) % 16;
+    float domeAzAurora  = mix(lightDome[sec0wAurora], lightDome[sec1wAurora], secFracAurora);
+    float elevFalloffAurora = 0.35 / (max(dir.z, 0.0) + 0.35);
+    float domeValAurora  = clamp(domeAzAurora * elevFalloffAurora, 0.0, 1.0);
+    const float kAuroraPollutionMaxDim = 0.9;
+
+    float tmAurora         = clamp(moonDirENU.z / 0.5, 0.0, 1.0);
+    float moonBrightAurora = tmAurora * tmAurora * moonDirENU.w;
+    const float kAuroraMoonMaxDim = 0.85;
+
+    float auroraVisSuppress = (1.0 - domeValAurora * kAuroraPollutionMaxDim)
+                             * (1.0 - moonBrightAurora * kAuroraMoonMaxDim);
+
+    // Atmospheric extinction — same Kasten & Young 1989 approximation as sat_sky.frag's copy.
+    float atmFracAurora = clamp(exp(-obsEffH / 20000.0), 0.0, 1.0);
+    float sinElAurora    = clamp(dir.z, 0.0, 1.0);
+    float elDegAurora    = degrees(asin(sinElAurora));
+    float airmassAurora  = 1.0 / (sinElAurora + 0.50572 * pow(elDegAurora + 6.07995, -1.6364));
+    float extinctMagAurora = cloud.extinctionCoeff * (airmassAurora - 1.0) * atmFracAurora;
+    float extinctionAurora = pow(10.0, -0.4 * extinctMagAurora);
+
+    return accumAurora * aSegLen * kAuroraScale * cloud.auroraGain * auroraVisSuppress * extinctionAurora;
+}
+
+// Airglow red band (630nm) supplemental march — moved here from sat_sky.frag this session (perf:
+// half-res instead of full-res, same rationale as aurora above, though the win is smaller — this
+// march only ever cost ~1ms full-res: fixed 16 steps, 1 noise call per sample, nowhere near
+// aurora's old worst case). Green/sodium bands still ride sat_sky.frag's main atmosphere loop "for
+// free" and stay there — moving just them would mean duplicating a chunk of that loop here for
+// near-zero marginal win, since they already cost almost nothing riding samples that loop takes
+// anyway for other reasons (see the "does the atmosphere need full-res" discussion this session).
+// No cloud-suppression term — the original never had one (unlike aurora), just a plain additive
+// term, so this folds straight into B_total below with no extra logic.
+const float kAirglowRedPeakM      = 275000.0;
+const float kAirglowRedHalfWidthM = 75000.0;
+const float kAirglowNoiseFreq     = 4.0;
+const float kAirglowDriftRate     = 0.015;
+const float kAirglowScale         = 0.0000005;
+
+vec3 airglowRedMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
+                        vec3 sunDirECEF, float obsEffH) {
+    const float kAirglowInnerM = 100000.0; // = R_ATMOS - R_EARTH
+    const float kAirglowFarM   = 500000.0;
+    vec2 tAtmos  = raySphere(obsPos, dir, R_ATMOS);
+    vec2 tAirFar = raySphere(obsPos, dir, R_EARTH + kAirglowFarM);
+
+    float rtEnter, rtExit;
+    if (obsEffH < kAirglowInnerM) {
+        rtEnter = tAtmos.y;
+        rtExit  = tAirFar.y;
+    } else if (obsEffH <= kAirglowFarM) {
+        rtEnter = 0.0;
+        rtExit  = tAirFar.y;
+        if (tAtmos.x > 0.0 && tAtmos.x < rtExit) rtExit = tAtmos.x;
+    } else {
+        rtEnter = tAirFar.x;
+        rtExit  = (tAtmos.x > 0.0) ? tAtmos.x : tAirFar.y;
+    }
+    // No terrain clip here (no tSurface in this shader) — same accepted approximation
+    // cloudMarchCS/cirrusMarchCS/auroraMarchCS already make.
+    if (rtEnter >= rtExit || rtExit <= 0.0) return vec3(0.0);
+
+    const int N_AIRGLOW_RED = 16;
+    float rSegLen = (rtExit - rtEnter) / float(N_AIRGLOW_RED);
+    vec3  accumAirglowRed = vec3(0.0);
+    for (int i = 0; i < N_AIRGLOW_RED; ++i) {
+        vec3  rp       = obsPos + dir * (rtEnter + (float(i) + 0.5) * rSegLen);
+        float rh       = length(rp) - R_EARTH;
+        vec3  rDirECEF = normalize(rp.x * enuX + rp.y * enuY + rp.z * enuZ);
+        float rDayness = clamp((dot(rDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
+        float rNight   = 1.0 - rDayness;
+        if (rNight > 0.001) {
+            float rPatch = 0.6 + 0.4 * warpPerlin3(rDirECEF * kAirglowNoiseFreq
+                                + vec3(pc.waveTime * kAirglowDriftRate, 17.0, -5.0));
+            float dzR      = (rh - kAirglowRedPeakM) / kAirglowRedHalfWidthM;
+            float densAirR = exp(-dzR * dzR) * rSegLen;
+            accumAirglowRed += kAirglowRedColor * cloud.airglowRedGain * densAirR * rNight * rPatch;
+        }
+    }
+    return accumAirglowRed * kAirglowScale * cloud.airglowGain;
 }
 
 vec3 cloudWarpOffset(vec3 dirECEF) {
@@ -789,6 +1063,34 @@ void main() {
 
     vec3  A_total = A_cirrus * A_cloud;
     vec3  B_total = B_cirrus * A_cloud + B_cloud;
+
+    // Aurora sky curtain (moved here this session — perf: half-res instead of full-res).
+    // Cloud suppression uses the LOCAL A_total already computed above — more accurate than
+    // sat_sky.frag's old "early" texture pre-sample, which only existed because that shader runs
+    // at full-res and needed a cheap same-frame proxy; this compute shader has the real value on
+    // hand already. Folding the result directly into B_total means it inherits the same terrain-
+    // occlusion handling sat_sky.frag already applies to the whole composite (a behavior change
+    // from before, when aurora ignored terrain occlusion entirely — this is more physically
+    // correct: terrain that blocks the view of the much-closer cloud layer necessarily blocks the
+    // far higher aurora shell along that same ray too).
+    vec3 auroraContrib = ((pc.debugDisableMask & 32u) != 0u)
+        ? vec3(0.0)
+        : auroraMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, pc.obsEffH, pc.moonDirENU);
+    if (dot(auroraContrib, auroraContrib) > 0.0) {
+        bool  auroraBehindClouds = (pc.obsEffH < kAuroraShellInnerM);
+        float cloudBlockLocal    = dot(A_total, vec3(1.0 / 3.0));
+        const float kAuroraCloudSuppressPower = 3.0;
+        float auroraCloudSuppress = auroraBehindClouds
+            ? pow(clamp(cloudBlockLocal, 0.0, 1.0), kAuroraCloudSuppressPower)
+            : 1.0;
+        B_total += auroraContrib * auroraCloudSuppress;
+    }
+
+    // Airglow red band (moved here this session — perf). No cloud-suppression term — the
+    // original never had one either, just a plain additive contribution.
+    if ((pc.debugDisableMask & 16u) == 0u) {
+        B_total += airglowRedMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, pc.obsEffH);
+    }
 
     // Nearer of the two layers' entry distances — always valid whenever either layer actually
     // rendered something, unlike tCloudOcclude (opacity-gated). Used by sat_sky.frag for terrain
