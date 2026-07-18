@@ -100,6 +100,13 @@ layout(set = 0, binding = 4) uniform CloudParams {
     float auroraCoverageAzFreq;    // USED here — coverage azimuthal wobble frequency
     float auroraCoverageDriftRate; // USED here — coverage evolution speed (wall-clock rad/s)
     float auroraShimmerRate;       // unused here (curtain fold noise is sat_sky.frag-only) — layout parity
+    // Struct grew 320->336 (session 30, see GpuCloudParams in SatelliteSim.h for why this was
+    // appended here instead of reusing pad1/pad2 above).
+    float cloudNightAmbientGain; // USED here — gain on kNightSkyAmbientColor, the decoupled night
+                                  // floor added to skyAmbient in cloudMarchCS
+    float pad4;
+    float pad5;
+    float pad6;
 } cloud;
 
 // Target A: rgb = combined additive radiance (B_total), a = tCloudOcclude (m, -1 = none)
@@ -167,6 +174,24 @@ const float kCloud3DFadeEnd   = 3000000.0;
 const float kMarchStepsAltStart = 2000.0;
 const float kMarchStepsAltEnd   = 200000.0;
 const float kMarchStepsFloor    = 12.0;
+
+// Self-shadow light-march cone grazing-angle attenuation (see cloudMarchCS): damps sunOptDepth
+// directly at low sun elevation rather than extending the cone's reach (which undersamples badly
+// at this codebase's low default light-step counts — see the comment at the call site).
+// kGrazeShadowFloor: sunOptDepth multiplier right at the horizon (sun elevation sin == 0).
+// kGrazeShadowFullSin: sin(elevation) above which no attenuation is applied — full cone-computed
+// shadow strength. sin(0.3) is roughly a 17.5 degree solar elevation.
+const float kGrazeShadowFloor   = 0.35;
+const float kGrazeShadowFullSin = 0.3;
+
+// Night-sky ambient floor for cloud tops: skyAmbientBase (the analytic single-scattering zenith
+// Rayleigh/Mie integral) decays to ~0 well before real civil twilight actually goes dark, because
+// it only counts direct sunlight reaching the zenith column — it has no multiple-scattering term
+// to carry any glow past that point. This constant is a decoupled, non-decaying "residual sky
+// glow" (starlight + multiple-scattered air), scaled by its own cloud.cloudNightAmbientGain slider
+// (deliberately NOT cloud.ambientGain, which also drives city-light upwelling — see nightFloorAmbient
+// below) so it stays controllable after skyAmbientBase itself has collapsed near zero post-sunset.
+const vec3  kNightSkyAmbientColor = vec3(0.015, 0.02, 0.035);
 
 const vec3  BETA_R = vec3(5.8e-6, 13.5e-6, 33.1e-6);
 const float H_R    = 7994.0;
@@ -771,6 +796,10 @@ void cloudMarchCS(
         float hNorm = (h - cloudBaseAlt) / shellThick;
         vec3  pECEF = p.x * enuX + p.y * enuY + p.z * enuZ;
 
+        // Hoisted up from its old spot further below (next to sunElev/selfShadow) so the self-
+        // shadow cone's grazing-angle compensation can use it too — same value, computed once.
+        float cloudSunDotRaw = dot(normalize(pECEF), sunDirECEF);
+
         float pLen  = length(pECEF);
         float pLon  = atan(pECEF.y, pECEF.x);
         float pLat  = asin(clamp(pECEF.z / pLen, -1.0, 1.0));
@@ -834,6 +863,24 @@ void cloudMarchCS(
                     sunOptDepth += cloudDensity(cUVWXY, cUVWD, chN, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
                 }
                 sunOptDepth *= shadowFade;
+
+                // Grazing-sun attenuation: at sunset the light-march cone above (only ~N_CONE
+                // samples, a handful by default) traverses the shell almost tangentially, so with
+                // this coverage map reading fairly uniform at the cone's short fixed reach, most
+                // samples land in cloud and sunOptDepth comes out uniformly high — reported as the
+                // whole visible cloud field going into flat shadow at sunset, well before the sun
+                // is actually at a shallow enough angle for that much mutual occlusion. (An earlier
+                // attempt fixed this by extending coneLen itself at grazing angles instead, but
+                // with a low, GPU-cost-bound N_CONE that just undersampled a longer path — visible
+                // as banding, and shadow no longer tied to actual cloud shape. Reverted above.)
+                // This instead directly damps the RESULT at low sun elevation, leaving the cone's
+                // sampling geometry untouched (so it stays fully correlated with cloud shape) —
+                // less physically rigorous, but matches the existing shadowFloor/selfShadow
+                // heuristic below, which already fudges the same sunset transition for the same
+                // reason.
+                float sunElevSin = clamp(abs(cloudSunDotRaw), 0.0, 1.0);
+                float grazeAtten = mix(kGrazeShadowFloor, 1.0, smoothstep(0.0, kGrazeShadowFullSin, sunElevSin));
+                sunOptDepth *= grazeAtten;
             }
 
             float ms1 = exp(-sunOptDepth);
@@ -841,7 +888,6 @@ void cloudMarchCS(
             float ms3 = exp(-sunOptDepth * 0.25) * 0.25;
             float sunTransmittance = max((ms1 + ms2 + ms3) / 1.75, 0.05);
 
-            float cloudSunDotRaw = dot(normalize(pECEF), sunDirECEF);
             float sunElev     = smoothstep(-0.04, 0.12, cloudSunDotRaw);
             float sunElevSoft = sunElev;
             float shadowFloor = mix(0.1, 0.5, clamp(1.0 - sunElev * 4.0, 0.0, 1.0));
@@ -850,16 +896,33 @@ void cloudMarchCS(
 
             float sampleDayness = clamp((cloudSunDotRaw + 0.2) / 0.5, 0.0, 1.0);
 
-            // Gated by (1-sampleDayness) — every OTHER ambient term below (moonContrib via
-            // nightFac, cityUp, auroraUp) already fades out at night; skyAmbient was the one
-            // exception, left ungated. Physically it represents zenith-scattered SUNLIGHT
-            // (Rayleigh+Mie), which genuinely is zero at true night — leaving it ungated let
-            // unlit clouds read as a lit, sky-colored haze instead of a dark silhouette, which is
-            // what made them hard to visually distinguish from the sky behind an aurora/Milky Way.
-            vec3 skyAmbient = skyAmbientBase
-                            * (mix(0.3, 0.9, hNorm)
-                            +  mix(0.1, 0.3, hNorm) * cloud.ambientGain)
-                            * (1.0 - sampleDayness);
+            // skyAmbientBase (the analytic single-scattering zenith Rayleigh/Mie integral, sampled
+            // once per frame at the observer) represents zenith-scattered SUNLIGHT and genuinely
+            // decays toward true night — but not fast enough on its own: it only zeroes out once
+            // the sun ray to every sample along the zenith column is Earth-blocked, which can
+            // still be a while (and depends on the OBSERVER's own position, not this cloud
+            // sample's) after this particular sample has visually gone dark. Originally this term
+            // was left completely ungated (read as a lit sky-colored haze even at true night); a
+            // first fix gated it by (1-sampleDayness), which only ramps IN toward night and never
+            // back out, so it stayed at full strength indefinitely once past the terminator —
+            // reported as overbright at night. twilightWeight is instead a proper bell: it rises
+            // approaching dusk and falls again deeper into night, so this term is twilight-only,
+            // as intended, and skyAmbientBase's own slow decay no longer has to do all the work.
+            float twilightRise = 1.0 - smoothstep(-0.05, 0.15, cloudSunDotRaw);
+            float twilightFall = smoothstep(-0.45, -0.15, cloudSunDotRaw);
+            float twilightWeight = twilightRise * twilightFall;
+            vec3 twilightAmbient = skyAmbientBase * mix(0.3, 0.9, hNorm) * twilightWeight;
+
+            // Separate, non-decaying night-sky floor (stand-in for starlight + multiple-scattered
+            // air) so cloud tops aren't fully dark once twilightAmbient above has faded out. Kept
+            // on its own cloud.cloudNightAmbientGain slider rather than cloud.ambientGain, which
+            // also drives cityUp below — sharing one gain forced a tradeoff between good city-light
+            // cloud illumination and blown-out night ambient. Still gated by (1-sampleDayness) —
+            // ramps up through twilight and holds through night, unlike twilightAmbient above.
+            vec3 nightFloorAmbient = kNightSkyAmbientColor * mix(0.1, 0.3, hNorm)
+                                    * cloud.cloudNightAmbientGain * (1.0 - sampleDayness);
+
+            vec3 skyAmbient = twilightAmbient + nightFloorAmbient;
 
             vec3  moonECEF_c    = moonDir3.x * enuX + moonDir3.y * enuY + moonDir3.z * enuZ;
             float moonElevGeog  = max(0.0, dot(normalize(pECEF), moonECEF_c));

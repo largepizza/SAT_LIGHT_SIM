@@ -148,6 +148,12 @@ layout(set = 0, binding = 9) uniform CloudParams {
     float auroraCoverageAzFreq;    // coverage azimuthal wobble frequency
     float auroraCoverageDriftRate; // coverage evolution speed (wall-clock rad/s)
     float auroraShimmerRate;       // curtain fold noise evolution speed (wall-clock rad/s)
+    // Struct grew 320->336 (session 30, see GpuCloudParams in SatelliteSim.h for why this was
+    // appended here instead of reusing pad1/pad2 above).
+    float cloudNightAmbientGain; // unused here (cloud lighting is cloud_march.comp-only) — layout parity
+    float pad4;
+    float pad5;
+    float pad6;
 } cloud;
 
 // Half-resolution cloud march output (written by cloud_march.comp, see the "velvet-rolling-
@@ -1363,6 +1369,18 @@ void main() {
     // Effective surface distance: terrain if found, else sea level
     float tSurface = (tHit > 0.0) ? tHit : tSeaLvl;
 
+    // ── Half-resolution cloud composite sample (hoisted early) ─────────────────
+    // Sampled here — ahead of the moon disc below — so the moon can be occluded by opaque
+    // cloud the same way it's occluded by terrain. The actual multiplicative/additive
+    // composite (`color = color * cloudB.rgb + cloudA.rgb`) still applies later, after the
+    // 2D flat cloud-layer overlay and satellite glow so those get attenuated too; this early
+    // sample only reads the alpha channels needed for occlusion tests.
+    vec2  cloudUV        = gl_FragCoord.xy / pc.screenSizePx;
+    vec4  cloudA         = texture(cloudTargetA, cloudUV);
+    vec4  cloudB         = texture(cloudTargetB, cloudUV);
+    float tCloudOcclude  = cloudA.a;
+    float tEnterCombined = cloudB.a;
+
     // ── Phase 2: atmosphere integration, truncated at the surface ─────────────
     vec2  tAtmos = raySphere(obsPos, dir, R_ATMOS);
     // Clamped to 0: when the observer is above R_ATMOS (reachable via the uncapped "Raise
@@ -1595,7 +1613,12 @@ void main() {
 
             vec3 texColor = texture(moonTex, moonUV).rgb;
 
-            float discFade = (tSurface > 0.0) ? 0.0 : 1.0;
+            // Occluded by terrain OR by opaque cloud (tCloudOcclude, ≥90% opaque along this ray —
+            // same threshold satellite/star depth occlusion uses below). Without the cloud term
+            // the moon's raw disc brightness survived the later multiplicative cloud attenuation
+            // visibly intact even under a thick deck — the composite dims it but doesn't blank
+            // the fine albedo detail the way a genuinely opaque cloud should.
+            float discFade = (tSurface > 0.0 || tCloudOcclude >= 0.0) ? 0.0 : 1.0;
             vec3 moonColor = texColor * (diffuse + earthshine) * limbDark * kMoonBright;
             vec3 moonAttn  = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             color += discFade * moonColor * moonAttn;
@@ -2156,15 +2179,12 @@ void main() {
     // larger denominator compressed cloudUV into a shrinking corner of [0,1] as renderScale
     // dropped — reported as clouds drifting off-center and distorting. pc.screenSizePx is always
     // this draw's OWN actual target size, so this now maps to [0,1] correctly regardless of scale.
-    vec2  cloudUV = gl_FragCoord.xy / pc.screenSizePx;
-    vec4  cloudA       = texture(cloudTargetA, cloudUV);
-    vec4  cloudB       = texture(cloudTargetB, cloudUV);
+    // cloudUV/cloudA/cloudB/tCloudOcclude/tEnterCombined were sampled earlier (right after
+    // tSurface), so the moon disc below can be occluded by opaque cloud too — not resampled here.
     // cloudBlock (post-tonemap sun-disc dimming, used below) derived from A_total's luminance
     // rather than a separate stored scalar — A_total already tracks combined opacity closely
     // (→0 when opaque, →1 when clear), and this frees Target B's alpha for tEnterCombined instead.
     float cloudBlock    = dot(cloudB.rgb, vec3(1.0/3.0));
-    float tCloudOcclude = cloudA.a;
-    float tEnterCombined = cloudB.a;
     // Terrain-occlusion correction: the compute pass has no terrain data, so it always marches
     // the shell's full potential extent. If terrain (this pixel's own accurate tSurface, computed
     // above) sits closer than either layer's entry point, suppress the whole combined

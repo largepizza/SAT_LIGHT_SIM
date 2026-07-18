@@ -446,6 +446,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.moonGain = moonGain;
         cp.pad1 = (float)cityOffsetEastM;  // repurposed: city-detail world-fixed east offset (m)
         cp.pad2 = (float)cityOffsetNorthM; // repurposed: city-detail world-fixed north offset (m)
+        cp.cloudNightAmbientGain = cloudNightAmbientGain;
         cp.stormStrength = stormStrength;
         cp.auroraGain = auroraGain;
         cp.auroraCloudGain = auroraCloudGain;
