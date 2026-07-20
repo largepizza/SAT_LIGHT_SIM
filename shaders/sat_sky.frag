@@ -155,9 +155,9 @@ layout(set = 0, binding = 9) uniform CloudParams {
     // Struct grew 320->336 (session 30, see GpuCloudParams in SatelliteSim.h for why this was
     // appended here instead of reusing pad1/pad2 above).
     float cloudNightAmbientGain; // unused here (cloud lighting is cloud_march.comp-only) — layout parity
-    float pad4;
-    float pad5;
-    float pad6;
+    float cloudBaseVariance;  // unused here (was pad4) — layout parity, see cloud_march.comp
+    float cloudErosionEdge;   // unused here (was pad5) — layout parity, see cloud_march.comp
+    float cloudErosionCore;   // unused here (was pad6) — layout parity, see cloud_march.comp
 } cloud;
 
 // Half-resolution cloud march output (written by cloud_march.comp, see the "velvet-rolling-
