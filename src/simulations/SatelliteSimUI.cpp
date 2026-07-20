@@ -1764,6 +1764,9 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Sun gain", &cloudSunGain, 0.0f, 5.0f, 0.1f, "%.2f", 5},
         {"Ambient", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
         {"Night ambient", &cloudNightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
+        {"Base variance", &cloudBaseVariance, 0.0f, 1.0f, 0.05f, "%.2f", 34},
+        {"Erosion (edge)", &cloudErosionEdge, 0.0f, 1.0f, 0.05f, "%.2f", 35},
+        {"Erosion (core)", &cloudErosionCore, 0.0f, 1.0f, 0.05f, "%.2f", 36},
         {"HG g", &cloudHgG, 0.0f, 0.99f, 0.05f, "%.2f", 7},
         {"March steps", &cloudMarchSteps, 4.0f, 1024.0f, 4.0f, "%.0f", 8},
         {"Light steps", &cloudLightSteps, 1.0f, 16.0f, 1.0f, "%.0f", 9},
@@ -2176,6 +2179,9 @@ void SatelliteSim::loadSettings()
         cloudSunGain = c.value("sun_gain", cloudSunGain);
         cloudAmbientGain = c.value("ambient_gain", cloudAmbientGain);
         cloudNightAmbientGain = c.value("night_ambient_gain", cloudNightAmbientGain);
+        cloudBaseVariance = c.value("cloud_base_variance", cloudBaseVariance);
+        cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
+        cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
         cloudHgG = c.value("hg_g", cloudHgG);
         cloudMarchSteps = c.value("march_steps", cloudMarchSteps);
         cloudLightSteps = c.value("light_steps", cloudLightSteps);
@@ -2269,6 +2275,9 @@ void SatelliteSim::saveSettings()
         {"sun_gain", cloudSunGain},
         {"ambient_gain", cloudAmbientGain},
         {"night_ambient_gain", cloudNightAmbientGain},
+        {"cloud_base_variance", cloudBaseVariance},
+        {"cloud_erosion_edge", cloudErosionEdge},
+        {"cloud_erosion_core", cloudErosionCore},
         {"hg_g", cloudHgG},
         {"march_steps", cloudMarchSteps},
         {"light_steps", cloudLightSteps},

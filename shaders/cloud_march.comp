@@ -104,9 +104,13 @@ layout(set = 0, binding = 4) uniform CloudParams {
     // appended here instead of reusing pad1/pad2 above).
     float cloudNightAmbientGain; // USED here — gain on kNightSkyAmbientColor, the decoupled night
                                   // floor added to skyAmbient in cloudMarchCS
-    float pad4;
-    float pad5;
-    float pad6;
+    float cloudBaseVariance;  // USED here (was pad4) — noise-driven cloud base height undulation,
+                               // in hNorm units (0 = old perfectly flat base); see cloudMarchCS
+    float cloudErosionEdge;   // USED here (was pad5) — cloudDensity() erosion strength at the
+                               // silhouette edge (base near 0)
+    float cloudErosionCore;   // USED here (was pad6) — cloudDensity() erosion strength at the
+                               // dense core (base near 1); kept lower than cloudErosionEdge so
+                               // cores stay comparatively solid while edges fray
 } cloud;
 
 // Target A: rgb = combined additive radiance (B_total), a = tCloudOcclude (m, -1 = none)
@@ -587,19 +591,38 @@ float cityBrightness(float lum) {
 }
 
 float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, float density, float heightProfile) {
+    // Vertical presence: THREE fixed Z-slices, not a continuous Z lookup — see
+    // project_cloud_march_steps memory: sampling Z continuously at this codebase's typical
+    // march-step counts reintroduces altitude-slab banding, which is why the original design
+    // pinned this to constant slices in the first place. The problem with only two slices is that
+    // a straight lerp between them makes every cloud's silhouette a geometric cone (wide at
+    // kPresenceZBase, monotonically narrowing to kPresenceZTop) — a third anchor at the midpoint
+    // breaks that monotonic taper into an actual bulge/waist shape without reintroducing
+    // per-march-step Z sensitivity (still just 3 discrete lookups, blended smoothly by hNorm).
     const float kPresenceZBase = 0.0;
-    const float kPresenceZTop  = 0.5;
+    const float kPresenceZMid  = 0.28;
+    const float kPresenceZTop  = 0.56;
     float nsBaseR = texture(cloudNoiseTex, uvwXY + vec3(0.0, 0.0, kPresenceZBase)).r;
+    float nsMidR  = texture(cloudNoiseTex, uvwXY + vec3(0.0, 0.0, kPresenceZMid)).r;
     float nsTopR  = texture(cloudNoiseTex, uvwXY + vec3(0.0, 0.0, kPresenceZTop)).r;
     float baseA   = remap(nsBaseR, 1.0 - coverage, 1.0, 0.0, 1.0);
+    float midA    = remap(nsMidR,  1.0 - coverage, 1.0, 0.0, 1.0);
     float topA    = remap(nsTopR,  1.0 - coverage, 1.0, 0.0, 1.0);
-    float base    = mix(baseA, topA, clamp(hNorm, 0.0, 1.0));
+    float hc      = clamp(hNorm, 0.0, 1.0);
+    float base    = (hc < 0.5) ? mix(baseA, midA, hc * 2.0)
+                                : mix(midA, topA, (hc - 0.5) * 2.0);
     if (base <= 0.0) return 0.0;
 
     vec4  nsF     = texture(cloudNoiseTex, uvwDetail * 1.5 + vec3(0.37, 0.53, 0.71));
     float erosion = nsF.g * 0.625 + nsF.b * 0.25 + nsF.a * 0.125;
 
-    float eroded  = remap(base, 0.2 * erosion, 1.0, 0.0, 1.0);
+    // Edge-biased erosion: `base` doubles as a proxy for how deep inside the cloud's own presence
+    // threshold this point sits (near 0 at the silhouette edge, toward 1 at the core). Biting
+    // harder near the edge than at the core carves cauliflower/wisp detail into the boundary while
+    // leaving dense cores comparatively solid — the previous single uniform erosion strength just
+    // scaled the whole shape down evenly, which reads as smooth/rounded rather than fluffy.
+    float erosionAmt = mix(cloud.cloudErosionEdge, cloud.cloudErosionCore, base);
+    float eroded  = remap(base, erosionAmt * erosion, 1.0, 0.0, 1.0);
 
     return clamp(eroded * heightProfile * density, 0.0, 1.0);
 }
@@ -817,8 +840,17 @@ void cloudMarchCS(
                                  dirECEFDrift * kCloudColFreq + warpUVW + vec3(0.0, 0.0, 0.25)).r;
         float colH = remap(colNoise, 1.0 - localCov, 1.0, 0.0, 1.0);
 
+        // Variable base height: was a hardcoded 0.0 for every column, so every cloud in the shell
+        // shared exactly the same base altitude — a perfectly flat deck. baseNoise reuses the same
+        // warped horizontal coordinate as colH (so the undulation follows the same drifting cloud
+        // field) but a decorrelated fixed Z offset, scaled by cloud.cloudBaseVariance (settings
+        // "Base variance"; 0 reproduces the old flat-base behavior exactly).
+        float baseNoise = texture(cloudNoiseTex,
+                                  dirECEFDrift * kCloudColFreq + warpUVW + vec3(0.0, 0.0, 0.85)).r;
+        float baseH = (baseNoise - 0.5) * cloud.cloudBaseVariance;
+
         float topFade = 1.0 - smoothstep(colH - 0.05, colH + 0.05, hNorm);
-        float hFade = smoothstep(0.0, 0.05, hNorm) * topFade;
+        float hFade = smoothstep(baseH, baseH + 0.05, hNorm) * topFade;
         if (hFade < 0.001) { inCloud = false; t += step; continue; }
 
         const float kVertTiles = 1.5;
@@ -842,8 +874,14 @@ void cloudMarchCS(
                 vec2  tConeExit = raySphere(p, sunDir, cloudTop);
                 float coneLen   = min((tConeExit.y > 0.0) ? tConeExit.y : shellThick, shellThick * 2.0);
                 float coneSeg   = coneLen / float(N_CONE);
+                // Per-invocation jitter on the cone's sample phase: a FIXED (ci+0.5) offset means
+                // every in-cloud sample's shadow cone is phase-locked to the same lattice through
+                // structured (Worley) noise sampled along one constant global direction (sunDir) —
+                // that's a textbook aliasing setup, and it read as coherent parallel-line banding
+                // in cloud shadows. Same noiseTex dither pattern cirrusMarchCS already uses.
+                float coneJitter = textureLod(noiseTex, vec2(gl_GlobalInvocationID.xy) * (1.0/128.0), 0.0).g;
                 for (int ci = 0; ci < N_CONE; ++ci) {
-                    vec3  cp    = p + sunDir * (float(ci) + 0.5) * coneSeg;
+                    vec3  cp    = p + sunDir * (float(ci) + coneJitter) * coneSeg;
                     float ch    = length(cp) - R_EARTH;
                     if (ch < cloudBaseAlt || ch > cloudTopAlt) continue;
                     float chN   = (ch - cloudBaseAlt) / shellThick;
@@ -855,11 +893,25 @@ void cloudMarchCS(
                                        + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                                       (0.5*PI - cpLat) / PI);
                     float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, 5.0).r;
-                    float cPosZ = sin(cpUV.x * 21.3 + cpUV.y * 17.7) * 0.5 + 0.5;
-                    vec3  cDir   = cpE / cpL;
-                    vec3  cUVWXY = cDir * kCloudHorizFreq;
+                    if (cLoc < 0.02) continue;
+                    float cPosZ      = sin(cpUV.x * 21.3 + cpUV.y * 17.7) * 0.5 + 0.5;
+                    vec3  cDir       = cpE / cpL;
+                    vec3  cDirDrift  = rotateZ(cDir, cloud.cloudPhase * cloud.layers[0].driftMult);
+                    vec3  cWarpUVW   = cloudWarpOffset(cDirDrift);
+                    vec3  cUVWXY = cDirDrift * kCloudHorizFreq + cWarpUVW;
                     vec3  cUVWD  = cUVWXY + vec3(0.0, 0.0, chN * kVertTiles + cPosZ * 2.0);
-                    float chFade = smoothstep(0.0, 0.05, chN) * (1.0 - smoothstep(0.95, 1.0, chN));
+
+                    // Match the cone's own vertical coverage limit and base variance to the SAME
+                    // per-column noise the visible march uses (colH/baseH above) — without this the
+                    // cone treated the whole 5%-95% of the shell as potential cloud regardless of
+                    // how little of that column the visible march actually filled in, so a nearly-
+                    // clear column (or one whose visible cloud is only a single-step sliver) could
+                    // still cast a full-height shadow with no corresponding visible cloud.
+                    float cColNoise  = texture(cloudNoiseTex, cDirDrift * kCloudColFreq + cWarpUVW + vec3(0.0, 0.0, 0.25)).r;
+                    float cColH      = remap(cColNoise, 1.0 - cLoc, 1.0, 0.0, 1.0);
+                    float cBaseNoise = texture(cloudNoiseTex, cDirDrift * kCloudColFreq + cWarpUVW + vec3(0.0, 0.0, 0.85)).r;
+                    float cBaseH     = (cBaseNoise - 0.5) * cloud.cloudBaseVariance;
+                    float chFade = smoothstep(cBaseH, cBaseH + 0.05, chN) * (1.0 - smoothstep(cColH - 0.05, cColH + 0.05, chN));
                     sunOptDepth += cloudDensity(cUVWXY, cUVWD, chN, cLoc, cloud.density, chFade) * coneSeg * 3.75e-4;
                 }
                 sunOptDepth *= shadowFade;

@@ -449,9 +449,12 @@ struct GpuCloudParams
                                   // light upwelling) so the two can be balanced independently.
                                   // Unused in sat_sky.frag (cloud lighting is cloud_march.comp-only)
                                   // — kept for layout parity.
-    float pad4;                  // reserved
-    float pad5;                  // reserved
-    float pad6;                  // reserved
+    float cloudBaseVariance;     // was pad4 — noise-driven cloud base height undulation (hNorm
+                                  // units, 0 = old perfectly flat base). See cloudMarchCS.
+    float cloudErosionEdge;      // was pad5 — cloudDensity() erosion strength at the silhouette
+                                  // edge (base near 0).
+    float cloudErosionCore;      // was pad6 — cloudDensity() erosion strength at the dense core
+                                  // (base near 1); kept lower than cloudErosionEdge.
 };
 static_assert(sizeof(GpuCloudParams) == 336, "GpuCloudParams layout mismatch");
 
@@ -889,6 +892,10 @@ private:
     float cloudNightAmbientGain = 1.0f; // decoupled night-sky floor on cloud tops (was piggybacking
                                          // on cloudAmbientGain, which also drives city-light
                                          // upwelling — see kNightSkyAmbientColor in cloud_march.comp)
+    float cloudBaseVariance = 0.3f; // noise-driven cloud base height undulation, hNorm units
+                                     // (0 = old perfectly flat base) — see cloudMarchCS
+    float cloudErosionEdge = 0.5f;  // cloudDensity() erosion strength at the silhouette edge
+    float cloudErosionCore = 0.15f; // cloudDensity() erosion strength at the dense core
     float cloudHgG = 0.27355f;
     float cloudMarchSteps = 75.57895f;
     float cloudLightSteps = 5.73684f;
@@ -1078,9 +1085,13 @@ private:
     bool hovPhotoMinus[9] = {};
     bool hovPhotoPlus[9] = {};
     bool draggingPhoto[9] = {};
-    bool hovCloudMinus[34] = {}; // was [25] — stale after C16 aurora sliders pushed indices to 32
-    bool hovCloudPlus[34] = {};  // now 34: index 33 is the new Night Ambient slider
-    bool draggingCloud[33] = {};
+    bool hovCloudMinus[37] = {}; // was [34] — indices 34-36 are the new base variance/erosion sliders
+    bool hovCloudPlus[37] = {};
+    bool draggingCloud[37] = {}; // was [33] — undersized relative to hovCloudMinus/Plus even before
+                                  // this session (slider id 33 "Night ambient" already overflowed
+                                  // it by one); ids 34-36 pushed the out-of-bounds write into
+                                  // whatever member follows in the class (the window-chrome state
+                                  // right below), which is what broke the settings window.
 
     // ── Window chrome (drag+resize; see UIRenderer::WindowChrome) ──────────────
     // x/y default to -1 (uninitialized, centers/places on first open); w/h are set
