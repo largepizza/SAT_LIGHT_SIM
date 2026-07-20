@@ -241,8 +241,12 @@ struct SatDrawPC
                              // targets, which are ALWAYS sized off the true swap extent
                              // regardless of renderScale) must divide by this, not by an assumed
                              // full-res constant, or the result is wrong whenever the two differ.
-}; // total: 144 bytes
-static_assert(sizeof(SatDrawPC) == 144, "SatDrawPC layout mismatch");
+    float skyGlareVisibility; // offset 144 — eased sun-glare gate (recordCompute(), see
+                             // skyGlareEased member comment); used only by sat_sky.frag's Milky
+                             // Way (stars read the CPU-side skyGlareEased directly in
+                             // updateStars(), no GPU copy needed for them).
+}; // total: 148 bytes
+static_assert(sizeof(SatDrawPC) == 148, "SatDrawPC layout mismatch");
 
 // ── Push constants for cloud_march.comp (half-res cloud compute pass, C15-perf) ──────────────
 // Matches the layout(push_constant) block in cloud_march.comp exactly. A separate struct from
@@ -860,6 +864,11 @@ private:
                                       // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
                                       // in both sat_flare.comp and updateStars() so a star and a
                                       // satellite at the same elevation dim identically
+    float sunlitBgVisibility = 0.15f; // Stars/Milky Way visibility fraction in space when the sun is
+                                    // off-screen but the observer is still in direct sunlight — 0 =
+                                    // fully hidden (like being fully day-suppressed), 1 = as visible as
+                                    // true night. Sun-on-screen always forces 0 regardless of this
+                                    // slider. See recordCompute()'s sky-glare gate and updateStars().
     // ── Milky Way skybox basis (session 27) ────────────────────────────────────
     // ENU->galactic rotation, recomputed each frame in updatePositions() and uploaded to
     // CloudParams. Orientation confirmed by eye against the real star field — no runtime
@@ -974,6 +983,13 @@ private:
     glm::vec4 sunDirENU{0, 1, 0, 0}; // sun direction in ENU (xyz), w = sin(elevation)
     glm::vec3 obsECI{0, 0, 6371000}; // observer ECI position (meters)
 
+    // ── Sky-background sun-glare gate (hysteresis state, not persisted) ───────
+    // Eased toward its per-frame target in recordCompute(), right after updatePositions() and
+    // before updateStars(). Consumed by updateStars() (folded into nightFactorEff) and pushed to
+    // sat_sky.frag via SatDrawPC for the Milky Way. See recordCompute() for the target/easing
+    // logic and rationale (asymmetric fast-dim/slow-recover rates).
+    float skyGlareEased = 1.0f;
+
     // ── TargetedReflector ground targets ──────────────────────────────────────
     // Random lat/lon points generated once at init as unit ECEF vectors.
     // Rotated to ECI each frame in updatePositions; filtered to those on the
@@ -1059,9 +1075,9 @@ private:
     bool hovSaveSnapshot = false;
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button
     bool hovDebugToggle[6] = {};   // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora)
-    bool hovPhotoMinus[8] = {};
-    bool hovPhotoPlus[8] = {};
-    bool draggingPhoto[8] = {};
+    bool hovPhotoMinus[9] = {};
+    bool hovPhotoPlus[9] = {};
+    bool draggingPhoto[9] = {};
     bool hovCloudMinus[34] = {}; // was [25] — stale after C16 aurora sliders pushed indices to 32
     bool hovCloudPlus[34] = {};  // now 34: index 33 is the new Night Ambient slider
     bool draggingCloud[33] = {};

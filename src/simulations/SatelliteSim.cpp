@@ -340,6 +340,45 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         uploadSatOrbits(ctx);
 
     updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, simDt);
+
+    // ── Sky-background sun-glare gate (stars / Milky Way, space only) ──────────
+    // updateStars()'s atmFrac fade (see that function) lets the day/night sky-brightness gate
+    // relax toward "always visible" once truly clear of the atmosphere — correct in principle
+    // (no air left to scatter sunlight into a blue daytime sky) but previously relaxed all the
+    // way to a flat 1.0 regardless of the sun's position, so stars/Milky Way stayed fully visible
+    // in space even staring straight at the sun, or in full unshielded sunlight. Real glare still
+    // applies: this computes a single per-frame, whole-screen target — not per-pixel, since it's
+    // meant to blank the ENTIRE sky background, not just fade near the sun the way the existing
+    // localized sunGlareSuppress halo in sat_sky.frag's Milky Way section does — and eases toward
+    // it so a quick look-away doesn't snap the sky instantly back.
+    {
+        glm::vec3 sunCam = glm::mat3(camera.viewMatrix()) * glm::vec3(sunDirENU);
+        float tanHalfFov = tanf(glm::radians(camera.fovYDeg) * 0.5f);
+        float aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
+        bool sunOnScreen = false;
+        if (sunCam.z < -0.001f)
+        {
+            float ndcX = sunCam.x / (-sunCam.z) / (tanHalfFov * aspect);
+            float ndcY = -sunCam.y / (-sunCam.z) / tanHalfFov;
+            sunOnScreen = (fabsf(ndcX) <= 1.0f && fabsf(ndcY) <= 1.0f);
+        }
+
+        // Observer's own local sun elevation — same day/night test updateStars()'s nightFactor
+        // already uses below, valid at any altitude this sim reaches (ENU is defined at the
+        // observer's actual position, so this tracks a real eclipse/shadow crossing reasonably
+        // well without a separate Earth-shadow ray test).
+        bool sunlit = sunDirENU.w > 0.0f;
+        float glareTarget = sunOnScreen ? 0.0f : (sunlit ? sunlitBgVisibility : 1.0f);
+
+        // Asymmetric hysteresis: glare hits fast (sensor/eyes overwhelmed almost immediately),
+        // recovery is slow (night-vision-style readaptation) — avoids an instant on/off pop
+        // either direction while still feeling responsive when the sun swings into view.
+        const float kSkyGlareOnRate = 3.0f;  // ~0.3s to mostly reach target when dimming
+        const float kSkyGlareOffRate = 0.4f; // ~2.5s to mostly reach target when recovering
+        float rate = (glareTarget < skyGlareEased) ? kSkyGlareOnRate : kSkyGlareOffRate;
+        skyGlareEased = glm::mix(skyGlareEased, glareTarget, 1.0f - expf(-dt * rate));
+    }
+
     updateLightPollutionDome();
     updateStars();
 
@@ -686,6 +725,7 @@ SatDrawPC SatelliteSim::buildSatDrawPC(VulkanContext &ctx, VkExtent2D targetExte
     // comment at that relocation site for why.
     pc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset); // w = user altitude offset above terrain (m); GPU computes ground height
     pc.debugDisableMask = debugDisableMask; // perf knockout toggles — see SatelliteSim.h member comment
+    pc.skyGlareVisibility = skyGlareEased; // sun-glare gate for the Milky Way — see skyGlareEased member comment
     return pc;
 }
 
@@ -3499,11 +3539,25 @@ void SatelliteSim::updateStars()
     float nightFactor = glm::clamp(-sunDirENU.w * 5.0f, 0.0f, 1.0f);
 
     // In space the sky is dark regardless of sun angle — no atmosphere to scatter.
-    // atmFrac decays with the same 80 km scale height used for sat daytime suppression.
+    // atmFrac used to decay with the same 80 km scale height used for satellites' orbital day
+    // suppression (correct for them — satellites fly hundreds of km up) — but reused here that
+    // decayed too fast for a still-in-atmosphere observer: even a modest few-km cloud-deck
+    // altitude already left atmFrac ~0.9, leaking ~10% of full night brightness into a clear
+    // daytime sky, visible on the brightest stars. Real daytime sky glow doesn't meaningfully
+    // thin until far above any cloud deck, so hold atmFrac at 1.0 (fully day/night gated, no
+    // leak) through the whole flyable atmosphere and only fade toward "space, nothing to hide
+    // behind" over the last stretch of the simulated atmosphere shell (R_ATMOS - R_EARTH = 100 km).
+    const float kStarSpaceFadeStartM = 40000.0f;
+    const float kStarSpaceFadeEndM   = 100000.0f;
     float obsR = glm::length(obsECI);
     float obsHeight = obsR - kEarthRadius;
-    float atmFrac = glm::clamp(glm::exp(-obsHeight / 80000.0f), 0.0f, 1.0f);
-    float nightFactorEff = glm::mix(1.0f, nightFactor, atmFrac); // 1.0 in space
+    float atmFrac = 1.0f - glm::clamp((obsHeight - kStarSpaceFadeStartM)
+                                       / (kStarSpaceFadeEndM - kStarSpaceFadeStartM), 0.0f, 1.0f);
+    // skyGlareEased (computed once per frame in recordCompute(), right before this call) replaces
+    // the old flat 1.0 space target — sun-on-screen or unshielded sunlight still gates visibility
+    // even with no atmosphere left to explain it away. At atmFrac==1 (fully in-atmosphere) this
+    // has no effect, since it's weighted out by (1-atmFrac)==0 and nightFactor alone governs.
+    float nightFactorEff = glm::mix(skyGlareEased, nightFactor, atmFrac);
 
     // Earth-limb elevation cutoff: from altitude, stars are visible below the 0° horizon.
     float r = kEarthRadius / obsR;
