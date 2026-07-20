@@ -1,6 +1,6 @@
 #version 450
 
-// ── Camera + sun push constants (same layout as C++ SatDrawPC, 144 bytes) ─────
+// ── Camera + sun push constants (same layout as C++ SatDrawPC, 148 bytes) ─────
 // The pipeline layout declares VK_SHADER_STAGE_VERTEX_BIT|FRAGMENT_BIT so both
 // stages share one push constant range.  The fragment uses skyView/fovYRad to
 // project glowBuf ENU directions into screen UV for the lens flare pass.
@@ -20,6 +20,10 @@ layout(push_constant) uniform PC {
                         // the full swapchain; any [0,1] UV derived from gl_FragCoord must divide
                         // by this, not an assumed full-res constant. See cloud composite sample
                         // below for why this matters.
+    float skyGlareVisibility; // eased sun-glare gate for stars/Milky Way, computed CPU-side each
+                        // frame in recordCompute() (skyGlareEased) — 0 when the sun is on screen,
+                        // sunlitBgVisibility (settings-tunable) when off-screen but the observer
+                        // is still in direct sunlight, 1.0 at true night. See Milky Way section.
 } pc;
 
 // ── Perf knockout toggles (profiling-only) ──────────────────────────────────────
@@ -1550,6 +1554,12 @@ void main() {
     const float kMoonTexRotDeg = 180.0;
     const float kMoonAngR      = 0.004578 * 3.0;
     const float kMoonBright    = 0.54;
+    // Set below on an actual ray-disc hit; used later to block the Milky Way skybox (and
+    // nothing else — stars are culled per-vertex in star_point.vert) from showing through the
+    // Moon's opaque disc on a clear-sky ray. Terrain/cloud occluding the Moon itself already
+    // separately block the Milky Way via their own existing visibility terms, so this only
+    // needs to be the pure geometric hit, not discFade.
+    bool moonDiscHit = false;
     if (moonDirENU.z > limbZ - kMoonAngR * 2.0) {
         vec3  moonDir3 = normalize(moonDirENU.xyz);
 
@@ -1579,6 +1589,7 @@ void main() {
         float discm = bm * bm - cm;
         float tm    = -bm - sqrt(max(discm, 0.0));
         if (discm >= 0.0 && tm > 0.0) {
+            moonDiscHit = true;
             vec3  hp = tm * dirR;
             vec3  n  = normalize(hp - moonDir3);
             float diffuse  = max(0.0, dot(n, sunDir)) * moonDirENU.w;
@@ -2217,10 +2228,18 @@ void main() {
     // and atmospheric extinction. Added post-tonemap like the ambient terms around it (comparably
     // faint) rather than folded into the HDR atmosphere accumulation above.
     {
-        // Space detection: same 80km atmospheric scale height as CPU's updateStars()/atmFrac.
-        float atmFracSky = clamp(exp(-obsEffH / 80000.0), 0.0, 1.0);
+        // Space detection: mirrors CPU's updateStars()/atmFrac — linear fade over the last
+        // stretch of the simulated atmosphere shell (40-100km, R_ATMOS-R_EARTH=100km) rather
+        // than an 80km-scale-height exponential, which decayed too fast and leaked Milky Way
+        // brightness into a clear daytime sky by cloud-deck altitude. Keep in sync with that copy.
+        const float kMWSpaceFadeStartM = 40000.0;
+        const float kMWSpaceFadeEndM   = 100000.0;
+        float atmFracSky = 1.0 - clamp((obsEffH - kMWSpaceFadeStartM)
+                                        / (kMWSpaceFadeEndM - kMWSpaceFadeStartM), 0.0, 1.0);
         float nightFactorSky = clamp(-sunDirENU.w * 5.0, 0.0, 1.0);
-        float nightFactorEffSky = mix(1.0, nightFactorSky, atmFracSky);
+        // pc.skyGlareVisibility (CPU-eased sun-glare gate, see its push-constant comment) replaces
+        // the old flat 1.0 space target — matches the same replacement in CPU's updateStars().
+        float nightFactorEffSky = mix(pc.skyGlareVisibility, nightFactorSky, atmFracSky);
 
         // Moonlight suppression — same shape as CPU's moonBrightStar.
         float tm = clamp(moonDirENU.z / 0.5, 0.0, 1.0);
@@ -2285,6 +2304,7 @@ void main() {
                           * extinctionMW
                           * sunGlareSuppress
                           * (tSurface > 0.0 ? 0.0 : 1.0) // blocked by terrain/ocean
+                          * (moonDiscHit ? 0.0 : 1.0)    // blocked by the Moon's own opaque disc
                           * pow(clamp(cloudBlock, 0.0, 1.0), kMWCloudSuppressPower);
         color += mwColor * visibility;
     }

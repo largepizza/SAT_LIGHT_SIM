@@ -1551,7 +1551,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[8][12];
+    static char photoBufs[9][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -1561,6 +1561,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"Moon suppress", &moonSuppression, 0.0f, 500.0f, 5.0f, "%.0f", 5},
         {"Pollution gain", &lightPollutionGain, 0.0f, 100.0f, 0.1f, "%.2f", 6},
         {"Extinction", &extinctionCoeff, 0.0f, 1.0f, 0.02f, "%.2f", 7},
+        {"Sunlit sky vis", &sunlitBgVisibility, 0.0f, 1.0f, 0.01f, "%.2f", 8},
     };
     for (auto &pp : photoParams)
     {
@@ -2075,6 +2076,7 @@ void SatelliteSim::loadSettings()
         moonSuppression = p.value("moon_suppression", moonSuppression);
         lightPollutionGain = p.value("light_pollution_gain", lightPollutionGain);
         extinctionCoeff = p.value("extinction_coeff", extinctionCoeff);
+        sunlitBgVisibility = p.value("sunlit_bg_visibility", sunlitBgVisibility);
     }
 
     if (j.contains("display"))
@@ -2223,7 +2225,8 @@ void SatelliteSim::saveSettings()
         {"highlight_flare", highlightFlare},
         {"moon_suppression", moonSuppression},
         {"light_pollution_gain", lightPollutionGain},
-        {"extinction_coeff", extinctionCoeff}};
+        {"extinction_coeff", extinctionCoeff},
+        {"sunlit_bg_visibility", sunlitBgVisibility}};
 
     j["display"] = {
         {"ui_scale", uiScale},
