@@ -32,8 +32,9 @@ layout(push_constant) uniform PC {
     vec4  sunDirENU;
     vec4  moonDirENU;
     vec4  obsECEFDir;   // xyz = observer ECEF unit vector
-    uint  debugDisableMask; // perf knockout toggles — mirrors SatDrawPC's; only bit 32 (aurora) is
-                            // meaningful here now that the sky curtain march lives in this shader
+    uint  debugDisableMask; // perf knockout toggles — mirrors SatDrawPC's; bit 32 (aurora curtain
+                            // march) and bit 64 (cloud self-shadow light cone) are the ones
+                            // meaningful here — both live only in this shader now
 } pc;
 
 layout(set = 0, binding = 0) uniform sampler2D earthCloudsTex;
@@ -81,7 +82,11 @@ layout(set = 0, binding = 4) uniform CloudParams {
     float oceanDetailOctaves; // unused here — layout parity
     float oceanReflSamples;   // unused here — layout parity
     float viewSamplesMax;     // unused here — layout parity, was pad4
-    float pad3;               // reserved — was nightAmbientGain, removed session 26 (layout parity)
+    float sunGainZenith;      // USED here (was pad3) — sun-gain multiplier applied when the sun is
+                               // near zenith, blended against `sunGain` (now effectively the
+                               // near-horizon/sunset value) by sun elevation. Was a single flat
+                               // gain for all elevations, which meant a value tuned to look good
+                               // at sunset (high) overexposed clouds at midday, or vice versa.
     float moonGain;           // shared moonlight brightness master — replaces this file's old
                               // hardcoded 0.015 moonContrib scalar; sat_sky.frag's terrain
                               // moonlight term reads the same field
@@ -129,6 +134,10 @@ layout(std430, set = 0, binding = 7) readonly buffer LightDomeBuf {
     float lightDome[16];
 };
 layout(set = 0, binding = 8) uniform sampler3D auroraNoiseTex;
+// Baked cloud/cirrus domain-warp field (see cloud_warp_noise.comp) — replaces the 3 live
+// warpPerlin3 evaluations cloudWarpOffset used to do per call. R/G/B = the three offset warp
+// channels, [0,1]-normalized (decode via *2-1 at the call site).
+layout(set = 0, binding = 9) uniform sampler3D cloudWarpNoiseTex;
 
 const float PI = 3.14159265359;
 const float R_EARTH = 6371000.0;
@@ -574,15 +583,57 @@ vec3 airglowRedMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
     return accumAirglowRed * kAirglowScale * cloud.airglowGain;
 }
 
+// Perf (this session): was 3 live warpPerlin3 evaluations (24 gradient-hash lookups) per call —
+// the dominant live-procedural cost in the cloud march, since this runs once per in-cloud march
+// sample. Baked into cloud_warp_noise.comp's field (R/G/B = the same three offset channels this
+// used to compute live). kWarpBakeN MUST match the bake shader's own constant — see that file's
+// header for the tiling-period / repeat-distance trade-off this bake accepted (the live version
+// never repeated; the baked one tiles at a period chosen to stay unnoticeable in normal play).
+const float kWarpBakeN = 16.0;
+const int   kWarpBakeRes = 192; // MUST match cloud_warp_noise.comp's own bake resolution (kSz)
+
+// Wraps a texel index into [0,N) — same explicit pattern as gradHash's cell wrap in
+// cloud_warp_noise.comp (not GLSL's `%`, whose sign behavior for negative operands isn't
+// something to rely on across drivers).
+int wrapTexel(int x, int n) { int r = x % n; return r < 0 ? r + n : r; }
+ivec3 wrapTexel3(ivec3 c, int n) { return ivec3(wrapTexel(c.x, n), wrapTexel(c.y, n), wrapTexel(c.z, n)); }
+
+// Manual smoothstep-weighted trilinear blend of the baked warp texels — NOT a plain texture()
+// call. Hardware trilinear filtering interpolates LINEARLY (straight-edged) between texels; the
+// live analytic version this replaced was smoothstep-interpolated (curved) between its gradient
+// corners. At this bake's texel density that mismatch was geometrically legible as visible
+// "tessellating triangle" faceting once the value is used as a raw coordinate displacement (see
+// cloud_warp_noise.comp's header — a 192³/2-octave resolution bump alone reduced but didn't
+// eliminate it). Using texelFetch + a manual smoothstep weight reproduces the same curved
+// interpolation shape the analytic Perlin evaluation had, regardless of texel density — the
+// sampler's REPEAT/LINEAR settings go unused here (texelFetch bypasses both address mode and
+// filtering; wrapping is done by hand via wrapTexel3 instead).
+vec3 cloudWarpNoiseSample(vec3 uvw) {
+    vec3  tc = fract(uvw) * float(kWarpBakeRes) - 0.5; // texel-centered, wrapped into [0,texSize)
+    ivec3 i0 = ivec3(floor(tc));
+    vec3  f  = tc - vec3(i0);
+    vec3  u  = f * f * (3.0 - 2.0 * f); // same smoothstep curve the analytic Perlin interpolant used
+
+    vec3 c000 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(0,0,0), kWarpBakeRes), 0).rgb;
+    vec3 c100 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(1,0,0), kWarpBakeRes), 0).rgb;
+    vec3 c010 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(0,1,0), kWarpBakeRes), 0).rgb;
+    vec3 c110 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(1,1,0), kWarpBakeRes), 0).rgb;
+    vec3 c001 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(0,0,1), kWarpBakeRes), 0).rgb;
+    vec3 c101 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(1,0,1), kWarpBakeRes), 0).rgb;
+    vec3 c011 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(0,1,1), kWarpBakeRes), 0).rgb;
+    vec3 c111 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(1,1,1), kWarpBakeRes), 0).rgb;
+
+    return mix(mix(mix(c000, c100, u.x), mix(c010, c110, u.x), u.y),
+               mix(mix(c001, c101, u.x), mix(c011, c111, u.x), u.y), u.z);
+}
+
 vec3 cloudWarpOffset(vec3 dirECEF) {
     vec3 windOfs = vec3(cloud.cloudPhase * kWarpDriftRate + pc.waveTime * kWarpEvolveRate,
                          pc.waveTime * kWarpEvolveRate * 0.6,
                          cloud.cloudPhase * kWarpDriftRate * 0.7 + pc.waveTime * kWarpEvolveRate * 0.8);
-    vec3 p       = dirECEF * kWarpFreq + windOfs;
-    float wx = warpPerlin3(p);
-    float wy = warpPerlin3(p + vec3(11.3, 47.7,  5.9));
-    float wz = warpPerlin3(p + vec3(71.9,  3.1, 29.4));
-    return vec3(wx, wy, wz) * kWarpStrength;
+    vec3 uvw = (dirECEF * kWarpFreq + windOfs) / kWarpBakeN;
+    vec3 n   = cloudWarpNoiseSample(uvw) * 2.0 - 1.0;
+    return n * kWarpStrength;
 }
 
 float cityBrightness(float lum) {
@@ -869,7 +920,7 @@ void cloudMarchCS(
             float sampleDist = t + step * 0.5;
             float shadowFade = 1.0 - smoothstep(cloud.shadowMaxDistM * 0.6, cloud.shadowMaxDistM, sampleDist);
             float sunOptDepth = 0.0;
-            if (shadowFade > 0.01) {
+            if (shadowFade > 0.01 && (pc.debugDisableMask & 64u) == 0u) {
                 int   N_CONE    = max(1, int(cloud.lightSteps));
                 vec2  tConeExit = raySphere(p, sunDir, cloudTop);
                 float coneLen   = min((tConeExit.y > 0.0) ? tConeExit.y : shellThick, shellThick * 2.0);
@@ -897,7 +948,13 @@ void cloudMarchCS(
                     float cPosZ      = sin(cpUV.x * 21.3 + cpUV.y * 17.7) * 0.5 + 0.5;
                     vec3  cDir       = cpE / cpL;
                     vec3  cDirDrift  = rotateZ(cDir, cloud.cloudPhase * cloud.layers[0].driftMult);
-                    vec3  cWarpUVW   = cloudWarpOffset(cDirDrift);
+                    // Reuse the PARENT sample's already-computed warp offset instead of calling
+                    // cloudWarpOffset (3 warpPerlin3 evaluations) again per cone step — perf
+                    // (this session): cone samples sit within ~2*shellThick of p along sunDir,
+                    // a few km at most, which is a negligible angular displacement against
+                    // kWarpFreq=6's basis over the full unit sphere. This was the single biggest
+                    // new cost from making the shadow cone warp-consistent with the visible cloud.
+                    vec3  cWarpUVW   = warpUVW;
                     vec3  cUVWXY = cDirDrift * kCloudHorizFreq + cWarpUVW;
                     vec3  cUVWD  = cUVWXY + vec3(0.0, 0.0, chN * kVertTiles + cPosZ * 2.0);
 
@@ -1000,7 +1057,13 @@ void cloudMarchCS(
             vec3  auroraUp        = kAuroraGroundColor * auroraLocalMask * cloud.auroraCloudGain
                                    * (1.0 - sampleDayness) * mix(0.2, 1.0, hNorm);
 
-            vec3  inScatter  = sunColorCloud * sunLit * ph * (1.0 + powder) * cloud.sunGain
+            // Sun gain blended by sun elevation: cloud.sunGain (near-horizon/sunset) tuned high
+            // reads as an amazing sunset, but the SAME flat gain applied at midday (sun near
+            // zenith) overexposes the whole cloud deck — cloudSunDotRaw is already ~sin(sun
+            // elevation) at this point on Earth, so 0=horizon/sunset, 1=overhead/midday.
+            float sunGainCurve = mix(cloud.sunGain, cloud.sunGainZenith,
+                                      smoothstep(0.0, 1.0, clamp(cloudSunDotRaw, 0.0, 1.0)));
+            vec3  inScatter  = sunColorCloud * sunLit * ph * (1.0 + powder) * sunGainCurve
                              + moonContrib
                              + skyAmbient
                              + cityUp
@@ -1130,7 +1193,10 @@ void cirrusMarchCS(
 
         float cloudSunDot  = dot(normalize(pECEF), sunDirECEF);
         float cloudDayFrac = smoothstep(-0.1, 0.15, cloudSunDot);
-        vec3  inScatter     = vec3(max(0.0, cloudSunDot + 0.1) * cloud.sunGain) * cloudDayFrac * ph * 2.0;
+        // See cloudMarchCS's sunGainCurve comment — same horizon/zenith blend, same rationale.
+        float sunGainCurveCirrus = mix(cloud.sunGain, cloud.sunGainZenith,
+                                        smoothstep(0.0, 1.0, clamp(cloudSunDot, 0.0, 1.0)));
+        vec3  inScatter     = vec3(max(0.0, cloudSunDot + 0.1) * sunGainCurveCirrus) * cloudDayFrac * ph * 2.0;
 
         cirrusScatter       += cirrusTransmittance * (1.0 - stepT) * inScatter;
         cirrusTransmittance *= stepT;
