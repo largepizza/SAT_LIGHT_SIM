@@ -139,6 +139,22 @@ layout(set = 0, binding = 8) uniform sampler3D auroraNoiseTex;
 // channels, [0,1]-normalized (decode via *2-1 at the call site).
 layout(set = 0, binding = 9) uniform sampler3D cloudWarpNoiseTex;
 
+// ── Reflect-Orbital ground beams (C12) — written by sat_orbit.comp, read here for the
+// volumetric in-scatter term. Indexed by TARGET IDENTITY (bestIdx), not azimuth — see the
+// ReflectBeamsBuf comment in sat_orbit.comp for why (avoids cross-target bucket collisions).
+// Struct must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h and sat_orbit.comp exactly.
+const uint BEAM_SLOTS = 201u; // must equal NUM_TARGETS in sat_orbit.comp / kNumReflectorTargets
+struct ReflectBeam {
+    vec3  satENU;
+    float intensity;
+    vec3  targetENU;
+    float footprintRadM;
+};
+layout(std430, set = 0, binding = 10) readonly buffer ReflectBeamsBuf {
+    uint         slotBright[BEAM_SLOTS];
+    ReflectBeam  beams[BEAM_SLOTS];
+};
+
 const float PI = 3.14159265359;
 const float R_EARTH = 6371000.0;
 const float R_ATMOS = 6471000.0;
@@ -1271,6 +1287,81 @@ void main() {
     // original never had one either, just a plain additive contribution.
     if ((pc.debugDisableMask & 16u) == 0u) {
         B_total += airglowRedMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, pc.obsEffH);
+    }
+
+    // ── Reflect-Orbital beam volumetric in-scatter (C12) ─────────────────────────────────────
+    // First-pass scope, not a per-march-step density sample: a cheap per-pixel closest-approach
+    // test against each of the (≤16) active beams, gated to the cloud shell's altitude band and
+    // modulated by this ray's OWN already-computed A_total — reuses work already done rather than
+    // a fresh cloudDensity() evaluation at the crossing point. Expected to need visual tuning in a
+    // follow-up session (glow radius, scale constant) once seen in-app — see TERRAIN_PLAN.md C12.
+    if ((pc.debugDisableMask & 128u) == 0u) {
+        const float kBeamGlowRadiusM = 3000.0;
+        float beamCloudBaseAlt = cloud.layers[0].shellAltM;
+        float beamCloudTopAlt  = cloud.layers[1].shellAltM;
+        // A_total is transmittance (1=clear, 0=opaque) along THIS view ray — see the aurora
+        // suppression comment above. A real light beam is only visible where there's scattering
+        // medium to catch it: invisible in fully clear air (no medium) AND extinguished inside
+        // fully opaque cloud (light can't reach the observer through it either) — visibility peaks
+        // at MODERATE cloud presence. A parabola peaking at cloudVisibility=0.5 (zero at both
+        // extremes) captures that shape from the one value already on hand, without an extra
+        // density lookup at the beam's specific crossing point.
+        float beamCloudVis    = clamp(dot(A_total, vec3(1.0 / 3.0)), 0.0, 1.0);
+        float beamMediumFactor = 4.0 * beamCloudVis * (1.0 - beamCloudVis);
+
+        for (int bi = 0; bi < int(BEAM_SLOTS); ++bi) {
+            float intensity = beams[bi].intensity;
+            if (intensity <= 0.0) continue;
+
+            vec3 satWorldPos    = obsPos + beams[bi].satENU;
+            vec3 targetWorldPos = obsPos + beams[bi].targetENU;
+            vec3 segDir = targetWorldPos - satWorldPos;
+            float segLen = length(segDir);
+            if (segLen < 1.0) continue;
+            vec3 segHat = segDir / segLen;
+
+            // Restrict the closest-approach search to the sub-range of the segment that's
+            // actually inside the cloud shell's altitude band — NOT the whole satellite-to-ground
+            // segment. The single GLOBAL closest-approach point (view ray vs. the full segment)
+            // is very unlikely to land inside a thin ~km-scale shell out of a ~500+ km segment by
+            // chance, which made this term almost never fire. Approximate via linear interpolation
+            // in altitude between the segment's two endpoints (altitude decreases ~monotonically
+            // from the satellite down to the ground target, so this is a good approximation
+            // without a real root-find).
+            float altSat = length(satWorldPos) - R_EARTH;
+            float altTgt = length(targetWorldPos) - R_EARTH;
+            float sLow = 0.0, sHigh = segLen;
+            if (altSat > altTgt) {
+                float invSpan = 1.0 / max(altSat - altTgt, 1e-3);
+                sHigh = clamp((altSat - beamCloudBaseAlt) * invSpan * segLen, 0.0, segLen);
+                sLow  = clamp((altSat - beamCloudTopAlt)  * invSpan * segLen, 0.0, segLen);
+                sLow  = min(sLow, sHigh);
+            }
+            // else: altitude doesn't decrease along the segment (shouldn't normally happen for a
+            // satellite-to-ground beam) — fall back to searching the whole segment.
+
+            // Closest approach between the view ray (obsPos, dir) and the beam segment —
+            // standard two-line closest-point solve, then clamp to the shell-crossing sub-range.
+            vec3  w0    = obsPos - satWorldPos;
+            float bDot  = dot(dir, segHat);
+            float dDot  = dot(dir, w0);
+            float eDot  = dot(segHat, w0);
+            float denom = 1.0 - bDot * bDot;
+            float sSeg  = (abs(denom) > 1e-6) ? (eDot - bDot * dDot) / denom : 0.0;
+            sSeg = clamp(sSeg, sLow, sHigh);
+            float tRay = sSeg * bDot - dDot;
+            if (tRay < 0.0) continue;
+
+            vec3  closestRayPt = obsPos + tRay * dir;
+            vec3  closestSegPt = satWorldPos + sSeg * segHat;
+            float perpDist     = length(closestRayPt - closestSegPt);
+            if (perpDist > kBeamGlowRadiusM * 3.0) continue;
+
+            float proximity = exp(-(perpDist * perpDist) / (2.0 * kBeamGlowRadiusM * kBeamGlowRadiusM));
+            float ph = phaseCloud(dot(dir, segHat));
+            const float kBeamScale = 3e-8;
+            B_total += vec3(kBeamScale * intensity * proximity * ph * beamMediumFactor);
+        }
     }
 
     // Nearer of the two layers' entry distances — always valid whenever either layer actually

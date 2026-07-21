@@ -1,0 +1,301 @@
+#version 450
+
+// ── cloud_shadow.comp ──────────────────────────────────────────────────────────
+// Shared cloud-transmittance primitive (C12). Low-resolution (128×128), fixed-size dispatch —
+// independent of screen resolution, no onResize handling needed. Computes, for a flat
+// tangent-plane grid of ground points centered on the observer, how much of the main cloud
+// shell (layers[0]/[1] — NOT cirrus, matching the scope of the old removed cloudShadowFactor)
+// sits between that ground point and the sun.
+//
+// This REPLACES the old cloudShadowFactor() (removed session 23 for being the dominant
+// terrain/ocean rendering cost — it was a live per-pixel raymarch, called on every screen
+// pixel at full resolution). The fix here is not a cheaper march — it's the same march done
+// ONCE PER GRID TEXEL instead of once per screen pixel, sampled back as an O(1) texture read
+// by every consumer (sat_sky.frag's terrain/ocean lighting, and the Reflect-Orbital beam
+// ground-spot term — see TERRAIN_PLAN.md C12 for the full design).
+//
+// Sea-level approximation: ground points are reconstructed on a FLAT tangent plane at R_EARTH,
+// ignoring local terrain elevation (no earthElevTex/earthSpecTex binding here) — cloud-base
+// altitude (2+ km) dwarfs most terrain relief, and this mirrors the project's existing
+// "exact for the dominant case, approximate for the edge case" pattern (e.g. the cloud/terrain
+// occlusion approximation in cloud_march.comp/sat_sky.frag).
+//
+// Correctness requirement, not just performance: samples cloud density using the exact same
+// cloudPhase/driftMult/erosion parameters as the visible cloud render (ported from
+// cloud_march.comp's canonical 3-slice cloudDensity), so shadows track the clouds actually
+// rendered overhead as they drift — a detached shadow would be a glaring visual bug, not just
+// an approximation.
+//
+// Unlike cloud_march.comp's screen-ray march, the ground point here is always below cloud base
+// by construction, so only the simple "below-shell" branch of the shell-entry logic is needed
+// (not the full below/inside/above classification arbitrary view rays require) — still using
+// the cancellation-safe raySphere form throughout (TERRAIN_PLAN.md session 22).
+//
+// Works directly in true ECEF space throughout (not the "obsPos" locally-rotated frame
+// cloud_march.comp's view-ray march uses) — there is no camera ray here to share that
+// convention with, so the ground point and every march sample are already in real ECEF,
+// avoiding an extra per-sample basis transform.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+const int GRID_RES = 128;
+
+layout(push_constant) uniform PC {
+    vec3  sunDirENU;    // unit vector toward sun, ENU — sunDirECEF derived in-shader from this and
+                         // obsECEFDir below, same convention cloud_march.comp's main() uses
+    float rangeM;       // tangent-plane grid half-extent (radius), meters
+    vec3  obsECEFDir;   // observer ECEF unit vector (local zenith direction)
+    float waveTime;     // wall-clock seconds — matches cloud_march.comp's pc.waveTime use in cloudWarpOffset
+    float cloudPhase;   // fmod(driftRate * simTime, 2pi) — same value CloudParams.cloudPhase carries
+    float pad0;
+    vec2  shadowResidualM; // texel-snapping residual (meters) — see SatelliteSim.h's
+                            // CloudShadowPC::shadowResidualM comment for the full rationale. Added
+                            // to the tangent-plane offset below so the grid's world-space footprint
+                            // only shifts in whole-texel steps as the observer moves, instead of
+                            // continuously drifting sub-texel every frame (the direct fix for
+                            // shadow "swimming"/flicker during camera motion).
+} pc;
+
+layout(set = 0, binding = 0) uniform sampler2D earthCloudsTex;
+layout(set = 0, binding = 1) uniform sampler3D cloudNoiseTex;
+layout(set = 0, binding = 2) uniform sampler3D cloudWarpNoiseTex;
+
+// Same CloudParams UBO layout as cloud_march.comp binding 4 / sat_sky.frag binding 9 —
+// duplicated struct, same underlying VkBuffer bound into this shader's own descriptor set.
+// Only fields cloudDensity()/the shell march actually use are meaningfully consumed here;
+// the rest exist purely for layout parity (see cloud_march.comp's own comments on this).
+struct CloudLayer {
+    float shellAltM;
+    float driftMult;
+    float alphaMax;
+    float mipLod;
+    float coverageMult;
+    float densityMult;
+    float enabled;
+    float pad;
+};
+layout(set = 0, binding = 3) uniform CloudParams {
+    float coverage;
+    float density;
+    float driftRate;
+    float sunGain;
+    float ambientGain;
+    float hgG;
+    float marchSteps;
+    float lightSteps;
+    float cloudPhaseUnused; // this shader receives cloudPhase via push constant instead (see PC)
+    float extinctionCoeff;
+    float cirrusWindAngle;
+    float cirrusStretch;
+    float airglowGain;
+    float airglowGreenGain;
+    float airglowRedGain;
+    float airglowSodiumGain;
+    float shadowMaxDistM;
+    float maxRenderDistM;
+    float viewSamplesMin;
+    float lightSamplesUnused;
+    float oceanSeaOctaves;
+    float oceanDetailOctaves;
+    float oceanReflSamples;
+    float viewSamplesMax;
+    float sunGainZenith;
+    float moonGain;
+    float pad1;
+    float pad2;
+    vec4 mwBasisRow0;
+    vec4 mwBasisRow1;
+    vec4 mwBasisRow2;
+    CloudLayer layers[4];
+    float stormStrength;
+    float auroraGain;
+    float auroraCloudGain;
+    float auroraGroundGain;
+    float auroraCoverageFreq;
+    float auroraCoverageAzFreq;
+    float auroraCoverageDriftRate;
+    float auroraShimmerRate;
+    float cloudNightAmbientGain;
+    float cloudBaseVariance;
+    float cloudErosionEdge;
+    float cloudErosionCore;
+} cloud;
+
+layout(set = 0, binding = 4, r16f) uniform writeonly image2D shadowTarget;
+
+const float PI = 3.14159265359;
+const float R_EARTH = 6371000.0;
+
+// Cancellation-safe form at R_EARTH scale — see TERRAIN_PLAN.md session 22 log.
+vec2 raySphere(vec3 ro, vec3 rd, float r) {
+    float b     = dot(ro, rd);
+    float roLen = length(ro);
+    float c     = (roLen - r) * (roLen + r);
+    float d     = b * b - c;
+    if (d < 0.0) return vec2(-1.0);
+    float sq = sqrt(d);
+    return vec2(-b - sq, -b + sq);
+}
+
+vec3 rotateZ(vec3 v, float theta) {
+    float c = cos(theta), s = sin(theta);
+    return vec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
+}
+
+float remap(float v, float lo, float hi, float newLo, float newHi) {
+    return newLo + clamp((v - lo) / (hi - lo), 0.0, 1.0) * (newHi - newLo);
+}
+
+// ── Baked cloud/cirrus domain-warp field sampling — ported verbatim from cloud_march.comp ────
+const float kWarpBakeN   = 16.0;
+const int   kWarpBakeRes = 192; // MUST match cloud_warp_noise.comp's bake resolution
+const float kWarpFreq       = 6.0;
+const float kWarpStrength   = 32.0;
+const float kWarpDriftRate  = 0.08;
+const float kWarpEvolveRate = 0.00002;
+
+int wrapTexel(int x, int n) { int r = x % n; return r < 0 ? r + n : r; }
+ivec3 wrapTexel3(ivec3 c, int n) { return ivec3(wrapTexel(c.x, n), wrapTexel(c.y, n), wrapTexel(c.z, n)); }
+
+vec3 cloudWarpNoiseSample(vec3 uvw) {
+    vec3  tc = fract(uvw) * float(kWarpBakeRes) - 0.5;
+    ivec3 i0 = ivec3(floor(tc));
+    vec3  f  = tc - vec3(i0);
+    vec3  u  = f * f * (3.0 - 2.0 * f);
+
+    vec3 c000 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(0,0,0), kWarpBakeRes), 0).rgb;
+    vec3 c100 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(1,0,0), kWarpBakeRes), 0).rgb;
+    vec3 c010 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(0,1,0), kWarpBakeRes), 0).rgb;
+    vec3 c110 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(1,1,0), kWarpBakeRes), 0).rgb;
+    vec3 c001 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(0,0,1), kWarpBakeRes), 0).rgb;
+    vec3 c101 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(1,0,1), kWarpBakeRes), 0).rgb;
+    vec3 c011 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(0,1,1), kWarpBakeRes), 0).rgb;
+    vec3 c111 = texelFetch(cloudWarpNoiseTex, wrapTexel3(i0 + ivec3(1,1,1), kWarpBakeRes), 0).rgb;
+
+    return mix(mix(mix(c000, c100, u.x), mix(c010, c110, u.x), u.y),
+               mix(mix(c001, c101, u.x), mix(c011, c111, u.x), u.y), u.z);
+}
+
+vec3 cloudWarpOffset(vec3 dirECEF) {
+    vec3 windOfs = vec3(pc.cloudPhase * kWarpDriftRate + pc.waveTime * kWarpEvolveRate,
+                         pc.waveTime * kWarpEvolveRate * 0.6,
+                         pc.cloudPhase * kWarpDriftRate * 0.7 + pc.waveTime * kWarpEvolveRate * 0.8);
+    vec3 uvw = (dirECEF * kWarpFreq + windOfs) / kWarpBakeN;
+    vec3 n   = cloudWarpNoiseSample(uvw) * 2.0 - 1.0;
+    return n * kWarpStrength;
+}
+
+// Ported verbatim from cloud_march.comp's canonical (3-slice, tunable edge/core erosion)
+// version — NOT the stale 2-slice copy in sat_sky.frag (dead code there since session 23).
+const float kCloudHorizFreq = 480.0;
+const float kCloudColFreq   = 80.0;
+
+float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, float density, float heightProfile) {
+    const float kPresenceZBase = 0.0;
+    const float kPresenceZMid  = 0.28;
+    const float kPresenceZTop  = 0.56;
+    float nsBaseR = texture(cloudNoiseTex, uvwXY + vec3(0.0, 0.0, kPresenceZBase)).r;
+    float nsMidR  = texture(cloudNoiseTex, uvwXY + vec3(0.0, 0.0, kPresenceZMid)).r;
+    float nsTopR  = texture(cloudNoiseTex, uvwXY + vec3(0.0, 0.0, kPresenceZTop)).r;
+    float baseA   = remap(nsBaseR, 1.0 - coverage, 1.0, 0.0, 1.0);
+    float midA    = remap(nsMidR,  1.0 - coverage, 1.0, 0.0, 1.0);
+    float topA    = remap(nsTopR,  1.0 - coverage, 1.0, 0.0, 1.0);
+    float hc      = clamp(hNorm, 0.0, 1.0);
+    float base    = (hc < 0.5) ? mix(baseA, midA, hc * 2.0)
+                                : mix(midA, topA, (hc - 0.5) * 2.0);
+    if (base <= 0.0) return 0.0;
+
+    vec4  nsF     = texture(cloudNoiseTex, uvwDetail * 1.5 + vec3(0.37, 0.53, 0.71));
+    float erosion = nsF.g * 0.625 + nsF.b * 0.25 + nsF.a * 0.125;
+
+    float erosionAmt = mix(cloud.cloudErosionEdge, cloud.cloudErosionCore, base);
+    float eroded  = remap(base, erosionAmt * erosion, 1.0, 0.0, 1.0);
+
+    return clamp(eroded * heightProfile * density, 0.0, 1.0);
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= GRID_RES || coord.y >= GRID_RES) return;
+
+    // ── Flat tangent-plane ground point (accepted approximation — see header) ───────────────
+    // shadowResidualM shifts every sample by the same small (< 1 texel) amount so the grid's
+    // world-space footprint is centered on a texel-quantized point, not the observer's exact
+    // continuously-moving position — see PC's shadowResidualM comment for the full rationale.
+    vec2 uv       = (vec2(coord) + 0.5) / float(GRID_RES) * 2.0 - 1.0; // [-1,1]
+    vec2 offsetM  = uv * pc.rangeM + pc.shadowResidualM;
+    vec3 enuZ     = normalize(pc.obsECEFDir);
+    vec3 enuX     = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+    vec3 enuY     = cross(enuZ, enuX);
+    vec3 groundECEF = enuZ * R_EARTH + enuX * offsetM.x + enuY * offsetM.y;
+    // Same convention as cloud_march.comp's main(): ENU->ECEF via the local basis, not a
+    // CPU-computed value (there is no CPU-side sunDirECEF anywhere else in this codebase either).
+    vec3 sunDirECEF = pc.sunDirENU.x * enuX + pc.sunDirENU.y * enuY + pc.sunDirENU.z * enuZ;
+
+    float cloudBaseAlt = cloud.layers[0].shellAltM;
+    float cloudTopAlt  = cloud.layers[1].shellAltM;
+    float shellThick   = cloudTopAlt - cloudBaseAlt;
+
+    float T = 1.0;
+    if (cloud.layers[0].enabled > 0.5) {
+        // Ground point is always below cloud base by construction — only the "below-shell"
+        // branch is needed (see header note on why the full 3-way classification isn't required).
+        vec2 shellB = raySphere(groundECEF, sunDirECEF, R_EARTH + cloudBaseAlt);
+        vec2 shellT = raySphere(groundECEF, sunDirECEF, R_EARTH + cloudTopAlt);
+        if (shellT.y > 0.0 && shellB.y < shellT.y) {
+            float tEnter = max(shellB.y, 0.0);
+            float tExit  = shellT.y;
+            const int kShadowSteps = 12;
+            float segLen = (tExit - tEnter) / float(kShadowSteps);
+            for (int i = 0; i < kShadowSteps; ++i) {
+                vec3 p = groundECEF + sunDirECEF * (tEnter + (float(i) + 0.5) * segLen);
+                float h = length(p) - R_EARTH;
+                if (h < cloudBaseAlt || h > cloudTopAlt) continue;
+                float hNorm = (h - cloudBaseAlt) / shellThick;
+
+                // Per-column density evaluation — identical to cloudMarchCS's main-shell sample
+                // (cloud_march.comp), except p is already true ECEF here (no obsPos-frame basis
+                // transform needed — see header).
+                float pLen = length(p);
+                vec3  dirECEF = p / pLen;
+                float pLon = atan(p.y, p.x);
+                float pLat = asin(clamp(p.z / pLen, -1.0, 1.0));
+                vec2  pUV  = vec2(fract((pLon + PI) / (2.0*PI)
+                                        + pc.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                                   (0.5*PI - pLat) / PI);
+                float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, 4.0).r;
+
+                vec3 dirECEFDrift = rotateZ(dirECEF, pc.cloudPhase * cloud.layers[0].driftMult);
+                vec3 warpUVW      = cloudWarpOffset(dirECEFDrift);
+
+                float colNoise = texture(cloudNoiseTex,
+                                         dirECEFDrift * kCloudColFreq + warpUVW + vec3(0.0, 0.0, 0.25)).r;
+                float colH = remap(colNoise, 1.0 - localCov, 1.0, 0.0, 1.0);
+
+                float baseNoise = texture(cloudNoiseTex,
+                                          dirECEFDrift * kCloudColFreq + warpUVW + vec3(0.0, 0.0, 0.85)).r;
+                float baseH = (baseNoise - 0.5) * cloud.cloudBaseVariance;
+
+                float topFade = 1.0 - smoothstep(colH - 0.05, colH + 0.05, hNorm);
+                float hFade   = smoothstep(baseH, baseH + 0.05, hNorm) * topFade;
+                if (hFade < 0.001) continue;
+
+                const float kVertTiles = 1.5;
+                float posZ      = sin(pUV.x * 21.3 + pUV.y * 17.7) * 0.5 + 0.5;
+                vec3  uvwXY     = dirECEFDrift * kCloudHorizFreq + warpUVW;
+                vec3  uvwDetail = uvwXY + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0);
+                float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade);
+
+                if (d > 0.001) {
+                    float extinction = d * segLen * 3e-3; // same density->optical-depth mapping as cloudMarchCS
+                    T *= exp(-extinction);
+                    if (T < 0.02) break;
+                }
+            }
+        }
+    }
+
+    // Max 85% darkening — matches the old removed cloudShadowFactor's cap.
+    float shadowFactor = mix(1.0, T, 0.85);
+    imageStore(shadowTarget, coord, vec4(shadowFactor, 0.0, 0.0, 0.0));
+}

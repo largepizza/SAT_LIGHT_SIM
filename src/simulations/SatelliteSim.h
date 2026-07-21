@@ -245,8 +245,17 @@ struct SatDrawPC
                              // skyGlareEased member comment); used only by sat_sky.frag's Milky
                              // Way (stars read the CPU-side skyGlareEased directly in
                              // updateStars(), no GPU copy needed for them).
-}; // total: 148 bytes
-static_assert(sizeof(SatDrawPC) == 148, "SatDrawPC layout mismatch");
+    float cloudShadowRangeM; // offset 148 — mirrors SatelliteSim::cloudShadowRangeM (C12); lets
+                             // sat_sky.frag convert hitPt.xy into the cloud_shadow.comp grid's
+                             // own [-range,+range] tangent-plane UV convention. Not shared via
+                             // CloudParams UBO to avoid a 3-way struct-duplication growth
+                             // (cloud_march.comp/sat_sky.frag/cloud_shadow.comp) for a field only
+                             // sat_sky.frag needs.
+    glm::vec2 cloudShadowResidualM; // offset 152 — mirrors CloudShadowPC::shadowResidualM (same
+                             // frame's value); subtracted from hitPt.xy/targetENU.xy before mapping
+                             // to the shadow grid's UV — see that field's comment for why.
+}; // total: 160 bytes
+static_assert(sizeof(SatDrawPC) == 160, "SatDrawPC layout mismatch");
 
 // ── Push constants for cloud_march.comp (half-res cloud compute pass, C15-perf) ──────────────
 // Matches the layout(push_constant) block in cloud_march.comp exactly. A separate struct from
@@ -268,6 +277,29 @@ struct CloudMarchPC
                                // cloud_march.comp; mirrors the same debugDisableMask value.
 }; // total: 132 bytes
 static_assert(sizeof(CloudMarchPC) == 132, "CloudMarchPC layout mismatch");
+
+// ── Push constants for cloud_shadow.comp (shared cloud-shadow primitive, C12) ────────────────
+// Fixed 128×128 dispatch, independent of screen resolution/camera — no skyView/fov/aspect needed.
+struct CloudShadowPC
+{
+    glm::vec3 sunDirENU;  float rangeM;     // offset 0/12 — ECEF derived in-shader from obsECEFDir,
+                                             // same convention as cloud_march.comp's own sunDirECEF
+    glm::vec3 obsECEFDir; float waveTime;   // offset 16/28
+    float cloudPhase;                       // offset 32
+    float pad0;                             // offset 36 — explicit, for the vec2 below (8-byte align)
+    glm::vec2 shadowResidualM;              // offset 40 — texel-snapping residual (meters), see
+                                             // SatelliteSim::computeCloudShadowSnap(). Grid center
+                                             // (uv=0) represents a texel-quantized world point, not
+                                             // the observer's exact continuously-moving position —
+                                             // this residual is the small (< 1 texel) gap between
+                                             // them, applied here and subtracted by every consumer
+                                             // (SatDrawPC's own copy) so a given world-space cloud
+                                             // feature maps to a STABLE texel except at whole-texel
+                                             // boundary crossings, instead of drifting sub-texel
+                                             // every frame as the observer moves — the direct fix
+                                             // for shadow "swimming"/flicker during camera motion.
+}; // total: 48 bytes
+static_assert(sizeof(CloudShadowPC) == 48, "CloudShadowPC layout mismatch");
 
 // Per-frame sky glow + lens flare data, written by sat_flare.comp each frame.
 //
@@ -347,6 +379,42 @@ struct GpuReflectorTarget
     float valid;      // 1.0 = night-side (valid target), 0.0 = dayside
 };
 static_assert(sizeof(GpuReflectorTarget) == 16, "GpuReflectorTarget layout mismatch");
+
+// ── Reflect-Orbital ground beams (device-local, written by sat_orbit.comp) ───
+// Keyed by TARGET IDENTITY (bestIdx, 0-200 — the same fixed index into reflTargets[] every
+// satellite's nearest-target scan already produces), NOT by azimuth-from-observer sector.
+// This was originally azimuth-sector-keyed (16 sectors, same idiom as GpuGlowBuf's
+// flareEntries/sectorBright, sat_flare.comp:483-494) — that scheme exists there to dedupe
+// potentially thousands of satellites across the WHOLE sky into a handful of render slots,
+// which is a different problem. For beams, two different satellites aiming at the same real
+// target should merge (brightest wins — legitimate), but two satellites aiming at two
+// DIFFERENT real targets that simply happen to share a 22.5°-wide azimuth wedge from the
+// observer must NOT collide — with only 16 sectors they routinely did, silently evicting one
+// beam's slot with an unrelated satellite's, which read as "the beam came from the wrong
+// satellite" / flickered between two sky positions as the two competitors' relative
+// brightness see-sawed frame to frame (found 2026-07-21 from an in-app report). Indexing by
+// bestIdx directly eliminates cross-target collisions entirely, since kBeamSlots exactly
+// matches the number of possible real-world targets (kNumReflectorTargets) — atomicMax is
+// still used, now purely for the legitimate "same target, multiple satellites" case. Zeroed
+// every frame via vkCmdFillBuffer, same pattern as glowBuf.
+static constexpr int kBeamSlots = 201; // MUST match kNumReflectorTargets (one slot per possible target)
+struct GpuReflectBeam
+{
+    glm::vec3 satENU;      // meters, observer-relative (East, North, Up)
+    float intensity;       // groundIrradiance * beamGain — NOT the view-dependent
+                           // mirrorPeak specular term; see sat_orbit.comp writer comment
+    glm::vec3 targetENU;   // meters, observer-relative; exact 3D ENU projection of the
+                           // chosen ground target — correctly encodes Earth curvature
+    float footprintRadM;   // ground footprint radius
+};
+static_assert(sizeof(GpuReflectBeam) == 32, "GpuReflectBeam layout mismatch");
+
+struct GpuReflectBeams
+{
+    uint32_t slotBright[kBeamSlots];  // atomicMax(floatBitsToUint(intensity)), indexed by bestIdx
+    GpuReflectBeam entries[kBeamSlots];
+};
+static_assert(sizeof(GpuReflectBeams) == kBeamSlots * 4 + kBeamSlots * 32, "GpuReflectBeams layout mismatch");
 
 // ── Per-layer cloud shell descriptor (std140: 32 bytes, 2 × vec4) ─────────────
 // Each layer is an infinitely thin sphere-shell sample of earthCloudsTex.
@@ -474,8 +542,10 @@ struct SatOrbitPC
     uint32_t enabledMask;   // bit i = constellation i is enabled — offset 84
     float simDt;            // simulated seconds this frame (mirror slew) — offset 88
     float elevCutoff;       // sin(Earth-limb angle) — horizon cull threshold (≤ -0.01) — offset 92
-}; // 96 bytes
-static_assert(sizeof(SatOrbitPC) == 96, "SatOrbitPC layout mismatch");
+    float beamGain;         // Reflect-Orbital ground-beam intensity multiplier — offset 96
+    float beamFootprintRadM;// Reflect-Orbital ground beam footprint radius (m) — offset 100
+}; // 104 bytes
+static_assert(sizeof(SatOrbitPC) == 104, "SatOrbitPC layout mismatch");
 
 // ── Sky camera ────────────────────────────────────────────────────────────────
 // Azimuth/elevation look direction in the local ENU frame.
@@ -605,6 +675,19 @@ private:
     VkBuffer reflectorTargetsBuf = VK_NULL_HANDLE; // host-visible, updated each frame
     VkDeviceMemory reflectorTargetsMem = VK_NULL_HANDLE;
     void *reflectorTargetsMapped = nullptr;
+    // Reflect-Orbital ground beams (host-visible+coherent; written by sat_orbit.comp, indexed
+    // by target identity + atomicMax, zeroed every frame via vkCmdFillBuffer — same pattern as
+    // glowBuf, including CPU readback of the previous frame's contents for a diagnostic). Read by
+    // cloud_march.comp (volumetric in-scatter) and sat_sky.frag (ground-spot direct lighting).
+    // See GpuReflectBeams.
+    VkBuffer reflectBeamsBuf = VK_NULL_HANDLE;
+    VkDeviceMemory reflectBeamsMem = VK_NULL_HANDLE;
+    void *reflectBeamsMapped = nullptr;
+    // Diagnostic readback (C12): how many of the 16 sectors currently hold an active beam, and
+    // the straight-line distance (meters) from the observer to the nearest one's ground target —
+    // one-frame-stale, same idiom as peakMagnitude. -1 = no active beams this/last frame.
+    int lastActiveBeamCount = 0;
+    float lastNearestBeamDistM = -1.0f;
 
     // ── sat_flare.comp descriptors / pipeline ─────────────────────────────────
     VkDescriptorSetLayout descLayout = VK_NULL_HANDLE;
@@ -707,17 +790,20 @@ private:
     // before buildUI/recordCompute run, so these hold the previous completed frame's
     // GPU time when buildUI reads them, and get refreshed for the following frame's
     // display at the top of recordCompute().
-    float gpuMsSmoothed[6] = {};     // cloud march, orbit compute, flare compute, sky background draw,
-                                      // satellite+star draw, UI overlay
+    float gpuMsSmoothed[7] = {};     // cloud march, cloud shadow map (C12), orbit compute, flare
+                                      // compute, sky background draw, satellite+star draw, UI overlay
     float gpuMsTotalSmoothed = 0.0f; // whole-frame GPU time
 
     // ── Perf knockout toggles (profiling-only; not persisted) ──────────────────
     // Bitmask sent to sat_sky.frag as SatDrawPC::debugDisableMask, so the individual cost of
     // the terrain march / atmosphere loop / sun optical-depth sub-march / ocean sky-reflection
     // loop / airglow-red supplemental march / aurora curtain march / cloud self-shadow light cone
-    // can be measured in isolation via gpuMsSmoothed deltas, without needing a GPU capture tool.
-    // See the dbgSkip* helpers near the top of sat_sky.frag for the bit assignments
-    // (1,2,4,8,16,32); bit 64 (cloud self-shadow cone) is checked directly in cloud_march.comp.
+    // / Reflect-Orbital beams / cloud shadow map can be measured in isolation via gpuMsSmoothed
+    // deltas, without needing a GPU capture tool. See the dbgSkip* helpers near the top of
+    // sat_sky.frag for the bit assignments (1,2,4,8,16,32); bit 64 (cloud self-shadow cone) and
+    // bit 128 (Reflect-Orbital beam volumetric term) are checked directly in cloud_march.comp;
+    // bit 128 (beam ground-spot term) and bit 256 (cloud shadow map) are also checked in
+    // sat_sky.frag (128 gates both consumers of the same feature, checked in both shaders).
     uint32_t debugDisableMask = 0;
 
     // ── Sky glow SSBO ─────────────────────────────────────────────────────────
@@ -848,6 +934,25 @@ private:
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;
     VkPipelineLayout cloudMarchPipeLayout = VK_NULL_HANDLE;
     VkPipeline cloudMarchPipeline = VK_NULL_HANDLE;
+    // ── Shared cloud-shadow primitive (C12) ───────────────────────────────────
+    // Fixed 128×128 R16_SFLOAT grid, independent of screen resolution — NOT recreated in
+    // onResize. Written by cloud_shadow.comp; sampled by sat_sky.frag (binding 18) for both
+    // general cloud-shadow-on-ground and the Reflect-Orbital beam ground-spot term.
+    static constexpr int kCloudShadowGridRes = 128;
+    VkImage cloudShadowImg = VK_NULL_HANDLE;
+    VkDeviceMemory cloudShadowMem = VK_NULL_HANDLE;
+    VkImageView cloudShadowView = VK_NULL_HANDLE;
+    VkSampler cloudShadowSampler = VK_NULL_HANDLE;
+    VkDescriptorSetLayout cloudShadowDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool cloudShadowDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet cloudShadowDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout cloudShadowPipeLayout = VK_NULL_HANDLE;
+    VkPipeline cloudShadowPipeline = VK_NULL_HANDLE;
+    float cloudShadowRangeM = 80000.0f; // tangent-plane grid half-extent (settings-tunable, C12 step 6)
+    // Texel-snapping residual (meters) computed once per frame in recordCompute() (alongside
+    // CloudShadowPC) and reused by buildSatDrawPC() so both the grid-builder and every consumer
+    // agree on the same frame's snap — see CloudShadowPC::shadowResidualM's comment for why.
+    glm::vec2 cloudShadowResidualM{0.0f, 0.0f};
     // Earth elevation texture (binding 5): 21600×10800 R8_UNORM land-elevation DEM.
     // Pixel p → elevation_m = p * 8848; ocean stored as 0. Terrain shell = R_EARTH + 9000 m.
     VkImage earthElevImg = VK_NULL_HANDLE;
@@ -898,6 +1003,13 @@ private:
                                     // fully hidden (like being fully day-suppressed), 1 = as visible as
                                     // true night. Sun-on-screen always forces 0 regardless of this
                                     // slider. See recordCompute()'s sky-glare gate and updateStars().
+    // ── Reflect-Orbital ground beams (C12) ────────────────────────────────────
+    // groundIrradiance * beamGain is NOT the same quantity as mirrorBoost/mirrorPeak (that's the
+    // view-dependent specular term the OBSERVER sees the mirror glint by; this is the physical
+    // irradiance the mirror delivers to its ground target, independent of view angle — see
+    // sat_orbit.comp's beam-writer comment). Uploaded via SatOrbitPC.
+    float beamGain = 1.0f;
+    float beamFootprintRadM = 50000.0f; // ground footprint radius; tunable constant for now
     // ── Milky Way skybox basis (session 27) ────────────────────────────────────
     // ENU->galactic rotation, recomputed each frame in updatePositions() and uploaded to
     // CloudParams. Orientation confirmed by eye against the real star field — no runtime
@@ -1109,13 +1221,13 @@ private:
     bool hovFullscreen = false;
     bool hovSaveSnapshot = false;
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button
-    bool hovDebugToggle[7] = {};   // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone)
+    bool hovDebugToggle[9] = {};   // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map)
     bool hovPhotoMinus[9] = {};
     bool hovPhotoPlus[9] = {};
     bool draggingPhoto[9] = {};
-    bool hovCloudMinus[38] = {}; // was [37] — index 37 is the new Sun gain (zenith) slider
-    bool hovCloudPlus[38] = {};
-    bool draggingCloud[38] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[41] = {}; // was [38] — idx 38-40 are C12's cloud-shadow-range/beam sliders
+    bool hovCloudPlus[41] = {};
+    bool draggingCloud[41] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                   // feedback_cloud_slider_arrays memory: this one was missed once
                                   // already and the out-of-bounds write corrupted the window-chrome
                                   // state declared right below, breaking the settings window.
@@ -1147,6 +1259,9 @@ private:
     void createCloudMarchResources(VulkanContext &ctx);
     void createCloudMarchDescriptors(VulkanContext &ctx);
     void createCloudMarchPipeline(VulkanContext &ctx);
+    void createCloudShadowResources(VulkanContext &ctx);
+    void createCloudShadowDescriptors(VulkanContext &ctx);
+    void createCloudShadowPipeline(VulkanContext &ctx);
     void createGlowResources(VulkanContext &ctx);
     void createComputePipeline(VulkanContext &ctx);
     void createSkyBgPipeline(VulkanContext &ctx);

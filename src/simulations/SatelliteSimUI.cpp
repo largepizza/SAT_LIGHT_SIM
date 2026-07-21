@@ -1514,10 +1514,10 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     CLAY_TEXT(CLAY_STRING("GPU FRAME BREAKDOWN"),
               CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
 
-    static const char *kPerfLabels[6] = {
-        "Cloud march", "Orbit compute", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
+    static const char *kPerfLabels[7] = {
+        "Cloud march", "Cloud shadow map", "Orbit compute", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
     static char perfBufs[7][20];
-    for (int pi = 0; pi < 6; ++pi)
+    for (int pi = 0; pi < 7; ++pi)
     {
         snprintf(perfBufs[pi], sizeof(perfBufs[pi]), "%.2f ms", gpuMsSmoothed[pi]);
         Clay_String labelStr{false, (int32_t)strlen(kPerfLabels[pi]), kPerfLabels[pi]};
@@ -1553,14 +1553,17 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // "Sky background draw" above with a toggle on vs. off to read off that block's
     // isolated GPU cost directly, without a GPU capture tool. Bits match SatelliteSim.h's
     // debugDisableMask comment: 1=terrain, 2=atmosphere, 4=sun optical depth, 8=ocean reflection,
-    // 16=airglow red, 32=aurora curtain, 64=cloud self-shadow cone.
+    // 16=airglow red, 32=aurora curtain, 64=cloud self-shadow cone, 128=Reflect-Orbital beams
+    // (C12, both the cloud_march.comp volumetric term and the sat_sky.frag ground-spot term),
+    // 256=cloud shadow map (C12, general terrain/ocean shadowing).
     CLAY_TEXT(CLAY_STRING("KNOCKOUT PROFILING (disables rendering correctness for cost isolation)"),
               CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
-    static const char *kDebugToggleLabels[7] = {
+    static const char *kDebugToggleLabels[9] = {
         "Terrain march", "Atmosphere loop (N_VIEW)", "Sun optical depth (N_LIGHT)", "Ocean sky reflection",
-        "Airglow red (16-step march)", "Aurora curtain march", "Cloud self-shadow cone"};
-    static const uint32_t kDebugToggleBits[7] = {1u, 2u, 4u, 8u, 16u, 32u, 64u};
-    for (int ti = 0; ti < 7; ++ti)
+        "Airglow red (16-step march)", "Aurora curtain march", "Cloud self-shadow cone",
+        "Reflect-Orbital beams", "Cloud shadow map"};
+    static const uint32_t kDebugToggleBits[9] = {1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u};
+    for (int ti = 0; ti < 9; ++ti)
     {
         bool on = (debugDisableMask & kDebugToggleBits[ti]) != 0u;
         Clay_String lblStr{false, (int32_t)strlen(kDebugToggleLabels[ti]), kDebugToggleLabels[ti]};
@@ -1589,6 +1592,36 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                 CLAY_TEXT(on ? CLAY_STRING("SKIP") : CLAY_STRING("ON"),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
             }
+        }
+    }
+
+    // ── Reflect-Orbital beam diagnostic (C12) ────────────────────────
+    // lastActiveBeamCount/lastNearestBeamDistM are read back from reflectBeamsBuf each frame
+    // (one-frame-stale, same idiom as peakMagnitude) — a quick way to tell "is anything being
+    // written at all" and "how far is the nearest one" apart from the render itself, since a
+    // beam's target being merely tens of km away can still be too far to notice visually.
+    {
+        static char beamCountBuf[24];
+        static char beamDistBuf[24];
+        snprintf(beamCountBuf, sizeof(beamCountBuf), "%d", lastActiveBeamCount);
+        if (lastNearestBeamDistM >= 0.0f)
+            snprintf(beamDistBuf, sizeof(beamDistBuf), "%.1f km", lastNearestBeamDistM / 1000.0f);
+        else
+            snprintf(beamDistBuf, sizeof(beamDistBuf), "none");
+        CLAY(CLAY_ID("BeamDiagRow"), {.layout = {
+                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
+                                          .padding = {4, 4, 2, 2},
+                                          .childGap = 8,
+                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY_TEXT(CLAY_STRING("Active beams / nearest"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            CLAY(CLAY_ID("BeamDiagSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+            Clay_String countStr{false, (int32_t)strlen(beamCountBuf), beamCountBuf};
+            Clay_String distStr{false, (int32_t)strlen(beamDistBuf), beamDistBuf};
+            CLAY_TEXT(countStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+            CLAY_TEXT(CLAY_STRING(" / "), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            CLAY_TEXT(distStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
         }
     }
 
@@ -1767,7 +1800,11 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
 {
     const float kSliderAbsX = settingsChrome.x + kSliderFixedLeft;
     const float kSliderW = settingsSliderWidth(settingsChrome.w);
-    static char cloudBufs[33][16];
+    // Was [33] — already undersized relative to the live idx range before this fix (a latent
+    // OOB stack write nobody had hit yet, found while adding C12's sliders, idx 38-40; see
+    // feedback_cloud_slider_arrays memory). Must stay >= (highest idx in use) + 1, same as
+    // hovCloudMinus/hovCloudPlus/draggingCloud above.
+    static char cloudBufs[41][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -1907,6 +1944,9 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"View samples (max)", &viewSamplesMax, 32.0f, 256.0f, 4.0f, "%.0f", 19},
         {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 20},
         {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
+        {"Cloud shadow range (m)", &cloudShadowRangeM, 10000.0f, 300000.0f, 5000.0f, "%.0f", 38},
+        {"Beam gain", &beamGain, 0.0f, 10.0f, 0.1f, "%.2f", 39},
+        {"Beam footprint (m)", &beamFootprintRadM, 1000.0f, 200000.0f, 1000.0f, "%.0f", 40},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -2316,6 +2356,9 @@ void SatelliteSim::loadSettings()
         auroraCoverageAzFreq = c.value("aurora_coverage_az_freq", auroraCoverageAzFreq);
         auroraCoverageDriftRate = c.value("aurora_coverage_drift_rate", auroraCoverageDriftRate);
         auroraShimmerRate = c.value("aurora_shimmer_rate", auroraShimmerRate);
+        cloudShadowRangeM = c.value("cloud_shadow_range_m", cloudShadowRangeM);
+        beamGain = c.value("beam_gain", beamGain);
+        beamFootprintRadM = c.value("beam_footprint_rad_m", beamFootprintRadM);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -2412,7 +2455,10 @@ void SatelliteSim::saveSettings()
         {"aurora_coverage_freq", auroraCoverageFreq},
         {"aurora_coverage_az_freq", auroraCoverageAzFreq},
         {"aurora_coverage_drift_rate", auroraCoverageDriftRate},
-        {"aurora_shimmer_rate", auroraShimmerRate}};
+        {"aurora_shimmer_rate", auroraShimmerRate},
+        {"cloud_shadow_range_m", cloudShadowRangeM},
+        {"beam_gain", beamGain},
+        {"beam_footprint_rad_m", beamFootprintRadM}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)
@@ -2545,11 +2591,12 @@ void SatelliteSim::savePerfSnapshot(float cpuDt)
     // the GPU total (a gap between them points at CPU-side or present/vsync cost).
     j["gpu_timing_ms"] = {
         {"cloud_march", gpuMsSmoothed[0]},
-        {"orbit_compute", gpuMsSmoothed[1]},
-        {"flare_compute", gpuMsSmoothed[2]},
-        {"sky_background_draw", gpuMsSmoothed[3]},
-        {"satellite_star_draw", gpuMsSmoothed[4]},
-        {"ui_overlay", gpuMsSmoothed[5]},
+        {"cloud_shadow_map", gpuMsSmoothed[1]},
+        {"orbit_compute", gpuMsSmoothed[2]},
+        {"flare_compute", gpuMsSmoothed[3]},
+        {"sky_background_draw", gpuMsSmoothed[4]},
+        {"satellite_star_draw", gpuMsSmoothed[5]},
+        {"ui_overlay", gpuMsSmoothed[6]},
         {"total", gpuMsTotalSmoothed}};
     j["cpu_frame"] = {
         {"dt_ms", cpuDt * 1000.0f},

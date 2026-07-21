@@ -72,9 +72,11 @@ struct VulkanContext {
     // Single frame in flight, so it's safe to resolve the previous frame's
     // query results right after the fence wait in App::drawFrame, before the
     // command buffer is reset and re-recorded for the new frame. Slot layout
-    // is a shared contract between App.cpp (writes 0, 5, 6) and SatelliteSim
-    // (writes 1, 2, 3 in recordCompute; 4 in recordDraw) — see comments there.
-    static constexpr uint32_t kTimestampCount = 7;
+    // is a shared contract between App.cpp (writes 0, 6, 7) and SatelliteSim
+    // (writes 1, 2, 3, 4 in recordCompute; 5 in recordDraw) — see comments there.
+    // Slot 2 (cloud_shadow.comp, C12) was inserted after slot 1 (cloud march) — every
+    // downstream slot shifted by one when it was added.
+    static constexpr uint32_t kTimestampCount = 8;
     VkQueryPool queryPool         = VK_NULL_HANDLE;
     double      timestampPeriodNs = 0.0;   // ns/tick, from device limits; 0 = unsupported
     bool        timestampsReady   = false; // false until one full frame has been resolved

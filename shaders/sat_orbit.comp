@@ -10,6 +10,10 @@
 // Writes:
 //   binding 1  SatInputBuf     — GpuSatInput array consumed by sat_flare.comp
 //   binding 2  mirrorNormalsBuf — updated slew state written back in-place
+//   binding 4  reflectBeamsBuf — Reflect-Orbital ground beams (C12), target-identity+atomicMax selection;
+//                                zeroed each frame by vkCmdFillBuffer, consumed by
+//                                cloud_march.comp (volumetric in-scatter) and sat_sky.frag
+//                                (ground-spot direct lighting)
 //
 // Below-horizon and disabled satellites write elevation = -π/2 and return early.
 // sat_flare.comp's existing horizon cull (elevation < -0.01 rad) discards them.
@@ -94,6 +98,29 @@ layout(set = 0, binding = 3) readonly buffer ReflectorTargetBuf {
     vec4 reflTargets[];  // xyz=posECI, w=valid
 };
 
+// ── Reflect-Orbital ground beams (C12): TARGET-IDENTITY-keyed selection ─────
+// Keyed by bestIdx (0-200, the same index into reflTargets[] every satellite's nearest-target
+// scan already produces) — NOT by azimuth-from-observer sector. An earlier azimuth-sector
+// version (same idiom as GpuGlowBuf's flareEntries/sectorBright) let two DIFFERENT satellites
+// aiming at two DIFFERENT real targets collide whenever those targets merely shared a
+// 22.5°-wide compass wedge from the observer, silently evicting one beam's slot with an
+// unrelated satellite's — found 2026-07-21 from an in-app report of a beam appearing to come
+// from the wrong satellite / flickering between sky positions. BEAM_SLOTS matches NUM_TARGETS
+// exactly so cross-target collisions are impossible; atomicMax is still used, now purely for
+// the legitimate case of multiple satellites aiming at the SAME target. Zeroed every frame by
+// vkCmdFillBuffer. Must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h exactly.
+const uint BEAM_SLOTS = 201u; // must equal NUM_TARGETS
+struct ReflectBeam {
+    vec3  satENU;       // meters, observer-relative (East, North, Up)
+    float intensity;    // groundIrradiance * beamGain
+    vec3  targetENU;    // meters, observer-relative
+    float footprintRadM;
+};
+layout(set = 0, binding = 4) buffer ReflectBeamsBuf {
+    uint         slotBright[BEAM_SLOTS];
+    ReflectBeam  beams[BEAM_SLOTS];
+};
+
 // ── Push constants ────────────────────────────────────────────────────────────
 // Offsets verified against SatOrbitPC in SatelliteSim.h.
 layout(push_constant) uniform PC {
@@ -108,6 +135,8 @@ layout(push_constant) uniform PC {
     uint  enabledMask;   // bit i set = constellation i is enabled — offset 84
     float simDt;         // simulated seconds this frame (mirror slew) — offset 88
     float elevCutoff;    // sin(Earth-limb angle); horizon cull threshold (≤ -0.01) — offset 92
+    float beamGain;          // Reflect-Orbital ground-beam intensity multiplier — offset 96
+    float beamFootprintRadM; // Reflect-Orbital ground beam footprint radius (m) — offset 100
 } pc;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -311,6 +340,56 @@ void main()
             }
         }
         mirrorNormals[i] = vec4(surfN0, 1.0);
+
+        // ── Ground beam (C12): write into reflectBeamsBuf if a real target is locked ──
+        // Only meaningful when a valid night-side target was actually found (bestIdx >= 0);
+        // the FlatMirror45 fallback above has no real ground target to illuminate.
+        if (bestIdx >= 0) {
+            vec3 targetECI    = reflTargets[bestIdx].xyz;
+            vec3 targetRelPos = targetECI - pc.obsECI;
+            vec3 targetENU    = vec3(dot(targetRelPos, pc.enuX.xyz),
+                                      dot(targetRelPos, pc.enuY.xyz),
+                                      dot(targetRelPos, pc.enuZ.xyz));
+            float targetRange = max(length(targetRelPos), 1.0);
+            float targetSinEl = targetENU.z / targetRange;
+
+            // Gate on the TARGET clearing the observer's horizon — this is the binding
+            // constraint (the satellite itself is almost always above elevCutoff by the time
+            // execution reaches here; two points on/near Earth's surface are only mutually
+            // visible within a much tighter range than a satellite's own horizon distance).
+            if (targetSinEl > pc.elevCutoff) {
+                vec3 satENU = vec3(dot(relPos, pc.enuX.xyz),
+                                    dot(relPos, pc.enuY.xyz),
+                                    dot(relPos, pc.enuZ.xyz));
+
+                // Ground irradiance delivered by the mirror — a physically different quantity
+                // from the view-dependent specular mirrorPeak term in sat_flare.comp (that
+                // answers "how bright does the mirror look to the OBSERVER"; this answers "how
+                // much sunlight lands on the ground target", independent of view angle, and for
+                // a collimated flat reflector at these ranges does NOT fall off with range —
+                // the reflected beam's footprint tracks the mirror's own size, not an expanding
+                // point-source cone). See CLAUDE.md / TERRAIN_PLAN.md C12 for the full rationale.
+                const float SOLAR_CONSTANT = 1361.0; // W/m^2 at Earth distance
+                float mirrorAreaM2   = orb.crossSection * orb.crossSection * 10.0;
+                float cosIncidence   = max(0.0, dot(surfN0, pc.sunDirECI));
+                float groundIrradiance = SOLAR_CONSTANT * mirrorAreaM2 * orb.mirrorFrac * cosIncidence;
+                float intensity = groundIrradiance * pc.beamGain;
+
+                if (intensity > 0.0) {
+                    // Indexed directly by TARGET IDENTITY (bestIdx), not azimuth — see the
+                    // ReflectBeamsBuf comment above for why. atomicMax + write-on-win still
+                    // handles multiple satellites legitimately aiming at the same target.
+                    uint  slot      = uint(bestIdx);
+                    uint  oldBright = atomicMax(slotBright[slot], floatBitsToUint(intensity));
+                    if (floatBitsToUint(intensity) > oldBright) {
+                        beams[slot].satENU        = satENU;
+                        beams[slot].intensity      = intensity;
+                        beams[slot].targetENU      = targetENU;
+                        beams[slot].footprintRadM  = pc.beamFootprintRadM;
+                    }
+                }
+            }
+        }
     } else {
         surfN0 = computeNormal(orb.primaryAttitude, orb, satNadir, velHat, vec3(0.0));
     }
