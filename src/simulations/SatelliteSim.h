@@ -580,6 +580,23 @@ private:
     VkBuffer satVisibleBuf = VK_NULL_HANDLE; // device-local, sat_flare.comp→vertex
     VkDeviceMemory satVisibleMem = VK_NULL_HANDLE;
 
+    // ── Satellite picking / selection tracking ────────────────────────────────
+    // pickedVisibleBuf mirrors just the selected satellite's 32-byte GpuSatVisible entry
+    // each frame (host-visible, mapped once like glowBuf) so buildUI can reproject its
+    // screen position without ever reading back the full (device-local) satVisibleBuf
+    // except at the moment of an initial click. See pickSatelliteAt/projectSkyDirToScreen.
+    VkBuffer pickedVisibleBuf = VK_NULL_HANDLE;
+    VkDeviceMemory pickedVisibleMem = VK_NULL_HANDLE;
+    void *pickedVisibleMapped = nullptr;
+    int selectedSatIndex = -1;        // index into satOrbits[]/satVisibleBuf; -1 = no selection
+    glm::vec3 lastPickedSkyDir{0.0f}; // previous frame's ENU sky direction for the selection
+    float lastPickedFlare = 0.0f;     // previous frame's flareIntensity for the selection (>0 = on screen)
+    // Cached info text, reformatted only when selectedSatIndex changes (see formatSelectedSatInfo).
+    // Separate per-line buffers, not one multi-line string — Clay/UIRenderer text draws a single
+    // line per CLAY_TEXT call with no embedded-newline support.
+    static constexpr int kSelInfoLines = 6;
+    char selInfoLine[kSelInfoLines][40] = {};
+
     // ── Orbit pipeline buffers ────────────────────────────────────────────────
     VkBuffer satOrbitBuf = VK_NULL_HANDLE; // device-local, uploaded once at init
     VkDeviceMemory satOrbitMem = VK_NULL_HANDLE;
@@ -1153,6 +1170,16 @@ private:
     void updatePositions(double t, float dt = 0.0f); // called each frame: fills satInputData + eci2enu
     void toggleTimeDirection() { timeDir = -timeDir; } // shared by KB_REVERSE and the left-panel Reverse button
 
+    // ── Satellite picking (see "Satellite picking / selection tracking" members above) ────
+    // Pure camera geometry mirror of sat_point.vert's projection (shaders/sat_point.vert:34,47,60-62);
+    // shared by the one-shot full-buffer scan below and the per-frame tracked-selection reprojection.
+    bool projectSkyDirToScreen(const glm::vec3 &skyDir, float screenW, float screenH,
+                               float &outX, float &outY) const;
+    // One-shot: copies satVisibleBuf back to a transient host-visible staging buffer and scans it
+    // for the nearest on-screen visible satellite to (clickX, clickY). Returns -1 if none hit.
+    int pickSatelliteAt(float clickX, float clickY, float screenW, float screenH);
+    void formatSelectedSatInfo(); // fills selectedSatInfoBuf from satOrbits[selectedSatIndex]; call when selection changes
+
     // ── Small UI helpers shared across every UI builder method ────────────────
     // (formerly local lambdas inside the single monolithic buildUI(); now member
     // functions since buildUI is split across buildLeftHudPanel/buildSettingsWindow/etc.)
@@ -1164,6 +1191,7 @@ private:
     // ── UI builders (defined in SatelliteSimUI.cpp) ────────────────────────────
     void buildLeftHudPanel(const UIInput &inp, UIRenderer &ui);
     void buildRightHudPanel(const UIInput &inp, UIRenderer &ui);
+    void buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui); // floating panel that tracks selectedSatIndex
 
     // Shared resizable+draggable+(optionally) closable window frame — title bar,
     // 8-direction edge/corner resize, bevel border — used by both the settings
