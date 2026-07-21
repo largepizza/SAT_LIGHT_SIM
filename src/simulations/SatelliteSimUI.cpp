@@ -185,6 +185,9 @@ namespace Pal
     constexpr Clay_Color speedFwd = {200, 55, 55, 220};    // forward (red)
     constexpr Clay_Color speedRev = {155, 155, 165, 220};  // reverse (grey)
     constexpr Clay_Color speedPaused = {95, 95, 100, 220}; // paused (dark grey)
+    // Selection
+    constexpr Clay_Color reticule = {255, 205, 60, 230}; // target-lock reticule (amber — distinct
+                                                          // from the red accent used everywhere else)
 }
 
 // ── Global styling parameters ─────────────────────────────────────────────────
@@ -372,6 +375,21 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         camera.fovYDeg = glm::clamp(camera.fovYDeg - inp.scrollY * 3.0f, 10.0f, 120.0f);
     }
 
+    // ── Left-click → satellite pick/select ────────────────────────────────────
+    // Scene interaction like camera look/pan, so gated only on UI hover (not on uiVisible) —
+    // left mouse button is otherwise unused for scene interaction (RMB drives camera look).
+    if (inp.lmbPressed && !ui.mouseOverUI())
+    {
+        int hit = pickSatelliteAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
+        if (hit != selectedSatIndex)
+        {
+            selectedSatIndex = hit;
+            formatSelectedSatInfo();
+            if (hit >= 0 && audio_)
+                audio_->playSfx("assets/sound/ui/buttonclick.wav"); // confirmation chirp — only on an actual (re)selection, not on deselect
+        }
+    }
+
     // ── Tab: skip all UI when hidden ─────────────────────────────────────────
     if (!uiVisible)
         return;
@@ -380,6 +398,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildRightHudPanel(inp, ui);
     buildSettingsWindow(inp, ui);
     buildViewControlsWindow(inp, ui);
+    buildSelectedSatPanel(inp, ui);
 
     // ── Mouse capture rects ───────────────────────────────────────────────────
     // Left/right HUD panels are corner-anchored (CLAY_SIZING_FIT, no stored chrome) —
@@ -713,6 +732,92 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
                                            .image = {.imageData = (void *)(intptr_t)(kIconSettings + 1)}}) {}
         }
     }
+}
+
+// ─── buildSelectedSatPanel ──────────────────────────────────────────────────
+// Floating info panel for the satellite currently selected via left-click (see the click
+// handling in buildUI above, and SatelliteSim::pickSatelliteAt/formatSelectedSatInfo). Tracks
+// the satellite's live screen position every frame by reprojecting lastPickedSkyDir — the
+// GPU-computed ENU direction mirrored back each frame via the tiny copy in recordCompute (see
+// its comments there). That readback is one-frame-stale by design (same idiom as peakMagnitude),
+// so the panel settles onto the correct position within ~2 frames of a fresh click/reselect.
+// When the satellite is currently off-screen or below the horizon, the floating panel is
+// skipped in favor of a small fixed corner chip, so the selection isn't silently lost from view.
+void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
+{
+    if (selectedSatIndex < 0)
+        return;
+
+    float sx = 0.0f, sy = 0.0f;
+    bool onScreen = lastPickedFlare > 0.0f &&
+                    projectSkyDirToScreen(lastPickedSkyDir, inp.screenW, inp.screenH, sx, sy);
+
+    const float kMargin = 12.0f;
+    if (!onScreen)
+    {
+        static char chipBuf[64];
+        snprintf(chipBuf, sizeof(chipBuf), "Selected: %s (out of view)", selInfoLine[0]);
+        Clay_String chipStr{false, (int32_t)strlen(chipBuf), chipBuf};
+        CLAY(CLAY_ID("SelSatChip"), {.layout = {
+                                         .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                         .padding = {10, 10, 6, 6}},
+                                     .backgroundColor = Pal::panelBgFade,
+                                     .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
+                                     .floating = {.offset = {kMargin, kMargin}, .zIndex = 6, .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
+        {
+            CLAY_TEXT(chipStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
+        }
+        ui.addMouseCaptureRect(kMargin, kMargin, 260.0f, 30.0f);
+        return;
+    }
+
+    // ── Target reticule: 4 fixed-size corner brackets around the satellite ────────────────
+    // Purely decorative (no capture rect) — Clay's default per-floating-element pointer capture
+    // doesn't feed our own manual mouseOverUI() hit-testing (see CLAUDE.md's Manual Hit-Testing
+    // note), so this can't accidentally swallow clicks meant for scene interaction.
+    const float kBoxSize = 6.0f;
+    const float kBorderW = 2.0f;
+    const float kRadius = 10.0f;
+    struct ReticuleCorner
+    {
+        float ox, oy; // top-left offset of this corner's box, relative to (sx, sy)
+        Clay_BorderWidth border;
+    };
+    const ReticuleCorner corners[4] = {
+        {-kRadius, -kRadius, {(uint16_t)kBorderW, 0, (uint16_t)kBorderW, 0, 0}},               // TL
+        {kRadius - kBoxSize, -kRadius, {0, (uint16_t)kBorderW, (uint16_t)kBorderW, 0, 0}},      // TR
+        {-kRadius, kRadius - kBoxSize, {(uint16_t)kBorderW, 0, 0, (uint16_t)kBorderW, 0}},      // BL
+        {kRadius - kBoxSize, kRadius - kBoxSize, {0, (uint16_t)kBorderW, 0, (uint16_t)kBorderW, 0}}, // BR
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        const ReticuleCorner &c = corners[i];
+        CLAY(CLAY_IDI("SelReticuleCorner", i), {.layout = {.sizing = {CLAY_SIZING_FIXED(kBoxSize), CLAY_SIZING_FIXED(kBoxSize)}},
+                                                .floating = {.offset = {sx + c.ox, sy + c.oy}, .zIndex = 4, .attachTo = CLAY_ATTACH_TO_ROOT},
+                                                .border = {.color = Pal::reticule, .width = c.border}}) {}
+    }
+
+    const float kOffsetX = 18.0f, kOffsetY = -8.0f; // nudge off the point itself
+    CLAY(CLAY_ID("SelSatPanel"), {.layout = {
+                                      .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                      .padding = {10, 10, 8, 8},
+                                      .childGap = 3,
+                                      .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                  .backgroundColor = Pal::panelBg,
+                                  .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
+                                  .floating = {.offset = {sx + kOffsetX, sy + kOffsetY}, .zIndex = 6, .attachTo = CLAY_ATTACH_TO_ROOT}})
+    {
+        Clay_String headStr{false, (int32_t)strlen(selInfoLine[0]), selInfoLine[0]};
+        CLAY_TEXT(headStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(13)}));
+        for (int i = 1; i < kSelInfoLines; ++i)
+        {
+            Clay_String lineStr{false, (int32_t)strlen(selInfoLine[i]), selInfoLine[i]};
+            CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
+        }
+    }
+    // Panel size isn't known until Clay lays it out this frame — this is a rough estimate for
+    // capture purposes only, same approximation the corner HUD panels' capture rects already use.
+    ui.addMouseCaptureRect(sx + kOffsetX, sy + kOffsetY, 220.0f, 150.0f);
 }
 
 // ─── buildResizableWindow ───────────────────────────────────────────────────

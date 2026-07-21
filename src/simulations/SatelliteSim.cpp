@@ -403,6 +403,18 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                             : 99.0f;
     }
 
+    // Read previous frame's tracked-selection position, same one-frame-stale idiom as
+    // peakMagnitude above. On the frame a selection is first made (or changed), this still
+    // holds the prior (possibly default/zero) value — the copy in the dispatch section below
+    // captures the freshly-selected satellite's real data for the FIRST time this frame, so the
+    // panel settles onto the correct tracked position within ~2 frames of the click, not instantly.
+    if (selectedSatIndex >= 0)
+    {
+        const GpuSatVisible *pv = static_cast<const GpuSatVisible *>(pickedVisibleMapped);
+        lastPickedSkyDir = pv->skyDir;
+        lastPickedFlare = pv->flareIntensity;
+    }
+
     // ── Observer terrain height + cloud params UBO fill (relocated from recordDraw) ─────────
     // cloud_march.comp's dispatch below needs fresh CloudParams/obsEffH data, but it must run
     // before the render pass begins (recordCompute), which is BEFORE recordDraw used to compute
@@ -684,11 +696,12 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                        0, sizeof(pc), &pc);
     vkCmdDispatch(cmd, (activeSatCount + 63) / 64, 1, 1);
 
-    // Barrier: sat_flare.comp writes satVisibleBuf → vertex shader reads it.
+    // Barrier: sat_flare.comp writes satVisibleBuf → vertex shader reads it (and, when a satellite
+    // is selected, the tiny per-frame pick-tracking copy just below also reads it via transfer).
     {
         VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
         bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         bmb.buffer = satVisibleBuf;
@@ -696,10 +709,148 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         bmb.size = VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0, 0, nullptr, 1, &bmb, 0, nullptr);
     }
+
+    // Selected-satellite tracking: mirror just that one 32-byte entry into pickedVisibleBuf so
+    // next frame's buildUI can reproject it (see the one-frame-stale read near peakMagnitude
+    // above). No-op — no command recorded at all — when nothing is selected.
+    if (selectedSatIndex >= 0 && selectedSatIndex < (int)activeSatCount)
+    {
+        VkBufferCopy pickRegion{};
+        pickRegion.srcOffset = (VkDeviceSize)selectedSatIndex * sizeof(GpuSatVisible);
+        pickRegion.dstOffset = 0;
+        pickRegion.size = sizeof(GpuSatVisible);
+        vkCmdCopyBuffer(cmd, satVisibleBuf, pickedVisibleBuf, 1, &pickRegion);
+    }
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 3);
+}
+
+// ─── projectSkyDirToScreen ────────────────────────────────────────────────────
+// Pure camera geometry — mirrors sat_point.vert's projection exactly
+// (shaders/sat_point.vert:34,47,60-62) so CPU-side picking/tracking agrees pixel-for-pixel
+// with what's actually rendered. No orbital mechanics here, so unlike the GPU orbit/attitude
+// math this carries little drift risk from being hand-duplicated in C++.
+bool SatelliteSim::projectSkyDirToScreen(const glm::vec3 &skyDir, float screenW, float screenH,
+                                         float &outX, float &outY) const
+{
+    glm::vec3 cam = glm::vec3(camera.viewMatrix() * glm::vec4(skyDir, 0.0f));
+    if (cam.z >= -0.001f)
+        return false; // behind camera — same threshold sat_point.vert uses
+
+    float tanHalfFov = tanf(glm::radians(camera.fovYDeg) * 0.5f);
+    float aspect = screenW / screenH;
+    float ndcX = cam.x / -cam.z / (tanHalfFov * aspect);
+    float ndcY = -cam.y / -cam.z / tanHalfFov;
+
+    outX = (ndcX * 0.5f + 0.5f) * screenW;
+    outY = (ndcY * 0.5f + 0.5f) * screenH;
+    return true;
+}
+
+// ─── pickSatelliteAt ───────────────────────────────────────────────────────────
+// One-shot click hit-test. Copies satVisibleBuf (device-local) back to a transient
+// host-visible staging buffer sized to activeSatCount (not MAX_SATELLITES, so cost scales
+// with what's actually simulated — a few MB at the current constellation roster), then scans
+// it on the CPU for the nearest currently-visible satellite within its own hit radius. The
+// synchronous stall from ctx.beginOneTimeCommands()/endOneTimeCommands() is fine here — this
+// only runs once per user click, never per frame (contrast the tiny per-frame tracking copy
+// in recordCompute above, which deliberately avoids any such stall).
+int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, float screenH)
+{
+    if (activeSatCount == 0 || !ctx_)
+        return -1;
+
+    VulkanContext &ctx = *ctx_;
+    VkDeviceSize copySize = (VkDeviceSize)activeSatCount * sizeof(GpuSatVisible);
+
+    VkBuffer stagingBuf = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMem = VK_NULL_HANDLE;
+    ctx.createBuffer(copySize, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     stagingBuf, stagingMem);
+
+    VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+    VkBufferCopy region{};
+    region.srcOffset = 0;
+    region.dstOffset = 0;
+    region.size = copySize;
+    vkCmdCopyBuffer(cmd, satVisibleBuf, stagingBuf, 1, &region);
+    ctx.endOneTimeCommands(cmd);
+
+    void *mapped = nullptr;
+    vkMapMemory(ctx.device, stagingMem, 0, copySize, 0, &mapped);
+    const GpuSatVisible *entries = static_cast<const GpuSatVisible *>(mapped);
+
+    constexpr float kMinHitRadiusPx = 8.0f; // dim/tiny points stay clickable
+
+    int best = -1;
+    float bestDist = 0.0f;
+    for (uint32_t i = 0; i < activeSatCount; ++i)
+    {
+        const GpuSatVisible &v = entries[i];
+        if (v.flareIntensity <= 0.0f)
+            continue;
+        float sx, sy;
+        if (!projectSkyDirToScreen(v.skyDir, screenW, screenH, sx, sy))
+            continue;
+        float dx = sx - clickX, dy = sy - clickY;
+        float dist = sqrtf(dx * dx + dy * dy);
+        float hitRadius = std::max(v.angularSize * 0.5f, kMinHitRadiusPx);
+        if (dist <= hitRadius && (best < 0 || dist < bestDist))
+        {
+            best = (int)i;
+            bestDist = dist;
+        }
+    }
+
+    vkUnmapMemory(ctx.device, stagingMem);
+    vkDestroyBuffer(ctx.device, stagingBuf, nullptr);
+    vkFreeMemory(ctx.device, stagingMem, nullptr);
+
+    return best;
+}
+
+// ─── formatSelectedSatInfo ─────────────────────────────────────────────────────
+// Fills selInfoLine[] from static, CPU-resident orbital-element data (satOrbits/constellations/
+// satTypes) — call once when selectedSatIndex changes, not every frame; nothing here is
+// per-frame dynamic (only screen position is, handled separately via lastPickedSkyDir).
+void SatelliteSim::formatSelectedSatInfo()
+{
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+    {
+        for (auto &line : selInfoLine)
+            line[0] = '\0';
+        return;
+    }
+
+    const SatOrbit &orb = satOrbits[selectedSatIndex];
+    const char *constName = "?";
+    const char *typeName = "?";
+    int localId = selectedSatIndex;
+    if (orb.constIdx < constellations.size())
+    {
+        const ConstellationConfig &c = constellations[orb.constIdx];
+        constName = c.name.c_str();
+        localId = selectedSatIndex - (int)c.orbitStart;
+        if (c.typeIdx < satTypes.size())
+            typeName = satTypes[c.typeIdx].name.c_str();
+    }
+
+    float altKm = orb.altM / 1000.0f;
+    float inclDeg = glm::degrees(orb.incl);
+    float periodMin = (orb.meanMot > 0.0f) ? (2.0f * glm::pi<float>() / orb.meanMot) / 60.0f : 0.0f;
+
+    snprintf(selInfoLine[0], sizeof(selInfoLine[0]), "%s #%d", constName, localId);
+    snprintf(selInfoLine[1], sizeof(selInfoLine[1]), "%s", typeName);
+    snprintf(selInfoLine[2], sizeof(selInfoLine[2]), "Alt: %.0f km", altKm);
+    snprintf(selInfoLine[3], sizeof(selInfoLine[3]), "Incl: %.1f deg", inclDeg);
+    if (orb.alignTerminator)
+        snprintf(selInfoLine[4], sizeof(selInfoLine[4]), "RAAN: sun-sync (precessing)");
+    else
+        snprintf(selInfoLine[4], sizeof(selInfoLine[4]), "RAAN: %.1f deg", glm::degrees(orb.raan));
+    snprintf(selInfoLine[5], sizeof(selInfoLine[5]), "Period: %.1f min", periodMin);
 }
 
 // ─── recordDraw ───────────────────────────────────────────────────────────────
@@ -1185,6 +1336,10 @@ void SatelliteSim::cleanup(VkDevice device)
     }
     vkDestroyBuffer(device, glowBuf, nullptr);
     vkFreeMemory(device, glowMem, nullptr);
+    if (pickedVisibleMapped)
+        vkUnmapMemory(device, pickedVisibleMem);
+    vkDestroyBuffer(device, pickedVisibleBuf, nullptr);
+    vkFreeMemory(device, pickedVisibleMem, nullptr);
     // satInputBuf is now device-local (no host mapping to release).
     vkDestroyBuffer(device, satInputBuf, nullptr);
     vkFreeMemory(device, satInputMem, nullptr);
@@ -2195,6 +2350,18 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
                      glowBuf, glowMem);
     vkMapMemory(ctx.device, glowMem, 0, bufSize, 0, &glowMapped);
     memset(glowMapped, 0, bufSize);
+
+    // ── Picked-satellite tracking buffer ───────────────────────────────────────
+    // 32-byte host-visible mirror of the selected satellite's GpuSatVisible entry, written by a
+    // tiny vkCmdCopyBuffer in recordCompute (only while a selection is active) and read back
+    // one-frame-stale at the top of recordCompute — same idiom as glowBuf/peakMagnitude above.
+    // Never bound as an SSBO, so TRANSFER_DST is the only usage it needs.
+    ctx.createBuffer(sizeof(GpuSatVisible),
+                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     pickedVisibleBuf, pickedVisibleMem);
+    vkMapMemory(ctx.device, pickedVisibleMem, 0, sizeof(GpuSatVisible), 0, &pickedVisibleMapped);
+    memset(pickedVisibleMapped, 0, sizeof(GpuSatVisible));
 
     // ── Noise texture: RGBA PNG for lens-flare angular corona variation ────────
     // Loaded from assets/noise/rgba_noise.png (tiled REPEAT sampler).
