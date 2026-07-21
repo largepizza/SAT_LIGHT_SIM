@@ -1,6 +1,6 @@
 #version 450
 
-// ── Camera + sun push constants (same layout as C++ SatDrawPC, 148 bytes) ─────
+// ── Camera + sun push constants (same layout as C++ SatDrawPC, 152 bytes) ─────
 // The pipeline layout declares VK_SHADER_STAGE_VERTEX_BIT|FRAGMENT_BIT so both
 // stages share one push constant range.  The fragment uses skyView/fovYRad to
 // project glowBuf ENU directions into screen UV for the lens flare pass.
@@ -24,6 +24,11 @@ layout(push_constant) uniform PC {
                         // frame in recordCompute() (skyGlareEased) — 0 when the sun is on screen,
                         // sunlitBgVisibility (settings-tunable) when off-screen but the observer
                         // is still in direct sunlight, 1.0 at true night. See Milky Way section.
+    float cloudShadowRangeM; // C12 — mirrors cloud_shadow.comp's own grid radius, lets this
+                        // shader convert hitPt.xy into that grid's tangent-plane UV convention.
+    vec2  cloudShadowResidualM; // C12 — same texel-snapping residual cloud_shadow.comp's grid was
+                        // built with this frame; subtract before mapping to that grid's UV — see
+                        // CloudShadowPC::shadowResidualM's comment in SatelliteSim.h.
 } pc;
 
 // ── Perf knockout toggles (profiling-only) ──────────────────────────────────────
@@ -82,6 +87,26 @@ layout(set = 0, binding = 15) uniform sampler2D cityNightDetailTex;
 // exact UVW layout/frequencies — the sampling code near auroraCurtainNoise/auroraSampleAt below
 // must stay in sync with it.
 layout(set = 0, binding = 16) uniform sampler3D auroraNoiseTex;
+
+// ── Reflect-Orbital ground beams (C12) — written by sat_orbit.comp, read here for the
+// ground-spot direct-lighting term. Indexed by TARGET IDENTITY (bestIdx), not azimuth — see
+// the ReflectBeamsBuf comment in sat_orbit.comp for why (avoids cross-target bucket collisions).
+// Struct must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h and sat_orbit.comp exactly.
+const uint BEAM_SLOTS = 201u; // must equal NUM_TARGETS in sat_orbit.comp / kNumReflectorTargets
+struct ReflectBeam {
+    vec3  satENU;
+    float intensity;
+    vec3  targetENU;
+    float footprintRadM;
+};
+layout(std430, set = 0, binding = 17) readonly buffer ReflectBeamsBuf {
+    uint         slotBright[BEAM_SLOTS];
+    ReflectBeam  beams[BEAM_SLOTS];
+};
+
+// Shared cloud-shadow primitive (C12) — written by cloud_shadow.comp, sampled here for both
+// general cloud-shadow-on-ground and (once step 5 lands) the beam ground-spot term.
+layout(set = 0, binding = 18) uniform sampler2D cloudShadowTex;
 
 // Cloud 3D noise volume (binding 8): 128³ RGBA, baked by cloud_noise.comp at init.
 // R = Perlin-Worley FBM (base shape), G/B/A = inverted Worley erosion octaves.
@@ -1196,10 +1221,12 @@ float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, floa
 
 // cloudShadowFactor() removed (C15-perf follow-up, session 23) — it was the dominant
 // remaining surface-level cloud cost (full-res, ~every terrain/ocean pixel, up to 64
-// steps each) and cloud shadowing on terrain/ocean isn't currently used. directSun below
-// no longer multiplies by it. Its CloudParams UBO slot reverted to `pad0`, and the
-// CLOUD_ISOLATE_COLH/SHADOW debug switches that existed only to isolate this function's
-// seam bugs went with it.
+// steps each). Its CloudParams UBO slot reverted to `pad0`, and the CLOUD_ISOLATE_COLH/SHADOW
+// debug switches that existed only to isolate this function's seam bugs went with it.
+// Cloud shadowing on terrain/ocean is BACK as of C12 (session 32+) via a different mechanism:
+// cloud_shadow.comp precomputes the same shadow transmittance once per low-res grid texel
+// (128x128) instead of once per screen pixel, sampled here as an O(1) texture read — see
+// directSun below.
 
 // cloudMarch()/cirrusMarch() moved to shaders/cloud_march.comp (half-res compute pass —
 // C15-perf). main() below now samples cloudTargetA/cloudTargetB (bindings 10/11) instead
@@ -1701,11 +1728,23 @@ void main() {
         float geoSunDot   = dot(normalize(hitPt), sunDir);
         float horizonGate = smoothstep(-0.03, 0.02, geoSunDot);
         float dayFrac     = smoothstep(-0.15, -0.12, sunDot) * horizonGate;
-        // directSun combines day/night blend for all sun-driven contributions. Used to also
-        // multiply in cloud-shadow transmittance (cloudShadowFactor(), removed session 23 —
-        // cloud shadowing on terrain/ocean isn't currently used, and it was the dominant
-        // remaining full-res surface-level cloud cost).
+        // directSun combines day/night blend for all sun-driven contributions.
         float directSun   = dayFrac;
+        // Cloud shadow (C12): sample the low-res cloud_shadow.comp grid at this hit point's own
+        // tangent-plane position — hitPt.xy is already the same observer-relative ENU offset
+        // (meters) that grid was built from (both use the "obsPos at local zenith" convention).
+        // Fade to "no shadow" near/beyond the grid's edge instead of letting the sampler's
+        // CLAMP_TO_EDGE repeat one boundary texel's value indefinitely past the grid's radius.
+        if ((pc.debugDisableMask & 256u) == 0u) {
+            vec2  shadowUVSigned = (hitPt.xy - pc.cloudShadowResidualM) / pc.cloudShadowRangeM;
+            float shadowEdgeDist = max(abs(shadowUVSigned.x), abs(shadowUVSigned.y));
+            float shadowFade     = 1.0 - smoothstep(0.85, 1.0, shadowEdgeDist);
+            if (shadowFade > 0.001) {
+                vec2  shadowUV = clamp(shadowUVSigned * 0.5 + 0.5, 0.0, 1.0);
+                float shadowVal = texture(cloudShadowTex, shadowUV).r;
+                directSun *= mix(1.0, shadowVal, shadowFade);
+            }
+        }
         // Antimeridian seam fix: longitude wraps at ±PI so dFdx(uvSurf.x) jumps by ~1.0
         // across that boundary. The GPU would pick the highest mip level, blurring a
         // vertical strip. Clamp the derivative to the small expected value instead.
@@ -2138,6 +2177,42 @@ void main() {
                     surfColor += pow(max(0.0, dot(reflect(dir, waveN), fe)), fSpecPow)
                                * fNrm * fIntens * 0.008 * vec3(1.2, 1.1, 1.0) * (1.0 - dayFrac) * altFade;
                 }
+            }
+        }
+
+        // ── Reflect-Orbital beam ground-spot (C12) ──────────────────────────────────────────
+        // Applies uniformly to whichever branch above produced surfColor (terrain or ocean) —
+        // deliberately placed after both, not inside either. Physically a different quantity
+        // from cloud_march.comp's volumetric in-scatter term above the surface: this is direct
+        // irradiance landing ON the ground, so unlike the volumetric term it does NOT get
+        // dimmer in fully clear air — the shadow lookup below only accounts for intervening
+        // cloud, not "is there scattering medium to see the beam in" (there's no beam here to
+        // see, just a lit patch of ground).
+        if ((pc.debugDisableMask & 128u) == 0u) {
+            const float kBeamGroundScale = 4e-8;
+            for (int bi = 0; bi < int(BEAM_SLOTS); ++bi) {
+                float intensity = beams[bi].intensity;
+                if (intensity <= 0.0) continue;
+
+                float groundDist = length(hitPt.xy - beams[bi].targetENU.xy);
+                float footprintR = max(beams[bi].footprintRadM, 1.0);
+                if (groundDist > footprintR * 4.0) continue;
+                float footprint = exp(-(groundDist * groundDist) / (2.0 * footprintR * footprintR));
+
+                // Same shared shadow-map lookup as the general cloud-shadow term above, but
+                // sampled at the TARGET's own tangent-plane position (not this pixel's hitPt) —
+                // this answers "is cloud blocking the mirror's line to its ground target," which
+                // also naturally gates "is this target even within the shadow grid's range."
+                vec2  tShadowSigned = (beams[bi].targetENU.xy - pc.cloudShadowResidualM) / pc.cloudShadowRangeM;
+                float tShadowEdge   = max(abs(tShadowSigned.x), abs(tShadowSigned.y));
+                float tShadowFade   = 1.0 - smoothstep(0.85, 1.0, tShadowEdge);
+                float shadowAtten   = 1.0;
+                if (tShadowFade > 0.001) {
+                    vec2  tShadowUV = clamp(tShadowSigned * 0.5 + 0.5, 0.0, 1.0);
+                    shadowAtten = mix(1.0, texture(cloudShadowTex, tShadowUV).r, tShadowFade);
+                }
+
+                surfColor += vec3(kBeamGroundScale * intensity * footprint) * shadowAtten;
             }
         }
 
