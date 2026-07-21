@@ -1,0 +1,125 @@
+#version 450
+
+// Bake a small tiling 3D RGB noise volume for the cloud/cirrus domain warp (cloudWarpOffset in
+// cloud_march.comp). Perf (this session): cloudWarpOffset was 3 live warpPerlin3 evaluations
+// (24 gradient-hash lookups total) called once per in-cloud march sample — the dominant live-
+// procedural cost in the cloud shader. Baking it into a texture turns that into a single
+// trilinear-filtered texture read, the same trade this codebase already made for the aurora
+// curtain's fold noise (see aurora_noise.comp).
+//
+// R/G/B = the SAME three offset warpPerlin3 evaluations cloudWarpOffset used to compute live
+// (offsets (0,0,0), (11.3,47.7,5.9), (71.9,3.1,29.4)), just baked at fixed cell-space positions
+// instead of evaluated per-sample. Dispatch (24,24,24) with local_size (8,8,8) → 192³ threads —
+// matches cloud_noise.comp's own resolution exactly (192/16=12, 192/32=6 texels/cell for the two
+// FBM octaves below — the same 6-texels/cell floor cloud_noise.comp's own N=32 octaves already
+// use). Bumped from an initial 128³/single-octave attempt that showed visible "tessellating
+// triangle" faceting: hardware trilinear filtering between baked texels is LINEAR, while the
+// live version's analytic evaluation was smoothstep-interpolated (curved) — at only 8 texels/
+// cell with a single Perlin octave, that mismatch was geometrically legible once the value was
+// used as a raw coordinate displacement (unlike cloud_noise.comp's R channel, which sums 3
+// octaves and is thresholded into a coverage mask rather than used as a raw offset).
+//
+// ── Tiling / repetition trade-off — READ BEFORE CHANGING kWarpBakeN ─────────────────────────
+// The live version was genuinely unbounded, non-tiling Perlin noise — it never repeated. Baking
+// it necessarily makes it periodic at some cell count (kWarpBakeN). That's a real, deliberate
+// trade against the exact mechanism [[project_cloud_next_session]] flagged as the fix for the
+// cloud DENSITY noise's own large-scale tiling problem ("domain warping with a second low-
+// frequency noise lookup" — this warp). kWarpBakeN=16 is chosen specifically so the FULL visible
+// sky dome (dirECEF sweeping close to a full unit sphere, scaled by cloud_march.comp's
+// kWarpFreq=6, i.e. |wc| up to ~6 covering the full range front-to-back ~12) only ever samples
+// less than one full tile (12 < 16) — no repetition is visible within a single view or even a
+// full circumnavigation without the time-varying wind-drift term (cloud.cloudPhase/pc.waveTime)
+// accumulating enough phase to complete a 16-unit cycle, which at default drift rates takes on
+// the order of days of continuous real-time play. Do not shrink kWarpBakeN without re-deriving
+// this margin — it is what keeps the bake's periodicity below the threshold of being noticeable.
+//
+// N MUST be a power of 2 — see CLOUD_SEAM_BUG.md / [[project_cloud_seam_bug]]: a non-power-of-2
+// tiling modulus bakes a real, reproducible discontinuity at the volume's own domain seam.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(rgba8, set = 0, binding = 0) writeonly uniform image3D cloudWarpNoiseTex;
+
+const int kWarpBakeN = 16; // tiling period in cells — MUST match cloud_march.comp's kWarpBakeN
+
+// Same integer bit-mixing hash as cloud_noise.comp/cloud_march.comp's warpHashU — identical
+// mixing, just duplicated per this codebase's no-#include convention.
+uvec3 hashU(uvec3 v)
+{
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    return v;
+}
+vec3 hash3(ivec3 c)
+{
+    return vec3(hashU(uvec3(c))) * (1.0 / 4294967296.0);
+}
+
+// Tiling gradient hash: wraps cell c within [0,N) before hashing — see cloud_noise.comp's
+// gradHash for the full seam-bug rationale (must be power-of-2 N).
+vec3 gradHash(ivec3 c, int N)
+{
+    int x = c.x % N; if (x < 0) x += N;
+    int y = c.y % N; if (y < 0) y += N;
+    int z = c.z % N; if (z < 0) z += N;
+    return normalize(-1.0 + 2.0 * hash3(ivec3(x, y, z)));
+}
+
+// 3D tiling Perlin noise, N gradient cells per axis, evaluated directly at a CELL-SPACE
+// coordinate p (not a normalized [0,1] uvw — the caller is responsible for scaling). This lets
+// the three channels below add their fixed offsets (11.3,47.7,5.9 etc.) directly in the same
+// cell-space cloudWarpOffset used live, then rely on the wrap in gradHash to keep it seamless
+// regardless of how far the offset pushes p outside [0,N).
+float perlinCell(vec3 p, int N)
+{
+    ivec3 i = ivec3(floor(p));
+    vec3 f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+
+    float v000 = dot(gradHash(i,                N), f               );
+    float v100 = dot(gradHash(i + ivec3(1,0,0), N), f - vec3(1,0,0) );
+    float v010 = dot(gradHash(i + ivec3(0,1,0), N), f - vec3(0,1,0) );
+    float v110 = dot(gradHash(i + ivec3(1,1,0), N), f - vec3(1,1,0) );
+    float v001 = dot(gradHash(i + ivec3(0,0,1), N), f - vec3(0,0,1) );
+    float v101 = dot(gradHash(i + ivec3(1,0,1), N), f - vec3(1,0,1) );
+    float v011 = dot(gradHash(i + ivec3(0,1,1), N), f - vec3(0,1,1) );
+    float v111 = dot(gradHash(i + ivec3(1,1,1), N), f - vec3(1,1,1) );
+
+    return mix(mix(mix(v000, v100, u.x), mix(v010, v110, u.x), u.y),
+               mix(mix(v001, v101, u.x), mix(v011, v111, u.x), u.y), u.z);
+}
+
+// Two-octave FBM instead of a single perlinCell evaluation — fixes the "tessellating triangle"
+// artifact seen at 8 texels/cell single-octave: hardware trilinear filtering between sparse
+// baked texels is LINEAR (straight-edged) where the live version's analytic evaluation was
+// smoothstep-interpolated (curved), and single-octave Perlin's own characteristic blobby
+// regularity made that straight-edged faceting read as a coherent, legible triangular tiling
+// once used as a coordinate displacement. Summing a second, doubled-frequency octave (same
+// trick cloud_noise.comp's own R channel already uses for the same reason) breaks up the
+// single-frequency regularity so the two octaves' facets don't align into one visible pattern.
+// N*2 stays a power of 2 (32) and keeps the SAME overall tiling period as the base octave (see
+// gradHash) — no change to kWarpBakeN or the sampling formula in cloud_march.comp.
+float perlinFBM(vec3 p, int N) {
+    float n1 = perlinCell(p,       N);
+    float n2 = perlinCell(p * 2.0, N * 2);
+    return n1 * 0.7 + n2 * 0.3;
+}
+
+void main()
+{
+    ivec3 texSize = imageSize(cloudWarpNoiseTex);
+    ivec3 coord = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(coord, texSize))) return;
+
+    vec3 uvw = (vec3(coord) + 0.5) / vec3(texSize);
+    vec3 p = uvw * float(kWarpBakeN);
+
+    // Same three offsets cloudWarpOffset used for its live wx/wy/wz warpPerlin3 calls.
+    float wx = perlinFBM(p,                                  kWarpBakeN);
+    float wy = perlinFBM(p + vec3(11.3, 47.7,  5.9),         kWarpBakeN);
+    float wz = perlinFBM(p + vec3(71.9,  3.1, 29.4),         kWarpBakeN);
+
+    imageStore(cloudWarpNoiseTex, coord, vec4(wx * 0.5 + 0.5, wy * 0.5 + 0.5, wz * 0.5 + 0.5, 1.0));
+}

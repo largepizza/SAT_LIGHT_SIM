@@ -128,7 +128,9 @@ layout(set = 0, binding = 9) uniform CloudParams {
     float oceanDetailOctaves; // perf (session 24): seaMapDetail() octave count (wave normal)
     float oceanReflSamples;   // perf (session 24): ocean sky-reflection loop sample count (N_REFL)
     float viewSamplesMax;     // perf (session 24 round 2): N_VIEW ceiling for long/grazing rays (was pad4)
-    float pad3;               // reserved — was nightAmbientGain, removed session 26 (see SatelliteSim.h)
+    float sunGainZenith;      // USED here (was pad3) — see cloud_march.comp for the full rationale;
+                               // evalCloudLayer below (the orbit-altitude flat cloud fallback)
+                               // blends sunGain/sunGainZenith by sun elevation the same way
     float moonGain;           // shared moonlight brightness master — terrain direct term AND
                               // cloud_march.comp's moonContrib both read this (see that file)
     float pad1;               // reserved
@@ -1071,7 +1073,7 @@ void evalCloudLayer(
     vec3  enuX,    vec3 enuY, vec3  enuZ,
     vec3  sunDirECEF,
     float odRcam,  float odMcam,
-    float coverage, float density, float sunGain,
+    float coverage, float density, float sunGain, float sunGainZenith,
     float shellAltM, float driftMult, float alphaMax, float mipLod,
     float cloudPhase,
     inout vec3 color)
@@ -1098,7 +1100,9 @@ void evalCloudLayer(
     // Sun angle at the cloud's geographic position — independent of observer location
     float cloudSunDot  = dot(normalize(cECEF), sunDirECEF);
     float cloudDayFrac = smoothstep(-0.1, 0.15, cloudSunDot);
-    vec3  cloudColor   = vec3(max(0.0, cloudSunDot + 0.1) * sunGain) * cloudDayFrac;
+    // See cloud_march.comp's cloudMarchCS sunGainCurve comment — same horizon/zenith blend.
+    float sunGainCurve = mix(sunGain, sunGainZenith, smoothstep(0.0, 1.0, clamp(cloudSunDot, 0.0, 1.0)));
+    vec3  cloudColor   = vec3(max(0.0, cloudSunDot + 0.1) * sunGainCurve) * cloudDayFrac;
 
     vec3 attn = exp(-(BETA_R * odRcam + BETA_M * 1.1 * odMcam));
     color = mix(color, cloudColor * attn, alpha);
@@ -2164,7 +2168,7 @@ void main() {
             odR_cam, odM_cam,
             cloud.coverage * cloud.layers[li].coverageMult,
             cloud.density  * cloud.layers[li].densityMult,
-            cloud.sunGain,
+            cloud.sunGain, cloud.sunGainZenith,
             cloud.layers[li].shellAltM,
             cloud.layers[li].driftMult,
             cloud.layers[li].alphaMax * fadeWeight,

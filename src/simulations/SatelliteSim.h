@@ -400,9 +400,9 @@ struct GpuCloudParams
     float oceanDetailOctaves; // perf (session 24): seaMapDetail() octave count (wave normal)
     float oceanReflSamples;   // perf (session 24): ocean sky-reflection loop sample count (N_REFL)
     float viewSamplesMax;     // perf (session 24 round 2): N_VIEW ceiling for long/grazing rays (was pad4)
-    float pad3;               // reserved — was nightAmbientGain (terrain night-side sky ambient);
-                               // removed session 26, user found dayColor-lit ambient didn't read
-                               // right at 0 and preferred no term over tuning a nonzero value
+    float sunGainZenith;      // was pad3 — sun-gain multiplier near sun zenith, blended against
+                               // `sunGain` (effectively the near-horizon/sunset value) by sun
+                               // elevation in both cloudMarchCS/cirrusMarchCS and evalCloudLayer.
     float moonGain;           // shared moonlight brightness master — terrain direct term AND
                                // cloud_march.comp's moonContrib (was a hardcoded 0.015 there) both
                                // read this, so one slider keeps moonlit terrain and moonlit clouds
@@ -697,9 +697,10 @@ private:
     // ── Perf knockout toggles (profiling-only; not persisted) ──────────────────
     // Bitmask sent to sat_sky.frag as SatDrawPC::debugDisableMask, so the individual cost of
     // the terrain march / atmosphere loop / sun optical-depth sub-march / ocean sky-reflection
-    // loop / airglow-red supplemental march / aurora curtain march can be measured in isolation
-    // via gpuMsSmoothed deltas, without needing a GPU capture tool. See the dbgSkip* helpers
-    // near the top of sat_sky.frag for the bit assignments (1,2,4,8,16,32).
+    // loop / airglow-red supplemental march / aurora curtain march / cloud self-shadow light cone
+    // can be measured in isolation via gpuMsSmoothed deltas, without needing a GPU capture tool.
+    // See the dbgSkip* helpers near the top of sat_sky.frag for the bit assignments
+    // (1,2,4,8,16,32); bit 64 (cloud self-shadow cone) is checked directly in cloud_march.comp.
     uint32_t debugDisableMask = 0;
 
     // ── Sky glow SSBO ─────────────────────────────────────────────────────────
@@ -789,6 +790,14 @@ private:
     VkDeviceMemory cloudNoiseMem = VK_NULL_HANDLE;
     VkImageView cloudNoiseView = VK_NULL_HANDLE;
     VkSampler cloudNoiseSampler = VK_NULL_HANDLE;
+    // Cloud/cirrus domain-warp 3D noise volume (cloud_march.comp binding 9): 128³ RGB, tiling
+    // period 16 cells, baked once at init. Replaces cloudWarpOffset's old 3 live warpPerlin3
+    // calls with a single texture read — see cloud_warp_noise.comp for the tiling/repetition
+    // trade-off this bake deliberately accepted.
+    VkImage cloudWarpNoiseImg = VK_NULL_HANDLE;
+    VkDeviceMemory cloudWarpNoiseMem = VK_NULL_HANDLE;
+    VkImageView cloudWarpNoiseView = VK_NULL_HANDLE;
+    VkSampler cloudWarpNoiseSampler = VK_NULL_HANDLE;
     // Aurora 3D noise volume (binding 16): 1024x16x256 RGBA8 — R=curtain fold base,
     // G/B=column-window colA/colB, baked once at init. See aurora_noise.comp.
     VkImage auroraNoiseImg = VK_NULL_HANDLE;
@@ -887,7 +896,9 @@ private:
     float cloudBaseAltM = 5585.96f; // layer 0 shell altitude (low cloud / stratus)
     float cloudTopAltM = 15000.0f; // layer 1 shell altitude (high cirrus)
     float cloudDriftRate = 1.04386e-5f;
-    float cloudSunGain = 3.35526f;
+    float cloudSunGain = 3.35526f; // near-horizon/sunset sun-gain endpoint — blended toward
+                                    // cloudSunGainZenith by sun elevation (see cloud_march.comp)
+    float cloudSunGainZenith = 1.0f; // sun-gain endpoint when the sun is near zenith (midday)
     float cloudAmbientGain = 1.86842f;
     float cloudNightAmbientGain = 1.0f; // decoupled night-sky floor on cloud tops (was piggybacking
                                          // on cloudAmbientGain, which also drives city-light
@@ -1081,17 +1092,16 @@ private:
     bool hovFullscreen = false;
     bool hovSaveSnapshot = false;
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button
-    bool hovDebugToggle[6] = {};   // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora)
+    bool hovDebugToggle[7] = {};   // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone)
     bool hovPhotoMinus[9] = {};
     bool hovPhotoPlus[9] = {};
     bool draggingPhoto[9] = {};
-    bool hovCloudMinus[37] = {}; // was [34] — indices 34-36 are the new base variance/erosion sliders
-    bool hovCloudPlus[37] = {};
-    bool draggingCloud[37] = {}; // was [33] — undersized relative to hovCloudMinus/Plus even before
-                                  // this session (slider id 33 "Night ambient" already overflowed
-                                  // it by one); ids 34-36 pushed the out-of-bounds write into
-                                  // whatever member follows in the class (the window-chrome state
-                                  // right below), which is what broke the settings window.
+    bool hovCloudMinus[38] = {}; // was [37] — index 37 is the new Sun gain (zenith) slider
+    bool hovCloudPlus[38] = {};
+    bool draggingCloud[38] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+                                  // feedback_cloud_slider_arrays memory: this one was missed once
+                                  // already and the out-of-bounds write corrupted the window-chrome
+                                  // state declared right below, breaking the settings window.
 
     // ── Window chrome (drag+resize; see UIRenderer::WindowChrome) ──────────────
     // x/y default to -1 (uninitialized, centers/places on first open); w/h are set
@@ -1115,6 +1125,7 @@ private:
     void createOrbitPipeline(VulkanContext &ctx);
     void uploadSatOrbits(VulkanContext &ctx);
     void createCloudNoisePipeline(VulkanContext &ctx);
+    void createCloudWarpNoisePipeline(VulkanContext &ctx);
     void createAuroraNoisePipeline(VulkanContext &ctx);
     void createCloudMarchResources(VulkanContext &ctx);
     void createCloudMarchDescriptors(VulkanContext &ctx);

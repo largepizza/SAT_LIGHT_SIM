@@ -1447,14 +1447,15 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // Each disables one block of sat_sky.frag (see dbgSkip* in the shader). Compare
     // "Sky background draw" above with a toggle on vs. off to read off that block's
     // isolated GPU cost directly, without a GPU capture tool. Bits match SatelliteSim.h's
-    // debugDisableMask comment: 1=terrain, 2=atmosphere, 4=sun optical depth, 8=ocean reflection.
+    // debugDisableMask comment: 1=terrain, 2=atmosphere, 4=sun optical depth, 8=ocean reflection,
+    // 16=airglow red, 32=aurora curtain, 64=cloud self-shadow cone.
     CLAY_TEXT(CLAY_STRING("KNOCKOUT PROFILING (disables rendering correctness for cost isolation)"),
               CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
-    static const char *kDebugToggleLabels[6] = {
+    static const char *kDebugToggleLabels[7] = {
         "Terrain march", "Atmosphere loop (N_VIEW)", "Sun optical depth (N_LIGHT)", "Ocean sky reflection",
-        "Airglow red (16-step march)", "Aurora curtain march"};
-    static const uint32_t kDebugToggleBits[6] = {1u, 2u, 4u, 8u, 16u, 32u};
-    for (int ti = 0; ti < 6; ++ti)
+        "Airglow red (16-step march)", "Aurora curtain march", "Cloud self-shadow cone"};
+    static const uint32_t kDebugToggleBits[7] = {1u, 2u, 4u, 8u, 16u, 32u, 64u};
+    for (int ti = 0; ti < 7; ++ti)
     {
         bool on = (debugDisableMask & kDebugToggleBits[ti]) != 0u;
         Clay_String lblStr{false, (int32_t)strlen(kDebugToggleLabels[ti]), kDebugToggleLabels[ti]};
@@ -1761,7 +1762,8 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"L0 alt (m)", &cloudBaseAltM, 100.0f, 6000.0f, 100.0f, "%.0f", 2},
         {"L1 alt (m)", &cloudTopAltM, 4000.0f, 15000.0f, 250.0f, "%.0f", 3},
         {"Drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
-        {"Sun gain", &cloudSunGain, 0.0f, 5.0f, 0.1f, "%.2f", 5},
+        {"Sun gain (horizon)", &cloudSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 5},
+        {"Sun gain (zenith)", &cloudSunGainZenith, 0.0f, 8.0f, 0.1f, "%.2f", 37},
         {"Ambient", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
         {"Night ambient", &cloudNightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
         {"Base variance", &cloudBaseVariance, 0.0f, 1.0f, 0.05f, "%.2f", 34},
@@ -2177,6 +2179,7 @@ void SatelliteSim::loadSettings()
         cloudTopAltM = c.value("top_alt_m", cloudTopAltM);
         cloudDriftRate = c.value("drift_rate", cloudDriftRate);
         cloudSunGain = c.value("sun_gain", cloudSunGain);
+        cloudSunGainZenith = c.value("sun_gain_zenith", cloudSunGainZenith);
         cloudAmbientGain = c.value("ambient_gain", cloudAmbientGain);
         cloudNightAmbientGain = c.value("night_ambient_gain", cloudNightAmbientGain);
         cloudBaseVariance = c.value("cloud_base_variance", cloudBaseVariance);
@@ -2273,6 +2276,7 @@ void SatelliteSim::saveSettings()
         {"top_alt_m", cloudTopAltM},
         {"drift_rate", cloudDriftRate},
         {"sun_gain", cloudSunGain},
+        {"sun_gain_zenith", cloudSunGainZenith},
         {"ambient_gain", cloudAmbientGain},
         {"night_ambient_gain", cloudNightAmbientGain},
         {"cloud_base_variance", cloudBaseVariance},

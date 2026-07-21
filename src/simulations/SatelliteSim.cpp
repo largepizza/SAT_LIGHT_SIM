@@ -140,6 +140,7 @@ void SatelliteSim::init(VulkanContext &ctx)
 
     createBuffers(ctx);
     createCloudNoisePipeline(ctx);
+    createCloudWarpNoisePipeline(ctx); // must run before createCloudMarchDescriptors (binding 9)
     createAuroraNoisePipeline(ctx); // must run before createGlowResources' writes (binding 16)
     createCloudMarchResources(ctx); // images must exist before createGlowResources' writes (bindings 10/11)
     createGlowResources(ctx);
@@ -463,6 +464,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.density = cloudDensity;
         cp.driftRate = cloudDriftRate;
         cp.sunGain = cloudSunGain;
+        cp.sunGainZenith = cloudSunGainZenith;
         cp.ambientGain = cloudAmbientGain;
         cp.hgG = cloudHgG;
         cp.marchSteps = cloudMarchSteps;
@@ -1096,6 +1098,26 @@ void SatelliteSim::cleanup(VkDevice device)
         vkFreeMemory(device, cloudNoiseMem, nullptr);
         cloudNoiseMem = VK_NULL_HANDLE;
     }
+    if (cloudWarpNoiseSampler)
+    {
+        vkDestroySampler(device, cloudWarpNoiseSampler, nullptr);
+        cloudWarpNoiseSampler = VK_NULL_HANDLE;
+    }
+    if (cloudWarpNoiseView)
+    {
+        vkDestroyImageView(device, cloudWarpNoiseView, nullptr);
+        cloudWarpNoiseView = VK_NULL_HANDLE;
+    }
+    if (cloudWarpNoiseImg)
+    {
+        vkDestroyImage(device, cloudWarpNoiseImg, nullptr);
+        cloudWarpNoiseImg = VK_NULL_HANDLE;
+    }
+    if (cloudWarpNoiseMem)
+    {
+        vkFreeMemory(device, cloudWarpNoiseMem, nullptr);
+        cloudWarpNoiseMem = VK_NULL_HANDLE;
+    }
     if (auroraNoiseSampler)
     {
         vkDestroySampler(device, auroraNoiseSampler, nullptr);
@@ -1709,6 +1731,149 @@ void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
     vkDestroyDescriptorSetLayout(ctx.device, bakeDescLayout, nullptr);
 }
 
+// ─── createCloudWarpNoisePipeline ───────────────────────────────────────────────
+// Allocates the 192³ RGB cloud/cirrus domain-warp noise volume, dispatches cloud_warp_noise.comp
+// to bake it in one shot, transitions to SHADER_READ_ONLY_OPTIMAL, then destroys the bake
+// pipeline/descriptor set. Structurally identical to createCloudNoisePipeline above (same
+// one-shot-bake pattern) — see cloud_warp_noise.comp for what's baked, why, and the tiling/
+// repetition trade-off it deliberately accepts. Resolution matches createCloudNoisePipeline's
+// own 192³ exactly — see that file's header comment for why (fixing visible interpolation
+// faceting at an earlier, smaller 128³/single-octave attempt). Must run before
+// createCloudMarchDescriptors() so cloudWarpNoiseView+Sampler exist when that descriptor set's
+// writes are assembled.
+void SatelliteSim::createCloudWarpNoisePipeline(VulkanContext &ctx)
+{
+    static constexpr uint32_t kSz = 192;
+
+    // ── Create 192³ RGBA8 3D image (storage + sampled) ───────────────────────
+    ctx.createImage(kSz, kSz, VK_FORMAT_R8G8B8A8_UNORM,
+                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    cloudWarpNoiseImg, cloudWarpNoiseMem,
+                    1,    // mipLevels
+                    kSz); // depth > 1 → createImage produces VK_IMAGE_TYPE_3D
+
+    // 3D image view (layerCount=1; depth lives in extent, not array layers)
+    {
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = cloudWarpNoiseImg;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_3D;
+        vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCreateImageView(ctx.device, &vci, nullptr, &cloudWarpNoiseView);
+    }
+
+    // Trilinear REPEAT sampler — the bake tiles seamlessly across UVW [0,1), and the continuous
+    // wind-drift term in cloudWarpOffset relies on hardware wrap to scroll through it smoothly.
+    {
+        VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        sci.magFilter = VK_FILTER_LINEAR;
+        sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sci.maxLod = 1.0f;
+        vkCreateSampler(ctx.device, &sci, nullptr, &cloudWarpNoiseSampler);
+    }
+
+    // ── Bake descriptor set layout: single STORAGE_IMAGE binding 0 ───────────
+    VkDescriptorSetLayout bakeDescLayout = VK_NULL_HANDLE;
+    {
+        VkDescriptorSetLayoutBinding b{};
+        b.binding = 0;
+        b.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b.descriptorCount = 1;
+        b.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        li.bindingCount = 1;
+        li.pBindings = &b;
+        vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &bakeDescLayout);
+    }
+
+    VkDescriptorPool bakePool = VK_NULL_HANDLE;
+    {
+        VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
+        VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pi.poolSizeCount = 1;
+        pi.pPoolSizes = &ps;
+        pi.maxSets = 1;
+        vkCreateDescriptorPool(ctx.device, &pi, nullptr, &bakePool);
+    }
+
+    VkDescriptorSet bakeSet = VK_NULL_HANDLE;
+    {
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool = bakePool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &bakeDescLayout;
+        vkAllocateDescriptorSets(ctx.device, &ai, &bakeSet);
+    }
+
+    // ── Pipeline layout + compute pipeline ────────────────────────────────────
+    VkPipelineLayout bakePipeLayout = VK_NULL_HANDLE;
+    {
+        VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        li.setLayoutCount = 1;
+        li.pSetLayouts = &bakeDescLayout;
+        vkCreatePipelineLayout(ctx.device, &li, nullptr, &bakePipeLayout);
+    }
+
+    VkPipeline bakePipeline = VK_NULL_HANDLE;
+    {
+        VkShaderModule mod = ctx.loadShader("shaders/cloud_warp_noise.comp.spv");
+        VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage.module = mod;
+        stage.pName = "main";
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage = stage;
+        ci.layout = bakePipeLayout;
+        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &bakePipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create cloud_warp_noise bake pipeline");
+        vkDestroyShaderModule(ctx.device, mod, nullptr);
+    }
+
+    // ── One-shot bake: barrier → bind → dispatch → barrier ───────────────────
+    {
+        auto cmd = ctx.beginOneTimeCommands();
+
+        // Transition UNDEFINED → GENERAL so the compute shader can write
+        ctx.imageBarrier(cmd, cloudWarpNoiseImg,
+                         0, VK_ACCESS_SHADER_WRITE_BIT,
+                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        // Descriptor write: STORAGE_IMAGE pointing at cloudWarpNoiseView in GENERAL layout
+        VkDescriptorImageInfo imgInfo{VK_NULL_HANDLE, cloudWarpNoiseView, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstSet = bakeSet;
+        w.dstBinding = 0;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        w.pImageInfo = &imgInfo;
+        vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, bakePipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                bakePipeLayout, 0, 1, &bakeSet, 0, nullptr);
+        vkCmdDispatch(cmd, kSz / 8, kSz / 8, kSz / 8); // local_size (8,8,8)
+
+        // Transition GENERAL → SHADER_READ_ONLY_OPTIMAL for use by cloud_march.comp
+        ctx.imageBarrier(cmd, cloudWarpNoiseImg,
+                         VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                         VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        ctx.endOneTimeCommands(cmd);
+    }
+
+    // ── Destroy bake-only Vulkan objects (view+sampler are kept as members) ───
+    vkDestroyPipeline(ctx.device, bakePipeline, nullptr);
+    vkDestroyPipelineLayout(ctx.device, bakePipeLayout, nullptr);
+    vkDestroyDescriptorPool(ctx.device, bakePool, nullptr);
+    vkDestroyDescriptorSetLayout(ctx.device, bakeDescLayout, nullptr);
+}
+
 // ─── createAuroraNoisePipeline ─────────────────────────────────────────────────
 // Allocates the 1024x16x256 RGBA aurora noise volume, dispatches aurora_noise.comp to bake the
 // curtain fold base (R) + column-window colA/colB (G/B) into it in one shot, transitions to
@@ -1912,11 +2077,12 @@ void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
 //   binding 4  CloudParams UBO (same underlying buffer as skyDescSet binding 9)
 //   binding 5  targetA (storage image, rgba16f)
 //   binding 6  targetB (storage image, rgba16f)
+//   binding 9  cloudWarpNoiseTex (sampler3D) — baked domain-warp field, see cloud_warp_noise.comp
 // Requires createGlowResources() to already have run (needs cloudParamsBuf, earthClouds/Night
 // textures) — see init() ordering.
 void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[9] = {};
+    VkDescriptorSetLayoutBinding bindings[10] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -1928,14 +2094,15 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     // aurora sky curtain march moved here (perf: folded into this half-res pass alongside clouds).
     bindings[7] = {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[8] = {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // aurora noise sampler3D
+    bindings[9] = {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // cloud warp noise sampler3D
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 9;
+    li.bindingCount = 10;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &cloudMarchDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
@@ -1960,8 +2127,9 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo targetBInfo{VK_NULL_HANDLE, cloudMarchTargetBView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorBufferInfo lightDomeInfo{lightDomeBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo auroraNoiseInfo{auroraNoiseSampler, auroraNoiseView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo warpNoiseInfo{cloudWarpNoiseSampler, cloudWarpNoiseView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    VkWriteDescriptorSet writes[9] = {};
+    VkWriteDescriptorSet writes[10] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 0, 0, 1,
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudsInfo, nullptr, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 1, 0, 1,
@@ -1980,7 +2148,9 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &lightDomeInfo, nullptr};
     writes[8] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 8, 0, 1,
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &auroraNoiseInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 9, writes, 0, nullptr);
+    writes[9] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 9, 0, 1,
+                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &warpNoiseInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 10, writes, 0, nullptr);
 }
 
 // ─── createCloudMarchPipeline ──────────────────────────────────────────────────

@@ -488,6 +488,112 @@ structural change.
 
 ## Session Log
 
+### 2026-07-20/21 (session 31) — Cloud shape quality pass + domain-warp bake perf
+Three user-reported cloud oddities (flat bases, conical/not-fluffy shapes, shadow line artifacts
++ phantom thin-cloud shadow-casters), followed by a perf regression from fixing the third one, then
+two rounds fixing a new artifact class the perf fix introduced. All changes in `cloudDensity()`/
+`cloudMarchCS()`/`cloudWarpOffset()` in `cloud_march.comp` (the single source of truth for cloud
+density since session 23 — see that entry) plus a new bake shader.
+
+- **Flat bases fixed:** the vertical base cutoff was a hardcoded `smoothstep(0.0, 0.05, hNorm)` —
+  literally the same altitude for every cloud on Earth, no noise input at all (the cloud *top*
+  already varied per-column via the existing `colH` noise, which is why only the base looked
+  artificially flat). Added a noise-driven `baseH` (same warped column coordinate as `colH`,
+  decorrelated Z offset), scaled by a new **"Base variance"** slider (default 0.3, 0 = old flat
+  behavior). Applied identically in both the main march's `hFade` and the self-shadow cone's
+  `chFade` for consistency.
+- **Conical/smooth shapes fixed:** root cause was `base = mix(baseA, topA, hNorm)` — a straight
+  lerp between exactly TWO fixed noise Z-slices, which is geometrically a cone by construction (no
+  real mid-height structure to deviate from a taper). Added a third mid-height presence slice
+  (`kPresenceZMid=0.28`) — still discrete fixed Z-slices, not continuous Z sampling, to avoid
+  reintroducing the altitude-slab banding bug from [[project_cloud_march_steps — 150 march steps
+  minimum]] (session pre-23). Also made erosion edge-biased: `erosionAmt = mix(cloudErosionEdge,
+  cloudErosionCore, base)` (new sliders, defaults 0.5/0.15) so edges fray while dense cores stay
+  comparatively solid, instead of one uniform erosion strength that just read as smooth downscaling.
+- **Shadow line artifacts + phantom shadow-casters fixed:** the self-shadow light cone sampled a
+  FIXED `(ci+0.5)*coneSeg` phase along `sunDir` through structured Worley noise — classic aliasing,
+  read as coherent parallel-line banding. Added per-pixel jitter (`noiseTex`-based, same pattern
+  `cirrusMarchCS` already used for its own step jitter). Separately, the cone's `chFade` ignored
+  the per-column `colH`/`baseH` entirely, treating the whole 5%-95% of the shell as "possible
+  cloud" regardless of how little of that column the visible march actually filled — so a
+  near-clear or single-march-step-thin column (visible in `CLOUD_DEBUG 2`) could still cast a
+  full-height shadow with no matching visible cloud. Cone now computes its own `colH`/`baseH` per
+  sample, using the same warped coordinate the visible density lookup uses.
+- **`GpuCloudParams` UBO: no struct growth.** All three new tunables above repurposed the
+  already-reserved `pad4`/`pad5`/`pad6` slots (`cloudBaseVariance`/`cloudErosionEdge`/
+  `cloudErosionCore`). Mirrored (layout-parity only) in `sat_sky.frag`'s duplicate struct copy —
+  see the shared-UBO-duplication rule noted in session 24's entry.
+- **Bug: settings window broke after adding the new sliders.** `draggingCloud[33]` (one of three
+  parallel arrays keyed by `CloudSlider` `idx`, alongside `hovCloudMinus`/`hovCloudPlus`) was never
+  resized when the sliders above were added — writes for the new ids landed out of bounds and
+  corrupted the window-chrome state declared immediately after it in the class, so the settings
+  window closed itself instantly and sliders read as permanently "stuck dragging." (`draggingCloud`
+  had actually been one short since an EARLIER session's "Night ambient" slider addition — the hover
+  arrays were resized then but this one was missed.) Fixed by resizing all three arrays together
+  (37, later 38 once the sun-gain-zenith slider below was added); no bounds-checked container
+  would have caught this at compile time, so any future slider addition to this shared tab system
+  must check all three by hand.
+- **Sun gain no longer flat across all sun elevations.** `cloud.sunGain` was one multiplier at
+  every elevation, so a value tuned to look amazing at sunset (5.0) overexposed clouds at midday.
+  Split into `cloud.sunGain` (near-horizon/sunset endpoint) and new `cloud.sunGainZenith` (midday
+  endpoint, default 1.0), blended by `cloudSunDotRaw` (≈sin(sun elevation)) in `cloudMarchCS`,
+  `cirrusMarchCS`, and `evalCloudLayer` (the orbit-altitude flat-cloud fallback in `sat_sky.frag`).
+  Repurposed the free `pad3` slot — still no struct growth. Settings: "Sun gain (horizon)" /
+  "Sun gain (zenith)", Clouds tab.
+- **Perf regression from the shadow-cone fix above, then fixed:** making the cone warp-consistent
+  with the visible cloud (`cUVWXY` needing the same `cloudWarpOffset` the main density lookup uses)
+  meant calling `cloudWarpOffset` (3 live `warpPerlin3` evaluations, 24 gradient-hash lookups) fresh
+  at every cone step — new cost that didn't exist before. Fixed for free by reusing the PARENT
+  march sample's already-computed `warpUVW` instead of recomputing it per cone-step position (cone
+  samples sit within ~2×shellThick of the parent, a few km, negligible against the warp's own low
+  frequency `kWarpFreq=6`).
+- **New profiling toggle:** added a 7th KNOCKOUT PROFILING checkbox, "Cloud self-shadow cone"
+  (`debugDisableMask` bit 64, checked directly in `cloudMarchCS`), so this block's isolated GPU
+  cost can be read off the existing GPU FRAME BREAKDOWN without a capture tool — mirrors the six
+  toggles session 29 built.
+- **Domain-warp baked into a new 3D texture, replacing live `warpPerlin3` in `cloudWarpOffset`**
+  (`cloudWarpOffset` runs once per in-cloud march sample — the dominant remaining live-procedural
+  cost). New `shaders/cloud_warp_noise.comp`, same one-shot-bake pattern as `cloud_noise.comp`/
+  `aurora_noise.comp`, new `createCloudWarpNoisePipeline()` in `SatelliteSim.cpp`, new binding 9 on
+  `cloud_march.comp`'s descriptor set. **Deliberate tiling trade-off:** the live version was
+  genuinely unbounded, non-tiling Perlin noise (never repeated) — baking it necessarily makes it
+  periodic at some cell count. Chose `kWarpBakeN=16` specifically so the full visible sky dome only
+  covers ~3/4 of one tile — no repetition visible within a session at default drift rates; this is
+  the same mechanism [[project_cloud_next_session]] flagged as the intended fix for the cloud
+  DENSITY noise's own large-scale tiling problem, so baking it was a real (if distant) risk against
+  that goal, not a free win — documented at the top of `cloud_warp_noise.comp` for future reference.
+  - **Round 1 (128³, single Perlin octave, 8 texels/cell): visible "tessellating triangle"
+    faceting**, reported immediately. This was NOT the tiling/domain-seam bug class from
+    [[project_cloud_seam_bug]] (already resolved, non-power-of-2 N) — root cause was
+    interpolation METHOD. Hardware trilinear filtering between baked texels is LINEAR
+    (straight-edged); the live analytic version was smoothstep-interpolated (curved) between its
+    gradient corners. At sparse texel density with only one Perlin octave, that mismatch was
+    geometrically legible once the value was used as a raw coordinate displacement — worse than
+    in `cloud_noise.comp`, whose comparable R channel sums 3 octaves and gets thresholded into a
+    coverage mask rather than used as a raw offset.
+  - **Round 2 (192³, two-octave FBM — matched `cloud_noise.comp`'s own proven resolution/N
+    choices exactly): reduced but did not eliminate** the faceting (user: "finer" but still
+    visible) — confirmed texel density/octave count were contributing factors but not the root
+    cause.
+  - **Round 3 (final fix): replaced hardware trilinear with a manual smoothstep-weighted blend.**
+    `cloudWarpOffset` no longer calls `texture()`; a new `cloudWarpNoiseSample()` helper does its
+    own 8-corner `texelFetch` + `mix()` using the SAME `f*f*(3-2*f)` weight curve the original
+    analytic evaluation used at its gradient corners, with manual wraparound (`wrapTexel`/
+    `wrapTexel3`, same explicit `if(r<0) r+=n` pattern as `gradHash` — not GLSL's `%`, whose
+    negative-operand behavior isn't safe to rely on across drivers). The C++-side sampler's
+    REPEAT/LINEAR settings are now vestigial for this texture (texelFetch bypasses both). 8
+    `texelFetch` calls vs. 1 `texture()` read, still far cheaper than the original 3× live
+    `warpPerlin3`. **User-confirmed: "the perfect effect, and performance is great."**
+- **Perf data caveat:** `perf_profiles/profile_log.jsonl` snapshots from this session
+  (`2026-07-21` group, `cloud_march` 4-21ms depending heavily on camera altitude/angle/coverage)
+  don't cleanly isolate this session's wins in isolation — no build-version tag on snapshots, no
+  paired before/after captures at matched camera state, and the new bit-64 shadow-cone toggle
+  wasn't exercised in any saved snapshot. Scene variance dominates snapshot-to-snapshot cost more
+  than implementation differences at this sample size (consistent with session 29's own
+  correlation-table caveat "small sample, treat as directional"). Final state is verified
+  qualitatively (user confirmed both the visual fix and that performance recovered), not via a
+  rigorous quantified A/B from this log.
+
 ### 2026-07-17 (session 29) — GPU performance profiling infrastructure + aurora/terrain/airglow optimization
 - **New: in-app GPU timestamp profiling.** `VulkanContext` gained a 7-slot `VK_QUERY_TYPE_TIMESTAMP`
   query pool (single frame in flight, so results are resolved right after the fence wait in
