@@ -344,49 +344,56 @@ void main()
         // ── Ground beam (C12): write into reflectBeamsBuf if a real target is locked ──
         // Only meaningful when a valid night-side target was actually found (bestIdx >= 0);
         // the FlatMirror45 fallback above has no real ground target to illuminate.
+        //
+        // SITE-referenced, not OBSERVER-referenced (revised 2026-07-21): this used to also
+        // require the TARGET to clear the observer's own local horizon (targetSinEl >
+        // elevCutoff) before writing anything. That coupled beam existence to the observer's
+        // exact position/altitude via a razor-thin geometric threshold — small movements (even
+        // ~300m of altitude) could cross it and make every beam vanish, and because so few
+        // satellites' targets ever happened to pass it, competing satellites fighting over the
+        // rare passing slot could flip the displayed beam to the wrong satellite frame to frame.
+        // The satellite itself already had to clear the OBSERVER's horizon to reach this code at
+        // all (the occultation cull at the top of main() returns early otherwise) — LEO horizon
+        // distance (~2000+ km) is generously larger than any range this feature could render
+        // anything useful at, so that's a sufficient outer bound on its own. Every satellite that
+        // reaches here with a real target now registers unconditionally; how close the OBSERVER
+        // needs to be to actually see it is a render-time distance check in the consumer shaders
+        // (cloud_march.comp / sat_sky.frag) instead, using a smooth cutoff rather than a fragile
+        // horizon test — see TERRAIN_PLAN.md C12 follow-up #5 for the full rationale.
         if (bestIdx >= 0) {
             vec3 targetECI    = reflTargets[bestIdx].xyz;
             vec3 targetRelPos = targetECI - pc.obsECI;
             vec3 targetENU    = vec3(dot(targetRelPos, pc.enuX.xyz),
                                       dot(targetRelPos, pc.enuY.xyz),
                                       dot(targetRelPos, pc.enuZ.xyz));
-            float targetRange = max(length(targetRelPos), 1.0);
-            float targetSinEl = targetENU.z / targetRange;
+            vec3 satENU = vec3(dot(relPos, pc.enuX.xyz),
+                                dot(relPos, pc.enuY.xyz),
+                                dot(relPos, pc.enuZ.xyz));
 
-            // Gate on the TARGET clearing the observer's horizon — this is the binding
-            // constraint (the satellite itself is almost always above elevCutoff by the time
-            // execution reaches here; two points on/near Earth's surface are only mutually
-            // visible within a much tighter range than a satellite's own horizon distance).
-            if (targetSinEl > pc.elevCutoff) {
-                vec3 satENU = vec3(dot(relPos, pc.enuX.xyz),
-                                    dot(relPos, pc.enuY.xyz),
-                                    dot(relPos, pc.enuZ.xyz));
+            // Ground irradiance delivered by the mirror — a physically different quantity
+            // from the view-dependent specular mirrorPeak term in sat_flare.comp (that
+            // answers "how bright does the mirror look to the OBSERVER"; this answers "how
+            // much sunlight lands on the ground target", independent of view angle, and for
+            // a collimated flat reflector at these ranges does NOT fall off with range —
+            // the reflected beam's footprint tracks the mirror's own size, not an expanding
+            // point-source cone). See CLAUDE.md / TERRAIN_PLAN.md C12 for the full rationale.
+            const float SOLAR_CONSTANT = 1361.0; // W/m^2 at Earth distance
+            float mirrorAreaM2   = orb.crossSection * orb.crossSection * 10.0;
+            float cosIncidence   = max(0.0, dot(surfN0, pc.sunDirECI));
+            float groundIrradiance = SOLAR_CONSTANT * mirrorAreaM2 * orb.mirrorFrac * cosIncidence;
+            float intensity = groundIrradiance * pc.beamGain;
 
-                // Ground irradiance delivered by the mirror — a physically different quantity
-                // from the view-dependent specular mirrorPeak term in sat_flare.comp (that
-                // answers "how bright does the mirror look to the OBSERVER"; this answers "how
-                // much sunlight lands on the ground target", independent of view angle, and for
-                // a collimated flat reflector at these ranges does NOT fall off with range —
-                // the reflected beam's footprint tracks the mirror's own size, not an expanding
-                // point-source cone). See CLAUDE.md / TERRAIN_PLAN.md C12 for the full rationale.
-                const float SOLAR_CONSTANT = 1361.0; // W/m^2 at Earth distance
-                float mirrorAreaM2   = orb.crossSection * orb.crossSection * 10.0;
-                float cosIncidence   = max(0.0, dot(surfN0, pc.sunDirECI));
-                float groundIrradiance = SOLAR_CONSTANT * mirrorAreaM2 * orb.mirrorFrac * cosIncidence;
-                float intensity = groundIrradiance * pc.beamGain;
-
-                if (intensity > 0.0) {
-                    // Indexed directly by TARGET IDENTITY (bestIdx), not azimuth — see the
-                    // ReflectBeamsBuf comment above for why. atomicMax + write-on-win still
-                    // handles multiple satellites legitimately aiming at the same target.
-                    uint  slot      = uint(bestIdx);
-                    uint  oldBright = atomicMax(slotBright[slot], floatBitsToUint(intensity));
-                    if (floatBitsToUint(intensity) > oldBright) {
-                        beams[slot].satENU        = satENU;
-                        beams[slot].intensity      = intensity;
-                        beams[slot].targetENU      = targetENU;
-                        beams[slot].footprintRadM  = pc.beamFootprintRadM;
-                    }
+            if (intensity > 0.0) {
+                // Indexed directly by TARGET IDENTITY (bestIdx), not azimuth — see the
+                // ReflectBeamsBuf comment above for why. atomicMax + write-on-win still
+                // handles multiple satellites legitimately aiming at the same target.
+                uint  slot      = uint(bestIdx);
+                uint  oldBright = atomicMax(slotBright[slot], floatBitsToUint(intensity));
+                if (floatBitsToUint(intensity) > oldBright) {
+                    beams[slot].satENU        = satENU;
+                    beams[slot].intensity      = intensity;
+                    beams[slot].targetENU      = targetENU;
+                    beams[slot].footprintRadM  = pc.beamFootprintRadM;
                 }
             }
         }

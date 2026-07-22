@@ -1,6 +1,6 @@
 #version 450
 
-// ── Camera + sun push constants (same layout as C++ SatDrawPC, 152 bytes) ─────
+// ── Camera + sun push constants (same layout as C++ SatDrawPC, 164 bytes) ─────
 // The pipeline layout declares VK_SHADER_STAGE_VERTEX_BIT|FRAGMENT_BIT so both
 // stages share one push constant range.  The fragment uses skyView/fovYRad to
 // project glowBuf ENU directions into screen UV for the lens flare pass.
@@ -29,6 +29,7 @@ layout(push_constant) uniform PC {
     vec2  cloudShadowResidualM; // C12 — same texel-snapping residual cloud_shadow.comp's grid was
                         // built with this frame; subtract before mapping to that grid's UV — see
                         // CloudShadowPC::shadowResidualM's comment in SatelliteSim.h.
+    float beamMaxRangeM; // C12 follow-up #6 — settings-tunable Reflect-Orbital beam render range
 } pc;
 
 // ── Perf knockout toggles (profiling-only) ──────────────────────────────────────
@@ -2190,9 +2191,16 @@ void main() {
         // see, just a lit patch of ground).
         if ((pc.debugDisableMask & 128u) == 0u) {
             const float kBeamGroundScale = 4e-8;
+            // Site-referenced (C12 follow-up #5): beams are now written unconditionally by any
+            // satellite above the OBSERVER's own orbital horizon, not gated by the ground
+            // target's local horizon — so pc.beamMaxRangeM (settings-tunable, follow-up #6) is
+            // the render-time "is the observer close enough to this site" cutoff that replaces
+            // the old fragile gate. A smooth fixed-distance check (not a horizon calculation),
+            // same value as cloud_march.comp's copy.
             for (int bi = 0; bi < int(BEAM_SLOTS); ++bi) {
                 float intensity = beams[bi].intensity;
                 if (intensity <= 0.0) continue;
+                if (length(beams[bi].targetENU) > pc.beamMaxRangeM) continue;
 
                 float groundDist = length(hitPt.xy - beams[bi].targetENU.xy);
                 float footprintR = max(beams[bi].footprintRadM, 1.0);

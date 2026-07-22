@@ -254,8 +254,11 @@ struct SatDrawPC
     glm::vec2 cloudShadowResidualM; // offset 152 — mirrors CloudShadowPC::shadowResidualM (same
                              // frame's value); subtracted from hitPt.xy/targetENU.xy before mapping
                              // to the shadow grid's UV — see that field's comment for why.
-}; // total: 160 bytes
-static_assert(sizeof(SatDrawPC) == 160, "SatDrawPC layout mismatch");
+    float beamMaxRangeM;     // offset 160 — C12 follow-up #6: settings-tunable "how far around
+                             // the observer do Reflect-Orbital beams render" cutoff, mirrors
+                             // CloudMarchPC's own copy (same frame's value).
+}; // total: 164 bytes
+static_assert(sizeof(SatDrawPC) == 164, "SatDrawPC layout mismatch");
 
 // ── Push constants for cloud_march.comp (half-res cloud compute pass, C15-perf) ──────────────
 // Matches the layout(push_constant) block in cloud_march.comp exactly. A separate struct from
@@ -275,8 +278,11 @@ struct CloudMarchPC
     uint32_t debugDisableMask; // perf knockout toggles — see SatDrawPC's member comment. Needed
                                // here too now that the aurora sky curtain march moved into
                                // cloud_march.comp; mirrors the same debugDisableMask value.
-}; // total: 132 bytes
-static_assert(sizeof(CloudMarchPC) == 132, "CloudMarchPC layout mismatch");
+    float beamMaxRangeM;       // offset 132 — C12 follow-up #6: settings-tunable "how far around
+                               // the observer do Reflect-Orbital beams render" cutoff, mirrors
+                               // SatDrawPC's own copy (same frame's value).
+}; // total: 136 bytes
+static_assert(sizeof(CloudMarchPC) == 136, "CloudMarchPC layout mismatch");
 
 // ── Push constants for cloud_shadow.comp (shared cloud-shadow primitive, C12) ────────────────
 // Fixed 128×128 dispatch, independent of screen resolution/camera — no skyView/fov/aspect needed.
@@ -1010,6 +1016,9 @@ private:
     // sat_orbit.comp's beam-writer comment). Uploaded via SatOrbitPC.
     float beamGain = 1.0f;
     float beamFootprintRadM = 50000.0f; // ground footprint radius; tunable constant for now
+    float beamMaxRangeM = 500000.0f; // C12 follow-up #6 — render-time "is the observer close
+                                      // enough to this site" cutoff (site-referenced beams have
+                                      // no observer-side write gate any more, see sat_orbit.comp)
     // ── Milky Way skybox basis (session 27) ────────────────────────────────────
     // ENU->galactic rotation, recomputed each frame in updatePositions() and uploaded to
     // CloudParams. Orientation confirmed by eye against the real star field — no runtime
@@ -1225,9 +1234,9 @@ private:
     bool hovPhotoMinus[9] = {};
     bool hovPhotoPlus[9] = {};
     bool draggingPhoto[9] = {};
-    bool hovCloudMinus[41] = {}; // was [38] — idx 38-40 are C12's cloud-shadow-range/beam sliders
-    bool hovCloudPlus[41] = {};
-    bool draggingCloud[41] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[42] = {}; // was [41] — idx 41 is C12's new "Beam max range" slider
+    bool hovCloudPlus[42] = {};
+    bool draggingCloud[42] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                   // feedback_cloud_slider_arrays memory: this one was missed once
                                   // already and the out-of-bounds write corrupted the window-chrome
                                   // state declared right below, breaking the settings window.

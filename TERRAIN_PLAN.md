@@ -740,7 +740,111 @@ branches are cheap and the vast majority of slots are empty at any moment.
 
 **Not yet re-confirmed in-app.**
 
+**Follow-up #5 (2026-07-21) — re-architected from OBSERVER-referenced to SITE-referenced, per the
+user's own diagnosis.** After the target-identity fix, user reported: a vague soft "white zone"
+near targets, beams reading as coming from the wrong sky position ("opposite of the satellites"),
+glitchy ones on the horizon, and — the key diagnostic clue — **climbing above just ~300m of
+altitude made every beam vanish entirely.** That last symptom pointed straight at the remaining
+`targetSinEl > pc.elevCutoff` write-gate: a razor-thin, continuously-recomputed spherical horizon
+test is exactly the kind of thing a few hundred meters of altitude can flip. User's proposed fix:
+stop gating on the OBSERVER's relationship to a site at write time — precompute which of the ~200
+fixed sites are currently serviceable (on the night side, matched to a satellite) independent of
+where the observer is, then only use the observer's position as a RENDER-time "am I close enough to
+this already-known-active site to bother drawing it" filter. Agreed this was the correct fix, not
+just a workaround.
 
+**What made this a small, targeted change rather than a rewrite:** the O(satCount × 201) nearest-
+target scan this depends on already exists and already runs from EVERY satellite's own perspective
+regardless of the observer (that's how `bestIdx` gets picked at all) — nothing new needed there.
+The blocker was purely the leftover observer-relative gate on top of it, which only mattered
+because a satellite ALSO has to already be visible above the OBSERVER's own orbital horizon to
+reach this code in the first place (an earlier, unrelated occultation cull returns early
+otherwise) — and LEO horizon distance (~2000+ km) is already generously larger than any range this
+effect could ever render something at, making it a sufficient outer bound on its own. So the fix
+was: **delete the target-horizon gate in `sat_orbit.comp`** (every satellite reaching the
+`TargetedReflector` branch with a real target now registers into its site's slot unconditionally),
+and **add an explicit `kBeamMaxRangeM` (500 km) render-time distance cutoff** in both consumer
+loops (`cloud_march.comp`, `sat_sky.frag`) as the new, smooth "is the observer in range of this
+site" check — a plain 3D distance test with no altitude sensitivity, replacing the fragile spherical
+horizon calculation. Expected to also fix the other three symptoms as a side effect: with each site
+now getting its own dedicated, uncontested slot (no more racing for the handful that used to pass
+the strict gate), there's no more competition-driven flicker or wrong-satellite substitution.
+
+**Scaling questions raised by the user, addressed without code changes (analysis only):**
+- *Can this handle scaling Reflect Orbital from 1,000 satellites (current) to 5,000 (the real
+  constellation's documented plan)?* Yes, with no expected performance concern and no architecture
+  change needed. The per-satellite target scan already costs O(satCount × 201) regardless of the
+  observer-gate fix — going 1,000→5,000 satellites is a 5× increase in a workload this engine
+  already runs 6-30× larger for other constellations in this same sim (Starlink Gen2 alone is
+  30,480 satellites, already well above `MAX_SATELLITES` headroom). More importantly, the
+  CONSUMER-side render cost is bounded by `BEAM_SLOTS` (201, fixed) regardless of satellite count,
+  since multiple satellites servicing the same site just resolve via `atomicMax` into one slot —
+  so rendering cost literally does not change with constellation size at all.
+- *Future: replace the 201 procedurally-random target sites with real-world locations (e.g. an
+  actual list of solar farms)?* Fully compatible with this architecture as-is — it only changes
+  where `reflectorTargetsECEF[]`'s values come from (a curated list instead of `rand()`), nothing
+  about the site-referenced selection/rendering pipeline. Not implemented now; revisit whenever
+  wanted.
+
+**Not yet re-confirmed in-app.**
+
+**Follow-up #6 (2026-07-21) — the site-referenced re-architecture worked: user confirmed beams and
+ground-spots now display.** Remaining complaints: cloud illumination reads as "very intense and
+sharp," a hard-edged region of lit vs. dark cloud rather than a soft glow; the lighting pattern
+"glitches and flips" when passing through a beam. Two genuinely different root causes, both in
+`cloud_march.comp`'s volumetric term, both fixed:
+
+- **The flip: a real numerical singularity, not a coordinate bug.** The closest-approach-between-
+  two-lines solve (`sSeg = (eDot - bDot*dDot) / denom`, `denom = 1 - bDot²`) has a textbook
+  removable singularity as the view ray becomes near-parallel to the beam (`bDot -> ±1`) — which is
+  exactly the geometry of "looking straight through the beam," the most likely case for a user to
+  actually encounter. The numerator doesn't vanish at the same rate as `denom`, so the division
+  swings wildly right in that regime, snapping the glow to a very different position frame to
+  frame. Fixed by falling back to the shell-crossing sub-range's midpoint whenever `denom` drops
+  below a threshold (`1e-3`) instead of dividing — correct in that regime too, since "nearly
+  parallel" means the perpendicular distance barely varies along the sub-range anyway, so which
+  point you pick barely matters.
+- **The sharp edge: mostly the hard altitude-band clamp, likely compounded by tonemap saturation.**
+  The shell-membership test clamped the search to `[sLow, sHigh]` with no transition — the closest-
+  approach point could snap to that window's exact boundary as view direction changed, a genuine
+  discontinuity in `perpDist` right at the edge. Added a `kAltMarginM=2000` fade zone (smoothstep,
+  same shaping style the main cloud march already uses for its own `hFade`) instead of a binary
+  window. Also widened `kBeamGlowRadiusM` 3000→7000 m (spread the same energy over more area) and
+  roughly halved `kBeamScale` 3e-8→1.5e-8 to compensate and pull back from what was likely tonemap
+  saturation turning a smoothly-decaying signal into a "pure white here, dark there" look. Also
+  added a smoothstep fade at the glow radius's own outer tail (was a hard `continue`) for full
+  continuity. All first-pass constants — expect another round once seen in-app, same as every
+  other volumetric feature here.
+
+**Godrays / ground-mist question — answered, not implemented.** User asked whether "cloud lighting
+fixed enough to show illuminated mist/dust near the ground below the cloud layer" is just a
+godrays/crepuscular-ray effect that should be generalized to clouds overall, not kept Reflect-
+Orbital-specific. Answer: yes, conceptually — and this project already has a matching, unbuilt
+backlog item for exactly that shared medium: **C11 ("Fog / dust / haze")** in the Phase D backlog
+above, explicitly scoped as "the low medium beams scatter through" for any strong local light
+source, not just one. Recommended NOT building a bespoke reflect-beam-only ground-mist hack in this
+pass — a proper shared low-altitude medium (sun, moon, city lights, reflect beams all scattering
+through the same fog layer) is more visually coherent and avoids building two separate
+approximations of the same phenomenon. This is a substantial standalone feature (its own low-
+altitude march or a real extension of the existing shell-march machinery down near the ground) that
+deserves its own scoping/design pass rather than being folded into this fix-up session — not
+started, awaiting a decision on when to pick up C11 properly.
+
+**Two new settings-tunables added (Terrain tab):**
+- **"Beam max range (m)"** (idx 41, `beamMaxRangeM`, default 500 km, range 50 km-2000 km) — the
+  render-time "is the observer close enough to this site" cutoff introduced in follow-up #5 was a
+  hardcoded constant in both consumer shaders; now a single CPU-side value threaded through both
+  `CloudMarchPC` and `SatDrawPC` (grew 132→136 and 160→164 bytes respectively).
+- **"Beam footprint (m)"** (idx 40, `beamFootprintRadM`) slider minimum lowered 1000→500 m (step
+  also 500) per user request, for a tighter, more spot-like ground glow than the 50 km default
+  allowed dialing down to before.
+
+**Also fixed:** a documentation-only slip from an earlier follow-up in this same session — the
+"### 2026-07-20/21 (session 31)" header above this entry had been accidentally deleted while
+splicing in an earlier follow-up's content (already present in the user's last commit, "Kind of
+beam"). Restored; no code was affected, only this log's own structure.
+
+### 2026-07-20/21 (session 31) — Cloud shape quality pass + domain-warp bake perf
 Three user-reported cloud oddities (flat bases, conical/not-fluffy shapes, shadow line artifacts
 + phantom thin-cloud shadow-casters), followed by a perf regression from fixing the third one, then
 two rounds fixing a new artifact class the perf fix introduced. All changes in `cloudDensity()`/

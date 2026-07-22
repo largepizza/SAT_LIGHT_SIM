@@ -564,6 +564,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cpc.moonDirENU = moonDirENU;
         cpc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
         cpc.debugDisableMask = debugDisableMask; // aurora knockout toggle now lives here too
+        cpc.beamMaxRangeM = beamMaxRangeM; // C12 follow-up #6
 
         uint32_t halfW = (ctx.swapExtent.width + 1) / 2;
         uint32_t halfH = (ctx.swapExtent.height + 1) / 2;
@@ -1000,6 +1001,7 @@ SatDrawPC SatelliteSim::buildSatDrawPC(VulkanContext &ctx, VkExtent2D targetExte
     pc.cloudShadowRangeM = cloudShadowRangeM; // C12 — cloud_shadow.comp grid tangent-plane UV mapping
     pc.cloudShadowResidualM = cloudShadowResidualM; // same frame's texel-snapping residual as the
                                                      // cloud_shadow.comp dispatch computed above
+    pc.beamMaxRangeM = beamMaxRangeM; // C12 follow-up #6
     return pc;
 }
 
