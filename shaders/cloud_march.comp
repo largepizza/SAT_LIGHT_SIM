@@ -22,7 +22,7 @@
 // them could simply be deleted from sat_sky.frag.
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// ── Push constants (132 bytes, matches C++ CloudMarchPC) ──────────────────────
+// ── Push constants (136 bytes, matches C++ CloudMarchPC) ──────────────────────
 layout(push_constant) uniform PC {
     mat4  skyView;     // ENU -> camera space (rotation, no translation) — same as SatDrawPC
     float fovYRad;
@@ -35,6 +35,7 @@ layout(push_constant) uniform PC {
     uint  debugDisableMask; // perf knockout toggles — mirrors SatDrawPC's; bit 32 (aurora curtain
                             // march) and bit 64 (cloud self-shadow light cone) are the ones
                             // meaningful here — both live only in this shader now
+    float beamMaxRangeM; // C12 follow-up #6 — settings-tunable Reflect-Orbital beam render range
 } pc;
 
 layout(set = 0, binding = 0) uniform sampler2D earthCloudsTex;
@@ -1293,10 +1294,18 @@ void main() {
     // First-pass scope, not a per-march-step density sample: a cheap per-pixel closest-approach
     // test against each of the (≤16) active beams, gated to the cloud shell's altitude band and
     // modulated by this ray's OWN already-computed A_total — reuses work already done rather than
-    // a fresh cloudDensity() evaluation at the crossing point. Expected to need visual tuning in a
-    // follow-up session (glow radius, scale constant) once seen in-app — see TERRAIN_PLAN.md C12.
+    // a fresh cloudDensity() evaluation at the crossing point.
     if ((pc.debugDisableMask & 128u) == 0u) {
-        const float kBeamGlowRadiusM = 3000.0;
+        // Widened (C12 follow-up #6, 2026-07-21) from 3000 — a narrow glow radius combined with
+        // an over-bright scale read as a harsh, blown-out edge rather than a soft glow; a wider
+        // radius spreads the same total energy over more pixels, feathering the transition.
+        const float kBeamGlowRadiusM = 7000.0;
+        // Site-referenced (C12 follow-up #5): beams are now written unconditionally by any
+        // satellite that clears the OBSERVER's own orbital horizon (a large, LEO-sized bound),
+        // not gated by the ground target's own local horizon — so this is the render-time "is
+        // the observer close enough to this site to bother" cutoff that replaces it. Settings-
+        // tunable (pc.beamMaxRangeM, C12 follow-up #6) — a smooth fixed-distance check, not a
+        // horizon calculation, so it doesn't reintroduce the old altitude-fragility.
         float beamCloudBaseAlt = cloud.layers[0].shellAltM;
         float beamCloudTopAlt  = cloud.layers[1].shellAltM;
         // A_total is transmittance (1=clear, 0=opaque) along THIS view ray — see the aurora
@@ -1312,6 +1321,7 @@ void main() {
         for (int bi = 0; bi < int(BEAM_SLOTS); ++bi) {
             float intensity = beams[bi].intensity;
             if (intensity <= 0.0) continue;
+            if (length(beams[bi].targetENU) > pc.beamMaxRangeM) continue;
 
             vec3 satWorldPos    = obsPos + beams[bi].satENU;
             vec3 targetWorldPos = obsPos + beams[bi].targetENU;
@@ -1327,40 +1337,82 @@ void main() {
             // chance, which made this term almost never fire. Approximate via linear interpolation
             // in altitude between the segment's two endpoints (altitude decreases ~monotonically
             // from the satellite down to the ground target, so this is a good approximation
-            // without a real root-find).
+            // without a real root-find). A margin either side (kAltMarginM) softens the hard
+            // window into a smooth fade (below) instead of a binary in/out clamp — the direct fix
+            // for the "very intense and sharp, distinct region" complaint (C12 follow-up #6): the
+            // old hard clamp meant the closest-approach point could snap to the window's exact
+            // boundary as view direction changed, a discontinuity in perpDist right at the edge.
+            const float kAltMarginM = 2000.0;
             float altSat = length(satWorldPos) - R_EARTH;
             float altTgt = length(targetWorldPos) - R_EARTH;
             float sLow = 0.0, sHigh = segLen;
             if (altSat > altTgt) {
                 float invSpan = 1.0 / max(altSat - altTgt, 1e-3);
-                sHigh = clamp((altSat - beamCloudBaseAlt) * invSpan * segLen, 0.0, segLen);
-                sLow  = clamp((altSat - beamCloudTopAlt)  * invSpan * segLen, 0.0, segLen);
+                sHigh = clamp((altSat - (beamCloudBaseAlt - kAltMarginM)) * invSpan * segLen, 0.0, segLen);
+                sLow  = clamp((altSat - (beamCloudTopAlt  + kAltMarginM)) * invSpan * segLen, 0.0, segLen);
                 sLow  = min(sLow, sHigh);
             }
             // else: altitude doesn't decrease along the segment (shouldn't normally happen for a
             // satellite-to-ground beam) — fall back to searching the whole segment.
 
-            // Closest approach between the view ray (obsPos, dir) and the beam segment —
-            // standard two-line closest-point solve, then clamp to the shell-crossing sub-range.
+            // Pick a representative point along the segment within the (margin-widened)
+            // shell-crossing sub-range — the standard two-line closest-point formula when
+            // well-conditioned, else the sub-range's midpoint. `denom = 1 - bDot²` has a
+            // removable singularity as the view ray becomes near-parallel to the beam
+            // (bDot -> ±1) — exactly "looking straight along the beam," which is also exactly
+            // what an observer standing at/near the site looking up at the sky is doing, so this
+            // isn't a rare edge case to shrug off.
             vec3  w0    = obsPos - satWorldPos;
             float bDot  = dot(dir, segHat);
             float dDot  = dot(dir, w0);
             float eDot  = dot(segHat, w0);
             float denom = 1.0 - bDot * bDot;
-            float sSeg  = (abs(denom) > 1e-6) ? (eDot - bDot * dDot) / denom : 0.0;
-            sSeg = clamp(sSeg, sLow, sHigh);
-            float tRay = sSeg * bDot - dDot;
+            float sSeg  = (denom > 1e-3) ? clamp((eDot - bDot * dDot) / denom, sLow, sHigh)
+                                          : 0.5 * (sLow + sHigh);
+            vec3  closestSegPt = satWorldPos + sSeg * segHat;
+
+            // Distance from THAT FIXED POINT to the ray, via direct projection — deliberately NOT
+            // the coupled two-line solve for tRay too (tRay = sSeg*bDot - dDot). That formula is
+            // unstable in the exact same near-parallel regime even after sSeg falls back to the
+            // midpoint above: dDot = dot(dir, obsPos - satWorldPos) scales with the FULL
+            // satellite-to-ground distance (hundreds of km), so when dir is nearly anti-parallel
+            // to segHat (observer near the site looking up at the beam — the single most
+            // important viewing case), tRay comes out near segLen, projecting "closestRayPt" out
+            // near the satellite's own altitude instead of near the actual shell a few km up —
+            // perpDist then reads as huge and the term gets culled right where it should be
+            // brightest. That was the real cause of the "dark spot directly over the site" bug
+            // (2026-07-21 in-app report). Projecting the fixed segment point onto the ray instead
+            // is a single dot product with no division at all, so it can't blow up regardless of
+            // how parallel dir and segHat are.
+            float tRay = dot(closestSegPt - obsPos, dir);
             if (tRay < 0.0) continue;
 
             vec3  closestRayPt = obsPos + tRay * dir;
-            vec3  closestSegPt = satWorldPos + sSeg * segHat;
-            float perpDist     = length(closestRayPt - closestSegPt);
+            float perpDist     = length(closestSegPt - closestRayPt);
             if (perpDist > kBeamGlowRadiusM * 3.0) continue;
+
+            // Soft vertical fade near the shell's altitude edges (mirrors the main cloud march's
+            // own hFade shaping) instead of a hard window — this is what actually removes the
+            // sharp bright/dark seam, on top of the closest-approach fix above which only removed
+            // the positional glitch.
+            float segAlt   = length(closestSegPt) - R_EARTH;
+            float altFadeLo = smoothstep(beamCloudBaseAlt - kAltMarginM, beamCloudBaseAlt, segAlt);
+            float altFadeHi = 1.0 - smoothstep(beamCloudTopAlt, beamCloudTopAlt + kAltMarginM, segAlt);
+            float altFade   = altFadeLo * altFadeHi;
+
+            // Soft falloff at the glow radius's own tail (smoothstep instead of a hard `continue`
+            // boundary) — the exp() itself is already smooth, but this removes the last hard edge
+            // where the term switches off entirely.
+            float distFade = 1.0 - smoothstep(kBeamGlowRadiusM * 2.0, kBeamGlowRadiusM * 3.0, perpDist);
 
             float proximity = exp(-(perpDist * perpDist) / (2.0 * kBeamGlowRadiusM * kBeamGlowRadiusM));
             float ph = phaseCloud(dot(dir, segHat));
-            const float kBeamScale = 3e-8;
-            B_total += vec3(kBeamScale * intensity * proximity * ph * beamMediumFactor);
+            // Halved from 3e-8 (C12 follow-up #6) — the wider glow radius above already spreads
+            // the same energy over ~5x the area, so this also needed to come down to avoid
+            // blowing out the tonemap (which is what turned a smoothly-decaying glow into a
+            // sharp-edged "pure white here, dark there" look in the first place).
+            const float kBeamScale = 1.5e-8;
+            B_total += vec3(kBeamScale * intensity * proximity * ph * beamMediumFactor * altFade * distFade);
         }
     }
 

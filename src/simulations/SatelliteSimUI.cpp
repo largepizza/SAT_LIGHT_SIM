@@ -1804,7 +1804,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // OOB stack write nobody had hit yet, found while adding C12's sliders, idx 38-40; see
     // feedback_cloud_slider_arrays memory). Must stay >= (highest idx in use) + 1, same as
     // hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[41][16];
+    static char cloudBufs[42][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -1946,7 +1946,8 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
         {"Cloud shadow range (m)", &cloudShadowRangeM, 10000.0f, 300000.0f, 5000.0f, "%.0f", 38},
         {"Beam gain", &beamGain, 0.0f, 10.0f, 0.1f, "%.2f", 39},
-        {"Beam footprint (m)", &beamFootprintRadM, 1000.0f, 200000.0f, 1000.0f, "%.0f", 40},
+        {"Beam footprint (m)", &beamFootprintRadM, 500.0f, 200000.0f, 500.0f, "%.0f", 40},
+        {"Beam max range (m)", &beamMaxRangeM, 50000.0f, 2000000.0f, 50000.0f, "%.0f", 41},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -2359,6 +2360,7 @@ void SatelliteSim::loadSettings()
         cloudShadowRangeM = c.value("cloud_shadow_range_m", cloudShadowRangeM);
         beamGain = c.value("beam_gain", beamGain);
         beamFootprintRadM = c.value("beam_footprint_rad_m", beamFootprintRadM);
+        beamMaxRangeM = c.value("beam_max_range_m", beamMaxRangeM);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -2458,7 +2460,8 @@ void SatelliteSim::saveSettings()
         {"aurora_shimmer_rate", auroraShimmerRate},
         {"cloud_shadow_range_m", cloudShadowRangeM},
         {"beam_gain", beamGain},
-        {"beam_footprint_rad_m", beamFootprintRadM}};
+        {"beam_footprint_rad_m", beamFootprintRadM},
+        {"beam_max_range_m", beamMaxRangeM}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)
