@@ -251,10 +251,15 @@ void SatelliteSim::updateGpuTimingStats(VulkanContext &ctx)
     if (!ctx.timestampsReady)
         return;
     const double *t = ctx.timestampMs;
+    // Slot order changed (C12 follow-up #22): sat_orbit.comp now dispatches BEFORE cloud_march.comp
+    // (was after), so its beam data is fresh THIS frame instead of one frame stale — see the
+    // dispatch-order comment in recordCompute(). Slot NUMBERS are unchanged (1-4), just reassigned
+    // to different GPU work; keep this order in sync with kPerfLabels[] in SatelliteSimUI.cpp and
+    // the JSON keys in savePerfSnapshot() if it ever changes again.
     float raw[7] = {
-        (float)(t[1] - t[0]), // cloud march compute
-        (float)(t[2] - t[1]), // cloud shadow map compute (C12)
-        (float)(t[3] - t[2]), // orbit compute
+        (float)(t[1] - t[0]), // orbit compute
+        (float)(t[2] - t[1]), // cloud march compute
+        (float)(t[3] - t[2]), // cloud shadow map compute (C12)
         (float)(t[4] - t[3]), // flare compute
         (float)(t[5] - t[4]), // sky/terrain/ocean bg + cloud composite fragment shader
         (float)(t[6] - t[5]), // satellite points + star draw
@@ -412,13 +417,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // peakMagnitude above.
     {
         const GpuReflectBeams *rb = static_cast<const GpuReflectBeams *>(reflectBeamsMapped);
-        int count = 0;
+        int count = std::min((int)rb->beamCount, kMaxActiveBeams);
         float nearest = -1.0f;
-        for (int s = 0; s < kBeamSlots; ++s)
+        for (int s = 0; s < count; ++s)
         {
-            if (rb->slotBright[s] == 0u)
-                continue;
-            ++count;
             float d = glm::length(rb->entries[s].targetENU);
             if (nearest < 0.0f || d < nearest)
                 nearest = d;
@@ -550,6 +552,118 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         memcpy(cloudParamsMapped, &cp, sizeof(cp));
     }
 
+    // ── Dispatch: sat_orbit.comp — orbital mechanics + attitude ───────────────────────────────
+    // Moved to run BEFORE cloud_march.comp (C12 follow-up #22) — it used to run after cloud_march/
+    // cloud_shadow, which meant cloud_march.comp's Reflect-Orbital beam sky glow always read
+    // ReflectBeamsBuf as written by the PREVIOUS frame's sat_orbit.comp (one frame stale). Harmless
+    // for observer-independent data, but satENU/targetENU are METERS offsets in the observer's ENU
+    // basis AT WRITE TIME — when the observer moves, a stale offset no longer matches this frame's
+    // fresh obsPos/basis when cloud_march.comp uses it, producing a visible lag proportional to how
+    // far the observer moved that frame (imperceptible at walking speed, clearly visible at "boost"
+    // movement). Running unconditionally here (even when activeSatCount==0, a legal 0-workgroup
+    // no-op dispatch) — before the `if (activeSatCount==0) return` check below — means
+    // cloud_march.comp always reads THIS frame's fresh beam data instead.
+    // Build enabled / highlight masks from constellation config (one bit per constellation).
+    uint32_t enabledMask = 0, highlightMask = 0;
+    for (uint32_t ci = 0; ci < (uint32_t)constellations.size() && ci < 32; ++ci)
+    {
+        if (constellations[ci].enabled)
+            enabledMask |= (1u << ci);
+        if (constellations[ci].highlight)
+            highlightMask |= (1u << ci);
+    }
+
+    SatOrbitPC orbitPc{};
+    orbitPc.enuX = eci2enuX;
+    orbitPc.enuY = eci2enuY;
+    orbitPc.enuZ = eci2enuZ;
+    orbitPc.sunDirECI = sunDirECI;
+    // Two-part subtraction: integer day difference (exact) + double seconds (precise).
+    // After auto-rebake, dDays < kOrbitRebakeDays so the float cast loses < 0.07 s.
+    int64_t dDays = simDayJ2000 - orbitEpochDay;
+    double dSec = simSecInDay - orbitEpochSec;
+    if (dSec < 0.0)
+    {
+        --dDays;
+        dSec += 86400.0;
+    } // borrow from day if frac is negative
+    orbitPc.deltaT = (float)((double)dDays * 86400.0 + dSec);
+    orbitPc.obsECI = obsECI;
+    orbitPc.satCount = activeSatCount;
+    orbitPc.highlightMask = highlightMask;
+    orbitPc.enabledMask = enabledMask;
+    orbitPc.simDt = simDt;
+    // Horizon cull threshold: open up to Earth limb for elevated observers.
+    // limbSin = -sqrt(1 - (R_EARTH/obsR)²); always clamped to at most -0.01.
+    {
+        float obsR = glm::length(obsECI);
+        float r = kEarthRadius / obsR;
+        float limbSin = -sqrtf(std::max(0.0f, 1.0f - r * r));
+        orbitPc.elevCutoff = std::min(-0.01f, limbSin);
+    }
+    orbitPc.beamGain = beamGain;
+    orbitPc.beamFootprintRadM = beamFootprintRadM;
+    orbitPc.mirrorSlewDegPerSec = mirrorSlewDegPerSec; // C12 follow-up #20
+
+    // Zero reflectBeamsBuf so this frame's orbit dispatch starts with an empty sector
+    // selection (same rationale as the glowBuf fill below — atomicMax needs a known-zero start).
+    vkCmdFillBuffer(cmd, reflectBeamsBuf, 0, sizeof(GpuReflectBeams), 0);
+    {
+        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        bmb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.buffer = reflectBeamsBuf;
+        bmb.offset = 0;
+        bmb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 1, &bmb, 0, nullptr);
+    }
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, orbitPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            orbitPipeLayout, 0, 1, &orbitDescSet, 0, nullptr);
+    vkCmdPushConstants(cmd, orbitPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, sizeof(orbitPc), &orbitPc);
+    vkCmdDispatch(cmd, (activeSatCount + 63) / 64, 1, 1);
+
+    // Barrier: sat_orbit.comp writes satInputBuf → sat_flare.comp reads it.
+    {
+        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.buffer = satInputBuf;
+        bmb.offset = 0;
+        bmb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 1, &bmb, 0, nullptr);
+    }
+    // Barrier: sat_orbit.comp writes reflectBeamsBuf → read THIS frame by cloud_march.comp
+    // (compute, right below) and sat_sky.frag (fragment, later in the render pass) — include both
+    // stages now so downstream consumers don't need to revisit this barrier.
+    {
+        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.buffer = reflectBeamsBuf;
+        bmb.offset = 0;
+        bmb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 1, &bmb, 0, nullptr);
+    }
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
+
     // ── Dispatch: cloud_march.comp — half-resolution cloud/cirrus march (C15-perf) ──────────
     // Runs at half ctx.swapExtent, writing cloudMarchTargetA/B; sat_sky.frag samples them
     // (skyDescSet bindings 10/11) in place of the old inline cirrusMarch()/cloudMarch() calls.
@@ -565,6 +679,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cpc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
         cpc.debugDisableMask = debugDisableMask; // aurora knockout toggle now lives here too
         cpc.beamMaxRangeM = beamMaxRangeM; // C12 follow-up #6
+        cpc.showBeamDebugRays = showBeamDebugRays ? 1u : 0u; // C12 follow-up #12
+        cpc.beamSkyGlowGain = beamSkyGlowGain; // C12 follow-up #17
 
         uint32_t halfW = (ctx.swapExtent.width + 1) / 2;
         uint32_t halfH = (ctx.swapExtent.height + 1) / 2;
@@ -602,7 +718,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                          VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
-    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
 
     // ── Dispatch: cloud_shadow.comp — shared cloud-transmittance primitive (C12) ────────────
     // Fixed 128×128 grid, independent of screen resolution/activeSatCount — always runs, even
@@ -656,118 +772,20 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                          VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
-    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 3);
 
     if (activeSatCount == 0)
     {
-        // Orbit/flare dispatches below are skipped this frame — write the same
-        // timestamp into their slots so updateGpuTimingStats() sees zero-duration
-        // buckets next frame instead of stale or unavailable query data.
-        ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 3);
+        // sat_flare.comp below is skipped this frame — write the same timestamp into its slot so
+        // updateGpuTimingStats() sees a zero-duration bucket next frame instead of stale or
+        // unavailable query data. sat_orbit.comp/cloud_march.comp/cloud_shadow.comp above already
+        // ran unconditionally this frame (sat_orbit.comp with 0 satellite workgroups when
+        // applicable — a legal no-op dispatch) and got their own real timestamps, so only the
+        // flare slot needs a placeholder here. See C12 follow-up #22 for why sat_orbit.comp now
+        // runs before this check at all (it used to run after it, alongside flare).
         ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 4);
         return;
     }
-
-    // Build enabled / highlight masks from constellation config (one bit per constellation).
-    uint32_t enabledMask = 0, highlightMask = 0;
-    for (uint32_t ci = 0; ci < (uint32_t)constellations.size() && ci < 32; ++ci)
-    {
-        if (constellations[ci].enabled)
-            enabledMask |= (1u << ci);
-        if (constellations[ci].highlight)
-            highlightMask |= (1u << ci);
-    }
-
-    // ── Dispatch 1: sat_orbit.comp — orbital mechanics + attitude ─────────────
-    SatOrbitPC orbitPc{};
-    orbitPc.enuX = eci2enuX;
-    orbitPc.enuY = eci2enuY;
-    orbitPc.enuZ = eci2enuZ;
-    orbitPc.sunDirECI = sunDirECI;
-    // Two-part subtraction: integer day difference (exact) + double seconds (precise).
-    // After auto-rebake, dDays < kOrbitRebakeDays so the float cast loses < 0.07 s.
-    int64_t dDays = simDayJ2000 - orbitEpochDay;
-    double dSec = simSecInDay - orbitEpochSec;
-    if (dSec < 0.0)
-    {
-        --dDays;
-        dSec += 86400.0;
-    } // borrow from day if frac is negative
-    orbitPc.deltaT = (float)((double)dDays * 86400.0 + dSec);
-    orbitPc.obsECI = obsECI;
-    orbitPc.satCount = activeSatCount;
-    orbitPc.highlightMask = highlightMask;
-    orbitPc.enabledMask = enabledMask;
-    orbitPc.simDt = simDt;
-    // Horizon cull threshold: open up to Earth limb for elevated observers.
-    // limbSin = -sqrt(1 - (R_EARTH/obsR)²); always clamped to at most -0.01.
-    {
-        float obsR = glm::length(obsECI);
-        float r = kEarthRadius / obsR;
-        float limbSin = -sqrtf(std::max(0.0f, 1.0f - r * r));
-        orbitPc.elevCutoff = std::min(-0.01f, limbSin);
-    }
-    orbitPc.beamGain = beamGain;
-    orbitPc.beamFootprintRadM = beamFootprintRadM;
-
-    // Zero reflectBeamsBuf so this frame's orbit dispatch starts with an empty sector
-    // selection (same rationale as the glowBuf fill below — atomicMax needs a known-zero start).
-    vkCmdFillBuffer(cmd, reflectBeamsBuf, 0, sizeof(GpuReflectBeams), 0);
-    {
-        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        bmb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bmb.buffer = reflectBeamsBuf;
-        bmb.offset = 0;
-        bmb.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(cmd,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             0, 0, nullptr, 1, &bmb, 0, nullptr);
-    }
-
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, orbitPipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            orbitPipeLayout, 0, 1, &orbitDescSet, 0, nullptr);
-    vkCmdPushConstants(cmd, orbitPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
-                       0, sizeof(orbitPc), &orbitPc);
-    vkCmdDispatch(cmd, (activeSatCount + 63) / 64, 1, 1);
-
-    // Barrier: sat_orbit.comp writes satInputBuf → sat_flare.comp reads it.
-    {
-        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bmb.buffer = satInputBuf;
-        bmb.offset = 0;
-        bmb.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(cmd,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             0, 0, nullptr, 1, &bmb, 0, nullptr);
-    }
-    // Barrier: sat_orbit.comp writes reflectBeamsBuf → read later this frame by sat_sky.frag
-    // (fragment) and next frame by cloud_march.comp (compute); include both stages now so
-    // step 4/5's consumers don't need to revisit this barrier.
-    {
-        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bmb.buffer = reflectBeamsBuf;
-        bmb.offset = 0;
-        bmb.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(cmd,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             0, 0, nullptr, 1, &bmb, 0, nullptr);
-    }
-    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 3);
 
     // Zero all glow bins so this frame's flare shader starts with an empty histogram.
     // floatBitsToUint(0.0) == 0u, so filling with 0 correctly marks every bin empty.
@@ -787,7 +805,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              0, 0, nullptr, 1, &bmb, 0, nullptr);
     }
 
-    // ── Dispatch 2: sat_flare.comp — lighting + visibility ────────────────────
+    // ── Dispatch: sat_flare.comp — lighting + visibility ──────────────────────
     SatFlarePC pc{};
     pc.enuX = eci2enuX;
     pc.enuY = eci2enuY;
@@ -1002,6 +1020,7 @@ SatDrawPC SatelliteSim::buildSatDrawPC(VulkanContext &ctx, VkExtent2D targetExte
     pc.cloudShadowResidualM = cloudShadowResidualM; // same frame's texel-snapping residual as the
                                                      // cloud_shadow.comp dispatch computed above
     pc.beamMaxRangeM = beamMaxRangeM; // C12 follow-up #6
+    pc.beamSkyGlowGain = beamSkyGlowGain; // C12 follow-up #18 — shared with cloud_march.comp's copy
     return pc;
 }
 
@@ -1735,7 +1754,7 @@ void SatelliteSim::createComputePipeline(VulkanContext &ctx)
 //   binding 1  satInputBuf       (write     SSBO — same buffer that sat_flare.comp reads)
 //   binding 2  mirrorNormalsBuf  (readwrite SSBO)
 //   binding 3  reflectorTargetsBuf (readonly SSBO)
-//   binding 4  reflectBeamsBuf   (readwrite SSBO — target-identity+atomicMax beam selection, C12)
+//   binding 4  reflectBeamsBuf   (readwrite SSBO — capped atomic-append beam list, C12)
 void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
 {
     VkDescriptorSetLayoutBinding bindings[5] = {};
@@ -4781,6 +4800,11 @@ void SatelliteSim::buildOrbits()
     // kNumReflectorTargets random lat/lon points stored as unit ECEF vectors.
     // updatePositions() rotates them to ECI each frame and filters for the
     // night-side terminator zone so mirrors only aim at dark-but-reachable spots.
+    // Default every slot to sea level first (covers indices 0 and kNumReflectorTargets-1, which
+    // the loop below doesn't touch) before the loop overrides 1..kNumReflectorTargets-2 with real
+    // per-target terrain elevation.
+    for (int ti = 0; ti < kNumReflectorTargets; ++ti)
+        reflectorTargetsRadiusM[ti] = kEarthRadius;
     for (int ti = 1; ti < kNumReflectorTargets - 1; ++ti)
     {
         // Uniform sampling on sphere: latitude from arcsin of uniform[-1,1],
@@ -4789,6 +4813,50 @@ void SatelliteSim::buildOrbits()
         float cosLat = sqrtf(std::max(0.0f, 1.0f - sinLat * sinLat));
         float lon = (float)rand() / RAND_MAX * glm::two_pi<float>();
         reflectorTargetsECEF[ti] = glm::vec3(cosLat * cosf(lon), cosLat * sinf(lon), sinLat);
+
+        // Real terrain elevation at this target's lat/lon (C12 follow-up #18) — without this,
+        // every target was placed on the sea-level sphere regardless of actual ground height,
+        // putting the "ground" endpoint of any beam-related ray for an elevated target (mountains,
+        // plateaus) underground relative to the terrain actually rendered there. Same CPU-side
+        // earthElevCpu lookup/formula as the observer's own terrain height above.
+        if (!earthElevCpu.empty())
+        {
+            // Derive lon/lat back from the ECEF vector just built (atan2 gives [-π, π] regardless
+            // of how `lon` above was originally sampled) — same convention the observer's own
+            // lookup and updatePositions() both use, avoiding any wrap-convention mismatch.
+            float lonRad = atan2f(reflectorTargetsECEF[ti].y, reflectorTargetsECEF[ti].x);
+            float latRad = asinf(sinLat);
+            float u = (lonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
+            float v = (0.5f * glm::pi<float>() - latRad) / glm::pi<float>();
+            int px = std::clamp((int)(u * (float)earthElevCpuW), 0, earthElevCpuW - 1);
+            int py = std::clamp((int)(v * (float)earthElevCpuH), 0, earthElevCpuH - 1);
+            // MAX over a small neighborhood, not a single point sample (C12 follow-up #23) — user
+            // reported beams still converging visibly below the rendered terrain surface. earthElevCpu
+            // is itself a 10x point-sampled downsample of the real 21600x10800 elevation texture
+            // (see createGlowResources()), so a single lookup can land on a texel a full ~9km away
+            // (10x the ~0.9km-per-texel source resolution) from the target's TRUE lat/lon, missing a
+            // nearby peak entirely and underestimating height — the direct cause of "converge below
+            // the surface." Taking the max of the surrounding 3x3 texels is a cheap, conservative
+            // fix: it can only raise the estimate toward a real nearby peak, never lower it, so at
+            // worst a target ends up slightly ABOVE ground (reads as "beam floats a little," far
+            // less objectionable than "beam sinks into the hillside"). Combined with a small fixed
+            // margin below for the same reason.
+            const float kSeaLevel = 15.0f / 255.0f;
+            uint8_t maxPix = 0;
+            for (int dy = -1; dy <= 1; ++dy)
+            {
+                int py2 = std::clamp(py + dy, 0, earthElevCpuH - 1);
+                for (int dx = -1; dx <= 1; ++dx)
+                {
+                    int px2 = ((px + dx) % earthElevCpuW + earthElevCpuW) % earthElevCpuW; // wrap longitude
+                    maxPix = std::max(maxPix, earthElevCpu[py2 * earthElevCpuW + px2]);
+                }
+            }
+            float pixVal = maxPix / 255.0f;
+            float terrainH = (pixVal <= kSeaLevel) ? 0.0f : std::max(0.0f, (pixVal - kSeaLevel) * 8848.0f);
+            const float kElevSafetyMarginM = 75.0f; // small fixed bias toward "above ground, not below"
+            reflectorTargetsRadiusM[ti] = kEarthRadius + terrainH + kElevSafetyMarginM;
+        }
     }
     // Last slot: fixed target at the observer spawn point (67°S, 67°W).
     // Guarantees at least one mirror always aims here when the site is on the night side.
@@ -4985,7 +5053,10 @@ void SatelliteSim::updatePositions(double t, float dt)
         for (int ti = 0; ti < kNumReflectorTargets; ++ti)
         {
             const glm::vec3 &ef = reflectorTargetsECEF[ti];
-            glm::vec3 eci = kEarthRadius * glm::vec3(
+            // reflectorTargetsRadiusM (C12 follow-up #18), not the bare kEarthRadius — accounts
+            // for real terrain elevation at this target so beams aim at the actual ground surface
+            // instead of the sea-level sphere (which sat underneath any elevated terrain).
+            glm::vec3 eci = reflectorTargetsRadiusM[ti] * glm::vec3(
                                                cosG * ef.x - sinG * ef.y,
                                                sinG * ef.x + cosG * ef.y,
                                                ef.z);

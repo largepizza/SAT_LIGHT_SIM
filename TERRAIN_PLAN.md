@@ -844,6 +844,638 @@ started, awaiting a decision on when to pick up C11 properly.
 splicing in an earlier follow-up's content (already present in the user's last commit, "Kind of
 beam"). Restored; no code was affected, only this log's own structure.
 
+**Follow-up #7 (2026-07-21) — found the REAL cause of the "dark spot directly over the site" and
+most of the remaining "odd rotation" reports: follow-up #6's near-parallel fallback only patched
+half of the unstable computation.** `sSeg` (which point along the beam segment) got a safe
+fallback when `denom` was small, but `tRay` (where along the VIEW RAY the closest approach sits)
+was still computed via the same coupled formula, `tRay = sSeg*bDot - dDot`. `dDot = dot(dir, obsPos
+- satWorldPos)` scales with the FULL satellite-to-ground distance — hundreds of km — so for an
+observer standing at/near a site and looking UP at the sky (dir nearly anti-parallel to segHat,
+exactly the most natural way to look at "the beam overhead"), `tRay` came out close to the full
+segment length, projecting the ray-side comparison point out near the SATELLITE's own altitude
+instead of the few-km-thick shell actually overhead. `perpDist` then measured as enormous and the
+term got culled — a dark hole in exactly the spot that should be brightest.
+
+**Fix: stopped solving the coupled two-line system for `tRay` at all.** Once `sSeg` picks a
+representative point on the segment (`closestSegPt`), finding that FIXED point's distance to the
+ray is a plain projection — `tRay = dot(closestSegPt - obsPos, dir)` — a single dot product with
+no division, so it cannot blow up regardless of how parallel `dir` and `segHat` get. This is a
+strictly more robust formulation than the original "true joint closest-approach-between-two-lines"
+solve for both unknowns simultaneously; it gives up a small amount of optimality in normal
+(non-parallel) viewing angles in exchange for being well-defined in every case, which is the right
+trade for a per-pixel visual term where "occasionally not the mathematically exact closest point"
+is invisible but "occasionally a wild division blowup" is a black hole in the sky.
+
+**Not yet re-confirmed in-app.** Still pending, raised in the same report and not yet addressed in
+code: (a) whether any residual "odd rotation" persists once this lands (some may simply be
+`phaseCloud`'s real forward/backward scattering anisotropy, which SHOULD look different from
+different angles — worth distinguishing from an actual bug once seen), and (b) the "one beam per
+site, even when many satellites service it" limitation — see the "site capacity" discussion below,
+answered as a design question, not yet implemented.
+
+**How beam selection actually works, for reference (user asked directly):** a satellite's target
+choice (`bestIdx`) IS its orientation — `sat_orbit.comp` scans all 201 possible sites and picks
+whichever maximizes `dot(satZenith, targetDir)` among currently-valid (night-side) ones, then
+slews its mirror normal toward that exact target via the sun/target half-vector. `ReflectBeamsBuf`
+is keyed by that same `bestIdx` (site identity, follow-up #5), one slot per SITE, not one per
+satellite. When multiple satellites simultaneously choose the same site (a well-serviced site),
+`atomicMax` on intensity keeps only the single brightest one — every other satellite servicing that
+same site loses the race and is silently dropped, which is exactly the reported "only one beam for
+what should be a whole sky's worth of satellites." This is a structural consequence of the
+one-slot-per-site design (chosen specifically to make cross-site collisions impossible, follow-up
+#5), not a separate bug — supporting multiple simultaneous beams per site needs a deliberate
+capacity decision (how many slots per site) with real buffer-size/loop-cost tradeoffs, raised with
+the user rather than picked unilaterally.
+
+**Follow-up #8 (2026-07-21) — multi-beam-per-site capacity implemented, user chose 4 per site.**
+`kBeamSlotsPerSite = 4` (new constant, `SatelliteSim.h`/`sat_orbit.comp`/`cloud_march.comp`/
+`sat_sky.frag`, all four must stay in sync). `ReflectBeamsBuf` grew from 201 slots to 201×4=804
+(`kBeamSlots` now derived as `201 * kBeamSlotsPerSite` rather than hardcoded); buffer size
+~6.4KB→~25.7KB, consumer loops 201→804 early-exit iterations/pixel — both trivial on a GPU.
+
+**Sub-slot assignment:** `sat_orbit.comp` hashes each satellite into one of the 4 sub-slots via its
+own `gl_GlobalInvocationID.x` (`i % BEAM_SLOTS_PER_SITE`) — stable frame to frame per satellite (a
+given satellite's invocation index doesn't change), so the hash itself introduces no flicker.
+`slot = bestIdx * BEAM_SLOTS_PER_SITE + (i % BEAM_SLOTS_PER_SITE)`. `atomicMax` still applies
+within each sub-slot for the (now much rarer) case of a 5th+ satellite landing on the same site
+AND the same sub-slot — previously every 2nd+ satellite on a site collided, now only roughly every
+5th does, assuming reasonably uniform hash distribution across servicing satellites.
+
+**Not yet re-confirmed in-app.** Consumer shaders needed no logic changes beyond the constant —
+they already loop over every slot in `[0, BEAM_SLOTS)` generically, unaware of the site/sub-slot
+grouping, so growing `BEAM_SLOTS` alone was sufficient there.
+
+**Follow-up #9 (2026-07-21) — 4-per-site rejected by the user; replaced with an uncapped
+atomic-append design.** User re-tested and reported the dark spot again, PLUS explicitly rejected
+the whole site-slot-capacity direction: "4 satellites per site is an awful limitation for a site
+potentially serviced by dozens of satellites... the beam will always be glitchy as it chooses
+which satellite it wants to originate from." Correct call — ANY fixed small-N-per-site scheme has
+this problem by construction: whenever more satellites are eligible than slots, WHICH ones
+currently hold a slot keeps changing as brightness/geometry shifts, and that churn is visible
+regardless of whether N is 1, 4, or 8.
+
+**New design: no site keying, no deduplication, no arbitration at all.** Every satellite that
+reaches the `TargetedReflector` branch with a real target claims its own slot via a single global
+`atomicAdd` counter (`beamCount`) and writes unconditionally — there is nothing to compete over, so
+nothing can glitch between representations. `kMaxActiveBeams = 256` is pure headroom, not a
+"keep-the-best-N" cap: a satellite must already clear the OBSERVER's own orbital horizon to reach
+this code at all (~2,000+ km radius, enforced earlier in `sat_orbit.comp` for an unrelated reason),
+which bounds how many can be simultaneously eligible. Rough estimate: horizon-visible fraction of
+Earth's surface from a ~500 km-altitude LEO horizon ≈ (π·2000²)/(4π·6371²) ≈ 2.5%; at 1,000
+satellites that's ~25 simultaneously eligible, ~125 even at the real constellation's planned 5,000
+— both comfortably under 256. `GpuReflectBeams` restructured: `uint32_t beamCount` + 12 bytes
+padding (std430 alignment for the following array-of-16-byte-aligned-struct) + `entries[256]`
+(8,208 bytes total, still trivial). Consumer shaders now loop `min(beamCount, kMaxActiveBeams)`
+instead of a fixed count — cheaper in the common case (typically far fewer active beams than 256)
+instead of always paying for the old fixed total. `sat_orbit.comp`'s writer collapsed to 4 lines
+(`atomicAdd` + bounds check + unconditional write) — simpler than every previous scheme.
+
+**Follow-up #10 (2026-07-21) — found the REAL root cause of the dark spot, which survived TWO
+rounds of patching: catastrophic floating-point cancellation, not a logic bug.** The
+closest-approach formula's `eDot`/`dDot` terms are dot products built from
+`w0 = obsPos - satWorldPos` — and `satWorldPos` sits up to ~2,000 km from `obsPos` (satellite
+altitude + slant range). Extracting a small (sub-km) answer by subtracting two independently-
+computed LARGE-magnitude float32 quantities (`eDot - bDot*dDot`) is exactly the class of bug this
+codebase's `raySphere()` was rewritten to avoid at R_EARTH scale (`TERRAIN_PLAN.md` session 22) —
+the earlier "near-parallel fallback" and "stable tRay projection" fixes each patched one symptom of
+this same underlying cancellation without addressing the cancellation itself, which is why the
+dark spot came back after both.
+
+**Fix: stop solving for a ray-dependent "optimal" point on the segment at all.** The shell-crossing
+sub-range is only a few km long — thinner than `kBeamGlowRadiusM`'s own spatial support — so ANY
+point within it is close enough to any other for this term's purposes. Now unconditionally uses
+the sub-range's midpoint (`satWorldPos + 0.5*(sLow+sHigh)*segHat`) as the reference point, with
+`tRay` still found via the stable direct projection from follow-up #7. This removes every
+large-minus-large subtraction from the hot path entirely — not a better patch, a different and
+much simpler formulation that was never going to be needed after this if the fixed-midpoint
+approach had been the starting design instead of the "true closest approach" one. Not yet
+re-confirmed in-app.
+
+**Cloud shadow "pixelated again" — raised same message, not yet diagnosed.** No code in
+`cloud_shadow.comp` or the texel-snapping path (follow-up #5's fix, user-confirmed working) was
+touched in follow-ups #6-#10 — all of that work was scoped to the beam terms. Leading hypothesis:
+the "Cloud shadow range (m)" slider may have been adjusted upward during the same testing session
+(a larger range at the grid's fixed 128×128 resolution directly coarsens meters-per-texel — an
+inherent trade-off of the fixed-resolution design, not a regression) — raised with the user rather
+than assumed, since nothing in this area's code changed.
+
+**Follow-up #11 (2026-07-21) — the atomic-append redesign had its own bias, found from a very
+specific report: satellites sweeping left-to-right had their flares "fade in from the left and
+stack up on the right," reversing when time reversed, and lagging when moving quickly into a new
+region.** Root cause: `kMaxActiveBeams` (256) was too tight for the real geometry. Reflect Orbital
+is a "Disk" constellation — a SINGLE orbital plane with 10 concentric altitude rings, not spread
+across many planes/RAANs — so the whole constellation sweeps together along essentially one great
+circle. From a fixed observer, the visible arc of that one ring is a large, non-scattered fraction
+of the total constellation (re-estimated ~900 simultaneously eligible at the real 5,000-satellite
+scale — the earlier uniform-sphere estimate in follow-up #9, ~125, assumed the WRONG distribution
+shape entirely). When eligible count exceeds the cap, only the first N to win the `atomicAdd` race
+get written — and race order correlates with GPU dispatch order, which correlates with satellite
+ARRAY index, which (for satellites all in one swept plane) correlates with WHERE ALONG THE RING
+each one currently sits. That is not a random 5% miss; it's a systematic, position-correlated
+exclusion — exactly "one side of the sky always loses," and it flips when the sweep direction
+flips. **Fix:** raised `kMaxActiveBeams` 256→2048, comfortable headroom over the re-estimated
+worst case, making overflow (and therefore this whole class of bias) effectively never happen
+rather than trying to make an overflow's bias smaller or fairer. `GpuReflectBeams` grew
+accordingly but is still trivially small for a GPU buffer.
+
+**Follow-up #12 (2026-07-21) — two more issues from the same report, plus a requested debug tool.**
+
+- **Cloud lighting direction was backwards.** User: looking FROM a site TOWARD the flaring
+  satellite lit clouds up fully; looking DOWN at a site from within the beam left clouds
+  edge-lit/backlit only — the opposite of both views' expected brightness. Root cause: the
+  volumetric term's phase function was called as `phaseCloud(dot(dir, segHat))`, where `segHat`
+  points satellite→target (the direction light PROPAGATES). Every other `phaseCloud()` call site
+  in this file (the sun's own scattering term) uses a vector pointing TOWARD the light source
+  (`sunDir`), so `cosA=+1` means "looking toward the source" and lands in the strong forward-
+  scattering lobe — matching the real "bright aureole around the sun seen through haze"
+  phenomenon. Passing `segHat` directly used the opposite sign convention, silently swapping which
+  viewing direction got the strong vs. weak lobe. Fixed: `phaseCloud(dot(dir, -segHat))`.
+- **Is the ground-illumination flicker linked to the existing lens-flare selection flicker?**
+  User asked directly. Answer: NOT the same code — lens flare (`sat_flare.comp`'s pre-existing
+  `flareEntries`/`sectorBright`, 8 azimuth sectors) is a completely separate buffer/shader from
+  `ReflectBeamsBuf`, untouched by any C12 work. They ARE the same CLASS of bug (arbitration among
+  more candidates than available slots causes visible switching when relative rankings shift) —
+  follow-up #11 fixed that class of bug for beams specifically by making overflow not happen; the
+  lens-flare system's own 8-sector cap is a separate, longer-standing case of the same pattern,
+  out of scope for C12, not touched here.
+- **Debug pointing-ray visualization, as requested.** New `GpuReflectBeam.reflectDirENU` field —
+  the mirror's ACTUAL current reflected-sunlight direction (`reflect(-sunDirECI, surfN0)`), which
+  can differ from the straight satellite→target line while `MIRROR_ROT_RATE`-limited slewing is
+  still catching up (useful precisely for seeing that lag). New opt-in-only toggle
+  (`showBeamDebugRays`, Settings → Display "Show beam pointing rays" checkbox) draws each active
+  beam's actual pointing direction as a long (1000 km), fat (15 km radius — deliberately much
+  bigger than the real glow's 7 km), green line, so convergence at a busy site is directly
+  visible. Deliberately NOT part of `debugDisableMask` — that mask means "disable this normally-on
+  thing" (0 = normal); this is the opposite shape ("enable this normally-off extra"), so it's its
+  own field on `CloudMarchPC` rather than an overloaded bit. Rendered via 32 samples along the
+  ray's length (not the single-fixed-point trick the real glow uses — that only needs to cover a
+  narrow few-km shell band, but a multi-hundred-km debug ray needs to look continuous from many
+  viewing angles), each sample still using the safe fixed-point-projection technique from
+  follow-up #10 (no closest-approach solve built from large-magnitude `obsPos`/`satWorldPos`
+  differences). `GpuReflectBeam` grew 32→48 bytes for the new field.
+
+**Not yet re-confirmed in-app** for any of the above (cap increase, phase sign fix, or the new
+debug tool). Cloud shadow pixelation question from follow-up #10 also still open.
+
+**Follow-up #13 (2026-07-21) — phase-sign fix alone didn't resolve the lighting-direction report;
+debug rays needed thinning + ground-tracing.**
+
+- **Cloud lighting still reported reversed** ("as if illuminated by the site itself instead of
+  the satellites from above") even after follow-up #12's phase-sign fix. Reconsidered and now
+  believe `beamMediumFactor` (the `4*v*(1-v)` parabola on cloud transmittance) was the more likely
+  dominant cause all along, not the phase function's sign. It uses the CURRENT VIEW RAY's own
+  aggregate transmittance (`A_total`) as a stand-in for "is there scattering medium at the beam's
+  actual 3D location" — a proxy that can be very wrong, since the viewer's own line of sight and
+  the beam's position are generally different rays through different parts of the sky. The old
+  shape went to exactly ZERO at both fully-clear and fully-opaque, so a view ray happening to look
+  through clear air killed the glow regardless of the beam's real surroundings, and a view ray
+  through dense cloud did the same — plausibly explaining "lit entirely" vs. "backlit" as an
+  artifact of which UNRELATED transmittance the two viewing positions' own rays happened to
+  sample, not any true directional lighting relationship. Fixed by giving it a floor
+  (`mix(0.35, 1.0, ...)` instead of the raw parabola), so the glow no longer disappears based on
+  this proxy's accuracy. Also damped the phase function's forward/backward swing toward uniform
+  (`mix(1.0, phaseCloud(...), 0.35)`) — the sign is still believed correct, but a ~3x swing was
+  likely amplifying any OTHER inconsistency into a stark, confusing "reversal" on top of it.
+  **Genuinely uncertain this fully resolves it** — flagged as such rather than asserted, given the
+  first attempt (sign-only) didn't land; a real fix may need sampling actual `cloudDensity()` at
+  the beam's own location instead of reusing the view ray's transmittance, which is a bigger
+  change not attempted yet.
+- **Debug rays too thick/bright to distinguish, and stopped mid-atmosphere instead of reaching the
+  ground.** Both straightforward: radius 15,000m→2,500m and scale 0.12→0.03 (thinner, dimmer, so
+  convergence at a busy site reads as many distinct lines instead of one blown-out mass); length
+  changed from a fixed 1,000 km to the ACTUAL ray-sphere intersection with Earth (`raySphere`
+  against `R_EARTH`, same helper the rest of this file already uses), so each ray now traces to
+  where it truly reaches the ground regardless of the satellite's altitude or exact aim, with a
+  3,000 km cap only as a fallback for a ray pointing away from Earth entirely.
+
+**Not yet re-confirmed in-app.**
+
+**Follow-up #14 (2026-07-22) — replaced the proxy-based glow with a real per-sample march,
+following the user's own debug-ray-derived design.**
+
+User confirmed the re-tuned debug rays now look correct ("well sized glowing green beams going
+straight from the satellites to the ground"), but flagged a new artifact: visible discrete/dotted
+stepping near the ground, from the debug ray's fixed 40-sample count spread over a now-variable
+(actual ground-intersection) length. Rather than just fixing the dotting, the user proposed a
+bigger pivot: base the REAL cloud/terrain illumination on the same marching technique the debug
+rays use, instead of continuing to patch the proxy-based approach — "optimize the steps close to
+the ground and not incorporate anything outside of the atmosphere... if we did this march in the
+cloud shader, we could also incorporate the lighting and occlusion better."
+
+Implemented for the cloud volumetric term (terrain ground-spot term intentionally left on its
+existing `cloudShadowTex`-based approximation for now — see scope note below):
+
+- New `beamCloudDensityAt(p, enuX, enuY, enuZ, hNorm)` function (right before `main()`) ports the
+  canonical per-step column evaluation from the main march (`pECEF`/lon-lat/`pUV`, `localCov` via
+  `earthCloudsTex`, `colH`/`baseH`/`hFade` shaping, `cloudDensity()`) so a beam's brightness comes
+  from what's ACTUALLY at its own 3D location — directly replacing the old `beamMediumFactor`
+  proxy (the current view ray's unrelated transmittance) that follow-up #13 suspected but wasn't
+  certain about.
+- The main beam block now marches along `reflectDirENU` (the ACTUAL current reflection direction —
+  the same vector the debug rays use and the user confirmed looks right) instead of the
+  `satWorldPos→targetWorldPos` idealized segment. Physically more correct: real light follows where
+  the mirror actually currently points, not its intended aim point during slew.
+- Two-phase per beam to stay affordable at up to `BEAM_MAX_ACTIVE` (2048) candidates: a cheap
+  single-point proximity pre-check (same fixed-midpoint trick from follow-up #10, still avoiding
+  the `obsPos`/`satWorldPos` cancellation bug) rejects beams nowhere near this pixel's view ray;
+  only survivors pay for the real 20-sample density march.
+- The march covers only the cloud shell's own altitude band (a few km), found by linearly
+  interpolating between the atmosphere-entry point (exactly `R_ATMOS`, altitude 100,000m by
+  construction) and the ground-hit point (exactly `R_EARTH`, altitude 0m by construction) — cheap
+  (two `raySphere` calls, no density evaluation) and exact for a near-vertical beam. This is both
+  the accuracy fix and a perf win: the vast majority of a satellite's real distance is vacuum with
+  nothing to evaluate, so a fixed step budget spent only on the shell crossing lands where cloud
+  can actually be, instead of being wasted on hundreds of km of empty atmosphere in between.
+  Front-to-back transmittance (`T`) attenuates deeper samples, so dense cloud near the shell top
+  correctly self-shadows what's beneath it along the beam — "handle volumetrics... if we play it
+  right," per the user's own framing.
+- `altFade`/`beamMediumFactor` removed outright (no longer needed — real per-sample density
+  naturally goes to zero outside actual cloud, and `cloudDensity`'s own `hFade` already provides
+  soft column edges). `kBeamScale` reset to a first-pass guess (`4e-8`) since the brightness
+  formula changed shape entirely (accumulated real in-scatter vs. a single fixed-proximity term) —
+  **expect this needs retuning in-app**, same as every other beam constant so far.
+- **Scope decision:** only the cloud volumetric term was rebuilt this round. The ground-spot term
+  in `sat_sky.frag` still uses the existing `cloudShadowTex` grid lookup for its cloud attenuation
+  — plumbing this new beam march's result across shaders (`cloud_march.comp` doesn't currently
+  have write access to `ReflectBeamsBuf`) is a bigger follow-up if wanted, not attempted here.
+
+Builds clean (`cmake --build build`, `cloud_march.comp` compiles via glslc). **Not yet seen
+in-app** — brightness scale, march step count, and whether this actually resolves the
+lighting-direction complaint all need the user's own look.
+
+**Follow-up #15 (2026-07-22) — per-target dedup, fixing a performance cliff and an unbounded
+brightness blowup near busy sites, both introduced by follow-up #14.**
+
+User tested follow-up #14 and reported: performance tanks near target locations, and large white
+balls appear in the cloud layer that glow intensely even at very low `beamGain`. Root cause of
+both: follow-up #14's real march runs **once per satellite** (`beams[]`, up to `BEAM_MAX_ACTIVE` =
+2048), but many satellites can share the same `bestIdx` ground target at once — Reflect Orbital's
+"Disk" deployment (see follow-up #11's finding on constellation shape) means a popular site can
+legitimately be serviced by dozens of satellites simultaneously. Two consequences of marching each
+independently:
+- **Performance**: near a busy target, many beams' cheap proximity pre-check pass *at once* for
+  the same screen region (since they all cluster near the same ground point), so the expensive
+  20-step real-density march — several texture fetches per step — runs once per contributing
+  satellite instead of once per site. This is also why it was so much cheaper than the simple
+  green debug rays: those samples are pure ALU (one `exp()` per sample, no texture reads at all),
+  so their cost doesn't scale the same way with per-sample work; the real march's per-sample cost
+  is dominated by `cloudDensity()`'s texture fetches, which the debug ray never pays.
+- **Unbounded brightness**: `B_total +=` per beam sums every contributing satellite's glow
+  independently at (nearly) the same screen location. Lowering `beamGain` scales each contributor
+  down equally, but the total still scales with satellite *count* — for a large enough N, even a
+  very low per-beam contribution multiplied by dozens of satellites reproduces the same blowup,
+  which is exactly why turning `beamGain` down didn't fix the visual symptom.
+
+**Fix: deduplicate by ground target, not by satellite**, before the expensive march ever runs.
+Since `bestIdx` is already a bounded 0-200 index (one of the 201 fixed reflector targets),
+`sat_orbit.comp` now ALSO writes a new small buffer — `ReflectTargetGlowBuf` (201 entries, one per
+target) — using the exact same atomicMax-then-write-on-win arbitration `sat_flare.comp` already
+uses for `sectorBright`/`flareEntries`: `atomicMax(targetBrightestBits[bestIdx],
+floatBitsToUint(intensity))`, and the winning invocation writes its own `satENU`/`intensity`/
+`targetENU`/`reflectDirENU`. The original per-satellite `ReflectBeamsBuf` (atomic-append, all
+2048 slots) is untouched and still fully populated — it's still what the debug pointing-ray
+visualization reads, since that legitimately wants to show every individual satellite converging.
+`cloud_march.comp`'s real volumetric march now reads `ReflectTargetGlowBuf` instead, capping its
+worst-case candidate count at 201 regardless of how many satellites are actually converging on any
+one site — this is both the performance fix (independent of servicing satellite count) and the
+brightness fix (exactly one bounded contribution per target instead of N stacked ones).
+
+**Accepted approximation, disclosed:** "brightest wins" is not the same as "sum of all
+contributors' irradiance" — physically, N mirrors really do deliver more total light to one spot
+than one mirror. Summing would need atomic float addition (not natively available without a GPU
+extension) or a fixed-point atomic-add workaround; picking the single brightest satellite per
+target was the immediately-implementable fix using this codebase's existing, proven arbitration
+idiom, and was judged the right tradeoff to actually land a fix now rather than block on a bigger
+change. If it turns out visually important for a busy site's glow to visibly scale with how many
+satellites are actually converging, summing is a real follow-up, not done here.
+
+New buffer: `GpuReflectTargetGlows` (`SatelliteSim.h`) — `uint32_t brightestBits[201]` + 3 padding
+words (std430 alignment before the vec3-containing struct array) + `GpuReflectBeam entries[201]`
+(reuses the existing 48-byte per-entry struct as-is). New binding 5 on `sat_orbit.comp`'s
+descriptor set (readwrite), binding 11 on `cloud_march.comp`'s (readonly) — three C++ edits
+(`createOrbitDescriptors`, `createCloudMarchDescriptors`, buffer creation/cleanup) plus the
+matching GLSL buffer declarations, following the same three-separate-descriptor-set-edits pattern
+this file's plan section originally flagged for any new SSBO. Device-local (no CPU readback
+needed, unlike `reflectBeamsBuf`'s host-visible mapping for its diagnostic). Zeroed each frame via
+`vkCmdFillBuffer` alongside `reflectBeamsBuf`, same barrier structure (write in `sat_orbit.comp`
+this frame, read by `cloud_march.comp` next frame — the same one-frame-in-flight pattern
+`reflectBeamsBuf` itself already relies on).
+
+Builds clean. **Not yet seen in-app.**
+
+**Follow-up #16 (2026-07-22) — dedup was too effective: beams reduced to brief flickers.**
+
+User tested follow-up #15 and reported beams were now nearly invisible, showing only brief
+flickers instead of a steady glow. Root cause: the march's GEOMETRY (`satWorldPos`/`rayDir`) was
+taken directly from `targetGlow[bi].satENU`/`.reflectDirENU` — i.e., from whichever satellite
+currently *wins* the atomicMax brightness arbitration for that target. At a busy site, many
+satellites converging on the same target have very similar intensity, so the winner can flip
+between different physical satellites from one frame to the next. Each winner sits at a different
+exact position with a slightly different reflection angle — and extrapolating that difference
+~90km from satellite altitude down to the cloud shell amplifies even a fraction-of-a-degree
+directional change into a shift of hundreds of meters to kilometers in the computed glow point,
+easily enough to fall in and out of the pre-filter's ~21km proximity radius as the winner changes
+— exactly "brief flickers, otherwise invisible."
+
+**Fix: decouple brightness from geometry.** Brightness (picking a single winning satellite's
+`intensity`) is fine to leave as-is — that's the accepted "brightest wins, not sum" approximation
+from follow-up #15. But the march's geometric reference must stay stable regardless of *which*
+satellite currently wins. `targetGlow[bi].targetENU` (the fixed ground target's position, which
+only rotates slowly with Earth) already IS stable — so the fix anchors the march to the target's
+own zenith line instead of the winning satellite's exact position/direction:
+```
+vec3 targetWorldPos = obsPos + targetGlow[bi].targetENU;
+vec3 targetZenith   = normalize(targetWorldPos);
+vec3 rayDir         = -targetZenith;
+vec3 satWorldPos    = targetWorldPos + targetZenith * 200000.0; // safely above R_ATMOS
+```
+This matches the codebase's already-established "beams are well-approximated as vertical"
+justification (see this C12 entry's shadow-map design section above, which used the same
+reasoning to justify a sun-ward-only lookup) — only now applied to decide it's safe to *always*
+treat the beam as coming straight down through the target's own zenith, rather than using each
+individual satellite's actual (more accurate, but per-satellite-noisy once deduplicated) angle.
+`satENU`/`reflectDirENU` remain in `GpuReflectTargetGlows`/read by this loop only implicitly (via
+`intensity`, still the winner's) — the debug pointing-ray visualization is unaffected, since it
+still reads the raw per-satellite `beams[]` list and uses each individual satellite's own true
+`reflectDirENU` directly, which is correct there (no dedup, no winner-switching).
+
+Builds clean. **Not yet seen in-app.**
+
+**Follow-up #17 (2026-07-22) — full revert of #14-#16; replaced with a simple, non-cloud-aware
+atmospheric-scattering glow, per explicit user direction.**
+
+User feedback: "This consolidation of lights was a step in the wrong direction. Additionally,
+nothing regarding the cloud lighting implementation has worked. Let's remove all of that." —
+i.e., not just fix follow-up #16's flicker, but discard follow-ups #14 (real `cloudDensity()`
+march), #15 (per-target dedup buffer), and #16 (stable-zenith geometry fix) entirely, and start
+over from a much simpler baseline. Explicit instruction: **no cloud lighting yet.**
+
+**Removed completely:**
+- `GpuReflectTargetGlows`/`kReflectTargetCount` (`SatelliteSim.h`), `reflectTargetGlowBuf`/`Mem`
+  members, its buffer creation/destroy/zero-fill/barriers, descriptor binding 5 on
+  `sat_orbit.comp` and binding 11 on `cloud_march.comp` (both reverted to their pre-#15 binding
+  counts), the atomicMax dedup write block in `sat_orbit.comp`, the `ReflectTargetGlowBuf` GLSL
+  declaration and `beamCloudDensityAt()` function in `cloud_march.comp`.
+- The entire real-march beam-glow block in `cloud_march.comp` (the `cloudDensity()`-based,
+  shell-bounded, target-anchored version from #14/#15/#16).
+
+**Replaced with** (still in `cloud_march.comp`, reads the raw per-satellite `beams[]` list
+directly — no dedup, matching the user's "consolidation was wrong" verdict): a technique
+structurally similar to the debug pointing rays just below it (multi-sample against the view ray
+via the same safe fixed-point-projection trick, pure ALU, no texture reads) — but with brightness
+driven by an analytic atmosphere model instead of a flat green constant, and non-uniform sampling
+biased toward the ground:
+- March range restricted to the atmosphere-entry-to-ground span only (`raySphere` against
+  `R_ATMOS` then `R_EARTH`) — skips the vacuum portion of a beam's real length, same optimization
+  rationale as before, just without any cloud-shell-specific narrowing.
+- 32 samples distributed via an ease-out curve (`frac = 1 - (1-u)^3`) — consecutive samples are
+  far apart near the atmosphere entry (nothing to see there) and close together near the ground
+  ("added marches near the surface," per the user's request), fixing the debug ray's own
+  uniform-spacing "dotted near the ground" artifact for this new effect (the debug ray itself is
+  unchanged, still uniform).
+- At each sample: local scattering-medium density via `exp(-h/H_R)` (Rayleigh) and `exp(-h/H_M)`
+  (Mie) — this shader's own existing atmosphere constants, already driving the main sky/sun-
+  transmittance model elsewhere in this file, reused here rather than inventing new ones. This
+  directly implements the user's described physics: light entering the atmosphere is bright but
+  there's no medium yet to scatter it into view (density ≈ 0 at high altitude); near the
+  stratosphere a faint glow starts to appear (density rising); near the ground there's much more
+  haze to scatter against, but by then the beam's own transmittance `T` has been reduced by
+  everything already passed through, so visible brightness is `T × density` — a real
+  single-scattering integral, not a hand-tuned altitude curve.
+- `T` accumulates extinction incrementally per step (`T *= exp(-(betaRScalar*densR +
+  BETA_M*1.1*densM)*stepLen)`, applied AFTER using `T` for that step's own contribution) — a
+  scalar approximation (BETA_R's three channels averaged) since this pass has no color/tinting
+  ambition yet, matching "start very simple."
+- New `beamSkyGlowGain` (default 0.05, dim) is the primary user-facing brightness control — its
+  own slider (Terrain tab, global idx 42), not overloading `beamGain` (the physical ground-
+  irradiance term), per `[[feedback_shared_gain_sliders]]`. `hovCloudMinus`/`Plus`/`draggingCloud`/
+  `cloudBufs` all resized 42→43 together, matching `[[feedback_cloud_slider_arrays]]`.
+  `CloudMarchPC` grew 140→144 bytes for the new field, persisted in `settings.json` under
+  `"beam_sky_glow_gain"`.
+
+Debug pointing-ray visualization is completely unaffected — still reads the raw `beams[]` list
+with each satellite's own true `reflectDirENU`, uniform 40-sample spacing, unchanged.
+
+Builds clean. **Not yet seen in-app** — brightness scale (the `1e-9` constant), sample count, and
+ground-bias curve shape are all first-pass guesses.
+
+**Follow-up #18 (2026-07-22) — target elevation fix + shared ground/sky brightness control.**
+
+User feedback (positive on #17's direction) plus two concrete requests: (a) tie the terrain
+ground-spot visually to the new sky glow so it reads as "the ray starts here," and (b) fix ground
+targets not accounting for real terrain elevation, which put every elevated target's "ground"
+underground relative to the actually-rendered terrain.
+
+- **Target elevation**: `reflectorTargetsECEF[]` were only ever unit ECEF directions, scaled by
+  the constant `kEarthRadius` (sea level) when converted to a real ECI position in
+  `updatePositions()`. Fixed by adding `reflectorTargetsRadiusM[kNumReflectorTargets]`
+  (`SatelliteSim.h`), computed once in `buildOrbits()`'s target-generation loop using the SAME
+  CPU-side `earthElevCpu` lookup/formula the observer's own terrain height already uses (`init()`
+  order guarantees `createGlowResources()` — which loads `earthElevCpu` — runs before
+  `initConstellation()`/`buildOrbits()`). `updatePositions()`'s ECI conversion now multiplies by
+  `reflectorTargetsRadiusM[ti]` instead of the bare `kEarthRadius`. This one CPU-side fix
+  propagates everywhere a target's ground position is used — `sat_orbit.comp`'s `targetENU`,
+  `sat_sky.frag`'s ground-spot, and follow-up #19's new upward march below — without touching any
+  of those consumers directly.
+- **Discovered, NOT fixed (flagged for the user, out of this round's scope):** target indices `0`
+  and `kNumReflectorTargets-1` (200) are never actually assigned a direction by the generation loop
+  (`for (ti=1; ti<kNumReflectorTargets-1; ...)` — deliberately or accidentally skips both ends).
+  Both stay at their zero-initialized `vec3(0,0,0)`, which `normalize()`s to NaN, making
+  `sunDot` NaN and `valid` always false — i.e., these two slots are permanently inert. Comments
+  in this same function still describe index 200 as "the fixed target at the observer spawn point
+  (67°S, 67°W)," matching this session's memory notes about a duplicate-assignment bug fixed
+  2026-07-20 — it looks like that fix removed the erroneous line but the CORRECT one never existed
+  in the version examined this session, or was removed alongside it. Not touched this round (out
+  of scope for elevation/march-direction/ground-spot); worth a dedicated look next session.
+- **Shared brightness control**: `beamSkyGlowGain` added to `SatDrawPC` (`sat_sky.frag`'s push
+  constant, mirroring `CloudMarchPC`'s copy — grew 164→168 bytes) and used in the ground-spot term
+  as `skyGlowNorm = pc.beamSkyGlowGain / 0.05` (normalized against the slider's default so existing
+  footprint brightness is unchanged unless the user actually moves the slider) — multiplying the
+  ground spot's existing `kBeamGroundScale`-based brightness. Also added a small, bright "hotspot
+  core" (`footprintR * 0.15` radius Gaussian, added on top of the existing soft halo) so the
+  ground-spot reads more like a distinct landing point — the anchor the new upward sky march
+  (follow-up #19) visually starts from.
+
+Builds clean. **Not yet seen in-app.**
+
+**Follow-up #19 (2026-07-22) — reversed march direction + altitude-bounded range.**
+
+User's specific ask: marching the whole ~100km atmosphere per beam is expensive; since the
+volumetric effect only matters in the lower atmosphere, march UP from the (now elevation-correct)
+ground target toward the satellite instead of DOWN from the satellite, and stop relatively quickly.
+
+- New origin: `targetWorldPos = obsPos + beams[bi].targetENU` (elevation-correct per follow-up
+  #18) instead of `satWorldPos`. Direction: `rayDirUp = -beams[bi].reflectDirENU` (that field
+  points sat→ground, the direction light propagates; negated for the upward march).
+- March range bounded to `kBeamGlowMaxAltM = 25000.0` (25km) above sea level via
+  `raySphere(targetWorldPos, rayDirUp, R_EARTH + kBeamGlowMaxAltM)` — the far root is the march's
+  new "top." This alone shrinks the marched span from ~100km to ~25km (roughly a 4x reduction at
+  the same sample count/resolution) — the direct fix for "marching through the entire atmosphere
+  is probably very expensive."
+- **Transmittance direction, the one subtlety this reversal introduces:** `T` must still represent
+  "how much of the ORIGINAL light survived from space down to here," which is a property of the
+  full path regardless of which way the shader marches computationally. Naively accumulating T
+  from ground (T=1) upward would be backwards (it would mean "nothing extinguishes below this
+  point," the opposite of reality). Fixed by iterating samples from the TOP of the truncated range
+  down to the ground (T=1 at the top, decreasing as altitude drops) — physically correct in a
+  single pass, and a reasonable approximation given the top of this truncated range (25km) is
+  already high enough that H_R's ~8km scale height leaves very little unaccounted-for extinction
+  above it. The existing ease-out density curve (`frac = 1-(1-u)^3`) is reused as-is, just applied
+  as `t = tTop*(1-frac)` instead of the old `tStart + frac*span` — still dense near the ground,
+  sparse near the top, same curve shape, opposite endpoint mapping.
+- Debug pointing-ray visualization is unaffected (still sat→ground, full uniform-sampled length) —
+  not touched this round; its own "dotted near the ground" artifact (the original trigger for
+  follow-up #14, back before the two reverts) still isn't separately fixed.
+
+Builds clean. **Not yet seen in-app** — `kBeamGlowMaxAltM`'s exact value (25km) is a first-pass
+guess at "relatively quickly," may need retuning once seen.
+
+**Follow-up #20 (2026-07-22) — four fixes: lost/incoherent rays, downsampling for perf, ocean
+occlusion bug, and slow observer-move catch-up.**
+
+User feedback after follow-up #19 landed, four distinct issues:
+
+1. **"Lost rays" not pointing at anything in particular.** Diagnosed and confirmed NOT the
+   zero-vector targets (indices 0/200 — those are correctly filtered out: `normalize(vec3(0))` is
+   NaN, `sunDot` becomes NaN, `valid = (NaN < 0.0)` is false in IEEE754, so `td.w < 0.5` skips them
+   in `sat_orbit.comp`'s bestIdx scan — they're inert, not selectable, not the cause). Real cause:
+   follow-up #19's march uses `beams[bi].reflectDirENU` (the mirror's ACTUAL current orientation)
+   for the march DIRECTION, starting at the fixed TARGET position. `reflectDirENU` lags the real
+   target for several seconds after a retarget while `MIRROR_ROT_RATE`-limited slewing catches up
+   — during that window it points somewhere between the old and new ideal direction, and since the
+   march no longer starts AT the satellite (follow-up #19 changed the origin to the target), a
+   mid-slew direction produces a ray that doesn't visually connect to anything sensible. Fixed by
+   using a STABLE vertical approximation instead: `rayDirUp = normalize(targetWorldPos)` (straight
+   up through the target's own zenith), not `reflectDirENU`. Well-justified because `bestIdx`
+   selection already maximizes `dot(satZenith, targetDir)` — targets are always close to the
+   servicing satellite's nadir, so "straight up" is a good approximation regardless of slew state.
+   `intensity` still legitimately depends on the satellite's real current orientation (via
+   `cosIncidence`, upstream in `sat_orbit.comp`) — only the glow's GEOMETRY stopped depending on it.
+2. **Performance still rough at busy sites.** Added stable downsampling: `GpuReflectBeam.debugPad`
+   (previously pure std430 padding, unused) is repurposed to carry the originating satellite's own
+   stable dispatch index (`float(i)`, written in `sat_orbit.comp`). `cloud_march.comp`'s sky glow
+   now only marches every 8th satellite (`mod(debugPad, 8.0) == 0`, `kBeamGlowStride = 8.0`),
+   compensating with `intensity *= 8.0` so total apparent brightness at a busy site stays close to
+   before with an 8x reduction in actual marches. Striding on the atomic-append SLOT index (`bi`)
+   directly was considered and rejected — `bi` isn't stable frame-to-frame (races on `beamCount`),
+   so it would show a different random 1/8th of satellites each frame (flicker); striding on the
+   satellite's own stable index avoids that.
+3. **Rays don't draw over ocean.** Root cause: `cloud_march.comp`'s `tEnterCombined` (used by
+   `sat_sky.frag`'s terrain/ocean occlusion test — "if a surface hit is closer than this, hide the
+   whole cloud/sky composite") was computed ONLY from the cirrus/cloud shell's own entry distances,
+   with no knowledge of where the beam glow itself actually starts (very close to the ground, per
+   follow-up #19). Whenever a real surface hit was closer than a FAR cloud shell but FARTHER than
+   the NEAR beam glow, the whole composite — including the beam glow, since it shares the same
+   target image — was wrongly suppressed. This hit ocean far more often than terrain specifically
+   because the ocean's smooth fallback sphere produces a valid `tSurface` hit in nearly every view
+   direction, while terrain-less directions (looking at open sky away from any landmass) often have
+   no hit at all, letting the false-suppression condition trigger far more rarely there. Fixed by
+   tracking `tEnterBeam` (the nearest VIEW-RAY distance any beam-glow sample actually contributed
+   at, using the same `tRay` already computed for the proximity check) and folding it into
+   `tEnterCombined`'s final `min()` — the occlusion test now knows about the near-ground beam
+   content too, not just the cloud shell.
+4. **Noticeable catch-up delay when the observer moves.** Confirmed as a real, deliberate rate
+   limit — `MIRROR_ROT_RATE` was a hardcoded 1 degree/second in `sat_orbit.comp`, reasonable for
+   passive observation but slow (potentially minutes) for a satellite to re-slew toward a newly
+   relevant target after the observer teleports/moves to a new area. Made tunable:
+   `SatOrbitPC.mirrorSlewDegPerSec` (new field, `SatOrbitPC` grew 104→108 bytes), CPU member
+   `SatelliteSim::mirrorSlewDegPerSec` defaulting to 15 (15x faster than before), new settings
+   slider ("Mirror slew rate (deg/s)", 1-60 range, global idx 43 — `hovCloudMinus/Plus/`
+   `draggingCloud`/`cloudBufs` resized 43→44), persisted in `settings.json`. `sat_orbit.comp` now
+   computes `maxAngle = radians(pc.mirrorSlewDegPerSec) * pc.simDt` instead of a fixed constant.
+
+Builds clean. **Not yet seen in-app.**
+
+**Follow-up #21 (2026-07-22) — direction fix (satellites again), slew-rate revert, and a diagnosed
+(not yet fixed) observer-movement lag.**
+
+User feedback after follow-up #20: performance improved marginally, but beams "do not point
+towards satellites at all" and now emit straight up from the target regardless — follow-up #20's
+"stable vertical" fix over-corrected. Also asked to revert the mirror slew-rate default, and asked
+why target sites/rays lag behind terrain when the observer moves.
+
+- **Direction fixed properly:** `rayDirUp = normalize(beams[bi].satENU - beams[bi].targetENU)` —
+  points at the satellite's ACTUAL current position, not a fixed vertical approximation, and not
+  `reflectDirENU` (which, on reflection, was never even the geometrically correct vector for
+  "target→satellite" — it's the direction reflected SUNLIGHT travels, which only coincides with
+  that line if the mirror happens to be perfectly converged). Using the two real positions
+  directly is correct regardless of mirror slew state (no dependency on `surfN0`/`reflectDirENU`
+  at all) and always points at where the satellite really is. Computed as `satENU - targetENU`
+  rather than `satWorldPos - targetWorldPos` to avoid re-adding then subtracting the shared
+  `obsPos` term.
+- **Mirror slew rate default reverted** to 1 deg/sec (was raised to 15 in follow-up #20) per user
+  preference. Left as a tunable slider (in case wanted later) rather than removing it outright.
+- **Observer-movement lag — diagnosed, not yet fixed.** Root cause: `cloud_march.comp`'s dispatch
+  runs BEFORE `sat_orbit.comp`'s dispatch within the same `recordCompute()` call (an existing,
+  intentional ordering — cloud_march.comp must finish before the render pass begins, and this
+  block was written early in the function before the orbit/flare dispatches were added later).
+  This means whenever `cloud_march.comp` reads `ReflectBeamsBuf` (for the sky glow), it's reading
+  data `sat_orbit.comp` wrote during the PREVIOUS frame's `recordCompute()` call — one frame stale
+  by construction (the same "previous frame's data is safe to read" pattern this codebase uses
+  elsewhere, e.g. `glowBuf`). For most buffers that staleness is harmless (position/observer-
+  independent data). For beams specifically it isn't: `satENU`/`targetENU` are stored as METERS
+  offsets in the OBSERVER'S ENU basis AT WRITE TIME — if the observer moves between frames, that
+  stored offset no longer matches the CURRENT frame's observer position/basis when
+  `cloud_march.comp` adds it onto this frame's fresh `obsPos`. The resulting position error is
+  approximately equal to the observer's own displacement (translation) plus a smaller rotational
+  term from the ENU basis itself reorienting, both scaling with how far the observer moved in that
+  one frame — imperceptible at typical walking speed, clearly visible at "boost" movement speed
+  (which can cover tens of km in a single frame).
+  - **Why not fixed immediately this round:** the only fully correct fix is for `cloud_march.comp`
+    to read the SAME frame's fresh beam data, i.e., reorder its dispatch to after
+    `sat_orbit.comp`'s. This is NOT purely mechanical: `cloud_march.comp`'s dispatch currently sits
+    BEFORE the `if (activeSatCount == 0) return;` early-out (deliberately, so clouds keep rendering
+    with zero active satellites) — moving it after `sat_orbit.comp` requires also moving
+    `sat_orbit.comp` (with 0 workgroups when `activeSatCount==0`, itself a legal/cheap no-op) ahead
+    of that same early-out, while keeping `sat_flare.comp` gated by it. It also touches the fixed
+    GPU-timestamp slot assignments (session 29 profiling — slots 1-4 have specific meanings the
+    "GPU FRAME BREAKDOWN" UI and `updateGpuTimingStats()` depend on) which would need renumbering
+    to stay meaningful. A translation-only "correct for how far the observer moved since last
+    frame" patch was considered as a lower-risk alternative but rejected: it doesn't correct the
+    ENU-basis-rotation component, which is NOT negligible for the satellite offset specifically
+    (up to ~2000km magnitude — even a fraction-of-a-degree basis rotation error amplifies to
+    multiple km) — i.e., it wouldn't fully fix the exact case (fast/boost movement) the user
+    reported as most noticeable. Flagged for the user rather than either rushing the full reorder
+    or shipping a partial fix with a known residual error in the reported worst case.
+
+Builds clean. **Not yet seen in-app** (direction fix, slew revert). Lag issue awaiting a decision
+on whether to do the full dispatch-reorder fix.
+
+**Follow-up #22 (2026-07-22) — full dispatch reorder to fix the observer-movement lag.**
+
+User chose the full reorder over a partial translation-only patch (which wouldn't have corrected
+the ENU-basis-rotation component of the error). Implemented in `recordCompute()`
+(`SatelliteSim.cpp`):
+
+- `sat_orbit.comp`'s entire dispatch (enabledMask/highlightMask computation, `SatOrbitPC` fill,
+  `reflectBeamsBuf` zero-fill + barrier, the dispatch itself, both post-dispatch barriers) moved to
+  run BEFORE `cloud_march.comp`'s dispatch — previously it ran after `cloud_march.comp` AND
+  `cloud_shadow.comp`, alongside `sat_flare.comp`. It now runs unconditionally, including when
+  `activeSatCount == 0`: `vkCmdDispatch(cmd, (0+63)/64, 1, 1)` dispatches 0 workgroups, which is a
+  legal Vulkan no-op (any dispatch dimension being zero means no invocations occur) — cheap and
+  safe. This was necessary because `cloud_march.comp` (and therefore its beam sky glow) must keep
+  rendering even with zero active satellites, and previously sat_orbit.comp's dispatch sat AFTER
+  the `if (activeSatCount==0) return;` early-out specifically to avoid dispatching orbital
+  mechanics work for zero satellites — moving it ahead of that check (as a cheap no-op in the
+  empty case) resolves the conflict.
+- The `if (activeSatCount==0) return;` early-out now only needs to guard `sat_flare.comp` (moved to
+  after `sat_orbit.comp`/`cloud_march.comp`/`cloud_shadow.comp`, all of which now always run) — it
+  went from writing two placeholder timestamps (orbit + flare) to just one (flare).
+- **GPU timestamp slots renumbered to match the new execution order** (numbers 1-4 unchanged,
+  reassigned to different work): 1 = orbit compute (was 3), 2 = cloud march (was 1), 3 = cloud
+  shadow map (was 2), 4 = flare compute (unchanged). Updated in three places to stay consistent:
+  `updateGpuTimingStats()`'s `raw[]` comments, `kPerfLabels[]` in `SatelliteSimUI.cpp` (the "GPU
+  FRAME BREAKDOWN" settings panel), and `savePerfSnapshot()`'s JSON key/index mapping (key NAMES
+  are what matter for reading old snapshot files — a re-ordering like this only changes which
+  index a given name reads from going forward, doesn't invalidate old data).
+- Net effect: `cloud_march.comp`'s Reflect-Orbital beam sky glow now reads `ReflectBeamsBuf` as
+  written by `sat_orbit.comp` earlier in the SAME frame — same-frame fresh data, no staleness, so
+  beam positions track the observer's current-frame position exactly like terrain does, eliminating
+  the lag entirely (not just reducing it) regardless of how fast the observer moves.
+
+Builds clean (verified no duplicate variable declarations from the block move — `orbitPc`/
+`enabledMask`/`highlightMask` each appear exactly once). **Not yet seen in-app.**
+
 ### 2026-07-20/21 (session 31) — Cloud shape quality pass + domain-warp bake perf
 Three user-reported cloud oddities (flat bases, conical/not-fluffy shapes, shadow line artifacts
 + phantom thin-cloud shadow-casters), followed by a perf regression from fixing the third one, then

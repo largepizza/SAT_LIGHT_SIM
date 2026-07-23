@@ -30,6 +30,9 @@ layout(push_constant) uniform PC {
                         // built with this frame; subtract before mapping to that grid's UV — see
                         // CloudShadowPC::shadowResidualM's comment in SatelliteSim.h.
     float beamMaxRangeM; // C12 follow-up #6 — settings-tunable Reflect-Orbital beam render range
+    float beamSkyGlowGain; // C12 follow-up #18 — mirrors cloud_march.comp's own copy so the
+                        // ground-spot term below and the sky glow march share one brightness
+                        // control and read as one continuous effect.
 } pc;
 
 // ── Perf knockout toggles (profiling-only) ──────────────────────────────────────
@@ -90,19 +93,23 @@ layout(set = 0, binding = 15) uniform sampler2D cityNightDetailTex;
 layout(set = 0, binding = 16) uniform sampler3D auroraNoiseTex;
 
 // ── Reflect-Orbital ground beams (C12) — written by sat_orbit.comp, read here for the
-// ground-spot direct-lighting term. Indexed by TARGET IDENTITY (bestIdx), not azimuth — see
-// the ReflectBeamsBuf comment in sat_orbit.comp for why (avoids cross-target bucket collisions).
+// ground-spot direct-lighting term. Capped atomic-append, no site keying/arbitration — see the
+// ReflectBeamsBuf comment in sat_orbit.comp for the full history/rationale.
 // Struct must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h and sat_orbit.comp exactly.
-const uint BEAM_SLOTS = 201u; // must equal NUM_TARGETS in sat_orbit.comp / kNumReflectorTargets
+const uint BEAM_MAX_ACTIVE = 2048u; // must match kMaxActiveBeams in SatelliteSim.h (C12 follow-up #11)
 struct ReflectBeam {
     vec3  satENU;
     float intensity;
     vec3  targetENU;
     float footprintRadM;
+    vec3  reflectDirENU; // mirror's ACTUAL current reflected-sunlight direction (debug pointing ray)
+    float debugPad;      // repurposed (follow-up #20) in cloud_march.comp: originating satellite's
+                          // stable dispatch index — unused here, not needed for this ground-spot term.
 };
 layout(std430, set = 0, binding = 17) readonly buffer ReflectBeamsBuf {
-    uint         slotBright[BEAM_SLOTS];
-    ReflectBeam  beams[BEAM_SLOTS];
+    uint         beamCount;
+    uint         beamPad0, beamPad1, beamPad2;
+    ReflectBeam  beams[BEAM_MAX_ACTIVE];
 };
 
 // Shared cloud-shadow primitive (C12) — written by cloud_shadow.comp, sampled here for both
@@ -2191,13 +2198,20 @@ void main() {
         // see, just a lit patch of ground).
         if ((pc.debugDisableMask & 128u) == 0u) {
             const float kBeamGroundScale = 4e-8;
+            // Normalized against the slider's default (0.05, see SatelliteSim.h) so existing
+            // footprint brightness is unchanged at default gain, while still scaling together
+            // with cloud_march.comp's sky glow (C12 follow-up #18) — one shared control instead
+            // of two independently-tuned pieces, so raising/lowering it visually reads as one
+            // continuous beam rather than a mismatched ground patch under an unrelated sky ray.
+            float skyGlowNorm = pc.beamSkyGlowGain / 0.05;
             // Site-referenced (C12 follow-up #5): beams are now written unconditionally by any
             // satellite above the OBSERVER's own orbital horizon, not gated by the ground
             // target's local horizon — so pc.beamMaxRangeM (settings-tunable, follow-up #6) is
             // the render-time "is the observer close enough to this site" cutoff that replaces
             // the old fragile gate. A smooth fixed-distance check (not a horizon calculation),
             // same value as cloud_march.comp's copy.
-            for (int bi = 0; bi < int(BEAM_SLOTS); ++bi) {
+            int activeBeamCount = int(min(beamCount, BEAM_MAX_ACTIVE));
+            for (int bi = 0; bi < activeBeamCount; ++bi) {
                 float intensity = beams[bi].intensity;
                 if (intensity <= 0.0) continue;
                 if (length(beams[bi].targetENU) > pc.beamMaxRangeM) continue;
@@ -2206,6 +2220,12 @@ void main() {
                 float footprintR = max(beams[bi].footprintRadM, 1.0);
                 if (groundDist > footprintR * 4.0) continue;
                 float footprint = exp(-(groundDist * groundDist) / (2.0 * footprintR * footprintR));
+                // Tight bright "hotspot" core on top of the soft halo (C12 follow-up #18) — reads
+                // as a clear landing point where the beam meets the ground, the anchor the sky
+                // glow march (cloud_march.comp) now visually starts from (that march begins
+                // exactly at this same targetENU position and heads upward — see its comment).
+                float coreR = footprintR * 0.15;
+                float core  = exp(-(groundDist * groundDist) / (2.0 * coreR * coreR));
 
                 // Same shared shadow-map lookup as the general cloud-shadow term above, but
                 // sampled at the TARGET's own tangent-plane position (not this pixel's hitPt) —
@@ -2220,7 +2240,7 @@ void main() {
                     shadowAtten = mix(1.0, texture(cloudShadowTex, tShadowUV).r, tShadowFade);
                 }
 
-                surfColor += vec3(kBeamGroundScale * intensity * footprint) * shadowAtten;
+                surfColor += vec3(kBeamGroundScale * intensity * (footprint + core * 2.0) * skyGlowNorm) * shadowAtten;
             }
         }
 

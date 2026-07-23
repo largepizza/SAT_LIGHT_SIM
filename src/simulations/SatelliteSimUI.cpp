@@ -187,7 +187,7 @@ namespace Pal
     constexpr Clay_Color speedPaused = {95, 95, 100, 220}; // paused (dark grey)
     // Selection
     constexpr Clay_Color reticule = {255, 205, 60, 230}; // target-lock reticule (amber — distinct
-                                                          // from the red accent used everywhere else)
+                                                         // from the red accent used everywhere else)
 }
 
 // ── Global styling parameters ─────────────────────────────────────────────────
@@ -784,9 +784,9 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
         Clay_BorderWidth border;
     };
     const ReticuleCorner corners[4] = {
-        {-kRadius, -kRadius, {(uint16_t)kBorderW, 0, (uint16_t)kBorderW, 0, 0}},               // TL
-        {kRadius - kBoxSize, -kRadius, {0, (uint16_t)kBorderW, (uint16_t)kBorderW, 0, 0}},      // TR
-        {-kRadius, kRadius - kBoxSize, {(uint16_t)kBorderW, 0, 0, (uint16_t)kBorderW, 0}},      // BL
+        {-kRadius, -kRadius, {(uint16_t)kBorderW, 0, (uint16_t)kBorderW, 0, 0}},                     // TL
+        {kRadius - kBoxSize, -kRadius, {0, (uint16_t)kBorderW, (uint16_t)kBorderW, 0, 0}},           // TR
+        {-kRadius, kRadius - kBoxSize, {(uint16_t)kBorderW, 0, 0, (uint16_t)kBorderW, 0}},           // BL
         {kRadius - kBoxSize, kRadius - kBoxSize, {0, (uint16_t)kBorderW, 0, (uint16_t)kBorderW, 0}}, // BR
     };
     for (int i = 0; i < 4; ++i)
@@ -1515,7 +1515,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
               CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
 
     static const char *kPerfLabels[7] = {
-        "Cloud march", "Cloud shadow map", "Orbit compute", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
+        "Orbit compute", "Cloud march", "Cloud shadow map", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
     static char perfBufs[7][20];
     for (int pi = 0; pi < 7; ++pi)
     {
@@ -1622,6 +1622,37 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
             CLAY_TEXT(countStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
             CLAY_TEXT(CLAY_STRING(" / "), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
             CLAY_TEXT(distStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        }
+    }
+
+    // ── Debug pointing-ray visualization (C12 follow-up #12) ─────────
+    // Draws each active beam's mirror's ACTUAL current reflected-sunlight direction as a long
+    // bright green ray from the satellite — not a knockout toggle (doesn't disable anything
+    // normal), so it gets its own checkbox rather than living in debugDisableMask.
+    CLAY(CLAY_ID("BeamDebugRayRow"), {.layout = {
+                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26)},
+                                          .padding = {4, 4, 2, 2},
+                                          .childGap = 8,
+                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Show beam pointing rays"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+        CLAY(CLAY_ID("BeamDebugRaySpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+        Clay_Color rayChkBg = showBeamDebugRays ? Pal::btnAccent : (hovBeamDebugRaysToggle ? Pal::btnHover : Pal::btnIdle);
+        CLAY(CLAY_ID("BeamDebugRayChk"), {.layout = {
+                                              .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                          .backgroundColor = rayChkBg,
+                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovBeamDebugRaysToggle);
+            sndClick(n, inp.lmbPressed);
+            if (n && inp.lmbPressed)
+                showBeamDebugRays = !showBeamDebugRays;
+            hovBeamDebugRaysToggle = n;
+            CLAY_TEXT(showBeamDebugRays ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
         }
     }
 
@@ -1804,7 +1835,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // OOB stack write nobody had hit yet, found while adding C12's sliders, idx 38-40; see
     // feedback_cloud_slider_arrays memory). Must stay >= (highest idx in use) + 1, same as
     // hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[42][16];
+    static char cloudBufs[44][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -1945,9 +1976,11 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 20},
         {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
         {"Cloud shadow range (m)", &cloudShadowRangeM, 10000.0f, 300000.0f, 5000.0f, "%.0f", 38},
-        {"Beam gain", &beamGain, 0.0f, 10.0f, 0.1f, "%.2f", 39},
+        {"Beam gain", &beamGain, 0.0f, 0.1f, 0.001f, "%.3f", 39},
         {"Beam footprint (m)", &beamFootprintRadM, 500.0f, 200000.0f, 500.0f, "%.0f", 40},
         {"Beam max range (m)", &beamMaxRangeM, 50000.0f, 2000000.0f, 50000.0f, "%.0f", 41},
+        {"Beam sky glow gain", &beamSkyGlowGain, 0.0f, 1.0f, 0.01f, "%.2f", 42},
+        {"Mirror slew rate (deg/s)", &mirrorSlewDegPerSec, 1.0f, 60.0f, 1.0f, "%.0f", 43},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -2361,6 +2394,8 @@ void SatelliteSim::loadSettings()
         beamGain = c.value("beam_gain", beamGain);
         beamFootprintRadM = c.value("beam_footprint_rad_m", beamFootprintRadM);
         beamMaxRangeM = c.value("beam_max_range_m", beamMaxRangeM);
+        beamSkyGlowGain = c.value("beam_sky_glow_gain", beamSkyGlowGain);
+        mirrorSlewDegPerSec = c.value("mirror_slew_deg_per_sec", mirrorSlewDegPerSec);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -2461,7 +2496,9 @@ void SatelliteSim::saveSettings()
         {"cloud_shadow_range_m", cloudShadowRangeM},
         {"beam_gain", beamGain},
         {"beam_footprint_rad_m", beamFootprintRadM},
-        {"beam_max_range_m", beamMaxRangeM}};
+        {"beam_max_range_m", beamMaxRangeM},
+        {"beam_sky_glow_gain", beamSkyGlowGain},
+        {"mirror_slew_deg_per_sec", mirrorSlewDegPerSec}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)
@@ -2592,10 +2629,14 @@ void SatelliteSim::savePerfSnapshot(float cpuDt)
     // not one noisy single-frame sample. CPU frame time is the current frame's
     // raw dt (same source as the HUD fps badge), included for comparison against
     // the GPU total (a gap between them points at CPU-side or present/vsync cost).
+    // Index order matches gpuMsSmoothed[]'s slot semantics (C12 follow-up #22: orbit now runs
+    // before cloud march — see updateGpuTimingStats()'s comment) — key NAMES, not indices, are
+    // what matter for reading old snapshots; a re-ordering like this changes which index a given
+    // name reads from going forward, so don't compare index positions across the reorder.
     j["gpu_timing_ms"] = {
-        {"cloud_march", gpuMsSmoothed[0]},
-        {"cloud_shadow_map", gpuMsSmoothed[1]},
-        {"orbit_compute", gpuMsSmoothed[2]},
+        {"orbit_compute", gpuMsSmoothed[0]},
+        {"cloud_march", gpuMsSmoothed[1]},
+        {"cloud_shadow_map", gpuMsSmoothed[2]},
         {"flare_compute", gpuMsSmoothed[3]},
         {"sky_background_draw", gpuMsSmoothed[4]},
         {"satellite_star_draw", gpuMsSmoothed[5]},
