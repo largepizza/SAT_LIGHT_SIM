@@ -1359,15 +1359,29 @@ void main() {
             // solve. r = obsPos - targetWorldPos, computed as -targetENU directly (avoids
             // re-adding then subtracting the shared obsPos term — same cancellation-avoidance
             // pattern used throughout this file for satWorldPos/targetWorldPos-adjacent math).
+            //
+            // Minimizing |r + s*dir - t*rayDirUp|^2 gives s = t*bDot - c and t = f + s*bDot
+            // (bDot = dir.rayDirUp, c = dir.r, f = rayDirUp.r); substituting the first into the
+            // second and solving for t gives t = (f - bDot*c) / denom. C12 follow-up #24: this
+            // file previously had (bDot*f - c)/denom — bDot multiplying the WRONG term — which
+            // produced systematically incorrect closest-point solutions for any non-perpendicular
+            // viewing angle. That's the root cause behind two user reports after follow-up #23
+            // shipped: "highly observer dependent... hard edges/clipping" (a wrong, unstable
+            // solution jumping between actual and clamped values as view angle changed) and beams
+            // "only manifesting as a couple dots at the cloud layer" when viewed from a distance
+            // (oblique/grazing views are exactly where a non-perpendicular bDot makes the wrong
+            // formula diverge most from the correct one, clamping to the wrong segment endpoint
+            // for most of the screen instead of tracing a continuous line down to the ground).
             vec3  r     = -beams[bi].targetENU;
             float bDot  = dot(dir, rayDirUp);
             float denom = 1.0 - bDot * bDot; // = sin^2(angle between the view ray and the beam)
+            float sinTheta = sqrt(max(denom, 0.0));
 
-            float tBeam;
+            float tBeamRaw;
             if (denom > 1e-5) {
                 float f = dot(rayDirUp, r);
                 float c = dot(dir, r);
-                tBeam = (bDot * f - c) / denom;
+                tBeamRaw = (f - bDot * c) / denom;
             } else {
                 // Near-parallel — exactly the "observer directly over the target, looking down a
                 // near-vertical beam" case (C12 follow-up #23's diagnosed flicker cause). The
@@ -1375,9 +1389,9 @@ void main() {
                 // onto the beam direction, which is stable, continuous, and exact in the true
                 // parallel limit (every point along the beam is then equally close in the
                 // cross-track sense).
-                tBeam = dot(rayDirUp, r);
+                tBeamRaw = dot(rayDirUp, r);
             }
-            tBeam = clamp(tBeam, 0.0, tTop);
+            float tBeam = clamp(tBeamRaw, 0.0, tTop);
 
             vec3  p     = targetWorldPos + rayDirUp * tBeam;
             float sView = dot(p - obsPos, dir);
@@ -1409,13 +1423,34 @@ void main() {
             float haze      = rhoR + rhoM; // local scattering medium at the closest-approach point
             float proximity = exp(-(perpDist * perpDist) / (2.0 * kBeamRayRadiusM * kBeamRayRadiusM));
 
+            // Grazing-angle brightness (C12 follow-up #24) — replaces the flat kBeamRayRadiusM
+            // stand-in from follow-up #23 with the actual analytic integral of a Gaussian
+            // cross-section tube along a straight view ray crossing it at angle theta: for two
+            // lines meeting at angle theta, distance-from-line-1-to-line-2 grows as
+            // sqrt(perpDist0^2 + (Δs*sinTheta)^2) moving along line 1 from the closest-approach
+            // point, so ∫exp(-dist^2/(2σ^2))dΔs = proximity0 * σ*sqrt(2π)/sinTheta. This is the
+            // SAME "brighter when viewed end-on" effect the old discrete 32-sample march produced
+            // (there, by accident, via many overlapping samples double-counting near-parallel
+            // views — part of what made distant convergence shots look good, and part of what
+            // follow-up #23's single-point-per-beam evaluation lost: "ruins the effect of seeing
+            // beams converge"). Capped so a real (finite) beam segment can't integrate to more
+            // than its own length tTop as sinTheta->0, instead of diverging.
+            float sinThetaClamped = max(sinTheta, kBeamRayRadiusM / tTop);
+            float grazingLen = kBeamRayRadiusM / sinThetaClamped; // effective interaction length, capped at tTop
+
+            // Smooth capsule-style end fade (C12 follow-up #24) — softens the segment's two ends
+            // instead of the hard clamp from follow-up #23, which pinned many different view rays
+            // to the SAME fixed endpoint at full brightness ("hard edges... I feel this isn't just
+            // a realism thing" — a real artifact of clamping a point evaluation, not a stylistic
+            // choice). Uses the UNCLAMPED tBeamRaw's overshoot past either end, same Gaussian sigma
+            // as the tube radius — reads as a rounded capsule cap rather than a flat disc.
+            float overshoot = max(0.0, max(-tBeamRaw, tBeamRaw - tTop));
+            float endFade = exp(-(overshoot * overshoot) / (2.0 * kBeamRayRadiusM * kBeamRayRadiusM));
+
             // First-pass scale — expect retuning once seen in-app; pc.beamSkyGlowGain is the
-            // primary user-facing brightness control. kBeamRayRadiusM stands in for the
-            // "effective interaction length" the old per-sample stepLen weighting used to
-            // provide — there's no discrete step to weight by anymore, so the Gaussian proximity
-            // term's own characteristic width is used instead.
+            // primary user-facing brightness control.
             const float kBeamScale = 1e-9;
-            B_total += vec3(pc.beamSkyGlowGain * intensity * T * haze * proximity * kBeamRayRadiusM * kBeamScale);
+            B_total += vec3(pc.beamSkyGlowGain * intensity * T * haze * proximity * grazingLen * endFade * kBeamScale);
 
             // Track the nearest contribution along the VIEW ray (C12 follow-up #20) — see
             // tEnterBeam's declaration above. Now a single analytic value per beam instead of a
