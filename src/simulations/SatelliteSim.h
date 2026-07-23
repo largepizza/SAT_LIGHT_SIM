@@ -257,8 +257,12 @@ struct SatDrawPC
     float beamMaxRangeM;     // offset 160 — C12 follow-up #6: settings-tunable "how far around
                              // the observer do Reflect-Orbital beams render" cutoff, mirrors
                              // CloudMarchPC's own copy (same frame's value).
-}; // total: 164 bytes
-static_assert(sizeof(SatDrawPC) == 164, "SatDrawPC layout mismatch");
+    float beamSkyGlowGain;   // offset 164 — C12 follow-up #18: mirrors CloudMarchPC's own copy so
+                             // the ground-spot term (this shader) and the sky glow march
+                             // (cloud_march.comp) share one brightness control and read as one
+                             // continuous effect instead of two independently-tuned pieces.
+}; // total: 168 bytes
+static_assert(sizeof(SatDrawPC) == 168, "SatDrawPC layout mismatch");
 
 // ── Push constants for cloud_march.comp (half-res cloud compute pass, C15-perf) ──────────────
 // Matches the layout(push_constant) block in cloud_march.comp exactly. A separate struct from
@@ -281,8 +285,18 @@ struct CloudMarchPC
     float beamMaxRangeM;       // offset 132 — C12 follow-up #6: settings-tunable "how far around
                                // the observer do Reflect-Orbital beams render" cutoff, mirrors
                                // SatDrawPC's own copy (same frame's value).
-}; // total: 136 bytes
-static_assert(sizeof(CloudMarchPC) == 136, "CloudMarchPC layout mismatch");
+    uint32_t showBeamDebugRays; // offset 136 — C12 follow-up #12: debug-only "draw each active
+                               // mirror's actual current pointing direction as a long ray" toggle.
+                               // Deliberately NOT part of debugDisableMask — that mask means
+                               // "disable this normally-on thing" (0 = normal rendering); this is
+                               // the opposite shape ("enable this normally-off extra"), so it gets
+                               // its own field rather than overloading that convention.
+    float beamSkyGlowGain;     // offset 140 — C12 follow-up #17: settings-tunable brightness for
+                               // the simple atmospheric-scattering beam glow (dim by default,
+                               // per [[feedback_shared_gain_sliders]] — its own slider, not
+                               // reusing beamGain, which is the physical ground-irradiance term).
+}; // total: 144 bytes
+static_assert(sizeof(CloudMarchPC) == 144, "CloudMarchPC layout mismatch");
 
 // ── Push constants for cloud_shadow.comp (shared cloud-shadow primitive, C12) ────────────────
 // Fixed 128×128 dispatch, independent of screen resolution/camera — no skyView/fov/aspect needed.
@@ -387,23 +401,46 @@ struct GpuReflectorTarget
 static_assert(sizeof(GpuReflectorTarget) == 16, "GpuReflectorTarget layout mismatch");
 
 // ── Reflect-Orbital ground beams (device-local, written by sat_orbit.comp) ───
-// Keyed by TARGET IDENTITY (bestIdx, 0-200 — the same fixed index into reflTargets[] every
-// satellite's nearest-target scan already produces), NOT by azimuth-from-observer sector.
-// This was originally azimuth-sector-keyed (16 sectors, same idiom as GpuGlowBuf's
-// flareEntries/sectorBright, sat_flare.comp:483-494) — that scheme exists there to dedupe
-// potentially thousands of satellites across the WHOLE sky into a handful of render slots,
-// which is a different problem. For beams, two different satellites aiming at the same real
-// target should merge (brightest wins — legitimate), but two satellites aiming at two
-// DIFFERENT real targets that simply happen to share a 22.5°-wide azimuth wedge from the
-// observer must NOT collide — with only 16 sectors they routinely did, silently evicting one
-// beam's slot with an unrelated satellite's, which read as "the beam came from the wrong
-// satellite" / flickered between two sky positions as the two competitors' relative
-// brightness see-sawed frame to frame (found 2026-07-21 from an in-app report). Indexing by
-// bestIdx directly eliminates cross-target collisions entirely, since kBeamSlots exactly
-// matches the number of possible real-world targets (kNumReflectorTargets) — atomicMax is
-// still used, now purely for the legitimate "same target, multiple satellites" case. Zeroed
-// every frame via vkCmdFillBuffer, same pattern as glowBuf.
-static constexpr int kBeamSlots = 201; // MUST match kNumReflectorTargets (one slot per possible target)
+// History: originally azimuth-sector-keyed (16 sectors, GpuGlowBuf's flareEntries/sectorBright
+// idiom) — let unrelated satellites aiming at different real targets collide whenever they
+// shared a 22.5° bearing wedge. Re-keyed by TARGET IDENTITY (bestIdx, one slot per site) to fix
+// that — but then a well-serviced site (many satellites simultaneously choosing it) could only
+// ever show its single brightest satellite via atomicMax, the rest silently dropped. Tried 4
+// sub-slots per site next — still arbitrary and still glitchy for a site serviced by "dozens"
+// of satellites (user report, 2026-07-21): whichever 4 happened to win kept changing as
+// brightness/geometry shifted, so the beam still visibly jumped between represented satellites.
+//
+// **Current design (2026-07-21): plain capped atomic-append, no site keying and no
+// deduplication/arbitration at all.** Every satellite that reaches the TargetedReflector branch
+// with a real target (bestIdx >= 0) claims its OWN slot via a single global atomicAdd counter
+// and writes its own beam unconditionally — no competition, so nothing to glitch between AS LONG
+// AS the cap isn't actually hit.
+//
+// kMaxActiveBeams (C12 follow-up #11, 2026-07-21: 256->2048): the first cap (256) was too tight
+// and reintroduced arbitration by a different door — when genuinely more satellites are eligible
+// than the cap, only the first N (by atomicAdd claim order, which correlates with GPU dispatch
+// order and therefore with satellite ARRAY INDEX, not anything geometric) get written, and every
+// later-indexed satellite is silently dropped EVERY frame. Reflect Orbital is a "Disk" (per
+// CLAUDE.md — a single orbital plane, 10 concentric altitude rings, not spread across many
+// planes/RAANs like a Walker constellation), so the whole constellation sweeps together along
+// essentially one great circle — from a fixed observer, the VISIBLE fraction of that one ring is
+// a specific, fairly large arc (not a small scattered sample of the whole sphere), and as
+// low-index satellites within that eligible set changed which physical satellites they were
+// (the ring sweeping across the sky over time / with observer motion), the rendered subset
+// visibly "stacked" toward whichever side of the sky currently held the lower-indexed eligible
+// satellites — reported as flares fading in from one side and stacking on the other, reversing
+// when time direction reversed, and lagging when moving quickly into a new region. Re-estimated
+// the realistic worst case at ~900 simultaneously eligible for a 5,000-satellite version of this
+// constellation (a single-plane arc estimate, not the much smaller uniform-sphere estimate
+// follow-up #9 used) — kMaxActiveBeams raised to 2048 for comfortable headroom over that, making
+// overflow effectively never happen rather than trying to make the overflow's bias smaller.
+// GpuReflectBeams is still tiny at this size (~96KB, after the debug reflectDirENU field below
+// grew each entry to 48 bytes). A satellite's slot index isn't stable frame
+// to frame (a race on the counter) but that no longer matters when nothing is being dropped:
+// nothing else depends on WHICH index a given satellite lands in, only that everything currently
+// eligible gets rendered, every frame. Zeroed every frame via vkCmdFillBuffer (resets beamCount
+// to 0 too), same pattern as glowBuf.
+static constexpr int kMaxActiveBeams = 2048;
 struct GpuReflectBeam
 {
     glm::vec3 satENU;      // meters, observer-relative (East, North, Up)
@@ -412,15 +449,29 @@ struct GpuReflectBeam
     glm::vec3 targetENU;   // meters, observer-relative; exact 3D ENU projection of the
                            // chosen ground target — correctly encodes Earth curvature
     float footprintRadM;   // ground footprint radius
+    glm::vec3 reflectDirENU; // unit direction, observer ENU basis — the mirror's ACTUAL current
+                           // reflected-sunlight direction (reflect(-sunDirECI, surfN0)), which
+                           // may differ from normalize(targetENU-satENU) while the mirror is
+                           // still slewing toward bestIdx's target (MIRROR_ROT_RATE-limited).
+                           // Debug-only (C12 follow-up #12): drawn as a long "pointing ray" from
+                           // the satellite so a busy site's convergence — and any satellites
+                           // still mid-slew and not yet converged — can be seen directly.
+    float debugPad;        // Repurposed (C12 follow-up #20): carries the originating satellite's
+                           // own stable dispatch index (written as float(i) in sat_orbit.comp) —
+                           // used by cloud_march.comp's sky glow to downsample by a STABLE subset
+                           // of satellites rather than by the atomic-append slot index (which
+                           // isn't stable frame-to-frame). Name kept for minimal diff; no longer
+                           // debug-only or padding.
 };
-static_assert(sizeof(GpuReflectBeam) == 32, "GpuReflectBeam layout mismatch");
+static_assert(sizeof(GpuReflectBeam) == 48, "GpuReflectBeam layout mismatch");
 
 struct GpuReflectBeams
 {
-    uint32_t slotBright[kBeamSlots];  // atomicMax(floatBitsToUint(intensity)), indexed by bestIdx
-    GpuReflectBeam entries[kBeamSlots];
+    uint32_t beamCount;    // atomicAdd counter — total claims this frame, may exceed kMaxActiveBeams
+    uint32_t pad0, pad1, pad2; // std430 array-of-16-byte-aligned-struct alignment padding
+    GpuReflectBeam entries[kMaxActiveBeams]; // only entries[0 .. min(beamCount,kMaxActiveBeams)) are valid
 };
-static_assert(sizeof(GpuReflectBeams) == kBeamSlots * 4 + kBeamSlots * 32, "GpuReflectBeams layout mismatch");
+static_assert(sizeof(GpuReflectBeams) == 16 + kMaxActiveBeams * 48, "GpuReflectBeams layout mismatch");
 
 // ── Per-layer cloud shell descriptor (std140: 32 bytes, 2 × vec4) ─────────────
 // Each layer is an infinitely thin sphere-shell sample of earthCloudsTex.
@@ -550,8 +601,16 @@ struct SatOrbitPC
     float elevCutoff;       // sin(Earth-limb angle) — horizon cull threshold (≤ -0.01) — offset 92
     float beamGain;         // Reflect-Orbital ground-beam intensity multiplier — offset 96
     float beamFootprintRadM;// Reflect-Orbital ground beam footprint radius (m) — offset 100
-}; // 104 bytes
-static_assert(sizeof(SatOrbitPC) == 104, "SatOrbitPC layout mismatch");
+    float mirrorSlewDegPerSec; // offset 104 — C12 follow-up #20: settings-tunable mirror slew
+                            // rate (was a hardcoded 1 deg/sec, MIRROR_ROT_RATE in sat_orbit.comp).
+                            // At 1 deg/sec a satellite retargeting after the observer moves to a
+                            // new area can take minutes to visually catch up — noticeable and
+                            // frustrating while exploring interactively, even though it's a
+                            // reasonable rate for passive/stationary observation. Default raised
+                            // substantially (see SatelliteSim::mirrorSlewDegPerSec) and now
+                            // user-tunable instead of fixed.
+}; // 108 bytes
+static_assert(sizeof(SatOrbitPC) == 108, "SatOrbitPC layout mismatch");
 
 // ── Sky camera ────────────────────────────────────────────────────────────────
 // Azimuth/elevation look direction in the local ENU frame.
@@ -811,6 +870,11 @@ private:
     // bit 128 (beam ground-spot term) and bit 256 (cloud shadow map) are also checked in
     // sat_sky.frag (128 gates both consumers of the same feature, checked in both shaders).
     uint32_t debugDisableMask = 0;
+    // Debug-only, not persisted (same convention as debugDisableMask) — draws each active
+    // Reflect-Orbital beam's ACTUAL current mirror-pointing direction as a long ray, so
+    // convergence at a busy site (and any satellite still mid-slew, not yet aimed at its target)
+    // can be seen directly. See GpuReflectBeam::reflectDirENU and cloud_march.comp (C12 follow-up #12).
+    bool showBeamDebugRays = false;
 
     // ── Sky glow SSBO ─────────────────────────────────────────────────────────
     // Written by sat_flare.comp each frame via binned atomicMax; read by sat_sky.frag.
@@ -1019,6 +1083,17 @@ private:
     float beamMaxRangeM = 500000.0f; // C12 follow-up #6 — render-time "is the observer close
                                       // enough to this site" cutoff (site-referenced beams have
                                       // no observer-side write gate any more, see sat_orbit.comp)
+    // C12 follow-up #17: simple atmospheric-scattering beam sky glow (replaces the removed real
+    // cloud-density march from follow-ups #14-#16, reverted per user request — no cloud lighting
+    // yet). Own gain, separate from beamGain (that's the physical ground-irradiance term feeding
+    // the ground spot; this purely scales the visual glow's brightness) — dim default, tunable.
+    float beamSkyGlowGain = 0.05f;
+    // C12 follow-up #20 raised this to 15 deg/sec by default (was a hardcoded 1 deg/sec constant,
+    // MIRROR_ROT_RATE) to reduce a noticeable catch-up delay after the observer moves. Follow-up
+    // #21: user preferred the original slew rate/behavior, so the default is back to 1 deg/sec —
+    // still exposed as a tunable slider (Settings → Terrain → "Mirror slew rate (deg/s)") in case
+    // it's wanted later, just no longer defaulting to the faster value.
+    float mirrorSlewDegPerSec = 1.0f;
     // ── Milky Way skybox basis (session 27) ────────────────────────────────────
     // ENU->galactic rotation, recomputed each frame in updatePositions() and uploaded to
     // CloudParams. Orientation confirmed by eye against the real star field — no runtime
@@ -1152,6 +1227,15 @@ private:
     // night side within 30° of the terminator (usefully dark but reachable).
     static constexpr int kNumReflectorTargets = 201;
     glm::vec3 reflectorTargetsECEF[kNumReflectorTargets]{}; // unit ECEF, set by initConstellation
+    // Real ground radius per target (C12 follow-up #18) — kEarthRadius + actual terrain elevation
+    // at that target's lat/lon, looked up once via earthElevCpu when targets are generated
+    // (buildOrbits() runs after createGlowResources() has loaded earthElevCpu — see init()'s call
+    // order). Fixes targets on any elevated terrain (mountains, plateaus) being placed at the
+    // sea-level sphere, which put the "ground" endpoint of every beam-related ray for that target
+    // underground. Defaults to kEarthRadius (sea level) if earthElevCpu isn't available for
+    // whatever reason. Consumed by updatePositions() in place of the bare kEarthRadius constant
+    // when converting reflectorTargetsECEF to a real ECI position.
+    float reflectorTargetsRadiusM[kNumReflectorTargets]{};
 
     // Mirror slew rate for TargetedReflector: maximum degrees the mirror normal
     // may rotate per real second.  Prevents instant snapping when the nearest
@@ -1231,12 +1315,13 @@ private:
     bool hovSaveSnapshot = false;
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button
     bool hovDebugToggle[9] = {};   // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map)
+    bool hovBeamDebugRaysToggle = false; // hover state for the "Show beam pointing rays" checkbox (C12 follow-up #12)
     bool hovPhotoMinus[9] = {};
     bool hovPhotoPlus[9] = {};
     bool draggingPhoto[9] = {};
-    bool hovCloudMinus[42] = {}; // was [41] — idx 41 is C12's new "Beam max range" slider
-    bool hovCloudPlus[42] = {};
-    bool draggingCloud[42] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[44] = {}; // was [43] — idx 43 is C12 follow-up #20's new "Mirror slew rate" slider
+    bool hovCloudPlus[44] = {};
+    bool draggingCloud[44] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                   // feedback_cloud_slider_arrays memory: this one was missed once
                                   // already and the out-of-bounds write corrupted the window-chrome
                                   // state declared right below, breaking the settings window.

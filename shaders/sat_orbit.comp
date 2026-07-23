@@ -10,7 +10,7 @@
 // Writes:
 //   binding 1  SatInputBuf     — GpuSatInput array consumed by sat_flare.comp
 //   binding 2  mirrorNormalsBuf — updated slew state written back in-place
-//   binding 4  reflectBeamsBuf — Reflect-Orbital ground beams (C12), target-identity+atomicMax selection;
+//   binding 4  reflectBeamsBuf — Reflect-Orbital ground beams (C12), capped atomic-append, no arbitration;
 //                                zeroed each frame by vkCmdFillBuffer, consumed by
 //                                cloud_march.comp (volumetric in-scatter) and sat_sky.frag
 //                                (ground-spot direct lighting)
@@ -98,27 +98,35 @@ layout(set = 0, binding = 3) readonly buffer ReflectorTargetBuf {
     vec4 reflTargets[];  // xyz=posECI, w=valid
 };
 
-// ── Reflect-Orbital ground beams (C12): TARGET-IDENTITY-keyed selection ─────
-// Keyed by bestIdx (0-200, the same index into reflTargets[] every satellite's nearest-target
-// scan already produces) — NOT by azimuth-from-observer sector. An earlier azimuth-sector
-// version (same idiom as GpuGlowBuf's flareEntries/sectorBright) let two DIFFERENT satellites
-// aiming at two DIFFERENT real targets collide whenever those targets merely shared a
-// 22.5°-wide compass wedge from the observer, silently evicting one beam's slot with an
-// unrelated satellite's — found 2026-07-21 from an in-app report of a beam appearing to come
-// from the wrong satellite / flickering between sky positions. BEAM_SLOTS matches NUM_TARGETS
-// exactly so cross-target collisions are impossible; atomicMax is still used, now purely for
-// the legitimate case of multiple satellites aiming at the SAME target. Zeroed every frame by
-// vkCmdFillBuffer. Must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h exactly.
-const uint BEAM_SLOTS = 201u; // must equal NUM_TARGETS
+// ── Reflect-Orbital ground beams (C12): capped atomic-append, no arbitration ────────────────
+// History: azimuth-sector-keyed, then target-identity-keyed (1 slot/site), then 4 sub-slots/site
+// — all still had a fixed slot (or small set of slots) that satellites competed for, so a site
+// serviced by "dozens" of satellites (user report, 2026-07-21) kept showing visible churn as
+// whichever few satellites currently won the slots changed. **Current design: no site keying,
+// no deduplication, no arbitration at all.** Every satellite reaching this branch with a real
+// target (bestIdx >= 0) claims its OWN slot via a single global atomicAdd counter and writes
+// unconditionally — nothing to compete over, so nothing to glitch between. BEAM_MAX_ACTIVE is a
+// generous headroom cap, not a "keep the best N" limit: a satellite must already clear the
+// OBSERVER's own orbital horizon to reach this code at all (~2000+ km radius, enforced earlier
+// in this shader for an unrelated reason), which bounds how many can simultaneously be eligible
+// to roughly a few hundred at most even for a 5,000-satellite constellation — see
+// TERRAIN_PLAN.md C12 follow-up #9. Zeroed every frame by vkCmdFillBuffer (resets beamCount to 0
+// too). Must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h exactly.
+const uint BEAM_MAX_ACTIVE = 2048u; // must match kMaxActiveBeams in SatelliteSim.h (C12 follow-up #11)
 struct ReflectBeam {
     vec3  satENU;       // meters, observer-relative (East, North, Up)
     float intensity;    // groundIrradiance * beamGain
     vec3  targetENU;    // meters, observer-relative
     float footprintRadM;
+    vec3  reflectDirENU; // unit direction — mirror's ACTUAL current reflected-sunlight direction
+                          // (debug pointing-ray visualization, C12 follow-up #12)
+    float debugPad;       // repurposed (follow-up #20): originating satellite's stable dispatch
+                          // index, for stable downsampling — see the write site below.
 };
 layout(set = 0, binding = 4) buffer ReflectBeamsBuf {
-    uint         slotBright[BEAM_SLOTS];
-    ReflectBeam  beams[BEAM_SLOTS];
+    uint         beamCount; // atomicAdd counter — may exceed BEAM_MAX_ACTIVE
+    uint         beamPad0, beamPad1, beamPad2; // std430 alignment padding, see SatelliteSim.h
+    ReflectBeam  beams[BEAM_MAX_ACTIVE];
 };
 
 // ── Push constants ────────────────────────────────────────────────────────────
@@ -137,13 +145,14 @@ layout(push_constant) uniform PC {
     float elevCutoff;    // sin(Earth-limb angle); horizon cull threshold (≤ -0.01) — offset 92
     float beamGain;          // Reflect-Orbital ground-beam intensity multiplier — offset 96
     float beamFootprintRadM; // Reflect-Orbital ground beam footprint radius (m) — offset 100
+    float mirrorSlewDegPerSec; // offset 104 — C12 follow-up #20: settings-tunable mirror slew rate
+                             // (was a hardcoded 1 deg/sec constant, MIRROR_ROT_RATE)
 } pc;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const float PI            = 3.14159265358979;
 const float TWO_PI        = 6.28318530717959;
 const float SSO_PREC_RATE = TWO_PI / (365.25 * 86400.0); // rad/s
-const float MIRROR_ROT_RATE = 0.01745329251994; // 1 degree per second in radians
 const float KNIFE_MAX_ROLL  = TWO_PI * (10.0/360.0); // 10 deg
 
 // AttitudeMode enum values — must match C++ enum in SatelliteSim.h.
@@ -330,7 +339,7 @@ void main()
             surfN0 = ideal;
         } else {
             vec3  cur      = state.xyz;
-            float maxAngle = MIRROR_ROT_RATE * pc.simDt;
+            float maxAngle = radians(pc.mirrorSlewDegPerSec) * pc.simDt;
             float cosA     = clamp(dot(cur, ideal), -1.0, 1.0);
             float angle    = acos(cosA);
             if (angle <= maxAngle) {
@@ -370,6 +379,15 @@ void main()
                                 dot(relPos, pc.enuY.xyz),
                                 dot(relPos, pc.enuZ.xyz));
 
+            // Debug-only (C12 follow-up #12): the mirror's ACTUAL current reflected-sunlight
+            // direction — may differ from normalize(targetECI-satECI) while MIRROR_ROT_RATE-
+            // limited slewing is still catching up to bestIdx's target. A direction, not a
+            // position, so it projects onto the ENU basis directly (no obsECI subtraction needed).
+            vec3 reflectDirECI = reflect(-pc.sunDirECI, surfN0);
+            vec3 reflectDirENU = vec3(dot(reflectDirECI, pc.enuX.xyz),
+                                       dot(reflectDirECI, pc.enuY.xyz),
+                                       dot(reflectDirECI, pc.enuZ.xyz));
+
             // Ground irradiance delivered by the mirror — a physically different quantity
             // from the view-dependent specular mirrorPeak term in sat_flare.comp (that
             // answers "how bright does the mirror look to the OBSERVER"; this answers "how
@@ -384,16 +402,22 @@ void main()
             float intensity = groundIrradiance * pc.beamGain;
 
             if (intensity > 0.0) {
-                // Indexed directly by TARGET IDENTITY (bestIdx), not azimuth — see the
-                // ReflectBeamsBuf comment above for why. atomicMax + write-on-win still
-                // handles multiple satellites legitimately aiming at the same target.
-                uint  slot      = uint(bestIdx);
-                uint  oldBright = atomicMax(slotBright[slot], floatBitsToUint(intensity));
-                if (floatBitsToUint(intensity) > oldBright) {
+                // No site keying, no arbitration (C12 follow-up #9) — every satellite that
+                // reaches here claims its own unique slot and writes unconditionally.
+                uint slot = atomicAdd(beamCount, 1u);
+                if (slot < BEAM_MAX_ACTIVE) {
                     beams[slot].satENU        = satENU;
                     beams[slot].intensity      = intensity;
                     beams[slot].targetENU      = targetENU;
                     beams[slot].footprintRadM  = pc.beamFootprintRadM;
+                    beams[slot].reflectDirENU  = reflectDirENU;
+                    // Repurposed (C12 follow-up #20): was pure std430 padding, unused. Carries
+                    // this satellite's own stable dispatch index `i` — NOT the atomic-append slot
+                    // `slot` itself, which races across satellites and isn't stable frame-to-frame.
+                    // cloud_march.comp's sky glow uses this to downsample by a STABLE subset of
+                    // satellites (mod(debugPad, stride)==0) instead of by slot index, which would
+                    // show a different random subset each frame (visible flicker).
+                    beams[slot].debugPad       = float(i);
                 }
             }
         }
