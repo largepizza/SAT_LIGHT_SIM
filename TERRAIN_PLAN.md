@@ -1476,6 +1476,102 @@ the ENU-basis-rotation component of the error). Implemented in `recordCompute()`
 Builds clean (verified no duplicate variable declarations from the block move — `orbitPc`/
 `enabledMask`/`highlightMask` each appear exactly once). **Not yet seen in-app.**
 
+**Follow-up #23 (2026-07-22) — elevation-lookup precision + analytic closest-approach rewrite
+(replacing the discrete 32-sample march). Note: this follow-up was implemented and build-verified
+in a session that lost context before it could be written up here — documented after the fact,
+alongside follow-up #24 which fixed a real bug introduced by it.**
+
+User reported four issues against follow-up #22's state: (1) beams still visibly converge to a
+point below the rendered terrain surface on elevated ground, and the underground portion isn't
+occluded — visible "through" the hillside; (2) beams draw over atmosphere/cloud layers with no
+depth/extinction awareness, and asked for smarter start/end culling against cloud volumes; (3)
+when the observer moves directly over a target, all volumetric effects glitch/alias/flicker
+together; (4) beams viewed near-horizontally show visible dotted stepping from the discrete march,
+and asked specifically: why does the march produce flat circular dots, and would a signed distance
+field help?
+
+- **Elevation-lookup precision (issue 1, partial fix):** `earthElevCpu` is itself a 10x
+  point-sampled downsample of the real 21600x10800 elevation texture (see `createGlowResources()`)
+  — a single lookup for a target's exact lat/lon could land on a texel up to ~9km away from the
+  true position, missing a nearby peak and underestimating height, which is the direct cause of
+  "converges below the surface." Fixed by taking the MAX over the surrounding 3x3 texels (wrapping
+  longitude) instead of a single point sample — can only raise the estimate toward a real nearby
+  peak, never lower it — plus a fixed +75m safety margin, biasing toward "floats slightly above
+  ground" rather than "sinks into it," since the former reads far better. Does not address the
+  "beams through terrain, unoccluded" half of issue 1 — that requires per-sample terrain-depth
+  awareness in a currently terrain-blind compute pass (`cloud_march.comp` has no elevation texture
+  binding), a bigger architectural addition not attempted this round.
+- **Analytic closest-approach + closed-form extinction, replacing the discrete march (issues 2 and
+  4):** the beam's density model is a pure function of altitude (`exp(-h/H)`), and altitude varies
+  near-linearly along the beam over this short a march — so both "closest approach to the view
+  ray" and "accumulated extinction to that point" have closed-form solutions, eliminating discrete
+  sampling (and its dotting artifact) entirely:
+  - Ray-to-line-segment closest point: standard two-line closest-point solve between the view ray
+    (`obsPos + s*dir`) and the beam segment (`targetWorldPos + t*rayDirUp`, `t` in `[0,tTop]`),
+    with a near-parallel fallback (project `r` directly onto the beam direction) for when the
+    denominator vanishes.
+  - Closed-form optical depth: `∫exp(-(h0+mu*t)/H)dt = (H/mu)*(rho(0)-rho(t))` for `mu != 0`
+    (falls back to `rho0*t` as `mu->0`), using `BETA_R`/`BETA_M`/`H_R`/`H_M` — this shader's own
+    existing atmosphere constants, unchanged from follow-up #17.
+  - `tEnterBeam` (terrain/ocean occlusion, follow-up #20) becomes a single analytic `sView` value
+    instead of a running minimum over 32 samples.
+  - Not attempted: issue 2's "cloud-volume-aware start/end culling" — that needs real
+    `cloudDensity()` sampling along the beam, explicitly out of scope per the standing "no cloud
+    lighting for beams" instruction from the #14-#17 revert.
+  - Leading theory for issue 3 (zenith flicker): discrete per-sample evaluation is inherently
+    unstable at near-parallel viewing angles (observer looking straight down a near-vertical beam)
+    — tiny shifts in exactly which of 32 fixed samples projects nearest a pixel's view ray can flip
+    frame to frame. An analytic, continuous closest-point evaluation should be far more stable
+    here by construction, though this was not yet confirmed in-app before context was lost.
+
+Builds clean. **Not seen in-app before the two follow-ups below were needed.**
+
+**Follow-up #24 (2026-07-23) — critical closest-point formula bug fix + grazing-angle brightness +
+smooth capsule end-fade.**
+
+Testing follow-up #23 surfaced two new problems: "beam rendering is now highly observer dependent
+— ruins the effect of seeing beams converge. Beams are clipped, hard edges sometimes — I feel this
+isn't just a realism thing" and "beams only manifest from a distance as a couple of dots at the
+cloud layer above target sites... everything below the cloud layer is stopped no matter cloud
+cover amount."
+
+- **Root cause, found by re-deriving the closest-point math from scratch:** minimizing
+  `|r + s*dir - t*rayDirUp|^2` gives `s = t*bDot - c` and `t = f + s*bDot`
+  (`bDot=dir.rayDirUp`, `c=dir.r`, `f=rayDirUp.r`); substituting and solving gives
+  `t = (f - bDot*c) / denom`. Follow-up #23 had `(bDot*f - c) / denom` — `bDot` multiplying the
+  WRONG term. This produced systematically incorrect (and frequently out-of-segment, hence
+  clamped) closest points for any non-perpendicular viewing angle — directly explaining both
+  reports: wrong/unstable solutions jumping between the true and clamped answer as view angle
+  changed ("hard edges... observer dependent"), and oblique/grazing distant views — exactly where
+  a wrong `bDot` term diverges most from correct — clamping to the wrong segment endpoint for most
+  of the screen instead of tracing a continuous line to the ground ("couple of dots... everything
+  below is stopped," which was NOT cloud occlusion — no cloud-related code path is even involved
+  in this term at all). Fixed: swapped to the correct `(f - bDot*c)/denom`.
+- **Grazing-angle brightness (restores "convergence looks bright," properly this time):** the old
+  discrete 32-sample march accidentally over-brightened near-end-on views (many overlapping
+  samples all close to the same near-parallel view ray, summed) — part of why distant "many beams
+  converging" shots looked good, and exactly what follow-up #23's single-point-per-beam evaluation
+  lost, with no accidental bonus left standing in for it. Replaced with the actual analytic
+  integral of a Gaussian cross-section tube crossed by a straight line at angle theta: distance
+  from a point on the view ray to the beam's line grows as `sqrt(perpDist0^2 + (Δs*sinTheta)^2)`
+  moving away from the closest-approach point, so
+  `∫exp(-dist^2/(2σ^2))dΔs = proximity0 * σ*sqrt(2π)/sinTheta` — i.e. multiply the existing
+  point-evaluated brightness by `kBeamRayRadiusM/sinTheta`, capped at `tTop` (a real, finite
+  segment can't integrate to more "effective length" than its own length, so `sinTheta` is
+  clamped to at least `kBeamRayRadiusM/tTop` before dividing) to stay bounded as `sinTheta->0`
+  (the exact "observer directly overhead" case).
+- **Smooth capsule-style end fade:** the hard `clamp(tBeamRaw, 0, tTop)` from follow-up #23 pinned
+  many different view rays to the SAME fixed endpoint at full brightness whenever their true
+  (unclamped) closest point fell outside the segment — a real "flat disc" artifact at each end, not
+  a stylistic rough edge. Fixed with `endFade = exp(-(overshoot^2)/(2*kBeamRayRadiusM^2))` where
+  `overshoot` is how far the UNCLAMPED `tBeamRaw` falls beyond either end, using the same Gaussian
+  sigma as the tube radius — reads as a rounded capsule cap instead of a flat one.
+- Old flat `kBeamRayRadiusM` brightness stand-in (follow-up #23's placeholder "effective length,"
+  since there was no discrete step to weight by anymore) removed — `grazingLen` and `endFade` now
+  do that job properly.
+
+Builds clean. **Not yet seen in-app.**
+
 ### 2026-07-20/21 (session 31) — Cloud shape quality pass + domain-warp bake perf
 Three user-reported cloud oddities (flat bases, conical/not-fluffy shapes, shadow line artifacts
 + phantom thin-cloud shadow-casters), followed by a perf regression from fixing the third one, then
