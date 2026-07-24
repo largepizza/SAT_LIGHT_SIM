@@ -8,11 +8,13 @@
 // the "velvet-rolling-squirrel" plan for the full design rationale (why two RGBA16F targets,
 // the combined-attenuation algebra, and the accepted terrain-occlusion approximation).
 //
-// This shader has NO terrain data (no earthElevTex/earthSpecTex, no terrain march) — it always
-// marches the cloud shell's full potential extent. sat_sky.frag does a post-hoc terrain-
-// occlusion correction using its own accurate tSurface against the tCloudOcclude distance
-// stored here (Target A alpha). See the "Known limitation" note in the plan: this is exact for
-// "terrain fully blocks the cloud" but does not replicate a mid-shell partial truncation.
+// This shader marches the cloud shell's full potential extent regardless of terrain — sat_sky.frag
+// does a post-hoc terrain-occlusion correction using its own accurate tSurface against the
+// tCloudOcclude distance stored here (Target A alpha). See the "Known limitation" note in the
+// plan: this is exact for "terrain fully blocks the cloud" but does not replicate a mid-shell
+// partial truncation. C12 follow-up #28 added `earthElevTex`/`earthSpecTex` (bindings 11/12,
+// below) — but ONLY for a per-beam terrain occlusion check in the Reflect-Orbital beam block;
+// nothing else in this file uses them, and cloud/cirrus/aurora still have no terrain awareness.
 //
 // Everything below down to `cirrusMarchCS`/`cloudMarchCS` is a DUPLICATE of code that also still
 // exists in sat_sky.frag (this codebase has no #include mechanism — every shader file is self-
@@ -22,7 +24,7 @@
 // them could simply be deleted from sat_sky.frag.
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// ── Push constants (140 bytes, matches C++ CloudMarchPC) ──────────────────────
+// ── Push constants (148 bytes, matches C++ CloudMarchPC) ──────────────────────
 layout(push_constant) uniform PC {
     mat4  skyView;     // ENU -> camera space (rotation, no translation) — same as SatDrawPC
     float fovYRad;
@@ -39,6 +41,7 @@ layout(push_constant) uniform PC {
     uint  showBeamDebugRays; // C12 follow-up #12 — debug pointing-ray visualization toggle
     float beamSkyGlowGain; // C12 follow-up #17 — settings-tunable brightness for the simple
                            // atmospheric-scattering beam glow
+    float daySuppression;  // C12 follow-up #28 — same ratio sat_flare.comp applies to satellites/stars
 } pc;
 
 layout(set = 0, binding = 0) uniform sampler2D earthCloudsTex;
@@ -163,9 +166,52 @@ layout(std430, set = 0, binding = 10) readonly buffer ReflectBeamsBuf {
     ReflectBeam  beams[BEAM_MAX_ACTIVE];
 };
 
+// C12 follow-up #28 — same pair sat_sky.frag binds, added here ONLY so the beam-glow block can do
+// a per-beam terrain occlusion check (see terrainHeightAtDir()/beamTerrainOccluded() below). Land-
+// only DEM; decode exactly matches sat_sky.frag's (see CLAUDE.md "Elevation texture encoding" for
+// the full pixel table) — do not change one without the other.
+layout(set = 0, binding = 11) uniform sampler2D earthElevTex;
+layout(set = 0, binding = 12) uniform sampler2D earthSpecTex;
+
 const float PI = 3.14159265359;
 const float R_EARTH = 6371000.0;
 const float R_ATMOS = 6471000.0;
+
+const float kElevRangeBeam  = 9000.0;
+const float kElevOffsetBeam = 15.0 / 255.0 * kElevRangeBeam;
+
+// Terrain height (meters above sea level) at a given ECEF-frame direction, via the same
+// lat/lon->UV mapping cloudMarchCS's cloud-coverage lookup already uses (~line 786-792 below —
+// atan2 longitude, asin latitude, [0,1] UV). Ocean/no-data pixels decode to 0 (sea level).
+float terrainHeightAtDir(vec3 dirECEF) {
+    float tLon = atan(dirECEF.y, dirECEF.x);
+    float tLat = asin(clamp(dirECEF.z, -1.0, 1.0));
+    vec2  tUV  = vec2(fract((tLon + PI) / (2.0 * PI)), (0.5 * PI - tLat) / PI);
+    float spec = textureLod(earthSpecTex, tUV, 2.0).r;
+    if (spec > 0.5) return 0.0; // ocean/water mask — sea level
+    float pixel = textureLod(earthElevTex, tUV, 2.0).r;
+    return max(0.0, pixel * kElevRangeBeam - kElevOffsetBeam);
+}
+
+// C12 follow-up #28 — per-beam terrain occlusion for the Reflect-Orbital beam glow (see call site
+// in the beam loop below). Marches a small fixed number of samples along the straight 3D line
+// from the observer to a beam's closest-approach point `p`, checking whether terrain rises above
+// the line at any sample. Endpoints (i=0, observer's own position; i=steps, `p` itself) are
+// skipped — the observer is never "inside" terrain by construction, and the target's own ground
+// elevation is already handled by the +75m safety margin at target-placement time (see
+// reflectorTargetsRadiusM in SatelliteSim.cpp) — checking only the interior catches an
+// intervening hill without false-positiving on either endpoint's own local footing.
+bool beamTerrainOccluded(vec3 obsPos, vec3 p, vec3 enuX, vec3 enuY, vec3 enuZ) {
+    const int kBeamOcclusionSteps = 8;
+    for (int i = 1; i < kBeamOcclusionSteps; ++i) {
+        float t         = float(i) / float(kBeamOcclusionSteps);
+        vec3  sp        = mix(obsPos, p, t);
+        float spAlt     = length(sp) - R_EARTH;
+        vec3  spDirECEF = normalize(sp.x * enuX + sp.y * enuY + sp.z * enuZ);
+        if (spAlt < terrainHeightAtDir(spDirECEF)) return true;
+    }
+    return false;
+}
 
 const float kCloudHorizFreq = 480.0;
 const float kCloudColFreq   = 80.0;
@@ -472,7 +518,19 @@ vec3 auroraCurtainSample(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirEC
 // (which existed only because sat_sky.frag runs at full-res and needed a cheap same-frame proxy;
 // this compute shader already has the real value on hand).
 vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
-                    vec3 sunDir, vec3 sunDirECEF, float obsEffH, vec4 moonDirENU) {
+                    vec3 sunDir, vec3 sunDirECEF, float obsEffH, vec4 moonDirENU,
+                    out float tEnterOut) // always valid whenever the march actually runs — same
+                                          // convention as cloudMarchCS/cirrusMarchCS's tEnterOut.
+                                          // C12 follow-up #25: this was previously missing
+                                          // entirely, so a ray with no cirrus/cloud/beam content
+                                          // left tEnterCombined at -1 even when aurora was the
+                                          // only thing on it, and sat_sky.frag's terrain gate
+                                          // (`tEnterCombined >= 0.0`) failed open — aurora drew
+                                          // straight through terrain whenever it was the sole
+                                          // occupant of B_total, which is the common case above
+                                          // the cloud shell (e.g. ~38km).
+{
+    tEnterOut = -1.0;
     const float kAuroraMarchInnerM = kAuroraShellInnerM - 55000.0;
     const float kAuroraMarchOuterM = kAuroraShellOuterM + 110000.0;
     vec2 tAuroraFar = raySphere(obsPos, dir, R_EARTH + kAuroraMarchOuterM);
@@ -506,6 +564,30 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
         minBoundColatDeg = min(minBoundColatDeg, degrees(acos(clamp(dot(bDirECEF, bPole), -1.0, 1.0))));
     }
     if (minBoundColatDeg > 80.0) return vec3(0.0);
+
+    // Past this point the march genuinely runs — record the entry distance for terrain
+    // suppression. Unlike cloudMarchCS/cirrusMarchCS, this canNOT just reuse atEnter: the march
+    // bounds above (kAuroraMarchInnerM/OuterM) are deliberately padded 55/110km beyond the REAL
+    // shell (kAuroraShellInnerM/OuterM) to catch the falloff/oval-mask tail smoothly, so "inside
+    // the padded march range" (atEnter==0 in the branch above) does NOT mean "inside the real
+    // emissive shell." Using atEnter directly told the terrain gate aurora content starts at
+    // distance 0 — i.e. nothing can ever occlude it — for the entire padding band (~40-95km
+    // altitude), well below where the aurora is actually bright. That's the real cause of a
+    // reported "pops in over terrain at ~38-40km" (matches kAuroraMarchInnerM = 95000-55000 =
+    // 40000 almost exactly) — a hard gate failure over that whole band, not a smooth fade. Fixed
+    // by computing the entry distance against the REAL (unpadded) shell bounds instead, fully
+    // decoupled from the padded range used for the step loop below.
+    float realEnter;
+    if (obsEffH < kAuroraShellInnerM) {
+        vec2 tRealIn = raySphere(obsPos, dir, R_EARTH + kAuroraShellInnerM);
+        realEnter = max(tRealIn.y, 0.0);
+    } else if (obsEffH <= kAuroraShellOuterM) {
+        realEnter = 0.0; // genuinely inside the real shell — content starts at the camera
+    } else {
+        vec2 tRealOut = raySphere(obsPos, dir, R_EARTH + kAuroraShellOuterM);
+        realEnter = max(tRealOut.x, 0.0);
+    }
+    tEnterOut = realEnter;
 
     const float kAuroraMaxStepM = 15000.0;
     const int   kAuroraStepsMin = 4;
@@ -1278,9 +1360,12 @@ void main() {
     // from before, when aurora ignored terrain occlusion entirely — this is more physically
     // correct: terrain that blocks the view of the much-closer cloud layer necessarily blocks the
     // far higher aurora shell along that same ray too).
-    vec3 auroraContrib = ((pc.debugDisableMask & 32u) != 0u)
-        ? vec3(0.0)
-        : auroraMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, pc.obsEffH, pc.moonDirENU);
+    float tEnterAurora = -1.0;
+    vec3  auroraContrib = vec3(0.0);
+    if ((pc.debugDisableMask & 32u) == 0u) {
+        auroraContrib = auroraMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF,
+                                       pc.obsEffH, pc.moonDirENU, tEnterAurora);
+    }
     if (dot(auroraContrib, auroraContrib) > 0.0) {
         bool  auroraBehindClouds = (pc.obsEffH < kAuroraShellInnerM);
         float cloudBlockLocal    = dot(A_total, vec3(1.0 / 3.0));
@@ -1323,24 +1408,50 @@ void main() {
     // folded into tEnterCombined below so sat_sky.frag's terrain/ocean occlusion test knows about
     // this near-ground content too, not just the (often farther) cloud shell's own entry distance.
     float tEnterBeam = -1.0;
+    vec3  beamRadiance = vec3(0.0); // C12 follow-up #25: accumulated separately from B_total and
+                                     // soft-compressed once below (fix 3c) so a dense cluster of
+                                     // overlapping beams saturates gracefully instead of blowing
+                                     // past displayable range as flat clipped white.
     if ((pc.debugDisableMask & 128u) == 0u && pc.beamSkyGlowGain > 0.0) {
         const float kBeamRayRadiusM  = 3000.0;  // glow "thickness" — proximity falloff radius
         const float kBeamGlowMaxAltM = 25000.0; // ignore the beam above this altitude — the
                                                   // volumetric effect is only pronounced in the
                                                   // lower atmosphere; also bounds the segment's
                                                   // far end below.
+        // C12 follow-up #25: was a hard `continue` at pc.beamMaxRangeM — a pure step function
+        // with no fade region. Combined with the 8x stride compensation below, a beam that
+        // happened to be in the stride subset would snap straight to full 8x-compensated
+        // brightness the instant its target crossed into range ("pop-in"). Now a smooth ramp
+        // over the last kBeamRangeFadeM meters of range instead.
+        const float kBeamRangeFadeM = 50000.0;
+
         // Stable downsample (C12 follow-up #20) — every kBeamGlowStride-th SATELLITE (by its own
         // stable dispatch index, stashed in debugPad — NOT the atomic-append slot `bi`, which
         // races across satellites and isn't stable frame to frame). Intensity compensated so
         // total apparent brightness at a busy site stays close to marching every satellite.
+        // C12 follow-up #28: this statistical averaging assumption needs MANY simultaneous beams
+        // to hold — near a single convergence site only a handful are ever locally relevant, so
+        // whether a beam survives this coin-flip gate, each survivor 8x brighter than it "should"
+        // be, caused visible brightness pops as satellites entered/exited target eligibility over
+        // time. Fixed below by exempting nearby beams from the stride entirely (evaluate every
+        // one, no compensation) — the geometric proximity/range cuts already bound how many such
+        // beams can exist close to the observer, so cost stays low without striding there; the
+        // stride+compensation scheme now only applies beyond kBeamStrideBubbleM, where the
+        // statistical-averaging assumption actually holds (many simultaneous distant beams).
         const float kBeamGlowStride = 8.0;
+        const float kBeamStrideBubbleM = 30000.0;
 
         int activeBeamCount = int(min(beamCount, BEAM_MAX_ACTIVE));
         for (int bi = 0; bi < activeBeamCount; ++bi) {
-            if (mod(beams[bi].debugPad, kBeamGlowStride) > 0.5) continue;
-            float intensity = beams[bi].intensity * kBeamGlowStride;
+            float targetDist = length(beams[bi].targetENU);
+            bool  closeBubble = targetDist < kBeamStrideBubbleM;
+            if (!closeBubble && mod(beams[bi].debugPad, kBeamGlowStride) > 0.5) continue;
+            float strideMult = closeBubble ? 1.0 : kBeamGlowStride;
+            float intensity = beams[bi].intensity * strideMult;
             if (intensity <= 0.0) continue;
-            if (length(beams[bi].targetENU) > pc.beamMaxRangeM) continue;
+
+            float rangeFade  = 1.0 - smoothstep(pc.beamMaxRangeM - kBeamRangeFadeM, pc.beamMaxRangeM, targetDist);
+            if (rangeFade <= 0.0) continue;
 
             // Segment: targetWorldPos (t=0, elevation-correct ground point — follow-up #18/#23)
             // to the satellite's REAL current direction (follow-up #21:
@@ -1377,20 +1488,23 @@ void main() {
             float denom = 1.0 - bDot * bDot; // = sin^2(angle between the view ray and the beam)
             float sinTheta = sqrt(max(denom, 0.0));
 
-            float tBeamRaw;
-            if (denom > 1e-5) {
-                float f = dot(rayDirUp, r);
-                float c = dot(dir, r);
-                tBeamRaw = (f - bDot * c) / denom;
-            } else {
-                // Near-parallel — exactly the "observer directly over the target, looking down a
-                // near-vertical beam" case (C12 follow-up #23's diagnosed flicker cause). The
-                // two-line formula's denominator vanishes here; fall back to projecting r directly
-                // onto the beam direction, which is stable, continuous, and exact in the true
-                // parallel limit (every point along the beam is then equally close in the
-                // cross-track sense).
-                tBeamRaw = dot(rayDirUp, r);
-            }
+            // C12 follow-up #25: the general/near-parallel split used to be a hard `if (denom >
+            // 1e-5)` branch — a real C0 discontinuity in view-DIRECTION space (denom is exactly
+            // sin^2 of the angle between the view ray and this beam, so the branch boundary is a
+            // thin ring around "looking straight along this beam"). With several differently-
+            // angled beams in view at once (a busy target with multiple mirrors converging, some
+            // near-horizon), several such rings can land anywhere on screen including the edges,
+            // and dividing by a shrinking-but-not-yet-clamped denom amplifies float noise right at
+            // the boundary — the likely source of "orientation-dependent clipping." Replaced with
+            // a smooth blend between the two formulas (both agree in the overlap region, so this
+            // changes nothing away from the boundary) — no more branch, no more seam.
+            float f = dot(rayDirUp, r);
+            float c = dot(dir, r);
+            float denomSafe      = max(denom, 1e-5);
+            float tBeamGeneral   = (f - bDot * c) / denomSafe;
+            float tBeamParallel  = f; // projection of r onto the beam direction — stable, exact
+                                       // in the true parallel limit
+            float tBeamRaw = mix(tBeamParallel, tBeamGeneral, smoothstep(0.0, 3e-4, denom));
             float tBeam = clamp(tBeamRaw, 0.0, tTop);
 
             vec3  p     = targetWorldPos + rayDirUp * tBeam;
@@ -1401,6 +1515,16 @@ void main() {
             float perpDist     = length(p - closestRayPt);
             if (perpDist > kBeamRayRadiusM * 3.0) continue;
 
+            // C12 follow-up #28: per-beam terrain occlusion. The shared tEnterCombined gate
+            // (see its declaration/fold-in below) can't do this correctly — it only knows the
+            // NEAREST volumetric content on this ray, so a close beam masks the occlusion test
+            // for any farther beam sharing the same ray. Do it directly here instead: march a
+            // few samples along the actual straight line from the observer to this beam's own
+            // closest-approach point and check terrain height at each — exact for "does a hill
+            // block this specific line of sight" (line-of-sight is a straight 3D line in this
+            // frame), unlike the shared scalar.
+            if (beamTerrainOccluded(obsPos, p, enuX, enuY, enuZ)) continue;
+
             // ── Closed-form density + transmittance at the closest-approach point ───────────────
             // h(t) ~= h0 + mu*t (flat-atmosphere approximation — accurate over this ~25km march
             // relative to R_EARTH). mu = cos(angle between the beam and local vertical) — near 1
@@ -1409,18 +1533,43 @@ void main() {
             float mu = dot(rayDirUp, normalize(targetWorldPos));
             float h  = max(0.0, h0 + mu * tBeam);
 
-            float rho0R = exp(-h0 / H_R), rhoR = exp(-h / H_R);
-            float rho0M = exp(-h0 / H_M), rhoM = exp(-h / H_M);
-            // Optical depth from the ground (t=0) to tBeam: exact integral of exp(-h(t)/H) under
-            // the linear-altitude approximation — ∫exp(-(h0+mu*t)/H)dt = (H/mu)*(rho(0)-rho(t))
-            // for mu != 0; falls back to the trivial constant-density case (rho0*t) as mu->0 (a
-            // near-horizontal beam, where altitude barely changes over the march anyway).
-            float ODR = (abs(mu) > 1e-4) ? (H_R / mu) * (rho0R - rhoR) : rho0R * tBeam;
-            float ODM = (abs(mu) > 1e-4) ? (H_M / mu) * (rho0M - rhoM) : rho0M * tBeam;
-            float betaRScalar = (BETA_R.x + BETA_R.y + BETA_R.z) / 3.0;
-            float T = exp(-(betaRScalar * ODR + BETA_M * 1.1 * ODM));
+            float rhoR = exp(-h / H_R);
+            float rhoM = exp(-h / H_M);
+            // C12 follow-up #27: this beam is a column of nearly-white DIRECT sunlight (reflected
+            // off the mirror in space, so it hasn't touched Earth's atmosphere at all until it
+            // starts descending) — physically, what should redden it white->yellow->red as it
+            // approaches the ground is WAVELENGTH-DEPENDENT EXTINCTION along the remaining descent
+            // (blue attenuates faster than red — the same reason low sun looks orange/red), NOT a
+            // per-point Rayleigh/Mie SCATTERING hue (that models ambient sky-dome light, a
+            // different physical situation, and was also numerically unstable here — see below).
+            // So ODR/ODM must measure "how much atmosphere has this light already fallen through
+            // by the time it reaches tBeam," i.e. the integral from tBeam UP to the segment's top
+            // (near the mirror/space end, where extinction is ~0), NOT from the ground UP to
+            // tBeam (which follow-up #23-26 used, and which — harmlessly, while T was colorless —
+            // is backwards: it made T MOST attenuated near the satellite and closest to 1/white
+            // near the ground, the opposite of a real sunbeam). rhoTopR/rhoTopM are the density at
+            // the segment's fixed upper bound (kBeamGlowMaxAltM) — a CONSTANT, since topHit is
+            // defined to land exactly at that altitude by construction.
+            float rhoTopR = exp(-kBeamGlowMaxAltM / H_R);
+            float rhoTopM = exp(-kBeamGlowMaxAltM / H_M); // ~0 — Mie is negligible above a few meters anyway
+            float ODR = (abs(mu) > 1e-4) ? (H_R / mu) * (rhoR - rhoTopR) : rhoR * (tTop - tBeam);
+            float ODM = (abs(mu) > 1e-4) ? (H_M / mu) * (rhoM - rhoTopM) : rhoM * (tTop - tBeam);
+            vec3 T = exp(-(BETA_R * ODR + BETA_M * 1.1 * ODM)); // vector BETA_R: wavelength-dependent,
+                                                                  // this IS the white->yellow->red gradient
 
-            float haze      = rhoR + rhoM; // local scattering medium at the closest-approach point
+            // C12 follow-up #27: emission color reverted to the flat/neutral scalar from before
+            // follow-up #25's phase-weighted Rayleigh/Mie hue-mixing attempt. That attempt derived
+            // hue from a RATIO between a blue-dominant vector (BETA_R*rhoR) and a near-white
+            // scalar (BETA_M*rhoM) — but rhoM collapses within meters of the ground (H_M=12m), so
+            // that ratio swings wildly over a tiny altitude range, and pM (Henyey-Greenstein,
+            // G_MIE=0.26) swings hugely with viewing/sun angle too — together producing the
+            // reported "mesmerizing rainbows" instead of a coherent beam. A collimated beam
+            // scattered sideways by local haze/air genuinely does look close to neutral/white at
+            // the scattering POINT itself (it's carrying the sun's direct spectrum, not re-doing
+            // Rayleigh sky-dome physics) — the correct white/yellow/red gradient comes entirely
+            // from T above now that its direction is fixed.
+            float hazeMagnitude = rhoR + rhoM;
+            vec3  hazeColor      = vec3(hazeMagnitude);
             float proximity = exp(-(perpDist * perpDist) / (2.0 * kBeamRayRadiusM * kBeamRayRadiusM));
 
             // Grazing-angle brightness (C12 follow-up #24) — replaces the flat kBeamRayRadiusM
@@ -1435,8 +1584,19 @@ void main() {
             // follow-up #23's single-point-per-beam evaluation lost: "ruins the effect of seeing
             // beams converge"). Capped so a real (finite) beam segment can't integrate to more
             // than its own length tTop as sinTheta->0, instead of diverging.
-            float sinThetaClamped = max(sinTheta, kBeamRayRadiusM / tTop);
-            float grazingLen = kBeamRayRadiusM / sinThetaClamped; // effective interaction length, capped at tTop
+            //
+            // C12 follow-up #28: this boost's own steep gradient (up to tTop, tens of km, as
+            // sinTheta->0) is itself a source of "glitches near convergence points" — the boost
+            // exists to make DISTANT convergence shots read as bright, but up close the beam is
+            // already plainly visible without amplification, and small viewing-angle changes near
+            // the zenith (exactly where you look when standing under a near-vertical beam) then
+            // cause large brightness swings. Fade the boost out at close range instead of touching
+            // the boost itself — preserves the (liked, working) distant-convergence brightness.
+            const float kGrazingFadeRangeM = 20000.0;
+            float grazingFade      = smoothstep(0.0, kGrazingFadeRangeM, targetDist);
+            float sinThetaClamped  = max(sinTheta, kBeamRayRadiusM / tTop);
+            float grazingLenBoost  = kBeamRayRadiusM / sinThetaClamped; // capped at tTop
+            float grazingLen = mix(kBeamRayRadiusM, grazingLenBoost, grazingFade); // effective interaction length
 
             // Smooth capsule-style end fade (C12 follow-up #24) — softens the segment's two ends
             // instead of the hard clamp from follow-up #23, which pinned many different view rays
@@ -1450,13 +1610,37 @@ void main() {
             // First-pass scale — expect retuning once seen in-app; pc.beamSkyGlowGain is the
             // primary user-facing brightness control.
             const float kBeamScale = 1e-9;
-            B_total += vec3(pc.beamSkyGlowGain * intensity * T * haze * proximity * grazingLen * endFade * kBeamScale);
+            beamRadiance += pc.beamSkyGlowGain * intensity * T * hazeColor
+                          * (proximity * grazingLen * endFade * rangeFade * kBeamScale);
 
             // Track the nearest contribution along the VIEW ray (C12 follow-up #20) — see
             // tEnterBeam's declaration above. Now a single analytic value per beam instead of a
             // running minimum over 32 samples.
             if (tEnterBeam < 0.0 || sView < tEnterBeam) tEnterBeam = sView;
         }
+
+        // C12 follow-up #28: daytime suppression — same formula/ratio sat_flare.comp already
+        // applies to satellites/stars (`dayBright`/`daySuppression`), so beams dim during the day
+        // instead of rendering at full brightness regardless of sun elevation. `pc.sunDirENU.w`
+        // is already sin(solar elevation), no new field needed for that half of the formula.
+        float tDay      = clamp((pc.sunDirENU.w + 0.05) / 0.39, 0.0, 1.0);
+        float dayBright = tDay * tDay;
+        float atmFracBeam = clamp(exp(-pc.obsEffH / 20000.0), 0.0, 1.0);
+        beamRadiance /= (1.0 + dayBright * pc.daySuppression * atmFracBeam);
+
+        // C12 follow-up #25: soft saturating compression instead of raw additive B_total +=.
+        // Every beam above added unboundedly (further inflated by the 8x stride compensation), so
+        // a dense cluster of simultaneously-visible beams could blow well past displayable range,
+        // reading as flat clipped white ("many beams together overwhelm and Z-fight"). This bounds
+        // the worst case while preserving hazeColor's actual hue better than a hard clamp would.
+        //
+        // C12 follow-up #28: multiplied by A_total (combined cirrus+cloud transmittance for this
+        // pixel) — previously beams ignored cloud opacity entirely. Beams render up to 25km
+        // altitude, well above typical cloud-shell tops, so for a ground observer looking up,
+        // cloud opacity anywhere on this ray is generally between the observer and the (higher)
+        // beam content — the same "shared per-ray opacity, no depth-awareness" approximation
+        // already accepted for cirrus/cloud interplay above (B_cirrus*A_cloud).
+        B_total += (vec3(1.0) - exp(-beamRadiance)) * A_total;
     }
 
     // ── Reflect-Orbital beam DEBUG pointing rays (C12 follow-up #12) ─────────────────────────
@@ -1530,6 +1714,10 @@ void main() {
     // declaration above; without this, terrain/ocean occlusion only knew about the (often much
     // farther) cloud shell entry distance, wrongly suppressing a nearer beam glow along with it.
     if (tEnterBeam >= 0.0 && (tEnterCombined < 0.0 || tEnterBeam < tEnterCombined)) tEnterCombined = tEnterBeam;
+    // Fold in aurora's own entry distance (C12 follow-up #25) — previously missing entirely, so a
+    // ray with no cirrus/cloud/beam content left tEnterCombined at -1 even when aurora was the only
+    // thing in B_total, and sat_sky.frag's terrain gate failed open (aurora drew through terrain).
+    if (tEnterAurora >= 0.0 && (tEnterCombined < 0.0 || tEnterAurora < tEnterCombined)) tEnterCombined = tEnterAurora;
 
     imageStore(targetA, coord, vec4(B_total, tCloudOcclude));
     imageStore(targetB, coord, vec4(A_total, tEnterCombined));

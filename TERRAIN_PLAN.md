@@ -1572,6 +1572,198 @@ cover amount."
 
 Builds clean. **Not yet seen in-app.**
 
+**Follow-up #25 (2026-07-23) — aurora terrain leak, beam pop-in, atmospheric color.**
+
+User confirmed follow-up #24 "definitely better at a distance and performance-wise," then reported
+three more issues, diagnosed via three parallel Explore-agent investigations plus direct reads:
+
+- **Aurora draws through terrain at 38km — NOT caused by the dispatch reorder or beam work,** despite
+  the timing coincidence; a separate, pre-existing gap. `tEnterCombined` (what `sat_sky.frag`'s
+  terrain gate checks) was only ever built from `tEnterCirrus`/`tEnterCloud`/`tEnterBeam` —
+  `auroraMarchCS`'s own entry distance (`atEnter`, already computed locally) was never returned or
+  folded in, even though aurora's radiance goes straight into the same `B_total` that gate protects.
+  Whenever cirrus/cloud/beam are all absent on a ray — the COMMON case above the cloud shell, e.g.
+  ~38km, where `cloudMarchCS`'s "above shell" branch frequently early-returns — `tEnterCombined`
+  stayed -1, the gate's `>= 0.0` check failed open, and aurora composited unconditionally regardless
+  of `tSurface`. Fixed: gave `auroraMarchCS` an `out float tEnterOut` (same convention as
+  `cloudMarchCS`/`cirrusMarchCS` — set once the march genuinely runs, before accumulation), folded
+  into `tEnterCombined` with the same `min`-combine pattern already used for `tEnterBeam`.
+- **Beam pop-in:** root cause was a hard `if (length(targetENU) > pc.beamMaxRangeM) continue;` —
+  a pure step function, no fade region — compounded by the 8x stride-downsample compensation
+  (`kBeamGlowStride`), so a stride-eligible beam snapped straight to full 8x brightness the instant
+  its target crossed into range. Fixed: replaced the hard cutoff with `rangeFade = 1.0 -
+  smoothstep(beamMaxRangeM - kBeamRangeFadeM, beamMaxRangeM, dist)` (fade constant 50km),
+  multiplied into the final per-beam contribution instead of gating it outright (still `continue`s
+  once truly zero, as a cheap perf floor).
+- **White blobs, orientation-dependent clipping/z-fight when standing in a beam** — three fixes,
+  all in the same block:
+  - **Color:** confirmed at the code level (not just perception) that the emission term was a
+    literal `vec3(scalar)` — `haze = rhoR + rhoM` with a mono-averaged `betaRScalar` transmittance,
+    genuinely colorless by construction. This file already duplicates real Rayleigh/Mie machinery
+    for a different purpose (`skyAmbientBase`, ~line 830: integrate exponential density, phase-
+    weight, scale by vector `BETA_R`) — ported that pattern in: transmittance `T` now uses vector
+    `BETA_R` (wavelength-dependent extinction), and the emission is now
+    `phaseR(cosA)*BETA_R*rhoR + phaseM(cosA)*BETA_M*rhoM` where `cosA` is the beam-to-sun angle —
+    the beam glows because it's sunlit air, the same physical mechanism as the rest of the sky.
+  - **Orientation-dependent clipping:** traced to the hard `if (denom > 1e-5)` branch in the
+    closest-point solve — `denom = sin²(angle between view ray and beam)`, so that branch boundary
+    is a literal thin ring in view-direction space around "looking straight along this beam."
+    With several differently-angled beams in view at once (a busy multi-mirror target, some near-
+    horizon), several such rings can land anywhere on screen including the edges, and dividing by a
+    shrinking-but-not-yet-clamped `denom` amplifies float noise right at the boundary. Fixed by
+    blending the general and near-parallel formulas continuously (`mix(tBeamParallel, tBeamGeneral,
+    smoothstep(0.0, 3e-4, denom))`) instead of hard-switching — no more branch, no more seam.
+  - **Many-beams overwhelm:** every beam added unboundedly into `B_total` (further inflated by the
+    8x stride compensation), so a dense cluster could blow well past displayable range and read as
+    flat clipped white. Fixed by accumulating this block's beams into a local `beamRadiance` and
+    applying a soft saturating compression once (`B_total += vec3(1.0) - exp(-beamRadiance)`)
+    instead of adding raw — bounds the worst case, preserves the new color better than a hard clamp,
+    doesn't touch the stride/downsampling scheme itself (not a reported perf problem).
+
+Builds clean. **Not yet seen in-app.**
+
+**Follow-up #26 (2026-07-23) — aurora fix incomplete + beam glow went fully invisible.**
+
+Testing follow-up #25 surfaced: (1) aurora still popped in over terrain at ~38-40km, now described
+more precisely as "immediately pops in over terrain, then fades rapidly over the next few km
+descending" (previously just "draws through terrain"); (2) beams became completely invisible even
+at max `beamGain`/`beamSkyGlowGain` — only the ground hotspots remained visible.
+
+- **Aurora — #25's fix was necessary but incomplete.** `40000 = kAuroraShellInnerM(95000) -
+  55000` — the reported pop altitude is almost exactly `kAuroraMarchInnerM`, confirming the real
+  bug: `auroraMarchCS`'s march bounds (`kAuroraMarchInnerM/OuterM`) are deliberately padded 55/110km
+  beyond the REAL emissive shell (`kAuroraShellInnerM/OuterM`) to catch the falloff/oval-mask tail
+  smoothly — so "inside the padded march range" (branch 2, `atEnter=0`) does NOT mean "inside the
+  real emissive shell." #25's fix set `tEnterOut = max(atEnter, 0.0)`, which is 0 across the ENTIRE
+  padding band (~40-95km altitude here) — telling the terrain gate "content starts at the camera,
+  nothing can ever occlude it" for that whole band, even though real brightness only starts near
+  the true 95km shell. That's the hard on/off "pop over terrain" at the padding boundary, and the
+  "fades rapidly over the next few km" is the genuinely-correct-but-newly-exposed extinction/oval
+  falloff becoming visible once the pop stopped masking it. Fixed properly: compute `tEnterOut`
+  against the REAL (unpadded) `kAuroraShellInnerM/OuterM` bounds via a small separate `raySphere`
+  classification, fully decoupled from the padded `atEnter`/`atExit` still used for the actual step
+  march below (unchanged — the padding still does its job for the visual falloff itself, it was
+  only wrong to reuse for the terrain-occlusion distance).
+- **Beams invisible — a real magnitude bug in #25's color fix, not a slider/tuning issue.** The new
+  `hazeColor = pR*BETA_R*rhoR + pM*BETA_M*rhoM` used `BETA_R`/`BETA_M` (~1e-5, real physical
+  scattering coefficients) as an ABSOLUTE multiplier, where the old flat `haze = rhoR+rhoM` was
+  O(1) — a ~4-5 order-of-magnitude collapse that `kBeamScale=1e-9`/`beamSkyGlowGain` were never
+  calibrated for, explaining "cannot see beams anymore, even with very high beam gain and beam sky
+  glow settings" (no slider has that much range). Fixed by decoupling HUE from MAGNITUDE: derive
+  the color ratio from the Rayleigh/Mie phase-weighted `BETA` terms (so it's correctly blue-tinted,
+  not white), then rescale the result to the SAME total magnitude as the old scalar
+  (`hazeMagnitude = rhoR+rhoM`) via `hazeColor = (rayleighWeighted + mieWeighted) *
+  (hazeMagnitude / colorMagnitude)`. This keeps the existing `kBeamScale`/`beamSkyGlowGain`
+  calibration valid — no guessed magic recalibration constant needed — while still fixing the
+  original "white blob" complaint via the ratio.
+- **Lesson:** introducing real physical units (`BETA_R`/`BETA_M`, ~1e-5) into a term that was
+  previously a normalized/flat scalar (~O(1)) and is fed into an already-tuned scale constant is a
+  silent, easy-to-miss magnitude bug — the code still compiles and runs, just produces a
+  vanishingly small (or, in the aurora case, a wrongly-always-zero-distance) result. When porting a
+  "real" physical formula into a place calibrated against a stylized stand-in, either recalibrate
+  the scale constant deliberately (with the math shown, not guessed) or — preferable when
+  possible — decouple the physically-meaningful part (hue, entry classification) from the
+  previously-tuned part (magnitude, fallback distance) so existing calibration survives unchanged.
+
+Builds clean. **Not yet seen in-app.**
+
+**Follow-up #27 (2026-07-23) — beam color: fixed transmittance direction, reverted hue-mixing.**
+
+User confirmed follow-up #26 "fixed the beam visuals" (beams visible again), but reported the new
+color reads as "mesmerizing rainbows" rather than physically plausible — and correctly reasoned
+that a beam is just reflected sunlight, so it should look white/yellow/red (like a sunbeam or
+low-angle sunlight), not blue (like ambient Rayleigh-scattered sky).
+
+- **Root cause of the rainbow instability:** follow-up #25/#26's color derived HUE from a ratio
+  between `pRBeam*BETA_R*rhoR` (a blue-dominant vector) and `pMBeam*BETA_M*rhoM` (a near-neutral
+  scalar). Two things made this ratio unstable rather than a smooth gradient: (1) `H_M = 12.0`
+  (meters!) means `rhoM` collapses to ~0 within meters of the ground, so the Rayleigh:Mie ratio
+  swings enormously over a tiny altitude range near the base of every beam; (2) `pMBeam` (Henyey-
+  Greenstein, `G_MIE=0.26`) swings hugely with viewing/sun angle. Together: rapidly, chaotically
+  shifting hue point-to-point and beam-to-beam — "rainbows."
+- **Root cause of the wrong hue direction (blue instead of white/yellow/red):** even setting
+  instability aside, modeling the beam's color as Rayleigh/Mie SCATTERING hue was modeling the
+  wrong physical effect. The beam carries direct sunlight reflected in space (unfiltered by
+  Earth's atmosphere until it starts descending) — its white→yellow→red gradient should come from
+  wavelength-dependent EXTINCTION accumulating along its remaining descent (blue attenuates faster
+  than red — the same reason a low sun looks orange), not from a scattering-angle-dependent hue at
+  the glow point itself. That mechanism already existed (`T`, the vector transmittance) but was
+  measuring optical depth in the WRONG direction: `ODR = (H_R/mu)*(rho0R-rhoR)` integrates from the
+  GROUND (t=0) up to the evaluation point — meaning attenuation was LARGEST near the satellite end
+  and near-zero (white) near the ground, backwards from a real sunbeam. Harmless while `T` was
+  colorless (follow-ups #23/24), but wrong now that color depends on it.
+- **Fix:** (1) flipped `ODR`/`ODM` to integrate from the evaluation point UP to the segment's fixed
+  top (`kBeamGlowMaxAltM`) instead of from the ground: `rhoTopR/rhoTopM` (density at that fixed
+  altitude — a constant) replace `rho0R/rho0M`, giving `ODR = (H_R/mu)*(rhoR - rhoTopR)` — zero
+  near the satellite end (nothing traversed yet), maximal near the ground (most atmosphere already
+  fallen through) — the correct direction. `T` (already using vector `BETA_R`, unchanged from #25)
+  now naturally reddens toward the ground and stays near-white near the top. (2) Reverted the
+  emission color to the flat/neutral `hazeColor = vec3(rhoR + rhoM)` (same as before #25's hue
+  attempt) — a collimated beam scattered sideways by local air/haze reads as close to neutral at
+  the scattering point; the white→yellow→red gradient now comes entirely from the (now correctly
+  directed) `T`.
+- **Lesson:** when a "physically real" term is plugged into a formula, check not just its
+  MAGNITUDE (follow-up #26's lesson) but its DIRECTION/SIGN CONVENTION against the actual physical
+  scenario — `ODR` computed the right integral in the wrong direction, which stayed invisible while
+  unused for color and only became a visible bug once the vector `T` started driving hue.
+
+Builds clean. **Not yet seen in-app.** Issues 2 (terrain/cloud occlusion, daytime suppression) and
+3 (convergence-point stability) from this round are substantial new scope — not diagnosed bugs in
+existing code but previously-deferred capability ("Not attempted... a bigger architecture
+addition") — see the next planning entry once designed.
+
+**Follow-up #28 (2026-07-23) — terrain/cloud occlusion, daytime suppression, convergence-point
+stability. Planned (two Explore-agent research passes) before implementing, given the scope.**
+
+- **Per-beam terrain occlusion:** the shared `tEnterCombined` gate is a single per-pixel scalar
+  (nearest volumetric content on that ray) — structurally can't encode occlusion for multiple
+  depth-separated beams on the same ray; whichever beam is nearest the camera masks the occlusion
+  test for every other beam sharing that ray, including ones geometrically behind a mountain. Fixed
+  by giving `cloud_march.comp` its own `earthElevTex`/`earthSpecTex` bindings (11/12 — mirrors the
+  exact `lightDomeBuf`/`auroraNoiseTex` precedent for adding a binding to this descriptor set, same
+  elevation decode `sat_sky.frag` uses) and doing a per-beam check directly in the loop:
+  `beamTerrainOccluded()` marches 8 samples along the straight 3D line from the observer to the
+  beam's own closest-approach point `p`, checking terrain height at each — geometrically exact for
+  "does a hill block this specific line of sight" (unlike the shared scalar), since line-of-sight
+  really is a straight line in this file's coordinate frame. A hard boolean skip, not a fade — a
+  hill blocking a sightline is a genuine hard edge in reality, not an artifact.
+- **Cloud occlusion:** confirmed in code that beams previously had ZERO interaction with cloud
+  opacity — `B_total = B_cirrus*A_cloud + B_cloud` (cirrus IS attenuated by cloud opacity) but the
+  beam term was `+=`'d with no multiply at all. Fixed: `B_total += (vec3(1.0)-exp(-beamRadiance)) *
+  A_total`. Same "shared per-ray opacity, no depth-awareness" approximation already accepted for
+  cirrus/cloud, well-justified here since beams render up to 25km — above typical cloud tops — so
+  cloud opacity anywhere on a ground observer's upward ray is generally between them and the beam.
+- **Daytime suppression:** reused `sat_flare.comp`'s exact formula (`dayBright = t², t =
+  clamp((sunElev+0.05)/0.39,0,1)`) using `pc.sunDirENU.w` (already = sin(solar elevation), no new
+  field needed for that half) — only `daySuppression` itself needed adding, one new float in
+  `CloudMarchPC` (144→148 bytes), filled from the same `SatelliteSim::daySuppression` member
+  `sat_flare.comp` already reads. Applied to `beamRadiance` before the saturating compression.
+- **Convergence-point glitches — root cause confirmed by research (not just theorized):** the
+  near-parallel closest-point region (`denom→0`) is a fixed ~1° angular window regardless of
+  distance — from far away it points toward the satellite (rarely viewed), but from directly under
+  a near-vertical beam it sits at the zenith, exactly where the user looks. `tBeamRaw`'s blend was
+  already smooth there (follow-up #25); the real remaining instability is `grazingLen`'s steep
+  growth (up to `tTop`, tens of km, as `sinTheta→0`) — small viewing-angle changes near the zenith
+  then cause large brightness swings. Fixed by fading the boost toward its unboosted baseline
+  (`kBeamRayRadiusM`, no amplification) as `targetDist→0` (`grazingFade = smoothstep(0,
+  kGrazingFadeRangeM=20000, targetDist)`) rather than touching the underlying math — preserves the
+  liked "converges brilliantly from a distance" effect while defusing the close-up gradient.
+  **Second, separate contributor:** `kBeamGlowStride=8`'s statistical-averaging assumption needs
+  many simultaneous beams to hold; near a single site only a handful are ever relevant, so whether
+  a beam survives the coin-flip stride gate (each survivor 8x brighter) caused visible pops as
+  satellites cycled through target eligibility. Fixed by exempting nearby beams
+  (`targetDist < kBeamStrideBubbleM=30000`) from the stride entirely — evaluated individually, no
+  8x compensation — since the existing proximity/range cuts already bound how many such beams can
+  exist close to the observer; the stride+compensation scheme now only applies beyond the bubble,
+  where the statistical assumption actually holds (many simultaneous distant beams from orbit).
+- **Explicitly deferred:** adaptive resolution/supersampling for near-field beam content (the
+  half-res dispatch under-resolving a beam that subtends a large screen fraction up close) — a
+  plausible secondary contributor per research, not confirmed, much larger change. Revisit if
+  glitches persist after the above.
+
+Builds clean (new descriptor bindings + push-constant field + shader logic). **Not yet seen
+in-app.**
+
 ### 2026-07-20/21 (session 31) — Cloud shape quality pass + domain-warp bake perf
 Three user-reported cloud oddities (flat bases, conical/not-fluffy shapes, shadow line artifacts
 + phantom thin-cloud shadow-casters), followed by a perf regression from fixing the third one, then

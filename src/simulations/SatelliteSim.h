@@ -295,8 +295,12 @@ struct CloudMarchPC
                                // the simple atmospheric-scattering beam glow (dim by default,
                                // per [[feedback_shared_gain_sliders]] — its own slider, not
                                // reusing beamGain, which is the physical ground-irradiance term).
-}; // total: 144 bytes
-static_assert(sizeof(CloudMarchPC) == 144, "CloudMarchPC layout mismatch");
+    float daySuppression;      // offset 144 — C12 follow-up #28: same daytime-suppression ratio
+                               // sat_flare.comp already applies to satellites/stars
+                               // (SatelliteSim::daySuppression), mirrored here so beams dim during
+                               // the day too instead of rendering at full brightness regardless.
+}; // total: 148 bytes
+static_assert(sizeof(CloudMarchPC) == 148, "CloudMarchPC layout mismatch");
 
 // ── Push constants for cloud_shadow.comp (shared cloud-shadow primitive, C12) ────────────────
 // Fixed 128×128 dispatch, independent of screen resolution/camera — no skyView/fov/aspect needed.
