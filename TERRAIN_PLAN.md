@@ -1764,6 +1764,140 @@ stability. Planned (two Explore-agent research passes) before implementing, give
 Builds clean (new descriptor bindings + push-constant field + shader logic). **Not yet seen
 in-app.**
 
+**Follow-up #29 (2026-07-23) — grazing-angle singularity, altitude cutoff feathering, tunable
+extinction, hard-edge softening.**
+
+User confirmed follow-up #28's terrain/cloud occlusion "seem great," and reported four more
+issues, all direct refinements of code from this session (no new planning round needed).
+
+- **Low-angle singularity ("overwhelmingly bright beams... before they turn red"), present in
+  older versions too:** root cause was follow-up #27's own transmittance-direction fix. `ODR =
+  (H_R/mu)*(rhoR - rhoTopR)` needs `(rhoR-rhoTopR)->0` as `mu->0` for the `1/mu` factor to cancel
+  into a finite, removable-singularity limit — the ORIGINAL pre-#27 formula achieved this because
+  both terms shared the SAME ground reference (`h0`, mu-independent). #27 changed the top reference
+  to a FIXED altitude constant (`kBeamGlowMaxAltM`, also mu-independent, but a DIFFERENT constant
+  from `rhoR`'s own mu-dependent approach to `rho(h0)`) — breaking the cancellation: as `mu->0`,
+  `(rhoR-rhoTopR)` approaches a fixed NONZERO value while dividing by `mu->0` is a true
+  (non-removable) singularity. Worse, `mu` can land on EITHER side of zero for a near-horizontal
+  target/satellite geometry (pure float noise at that point) — landing slightly negative makes
+  `ODR` swing to a huge NEGATIVE number, so `T=exp(-ODR*BETA)` balloons to `>1` (physically
+  nonsensical, "overwhelmingly bright") right before the `abs(mu)<=1e-4` fallback branch takes over.
+  **Fixed:** evaluate the top reference with the SAME linear `h(t)` model at `t=tTop`
+  (`hTop=h0+mu*tTop`) instead of a fixed constant — both `rhoR` and `rhoTopR` now come from the
+  same self-consistent model and correctly converge to the SAME value as `mu->0` (a removable
+  singularity again, matching the explicit fallback), while still preserving #27's tBeam-to-top
+  DIRECTION. **Lesson, extending #26/#27's own:** a real-physics substitution needs to be checked
+  for whether it preserves an EXISTING cancellation/limit, not just magnitude and direction.
+- **Abrupt altitude cutoff:** the beam segment simply stops existing past `kBeamGlowMaxAltM`
+  (25km) with nothing beyond it to fade into — `endFade` only softens by VIEW-RAY overshoot past
+  the segment, a different quantity from the evaluated point's own altitude. Added
+  `altFade = 1-smoothstep(kBeamGlowMaxAltM-6000, kBeamGlowMaxAltM, h)`, multiplied into the final
+  contribution — fades the last 6km of altitude instead of an abrupt stop.
+  - **Tunable extinction:** added `beamExtinctionMult` (default 1.0, settings slider "Beam
+    extinction," range 0.1-5.0) multiplying the beam's OWN optical-depth exponent
+    (`T=exp(-(...)*mult)`) — separate from `BETA_R`/`BETA_M` themselves (stay shared/physical with
+    the rest of the atmosphere). `CloudMarchPC` grew 148->152 bytes; `hovCloudMinus/Plus/
+    draggingCloud`/`cloudBufs` grew 44->45 for the new slider idx 44, per
+    [[feedback_cloud_slider_arrays]].
+- **"Hard shell that wraps around the spotlight" near convergence points** — two hard
+  discontinuities identified and softened, both literal fixed-radius/boolean boundaries:
+  - `perpDist > kBeamRayRadiusM*3.0` was a hard `continue` — a literal tube-shaped wall around
+    every beam (proximity is already ~2.6e-18 there, but the BOUNDARY itself was still a true
+    discontinuity). Softened into `proximityCutoffFade = 1-smoothstep(3*kBeamRayRadiusM,
+    4*kBeamRayRadiusM, perpDist)`, multiplied in; `continue` only past the outer bound.
+  - `beamTerrainOccluded()` (follow-up #28) was a hard boolean from a coarse 8-sample test — could
+    flip fully-visible/fully-occluded from a tiny viewing-angle change near ground level, its own
+    source of sharp edges. Renamed to `beamTerrainVisibility()`, returns a continuous
+    `smoothstep(-300, 300, minMargin)` fraction (worst-sample margin, softened over 300m) instead
+    of a bool, multiplied into the contribution rather than gating with `continue`.
+
+Builds clean (new push-constant field, member, UI slider, array resizes, shader logic). **Not yet
+seen in-app.**
+
+**Follow-up #30 (2026-07-23) — replace the near-field tube with a directional sky-glow bleed.**
+
+User confirmed #29's color/singularity fixes were good, but the near-field experience was still
+"weird... sharp edges... beam glow just gets cut in half... a darkening within the middle" and
+asked how the tube approach differs architecturally from clouds/aurora's smooth interiors. Answer:
+clouds/aurora do real ray marching (many samples integrating actual local density — continuous by
+construction); the beam tube reduces each beam to ONE closest-approach point plus closed-form
+formulas standing in for a real integral, all built on "camera is far enough away for one point to
+represent the whole crossing" — an assumption with no near-field fallback, structurally incapable
+of a smooth interior. The user's own reframe: **beams are light, not fog** — a real observer near
+one wouldn't see an illuminated cloud, they'd see the sky itself glow brightly with realistic
+bleed into the surrounding sky (recalling this project's Light Pollution Dome as the model).
+
+- Researched (2 parallel Explore agents) whether an earlier "directional glow" version of the beam
+  effect ever existed (it didn't — every version since the very first has been line/tube geometry;
+  the user's memory of "the old sky glow" most likely maps to the ground-hotspot term, which IS
+  already a 2D distance-falloff glow, just on the ground plane) and the Light Pollution Dome's
+  exact mechanism (`updateLightPollutionDome()`, `SatelliteSim.cpp:4089-4202`; 16-sector array, 2-
+  sector interpolation, a FIXED horizon-weighted `elevFalloff` at 4 consumption sites). Concluded
+  the dome's specific sector/elevFalloff machinery isn't directly reusable (its elevFalloff assumes
+  city lights are always near the horizon; a Reflect-Orbital target can appear at any elevation,
+  including zenith, when standing right under one) — but a single `dot(dir, normalize(targetENU))`
+  gives a full 2D (azimuth+elevation)-aware falloff directly, simpler than the dome's sector-
+  binning-plus-separate-elevation-curve for this specific need. No new SSBO/sector-aggregation
+  pass needed — extended the EXISTING per-beam loop instead.
+- **Implementation, all in the same beam loop:** one shared `crossfade = smoothstep(0,
+  kNearFieldCrossoverM=15000, targetDist)` (0 near, 1 far). The tube's existing shape stack
+  (`proximity*grazingLen*endFade*altFade*proximityCutoffFade*terrainVis`) gets an added `*
+  crossfade` factor — fades it to zero approaching a beam, which removes the reported artifacts by
+  AVOIDANCE (they only occur in the regime now faded out) rather than further patching the tube's
+  geometry math. A new bleed term — `bleedFalloff = exp(-(1-cosToTarget)/bleedWidth)` where
+  `bleedWidth` grows as the observer nears (mixed by the SAME crossfade, so one parameter drives
+  both fades with no gap or double-bright overlap) — reuses the tube's already-computed `T`/
+  `hazeColor`/`intensity` (simple, consistent color for a first pass, no separate atmospheric
+  model), its own gain (`beamGlowBleedGain`, new tunable, default 0.3, mirrors `beamExtinctionMult`'s
+  plumbing exactly — `CloudMarchPC` 152→156 bytes, slider idx 45, arrays 45→46). Deliberately does
+  NOT apply `terrainVis` — a directional sky glow isn't blocked by terrain the way a discrete tube
+  point is, and its dominant near-field regime makes an intervening mountain implausible anyway,
+  matching how the Light Pollution Dome doesn't do per-source terrain occlusion either.
+
+Builds clean (new push-constant field, member, UI slider, array resizes, shader logic). **Not yet
+seen in-app.**
+
+**Follow-up #31 (2026-07-23) — observer-relative crossfade fix + beam-driven sky suppression.**
+
+User confirmed #30's crossfade "works well with the sky glow effect from the surface," reported
+two more issues, and noted one item of existing behavior (no action needed).
+
+- **Crossfade didn't trigger flying through a beam away from its ground target:** root cause —
+  `crossfade` keyed on `targetDist` (distance to the beam's GROUND TARGET only). Flying through
+  the middle of a long beam far from where it terminates left `targetDist` large, so the tube's
+  near-field artifacts stayed active there. Fixed: `crossfade` now uses a point-to-segment
+  distance from `obsPos` to the beam's own clamped 3D line (`obsT = dot(obsPos-targetWorldPos,
+  rayDirUp)`, clamped to `[0,tTop]`, then `obsToBeamDist = length(obsPos - closestPoint)`) —
+  computed once `targetWorldPos`/`rayDirUp`/`tTop` are known (moved down from where `crossfade`
+  used to live, early in the loop). Reduces to ~`targetDist` near the ground end, so this is a
+  strict generalization, not a separate measure. `rangeFade` (the separate "in range at all"
+  cutoff) correctly still uses plain `targetDist`.
+- **Beam sky-glow should suppress satellites/stars/Milky Way like the Light Pollution Dome does:**
+  built a SECOND, independent 16-sector dome (`beamGlowDomeBuf`), populated by active beams instead
+  of a static night-lights texture, consumed at the same 3 sites the existing dome already is.
+  - Written in `sat_orbit.comp`'s existing beam-write block (`targetENU`/`intensity` already on
+    hand there): hard-binned by azimuth, `atomicMax(floatBitsToUint(domeVal))` (same idiom as
+    `sat_flare.comp`'s flare-sector selection). `intensity` (ground irradiance) does NOT fall off
+    with observer distance by physical design — correct for the ground target's own illumination,
+    wrong for suppression purposes (a beam on the far side of the planet at the same azimuth as a
+    star must not suppress it) — added an explicit `distFade = exp(-targetDist/80000)` plus a
+    Reinhard-style compression (`domeRaw/(domeRaw+1.0)`) so the buffer stays bounded to [0,1)
+    regardless of how bright a well-aligned mirror gets. New binding 5 on `sat_orbit.comp`.
+  - Read (same 16-sector interpolation + `elevFalloff=0.35/(max(z,0)+0.35)` convention as
+    `lightDomeBuf`, verbatim) at: `sat_flare.comp` (new binding 4, multiplies `effectFlare`),
+    `sat_sky.frag`'s Milky Way section (new binding 19, folded into `visibility`), and
+    `updateStars()` (CPU, via a one-frame-stale readback into `beamGlowDomeAz[16]` — same
+    `HOST_VISIBLE|HOST_COHERENT` + mapped-pointer-read-before-this-frame's-fill idiom as
+    `reflectBeamsBuf`/`glowBuf`). Each site gets its own `kMaxDim` cap, same pattern as the
+    existing dome's per-consumer caps.
+  - Deliberately a SEPARATE buffer from `lightDomeBuf`, not merged — two independent phenomena
+    that happen to share a consumption shape.
+- **Item 3 (mirrorFrac alignment triggering `sat_flare.comp`'s own lens flare/sky illumination)**
+  was a user note about existing, correct behavior — no action taken.
+
+Builds clean (3 shaders + C++ across 2 descriptor sets, 1 new buffer, 1 new CPU readback). **Not
+yet seen in-app.**
+
 ### 2026-07-20/21 (session 31) — Cloud shape quality pass + domain-warp bake perf
 Three user-reported cloud oddities (flat bases, conical/not-fluffy shapes, shadow line artifacts
 + phantom thin-cloud shadow-casters), followed by a perf regression from fixing the third one, then

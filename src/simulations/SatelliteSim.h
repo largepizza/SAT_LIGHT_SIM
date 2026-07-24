@@ -299,8 +299,19 @@ struct CloudMarchPC
                                // sat_flare.comp already applies to satellites/stars
                                // (SatelliteSim::daySuppression), mirrored here so beams dim during
                                // the day too instead of rendering at full brightness regardless.
-}; // total: 148 bytes
-static_assert(sizeof(CloudMarchPC) == 148, "CloudMarchPC layout mismatch");
+    float beamExtinctionMult;  // offset 148 — C12 follow-up #29: settings-tunable multiplier on
+                               // the beam's own optical-depth exponent (default 1.0 = plain
+                               // physical scaling). Separate from BETA_R/BETA_M themselves, which
+                               // stay shared/physical with the rest of the atmosphere — this only
+                               // lets beams redden faster/slower without touching anything else
+                               // that reuses those shared constants.
+    float beamGlowBleedGain;   // offset 152 — C12 follow-up #30: gain for the near-field
+                               // directional sky-glow bleed that replaces the tube glow close to
+                               // the observer (see the beam block's own comments) — a visually
+                               // distinct term from beamSkyGlowGain, per
+                               // [[feedback_shared_gain_sliders]], not a reuse of it.
+}; // total: 156 bytes
+static_assert(sizeof(CloudMarchPC) == 156, "CloudMarchPC layout mismatch");
 
 // ── Push constants for cloud_shadow.comp (shared cloud-shadow primitive, C12) ────────────────
 // Fixed 128×128 dispatch, independent of screen resolution/camera — no skyView/fov/aspect needed.
@@ -757,6 +768,20 @@ private:
     // one-frame-stale, same idiom as peakMagnitude. -1 = no active beams this/last frame.
     int lastActiveBeamCount = 0;
     float lastNearestBeamDistM = -1.0f;
+    // Beam-driven sky-glow "pollution dome" (C12 follow-up #31) — parallel to lightDomeBuf's
+    // 16-sector scheme, but populated by ACTIVE Reflect-Orbital beams instead of a static
+    // night-lights texture, so satellites/stars/Milky Way dim near a bright beam the same way
+    // they already dim near real light pollution. Written by sat_orbit.comp (atomicMax per
+    // sector, host-visible+coherent so the CPU can also read back the previous frame's contents —
+    // same one-frame-stale idiom as reflectBeamsBuf/glowBuf). Read directly on the GPU by
+    // sat_flare.comp and sat_sky.frag's Milky Way section; updateStars() reads the CPU-side
+    // beamGlowDomeAz[] copy below. Deliberately a SEPARATE buffer from lightDomeBuf, not merged —
+    // two independent phenomena that happen to share a consumption pattern.
+    static constexpr int kNumBeamGlowSectors = 16;
+    VkBuffer beamGlowDomeBuf = VK_NULL_HANDLE;
+    VkDeviceMemory beamGlowDomeMem = VK_NULL_HANDLE;
+    void *beamGlowDomeMapped = nullptr;
+    float beamGlowDomeAz[kNumBeamGlowSectors]{}; // CPU-side copy of the previous frame's contents
 
     // ── sat_flare.comp descriptors / pipeline ─────────────────────────────────
     VkDescriptorSetLayout descLayout = VK_NULL_HANDLE;
@@ -1098,6 +1123,18 @@ private:
     // still exposed as a tunable slider (Settings → Terrain → "Mirror slew rate (deg/s)") in case
     // it's wanted later, just no longer defaulting to the faster value.
     float mirrorSlewDegPerSec = 1.0f;
+    // C12 follow-up #29: user-tunable extra extinction for the beam glow — "I feel like there
+    // should be more extinction should a beam get redder." Default 1.0 = plain physical scaling
+    // (matches every prior session); higher values redden low-angle/long-path beams faster.
+    // Separate from BETA_R/BETA_M, which stay shared/physical with the rest of the atmosphere.
+    float beamExtinctionMult = 1.0f;
+    // C12 follow-up #30: gain for the near-field directional sky-glow bleed — the replacement for
+    // the tube glow's near-field behavior (which has structural artifacts up close: "cut in half,"
+    // a "hard shell," darkening in the middle — a single-point analytic approximation was never
+    // designed for a camera near/inside the volume). The tube fades out approaching a beam
+    // (crossfade in the shader) while this purely angular (no segment geometry) glow term fades
+    // in — own gain per [[feedback_shared_gain_sliders]], not a reuse of beamSkyGlowGain.
+    float beamGlowBleedGain = 0.3f;
     // ── Milky Way skybox basis (session 27) ────────────────────────────────────
     // ENU->galactic rotation, recomputed each frame in updatePositions() and uploaded to
     // CloudParams. Orientation confirmed by eye against the real star field — no runtime
@@ -1323,9 +1360,9 @@ private:
     bool hovPhotoMinus[9] = {};
     bool hovPhotoPlus[9] = {};
     bool draggingPhoto[9] = {};
-    bool hovCloudMinus[44] = {}; // was [43] — idx 43 is C12 follow-up #20's new "Mirror slew rate" slider
-    bool hovCloudPlus[44] = {};
-    bool draggingCloud[44] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[46] = {}; // was [45] — idx 45 is C12 follow-up #30's new "Beam glow bleed gain" slider
+    bool hovCloudPlus[46] = {};
+    bool draggingCloud[46] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                   // feedback_cloud_slider_arrays memory: this one was missed once
                                   // already and the out-of-bounds write corrupted the window-chrome
                                   // state declared right below, breaking the settings window.

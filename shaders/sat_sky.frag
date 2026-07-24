@@ -215,6 +215,15 @@ layout(std430, set = 0, binding = 12) readonly buffer LightDomeBuf {
 // SatelliteSim.cpp for how the fixed orientation, including the longitude mirror, is built).
 layout(set = 0, binding = 13) uniform sampler2D milkyWayTex;
 
+// Beam-driven sky-glow suppression dome (binding 19, C12 follow-up #31): same buffer as
+// sat_orbit.comp's binding 5 / sat_flare.comp's binding 4 — a SECOND, independent 16-sector dome,
+// populated by active Reflect-Orbital beams instead of a static night-lights texture. Stored as
+// raw atomicMax'd uint bit-patterns (floatBitsToUint on the write side) — reinterpret via
+// uintBitsToFloat, NOT a direct float read like LightDomeBuf above.
+layout(std430, set = 0, binding = 19) readonly buffer BeamGlowDomeBuf {
+    uint beamGlowDome[16];
+};
+
 layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
@@ -2369,6 +2378,14 @@ void main() {
         float domeVal = clamp(domeAz * elevFalloffMW, 0.0, 1.0);
         const float kMWPollutionMaxDim = 0.99;
 
+        // C12 follow-up #31: same suppression shape, second independent source — a nearby
+        // Reflect-Orbital beam should wash out the Milky Way the same way real light pollution
+        // does. beamGlowDome[] holds raw atomicMax'd uint bit-patterns (floatBitsToUint on the
+        // write side in sat_orbit.comp) — reinterpret via uintBitsToFloat, unlike lightDome[].
+        float beamDomeAz = mix(uintBitsToFloat(beamGlowDome[sec0w]), uintBitsToFloat(beamGlowDome[sec1w]), secFrac);
+        float beamDomeVal = clamp(beamDomeAz * elevFalloffMW, 0.0, 1.0);
+        const float kMWBeamPollutionMaxDim = 0.99;
+
         // Atmospheric extinction — same Kasten & Young 1989 airmass approximation used by
         // sat_flare.comp/updateStars(), reusing cloud.extinctionCoeff (was pad0 — see CloudParams).
         float sinElMW  = clamp(dir.z, 0.0, 1.0);
@@ -2407,6 +2424,7 @@ void main() {
         const float kMWCloudSuppressPower = 3.0;
         float visibility = nightFactorEffSky
                           * (1.0 - domeVal * kMWPollutionMaxDim)
+                          * (1.0 - beamDomeVal * kMWBeamPollutionMaxDim)
                           * (1.0 - moonBrightSky * kMWMoonMaxDim)
                           * extinctionMW
                           * sunGlareSuppress

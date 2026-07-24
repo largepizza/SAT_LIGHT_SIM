@@ -1835,7 +1835,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // OOB stack write nobody had hit yet, found while adding C12's sliders, idx 38-40; see
     // feedback_cloud_slider_arrays memory). Must stay >= (highest idx in use) + 1, same as
     // hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[44][16];
+    static char cloudBufs[46][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -1981,6 +1981,8 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Beam max range (m)", &beamMaxRangeM, 50000.0f, 2000000.0f, 50000.0f, "%.0f", 41},
         {"Beam sky glow gain", &beamSkyGlowGain, 0.0f, 1.0f, 0.01f, "%.2f", 42},
         {"Mirror slew rate (deg/s)", &mirrorSlewDegPerSec, 1.0f, 60.0f, 1.0f, "%.0f", 43},
+        {"Beam extinction", &beamExtinctionMult, 0.1f, 5.0f, 0.1f, "%.1f", 44},
+        {"Beam glow bleed gain", &beamGlowBleedGain, 0.0f, 2.0f, 0.05f, "%.2f", 45},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -2396,6 +2398,8 @@ void SatelliteSim::loadSettings()
         beamMaxRangeM = c.value("beam_max_range_m", beamMaxRangeM);
         beamSkyGlowGain = c.value("beam_sky_glow_gain", beamSkyGlowGain);
         mirrorSlewDegPerSec = c.value("mirror_slew_deg_per_sec", mirrorSlewDegPerSec);
+        beamExtinctionMult = c.value("beam_extinction_mult", beamExtinctionMult);
+        beamGlowBleedGain = c.value("beam_glow_bleed_gain", beamGlowBleedGain);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -2498,7 +2502,9 @@ void SatelliteSim::saveSettings()
         {"beam_footprint_rad_m", beamFootprintRadM},
         {"beam_max_range_m", beamMaxRangeM},
         {"beam_sky_glow_gain", beamSkyGlowGain},
-        {"mirror_slew_deg_per_sec", mirrorSlewDegPerSec}};
+        {"mirror_slew_deg_per_sec", mirrorSlewDegPerSec},
+        {"beam_extinction_mult", beamExtinctionMult},
+        {"beam_glow_bleed_gain", beamGlowBleedGain}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

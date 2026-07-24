@@ -129,6 +129,18 @@ layout(set = 0, binding = 4) buffer ReflectBeamsBuf {
     ReflectBeam  beams[BEAM_MAX_ACTIVE];
 };
 
+// C12 follow-up #31: beam-driven sky-glow "pollution dome" — parallel to the (CPU-computed)
+// Light Pollution Dome's 16-sector scheme, populated here by ACTIVE beams instead of a static
+// night-lights texture, so satellites/stars/Milky Way dim near a bright beam the same way they
+// already dim near real light pollution. Stored as raw atomicMax'd uint bit-patterns
+// (floatBitsToUint), same idiom as GlowBuf's bins in sat_flare.comp — reinterpret via
+// uintBitsToFloat on read. Zeroed every frame by vkCmdFillBuffer. Must match
+// kNumBeamGlowSectors in SatelliteSim.h (16) — a power of 2, needed for the `&` sector mask below.
+const uint NUM_BEAM_GLOW_SECTORS = 16u;
+layout(set = 0, binding = 5) buffer BeamGlowDomeBuf {
+    uint beamGlowDome[NUM_BEAM_GLOW_SECTORS];
+};
+
 // ── Push constants ────────────────────────────────────────────────────────────
 // Offsets verified against SatOrbitPC in SatelliteSim.h.
 layout(push_constant) uniform PC {
@@ -402,6 +414,35 @@ void main()
             float intensity = groundIrradiance * pc.beamGain;
 
             if (intensity > 0.0) {
+                // C12 follow-up #31: contribute to the directional sky-glow suppression dome —
+                // independent of whether this beam's own entry makes it into BEAM_MAX_ACTIVE
+                // below (the dome has no list/capacity to overflow). `intensity` does NOT fall
+                // off with observer distance by physical design (see groundIrradiance's own
+                // comment above) — correct for the ground target's OWN illumination, but wrong
+                // for how far this beam should suppress background objects AS SEEN FROM THE
+                // OBSERVER, so add an explicit distance falloff here specifically for the dome (a
+                // beam on the far side of the planet at the same azimuth as a star must not
+                // suppress it).
+                float targetDist        = length(targetENU);
+                const float kBeamDomeRangeM    = 80000.0;  // first-pass guess, tunable
+                // C12 follow-up #32: 3e-8 was WAY too small — for a well-aligned Reflect Mirror
+                // (crossSectionM2=2376, mirrorFrac=0.97), intensity peaks around ~3.1e6, giving
+                // domeRaw ~ 0.09 and domeVal ~ 0.086 even at point-blank range — nowhere near
+                // enough to visibly compete against kBeamDomeCompressK=1.0's denominator, which is
+                // why the Milky Way (and likely satellites/stars too, just less noticeably against
+                // a point source) weren't visibly dimming near a beam. Retuned so a well-aligned
+                // close mirror reaches domeRaw ~ 6 (domeVal ~ 0.86) instead.
+                const float kBeamDomeScale     = 2e-6;
+                const float kBeamDomeCompressK = 1.0;      // Reinhard-style, keeps domeVal in [0,1)
+                float distFade = exp(-targetDist / kBeamDomeRangeM);
+                float domeRaw  = intensity * distFade * kBeamDomeScale;
+                float domeVal  = domeRaw / (domeRaw + kBeamDomeCompressK);
+                if (domeVal > 0.0) {
+                    float az     = mod(atan(targetENU.x, targetENU.y) + TWO_PI, TWO_PI);
+                    uint  sector = uint(az * (float(NUM_BEAM_GLOW_SECTORS) / TWO_PI)) & (NUM_BEAM_GLOW_SECTORS - 1u);
+                    atomicMax(beamGlowDome[sector], floatBitsToUint(domeVal));
+                }
+
                 // No site keying, no arbitration (C12 follow-up #9) — every satellite that
                 // reaches here claims its own unique slot and writes unconditionally.
                 uint slot = atomicAdd(beamCount, 1u);
