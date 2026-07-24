@@ -429,6 +429,18 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         lastNearestBeamDistM = nearest;
     }
 
+    // Read previous frame's beamGlowDomeBuf (C12 follow-up #31) — one-frame-stale, same idiom as
+    // glowBuf/reflectBeamsBuf above. sat_orbit.comp stores raw atomicMax'd uint bit-patterns
+    // (floatBitsToUint on the GPU side), so reinterpret via memcpy rather than a direct float
+    // cast, matching glowBuf's own pattern.
+    {
+        const uint32_t *bgd = static_cast<const uint32_t *>(beamGlowDomeMapped);
+        for (int i = 0; i < kNumBeamGlowSectors; ++i)
+        {
+            memcpy(&beamGlowDomeAz[i], &bgd[i], sizeof(float));
+        }
+    }
+
     // Read previous frame's tracked-selection position, same one-frame-stale idiom as
     // peakMagnitude above. On the frame a selection is first made (or changed), this still
     // holds the prior (possibly default/zero) value — the copy in the dispatch section below
@@ -623,6 +635,24 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              0, 0, nullptr, 1, &bmb, 0, nullptr);
     }
 
+    // Zero beamGlowDomeBuf (C12 follow-up #31) — same rationale as reflectBeamsBuf above,
+    // atomicMax needs a known-zero start each frame.
+    vkCmdFillBuffer(cmd, beamGlowDomeBuf, 0, sizeof(float) * kNumBeamGlowSectors, 0);
+    {
+        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        bmb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.buffer = beamGlowDomeBuf;
+        bmb.offset = 0;
+        bmb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 1, &bmb, 0, nullptr);
+    }
+
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, orbitPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             orbitPipeLayout, 0, 1, &orbitDescSet, 0, nullptr);
@@ -662,6 +692,23 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              0, 0, nullptr, 1, &bmb, 0, nullptr);
     }
+    // Barrier: sat_orbit.comp writes beamGlowDomeBuf (C12 follow-up #31) → read THIS frame by
+    // sat_flare.comp (compute) and sat_sky.frag's Milky Way section (fragment) — same scope as
+    // reflectBeamsBuf's barrier above, same two consumer stage types.
+    {
+        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.buffer = beamGlowDomeBuf;
+        bmb.offset = 0;
+        bmb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 1, &bmb, 0, nullptr);
+    }
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
 
     // ── Dispatch: cloud_march.comp — half-resolution cloud/cirrus march (C15-perf) ──────────
@@ -682,6 +729,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cpc.showBeamDebugRays = showBeamDebugRays ? 1u : 0u; // C12 follow-up #12
         cpc.beamSkyGlowGain = beamSkyGlowGain; // C12 follow-up #17
         cpc.daySuppression = daySuppression; // C12 follow-up #28 — same ratio sat_flare.comp uses for satellites/stars
+        cpc.beamExtinctionMult = beamExtinctionMult; // C12 follow-up #29
+        cpc.beamGlowBleedGain = beamGlowBleedGain; // C12 follow-up #30
 
         uint32_t halfW = (ctx.swapExtent.width + 1) / 2;
         uint32_t halfH = (ctx.swapExtent.height + 1) / 2;
@@ -1510,6 +1559,10 @@ void SatelliteSim::cleanup(VkDevice device)
         vkUnmapMemory(device, reflectBeamsMem);
     vkDestroyBuffer(device, reflectBeamsBuf, nullptr);
     vkFreeMemory(device, reflectBeamsMem, nullptr);
+    if (beamGlowDomeMapped)
+        vkUnmapMemory(device, beamGlowDomeMem);
+    vkDestroyBuffer(device, beamGlowDomeBuf, nullptr);
+    vkFreeMemory(device, beamGlowDomeMem, nullptr);
 
     vkDestroyPipeline(device, starPipeline, nullptr);
     vkDestroyPipelineLayout(device, starPipeLayout, nullptr);
@@ -1671,12 +1724,22 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
                      reflectBeamsBuf, reflectBeamsMem);
     vkMapMemory(ctx.device, reflectBeamsMem, 0, sizeof(GpuReflectBeams), 0, &reflectBeamsMapped);
     memset(reflectBeamsMapped, 0, sizeof(GpuReflectBeams));
+
+    // beamGlowDomeBuf (C12 follow-up #31): HOST_VISIBLE|HOST_COHERENT, same reasoning as
+    // reflectBeamsBuf — written by sat_orbit.comp (atomicMax per sector), zeroed every frame via
+    // vkCmdFillBuffer, and safely readable by the CPU (one-frame-stale) for updateStars().
+    ctx.createBuffer(sizeof(float) * kNumBeamGlowSectors,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     beamGlowDomeBuf, beamGlowDomeMem);
+    vkMapMemory(ctx.device, beamGlowDomeMem, 0, sizeof(float) * kNumBeamGlowSectors, 0, &beamGlowDomeMapped);
+    memset(beamGlowDomeMapped, 0, sizeof(float) * kNumBeamGlowSectors);
 }
 
 // ─── createDescriptors ────────────────────────────────────────────────────────
 void SatelliteSim::createDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[4] = {};
+    VkDescriptorSetLayoutBinding bindings[5] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
@@ -1685,13 +1748,15 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // glowBuf: atomic writes from flare shader
     bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // lightDomeBuf: host-visible, CPU-written
+    bindings[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                   VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // beamGlowDomeBuf: C12 follow-up #31
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 4;
+    li.bindingCount = 5;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &ps;
@@ -1708,8 +1773,9 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
     VkDescriptorBufferInfo visInfo{satVisibleBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo glowInfo{glowBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo domeInfo{lightDomeBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo beamDomeInfo{beamGlowDomeBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[4] = {};
+    VkWriteDescriptorSet writes[5] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &inpInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
@@ -1718,7 +1784,9 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
                  descSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &glowInfo, nullptr};
     writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &domeInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 4, writes, 0, nullptr);
+    writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                 descSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamDomeInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 5, writes, 0, nullptr);
 }
 
 // ─── createComputePipeline ────────────────────────────────────────────────────
@@ -1756,21 +1824,23 @@ void SatelliteSim::createComputePipeline(VulkanContext &ctx)
 //   binding 2  mirrorNormalsBuf  (readwrite SSBO)
 //   binding 3  reflectorTargetsBuf (readonly SSBO)
 //   binding 4  reflectBeamsBuf   (readwrite SSBO — capped atomic-append beam list, C12)
+//   binding 5  beamGlowDomeBuf  (readwrite SSBO — 16-sector beam sky-glow dome, C12 follow-up #31)
 void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[5] = {};
+    VkDescriptorSetLayoutBinding bindings[6] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 5;
+    li.bindingCount = 6;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &orbitDescLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &ps;
@@ -1788,8 +1858,9 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
     VkDescriptorBufferInfo mirrorInfo{mirrorNormalsBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo reflInfo{reflectorTargetsBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo beamInfo{reflectBeamsBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo beamDomeInfo{beamGlowDomeBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[5] = {};
+    VkWriteDescriptorSet writes[6] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 0, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &orbitInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 1, 0, 1,
@@ -1800,7 +1871,9 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &reflInfo, nullptr};
     writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 4, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 5, writes, 0, nullptr);
+    writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 5, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamDomeInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 6, writes, 0, nullptr);
 }
 
 // ─── createOrbitPipeline ──────────────────────────────────────────────────────
@@ -3398,8 +3471,8 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         memset(cloudParamsMapped, 0, sz);
     }
 
-    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=cloudShadowTex
-    VkDescriptorSetLayoutBinding bindings[19] = {};
+    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=cloudShadowTex, 19=beamGlowDomeBuf
+    VkDescriptorSetLayoutBinding bindings[20] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -3424,13 +3497,17 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // cloudShadowTex: same image as cloud_shadow.comp's output — general cloud shadow + beam
     // ground-spot attenuation (C12).
     bindings[18] = {18, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // beamGlowDomeBuf: same buffer as sat_orbit.comp's binding 5 / sat_flare.comp's binding 4 —
+    // dims the Milky Way near an active beam the same way the light pollution dome already does
+    // (C12 follow-up #31).
+    bindings[19] = {19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 19;
+    li.bindingCount = 20;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
     VkDescriptorPoolSize ps[3] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 15},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
     };
@@ -3473,8 +3550,9 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     VkDescriptorImageInfo auroraNoiseImgInfo{auroraNoiseSampler, auroraNoiseView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo reflectBeamsInfo{reflectBeamsBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo cloudShadowImgInfo{cloudShadowSampler, cloudShadowView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo beamGlowDomeInfo{beamGlowDomeBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[19] = {};
+    VkWriteDescriptorSet writes[20] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = skyDescSet;
     writes[0].dstBinding = 0;
@@ -3589,7 +3667,13 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     writes[18].descriptorCount = 1;
     writes[18].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[18].pImageInfo = &cloudShadowImgInfo;
-    vkUpdateDescriptorSets(ctx.device, 19, writes, 0, nullptr);
+    writes[19].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[19].dstSet = skyDescSet;
+    writes[19].dstBinding = 19;
+    writes[19].descriptorCount = 1;
+    writes[19].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[19].pBufferInfo = &beamGlowDomeInfo;
+    vkUpdateDescriptorSets(ctx.device, 20, writes, 0, nullptr);
 }
 
 // Fullscreen triangle that colors pixels sky or ground based on camera elevation.
@@ -4286,6 +4370,15 @@ void SatelliteSim::updateStars()
         // non-horizon angles instead of saturating uselessly before elevFalloff is even applied.
         float domeVal = glm::clamp(domeAz * elevFalloff, 0.0f, 1.0f);
 
+        // C12 follow-up #31: same suppression shape, second independent source — a nearby
+        // Reflect-Orbital beam should wash out this star the same way real light pollution does.
+        // beamGlowDomeAz[] is the one-frame-stale CPU readback of sat_orbit.comp's atomicMax'd
+        // dome (see recordCompute()'s top-of-frame read), same interpolation convention as
+        // lightDomeAz above.
+        float beamDomeAz = glm::mix(beamGlowDomeAz[sec0w], beamGlowDomeAz[sec1w], secFrac);
+        float beamDomeVal = glm::clamp(beamDomeAz * elevFalloff, 0.0f, 1.0f);
+        const float kStarBeamPollutionMaxDim = 0.99f;
+
         // Atmospheric extinction (airmass) — same Kasten & Young 1989 approximation as
         // sat_flare.comp, applied identically so a star and a satellite at the same elevation
         // dim by the same amount. Independent of light pollution/moon; this is what gives the
@@ -4300,7 +4393,9 @@ void SatelliteSim::updateStars()
         // Above the Earth limb: visible. Below: culled.
         float intensity = (enu.z >= limbSin)
                               ? rec.rawIntensity * nightFactorEff * extinction
-                                * (1.0f - domeVal * kStarPollutionMaxDim) * (1.0f - moonBrightStar * kStarMoonMaxDim)
+                                * (1.0f - domeVal * kStarPollutionMaxDim)
+                                * (1.0f - beamDomeVal * kStarBeamPollutionMaxDim)
+                                * (1.0f - moonBrightStar * kStarMoonMaxDim)
                               : 0.0f;
 
         dst[i].skyDir = enu;

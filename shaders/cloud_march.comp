@@ -24,7 +24,7 @@
 // them could simply be deleted from sat_sky.frag.
 layout(local_size_x = 16, local_size_y = 16) in;
 
-// ── Push constants (148 bytes, matches C++ CloudMarchPC) ──────────────────────
+// ── Push constants (156 bytes, matches C++ CloudMarchPC) ──────────────────────
 layout(push_constant) uniform PC {
     mat4  skyView;     // ENU -> camera space (rotation, no translation) — same as SatDrawPC
     float fovYRad;
@@ -42,6 +42,8 @@ layout(push_constant) uniform PC {
     float beamSkyGlowGain; // C12 follow-up #17 — settings-tunable brightness for the simple
                            // atmospheric-scattering beam glow
     float daySuppression;  // C12 follow-up #28 — same ratio sat_flare.comp applies to satellites/stars
+    float beamExtinctionMult; // C12 follow-up #29 — settings-tunable extra extinction for the beam glow
+    float beamGlowBleedGain;  // C12 follow-up #30 — gain for the near-field directional sky-glow bleed
 } pc;
 
 layout(set = 0, binding = 0) uniform sampler2D earthCloudsTex;
@@ -201,16 +203,28 @@ float terrainHeightAtDir(vec3 dirECEF) {
 // elevation is already handled by the +75m safety margin at target-placement time (see
 // reflectorTargetsRadiusM in SatelliteSim.cpp) — checking only the interior catches an
 // intervening hill without false-positiving on either endpoint's own local footing.
-bool beamTerrainOccluded(vec3 obsPos, vec3 p, vec3 enuX, vec3 enuY, vec3 enuZ) {
-    const int kBeamOcclusionSteps = 8;
+//
+// C12 follow-up #29: returns a continuous [0,1] visibility fraction now, not a hard bool — the
+// original boolean version contributed to a reported "hard shell that wraps around the spotlight"
+// near convergence points, since this coarse 8-sample test can flip fully-visible/fully-occluded
+// with only a tiny change in viewing angle near ground level (the sampled line's near-terrain
+// grazes shift with `p`, which itself moves continuously with view direction) — a real
+// discontinuity from a discrete test, same shape of bug as several fixed earlier this project
+// (the closest-point branch, the range cutoff). Uses the WORST (most-below-terrain) sample's
+// margin, softened over kOcclusionFeatherM, so a near-miss grazes smoothly instead of flipping.
+float beamTerrainVisibility(vec3 obsPos, vec3 p, vec3 enuX, vec3 enuY, vec3 enuZ) {
+    const int   kBeamOcclusionSteps = 8;
+    const float kOcclusionFeatherM  = 300.0;
+    float minMargin = 1e9;
     for (int i = 1; i < kBeamOcclusionSteps; ++i) {
         float t         = float(i) / float(kBeamOcclusionSteps);
         vec3  sp        = mix(obsPos, p, t);
         float spAlt     = length(sp) - R_EARTH;
         vec3  spDirECEF = normalize(sp.x * enuX + sp.y * enuY + sp.z * enuZ);
-        if (spAlt < terrainHeightAtDir(spDirECEF)) return true;
+        float margin    = spAlt - terrainHeightAtDir(spDirECEF); // positive = clear, negative = below terrain
+        minMargin = min(minMargin, margin);
     }
-    return false;
+    return smoothstep(-kOcclusionFeatherM, kOcclusionFeatherM, minMargin);
 }
 
 const float kCloudHorizFreq = 480.0;
@@ -1137,7 +1151,7 @@ void cloudMarchCS(
             vec3 nightFloorAmbient = kNightSkyAmbientColor * mix(0.1, 0.3, hNorm)
                                     * cloud.cloudNightAmbientGain * (1.0 - sampleDayness);
 
-            vec3 skyAmbient = twilightAmbient + nightFloorAmbient;
+            vec3 skyAmbient = twilightAmbient;// + nightFloorAmbient;
 
             vec3  moonECEF_c    = moonDir3.x * enuX + moonDir3.y * enuY + moonDir3.z * enuZ;
             float moonElevGeog  = max(0.0, dot(normalize(pECEF), moonECEF_c));
@@ -1453,6 +1467,41 @@ void main() {
             float rangeFade  = 1.0 - smoothstep(pc.beamMaxRangeM - kBeamRangeFadeM, pc.beamMaxRangeM, targetDist);
             if (rangeFade <= 0.0) continue;
 
+            // C12 follow-up #32: fade out the WHOLE beam (tube AND bleed) by the SATELLITE's own
+            // elevation as seen by the observer — reported bug: exiting/retargeting satellites
+            // near the horizon suddenly cast "a huge, uniformly white ray" toward their target.
+            // Root cause: at very low satellite elevation the geometry goes doubly degenerate —
+            // the view ray can graze nearly the ENTIRE beam length at once (a highly oblique/
+            // near-parallel viewing angle, which the grazing-angle boost amplifies heavily), while
+            // the visible portion of the segment sits mostly near the TOP (near the satellite,
+            // near space, negligible atmosphere) where transmittance T is still ~(1,1,1) — i.e.
+            // barely reddened — so the two combine into an oversized, colorless ("white") flash.
+            // Rather than chase every such edge case in the tube's closed-form math, just don't
+            // render the beam at all below a small elevation margin — physically reasonable too
+            // (a real beam from a satellite that low would be realistically extinguished anyway).
+            float satElevSin = normalize(beams[bi].satENU).z;
+            float elevFade = smoothstep(0.0, sin(radians(5.0)), satElevSin); // 0 at/below horizon, 1 by 5 deg
+            if (elevFade <= 0.0) continue;
+
+            // C12 follow-up #30: the tube glow below is a single-point analytic approximation —
+            // built on the assumption that the camera is far enough away for one point to
+            // represent the whole crossing. That breaks down near/inside the beam (reported: "cut
+            // in half," a "hard shell... wraps around the spotlight," darkening in the middle) —
+            // not tunable-constant bugs, a structural gap: there's no volumetric march to fall
+            // back on like clouds/aurora have. Rather than patching the tube's geometry further,
+            // fade it out entirely as the observer approaches, and let a new, purely angular
+            // sky-glow term (below, after `hazeColor`) — which has no segment geometry, no
+            // closest-point solve, nothing to discontinue on — take over in exactly that regime.
+            // One shared crossfade drives both, so they meet with no gap or double-bright overlap.
+            // C12 follow-up #31: this used to key off `targetDist` (distance to the GROUND
+            // TARGET only) — reported bug: flying through the middle of a long beam, far from
+            // where it terminates at the ground, still showed the tube's near-field artifacts,
+            // since targetDist stayed large there. The crossfade needs the observer's proximity to
+            // the actual BEAM LINE, not just its ground endpoint — computed below once the segment
+            // itself (targetWorldPos/rayDirUp/tTop) is known.
+            const float kNearFieldCrossoverM = 15000.0; // first-pass guess, tunable like every
+                                                          // similar constant this session
+
             // Segment: targetWorldPos (t=0, elevation-correct ground point — follow-up #18/#23)
             // to the satellite's REAL current direction (follow-up #21:
             // normalize(satENU-targetENU), not reflectDirENU or a fixed vertical — see that
@@ -1464,6 +1513,17 @@ void main() {
             vec2  topHit = raySphere(targetWorldPos, rayDirUp, R_EARTH + kBeamGlowMaxAltM);
             float tTop   = topHit.y;
             if (tTop <= 1.0) continue; // shouldn't happen — target sits inside this sphere by construction
+
+            // C12 follow-up #31: point-to-segment distance from the OBSERVER (not the view ray)
+            // to this beam's actual 3D line, clamped to the segment — this is what "am I inside
+            // this beam" really means, independent of which direction the camera happens to be
+            // looking. Reduces to ~targetDist near the ground end (obsT clamps to 0 there), so
+            // this is a strict generalization of the old target-only measure, not a separate one.
+            float obsT           = dot(obsPos - targetWorldPos, rayDirUp);
+            float obsTClamped    = clamp(obsT, 0.0, tTop);
+            vec3  obsClosestOnBeam = targetWorldPos + rayDirUp * obsTClamped;
+            float obsToBeamDist  = length(obsPos - obsClosestOnBeam);
+            float crossfade = smoothstep(0.0, kNearFieldCrossoverM, obsToBeamDist); // 0 near, 1 far
 
             // ── Analytic closest approach: VIEW ray (obsPos + s*dir, s>=0) vs. BEAM segment
             // (targetWorldPos + t*rayDirUp, t in [0,tTop]) — standard two-line closest-point
@@ -1513,7 +1573,17 @@ void main() {
 
             vec3  closestRayPt = obsPos + sView * dir;
             float perpDist     = length(p - closestRayPt);
-            if (perpDist > kBeamRayRadiusM * 3.0) continue;
+            // C12 follow-up #29: was a hard `continue` at exactly 3*kBeamRayRadiusM — a literal
+            // fixed-radius tube around every beam, reported as feeling "like I am in a hard shell
+            // that wraps around the spotlight" when standing near several beams at once (each
+            // one's own tube boundary a hard wall). The Gaussian `proximity` term is already
+            // ~2.6e-18 at exactly 3-sigma, so this cutoff was never meant to be visible on its
+            // own — but the boundary itself was still a true discontinuity (contribution present,
+            // however faint, on one side; exactly zero on the other). Softened into a fade over
+            // one more sigma so there's no discontinuity left at all, only `continue`ing once
+            // truly negligible.
+            float proximityCutoffFade = 1.0 - smoothstep(kBeamRayRadiusM * 3.0, kBeamRayRadiusM * 4.0, perpDist);
+            if (proximityCutoffFade <= 0.0) continue;
 
             // C12 follow-up #28: per-beam terrain occlusion. The shared tEnterCombined gate
             // (see its declaration/fold-in below) can't do this correctly — it only knows the
@@ -1523,7 +1593,12 @@ void main() {
             // closest-approach point and check terrain height at each — exact for "does a hill
             // block this specific line of sight" (line-of-sight is a straight 3D line in this
             // frame), unlike the shared scalar.
-            if (beamTerrainOccluded(obsPos, p, enuX, enuY, enuZ)) continue;
+            // C12 follow-up #29: returns a continuous visibility fraction now, not a hard boolean
+            // — see beamTerrainVisibility()'s own comment for why (contributed to the same "hard
+            // shell" complaint: a coarse 8-sample boolean test flipping on/off as view angle
+            // shifted slightly near ground level created its own sharp edges).
+            float terrainVis = beamTerrainVisibility(obsPos, p, enuX, enuY, enuZ);
+            if (terrainVis <= 0.0) continue;
 
             // ── Closed-form density + transmittance at the closest-approach point ───────────────
             // h(t) ~= h0 + mu*t (flat-atmosphere approximation — accurate over this ~25km march
@@ -1532,6 +1607,16 @@ void main() {
             float h0 = length(targetWorldPos) - R_EARTH;
             float mu = dot(rayDirUp, normalize(targetWorldPos));
             float h  = max(0.0, h0 + mu * tBeam);
+
+            // C12 follow-up #29: feather the segment's altitude ceiling instead of an abrupt cut.
+            // The segment simply doesn't extend past kBeamGlowMaxAltM, so a point evaluated near
+            // that boundary could sit right at the edge of the modeled region with nothing beyond
+            // it to blend into — reported as "an abrupt cutoff based on altitude." Fades the
+            // contribution out over the last kAltFeatherM of altitude instead of relying solely on
+            // endFade (which fades by VIEW-RAY overshoot past the segment, a different quantity —
+            // this fades by the evaluated point's own ALTITUDE).
+            const float kAltFeatherM = 6000.0;
+            float altFade = 1.0 - smoothstep(kBeamGlowMaxAltM - kAltFeatherM, kBeamGlowMaxAltM, h);
 
             float rhoR = exp(-h / H_R);
             float rhoM = exp(-h / H_M);
@@ -1547,15 +1632,35 @@ void main() {
             // (near the mirror/space end, where extinction is ~0), NOT from the ground UP to
             // tBeam (which follow-up #23-26 used, and which — harmlessly, while T was colorless —
             // is backwards: it made T MOST attenuated near the satellite and closest to 1/white
-            // near the ground, the opposite of a real sunbeam). rhoTopR/rhoTopM are the density at
-            // the segment's fixed upper bound (kBeamGlowMaxAltM) — a CONSTANT, since topHit is
-            // defined to land exactly at that altitude by construction.
-            float rhoTopR = exp(-kBeamGlowMaxAltM / H_R);
-            float rhoTopM = exp(-kBeamGlowMaxAltM / H_M); // ~0 — Mie is negligible above a few meters anyway
+            // near the ground, the opposite of a real sunbeam).
+            //
+            // C12 follow-up #29: follow-up #27 evaluated the "top" reference at the FIXED altitude
+            // kBeamGlowMaxAltM (a global constant, independent of mu) — this broke the mu->0
+            // cancellation that makes this formula well-behaved for grazing (near-horizontal)
+            // beams: as mu->0, rhoR->rho(h0) (a mu-independent value) while the fixed rhoTopR stays
+            // a DIFFERENT, unrelated constant, so (rhoR-rhoTopR) approaches a fixed NONZERO value
+            // while dividing by mu->0 — a genuine (not removable) singularity, and since mu can
+            // land on EITHER side of zero for a near-horizontal target/satellite geometry (pure
+            // floating-point noise at that point), ODR could swing to a huge NEGATIVE number,
+            // making T=exp(-ODR*BETA) balloon to an unphysical (>1, "overwhelmingly bright")
+            // value right before settling into whatever the mu~0 fallback does — exactly the
+            // reported "odd singularity for extremely low angle beams... overwhelmingly bright
+            // before they turn red." Fixed: evaluate the top reference with the SAME linear h(t)
+            // model at t=tTop (hTop = h0+mu*tTop) instead of a fixed altitude — both rhoR and
+            // rhoTopR now come from the same self-consistent linear model, so they correctly
+            // converge to the SAME value as mu->0 (removable singularity, matches the explicit
+            // mu~0 fallback below) while still preserving the tBeam-to-top DIRECTION from #27.
+            float hTop    = h0 + mu * tTop;
+            float rhoTopR = exp(-max(hTop, 0.0) / H_R);
+            float rhoTopM = exp(-max(hTop, 0.0) / H_M);
             float ODR = (abs(mu) > 1e-4) ? (H_R / mu) * (rhoR - rhoTopR) : rhoR * (tTop - tBeam);
             float ODM = (abs(mu) > 1e-4) ? (H_M / mu) * (rhoM - rhoTopM) : rhoM * (tTop - tBeam);
-            vec3 T = exp(-(BETA_R * ODR + BETA_M * 1.1 * ODM)); // vector BETA_R: wavelength-dependent,
-                                                                  // this IS the white->yellow->red gradient
+            // C12 follow-up #29: user-tunable extra extinction (default 1.0 = plain physical
+            // scaling, matching every prior session) — separate from BETA_R/BETA_M themselves,
+            // which stay shared/physical with the rest of the atmosphere; this only scales the
+            // OPTICAL DEPTH used for the beam's own transmittance, so higher values redden faster
+            // without touching anything else that reuses BETA_R/BETA_M.
+            vec3 T = exp(-(BETA_R * ODR + BETA_M * 1.1 * ODM) * pc.beamExtinctionMult);
 
             // C12 follow-up #27: emission color reverted to the flat/neutral scalar from before
             // follow-up #25's phase-weighted Rayleigh/Mie hue-mixing attempt. That attempt derived
@@ -1609,9 +1714,40 @@ void main() {
 
             // First-pass scale — expect retuning once seen in-app; pc.beamSkyGlowGain is the
             // primary user-facing brightness control.
+            // C12 follow-up #30: `crossfade` attenuates this whole tube contribution to zero as
+            // the observer approaches the beam (see its declaration above) — this is what removes
+            // the near-field artifacts, not a change to any of the shape terms themselves.
             const float kBeamScale = 1e-9;
             beamRadiance += pc.beamSkyGlowGain * intensity * T * hazeColor
-                          * (proximity * grazingLen * endFade * rangeFade * kBeamScale);
+                          * (proximity * grazingLen * endFade * rangeFade * altFade
+                             * proximityCutoffFade * terrainVis * crossfade * elevFade * kBeamScale);
+
+            // ── Near-field directional sky-glow bleed (C12 follow-up #30) ───────────────────────
+            // Takes over from the tube as `crossfade->0`. Pure angular falloff around the
+            // direction TO the target as seen from the observer — no segment geometry, no
+            // closest-point solve, so nothing here can discontinue the way the tube's single-point
+            // approximation does. This is the direct sky-side counterpart of the ground hotspot in
+            // sat_sky.frag (same idea — a soft radial falloff around a bright point — just
+            // evaluated in the sky's angular domain instead of the ground's planar one). Reuses
+            // the SAME T/hazeColor computed above for the tube at this beam's closest-approach
+            // point, rather than a separate atmospheric model — simple and consistent for a first
+            // pass. Does NOT use terrainVis (a directional sky glow isn't blocked by terrain the
+            // way a discrete 3D tube point is, and this term's regime — near-field — makes an
+            // intervening mountain physically implausible anyway; the Light Pollution Dome this is
+            // modeled after doesn't do per-source terrain occlusion either).
+            float cosToTarget = dot(dir, normalize(beams[bi].targetENU));
+            // Width grows as the observer gets closer (crossfade->0) — a nearby light source
+            // visually dominates more of the sky, same physical intuition as a real light halo
+            // growing as you approach it. Driven by the SAME crossfade so there's one parameter
+            // to reason about, not two independently-tuned ones that could drift apart.
+            const float kBleedWidthFar  = 0.02; // first-pass guess, tunable
+            const float kBleedWidthNear = 0.35;
+            float bleedWidth   = mix(kBleedWidthNear, kBleedWidthFar, crossfade);
+            float bleedFalloff = exp(-(1.0 - cosToTarget) / bleedWidth);
+            float bleedFade    = 1.0 - crossfade; // complementary to the tube's fade
+            const float kBleedScale = 1e-9;
+            beamRadiance += pc.beamGlowBleedGain * intensity * T * hazeColor
+                          * (bleedFalloff * rangeFade * bleedFade * elevFade * kBleedScale);
 
             // Track the nearest contribution along the VIEW ray (C12 follow-up #20) — see
             // tEnterBeam's declaration above. Now a single analytic value per beam instead of a

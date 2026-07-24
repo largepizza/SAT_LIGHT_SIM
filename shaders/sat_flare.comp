@@ -95,6 +95,16 @@ layout(set = 0, binding = 3) readonly buffer LightDomeBuf {
     float lightDome[16];
 };
 
+// C12 follow-up #31: beam-driven sky-glow suppression dome — parallel to LightDomeBuf above but
+// populated by ACTIVE Reflect-Orbital beams (sat_orbit.comp, atomicMax per sector) instead of a
+// static night-lights texture. Stored as raw atomicMax'd uint bit-patterns (floatBitsToUint on
+// the write side) — reinterpret via uintBitsToFloat here, NOT a direct float read. Deliberately a
+// SEPARATE buffer from LightDomeBuf, not merged — two independent phenomena, same consumption
+// shape.
+layout(set = 0, binding = 4) readonly buffer BeamGlowDomeBuf {
+    uint beamGlowDome[16];
+};
+
 // ── Push constants ────────────────────────────────────────────────────────────
 // GLSL std430 vec3 alignment = 16.  Offsets verified against C++ SatFlarePC.
 layout(push_constant) uniform PC {
@@ -437,6 +447,16 @@ void main() {
     // through even in a maximally lit city.
     const float kSatPollutionMaxDim = 0.85;
     effectFlare *= 1.0 - domeVal * kSatPollutionMaxDim;
+
+    // C12 follow-up #31: same suppression shape, second independent source — a nearby
+    // Reflect-Orbital beam should wash out this satellite the same way real light pollution does.
+    // beamGlowDome[] holds raw atomicMax'd uint bit-patterns (floatBitsToUint on the write side in
+    // sat_orbit.comp) — reinterpret via uintBitsToFloat before using, unlike lightDome[] which is
+    // a plain float buffer.
+    float beamDomeAz = mix(uintBitsToFloat(beamGlowDome[sec0w]), uintBitsToFloat(beamGlowDome[sec1w]), secFrac);
+    float beamDomeVal = clamp(beamDomeAz * elevFalloff, 0.0, 1.0);
+    const float kBeamPollutionMaxDim = 0.85;
+    effectFlare *= 1.0 - beamDomeVal * kBeamPollutionMaxDim;
 
     // ── Cull if below visibility threshold ────────────────────────────────────
     if (effectFlare < pc.visThresh) {
