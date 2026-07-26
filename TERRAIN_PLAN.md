@@ -1898,6 +1898,46 @@ two more issues, and noted one item of existing behavior (no action needed).
 Builds clean (3 shaders + C++ across 2 descriptor sets, 1 new buffer, 1 new CPU readback). **Not
 yet seen in-app.**
 
+**Follow-up #32 (2026-07-23) — beam-dome scale fix + low-elevation "white ray" fix.**
+
+User reported the sky glow itself is visible, but the Milky Way isn't visibly dimming near it, and
+a separate artifact: exiting/retargeting satellites near the horizon suddenly cast "a huge,
+uniformly white ray" toward their target — asked for all beam elements to fade out above a small
+elevation margin (~5°).
+
+- **Beam-dome suppression too weak (likely everywhere, not just the Milky Way — just least
+  noticeable against a broad diffuse band vs. a point source):** worked the actual numbers —
+  `kBeamDomeScale = 3e-8` (follow-up #31's first-pass guess) combined with a well-aligned Reflect
+  Mirror's peak `intensity` (~3.1e6, from `crossSectionM2=2376`, `mirrorFrac=0.97`) gives
+  `domeRaw ≈ 0.09` even at point-blank range — nowhere near enough to compete against
+  `kBeamDomeCompressK=1.0`'s denominator (`domeVal ≈ 0.086`, an at-most ~8% dim with
+  `kMaxDim=0.99`). Retuned `kBeamDomeScale` to `2e-6` (~67x) so a well-aligned close mirror reaches
+  `domeRaw ≈ 6.3` (`domeVal ≈ 0.86`) — a real, visible suppression, matching the dynamic range the
+  actual Light Pollution Dome achieves for a bright city.
+- **Low-elevation "white ray" — root-caused, not just patched:** at very low satellite elevation
+  the geometry goes doubly degenerate — the view ray can graze nearly the ENTIRE beam length at
+  once (an extreme oblique/near-parallel viewing angle, which `grazingLen`'s boost amplifies
+  heavily), while the visible portion of the segment sits mostly near the TOP of the segment (near
+  the satellite, near space, negligible atmosphere) where `T` is still ~(1,1,1) — barely reddened.
+  Boosted brightness + no color = an oversized, colorless flash, worst right as a satellite is
+  rising/setting or its mirror is mid-retarget. Rather than chase every such edge case in the
+  tube's closed-form math (the same lesson as #25-29's tube saga), added a blunt, robust,
+  physically-reasonable gate instead: `satElevSin = normalize(beams[bi].satENU).z`,
+  `elevFade = smoothstep(0, sin(5°), satElevSin)`, multiplied into BOTH the tube and bleed
+  contributions (and an early `continue` when `elevFade<=0`, i.e. at/below the horizon) — a real
+  low-elevation satellite would be realistically near-fully-extinguished anyway.
+- **Build-system gotcha hit this session, worth remembering:** `sat_orbit.comp`'s `.spv` was
+  timestamped NEWER than its just-edited source (`ls -la` showed the source at an OLDER mtime than
+  its own compiled output — a Windows/tool-chain clock quirk, not a real content issue), so the
+  glob-based shader-compile step silently skipped recompiling it despite the real content change.
+  Caught by comparing `ls -la --time-style=full-iso` on both files after a build that suspiciously
+  only compiled one of two edited shaders; fixed with `touch` on the source before rebuilding.
+  **If a future build only recompiles SOME of the shaders you just edited, check timestamps before
+  assuming the others had no changes.**
+
+Builds clean (verified with a follow-up clean build showing zero pending shader recompiles).
+**Not yet seen in-app.**
+
 ### 2026-07-20/21 (session 31) — Cloud shape quality pass + domain-warp bake perf
 Three user-reported cloud oddities (flat bases, conical/not-fluffy shapes, shadow line artifacts
 + phantom thin-cloud shadow-casters), followed by a perf regression from fixing the third one, then
