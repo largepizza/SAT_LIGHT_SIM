@@ -432,7 +432,7 @@ void main()
                 // why the Milky Way (and likely satellites/stars too, just less noticeably against
                 // a point source) weren't visibly dimming near a beam. Retuned so a well-aligned
                 // close mirror reaches domeRaw ~ 6 (domeVal ~ 0.86) instead.
-                const float kBeamDomeScale     = 2e-6;
+                const float kBeamDomeScale     = 2e-3;
                 const float kBeamDomeCompressK = 1.0;      // Reinhard-style, keeps domeVal in [0,1)
                 float distFade = exp(-targetDist / kBeamDomeRangeM);
                 float domeRaw  = intensity * distFade * kBeamDomeScale;
