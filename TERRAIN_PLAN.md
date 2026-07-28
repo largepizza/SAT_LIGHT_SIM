@@ -1938,6 +1938,700 @@ elevation margin (~5°).
 Builds clean (verified with a follow-up clean build showing zero pending shader recompiles).
 **Not yet seen in-app.**
 
+**Follow-up #33 (2026-07-26) — real beam↔cloud occlusion: audit found three separate gaps,
+fixed with a new per-target GPU pass instead of touching the tube's own math.**
+
+User audit request ("beams should be cut off by clouds, not hit the ground") led to auditing all
+three places a beam could interact with cloud, finding each was in a different state:
+
+1. **Ground-spot term (`sat_sky.frag`) — real, previously-undiagnosed bug.** Its `shadowAtten`
+   sampled `cloudShadowTex`, the general-purpose cloud-shadow grid (`cloud_shadow.comp`) — 80km
+   half-extent (`cloudShadowRangeM`), centered on the OBSERVER. Beams render out to `beamMaxRangeM`
+   (500km). Any target beyond 80km — the common case, since the 201 reflector targets are
+   scattered globally at ~1500km+ typical spacing — always fell outside the grid
+   (`tShadowEdge > 1.0` collapses `tShadowFade` to 0) and got `shadowAtten = 1.0`: **no shadow,
+   silently, for most of the beam's actual visible range.**
+2. **Sky-glow tube/bleed (`cloud_march.comp`) — not literally inert, but the wrong model.** Already
+   multiplied by `A_total` (this pixel's own view-ray cloud transmittance, follow-up #28) — some
+   real dimming happens — but it's a "uniform dim by whatever cloud sits anywhere along this ray"
+   approximation with **no depth-awareness**, explicitly documented as accepted. It was never built
+   to make a beam visually terminate at a cloud, which is what "cut off, not hitting the ground"
+   actually asks for.
+3. **Satellite/mirror lens flares (`sat_flare.comp`, `sat_point.vert/frag`) — zero cloud awareness
+   anywhere,** confirmed by direct grep (no "cloud" string in any of the three files). Never built,
+   for any satellite, not just mirrors.
+
+User chose to fix #2 (a real redesign) and #3 (new capability) — #1 got fixed anyway, as a required
+side effect of #2's design (see below), even though it wasn't separately selected.
+
+**Landmine avoided:** follow-ups #14-#16 (see that section, three entries below) tried exactly this
+kind of real cloud-aware beam lighting and were fully reverted — root causes were (a) marching real
+`cloudDensity()` **once per satellite** (up to 2048, when many satellites can share one busy
+target), scaling both cost and brightness with satellite count instead of target count; (b) the
+dedup fix anchored *geometry* to whichever satellite won a per-frame brightness arbitration, and
+the winner flipping frame-to-frame among near-equal satellites caused visible flicker. This
+round's design avoids both structurally: the new lookup below is a pure function of **ground
+target position + current cloud field only** — no satellite identity or arbitration anywhere in
+it — computed exactly once per unique target (≤201) regardless of how many satellites use it, so
+there's nothing to flicker between.
+
+**Design: a new tiny compute pass, `shaders/beam_cloud_block.comp`, evaluated per-target, not
+per-satellite or per-screen-pixel.** For each of the 201 fixed reflector targets: a 12-step
+vertical (straight-up, sun-independent) march through the main cloud shell (`layers[0]`/`[1]`,
+same bounds `cloudMarchCS` uses), using the exact hand-duplicated `cloudDensity()`/`raySphere()`/
+noise-sampling helpers `cloud_shadow.comp` already uses (same project convention as
+`[[feedback_shared_ubo_duplication]]` — no GLSL include mechanism exists to share this directly).
+Outputs two floats per target into a new `beamCloudBlockBuf` (device-local, 201×vec2, no atomics —
+each of the 201 threads owns exactly one index): `blockAltM` (altitude at which vertical
+transmittance first drops below 50%) and `blockOpacity` (0=clear column, 1=fully opaque).
+
+**Deliberately NOT built on `cloud_shadow.comp`'s existing grid** — mid-session the user flagged
+that grid as "in a bad spot... a singular square pixelated texture that follows the observer and
+does not track well for high vantage points," and asked whether this plan depended on it. It
+doesn't: the new buffer evaluates each target's exact ECEF position directly, no spatial grid, no
+interpolation, no observer-centered pixelation to inherit — only the low-level march *technique* is
+borrowed, not the grid architecture. If the general shadow grid is redesigned later, this pass is
+fully decoupled and needs no changes.
+
+**A new static buffer, `reflectorTargetsECEFBuf`** (201×vec4, xyz=unit ECEF dir, w=ground radius),
+uploaded ONCE (right after `initConstellation()` in `init()`, since `reflectorTargetsECEF[]`/
+`reflectorTargetsRadiusM[]` never change afterward) — needed because cloud lon/lat sampling wants
+true ECEF, and the existing `reflectorTargetsBuf` is ECI (rotates with GMST every frame); avoids
+adding GMST-rotation math to the new shader.
+
+**Consumption: baked directly into `ReflectBeam` (grown 48→64 bytes)** rather than adding a new
+binding to `cloud_march.comp`/`sat_sky.frag` — both already read `beams[bi]` per-beam, so
+`sat_orbit.comp` (new binding 6, reads `beamCloudBlockBuf[bestIdx]` at its existing beam-write site)
+just copies `blockAltM`/`blockOpacity` straight onto the entry being written; no `bestIdx`
+indirection needed downstream. All three `ReflectBeam` copies (`sat_orbit.comp`, `cloud_march.comp`,
+`sat_sky.frag`) and the C++ `GpuReflectBeam`/`static_assert` updated together.
+
+- **`cloud_march.comp`: a new `cloudFade` term next to the existing `altFade`, NOT a change to
+  `tTop`/the closest-approach solve/extinction math.** That region has this file's worst bug
+  history (follow-ups #24-#29 all landed real bugs there) — a pure brightness fade reusing the
+  ALREADY-per-pixel `h` (the closest-approach point's own altitude) is lower-risk and sufficient:
+  `cloudFadeHard = smoothstep(blockAltM-500, blockAltM, h)`, blended with `blockOpacity` via `mix`
+  so `blockOpacity==0` (no cloud) is a true no-op regardless of `blockAltM`'s value. Multiplied into
+  both the tube's and the bleed's `beamRadiance +=` lines. Since a beam drawn as a line in the sky
+  has different `h` at different screen pixels, this reads as the beam visibly terminating right
+  where it meets the cloud (brightest at the cutoff, since `proximity` is centered there) while the
+  portion toward the satellite stays fully lit — and, as a side effect, partially covers the
+  original "illuminate the cloud" ask for free (no separate lit-patch-on-the-cloud-surface work
+  attempted this round).
+- **`sat_sky.frag`: ground-spot's `shadowAtten` replaced outright** with `1.0 - beams[bi].blockOpacity`
+  — deletes the old 80km-limited `cloudShadowTex` lookup entirely for this term (fixing bug #1
+  above as a required side effect: the sky cutoff and the ground spot must agree, or a beam could
+  visibly terminate overhead while its landing point stayed lit).
+- **Satellite/flare cloud occlusion: `sat_point.frag` reads cloud data for the first time.** New
+  bindings 5/6 (`cloudTargetA`/`cloudTargetB`, same underlying views `skyDescSet` already binds at
+  10/11) on the satellite draw's own 5→7-binding `descLayout` (a separate, smaller set from
+  `sat_sky.frag`'s 20-binding `skyDescLayout` — confirmed via research, not assumed). Push constant
+  range grew `VERTEX`→`VERTEX|FRAGMENT` (`drawPipeLayout`, plus the matching
+  `vkCmdPushConstants` stage-flags at the actual draw call — Vulkan requires these to match the
+  layout's registered range exactly), with `sat_point.frag` declaring just the fields it needs
+  (`screenSizePx` at its real offset 136) as a longer prefix of the shared `SatDrawPC` block,
+  the same "declare only what you use, real byte offsets" trick `sat_point.vert` already uses for
+  its own (shorter, stale-comment) prefix. `cloudUV = gl_FragCoord.xy / pc.screenSizePx` — replicated
+  exactly from `sat_sky.frag`, not an assumed constant (the documented render-scale gotcha).
+  Two-tier response mirroring how `sat_sky.frag` already treats cloud opacity elsewhere: a hard
+  zero for genuinely opaque cloud (`tCloudOcclude`, same convention that already hides the moon
+  disc) times a smooth power-curve dim otherwise (same shape the Milky Way/sun disc already use) —
+  so satellites join the existing visual language rather than a new one.
+- **Real bug caught before it shipped: `onResize()` didn't refresh `descSet`'s new bindings 5/6.**
+  The half-res cloud targets get destroyed/recreated on every resize, and `onResize()` already
+  patches `skyDescSet`'s (10/11) and `cloudMarchDescSet`'s (5/6) image-view writes to match — but
+  had no equivalent for the satellite draw's own `descSet`, which would have kept pointing at freed
+  image views after the first resize. Added the same refresh pattern for `descSet` bindings 5/6.
+
+**Files touched:** `shaders/beam_cloud_block.comp` (new), `shaders/sat_orbit.comp` (binding 6,
+`ReflectBeam` growth, write site), `shaders/cloud_march.comp` (`ReflectBeam` growth, `cloudFade`),
+`shaders/sat_sky.frag` (`ReflectBeam` growth, ground-spot rewrite), `shaders/sat_point.frag` (new
+bindings/push-constant/cloud response), `src/simulations/SatelliteSim.h` (`GpuReflectBeam`→64
+bytes, `BeamCloudBlockPC`, new buffer/pipeline/descriptor members), `src/simulations/SatelliteSim.cpp`
+(buffer creation, `createBeamCloudBlockDescriptors`/`Pipeline`, `recordCompute()` dispatch+barrier
+before `sat_orbit.comp`, `createOrbitDescriptors()`→7 bindings, `createDescriptors()`→7 bindings,
+`createDrawPipeline()`/push-constant stage flags, `onResize()` fix, one-time ECEF upload after
+`initConstellation()`).
+
+Builds clean (all five touched shaders recompiled and linked with no errors; verified `.spv`
+timestamps are newer than sources, learning the lesson from follow-up #32's build-timestamp
+gotcha). **Not yet seen in-app** — this round's tuning constants (`kCloudFeatherM=500`,
+`kSatCloudSuppressPower=2.0`, the 50%-transmittance threshold for `blockAltM`) are all first-pass
+guesses, same as every other C12 constant on first landing.
+
+**Follow-up #34 (2026-07-26) — physically-derived beam radius, replacing two flat constants with
+one shared physics formula.**
+
+User asked how large beams currently are and how to make their size derive from the satellite's
+own area, emphasizing accuracy. Both existing size quantities were completely disconnected from
+physics: the ground footprint (`beamFootprintRadM`, a settings slider, default 50,000 m radius,
+range 500m–200km) was a single flat value identical for every satellite regardless of mirror size
+or altitude, and the sky tube's visual thickness (`kBeamRayRadiusM = 3000.0` in `cloud_march.comp`)
+was a separate hardcoded constant, also identical for every beam.
+
+**Root physics, worked out from scratch:** for a large flat mirror reflecting sunlight, the
+dominant spreading mechanism is **not diffraction** off the mirror's own aperture (~1e-8 rad for a
+~48m mirror — utterly negligible) — it's that **the sun itself isn't a point source**. Its mean
+angular radius (~0.2665°, 0.0046505 rad) means even a perfectly flat mirror reflects a cone of that
+half-angle, so the beam widens as it travels regardless of how collimated the mirror itself is.
+Using the sun's fixed mean angular radius (not a date-accurate one factoring in Earth's orbital
+eccentricity) matches the sim's existing level of fidelity — it already treats `SOLAR_CONSTANT` as
+a fixed 1361 W/m² regardless of simulated date, so this isn't a new simplification being
+introduced. One formula, used at both ends with a different propagation distance:
+```
+radius = mirrorRadiusM + distanceFromMirrorM * tan(kSunAngularRadiusRad)
+mirrorRadiusM = sqrt(mirrorAreaM2 / PI)   // equivalent-circle radius of the physical mirror
+```
+For the largest mirror type (2376 m², ~500km typical range) this gives ~2-3km radius — the mirror's
+own size barely matters (~27m), the range term dominates completely. This is ~20x smaller than the
+old flat 50km default, which is why "how do we scale them down" and "make it physically derived"
+turned out to be the same fix.
+
+- **Ground footprint (`sat_orbit.comp`, at the existing beam-write site):** `mirrorAreaM2` was
+  already computed there for `groundIrradiance`, and `satENU`/`targetENU` were already both
+  resolved — no new inputs needed. `mirrorRadiusM = sqrt(mirrorAreaM2/PI)`, `slantRangeM =
+  length(satENU-targetENU)` (true 3D mirror→target distance, not just altitude),
+  `footprintRadM = mirrorRadiusM + slantRangeM*tan(kSunAngularRadiusRad)`. Also fixed a stale
+  comment nearby that had (incorrectly, and not actually implemented that way) asserted "the
+  reflected beam's footprint tracks the mirror's own size, not an expanding point-source cone" —
+  conflating two separate physical facts: ground IRRADIANCE genuinely doesn't fall with range for
+  an idealized collimated reflector, but the footprint's SIZE does grow with range regardless.
+- **Sky tube thickness (`cloud_march.comp`) — now per-pixel, not a flat constant.** The tube math
+  already resolves `tBeam`/`p` (the per-pixel closest-approach point along the beam's segment)
+  before any use of the old `kBeamRayRadiusM`. Computed right after that point: `tSatParam =
+  length(beams[bi].satENU-beams[bi].targetENU)` (same line `rayDirUp` already follows),
+  `distFromSatM = max(tSatParam-tBeam, 0)` (distance already traveled from the SATELLITE, not the
+  ground — divergence accumulates from the source outward, narrowest near the mirror, widest near
+  the ground), `tubeRadiusM = max(beams[bi].mirrorRadiusM,1) + distFromSatM*tan(kSunAngularRadiusRad)`.
+  At `tBeam=0` this is exactly the ground footprint's own formula — the tube's width at the ground
+  now matches the ground-spot's footprint exactly, instead of an unrelated flat constant. Replaced
+  all six existing uses of `kBeamRayRadiusM` (`proximityCutoffFade`, `proximity`,
+  `sinThetaClamped`, `grazingLenBoost`, `grazingLen`, `endFade`) with `tubeRadiusM` — a mechanical
+  substitution only; deliberately did NOT touch the segment/closest-approach geometry itself (that
+  region has this file's worst bug history, follow-ups #24-29).
+- **Ground-spot core (`sat_sky.frag`):** `coreR = footprintR*0.15` (an arbitrary ratio) became
+  `coreR = max(beams[bi].mirrorRadiusM, 1.0)` — the tight bright "hotspot" is now the mirror's own
+  true physical size, with the existing soft halo (`footprintR`, unchanged) representing the full
+  sun-disk-broadened extent around it.
+- **`ReflectBeam` grows by repurposing padding, not by growing the struct.** `pad0` (present in all
+  three GLSL copies + the C++ struct since follow-up #33's growth to 64 bytes) is now
+  `mirrorRadiusM` — zero size change, same trick already used for `debugPad`.
+- **Manual override removed entirely, per explicit user decision** (asked via a scope question: keep
+  a scale-multiplier slider on top of the physics, vs. remove the free parameter outright — user
+  chose removal as the simplest, most direct match for "accuracy is important"). Deleted:
+  `SatOrbitPC::beamFootprintRadM` (struct shrinks 108→104 bytes, matching GLSL's own implicit
+  sequential push-constant offsets on the other side), `SatelliteSim::beamFootprintRadM` CPU member
+  and its `orbitPc.beamFootprintRadM = ...` assignment, the `"beam_footprint_rad_m"` settings.json
+  load/save keys, and the "Beam footprint (m)" slider row. **Per
+  `[[feedback_cloud_slider_arrays]]`: did NOT resize `hovCloudMinus`/`hovCloudPlus`/`draggingCloud`
+  or renumber any other slider's index** — each row already carries its own explicit index number
+  (not positional), so deleting this one row simply leaves index 40 permanently unused, same
+  accepted "dead capacity" pattern already documented for `reflectorTargetsECEF`'s indices 0/200.
+
+**Files touched:** `shaders/sat_orbit.comp` (footprint formula, `mirrorRadiusM` write, removed
+push-constant field, stale-comment fix), `shaders/cloud_march.comp` (`tubeRadiusM` replacing
+`kBeamRayRadiusM` at 6 call sites), `shaders/sat_sky.frag` (`coreR` from `mirrorRadiusM`),
+`src/simulations/SatelliteSim.h` (`SatOrbitPC` field removal, `GpuReflectBeam` comment update,
+`beamFootprintRadM` CPU member removal), `src/simulations/SatelliteSim.cpp` (push-constant
+assignment removal), `src/simulations/SatelliteSimUI.cpp` (slider row + settings.json key removal).
+
+Builds clean (all three touched shaders recompiled, C++ compiled/linked with no errors; `.spv`
+timestamps verified newer than sources). **Not yet seen in-app** — expect beams to look
+noticeably narrower/tighter than before, especially far from their target, and the ground-spot's
+bright core to read as a small sharp point rather than a large diffuse blob.
+
+**Follow-up #34 fix (2026-07-26, same day) — user report after seeing #34 in-app: a hard edge
+tracking the satellite's position, plus low-angle beams cutting off wrong.**
+
+User reported three things at once: (1) a hard edge within the beam that visibly tracks around the
+satellite's position, and asked directly whether the crossfade/near-field-bleed handling from
+follow-up #30/#31 had regressed; (2) low-elevation beams not casting properly — the beam's edge
+appeared to get cut off at the same ground distance as the center, when it should paint more of an
+oval and the higher-altitude part of the beam should continue past the target rather than
+terminating early; (3) the ground spot no longer visible at all.
+
+**#1 root-caused as a genuine regression from #34, not the crossfade feature going away.**
+`tTop` (the tube segment's far end) was computed purely from `raySphere` against the FIXED 25km-
+altitude sphere (`kBeamGlowMaxAltM`), with no relationship to the satellite's own TRUE distance
+(`tSatParam = length(satENU-targetENU)`). At low elevation this genuinely diverges: `kBeamGlowMaxAltM`
+is an ALTITUDE, but at shallow `mu` (near-horizontal beam) the PATH LENGTH needed to gain that same
+25km of altitude balloons — e.g. `mu=0.01` needs 2500km of path length for 25km of altitude gain,
+easily more than a typical several-hundred-km LEO slant range. Unclamped, the tube rendered a
+fictitious continuation PAST the real satellite position. Follow-up #34's own `distFromSatM =
+max(tSatParam-tBeam, 0)` then clamped to exactly 0 across that fictitious continuation, collapsing
+`tubeRadiusM` down to just `mirrorRadiusM` (~27.5m) there — an abrupt, near-zero-width pinch whose
+location depends on the satellite's current distance, reading exactly as "a hard edge that tracks
+around the satellite point" as the satellite moved frame to frame. This is a real bug this session
+introduced (the crossfade/bleed feature itself is untouched and still there), not a lost feature.
+**Fix:** `tTop = min(topHit.y, tSatParam)` — computed once, right after `rayDirUp`, before `tTop`'s
+first use — the tube segment can never extend past the satellite's actual position, which also
+means `distFromSatM` is now provably `>= 0` always (the `max(...,0)` clamp on it is now dead code
+in practice, left in place as a defensive no-op). This is also a genuine pre-existing correctness
+fix independent of the visual symptom: the beam should never have rendered past the real satellite.
+
+**#3 (ground spot invisible) investigated and found NOT to be a bug** — it's the direct, expected
+consequence of #34's own accuracy fix: the halo shrank ~20x (50km→2-3km) and the core ~270x
+(7.5km→27.5m, the mirror's true physical size). At typical viewing distances the landing point is
+now genuinely easy to miss unless positioned almost exactly over the target. Asked the user
+directly (scope question: leave it fully physical, vs. add an artificial minimum-visibility floor
+on top) — **user chose to leave it fully physical**, no change made.
+
+**#2 (low-angle footprint shape) is real missing physics, not a bug** — spun into its own follow-up
+below (elliptical ground footprint) since it required actual geometric derivation, not a one-line
+fix.
+
+Builds clean (`cloud_march.comp` only, single-file change). **Not yet seen in-app.**
+
+**Follow-up #35 (2026-07-26, same day) — elliptical ground footprint for grazing beams.**
+
+Addresses #34-fix's item #2 above. Worked the paraxial cone-plane intersection geometry from
+scratch (justified since the divergence half-angle — the sun's angular radius, 0.0046505 rad — is
+tiny, so first-order/small-angle terms dominate completely): a circular cone of half-angle α with
+apex at the satellite, axis hitting the ground at elevation angle θ, produces an ellipse that is,
+to leading order in α, **unchanged in the across-track direction** (perpendicular to the beam's
+ground-projected azimuth) and **stretched by exactly `1/sinθ` along the track** (toward/away from
+the point on the ground directly below the satellite) — the same "flashlight on a tilted wall"
+intuition. Crucially, **worked out that it's symmetric, not asymmetric, to this order** — the
+initial hand-wavy guess that the far edge should stretch more than the near edge only shows up at
+SECOND order in α (~0.5% relative correction here — imperceptible for a sun-angular-radius-driven
+beam), so a plain centered ellipse is the physically correct model, not an offset one. This also
+means `footprintRadM` itself (computed in `sat_orbit.comp`, follow-up #34) needed NO new formula —
+it already IS the correct minor-axis (unstretched) radius exactly as derived; only the ground-spot
+term's *consumption* of it in `sat_sky.frag` needed to become anisotropic.
+
+Implementation, entirely inside `sat_sky.frag`'s ground-spot loop (no buffer/struct changes — every
+needed input, `satENU`/`targetENU`/`footprintRadM`/`mirrorRadiusM`, was already on `beams[bi]`):
+`sinElev = normalize(beams[bi].satENU-beams[bi].targetENU).z` (the same `mu` quantity
+`cloud_march.comp` already computes for its own altitude formula, just never computed here before);
+decompose `hitPt.xy - targetENU.xy` into along-track/across-track components via the ground-
+projected azimuth direction (`beamDirUp.xy`, normalized, with a guard for near-vertical beams where
+that projection is ~zero-length); `majorR = footprintR/sinElev`, `coreMajorR = coreR/sinElev`
+(minor axes unchanged); swap the single-sigma Gaussians for the two-sigma anisotropic equivalent.
+Also bundled in an `elevFade` (same `smoothstep(0, sin(5°), sinElev)` shape `cloud_march.comp`
+already applies to the sky tube/bleed, follow-up #32) — needed because without it, an extremely
+grazing beam's ellipse stretches toward infinity as `sinElev->0` with nothing to cut it off,
+inconsistent with the sky portion already vanishing at that same elevation, and would have been a
+second independent source of "beams don't cast properly at low angles" left unaddressed.
+
+Builds clean (`sat_sky.frag` only, single-file change, no C++/struct side effects). **Not yet seen
+in-app** — expect a near-circular spot for high-elevation beams (unchanged) and a visibly elongated
+oval, stretched toward/away from the satellite's ground-projected direction, for low-elevation
+ones, fading out entirely below ~5° satellite elevation.
+
+**Follow-up #36 (2026-07-26, same day) — fixed the bleed term's structural gating bug ("hollow
+tunnel"), and extended the beam segment past the target for grazing hits.**
+
+User tested #35 and reported two things: (1) looking into a beam shows a dark, hollow-cylinder
+interior with harsh edges, worst near the ground where it meets terrain/ocean — asked directly
+whether the crossfade/near-field-bleed handling (follow-up #30/#31) had been lost; (2) with the
+ground now an elongated ellipse, the sky beam visibly stops dead at the target point instead of
+continuing to meet the ellipse's far edge — proposed extending the beam based on its width and
+grazing angle so the beam's own far edge is what clips the ground, not the infinitesimal axis.
+
+**#1 root-caused by re-reading the live loop end-to-end (not relying on memory) — a real structural
+bug from this session's own restructuring, not the bleed feature regressing.** The near-field bleed
+(follow-up #30) sits AFTER three tube-specific early `continue`s: `sView<0` (closest-approach point
+on the infinite line falls behind the camera), `proximityCutoffFade<=0` (beyond ~4σ of the tube's
+radius), `terrainVis<=0` (that specific 3D point locally terrain-occluded). All three abandon the
+**entire loop iteration** — so whenever any trips, bleed never runs either, even though bleed is a
+pure angular falloff that needs none of those quantities. Worse, bleed **reuses** `T`/`hazeColor`,
+which were computed even later, inside the same gated region — so the fix couldn't be "just delete
+the `continue`s," `T`/`hazeColor` needed to stop depending on that region too. Standing near/inside
+a beam and looking sideways or downward routinely produces exactly `sView<0` or `terrainVis<=0` —
+not edge cases — which is exactly the "hollow tunnel"/harsh-edges/harsh-terrain-intersection
+symptom: precisely the directions where bleed should smoothly fill in were silently rendering
+nothing.
+
+**Fix: reorder, don't reformulate.** `h0`/`mu`/`h`/`altFade`/`cloudFade`/`rhoR`/`rhoM`/`hTop`/
+`ODR`/`ODM`/`T`/`hazeMagnitude`/`hazeColor` only ever depended on `tBeam` and `beams[bi]` fields —
+never on `sView`/`perpDist`/`proximityCutoffFade`/`terrainVis` — they were just declared later than
+necessary. Moved that whole block to right after `tBeam`/`p`, before the `sView` check — zero
+formula changes, just relocation — making `T`/`hazeColor` available to bleed unconditionally. The
+three `continue`s became a single multiplicative gate on the TUBE's own contribution only
+(`tubeVisible = (sView>=0)?1:0`, combined with `proximityCutoffFade`/`terrainVis` which were
+*already* continuous multipliers in the tube's final formula — only their early-exit shortcut was
+removed, not their own math). Bleed, computed unconditionally afterward, is now genuinely
+independent, as its own (previously aspirational) comments already claimed.
+
+**#2: extended the segment's lower bound using the same paraxial geometry as #35's ellipse, solved
+for path length instead of ground displacement.** A finite-width beam's far edge must travel
+farther than the central axis before reaching ground level at a shallow angle:
+`extraLengthM = footprintRadM * cosElev / sinElev` (sinElev=mu, cosElev=length(rayDirUp.xy)) — 0 at
+θ=90° (straight down), growing large at grazing incidence, matching "the beam should continue past
+the target." `tBeam = clamp(tBeamRaw, -extraLengthM, tTop)` (was `clamp(..., 0.0, tTop)`), and
+`endFade`'s overshoot formula updated to reference the new lower bound instead of a hardcoded 0.
+The altitude formula's existing `max(0.0, ...)` floor means the new negative-`tBeam` stretch simply
+evaluates at ground-level atmospheric density/color — a deliberately simple approximation (not a
+rigorous independent re-trace of the true 3D edge ray), reasonable for what's fundamentally a
+visual patch connecting the tube to the already-approximate ellipse.
+
+Both fixes touch the same loop and interact (fix #1's reordering is what makes `mu` available early
+enough for fix #2's `extraLengthM`), so landed together in one pass. No struct/buffer/push-constant
+changes — everything needed (`footprintRadM`, `mirrorRadiusM`, `satENU`, `targetENU`) was already on
+`beams[bi]`.
+
+Builds clean (`cloud_march.comp` only, single-file change; `.spv` confirmed newer than source).
+**Not yet seen in-app** — expect smooth, continuous glow when standing near/inside a beam (no dark
+hollow interior, no hard edges at terrain/ocean), and a low-elevation beam's sky portion to visibly
+extend past the target to meet its elongated ground ellipse instead of stopping short.
+
+**Follow-up #37 (2026-07-26, same day) — extension-underground bug fix, and the tube-approximation
+question raised directly.**
+
+User reported the tube's hollow/cylinder nature was "even more apparent now," asked directly why
+beams are rendered as tubes at all rather than continuous beams, and reported #36's ground extension
+was only visible from above — moving to sea level made it "shrink inward."
+
+**Root-caused the sea-level bug: a real geometric error in #36's own extension.** `p = targetWorldPos
++ rayDirUp * tBeam` continues along the beam's full 3D axis for negative `tBeam` — but `rayDirUp` has
+an UPWARD component (`mu`), so extending "backward" along that same tilted line doesn't stay on the
+ground, it dives underground by `mu*|tBeam|`. The altitude formula (`h`) already floored at 0 so
+brightness/color looked fine, but `p`'s actual 3D POSITION was never corrected, and that position
+feeds `beamTerrainVisibility(obsPos, p, ...)` — from a low, sea-level vantage, the sightline to a
+now-underground point gets correctly blocked by terrain occlusion; from high above, the discrepancy
+is small enough relative to viewing distance to not be obvious. Fixed by splitting the position
+formula at `tBeam=0`: the normal segment (`tBeam>=0`) is unchanged; the extension (`tBeam<0`) moves
+along a purely HORIZONTAL direction (`horizontalDirUp`, the ground-projected component of
+`rayDirUp`) instead of continuing along the tilted axis, staying on the ground instead of diving
+under it. `h`'s formula updated the same way (`mu * max(tBeam,0.0)` instead of `mu*tBeam`) so the
+extension's altitude stays flat at the target's own `h0` instead of decaying toward sea level. Both
+halves agree exactly at `tBeam=0` (zero displacement either way), so no new seam introduced.
+
+**The architecture question was answered directly, not deflected.** Explained why tubes exist at
+all: a real volumetric march for beams was tried FIRST (follow-up #14) and reverted — performance
+collapsed near busy sites because Reflect-Orbital's "Disk" deployment can have dozens of satellites
+converging on one target, and marching each independently multiplied cost by satellite count, not
+target count (see that follow-up's own section, and lesson 5 in the memory file, for the full
+history). The analytic "tube" replaced it: an O(1)-per-beam single-closest-point evaluation instead
+of marching, cheap enough for 2000+ simultaneous beams, at the cost of having no real volumetric
+interior — which is the root cause behind essentially every tube-specific artifact fixed this
+session (hollow tunnel, hard edges, the extension bug above). Presented three options (keep
+patching the analytic model / a real but scoped volumetric march for near-field only / simplify the
+visual model to something structurally immune to these artifacts) — **user chose the scoped
+near-field volumetric march.** Full design for that is its own follow-up (see below); this entry is
+just the extension bug fix + the decision record.
+
+Builds clean (`cloud_march.comp` only). **Not yet seen in-app.**
+
+**Follow-up #38 (2026-07-26, same day) — the scoped near-field volumetric march, designed and
+shipped.**
+
+Full design per the decision recorded in follow-up #37. Replaces the near-field "bleed" term's
+FORMULA only — same trigger (`crossfade<1`), same gain slider (`beamGlowBleedGain`), same slot in
+the loop — swapping a pure angular falloff (no depth, uniform brightness regardless of how much of
+the beam's volume a given view ray actually passes through) for a short, genuinely depth-aware
+march through the tube's own Gaussian cross-section.
+
+**Avoids both of follow-up #14's specific failure modes, explicitly:** (1) only activates in the
+near field (within `kNearFieldCrossoverM=15000m` of a beam's own line) — the far-field tube, the
+common case, is untouched; (2) pure ALU, zero texture samples (a closed-form Gaussian
+distance-to-line evaluation per step, not a `cloudDensity()` lookup) — the same
+cheap/expensive distinction follow-up #17 already drew in this file between the debug pointing rays
+(ALU-only, cheap at any sample count) and #14's reverted texture-heavy per-satellite march.
+
+**March range reuses `sinThetaClamped`** (already computed by the tube's own `grazingLenBoost`)
+instead of deriving a new closed-form ray-vs-cylinder intersection — `tubeRadiusM/sinThetaClamped`
+was already "how far along the view ray you stay within one sigma of the tube," so
+`marchHalfRangeM = tubeRadiusM * 3.0 / sinThetaClamped` centered on `sView` (the tube's own
+closest-approach point — correct by construction) is a natural, low-risk reuse rather than new
+math in the file's most bug-prone region.
+
+**The march loop** (10 fixed steps, `kBeamMarchDensityScale=1.5e-4` first-pass constant): for each
+step, project the sample point onto the beam's own axis (`tSample`), skip if outside the segment's
+valid range (`[-extraLengthM, tTop]`, follow-up #36/#37's own extended bounds), evaluate the SAME
+Gaussian density formula `proximity` already uses (held at the closest-approach point's own
+`tubeRadiusM` for the whole march — taper across a near-field-scale span is minor, dominated by
+distance-from-satellite which barely changes there), accumulate transmittance/scatter in the same
+shape `cloudMarchCS` already uses elsewhere in this file (`marchT *= stepT; marchAccum += marchT*(1-stepT)`).
+Reuses `T`/`hazeColor` already computed once at the closest-approach point for the tube term, rather
+than re-deriving per march step (same "near-field span is short enough that atmospheric properties
+barely change" reasoning).
+
+**Cost risk at a busy convergence site (many beams simultaneously near-field) is accepted, not
+preemptively mitigated** — flagged explicitly in the plan rather than guessed at: unlike #14 this is
+pure ALU so per-step cost is far cheaper, but a busy site with dozens of near-field beams would
+still run this march that many times. If real profiling shows this is a problem, `kBeamMarchSteps`
+and the already-established `kBeamStrideBubbleM`/stride pattern (used elsewhere in this same loop)
+are the two knobs to reach for — not addressed speculatively this round.
+
+No struct/buffer/push-constant changes — every input (`tubeRadiusM`, `sinThetaClamped`, `sView`,
+`targetWorldPos`, `rayDirUp`, `tTop`, `extraLengthM`, `T`, `hazeColor`) was already computed
+unconditionally earlier in the same loop iteration (follow-up #36's own reordering is what made
+this possible without any further restructuring).
+
+Builds clean (`cloud_march.comp` only; `.spv` confirmed newer than source). **Not yet seen
+in-app** — expect standing near/inside a beam to now show genuine depth (brighter through the
+tube's center, dimmer at its grazing edge) instead of a flat angular glow; far-field beams should
+be completely unaffected; cost at a busy multi-satellite site is the one open question that needs
+real in-app observation, not just code review.
+
+**Follow-up #39 (2026-07-26, same day) — the near-field march didn't pan out; removed entirely,
+replaced with a sky-illumination wash instead of any per-pixel volumetric geometry.**
+
+User tested #38 and reported: no visible march despite real performance cost, even after tuning
+sigma range (3.0→7.0), density scale (1.5e-4→1.5e-1), and step count (10→20) — none of it made the
+march show up. Combined with #37's extension also not clearly working, the user's own conclusion:
+trying to render something that looks like a 3D tube's interior is probably the wrong path,
+performance-wise and results-wise, on top of already being #23-38's long chain of patches to the
+same single-point/point-sampled model. **Proposed replacement, explicit:** if the observer is
+within a beam, don't render the beam's own shape there at all — let it fade to nothing (which
+`crossfade` already does to the tube) — and sell "standing in an intensely lit spot" via (1) the
+satellite's own point-sprite flare, already independently rendered and already effective when
+aligned, and (2) a general, non-directional "tremendous sky illumination," explicitly NOT shaped
+like the beam's geometry.
+
+**Found an exact, already-proven precedent for (2) already in `sat_sky.frag`: city light-pollution
+glow.** `accumCity` — accumulated for free along the existing atmosphere view-ray march using real
+night-lights texture data — composites additively: `color += accumCity * vec3(1.0,0.72,0.42) *
+nightFactor * kNightGlowScale;` (`sat_sky.frag:1579`). Reflect-Orbital already has an analogous,
+fully-computed-but-unused-for-this brightness source: `beamGlowDomeBuf` (the 16-sector dome from
+follow-up #31), which until now only SUPPRESSED other sky objects (Milky Way, satellites, stars) —
+never added its own visible glow. That gap was the missing piece, and it needed zero new
+computation (already bound in `sat_sky.frag` at binding 19).
+
+**Changes:**
+- `cloud_march.comp`: deleted the ENTIRE near-field bleed/march block (both #30's original and
+  #38's march replacement) — nothing takes its place in this file. The tube's own `beamRadiance +=`
+  (already multiplied by `crossfade`) is now the only per-beam sky contribution; it already fades
+  smoothly to nothing as the observer approaches, which is now the whole near-field behavior.
+- `sat_sky.frag`: new composite line right after the city-glow line, same general
+  sky-color-building stage — a third independent copy of the 16-sector interpolated lookup formula
+  (same established "duplicate per consumer" convention already used twice for this exact kind of
+  dome data), reading `beamGlowDome[]` and adding `vec3(1.0,0.95,0.9) * beamGlowVal *
+  pc.beamGlowBleedGain * kBeamSkyGlowScale * nightFactor` to `color`. Reuses `nightFactor` (computed
+  one line above for city glow) rather than re-deriving day/night gating — accepted first-pass
+  simplification (doesn't distinguish the observer's own day/night from the beam target's).
+- `pc.beamGlowBleedGain` (the existing "Beam glow bleed gain" slider — no new slider, no
+  settings.json changes) moved from `CloudMarchPC` (no longer used there) to `SatDrawPC` (172 bytes,
+  was 168 — `CloudMarchPC` correspondingly shrank to 152, was 156) — mirrors the existing
+  `beamMaxRangeM`/`beamSkyGlowGain` dual-mirroring pattern already used between these two structs.
+  Caught during the build: `sat_sky.frag`'s own GLSL `PC` block declaration needed the new field
+  added explicitly too (each shader stage declares its own view into the shared push-constant
+  range) — a build error on the first attempt caught this immediately.
+- Extension bug (#37, "only visible from above") explicitly NOT touched — user characterized it as
+  "a tweakable fix," not broken; out of scope for this round.
+
+Builds clean (both shaders recompiled, `.spv` timestamps confirmed newer than sources; C++
+compiled/linked with no errors). **Not yet seen in-app** — expect standing inside/near a beam to
+show the tube fading to nothing (no march artifacts, no added cost there) while the surrounding sky
+reads as genuinely brighter; the satellite's own flare is unchanged; moving away should show the
+new sky glow fading with the dome's existing distance falloff while the tube fades back in.
+
+**Follow-up #40 (2026-07-27) — user report: neither the wash nor the fade were visible in-app; a
+real units-mismatch bug in #39, plus exposing the fade radius as a slider.**
+
+User tested #39 and reported seeing neither the sky-illumination wash nor any visible fade near a
+beam. Root-caused two separate things, only one of which was an actual bug:
+
+- **Real bug: `kBeamSkyGlowScale` (0.000002) was copied from `kNightGlowScale` (0.0000002) on the
+  mistaken assumption they scale comparable quantities — they don't.** `kNightGlowScale` multiplies
+  `accumCity`, a raw, UNNORMALIZED raymarch accumulation (tens of atmosphere samples of night-lights
+  texture data summed together, easily reaching double digits), so it needs a tiny multiplier to
+  land in a sane additive range. `beamGlowVal` (the new wash's input) is already Reinhard-compressed
+  and `clamp`ed to `[0,1]` in `sat_orbit.comp` (follow-up #31/#32's dome-brightness formula) — an
+  entirely different regime. Multiplying an already-normalized-to-1 value by a further 2e-6 crushed
+  the wash's theoretical maximum to `1.0 (beamGlowVal) × 0.3 (default beamGlowBleedGain) × 2e-6
+  (kBeamSkyGlowScale) ≈ 6e-7` — genuinely invisible against anything, not just under-tuned. Fixed by
+  raising `kBeamSkyGlowScale` to `1.0` in `sat_sky.frag`, restoring the existing "Beam glow bleed
+  gain" slider (0-2 range, default 0.3) as the real, visible control.
+- **Also found while investigating: `cloud_march.comp`'s own GLSL `PC` struct declaration still had
+  the OLD `beamGlowBleedGain` field from before #39 moved it out** — the C++ `CloudMarchPC` struct
+  had already shrunk to 152 bytes, but this shader's own push-constant block still declared 156
+  bytes' worth of fields (a stale leftover, not caught by the build since nothing in this file read
+  that trailing field anymore — the same "each shader stage declares its own view into the shared
+  push-constant range" gotcha #39 itself had already caught once for `sat_sky.frag`, just missed on
+  the source-file side this time). Not the cause of the reported symptom (the stale field was inert),
+  but real drift between the C++ and GLSL declarations — cleaned up as part of this pass by reusing
+  the freed offset for the new field below rather than leaving it dangling.
+- **The near-field fade itself (`crossfade`, unchanged since #30/#31) was never actually broken** —
+  it already smoothly zeroes the tube's contribution within `kNearFieldCrossoverM` (a hardcoded
+  15000m) of a beam's own 3D line. The user's report is read as: with the wash invisible (bug above)
+  there was nothing to visually contrast against the vanishing tube, so the fade itself didn't read
+  as an effect happening — combined with the explicit ask ("what variables control these, can they
+  be made sliders"), exposed the radius as a tunable instead of leaving it a silent constant.
+
+**Changes:**
+- `sat_sky.frag`: `kBeamSkyGlowScale` raised `0.000002` → `1.0`, with a comment recording the
+  units-mismatch reasoning above (so it isn't miscopied from `kNightGlowScale`'s neighborhood again).
+- `cloud_march.comp`: removed the stale `beamGlowBleedGain` field from the shader's own `PC` block;
+  added `beamNearFieldFadeM` in its place (reused offset, struct stays self-consistent with the new
+  156-byte C++ size below). The local `kNearFieldCrossoverM` constant now reads `pc.beamNearFieldFadeM`
+  instead of a hardcoded `15000.0`.
+- `SatelliteSim.h`: `CloudMarchPC` grew 152→156 bytes for `beamNearFieldFadeM` (offset 152, the same
+  slot `beamGlowBleedGain` vacated in #39). New CPU member `beamNearFieldFadeM = 15000.0f` (matches
+  the old hardcoded default exactly, so behavior is unchanged until the user moves the slider).
+  `hovCloudMinus`/`hovCloudPlus`/`draggingCloud` grew 46→47 for the new slider slot (idx 46).
+- `SatelliteSim.cpp`: `recordCompute()`'s `CloudMarchPC` fill gained
+  `cpc.beamNearFieldFadeM = beamNearFieldFadeM;`.
+- `SatelliteSimUI.cpp`: new slider **"Beam near-field fade (m)"** (1000-50000, step 1000) added to
+  the Terrain tab's beam slider group, idx 46, right after "Beam glow bleed gain". Persisted to
+  `settings.json` as `beam_near_field_fade_m`.
+
+Builds clean (`cmake --build build`, both shaders recompiled, `.spv` timestamps in
+`build/Debug/shaders/` confirmed newer than sources; C++ compiled/linked with no errors). **Not yet
+seen in-app.** Expect: the sky-illumination wash should now be clearly visible approaching an active
+beam (tune via the existing "Beam glow bleed gain" slider, 0-2 range); the tube should visibly fade
+out over the new "Beam near-field fade (m)" slider's radius (default still 15000m, matching prior
+behavior) as a contrast against the now-visible wash, rather than fading into nothing-vs-nothing.
+
+**Follow-up #41 (2026-07-27) — user tested #40 with the gain cranked up and found two real problems
+with the wash itself: wrong distance measure, wrong shape.**
+
+1. **Wrong distance measure.** The wash's brightness (`sat_orbit.comp`'s `domeVal`) falls off with
+   `targetDist = length(targetENU)` — distance to the beam's GROUND TARGET only. Beams can be long;
+   an observer climbing up alongside a beam toward the satellite end stays close to its actual LINE
+   the whole way, but `targetDist` grows, so the wash incorrectly faded out despite genuine
+   proximity. The exact same class of bug follow-up #31 already fixed once for the tube's own
+   `crossfade` (point-to-*segment*, not point-to-*endpoint*) — the wash never got that fix when #39
+   added it.
+2. **Wrong shape.** The wash reused the Light Pollution Dome's exact idiom: 16 azimuth sectors ×
+   horizon-brightest elevation falloff — right for a city's broad glow dome in one compass
+   direction, wrong for one narrow, often low-angle beam. Read as a rising pillar, not a general
+   brightening. **User's own proposed fix:** build a real distance-to-beam function, then just use it
+   to amplify sky brightness uniformly — no azimuth/elevation dependence.
+
+**Implementation reused and fixed existing infrastructure instead of adding new GPU plumbing.**
+`SatelliteSim::recordCompute()` already reads back `reflectBeamsBuf` on the CPU every frame (a
+one-frame-stale diagnostic, `lastActiveBeamCount`/`lastNearestBeamDistM`) — and it had the SAME
+"distance to target, not to line" bug (`glm::length(entries[s].targetENU)`). `GpuReflectBeam`
+entries already store both `satENU` and `targetENU` (observer-relative — origin is the observer), so
+a proper point-to-segment distance was a small formula change to this existing loop, fixing the
+Settings beam-debug readout's own latent inaccuracy as a side effect. No new buffer, no new
+descriptor bindings, no new barriers — considered and rejected a GPU-side `atomicMin`-into-a-new-
+buffer approach (fully researched: `orbitDescSet` binding 7 and `skyDescSet` binding 20 were both
+free) in favor of this much smaller change, since the CPU already had the data and already threads
+per-frame scalars into `sat_sky.frag` via `SatDrawPC`.
+
+**Changes:**
+- `SatelliteSim.cpp`: the `reflectBeamsBuf` readback loop (~line 439) now computes point-to-segment
+  distance (`slantRangeM = length(satENU-targetENU)`, `dirUp = (satENU-targetENU)/slantRangeM`,
+  `t = clamp(-dot(targetENU,dirUp), 0, slantRangeM)`, `d = length(targetENU + dirUp*t)`) instead of
+  `length(targetENU)`. Right after, a new block computes `beamProximityGlow` — a ready-to-use [0,1]
+  value, hand-rolled smoothstep of `lastNearestBeamDistM` over `beamNearFieldFadeM` (the SAME radius
+  slider #40 added for the tube's own crossfade — reused here exactly as the user suggested, one
+  distance function driving both fades). `buildSatDrawPC()` gained
+  `pc.beamProximityGlow = beamProximityGlow;`.
+- `SatelliteSim.h`: new CPU member `beamProximityGlow`; `SatDrawPC` grew 172→176 bytes for the
+  mirrored field.
+- `sat_sky.frag`: `PC` struct gained `beamProximityGlow`. The entire azimuth-sector-lookup wash
+  block (`azBeam`/`secFBeam`/`sec0Beam`/`beamAzGlow`/`elevFalloffBeam`/`beamGlowVal`) deleted,
+  replaced with a single non-directional composite:
+  `color += vec3(1.0,0.95,0.9) * pc.beamProximityGlow * pc.beamGlowBleedGain * kBeamSkyGlowScale *
+  nightFactor;` — no `dir`/azimuth/elevation dependence, so proximity brightens the whole visible
+  sky uniformly. `beamGlowDomeBuf` itself untouched — still used for its original suppression
+  purpose (Milky Way section here, `sat_flare.comp`, `updateStars()`).
+
+Builds clean (`cmake --build build`, `sat_sky.frag.spv` timestamp confirmed newer than source;
+`SatDrawPC` static_assert passes at 176 bytes; C++ compiled/linked with no errors). **Not yet seen
+in-app.** Expect: climbing up alongside a long beam, well away from its ground target, should now
+still show the sky brightening (previously faded out there); the brightening should read as a
+uniform wash across the whole sky, not a narrow column in one direction; the Settings beam-debug
+"nearest beam distance" readout should reflect true line distance now (a minor, expected side effect).
+
+**Follow-up #42 (2026-07-27) — the beam extension (#36/#37) never actually rendered, plus real
+terrain/ocean occlusion under-sampling and a precision mismatch, both fixed.**
+
+1. **Extension geometry bug, found by re-reading the full per-beam block end-to-end.** The
+   extension's position formula (`p` split at `tBeam=0`, using `horizontalDirUp` for the negative
+   region) was correct since #37. The bug was upstream: the closest-approach solve that decides
+   WHICH `tBeam` value (and therefore point) a given pixel gets evaluated at was still solved
+   entirely against the tilted tube line (`rayDirUp`) — `tBeamRaw` answers "where along the TILTED
+   line is this view ray closest," which has no relationship to "where along the HORIZONTAL ground
+   extension is this view ray closest." A pixel looking at a point 5km past the target along the
+   ground got assigned a `tBeamRaw` from the wrong line's geometry — usually far outside
+   `[-extraLengthM, tTop]` — so either the resulting (clamped) point didn't match what the pixel was
+   looking at (`perpDist` large → near-zero `proximity`), or `overshoot` (also built from the same
+   wrong `tBeamRaw`) blew up and collapsed `endFade`. Both failure modes converge on the same visible
+   symptom: the extension only ever lit up right at `t≈0` — i.e. exactly at the target, reading as
+   "the beam terminates there" regardless of `extraLengthM`'s actual size.
+   
+   **Fix: two independent closest-approach solves, tube (`rayDirUp`, `t∈[0,tTop]`) and extension
+   (`horizontalDirUp`, `t∈[0,extraLengthM]`), each producing its own point/`perpDist`/`overshoot`/
+   `sinTheta` — the branch with the SMALLER `perpDist` wins** and its values (`p`, `sView`,
+   `perpDist`, `overshoot`, `sinTheta`, signed `tBeam`) feed all the existing downstream formulas
+   unchanged (`distFromSatM`, `tubeRadiusM`, `proximity`, `grazingLen`, `terrainVis`, the final
+   `beamRadiance +=`). This falls out correctly per-pixel with no explicit "which side of the target"
+   test: a pixel looking at the ground extension is naturally closer to that line, a pixel looking up
+   at the tube is naturally closer to that one. Both branches agree exactly at their shared `t=0`
+   boundary, so there's no seam. `r`/`c` (origin-independent of line direction) are shared between
+   both solves; only `bDot`/`denom`/`f`/the raw-t formula differ per branch. Also fixed in passing:
+   `sinThetaClamped`'s divisor was always `tubeRadiusM/tTop` (the TUBE's length) even for the
+   extension branch, over-amplifying its grazing-angle boost — now `tubeRadiusM/segLen`, where
+   `segLen` is each branch's own natural length cap (`tTop` or `extraLengthM`).
+   
+   Considered and rejected: falling back to fixed multi-sample marching along just the short
+   extension (mirroring the debug-ray section's `kDebugRaySamples` pattern) — rejected to stay
+   consistent with this feature's established analytic, O(1)-per-beam architecture (the reason
+   follow-up #23 replaced an earlier 32-sample march in the first place), and because the two-branch
+   solve is the more principled fix, not an approximation.
+
+2. **Terrain/ocean occlusion (`beamTerrainVisibility()`) had two independent real bugs**, found by
+   direct comparison against `sat_sky.frag`'s own (already-adaptive, session 29) terrain march:
+   - **Fixed sample count (8), regardless of line length.** For a beam hundreds of km from the
+     observer, 8 samples land tens of km apart — any hill between two samples was completely
+     undetected, not just soft-edged. Fixed with the same path-length-adaptive pattern
+     `sat_sky.frag`'s own terrain march already uses (`sat_sky.frag:1338-1374`, confirmed via
+     research this round): `kBeamOcclusionSteps = clamp(int(lineLen/3000.0), 8, 32)` — 8 as the floor
+     (no regression for the common near-field case), 32 as a cost-bounded ceiling (this runs
+     per-beam per-pixel, already thinned at range by the existing `kBeamGlowStride` mechanism).
+   - **`terrainHeightAtDir()` sampled at mip 2.0** while `sat_sky.frag`'s own terrain
+     march/bisection/normal computation all sample the SAME textures at mip 0.0 (confirmed via
+     research: `sat_sky.frag:1312-1417`) — a real, undocumented precision mismatch: the beam
+     occlusion test was checking against a blurrier version of the terrain than what's actually
+     drawn, letting beams clip through real hills the test couldn't "see," or get needlessly dimmed
+     by a mip-2 bump that doesn't exist in the mip-0 terrain the camera renders. Changed both
+     `textureLod` calls in `terrainHeightAtDir()` to mip 0.0.
+
+Builds clean (`cmake --build build`, `cloud_march.comp.spv` timestamp confirmed newer than source; no
+other files touched this round). **Not yet seen in-app.** Expect: low-elevation beams should now
+visibly continue past their target, connecting to the stretched ground ellipse instead of stopping
+dead at the target point; beam/terrain/ocean interaction artifacts (beams clipping through hills, or
+dimming in open air near terrain) should be visibly reduced, especially for beams far from the
+observer or near rugged terrain.
+
+**Follow-up #43 (2026-07-27) — reverted #35's elliptical ground footprint back to isotropic circular,
+per user report.** After #42's extension fix made the true sky-to-ground beam geometry more visible,
+the user traced actual beam impact points in-app and found the ellipse's stretch axis/magnitude
+(derived from that one satellite's own beam angle) didn't match where the light visibly appeared to
+land — explicitly attributed to the ellipse being "based on only 1 satellite beam angle." Reverted
+`sat_sky.frag`'s ground-spot term to a plain isotropic Gaussian (`groundDist = length(hitPt.xy -
+targetENU.xy)`, `footprint`/`core` as a function of `groundDist` alone) — `footprintR`/`coreR`
+themselves are unchanged (still #34's physically-derived minor-axis-equivalent radii); only this
+term's own consumption reverts. `elevFade` (the 5°-cutoff matching the sky tube's own gate) was KEPT
+even though its original motivating concern (the ellipse stretching to infinity as `sinElev→0`) no
+longer applies — independently reasonable for consistency with the sky portion vanishing at the same
+elevation. Builds clean, `sat_sky.frag.spv` timestamp confirmed refreshed. **Not yet seen in-app.**
+
+Also raised this same round, not yet acted on — see the memory file `project_c12_reflect_beams.md`
+for the fuller writeup:
+- **"Do we compute depth when we draw our beams?"** Answered directly: no true per-pixel depth-sorted
+  compositing exists for beams. `cloud_march.comp` writes ONE shared scalar, `tEnterCombined` (the
+  nearest entry distance among ALL cirrus/cloud/beam/aurora content combined, at HALF resolution);
+  `sat_sky.frag` compares that single value against this pixel's real (full-res, exact) terrain hit
+  distance `tSurface` and, if terrain is nearer, suppresses the ENTIRE combined buffer for that pixel
+  — all types at once, no per-layer occlusion. This means a beam that's actually behind a hill can
+  still render if some unrelated CLOSER cloud/cirrus content happens to be nearer than that hill on
+  the same ray (nothing keeps the layers' occlusion independent), on top of the half-resolution
+  sampling itself producing blockier suppression boundaries than the full-res terrain silhouette
+  they're being compared against. Separately, `beamTerrainVisibility()` (improved in #42) is its own
+  approximate line-of-sight march, not a true depth-buffer test either.
+- **Recommendation offered, not yet implemented or agreed to:** give beams their own accurate
+  occlusion test directly in `sat_sky.frag`, using the EXACT `tSurface` already computed for that
+  exact pixel, instead of relying on the shared half-res composite's single scalar — beams are a
+  bounded/sparse count (unlike full volumetric clouds), so this is likely affordable, and would fix
+  both the cross-layer occlusion bug and the half-res blockiness. Tradeoff: moves (or duplicates) beam
+  glow evaluation into the full-res fragment shader — more per-pixel work, and code duplication
+  between the two shaders, though that's already an established, accepted pattern in this file
+  (cirrus/cloud march functions are already hand-duplicated between `cloud_march.comp` and
+  `sat_sky.frag` per `[[feedback_shared_ubo_duplication]]`-style convention).
+- **"Does the beam glow from being within beams just flatly illuminate the entire screen?"** Confirmed
+  yes — `pc.beamProximityGlow` (#41) is one CPU-computed scalar per frame, added uniformly to every
+  SKY pixel's color with zero directional/positional variation (does not touch terrain/ocean/UI, only
+  the atmospheric sky backdrop). This is exactly what was requested in #41 ("just amplify the sky
+  brightness when inside a beam"), so not a bug — flagged back to the user to confirm this flat/
+  uniform feel is still what's wanted, or whether some (correctly-implemented, non-pillar) soft
+  directionality should be reintroduced.
+
 ### 2026-07-20/21 (session 31) — Cloud shape quality pass + domain-warp bake perf
 Three user-reported cloud oddities (flat bases, conical/not-fluffy shapes, shadow line artifacts
 + phantom thin-cloud shadow-casters), followed by a perf regression from fixing the third one, then

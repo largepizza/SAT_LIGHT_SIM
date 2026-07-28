@@ -1976,13 +1976,17 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 20},
         {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
         {"Cloud shadow range (m)", &cloudShadowRangeM, 10000.0f, 300000.0f, 5000.0f, "%.0f", 38},
-        {"Beam gain", &beamGain, 0.0f, 0.1f, 0.001f, "%.3f", 39},
-        {"Beam footprint (m)", &beamFootprintRadM, 500.0f, 200000.0f, 500.0f, "%.0f", 40},
+        {"Beam gain", &beamGain, 0.0f, 0.01f, 0.0001f, "%.3f", 39},
+        // C12 follow-up #34: slot 40 ("Beam footprint (m)") removed — footprint is now physically
+        // derived from mirror area + range in sat_orbit.comp, not a free-parameter slider. Index
+        // 40 is deliberately left unused rather than renumbering every slider after it (see
+        // [[feedback_cloud_slider_arrays]] — hovCloudMinus/Plus/draggingCloud stay sized 46).
         {"Beam max range (m)", &beamMaxRangeM, 50000.0f, 2000000.0f, 50000.0f, "%.0f", 41},
         {"Beam sky glow gain", &beamSkyGlowGain, 0.0f, 1.0f, 0.01f, "%.2f", 42},
         {"Mirror slew rate (deg/s)", &mirrorSlewDegPerSec, 1.0f, 60.0f, 1.0f, "%.0f", 43},
         {"Beam extinction", &beamExtinctionMult, 0.1f, 5.0f, 0.1f, "%.1f", 44},
-        {"Beam glow bleed gain", &beamGlowBleedGain, 0.0f, 2.0f, 0.05f, "%.2f", 45},
+        {"Beam glow bleed gain", &beamGlowBleedGain, 0.0f, 0.01f, 0.0001f, "%.2f", 45},
+        {"Beam near-field fade (m)", &beamNearFieldFadeM, 1000.0f, 500000.0f, 1000.0f, "%.0f", 46},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -2394,12 +2398,12 @@ void SatelliteSim::loadSettings()
         auroraShimmerRate = c.value("aurora_shimmer_rate", auroraShimmerRate);
         cloudShadowRangeM = c.value("cloud_shadow_range_m", cloudShadowRangeM);
         beamGain = c.value("beam_gain", beamGain);
-        beamFootprintRadM = c.value("beam_footprint_rad_m", beamFootprintRadM);
         beamMaxRangeM = c.value("beam_max_range_m", beamMaxRangeM);
         beamSkyGlowGain = c.value("beam_sky_glow_gain", beamSkyGlowGain);
         mirrorSlewDegPerSec = c.value("mirror_slew_deg_per_sec", mirrorSlewDegPerSec);
         beamExtinctionMult = c.value("beam_extinction_mult", beamExtinctionMult);
         beamGlowBleedGain = c.value("beam_glow_bleed_gain", beamGlowBleedGain);
+        beamNearFieldFadeM = c.value("beam_near_field_fade_m", beamNearFieldFadeM);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -2499,12 +2503,12 @@ void SatelliteSim::saveSettings()
         {"aurora_shimmer_rate", auroraShimmerRate},
         {"cloud_shadow_range_m", cloudShadowRangeM},
         {"beam_gain", beamGain},
-        {"beam_footprint_rad_m", beamFootprintRadM},
         {"beam_max_range_m", beamMaxRangeM},
         {"beam_sky_glow_gain", beamSkyGlowGain},
         {"mirror_slew_deg_per_sec", mirrorSlewDegPerSec},
         {"beam_extinction_mult", beamExtinctionMult},
-        {"beam_glow_bleed_gain", beamGlowBleedGain}};
+        {"beam_glow_bleed_gain", beamGlowBleedGain},
+        {"beam_near_field_fade_m", beamNearFieldFadeM}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

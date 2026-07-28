@@ -27,7 +27,50 @@ layout(location = 2) in float fragAngSize;
 
 layout(location = 0) out vec4 outColor;
 
+// ── Cloud occlusion (C12 follow-up #33) ───────────────────────────────────────
+// Same half-res cloud composite targets sat_sky.frag reads (bindings 10/11 there; 5/6 here —
+// this pipeline's own descriptor set, see createDescriptors()/createDrawPipeline() in
+// SatelliteSim.cpp). Previously satellites (including mirror lens flares) had NO cloud
+// awareness at all — this is the first time this pipeline reads cloud data.
+layout(set = 0, binding = 5) uniform sampler2D cloudTargetA; // a = tCloudOcclude (>=0 => >=90% opaque)
+layout(set = 0, binding = 6) uniform sampler2D cloudTargetB; // rgb = A_total (cloud transmittance)
+
+// Declares only the fields this shader reads, at their real SatDrawPC byte offsets — same
+// "prefix of the shared push-constant block" trick sat_point.vert already uses, just extended
+// far enough to reach screenSizePx (offset 136) instead of stopping at offset 76.
+layout(push_constant) uniform PC {
+    mat4  skyView;          // offset 0 — unused here, declared for layout consistency
+    float fovYRad;          // offset 64
+    float aspect;           // offset 68
+    float gmst;             // offset 72
+    float waveTime;         // offset 76
+    vec4  sunDirENU;        // offset 80
+    vec4  moonDirENU;       // offset 96
+    vec4  obsECEFDir;       // offset 112
+    uint  debugDisableMask; // offset 128 — unused here
+    float pad0;             // offset 132
+    vec2  screenSizePx;     // offset 136 — the only field this shader actually needs
+} pc;
+
 void main() {
+    // gl_FragCoord.xy must divide by THIS draw's own target size, never an assumed constant —
+    // see sat_sky.frag's documented render-scale gotcha (CLAUDE.md "Subsystem: Resolution
+    // Scaling"). Satellites always draw at native resolution regardless of renderScale, but the
+    // cloud targets are always sized off the true swap extent, so this is the correct divisor
+    // in both cases (matches sat_sky.frag's own cloudUV formula exactly).
+    vec2 cloudUV = gl_FragCoord.xy / pc.screenSizePx;
+    vec4 cloudA  = texture(cloudTargetA, cloudUV);
+    vec4 cloudB  = texture(cloudTargetB, cloudUV);
+    float tCloudOcclude = cloudA.a;
+    float cloudBlock    = dot(cloudB.rgb, vec3(1.0 / 3.0));
+    // Two-tier response, mirroring the two ways sat_sky.frag already treats cloud opacity:
+    // a hard gate for genuinely opaque cloud (same tCloudOcclude convention that hides the moon
+    // disc), and a smooth power-curve dim otherwise (same shape the Milky Way/sun disc use), so
+    // satellites join the same existing visual language instead of a new one.
+    float cloudHardOcclude = (tCloudOcclude >= 0.0) ? 0.0 : 1.0;
+    const float kSatCloudSuppressPower = 2.0;
+    float cloudVis = cloudHardOcclude * pow(clamp(cloudBlock, 0.0, 1.0), kSatCloudSuppressPower);
+
     // gl_PointCoord is [0,1] across the point sprite quad.
     // c is centered at (0,0); d is distance from centre.
     vec2  c = gl_PointCoord - 0.5;
@@ -79,6 +122,6 @@ void main() {
     float glow           = (1.0 / (1.0 + r * r)) * glowBrightness;
     glow                *= 1.0 - smoothstep(0.0, 0.5, d);
 
-    float brightness = inner + glow;
+    float brightness = (inner + glow) * cloudVis;
     outColor = vec4(fragColor * brightness, brightness);
 }

@@ -14,6 +14,9 @@
 //                                zeroed each frame by vkCmdFillBuffer, consumed by
 //                                cloud_march.comp (volumetric in-scatter) and sat_sky.frag
 //                                (ground-spot direct lighting)
+//   binding 6  beamCloudBlockBuf — per-target cloud occlusion (C12 follow-up #33), written by
+//                                beam_cloud_block.comp earlier this frame; read here to bake
+//                                blockAltM/blockOpacity into each beam
 //
 // Below-horizon and disabled satellites write elevation = -π/2 and return early.
 // sat_flare.comp's existing horizon cull (elevation < -0.01 rad) discards them.
@@ -122,6 +125,12 @@ struct ReflectBeam {
                           // (debug pointing-ray visualization, C12 follow-up #12)
     float debugPad;       // repurposed (follow-up #20): originating satellite's stable dispatch
                           // index, for stable downsampling — see the write site below.
+    float blockAltM;       // C12 follow-up #33: copied from beamCloudBlockBuf[bestIdx] at write
+    float blockOpacity;    // time below — see beam_cloud_block.comp.
+    float mirrorRadiusM;   // C12 follow-up #34: repurposed from padding — equivalent-circle radius
+                          // of the physical mirror (sqrt(mirrorAreaM2/PI)), used by cloud_march.comp
+                          // (sky tube radius) and sat_sky.frag (ground-spot core radius).
+    float pad1;            // std430 16-byte alignment
 };
 layout(set = 0, binding = 4) buffer ReflectBeamsBuf {
     uint         beamCount; // atomicAdd counter — may exceed BEAM_MAX_ACTIVE
@@ -141,6 +150,14 @@ layout(set = 0, binding = 5) buffer BeamGlowDomeBuf {
     uint beamGlowDome[NUM_BEAM_GLOW_SECTORS];
 };
 
+// C12 follow-up #33: per-target cloud occlusion, written by beam_cloud_block.comp EARLIER this
+// same frame (dispatched before this shader in recordCompute(), with a barrier in between).
+// x = blockAltM, y = blockOpacity — indexed directly by bestIdx (0..200), copied straight into
+// each beam's own ReflectBeam entry below. Must match kNumReflectorTargets in SatelliteSim.h.
+layout(set = 0, binding = 6) readonly buffer BeamCloudBlockBuf {
+    vec2 beamCloudBlock[];
+};
+
 // ── Push constants ────────────────────────────────────────────────────────────
 // Offsets verified against SatOrbitPC in SatelliteSim.h.
 layout(push_constant) uniform PC {
@@ -156,9 +173,11 @@ layout(push_constant) uniform PC {
     float simDt;         // simulated seconds this frame (mirror slew) — offset 88
     float elevCutoff;    // sin(Earth-limb angle); horizon cull threshold (≤ -0.01) — offset 92
     float beamGain;          // Reflect-Orbital ground-beam intensity multiplier — offset 96
-    float beamFootprintRadM; // Reflect-Orbital ground beam footprint radius (m) — offset 100
-    float mirrorSlewDegPerSec; // offset 104 — C12 follow-up #20: settings-tunable mirror slew rate
-                             // (was a hardcoded 1 deg/sec constant, MIRROR_ROT_RATE)
+    float mirrorSlewDegPerSec; // offset 100 — C12 follow-up #20: settings-tunable mirror slew rate
+                             // (was a hardcoded 1 deg/sec constant, MIRROR_ROT_RATE). C12 follow-up
+                             // #34: was offset 104 — beamFootprintRadM (the old flat-constant
+                             // footprint override) removed entirely; footprint is now physically
+                             // derived from mirror area + range at the write site below.
 } pc;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -403,10 +422,14 @@ void main()
             // Ground irradiance delivered by the mirror — a physically different quantity
             // from the view-dependent specular mirrorPeak term in sat_flare.comp (that
             // answers "how bright does the mirror look to the OBSERVER"; this answers "how
-            // much sunlight lands on the ground target", independent of view angle, and for
-            // a collimated flat reflector at these ranges does NOT fall off with range —
-            // the reflected beam's footprint tracks the mirror's own size, not an expanding
-            // point-source cone). See CLAUDE.md / TERRAIN_PLAN.md C12 for the full rationale.
+            // much sunlight lands on the ground target", independent of view angle). The
+            // irradiance itself does NOT fall off with range for an idealized collimated flat
+            // reflector — but the FOOTPRINT's SIZE still grows with range (C12 follow-up #34,
+            // see mirrorRadiusM/footprintRadM below): the two are separate physical facts, and an
+            // earlier version of this comment conflated them into "footprint tracks the mirror's
+            // own size," which was never actually implemented that way and isn't correct — the
+            // sun's own finite angular size means the reflected cone widens with distance
+            // regardless of how collimated the mirror itself is.
             const float SOLAR_CONSTANT = 1361.0; // W/m^2 at Earth distance
             float mirrorAreaM2   = orb.crossSection * orb.crossSection * 10.0;
             float cosIncidence   = max(0.0, dot(surfN0, pc.sunDirECI));
@@ -443,6 +466,20 @@ void main()
                     atomicMax(beamGlowDome[sector], floatBitsToUint(domeVal));
                 }
 
+                // C12 follow-up #34: physically-derived footprint radius, replacing the old flat
+                // pc.beamFootprintRadM constant. The dominant spreading mechanism for a large flat
+                // mirror reflecting sunlight isn't diffraction off the mirror's own aperture
+                // (~1e-8 rad for a ~48m mirror — utterly negligible) — it's that the SUN isn't a
+                // point source: its mean angular radius means even a perfectly flat mirror
+                // reflects a cone of that half-angle, so the beam widens with distance regardless
+                // of how collimated the mirror itself is. mirrorRadiusM (the mirror's own
+                // equivalent-circle size) is also stored per-beam — cloud_march.comp's sky tube
+                // and sat_sky.frag's ground-spot core both need it downstream.
+                float mirrorRadiusM = sqrt(mirrorAreaM2 / PI);
+                float slantRangeM   = length(satENU - targetENU); // true 3D mirror->target distance
+                const float kSunAngularRadiusRad = 0.0046505; // sun's mean angular radius, ~0.2665 deg
+                float footprintRadM = mirrorRadiusM + slantRangeM * tan(kSunAngularRadiusRad);
+
                 // No site keying, no arbitration (C12 follow-up #9) — every satellite that
                 // reaches here claims its own unique slot and writes unconditionally.
                 uint slot = atomicAdd(beamCount, 1u);
@@ -450,7 +487,7 @@ void main()
                     beams[slot].satENU        = satENU;
                     beams[slot].intensity      = intensity;
                     beams[slot].targetENU      = targetENU;
-                    beams[slot].footprintRadM  = pc.beamFootprintRadM;
+                    beams[slot].footprintRadM  = footprintRadM;
                     beams[slot].reflectDirENU  = reflectDirENU;
                     // Repurposed (C12 follow-up #20): was pure std430 padding, unused. Carries
                     // this satellite's own stable dispatch index `i` — NOT the atomic-append slot
@@ -459,6 +496,13 @@ void main()
                     // satellites (mod(debugPad, stride)==0) instead of by slot index, which would
                     // show a different random subset each frame (visible flicker).
                     beams[slot].debugPad       = float(i);
+                    // C12 follow-up #33: bake this target's precomputed vertical cloud-column
+                    // result directly into the beam entry — cloud_march.comp/sat_sky.frag then
+                    // read it straight off beams[bi], no bestIdx indirection needed downstream.
+                    vec2 cloudBlock = beamCloudBlock[bestIdx];
+                    beams[slot].blockAltM      = cloudBlock.x;
+                    beams[slot].blockOpacity   = cloudBlock.y;
+                    beams[slot].mirrorRadiusM  = mirrorRadiusM;
                 }
             }
         }
