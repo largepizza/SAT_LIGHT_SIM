@@ -1,6 +1,6 @@
 #version 450
 
-// ── Camera + sun push constants (same layout as C++ SatDrawPC, 164 bytes) ─────
+// ── Camera + sun push constants (same layout as C++ SatDrawPC, 172 bytes) ─────
 // The pipeline layout declares VK_SHADER_STAGE_VERTEX_BIT|FRAGMENT_BIT so both
 // stages share one push constant range.  The fragment uses skyView/fovYRad to
 // project glowBuf ENU directions into screen UV for the lens flare pass.
@@ -33,6 +33,13 @@ layout(push_constant) uniform PC {
     float beamSkyGlowGain; // C12 follow-up #18 — mirrors cloud_march.comp's own copy so the
                         // ground-spot term below and the sky glow march share one brightness
                         // control and read as one continuous effect.
+    float beamGlowBleedGain; // C12 follow-up #39 — moved here from cloud_march.comp's CloudMarchPC
+                        // (that file's near-field bleed/march was removed entirely); now drives
+                        // this shader's own beam sky-illumination wash instead.
+    float beamProximityGlow; // C12 follow-up #41 — CPU-computed [0,1] "how close is the observer
+                        // to any active beam's actual line" value (SatelliteSim::beamProximityGlow).
+                        // Replaces the directional azimuth-sector dome lookup the wash used in
+                        // #39/#40 — applied uniformly regardless of view direction.
 } pc;
 
 // ── Perf knockout toggles (profiling-only) ──────────────────────────────────────
@@ -105,6 +112,12 @@ struct ReflectBeam {
     vec3  reflectDirENU; // mirror's ACTUAL current reflected-sunlight direction (debug pointing ray)
     float debugPad;      // repurposed (follow-up #20) in cloud_march.comp: originating satellite's
                           // stable dispatch index — unused here, not needed for this ground-spot term.
+    float blockAltM;     // C12 follow-up #33: unused here (ground-spot only needs blockOpacity below).
+    float blockOpacity;  // 0 = clear column, 1 = fully opaque — replaces the old cloudShadowTex
+                          // lookup for this term (see the ground-spot block below).
+    float mirrorRadiusM; // C12 follow-up #34: mirror's own equivalent-circle radius — the ground-
+                          // spot's bright "core" is now this true physical size (see below).
+    float pad1;           // std430 16-byte alignment
 };
 layout(std430, set = 0, binding = 17) readonly buffer ReflectBeamsBuf {
     uint         beamCount;
@@ -1572,6 +1585,27 @@ void main() {
     float nightFactor = 1.0 - smoothstep(-0.05, 0.1, sunDirENU.w);
     color += accumCity * vec3(1.0, 0.72, 0.42) * nightFactor * kNightGlowScale;
 
+    // C12 follow-up #41: replaced the directional (azimuth-sector-dome-based) wash from #39/#40
+    // with a simple non-directional "sky is brighter near an active beam" term. The directional
+    // version read as a narrow rising pillar from one bearing (right for a city's broad glow dome,
+    // wrong for one concentrated, often low-angle beam) and measured distance to the beam's GROUND
+    // TARGET only, incorrectly fading out as the observer climbed up alongside a beam away from the
+    // ground while staying right next to its actual line. pc.beamProximityGlow (CPU-computed in
+    // SatelliteSim.cpp from true point-to-segment distance to the nearest active beam's line,
+    // one-frame-stale like every other reflectBeamsBuf readback) already carries the complete
+    // [0,1] falloff — applied equally regardless of view direction, so standing near a beam
+    // brightens the WHOLE visible sky, not one patch of it. beamGlowDomeBuf itself is untouched —
+    // still used below (Milky Way section) and in sat_flare.comp/updateStars() for its original
+    // purpose, suppressing other sky objects near an active beam.
+    const float kBeamSkyGlowScale = 1.0; // C12 follow-up #40 — see that follow-up's note on why
+                                          // this needed to be O(1), not O(1e-6): it multiplies an
+                                          // already-[0,1]-normalized value, unlike kNightGlowScale.
+    // Reuses the SAME nightFactor just computed for city glow above — an accepted first-pass
+    // simplification (an active beam's target is always night-side by construction, but this
+    // doesn't separately check the OBSERVER's own day/night).
+    color += vec3(1.0, 0.95, 0.9) * pc.beamProximityGlow * pc.beamGlowBleedGain * kBeamSkyGlowScale
+           * nightFactor;
+
     // ── Airglow (C15) ─────────────────────────────────────────────────────────
     // Green + sodium bands (accumAirglow) rode the N_VIEW loop above for free.
     color += accumAirglow * kAirglowScale * cloud.airglowGain;
@@ -2225,31 +2259,50 @@ void main() {
                 if (intensity <= 0.0) continue;
                 if (length(beams[bi].targetENU) > pc.beamMaxRangeM) continue;
 
-                float groundDist = length(hitPt.xy - beams[bi].targetENU.xy);
                 float footprintR = max(beams[bi].footprintRadM, 1.0);
-                if (groundDist > footprintR * 4.0) continue;
-                float footprint = exp(-(groundDist * groundDist) / (2.0 * footprintR * footprintR));
                 // Tight bright "hotspot" core on top of the soft halo (C12 follow-up #18) — reads
                 // as a clear landing point where the beam meets the ground, the anchor the sky
                 // glow march (cloud_march.comp) now visually starts from (that march begins
                 // exactly at this same targetENU position and heads upward — see its comment).
-                float coreR = footprintR * 0.15;
-                float core  = exp(-(groundDist * groundDist) / (2.0 * coreR * coreR));
+                // C12 follow-up #34: was footprintR*0.15 (an arbitrary ratio) — now the mirror's
+                // own true physical size, with footprintR (the halo) representing the full
+                // sun-disk-broadened extent around it.
+                float coreR = max(beams[bi].mirrorRadiusM, 1.0);
 
-                // Same shared shadow-map lookup as the general cloud-shadow term above, but
-                // sampled at the TARGET's own tangent-plane position (not this pixel's hitPt) —
-                // this answers "is cloud blocking the mirror's line to its ground target," which
-                // also naturally gates "is this target even within the shadow grid's range."
-                vec2  tShadowSigned = (beams[bi].targetENU.xy - pc.cloudShadowResidualM) / pc.cloudShadowRangeM;
-                float tShadowEdge   = max(abs(tShadowSigned.x), abs(tShadowSigned.y));
-                float tShadowFade   = 1.0 - smoothstep(0.85, 1.0, tShadowEdge);
-                float shadowAtten   = 1.0;
-                if (tShadowFade > 0.001) {
-                    vec2  tShadowUV = clamp(tShadowSigned * 0.5 + 0.5, 0.0, 1.0);
-                    shadowAtten = mix(1.0, texture(cloudShadowTex, tShadowUV).r, tShadowFade);
-                }
+                // C12 follow-up #43: reverted #35's elliptical footprint back to an isotropic
+                // circle, per user report — tracing actual beam impact points in-app showed the
+                // ellipse's stretch axis/magnitude (derived from this ONE satellite's own beam
+                // angle) didn't match where the light visibly appeared to land, especially once the
+                // sky extension (#42) made the true landing geometry more visible. footprintR/coreR
+                // are unchanged (still the physically-derived minor-axis-equivalent radii from
+                // sat_orbit.comp); only this term's own consumption goes back to isotropic.
+                // elevFade kept — independently reasonable (matches the sky tube's own 5° cutoff,
+                // cloud_march.comp) even without the ellipse's infinite-stretch concern that
+                // originally motivated it.
+                vec3  beamDirUp = normalize(beams[bi].satENU - beams[bi].targetENU);
+                float sinElev   = beamDirUp.z;
+                float elevFade  = smoothstep(0.0, 0.08716, sinElev); // sin(5 deg) = 0.08716
+                if (elevFade <= 0.0) continue;
 
-                surfColor += vec3(kBeamGroundScale * intensity * (footprint + core * 2.0) * skyGlowNorm) * shadowAtten;
+                float groundDist = length(hitPt.xy - beams[bi].targetENU.xy);
+                if (groundDist > footprintR * 4.0) continue;
+
+                float footprint = exp(-0.5 * groundDist * groundDist / (footprintR * footprintR));
+                float core      = exp(-0.5 * groundDist * groundDist / (coreR * coreR));
+
+                // C12 follow-up #33: was a lookup into cloudShadowTex, the general-purpose
+                // 80km-half-extent grid centered on the OBSERVER (cloud_shadow.comp) — a real bug,
+                // not an approximation: any target beyond 80km (the common case; the 201 reflector
+                // targets are scattered globally, ~1500km+ typical spacing) always fell outside the
+                // grid and got shadowAtten=1.0 (no shadow), silently. Replaced with the exact,
+                // unlimited-range per-target value baked into this same beam entry by
+                // beam_cloud_block.comp/sat_orbit.comp — also what makes the beam visibly cut off
+                // in the sky (cloud_march.comp's cloudFade) consistent with its ground spot going
+                // dark, instead of one updating and not the other.
+                float shadowAtten = 1.0 - beams[bi].blockOpacity;
+
+                surfColor += vec3(kBeamGroundScale * intensity * (footprint + core * 2.0) * skyGlowNorm)
+                           * shadowAtten * elevFade;
             }
         }
 
