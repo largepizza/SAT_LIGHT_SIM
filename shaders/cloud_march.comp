@@ -179,12 +179,19 @@ layout(std430, set = 0, binding = 10) readonly buffer ReflectBeamsBuf {
     ReflectBeam  beams[BEAM_MAX_ACTIVE];
 };
 
-// C12 follow-up #28 — same pair sat_sky.frag binds, added here ONLY so the beam-glow block can do
-// a per-beam terrain occlusion check (see terrainHeightAtDir()/beamTerrainOccluded() below). Land-
-// only DEM; decode exactly matches sat_sky.frag's (see CLAUDE.md "Elevation texture encoding" for
-// the full pixel table) — do not change one without the other.
+// Same pair sat_sky.frag binds. Originally added (C12 follow-up #28) purely so the beam-glow block
+// could run its own per-beam terrain occlusion march; that march is gone, replaced by the shared
+// scene depth below. These are still required, for observerEffHeight() in main() — the observer's
+// own ground height, which must be resolved identically here, in sat_sky.frag and in
+// scene_depth.comp or the three disagree about where the observer is. Decode lives in
+// terrain.glsl (see its header for the DEM pixel table).
 layout(set = 0, binding = 11) uniform sampler2D earthElevTex;
 layout(set = 0, binding = 12) uniform sampler2D earthSpecTex;
+// Shared scene depth — linear metres to the first terrain/ocean surface along each view ray, or
+// kNoSurfaceT for rays that reach space. Written by scene_depth.comp earlier in this same
+// recordCompute. This dispatch grid and that image are both half ctx.swapExtent, so it is read
+// with a plain texelFetch at gl_GlobalInvocationID: no UV math, no filtering, nothing to get wrong.
+layout(set = 0, binding = 13) uniform sampler2D sceneDepthTex;
 
 // PI, R_EARTH, R_ATMOS, BETA_R/H_R, BETA_M/H_M/G_MIE, SUN_INTENSITY, kCloudHorizFreq/kCloudColFreq,
 // raySphere, rotateZ, remap, phaseM/phaseCloud and the scene-depth sentinels come from the shared
@@ -205,54 +212,16 @@ layout(set = 0, binding = 12) uniform sampler2D earthSpecTex;
 // terrain march/bisection/normals all sampled mip 0.0 — an undocumented precision mismatch that
 // let beams clip through hills the occlusion test could not "see". Sharing the decode is what
 // stops that class of mismatch recurring.
-float terrainHeightAtDir(vec3 dirECEF) {
-    return terrainHeightAtDir(earthElevTex, earthSpecTex, dirECEF);
-}
+// (the local terrainHeightAtDir wrapper lived here — its only caller was beamTerrainVisibility,
+//  removed just below. terrain.glsl's own terrainHeightAtDir(elevTex, specTex, dir) is still
+//  available if anything here needs a DEM height again.)
 
-// C12 follow-up #28 — per-beam terrain occlusion for the Reflect-Orbital beam glow (see call site
-// in the beam loop below). Marches a small fixed number of samples along the straight 3D line
-// from the observer to a beam's closest-approach point `p`, checking whether terrain rises above
-// the line at any sample. Endpoints (i=0, observer's own position; i=steps, `p` itself) are
-// skipped — the observer is never "inside" terrain by construction, and the target's own ground
-// elevation is already handled by the +75m safety margin at target-placement time (see
-// reflectorTargetsRadiusM in SatelliteSim.cpp) — checking only the interior catches an
-// intervening hill without false-positiving on either endpoint's own local footing.
-//
-// C12 follow-up #29: returns a continuous [0,1] visibility fraction now, not a hard bool — the
-// original boolean version contributed to a reported "hard shell that wraps around the spotlight"
-// near convergence points, since this coarse 8-sample test can flip fully-visible/fully-occluded
-// with only a tiny change in viewing angle near ground level (the sampled line's near-terrain
-// grazes shift with `p`, which itself moves continuously with view direction) — a real
-// discontinuity from a discrete test, same shape of bug as several fixed earlier this project
-// (the closest-point branch, the range cutoff). Uses the WORST (most-below-terrain) sample's
-// margin, softened over kOcclusionFeatherM, so a near-miss grazes smoothly instead of flipping.
-float beamTerrainVisibility(vec3 obsPos, vec3 p, vec3 enuX, vec3 enuY, vec3 enuZ) {
-    // C12 follow-up #42: was a fixed 8 samples regardless of line length — for a beam hundreds of
-    // km away, samples land tens of km apart and any hill between two of them was completely
-    // undetected (not just soft-edged; genuinely invisible to the test). Now scales with the
-    // observer->p line length, same "path-length-adaptive step count" pattern sat_sky.frag's own
-    // terrain march already uses (kTerrainStepTargetM there; see that file for the precedent).
-    float lineLen = length(p - obsPos);
-    const float kBeamOcclusionStepTargetM = 3000.0;
-    const int   kBeamOcclusionStepsMin = 8;  // matches the old fixed count — no regression for
-                                              // the common near-field case
-    const int   kBeamOcclusionStepsMax = 32; // bounded — this runs per-beam per-pixel, already
-                                              // thinned by kBeamGlowStride at range; keep the
-                                              // worst-case cost in check
-    int kBeamOcclusionSteps = clamp(int(lineLen / kBeamOcclusionStepTargetM),
-                                     kBeamOcclusionStepsMin, kBeamOcclusionStepsMax);
-    const float kOcclusionFeatherM  = 300.0;
-    float minMargin = 1e9;
-    for (int i = 1; i < kBeamOcclusionSteps; ++i) {
-        float t         = float(i) / float(kBeamOcclusionSteps);
-        vec3  sp        = mix(obsPos, p, t);
-        float spAlt     = length(sp) - R_EARTH;
-        vec3  spDirECEF = normalize(sp.x * enuX + sp.y * enuY + sp.z * enuZ);
-        float margin    = spAlt - terrainHeightAtDir(spDirECEF); // positive = clear, negative = below terrain
-        minMargin = min(minMargin, margin);
-    }
-    return smoothstep(-kOcclusionFeatherM, kOcclusionFeatherM, minMargin);
-}
+// (beamTerrainVisibility lived here — an up-to-32-sample line-of-sight terrain march run PER
+//  BEAM PER PIXEL, i.e. up to ~1e9 DEM fetches per frame, and by a wide margin the most
+//  expensive thing in this shader. It existed only because this pass had no depth buffer to
+//  ask. Replaced in the pipeline-unification pass by a single comparison against sceneDepthTex;
+//  see the call site in the beam loop for exactly what the substitution preserves and what it
+//  deliberately changes.)
 
 // (kCloudHorizFreq / kCloudColFreq come from common.glsl.)
 
@@ -528,18 +497,8 @@ vec3 auroraCurtainSample(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirEC
 // this compute shader already has the real value on hand).
 vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
                     vec3 sunDir, vec3 sunDirECEF, float obsEffH, vec4 moonDirENU,
-                    out float tEnterOut) // always valid whenever the march actually runs — same
-                                          // convention as cloudMarchCS/cirrusMarchCS's tEnterOut.
-                                          // C12 follow-up #25: this was previously missing
-                                          // entirely, so a ray with no cirrus/cloud/beam content
-                                          // left tEnterCombined at -1 even when aurora was the
-                                          // only thing on it, and sat_sky.frag's terrain gate
-                                          // (`tEnterCombined >= 0.0`) failed open — aurora drew
-                                          // straight through terrain whenever it was the sole
-                                          // occupant of B_total, which is the common case above
-                                          // the cloud shell (e.g. ~38km).
+                    float tScene)  // shared scene depth — see cloudMarchCS
 {
-    tEnterOut = -1.0;
     const float kAuroraMarchInnerM = kAuroraShellInnerM - 55000.0;
     const float kAuroraMarchOuterM = kAuroraShellOuterM + 110000.0;
     vec2 tAuroraFar = raySphere(obsPos, dir, R_EARTH + kAuroraMarchOuterM);
@@ -557,9 +516,11 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
         atEnter = tAuroraFar.x;
         atExit  = (tAuroraIn.x > 0.0) ? tAuroraIn.x : tAuroraFar.y;
     }
-    // No terrain clip here (no tSurface in this shader) — same accepted approximation
-    // cloudMarchCS/cirrusMarchCS already make; sat_sky.frag's post-hoc terrain-occlusion
-    // correction on the composited result covers gross occlusion for all three now.
+    // Terrain occlusion. Clamp the PADDED bounds used by the step loop, but test entry against
+    // the REAL shell below — the padding (55/110km) exists to catch the emission falloff tail
+    // smoothly and is not itself emissive, so gating on it would re-introduce exactly the
+    // "aurora pops in at ~38-40km" bug that motivated the padded/real split in the first place.
+    atExit = min(atExit, tScene);
     if (atEnter >= atExit || atExit <= 0.0) return vec3(0.0);
 
     // Whole-ray bounding pre-check (ported from sat_sky.frag this session) — same 80deg
@@ -596,7 +557,8 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
         vec2 tRealOut = raySphere(obsPos, dir, R_EARTH + kAuroraShellOuterM);
         realEnter = max(tRealOut.x, 0.0);
     }
-    tEnterOut = realEnter;
+    // The real (unpadded) shell starts behind terrain — nothing emissive is visible on this ray.
+    if (realEnter >= tScene) return vec3(0.0);
 
     const float kAuroraMaxStepM = 15000.0;
     const int   kAuroraStepsMin = 4;
@@ -656,7 +618,7 @@ const float kAirglowDriftRate     = 0.015;
 const float kAirglowScale         = 0.0000005;
 
 vec3 airglowRedMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
-                        vec3 sunDirECEF, float obsEffH) {
+                        vec3 sunDirECEF, float obsEffH, float tScene) {
     const float kAirglowInnerM = 100000.0; // = R_ATMOS - R_EARTH
     const float kAirglowFarM   = 500000.0;
     vec2 tAtmos  = raySphere(obsPos, dir, R_ATMOS);
@@ -674,8 +636,11 @@ vec3 airglowRedMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
         rtEnter = tAirFar.x;
         rtExit  = (tAtmos.x > 0.0) ? tAtmos.x : tAirFar.y;
     }
-    // No terrain clip here (no tSurface in this shader) — same accepted approximation
-    // cloudMarchCS/cirrusMarchCS/auroraMarchCS already make.
+    // Terrain occlusion. NOTE this is a genuine BUG FIX, not just a refactor: the red band never
+    // contributed to the old shared tEnterCombined scalar at all, so until now it rendered
+    // straight through terrain unconditionally, at every observer altitude.
+    if (rtEnter >= tScene) return vec3(0.0);
+    rtExit = min(rtExit, tScene);
     if (rtEnter >= rtExit || rtExit <= 0.0) return vec3(0.0);
 
     const int N_AIRGLOW_RED = 16;
@@ -829,15 +794,12 @@ void cloudMarchCS(
     out   vec3  A_cloud, out vec3 B_cloud,
     out   vec3  cloudTOut,
     out   float tCloudOcclude,
-    out   float tEnterOut) // always valid whenever the march actually runs, unlike tCloudOcclude
-                            // (which only sets once ≥90% opaque) — see sat_sky.frag's terrain-
-                            // suppression comment for why both are needed.
+    float tScene)  // shared scene depth (metres to the first surface, or kNoSurfaceT)
 {
     A_cloud = vec3(1.0);
     B_cloud = vec3(0.0);
     cloudTOut = vec3(1.0);
     tCloudOcclude = -1.0;
-    tEnterOut = -1.0;
     if (cloud.layers[0].enabled < 0.5) return;
 
     float cloudAltFade = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
@@ -867,6 +829,13 @@ void cloudMarchCS(
         tExit  = (shellB.x > 0.0) ? shellB.x : shellT.y;
     }
 
+    // Terrain occlusion, applied to THIS layer's own bounds. Terrain nearer than the shell entry
+    // means the ray never reaches cloud at all; terrain inside the shell truncates the march part
+    // way — a ridge poking into the deck now correctly cuts the cloud behind it, which the old
+    // shared post-hoc gate explicitly could not do (it could only suppress all layers or none).
+    if (tEnter >= tScene) return;
+    tExit = min(tExit, tScene);
+
     tExit = min(tExit, tEnter + cloud.maxRenderDistM);
     if (tEnter >= tExit || tExit <= 0.0) return;
 
@@ -882,11 +851,6 @@ void cloudMarchCS(
         float cMap  = textureLod(earthCloudsTex, eUV, 4.0).r;
         if (cloud.coverage * cMap < 0.02) return;
     }
-
-    // Past this point the march genuinely runs — record the entry distance for terrain
-    // suppression regardless of how opaque the result turns out to be (tCloudOcclude, set later,
-    // stays gated at ≥90% opacity for the separate satellite-occlusion use case).
-    tEnterOut = tEnter;
 
     vec3 sunColorCloud = vec3(0.0);
     {
@@ -1204,16 +1168,105 @@ void cloudMarchCS(
     B_cloud = cloudAttn * cloudScatter * cloudAltFade;
 }
 
+// ── Per-pixel cloud shadow on terrain/ocean ───────────────────────────────────────────────────
+// Marches sunward from a point ON THE GROUND through the main cloud shell and returns the
+// transmittance — "how much direct sunlight reaches this spot".
+//
+// This replaces cloud_shadow.comp's 128x128 observer-centred tangent-plane grid outright. That
+// grid had three structural problems, all of which this form avoids by construction rather than
+// by mitigation:
+//   * Resolution. 128 texels over the default +/-80 km range is 1250 m per texel, EVERYWHERE.
+//     Here the sampling grid is screen space, so it is metres-per-texel near the camera and
+//     coarsens naturally with distance — the opposite of what you want to fix, and it fixes
+//     itself.
+//   * Altitude. The grid was centred on the observer at a fixed world extent, so climbing made it
+//     cover a steadily smaller fraction of the visible ground. Following the view ray has no such
+//     failure mode.
+//   * Swimming. Because the grid re-centred on a continuously moving observer every frame, it
+//     needed texel-snapping machinery (computeCloudShadowSnap + a residual subtracted by every
+//     consumer) to stop shadows drifting sub-texel. This value is a pure function of the world
+//     position being shaded, so there is nothing to snap and that whole subsystem is deleted.
+//
+// The march itself is deliberately the same 12 steps and the same density->optical-depth constant
+// the grid used, so brightness is comparable; only the sampling geometry changed.
+float cloudGroundShadow(vec3 groundECEF, vec3 sunDirECEF, float jitter) {
+    if (cloud.layers[0].enabled < 0.5) return 1.0;
+
+    float cloudBaseAlt = cloud.layers[0].shellAltM;
+    float cloudTopAlt  = cloud.layers[1].shellAltM;
+    float shellThick   = cloudTopAlt - cloudBaseAlt;
+
+    // The shaded point is always below the cloud base by construction (it is on the ground), so
+    // only the "below the shell, looking up" root is needed — no 3-way observer classification.
+    vec2 shellB = raySphere(groundECEF, sunDirECEF, R_EARTH + cloudBaseAlt);
+    vec2 shellT = raySphere(groundECEF, sunDirECEF, R_EARTH + cloudTopAlt);
+    if (!(shellT.y > 0.0 && shellB.y < shellT.y)) return 1.0;
+
+    float tEnter = max(shellB.y, 0.0);
+    float tExit  = shellT.y;
+    const int kShadowSteps = 12;
+    float segLen = (tExit - tEnter) / float(kShadowSteps);
+
+    float T = 1.0;
+    for (int i = 0; i < kShadowSteps; ++i) {
+        // Jittered sample phase. Neighbouring screen texels can map to ground points kilometres
+        // apart at grazing angles, so a fixed (i+0.5) phase through structured noise is an
+        // aliasing setup — the same one the sun self-shadow cone above already dithers away.
+        vec3  p = groundECEF + sunDirECEF * (tEnter + (float(i) + jitter) * segLen);
+        float h = length(p) - R_EARTH;
+        if (h < cloudBaseAlt || h > cloudTopAlt) continue;
+        float hNorm = (h - cloudBaseAlt) / shellThick;
+
+        float pLen = length(p);
+        vec3  dirECEF = p / pLen;
+        float pLon = atan(p.y, p.x);
+        float pLat = asin(clamp(p.z / pLen, -1.0, 1.0));
+        vec2  pUV  = vec2(fract((pLon + PI) / (2.0*PI)
+                                + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                          (0.5*PI - pLat) / PI);
+        float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, 4.0).r;
+        if (localCov < 0.02) continue;
+
+        vec3 dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[0].driftMult);
+        vec3 warpUVW      = cloudWarpOffset(dirECEFDrift);
+
+        float colNoise = texture(cloudNoiseTex,
+                                 dirECEFDrift * kCloudColFreq + warpUVW + vec3(0.0, 0.0, 0.25)).r;
+        float colH = remap(colNoise, 1.0 - localCov, 1.0, 0.0, 1.0);
+
+        float baseNoise = texture(cloudNoiseTex,
+                                  dirECEFDrift * kCloudColFreq + warpUVW + vec3(0.0, 0.0, 0.85)).r;
+        float baseH = (baseNoise - 0.5) * cloud.cloudBaseVariance;
+
+        float topFade = 1.0 - smoothstep(colH - 0.05, colH + 0.05, hNorm);
+        float hFade   = smoothstep(baseH, baseH + 0.05, hNorm) * topFade;
+        if (hFade < 0.001) continue;
+
+        const float kVertTiles = 1.5;
+        float posZ      = sin(pUV.x * 21.3 + pUV.y * 17.7) * 0.5 + 0.5;
+        vec3  uvwXY     = dirECEFDrift * kCloudHorizFreq + warpUVW;
+        vec3  uvwDetail = uvwXY + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0);
+        float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade);
+
+        if (d > 0.001) {
+            T *= exp(-d * segLen * 3e-3); // same density->optical-depth mapping as the view march
+            if (T < 0.02) break;
+        }
+    }
+
+    // Max 85% darkening — same cap the grid applied, so this drops in at matched brightness.
+    return mix(1.0, T, 0.85);
+}
+
 void cirrusMarchCS(
     vec3  obsPos,  vec3  dir,
     vec3  enuX,    vec3  enuY,        vec3  enuZ,
     vec3  sunDir,  vec3  sunDirECEF,  float obsEffH,
     out   vec3  A_cirrus, out vec3 B_cirrus,
-    out   float tEnterOut) // always valid whenever the march runs — see cloudMarchCS's tEnterOut
+    float tScene)  // shared scene depth — see cloudMarchCS
 {
     A_cirrus = vec3(1.0);
     B_cirrus = vec3(0.0);
-    tEnterOut = -1.0;
     if (cloud.layers[1].enabled < 0.5) return;
     float cirrusAltFade = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
     if (cirrusAltFade < 0.001) return;
@@ -1242,8 +1295,10 @@ void cirrusMarchCS(
     // the old 200km cap cut the march off well short of that, letting stars/aurora/Milky Way show
     // straight through cirrus near the horizon instead of the cirrus layer thinning out naturally.
     tExit = min(tExit, tEnter + 450000.0);
+    // Terrain occlusion on this layer's own bounds — see cloudMarchCS.
+    if (tEnter >= tScene) return;
+    tExit = min(tExit, tScene);
     if (tEnter >= tExit || tExit <= 0.0) return;
-    tEnterOut = tEnter;
 
     // Adaptive step count (same fix as the aurora march, session 28 follow-up #9): a FIXED
     // N_CIRRUS badly serves a path length that now legitimately ranges from ~10km (steep look-down)
@@ -1345,17 +1400,30 @@ void main() {
     vec3 enuY = cross(enuZ, enuX);
     vec3 sunDirECEF = sunDir.x * enuX + sunDir.y * enuY + sunDir.z * enuZ;
 
-    vec3 obsPos = vec3(0.0, 0.0, R_EARTH + pc.obsEffH + 2.0);
+    // Observer height resolved on the GPU via the SAME shared helper sat_sky.frag and
+    // scene_depth.comp use. This shader previously took a CPU-computed value straight off
+    // pc.obsEffH while sat_sky.frag did its own texture lookup, so the two disagreed about where
+    // the observer was. That was harmless while each only compared distances against itself, but
+    // it is not once one pass produces a depth buffer the other consumes — a few metres of
+    // disagreement at the observer becomes a visible occlusion mismatch along grazing rays.
+    // pc.obsEffH is still the CPU's value and is deliberately no longer read here.
+    float obsEffH = observerEffHeight(earthElevTex, earthSpecTex, pc.obsECEFDir);
+    vec3  obsPos  = observerPos(obsEffH);
 
-    vec3  A_cirrus, B_cirrus;
-    float tEnterCirrus;
-    cirrusMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, pc.obsEffH,
-                  A_cirrus, B_cirrus, tEnterCirrus);
+    // Shared scene depth for this exact texel. Read ONCE here, not per beam: the beam loop below
+    // runs up to 2048 iterations and every one of them needs the same value. texelFetch rather
+    // than texture() because this dispatch grid and sceneDepthTex are the same size — an exact
+    // 1:1 mapping with no filtering, so the value read is exactly the value written.
+    float tScene = texelFetch(sceneDepthTex, coord, 0).r;
+
+    vec3 A_cirrus, B_cirrus;
+    cirrusMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, obsEffH,
+                  A_cirrus, B_cirrus, tScene);
 
     vec3  A_cloud, B_cloud, cloudTOut;
-    float tCloudOcclude, tEnterCloud;
-    cloudMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, pc.obsEffH, pc.moonDirENU,
-                 A_cloud, B_cloud, cloudTOut, tCloudOcclude, tEnterCloud);
+    float tCloudOcclude;
+    cloudMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, obsEffH, pc.moonDirENU,
+                 A_cloud, B_cloud, cloudTOut, tCloudOcclude, tScene);
 
     vec3  A_total = A_cirrus * A_cloud;
     vec3  B_total = B_cirrus * A_cloud + B_cloud;
@@ -1369,14 +1437,13 @@ void main() {
     // from before, when aurora ignored terrain occlusion entirely — this is more physically
     // correct: terrain that blocks the view of the much-closer cloud layer necessarily blocks the
     // far higher aurora shell along that same ray too).
-    float tEnterAurora = -1.0;
-    vec3  auroraContrib = vec3(0.0);
+    vec3 auroraContrib = vec3(0.0);
     if ((pc.debugDisableMask & 32u) == 0u) {
         auroraContrib = auroraMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF,
-                                       pc.obsEffH, pc.moonDirENU, tEnterAurora);
+                                       obsEffH, pc.moonDirENU, tScene);
     }
     if (dot(auroraContrib, auroraContrib) > 0.0) {
-        bool  auroraBehindClouds = (pc.obsEffH < kAuroraShellInnerM);
+        bool  auroraBehindClouds = (obsEffH < kAuroraShellInnerM);
         float cloudBlockLocal    = dot(A_total, vec3(1.0 / 3.0));
         const float kAuroraCloudSuppressPower = 3.0;
         float auroraCloudSuppress = auroraBehindClouds
@@ -1388,7 +1455,7 @@ void main() {
     // Airglow red band (moved here this session — perf). No cloud-suppression term — the
     // original never had one either, just a plain additive contribution.
     if ((pc.debugDisableMask & 16u) == 0u) {
-        B_total += airglowRedMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, pc.obsEffH);
+        B_total += airglowRedMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, obsEffH, tScene);
     }
 
     // ── Reflect-Orbital beam sky glow — analytic closest-approach + closed-form extinction ─────
@@ -1413,10 +1480,10 @@ void main() {
     // far more stable at near-parallel viewing angles than 32 independently-evaluated samples.
     // Also cheaper: O(1) per beam instead of O(32).
     //
-    // tEnterBeam: nearest VIEW-RAY distance the beam actually contributes at (C12 follow-up #20),
-    // folded into tEnterCombined below so sat_sky.frag's terrain/ocean occlusion test knows about
-    // this near-ground content too, not just the (often farther) cloud shell's own entry distance.
-    float tEnterBeam = -1.0;
+    // (tEnterBeam lived here — the beam's own nearest view-ray contribution, fed into the shared
+    //  tEnterCombined scalar so terrain occlusion knew about near-ground beam content. Beams are
+    //  now occluded directly against sceneDepthTex at their own sView, per beam, so there is
+    //  nothing left to fold anywhere.)
     vec3  beamRadiance = vec3(0.0); // C12 follow-up #25: accumulated separately from B_total and
                                      // soft-compressed once below (fix 3c) so a dense cluster of
                                      // overlapping beams saturates gracefully instead of blowing
@@ -1545,8 +1612,10 @@ void main() {
             // negative tBeam doesn't stay on the ground, it dives underground (by mu*|tBeam|,
             // exactly the bug reported: "extension only visible from above... at sea level it
             // shrinks inward" — a low observer's sightline to a now-underground point gets blocked
-            // by beamTerrainVisibility, while from high above the discrepancy is easy to miss). The
-            // extension needs to move along the GROUND, not along the beam's own tilted axis.
+            // by the terrain occlusion test, while from high above the discrepancy is easy to miss;
+            // that test was a line-of-sight march then and is a scene-depth compare now, but the
+            // symptom would be the same either way). The extension needs to move along the GROUND,
+            // not along the beam's own tilted axis.
             vec3  horizontalDirUp = (cosElev > 1e-4) ? vec3(rayDirUp.xy, 0.0) / cosElev : vec3(1.0, 0.0, 0.0);
 
             vec2  topHit = raySphere(targetWorldPos, rayDirUp, R_EARTH + kBeamGlowMaxAltM);
@@ -1795,19 +1864,32 @@ void main() {
             // own contribution via the multiply below, same net effect for THAT term.
             float proximityCutoffFade = 1.0 - smoothstep(tubeRadiusM * 3.0, tubeRadiusM * 4.0, perpDist);
 
-            // C12 follow-up #28: per-beam terrain occlusion. The shared tEnterCombined gate
-            // (see its declaration/fold-in below) can't do this correctly — it only knows the
-            // NEAREST volumetric content on this ray, so a close beam masks the occlusion test
-            // for any farther beam sharing the same ray. Do it directly here instead: march a
-            // few samples along the actual straight line from the observer to this beam's own
-            // closest-approach point and check terrain height at each — exact for "does a hill
-            // block this specific line of sight" (line-of-sight is a straight 3D line in this
-            // frame), unlike the shared scalar.
-            // C12 follow-up #29: returns a continuous visibility fraction now, not a hard boolean
-            // — see beamTerrainVisibility()'s own comment for why (contributed to the same "hard
-            // shell" complaint: a coarse 8-sample boolean test flipping on/off as view angle
-            // shifted slightly near ground level created its own sharp edges).
-            float terrainVis = beamTerrainVisibility(obsPos, p, enuX, enuY, enuZ);
+            // Per-beam terrain occlusion, now a depth comparison against the shared scene depth.
+            //
+            // This replaces beamTerrainVisibility() — a march of up to 32 samples x 2 mip-0
+            // fetches into the 21600x10800 DEM, run PER BEAM PER PIXEL inside this loop. That was
+            // comfortably the most expensive thing in this shader; it existed only because there
+            // was no depth buffer to ask.
+            //
+            // The test is now exact rather than sampled: tScene is the FIRST surface along this
+            // pixel's ray, so tScene < sView means something blocks the ray before it reaches the
+            // tube. The old march could miss a hill entirely between two samples (its own comment
+            // admitted this and only partly patched it); a depth test cannot.
+            //
+            // WHAT CHANGED, deliberately: the old test walked observer -> p, where p is the
+            // closest point on the BEAM. This walks along the VIEW RAY to sView. The two differ
+            // laterally by perpDist (up to several km for a long beam). The view-ray version is
+            // the more correct question — "is what this pixel is looking at blocked" — but it is
+            // a genuine behaviour change at beam edges over ridges.
+            //
+            // The feather is proportional, not the old fixed +/-300 m. That constant was a
+            // VERTICAL margin (height above terrain); this one is a distance ALONG the ray, and a
+            // fixed value there would be far harsher at exactly the grazing angles the softness
+            // was introduced for (follow-up #29's "hard shell that wraps around the spotlight").
+            const float kBeamOccFeatherMinM  = 300.0;
+            const float kBeamOccFeatherFrac  = 0.03;
+            float occFeather = max(kBeamOccFeatherMinM, kBeamOccFeatherFrac * sView);
+            float terrainVis = smoothstep(-occFeather, occFeather, tScene - sView);
 
             float proximity = exp(-(perpDist * perpDist) / (2.0 * tubeRadiusM * tubeRadiusM));
 
@@ -1876,11 +1958,6 @@ void main() {
             // new general sky-illumination wash in sat_sky.frag (reusing beamGlowDomeBuf, which
             // was already computed for suppression purposes — see that file for the new
             // consumption). See TERRAIN_PLAN.md C12 follow-up #39 for the full writeup.
-
-            // Track the nearest contribution along the VIEW ray (C12 follow-up #20) — see
-            // tEnterBeam's declaration above. Now a single analytic value per beam instead of a
-            // running minimum over 32 samples.
-            if (tEnterBeam < 0.0 || sView < tEnterBeam) tEnterBeam = sView;
         }
 
         // C12 follow-up #28: daytime suppression — same formula/ratio sat_flare.comp already
@@ -1889,7 +1966,7 @@ void main() {
         // is already sin(solar elevation), no new field needed for that half of the formula.
         float tDay      = clamp((pc.sunDirENU.w + 0.05) / 0.39, 0.0, 1.0);
         float dayBright = tDay * tDay;
-        float atmFracBeam = clamp(exp(-pc.obsEffH / 20000.0), 0.0, 1.0);
+        float atmFracBeam = clamp(exp(-obsEffH / 20000.0), 0.0, 1.0);
         beamRadiance /= (1.0 + dayBright * pc.daySuppression * atmFracBeam);
 
         // C12 follow-up #25: soft saturating compression instead of raw additive B_total +=.
@@ -1965,24 +2042,32 @@ void main() {
         }
     }
 
-    // Nearer of the two layers' entry distances — always valid whenever either layer actually
-    // rendered something, unlike tCloudOcclude (opacity-gated). Used by sat_sky.frag for terrain
-    // suppression: if terrain sits closer than this, the WHOLE combined contribution is hidden
-    // (both layers can't be independently suppressed once merged into one target — an accepted
-    // approximation for the rarer case where terrain sits geometrically between the two shells).
-    float tEnterCombined;
-    if (tEnterCirrus < 0.0) tEnterCombined = tEnterCloud;
-    else if (tEnterCloud < 0.0) tEnterCombined = tEnterCirrus;
-    else tEnterCombined = min(tEnterCirrus, tEnterCloud);
-    // Fold in the beam glow's own nearest contribution (C12 follow-up #20) — see tEnterBeam's
-    // declaration above; without this, terrain/ocean occlusion only knew about the (often much
-    // farther) cloud shell entry distance, wrongly suppressing a nearer beam glow along with it.
-    if (tEnterBeam >= 0.0 && (tEnterCombined < 0.0 || tEnterBeam < tEnterCombined)) tEnterCombined = tEnterBeam;
-    // Fold in aurora's own entry distance (C12 follow-up #25) — previously missing entirely, so a
-    // ray with no cirrus/cloud/beam content left tEnterCombined at -1 even when aurora was the only
-    // thing in B_total, and sat_sky.frag's terrain gate failed open (aurora drew through terrain).
-    if (tEnterAurora >= 0.0 && (tEnterCombined < 0.0 || tEnterAurora < tEnterCombined)) tEnterCombined = tEnterAurora;
+    // tEnterCombined is GONE. It fused cirrus + cloud + beam + aurora entry distances into one
+    // scalar that sat_sky.frag compared against its own terrain distance, suppressing the WHOLE
+    // composite when terrain won — so the four could never be occluded independently (a beam
+    // behind a hill still drew if some unrelated nearer cloud won the min()), partial truncation
+    // was impossible, and the half-res scalar was being compared against a full-res silhouette.
+    //
+    // It was also a latent correctness bug in its own right: this is an RGBA16F target, whose
+    // alpha saturates at 65504, and near-horizon cloud entry distances routinely exceed 100 km.
+    // Those overflowed to +inf, making `tSurface < tEnterCombined` unconditionally true and
+    // suppressing the entire composite on any ray that also hit the sea-level sphere.
+    //
+    // Every layer above now clamps to tScene at march time instead, which is strictly more
+    // correct — and it freed this alpha channel for the per-pixel cloud shadow below.
+    //
+    // Only ground pixels pay for it: sky rays have tScene == kNoSurfaceT and skip out entirely.
+    // The shadow is evaluated at the terrain hit point the depth pass already found, so this
+    // needs no new bindings, no new pass, and no spatial grid — the whole of cloud_shadow.comp
+    // and its texel-snapping subsystem is deleted in exchange.
+    float terrainSunT = 1.0;
+    if (tScene < kNoSurfaceT && (pc.debugDisableMask & 256u) == 0u) {
+        vec3  hitENU  = obsPos + tScene * dir;
+        vec3  hitECEF = hitENU.x * enuX + hitENU.y * enuY + hitENU.z * enuZ;
+        float jitter  = textureLod(noiseTex, vec2(gl_GlobalInvocationID.xy) * (1.0/128.0), 0.0).b;
+        terrainSunT = cloudGroundShadow(hitECEF, sunDirECEF, jitter);
+    }
 
     imageStore(targetA, coord, vec4(B_total, tCloudOcclude));
-    imageStore(targetB, coord, vec4(A_total, tEnterCombined));
+    imageStore(targetB, coord, vec4(A_total, terrainSunT));
 }

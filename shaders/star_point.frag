@@ -28,7 +28,41 @@ layout(location = 3) in float fragTwinkle;  // scintillation modulator [0,~2]; 1
 
 layout(location = 0) out vec4 outColor;
 
+#include "common.glsl"   // kNoSurfaceT
+
+// Shared scene depth — see scene_depth.comp. Only consulted when the hardware depth buffer isn't
+// written, i.e. renderScale < 1.0.
+layout(set = 0, binding = 7) uniform sampler2D sceneDepthTex;
+
+// Longest prefix of SatDrawPC this shader needs. Same trick sat_point.frag/vert already use: each
+// stage declares its own view into the shared push-constant range, up to the last field it reads.
+layout(push_constant) uniform PC {
+    mat4  skyView;          // offset 0   — unused here, declared for layout consistency
+    float fovYRad;          // offset 64
+    float aspect;           // offset 68
+    float gmst;             // offset 72
+    float waveTime;         // offset 76
+    vec4  sunDirENU;        // offset 80
+    vec4  moonDirENU;       // offset 96
+    vec4  obsECEFDir;       // offset 112
+    uint  debugDisableMask; // offset 128 — unused here
+    float sceneDepthMode;   // offset 132 — 1.0 only when renderScale < 1.0
+    vec2  screenSizePx;     // offset 136 — THIS draw's target size; stars always draw at native res
+} pc;
+
 void main() {
+    // Terrain occlusion at renderScale < 1.0, where nothing writes hardware depth.
+    //
+    // Unlike satellites, stars get the simple and unambiguously correct rule: they are at
+    // infinity, so ANY surface on this ray occludes them. sat_point.frag has to reproduce the
+    // old 150 km cap instead because a satellite can legitimately sit nearer than the terrain
+    // behind it; a star never can. This is strictly better than the hardware-depth path stars
+    // get at full resolution, which inherits that same 150 km cap from sat_sky.frag.
+    if (pc.sceneDepthMode > 0.5) {
+        float tScene = texture(sceneDepthTex, gl_FragCoord.xy / pc.screenSizePx).r;
+        if (tScene < kNoSurfaceT) discard;
+    }
+
     vec2  c = gl_PointCoord - 0.5;
     float d = length(c);
 

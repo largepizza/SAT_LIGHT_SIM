@@ -143,7 +143,8 @@ void SatelliteSim::init(VulkanContext &ctx)
     createCloudWarpNoisePipeline(ctx); // must run before createCloudMarchDescriptors (binding 9)
     createAuroraNoisePipeline(ctx); // must run before createGlowResources' writes (binding 16)
     createCloudMarchResources(ctx); // images must exist before createGlowResources' writes (bindings 10/11)
-    createCloudShadowResources(ctx); // image must exist before createGlowResources' writes (binding 18)
+    createSceneDepthResources(ctx); // image must exist before createGlowResources' (binding 19),
+                                     // createDescriptors' (binding 7) and initStars' (binding 7) writes
     createGlowResources(ctx);
     createDescriptors(ctx);
     createComputePipeline(ctx);
@@ -151,8 +152,8 @@ void SatelliteSim::init(VulkanContext &ctx)
     createOrbitPipeline(ctx);
     createCloudMarchDescriptors(ctx); // needs cloudParamsBuf from createGlowResources above
     createCloudMarchPipeline(ctx);
-    createCloudShadowDescriptors(ctx); // needs cloudParamsBuf/earthClouds/cloudNoise/cloudWarpNoise
-    createCloudShadowPipeline(ctx);
+    createSceneDepthDescriptors(ctx); // needs earthElev/earthSpec from createGlowResources above
+    createSceneDepthPipeline(ctx);
     createBeamCloudBlockDescriptors(ctx); // needs same cloudParamsBuf/earthClouds/cloudNoise/cloudWarpNoise
     createBeamCloudBlockPipeline(ctx);
     createSkyBgPipeline(ctx);
@@ -261,6 +262,34 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     satCloudWrites[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descSet, 6, 0, 1,
                          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &satCloudBInfo, nullptr, nullptr};
     vkUpdateDescriptorSets(ctx.device, 2, satCloudWrites, 0, nullptr);
+
+    // ── Shared scene depth — same swapchain-size dependency, same destroy/recreate/patch dance.
+    // Two sets reference it: its own (as a storage image, for writing) and skyDescSet binding 20
+    // (as a sampled image, for reading). Miss either and the next frame samples a destroyed view.
+    vkDestroyImageView(ctx.device, sceneDepthView, nullptr);
+    vkDestroyImage(ctx.device, sceneDepthImg, nullptr);
+    vkFreeMemory(ctx.device, sceneDepthMem, nullptr);
+    sceneDepthImg = VK_NULL_HANDLE;
+    sceneDepthMem = VK_NULL_HANDLE;
+    sceneDepthView = VK_NULL_HANDLE;
+    createSceneDepthResources(ctx); // recreates image/view; leaves it in SHADER_READ_ONLY_OPTIMAL
+
+    VkDescriptorImageInfo depthStorageInfo{VK_NULL_HANDLE, sceneDepthView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo depthSampledInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet depthWrites[5] = {};
+    depthWrites[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 2, 0, 1,
+                      VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &depthStorageInfo, nullptr, nullptr};
+    depthWrites[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 13, 0, 1,
+                      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
+    depthWrites[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, skyDescSet, 19, 0, 1,
+                      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
+    // The two point-draw sets read it as well (terrain occlusion at renderScale < 1.0). Easy to
+    // forget — the same omission was caught late once before, for the cloud targets' bindings 5/6.
+    depthWrites[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descSet, 7, 0, 1,
+                      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
+    depthWrites[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, starDescSet, 7, 0, 1,
+                      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 5, depthWrites, 0, nullptr);
 }
 
 // ─── recordCompute ────────────────────────────────────────────────────────────
@@ -274,14 +303,15 @@ void SatelliteSim::updateGpuTimingStats(VulkanContext &ctx)
     if (!ctx.timestampsReady)
         return;
     const double *t = ctx.timestampMs;
-    // Slot 1 (beam_cloud_block.comp) was added in the pipeline-unification pass. Before that its
-    // cost was folded silently into the orbit-compute bucket, which is why that bucket had always
-    // read as a suspiciously flat 0.37-0.59 ms regardless of how much beam work was active.
+    // The pipeline-unification pass added two buckets and removed one: beam cloud block (whose
+    // cost used to be folded silently into orbit compute, which is why that bucket always read a
+    // suspiciously flat 0.37-0.59 ms) and scene depth, the new shared terrain-depth pass; cloud
+    // shadow map went away when its dispatch was folded into cloud_march.comp.
     float raw[8] = {
-        (float)(t[1] - t[0]), // beam cloud block compute (C12 follow-up #33)
-        (float)(t[2] - t[1]), // orbit compute
-        (float)(t[3] - t[2]), // cloud march compute
-        (float)(t[4] - t[3]), // cloud shadow map compute (C12)
+        (float)(t[1] - t[0]), // scene depth compute (shared terrain/ocean depth)
+        (float)(t[2] - t[1]), // beam cloud block compute (C12 follow-up #33)
+        (float)(t[3] - t[2]), // orbit compute
+        (float)(t[4] - t[3]), // cloud march compute (incl. the per-pixel cloud shadow)
         (float)(t[5] - t[4]), // flare compute
         (float)(t[6] - t[5]), // sky/terrain/ocean bg + cloud composite fragment shader
         (float)(t[7] - t[6]), // satellite points + star draw
@@ -659,6 +689,54 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     orbitPc.beamGain = beamGain;
     orbitPc.mirrorSlewDegPerSec = mirrorSlewDegPerSec; // C12 follow-up #20
 
+    // ── Dispatch: scene_depth.comp — shared terrain/ocean depth (pipeline unification) ──────────
+    // Runs FIRST. Everything downstream that needs to know "is this pixel's view blocked by the
+    // ground" reads the result instead of re-deriving it: cloud_march.comp's beam occlusion (which
+    // used to march the DEM per beam per pixel), and — from the next step — every volumetric
+    // layer's own far bound. Depends on nothing else this frame, only the camera.
+    {
+        SceneDepthPC dpc{};
+        dpc.skyView = camera.viewMatrix();
+        dpc.fovYRad = glm::radians(camera.fovYDeg);
+        // ALWAYS the true swapchain aspect, never a render-scaled one — this buffer is consumed
+        // at several different resolutions and must be the same function of normalized screen UV
+        // at all of them.
+        dpc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
+        dpc.debugDisableMask = debugDisableMask;
+        dpc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
+
+        uint32_t halfW = (ctx.swapExtent.width + 1) / 2;
+        uint32_t halfH = (ctx.swapExtent.height + 1) / 2;
+
+        // Pre-dispatch: SHADER_READ_ONLY_OPTIMAL → GENERAL.
+        // srcStage includes COMPUTE as well as FRAGMENT — unlike cloudMarchTargetA/B (read only by
+        // fragment shaders), this image is also read by cloud_march.comp, so the write-after-read
+        // hazard against the PREVIOUS frame's compute read has to be covered. Benign in practice
+        // with one frame in flight plus the fence wait, but sync-validation flags its absence.
+        ctx.imageBarrier(cmd, sceneDepthImg,
+                         VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, sceneDepthPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                sceneDepthPipeLayout, 0, 1, &sceneDepthDescSet, 0, nullptr);
+        vkCmdPushConstants(cmd, sceneDepthPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(dpc), &dpc);
+        vkCmdDispatch(cmd, (halfW + 15) / 16, (halfH + 15) / 16, 1);
+
+        // Post-dispatch: GENERAL → SHADER_READ_ONLY_OPTIMAL. dstStage covers BOTH consumer kinds —
+        // cloud_march.comp (compute, later this call) and sat_sky.frag / the point draws
+        // (fragment, later this frame in the render pass).
+        ctx.imageBarrier(cmd, sceneDepthImg,
+                         VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                         VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    }
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
+
     // Zero reflectBeamsBuf so this frame's orbit dispatch starts with an empty sector
     // selection (same rationale as the glowBuf fill below — atomicMax needs a known-zero start).
     vkCmdFillBuffer(cmd, reflectBeamsBuf, 0, sizeof(GpuReflectBeams), 0);
@@ -702,7 +780,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     //
     // Knockout bit 512 skips the dispatch itself (not just its consumers — bit 128 does that).
     // Skipping leaves beamCloudBlockBuf holding the previous frame's values rather than garbage,
-    // since every thread fully overwrites its own slot; same convention as bit 256/cloud_shadow.
+    // since every thread fully overwrites its own slot; same convention bit 1024 uses for the
+    // scene depth pass.
     if ((debugDisableMask & 512u) == 0u)
     {
         BeamCloudBlockPC bpc{};
@@ -732,7 +811,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     }
     // Written unconditionally, including on the knockout-skipped path — the bucket then reads ~0,
     // which is exactly the measurement the knockout is there to produce.
-    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, orbitPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -790,7 +869,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              0, 0, nullptr, 1, &bmb, 0, nullptr);
     }
-    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 3);
 
     // ── Dispatch: cloud_march.comp — half-resolution cloud/cirrus march (C15-perf) ──────────
     // Runs at half ctx.swapExtent, writing cloudMarchTargetA/B; sat_sky.frag samples them
@@ -851,67 +930,20 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                          VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
-    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 3);
-
-    // ── Dispatch: cloud_shadow.comp — shared cloud-transmittance primitive (C12) ────────────
-    // Fixed 128×128 grid, independent of screen resolution/activeSatCount — always runs, even
-    // when no satellites are active (unlike orbit/flare below). See cloud_shadow.comp's header
-    // for the full design. Gated on the "Cloud shadow map" knockout toggle (bit 256) so its
-    // isolated GPU cost reads as ~0 in the frame breakdown when disabled, not just its
-    // consumers in sat_sky.frag — skipping the dispatch leaves cloudShadowImg in whatever
-    // layout/contents it already had (SHADER_READ_ONLY_OPTIMAL either way), so no barrier is
-    // needed for the skip itself.
-    if ((debugDisableMask & 256u) == 0u)
-    {
-        CloudShadowPC spc{};
-        spc.sunDirENU = sunDirENU;
-        spc.rangeM = cloudShadowRangeM;
-        spc.obsECEFDir = obsDir;
-        spc.waveTime = (float)(simSecInDay * 1.0);
-        spc.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
-                                     glm::two_pi<double>());
-        // Texel-snapping to prevent shadow "swimming"/flicker as the observer moves: the grid
-        // recenters on the observer's exact position every frame by construction (uv=0 ->
-        // enuZ*R_EARTH), so any world-space cloud feature's mapping to a texel index drifts
-        // continuously as the observer moves — a classic moving-shadow-map aliasing artifact.
-        // Fix: quantize the grid's actual center to whole-texel multiples of a STABLE east/north
-        // coordinate (reusing cityOffsetEastM/NorthM, the same running accumulator the city-detail
-        // texture blend already relies on for exactly this "stable world-fixed offset" property),
-        // and pass the small residual gap (< 1 texel) to both this dispatch and sat_sky.frag so a
-        // given world point maps to the SAME texel except at whole-texel boundary crossings.
-        {
-            double texelSizeM = (2.0 * (double)cloudShadowRangeM) / (double)kCloudShadowGridRes;
-            double snappedEastM = std::round(cityOffsetEastM / texelSizeM) * texelSizeM;
-            double snappedNorthM = std::round(cityOffsetNorthM / texelSizeM) * texelSizeM;
-            cloudShadowResidualM = glm::vec2((float)(snappedEastM - cityOffsetEastM),
-                                             (float)(snappedNorthM - cityOffsetNorthM));
-            spc.shadowResidualM = cloudShadowResidualM;
-        }
-
-        ctx.imageBarrier(cmd, cloudShadowImg,
-                         VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cloudShadowPipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                cloudShadowPipeLayout, 0, 1, &cloudShadowDescSet, 0, nullptr);
-        vkCmdPushConstants(cmd, cloudShadowPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
-                           0, sizeof(spc), &spc);
-        vkCmdDispatch(cmd, (kCloudShadowGridRes + 15) / 16, (kCloudShadowGridRes + 15) / 16, 1);
-
-        ctx.imageBarrier(cmd, cloudShadowImg,
-                         VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                         VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    }
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 4);
+
+    // (cloud_shadow.comp dispatched here — a fixed 128x128 observer-centred tangent-plane grid,
+    //  plus the texel-snapping machinery it needed to stop shadows swimming as the observer
+    //  moved. Deleted in the pipeline-unification pass: cloud_march.comp now marches the shadow
+    //  per pixel from the terrain hit point the scene-depth pass already found, which is sharper
+    //  near the camera, correct from any altitude, unbounded in range, and has nothing to snap.
+    //  Its timestamp bucket went away with it.)
 
     if (activeSatCount == 0)
     {
         // sat_flare.comp below is skipped this frame — write the same timestamp into its slot so
         // updateGpuTimingStats() sees a zero-duration bucket next frame instead of stale or
-        // unavailable query data. beam_cloud_block/sat_orbit/cloud_march/cloud_shadow above already
+        // unavailable query data. scene_depth/beam_cloud_block/sat_orbit/cloud_march above already
         // ran unconditionally this frame (sat_orbit.comp with 0 satellite workgroups when
         // applicable — a legal no-op dispatch) and got their own real timestamps, so only the
         // flare slot needs a placeholder here. See C12 follow-up #22 for why sat_orbit.comp now
@@ -1148,10 +1180,12 @@ SatDrawPC SatelliteSim::buildSatDrawPC(VulkanContext &ctx, VkExtent2D targetExte
     // comment at that relocation site for why.
     pc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset); // w = user altitude offset above terrain (m); GPU computes ground height
     pc.debugDisableMask = debugDisableMask; // perf knockout toggles — see SatelliteSim.h member comment
+    // Only tell the point draws to depth-test against sceneDepthTex when the hardware depth
+    // buffer isn't being written — i.e. on the render-scaled path, which blits an offscreen
+    // background in and never runs a depth-writing draw. At full resolution hardware depth is
+    // per-fragment exact, so leave it alone.
+    pc.sceneDepthMode = (renderScale < 0.999f) ? 1.0f : 0.0f;
     pc.skyGlareVisibility = skyGlareEased; // sun-glare gate for the Milky Way — see skyGlareEased member comment
-    pc.cloudShadowRangeM = cloudShadowRangeM; // C12 — cloud_shadow.comp grid tangent-plane UV mapping
-    pc.cloudShadowResidualM = cloudShadowResidualM; // same frame's texel-snapping residual as the
-                                                     // cloud_shadow.comp dispatch computed above
     pc.beamMaxRangeM = beamMaxRangeM; // C12 follow-up #6
     pc.beamSkyGlowGain = beamSkyGlowGain; // C12 follow-up #18 — shared with cloud_march.comp's copy
     pc.beamGlowBleedGain = beamGlowBleedGain; // C12 follow-up #39 — moved here from CloudMarchPC;
@@ -1255,7 +1289,7 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, starPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 starPipeLayout, 0, 1, &starDescSet, 0, nullptr);
-        vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT,
+        vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(pc), &pc);
         vkCmdDraw(cmd, starCount, 1, 0, 0);
     }
@@ -1293,20 +1327,20 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyPipelineLayout(device, cloudMarchPipeLayout, nullptr);
     vkDestroyDescriptorPool(device, cloudMarchDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, cloudMarchDescLayout, nullptr);
-    // ── Cloud shadow map pipeline (C12) ────────────────────────────────────────
-    vkDestroyPipeline(device, cloudShadowPipeline, nullptr);
-    vkDestroyPipelineLayout(device, cloudShadowPipeLayout, nullptr);
-    vkDestroyDescriptorPool(device, cloudShadowDescPool, nullptr);
-    vkDestroyDescriptorSetLayout(device, cloudShadowDescLayout, nullptr);
-    vkDestroySampler(device, cloudShadowSampler, nullptr);
-    vkDestroyImageView(device, cloudShadowView, nullptr);
+    // ── Scene depth pipeline (pipeline unification) ────────────────────────────
+    vkDestroyPipeline(device, sceneDepthPipeline, nullptr);
+    vkDestroyPipelineLayout(device, sceneDepthPipeLayout, nullptr);
+    vkDestroyDescriptorPool(device, sceneDepthDescPool, nullptr);
+    vkDestroyDescriptorSetLayout(device, sceneDepthDescLayout, nullptr);
+    vkDestroySampler(device, sceneDepthSampler, nullptr);
+    vkDestroyImageView(device, sceneDepthView, nullptr);
+    vkDestroyImage(device, sceneDepthImg, nullptr);
+    vkFreeMemory(device, sceneDepthMem, nullptr);
     // ── Beam cloud block pipeline (C12 follow-up #33) ──────────────────────────
     vkDestroyPipeline(device, beamCloudBlockPipeline, nullptr);
     vkDestroyPipelineLayout(device, beamCloudBlockPipeLayout, nullptr);
     vkDestroyDescriptorPool(device, beamCloudBlockDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, beamCloudBlockDescLayout, nullptr);
-    vkDestroyImage(device, cloudShadowImg, nullptr);
-    vkFreeMemory(device, cloudShadowMem, nullptr);
     // ── Flare + draw + sky pipelines ───────────────────────────────────────────
     vkDestroyPipeline(device, compPipeline, nullptr);
     vkDestroyPipeline(device, skyBgPipeline, nullptr);
@@ -1857,7 +1891,7 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
 // ─── createDescriptors ────────────────────────────────────────────────────────
 void SatelliteSim::createDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[7] = {};
+    VkDescriptorSetLayoutBinding bindings[8] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
@@ -1874,15 +1908,19 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudTargetA
     bindings[6] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudTargetB
+    // sceneDepthTex — terrain occlusion for the point sprites when renderScale < 1.0, where the
+    // hardware depth buffer is never written. Same image skyDescSet binding 19 samples.
+    bindings[7] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                   VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // sceneDepthTex
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 7;
+    li.bindingCount = 8;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
     VkDescriptorPoolSize ps[2] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}};
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 2;
     pi.pPoolSizes = ps;
@@ -1902,8 +1940,9 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
     VkDescriptorBufferInfo beamDomeInfo{beamGlowDomeBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo cloudAInfo{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cloudBInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo satDepthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    VkWriteDescriptorSet writes[7] = {};
+    VkWriteDescriptorSet writes[8] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &inpInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
@@ -1918,7 +1957,9 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
                  descSet, 5, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudAInfo, nullptr, nullptr};
     writes[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 6, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudBInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 7, writes, 0, nullptr);
+    writes[7] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                 descSet, 7, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &satDepthInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 8, writes, 0, nullptr);
 }
 
 // ─── createComputePipeline ────────────────────────────────────────────────────
@@ -2619,7 +2660,7 @@ void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
 // textures) — see init() ordering.
 void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[13] = {};
+    VkDescriptorSetLayoutBinding bindings[14] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -2635,14 +2676,17 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     bindings[10] = {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // reflectBeamsBuf
     bindings[11] = {11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // earthElevTex
     bindings[12] = {12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // earthSpecTex
+    // sceneDepthTex: written by scene_depth.comp earlier in the same recordCompute. Read 1:1 by
+    // texelFetch — this set's dispatch grid and that image are the same half-swapExtent size.
+    bindings[13] = {13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // sceneDepthTex
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 13;
+    li.bindingCount = 14;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &cloudMarchDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
@@ -2678,8 +2722,9 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     VkImageView specViewFinal2    = earthSpecView ? earthSpecView : noiseTexView;
     VkDescriptorImageInfo elevInfo{elevSamplerFinal2, elevViewFinal2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo specInfo{specSamplerFinal2, specViewFinal2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo sceneDepthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    VkWriteDescriptorSet writes[13] = {};
+    VkWriteDescriptorSet writes[14] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 0, 0, 1,
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudsInfo, nullptr, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 1, 0, 1,
@@ -2706,7 +2751,9 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo, nullptr, nullptr};
     writes[12] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 12, 0, 1,
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &specInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 13, writes, 0, nullptr);
+    writes[13] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 13, 0, 1,
+                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &sceneDepthInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 14, writes, 0, nullptr);
 }
 
 // ─── createCloudMarchPipeline ──────────────────────────────────────────────────
@@ -2737,129 +2784,148 @@ void SatelliteSim::createCloudMarchPipeline(VulkanContext &ctx)
     vkDestroyShaderModule(ctx.device, mod, nullptr);
 }
 
-// ─── createCloudShadowResources ───────────────────────────────────────────────
-// Fixed 128×128 R16_SFLOAT grid (kCloudShadowGridRes) — independent of screen resolution, so
-// unlike cloudMarchTargetA/B this is NOT recreated in onResize. See cloud_shadow.comp's header
-// for the full design (C12): shared cloud-transmittance primitive for both the general
-// cloud-shadow-on-ground revival and the Reflect-Orbital beam ground-spot term.
-void SatelliteSim::createCloudShadowResources(VulkanContext &ctx)
+// ─── createSceneDepthResources ────────────────────────────────────────────────
+// One half-resolution R32_SFLOAT storage+sampled image written by scene_depth.comp each frame,
+// holding the linear distance to the first terrain/ocean surface along each view ray.
+//
+// Sized identically to cloudMarchTargetA/B — half of the SWAP extent, NOT of the render-scaled
+// extent — so cloud_march.comp (which dispatches on exactly this grid) can read it with a plain
+// texelFetch at its own gl_GlobalInvocationID, with no UV math to get wrong. Swapchain-size
+// dependent, so recreated in onResize alongside those targets.
+//
+// A colour-aspect image rather than a real depth attachment, deliberately: that keeps
+// ctx.imageBarrier (which hardcodes COLOR aspect / 1 mip / 1 layer) usable unchanged, and avoids
+// the depth-format blit portability problem that made the render-scale path skip depth entirely.
+void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
 {
-    ctx.createImage(kCloudShadowGridRes, kCloudShadowGridRes, VK_FORMAT_R16_SFLOAT,
+    uint32_t w = (ctx.swapExtent.width + 1) / 2;
+    uint32_t h = (ctx.swapExtent.height + 1) / 2;
+
+    ctx.createImage(w, h, VK_FORMAT_R32_SFLOAT,
                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    cloudShadowImg, cloudShadowMem);
+                    sceneDepthImg, sceneDepthMem);
     VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    vci.image = cloudShadowImg;
+    vci.image = sceneDepthImg;
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format = VK_FORMAT_R16_SFLOAT;
+    vci.format = VK_FORMAT_R32_SFLOAT;
     vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCreateImageView(ctx.device, &vci, nullptr, &cloudShadowView);
+    vkCreateImageView(ctx.device, &vci, nullptr, &sceneDepthView);
 
-    VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-    sci.magFilter = VK_FILTER_LINEAR;
-    sci.minFilter = VK_FILTER_LINEAR;
-    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.maxLod = 0.0f;
-    vkCreateSampler(ctx.device, &sci, nullptr, &cloudShadowSampler);
+    // NEAREST, not LINEAR. Filtering a distance field across a terrain silhouette interpolates
+    // between "ridge at 8 km" and "sky at 1e30", producing meaningless intermediate distances
+    // along every skyline. Point sampling keeps every fetched value one the depth pass actually
+    // wrote. Created once and reused across resizes (resolution-independent).
+    if (!sceneDepthSampler)
+    {
+        VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        sci.magFilter = VK_FILTER_NEAREST;
+        sci.minFilter = VK_FILTER_NEAREST;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.maxLod = 0.0f;
+        vkCreateSampler(ctx.device, &sci, nullptr, &sceneDepthSampler);
+    }
 
-    // Leave in SHADER_READ_ONLY_OPTIMAL — same starting-state convention as cloudMarchTargetA/B
-    // (see createCloudMarchResources); recordCompute's per-frame barrier transitions to GENERAL
-    // before the dispatch and back afterward.
+    // Establish SHADER_READ_ONLY_OPTIMAL as the starting layout — what the descriptor writes
+    // declare and what recordCompute's per-frame pre-dispatch barrier transitions FROM. Same
+    // one-time-setup role createCloudMarchResources' matching barriers play, for both first init
+    // and after an onResize recreation.
     auto cmd = ctx.beginOneTimeCommands();
-    ctx.imageBarrier(cmd, cloudShadowImg, 0, VK_ACCESS_SHADER_READ_BIT,
+    ctx.imageBarrier(cmd, sceneDepthImg, 0, VK_ACCESS_SHADER_READ_BIT,
                      VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     ctx.endOneTimeCommands(cmd);
 }
 
-// ─── createCloudShadowDescriptors ─────────────────────────────────────────────
-// Descriptor set for cloud_shadow.comp:
-//   binding 0  earthCloudsTex  (sampler2D)  — same texture as cloud_march.comp binding 0
-//   binding 1  cloudNoiseTex   (sampler3D)  — same texture as cloud_march.comp binding 1
-//   binding 2  cloudWarpNoiseTex (sampler3D) — same texture as cloud_march.comp binding 9
-//   binding 3  CloudParams UBO (same underlying buffer as skyDescSet binding 9)
-//   binding 4  shadowTarget (storage image, r16f)
-// Requires createGlowResources()/createCloudNoisePipeline()/createCloudWarpNoisePipeline() to
-// already have run — see init() ordering.
-void SatelliteSim::createCloudShadowDescriptors(VulkanContext &ctx)
+// ─── createSceneDepthDescriptors ──────────────────────────────────────────────
+// Descriptor set for scene_depth.comp:
+//   binding 0  earthElevTex (sampler2D)
+//   binding 1  earthSpecTex (sampler2D)
+//   binding 2  sceneDepth   (storage image, r32f)
+void SatelliteSim::createSceneDepthDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[5] = {};
+    VkDescriptorSetLayoutBinding bindings[3] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    bindings[3] = {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    bindings[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 5;
+    li.bindingCount = 3;
     li.pBindings = bindings;
-    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &cloudShadowDescLayout);
+    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &sceneDepthDescLayout);
 
-    VkDescriptorPoolSize ps[3] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+    VkDescriptorPoolSize ps[2] = {
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.poolSizeCount = 3;
+    pi.poolSizeCount = 2;
     pi.pPoolSizes = ps;
     pi.maxSets = 1;
-    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &cloudShadowDescPool);
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &sceneDepthDescPool);
 
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool = cloudShadowDescPool;
+    ai.descriptorPool = sceneDepthDescPool;
     ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &cloudShadowDescLayout;
-    vkAllocateDescriptorSets(ctx.device, &ai, &cloudShadowDescSet);
+    ai.pSetLayouts = &sceneDepthDescLayout;
+    vkAllocateDescriptorSets(ctx.device, &ai, &sceneDepthDescSet);
 
-    VkDescriptorImageInfo cloudsInfo{earthCloudsSampler, earthCloudsView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo noise3DInfo{cloudNoiseSampler, cloudNoiseView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo warpNoiseInfo{cloudWarpNoiseSampler, cloudWarpNoiseView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorBufferInfo cloudParamsInfo{cloudParamsBuf, 0, sizeof(GpuCloudParams)};
-    VkDescriptorImageInfo shadowTargetInfo{VK_NULL_HANDLE, cloudShadowView, VK_IMAGE_LAYOUT_GENERAL};
+    // Same fallback pattern the sky and cloud-march sets use — the elevation/spec textures may
+    // have failed to load, so fall back to the always-valid noise sampler rather than leaving a
+    // descriptor pointing at a null image. With that fallback the depth pass reads noise as
+    // "terrain", which is wrong but bounded; a null view is a device loss.
+    VkSampler   elevSamplerFinal = earthElevSampler ? earthElevSampler : noiseSampler;
+    VkImageView elevViewFinal    = earthElevView ? earthElevView : noiseTexView;
+    VkSampler   specSamplerFinal = earthSpecSampler ? earthSpecSampler : noiseSampler;
+    VkImageView specViewFinal    = earthSpecView ? earthSpecView : noiseTexView;
+    VkDescriptorImageInfo elevInfo{elevSamplerFinal, elevViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo specInfo{specSamplerFinal, specViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo depthInfo{VK_NULL_HANDLE, sceneDepthView, VK_IMAGE_LAYOUT_GENERAL};
 
-    VkWriteDescriptorSet writes[5] = {};
-    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudShadowDescSet, 0, 0, 1,
-                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudsInfo, nullptr, nullptr};
-    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudShadowDescSet, 1, 0, 1,
-                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &noise3DInfo, nullptr, nullptr};
-    writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudShadowDescSet, 2, 0, 1,
-                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &warpNoiseInfo, nullptr, nullptr};
-    writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudShadowDescSet, 3, 0, 1,
-                 VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &cloudParamsInfo, nullptr};
-    writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudShadowDescSet, 4, 0, 1,
-                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shadowTargetInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 5, writes, 0, nullptr);
+    VkWriteDescriptorSet writes[3] = {};
+    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 0, 0, 1,
+                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo, nullptr, nullptr};
+    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 1, 0, 1,
+                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &specInfo, nullptr, nullptr};
+    writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 2, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &depthInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 3, writes, 0, nullptr);
 }
 
-// ─── createCloudShadowPipeline ────────────────────────────────────────────────
-void SatelliteSim::createCloudShadowPipeline(VulkanContext &ctx)
+// ─── createSceneDepthPipeline ─────────────────────────────────────────────────
+void SatelliteSim::createSceneDepthPipeline(VulkanContext &ctx)
 {
-    VkShaderModule mod = ctx.loadShader("shaders/cloud_shadow.comp.spv");
+    VkShaderModule mod = ctx.loadShader("shaders/scene_depth.comp.spv");
 
     VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = mod;
     stage.pName = "main";
 
-    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CloudShadowPC)};
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SceneDepthPC)};
 
     VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     li.setLayoutCount = 1;
-    li.pSetLayouts = &cloudShadowDescLayout;
+    li.pSetLayouts = &sceneDepthDescLayout;
     li.pushConstantRangeCount = 1;
     li.pPushConstantRanges = &pcr;
-    vkCreatePipelineLayout(ctx.device, &li, nullptr, &cloudShadowPipeLayout);
+    vkCreatePipelineLayout(ctx.device, &li, nullptr, &sceneDepthPipeLayout);
 
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = stage;
-    ci.layout = cloudShadowPipeLayout;
-    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &cloudShadowPipeline) != VK_SUCCESS)
-        throw std::runtime_error("SatelliteSim: failed to create cloud_shadow compute pipeline");
+    ci.layout = sceneDepthPipeLayout;
+    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &sceneDepthPipeline) != VK_SUCCESS)
+        throw std::runtime_error("SatelliteSim: failed to create scene_depth compute pipeline");
 
     vkDestroyShaderModule(ctx.device, mod, nullptr);
 }
+
+// (createCloudShadowResources / Descriptors / Pipeline lived here — the 128x128 R16_SFLOAT grid,
+//  its own 5-binding descriptor set, sampler, and compute pipeline. All deleted in the
+//  pipeline-unification pass; cloud_march.comp::cloudGroundShadow now produces the same value
+//  per pixel from the terrain hit point the scene-depth pass supplies, using bindings that pass
+//  already had.)
 
 // ─── createBeamCloudBlockDescriptors ──────────────────────────────────────────
 // Descriptor set for beam_cloud_block.comp (C12 follow-up #33):
@@ -2869,7 +2935,7 @@ void SatelliteSim::createCloudShadowPipeline(VulkanContext &ctx)
 //   binding 3  cloudWarpNoiseTex (sampler3D) — same texture as cloud_shadow.comp binding 2
 //   binding 4  CloudParams UBO (same underlying buffer as skyDescSet binding 9)
 //   binding 5  beamCloudBlockBuf (SSBO, write)
-// Deliberately its own small set, not sharing cloudShadowDescLayout — different buffer shapes
+// Deliberately its own small descriptor set — different buffer shapes
 // (no storage image here) and the two passes are conceptually independent (see
 // beam_cloud_block.comp's header for why this isn't built on cloud_shadow.comp's grid).
 void SatelliteSim::createBeamCloudBlockDescriptors(VulkanContext &ctx)
@@ -3701,7 +3767,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         memset(cloudParamsMapped, 0, sz);
     }
 
-    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=cloudShadowTex, 19=beamGlowDomeBuf
+    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=beamGlowDomeBuf, 19=sceneDepthTex
     VkDescriptorSetLayoutBinding bindings[20] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -3724,13 +3790,13 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     bindings[16] = {16, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // aurora noise sampler3D
     // reflectBeamsBuf: same buffer as sat_orbit.comp's binding 4 — ground-spot direct lighting (C12).
     bindings[17] = {17, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-    // cloudShadowTex: same image as cloud_shadow.comp's output — general cloud shadow + beam
-    // ground-spot attenuation (C12).
-    bindings[18] = {18, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     // beamGlowDomeBuf: same buffer as sat_orbit.comp's binding 5 / sat_flare.comp's binding 4 —
     // dims the Milky Way near an active beam the same way the light pollution dome already does
-    // (C12 follow-up #31).
-    bindings[19] = {19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // (C12 follow-up #31). Was binding 19; compacted down when cloudShadowTex (18) was deleted.
+    bindings[18] = {18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // sceneDepthTex: same image scene_depth.comp writes at the top of recordCompute — the shared
+    // terrain/ocean distance every occlusion test now reads instead of re-deriving.
+    bindings[19] = {19, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     li.bindingCount = 20;
     li.pBindings = bindings;
@@ -3779,7 +3845,6 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     VkDescriptorImageInfo cityNightDetailImgInfo{cityNightDetailSampler, cityNightDetailView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo auroraNoiseImgInfo{auroraNoiseSampler, auroraNoiseView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo reflectBeamsInfo{reflectBeamsBuf, 0, VK_WHOLE_SIZE};
-    VkDescriptorImageInfo cloudShadowImgInfo{cloudShadowSampler, cloudShadowView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo beamGlowDomeInfo{beamGlowDomeBuf, 0, VK_WHOLE_SIZE};
 
     VkWriteDescriptorSet writes[20] = {};
@@ -3895,14 +3960,15 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     writes[18].dstSet = skyDescSet;
     writes[18].dstBinding = 18;
     writes[18].descriptorCount = 1;
-    writes[18].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[18].pImageInfo = &cloudShadowImgInfo;
+    writes[18].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[18].pBufferInfo = &beamGlowDomeInfo;
+    VkDescriptorImageInfo sceneDepthImgInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     writes[19].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[19].dstSet = skyDescSet;
     writes[19].dstBinding = 19;
     writes[19].descriptorCount = 1;
-    writes[19].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[19].pBufferInfo = &beamGlowDomeInfo;
+    writes[19].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[19].pImageInfo = &sceneDepthImgInfo;
     vkUpdateDescriptorSets(ctx.device, 20, writes, 0, nullptr);
 }
 
@@ -4262,22 +4328,23 @@ void SatelliteSim::initStars(VulkanContext &ctx)
                      starBuf, starMem);
     vkMapMemory(ctx.device, starMem, 0, bufSize, 0, &starMapped);
 
-    // Descriptor layout: only binding=1 (vertex shader reads GpuSatVisible).
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 1;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    // Descriptor layout: binding 1 (vertex shader reads GpuSatVisible) + binding 7
+    // (fragment shader reads sceneDepthTex for terrain occlusion at renderScale < 1.0).
+    VkDescriptorSetLayoutBinding starBindings[2] = {};
+    starBindings[0] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+    starBindings[1] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 1;
-    li.pBindings = &binding;
+    li.bindingCount = 2;
+    li.pBindings = starBindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &starDescLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    VkDescriptorPoolSize ps[2] = {
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.poolSizeCount = 1;
-    pi.pPoolSizes = &ps;
+    pi.poolSizeCount = 2;
+    pi.pPoolSizes = ps;
     pi.maxSets = 1;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &starDescPool);
 
@@ -4288,13 +4355,13 @@ void SatelliteSim::initStars(VulkanContext &ctx)
     vkAllocateDescriptorSets(ctx.device, &ai, &starDescSet);
 
     VkDescriptorBufferInfo bufInfo{starBuf, 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet wr{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    wr.dstSet = starDescSet;
-    wr.dstBinding = 1;
-    wr.descriptorCount = 1;
-    wr.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    wr.pBufferInfo = &bufInfo;
-    vkUpdateDescriptorSets(ctx.device, 1, &wr, 0, nullptr);
+    VkDescriptorImageInfo starDepthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet starWr[2] = {};
+    starWr[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, starDescSet, 1, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufInfo, nullptr};
+    starWr[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, starDescSet, 7, 0, 1,
+                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &starDepthInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 2, starWr, 0, nullptr);
 
     createStarPipeline(ctx);
 
@@ -4359,7 +4426,9 @@ void SatelliteSim::createStarPipeline(VulkanContext &ctx)
 
     if (starPipeLayout == VK_NULL_HANDLE)
     {
-        VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(SatDrawPC)};
+        // VERTEX|FRAGMENT: star_point.frag now reads screenSizePx/sceneDepthMode for the depth
+        // test. The vkCmdPushConstants call at the draw site must use these exact same flags.
+        VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SatDrawPC)};
         VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         li.setLayoutCount = 1;
         li.pSetLayouts = &starDescLayout;
