@@ -109,11 +109,12 @@ void App::drawFrame() {
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     vkBeginCommandBuffer(ctx.commandBuffer, &bi);
 
-    // GPU timestamp profiling: slot 0 marks frame start. Slots 1-4 are written inside
-    // sim->recordCompute() (compute-pass breakdown: cloud march, cloud shadow map [C12],
-    // orbit compute, flare compute); slot 5 is written inside sim->recordDraw() (end of the
-    // sky background pass). Slots 6-7 mark the end of the satellite+star draw and the UI
-    // overlay respectively. See VulkanContext::kTimestampCount.
+    // GPU timestamp profiling: slot 0 marks frame start. Slots 1-5 are written inside
+    // sim->recordCompute() (compute-pass breakdown: beam cloud block, orbit compute, cloud
+    // march, cloud shadow map, flare compute); slot 6 is written inside sim->recordPrePass()
+    // or sim->recordDraw() (end of the sky background pass, whichever path rendered it).
+    // Slots 7-8 mark the end of the satellite+star draw and the UI overlay respectively.
+    // See VulkanContext::kTimestampCount for the authoritative slot table.
     ctx.resetTimestamps(ctx.commandBuffer);
     ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
 
@@ -139,11 +140,11 @@ void App::drawFrame() {
 
     // 3. Simulation draw calls (render pass is already open)
     sim->recordDraw(ctx.commandBuffer, ctx, dt);
-    ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 6);
+    ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 7);
 
     // 4. UI draws on top of the simulation
     ui.record(ctx.commandBuffer, ctx);
-    ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 7);
+    ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 8);
 
     vkCmdEndRenderPass(ctx.commandBuffer);
     vkEndCommandBuffer(ctx.commandBuffer);
