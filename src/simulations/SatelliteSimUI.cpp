@@ -1948,7 +1948,15 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Sun gain (horizon)", &cloudSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 5},
         {"Sun gain (zenith)", &cloudSunGainZenith, 0.0f, 8.0f, 0.1f, "%.2f", 37},
         {"Ambient", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
-        {"Night ambient", &cloudNightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
+        {"Twilight ambient", &cloudTwilightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
+        {"Sun gain elev band", &sunGainElevBand, 0.02f, 1.0f, 0.01f, "%.2f", 47},
+        {"Twilight band hi", &twilightBandHi, -0.1f, 0.8f, 0.01f, "%.2f", 48},
+        {"Twilight band lo", &twilightBandLo, -0.9f, 0.0f, 0.01f, "%.2f", 49},
+        {"Coverage mip", &coverageMipLod, 0.0f, 6.0f, 0.25f, "%.2f", 50},
+        {"Flat coverage scale", &flatCoverageScale, 0.1f, 2.0f, 0.01f, "%.2f", 51},
+        {"Flat sun gain scale", &flatSunGainScale, 0.1f, 10.0f, 0.05f, "%.2f", 52},
+        {"Cloud 3D fade start (m)", &cloudDistFadeStartM, 5000.0f, 800000.0f, 5000.0f, "%.0f", 53},
+        {"Cloud 3D fade end (m)", &cloudDistFadeEndM, 10000.0f, 2000000.0f, 10000.0f, "%.0f", 54},
         {"Base variance", &cloudBaseVariance, 0.0f, 1.0f, 0.05f, "%.2f", 34},
         {"Erosion (edge)", &cloudErosionEdge, 0.0f, 1.0f, 0.05f, "%.2f", 35},
         {"Erosion (core)", &cloudErosionCore, 0.0f, 1.0f, 0.05f, "%.2f", 36},
@@ -1995,6 +2003,7 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Mirror slew rate (deg/s)", &mirrorSlewDegPerSec, 1.0f, 60.0f, 1.0f, "%.0f", 43},
         {"Beam extinction", &beamExtinctionMult, 0.1f, 5.0f, 0.1f, "%.1f", 44},
         {"Beam glow bleed gain", &beamGlowBleedGain, 0.0f, 0.01f, 0.0001f, "%.2f", 45},
+        {"Cloud shadow range (m)", &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
         {"Beam near-field fade (m)", &beamNearFieldFadeM, 1000.0f, 500000.0f, 1000.0f, "%.0f", 46},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
@@ -2375,7 +2384,17 @@ void SatelliteSim::loadSettings()
         cloudSunGain = c.value("sun_gain", cloudSunGain);
         cloudSunGainZenith = c.value("sun_gain_zenith", cloudSunGainZenith);
         cloudAmbientGain = c.value("ambient_gain", cloudAmbientGain);
-        cloudNightAmbientGain = c.value("night_ambient_gain", cloudNightAmbientGain);
+        // Key renamed with the term's meaning; an old night_ambient_gain value is not
+        // meaningful for the twilight bell, so it is deliberately not migrated.
+        cloudTwilightAmbientGain = c.value("twilight_ambient_gain", cloudTwilightAmbientGain);
+        sunGainElevBand = c.value("sun_gain_elev_band", sunGainElevBand);
+        twilightBandHi = c.value("twilight_band_hi", twilightBandHi);
+        twilightBandLo = c.value("twilight_band_lo", twilightBandLo);
+        coverageMipLod = c.value("coverage_mip_lod", coverageMipLod);
+        flatCoverageScale = c.value("flat_coverage_scale", flatCoverageScale);
+        flatSunGainScale = c.value("flat_sun_gain_scale", flatSunGainScale);
+        cloudDistFadeStartM = c.value("cloud_dist_fade_start_m", cloudDistFadeStartM);
+        cloudDistFadeEndM = c.value("cloud_dist_fade_end_m", cloudDistFadeEndM);
         cloudBaseVariance = c.value("cloud_base_variance", cloudBaseVariance);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
@@ -2411,6 +2430,7 @@ void SatelliteSim::loadSettings()
         mirrorSlewDegPerSec = c.value("mirror_slew_deg_per_sec", mirrorSlewDegPerSec);
         beamExtinctionMult = c.value("beam_extinction_mult", beamExtinctionMult);
         beamGlowBleedGain = c.value("beam_glow_bleed_gain", beamGlowBleedGain);
+        cloudShadowRangeM = c.value("cloud_shadow_range_m", cloudShadowRangeM);
         beamNearFieldFadeM = c.value("beam_near_field_fade_m", beamNearFieldFadeM);
     }
 
@@ -2479,7 +2499,15 @@ void SatelliteSim::saveSettings()
         {"sun_gain", cloudSunGain},
         {"sun_gain_zenith", cloudSunGainZenith},
         {"ambient_gain", cloudAmbientGain},
-        {"night_ambient_gain", cloudNightAmbientGain},
+        {"twilight_ambient_gain", cloudTwilightAmbientGain},
+        {"sun_gain_elev_band", sunGainElevBand},
+        {"twilight_band_hi", twilightBandHi},
+        {"twilight_band_lo", twilightBandLo},
+        {"coverage_mip_lod", coverageMipLod},
+        {"flat_coverage_scale", flatCoverageScale},
+        {"flat_sun_gain_scale", flatSunGainScale},
+        {"cloud_dist_fade_start_m", cloudDistFadeStartM},
+        {"cloud_dist_fade_end_m", cloudDistFadeEndM},
         {"cloud_base_variance", cloudBaseVariance},
         {"cloud_erosion_edge", cloudErosionEdge},
         {"cloud_erosion_core", cloudErosionCore},
@@ -2515,6 +2543,7 @@ void SatelliteSim::saveSettings()
         {"mirror_slew_deg_per_sec", mirrorSlewDegPerSec},
         {"beam_extinction_mult", beamExtinctionMult},
         {"beam_glow_bleed_gain", beamGlowBleedGain},
+        {"cloud_shadow_range_m", cloudShadowRangeM},
         {"beam_near_field_fade_m", beamNearFieldFadeM}};
 
     nlohmann::json kbArr = nlohmann::json::array();

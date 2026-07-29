@@ -43,6 +43,8 @@ layout(push_constant) uniform PC {
                            // atmospheric-scattering beam glow
     float daySuppression;  // C12 follow-up #28 — same ratio sat_flare.comp applies to satellites/stars
     float beamExtinctionMult; // C12 follow-up #29 — settings-tunable extra extinction for the beam glow
+    float cloudShadowRangeM;  // distance (m) beyond which the per-pixel terrain cloud shadow fades
+                              // out and stops being marched — see the call site in main()
     float beamNearFieldFadeM; // C12 follow-up #40 — settings-tunable crossfade blend radius (m) around
                               // a beam's own 3D line; was a hardcoded kNearFieldCrossoverM constant.
                               // (beamGlowBleedGain, previously the last field here, moved to
@@ -189,13 +191,11 @@ const float kMarchStepsFloor    = 12.0;
 const float kGrazeShadowFloor   = 0.35;
 const float kGrazeShadowFullSin = 0.3;
 
-// Night-sky ambient floor for cloud tops: skyAmbientBase (the analytic single-scattering zenith
-// Rayleigh/Mie integral) decays to ~0 well before real civil twilight actually goes dark, because
-// it only counts direct sunlight reaching the zenith column — it has no multiple-scattering term
-// to carry any glow past that point. This constant is a decoupled, non-decaying "residual sky
-// glow" (starlight + multiple-scattered air), scaled by its own cloud.cloudNightAmbientGain slider
-// (deliberately NOT cloud.ambientGain, which also drives city-light upwelling — see nightFloorAmbient
-// below) so it stays controllable after skyAmbientBase itself has collapsed near zero post-sunset.
+// UNUSED. Was the colour of a non-decaying night-sky floor for cloud tops (starlight + multiple-
+// scattered air) intended to hold cloud tops above black after skyAmbientBase collapses post-
+// sunset. That term persisted through full night, which is the wrong effect — what was wanted is
+// twilight-only sky lighting, and twilightAmbient already provides it. Kept only because the
+// colour is a reasonable starting point if a genuine night floor is ever wanted; nothing reads it.
 const vec3  kNightSkyAmbientColor = vec3(0.015, 0.02, 0.035);
 
 // (BETA_R/H_R, BETA_M/H_M/G_MIE and SUN_INTENSITY come from common.glsl.)
@@ -221,6 +221,19 @@ const float kCirrusFreqScale  = 0.4;
 // (raySphere is in common.glsl — one copy now, so the "keep both copies in sync" note this
 // comment used to carry no longer applies.)
 
+// DELIBERATELY NOT the shared optDepthN(), despite being the same integral.
+//
+// This is a specialization, and the specialization is the point: N_LIGHT is a compile-time
+// constant here, so this loop can be fully unrolled. Routing it through the shared function makes
+// the trip count a runtime parameter — which is unavoidable for a function that also has to serve
+// sat_sky.frag's settings-tunable count — and that measurably hurt, because optDepth is called
+// from five sites in this shader including inside the march.
+//
+// The de-duplication attempt and its revert are recorded here rather than deleted, because the
+// tension is real and someone will be tempted again: what made these two copies look like
+// "drift" (12 vs cloud.lightSamples) is exactly what let each one be compiled well. Sharing the
+// body costs more than the duplication does. If you unify them, measure cloud_march before and
+// after, at altitude and near the surface.
 vec2 optDepth(vec3 p, vec3 d, float segTotal) {
     float sLen = segTotal / float(N_LIGHT);
     float odR = 0.0, odM = 0.0;
@@ -749,6 +762,16 @@ void cloudMarchCS(
     if (tEnter >= tScene) return;
     tExit = min(tExit, tScene);
 
+    // Distance-based 3D->2D crossfade. This, not maxRenderDistM, is what actually bounds the
+    // march: maxRenderDistM caps the span from tEnter, which from orbit is only the ~9 km shell
+    // crossing and therefore never binds no matter how low it is set. Keying on tEnter — how far
+    // away the clouds on this ray are — makes the fade cheap where it matters, because a fully
+    // faded ray returns here before the coverage lookup, the step-count setup or the march.
+    // It also gives a horizon transition from the ground, which an altitude-only fade cannot.
+    float cloudDistFade = 1.0 - smoothstep(cloud.cloudDistFadeStartM, cloud.cloudDistFadeEndM, tEnter);
+    cloudAltFade = min(cloudAltFade, cloudDistFade);
+    if (cloudAltFade < 0.001) return;
+
     tExit = min(tExit, tEnter + cloud.maxRenderDistM);
     if (tEnter >= tExit || tExit <= 0.0) return;
 
@@ -761,7 +784,15 @@ void cloudMarchCS(
         vec2  eUV   = vec2(fract((eLon + PI) / (2.0*PI)
                                  + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                            (0.5*PI - eLat) / PI);
-        float cMap  = textureLod(earthCloudsTex, eUV, 4.0).r;
+        // DELIBERATELY coarser than cloud.coverageMipLod, and deliberately not tunable.
+        // This is a whole-column rejection test taken from a SINGLE point (the shell entry),
+        // used to skip the march entirely. A blurry read is what makes that single sample
+        // representative of the column's neighbourhood. Sampling it sharply would let a ray
+        // reject because its entry point happened to land in a gap between two cloud cells even
+        // though it passes through plenty of cloud further along — holes and popping, not detail.
+        // A rejection test wants to be conservative; only the per-sample lookups want to be sharp.
+        const float kCoverageRejectMipLod = 4.0;
+        float cMap  = textureLod(earthCloudsTex, eUV, kCoverageRejectMipLod).r;
         if (cloud.coverage * cMap < 0.02) return;
     }
 
@@ -780,20 +811,37 @@ void cloudMarchCS(
 
     vec3 skyAmbientBase = vec3(0.0);
     {
-        // Sampled at the OBSERVER's own position, NOT the cloud march's entry point (obsPos +
-        // tEnter*dir) — a first version used the entry point, which is fine for a steep/near-
-        // vertical ray (tEnter small, close to the observer) but for a GRAZING/near-horizontal ray
-        // tEnter can be hundreds of km out, putting p0 near the observer's own visual horizon.
-        // Earth's curvature means conditions THERE (day/night, twilight angle) can genuinely differ
-        // from the observer's own — and since skyAmbientBase is computed ONCE per pixel and then
-        // applied UNIFORMLY across the entire march (every in-cloud step from tEnter to tExit, now
-        // as far as ~400km after the render-distance extension), one potentially-unrepresentative
-        // sample from a single far point was getting smeared across the whole visible horizon
-        // band — reported as "aurora glow / sky Mie scattering dramatically overlays clouds at the
-        // horizon." Anchoring to obsPos instead makes this a stable read of the observer's own
-        // actual local conditions (the thing that's actually dark during an aurora-visible night),
-        // consistent across the whole march instead of picking up whatever a distant point sees.
-        vec3 p0     = obsPos;
+        // Anchored at the CLOUD, not at the observer: p0 is the march's shell entry point. This
+        // term is "how bright is the sky lighting this cloud", so it has to be sampled where the
+        // cloud is.
+        //
+        // It was previously anchored at obsPos, which is only equivalent when the observer is
+        // essentially co-located with the clouds — true from the surface, badly false from orbit.
+        // From LEO you can be over the night side looking at clouds on the terminator: the
+        // per-sample twilight bell (cloudSunDotRaw) correctly says "full twilight", while
+        // skyAmbientBase sampled at your own position says "night, ~0". Zero times any gain is
+        // still zero, which is why cranking the twilight gain did nothing from orbit while working
+        // fine from the ground.
+        //
+        // An earlier round tried to fix that by clamping the obsPos anchor into the atmosphere
+        // (above R_ATMOS the outward zenith ray never re-enters, so tSA.y <= 0 and the whole term
+        // was EXACTLY zero). That was a real bug and the clamp was necessary, but it was not
+        // sufficient — it fixed "the anchor is in vacuum" without fixing "the anchor is in the
+        // wrong place".
+        //
+        // Why the original obsPos switch is safe to undo: it was made because a distant entry
+        // point on a grazing ray could smear unrepresentative conditions across the horizon band.
+        // The twilight bell did not exist yet at that point. It does now, and it gates per-sample
+        // on the sample's OWN sun angle, so a daylit distant column can no longer leak onto night
+        // clouds regardless of what the anchor reads. If the horizon artifact returns, that gate
+        // is the thing to look at, not this anchor.
+        //
+        // The entry point is on the cloud shell by construction, so it is always at 2-11 km — well
+        // inside the atmosphere. The clamp is kept purely as a guard.
+        const float kAmbientAnchorMaxAltM = 60000.0;   // safely inside R_ATMOS (= R_EARTH + 100km)
+        vec3  pEntry     = obsPos + tEnter * dir;
+        float anchorAltM = min(length(pEntry) - R_EARTH, kAmbientAnchorMaxAltM);
+        vec3 p0     = normalize(pEntry) * (R_EARTH + max(anchorAltM, 0.0));
         vec3 zenith = normalize(p0);
         vec2 tSA    = raySphere(p0, zenith, R_ATMOS);
         if (tSA.y > 0.0) {
@@ -873,7 +921,10 @@ void cloudMarchCS(
                                  + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                            (0.5*PI - pLat) / PI);
         vec2  pUVGeo = vec2(fract((pLon + PI) / (2.0*PI)), (0.5*PI - pLat) / PI);
-        float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, 4.0).r;
+        // Per-sample coverage — this is the lookup that decides cloud SHAPE, so it takes the
+        // tunable mip. Aliasing risk from the march itself is low: even mip 0 is ~4.9 km/texel
+        // against a <=250 m step (kCloudMaxStepM), so the march oversamples it heavily.
+        float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, cloud.coverageMipLod).r;
 
         vec3  dirECEF      = pECEF / pLen;
         vec3  dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[0].driftMult);
@@ -935,7 +986,11 @@ void cloudMarchCS(
                     vec2  cpUV  = vec2(fract((cpLon + PI) / (2.0*PI)
                                        + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                                       (0.5*PI - cpLat) / PI);
-                    float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, 5.0).r;
+                    // One mip coarser than the view march, preserving the previous relationship
+                    // (was a fixed 5.0 against the view march's 4.0). Self-shadowing does not need
+                    // the fine detail, and this is the hottest lookup in the shader — it runs per
+                    // cone step per in-cloud sample.
+                    float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, cloud.coverageMipLod + 1.0).r;
                     if (cLoc < 0.02) continue;
                     float cPosZ      = sin(cpUV.x * 21.3 + cpUV.y * 17.7) * 0.5 + 0.5;
                     vec3  cDir       = cpE / cpL;
@@ -1009,21 +1064,41 @@ void cloudMarchCS(
             // reported as overbright at night. twilightWeight is instead a proper bell: it rises
             // approaching dusk and falls again deeper into night, so this term is twilight-only,
             // as intended, and skyAmbientBase's own slow decay no longer has to do all the work.
-            float twilightRise = 1.0 - smoothstep(-0.05, 0.15, cloudSunDotRaw);
-            float twilightFall = smoothstep(-0.45, -0.15, cloudSunDotRaw);
+            //
+            // Both edges of the bell are tunable, because where it STARTS turned out to matter as
+            // much as its height. The original hardcoded rise band (-0.05..0.15) did not reach
+            // full strength until the sun was already ~3 degrees below the horizon, while the
+            // direct-sun term (sunElev, smoothstep(-0.04, 0.12, ...)) had died at ~2 degrees
+            // below. Between those two lay a band where clouds had lost the sun and not yet
+            // gained the sky — reported as white -> orange -> BLACK -> blue -> black through a
+            // single sunset. Raising twilightBandHi slides the whole rise earlier so the sky term
+            // is already contributing while the last direct light is fading, closing the gap.
+            //
+            // Widths are fixed; only the edges move. kTwilightRiseWidth matches the original band
+            // (0.15 - -0.05) and kTwilightFallWidth the original (-0.15 - -0.45), so setting
+            // Hi = 0.15 / Lo = -0.45 reproduces the previous behaviour exactly.
+            const float kTwilightRiseWidth = 0.2;
+            const float kTwilightFallWidth = 0.3;
+            float twiHi = cloud.twilightBandHi;
+            float twiLo = cloud.twilightBandLo;
+            float twilightRise = 1.0 - smoothstep(twiHi - kTwilightRiseWidth, twiHi, cloudSunDotRaw);
+            float twilightFall = smoothstep(twiLo, twiLo + kTwilightFallWidth, cloudSunDotRaw);
             float twilightWeight = twilightRise * twilightFall;
-            vec3 twilightAmbient = skyAmbientBase * mix(0.3, 0.9, hNorm) * twilightWeight;
+            // cloud.cloudTwilightAmbientGain is the manual control over this: sky-lit cloud at
+            // dusk/dawn, so clouds read consistently against the sky-lit TERRAIN beside them
+            // instead of dropping dark while the ground is still visibly blue. Twilight-only by
+            // construction — twilightWeight is a bell, not a step, so this contributes nothing in
+            // full daylight and nothing in full night.
+            vec3 twilightAmbient = skyAmbientBase * mix(0.3, 0.9, hNorm) * twilightWeight
+                                 * cloud.cloudTwilightAmbientGain;
 
-            // Separate, non-decaying night-sky floor (stand-in for starlight + multiple-scattered
-            // air) so cloud tops aren't fully dark once twilightAmbient above has faded out. Kept
-            // on its own cloud.cloudNightAmbientGain slider rather than cloud.ambientGain, which
-            // also drives cityUp below — sharing one gain forced a tradeoff between good city-light
-            // cloud illumination and blown-out night ambient. Still gated by (1-sampleDayness) —
-            // ramps up through twilight and holds through night, unlike twilightAmbient above.
-            vec3 nightFloorAmbient = kNightSkyAmbientColor * mix(0.1, 0.3, hNorm)
-                                    * cloud.cloudNightAmbientGain * (1.0 - sampleDayness);
-
-            vec3 skyAmbient = twilightAmbient;// + nightFloorAmbient;
+            // (a non-decaying nightFloorAmbient term lived here, gated by (1-sampleDayness) so it
+            //  ramped up through twilight and then HELD through the night. It was dead code —
+            //  computed and discarded — and briefly enabled before being removed outright: a floor
+            //  that persists into full night is the wrong effect. What was actually wanted is a
+            //  twilight-only term, which twilightAmbient above already is by construction, since
+            //  twilightWeight is a bell that falls back to zero deeper into night.)
+            vec3 skyAmbient = twilightAmbient;
 
             vec3  moonECEF_c    = moonDir3.x * enuX + moonDir3.y * enuY + moonDir3.z * enuZ;
             float moonElevGeog  = max(0.0, dot(normalize(pECEF), moonECEF_c));
@@ -1053,8 +1128,13 @@ void cloudMarchCS(
             // reads as an amazing sunset, but the SAME flat gain applied at midday (sun near
             // zenith) overexposes the whole cloud deck — cloudSunDotRaw is already ~sin(sun
             // elevation) at this point on Earth, so 0=horizon/sunset, 1=overhead/midday.
+            // Blend band is now cloud.sunGainElevBand rather than a hardcoded [0,1]. At [0,1]
+            // the sunset gain was still half-strength at 30 degrees of sun elevation, so it hung
+            // over most of the morning; the default 0.25 hands over to the zenith gain by ~14.5
+            // degrees. Same curve shape, just reaches the top far sooner.
             float sunGainCurve = mix(cloud.sunGain, cloud.sunGainZenith,
-                                      smoothstep(0.0, 1.0, clamp(cloudSunDotRaw, 0.0, 1.0)));
+                                      smoothstep(0.0, max(cloud.sunGainElevBand, 0.02),
+                                                 clamp(cloudSunDotRaw, 0.0, 1.0)));
             vec3  inScatter  = sunColorCloud * sunLit * ph * (1.0 + powder) * sunGainCurve
                              + moonContrib
                              + skyAmbient
@@ -1137,7 +1217,9 @@ float cloudGroundShadow(vec3 groundECEF, vec3 sunDirECEF, float jitter) {
         vec2  pUV  = vec2(fract((pLon + PI) / (2.0*PI)
                                 + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                           (0.5*PI - pLat) / PI);
-        float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, 4.0).r;
+        // Matches the view march's mip so the shadow is cast by the same cloud shape that is
+        // actually drawn — a coarser read here would shadow blobs that are no longer visible.
+        float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, cloud.coverageMipLod).r;
         if (localCov < 0.02) continue;
 
         vec3 dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[0].driftMult);
@@ -1211,6 +1293,12 @@ void cirrusMarchCS(
     // Terrain occlusion on this layer's own bounds — see cloudMarchCS.
     if (tEnter >= tScene) return;
     tExit = min(tExit, tScene);
+
+    // Distance-based crossfade, same as cloudMarchCS — see there for why this and not
+    // maxRenderDistM is what bounds the march.
+    float cirrusDistFade = 1.0 - smoothstep(cloud.cloudDistFadeStartM, cloud.cloudDistFadeEndM, tEnter);
+    cirrusAltFade = min(cirrusAltFade, cirrusDistFade);
+    if (cirrusAltFade < 0.001) return;
     if (tEnter >= tExit || tExit <= 0.0) return;
 
     // Adaptive step count (same fix as the aurora march, session 28 follow-up #9): a FIXED
@@ -1973,12 +2061,31 @@ void main() {
     // The shadow is evaluated at the terrain hit point the depth pass already found, so this
     // needs no new bindings, no new pass, and no spatial grid — the whole of cloud_shadow.comp
     // and its texel-snapping subsystem is deleted in exchange.
+    //
+    // DISTANCE GATE — load-bearing for performance, not just a quality knob.
+    //
+    // The gate below is "does this ray hit ground, and is that ground near enough for its shadow
+    // to be resolvable". Without the distance half, this ran on every ground-hitting pixel: from
+    // orbit that is essentially the WHOLE screen, ~485k half-res pixels each doing a 12-step
+    // sunward march, for shadow detail far below one pixel at that range. Near the surface the
+    // same thing happened to every horizon-ward ray hitting ocean hundreds of km out.
+    //
+    // The 128x128 grid this replaced was accidentally immune: being observer-centred with a fixed
+    // ~80 km extent, it covered a vanishing patch of the visible ground from altitude and cost
+    // almost nothing there. Removing the grid removed that accidental gating along with it.
+    //
+    // Fading rather than hard-cutting matters — a hard edge is exactly the artifact the old grid
+    // had. Cost scales with how much of the screen is BOTH ground and within range, which from
+    // orbit is now approximately none.
     float terrainSunT = 1.0;
     if (tScene < kNoSurfaceT && (pc.debugDisableMask & 256u) == 0u) {
-        vec3  hitENU  = obsPos + tScene * dir;
-        vec3  hitECEF = hitENU.x * enuX + hitENU.y * enuY + hitENU.z * enuZ;
-        float jitter  = textureLod(noiseTex, vec2(gl_GlobalInvocationID.xy) * (1.0/128.0), 0.0).b;
-        terrainSunT = cloudGroundShadow(hitECEF, sunDirECEF, jitter);
+        float shadowFade = 1.0 - smoothstep(pc.cloudShadowRangeM * 0.6, pc.cloudShadowRangeM, tScene);
+        if (shadowFade > 0.001) {
+            vec3  hitENU  = obsPos + tScene * dir;
+            vec3  hitECEF = hitENU.x * enuX + hitENU.y * enuY + hitENU.z * enuZ;
+            float jitter  = textureLod(noiseTex, vec2(gl_GlobalInvocationID.xy) * (1.0/128.0), 0.0).b;
+            terrainSunT = mix(1.0, cloudGroundShadow(hitECEF, sunDirECEF, jitter), shadowFade);
+        }
     }
 
     imageStore(targetA, coord, vec4(B_total, tCloudOcclude));

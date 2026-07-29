@@ -311,17 +311,25 @@ struct CloudMarchPC
                                // stay shared/physical with the rest of the atmosphere — this only
                                // lets beams redden faster/slower without touching anything else
                                // that reuses those shared constants.
-    float beamNearFieldFadeM;  // offset 152 — C12 follow-up #40: settings-tunable radius (meters)
+    float cloudShadowRangeM;   // offset 152 — distance (m) beyond which the per-pixel terrain
+                               // cloud shadow fades out and stops being marched. Restored (with a
+                               // new meaning) after the 128x128 grid was deleted: that grid had a
+                               // hard extent which accidentally kept its cost near zero from
+                               // altitude, and dropping it made the per-pixel replacement run over
+                               // the whole screen from orbit. Now a smooth fade rather than a hard
+                               // edge — see the call site in cloud_march.comp's main().
+    float beamNearFieldFadeM;  // offset 156 — C12 follow-up #40: settings-tunable radius (meters)
                                // of the `crossfade` blend zone around a beam's own 3D line — was a
                                // hardcoded kNearFieldCrossoverM=15000 constant; exposed so the user
                                // can widen/narrow how far out the tube starts fading as they
                                // approach a beam (previously untunable, and easy to mistake for "no
                                // fade happening" when nothing else changes to make it visible).
-}; // total: 156 bytes — C12 follow-up #39: beamGlowBleedGain (was offset 152, last field) moved to
+}; // total: 160 bytes — grew by cloudShadowRangeM. C12 follow-up #39: beamGlowBleedGain (was
+   // offset 152) had moved to
    // SatDrawPC — the near-field bleed/march it drove in this file was removed entirely; that same
    // slider now drives sat_sky.frag's beam sky-illumination wash instead. C12 follow-up #40 reused
    // the freed offset for beamNearFieldFadeM.
-static_assert(sizeof(CloudMarchPC) == 156, "CloudMarchPC layout mismatch");
+static_assert(sizeof(CloudMarchPC) == 160, "CloudMarchPC layout mismatch");
 
 // (CloudShadowPC lived here — push constants for cloud_shadow.comp's 128x128 grid, including the
 //  shadowResidualM texel-snapping term that stopped shadows swimming as the observer moved. The
@@ -617,19 +625,68 @@ struct GpuCloudParams
     // Struct grew 320->336 here (session 30): appended rather than reusing pad1/pad2 above, which
     // turned out to already be repurposed (city-detail world offset, read by name as cloud.pad1/
     // pad2 in sat_sky.frag) despite their stale "reserved" comments — do not repurpose those.
-    float cloudNightAmbientGain; // gain on cloud_march.comp's kNightSkyAmbientColor floor term —
-                                  // deliberately separate from ambientGain (which also drives city-
-                                  // light upwelling) so the two can be balanced independently.
-                                  // Unused in sat_sky.frag (cloud lighting is cloud_march.comp-only)
-                                  // — kept for layout parity.
+    float cloudTwilightAmbientGain; // gain on cloud_march.comp's twilightAmbient term — sky-lit
+                                  // cloud at dusk/dawn only (twilightWeight is a bell, so this
+                                  // contributes nothing in daylight or full night). Same UBO slot
+                                  // that used to drive a non-decaying night floor; that term was
+                                  // the wrong effect and is gone. Deliberately separate from
+                                  // ambientGain, which also drives city-light upwelling.
+                                  // Unused in sat_sky.frag — kept for layout parity.
     float cloudBaseVariance;     // was pad4 — noise-driven cloud base height undulation (hNorm
                                   // units, 0 = old perfectly flat base). See cloudMarchCS.
     float cloudErosionEdge;      // was pad5 — cloudDensity() erosion strength at the silhouette
                                   // edge (base near 0).
     float cloudErosionCore;      // was pad6 — cloudDensity() erosion strength at the dense core
                                   // (base near 1); kept lower than cloudErosionEdge.
+    // Struct grew 336->352. std140 rounds a uniform block up to a multiple of 16, so a single
+    // trailing float would have left the GLSL block at 352 while this struct stayed 340 — a
+    // silent mismatch. The three pads keep both at 352; take one when the next field is needed.
+    float sunGainElevBand;       // sin(sun elevation) at which sunGainZenith fully replaces
+                                  // sunGain. Was a hardcoded smoothstep(0,1,sinElev): only
+                                  // half-way to the zenith value at 30 degrees up, so a sunset-
+                                  // tuned gain stayed dominant through most of the morning.
+    float twilightBandHi;        // sin(sun elev) above which twilight cloud ambient is zero.
+                                  // Raise to bring the term FORWARD into sunset — the original
+                                  // hardcoded 0.15 left a gap where direct sun had faded but the
+                                  // sky term had not arrived (clouds briefly went black).
+    float twilightBandLo;        // sin(sun elev) below which it is zero — how far into night it
+                                  // carries.
+    // ORDER BELOW MUST MATCH shaders/include/cloud_params.glsl EXACTLY, field for field.
+    //
+    // This is the one pairing the shared header cannot protect — GLSL and C++ can't share a
+    // declaration, so this struct is a hand-maintained mirror. It was gotten wrong immediately
+    // after that header landed: these four were appended AFTER coverageMipLod in the GLSL but
+    // inserted BEFORE it here. Nothing failed to compile and the static_assert still passed,
+    // because the total size was right; every field from coverageMipLod onward simply read its
+    // neighbour's value. The visible result was flatSunGainScale reading pad10 (0 -> black
+    // clouds) and flatCoverageScale reading 4.0 (-> coverage x4, clouds swallowing the Earth).
+    //
+    // A size check cannot catch a permutation. When adding a field, add it in the same position
+    // in both files, and prefer appending at the end of both.
+    float coverageMipLod;        // mip the volumetric march samples earthCloudsTex at. Was a
+                                  // hardcoded 4.0 (~78 km/texel on the 8K source): the volumetric
+                                  // shape could only ever follow large blobs, while the flat 2D
+                                  // layer sampled sharply — which is why the two never matched
+                                  // and the 3D->2D crossfade had to be pushed out to 800 km.
+    float flatCoverageScale;     // see cloud_params.glsl — maps the shared Coverage slider onto
+                                  // the flat 2D layer, which needs a lower value than the
+                                  // volumetric for the same apparent cloud amount.
+    float flatSunGainScale;      // same idea for Sun gain: the flat layer is a single multiply
+                                  // while the volumetric accumulates through transmittance, so
+                                  // the same slider lands ~4x dimmer on the flat path.
+    float pad10;
+    float pad11;
+    float cloudDistFadeStartM;   // distance-based 3D->2D crossfade: fully volumetric nearer than
+                                  // this, fully flat-2D beyond cloudDistFadeEndM. Keyed on the
+                                  // per-ray distance to the cloud shell, so it actually bounds the
+                                  // march — maxRenderDistM caps march LENGTH from the shell entry
+                                  // and so does nothing from orbit, where that span is just the
+                                  // ~9 km shell crossing.
+    float cloudDistFadeEndM;
+    float pad12;                 // keep the block 16-byte aligned at 384
+    float pad13;
 };
-static_assert(sizeof(GpuCloudParams) == 336, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 384, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -1205,6 +1262,9 @@ private:
     float beamGlowBleedGain = 0.3f;
     // C12 follow-up #40: radius (meters) of the crossfade blend zone around a beam's own 3D line —
     // was a hardcoded kNearFieldCrossoverM constant in cloud_march.comp, now user-tunable.
+    // Per-pixel cloud shadow fade distance. 80 km matches the deleted grid's half-extent, so
+    // anything previously shadowed still is; beyond it the shadow was sub-pixel anyway.
+    float cloudShadowRangeM = 80000.0f;
     float beamNearFieldFadeM = 15000.0f;
     // C12 follow-up #41: 0-1, how close the observer is to ANY active beam's actual 3D line —
     // smoothstepped from lastNearestBeamDistM/beamNearFieldFadeM each frame in recordCompute().
@@ -1230,12 +1290,30 @@ private:
                                     // cloudSunGainZenith by sun elevation (see cloud_march.comp)
     float cloudSunGainZenith = 1.0f; // sun-gain endpoint when the sun is near zenith (midday)
     float cloudAmbientGain = 1.86842f;
-    float cloudNightAmbientGain = 1.0f; // decoupled night-sky floor on cloud tops (was piggybacking
+    float cloudTwilightAmbientGain = 1.0f; // manual gain on sky-lit cloud during twilight (was piggybacking
                                          // on cloudAmbientGain, which also drives city-light
                                          // upwelling — see kNightSkyAmbientColor in cloud_march.comp)
     float cloudBaseVariance = 0.3f; // noise-driven cloud base height undulation, hNorm units
                                      // (0 = old perfectly flat base) — see cloudMarchCS
     float cloudErosionEdge = 0.5f;  // cloudDensity() erosion strength at the silhouette edge
+    float sunGainElevBand = 0.25f;  // ~14.5 deg elevation; was effectively 1.0 (half at 30 deg)
+    // Brought forward from the original hardcoded 0.15 so the sky term overlaps the tail of
+    // direct sunlight instead of starting after it; 0.35 is ~20 deg of sun elevation.
+    float twilightBandHi = 0.35f;
+    float twilightBandLo = -0.45f;  // unchanged from the original hardcoded value
+    // 1.0 rather than 0.0: a compromise starting point. Lower = more small-scale structure and
+    // a closer match to the flat layer, at the cost of worse texture-cache behaviour (mip 0 of
+    // the 8K map is ~33 MB and is sampled once per in-cloud march step).
+    float coverageMipLod = 1.0f;
+    // Measured against the volumetric at MIP 0: volumetric (coverage 1.00, sun gain 0.46)
+    // matched flat (coverage 0.69, sun gain 1.84). Defaults encode those ratios so the shared
+    // sliders now move both paths together instead of only ever suiting one of them.
+    float flatCoverageScale = 0.69f;
+    float flatSunGainScale  = 4.0f;
+    // Clouds at 11 km have a ground-level horizon of ~374 km, so this band puts the transition
+    // near the horizon when standing on the surface, and makes everything 2D from orbit.
+    float cloudDistFadeStartM = 150000.0f;
+    float cloudDistFadeEndM   = 400000.0f;
     float cloudErosionCore = 0.15f; // cloudDensity() erosion strength at the dense core
     float cloudHgG = 0.27355f;
     float cloudMarchSteps = 75.57895f;
@@ -1436,9 +1514,9 @@ private:
     bool hovPhotoMinus[9] = {};
     bool hovPhotoPlus[9] = {};
     bool draggingPhoto[9] = {};
-    bool hovCloudMinus[47] = {}; // was [46] — idx 46 is C12 follow-up #40's new "Beam near-field fade (m)" slider
-    bool hovCloudPlus[47] = {};
-    bool draggingCloud[47] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[55] = {}; // was [53] — idx 53/54 are the distance-based cloud fade sliders
+    bool hovCloudPlus[55] = {};
+    bool draggingCloud[55] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                   // feedback_cloud_slider_arrays memory: this one was missed once
                                   // already and the out-of-bounds write corrupted the window-chrome
                                   // state declared right below, breaking the settings window.
