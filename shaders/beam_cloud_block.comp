@@ -44,65 +44,10 @@ layout(set = 0, binding = 1) uniform sampler2D earthCloudsTex;
 layout(set = 0, binding = 2) uniform sampler3D cloudNoiseTex;
 layout(set = 0, binding = 3) uniform sampler3D cloudWarpNoiseTex;
 
-// Same CloudParams UBO layout as cloud_shadow.comp binding 3 / cloud_march.comp binding 4 —
-// duplicated struct, same underlying VkBuffer. Only fields cloudDensity()/the shell march
-// actually use are meaningfully consumed here; the rest exist purely for layout parity.
-struct CloudLayer {
-    float shellAltM;
-    float driftMult;
-    float alphaMax;
-    float mipLod;
-    float coverageMult;
-    float densityMult;
-    float enabled;
-    float pad;
-};
-layout(set = 0, binding = 4) uniform CloudParams {
-    float coverage;
-    float density;
-    float driftRate;
-    float sunGain;
-    float ambientGain;
-    float hgG;
-    float marchSteps;
-    float lightSteps;
-    float cloudPhaseUnused;
-    float extinctionCoeff;
-    float cirrusWindAngle;
-    float cirrusStretch;
-    float airglowGain;
-    float airglowGreenGain;
-    float airglowRedGain;
-    float airglowSodiumGain;
-    float shadowMaxDistM;
-    float maxRenderDistM;
-    float viewSamplesMin;
-    float lightSamplesUnused;
-    float oceanSeaOctaves;
-    float oceanDetailOctaves;
-    float oceanReflSamples;
-    float viewSamplesMax;
-    float sunGainZenith;
-    float moonGain;
-    float pad1;
-    float pad2;
-    vec4 mwBasisRow0;
-    vec4 mwBasisRow1;
-    vec4 mwBasisRow2;
-    CloudLayer layers[4];
-    float stormStrength;
-    float auroraGain;
-    float auroraCloudGain;
-    float auroraGroundGain;
-    float auroraCoverageFreq;
-    float auroraCoverageAzFreq;
-    float auroraCoverageDriftRate;
-    float auroraShimmerRate;
-    float cloudNightAmbientGain;
-    float cloudBaseVariance;
-    float cloudErosionEdge;
-    float cloudErosionCore;
-} cloud;
+// CloudParams UBO + CloudLayer come from the shared header. This block used to be
+// hand-copied here; see cloud_params.glsl for why that was a standing hazard.
+#define CLOUD_PARAMS_BINDING 4
+#include "cloud_params.glsl"
 
 // x = blockAltM (m above sea level; cloud top alt if never blocked — irrelevant when
 // blockOpacity==0, see cloud_march.comp's consumption), y = blockOpacity (0=clear, 1=opaque).

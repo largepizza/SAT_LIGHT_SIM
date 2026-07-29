@@ -227,17 +227,7 @@ struct SatDrawPC
     uint32_t debugDisableMask; // profiling-only knockout toggles consumed by sat_sky.frag
                                // (dbgSkipTerrain/dbgSkipAtmosphere/dbgSkipSunOD/dbgSkipOceanRefl);
                                // 0 = everything enabled (normal rendering). See Display settings tab.
-    float sceneDepthMode;  // offset 132 — 1.0 when the satellite/star point draws must occlude
-                            // against sceneDepthTex instead of the hardware depth buffer, i.e.
-                            // whenever renderScale < 1.0 (the scaled path renders the background
-                            // into an offscreen target and blits it, so no depth is ever written
-                            // and points would otherwise draw straight through mountains). 0.0 at
-                            // full resolution, where hardware depth is per-fragment exact and
-                            // free — swapping it for a half-res texture fetch there would
-                            // visibly coarsen silhouettes for nothing.
-                            //
-                            // Reuses what was pad0: a float here satisfies the same 8-byte
-                            // alignment the vec2 below needs, so nothing after it shifts.
+    float pad0;            // explicit — GLSL push_constant layout aligns the vec2 below to 8
                             // bytes (std430 rules), same as std140/std430 buffers; C++ doesn't
                             // insert this padding automatically the way GLSL requires it, so it
                             // must be here explicitly or screenSizePx reads garbage in the shader.

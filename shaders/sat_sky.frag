@@ -101,22 +101,7 @@ layout(set = 0, binding = 16) uniform sampler3D auroraNoiseTex;
 // ground-spot direct-lighting term. Capped atomic-append, no site keying/arbitration — see the
 // ReflectBeamsBuf comment in sat_orbit.comp for the full history/rationale.
 // Struct must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h and sat_orbit.comp exactly.
-const uint BEAM_MAX_ACTIVE = 2048u; // must match kMaxActiveBeams in SatelliteSim.h (C12 follow-up #11)
-struct ReflectBeam {
-    vec3  satENU;
-    float intensity;
-    vec3  targetENU;
-    float footprintRadM;
-    vec3  reflectDirENU; // mirror's ACTUAL current reflected-sunlight direction (debug pointing ray)
-    float debugPad;      // repurposed (follow-up #20) in cloud_march.comp: originating satellite's
-                          // stable dispatch index — unused here, not needed for this ground-spot term.
-    float blockAltM;     // C12 follow-up #33: unused here (ground-spot only needs blockOpacity below).
-    float blockOpacity;  // 0 = clear column, 1 = fully opaque — replaces the old cloudShadowTex
-                          // lookup for this term (see the ground-spot block below).
-    float mirrorRadiusM; // C12 follow-up #34: mirror's own equivalent-circle radius — the ground-
-                          // spot's bright "core" is now this true physical size (see below).
-    float pad1;           // std430 16-byte alignment
-};
+#include "reflect_beam.glsl"   // ReflectBeam + BEAM_MAX_ACTIVE
 layout(std430, set = 0, binding = 17) readonly buffer ReflectBeamsBuf {
     uint         beamCount;
     uint         beamPad0, beamPad1, beamPad2;
@@ -132,80 +117,10 @@ layout(std430, set = 0, binding = 17) readonly buffer ReflectBeamsBuf {
 // R = Perlin-Worley FBM (base shape), G/B/A = inverted Worley erosion octaves.
 layout(set = 0, binding = 8) uniform sampler3D cloudNoiseTex;
 
-// Cloud / volumetrics tunables (binding 9).
-// cloudPhase is CPU-computed fmod(driftRate * simTime, 2π) and uploaded each frame.
-// std140: 96-byte global section (6×vec4) + 4×32-byte CloudLayer = 224 bytes total.
-struct CloudLayer {
-    float shellAltM;    // sphere-shell altitude above R_EARTH (m)
-    float driftMult;    // cloudPhase longitude multiplier
-    float alphaMax;     // maximum opacity [0,1]
-    float mipLod;       // fixed texture LOD
-    float coverageMult; // per-layer coverage scale
-    float densityMult;  // per-layer density scale
-    float enabled;      // 1.0 = active
-    float pad;
-};
-layout(set = 0, binding = 9) uniform CloudParams {
-    float coverage;
-    float density;
-    float driftRate;
-    float sunGain;
-    float ambientGain;
-    float hgG;
-    float marchSteps;
-    float lightSteps;
-    float cloudPhase;
-    float extinctionCoeff;  // was pad0 (freed session 23 when cloudShadowFactor was removed); now
-                            // carries the same atmospheric-extinction coefficient sat_flare.comp
-                            // gets via push constant, so the Milky Way term below can apply
-                            // identical Kasten & Young dimming without its own push-constant field
-    float cirrusWindAngle;  // C13: cirrus streak wind axis, radians (was pad1)
-    float cirrusStretch;    // C13: cirrus noise anisotropic elongation factor (was pad2)
-    float airglowGain;        // C15: master airglow brightness multiplier
-    float airglowGreenGain;   // C15: green (557.7nm) band gain
-    float airglowRedGain;     // C15: red (630.0nm) band gain
-    float airglowSodiumGain;  // C15: sodium (589.3nm) band gain — keep dim relative to green
-    float shadowMaxDistM;     // cloudMarch's sun self-shadow cone fades out beyond this distance (m)
-    float maxRenderDistM;     // cloudMarch's tExit distance cap (was a hardcoded 80km)
-    float viewSamplesMin;     // perf (session 24 round 2): N_VIEW floor for short rays (was pad2)
-    float lightSamples;       // perf (session 24): N_LIGHT optDepth sub-march count (was pad3)
-    float oceanSeaOctaves;    // perf (session 24): seaMap() octave count (height-trace geometry)
-    float oceanDetailOctaves; // perf (session 24): seaMapDetail() octave count (wave normal)
-    float oceanReflSamples;   // perf (session 24): ocean sky-reflection loop sample count (N_REFL)
-    float viewSamplesMax;     // perf (session 24 round 2): N_VIEW ceiling for long/grazing rays (was pad4)
-    float sunGainZenith;      // USED here (was pad3) — see cloud_march.comp for the full rationale;
-                               // evalCloudLayer below (the orbit-altitude flat cloud fallback)
-                               // blends sunGain/sunGainZenith by sun elevation the same way
-    float moonGain;           // shared moonlight brightness master — terrain direct term AND
-                              // cloud_march.comp's moonContrib both read this (see that file)
-    float pad1;               // reserved
-    float pad2;               // reserved
-    // Milky Way skybox (session 27): CPU-computed ENU->galactic basis rows (fixed orientation,
-    // confirmed by eye against the real star field — see updatePositions() in SatelliteSim.cpp).
-    // dirGal = vec3(dot(enuDir, mwBasisRow0.xyz), dot(enuDir, mwBasisRow1.xyz), dot(enuDir, mwBasisRow2.xyz)).
-    // mwBasisRow0.w carries a fixed gain of 1.0 (rows 1/2 .w unused).
-    vec4 mwBasisRow0;
-    vec4 mwBasisRow1;
-    vec4 mwBasisRow2;
-    CloudLayer layers[4];
-    // Aurora (C16, TERRAIN_PLAN.md Phase E): geomagnetic curtain primitive.
-    float stormStrength;    // [0,1] drives oval equatorward expansion, brightness, fold chaos
-    float auroraGain;       // master aurora brightness multiplier (sky curtain itself)
-    float auroraCloudGain;  // unused here (cloud lighting is cloud_march.comp-only) — layout parity
-    float auroraGroundGain; // master gain for LOCAL, per-point aurora ambient/reflection lighting
-                             // on terrain/ocean — distinct from auroraGain (sky curtain) and
-                             // auroraCloudGain (clouds)
-    float auroraCoverageFreq;      // coverage patch size (per-degree colat frequency)
-    float auroraCoverageAzFreq;    // coverage azimuthal wobble frequency
-    float auroraCoverageDriftRate; // coverage evolution speed (wall-clock rad/s)
-    float auroraShimmerRate;       // curtain fold noise evolution speed (wall-clock rad/s)
-    // Struct grew 320->336 (session 30, see GpuCloudParams in SatelliteSim.h for why this was
-    // appended here instead of reusing pad1/pad2 above).
-    float cloudNightAmbientGain; // unused here (cloud lighting is cloud_march.comp-only) — layout parity
-    float cloudBaseVariance;  // unused here (was pad4) — layout parity, see cloud_march.comp
-    float cloudErosionEdge;   // unused here (was pad5) — layout parity, see cloud_march.comp
-    float cloudErosionCore;   // unused here (was pad6) — layout parity, see cloud_march.comp
-} cloud;
+// CloudParams UBO + CloudLayer come from the shared header. This block used to be
+// hand-copied here; see cloud_params.glsl for why that was a standing hazard.
+#define CLOUD_PARAMS_BINDING 9
+#include "cloud_params.glsl"
 
 // Half-resolution cloud march output (written by cloud_march.comp, see the "velvet-rolling-
 // squirrel" plan / TERRAIN_PLAN.md session 23 log). Replaces the old inline cirrusMarch()/

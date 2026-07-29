@@ -55,81 +55,10 @@ layout(set = 0, binding = 1) uniform sampler3D cloudNoiseTex;
 layout(set = 0, binding = 2) uniform sampler2D earthNightTex;
 layout(set = 0, binding = 3) uniform sampler2D noiseTex;
 
-// Same CloudParams UBO layout as sat_sky.frag binding 9 — duplicated struct, same underlying
-// VkBuffer bound into this separate descriptor set.
-struct CloudLayer {
-    float shellAltM;
-    float driftMult;
-    float alphaMax;
-    float mipLod;
-    float coverageMult;
-    float densityMult;
-    float enabled;
-    float pad;
-};
-layout(set = 0, binding = 4) uniform CloudParams {
-    float coverage;
-    float density;
-    float driftRate;
-    float sunGain;
-    float ambientGain;
-    float hgG;
-    float marchSteps;
-    float lightSteps;
-    float cloudPhase;
-    float extinctionCoeff; // unused here (atmospheric extinction is sat_sky.frag-only) — was pad0,
-                           // now genuinely occupied there; kept named/positioned for layout parity
-    float cirrusWindAngle;
-    float cirrusStretch;
-    float airglowGain;
-    float airglowGreenGain;
-    float airglowRedGain;
-    float airglowSodiumGain;
-    float shadowMaxDistM;
-    float maxRenderDistM;
-    float viewSamplesMin;     // unused here (N_VIEW belongs to the main atmosphere loop in
-                              // sat_sky.frag) — kept for layout parity, was pad2
-    float lightSamples;       // unused here — was pad3
-    float oceanSeaOctaves;    // unused here (ocean shading is in sat_sky.frag, not this compute
-                              // shader) — kept for layout parity
-    float oceanDetailOctaves; // unused here — layout parity
-    float oceanReflSamples;   // unused here — layout parity
-    float viewSamplesMax;     // unused here — layout parity, was pad4
-    float sunGainZenith;      // USED here (was pad3) — sun-gain multiplier applied when the sun is
-                               // near zenith, blended against `sunGain` (now effectively the
-                               // near-horizon/sunset value) by sun elevation. Was a single flat
-                               // gain for all elevations, which meant a value tuned to look good
-                               // at sunset (high) overexposed clouds at midday, or vice versa.
-    float moonGain;           // shared moonlight brightness master — replaces this file's old
-                              // hardcoded 0.015 moonContrib scalar; sat_sky.frag's terrain
-                              // moonlight term reads the same field
-    float pad1;               // reserved
-    float pad2;               // reserved
-    vec4 mwBasisRow0;         // unused here (Milky Way skybox is sat_sky.frag-only) — layout parity
-    vec4 mwBasisRow1;         // unused here — layout parity
-    vec4 mwBasisRow2;         // unused here — layout parity
-    CloudLayer layers[4];
-    float stormStrength;      // USED here — drives auroraOvalMaskLocal's oval expansion (mirrors
-                               // sat_sky.frag's storm-driven widening/equatorward shift)
-    float auroraGain;         // unused here (sky curtain brightness is sat_sky.frag-only) — layout parity
-    float auroraCloudGain;    // USED here — master gain for the local per-sample cloud upwelling
-    float auroraGroundGain;   // unused here (terrain/ocean lighting is sat_sky.frag-only) — layout parity
-    float auroraCoverageFreq;      // USED here — coverage patch size (per-degree colat frequency)
-    float auroraCoverageAzFreq;    // USED here — coverage azimuthal wobble frequency
-    float auroraCoverageDriftRate; // USED here — coverage evolution speed (wall-clock rad/s)
-    float auroraShimmerRate;       // unused here (curtain fold noise is sat_sky.frag-only) — layout parity
-    // Struct grew 320->336 (session 30, see GpuCloudParams in SatelliteSim.h for why this was
-    // appended here instead of reusing pad1/pad2 above).
-    float cloudNightAmbientGain; // USED here — gain on kNightSkyAmbientColor, the decoupled night
-                                  // floor added to skyAmbient in cloudMarchCS
-    float cloudBaseVariance;  // USED here (was pad4) — noise-driven cloud base height undulation,
-                               // in hNorm units (0 = old perfectly flat base); see cloudMarchCS
-    float cloudErosionEdge;   // USED here (was pad5) — cloudDensity() erosion strength at the
-                               // silhouette edge (base near 0)
-    float cloudErosionCore;   // USED here (was pad6) — cloudDensity() erosion strength at the
-                               // dense core (base near 1); kept lower than cloudErosionEdge so
-                               // cores stay comparatively solid while edges fray
-} cloud;
+// CloudParams UBO + CloudLayer come from the shared header. This block used to be
+// hand-copied here; see cloud_params.glsl for why that was a standing hazard.
+#define CLOUD_PARAMS_BINDING 4
+#include "cloud_params.glsl"
 
 // Target A: rgb = combined additive radiance (B_total), a = tCloudOcclude (m, -1 = none)
 layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D targetA;
@@ -156,23 +85,7 @@ layout(set = 0, binding = 9) uniform sampler3D cloudWarpNoiseTex;
 // volumetric in-scatter term. Capped atomic-append, no site keying/arbitration — see the
 // ReflectBeamsBuf comment in sat_orbit.comp for the full history/rationale.
 // Struct must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h and sat_orbit.comp exactly.
-const uint BEAM_MAX_ACTIVE = 2048u; // must match kMaxActiveBeams in SatelliteSim.h (C12 follow-up #11)
-struct ReflectBeam {
-    vec3  satENU;
-    float intensity;
-    vec3  targetENU;
-    float footprintRadM;
-    vec3  reflectDirENU; // mirror's ACTUAL current reflected-sunlight direction (debug pointing ray)
-    float debugPad;      // repurposed (follow-up #20): originating satellite's stable dispatch
-                          // index, written by sat_orbit.comp — used below for stable downsampling.
-    float blockAltM;     // C12 follow-up #33: altitude at which this beam's target's own vertical
-                          // cloud column first drops below 50% transmittance — see the cloudFade
-                          // term below. Irrelevant when blockOpacity==0.
-    float blockOpacity;  // 0 = clear column, 1 = fully opaque.
-    float mirrorRadiusM; // C12 follow-up #34: mirror's own equivalent-circle radius — the tube's
-                          // physically-derived radius (see tubeRadiusM below) starts from this.
-    float pad1;           // std430 16-byte alignment
-};
+#include "reflect_beam.glsl"   // ReflectBeam + BEAM_MAX_ACTIVE
 layout(std430, set = 0, binding = 10) readonly buffer ReflectBeamsBuf {
     uint         beamCount;
     uint         beamPad0, beamPad1, beamPad2;
