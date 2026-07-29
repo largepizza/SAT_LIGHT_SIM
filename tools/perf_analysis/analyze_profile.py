@@ -35,6 +35,10 @@ GPU_COL_RENAME = {
     # Added alongside cloud_shadow.comp (session 32). Snapshots older than that have no
     # such key; without this mapping the bucket was silently dropped from every report.
     "gpu_timing_ms.cloud_shadow_map": "cloud_shadow_map",
+    # Added in the pipeline-unification pass alongside scene_depth.comp - the shared terrain
+    # depth buffer that replaced beamTerrainVisibility's per-beam-per-pixel DEM march. Expect
+    # cloud_march to drop sharply in the same snapshots where this key first appears.
+    "gpu_timing_ms.scene_depth": "scene_depth",
     # Added in the pipeline-unification pass. Before it existed, beam_cloud_block.comp's
     # cost was folded into orbit_compute - so orbit_compute is NOT comparable across the
     # boundary where this key appears. Treat a jump down in orbit_compute at that point as
@@ -65,7 +69,7 @@ def load(path: Path) -> pd.DataFrame:
 def add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.rename(columns=GPU_COL_RENAME)
     for col in ("sky_background_draw", "satellite_star_draw", "sky_terrain_draw_legacy",
-                "cloud_shadow_map", "beam_cloud_block", "debug_disable_mask"):
+                "cloud_shadow_map", "beam_cloud_block", "scene_depth", "debug_disable_mask"):
         if col not in df.columns:
             df[col] = float("nan")
 
@@ -92,8 +96,8 @@ def add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
 def print_resolution_breakdown(df: pd.DataFrame) -> None:
     print("\n=== GPU pass cost by resolution (ms) ===")
     grp = df.groupby(["resolution.width", "resolution.height"])
-    cols = ["cloud_march", "sky_terrain_draw", "cloud_shadow_map", "beam_cloud_block",
-            "orbit_compute", "flare_compute", "ui_overlay", "gpu_total"]
+    cols = ["cloud_march", "sky_terrain_draw", "scene_depth", "cloud_shadow_map",
+            "beam_cloud_block", "orbit_compute", "flare_compute", "ui_overlay", "gpu_total"]
     cols = [c for c in cols if df[c].notna().any()]
     print(grp[cols].agg(["mean", "std", "count"]).round(2).to_string())
 
@@ -142,7 +146,7 @@ KNOCKOUT_BIT_NAMES = {
     32: "aurora curtain march",
     64: "cloud self-shadow cone",
     128: "Reflect-Orbital beams",
-    256: "cloud shadow map (dispatch)",
+    256: "cloud shadow (per-pixel)",
     512: "beam cloud block (dispatch)",
 }
 
@@ -154,7 +158,7 @@ KNOCKOUT_BIT_NAMES = {
 KNOCKOUT_BIT_BUCKET = {
     64: "cloud_march",
     128: "cloud_march",   # the volumetric tube term dominates; the ground-spot term is in sky bg
-    256: "cloud_shadow_map",
+    256: "cloud_march",   # was its own dispatch/bucket; folded into cloud_march.comp
     512: "beam_cloud_block",
 }
 

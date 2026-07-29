@@ -1517,7 +1517,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // Order must match gpuMsSmoothed[]'s slot semantics — see VulkanContext::kTimestampCount
     // for the authoritative table, and savePerfSnapshot() below for the matching JSON keys.
     static const char *kPerfLabels[8] = {
-        "Beam cloud block", "Orbit compute", "Cloud march", "Cloud shadow map", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
+        "Scene depth", "Beam cloud block", "Orbit compute", "Cloud march", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
     static char perfBufs[8][20];
     for (int pi = 0; pi < 8; ++pi)
     {
@@ -1557,17 +1557,23 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // debugDisableMask comment: 1=terrain, 2=atmosphere, 4=sun optical depth, 8=ocean reflection,
     // 16=airglow red, 32=aurora curtain, 64=cloud self-shadow cone, 128=Reflect-Orbital beams
     // (C12, both the cloud_march.comp volumetric term and the sat_sky.frag ground-spot term),
-    // 256=cloud shadow map (C12, general terrain/ocean shadowing), 512=beam cloud block dispatch.
-    // 256 and 512 are the two PRODUCER-side knockouts (they skip a whole dispatch in
-    // recordCompute); every other bit disables a consumer block inside a shader.
+    // 256=cloud shadow on terrain/ocean, 512=beam cloud block dispatch, 1024=scene depth pass.
+    // 512 and 1024 are the PRODUCER-side knockouts (they skip a whole dispatch in recordCompute);
+    // every other bit disables a block inside a shader. 256 used to be producer-side too, back
+    // when the shadow was its own 128x128 dispatch; it now gates the per-pixel shadow march
+    // inside cloud_march.comp, so its cost shows up in that bucket.
+    //
+    // 1024 is the big one: the scene depth pass fills kNoSurfaceT when skipped, so nothing
+    // occludes anything and the renderer reverts to its pre-unification occlusion behaviour.
+    // That makes the entire shared-depth architecture a single A/B checkbox.
     CLAY_TEXT(CLAY_STRING("KNOCKOUT PROFILING (disables rendering correctness for cost isolation)"),
               CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
-    static const char *kDebugToggleLabels[10] = {
+    static const char *kDebugToggleLabels[11] = {
         "Terrain march", "Atmosphere loop (N_VIEW)", "Sun optical depth (N_LIGHT)", "Ocean sky reflection",
         "Airglow red (16-step march)", "Aurora curtain march", "Cloud self-shadow cone",
-        "Reflect-Orbital beams", "Cloud shadow map", "Beam cloud block dispatch"};
-    static const uint32_t kDebugToggleBits[10] = {1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u, 512u};
-    for (int ti = 0; ti < 10; ++ti)
+        "Reflect-Orbital beams", "Cloud shadow (per-pixel)", "Beam cloud block dispatch", "Scene depth pass"};
+    static const uint32_t kDebugToggleBits[11] = {1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u, 512u, 1024u};
+    for (int ti = 0; ti < 11; ++ti)
     {
         bool on = (debugDisableMask & kDebugToggleBits[ti]) != 0u;
         Clay_String lblStr{false, (int32_t)strlen(kDebugToggleLabels[ti]), kDebugToggleLabels[ti]};
@@ -1979,7 +1985,6 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"View samples (max)", &viewSamplesMax, 32.0f, 256.0f, 4.0f, "%.0f", 19},
         {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 20},
         {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
-        {"Cloud shadow range (m)", &cloudShadowRangeM, 10000.0f, 300000.0f, 5000.0f, "%.0f", 38},
         {"Beam gain", &beamGain, 0.0f, 0.01f, 0.0001f, "%.3f", 39},
         // C12 follow-up #34: slot 40 ("Beam footprint (m)") removed — footprint is now physically
         // derived from mirror area + range in sat_orbit.comp, not a free-parameter slider. Index
@@ -2400,7 +2405,6 @@ void SatelliteSim::loadSettings()
         auroraCoverageAzFreq = c.value("aurora_coverage_az_freq", auroraCoverageAzFreq);
         auroraCoverageDriftRate = c.value("aurora_coverage_drift_rate", auroraCoverageDriftRate);
         auroraShimmerRate = c.value("aurora_shimmer_rate", auroraShimmerRate);
-        cloudShadowRangeM = c.value("cloud_shadow_range_m", cloudShadowRangeM);
         beamGain = c.value("beam_gain", beamGain);
         beamMaxRangeM = c.value("beam_max_range_m", beamMaxRangeM);
         beamSkyGlowGain = c.value("beam_sky_glow_gain", beamSkyGlowGain);
@@ -2505,7 +2509,6 @@ void SatelliteSim::saveSettings()
         {"aurora_coverage_az_freq", auroraCoverageAzFreq},
         {"aurora_coverage_drift_rate", auroraCoverageDriftRate},
         {"aurora_shimmer_rate", auroraShimmerRate},
-        {"cloud_shadow_range_m", cloudShadowRangeM},
         {"beam_gain", beamGain},
         {"beam_max_range_m", beamMaxRangeM},
         {"beam_sky_glow_gain", beamSkyGlowGain},
@@ -2628,6 +2631,12 @@ void SatelliteSim::savePerfSnapshot(float cpuDt)
     // Settings that materially affect GPU cost — needed to tell "this location is
     // slow" apart from "quality was cranked up when this was captured".
     j["quality"] = {
+        // render_scale matters more than any other quality field for interpreting these numbers:
+        // the sky/terrain/cloud background renders at this fraction of the swapchain extent while
+        // scene_depth and the cloud targets are ALWAYS half the full extent. So the relative cost
+        // of those fixed-size passes rises sharply as this drops, and two snapshots at different
+        // render scales are not comparable even at identical resolution/viewpoint.
+        {"render_scale", renderScale},
         {"cloud_march_steps", cloudMarchSteps},
         {"cloud_light_steps", cloudLightSteps},
         {"cloud_coverage", cloudCoverage},
@@ -2649,11 +2658,14 @@ void SatelliteSim::savePerfSnapshot(float cpuDt)
     // name reads from going forward, so don't compare index positions across the reorder.
     // beam_cloud_block is new as of the pipeline-unification pass; snapshots taken before it
     // exists have no such key, and their orbit_compute value silently INCLUDES this cost.
+    // cloud_shadow_map disappeared when that dispatch was folded into cloud_march.comp - its
+    // cost now lives inside the cloud_march bucket. Snapshots that still carry the old key
+    // predate that change.
     j["gpu_timing_ms"] = {
-        {"beam_cloud_block", gpuMsSmoothed[0]},
-        {"orbit_compute", gpuMsSmoothed[1]},
-        {"cloud_march", gpuMsSmoothed[2]},
-        {"cloud_shadow_map", gpuMsSmoothed[3]},
+        {"scene_depth", gpuMsSmoothed[0]},
+        {"beam_cloud_block", gpuMsSmoothed[1]},
+        {"orbit_compute", gpuMsSmoothed[2]},
+        {"cloud_march", gpuMsSmoothed[3]},
         {"flare_compute", gpuMsSmoothed[4]},
         {"sky_background_draw", gpuMsSmoothed[5]},
         {"satellite_star_draw", gpuMsSmoothed[6]},

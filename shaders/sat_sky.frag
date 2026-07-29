@@ -24,11 +24,9 @@ layout(push_constant) uniform PC {
                         // frame in recordCompute() (skyGlareEased) — 0 when the sun is on screen,
                         // sunlitBgVisibility (settings-tunable) when off-screen but the observer
                         // is still in direct sunlight, 1.0 at true night. See Milky Way section.
-    float cloudShadowRangeM; // C12 — mirrors cloud_shadow.comp's own grid radius, lets this
-                        // shader convert hitPt.xy into that grid's tangent-plane UV convention.
-    vec2  cloudShadowResidualM; // C12 — same texel-snapping residual cloud_shadow.comp's grid was
-                        // built with this frame; subtract before mapping to that grid's UV — see
-                        // CloudShadowPC::shadowResidualM's comment in SatelliteSim.h.
+    // (cloudShadowRangeM and cloudShadowResidualM were here — both only existed to address
+    //  cloud_shadow.comp's observer-centred grid and undo its texel snapping. That pass is gone;
+    //  the shadow arrives in cloudTargetB.a already evaluated at this pixel's terrain hit point.)
     float beamMaxRangeM; // C12 follow-up #6 — settings-tunable Reflect-Orbital beam render range
     float beamSkyGlowGain; // C12 follow-up #18 — mirrors cloud_march.comp's own copy so the
                         // ground-spot term below and the sky glow march share one brightness
@@ -125,9 +123,10 @@ layout(std430, set = 0, binding = 17) readonly buffer ReflectBeamsBuf {
     ReflectBeam  beams[BEAM_MAX_ACTIVE];
 };
 
-// Shared cloud-shadow primitive (C12) — written by cloud_shadow.comp, sampled here for both
-// general cloud-shadow-on-ground and (once step 5 lands) the beam ground-spot term.
-layout(set = 0, binding = 18) uniform sampler2D cloudShadowTex;
+// (binding 18 was cloudShadowTex, cloud_shadow.comp's 128x128 grid. That whole pass is gone —
+//  cloud_march.comp now writes a per-pixel shadow into cloudB.a. Bindings 19/20 were compacted
+//  down into 18/19 rather than leaving a hole, since the C++ side fills its binding array
+//  contiguously.)
 
 // Cloud 3D noise volume (binding 8): 128³ RGBA, baked by cloud_noise.comp at init.
 // R = Perlin-Worley FBM (base shape), G/B/A = inverted Worley erosion octaves.
@@ -233,7 +232,7 @@ layout(set = 0, binding = 13) uniform sampler2D milkyWayTex;
 // populated by active Reflect-Orbital beams instead of a static night-lights texture. Stored as
 // raw atomicMax'd uint bit-patterns (floatBitsToUint on the write side) — reinterpret via
 // uintBitsToFloat, NOT a direct float read like LightDomeBuf above.
-layout(std430, set = 0, binding = 19) readonly buffer BeamGlowDomeBuf {
+layout(std430, set = 0, binding = 18) readonly buffer BeamGlowDomeBuf {
     uint beamGlowDome[16];
 };
 
@@ -1082,6 +1081,12 @@ void evalCloudLayer(
 //      banding is caused by posZ not spanning enough geographic range from the surface.
 #define CLOUD_DEBUG 0
 
+// NOTE: the description below is HISTORY. cloud_shadow.comp no longer exists — the shadow is now
+// marched per pixel inside cloud_march.comp from this pixel's own terrain hit point (see
+// cloudGroundShadow there) and arrives in cloudTargetB.a. Kept because the reasoning about why
+// full-res per-pixel shadowing was too expensive in session 23 still explains why the current
+// version runs at half resolution rather than here.
+//
 // cloudShadowFactor() removed (C15-perf follow-up, session 23) — it was the dominant
 // remaining surface-level cloud cost (full-res, ~every terrain/ocean pixel, up to 64
 // steps each). Its CloudParams UBO slot reverted to `pad0`, and the CLOUD_ISOLATE_COLH/SHADOW
@@ -1246,7 +1251,10 @@ void main() {
     vec4  cloudA         = texture(cloudTargetA, cloudUV);
     vec4  cloudB         = texture(cloudTargetB, cloudUV);
     float tCloudOcclude  = cloudA.a;
-    float tEnterCombined = cloudB.a;
+    // cloudB.a used to carry tEnterCombined, the fused entry distance this shader compared
+    // against tSurface to suppress the whole composite. Every volumetric layer is now clamped to
+    // the shared scene depth inside cloud_march.comp instead, so there is nothing to test here.
+    // The channel is free; the next step gives it the per-pixel cloud shadow.
 
     // ── Phase 2: atmosphere integration, truncated at the surface ─────────────
     vec2  tAtmos = raySphere(obsPos, dir, R_ATMOS);
@@ -1583,21 +1591,16 @@ void main() {
         float dayFrac     = smoothstep(-0.15, -0.12, sunDot) * horizonGate;
         // directSun combines day/night blend for all sun-driven contributions.
         float directSun   = dayFrac;
-        // Cloud shadow (C12): sample the low-res cloud_shadow.comp grid at this hit point's own
-        // tangent-plane position — hitPt.xy is already the same observer-relative ENU offset
-        // (meters) that grid was built from (both use the "obsPos at local zenith" convention).
-        // Fade to "no shadow" near/beyond the grid's edge instead of letting the sampler's
-        // CLAMP_TO_EDGE repeat one boundary texel's value indefinitely past the grid's radius.
-        if ((pc.debugDisableMask & 256u) == 0u) {
-            vec2  shadowUVSigned = (hitPt.xy - pc.cloudShadowResidualM) / pc.cloudShadowRangeM;
-            float shadowEdgeDist = max(abs(shadowUVSigned.x), abs(shadowUVSigned.y));
-            float shadowFade     = 1.0 - smoothstep(0.85, 1.0, shadowEdgeDist);
-            if (shadowFade > 0.001) {
-                vec2  shadowUV = clamp(shadowUVSigned * 0.5 + 0.5, 0.0, 1.0);
-                float shadowVal = texture(cloudShadowTex, shadowUV).r;
-                directSun *= mix(1.0, shadowVal, shadowFade);
-            }
-        }
+        // Cloud shadow: cloud_march.comp already marched sunward from this pixel's own terrain
+        // hit point and stored the transmittance in cloudB.a (sampled earlier, alongside the rest
+        // of the composite). One multiply — no grid lookup, no UV mapping, no edge fade.
+        //
+        // This replaced a 128x128 observer-centred tangent-plane grid, which needed all three of
+        // those things plus a texel-snapping residual to stop shadows swimming as the observer
+        // moved, and which silently stopped shadowing anything past cloudShadowRangeM. The
+        // replacement has no range limit and nothing to snap, because the value is a function of
+        // the world point being shaded rather than of where the camera happens to be.
+        directSun *= cloudB.a;
         // Antimeridian seam fix: longitude wraps at ±PI so dFdx(uvSurf.x) jumps by ~1.0
         // across that boundary. The GPU would pick the highest mip level, blurring a
         // vertical strip. Clamp the derivative to the small expected value instead.
@@ -2149,11 +2152,10 @@ void main() {
     // precomputed result here instead of marching per full-res pixel. Target A: rgb=B_total
     // (combined additive radiance), a=tCloudOcclude (m, -1=none, only set when the cloud is
     // ≥90% opaque — used below for satellite/star depth occlusion, NOT for terrain suppression).
-    // Target B: rgb=A_total (combined multiplicative attenuation), a=tEnterCombined (m, -1=none;
-    // ALWAYS valid whenever either layer rendered anything, regardless of opacity — this is what
-    // terrain suppression must use; tCloudOcclude's 90%-opacity gate meant most non-solid cloud
-    // never got suppressed at all, a real bug, not just the documented mid-shell approximation).
-    // Perf (this session, resolution-scaling fix): was `gl_FragCoord.xy / (textureSize(
+    // Target B: rgb=A_total (combined multiplicative attenuation), a=per-pixel cloud shadow
+    // (currently 1.0 — the channel was freed by deleting tEnterCombined and is claimed in the
+    // next step).
+    // Perf (session 29, resolution-scaling fix): was `gl_FragCoord.xy / (textureSize(
     // cloudTargetA,0)*2.0)`, silently assuming gl_FragCoord always spans the full swap extent —
     // true before renderScale existed, false once sat_sky.frag can render into a SMALLER low-res
     // framebuffer (recordPrePass) while cloudTargetA/B stay sized off the TRUE swap extent
@@ -2161,27 +2163,22 @@ void main() {
     // larger denominator compressed cloudUV into a shrinking corner of [0,1] as renderScale
     // dropped — reported as clouds drifting off-center and distorting. pc.screenSizePx is always
     // this draw's OWN actual target size, so this now maps to [0,1] correctly regardless of scale.
-    // cloudUV/cloudA/cloudB/tCloudOcclude/tEnterCombined were sampled earlier (right after
-    // tSurface), so the moon disc below can be occluded by opaque cloud too — not resampled here.
+    // cloudUV/cloudA/cloudB/tCloudOcclude were sampled earlier (right after tSurface), so the
+    // moon disc above can be occluded by opaque cloud too — not resampled here.
     // cloudBlock (post-tonemap sun-disc dimming, used below) derived from A_total's luminance
     // rather than a separate stored scalar — A_total already tracks combined opacity closely
-    // (→0 when opaque, →1 when clear), and this frees Target B's alpha for tEnterCombined instead.
+    // (→0 when opaque, →1 when clear).
     float cloudBlock    = dot(cloudB.rgb, vec3(1.0/3.0));
-    // Terrain-occlusion correction: the compute pass has no terrain data, so it always marches
-    // the shell's full potential extent. If terrain (this pixel's own accurate tSurface, computed
-    // above) sits closer than either layer's entry point, suppress the whole combined
-    // contribution — exact for "terrain fully blocks the cloud," not for a mid-shell partial
-    // truncation (a ridge poking partway into the shell) or for terrain sitting geometrically
-    // between the cirrus and low-cloud layers specifically (both merged into one target, so they
-    // can't be independently suppressed) — accepted approximations, see the half-res-cloud-pass
-    // plan's "Known limitation" note.
+    // No terrain-suppression test any more. cloud_march.comp now clamps every layer (cloud,
+    // cirrus, aurora, airglow-red) and every beam to the shared scene depth at march time, so
+    // whatever reached this composite is already correctly occluded — per layer, and with real
+    // partial truncation where a ridge pokes into a shell, which the old single-scalar gate
+    // could not express at all.
     // Aurora rides along inside cloudA.rgb (B_total) now — folded in by cloud_march.comp's
     // auroraMarchCS, with its own cloud-suppression already applied there using the local cloud
-    // opacity. No separate aurora term needed here; it shares this same terrain-occlusion gate
-    // too (a deliberate behavior change from before — see the "Aurora" comment above main()).
-    if (!(tSurface > 0.0 && tEnterCombined >= 0.0 && tSurface < tEnterCombined)) {
-        color = color * cloudB.rgb + cloudA.rgb;
-    }
+    // opacity. No separate aurora term needed here; it is terrain-occluded at march time along
+    // with everything else in the composite.
+    color = color * cloudB.rgb + cloudA.rgb;
 
     // ── Auto-exposure tone mapping ─────────────────────────────────────────────
     float dayness  = clamp((sunDirENU.w + 0.2) / 1.2, 0.0, 1.0);

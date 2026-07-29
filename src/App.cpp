@@ -110,9 +110,9 @@ void App::drawFrame() {
     vkBeginCommandBuffer(ctx.commandBuffer, &bi);
 
     // GPU timestamp profiling: slot 0 marks frame start. Slots 1-5 are written inside
-    // sim->recordCompute() (compute-pass breakdown: beam cloud block, orbit compute, cloud
-    // march, cloud shadow map, flare compute); slot 6 is written inside sim->recordPrePass()
-    // or sim->recordDraw() (end of the sky background pass, whichever path rendered it).
+    // sim->recordCompute() (compute-pass breakdown: scene depth, beam cloud block, orbit compute,
+    // cloud march, flare compute); slot 6 is written inside sim->recordPrePass() or
+    // sim->recordDraw() (end of the sky background pass, whichever path rendered it).
     // Slots 7-8 mark the end of the satellite+star draw and the UI overlay respectively.
     // See VulkanContext::kTimestampCount for the authoritative slot table.
     ctx.resetTimestamps(ctx.commandBuffer);

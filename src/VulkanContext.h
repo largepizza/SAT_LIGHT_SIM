@@ -78,18 +78,20 @@ struct VulkanContext {
     // Authoritative slot layout (keep in sync with SatelliteSim::updateGpuTimingStats,
     // kPerfLabels[] in SatelliteSimUI.cpp, and the JSON keys in savePerfSnapshot):
     //   0 frame start                 App.cpp
-    //   1 beam_cloud_block.comp done  SatelliteSim::recordCompute
-    //   2 sat_orbit.comp done         SatelliteSim::recordCompute
-    //   3 cloud_march.comp done       SatelliteSim::recordCompute
-    //   4 cloud_shadow.comp done      SatelliteSim::recordCompute
+    //   1 scene_depth.comp done       SatelliteSim::recordCompute
+    //   2 beam_cloud_block.comp done  SatelliteSim::recordCompute
+    //   3 sat_orbit.comp done         SatelliteSim::recordCompute
+    //   4 cloud_march.comp done       SatelliteSim::recordCompute
     //   5 sat_flare.comp done         SatelliteSim::recordCompute
     //   6 sky background draw done    SatelliteSim::recordPrePass XOR ::recordDraw
     //   7 satellite + star draw done  App.cpp
     //   8 UI overlay done             App.cpp
     //
-    // History: slot 4 (cloud_shadow.comp, C12) was inserted after cloud march; slot 1
-    // (beam_cloud_block.comp) was added later — its cost had until then been folded
-    // silently into the orbit-compute bucket. Every downstream slot shifted each time.
+    // History: cloud_shadow.comp (C12) held a slot here until the pipeline-unification pass
+    // folded its work into cloud_march.comp; beam_cloud_block.comp was added when its cost was
+    // found to be hiding inside the orbit bucket; scene_depth.comp then took slot 1 at the head
+    // of the pass. Every downstream slot shifted each time — which is why the slot NUMBERS are
+    // documented here and nowhere else authoritative.
     static constexpr uint32_t kTimestampCount = 9;
     VkQueryPool queryPool         = VK_NULL_HANDLE;
     double      timestampPeriodNs = 0.0;   // ns/tick, from device limits; 0 = unsupported

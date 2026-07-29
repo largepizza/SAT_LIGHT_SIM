@@ -227,7 +227,17 @@ struct SatDrawPC
     uint32_t debugDisableMask; // profiling-only knockout toggles consumed by sat_sky.frag
                                // (dbgSkipTerrain/dbgSkipAtmosphere/dbgSkipSunOD/dbgSkipOceanRefl);
                                // 0 = everything enabled (normal rendering). See Display settings tab.
-    float pad0;            // explicit — GLSL push_constant layout aligns the vec2 below to 8
+    float sceneDepthMode;  // offset 132 — 1.0 when the satellite/star point draws must occlude
+                            // against sceneDepthTex instead of the hardware depth buffer, i.e.
+                            // whenever renderScale < 1.0 (the scaled path renders the background
+                            // into an offscreen target and blits it, so no depth is ever written
+                            // and points would otherwise draw straight through mountains). 0.0 at
+                            // full resolution, where hardware depth is per-fragment exact and
+                            // free — swapping it for a half-res texture fetch there would
+                            // visibly coarsen silhouettes for nothing.
+                            //
+                            // Reuses what was pad0: a float here satisfies the same 8-byte
+                            // alignment the vec2 below needs, so nothing after it shifts.
                             // bytes (std430 rules), same as std140/std430 buffers; C++ doesn't
                             // insert this padding automatically the way GLSL requires it, so it
                             // must be here explicitly or screenSizePx reads garbage in the shader.
@@ -245,35 +255,30 @@ struct SatDrawPC
                              // skyGlareEased member comment); used only by sat_sky.frag's Milky
                              // Way (stars read the CPU-side skyGlareEased directly in
                              // updateStars(), no GPU copy needed for them).
-    float cloudShadowRangeM; // offset 148 — mirrors SatelliteSim::cloudShadowRangeM (C12); lets
-                             // sat_sky.frag convert hitPt.xy into the cloud_shadow.comp grid's
-                             // own [-range,+range] tangent-plane UV convention. Not shared via
-                             // CloudParams UBO to avoid a 3-way struct-duplication growth
-                             // (cloud_march.comp/sat_sky.frag/cloud_shadow.comp) for a field only
-                             // sat_sky.frag needs.
-    glm::vec2 cloudShadowResidualM; // offset 152 — mirrors CloudShadowPC::shadowResidualM (same
-                             // frame's value); subtracted from hitPt.xy/targetENU.xy before mapping
-                             // to the shadow grid's UV — see that field's comment for why.
-    float beamMaxRangeM;     // offset 160 — C12 follow-up #6: settings-tunable "how far around
+    // (cloudShadowRangeM at 148 and cloudShadowResidualM at 152 lived here — both existed only to
+    //  map hitPt.xy into cloud_shadow.comp's observer-centred grid, and to undo that grid's
+    //  texel-snapping. The grid is gone; the shadow now arrives in cloudTargetB.a, already
+    //  evaluated at this pixel's own terrain hit point. Every field below shifted down 12 bytes.)
+    float beamMaxRangeM;     // offset 148 — C12 follow-up #6: settings-tunable "how far around
                              // the observer do Reflect-Orbital beams render" cutoff, mirrors
                              // CloudMarchPC's own copy (same frame's value).
-    float beamSkyGlowGain;   // offset 164 — C12 follow-up #18: mirrors CloudMarchPC's own copy so
+    float beamSkyGlowGain;   // offset 152 — C12 follow-up #18: mirrors CloudMarchPC's own copy so
                              // the ground-spot term (this shader) and the sky glow march
                              // (cloud_march.comp) share one brightness control and read as one
                              // continuous effect instead of two independently-tuned pieces.
-    float beamGlowBleedGain; // offset 168 — C12 follow-up #39: moved here from CloudMarchPC — the
+    float beamGlowBleedGain; // offset 156 — C12 follow-up #39: moved here from CloudMarchPC — the
                              // near-field volumetric march/bleed in cloud_march.comp was removed
                              // entirely (didn't read as intended even after tuning, added real
                              // cost for no visible benefit); this same slider now drives the
                              // beam-driven sky-illumination wash added to this shader instead (see
                              // the beamGlowDome consumption near the city-glow composite).
-    float beamProximityGlow; // offset 172 — C12 follow-up #41: CPU-computed [0,1] "how close is
+    float beamProximityGlow; // offset 160 — C12 follow-up #41: CPU-computed [0,1] "how close is
                              // the observer to any active beam's actual line" value (see
                              // SatelliteSim::beamProximityGlow). Replaces the directional
                              // azimuth-sector dome lookup the wash used in #39/#40 — applied
                              // uniformly regardless of view direction.
-}; // total: 176 bytes
-static_assert(sizeof(SatDrawPC) == 176, "SatDrawPC layout mismatch");
+}; // total: 164 bytes
+static_assert(sizeof(SatDrawPC) == 164, "SatDrawPC layout mismatch");
 
 // ── Push constants for cloud_march.comp (half-res cloud compute pass, C15-perf) ──────────────
 // Matches the layout(push_constant) block in cloud_march.comp exactly. A separate struct from
@@ -328,28 +333,10 @@ struct CloudMarchPC
    // the freed offset for beamNearFieldFadeM.
 static_assert(sizeof(CloudMarchPC) == 156, "CloudMarchPC layout mismatch");
 
-// ── Push constants for cloud_shadow.comp (shared cloud-shadow primitive, C12) ────────────────
-// Fixed 128×128 dispatch, independent of screen resolution/camera — no skyView/fov/aspect needed.
-struct CloudShadowPC
-{
-    glm::vec3 sunDirENU;  float rangeM;     // offset 0/12 — ECEF derived in-shader from obsECEFDir,
-                                             // same convention as cloud_march.comp's own sunDirECEF
-    glm::vec3 obsECEFDir; float waveTime;   // offset 16/28
-    float cloudPhase;                       // offset 32
-    float pad0;                             // offset 36 — explicit, for the vec2 below (8-byte align)
-    glm::vec2 shadowResidualM;              // offset 40 — texel-snapping residual (meters), see
-                                             // SatelliteSim::computeCloudShadowSnap(). Grid center
-                                             // (uv=0) represents a texel-quantized world point, not
-                                             // the observer's exact continuously-moving position —
-                                             // this residual is the small (< 1 texel) gap between
-                                             // them, applied here and subtracted by every consumer
-                                             // (SatDrawPC's own copy) so a given world-space cloud
-                                             // feature maps to a STABLE texel except at whole-texel
-                                             // boundary crossings, instead of drifting sub-texel
-                                             // every frame as the observer moves — the direct fix
-                                             // for shadow "swimming"/flicker during camera motion.
-}; // total: 48 bytes
-static_assert(sizeof(CloudShadowPC) == 48, "CloudShadowPC layout mismatch");
+// (CloudShadowPC lived here — push constants for cloud_shadow.comp's 128x128 grid, including the
+//  shadowResidualM texel-snapping term that stopped shadows swimming as the observer moved. The
+//  whole pass is gone; the per-pixel replacement in cloud_march.comp needs no snapping because
+//  its value is a function of the world point being shaded, not of the camera's position.)
 
 // ── Push constants for beam_cloud_block.comp (C12 follow-up #33) ─────────────────────────────
 // No sun/observer fields needed — this pass evaluates a fixed set of ground targets in true
@@ -360,6 +347,25 @@ struct BeamCloudBlockPC
     float cloudPhase;
 }; // total: 8 bytes
 static_assert(sizeof(BeamCloudBlockPC) == 8, "BeamCloudBlockPC layout mismatch");
+
+// ── Push constants for scene_depth.comp (pipeline unification) ───────────────────────────────
+// Camera-only: this pass marches terrain, so it needs the view ray and the observer, nothing
+// about sun/moon/clouds. `aspect` is ALWAYS the true swapchain aspect (never a render-scaled
+// one) — that is what makes the resulting depth buffer well-defined for consumers rendering at a
+// different resolution than this pass.
+struct SceneDepthPC
+{
+    glm::mat4 skyView;         // offset 0  — ENU → camera space
+    float fovYRad;             // offset 64
+    float aspect;              // offset 68
+    uint32_t debugDisableMask; // offset 72 — bit 1 skips the terrain march; bit 1024 skips the
+                               //             whole pass (fills kNoSurfaceT = nothing occludes
+                               //             anything, reproducing pre-unification behaviour, so
+                               //             the entire architecture A/Bs from one checkbox)
+    float pad0;                // offset 76 — explicit, aligns the vec4 below to 16
+    glm::vec4 obsECEFDir;      // offset 80 — xyz = observer ECEF unit vector, w = height offset
+}; // total: 96 bytes
+static_assert(sizeof(SceneDepthPC) == 96, "SceneDepthPC layout mismatch");
 
 // Per-frame sky glow + lens flare data, written by sat_flare.comp each frame.
 //
@@ -939,10 +945,10 @@ private:
     // before buildUI/recordCompute run, so these hold the previous completed frame's
     // GPU time when buildUI reads them, and get refreshed for the following frame's
     // display at the top of recordCompute().
-    float gpuMsSmoothed[8] = {};     // beam cloud block, orbit compute, cloud march, cloud shadow
-                                      // map, flare compute, sky background draw, satellite+star
-                                      // draw, UI overlay — order fixed by VulkanContext's slot
-                                      // table; kPerfLabels[] and savePerfSnapshot() mirror it
+    float gpuMsSmoothed[8] = {};     // scene depth, beam cloud block, orbit compute, cloud march,
+                                      // flare compute, sky background draw, satellite+star draw,
+                                      // UI overlay — order fixed by VulkanContext's slot table;
+                                      // kPerfLabels[] and savePerfSnapshot() mirror it
     float gpuMsTotalSmoothed = 0.0f; // whole-frame GPU time
 
     // ── Perf knockout toggles (profiling-only; not persisted) ──────────────────
@@ -1093,25 +1099,27 @@ private:
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;
     VkPipelineLayout cloudMarchPipeLayout = VK_NULL_HANDLE;
     VkPipeline cloudMarchPipeline = VK_NULL_HANDLE;
-    // ── Shared cloud-shadow primitive (C12) ───────────────────────────────────
-    // Fixed 128×128 R16_SFLOAT grid, independent of screen resolution — NOT recreated in
-    // onResize. Written by cloud_shadow.comp; sampled by sat_sky.frag (binding 18) for both
-    // general cloud-shadow-on-ground and the Reflect-Orbital beam ground-spot term.
-    static constexpr int kCloudShadowGridRes = 128;
-    VkImage cloudShadowImg = VK_NULL_HANDLE;
-    VkDeviceMemory cloudShadowMem = VK_NULL_HANDLE;
-    VkImageView cloudShadowView = VK_NULL_HANDLE;
-    VkSampler cloudShadowSampler = VK_NULL_HANDLE;
-    VkDescriptorSetLayout cloudShadowDescLayout = VK_NULL_HANDLE;
-    VkDescriptorPool cloudShadowDescPool = VK_NULL_HANDLE;
-    VkDescriptorSet cloudShadowDescSet = VK_NULL_HANDLE;
-    VkPipelineLayout cloudShadowPipeLayout = VK_NULL_HANDLE;
-    VkPipeline cloudShadowPipeline = VK_NULL_HANDLE;
-    float cloudShadowRangeM = 80000.0f; // tangent-plane grid half-extent (settings-tunable, C12 step 6)
-    // Texel-snapping residual (meters) computed once per frame in recordCompute() (alongside
-    // CloudShadowPC) and reused by buildSatDrawPC() so both the grid-builder and every consumer
-    // agree on the same frame's snap — see CloudShadowPC::shadowResidualM's comment for why.
-    glm::vec2 cloudShadowResidualM{0.0f, 0.0f};
+    // ── Shared scene depth (pipeline unification) ─────────────────────────────
+    // Half ctx.swapExtent, R32_SFLOAT, written by scene_depth.comp at the very top of
+    // recordCompute. Holds the LINEAR distance in metres along each view ray to the first
+    // terrain/ocean surface, or kNoSurfaceT (1e30) for rays that reach space.
+    //
+    // Same sizing rule as cloudMarchTargetA/B — half of the SWAP extent, deliberately
+    // independent of renderScale — so cloud_march.comp reads it 1:1 with texelFetch on its own
+    // dispatch grid, while fragment consumers use gl_FragCoord.xy / pc.screenSizePx.
+    //
+    // R32, not R16: distances reach 3.6e6 m from LEO and half-float saturates at 65504. That
+    // overflow is exactly the bug this buffer retires (see tEnterCombined) — do not shrink it.
+    // Recreated in onResize alongside the cloud targets; see there for the descriptor patches.
+    VkImage sceneDepthImg = VK_NULL_HANDLE;
+    VkDeviceMemory sceneDepthMem = VK_NULL_HANDLE;
+    VkImageView sceneDepthView = VK_NULL_HANDLE;
+    VkSampler sceneDepthSampler = VK_NULL_HANDLE; // resolution-independent; created once
+    VkDescriptorSetLayout sceneDepthDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool sceneDepthDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet sceneDepthDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout sceneDepthPipeLayout = VK_NULL_HANDLE;
+    VkPipeline sceneDepthPipeline = VK_NULL_HANDLE;
     // ── Per-target beam cloud block (C12 follow-up #33) ───────────────────────
     // Own small descriptor set/pipeline, modeled on the cloud-shadow one just above but
     // deliberately NOT sharing its observer-centered grid — see beam_cloud_block.comp's header
@@ -1433,7 +1441,7 @@ private:
     bool hovFullscreen = false;
     bool hovSaveSnapshot = false;
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button
-    bool hovDebugToggle[10] = {};  // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch)
+    bool hovDebugToggle[11] = {};  // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch, scene depth pass)
     bool hovBeamDebugRaysToggle = false; // hover state for the "Show beam pointing rays" checkbox (C12 follow-up #12)
     bool hovPhotoMinus[9] = {};
     bool hovPhotoPlus[9] = {};
@@ -1472,9 +1480,9 @@ private:
     void createCloudMarchResources(VulkanContext &ctx);
     void createCloudMarchDescriptors(VulkanContext &ctx);
     void createCloudMarchPipeline(VulkanContext &ctx);
-    void createCloudShadowResources(VulkanContext &ctx);
-    void createCloudShadowDescriptors(VulkanContext &ctx);
-    void createCloudShadowPipeline(VulkanContext &ctx);
+    void createSceneDepthResources(VulkanContext &ctx);
+    void createSceneDepthDescriptors(VulkanContext &ctx);
+    void createSceneDepthPipeline(VulkanContext &ctx);
     void createBeamCloudBlockDescriptors(VulkanContext &ctx);
     void createBeamCloudBlockPipeline(VulkanContext &ctx);
     void createGlowResources(VulkanContext &ctx);

@@ -1,0 +1,148 @@
+#version 450
+
+// ── Shared scene-depth pass ───────────────────────────────────────────────────────────────────
+//
+// Writes, per half-resolution texel, the LINEAR distance in metres along that pixel's view ray to
+// the first terrain or ocean surface — or kNoSurfaceT when the ray reaches space. This is the one
+// buffer every later pass tests against, replacing a family of ad-hoc per-feature occlusion
+// mechanisms that each existed only because cloud_march.comp had no terrain data of its own:
+//
+//   * beamTerrainVisibility()  — a per-beam, per-pixel line-of-sight terrain march (8-32 samples
+//                                x 2 mip-0 fetches into the 21600x10800 DEM, inside a loop over
+//                                up to 2048 beams). By far the largest cost this pass removes.
+//   * tEnterCombined           — one shared "nearest entry distance" scalar fused across cirrus +
+//                                cloud + beam + aurora, so the four could never be occluded
+//                                independently. It was also stored in an RGBA16F alpha channel,
+//                                whose 65504 ceiling every near-horizon cloud entry overflowed.
+//   * tCloudOcclude            — only ever valid for >=90%-opaque cloud.
+//
+// Deliberately NOT a depth attachment: this is an R32_SFLOAT COLOUR image used as STORAGE|SAMPLED.
+// That keeps VulkanContext::imageBarrier (which hardcodes the colour aspect, 1 mip, 1 layer)
+// usable as-is, and sidesteps the depth-format blit portability problem that made the render-scale
+// path give up on depth entirely.
+//
+// R32, not R16: distances reach tCap = 3.6e6 m from LEO. Half-float saturates at 65504 — that is
+// exactly the bug this pass is retiring, so do not "optimise" the format down.
+//
+// Resolution is half of ctx.swapExtent and INDEPENDENT of renderScale, matching cloudMarchTargetA/B
+// byte for byte. That is what lets cloud_march.comp (which dispatches on the same grid) read this
+// with a plain texelFetch at its own gl_GlobalInvocationID — no UV math, no filtering, no
+// resampling error — while fragment consumers use gl_FragCoord.xy / pc.screenSizePx, the rule
+// that is already correct at every render scale.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(push_constant) uniform PC {
+    mat4  skyView;          // ENU → camera space                        — offset 0
+    float fovYRad;          //                                            — offset 64
+    float aspect;           // ALWAYS the true swapchain aspect           — offset 68
+    uint  debugDisableMask; // bit 1 = skip terrain, bit 1024 = skip pass — offset 72
+    float pad0;             //                                            — offset 76
+    vec4  obsECEFDir;       // xyz = observer ECEF unit vec, w = height   — offset 80
+} pc;
+
+layout(set = 0, binding = 0) uniform sampler2D earthElevTex;
+layout(set = 0, binding = 1) uniform sampler2D earthSpecTex;
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D sceneDepth;
+
+#include "common.glsl"
+#include "terrain.glsl"
+
+// Step budget. sat_sky.frag's full-res march targets a ~2800 m coarsest step over 64-164 steps;
+// this runs at half resolution and only needs to resolve the surface well enough to occlude
+// volumetrics and beams, not to shade it, so it targets twice the step length over half the
+// ceiling. The quadratic distribution below packs steps toward the observer, so the coarsest step
+// lands at the far end: dt ~ 2*(tExit-2)/kN.
+const float kDepthStepTargetM = 5600.0;
+const int   kDepthStepsMin    = 48;
+const int   kDepthStepsMax    = 96;
+
+void main() {
+    ivec2 size  = imageSize(sceneDepth);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    // Knockout: fill with "nothing anywhere". Every consumer's operation is min()/>= against this,
+    // so a uniform kNoSurfaceT reproduces the pre-unification behaviour (volumetrics and beams
+    // unoccluded by terrain) — making the whole architecture a single A/B checkbox.
+    if ((pc.debugDisableMask & 1024u) != 0u) {
+        imageStore(sceneDepth, coord, vec4(kNoSurfaceT));
+        return;
+    }
+
+    // Same view ray sat_sky.vert/frag build, evaluated directly at this texel instead of via
+    // vertex interpolation — identical affine transform, coarser sampling grid. pc.aspect is the
+    // true screen aspect at every render scale, so the ray direction is the same function of
+    // normalized screen UV everywhere; that is what makes this buffer well-defined for consumers
+    // rendering at a different resolution than this pass.
+    vec2 uv  = (vec2(coord) + 0.5) / vec2(size);
+    vec2 ndc = uv * 2.0 - 1.0;
+    float tanHalfFov = tan(pc.fovYRad * 0.5);
+    vec3  camDir = vec3(ndc.x * tanHalfFov * pc.aspect, -ndc.y * tanHalfFov, -1.0);
+    vec3  dir    = normalize(mat3(transpose(pc.skyView)) * camDir);
+
+    vec3 enuX, enuY, enuZ;
+    enuBasis(pc.obsECEFDir.xyz, enuX, enuY, enuZ);
+
+    // GPU-resolved observer height — the SAME shared helper sat_sky.frag and cloud_march.comp now
+    // use. They previously disagreed (one CPU value, one GPU lookup), which was harmless while
+    // each only compared against itself but is not once one produces distances the other consumes.
+    float obsEffH = observerEffHeight(earthElevTex, earthSpecTex, pc.obsECEFDir);
+    vec3  obsPos  = observerPos(obsEffH);
+
+    vec2 tBase  = raySphere(obsPos, dir, R_EARTH);
+    vec2 tShell = raySphere(obsPos, dir, R_EARTH + kMaxTerrain);
+
+    float tHit    = -1.0;
+    float tSeaLvl = (tBase.x > 0.0) ? tBase.x : -1.0;
+
+    // Terrain march. Mirrors sat_sky.frag's structure exactly (same gate, same tCap, same
+    // quadratic step distribution, same 12-step bisection) so the two agree on where the surface
+    // is; only the step budget differs. Note the >0.7 gate: above ~44 degrees elevation no terrain
+    // on Earth is geometrically reachable from any altitude.
+    if ((pc.debugDisableMask & 1u) == 0u && dir.z < 0.7 && tShell.y > 0.0) {
+        float tExit = (tBase.x > 0.0) ? tBase.x
+                    : (tShell.y > 0.0  ? tShell.y : 0.0);
+        float tCap  = mix(250000.0, 3600000.0, clamp(obsEffH / 400000.0, 0.0, 1.0));
+        tExit = min(tExit, tCap);
+
+        int kN = clamp(int(2.0 * (tExit - 2.0) / kDepthStepTargetM), kDepthStepsMin, kDepthStepsMax);
+
+        // No screen-space jitter here, deliberately. sat_sky.frag dithers its march start to trade
+        // banding for noise in a SHADED result; this buffer feeds occlusion tests, where per-texel
+        // jitter would turn a clean silhouette into a noisy one that shimmers under camera motion.
+        float tPrev = 2.0;
+        for (int i = 0; i < kN; ++i) {
+            if (tHit >= 0.0) break;
+            float frac = float(i) / float(kN);
+            float t    = 2.0 + (tExit - 2.0) * frac * frac;
+            if (t > tExit) break;
+            vec3  p    = obsPos + t * dir;
+            float rayH = length(p) - R_EARTH;
+            if (rayH <= 0.0) break;
+
+            vec3  pE       = p.x * enuX + p.y * enuY + p.z * enuZ;
+            float terrainH = terrainHeightAtUV(earthElevTex, earthSpecTex, posToUV(pE), 0.0);
+
+            if (rayH < terrainH) {
+                float tLo = tPrev, tHi = t;
+                for (int j = 0; j < 12; ++j) {
+                    float tM  = (tLo + tHi) * 0.5;
+                    vec3  pm  = obsPos + tM * dir;
+                    float mH  = length(pm) - R_EARTH;
+                    vec3  pmE = pm.x * enuX + pm.y * enuY + pm.z * enuZ;
+                    float mT  = terrainHeightAtUV(earthElevTex, earthSpecTex, posToUV(pmE), 0.0);
+                    if (mH < mT) tHi = tM; else tLo = tM;
+                }
+                tHit = (tLo + tHi) * 0.5;
+            }
+            tPrev = t;
+        }
+    }
+
+    // Same "effective surface distance" definition as sat_sky.frag's tSurface: terrain if the
+    // march found any, else the sea-level sphere. Converted to the large-finite sentinel so every
+    // consumer can use a branch-free min()/>= without its own "did we hit anything" guard.
+    float tSurface = (tHit > 0.0) ? tHit : tSeaLvl;
+    imageStore(sceneDepth, coord, vec4(tSurface > 0.0 ? tSurface : kNoSurfaceT));
+}

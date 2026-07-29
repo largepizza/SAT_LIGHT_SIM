@@ -34,6 +34,8 @@ layout(location = 0) out vec4 outColor;
 // awareness at all — this is the first time this pipeline reads cloud data.
 layout(set = 0, binding = 5) uniform sampler2D cloudTargetA; // a = tCloudOcclude (>=0 => >=90% opaque)
 layout(set = 0, binding = 6) uniform sampler2D cloudTargetB; // rgb = A_total (cloud transmittance)
+// Shared scene depth — see scene_depth.comp. Only read when renderScale < 1.0.
+layout(set = 0, binding = 7) uniform sampler2D sceneDepthTex;
 
 // Declares only the fields this shader reads, at their real SatDrawPC byte offsets — same
 // "prefix of the shared push-constant block" trick sat_point.vert already uses, just extended
@@ -48,7 +50,7 @@ layout(push_constant) uniform PC {
     vec4  moonDirENU;       // offset 96
     vec4  obsECEFDir;       // offset 112
     uint  debugDisableMask; // offset 128 — unused here
-    float pad0;             // offset 132
+    float sceneDepthMode;   // offset 132 — 1.0 only when renderScale < 1.0 (no hardware depth)
     vec2  screenSizePx;     // offset 136 — the only field this shader actually needs
 } pc;
 
@@ -77,6 +79,24 @@ void main() {
     float d = length(c);
 
     if (d > 0.5) discard;
+
+    // Terrain occlusion when the hardware depth buffer isn't available. At renderScale < 1.0 the
+    // background is rendered offscreen and blitted in, so nothing ever writes depth and these
+    // points would otherwise draw straight through mountains — the documented tradeoff of that
+    // feature, now closed.
+    //
+    // The kOcclusionCap comparison reproduces the hardware-depth rule EXACTLY rather than asking
+    // the more obvious "is there any surface at all". sat_sky.frag only writes a near depth value
+    // when tOcclude < 150000, so at full resolution a point survives terrain that is farther than
+    // that. Testing "any surface" here would newly hide satellites seen against the Earth from
+    // orbit, where the ground is 150-3600 km away but the satellite may be much nearer. Getting
+    // that right properly needs the satellite's own slant range, which GpuSatVisible has no room
+    // for — so match the existing behaviour instead of inventing a different one.
+    if (pc.sceneDepthMode > 0.5) {
+        const float kOcclusionCap = 150000.0;
+        float tScene = texture(sceneDepthTex, cloudUV).r;
+        if (tScene < kOcclusionCap) cloudVis = 0.0;
+    }
 
     // ── Inner core: tight pinpoint, log-compressed brightness ─────────────────
     // sigmaInner = 0.045 (relative): 4.5% of sprite half-width.
