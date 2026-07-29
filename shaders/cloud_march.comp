@@ -186,29 +186,27 @@ layout(std430, set = 0, binding = 10) readonly buffer ReflectBeamsBuf {
 layout(set = 0, binding = 11) uniform sampler2D earthElevTex;
 layout(set = 0, binding = 12) uniform sampler2D earthSpecTex;
 
-const float PI = 3.14159265359;
-const float R_EARTH = 6371000.0;
-const float R_ATMOS = 6471000.0;
+// PI, R_EARTH, R_ATMOS, BETA_R/H_R, BETA_M/H_M/G_MIE, SUN_INTENSITY, kCloudHorizFreq/kCloudColFreq,
+// raySphere, rotateZ, remap, phaseM/phaseCloud and the scene-depth sentinels come from the shared
+// header. terrain.glsl supplies the DEM decode and observer-frame helpers — kElevRangeBeam /
+// kElevOffsetBeam were a local re-declaration of exactly kElevRange / kElevOffset.
+#include "common.glsl"
+#include "terrain.glsl"
 
-const float kElevRangeBeam  = 9000.0;
-const float kElevOffsetBeam = 15.0 / 255.0 * kElevRangeBeam;
-
-// Terrain height (meters above sea level) at a given ECEF-frame direction, via the same
-// lat/lon->UV mapping cloudMarchCS's cloud-coverage lookup already uses (~line 786-792 below —
-// atan2 longitude, asin latitude, [0,1] UV). Ocean/no-data pixels decode to 0 (sea level).
+// Terrain height (m above sea level) at an ECEF-frame direction. Thin wrapper binding this
+// shader's own earthElevTex/earthSpecTex to the shared decode, so the caller below is unchanged.
+//
+// Was a full local copy until the unification pass, carrying its own kElevRangeBeam/
+// kElevOffsetBeam re-declarations of kElevRange/kElevOffset. It also fract()'d the U coordinate,
+// which the shared dirToUV does not — a no-op in practice, since atan2 returns [-PI,PI] so
+// (lon+PI)/(2*PI) is already in [0,1] and only the exact-1.0 endpoint differs.
+//
+// Mip 0.0 is deliberate (C12 follow-up #42): this used to sample mip 2.0 while sat_sky.frag's
+// terrain march/bisection/normals all sampled mip 0.0 — an undocumented precision mismatch that
+// let beams clip through hills the occlusion test could not "see". Sharing the decode is what
+// stops that class of mismatch recurring.
 float terrainHeightAtDir(vec3 dirECEF) {
-    float tLon = atan(dirECEF.y, dirECEF.x);
-    float tLat = asin(clamp(dirECEF.z, -1.0, 1.0));
-    vec2  tUV  = vec2(fract((tLon + PI) / (2.0 * PI)), (0.5 * PI - tLat) / PI);
-    // C12 follow-up #42: was mip 2.0 — a real, undocumented precision mismatch against
-    // sat_sky.frag's own terrain march/bisection/normals, which all sample these same textures
-    // at mip 0.0. Reading a blurrier elevation here than what's actually drawn let beams clip
-    // through real hills the occlusion test couldn't "see," or get needlessly dimmed by a mip-2
-    // bump that doesn't exist in the mip-0 terrain the camera renders.
-    float spec = textureLod(earthSpecTex, tUV, 0.0).r;
-    if (spec > 0.5) return 0.0; // ocean/water mask — sea level
-    float pixel = textureLod(earthElevTex, tUV, 0.0).r;
-    return max(0.0, pixel * kElevRangeBeam - kElevOffsetBeam);
+    return terrainHeightAtDir(earthElevTex, earthSpecTex, dirECEF);
 }
 
 // C12 follow-up #28 — per-beam terrain occlusion for the Reflect-Orbital beam glow (see call site
@@ -256,8 +254,7 @@ float beamTerrainVisibility(vec3 obsPos, vec3 p, vec3 enuX, vec3 enuY, vec3 enuZ
     return smoothstep(-kOcclusionFeatherM, kOcclusionFeatherM, minMargin);
 }
 
-const float kCloudHorizFreq = 480.0;
-const float kCloudColFreq   = 80.0;
+// (kCloudHorizFreq / kCloudColFreq come from common.glsl.)
 
 const float kWarpFreq       = 6.0;
 const float kWarpStrength   = 32.0;
@@ -319,14 +316,14 @@ const float kGrazeShadowFullSin = 0.3;
 // below) so it stays controllable after skyAmbientBase itself has collapsed near zero post-sunset.
 const vec3  kNightSkyAmbientColor = vec3(0.015, 0.02, 0.035);
 
-const vec3  BETA_R = vec3(5.8e-6, 13.5e-6, 33.1e-6);
-const float H_R    = 7994.0;
-const float BETA_M = 2.1e-5;
-const float H_M    = 12.0;
-const float G_MIE  = 0.26;
+// (BETA_R/H_R, BETA_M/H_M/G_MIE and SUN_INTENSITY come from common.glsl.)
 
-const float SUN_INTENSITY = 1.0;
-
+// NOTE — this is a REAL drift against sat_sky.frag, kept deliberately for now.
+// sat_sky.frag's optDepth reads `cloud.lightSamples` (the "Light samples" settings slider); this
+// one is hardcoded, so the slider has never affected cloud/cirrus/aurora sun lighting at all.
+// Step 6 of the unification pass gives the shared optDepth an explicit nLight parameter with each
+// caller passing what it passes today, so the drift becomes visible and unifying the VALUE stays
+// a separate, opt-in decision rather than a silent side effect of de-duplication.
 const int N_LIGHT = 12;
 
 const float kCirrusWindWarpFreq  = 1.5;
@@ -336,35 +333,11 @@ const float kCirrusWindDriftRate = 0.05;
 const float kCirrusThicknessM = 700.0;
 const float kCirrusFreqScale  = 0.4;
 
-// ── Duplicated shared helpers (also present in sat_sky.frag — keep in sync) ───
+// (phaseM / phaseCloud are in common.glsl. The "── Duplicated shared helpers, keep in sync ──"
+// section that used to live here is gone along with the duplication it was warning about.)
 
-float phaseM(float cosA) {
-    float g2  = G_MIE * G_MIE;
-    float den = pow(max(1e-4, 1.0 + g2 - 2.0 * G_MIE * cosA), 1.5);
-    return 1.5 * ((1.0 - g2) / (2.0 + g2)) * (1.0 + cosA * cosA) / den;
-}
-
-float phaseCloud(float cosA) {
-    const float gF = 0.3, gB = -0.1;
-    float g2f = gF * gF, g2b = gB * gB;
-    float fwd = 1.5 * ((1.0 - g2f) / (2.0 + g2f)) * (1.0 + cosA * cosA)
-                / pow(max(1e-4, 1.0 + g2f - 2.0 * gF * cosA), 1.5);
-    float bwd = 1.5 * ((1.0 - g2b) / (2.0 + g2b)) * (1.0 + cosA * cosA)
-                / pow(max(1e-4, 1.0 + g2b - 2.0 * gB * cosA), 1.5);
-    return mix(fwd, bwd, 0.3);
-}
-
-// c computed as (|ro|-r)*(|ro|+r), not dot(ro,ro)-r*r — see sat_sky.frag's raySphere comment
-// for why (catastrophic cancellation at R_EARTH scale). Keep both copies in sync.
-vec2 raySphere(vec3 ro, vec3 rd, float r) {
-    float b     = dot(ro, rd);
-    float roLen = length(ro);
-    float c     = (roLen - r) * (roLen + r);
-    float d     = b * b - c;
-    if (d < 0.0) return vec2(-1.0);
-    float sq = sqrt(d);
-    return vec2(-b - sq, -b + sq);
-}
+// (raySphere is in common.glsl — one copy now, so the "keep both copies in sync" note this
+// comment used to carry no longer applies.)
 
 vec2 optDepth(vec3 p, vec3 d, float segTotal) {
     float sLen = segTotal / float(N_LIGHT);
@@ -377,14 +350,7 @@ vec2 optDepth(vec3 p, vec3 d, float segTotal) {
     return vec2(odR, odM) * sLen;
 }
 
-vec3 rotateZ(vec3 v, float theta) {
-    float c = cos(theta), s = sin(theta);
-    return vec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
-}
-
-float remap(float v, float lo, float hi, float newLo, float newHi) {
-    return newLo + clamp((v - lo) / (hi - lo), 0.0, 1.0) * (newHi - newLo);
-}
+// (rotateZ and remap are in common.glsl.)
 
 uvec3 warpHashU(uvec3 v) {
     v = v * 1664525u + 1013904223u;

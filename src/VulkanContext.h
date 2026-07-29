@@ -72,11 +72,25 @@ struct VulkanContext {
     // Single frame in flight, so it's safe to resolve the previous frame's
     // query results right after the fence wait in App::drawFrame, before the
     // command buffer is reset and re-recorded for the new frame. Slot layout
-    // is a shared contract between App.cpp (writes 0, 6, 7) and SatelliteSim
-    // (writes 1, 2, 3, 4 in recordCompute; 5 in recordDraw) — see comments there.
-    // Slot 2 (cloud_shadow.comp, C12) was inserted after slot 1 (cloud march) — every
-    // downstream slot shifted by one when it was added.
-    static constexpr uint32_t kTimestampCount = 8;
+    // is a shared contract between App.cpp (writes 0, 7, 8) and SatelliteSim
+    // (writes 1-5 in recordCompute; 6 in recordPrePass XOR recordDraw).
+    //
+    // Authoritative slot layout (keep in sync with SatelliteSim::updateGpuTimingStats,
+    // kPerfLabels[] in SatelliteSimUI.cpp, and the JSON keys in savePerfSnapshot):
+    //   0 frame start                 App.cpp
+    //   1 beam_cloud_block.comp done  SatelliteSim::recordCompute
+    //   2 sat_orbit.comp done         SatelliteSim::recordCompute
+    //   3 cloud_march.comp done       SatelliteSim::recordCompute
+    //   4 cloud_shadow.comp done      SatelliteSim::recordCompute
+    //   5 sat_flare.comp done         SatelliteSim::recordCompute
+    //   6 sky background draw done    SatelliteSim::recordPrePass XOR ::recordDraw
+    //   7 satellite + star draw done  App.cpp
+    //   8 UI overlay done             App.cpp
+    //
+    // History: slot 4 (cloud_shadow.comp, C12) was inserted after cloud march; slot 1
+    // (beam_cloud_block.comp) was added later — its cost had until then been folded
+    // silently into the orbit-compute bucket. Every downstream slot shifted each time.
+    static constexpr uint32_t kTimestampCount = 9;
     VkQueryPool queryPool         = VK_NULL_HANDLE;
     double      timestampPeriodNs = 0.0;   // ns/tick, from device limits; 0 = unsupported
     bool        timestampsReady   = false; // false until one full frame has been resolved

@@ -265,34 +265,32 @@ void SatelliteSim::onResize(VulkanContext &ctx)
 
 // ─── recordCompute ────────────────────────────────────────────────────────────
 // Reads ctx.timestampMs (resolved by App::drawFrame right after this frame's fence wait,
-// i.e. before this call — see VulkanContext::resolveTimestamps) and EMA-smooths the seven
-// pass-duration buckets into gpuMsSmoothed[]. Slot layout: 0=frame start (App), 1=cloud
-// march done (below), 2=cloud shadow map done (below, C12), 3=orbit compute done (below),
-// 4=flare compute done (below), 5=sky background draw done (recordDraw), 6=satellite+star
-// draw done (App, after sim->recordDraw), 7=UI overlay done (App, after ui.record).
+// i.e. before this call — see VulkanContext::resolveTimestamps) and EMA-smooths the eight
+// pass-duration buckets into gpuMsSmoothed[].  VulkanContext::kTimestampCount carries the
+// authoritative slot table; this function, kPerfLabels[] in SatelliteSimUI.cpp, and the JSON
+// keys in savePerfSnapshot() must all stay in sync with it and with each other.
 void SatelliteSim::updateGpuTimingStats(VulkanContext &ctx)
 {
     if (!ctx.timestampsReady)
         return;
     const double *t = ctx.timestampMs;
-    // Slot order changed (C12 follow-up #22): sat_orbit.comp now dispatches BEFORE cloud_march.comp
-    // (was after), so its beam data is fresh THIS frame instead of one frame stale — see the
-    // dispatch-order comment in recordCompute(). Slot NUMBERS are unchanged (1-4), just reassigned
-    // to different GPU work; keep this order in sync with kPerfLabels[] in SatelliteSimUI.cpp and
-    // the JSON keys in savePerfSnapshot() if it ever changes again.
-    float raw[7] = {
-        (float)(t[1] - t[0]), // orbit compute
-        (float)(t[2] - t[1]), // cloud march compute
-        (float)(t[3] - t[2]), // cloud shadow map compute (C12)
-        (float)(t[4] - t[3]), // flare compute
-        (float)(t[5] - t[4]), // sky/terrain/ocean bg + cloud composite fragment shader
-        (float)(t[6] - t[5]), // satellite points + star draw
-        (float)(t[7] - t[6]), // UI overlay
+    // Slot 1 (beam_cloud_block.comp) was added in the pipeline-unification pass. Before that its
+    // cost was folded silently into the orbit-compute bucket, which is why that bucket had always
+    // read as a suspiciously flat 0.37-0.59 ms regardless of how much beam work was active.
+    float raw[8] = {
+        (float)(t[1] - t[0]), // beam cloud block compute (C12 follow-up #33)
+        (float)(t[2] - t[1]), // orbit compute
+        (float)(t[3] - t[2]), // cloud march compute
+        (float)(t[4] - t[3]), // cloud shadow map compute (C12)
+        (float)(t[5] - t[4]), // flare compute
+        (float)(t[6] - t[5]), // sky/terrain/ocean bg + cloud composite fragment shader
+        (float)(t[7] - t[6]), // satellite points + star draw
+        (float)(t[8] - t[7]), // UI overlay
     };
     const float kAlpha = 0.1f; // low-pass so the HUD numbers don't flicker frame to frame
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < 8; ++i)
         gpuMsSmoothed[i] = glm::mix(gpuMsSmoothed[i], raw[i], kAlpha);
-    gpuMsTotalSmoothed = glm::mix(gpuMsTotalSmoothed, (float)(t[7] - t[0]), kAlpha);
+    gpuMsTotalSmoothed = glm::mix(gpuMsTotalSmoothed, (float)(t[8] - t[0]), kAlpha);
 }
 
 void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
@@ -701,6 +699,11 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // Must run BEFORE sat_orbit.comp below, which reads beamCloudBlockBuf while writing beams.
     // 201 targets, no per-frame zero-fill needed (every thread owns and fully overwrites its own
     // index, no atomics — see the buffer's own member comment).
+    //
+    // Knockout bit 512 skips the dispatch itself (not just its consumers — bit 128 does that).
+    // Skipping leaves beamCloudBlockBuf holding the previous frame's values rather than garbage,
+    // since every thread fully overwrites its own slot; same convention as bit 256/cloud_shadow.
+    if ((debugDisableMask & 512u) == 0u)
     {
         BeamCloudBlockPC bpc{};
         bpc.waveTime = (float)(simSecInDay * 1.0);
@@ -727,6 +730,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 0, nullptr, 1, &bmb, 0, nullptr);
     }
+    // Written unconditionally, including on the knockout-skipped path — the bucket then reads ~0,
+    // which is exactly the measurement the knockout is there to produce.
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, orbitPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -784,7 +790,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              0, 0, nullptr, 1, &bmb, 0, nullptr);
     }
-    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
 
     // ── Dispatch: cloud_march.comp — half-resolution cloud/cirrus march (C15-perf) ──────────
     // Runs at half ctx.swapExtent, writing cloudMarchTargetA/B; sat_sky.frag samples them
@@ -845,7 +851,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                          VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
-    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 3);
 
     // ── Dispatch: cloud_shadow.comp — shared cloud-transmittance primitive (C12) ────────────
     // Fixed 128×128 grid, independent of screen resolution/activeSatCount — always runs, even
@@ -899,18 +905,18 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                          VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
-    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 3);
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 4);
 
     if (activeSatCount == 0)
     {
         // sat_flare.comp below is skipped this frame — write the same timestamp into its slot so
         // updateGpuTimingStats() sees a zero-duration bucket next frame instead of stale or
-        // unavailable query data. sat_orbit.comp/cloud_march.comp/cloud_shadow.comp above already
+        // unavailable query data. beam_cloud_block/sat_orbit/cloud_march/cloud_shadow above already
         // ran unconditionally this frame (sat_orbit.comp with 0 satellite workgroups when
         // applicable — a legal no-op dispatch) and got their own real timestamps, so only the
         // flare slot needs a placeholder here. See C12 follow-up #22 for why sat_orbit.comp now
         // runs before this check at all (it used to run after it, alongside flare).
-        ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 4);
+        ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
         return;
     }
 
@@ -985,7 +991,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         pickRegion.size = sizeof(GpuSatVisible);
         vkCmdCopyBuffer(cmd, satVisibleBuf, pickedVisibleBuf, 1, &pickRegion);
     }
-    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 4);
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
 }
 
 // ─── projectSkyDirToScreen ────────────────────────────────────────────────────
@@ -1180,7 +1186,7 @@ void SatelliteSim::recordPrePass(VkCommandBuffer cmd, VulkanContext &ctx, float 
     vkCmdEndRenderPass(cmd); // finalLayout=TRANSFER_SRC_OPTIMAL — ready for the blit below, no extra barrier
     // Moved here from recordDraw's Pass 1 (same meaning: sky/terrain/ocean/cloud-composite
     // shader's own cost) — this is now the only place that timestamp gets written when scaled.
-    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 6);
 
     // ── Blit (linear-filtered upscale) into the swapchain image ──────────────────────────────
     // UNDEFINED oldLayout: we're about to overwrite the whole image via blit, so previous
@@ -1227,7 +1233,7 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         // Isolates the sky/terrain/ocean/cloud-composite fragment shader's own cost from the
         // satellite + star point draws that follow (previously all three were lumped into one
         // timestamp bucket in App.cpp — see VulkanContext::kTimestampCount).
-        ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
+        ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 6);
     }
 
     // ── Pass 2: satellite points (additive blending) ──────────────────────────

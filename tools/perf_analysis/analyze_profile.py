@@ -32,6 +32,14 @@ GPU_COL_RENAME = {
     "gpu_timing_ms.cloud_march": "cloud_march",
     "gpu_timing_ms.orbit_compute": "orbit_compute",
     "gpu_timing_ms.flare_compute": "flare_compute",
+    # Added alongside cloud_shadow.comp (session 32). Snapshots older than that have no
+    # such key; without this mapping the bucket was silently dropped from every report.
+    "gpu_timing_ms.cloud_shadow_map": "cloud_shadow_map",
+    # Added in the pipeline-unification pass. Before it existed, beam_cloud_block.comp's
+    # cost was folded into orbit_compute - so orbit_compute is NOT comparable across the
+    # boundary where this key appears. Treat a jump down in orbit_compute at that point as
+    # the split landing, not as a real optimisation.
+    "gpu_timing_ms.beam_cloud_block": "beam_cloud_block",
     # Pre-split legacy bucket (recordDraw's sky bg + satellite points + stars fused into
     # one timestamp) - present only in snapshots captured before the sky/satellite draw
     # split. Kept as its own column rather than merged into sky_background_draw so the
@@ -56,7 +64,8 @@ def load(path: Path) -> pd.DataFrame:
 
 def add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.rename(columns=GPU_COL_RENAME)
-    for col in ("sky_background_draw", "satellite_star_draw", "sky_terrain_draw_legacy", "debug_disable_mask"):
+    for col in ("sky_background_draw", "satellite_star_draw", "sky_terrain_draw_legacy",
+                "cloud_shadow_map", "beam_cloud_block", "debug_disable_mask"):
         if col not in df.columns:
             df[col] = float("nan")
 
@@ -83,7 +92,9 @@ def add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
 def print_resolution_breakdown(df: pd.DataFrame) -> None:
     print("\n=== GPU pass cost by resolution (ms) ===")
     grp = df.groupby(["resolution.width", "resolution.height"])
-    cols = ["cloud_march", "sky_terrain_draw", "orbit_compute", "flare_compute", "ui_overlay", "gpu_total"]
+    cols = ["cloud_march", "sky_terrain_draw", "cloud_shadow_map", "beam_cloud_block",
+            "orbit_compute", "flare_compute", "ui_overlay", "gpu_total"]
+    cols = [c for c in cols if df[c].notna().any()]
     print(grp[cols].agg(["mean", "std", "count"]).round(2).to_string())
 
     print("\n=== Per-megapixel cost (ms/Mpx) - flat across rows = purely resolution-bound ===")
@@ -129,43 +140,114 @@ KNOCKOUT_BIT_NAMES = {
     8: "ocean sky reflection",
     16: "airglow red (16-step march)",
     32: "aurora curtain march",
+    64: "cloud self-shadow cone",
+    128: "Reflect-Orbital beams",
+    256: "cloud shadow map (dispatch)",
+    512: "beam cloud block (dispatch)",
 }
+
+# Which GPU bucket each knockout actually affects. The consumer-side bits all live inside
+# the sky fragment shader; the two producer-side bits skip a whole compute dispatch, so their
+# cost shows up in that dispatch's own bucket and NOT in sky_background_draw at all. Reporting
+# every bit against sky_background_draw (as this script used to) makes the producer bits look
+# free even when they aren't.
+KNOCKOUT_BIT_BUCKET = {
+    64: "cloud_march",
+    128: "cloud_march",   # the volumetric tube term dominates; the ground-spot term is in sky bg
+    256: "cloud_shadow_map",
+    512: "beam_cloud_block",
+}
+
+# A snapshot pair is only comparable if it was captured at effectively the same viewpoint.
+# These are the tolerances for "same site" clustering; the time gap dominates in practice
+# because toggles are swept in quick succession at one spot.
+CLUSTER_MAX_GAP_S = 900.0     # 15 min without a snapshot starts a new cluster
+CLUSTER_LATLON_TOL = 0.5      # degrees
+CLUSTER_ALT_REL_TOL = 0.25    # 25% change in observer altitude
+CLUSTER_EL_TOL = 15.0         # degrees of camera elevation
+
+
+def assign_clusters(df: pd.DataFrame) -> pd.DataFrame:
+    """Group snapshots into comparable 'same site, same sitting' clusters.
+
+    Without this, comparing a toggle's global mean against the global mask=0 mean conflates
+    "this toggle was disabled" with "these snapshots were taken somewhere else entirely".
+    On the existing dataset that produced *negative* isolated costs for every toggle - the
+    baseline happened to be captured at a much cheaper viewpoint than the toggled samples.
+    """
+    df = df.sort_values("captured_at_unix").copy()
+    lat = df["observer.lat_deg"]
+    lon = df["observer.lon_deg"]
+    alt = df["observer.height_offset_m"]
+    el = df["camera.el_deg"]
+
+    gap = df["captured_at_unix"].diff() > CLUSTER_MAX_GAP_S
+    moved = (lat.diff().abs() > CLUSTER_LATLON_TOL) | (lon.diff().abs() > CLUSTER_LATLON_TOL)
+    climbed = (alt.diff().abs() / (alt.shift().abs() + 1000.0)) > CLUSTER_ALT_REL_TOL
+    turned = el.diff().abs() > CLUSTER_EL_TOL
+
+    df["cluster"] = (gap | moved | climbed | turned).fillna(True).cumsum()
+    return df
 
 
 def print_knockout_summary(df: pd.DataFrame) -> None:
     # Reads debug_disable_mask snapshots captured via the Display tab's knockout checkboxes.
-    # Compares each single-toggle-disabled mean against the mask=0 baseline to report that
-    # block's isolated GPU cost directly - the in-app alternative to a GPU capture tool.
+    # Compares each single-toggle-disabled sample against the mask=0 baseline FROM THE SAME
+    # CLUSTER - the in-app alternative to a GPU capture tool. See assign_clusters() for why
+    # a global mean is not good enough.
     known = df[df["debug_disable_mask"].notna()].copy()
     if known.empty:
         print("\n=== Knockout toggle summary ===\nNo snapshots with knockout toggles captured yet.")
         return
     known["debug_disable_mask"] = known["debug_disable_mask"].astype(int)
-    baseline = known[known["debug_disable_mask"] == 0]
-    if baseline.empty:
-        print("\n=== Knockout toggle summary ===\nNo baseline (all toggles off) snapshots yet - can't compute deltas.")
-        return
-    baseline_sky = baseline["sky_background_draw"].mean()
-    baseline_total = baseline["gpu_total"].mean()
-    print(f"\n=== Knockout toggle summary (baseline sky_background_draw = {baseline_sky:.2f} ms, gpu_total = {baseline_total:.2f} ms, n={len(baseline)}) ===")
+    known = assign_clusters(known)
+
     rows = []
-    for bit, name in KNOCKOUT_BIT_NAMES.items():
-        sub = known[known["debug_disable_mask"] == bit]
-        if sub.empty:
+    skipped_clusters = 0
+    for cid, cl in known.groupby("cluster"):
+        base = cl[cl["debug_disable_mask"] == 0]
+        if base.empty:
+            skipped_clusters += 1
             continue
-        sky_mean = sub["sky_background_draw"].mean()
-        rows.append({
-            "toggle": name,
-            "n": len(sub),
-            "sky_bg_with_toggle_ms": round(sky_mean, 2),
-            "isolated_cost_ms": round(baseline_sky - sky_mean, 2),
-            "pct_of_sky_bg": round(100 * (baseline_sky - sky_mean) / baseline_sky, 1) if baseline_sky else float("nan"),
-        })
-    if rows:
-        print(pd.DataFrame(rows).set_index("toggle").to_string())
-    else:
-        print("No single-toggle snapshots found (only baseline and/or combined masks).")
-        print("Capture one snapshot per individual toggle (with the others off) for a clean readout.")
+        for bit, name in KNOCKOUT_BIT_NAMES.items():
+            sub = cl[cl["debug_disable_mask"] == bit]
+            if sub.empty:
+                continue
+            bucket = KNOCKOUT_BIT_BUCKET.get(bit, "sky_background_draw")
+            if bucket not in cl.columns or base[bucket].isna().all():
+                continue
+            base_ms = base[bucket].mean()
+            off_ms = sub[bucket].mean()
+            rows.append({
+                "toggle": name,
+                "bucket": bucket,
+                "cluster": int(cid),
+                "alt_m": int(base["observer.height_offset_m"].mean()),
+                "baseline_ms": round(base_ms, 2),
+                "with_toggle_ms": round(off_ms, 2),
+                "isolated_cost_ms": round(base_ms - off_ms, 2),
+                "pct_of_bucket": round(100 * (base_ms - off_ms) / base_ms, 1) if base_ms else float("nan"),
+                "fps_delta": round(sub["cpu_frame.fps"].mean() - base["cpu_frame.fps"].mean(), 1),
+            })
+
+    print("\n=== Knockout toggle summary (per matched cluster: same site, same sitting) ===")
+    if not rows:
+        print("No cluster contains both a mask=0 baseline and a single-toggle snapshot.")
+        print("Capture the baseline AND each individual toggle without moving the camera between them.")
+        return
+    out = pd.DataFrame(rows).sort_values(["toggle", "cluster"])
+    print(out.set_index(["toggle", "cluster"]).to_string())
+
+    print("\n--- Mean isolated cost across clusters (only clusters with a matched baseline) ---")
+    agg = out.groupby(["toggle", "bucket"]).agg(
+        clusters=("cluster", "nunique"),
+        isolated_cost_ms=("isolated_cost_ms", "mean"),
+        pct_of_bucket=("pct_of_bucket", "mean"),
+        fps_delta=("fps_delta", "mean"),
+    ).round(2)
+    print(agg.to_string())
+    if skipped_clusters:
+        print(f"\n({skipped_clusters} cluster(s) skipped - toggled snapshots with no mask=0 baseline captured alongside.)")
 
 
 def print_correlations(df: pd.DataFrame) -> None:

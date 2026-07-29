@@ -239,11 +239,11 @@ layout(std430, set = 0, binding = 19) readonly buffer BeamGlowDomeBuf {
 
 layout(location = 0) out vec4 outColor;
 
-const float PI = 3.14159265359;
-
-// ── Atmosphere geometry (meters) ───────────────────────────────────────────────
-const float R_EARTH = 6371000.0;
-const float R_ATMOS = 6471000.0;   // 100 km above surface
+// PI, R_EARTH, R_ATMOS, BETA_R/H_R, BETA_M/H_M/G_MIE, SUN_INTENSITY, kCloudHorizFreq/kCloudColFreq,
+// raySphere, rotateZ, remap, phaseR/phaseM/phaseCloud and the scene-depth sentinels all live in
+// the shared header now. terrain.glsl brings the DEM decode + observer-frame helpers.
+#include "common.glsl"
+#include "terrain.glsl"
 
 // ── Cloud noise domain frequencies ─────────────────────────────────────────────
 // Cloud procedural noise (cloudNoiseTex) is sampled by TRUE 3D unit-sphere position
@@ -256,46 +256,15 @@ const float R_ATMOS = 6471000.0;   // 100 km above surface
 // given lat/lon), so cloud "presence" shape naturally has no unwanted Z-sweep with no hack
 // needed. Frequencies are ~(old UV-space tile count)/(2*PI), since dirECEF isn't normalized
 // to a 0-1 globe fraction the way pUV was — retune visually, these are starting points.
-const float kCloudHorizFreq = 480.0;   // ~13 km detail features (was kHorizTiles=3000 in pUV space)
-const float kCloudColFreq   = 80.0;    // ~20 km cloud-system footprints (was kColTiles=500)
+// (kCloudHorizFreq / kCloudColFreq are defined in common.glsl — same values, same rationale.)
 
-// ── Domain warp: breaks single-frequency tiling + gives weather-system curviness ──────────
-// The 192³ baked noise volume is reused at ONE fixed frequency (kCloudHorizFreq/kCloudColFreq)
-// across the ENTIRE globe. From ground level you never see enough footprint at once to notice
-// the repeat, but from LEO the same tile period becomes an obvious repeating pattern. Standard
-// fix (Inigo Quilez's domain-warping technique): offset the sampling coordinate by a second,
-// much LOWER-frequency noise field before the main frequency multiply. This also naturally
-// gives cloud systems a swept/curved silhouette instead of the raw round Worley-cell blob
-// shape — closer to how real weather systems look, without needing true curl noise.
-// The warp field's own sample coordinate is advected by cloudPhase, so it slowly drifts over
-// time — this is what gives the 3D noise itself genuine flow, not just the existing 2D
-// coverage-map UV slide (cloudPhase*driftMult elsewhere), which only reveals/hides a STATIC 3D
-// volume and never displaces the volume's own internal structure.
-const float kWarpFreq      = 6;    // low relative to kCloudColFreq=80 — large-scale sweep only
-// kWarpStrength UNITS FIXED: this used to be a dirECEF-space offset applied BEFORE the
-// kCloudHorizFreq(480)/kCloudColFreq(80) multiply, which silently amplified it by whichever
-// frequency it fed into — at the old semantics, strength=0.3 shifted the fine-detail sample by
-// up to 0.3*480=144 texels, 75% of the entire 192-texel tile, tearing across the texture's own
-// REPEAT period (the reported seams/grid artifacts, worse at higher strength because the
-// amplification is linear in it). Now cloudWarpOffset() returns a UVW-TEXEL-space offset
-// applied AFTER the frequency multiply instead, so this value means "texels of displacement,"
-// identical at every target frequency, with no hidden amplification. Old dirECEF-space tuning
-// does not carry over 1:1 — retune from scratch; ~8-16 is a reasonable starting range.
-const float kWarpStrength  = 32.0;
-const float kWarpDriftRate = 0.08;   // independent multiplier on cloudPhase for the warp field's
-                                      // own drift speed, separate from the coverage map's rate
-const float kWarpEvolveRate = 0.00002; // pc.waveTime (wall-clock sec) multiplier — the actual
-                                      // visible boiling rate; see windOfs comment in
-                                      // cloudWarpOffset for why cloudPhase alone was too slow
-
-// City upwelling baseline scale — see comment at its use site (cloudMarch, cityUp) for why the
-// old code (cloud.ambientGain alone, default 0.02) was effectively invisible. This constant
-// gives it a real baseline; cloud.ambientGain still scales it further from the settings UI.
-// NOTE: 50.0 blew out to solid white — this contribution accumulates across every march sample
-// with hNorm<0.45 along a column (potentially dozens for a thick cloud), not just once, so the
-// per-sample value compounds a lot more than a single-sample estimate suggests. Cut by ~8x;
-// nudge from here rather than jumping back toward the old value.
-const float kCityUpwellStrength = 0.004;
+// ── Domain warp / city upwelling constants: MOVED, not deleted ────────────────────────────
+// kWarpFreq/kWarpStrength/kWarpDriftRate/kWarpEvolveRate and kCityUpwellStrength used to live
+// here alongside this file's own cloudWarpOffset()/cloudDensity()/cloudMarch(). Those marches
+// moved to cloud_march.comp (session 23); the constants and functions were left behind and had
+// zero call sites in this file ever since. Removed in the pipeline-unification pass. The live
+// definitions — including the full rationale comments this block used to carry — are in
+// cloud_march.comp; anything shared migrates to shaders/include/ from there, not from here.
 
 // City-brightness response curve, shared by the cloud upwelling (below) and the atmospheric
 // city-glow term (see kNightGlowScale) so both read the same "how bright is this city" signal
@@ -378,16 +347,13 @@ const float kMarchStepsAltEnd   = 200000.0;   // at/above this: kMarchStepsFloor
 const float kMarchStepsFloor    = 12.0;       // minimum steps once the shell is angularly tiny
 
 // ── Rayleigh scattering (wavelength-dependent: R=650nm, G=510nm, B=440nm) ─────
-const vec3  BETA_R = vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level //vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level
-const float H_R    = 7994.0;   // Rayleigh scale height (m)
+// (BETA_R / H_R are defined in common.glsl.)
 
 // ── Mie scattering (aerosols, wavelength-independent) ─────────────────────────
-const float BETA_M = 2.1e-5;   // 1/m, sea level
-const float H_M    = 12.0;   // Mie scale height (m)
-const float G_MIE  = 0.26;     // forward-scatter asymmetry (higher = sharper corona)
+// (BETA_M / H_M / G_MIE are defined in common.glsl.)
 
 // ── Lighting / tone mapping ────────────────────────────────────────────────────
-const float SUN_INTENSITY  = 1.0;
+// (SUN_INTENSITY is defined in common.glsl.)
 const float EXPOSURE_DAY   =  1.8;   // sun at zenith -- prevents white washout
 const float EXPOSURE_NIGHT = 10.0;   // below horizon -- amplifies dim twilight glow
 
@@ -399,53 +365,10 @@ const float EXPOSURE_NIGHT = 10.0;   // below horizon -- amplifies dim twilight 
 // of the ground-level frame budget this actually costs before investing in a transmittance LUT.
 // Defaults (124/12) preserve prior behavior exactly.
 
-float phaseR(float cosA) {
-    return 0.75 * (1.0 + cosA * cosA);
-}
-float phaseM(float cosA) {
-    float g2  = G_MIE * G_MIE;
-    float den = pow(max(1e-4, 1.0 + g2 - 2.0 * G_MIE * cosA), 1.5);
-    return 1.5 * ((1.0 - g2) / (2.0 + g2)) * (1.0 + cosA * cosA) / den;
-}
-// Cloud dual-lobe HG: mild forward scatter (g=0.3) + very weak backscatter (g=-0.1).
-// gF=0.3 gives ~5x forward vs perpendicular — enough for a silver lining without a spotlight.
-// The old gF=0.8 (div near cosA=1) caused the "cone of light" artifact.
-float phaseCloud(float cosA) {
-    const float gF = 0.3, gB = -0.1;
-    float g2f = gF * gF, g2b = gB * gB;
-    float fwd = 1.5 * ((1.0 - g2f) / (2.0 + g2f)) * (1.0 + cosA * cosA)
-                / pow(max(1e-4, 1.0 + g2f - 2.0 * gF * cosA), 1.5);
-    float bwd = 1.5 * ((1.0 - g2b) / (2.0 + g2b)) * (1.0 + cosA * cosA)
-                / pow(max(1e-4, 1.0 + g2b - 2.0 * gB * cosA), 1.5);
-    return mix(fwd, bwd, 0.3);
-}
-// Analytic ray-sphere intersection. Returns (tNear, tFar) along the ray.
-// Solves |ro + t*rd|² = r²  →  t² + 2bt + c = 0  where b=dot(ro,rd), c=|ro|²-r².
-// When ro is inside the sphere, tNear < 0 and tFar > 0 (one root behind, one ahead).
-// Both components are negative (vec2(-1)) on a miss (discriminant < 0).
-//
-// c is deliberately computed as (|ro|-r)*(|ro|+r), NOT dot(ro,ro)-r*r. At this project's scale
-// |ro| and r are both ~R_EARTH (~6.37e6 m), so dot(ro,ro) and r*r are both ~1e13-magnitude
-// float32 numbers — subtracting two nearly-equal huge numbers to get a value that should be much
-// smaller (near the horizon, the true discriminant is small) destroys precision catastrophically
-// right where every shell march (clouds, cirrus, airglow, atmosphere) needs it most: grazing/
-// near-tangent rays, i.e. the horizon. (|ro|-r) is instead a direct small-number subtraction —
-// |ro| and r are each independently accurate to ~1 part in 2^24, so their difference retains
-// that same relative precision instead of inheriting the ~1e6-magnitude absolute error that
-// squaring-then-subtracting would produce. This is the standard fix for planetary-scale
-// ray-sphere tests in single precision; it does not fully eliminate float32's inherent precision
-// floor exactly AT true tangency (b*b itself is still a large number there), but it removes the
-// much larger, unconditional cancellation error that was present at every distance, not just
-// exact tangency.
-vec2 raySphere(vec3 ro, vec3 rd, float r) {
-    float b     = dot(ro, rd);           // half the t^1 coefficient of the quadratic
-    float roLen = length(ro);
-    float c     = (roLen - r) * (roLen + r);  // |ro|²-r², cancellation-safe form
-    float d     = b * b - c;             // discriminant; negative = ray misses sphere entirely
-    if (d < 0.0) return vec2(-1.0);
-    float sq = sqrt(d);
-    return vec2(-b - sq, -b + sq);    // tNear = entry distance, tFar = exit distance
-}
+// (phaseR / phaseM are defined in common.glsl.)
+// (phaseCloud lived here — dead since the cloud march moved to cloud_march.comp, removed in the
+// pipeline-unification pass. The live copy is cloud_march.comp's.)
+// (raySphere, with its full planetary-scale precision rationale, is in common.glsl.)
 // Marches N_LIGHT steps from point p toward direction d over distance segTotal
 // and returns (Rayleigh optical depth, Mie optical depth) — i.e. ∫ρ(h) ds for each species.
 // Multiply by BETA_R / BETA_M in the caller to convert to actual extinction coefficients.
@@ -468,24 +391,10 @@ vec2 optDepth(vec3 p, vec3 d, float segTotal) {
     return vec2(odR, odM) * sLen;  // multiply summed densities by step length → optical depth units
 }
 
-// Rotates a direction vector around the Z (polar) axis by angle theta — used to advect the 3D
-// cloud noise's sampling position in lockstep with the 2D coverage map's own longitude drift
-// (cloud.cloudPhase * driftMult). Without this, the coverage silhouette slides while the 3D
-// structure underneath stays fixed in place — a static blob's leading edge gets progressively
-// uncovered (reads as "growing") and its trailing edge gets covered back up (reads as
-// "shrinking"), instead of the whole cloud genuinely translating. Rotating dirECEF by the same
-// angle the 2D UV shifts by keeps the two locked together.
-vec3 rotateZ(vec3 v, float theta) {
-    float c = cos(theta), s = sin(theta);
-    return vec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
-}
+// (rotateZ lived here — dead since the cloud march moved to cloud_march.comp, removed in the
+// pipeline-unification pass. The live copy is cloud_march.comp's.)
 
-// Clamp-and-scale: maps v from [lo,hi] → [newLo,newHi], clamped to the output range.
-// Used throughout cloud density to shift where the noise "zero floor" lands —
-// changing lo raises or lowers the threshold at which noise starts contributing density.
-float remap(float v, float lo, float hi, float newLo, float newHi) {
-    return newLo + clamp((v - lo) / (hi - lo), 0.0, 1.0) * (newHi - newLo);
-}
+// (remap is defined in common.glsl — still used here by the aurora shell/fold code.)
 
 // ── Analytic 3D gradient noise for the cloud domain warp ───────────────────────
 // The warp used to read cloudNoiseTex (a 192³ DISCRETELY STORED texture) at kWarpFreq=0.1,
@@ -526,30 +435,11 @@ float warpPerlin3(vec3 p) {
                mix(mix(v001, v101, u.x), mix(v011, v111, u.x), u.y), u.z);
 }
 
-// Low-frequency domain-warp offset for cloud noise sampling — see kWarpFreq/Strength/DriftRate
-// comment above. Returns a UVW-TEXEL-space offset (see kWarpStrength units note) — callers add
-// it AFTER multiplying their dirECEF by kCloudHorizFreq/kCloudColFreq, not before, so the same
-// absolute texel displacement applies at every target frequency with no hidden amplification.
-// Three warpPerlin3 evaluations (offset to decorrelate) build a pseudo-random vector field —
-// pure ALU cost, no texture bandwidth, and no grid to facet against at any zoom level.
-//
-// windOfs evolution: driven by pc.waveTime (wall-clock seconds, constant rate regardless of
-// sim time-warp — same push constant already used for ocean wave animation), not cloud.cloudPhase.
-// cloudPhase advances at cloud.driftRate*simTime (~3e-6 rad/sim-second, calibrated for a
-// realistic "~1 deg/day" weather drift) — a full cycle takes ~24 days of SIMULATED time, so at
-// normal time scales the warp was effectively frozen over any real observation window. A small
-// residual cloudPhase term is kept so the warp's long-run drift direction still tracks the
-// coherent weather-system motion; pc.waveTime supplies the actual visible boiling motion.
-vec3 cloudWarpOffset(vec3 dirECEF) {
-    vec3 windOfs = vec3(cloud.cloudPhase * kWarpDriftRate + pc.waveTime * kWarpEvolveRate,
-                         pc.waveTime * kWarpEvolveRate * 0.6,
-                         cloud.cloudPhase * kWarpDriftRate * 0.7 + pc.waveTime * kWarpEvolveRate * 0.8);
-    vec3 p       = dirECEF * kWarpFreq + windOfs;
-    float wx = warpPerlin3(p);
-    float wy = warpPerlin3(p + vec3(11.3, 47.7,  5.9));
-    float wz = warpPerlin3(p + vec3(71.9,  3.1, 29.4));
-    return vec3(wx, wy, wz) * kWarpStrength;
-}
+// (cloudWarpOffset lived here — dead since the cloud march moved to cloud_march.comp, removed in
+// the pipeline-unification pass. Worth knowing if you go looking for it: this copy still used
+// THREE LIVE warpPerlin3 evaluations, while cloud_march.comp's live version reads the baked
+// cloudWarpNoiseTex instead (session 31). They were genuinely different algorithms producing
+// different values — the drift was invisible only because this copy was already unreachable.)
 
 // cirrusWindAngleAt/cirrusDomainWarp moved to shaders/cloud_march.comp (C15-perf, half-res cloud
 // pass) — they were exclusive to cirrusMarch, which moved there too.
@@ -1163,68 +1053,11 @@ void evalCloudLayer(
     color = mix(color, cloudColor * attn, alpha);
 }
 
-// ── Volumetric cloud density (Nubis remap + erosion) ─────────────────────────
-// Returns a density value [0,1] at the given 3D noise coordinate.
-//   uvwXY:         dirECEF * kCloudHorizFreq, UNFRACTED — horizontal noise position; two fixed
-//                  Z-offsets are added internally to sample a "base" and "top" archetype slice.
-//   uvwDetail:     full 3D coordinate (Z=altitude) for the Worley erosion channels
-//   hNorm:         normalized height within the cloud shell [0,1] — blends base→top presence
-//   coverage:      per-sample 2D coverage map value × global coverage slider — controls threshold
-//   density:       global linear scale from CloudParams UBO (user-tunable at runtime)
-//   heightProfile: caller-supplied soft fade [0,1] — 0 at shell base/top, 1 in mid-layer
-float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, float density, float heightProfile) {
-    // ── Stage 1: Base shape — blend two fixed-Z archetype slices by hNorm ─────
-    // Sampling two DIFFERENT fixed Z-slices of the Perlin-Worley R channel gives the cloud
-    // footprint genuine width variation with height instead of the "perfect cylinder" a single
-    // constant-Z slice produced. Threshold EACH slice independently, then blend the resulting
-    // (post-threshold) alpha values — not the raw noise values. Blending raw values first would
-    // regress the mid-height sample toward the mean of two decorrelated fields, which can only
-    // ever shrink coverage monotonically (a smooth cone) — it can never produce a region present
-    // in one slice but absent in the other, which is exactly what a real overhang/concavity is.
-    // Post-threshold blending preserves each slice's independent shape so those regions can
-    // appear/disappear across height non-monotonically. mix() is still smooth in hNorm, so this
-    // remains immune to the raymarch-step banding a raw continuous Z-sweep caused (see
-    // project_cloud_march_steps memory) — there's no threshold crossing along hNorm to alias.
-    const float kPresenceZBase = 0.0;
-    const float kPresenceZTop  = 0.5;
-    // No manual fract() here: cloudNoiseSampler is already REPEAT-addressed, which wraps the
-    // raw coordinate correctly. Pre-wrapping with fract() creates an artificial sawtooth
-    // discontinuity in the coordinate as seen by the GPU's automatic screen-space derivative
-    // computation (used for LOD/filtering), which manual wrapping does not need to introduce.
-    float nsBaseR = texture(cloudNoiseTex, uvwXY + vec3(0.0, 0.0, kPresenceZBase)).r;
-    float nsTopR  = texture(cloudNoiseTex, uvwXY + vec3(0.0, 0.0, kPresenceZTop)).r;
-    float baseA   = remap(nsBaseR, 1.0 - coverage, 1.0, 0.0, 1.0);
-    float topA    = remap(nsTopR,  1.0 - coverage, 1.0, 0.0, 1.0);
-    float base    = mix(baseA, topA, clamp(hNorm, 0.0, 1.0));
-    if (base <= 0.0) return 0.0;  // clear sky at this point — skip the more expensive erosion fetch
-
-    // ── Stage 2: High-frequency erosion detail (G/B/A channels at full 3D Z) ──
-    // Uses uvwDetail (altitude in Z) so the Worley erosion varies with height,
-    // giving each cloud tower 3D interior structure (bumpy surface, wispy edges).
-    // Worley cells are spherical, not gradient-plane-aligned, so this does NOT
-    // re-introduce the horizontal slab problem that afflicted the Perlin R channel.
-    // G/B/A = inverted Worley cells at three successive octave scales:
-    //   G (weight 0.625): coarse Worley — chews large bites from cloud edges (cumulus cauliflower)
-    //   B (weight 0.25):  medium Worley — adds mid-scale texture to edge fraying
-    //   A (weight 0.125): fine Worley   — adds wispy tendrils at the very edge
-    vec4  nsF     = texture(cloudNoiseTex, uvwDetail * 1.5 + vec3(0.37, 0.53, 0.71));
-    float erosion = nsF.g * 0.625 + nsF.b * 0.25 + nsF.a * 0.125;
-
-    // ── Stage 3: Apply erosion by raising the base shape's lower floor ────────
-    // remap(base, 0.2*erosion, 1.0, 0.0, 1.0):
-    //   New lower cutoff = 0.2 * erosion (ranges 0.0 to ~0.2 depending on Worley cells).
-    //   Cloud edges (small base values near the threshold) get their floor pushed up →
-    //   they drop below the new floor and disappear = the edge is eroded away.
-    //   Cloud interiors (base near 1.0) are far above the floor → unaffected → stay dense.
-    // Net visual effect: large rounded blobs develop wispy edges and cauliflower surfaces.
-    float eroded  = remap(base, 0.2 * erosion, 1.0, 0.0, 1.0);  // erosion floor fixed; density is a linear scale
-
-    // ── Stage 4: Modulate by height profile and global density ────────────────
-    // heightProfile fades density to zero at the base and top of the cloud shell,
-    // preventing hard horizontal planes from being visible when looking through a layer.
-    // density is a linear user-tunable scale applied last so it doesn't shift the erosion logic.
-    return clamp(eroded * heightProfile * density, 0.0, 1.0);
-}
+// (cloudDensity lived here — dead since the cloud march moved to cloud_march.comp, removed in
+//  the pipeline-unification pass. Worth knowing if you go looking for it: this copy blended only
+//  TWO fixed Z-slices (0.0 / 0.5) and used a fixed 0.2*erosion floor, while cloud_march.comp's
+//  live version blends THREE (0.0 / 0.28 / 0.56) piecewise and takes its erosion floor from the
+//  UBO. Another genuine drift that stayed invisible because this copy was already unreachable.)
 
 // ── Cloud raymarch diagnostics ────────────────────────────────────────────────
 // Set CLOUD_DEBUG to 1-5 to replace cloud output with a diagnostic overlay.
@@ -1288,34 +1121,13 @@ void main() {
     // not relative to the observer's view of the sun.
     vec3 sunDirECEF = sunDir.x * enuX + sunDir.y * enuY + sunDir.z * enuZ;
 
-    // ── Elevation encoding constants ──────────────────────────────────────────────
-    // Land-only normalized DEM: pixel=0 → 0 m (sea level), pixel=1 → 8848 m (Everest).
-    // Ocean texels are stored as 0, but JPEG compression introduces DCT artifacts
-    // (typically 1–4 out of 255 levels = 34–140 m) that cause false terrain hits.
-    // All elevation reads are gated by earthSpecTex (ocean mask): if specMask > 0.5
-    // the texel is ocean and terrainH is forced to 0 regardless of the elevation pixel.
-    const float kElevRange  = 9000.0;
-    const float kMaxTerrain = 9000.0;  // terrain shell height (m) — just above Everest
-    const float kElevOffset = 15.0 / 255.0 * kElevRange;  // DEM ocean baseline (~529 m)
-
-    // GPU-side observer ground height: single texture fetch at the observer's lat/lon.
-    // This matches the terrain march formula exactly, so the observer never sinks into
-    // terrain regardless of what the CPU computed.  pc.obsECEFDir.w is the CPU's total
-    // height above sea level (obsTerrainH + obsHeightOffset); we take the max of the
-    // GPU ground height and the CPU value so user-controlled altitude offsets still work.
-    float obsGroundH;
-    {
-        vec3  od  = normalize(pc.obsECEFDir.xyz);
-        float lat = asin(clamp(od.z, -1.0, 1.0));
-        float lon = atan(od.y, od.x);
-        vec2  uv  = vec2((lon + PI) / (2.0*PI), (0.5*PI - lat) / PI);
-        float obsSpec = textureLod(earthSpecTex, uv, 0.0).r;
-        obsGroundH = (obsSpec > 0.5) ? 0.0 : max(0.0, textureLod(earthElevTex, uv, 0.0).r * kElevRange - kElevOffset);
-    }
-    float obsEffH = max(obsGroundH, max(0.0, pc.obsECEFDir.w));
+    // Elevation encoding constants (kElevRange / kMaxTerrain / kElevOffset) and the GPU-side
+    // observer ground-height lookup both live in terrain.glsl now — see that file's header for
+    // the DEM encoding, which is the single most re-broken piece of knowledge in this project.
+    float obsEffH = observerEffHeight(earthElevTex, earthSpecTex, pc.obsECEFDir);
 
     // Observer position: +2 m eye height above ground.
-    vec3 obsPos = vec3(0.0, 0.0, R_EARTH + obsEffH + 2.0);
+    vec3 obsPos = observerPos(obsEffH);
 
     // For elevated observers the visible region extends below the geometric horizon.
     // limbZ = sin(Earth-limb depression angle) — negative, approaches 0 at sea level.
@@ -1377,12 +1189,7 @@ void main() {
             if (rayH <= 0.0) break;
 
             vec3  pE  = p.x * enuX + p.y * enuY + p.z * enuZ;
-            float pL  = length(pE);
-            float lat = asin(clamp(pE.z / pL, -1.0, 1.0));
-            float lon = atan(pE.y, pE.x);
-            vec2  uv  = vec2((lon + PI) / (2.0 * PI), (0.5 * PI - lat) / PI);
-            float specPx   = textureLod(earthSpecTex, uv, 0.0).r;
-            float terrainH = (specPx > 0.5) ? 0.0 : max(0.0, textureLod(earthElevTex, uv, 0.0).r * kElevRange - kElevOffset);
+            float terrainH = terrainHeightAtUV(earthElevTex, earthSpecTex, posToUV(pE), 0.0);
 
             if (rayH < terrainH) {
                 float tLo = tPrev, tHi = t;
@@ -1391,12 +1198,7 @@ void main() {
                     vec3  pm  = obsPos + tM * dir;
                     float mH  = length(pm) - R_EARTH;
                     vec3  pmE = pm.x * enuX + pm.y * enuY + pm.z * enuZ;
-                    float mL  = length(pmE);
-                    float mLat = asin(clamp(pmE.z / mL, -1.0, 1.0));
-                    float mLon = atan(pmE.y, pmE.x);
-                    vec2  mUV  = vec2((mLon + PI) / (2.0*PI), (0.5*PI - mLat) / PI);
-                    float mSpec = textureLod(earthSpecTex, mUV, 0.0).r;
-                    float mT    = (mSpec > 0.5) ? 0.0 : max(0.0, textureLod(earthElevTex, mUV, 0.0).r * kElevRange - kElevOffset);
+                    float mT  = terrainHeightAtUV(earthElevTex, earthSpecTex, posToUV(pmE), 0.0);
                     if (mH < mT) tHi = tM; else tLo = tM;
                 }
                 tHit = (tLo + tHi) * 0.5;

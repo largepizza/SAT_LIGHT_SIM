@@ -99,6 +99,7 @@ if(NOT GLSLC)
 endif()
 
 set(SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+set(SHADER_INC_DIR "${SHADER_SRC_DIR}/include")
 set(SHADER_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 file(MAKE_DIRECTORY ${SHADER_OUT_DIR})
 
@@ -108,14 +109,25 @@ file(GLOB SHADERS CONFIGURE_DEPENDS
     "${SHADER_SRC_DIR}/*.comp"
 )
 
+# Shared shader headers live in shaders/include/ with a .glsl extension — a SEPARATE directory
+# AND a separate extension, so the glob above never tries to compile one as a standalone
+# translation unit. Naming a header .comp, or leaving it in shaders/, breaks the build.
+file(GLOB SHADER_HEADERS CONFIGURE_DEPENDS "${SHADER_INC_DIR}/*.glsl")
+
 set(SPV_FILES "")
 foreach(SHADER ${SHADERS})
     get_filename_component(SHADER_NAME ${SHADER} NAME)
     set(SPV "${SHADER_OUT_DIR}/${SHADER_NAME}.spv")
     add_custom_command(
         OUTPUT ${SPV}
-        COMMAND ${GLSLC} ${SHADER} -o ${SPV}
-        DEPENDS ${SHADER}
+        COMMAND ${GLSLC} -I "${SHADER_INC_DIR}" ${SHADER} -o ${SPV}
+        # Every shader depends on ALL headers, not just the ones it includes. Coarse — touching
+        # one header recompiles all ~28 shaders — but glslc takes seconds even on the two big
+        # ones, and it is correct on every generator. The precise alternative (glslc -MD +
+        # add_custom_command DEPFILE) needs CMake 3.27 for Visual Studio generators; this project
+        # requires 3.20 and builds with MSVC, so DEPFILE is not available here. If the build ever
+        # moves to Ninja, switching is a small change.
+        DEPENDS ${SHADER} ${SHADER_HEADERS}
         COMMENT "Compiling shader: ${SHADER_NAME}"
         VERBATIM
     )

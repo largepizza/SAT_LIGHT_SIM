@@ -939,8 +939,10 @@ private:
     // before buildUI/recordCompute run, so these hold the previous completed frame's
     // GPU time when buildUI reads them, and get refreshed for the following frame's
     // display at the top of recordCompute().
-    float gpuMsSmoothed[7] = {};     // cloud march, cloud shadow map (C12), orbit compute, flare
-                                      // compute, sky background draw, satellite+star draw, UI overlay
+    float gpuMsSmoothed[8] = {};     // beam cloud block, orbit compute, cloud march, cloud shadow
+                                      // map, flare compute, sky background draw, satellite+star
+                                      // draw, UI overlay — order fixed by VulkanContext's slot
+                                      // table; kPerfLabels[] and savePerfSnapshot() mirror it
     float gpuMsTotalSmoothed = 0.0f; // whole-frame GPU time
 
     // ── Perf knockout toggles (profiling-only; not persisted) ──────────────────
@@ -953,6 +955,9 @@ private:
     // bit 128 (Reflect-Orbital beam volumetric term) are checked directly in cloud_march.comp;
     // bit 128 (beam ground-spot term) and bit 256 (cloud shadow map) are also checked in
     // sat_sky.frag (128 gates both consumers of the same feature, checked in both shaders).
+    // Bit 512 gates the beam_cloud_block.comp DISPATCH itself, in recordCompute() — no shader
+    // reads it. Bits 256 and 512 are the two producer-side knockouts; every other bit disables a
+    // consumer block inside a shader.
     uint32_t debugDisableMask = 0;
     // Debug-only, not persisted (same convention as debugDisableMask) — draws each active
     // Reflect-Orbital beam's ACTUAL current mirror-pointing direction as a long ray, so
@@ -1428,7 +1433,7 @@ private:
     bool hovFullscreen = false;
     bool hovSaveSnapshot = false;
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button
-    bool hovDebugToggle[9] = {};   // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map)
+    bool hovDebugToggle[10] = {};  // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch)
     bool hovBeamDebugRaysToggle = false; // hover state for the "Show beam pointing rays" checkbox (C12 follow-up #12)
     bool hovPhotoMinus[9] = {};
     bool hovPhotoPlus[9] = {};

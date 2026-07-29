@@ -1514,10 +1514,12 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     CLAY_TEXT(CLAY_STRING("GPU FRAME BREAKDOWN"),
               CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
 
-    static const char *kPerfLabels[7] = {
-        "Orbit compute", "Cloud march", "Cloud shadow map", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
-    static char perfBufs[7][20];
-    for (int pi = 0; pi < 7; ++pi)
+    // Order must match gpuMsSmoothed[]'s slot semantics — see VulkanContext::kTimestampCount
+    // for the authoritative table, and savePerfSnapshot() below for the matching JSON keys.
+    static const char *kPerfLabels[8] = {
+        "Beam cloud block", "Orbit compute", "Cloud march", "Cloud shadow map", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
+    static char perfBufs[8][20];
+    for (int pi = 0; pi < 8; ++pi)
     {
         snprintf(perfBufs[pi], sizeof(perfBufs[pi]), "%.2f ms", gpuMsSmoothed[pi]);
         Clay_String labelStr{false, (int32_t)strlen(kPerfLabels[pi]), kPerfLabels[pi]};
@@ -1555,15 +1557,17 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // debugDisableMask comment: 1=terrain, 2=atmosphere, 4=sun optical depth, 8=ocean reflection,
     // 16=airglow red, 32=aurora curtain, 64=cloud self-shadow cone, 128=Reflect-Orbital beams
     // (C12, both the cloud_march.comp volumetric term and the sat_sky.frag ground-spot term),
-    // 256=cloud shadow map (C12, general terrain/ocean shadowing).
+    // 256=cloud shadow map (C12, general terrain/ocean shadowing), 512=beam cloud block dispatch.
+    // 256 and 512 are the two PRODUCER-side knockouts (they skip a whole dispatch in
+    // recordCompute); every other bit disables a consumer block inside a shader.
     CLAY_TEXT(CLAY_STRING("KNOCKOUT PROFILING (disables rendering correctness for cost isolation)"),
               CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
-    static const char *kDebugToggleLabels[9] = {
+    static const char *kDebugToggleLabels[10] = {
         "Terrain march", "Atmosphere loop (N_VIEW)", "Sun optical depth (N_LIGHT)", "Ocean sky reflection",
         "Airglow red (16-step march)", "Aurora curtain march", "Cloud self-shadow cone",
-        "Reflect-Orbital beams", "Cloud shadow map"};
-    static const uint32_t kDebugToggleBits[9] = {1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u};
-    for (int ti = 0; ti < 9; ++ti)
+        "Reflect-Orbital beams", "Cloud shadow map", "Beam cloud block dispatch"};
+    static const uint32_t kDebugToggleBits[10] = {1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u, 512u};
+    for (int ti = 0; ti < 10; ++ti)
     {
         bool on = (debugDisableMask & kDebugToggleBits[ti]) != 0u;
         Clay_String lblStr{false, (int32_t)strlen(kDebugToggleLabels[ti]), kDebugToggleLabels[ti]};
@@ -2643,14 +2647,17 @@ void SatelliteSim::savePerfSnapshot(float cpuDt)
     // before cloud march — see updateGpuTimingStats()'s comment) — key NAMES, not indices, are
     // what matter for reading old snapshots; a re-ordering like this changes which index a given
     // name reads from going forward, so don't compare index positions across the reorder.
+    // beam_cloud_block is new as of the pipeline-unification pass; snapshots taken before it
+    // exists have no such key, and their orbit_compute value silently INCLUDES this cost.
     j["gpu_timing_ms"] = {
-        {"orbit_compute", gpuMsSmoothed[0]},
-        {"cloud_march", gpuMsSmoothed[1]},
-        {"cloud_shadow_map", gpuMsSmoothed[2]},
-        {"flare_compute", gpuMsSmoothed[3]},
-        {"sky_background_draw", gpuMsSmoothed[4]},
-        {"satellite_star_draw", gpuMsSmoothed[5]},
-        {"ui_overlay", gpuMsSmoothed[6]},
+        {"beam_cloud_block", gpuMsSmoothed[0]},
+        {"orbit_compute", gpuMsSmoothed[1]},
+        {"cloud_march", gpuMsSmoothed[2]},
+        {"cloud_shadow_map", gpuMsSmoothed[3]},
+        {"flare_compute", gpuMsSmoothed[4]},
+        {"sky_background_draw", gpuMsSmoothed[5]},
+        {"satellite_star_draw", gpuMsSmoothed[6]},
+        {"ui_overlay", gpuMsSmoothed[7]},
         {"total", gpuMsTotalSmoothed}};
     j["cpu_frame"] = {
         {"dt_ms", cpuDt * 1000.0f},
