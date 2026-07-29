@@ -115,23 +115,7 @@ layout(set = 0, binding = 3) readonly buffer ReflectorTargetBuf {
 // to roughly a few hundred at most even for a 5,000-satellite constellation — see
 // TERRAIN_PLAN.md C12 follow-up #9. Zeroed every frame by vkCmdFillBuffer (resets beamCount to 0
 // too). Must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h exactly.
-const uint BEAM_MAX_ACTIVE = 2048u; // must match kMaxActiveBeams in SatelliteSim.h (C12 follow-up #11)
-struct ReflectBeam {
-    vec3  satENU;       // meters, observer-relative (East, North, Up)
-    float intensity;    // groundIrradiance * beamGain
-    vec3  targetENU;    // meters, observer-relative
-    float footprintRadM;
-    vec3  reflectDirENU; // unit direction — mirror's ACTUAL current reflected-sunlight direction
-                          // (debug pointing-ray visualization, C12 follow-up #12)
-    float debugPad;       // repurposed (follow-up #20): originating satellite's stable dispatch
-                          // index, for stable downsampling — see the write site below.
-    float blockAltM;       // C12 follow-up #33: copied from beamCloudBlockBuf[bestIdx] at write
-    float blockOpacity;    // time below — see beam_cloud_block.comp.
-    float mirrorRadiusM;   // C12 follow-up #34: repurposed from padding — equivalent-circle radius
-                          // of the physical mirror (sqrt(mirrorAreaM2/PI)), used by cloud_march.comp
-                          // (sky tube radius) and sat_sky.frag (ground-spot core radius).
-    float pad1;            // std430 16-byte alignment
-};
+#include "reflect_beam.glsl"   // ReflectBeam + BEAM_MAX_ACTIVE
 layout(set = 0, binding = 4) buffer ReflectBeamsBuf {
     uint         beamCount; // atomicAdd counter — may exceed BEAM_MAX_ACTIVE
     uint         beamPad0, beamPad1, beamPad2; // std430 alignment padding, see SatelliteSim.h

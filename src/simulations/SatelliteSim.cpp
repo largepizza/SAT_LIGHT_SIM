@@ -143,8 +143,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     createCloudWarpNoisePipeline(ctx); // must run before createCloudMarchDescriptors (binding 9)
     createAuroraNoisePipeline(ctx); // must run before createGlowResources' writes (binding 16)
     createCloudMarchResources(ctx); // images must exist before createGlowResources' writes (bindings 10/11)
-    createSceneDepthResources(ctx); // image must exist before createGlowResources' (binding 19),
-                                     // createDescriptors' (binding 7) and initStars' (binding 7) writes
+    createSceneDepthResources(ctx); // image must exist before createGlowResources' writes (binding 19)
     createGlowResources(ctx);
     createDescriptors(ctx);
     createComputePipeline(ctx);
@@ -276,20 +275,14 @@ void SatelliteSim::onResize(VulkanContext &ctx)
 
     VkDescriptorImageInfo depthStorageInfo{VK_NULL_HANDLE, sceneDepthView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo depthSampledInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet depthWrites[5] = {};
+    VkWriteDescriptorSet depthWrites[3] = {};
     depthWrites[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 2, 0, 1,
                       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &depthStorageInfo, nullptr, nullptr};
     depthWrites[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 13, 0, 1,
                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
     depthWrites[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, skyDescSet, 19, 0, 1,
                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
-    // The two point-draw sets read it as well (terrain occlusion at renderScale < 1.0). Easy to
-    // forget — the same omission was caught late once before, for the cloud targets' bindings 5/6.
-    depthWrites[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descSet, 7, 0, 1,
-                      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
-    depthWrites[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, starDescSet, 7, 0, 1,
-                      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 5, depthWrites, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device, 3, depthWrites, 0, nullptr);
 }
 
 // ─── recordCompute ────────────────────────────────────────────────────────────
@@ -1180,11 +1173,6 @@ SatDrawPC SatelliteSim::buildSatDrawPC(VulkanContext &ctx, VkExtent2D targetExte
     // comment at that relocation site for why.
     pc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset); // w = user altitude offset above terrain (m); GPU computes ground height
     pc.debugDisableMask = debugDisableMask; // perf knockout toggles — see SatelliteSim.h member comment
-    // Only tell the point draws to depth-test against sceneDepthTex when the hardware depth
-    // buffer isn't being written — i.e. on the render-scaled path, which blits an offscreen
-    // background in and never runs a depth-writing draw. At full resolution hardware depth is
-    // per-fragment exact, so leave it alone.
-    pc.sceneDepthMode = (renderScale < 0.999f) ? 1.0f : 0.0f;
     pc.skyGlareVisibility = skyGlareEased; // sun-glare gate for the Milky Way — see skyGlareEased member comment
     pc.beamMaxRangeM = beamMaxRangeM; // C12 follow-up #6
     pc.beamSkyGlowGain = beamSkyGlowGain; // C12 follow-up #18 — shared with cloud_march.comp's copy
@@ -1289,7 +1277,7 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, starPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 starPipeLayout, 0, 1, &starDescSet, 0, nullptr);
-        vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT,
                            0, sizeof(pc), &pc);
         vkCmdDraw(cmd, starCount, 1, 0, 0);
     }
@@ -1891,7 +1879,7 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
 // ─── createDescriptors ────────────────────────────────────────────────────────
 void SatelliteSim::createDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[8] = {};
+    VkDescriptorSetLayoutBinding bindings[7] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
@@ -1908,19 +1896,15 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudTargetA
     bindings[6] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudTargetB
-    // sceneDepthTex — terrain occlusion for the point sprites when renderScale < 1.0, where the
-    // hardware depth buffer is never written. Same image skyDescSet binding 19 samples.
-    bindings[7] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                   VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // sceneDepthTex
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 8;
+    li.bindingCount = 7;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
     VkDescriptorPoolSize ps[2] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 2;
     pi.pPoolSizes = ps;
@@ -1940,9 +1924,8 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
     VkDescriptorBufferInfo beamDomeInfo{beamGlowDomeBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo cloudAInfo{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cloudBInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo satDepthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
-    VkWriteDescriptorSet writes[8] = {};
+    VkWriteDescriptorSet writes[7] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &inpInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
@@ -1957,9 +1940,7 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
                  descSet, 5, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudAInfo, nullptr, nullptr};
     writes[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 6, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudBInfo, nullptr, nullptr};
-    writes[7] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
-                 descSet, 7, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &satDepthInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 8, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device, 7, writes, 0, nullptr);
 }
 
 // ─── createComputePipeline ────────────────────────────────────────────────────
@@ -4328,23 +4309,22 @@ void SatelliteSim::initStars(VulkanContext &ctx)
                      starBuf, starMem);
     vkMapMemory(ctx.device, starMem, 0, bufSize, 0, &starMapped);
 
-    // Descriptor layout: binding 1 (vertex shader reads GpuSatVisible) + binding 7
-    // (fragment shader reads sceneDepthTex for terrain occlusion at renderScale < 1.0).
-    VkDescriptorSetLayoutBinding starBindings[2] = {};
-    starBindings[0] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
-    starBindings[1] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // Descriptor layout: only binding=1 (vertex shader reads GpuSatVisible).
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 1;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 2;
-    li.pBindings = starBindings;
+    li.bindingCount = 1;
+    li.pBindings = &binding;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &starDescLayout);
 
-    VkDescriptorPoolSize ps[2] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.poolSizeCount = 2;
-    pi.pPoolSizes = ps;
+    pi.poolSizeCount = 1;
+    pi.pPoolSizes = &ps;
     pi.maxSets = 1;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &starDescPool);
 
@@ -4355,13 +4335,13 @@ void SatelliteSim::initStars(VulkanContext &ctx)
     vkAllocateDescriptorSets(ctx.device, &ai, &starDescSet);
 
     VkDescriptorBufferInfo bufInfo{starBuf, 0, VK_WHOLE_SIZE};
-    VkDescriptorImageInfo starDepthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet starWr[2] = {};
-    starWr[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, starDescSet, 1, 0, 1,
-                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufInfo, nullptr};
-    starWr[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, starDescSet, 7, 0, 1,
-                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &starDepthInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 2, starWr, 0, nullptr);
+    VkWriteDescriptorSet wr{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    wr.dstSet = starDescSet;
+    wr.dstBinding = 1;
+    wr.descriptorCount = 1;
+    wr.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    wr.pBufferInfo = &bufInfo;
+    vkUpdateDescriptorSets(ctx.device, 1, &wr, 0, nullptr);
 
     createStarPipeline(ctx);
 
@@ -4426,9 +4406,7 @@ void SatelliteSim::createStarPipeline(VulkanContext &ctx)
 
     if (starPipeLayout == VK_NULL_HANDLE)
     {
-        // VERTEX|FRAGMENT: star_point.frag now reads screenSizePx/sceneDepthMode for the depth
-        // test. The vkCmdPushConstants call at the draw site must use these exact same flags.
-        VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SatDrawPC)};
+        VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(SatDrawPC)};
         VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         li.setLayoutCount = 1;
         li.pSetLayouts = &starDescLayout;
