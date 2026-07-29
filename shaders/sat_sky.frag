@@ -287,6 +287,10 @@ const float EXPOSURE_NIGHT = 10.0;   // below horizon -- amplifies dim twilight 
 // and returns (Rayleigh optical depth, Mie optical depth) — i.e. ∫ρ(h) ds for each species.
 // Multiply by BETA_R / BETA_M in the caller to convert to actual extinction coefficients.
 // Called once per view sample to accumulate the sun-side transmittance at that altitude.
+// Kept local, NOT shared with cloud_march.comp's copy of the same integral. See that file's
+// optDepth comment for why: sharing forces a runtime trip count, and cloud_march's is a
+// compile-time constant it needs to keep. This copy's count is settings-tunable, so it has a
+// runtime bound either way and loses nothing by staying here.
 vec2 optDepth(vec3 p, vec3 d, float segTotal) {
     // Perf knockout: zero optical depth = "sun ray unattenuated", the same fallback the
     // callers already use when tSun.y <= 0 (no atmosphere intersection) — a safe, already-
@@ -302,7 +306,7 @@ vec2 optDepth(vec3 p, vec3 d, float segTotal) {
         odR += exp(-h / H_R);  // Rayleigh density (exponential profile, scale height H_R)
         odM += exp(-h / H_M);  // Mie density (exponential profile, scale height H_M)
     }
-    return vec2(odR, odM) * sLen;  // multiply summed densities by step length → optical depth units
+    return vec2(odR, odM) * sLen;  // summed densities x step length -> optical depth units
 }
 
 // (rotateZ lived here — dead since the cloud march moved to cloud_march.comp, removed in the
@@ -935,12 +939,26 @@ void evalCloudLayer(
     float coverage, float density, float sunGain, float sunGainZenith,
     float shellAltM, float driftMult, float alphaMax, float mipLod,
     float cloudPhase,
+    float obsEffH, float volumetricPair,
     inout vec3 color)
 {
     vec2  tc = raySphere(obsPos, dir, R_EARTH + shellAltM);
     float t  = (tc.x > 0.001) ? tc.x : tc.y;
     if (t <= 0.001) return;
     if (tSurface > 0.0 && t >= tSurface) return;
+
+    // Crossfade against the volumetric pass, for the two layers it also renders (0 and 1). This
+    // has to be computed HERE rather than at the call site, because it depends on t — the
+    // distance to the shell along THIS ray — and the call site does not have it. That is the whole
+    // point of moving to a distance-keyed fade: it varies across the screen, so near clouds can be
+    // volumetric while horizon clouds on the same frame are flat. The weight is the exact
+    // complement of cloudMarchCS's, so the two always sum to one.
+    if (volumetricPair > 0.5) {
+        float altFade  = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
+        float distFade = 1.0 - smoothstep(cloud.cloudDistFadeStartM, cloud.cloudDistFadeEndM, t);
+        alphaMax *= 1.0 - min(altFade, distFade);
+        if (alphaMax < 0.001) return;
+    }
 
     // Hit point in ENU → convert to ECEF for geographic UV and sun-dot
     vec3  hitENU = obsPos + t * dir;
@@ -960,8 +978,17 @@ void evalCloudLayer(
     float cloudSunDot  = dot(normalize(cECEF), sunDirECEF);
     float cloudDayFrac = smoothstep(-0.1, 0.15, cloudSunDot);
     // See cloud_march.comp's cloudMarchCS sunGainCurve comment — same horizon/zenith blend.
-    float sunGainCurve = mix(sunGain, sunGainZenith, smoothstep(0.0, 1.0, clamp(cloudSunDot, 0.0, 1.0)));
-    vec3  cloudColor   = vec3(max(0.0, cloudSunDot + 0.1) * sunGainCurve) * cloudDayFrac;
+    float sunGainCurve = mix(sunGain, sunGainZenith,
+                             smoothstep(0.0, max(cloud.sunGainElevBand, 0.02),
+                                        clamp(cloudSunDot, 0.0, 1.0)));
+    // Soft-compressed rather than the old raw product. This term fed straight into the composite
+    // unbounded, so a sunGain tuned to give the VOLUMETRIC path good sunsets drove the flat layer
+    // hard into pure white — the two paths respond to the same slider completely differently,
+    // because the volumetric accumulates through transmittance while this is a single multiply.
+    // 1-exp(-x) is ~x for small x (dim clouds unchanged) and asymptotes to 1 instead of clipping,
+    // which is also about right physically: a fully lit cloud's albedo is ~0.7-0.9, not unbounded.
+    vec3  cloudLit     = vec3(max(0.0, cloudSunDot + 0.1) * sunGainCurve) * cloudDayFrac;
+    vec3  cloudColor   = 1.0 - exp(-cloudLit);
 
     vec3 attn = exp(-(BETA_R * odRcam + BETA_M * 1.1 * odMcam));
     color = mix(color, cloudColor * attn, alpha);
@@ -2043,22 +2070,27 @@ void main() {
     // had this backwards (cirrus drew over the low deck regardless of which was actually nearer).
     for (int li = 3; li >= 0; --li) {
         if (cloud.layers[li].enabled < 0.5) continue;
-        float fadeWeight = 1.0;
-        if (li < 2) {
-            fadeWeight = smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
-            if (fadeWeight < 0.001) continue;
-        }
+        // The 3D->2D weight used to be computed here from observer altitude alone — one value for
+        // the entire screen. It now lives inside evalCloudLayer, which knows this ray's own
+        // distance to the shell; see the note there.
+        float volumetricPair = (li < 2) ? 1.0 : 0.0;
         evalCloudLayer(
             obsPos, dir, tSurface, enuX, enuY, enuZ, sunDirECEF,
             odR_cam, odM_cam,
-            cloud.coverage * cloud.layers[li].coverageMult,
+            // flatCoverageScale / flatSunGainScale calibrate the shared sliders onto this path.
+            // Without them one set of values could only ever suit the volumetric OR the flat
+            // layer, never both — which is what made the 3D->2D crossfade untunable and forced
+            // kCloud3DFadeStart out to 800 km to hide the mismatch.
+            cloud.coverage * cloud.layers[li].coverageMult * cloud.flatCoverageScale,
             cloud.density  * cloud.layers[li].densityMult,
-            cloud.sunGain, cloud.sunGainZenith,
+            cloud.sunGain      * cloud.flatSunGainScale,
+            cloud.sunGainZenith * cloud.flatSunGainScale,
             cloud.layers[li].shellAltM,
             cloud.layers[li].driftMult,
-            cloud.layers[li].alphaMax * fadeWeight,
+            cloud.layers[li].alphaMax,
             cloud.layers[li].mipLod,
             cloud.cloudPhase,
+            obsEffH, volumetricPair,
             color);
     }
 

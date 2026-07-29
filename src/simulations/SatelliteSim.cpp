@@ -603,10 +603,18 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.moonGain = moonGain;
         cp.pad1 = (float)cityOffsetEastM;  // repurposed: city-detail world-fixed east offset (m)
         cp.pad2 = (float)cityOffsetNorthM; // repurposed: city-detail world-fixed north offset (m)
-        cp.cloudNightAmbientGain = cloudNightAmbientGain;
+        cp.cloudTwilightAmbientGain = cloudTwilightAmbientGain;
         cp.cloudBaseVariance = cloudBaseVariance;
         cp.cloudErosionEdge = cloudErosionEdge;
         cp.cloudErosionCore = cloudErosionCore;
+        cp.sunGainElevBand = sunGainElevBand;
+        cp.twilightBandHi = twilightBandHi;
+        cp.twilightBandLo = twilightBandLo;
+        cp.coverageMipLod = coverageMipLod;
+        cp.flatCoverageScale = flatCoverageScale;
+        cp.flatSunGainScale = flatSunGainScale;
+        cp.cloudDistFadeStartM = cloudDistFadeStartM;
+        cp.cloudDistFadeEndM = cloudDistFadeEndM;
         cp.stormStrength = stormStrength;
         cp.auroraGain = auroraGain;
         cp.auroraCloudGain = auroraCloudGain;
@@ -883,6 +891,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cpc.beamSkyGlowGain = beamSkyGlowGain; // C12 follow-up #17
         cpc.daySuppression = daySuppression; // C12 follow-up #28 — same ratio sat_flare.comp uses for satellites/stars
         cpc.beamExtinctionMult = beamExtinctionMult; // C12 follow-up #29
+        cpc.cloudShadowRangeM = cloudShadowRangeM;
         cpc.beamNearFieldFadeM = beamNearFieldFadeM; // C12 follow-up #40
         // C12 follow-up #39: cpc.beamGlowBleedGain removed — the near-field bleed/march it drove
         // in this shader was removed entirely; see buildSatDrawPC() for its new home.

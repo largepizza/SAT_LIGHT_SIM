@@ -41,16 +41,99 @@ sim->buildUI(dt, ui)     → Clay layout; camera look; mouse capture rects
 sim->recordCompute(cmd)  → WASD movement; simTime advance;
                            CPU updatePositions() — sun/moon/obsECI/eci2enu/reflector targets only;
                            orbit rebake check (every 7 sim-days);
-                           GPU dispatch 1: sat_orbit.comp (orbital mechanics + attitude normals);
-                           buffer barrier satInputBuf (SHADER_WRITE → SHADER_READ, compute→compute);
-                           vkCmdFillBuffer(glowBuf, 0) + barrier (clear per-frame histogram);
-                           GPU dispatch 2: sat_flare.comp (lighting + visibility culling);
-                           buffer barrier satVisibleBuf (SHADER_WRITE → SHADER_READ, compute→vertex)
+                           dispatch 1: scene_depth.comp   (half-res shared terrain/ocean depth)
+                           dispatch 2: beam_cloud_block.comp (201 reflector targets)
+                           dispatch 3: sat_orbit.comp     (orbital mechanics + attitude + beam list)
+                           dispatch 4: cloud_march.comp   (half-res clouds/cirrus/aurora/airglow-red/
+                                                            beam tubes + per-pixel cloud shadow)
+                           dispatch 5: sat_flare.comp     (lighting + visibility culling)
+                           barriers between each (see recordCompute for exact stage/access pairs)
+sim->recordPrePass(cmd)  → renderScale < 1.0 only: low-res sky → vkCmdBlitImage into swapchain
 vkCmdBeginRenderPass     → owned by App
 sim->recordDraw(cmd)     → sky/ground background → satellite points → stars
 ui.record(cmd)           → Clay → Vulkan quads/text/icons on top
 vkCmdEndRenderPass       → owned by App
 ```
+
+### Occlusion: one shared depth buffer
+
+`scene_depth.comp` writes `sceneDepthImg` — half `ctx.swapExtent`, **`R32_SFLOAT`**, linear metres
+along each view ray to the first terrain/ocean surface, or `kNoSurfaceT` (1e30) for sky. Every
+later pass tests against it instead of deriving its own answer.
+
+This replaced three separate mechanisms that existed only because `cloud_march.comp` had no
+terrain data: `beamTerrainVisibility()` (an 8-32 sample DEM march run *per beam per pixel* — the
+single most expensive thing in that shader), `tEnterCombined` (one entry distance fused across
+cirrus+cloud+beam+aurora, so none could be occluded independently), and the opacity-gated
+`tCloudOcclude` for terrain purposes. Each volumetric march now clamps to `tScene` at march time,
+which also gives real partial truncation where a ridge pokes into a shell.
+
+**Sizing is deliberate and load-bearing:** half of the SWAP extent, independent of `renderScale`,
+exactly matching `cloudMarchTargetA/B`. That is what lets `cloud_march.comp` read it 1:1 with
+`texelFetch` at its own `gl_GlobalInvocationID` — no UV math to get wrong. Fragment consumers use
+`gl_FragCoord.xy / pc.screenSizePx`. **Consequence:** at `renderScale < 1.0` the depth pass does
+not shrink, so its relative cost rises sharply (at 50% it marches terrain at the same pixel count
+as the sky pass itself). Knockout bit 1024 disables it — the buffer fills with `kNoSurfaceT`, which
+reproduces pre-unification occlusion behaviour, making the whole architecture one A/B checkbox.
+
+**Never store a distance in a half-float.** `tEnterCombined` lived in an `RGBA16F` alpha, whose
+65504 ceiling every near-horizon cloud entry overflowed to `+inf` — silently suppressing the entire
+composite on any ray that also hit the sea-level sphere. That bug is why `sceneDepthImg` is R32.
+
+### Shader `#include`
+
+`shaders/include/*.glsl`, compiled with `glslc -I`. CMake globs the headers and makes every shader
+depend on all of them — coarse, but `add_custom_command(DEPFILE)` needs CMake 3.27 for VS
+generators and this project requires 3.20.
+
+| Header | Holds |
+|---|---|
+| `common.glsl` | PI, R_EARTH/R_ATMOS, BETA_R/M, H_R/H_M, G_MIE, SUN_INTENSITY, cloud noise freqs, `kNoSurfaceT`, `raySphere`, `rotateZ`, `remap`, phase functions |
+| `terrain.glsl` | DEM decode constants, `dirToUV`/`posToUV`, `terrainHeightAtUV/AtDir`, `enuBasis`, `observerEffHeight`, `observerPos` |
+| `cloud_params.glsl` | the `CloudParams` UBO block + `CloudLayer` (`#define CLOUD_PARAMS_BINDING` first) |
+
+**`GpuCloudParams` in `SatelliteSim.h` is a hand-maintained mirror of `cloud_params.glsl`** — GLSL
+and C++ cannot share a declaration, so that pairing is the one place a CloudParams mismatch can
+still hide. **Run `python tools/check_cloud_params.py` after touching either.**
+
+The failure mode is a *permutation*, not a size change, which is why the `static_assert` does not
+catch it: append a field in a different position in each file and the total size is unchanged, so
+everything compiles and every field from the divergence point onward silently reads its
+neighbour's value. This shipped once — `flatSunGainScale` read a pad (0, so 2D clouds rendered
+black) while `flatCoverageScale` read 4.0 (so coverage quadrupled and swallowed the Earth).
+Prefer appending at the end of both files.
+| `reflect_beam.glsl` | `ReflectBeam` + `BEAM_MAX_ACTIVE` |
+
+**`observerEffHeight` must be used by every pass that produces or consumes a distance.**
+`cloud_march.comp` previously took a CPU-computed `obsEffH` while `sat_sky.frag` did its own GPU
+lookup; harmless while each only compared against itself, wrong the moment one produces a depth
+buffer the other reads.
+
+**`optDepth` is the cautionary tale — and NOT in the direction you would expect.** Its two copies
+look like classic drift: `cloud_march.comp` hardcodes `N_LIGHT=12` while `sat_sky.frag` reads
+`cloud.lightSamples`, so the "Light samples" slider affects atmosphere and not clouds/aurora.
+Sharing them was tried and **reverted after a measured performance regression**.
+
+The reason is that de-duplication and specialization are in tension here. `cloud_march.comp`'s
+trip count is a compile-time constant, so its loop unrolls; a shared function that must also serve
+a settings-tunable count necessarily takes the count as a parameter, making the bound runtime.
+glslc emits it as a real function (SPIR-V confirmed non-inlined, 5 call sites in that shader), so
+the driver has to both inline and prove the constant to recover the unroll. It did not recover it.
+
+**The false assumption was that extracting byte-identical code into a header is codegen-neutral.**
+It is for pure declarations (`CloudParams`, `ReflectBeam` — no risk, real value, keep doing that)
+and for code that was already a function with an unchanged signature. It is NOT when the signature
+change turns a constant into a parameter. If you unify these anyway, measure `cloud_march` before
+and after, at altitude and near the surface — do not assume.
+
+**Still hand-duplicated, by choice:** `optDepth` (see above — sharing it was measurably slower),
+and the aurora function set (`auroraFrame`, `auroraCoverage`,
+`auroraOvalMask`, `auroraCurtainNoise`, `auroraSampleAt`/`auroraCurtainSample`) in `sat_sky.frag`
+and `cloud_march.comp`. Verified byte-identical (comments stripped) as of this pass, so there is no
+active bug — but they bind `auroraNoiseTex` at different indices and read different PC structs, so
+sharing them needs sampler parameters threaded through all five. Keep both copies in sync until
+someone does that work. Same applies to the cloud-column sample body, which appears in
+`cloud_march.comp` (view march + sun cone + terrain shadow) and `beam_cloud_block.comp`.
 
 ---
 
@@ -519,7 +602,10 @@ Built session 29 to replace guesswork ("N_VIEW is probably the bottleneck") with
 measurement — used to find and fix the terrain step-count bug and the aurora resolution/noise-bake
 wins documented under "Active Development" above. Four pieces:
 
-**In-app GPU timestamp queries** (`VulkanContext`): a 7-slot `VK_QUERY_TYPE_TIMESTAMP` pool.
+**In-app GPU timestamp queries** (`VulkanContext`): a `VK_QUERY_TYPE_TIMESTAMP` pool whose slot
+count has changed several times as passes came and went — `VulkanContext::kTimestampCount` carries
+the authoritative slot table and is the only place that mapping is documented. `updateGpuTimingStats`,
+`kPerfLabels[]` and `savePerfSnapshot()`'s JSON keys all mirror it and must be updated together.
 Single frame in flight, so results are resolved in `App::drawFrame` right after the fence wait —
 no stall. Slot layout is a shared contract: App.cpp writes 0 (frame start), 5 (satellite+star draw
 done), 6 (UI overlay done); `SatelliteSim` writes 1-3 in `recordCompute` (cloud march / orbit
@@ -556,6 +642,31 @@ tools/perf_analysis/analyze_profile.py`.
 
 See `TERRAIN_PLAN.md` session 29 log for the full narrative — what was measured, what was
 concluded, and which prior assumptions (the session-24 transmittance-LUT guess) it overturned.
+
+---
+
+## Subsystem: Cloud Shadows
+
+Marched **per pixel** inside `cloud_march.comp` (`cloudGroundShadow`), sunward from the terrain hit
+point `scene_depth.comp` supplies, and delivered in `cloudTargetB.a` — the channel freed by
+deleting `tEnterCombined`. `sat_sky.frag` consumes it as a single `directSun *= cloudB.a`.
+Gated on `tScene < kNoSurfaceT`, so sky pixels pay nothing. Knockout bit 256.
+
+This replaced `cloud_shadow.comp`, a fixed 128x128 observer-centred tangent-plane grid, which is
+worth understanding because the failure modes were structural rather than tuning:
+
+| | 128² grid | per-pixel |
+|---|---|---|
+| Resolution | 1250 m/texel uniformly at the 80 km default | screen-space; metres near camera, coarsens with distance |
+| From altitude | observer-centred at fixed world extent, so it covered less and less of the visible ground | follows the view ray |
+| Range | hard cutoff at `cloudShadowRangeM` (which had already caused a real beam bug, worked around via `blockOpacity`) | none |
+| Swimming | needed `computeCloudShadowSnap()` + a residual subtracted by every consumer | nothing to snap — the value is a function of the world point being shaded, not the camera |
+
+Deleted with it: the image/view/sampler/descriptor set/pipeline, `CloudShadowPC`, the snapping
+block, two `SatDrawPC` fields, the "Cloud shadow range (m)" slider and its settings key, and the
+pass's timestamp bucket. Same 12 steps and the same `3e-3` density→optical-depth constant the grid
+used, so brightness is comparable. The march phase is jittered off `noiseTex` because adjacent
+half-res texels can map to ground points kilometres apart at grazing angles.
 
 ---
 
@@ -605,6 +716,13 @@ between `recordPrePass` and `recordDraw` so `aspect` (always the true screen asp
 
 See `TERRAIN_PLAN.md` session 29 log for the full design writeup and the bug's root-cause
 narrative.
+
+**Its value has shrunk since the pipeline unification.** `scene_depth.comp` and the cloud targets
+are fixed at half the SWAP extent and do not scale, so at 1920x1009 dropping to 50% removes only
+~1.46 Mpx of sky-pass work while ~0.96 Mpx of compute stays. With the sky pass now much cheaper
+(beam occlusion gone, layers clamped at march time), 100% and 50% measure comparably in practice —
+and 100% additionally gets exact hardware-depth occlusion for satellites/stars. Prefer 100%. If
+render scale needs to matter again, the fix is making those two compute passes scale with it.
 
 ---
 
@@ -709,7 +827,7 @@ Read it at the start of any terrain-related session before making changes.
   w = obsHeightOffset), `debugDisableMask (uint)` at offset 128 (perf knockout toggles, session 29
   — see "Subsystem: GPU Performance Profiling"). `CloudMarchPC` is also 132 bytes for the same
   reason (mirrors `debugDisableMask` — only the aurora/airglow-red bits are meaningful there).
-- Sky descriptor set has 17 bindings (0-16): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D, session 29)
+- Sky descriptor set has 20 bindings (0-19): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
 - `sat_sky.frag` ground path: terrain march step count is path-length-adaptive as of session 29
   (`kN` scales with this ray's own `tExit`, clamped to a user-tuned [64,164] range — the old

@@ -42,7 +42,6 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     float lightSteps;
     float cloudPhase;
     float extinctionCoeff;
-                           // now genuinely occupied there; kept named/positioned for layout parity
     float cirrusWindAngle;
     float cirrusStretch;
     float airglowGain;
@@ -52,21 +51,13 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     float shadowMaxDistM;
     float maxRenderDistM;
     float viewSamplesMin;
-                              // sat_sky.frag) — kept for layout parity, was pad2
     float lightSamples;
     float oceanSeaOctaves;
-                              // shader) — kept for layout parity
     float oceanDetailOctaves;
     float oceanReflSamples;
     float viewSamplesMax;
     float sunGainZenith;
-                               // near zenith, blended against `sunGain` (now effectively the
-                               // near-horizon/sunset value) by sun elevation. Was a single flat
-                               // gain for all elevations, which meant a value tuned to look good
-                               // at sunset (high) overexposed clouds at midday, or vice versa.
     float moonGain;           // shared moonlight brightness master — replaces this file's old
-                              // hardcoded 0.015 moonContrib scalar; sat_sky.frag's terrain
-                              // moonlight term reads the same field
     float pad1;               // reserved
     float pad2;               // reserved
     vec4 mwBasisRow0;
@@ -74,7 +65,6 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     vec4 mwBasisRow2;
     CloudLayer layers[4];
     float stormStrength;
-                               // sat_sky.frag's storm-driven widening/equatorward shift)
     float auroraGain;
     float auroraCloudGain;
     float auroraGroundGain;
@@ -84,13 +74,40 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     float auroraShimmerRate;
     // Struct grew 320->336 (session 30, see GpuCloudParams in SatelliteSim.h for why this was
     // appended here instead of reusing pad1/pad2 above).
-    float cloudNightAmbientGain;
-                                  // floor added to skyAmbient in cloudMarchCS
+    float cloudTwilightAmbientGain;
     float cloudBaseVariance;
-                               // in hNorm units (0 = old perfectly flat base); see cloudMarchCS
     float cloudErosionEdge;
-                               // silhouette edge (base near 0)
     float cloudErosionCore;
-                               // dense core (base near 1); kept lower than cloudErosionEdge so
-                               // cores stay comparatively solid while edges fray
+    // Grew 336->352. sunGainElevBand: sin(sun elevation) at which sunGainZenith fully replaces
+    // sunGain. Was a hardcoded smoothstep(0,1,...), i.e. only half-way to the zenith value at 30
+    // degrees elevation, so a gain tuned for sunset stayed dominant most of the morning.
+    float sunGainElevBand;
+    // Edges of the twilight ambient bell, in sin(sun elevation) at the cloud sample.
+    // Hi: above this the term is zero (raise to start it EARLIER, before the sun has set).
+    // Lo: below this the term is zero (lower to carry it deeper into night).
+    float twilightBandHi;
+    float twilightBandLo;
+    // Mip level the VOLUMETRIC march reads the 2D coverage map at. Was hardcoded 4.0, which on
+    // the 8K source is ~78 km per texel — every small feature the flat 2D layer shows was already
+    // filtered away before the density function saw it, so no coverage value could bring it back.
+    float coverageMipLod;
+    // Flat-2D-layer calibration. The volumetric and flat paths need DIFFERENT numbers to look the
+    // same, because they are structurally different: the volumetric thresholds the coverage map
+    // and then erodes it, applies a height profile and accumulates through transmittance, while
+    // the flat layer thresholds the same map once and multiplies. Driving both from one set of
+    // sliders is what made the 3D->2D crossfade impossible to match. These map the shared slider
+    // values onto the flat layer's equivalent, measured against the volumetric at MIP 0.
+    float flatCoverageScale;   // volumetric coverage 1.00 matched flat coverage 0.69
+    float flatSunGainScale;    // volumetric sun gain 0.46 matched flat sun gain 1.84 (~4x)
+    float pad10;
+    float pad11;
+    // Distance-based 3D->2D crossfade, replacing the altitude-only one as the effective control.
+    // Keyed on the distance to the cloud shell along THIS ray, so it bounds the march directly —
+    // unlike maxRenderDistM, which caps march LENGTH from the shell entry and therefore does
+    // nothing from orbit (there the span is just the ~9 km shell crossing, already far under any
+    // cap). Also gives a natural horizon transition from the ground, which altitude cannot.
+    float cloudDistFadeStartM; // fully volumetric nearer than this
+    float cloudDistFadeEndM;   // fully flat-2D beyond this
+    float pad12;
+    float pad13;
 } cloud;
