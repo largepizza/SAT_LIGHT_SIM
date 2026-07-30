@@ -1543,12 +1543,20 @@ private:
     //
     // held=false  → dispatched in onKey() via pressed(idx)
     // held=true   → polled in recordCompute() via glfwGetKey(win, keybindings[idx].key)
+    //
+    // gpButton mirrors key but for an Xbox-style gamepad (GLFW_GAMEPAD_BUTTON_*, -1 =
+    // unbound) — either input fires the same action, so rebinding one never disturbs the
+    // other. listening/listeningPad are mutually exclusive across the whole vector (the UI
+    // clears every other flag before setting one), each capturing the next keyboard key or
+    // gamepad button respectively — see onKey() and pollGamepad().
     struct KeyBinding
     {
         const char *action;
         int key;
+        int gpButton = -1;
         bool held = false; // true = polled (held modifier), false = event (pressed once)
         bool listening = false;
+        bool listeningPad = false;
     };
     std::vector<KeyBinding> keybindings;
 
@@ -1564,11 +1572,29 @@ private:
         KB_MOVE_BOOST = 5,  // held
         KB_MOVE_FINE = 6,   // held
         KB_CINEMATIC = 7,   // event — toggles camera drift mode while panning
-        KB_RAISE_ELEV = 8,  // Q — held — raise observer above terrain
-        KB_LOWER_ELEV = 9,  // E — held — lower observer toward terrain
+        KB_RAISE_ELEV = 8,  // Q — held — raise observer above terrain (gamepad: analog right trigger, see gpElevRaise, not this binding's gpButton)
+        KB_LOWER_ELEV = 9,  // E — held — lower observer toward terrain (gamepad: analog left trigger, see gpElevLower)
         KB_RESET_ELEV = 10, // Z — event — snap observer back to terrain elevation
-        KB_COUNT = 11,
+        KB_ZOOM_IN = 11,    // held — narrows FOV (zoom in)
+        KB_ZOOM_OUT = 12,   // held — widens FOV (zoom out)
+        KB_ZOOM_RESET = 13, // event — snap FOV back to default
+        KB_SELECT_SAT = 14, // event — select the satellite nearest the center of the screen
+        KB_COUNT = 15,
     };
+
+    // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
+    // (keyboard) and pollGamepad() (gamepad edge-detect) so the two input paths can never
+    // drift apart. No-op for held bindings (MOVE_BOOST/FINE, RAISE/LOWER_ELEV, ZOOM_IN/OUT):
+    // those are polled directly, not dispatched.
+    void dispatchKeyAction(int bindIdx);
+
+    // Polled once per frame from recordCompute(). Scans for a connected gamepad, edge-detects
+    // event-style button presses (dispatchKeyAction) and rebind capture (listeningPad), and
+    // fills gpMoveFwd/gpMoveRight/gpLookYawDeg/gpLookPitchDeg from the sticks for the
+    // movement/look code in recordCompute()/buildUI() to consume.
+    void pollGamepad(float dt);
+    // True if the gamepad button bound to keybindings[bindIdx] is currently held down.
+    bool gpHeld(int bindIdx) const;
 
     // ── ECI → ENU rotation (updated each frame in updatePositions) ────────────
     // Encodes the surface-fixed observer's local frame in ECI coordinates.
@@ -1637,6 +1663,23 @@ private:
     int64_t orbitEpochDay = 0;
     double orbitEpochSec = 0.0;
 
+    // ── Gamepad state (Xbox controller support, works the same over Bluetooth or USB —
+    //    Windows exposes both as an XInput device, which GLFW 3.4's joystick backend already
+    //    talks to) ────────────────────────────────────────────────────────────────
+    // GLFW joystick id of the active gamepad; -1 = none connected. Re-scanned in pollGamepad()
+    // whenever it goes stale (disconnect), so plug-in/plug-out works without a restart.
+    int gamepadId = -1;
+    GLFWgamepadstate gpState{};                                     // last frame's full state (for held-button checks in recordCompute)
+    unsigned char prevGpButtons[GLFW_GAMEPAD_BUTTON_LAST + 1] = {}; // previous frame's buttons, for edge detection
+    float gpMoveFwd = 0.0f, gpMoveRight = 0.0f;       // left stick, deadzoned, [-1,1] — combines additively with WASD
+    float gpLookYawDeg = 0.0f, gpLookPitchDeg = 0.0f; // right stick, this-frame look delta in degrees (already dt-scaled)
+    // Analog triggers for elevation — deliberately NOT part of the keybindings/gpButton
+    // rebind system (triggers are axes, not digital buttons; same reasoning as WASD/sticks
+    // not being rebindable). [0,1] pressure, combined via max() with the (still rebindable)
+    // digital KB_RAISE_ELEV/KB_LOWER_ELEV state in recordCompute's elevation block, so
+    // "pressure corresponds to vertical speed."
+    float gpElevRaise = 0.0f, gpElevLower = 0.0f;
+
     // ── Mouse state / window handle ───────────────────────────────────────────
     GLFWwindow *win = nullptr;
     int windowedX = 100, windowedY = 100;  // saved windowed position (for restore)
@@ -1677,7 +1720,8 @@ private:
     bool hovMusicVolPlus = false;
     bool hovSfxVolMinus = false;
     bool hovSfxVolPlus = false;
-    bool hovRebind[KB_COUNT] = {}; // per keybinding row — sized to match keybindings vector
+    bool hovRebind[KB_COUNT] = {};    // per keybinding row — sized to match keybindings vector
+    bool hovRebindPad[KB_COUNT] = {}; // per keybinding row, gamepad-button rebind button
     bool hovFullscreen = false;
     bool hovSaveSnapshot = false;
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button

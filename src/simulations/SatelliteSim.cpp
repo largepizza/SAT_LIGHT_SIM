@@ -122,21 +122,28 @@ void SatelliteSim::init(VulkanContext &ctx)
 
     // Order must match the KB_* enum in SatelliteSim.h.
     // held=true  → polled every frame in recordCompute (modifier/held keys)
-    // held=false → fired once in onKey (toggle/event keys)
+    // held=false → fired once in onKey/pollGamepad (toggle/event keys)
+    // gpButton   → default Xbox-controller binding; -1 = unbound (user can still bind one
+    //              in the settings window). KB_CINEMATIC is left unbound by default since
+    //              it's a mouse-drag-flavored feature (see dispatchKeyAction).
     keybindings = {
-        {"Toggle UI", GLFW_KEY_TAB, false, false},          // KB_TOGGLE_UI
-        {"Pause/Resume", GLFW_KEY_SPACE, false, false},     // KB_PAUSE
-        {"Slow Down", GLFW_KEY_COMMA, false, false},        // KB_SLOWER
-        {"Speed Up", GLFW_KEY_PERIOD, false, false},        // KB_FASTER
-        {"Reverse Time", GLFW_KEY_R, false, false},         // KB_REVERSE
-        {"Move Fast", GLFW_KEY_LEFT_SHIFT, true, false},    // KB_MOVE_BOOST (held)
-        {"Move Fine", GLFW_KEY_LEFT_CONTROL, true, false},  // KB_MOVE_FINE  (held)
-        {"Cinematic Pan", GLFW_KEY_LEFT_ALT, false, false}, // KB_CINEMATIC  (event, toggle)
-        {"Raise Elevation", GLFW_KEY_Q, true, false},       // KB_RAISE_ELEV (held)
-        {"Lower Elevation", GLFW_KEY_E, true, false},       // KB_LOWER_ELEV (held)
-        {"Reset Elevation", GLFW_KEY_Z, false, false},      // KB_RESET_ELEV (event)
+        {"Toggle UI", GLFW_KEY_TAB, GLFW_GAMEPAD_BUTTON_BACK, false, false},          // KB_TOGGLE_UI
+        {"Pause/Resume", GLFW_KEY_SPACE, GLFW_GAMEPAD_BUTTON_START, false, false},    // KB_PAUSE
+        {"Slow Down", GLFW_KEY_COMMA, GLFW_GAMEPAD_BUTTON_DPAD_LEFT, false, false},   // KB_SLOWER
+        {"Speed Up", GLFW_KEY_PERIOD, GLFW_GAMEPAD_BUTTON_DPAD_RIGHT, false, false},  // KB_FASTER
+        {"Reverse Time", GLFW_KEY_R, GLFW_GAMEPAD_BUTTON_DPAD_UP, false, false},      // KB_REVERSE
+        {"Move Fast", GLFW_KEY_LEFT_SHIFT, GLFW_GAMEPAD_BUTTON_LEFT_THUMB, true, false},   // KB_MOVE_BOOST (held)
+        {"Move Fine", GLFW_KEY_LEFT_CONTROL, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB, true, false}, // KB_MOVE_FINE  (held)
+        {"Cinematic Pan", GLFW_KEY_LEFT_ALT, -1, false, false},                       // KB_CINEMATIC  (event, toggle)
+        {"Raise Elevation", GLFW_KEY_Q, -1, true, false},                             // KB_RAISE_ELEV (held) — gamepad is the analog right trigger, see gpElevRaise
+        {"Lower Elevation", GLFW_KEY_E, -1, true, false},                             // KB_LOWER_ELEV (held) — gamepad is the analog left trigger, see gpElevLower
+        {"Reset Elevation", GLFW_KEY_Z, -1, false, false},                            // KB_RESET_ELEV (event) — Y reassigned to Reset Zoom below
+        {"Zoom In", GLFW_KEY_EQUAL, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER, true, false},   // KB_ZOOM_IN    (held)
+        {"Zoom Out", GLFW_KEY_MINUS, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER, true, false},   // KB_ZOOM_OUT   (held)
+        {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_Y, false, false},              // KB_ZOOM_RESET (event)
+        {"Select Satellite", GLFW_KEY_F, GLFW_GAMEPAD_BUTTON_A, false, false},        // KB_SELECT_SAT (event) — center-of-screen pick
     };
-    static_assert(KB_COUNT == 11, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 15, "KB enum and keybindings initializer are out of sync");
 
     createBuffers(ctx);
     createCloudNoisePipeline(ctx);
@@ -355,9 +362,121 @@ void SatelliteSim::updateGpuTimingStats(VulkanContext &ctx)
     gpuMsTotalSmoothed = glm::mix(gpuMsTotalSmoothed, (float)(t[8] - t[0]), kAlpha);
 }
 
+bool SatelliteSim::gpHeld(int bindIdx) const
+{
+    if (gamepadId < 0 || bindIdx < 0 || bindIdx >= (int)keybindings.size())
+        return false;
+    int b = keybindings[bindIdx].gpButton;
+    return b >= 0 && b <= GLFW_GAMEPAD_BUTTON_LAST && gpState.buttons[b] == GLFW_PRESS;
+}
+
+// Polled once per frame, before anything else in recordCompute reads gamepad state.
+// Mirrors onKey()'s dispatch/rebind-capture for the gamepad's digital buttons, and fills
+// gpMoveFwd/gpMoveRight/gpLookYawDeg/gpLookPitchDeg from the sticks — consumed later this
+// same recordCompute call (movement) and by buildUI() next frame (look; buildUI runs before
+// recordCompute in the frame loop, so the stick's contribution is one frame behind the
+// mouse's, same as any other cross-frame state here — imperceptible for continuous input).
+void SatelliteSim::pollGamepad(float dt)
+{
+    gpMoveFwd = gpMoveRight = 0.0f;
+    gpLookYawDeg = gpLookPitchDeg = 0.0f;
+    gpElevRaise = gpElevLower = 0.0f;
+
+    if (gamepadId < 0 || !glfwJoystickIsGamepad(gamepadId))
+    {
+        // Rescan — handles both first connection and hot-swap after a disconnect.
+        gamepadId = -1;
+        for (int j = GLFW_JOYSTICK_1; j <= GLFW_JOYSTICK_LAST; ++j)
+        {
+            if (glfwJoystickIsGamepad(j))
+            {
+                gamepadId = j;
+                break;
+            }
+        }
+        if (gamepadId < 0)
+            return;
+        memset(prevGpButtons, GLFW_RELEASE, sizeof(prevGpButtons));
+        memset(&gpState, 0, sizeof(gpState));
+    }
+
+    GLFWgamepadstate state;
+    if (!glfwGetGamepadState(gamepadId, &state))
+        return;
+
+    // Rebind capture: if a binding is waiting for a pad button, claim the first newly-pressed
+    // one and stop — mirrors onKey()'s keyboard capture, including consuming this poll so the
+    // same button press can't also fire as a normal action below.
+    for (auto &kb : keybindings)
+    {
+        if (!kb.listeningPad)
+            continue;
+        for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; ++b)
+        {
+            bool down = state.buttons[b] == GLFW_PRESS;
+            bool wasDown = prevGpButtons[b] == GLFW_PRESS;
+            if (down && !wasDown)
+            {
+                kb.gpButton = b;
+                kb.listeningPad = false;
+                memcpy(prevGpButtons, state.buttons, sizeof(prevGpButtons));
+                gpState = state;
+                return;
+            }
+        }
+        break; // only one binding can listen at a time (enforced by the settings UI)
+    }
+
+    // Edge-triggered (event) actions.
+    for (size_t i = 0; i < keybindings.size(); ++i)
+    {
+        const KeyBinding &kb = keybindings[i];
+        if (kb.held || kb.gpButton < 0 || kb.gpButton > GLFW_GAMEPAD_BUTTON_LAST)
+            continue;
+        bool down = state.buttons[kb.gpButton] == GLFW_PRESS;
+        bool wasDown = prevGpButtons[kb.gpButton] == GLFW_PRESS;
+        if (down && !wasDown)
+            dispatchKeyAction((int)i);
+    }
+
+    memcpy(prevGpButtons, state.buttons, sizeof(prevGpButtons));
+    gpState = state; // held-button checks (gpHeld) read this later in recordCompute
+
+    auto deadzone = [](float v, float dz)
+    {
+        float a = fabsf(v);
+        if (a < dz)
+            return 0.0f;
+        return copysignf((a - dz) / (1.0f - dz), v);
+    };
+
+    // Left stick: forward/right, additive with WASD in recordCompute's movement block.
+    gpMoveFwd = -deadzone(state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y], 0.2f); // stick forward (up) = negative axis Y
+    gpMoveRight = deadzone(state.axes[GLFW_GAMEPAD_AXIS_LEFT_X], 0.2f);
+
+    // Right stick: look, applied unconditionally in buildUI (no RMB-capture concept for a
+    // controller — there's no cursor to hide). Rate-based, so scale by dt here; mouse deltas
+    // are already frame-rate independent (raw pixel deltas), gamepad deflection is not.
+    constexpr float kGamepadLookDegPerSec = 90.0f;
+    gpLookYawDeg = deadzone(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_X], 0.15f) * kGamepadLookDegPerSec * dt;
+    gpLookPitchDeg = deadzone(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y], 0.15f) * kGamepadLookDegPerSec * dt;
+
+    // Triggers: elevation pressure. GLFW's standardized gamepad axes are documented as -1
+    // (released) to +1 (fully pressed), so remap to [0,1]; small deadzone at the released end
+    // only (not a symmetric deadzone — a trigger has no "center" to null out).
+    auto triggerPressure = [](float axis)
+    {
+        float t = glm::clamp((axis + 1.0f) * 0.5f, 0.0f, 1.0f);
+        return t < 0.02f ? 0.0f : t;
+    };
+    gpElevRaise = triggerPressure(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER]);
+    gpElevLower = triggerPressure(state.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER]);
+}
+
 void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
 {
     updateGpuTimingStats(ctx);
+    pollGamepad(dt);
 
     // ── WASD surface navigation ───────────────────────────────────────────────
     // Pure 3D ECEF — no lat/lon arithmetic, no gimbal lock, works at any latitude.
@@ -369,13 +488,17 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // After each step obsFacing is parallel-transported to stay tangent at newPos.
     if (win)
     {
-        bool boost = win && glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS;
-        bool fine = win && glfwGetKey(win, keybindings[KB_MOVE_FINE].key) == GLFW_PRESS;
+        bool boost = (win && glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS) || gpHeld(KB_MOVE_BOOST);
+        bool fine = (win && glfwGetKey(win, keybindings[KB_MOVE_FINE].key) == GLFW_PRESS) || gpHeld(KB_MOVE_FINE);
         float speed = boost ? 0.5f : fine ? 0.005f
                                           : 0.08f; // boost = fast, fine = slow, default = normal
 
         float fwd = (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS ? 1.0f : 0.0f) - (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS ? 1.0f : 0.0f);
         float right = (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS ? 1.0f : 0.0f) - (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS ? 1.0f : 0.0f);
+        // Left stick augments WASD rather than replacing it, so both can be used together;
+        // clamp keeps combined input from exceeding the analog range WASD alone already implied.
+        fwd = glm::clamp(fwd + gpMoveFwd, -1.0f, 1.0f);
+        right = glm::clamp(right + gpMoveRight, -1.0f, 1.0f);
 
         if (fwd != 0.0f || right != 0.0f)
         {
@@ -394,19 +517,33 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
 
         // Q/E: raise/lower observer relative to terrain; rate scales with height offset
-        // (faster when high up, 10m/s minimum near the surface).
-        bool raise = glfwGetKey(win, keybindings[KB_RAISE_ELEV].key) == GLFW_PRESS;
-        bool lower = glfwGetKey(win, keybindings[KB_LOWER_ELEV].key) == GLFW_PRESS;
-        if (raise || lower)
+        // (faster when high up, 10m/s minimum near the surface). Digital sources (keyboard,
+        // or a gamepad button if the user rebinds one) contribute full-speed (1.0); the
+        // gamepad's default control is the analog trigger pressure instead — combined via
+        // max() so pressure directly scales vertical speed without needing its own rate curve.
+        float raiseAmt = std::max((glfwGetKey(win, keybindings[KB_RAISE_ELEV].key) == GLFW_PRESS || gpHeld(KB_RAISE_ELEV)) ? 1.0f : 0.0f, gpElevRaise);
+        float lowerAmt = std::max((glfwGetKey(win, keybindings[KB_LOWER_ELEV].key) == GLFW_PRESS || gpHeld(KB_LOWER_ELEV)) ? 1.0f : 0.0f, gpElevLower);
+        if (raiseAmt > 0.0f || lowerAmt > 0.0f)
         {
             float rate = std::max(10.0f, obsHeightOffset * 0.5f);
             if (boost)
                 rate *= 10.0f;
             if (fine)
                 rate *= 0.1f;
-            obsHeightOffset += (raise ? 1.0f : -1.0f) * rate * dt;
+            obsHeightOffset += (raiseAmt - lowerAmt) * rate * dt;
             // Clamp so observer never sinks below the terrain surface (only reset via Z)
             obsHeightOffset = std::max(0.0f, obsHeightOffset);
+        }
+
+        // Zoom in/out (held): narrows/widens FOV at a fixed rate. Independent of boost/fine —
+        // those are movement-speed modifiers, not a zoom concept.
+        bool zoomIn = (glfwGetKey(win, keybindings[KB_ZOOM_IN].key) == GLFW_PRESS) || gpHeld(KB_ZOOM_IN);
+        bool zoomOut = (glfwGetKey(win, keybindings[KB_ZOOM_OUT].key) == GLFW_PRESS) || gpHeld(KB_ZOOM_OUT);
+        if (zoomIn || zoomOut)
+        {
+            constexpr float kZoomRateDegPerSec = 40.0f;
+            camera.fovYDeg += (zoomOut ? 1.0f : -1.0f) * kZoomRateDegPerSec * dt;
+            camera.fovYDeg = glm::clamp(camera.fovYDeg, 10.0f, 120.0f);
         }
     }
 
@@ -1955,6 +2092,63 @@ void SatelliteSim::cleanup(VkDevice device)
 }
 
 // ─── onKey ────────────────────────────────────────────────────────────────────
+// Shared event-action dispatch — see declaration in SatelliteSim.h for why this is split
+// out of onKey (used by both the keyboard callback and pollGamepad's button edge-detect).
+void SatelliteSim::dispatchKeyAction(int bindIdx)
+{
+    switch (bindIdx)
+    {
+    case KB_TOGGLE_UI:
+        uiVisible = !uiVisible;
+        break;
+    case KB_PAUSE:
+        timePaused = !timePaused;
+        break;
+    case KB_SLOWER:
+        timeScaleIdx = std::max(0, timeScaleIdx - 1);
+        break;
+    case KB_FASTER:
+        timeScaleIdx = std::min(kNumTimeScales - 1, timeScaleIdx + 1);
+        break;
+    case KB_REVERSE:
+        toggleTimeDirection();
+        break;
+    case KB_CINEMATIC:
+        // Mouse-drag-flavored feature (RMB capture is required to mean anything); gated
+        // the same way regardless of whether the press came from a key or a gamepad button.
+        if (camera.captured)
+            cinematicMode = !cinematicMode;
+        break;
+    case KB_RESET_ELEV:
+        obsHeightOffset = 0.0f;
+        break;
+    case KB_ZOOM_RESET:
+        camera.fovYDeg = SkyCamera{}.fovYDeg; // reads the struct's own default rather than duplicating the literal
+        break;
+    case KB_SELECT_SAT:
+    {
+        // Center-of-screen equivalent of the mouse left-click pick in buildUI — same
+        // pickSatelliteAt/selectedSatIndex path, just at (screenW/2, screenH/2) instead of
+        // the cursor. ctx_ (set in init()) gives swapExtent without needing a UIInput here.
+        if (!ctx_)
+            break;
+        float w = (float)ctx_->swapExtent.width;
+        float h = (float)ctx_->swapExtent.height;
+        int hit = pickSatelliteAt(w * 0.5f, h * 0.5f, w, h);
+        if (hit != selectedSatIndex)
+        {
+            selectedSatIndex = hit;
+            formatSelectedSatInfo();
+            if (hit >= 0 && audio_)
+                audio_->playSfx("assets/sound/ui/buttonclick.wav");
+        }
+        break;
+    }
+    default:
+        break; // KB_MOVE_BOOST/FINE, KB_RAISE_ELEV/LOWER_ELEV, KB_ZOOM_IN/OUT are held keys — polled directly.
+    }
+}
+
 void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
 {
     win = w;
@@ -1967,16 +2161,20 @@ void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
         return;
     }
 
-    // If any binding is listening, capture this key press and assign it.
+    // If any binding is listening for a rebind (keyboard or gamepad), capture/cancel here.
+    // Esc cancels either kind; a non-Esc key only assigns kb.key (a keyboard press can't
+    // satisfy a listeningPad row — the user must press a controller button for that, handled
+    // in pollGamepad — but it still consumes the event so it doesn't leak through to dispatch).
     for (auto &kb : keybindings)
     {
-        if (!kb.listening)
+        if (!kb.listening && !kb.listeningPad)
             continue;
         if (key == GLFW_KEY_ESCAPE)
         {
-            kb.listening = false; // cancel rebind
+            kb.listening = false;
+            kb.listeningPad = false;
         }
-        else
+        else if (kb.listening)
         {
             kb.key = key;
             kb.listening = false;
@@ -1985,26 +2183,9 @@ void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
     }
 
     // Dispatch via keybindings array
-    auto pressed = [&](int bindIdx)
-    {
-        return bindIdx < (int)keybindings.size() && key == keybindings[bindIdx].key;
-    };
-
-    if (pressed(KB_TOGGLE_UI))
-        uiVisible = !uiVisible;
-    if (pressed(KB_PAUSE))
-        timePaused = !timePaused;
-    if (pressed(KB_SLOWER))
-        timeScaleIdx = std::max(0, timeScaleIdx - 1);
-    if (pressed(KB_FASTER))
-        timeScaleIdx = std::min(kNumTimeScales - 1, timeScaleIdx + 1);
-    if (pressed(KB_REVERSE))
-        toggleTimeDirection();
-    if (pressed(KB_CINEMATIC) && camera.captured)
-        cinematicMode = !cinematicMode;
-    if (pressed(KB_RESET_ELEV))
-        obsHeightOffset = 0.0f;
-    // KB_MOVE_BOOST, KB_MOVE_FINE, KB_RAISE_ELEV, KB_LOWER_ELEV are held keys — polled in recordCompute.
+    for (size_t i = 0; i < keybindings.size(); ++i)
+        if (key == keybindings[i].key)
+            dispatchKeyAction((int)i);
 
     // F11: toggle fullscreen
     if (key == GLFW_KEY_F11)

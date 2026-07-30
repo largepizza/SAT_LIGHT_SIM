@@ -143,6 +143,47 @@ static const char *keyDisplayName(int key)
     }
 }
 
+// Helper: short display name for a GLFW gamepad button code (used in settings window).
+// -1 (unbound) is handled by the caller, not here.
+static const char *gamepadButtonDisplayName(int button)
+{
+    switch (button)
+    {
+    case GLFW_GAMEPAD_BUTTON_A:
+        return "A";
+    case GLFW_GAMEPAD_BUTTON_B:
+        return "B";
+    case GLFW_GAMEPAD_BUTTON_X:
+        return "X";
+    case GLFW_GAMEPAD_BUTTON_Y:
+        return "Y";
+    case GLFW_GAMEPAD_BUTTON_LEFT_BUMPER:
+        return "LB";
+    case GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER:
+        return "RB";
+    case GLFW_GAMEPAD_BUTTON_BACK:
+        return "Back";
+    case GLFW_GAMEPAD_BUTTON_START:
+        return "Start";
+    case GLFW_GAMEPAD_BUTTON_GUIDE:
+        return "Guide";
+    case GLFW_GAMEPAD_BUTTON_LEFT_THUMB:
+        return "LS";
+    case GLFW_GAMEPAD_BUTTON_RIGHT_THUMB:
+        return "RS";
+    case GLFW_GAMEPAD_BUTTON_DPAD_UP:
+        return "D-Up";
+    case GLFW_GAMEPAD_BUTTON_DPAD_RIGHT:
+        return "D-Right";
+    case GLFW_GAMEPAD_BUTTON_DPAD_DOWN:
+        return "D-Down";
+    case GLFW_GAMEPAD_BUTTON_DPAD_LEFT:
+        return "D-Left";
+    default:
+        return "?";
+    }
+}
+
 // ── UI color palette ──────────────────────────────────────────────────────────
 // Edit here to restyle the entire UI. All buildUI colors reference these names.
 namespace Pal
@@ -334,6 +375,17 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                 cinematicPitchVel = 0.0f;
                 cinematicActive = false;
             }
+        }
+
+        // Gamepad look (right stick): applied unconditionally, independent of the mouse/RMB
+        // capture logic above — a controller has no cursor to capture, so it always drives
+        // the camera when deflected. Filled by pollGamepad() in the previous recordCompute.
+        if (gpLookYawDeg != 0.0f || gpLookPitchDeg != 0.0f)
+        {
+            float angle = glm::radians(-gpLookYawDeg);
+            glm::vec3 leftDir = glm::cross(obsDir, obsFacing);
+            obsFacing = glm::normalize(cosf(angle) * obsFacing + sinf(angle) * leftDir);
+            camera.elDeg = glm::clamp(camera.elDeg - gpLookPitchDeg, -89.0f, 89.0f);
         }
 
         // Derive camera.azDeg from obsFacing projected into the local Earth-fixed ENU.
@@ -1179,12 +1231,14 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
 void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
 {
     static char kbKeyBuf[KB_COUNT][16];
+    static char kbPadBuf[KB_COUNT][16];
     for (int ki = 0; ki < (int)keybindings.size() && ki < KB_COUNT; ++ki)
     {
         KeyBinding &kb = keybindings[ki];
         snprintf(kbKeyBuf[ki], sizeof(kbKeyBuf[ki]), "[%s]", keyDisplayName(kb.key));
+        snprintf(kbPadBuf[ki], sizeof(kbPadBuf[ki]), "[%s]", kb.gpButton >= 0 ? gamepadButtonDisplayName(kb.gpButton) : "-");
 
-        Clay_Color rowBg = kb.listening
+        Clay_Color rowBg = (kb.listening || kb.listeningPad)
                                ? Pal::listenRow
                                : Clay_Color{0, 0, 0, 0};
         CLAY(CLAY_IDI("KbRow", ki), {.layout = {
@@ -1231,10 +1285,50 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
                 if (hovRebind[ki] && inp.lmbPressed)
                 {
                     for (auto &other : keybindings)
+                    {
                         other.listening = false;
+                        other.listeningPad = false;
+                    }
                     kb.listening = true;
                 }
                 CLAY_TEXT(kb.listening ? CLAY_STRING("PRESS KEY") : CLAY_STRING("Rebind"),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(10)}));
+            }
+
+            CLAY(CLAY_IDI("KbPad", ki), {.layout = {
+                                             .sizing = {CLAY_SIZING_FIXED(70), CLAY_SIZING_FIT(0)}}})
+            {
+                Clay_String padStr{false, (int32_t)strlen(kbPadBuf[ki]), kbPadBuf[ki]};
+                Clay_Color padCol = kb.listeningPad
+                                         ? Pal::listenKey
+                                         : Pal::keyText;
+                CLAY_TEXT(padStr,
+                          CLAY_TEXT_CONFIG({.textColor = padCol, .fontSize = fs(13)}));
+            }
+
+            Clay_Color rebindPadBg = kb.listeningPad
+                                          ? Pal::listenBtn
+                                          : (hovRebindPad[ki] ? Pal::btnHover : Pal::btnIdle);
+            CLAY(CLAY_IDI("KbRebindPad", ki), {.layout = {
+                                                   .sizing = {CLAY_SIZING_FIXED(90), CLAY_SIZING_FIXED(20)},
+                                                   .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                               .backgroundColor = rebindPadBg,
+                                               .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovRebindPad[ki]);
+                sndClick(n, inp.lmbPressed);
+                hovRebindPad[ki] = n;
+                if (hovRebindPad[ki] && inp.lmbPressed)
+                {
+                    for (auto &other : keybindings)
+                    {
+                        other.listening = false;
+                        other.listeningPad = false;
+                    }
+                    kb.listeningPad = true;
+                }
+                CLAY_TEXT(kb.listeningPad ? CLAY_STRING("PRESS PAD") : CLAY_STRING("Bind Pad"),
                           CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(10)}));
             }
         }
@@ -2119,14 +2213,17 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         int kbIdx;       // valid only if key == nullptr
     };
     CtrlRow rows[] = {
-        {"Move", "WASD", -1},
-        {"Look around", "Right-click drag", -1},
+        {"Move", "WASD / L stick", -1},
+        {"Look around", "Right-click drag / R stick", -1},
         {"Zoom (FOV)", "Scroll wheel", -1},
+        {keybindings[KB_ZOOM_IN].action, nullptr, KB_ZOOM_IN},
+        {keybindings[KB_ZOOM_OUT].action, nullptr, KB_ZOOM_OUT},
+        {keybindings[KB_ZOOM_RESET].action, nullptr, KB_ZOOM_RESET},
         {keybindings[KB_MOVE_BOOST].action, nullptr, KB_MOVE_BOOST},
         {keybindings[KB_MOVE_FINE].action, nullptr, KB_MOVE_FINE},
-        {keybindings[KB_RAISE_ELEV].action, nullptr, KB_RAISE_ELEV},
-        {keybindings[KB_LOWER_ELEV].action, nullptr, KB_LOWER_ELEV},
+        {"Raise/Lower Elevation", "Q/E / RT/LT trigger", -1},
         {keybindings[KB_RESET_ELEV].action, nullptr, KB_RESET_ELEV},
+        {keybindings[KB_SELECT_SAT].action, nullptr, KB_SELECT_SAT},
         {keybindings[KB_CINEMATIC].action, nullptr, KB_CINEMATIC},
         {keybindings[KB_PAUSE].action, nullptr, KB_PAUSE},
         {keybindings[KB_SLOWER].action, nullptr, KB_SLOWER},
@@ -2142,14 +2239,18 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
                                              .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                          .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
     {
-        static char keyBufs[14][16];
+        static char keyBufs[KB_COUNT + 3][32];
         int idx = 0;
         for (auto &row : rows)
         {
             const char *keyText = row.key;
             if (!keyText)
             {
-                snprintf(keyBufs[idx], sizeof(keyBufs[idx]), "%s", keyDisplayName(keybindings[row.kbIdx].key));
+                const KeyBinding &kb = keybindings[row.kbIdx];
+                if (kb.gpButton >= 0)
+                    snprintf(keyBufs[idx], sizeof(keyBufs[idx]), "%s / %s", keyDisplayName(kb.key), gamepadButtonDisplayName(kb.gpButton));
+                else
+                    snprintf(keyBufs[idx], sizeof(keyBufs[idx]), "%s", keyDisplayName(kb.key));
                 keyText = keyBufs[idx];
             }
             CLAY(CLAY_IDI("CtrlRow", idx), {.layout = {
@@ -2359,15 +2460,28 @@ void SatelliteSim::loadSettings()
 
     if (j.contains("controls") && j["controls"].contains("keybindings"))
     {
-        std::unordered_map<std::string, int> actionKey;
+        // hasGp distinguishes "no gp_button key in this settings.json" (older file, predating
+        // gamepad support — keep the compiled-in default gpButton) from an explicit rebind.
+        struct LoadedBinding
+        {
+            int key;
+            int gpButton;
+            bool hasGp;
+        };
+        std::unordered_map<std::string, LoadedBinding> actionKey;
         for (const auto &kb : j["controls"]["keybindings"])
             if (kb.contains("action") && kb.contains("key"))
-                actionKey[kb["action"].get<std::string>()] = kb["key"].get<int>();
+                actionKey[kb["action"].get<std::string>()] = {
+                    kb["key"].get<int>(), kb.value("gp_button", -1), kb.contains("gp_button")};
         for (auto &kb : keybindings)
         {
             auto it = actionKey.find(kb.action);
             if (it != actionKey.end())
-                kb.key = it->second;
+            {
+                kb.key = it->second.key;
+                if (it->second.hasGp)
+                    kb.gpButton = it->second.gpButton;
+            }
         }
     }
 
@@ -2573,7 +2687,7 @@ void SatelliteSim::saveSettings()
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)
-        kbArr.push_back({{"action", kb.action}, {"key", kb.key}});
+        kbArr.push_back({{"action", kb.action}, {"key", kb.key}, {"gp_button", kb.gpButton}});
     j["controls"]["keybindings"] = kbArr;
 
     nlohmann::json constArr = nlohmann::json::array();
