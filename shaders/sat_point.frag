@@ -13,8 +13,10 @@
 //           no smoothstep needed, no hard circular edge visible.
 //           Zero for intensity ≤ 1; fades in log-scale above that.
 //
-// Lens flare corona + ghost artifacts are rendered by sat_sky.frag via lensFlare()
-// using per-satellite positions from glowBuf.flareEntries.
+// The soft glow + godray corona (flare architecture overhaul) is rendered by a separate
+// render-to-texture + blur/streak pipeline (flare_source.vert/.frag, composited in
+// flare_composite.frag) that draws from the same GpuSatVisible data as this dot sprite. This
+// shader's own two-Gaussian falloff is unrelated to that pipeline.
 //
 // Output is (rgb*brightness, brightness) for additive blend accumulation.
 // ─────────────────────────────────────────────────────────────────────────────

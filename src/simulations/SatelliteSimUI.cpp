@@ -1568,12 +1568,13 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // That makes the entire shared-depth architecture a single A/B checkbox.
     CLAY_TEXT(CLAY_STRING("KNOCKOUT PROFILING (disables rendering correctness for cost isolation)"),
               CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
-    static const char *kDebugToggleLabels[11] = {
+    static const char *kDebugToggleLabels[12] = {
         "Terrain march", "Atmosphere loop (N_VIEW)", "Sun optical depth (N_LIGHT)", "Ocean sky reflection",
         "Airglow red (16-step march)", "Aurora curtain march", "Cloud self-shadow cone",
-        "Reflect-Orbital beams", "Cloud shadow (per-pixel)", "Beam cloud block dispatch", "Scene depth pass"};
-    static const uint32_t kDebugToggleBits[11] = {1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u, 512u, 1024u};
-    for (int ti = 0; ti < 11; ++ti)
+        "Reflect-Orbital beams", "Cloud shadow (per-pixel)", "Beam cloud block dispatch", "Scene depth pass",
+        "Fog layer (C11)"};
+    static const uint32_t kDebugToggleBits[12] = {1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u, 512u, 1024u, 2048u};
+    for (int ti = 0; ti < 12; ++ti)
     {
         bool on = (debugDisableMask & kDebugToggleBits[ti]) != 0u;
         Clay_String lblStr{false, (int32_t)strlen(kDebugToggleLabels[ti]), kDebugToggleLabels[ti]};
@@ -1731,7 +1732,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[9][12];
+    static char photoBufs[11][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -1742,6 +1743,10 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"Pollution gain", &lightPollutionGain, 0.0f, 100.0f, 0.1f, "%.2f", 6},
         {"Extinction", &extinctionCoeff, 0.0f, 1.0f, 0.02f, "%.2f", 7},
         {"Sunlit sky vis", &sunlitBgVisibility, 0.0f, 1.0f, 0.01f, "%.2f", 8},
+        // Flare architecture overhaul: replaces the deleted per-pixel flareEntries loop with a
+        // render-to-texture + blur/streak pipeline (see FlareSourcePC's comment in SatelliteSim.h).
+        {"Flare glow gain", &flareGlowGain, 0.0f, 0.01f, 0.0005f, "%.2f", 9},
+        {"Flare streak", &flareStreakGain, 0.0f, 1.0f, 0.02f, "%.2f", 10},
     };
     for (auto &pp : photoParams)
     {
@@ -1967,6 +1972,12 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Cirrus stretch", &cloudCirrusStretch, 1.0f, 10.0f, 0.5f, "%.1f", 11},
         {"Shadow max dist (m)", &cloudShadowMaxDistM, 1000.0f, 60000.0f, 1000.0f, "%.0f", 16},
         {"Render dist (m)", &cloudMaxRenderDistM, 20000.0f, 800000.0f, 10000.0f, "%.0f", 17},
+        // C11 ground fog layer (fogMarchCS, cloud_march.comp) — real volumetric mist shell with
+        // sun/beam godrays. First-pass defaults, expect retuning once seen in-app.
+        {"Fog top altitude (m)", &fogTopAltM, 50.0f, 200000.0f, 50.0f, "%.0f", 55},
+        {"Fog density", &fogDensity, 0.0f, 10.0f, 0.1f, "%.1f", 56},
+        {"Fog coverage", &fogCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 57},
+        {"Fog sun gain", &fogSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 58},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -2001,7 +2012,9 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Beam max range (m)", &beamMaxRangeM, 50000.0f, 2000000.0f, 50000.0f, "%.0f", 41},
         {"Beam sky glow gain", &beamSkyGlowGain, 0.0f, 1.0f, 0.01f, "%.2f", 42},
         {"Mirror slew rate (deg/s)", &mirrorSlewDegPerSec, 1.0f, 60.0f, 1.0f, "%.0f", 43},
-        {"Beam extinction", &beamExtinctionMult, 0.1f, 5.0f, 0.1f, "%.1f", 44},
+        // C12 follow-up #44: slot 44 ("Beam extinction") removed along with the analytic beam
+        // sky tube it tuned — the replacement per-sample beam-cloud term has no separate
+        // extinction exponent. Index 44 deliberately left unused, same pattern as slot 40 above.
         {"Beam glow bleed gain", &beamGlowBleedGain, 0.0f, 0.01f, 0.0001f, "%.2f", 45},
         {"Cloud shadow range (m)", &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
         {"Beam near-field fade (m)", &beamNearFieldFadeM, 1000.0f, 500000.0f, 1000.0f, "%.0f", 46},
@@ -2285,6 +2298,8 @@ void SatelliteSim::loadSettings()
         lightPollutionGain = p.value("light_pollution_gain", lightPollutionGain);
         extinctionCoeff = p.value("extinction_coeff", extinctionCoeff);
         sunlitBgVisibility = p.value("sunlit_bg_visibility", sunlitBgVisibility);
+        flareGlowGain = p.value("flare_glow_gain", flareGlowGain);
+        flareStreakGain = p.value("flare_streak_gain", flareStreakGain);
     }
 
     if (j.contains("display"))
@@ -2428,10 +2443,15 @@ void SatelliteSim::loadSettings()
         beamMaxRangeM = c.value("beam_max_range_m", beamMaxRangeM);
         beamSkyGlowGain = c.value("beam_sky_glow_gain", beamSkyGlowGain);
         mirrorSlewDegPerSec = c.value("mirror_slew_deg_per_sec", mirrorSlewDegPerSec);
-        beamExtinctionMult = c.value("beam_extinction_mult", beamExtinctionMult);
+        // beam_extinction_mult: C12 follow-up #44 — key deliberately no longer read; a stale
+        // value in an old settings.json is simply ignored (no member left to load it into).
         beamGlowBleedGain = c.value("beam_glow_bleed_gain", beamGlowBleedGain);
         cloudShadowRangeM = c.value("cloud_shadow_range_m", cloudShadowRangeM);
         beamNearFieldFadeM = c.value("beam_near_field_fade_m", beamNearFieldFadeM);
+        fogTopAltM = c.value("fog_top_alt_m", fogTopAltM);
+        fogDensity = c.value("fog_density", fogDensity);
+        fogCoverage = c.value("fog_coverage", fogCoverage);
+        fogSunGain = c.value("fog_sun_gain", fogSunGain);
     }
 
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
@@ -2456,7 +2476,9 @@ void SatelliteSim::saveSettings()
         {"moon_suppression", moonSuppression},
         {"light_pollution_gain", lightPollutionGain},
         {"extinction_coeff", extinctionCoeff},
-        {"sunlit_bg_visibility", sunlitBgVisibility}};
+        {"sunlit_bg_visibility", sunlitBgVisibility},
+        {"flare_glow_gain", flareGlowGain},
+        {"flare_streak_gain", flareStreakGain}};
 
     j["display"] = {
         {"ui_scale", uiScale},
@@ -2541,10 +2563,13 @@ void SatelliteSim::saveSettings()
         {"beam_max_range_m", beamMaxRangeM},
         {"beam_sky_glow_gain", beamSkyGlowGain},
         {"mirror_slew_deg_per_sec", mirrorSlewDegPerSec},
-        {"beam_extinction_mult", beamExtinctionMult},
         {"beam_glow_bleed_gain", beamGlowBleedGain},
         {"cloud_shadow_range_m", cloudShadowRangeM},
-        {"beam_near_field_fade_m", beamNearFieldFadeM}};
+        {"beam_near_field_fade_m", beamNearFieldFadeM},
+        {"fog_top_alt_m", fogTopAltM},
+        {"fog_density", fogDensity},
+        {"fog_coverage", fogCoverage},
+        {"fog_sun_gain", fogSunGain}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

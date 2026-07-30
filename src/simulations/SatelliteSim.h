@@ -298,38 +298,67 @@ struct CloudMarchPC
                                // the opposite shape ("enable this normally-off extra"), so it gets
                                // its own field rather than overloading that convention.
     float beamSkyGlowGain;     // offset 140 — C12 follow-up #17: settings-tunable brightness for
-                               // the simple atmospheric-scattering beam glow (dim by default,
-                               // per [[feedback_shared_gain_sliders]] — its own slider, not
-                               // reusing beamGain, which is the physical ground-irradiance term).
-    float daySuppression;      // offset 144 — C12 follow-up #28: same daytime-suppression ratio
-                               // sat_flare.comp already applies to satellites/stars
-                               // (SatelliteSim::daySuppression), mirrored here so beams dim during
-                               // the day too instead of rendering at full brightness regardless.
-    float beamExtinctionMult;  // offset 148 — C12 follow-up #29: settings-tunable multiplier on
-                               // the beam's own optical-depth exponent (default 1.0 = plain
-                               // physical scaling). Separate from BETA_R/BETA_M themselves, which
-                               // stay shared/physical with the rest of the atmosphere — this only
-                               // lets beams redden faster/slower without touching anything else
-                               // that reuses those shared constants.
-    float cloudShadowRangeM;   // offset 152 — distance (m) beyond which the per-pixel terrain
+                               // the beam->cloud illumination term (C12 follow-up #44 — this used
+                               // to gain the old analytic sky tube; it's that term's direct
+                               // successor, not a new concept, so it keeps the same slider, per
+                               // [[feedback_shared_gain_sliders]]).
+    float cloudShadowRangeM;   // offset 144 — distance (m) beyond which the per-pixel terrain
                                // cloud shadow fades out and stops being marched. Restored (with a
                                // new meaning) after the 128x128 grid was deleted: that grid had a
                                // hard extent which accidentally kept its cost near zero from
                                // altitude, and dropping it made the per-pixel replacement run over
                                // the whole screen from orbit. Now a smooth fade rather than a hard
                                // edge — see the call site in cloud_march.comp's main().
-    float beamNearFieldFadeM;  // offset 156 — C12 follow-up #40: settings-tunable radius (meters)
-                               // of the `crossfade` blend zone around a beam's own 3D line — was a
-                               // hardcoded kNearFieldCrossoverM=15000 constant; exposed so the user
-                               // can widen/narrow how far out the tube starts fading as they
-                               // approach a beam (previously untunable, and easy to mistake for "no
-                               // fade happening" when nothing else changes to make it visible).
-}; // total: 160 bytes — grew by cloudShadowRangeM. C12 follow-up #39: beamGlowBleedGain (was
-   // offset 152) had moved to
-   // SatDrawPC — the near-field bleed/march it drove in this file was removed entirely; that same
-   // slider now drives sat_sky.frag's beam sky-illumination wash instead. C12 follow-up #40 reused
-   // the freed offset for beamNearFieldFadeM.
-static_assert(sizeof(CloudMarchPC) == 160, "CloudMarchPC layout mismatch");
+    // (daySuppression/beamExtinctionMult/beamNearFieldFadeM lived here, at offsets 148/152/156 —
+    //  all three existed only for the analytic beam sky-glow block deleted in C12 follow-up #44.
+    //  The new per-sample beam-cloud term gates day/night with the march's own per-sample
+    //  sampleDayness instead (no CPU-fed ratio needed), and has no separate extinction/near-
+    //  field-fade concept — it's a real volumetric term composited through the march's own
+    //  transmittance, not a closed-form stand-in that needed its own fade heuristics. The CPU
+    //  members themselves (daySuppression, beamNearFieldFadeM) are NOT removed — still read
+    //  elsewhere (satellite/star day suppression, SatDrawPC's ground-spot-adjacent crossfade
+    //  radius) — only their now-unused mirror copies in this one struct are gone.
+    //  beamGlowBleedGain, before that, had already moved to SatDrawPC in follow-up #39.)
+}; // total: 148 bytes.
+static_assert(sizeof(CloudMarchPC) == 148, "CloudMarchPC layout mismatch");
+
+// ── Per-target beam->cloud light sources (C12 follow-up #44, host-visible) ───────────────────
+// Built each frame on the CPU in recordCompute() by aggregating ReflectBeamsBuf's per-satellite
+// entries by target position (the same readback loop that already computes lastActiveBeamCount/
+// beamProximityGlow — see that comment for why grouping by targetENU needs no target-ID
+// plumbing). Consumed by cloud_march.comp's cloudMarchCS as a real per-sample volumetric light
+// source, replacing the deleted analytic sky tube. Bounded at kMaxCloudBeamLights regardless of
+// how many satellites are servicing any given target — the structural fix for the per-satellite
+// cost/flicker problems the original C12 follow-up #14/#16 real-march attempt hit.
+// Struct must match BeamCloudLight/BeamCloudLightBuf in cloud_march.comp exactly.
+static constexpr int kMaxCloudBeamLights = 16;
+struct GpuBeamCloudLight
+{
+    glm::vec3 targetENU;    // meters, observer-relative
+    float     aggIntensity; // sum of groundIrradiance*beamGain across every satellite servicing this target
+    float     footprintRadM; // largest ground footprint radius among contributing satellites
+    // blockAltM/blockOpacity (C12 follow-up #46): repurposed from pad0/pad1, zero size change.
+    // Copied straight from a contributing GpuReflectBeam entry — beam_cloud_block.comp already
+    // computes this ONCE PER TARGET PER FRAME (a 12-step vertical march, not per screen sample),
+    // and every satellite servicing the same target reads the identical beamCloudBlockBuf[bestIdx]
+    // value, so no re-aggregation logic is needed beyond copying whichever contributing entry's
+    // value (see SatelliteSim.cpp's beamCloudLightBuf aggregation). Lets cloud_march.comp derive a
+    // height-based directional cutoff (bright above this target's own cloud-opacity altitude, dark
+    // below) as a cheap per-light lookup instead of a second live self-shadow march — see that
+    // follow-up's log entry for why the live march (#45) was too expensive and got replaced.
+    float     blockAltM;    // altitude (m) where this target's column first drops below 50% transmittance
+    float     blockOpacity; // 0 = clear column, 1 = fully opaque
+    float     pad2;         // std430 array-of-vec4-pairs alignment
+};
+static_assert(sizeof(GpuBeamCloudLight) == 32, "GpuBeamCloudLight layout mismatch");
+
+struct GpuBeamCloudLights
+{
+    uint32_t count;
+    uint32_t pad0, pad1, pad2;
+    GpuBeamCloudLight entries[kMaxCloudBeamLights];
+};
+static_assert(sizeof(GpuBeamCloudLights) == 16 + kMaxCloudBeamLights * 32, "GpuBeamCloudLights layout mismatch");
 
 // (CloudShadowPC lived here — push constants for cloud_shadow.comp's 128x128 grid, including the
 //  shadowResidualM texel-snapping term that stopped shadows swimming as the observer moved. The
@@ -365,31 +394,107 @@ struct SceneDepthPC
 }; // total: 96 bytes
 static_assert(sizeof(SceneDepthPC) == 96, "SceneDepthPC layout mismatch");
 
-// Per-frame sky glow + lens flare data, written by sat_flare.comp each frame.
+// Per-frame sky glow data, written by sat_flare.comp each frame.
 //
-//   bins[64]         — Spatial histogram (45°×11.25° cells, 8 az × 8 el).
-//                      atomicMax(floatBitsToUint(effectFlare)) per bin.
-//                      Used for the wide-Gaussian aggregate sky glow pass.
+//   bins[64] — Spatial histogram (45°×11.25° cells, 8 az × 8 el).
+//              atomicMax(floatBitsToUint(effectFlare)) per bin.
+//              Used for the wide-Gaussian aggregate sky glow pass in sat_sky.frag. Unrelated to,
+//              and unaffected by, the flare/corona architecture overhaul below — a separate
+//              phenomenon that happens to share this buffer for historical reasons.
 //
-//   flareCount / flareEntries[32]  — Per-satellite sequential slot claim.
-//                      Used by sat_sky.frag to call lensFlare() at the real
-//                      satellite screen position (spiky corona + ghost artifacts).
+// std430: bins[64]×uint(256).
 //
-// std430: bins[64]×uint(256) + flareCount+pad×uint(16) + flareEntries[8]×vec4(128)
-//       + sectorBright[8]×uint(32) = 432 bytes total.
-// sectorBright[8]: atomicMax per 45°-azimuth sector — stable between frames.
-// flareEntries[8]: last-written direction per sector (xyz only; w unused).
+// (flareCount/flareEntries[kMaxFlares] lived here — a capped atomic-append list of "bright"
+// satellites that sat_sky.frag looped over PER SCREEN PIXEL to draw lens-flare coronas. Deleted in
+// the flare architecture overhaul (see TERRAIN_PLAN.md): raising the cap enough to stop flicker
+// with "100s" of simultaneously-bright Reflect-Orbital satellites made the per-pixel cost scale
+// with it — confirmed by measurement to tank framerate to 24fps. Replaced by actually RENDERING
+// every visible satellite (plus the sun) as a point into a small offscreen texture
+// (flareSourceImg/flareScratchImg, see those members below), which a couple of cheap compute
+// blur/streak passes turn into the corona+godray texture composited once per frame instead of once
+// per pixel per bright satellite. See GpuOceanGlintBuf below for the one consumer that still needed
+// a small, independent capped list of its own.)
 static constexpr int kGlowBins = 64;
-static constexpr int kMaxFlares = 8;
 struct GpuGlowBuf
 {
     uint32_t bins[kGlowBins];
-    uint32_t flareCount; // unused; kept for layout compat
-    uint32_t flarePad[3];
-    glm::vec4 flareEntries[kMaxFlares]; // xyz=ENU dir per sector (last-writer)
-    uint32_t sectorBright[kMaxFlares];  // floatBitsToUint(max effectFlare) per sector
 };
-static_assert(sizeof(GpuGlowBuf) == kGlowBins * 4 + 16 + kMaxFlares * 16 + kMaxFlares * 4, "GpuGlowBuf layout mismatch");
+static_assert(sizeof(GpuGlowBuf) == kGlowBins * 4, "GpuGlowBuf layout mismatch");
+
+// ── Ocean satellite-glint list (flare architecture overhaul) ─────────────────────────────────
+// A small, INDEPENDENT capped atomic-append list — same pattern the old flareEntries used, just
+// decoupled from corona rendering and much smaller, since ocean specular glint is a minor highlight
+// effect, not the primary visibility signal. Written by sat_flare.comp alongside GpuSatVisible;
+// read by sat_sky.frag's ocean-glint block, which ALSO gained cloud + terrain occlusion tests at
+// each entry's own screen position this round (the previous version had none at all).
+static constexpr int kMaxOceanGlints = 32;
+struct GpuOceanGlintBuf
+{
+    uint32_t count;
+    uint32_t pad0, pad1, pad2;
+    glm::vec4 entries[kMaxOceanGlints]; // xyz=ENU dir, w=effectFlare
+};
+static_assert(sizeof(GpuOceanGlintBuf) == 16 + kMaxOceanGlints * 16, "GpuOceanGlintBuf layout mismatch");
+
+// ── Flare/corona render-to-texture pipeline (flare architecture overhaul) ────────────────────
+// Replaces the deleted per-pixel flareEntries loop. Three stages, all inside recordCompute()/
+// recordDraw() (no new Simulation interface hook needed):
+//   1. flare_source.vert/.frag: every visible satellite (from GpuSatVisible, exactly like
+//      sat_point.vert) plus one virtual point for the sun is drawn into a small offscreen target
+//      (flareSourceImg), quarter the swap extent, independent of renderScale (same sizing
+//      rationale as scene_depth.comp/cloud_march.comp's half-res targets — this one goes one step
+//      smaller since it is deliberately going to be blurred, not sampled 1:1). Cloud + terrain
+//      occlusion are tested per-point in the fragment shader (reusing sat_point.frag's existing
+//      technique, plus a new terrain test this pass needs since it has no shared depth buffer of
+//      its own to rely on).
+//   2. flare_blur.comp: one pipeline, three dispatches, ping-ponging between flareSourceImg and
+//      flareScratchImg — two separable-Gaussian passes (corona softness) then one multi-directional
+//      streak pass (the godray mechanism: operates uniformly on the whole buffer, so it naturally
+//      produces shafts from ANY bright, unoccluded region — sun or satellites alike — with no
+//      "which light source" tracking needed).
+//   3. flare_composite.vert/.frag: one additive fullscreen-triangle draw, appended at the end of
+//      recordDraw(), sampling the final blurred/streaked texture into the frame.
+// The sun keeps its existing disc/atmospheric-corona block and its lensFlare() ghost/streak call
+// in sat_sky.frag UNCHANGED — "lens elements" (ghosts, chromatic streaks) stay sun-only, per
+// explicit user decision; it ALSO becomes one bright point in this new pipeline, so it gains real
+// godray shafts through cloud/terrain gaps on top of its existing hand-authored treatment.
+struct FlareSourcePC
+{
+    glm::mat4 skyView;         // offset 0
+    float fovYRad;             // offset 64
+    float aspect;              // offset 68
+    uint32_t satCount;         // offset 72 — gl_VertexIndex >= satCount means "this is the sun"
+    float sunRefIntensity;     // offset 76 — fixed reference brightness for the sun's virtual point
+    glm::vec4 sunDirENU;       // offset 80 — xyz=dir, w=sin(elevation)
+    glm::vec2 screenSizePx;    // offset 96 — THIS pass's own (small) target size, for the fragment
+                               //             shader's occlusion UV — never assume a constant, see
+                               //             the resolution-scaling gotcha this codebase already
+                               //             learned once for sat_sky.frag.
+    float resScale;            // offset 104 — flareExtent / ctx.swapExtent ratio; scales point size
+                               //              down to this smaller target so satellites don't look
+                               //              oversized once the composite upsamples back to full res
+    float pad0;                // offset 108
+}; // total: 112 bytes
+static_assert(sizeof(FlareSourcePC) == 112, "FlareSourcePC layout mismatch");
+
+// Push constants for flare_blur.comp — one pipeline, three dispatches per frame (see the
+// architecture comment above): direction picks which image is source vs destination this
+// dispatch, mode picks horizontal-gaussian / vertical-gaussian / streak.
+struct FlareBlurPC
+{
+    uint32_t direction;  // 0 = read flareSourceImg write flareScratchImg, 1 = reverse
+    uint32_t mode;       // 0 = horizontal gaussian, 1 = vertical gaussian, 2 = streak
+    float streakGain;    // user-tunable streak/godray strength (Settings > Display)
+    float pad0;
+}; // total: 16 bytes
+static_assert(sizeof(FlareBlurPC) == 16, "FlareBlurPC layout mismatch");
+
+// Push constants for flare_composite.frag — the final additive draw into the main frame.
+struct FlareCompositePC
+{
+    float gain; // user-tunable overall glow gain (Settings > Display)
+}; // total: 4 bytes
+static_assert(sizeof(FlareCompositePC) == 4, "FlareCompositePC layout mismatch");
 
 // ── GPU orbital parameters (uploaded once per buildOrbits, device-local) ─────
 // 28 × 4-byte fields = 112 bytes.  All plain floats/uints — no vec3 — so
@@ -674,8 +779,9 @@ struct GpuCloudParams
     float flatSunGainScale;      // same idea for Sun gain: the flat layer is a single multiply
                                   // while the volumetric accumulates through transmittance, so
                                   // the same slider lands ~4x dimmer on the flat path.
-    float pad10;
-    float pad11;
+    float fogTopAltM;            // C11 (repurposed from pad10) — ground fog shell top altitude
+                                  // (m above sea level); see fogMarchCS in cloud_march.comp.
+    float fogDensity;            // C11 (repurposed from pad11) — fog density scale.
     float cloudDistFadeStartM;   // distance-based 3D->2D crossfade: fully volumetric nearer than
                                   // this, fully flat-2D beyond cloudDistFadeEndM. Keyed on the
                                   // per-ray distance to the cloud shell, so it actually bounds the
@@ -683,8 +789,9 @@ struct GpuCloudParams
                                   // and so does nothing from orbit, where that span is just the
                                   // ~9 km shell crossing.
     float cloudDistFadeEndM;
-    float pad12;                 // keep the block 16-byte aligned at 384
-    float pad13;
+    float fogCoverage;           // C11 (repurposed from pad12) — ground fog global coverage gate.
+    float fogSunGain;            // C11 (repurposed from pad13) — fog sun-lit brightness gain,
+                                  // separate from cloud.sunGain per [[feedback_shared_gain_sliders]].
 };
 static_assert(sizeof(GpuCloudParams) == 384, "GpuCloudParams layout mismatch");
 
@@ -866,11 +973,18 @@ private:
     // Reflect-Orbital ground beams (host-visible+coherent; written by sat_orbit.comp, indexed
     // by target identity + atomicMax, zeroed every frame via vkCmdFillBuffer — same pattern as
     // glowBuf, including CPU readback of the previous frame's contents for a diagnostic). Read by
-    // cloud_march.comp (volumetric in-scatter) and sat_sky.frag (ground-spot direct lighting).
-    // See GpuReflectBeams.
+    // cloud_march.comp (debug pointing rays only, as of C12 follow-up #44) and sat_sky.frag
+    // (ground-spot direct lighting). See GpuReflectBeams.
     VkBuffer reflectBeamsBuf = VK_NULL_HANDLE;
     VkDeviceMemory reflectBeamsMem = VK_NULL_HANDLE;
     void *reflectBeamsMapped = nullptr;
+    // Per-target beam->cloud light sources (C12 follow-up #44) — host-visible+coherent, written
+    // by the CPU each frame in recordCompute() (aggregated from reflectBeamsBuf's readback, same
+    // place lastActiveBeamCount/beamProximityGlow are computed), read by cloud_march.comp's real
+    // per-sample beam illumination term. See GpuBeamCloudLights.
+    VkBuffer beamCloudLightBuf = VK_NULL_HANDLE;
+    VkDeviceMemory beamCloudLightMem = VK_NULL_HANDLE;
+    void *beamCloudLightMapped = nullptr;
     // Diagnostic readback (C12): how many of the 16 sectors currently hold an active beam, and
     // the straight-line distance (meters) from the observer to the nearest one's ground target —
     // one-frame-stale, same idiom as peakMagnitude. -1 = no active beams this/last frame.
@@ -1167,6 +1281,58 @@ private:
     VkDescriptorSet sceneDepthDescSet = VK_NULL_HANDLE;
     VkPipelineLayout sceneDepthPipeLayout = VK_NULL_HANDLE;
     VkPipeline sceneDepthPipeline = VK_NULL_HANDLE;
+
+    // ── Flare/corona render-to-texture pipeline (flare architecture overhaul) ─────────────────
+    // See FlareSourcePC's comment above for the three-stage design. flareExtent is a QUARTER of
+    // ctx.swapExtent (one step smaller than scene_depth/cloud_march's half-res convention — this
+    // buffer is deliberately going to be blurred, not sampled 1:1), independent of renderScale,
+    // recreated in onResize alongside those.
+    VkExtent2D flareExtent{};
+    VkImage flareSourceImg = VK_NULL_HANDLE;   // RGBA16F, COLOR_ATTACHMENT|STORAGE|SAMPLED
+    VkDeviceMemory flareSourceMem = VK_NULL_HANDLE;
+    VkImageView flareSourceView = VK_NULL_HANDLE;
+    VkImage flareScratchImg = VK_NULL_HANDLE;  // RGBA16F, STORAGE|SAMPLED — compute ping-pong + final composite source
+    VkDeviceMemory flareScratchMem = VK_NULL_HANDLE;
+    VkImageView flareScratchView = VK_NULL_HANDLE;
+    VkSampler flareSampler = VK_NULL_HANDLE;   // shared by both images; resolution-independent, created once
+    VkRenderPass flareSourceRenderPass = VK_NULL_HANDLE; // single color attachment, CLEAR, finalLayout=COLOR_ATTACHMENT_OPTIMAL
+    VkFramebuffer flareSourceFramebuffer = VK_NULL_HANDLE;
+    // Stage 1 (render): reuses the EXISTING descLayout/descSet (satVisibleBuf binding 1,
+    // cloudTargetA/B bindings 5/6 are already there for sat_point.frag; binding 7 (sceneDepthTex)
+    // is new — see createDescriptors()) — own pipeline layout only because the push constant type
+    // (FlareSourcePC) differs from drawPipeLayout's SatDrawPC.
+    VkPipelineLayout flareSourcePipeLayout = VK_NULL_HANDLE;
+    VkPipeline flareSourcePipeline = VK_NULL_HANDLE;
+    // Stage 2 (blur/streak): own tiny descriptor set — two STORAGE_IMAGE bindings, nothing this
+    // codebase's existing sets already provide.
+    VkDescriptorSetLayout flareBlurDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool flareBlurDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet flareBlurDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout flareBlurPipeLayout = VK_NULL_HANDLE;
+    VkPipeline flareBlurPipeline = VK_NULL_HANDLE;
+    // Stage 3 (composite): own tiny descriptor set — one COMBINED_IMAGE_SAMPLER binding
+    // (flareScratchImg, sampled directly in VK_IMAGE_LAYOUT_GENERAL — legal, and this image is
+    // small enough that skipping a layout-transition barrier costs nothing measurable). Targets
+    // the MAIN render pass (ctx.renderPass), same render-pass-compatibility trick drawPipeline
+    // already relies on to also work under ctx.renderPassLoad at renderScale<1.
+    VkDescriptorSetLayout flareCompositeDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool flareCompositeDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet flareCompositeDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout flareCompositePipeLayout = VK_NULL_HANDLE;
+    VkPipeline flareCompositePipeline = VK_NULL_HANDLE;
+    // Ocean-glint list (see GpuOceanGlintBuf) — device-local, zeroed every frame like glowBuf.
+    VkBuffer oceanGlintBuf = VK_NULL_HANDLE;
+    VkDeviceMemory oceanGlintMem = VK_NULL_HANDLE;
+    // User tunables (Settings > Display), persisted in settings.json. First-pass defaults —
+    // expected to need retuning once seen in-app, same as every other constant this session.
+    float flareGlowGain = 1.0f;    // post-composite overall multiplier
+    float flareStreakGain = 0.35f; // per-tap streak/godray strength (flare_blur.comp mode=2)
+    float sunFlareRefIntensity = 40.0f; // fixed reference brightness for the sun's virtual point
+                                        // in the flare-source buffer — NOT a slider (kept small in
+                                        // scope this round); tune in code if the sun's godray/glow
+                                        // contribution looks under- or over-powered relative to
+                                        // satellites once seen in-app.
+
     // ── Per-target beam cloud block (C12 follow-up #33) ───────────────────────
     // Own small descriptor set/pipeline, modeled on the cloud-shadow one just above but
     // deliberately NOT sharing its observer-centered grid — see beam_cloud_block.comp's header
@@ -1231,41 +1397,40 @@ private:
     // view-dependent specular term the OBSERVER sees the mirror glint by; this is the physical
     // irradiance the mirror delivers to its ground target, independent of view angle — see
     // sat_orbit.comp's beam-writer comment). Uploaded via SatOrbitPC.
-    float beamGain = 1.0f;
+    float beamGain = 0.004023f;
     // C12 follow-up #34: beamFootprintRadM (a flat, tunable constant) removed — the ground
     // footprint is now physically derived in sat_orbit.comp from mirror area + range to target.
-    float beamMaxRangeM = 500000.0f; // C12 follow-up #6 — render-time "is the observer close
+    float beamMaxRangeM = 1305172.5f; // C12 follow-up #6 — render-time "is the observer close
                                       // enough to this site" cutoff (site-referenced beams have
                                       // no observer-side write gate any more, see sat_orbit.comp)
     // C12 follow-up #17: simple atmospheric-scattering beam sky glow (replaces the removed real
     // cloud-density march from follow-ups #14-#16, reverted per user request — no cloud lighting
     // yet). Own gain, separate from beamGain (that's the physical ground-irradiance term feeding
     // the ground spot; this purely scales the visual glow's brightness) — dim default, tunable.
-    float beamSkyGlowGain = 0.05f;
+    float beamSkyGlowGain = 0.022989f;
     // C12 follow-up #20 raised this to 15 deg/sec by default (was a hardcoded 1 deg/sec constant,
     // MIRROR_ROT_RATE) to reduce a noticeable catch-up delay after the observer moves. Follow-up
     // #21: user preferred the original slew rate/behavior, so the default is back to 1 deg/sec —
     // still exposed as a tunable slider (Settings → Terrain → "Mirror slew rate (deg/s)") in case
     // it's wanted later, just no longer defaulting to the faster value.
-    float mirrorSlewDegPerSec = 1.0f;
-    // C12 follow-up #29: user-tunable extra extinction for the beam glow — "I feel like there
-    // should be more extinction should a beam get redder." Default 1.0 = plain physical scaling
-    // (matches every prior session); higher values redden low-angle/long-path beams faster.
-    // Separate from BETA_R/BETA_M, which stay shared/physical with the rest of the atmosphere.
-    float beamExtinctionMult = 1.0f;
+    float mirrorSlewDegPerSec = 5.068965f;
+    // (beamExtinctionMult lived here — user-tunable extra extinction for the deleted analytic
+    // beam sky tube. Removed in C12 follow-up #44 along with the tube itself: the replacement
+    // per-sample beam-cloud term is a real volumetric contribution composited through the cloud
+    // march's own transmittance, with no separate closed-form extinction exponent to tune.)
     // C12 follow-up #30: gain for the near-field directional sky-glow bleed — the replacement for
     // the tube glow's near-field behavior (which has structural artifacts up close: "cut in half,"
     // a "hard shell," darkening in the middle — a single-point analytic approximation was never
     // designed for a camera near/inside the volume). The tube fades out approaching a beam
     // (crossfade in the shader) while this purely angular (no segment geometry) glow term fades
     // in — own gain per [[feedback_shared_gain_sliders]], not a reuse of beamSkyGlowGain.
-    float beamGlowBleedGain = 0.3f;
+    float beamGlowBleedGain = 0.001379f;
     // C12 follow-up #40: radius (meters) of the crossfade blend zone around a beam's own 3D line —
     // was a hardcoded kNearFieldCrossoverM constant in cloud_march.comp, now user-tunable.
     // Per-pixel cloud shadow fade distance. 80 km matches the deleted grid's half-extent, so
     // anything previously shadowed still is; beyond it the shadow was sub-pixel anyway.
     float cloudShadowRangeM = 80000.0f;
-    float beamNearFieldFadeM = 15000.0f;
+    float beamNearFieldFadeM = 71510.867188f;
     // C12 follow-up #41: 0-1, how close the observer is to ANY active beam's actual 3D line —
     // smoothstepped from lastNearestBeamDistM/beamNearFieldFadeM each frame in recordCompute().
     // Drives the non-directional sky-glow wash in sat_sky.frag, replacing #39/#40's directional
@@ -1281,51 +1446,58 @@ private:
     // Cloud tunables (CPU-side; uploaded to cloudParamsBuf each frame)
     // Defaults below are the user-tuned values as of the C16 (aurora) session-28 follow-up #21/#22
     // (2026-07-16) commit — baked in from settings.json rather than the original placeholder guesses.
-    float cloudCoverage = 0.61404f;
-    float cloudDensity = 5.48421f;
-    float cloudBaseAltM = 5585.96f; // layer 0 shell altitude (low cloud / stratus)
+    float cloudCoverage = 1.0f;
+    float cloudDensity = 8.179311f;
+    float cloudBaseAltM = 5585.964844f; // layer 0 shell altitude (low cloud / stratus)
     float cloudTopAltM = 15000.0f; // layer 1 shell altitude (high cirrus)
-    float cloudDriftRate = 1.04386e-5f;
-    float cloudSunGain = 3.35526f; // near-horizon/sunset sun-gain endpoint — blended toward
+    float cloudDriftRate = 1.0438595e-05f;
+    float cloudSunGain = 1.471264f; // near-horizon/sunset sun-gain endpoint — blended toward
                                     // cloudSunGainZenith by sun elevation (see cloud_march.comp)
-    float cloudSunGainZenith = 1.0f; // sun-gain endpoint when the sun is near zenith (midday)
-    float cloudAmbientGain = 1.86842f;
-    float cloudTwilightAmbientGain = 1.0f; // manual gain on sky-lit cloud during twilight (was piggybacking
+    float cloudSunGainZenith = 0.45977f; // sun-gain endpoint when the sun is near zenith (midday)
+    float cloudAmbientGain = 4.827586f;
+    float cloudTwilightAmbientGain = 10.574713f; // manual gain on sky-lit cloud during twilight (was piggybacking
                                          // on cloudAmbientGain, which also drives city-light
                                          // upwelling — see kNightSkyAmbientColor in cloud_march.comp)
-    float cloudBaseVariance = 0.3f; // noise-driven cloud base height undulation, hNorm units
+    float cloudBaseVariance = 0.367816f; // noise-driven cloud base height undulation, hNorm units
                                      // (0 = old perfectly flat base) — see cloudMarchCS
-    float cloudErosionEdge = 0.5f;  // cloudDensity() erosion strength at the silhouette edge
-    float sunGainElevBand = 0.25f;  // ~14.5 deg elevation; was effectively 1.0 (half at 30 deg)
+    float cloudErosionEdge = 0.965517f;  // cloudDensity() erosion strength at the silhouette edge
+    float sunGainElevBand = 0.121379f;  // ~14.5 deg elevation; was effectively 1.0 (half at 30 deg)
     // Brought forward from the original hardcoded 0.15 so the sky term overlaps the tail of
     // direct sunlight instead of starting after it; 0.35 is ~20 deg of sun elevation.
-    float twilightBandHi = 0.35f;
-    float twilightBandLo = -0.45f;  // unchanged from the original hardcoded value
+    float twilightBandHi = 0.013793f;
+    float twilightBandLo = -0.382759f;  // unchanged from the original hardcoded value
     // 1.0 rather than 0.0: a compromise starting point. Lower = more small-scale structure and
     // a closer match to the flat layer, at the cost of worse texture-cache behaviour (mip 0 of
     // the 8K map is ~33 MB and is sampled once per in-cloud march step).
-    float coverageMipLod = 1.0f;
+    float coverageMipLod = 0.0f;
     // Measured against the volumetric at MIP 0: volumetric (coverage 1.00, sun gain 0.46)
     // matched flat (coverage 0.69, sun gain 1.84). Defaults encode those ratios so the shared
     // sliders now move both paths together instead of only ever suiting one of them.
-    float flatCoverageScale = 0.69f;
-    float flatSunGainScale  = 4.0f;
+    float flatCoverageScale = 0.602299f;
+    float flatSunGainScale  = 3.968965f;
     // Clouds at 11 km have a ground-level horizon of ~374 km, so this band puts the transition
     // near the horizon when standing on the surface, and makes everything 2D from orbit.
-    float cloudDistFadeStartM = 150000.0f;
-    float cloudDistFadeEndM   = 400000.0f;
-    float cloudErosionCore = 0.15f; // cloudDensity() erosion strength at the dense core
-    float cloudHgG = 0.27355f;
-    float cloudMarchSteps = 75.57895f;
-    float cloudLightSteps = 5.73684f;
+    float cloudDistFadeStartM = 151902.171875f;
+    float cloudDistFadeEndM   = 399347.8125f;
+    // C11 ground fog layer — real per-sample volumetric march in cloud_march.comp's fogMarchCS,
+    // reusing beamCloudLightBuf for beam godrays and a fixed small self-shadow march for sun
+    // godrays. First-pass defaults, expect retuning once seen in-app.
+    float fogTopAltM = 300.0f;   // shell top altitude (m above sea level); sea level is the base
+    float fogDensity = 1.0f;    // density scale, analogous to cloud.density
+    float fogCoverage = 0.6f;   // global coverage gate for the patchiness noise, [0,1]
+    float fogSunGain = 1.0f;    // sun-lit fog brightness gain, own slider (not cloud.sunGain)
+    float cloudErosionCore = 0.37931f; // cloudDensity() erosion strength at the dense core
+    float cloudHgG = 0.356053f;
+    float cloudMarchSteps = 215.034485f;
+    float cloudLightSteps = 12.896552f;
     float cloudCirrusWindDeg = 40.0f; // C13: cirrus streak wind azimuth (degrees, converted to radians for the UBO)
-    float cloudCirrusStretch = 4.0f;  // C13: cirrus noise anisotropic elongation factor (1 = no stretch)
-    float airglowGain = 0.06579f;         // C15: master airglow brightness multiplier
-    float airglowGreenGain = 0.05263f;    // C15: green (557.7nm) band gain
-    float airglowRedGain = 0.01316f;      // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
-    float airglowSodiumGain = 0.06579f;   // C15: sodium (589.3nm) band gain — kept dim relative to green
-    float cloudShadowMaxDistM = 28688.6f; // sun self-shadow cone (N_CONE) fades out beyond this distance
-    float cloudMaxRenderDistM = 396315.78f; // cloudMarch tExit distance cap — raised to ~400km
+    float cloudCirrusStretch = 2.184211f;  // C13: cirrus noise anisotropic elongation factor (1 = no stretch)
+    float airglowGain = 0.065789f;         // C15: master airglow brightness multiplier
+    float airglowGreenGain = 0.052632f;    // C15: green (557.7nm) band gain
+    float airglowRedGain = 0.013158f;      // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
+    float airglowSodiumGain = 0.065789f;   // C15: sodium (589.3nm) band gain — kept dim relative to green
+    float cloudShadowMaxDistM = 22022.988281f; // sun self-shadow cone (N_CONE) fades out beyond this distance
+    float cloudMaxRenderDistM = 800000.0f; // cloudMarch tExit distance cap — raised to ~400km
                                             // (session 28 follow-up #10): the low-cloud shell's own
                                             // geometric horizon distance at 11km altitude is
                                             // ~sqrt(2*R_EARTH*11000)≈374km; the prior 165km default
@@ -1341,24 +1513,24 @@ private:
     // artifacts in testing; 6 was clean — round 3); viewSamplesMax is the prior universal fixed
     // value (124), kept as the ceiling for long/grazing rays since that was already proven
     // correct at all altitudes before this change.
-    float viewSamplesMin = 5.68421f;
-    float viewSamplesMax = 135.15790f;
-    float lightSamples = 12.0f;        // N_LIGHT: optDepth sun-side sub-march count
+    float viewSamplesMin = 6.482759f;
+    float viewSamplesMax = 124.689659f;
+    float lightSamples = 2.0f;        // N_LIGHT: optDepth sun-side sub-march count
     float oceanSeaOctaves = 3.0f;      // seaMap() octave count (height-trace geometry)
     float oceanDetailOctaves = 5.0f;   // seaMapDetail() octave count (wave normal)
     float oceanReflSamples = 6.0f;     // ocean sky-reflection loop sample count (N_REFL)
-    float moonGain = 0.00526f;         // shared moonlight brightness: terrain direct term + cloud
+    float moonGain = 0.005263f;         // shared moonlight brightness: terrain direct term + cloud
                                         // moonContrib (default matches the prior hardcoded cloud value)
-    float stormStrength = 0.32018f;    // C16: aurora oval expansion/brightness/chaos [0,1]
+    float stormStrength = 0.333333f;    // C16: aurora oval expansion/brightness/chaos [0,1]
     float auroraGain = 0.1f;           // C16: master aurora brightness multiplier
-    float auroraCloudGain = 0.00395f;  // C16: ambient aurora light on clouds only (no albedo term
+    float auroraCloudGain = 0.001754f;  // C16: ambient aurora light on clouds only (no albedo term
                                         // in that formula, so it needs a much lower default than
                                         // terrain/ocean to land in the same plausible range)
-    float auroraGroundGain = 0.00746f; // C16: ambient aurora light on terrain/ocean only
-    float auroraCoverageFreq = 0.42632f;      // C16: coverage patch size (per-degree colat frequency)
-    float auroraCoverageAzFreq = 4.28947f;    // C16: coverage azimuthal wobble frequency
-    float auroraCoverageDriftRate = 0.0019386f; // C16: coverage evolution speed (wall-clock rad/s)
-    float auroraShimmerRate = 0.00175f; // C16: curtain fold noise evolution speed (wall-clock rad/s)
+    float auroraGroundGain = 0.007456f; // C16: ambient aurora light on terrain/ocean only
+    float auroraCoverageFreq = 0.426316f;      // C16: coverage patch size (per-degree colat frequency)
+    float auroraCoverageAzFreq = 4.289474f;    // C16: coverage azimuthal wobble frequency
+    float auroraCoverageDriftRate = 0.001193f; // C16: coverage evolution speed (wall-clock rad/s)
+    float auroraShimmerRate = 0.001754f; // C16: curtain fold noise evolution speed (wall-clock rad/s)
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
     std::string exeDir_;           // directory containing the exe; set in init()
@@ -1509,14 +1681,17 @@ private:
     bool hovFullscreen = false;
     bool hovSaveSnapshot = false;
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button
-    bool hovDebugToggle[11] = {};  // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch, scene depth pass)
+    bool hovDebugToggle[12] = {};  // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch, scene depth pass, fog layer)
     bool hovBeamDebugRaysToggle = false; // hover state for the "Show beam pointing rays" checkbox (C12 follow-up #12)
-    bool hovPhotoMinus[9] = {};
-    bool hovPhotoPlus[9] = {};
-    bool draggingPhoto[9] = {};
-    bool hovCloudMinus[55] = {}; // was [53] — idx 53/54 are the distance-based cloud fade sliders
-    bool hovCloudPlus[55] = {};
-    bool draggingCloud[55] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    // Sized 11, not 9 — flare_glow_gain/flare_streak_gain (flare architecture overhaul) added two
+    // more PhotoParam rows; per [[feedback_cloud_slider_arrays]], all three hover/dragging arrays
+    // must grow together with any new slider id.
+    bool hovPhotoMinus[11] = {};
+    bool hovPhotoPlus[11] = {};
+    bool draggingPhoto[11] = {};
+    bool hovCloudMinus[59] = {}; // was [55] — idx 55-58 are the C11 fog layer sliders
+    bool hovCloudPlus[59] = {};
+    bool draggingCloud[59] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                   // feedback_cloud_slider_arrays memory: this one was missed once
                                   // already and the out-of-bounds write corrupted the window-chrome
                                   // state declared right below, breaking the settings window.
@@ -1559,6 +1734,19 @@ private:
     void createSkyLowResResources(VulkanContext &ctx); // resolution scaling (session 29)
     void destroySkyLowResResources(VkDevice device);   // called from onResize (before recreate) and cleanup
     void createDrawPipeline(VulkanContext &ctx);
+    // ── Flare/corona render-to-texture pipeline (flare architecture overhaul) ─────────────────
+    void createFlareResources(VulkanContext &ctx);   // images, samplers, render pass, framebuffer
+    void destroyFlareResources(VkDevice device);     // called from onResize (before recreate) and cleanup
+    void createFlareDescriptors(VulkanContext &ctx); // new flareBlur (2 storage images) and
+                                                      // flareComposite (1 sampler) descriptor sets.
+                                                      // descLayout/descSet bindings 7/8 and
+                                                      // skyDescSet binding 20 are added directly in
+                                                      // createDescriptors()/createGlowResources()
+                                                      // themselves (descriptor set layouts are
+                                                      // immutable once created, so those two can't
+                                                      // be "extended" afterward from here).
+    void createFlarePipelines(VulkanContext &ctx);   // flareSource (graphics), flareBlur (compute),
+                                                      // flareComposite (graphics) pipelines
     void initStars(VulkanContext &ctx);
     void createStarPipeline(VulkanContext &ctx);
     void updateStars();

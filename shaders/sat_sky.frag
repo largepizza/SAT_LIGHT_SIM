@@ -54,15 +54,24 @@ layout(location = 0) in  vec3 enuDir;           // interpolated ENU view ray (no
 layout(location = 1) in flat vec4 sunDirENU;    // passed through from vertex (same as pc.sunDirENU)
 layout(location = 2) in flat vec4 moonDirENU;   // moon dir + phase pass-through
 
-// Sky glow + lens flare data, written by sat_flare.comp each frame.
-// Must match GpuGlowBuf (SatelliteSim.h) exactly.
+// Sky glow histogram, written by sat_flare.comp each frame. Must match GpuGlowBuf exactly.
+// (flareCount/flareEntries[kFlareMax] lived here — the per-pixel corona loop that read them was
+// deleted in the flare architecture overhaul; see FlareSourcePC's comment in SatelliteSim.h. The
+// satellite corona/godray effect now comes from a render-to-texture + blur/streak pipeline
+// composited once per frame in flare_composite.frag instead.)
 layout(std430, set = 0, binding = 0) readonly buffer GlowBuf {
-    uint  bins[64];          // sky glow: floatBitsToUint(max effectFlare) per bin
-    uint  flareCount;        // unused; kept for layout compat
-    uint  flarePad[3];
-    vec4  flareEntries[8];   // xyz=ENU dir per sector (last-writer within 45°-az sector)
-    uint  sectorBright[8];   // floatBitsToUint(max effectFlare) per sector — stable
+    uint  bins[64]; // sky glow: floatBitsToUint(max effectFlare) per bin
 } glowBuf;
+
+// Ocean-glint list (flare architecture overhaul) — matches GpuOceanGlintBuf exactly. Same buffer
+// sat_flare.comp's binding 8 writes; read here via skyDescSet's own binding 20.
+const uint kOceanGlintMax = 32u; // must match kMaxOceanGlints in SatelliteSim.h and
+                                 // OCEAN_GLINT_MAX in sat_flare.comp exactly.
+layout(std430, set = 0, binding = 20) readonly buffer OceanGlintBuf {
+    uint oceanGlintCount;
+    uint oceanGlintPad[3];
+    vec4 oceanGlintEntries[kOceanGlintMax]; // xyz=ENU dir, w=effectFlare
+} oceanGlintBuf;
 
 // RGBA noise texture (binding 1): tiled REPEAT sampler, used for angular corona
 // variation in lensFlare().  Replaces the original ShaderToy's iChannel0 lookup.
@@ -150,6 +159,13 @@ layout(set = 0, binding = 13) uniform sampler2D milkyWayTex;
 layout(std430, set = 0, binding = 18) readonly buffer BeamGlowDomeBuf {
     uint beamGlowDome[16];
 };
+
+// Shared scene depth (binding 19) — linear metres to the first terrain/ocean surface along each
+// view ray, or kNoSurfaceT for rays that reach space. Written by scene_depth.comp earlier in the
+// same recordCompute; this binding was already wired on the C++ side (layout/pool/onResize) but
+// never actually declared/sampled here until now (2026-07-29) — used below to test whether
+// terrain blocks a lens-flare source's own direction, not this fragment's view ray.
+layout(set = 0, binding = 19) uniform sampler2D sceneDepthTex;
 
 layout(location = 0) out vec4 outColor;
 
@@ -828,6 +844,14 @@ vec3 lensFlare(vec2 uv, vec2 pos, float intens, float bokehMult) {
     float f6  = max(0.01 - pow(length(uvx - 0.300*pos), 1.6), 0.0) * 6.0;
     float f62 = max(0.01 - pow(length(uvx - 0.325*pos), 1.6), 0.0) * 3.0;
     float f63 = max(0.01 - pow(length(uvx - 0.350*pos), 1.6), 0.0) * 5.0;
+
+    // (A "radial ray fan" sunburst stand-in for screen-space godrays lived here briefly,
+    // 2026-07-29 — reverted same day per user feedback: too sharply-defined/star-like for the
+    // soft, astigmatism-like human-eye look this flare is going for, and made the many-satellite
+    // Reflect-Orbital case look worse, not better. The prior streak/bokeh terms above (f4-f6) are
+    // the preferred "spike" look. Screen-space godrays remain a real, unimplemented want — see
+    // TERRAIN_PLAN.md's follow-up log for the "threshold + depth-subtract + radial blur" direction
+    // proposed instead.)
 
     // ── Assemble ──────────────────────────────────────────────────────────────
     vec3 c = vec3(0.0);
@@ -1961,19 +1985,30 @@ void main() {
             vec3 surfUpECEF = normalize(surfUp.x * enuX + surfUp.y * enuY + surfUp.z * enuZ);
             surfColor += auroraGlowAt(surfUpECEF, sunDirECEF, pc.waveTime, cloud.stormStrength)
                        * cloud.auroraGroundGain * 0.5 * atten;
-            // Mirror satellite flare glints — sector-stable selection via sectorBright.
+            // Mirror satellite flare glints — own small independent capped atomic-append list
+            // (flare architecture overhaul), decoupled from the deleted per-pixel corona system.
+            // Now also occlusion-aware (previously had NONE at all): sampled at each entry's own
+            // screen position, the same technique already proven this session for the corona loop.
             {
-                for (int fi = 0; fi < 8; ++fi) {
-                    if (glowBuf.sectorBright[fi] == 0u) continue;
-                    float flux = uintBitsToFloat(glowBuf.sectorBright[fi]);
+                uint fCount = min(oceanGlintBuf.oceanGlintCount, kOceanGlintMax);
+                float tanHFg = tan(pc.fovYRad * 0.5);
+                for (uint fi = 0u; fi < fCount; ++fi) {
+                    float flux = oceanGlintBuf.oceanGlintEntries[fi].w;
                     if (flux < 2.0) continue;
-                    vec3 fe = normalize(glowBuf.flareEntries[fi].xyz);
+                    vec3 fe = normalize(oceanGlintBuf.oceanGlintEntries[fi].xyz);
                     if (fe.z < limbZ - 0.02) continue;
+                    vec3 feCam = mat3(pc.skyView) * fe;
+                    if (feCam.z >= -0.01) continue;
+                    vec2 feUV = vec2(feCam.x, -feCam.y) / (-feCam.z * tanHFg * 2.0);
+                    vec2 feScreenUV = vec2(feUV.x / pc.aspect + 0.5, feUV.y + 0.5);
+                    float feCloudOccl = dot(texture(cloudTargetB, feScreenUV).rgb, vec3(1.0 / 3.0));
+                    float feTerrainOccl = (texture(sceneDepthTex, feScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
                     float fSpecPow = 80.0;
                     float fNrm     = (fSpecPow + 8.0) / (PI * 8.0);
                     float fIntens  = clamp(log2(max(flux, 1.0)) / 10.0, 0.0, 1.0);
                     surfColor += pow(max(0.0, dot(reflect(dir, waveN), fe)), fSpecPow)
-                               * fNrm * fIntens * 0.008 * vec3(1.2, 1.1, 1.0) * (1.0 - dayFrac) * altFade;
+                               * fNrm * fIntens * 0.008 * vec3(1.2, 1.1, 1.0) * (1.0 - dayFrac) * altFade
+                               * feCloudOccl * feTerrainOccl;
                 }
             }
         }
@@ -2262,16 +2297,25 @@ void main() {
         const float kSunAngR = 0.00466; // solar angular radius (~0.267°)
         // Geometric fade: smooth transition as sun centre crosses the geometric limb.
         float geomFade   = smoothstep(limbZ - kSunAngR, limbZ + kSunAngR, sunDirENU.w);
-        // Disc pixel: hard-clipped by terrain/ocean hit for this fragment direction.
-        float discVis    = (1.0 - smoothstep(0.007, 0.010, angle))
-                         * (tSurface > 0.0 ? 0.0 : 1.0);
+        // Hard gate: terrain/ocean OR genuinely-opaque (>=90%) cloud on THIS fragment's own view
+        // ray — same ray the sun disc/corona are drawn along, and the same tSurface/tCloudOcclude
+        // pair the moon disc gates on (discFade above). Fixed 2026-07-29: previously `corona` (the
+        // wide atmospheric halo, ~10-20x the disc's radius) had NO gate at all — only `discVis`
+        // checked tSurface, and neither checked tCloudOcclude — so a mountain or a genuinely opaque
+        // cloud deck correctly hid the disc but left its halo glowing right through. The only
+        // attenuation either term got was `cloudBlock` (A_total's soft luminance dimming) below,
+        // which fades but never reaches zero for real cloud, so it read as "doesn't occlude."
+        float sunGate    = (tSurface > 0.0 || tCloudOcclude >= 0.0) ? 0.0 : 1.0;
+        // Disc pixel: hard-clipped by terrain/ocean/opaque-cloud hit for this fragment direction.
+        float discVis    = (1.0 - smoothstep(0.007, 0.010, angle)) * sunGate;
         // Sunset shift: redden and widen corona as sun approaches the limb.
         float sunsetT    = clamp(1.0 - (sunDirENU.w - limbZ) / 0.15, 0.0, 1.0);
         vec3  sunCol     = mix(vec3(1.5, 1.3, 1.0), vec3(1.8, 0.7, 0.2), sunsetT * 0.7);
         float coronaSig  = mix(0.035, 0.08, sunsetT * sunsetT);
-        float corona     = exp(-angle * angle / (2.0 * coronaSig * coronaSig));
-        // Attenuate sun disc and corona by cloud transmittance on this view ray (cloudBlock
-        // sampled from cloudTargetB.a above, replacing the old dot(cloudTFinal, vec3(1/3))).
+        float corona     = exp(-angle * angle / (2.0 * coronaSig * coronaSig)) * sunGate;
+        // Remaining soft dimming (cloudBlock, A_total's luminance) still applies on top for thin/
+        // translucent cloud the hard gate above doesn't trip on — a hazy, dimmed disc through mist
+        // is correct; sunGate only handles the "actually opaque" case that dimming alone can't.
         color += (discVis * geomFade * sunCol + corona * geomFade * sunCol * 0.12) * cloudBlock;
     }
 
@@ -2299,29 +2343,11 @@ void main() {
 
         vec3 flareAccum = vec3(0.0);
 
-        // ── Satellite lens flares ───────────────────────────────────────────────
-        // One entry per 45°-az sector; sectorBright holds the stable atomicMax
-        // brightness so the flare intensity doesn't flicker even when many
-        // bright satellites compete within the same sector.
-        {
-            const float kFlareThr = 1.0;
-            for (int gi = 0; gi < 8; ++gi) {
-                if (glowBuf.sectorBright[gi] == 0u) continue;
-                float bright = uintBitsToFloat(glowBuf.sectorBright[gi]);
-                if (bright < kFlareThr) continue;
-                vec3 satDir = normalize(glowBuf.flareEntries[gi].xyz);
-                if (satDir.z < limbZ - 0.02) continue;
-
-                vec3 satCam = mat3(pc.skyView) * satDir;
-                if (satCam.z >= -0.01) continue;
-                vec2 satUV = vec2(satCam.x, -satCam.y) / (-satCam.z * tanHF * 2.0);
-
-                float intens     = clamp(log2(max(bright, 1.0)) / log2(16.0), 0.0, 1.0);
-                float entryScale = intens * sqrt(intens);
-                vec3  tint       = vec3(1.3, 1.15, 1.0);
-                flareAccum += lensFlare(fragUV, satUV, intens, 0.3) * tint * entryScale * 0.25;
-            }
-        }
+        // (Satellite lens flares — the per-pixel loop over glowBuf.flareEntries — lived here.
+        // Deleted in the flare architecture overhaul: satellites now get their soft glow+godray
+        // treatment from a render-to-texture + blur/streak pipeline, composited separately in
+        // flare_composite.frag. Only the sun keeps a hand-authored lensFlare() ghost/corona call,
+        // per explicit user decision — see FlareSourcePC's comment in SatelliteSim.h.)
 
         // ── Sun lens flare ──────────────────────────────────────────────────────
         // Gate on limbZ (sin of geometric limb depression, already accounts for observer
@@ -2335,7 +2361,17 @@ void main() {
                 vec2 sunUV    = vec2(sunCam.x, -sunCam.y) / (-sunCam.z * tanHF * 2.0);
                 float sunFade = clamp(above * 8.0, 0.0, 1.0);
                 vec3  sunTint = vec3(1.4, 1.2, 0.9);
-                flareAccum += lensFlare(fragUV, sunUV, sunIntensity, 2.0) * sunTint * sunFade * 0.45;
+                // Same cloud-occlusion fix as the satellite flares above — sampled at the SUN's
+                // own screen position, not this fragment's (`cloudBlock`, used for the sun disc
+                // itself right above, is deliberately not reused here for the same reason).
+                vec2  sunScreenUV  = vec2(sunUV.x / pc.aspect + 0.5, sunUV.y + 0.5);
+                float sunCloudOccl = dot(texture(cloudTargetB, sunScreenUV).rgb, vec3(1.0/3.0));
+                // Terrain occlusion, same technique/reasoning as the satellite loop above — a
+                // local ridge or mountain blocking the sun's own direction (distinct from limbZ's
+                // Earth-curvature horizon test above) now correctly hides its flare too.
+                float sunTerrainOccl = (texture(sceneDepthTex, sunScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
+                flareAccum += lensFlare(fragUV, sunUV, sunIntensity, 2.0) * sunTint * sunFade * 0.45
+                            * sunCloudOccl * sunTerrainOccl;
             }
         }
 
