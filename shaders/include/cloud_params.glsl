@@ -99,8 +99,10 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // values onto the flat layer's equivalent, measured against the volumetric at MIP 0.
     float flatCoverageScale;   // volumetric coverage 1.00 matched flat coverage 0.69
     float flatSunGainScale;    // volumetric sun gain 0.46 matched flat sun gain 1.84 (~4x)
-    float pad10;
-    float pad11;
+    // fogTopAltM/fogDensity (C11, repurposed from pad10/pad11 — zero size change): the ground fog
+    // shell (sea level to fogTopAltM) and its density scale. See fogMarchCS in cloud_march.comp.
+    float fogTopAltM;
+    float fogDensity;
     // Distance-based 3D->2D crossfade, replacing the altitude-only one as the effective control.
     // Keyed on the distance to the cloud shell along THIS ray, so it bounds the march directly —
     // unlike maxRenderDistM, which caps march LENGTH from the shell entry and therefore does
@@ -108,6 +110,9 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // cap). Also gives a natural horizon transition from the ground, which altitude cannot.
     float cloudDistFadeStartM; // fully volumetric nearer than this
     float cloudDistFadeEndM;   // fully flat-2D beyond this
-    float pad12;
-    float pad13;
+    // fogCoverage/fogSunGain (C11, repurposed from pad12/pad13 — zero size change): global
+    // coverage gate for the ground fog shell's patchiness, and its own sun-lit brightness gain
+    // (separate from cloud.sunGain per [[feedback_shared_gain_sliders]]). See fogMarchCS.
+    float fogCoverage;
+    float fogSunGain;
 } cloud;

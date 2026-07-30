@@ -7,6 +7,46 @@ clouds, and orbital camera mode. Read this at the start of any terrain-related s
 
 ## Immediate Next Step
 
+## NEXT SESSION — two profiled optimization targets
+
+Cloud work is closed and its tuned values are now the C++ defaults. Both items below were
+identified from in-app measurement, not inspection.
+
+### 1. Reflect-Orbital beams — rethink the algorithm — DONE (C12 follow-up #44, 2026-07-28)
+
+Resolved by deleting the analytic tube entirely and folding beam illumination into
+`cloudMarchCS`'s existing per-sample lighting loop as a real, cloud-density-gated emissive term,
+bounded per-TARGET (≤16 simultaneously) via CPU-side aggregation rather than per-satellite. See the
+C12 follow-up #44 log entry below and `[[project_c12_reflect_beams]]` for the full design and the
+44-follow-up history that led to it. Not yet measured in-app — if the perf win doesn't materialize
+as expected, re-open this item.
+
+### 2. Terrain march — add levels, or fade it out with altitude
+
+**Measured:** disabling the terrain march (knockout bit 1) recovers a decent frame rate, more so
+from altitude.
+
+**Why it is effectively always maxed:** `sat_sky.frag` DOES scale steps with path length
+(`kN = clamp(2*(tExit-2)/2800, 64, 164)`, session 29) — but `tCap = mix(250e3, 3600e3, obsEffH/400e3)`
+grows the march REACH with altitude faster than the budget grows, so from LEO `kN` computes to
+~2571 and clamps to 164, the ceiling, on essentially every screen pixel.
+
+**Options, roughly in order of value:**
+- **Fade the march out with distance/altitude the way clouds now do.** Terrain relief is sub-pixel
+  from orbit, and the sea-level sphere fallback (`tSeaLvl`) already exists as the "no hit" result —
+  so this degrades to a smooth textured Earth rather than to nothing. Directly mirrors the cloud
+  `cloudDistFadeStartM/EndM` change and is the same shape of win.
+- Expose `kTerrainStepsMin/Max` and `kTerrainStepTargetM` as sliders (currently hardcoded), so the
+  quality/cost tradeoff is tunable at all.
+- Revisit the `tCap` altitude ramp itself — 3600 km of reach may be more than is ever visibly
+  useful, and it is what pins `kN` at maximum.
+
+---
+
+---
+
+### Older notes below
+
 **Moonlight tuning is settled (sessions 25-26):** `moonSuppression=4.0` (satellites),
 `cloud.moonGain=0.015` (terrain+clouds), `kStarMoonMaxDim=0.9` (stars, user-tuned directly in the
 IDE) all confirmed good in-app. Terrain night ambient was tried and **removed** (session 26) —
@@ -358,9 +398,14 @@ The jpg is the **coverage signal**; the 3D noise supplies **shape/detail**; heig
   atmosphere loop per the Step 7 spec above (`accumCity += cityUp*densR*attn`, mip-4 `earthNightTex`,
   strip `kNightFloor`, gate by `nightFactor`); modulate by cloud transmittance (cities glow into
   overcast). **Mark Step 7 done here.** *Done when:* glow domes correct, distance fall-off, brighter under cloud.
-- [ ] **C11 — Fog / dust / haze.** Height-based exponential medium (0-~2 km) + tint + optional 3D-noise
-  patchiness; analytic base extinction + sampled in-scatter near camera. Softens twilight + light
-  pollution; the low medium beams scatter through. *Done when:* low haze reads near ground, recedes with altitude.
+- [~] **C11 — Fog / dust / haze.** First real pass landed 2026-07-29 (C12 follow-up #47, see log
+  below) — a real per-sample volumetric ground fog march (`fogMarchCS`, sea level to
+  `cloud.fogTopAltM`), NOT the originally-stubbed analytic-extinction approach above (superseded):
+  real self-shadowed marching turned out affordable specifically because this layer is thin, the
+  same lesson C12's beam-cloud work (#44-46) already proved. Real sun AND beam godrays (shafts of
+  light through the fog), reusing the shared `beamCloudLighting()` for the latter. Not yet seen
+  in-app — tuning constants are first-pass guesses. *Done when:* low haze/mist reads near ground,
+  recedes with altitude, shows real light shafts under a beam or low sun.
 - [~] **C12 — Reflect-Orbital sky beams + shared cloud-shadow primitive.** Design revised and
   re-locked session 32 (see log below) — original stub above superseded. `GpuReflectBeams` SSBO
   (sector+atomicMax selection, same idiom as `sat_flare.comp`'s `flareEntries`/`sectorBright`) now
@@ -2631,6 +2676,641 @@ for the fuller writeup:
   brightness when inside a beam"), so not a bug — flagged back to the user to confirm this flat/
   uniform feel is still what's wanted, or whether some (correctly-implemented, non-pillar) soft
   directionality should be reintroduced.
+
+**Follow-up #44 (2026-07-28) — the analytic sky tube is deleted outright, replaced with real
+per-sample beam→cloud illumination. Not a patch on the #23-43 chain; a structural replacement.**
+
+User called this directly: the tube has been the single most-patched piece of this codebase (44
+follow-ups, most of them fixing artifacts intrinsic to representing a beam as one closest-approach
+point plus closed-form stand-ins for a real integral), it measurably halves framerate near a busy
+site (see the "Reflect-Orbital beams — rethink the algorithm" note at the top of this file), and it
+still doesn't read as real light in fog. Decision: drop the tube/bleed/crossfade/extension/dual-
+closest-point-solve machinery entirely and make Reflect-Orbital beams a genuine emissive term inside
+`cloudMarchCS`'s own per-sample in-cloud lighting — the same place `cityUp`/`auroraUp`/`moonContrib`
+already live — instead of a separate per-pixel screen-space effect layered on top in `main()`.
+
+**Scope, fixed before writing code (user chose the recommended option on each):**
+- **Sky glow requires real cloud/mist to be visible.** A beam through clear air is now invisible in
+  the sky (matches this file's own long-standing "a light beam is only visible where there's
+  scattering medium to catch it" principle, previously honored only approximately). No standalone
+  clear-air fallback.
+- **Ground landing-spot and the two ambient effects are UNTOUCHED.** `sat_sky.frag`'s ground-spot
+  ellipse-turned-circle term (`beams[bi].blockOpacity`/`mirrorRadiusM`/`footprintRadM`), the
+  `beamGlowDomeBuf`-driven star/Milky Way/satellite suppression dome, and the flat
+  `beamProximityGlow` "sky brightens near an active beam" wash are all cheap, all already good, and
+  none of them were the measured performance problem — only `cloud_march.comp`'s per-pixel tube loop
+  was. All three still read the per-satellite `ReflectBeamsBuf`/`GpuReflectBeam` exactly as before.
+- **Debug pointing-ray visualization is UNTOUCHED** — still useful for verifying mirror
+  targeting/slew now that there's no visual tube to eyeball convergence from.
+
+**Why "fold it into the existing march" finally works when follow-up #14's real march didn't.**
+#14 marched real `cloudDensity()` once **per satellite** (up to 2048) — cost and brightness both
+scaled with how many satellites happened to be servicing a popular site, and #16's attempt to dedupe
+by picking a per-frame "winning" satellite's geometry flickered as the winner changed frame to
+frame. This design is a pure function of **ground target position + aggregate irradiance only**,
+computed **once per unique target** (bounded, ≤16 simultaneously "nearby" — see below), with no
+satellite identity or arbitration anywhere in the per-sample lookup — the identical structural fix
+`beam_cloud_block.comp` already used for cloud-occlusion lookups, applied here to illumination.
+
+**New CPU-side aggregation, reusing infrastructure that already existed for something else.**
+`SatelliteSim::recordCompute()` already reads back last frame's `reflectBeamsBuf` (one-frame-stale,
+`HOST_COHERENT`) to compute `lastActiveBeamCount`/`lastNearestBeamDistM`/`beamProximityGlow` (C12
+follow-up #41). The SAME loop over `rb->entries[]` now also buckets each in-range, positive-
+intensity entry by its `targetENU` (satellites aiming at the same real-world site resolve to
+numerically identical `targetENU`, since both derive from the same `reflectorTargetsBuf[bestIdx]`
+rotated the same way this frame — a simple `distSq < 4.0` epsilon match is enough, no target-ID
+plumbing needed), summing `intensity` into that bucket and keeping the largest `footprintRadM` seen.
+Output: a small fixed list (`kMaxCloudBeamLights = 16`, generous — reflector targets are globally
+sparse, ~1500km+ typical spacing, so more than a handful simultaneously in `beamMaxRangeM` range is
+already an edge case) uploaded to a new host-visible buffer, `beamCloudLightBuf`
+(`GpuBeamCloudLights`/`GpuBeamCloudLight`, same "CPU writes this frame, GPU reads this same frame,
+single frame in flight, no barrier" idiom as `reflectorTargetsBuf`/`lightDomeBuf`).
+
+**`cloud_march.comp` changes:**
+- New binding 14, `BeamCloudLightBuf` (readonly SSBO), declared locally in this file only — unlike
+  `ReflectBeam` (shared by 3 files via `reflect_beam.glsl`), this data is consumed nowhere else.
+- Inside `cloudMarchCS`'s per-sample `if (d > 0.001)` block, a new term evaluated at the sample's
+  own position `p` and altitude, right alongside `cityUp`/`auroraUp`:
+  `beamLit += vec3(1,0.97,0.92) * light.aggIntensity * exp(-lateralDistSq / (2*radius²))`, radius
+  from `light.footprintRadM` (the beam's already-physically-derived ground footprint — reused as-is
+  rather than re-deriving an altitude-dependent tube radius, since the cloud shell's 2-11km band is
+  a negligible fraction of a typical beam's full slant range). Gated the same way `cityUp` already
+  is, by `(1.0 - sampleDayness)` (per-sample geographic day/night, not an observer-based ratio) and
+  by the existing `debugDisableMask` bit 128 ("Reflect-Orbital beams" knockout). Gain reuses
+  `pc.beamSkyGlowGain` — this term is that slider's direct successor, not a new concept, so no new
+  slider per [[feedback_shared_gain_sliders]].
+- **Terrain occlusion, cloud depth-compositing, and the near-field "hollow tube" problem are now
+  ALL solved for free, by construction, not by any new code:** this term only evaluates at real
+  march sample positions, which `cloudMarchCS` already clips to `tScene` (real terrain occlusion)
+  and already composites in true depth order via `cloudTransmittance`/`cloudScatter` alongside every
+  other lighting term. There is no separate `beamTerrainVisibility` march, no `blockAltM`/
+  `blockOpacity` cloud-cutoff fade, no crossfade/extension/dual-closest-point-solve — a march is
+  continuous by construction the same way clouds/aurora already are (the exact property follow-up
+  #37-39 concluded the point-sampled tube could never have).
+- **Deleted outright:** the entire ~525-line "Reflect-Orbital beam sky glow" block in `main()`
+  (follow-ups #23-42's cumulative closest-approach/extinction/extension machinery), including
+  `kBeamGlowMaxAltM`, the 8x satellite-stride downsample (`kBeamGlowStride`/`kBeamStrideBubbleM` —
+  no longer needed: cost is now bounded by TARGET count via the CPU aggregation, not satellite
+  count, so there is nothing left to stride), `dayBright`/`atmFracBeam` (replaced by per-sample
+  `sampleDayness`, already computed in the march loop), and the final soft-compression
+  `B_total += (1-exp(-beamRadiance))*A_total` (the new term feeds `inScatter` directly and is
+  composited by the march's own existing transmittance accumulation instead).
+- `CloudMarchPC` shrinks 160→148 bytes: `daySuppression`, `beamExtinctionMult`, and
+  `beamNearFieldFadeM` are removed (all three existed only for the deleted block — the CPU members
+  `daySuppression`/`beamNearFieldFadeM` themselves are NOT removed, since they're still read
+  elsewhere — satellite/star day suppression and `SatDrawPC`'s ground-spot-adjacent crossfade radius
+  respectively — only their now-unused mirror copies in this one push-constant struct go).
+  `beamExtinctionMult` has no other consumer anywhere, so it's removed everywhere: the CPU member,
+  the "Beam extinction" settings-window slider, and the `beam_extinction_mult` settings.json key.
+
+**First-pass tuning constant, expect retuning in-app (same as every other C12 constant on first
+landing):** the beam-lit term has no separate scale constant of its own beyond `pc.beamSkyGlowGain`
+— `aggIntensity` is used at its native ground-irradiance-ish magnitude, scaled down by a new
+`kBeamCloudGlowScale` (first guess `1e-9`, matching the old tube's `kBeamScale` order of magnitude
+since it multiplies the same `intensity` quantity).
+
+**Deliberately not attempted this round:** a true depth-sorted composite for the OTHER two beam
+effects (ground-spot, sky-glow suppression dome) — the open question from follow-up #43 about
+`tEnterCombined`'s single shared occlusion scalar is specific to those two paths and is untouched by
+this change (this round only replaces the sky-glow TUBE, which no longer uses `tEnterCombined` at
+all). See `[[project_c12_reflect_beams]]` for the full 44-follow-up history if that gap is revisited.
+
+Builds clean (`cloud_march.comp` + `SatelliteSim.h/.cpp` recompiled/linked with no errors; `.spv`
+timestamp confirmed newer than source). **Not yet seen in-app** — expect: beams invisible in clear
+sky (by design), a soft glowing patch where an active beam passes through real cloud, that patch
+correctly hidden behind terrain/nearer cloud, and no near-field hollow-tube/hard-edge artifacts when
+flying through a beam that also happens to be inside cloud. Ground landing-spot and the ambient
+wash/suppression effects should look and behave exactly as before. `kBeamCloudGlowScale` will almost
+certainly need retuning against real cloud density once seen.
+
+**Follow-up #45 (2026-07-28) — directional shading: phase function alone wasn't enough, real
+self-shadowing was missing.**
+
+User tuned `kBeamCloudGlowScale` after #44 and got a nice effect, but reported the beam-lit cloud
+"illuminates from all directions" — no directional shading — and asked directly whether this reuses
+the same "light steps" mechanism sunlight's self-shadow cone does. **Answer at the time: no.**
+
+- **First pass (this same round, superseded below): added a `phaseCloud()` term.** The light
+  direction from a cloud sample toward its source is approximated as local zenith (`normalize(p)` —
+  exact in this file's local ENU-ish frame, the same frame trick `h = length(p) - R_EARTH` already
+  relies on, since beams are already treated as near-vertical elsewhere in this feature). This alone
+  only changes brightness with VIEW angle (brighter looking up-beam, like sun-through-cloud silver
+  lining) — it does NOT vary by DEPTH within the cloud, so a sample at the shaded base of a thick
+  cloud still got the same brightness as one at the sunlit top. That flatness, not the missing phase
+  function, was the actual "illuminates from all directions" complaint.
+- **Real fix: a second self-shadow cone, mirroring the sun's own one line below it in the same
+  loop.** Same `cloud.lightSteps` step count (directly answering the user's question — yes, now it
+  does), same per-step density evaluation (colH/baseH/coverage/cloudDensity — copied rather than
+  refactored into a shared function with the sun's cone, to avoid touching already-tuned working
+  code; this file already accepts this duplication convention elsewhere), same reuse of the parent
+  sample's `warpUVW` (identical "cone samples sit within ~2*shellThick of p, negligible angular
+  displacement" reasoning the sun cone's own comment already gives). Marches upward along
+  `beamUpDir` from `p` to the shell top, accumulates optical depth, and attenuates `beamMag` by
+  `exp(-beamShadowOD)` before the phase-function/gain multiply.
+- **Cost stays bounded:** gated on `beamMag > 1e-6` (only runs where a target's Gaussian falloff is
+  already non-negligible — geographically sparse, unlike the sun's cone which runs on every in-cloud
+  sample everywhere) and on the same `debugDisableMask` bit 64 ("Cloud self-shadow cone" knockout)
+  the sun's cone already uses, since it's the same class of cost/feature.
+- **Not refactored into a shared function with the sun cone** despite being a near-duplicate body —
+  deliberate: this exact density-eval logic has a documented bug history (session 31's colH/baseH
+  consistency bugs), and `cloud.lightSteps`'s trip count was already runtime (not compile-time) in
+  the sun cone before this change, so factoring out a function doesn't trade away any unrolling this
+  time (unlike the `optDepth` cautionary tale in CLAUDE.md, where cloud_march.comp's copy WAS
+  compile-time-unrolled and sharing would have lost that) — but touching proven, tuned working code
+  to prove that out felt like unnecessary risk for this round. Revisit if the duplication becomes a
+  real maintenance problem.
+
+Builds clean (`cloud_march.comp` only; `.spv` confirmed newer than source). **Not yet seen in-app** —
+expect beam-lit cloud to now show real volumetric shading (bright near the shell top where the beam
+enters, darker toward the base/interior where more cloud sits between the sample and the light),
+compounding with the phase-function view-angle brightening from earlier this round.
+
+**Follow-up #46 (2026-07-28) — the live self-shadow march (#45) was too expensive; replaced with a
+cheap per-target height lookup that already existed.**
+
+User reported #45's directional shading works but is "quite heavy on performance," and pointed out
+the whole point of this redesign (#44) was to scale with SITE count, not satellite count — the live
+self-shadow march reintroduced a real per-sample cost that scaled with how much of the VISIBLE CLOUD
+AREA sat within the Gaussian falloff's non-negligible radius, not with target count. With
+`aggIntensity` reaching millions (a well-serviced site), `beamMag > 1e-6`'s raw-magnitude threshold
+gates on a radius roughly `sqrt(2*ln(aggIntensity/1e-6))` sigma out — for `aggIntensity~1e6` that's
+~7.4σ, several times wider than the visually-significant core, so the expensive march ran across a
+much bigger disc of cloud than intended.
+
+**Fix: delete the live march, reuse data that was already being computed for free.**
+`beam_cloud_block.comp` already computes, ONCE PER TARGET PER FRAME (not per screen sample, not per
+in-cloud march sample), the altitude at which each target's own vertical cloud column drops below
+50% transmittance (`blockAltM`/`blockOpacity` — this is the exact same per-target buffer the deleted
+tube's `cloudFade` cutoff used to read directly from `ReflectBeam`). Copied these two fields onto the
+new `GpuBeamCloudLight`/`BeamCloudLight` (repurposing `pad0`/`pad1`, zero struct growth — same
+"CPU aggregates from the existing reflectBeamsBuf readback" path #44 already built, since every
+satellite entry already carries its own copy of these two fields). In `cloud_march.comp`, replaced
+the whole live-march block with one `smoothstep`+`mix` PER LIGHT, inside the existing per-target
+accumulation loop — bright above the target's own block altitude, dark below, no marching:
+```
+float hCut = smoothstep(blockAltM - 500.0, blockAltM, h);
+beamMag += g * mix(1.0, hCut, blockOpacity);
+```
+The view-angle `phaseCloud()` term from #45 is unchanged and still needed — the two are
+complementary (view-angle vs. depth-in-cloud), see #45's lesson.
+
+**Trade-off, explicit:** this is coarser than a live march — one representative vertical opacity
+profile per target's own column, not the true local 3D density around each specific sample point
+(the same accepted approximation the ORIGINAL deleted tube used for its own cloud cutoff). Judged
+worth it given the measured cost of the alternative; revisit with a bounded/cheaper live march only
+if this reads as visibly wrong once seen (e.g. a target with a patchy, non-uniform cloud field
+around it).
+
+Builds clean (`cloud_march.comp` + `SatelliteSim.h/.cpp`; `.spv` and `.exe` confirmed newer than
+their sources). **Not yet seen in-app.**
+
+**Also asked this round: would a future dust/fog volume (C11, not yet built) inherit this beam
+lighting, and would it show visible beam SHAFTS rather than just a glow patch?** Answered directly,
+not built: no automatic inheritance — this term lives specifically inside `cloudMarchCS`'s own
+per-sample loop, keyed to the cloud shell's own bounds (2-11km) and density field. A separate C11
+fog/dust march would need the same three ingredients added to its OWN per-sample loop: the per-target
+Gaussian lookup against `beamCloudLightBuf` (already globally bound, reusable as-is, no new plumbing),
+the `phaseCloud()` view-angle term, and (if the fog volume isn't itself thin/optically simple enough
+to skip it) a self-shadow term. Expected to look BETTER and be CHEAPER than doing this for clouds:
+ground fog is typically much thinner vertically (a shallower march, or even a single-slab closed
+form instead of a multi-km shell) and closer to the camera, and a beam passing through a thin,
+close, dense-enough layer is exactly the classic "sunbeam through morning mist" visual — likely the
+most direct path left to the "beam is light, not fog" look the whole C12 saga (follow-ups #30/#37-39)
+was chasing analytically and gave up on, now that real volumetric marching is finally cheap enough
+for a THIN nearby volume (it was never cheap enough for the whole cloud shell, which is why the tube
+existed in the first place). Not scoped or started — C11 remains "not yet begun" per the plan's
+priority order.
+
+**Follow-up #47 (2026-07-29) — C11 (ground fog/dust) built, exactly along the lines predicted in
+follow-up #46: real volumetric marching, cheap because the layer is thin. Plus two beam occlusion
+gaps closed.**
+
+User asked to build C11, whether it would respect cloud occlusion, whether it would produce real
+godrays or need a screen-space pass, and flagged that beams passing through cloud (and the sky-
+brightening wash's distance check) needed to actually respect occlusion. Planned via `EnterPlanMode`
+given the size (new subsystem + a design fork); user confirmed all three recommended options
+(real volumetric self-shadowing over screen-space godrays; patchy ground-hugging mist over uniform
+haze; the two concrete occlusion gaps below over a general N-layer depth-sorted compositor).
+
+- **New `fogMarchCS()` in `cloud_march.comp`** — sea level to `cloud.fogTopAltM` (default 300m),
+  structured like `cirrusMarchCS` (fixed shell, adaptive step count, `tScene` terrain clipping) but
+  with fog-appropriate density instead of cumulus sculpting: patchiness reuses the existing baked
+  `cloudNoiseTex` at a much lower frequency (`kFogHorizFreq`, no new noise-bake pass), vertical
+  profile is a simple denser-near-ground falloff, render distance is a short hardcoded cap
+  (`kFogMaxRangeM=12km` — real fog has limited visibility anyway, which conveniently also bounds
+  march cost). A fixed-altitude shell already gives "fog fills the valleys, peaks poke through" for
+  free via the same terrain clipping every other layer uses — no terrain-relative height-above-
+  ground tracking needed.
+- **Sun godrays: a real short self-shadow march** through the fog's own density toward `sunDir` —
+  fixed step count (`kFogLightSteps=4`, NOT tied to `cloud.lightSteps`, which is tuned for cloud's
+  multi-km shell, an unrelated scale). This is what produces actual light shafts (bright where the
+  sun-ward path is thin, dark where thick) rather than a uniform dim — answering "would this create
+  godrays or need screen-space" directly: yes, for real, because the layer is thin enough to march.
+- **Beam godrays — and occlusion gap #1 — solved by factoring, not new code.** The per-light beam
+  lookup (Gaussian falloff + `blockAltM`/`blockOpacity` height cutoff + `phaseCloud()` view angle)
+  used to live only in `cloudMarchCS`. Extracted verbatim into a new shared `beamCloudLighting(p, h,
+  dir, obsPos, sampleDayness)`, called identically from both `cloudMarchCS` and `fogMarchCS`. Since
+  fog's `h` is always far below any target's `blockAltM` (a quantity from a march through the
+  2-11km CLOUD shell), the existing height-cutoff smoothstep already reads as "fully blocked"
+  wherever `blockOpacity>0` — a beam already blocked by opaque cloud above therefore doesn't also
+  light fog below it, for free, just by evaluating the same function at a lower altitude. Unlike the
+  sun self-shadow cone (deliberately NOT shared between cloud and fog — real per-volume differences,
+  own bug history, see `cloudDensity`'s colH/baseH saga), this factor-out was judged low-risk: the
+  body has no per-volume-specific logic, and `beamLightCount`'s loop was already a runtime (not
+  compile-time-unrolled) trip count before the split, so no codegen risk of the `optDepth`
+  cautionary-tale kind (CLAUDE.md) applies.
+- **Compositing:** fog is the nearest volumetric layer to a ground-level observer, so `main()`
+  composites it LAST against the already-combined cirrus+cloud result — the same algebraic pattern
+  cloud already uses over cirrus, one tier closer to the camera (`A_total *= A_fog; B_total = B_total
+  * A_fog + B_fog`), placed before aurora/airglow so thick fog also dims those through the same
+  (now fog-inclusive) `A_total`. Known v1 gap, accepted: for an observer above the cloud shell
+  looking down at both cloud and fog, the true depth order can reverse (not handled) — bounded by
+  fog's own altitude fade, which already zeroes its contribution well before this matters, the same
+  style of approximation the existing cirrus/cloud ordering already relies on.
+- **Occlusion gap #2 — `beamProximityGlow` (the flat sky-brightening wash, follow-up #41) now
+  dampened by cloud opacity.** It previously had zero cloud-awareness — it would brighten the sky
+  near a beam the same amount whether or not a solid cloud deck was actually between the observer
+  and the beam. Fixed in the existing CPU readback loop (`SatelliteSim.cpp`): track the `blockOpacity`
+  of whichever `reflectBeamsBuf` entry produced the current nearest-beam-line distance, and multiply
+  the final wash value by `(1 - nearestBlockOpacity)` — proportional dimming, not a hard cutoff.
+- **No new descriptor bindings, buffers, or barriers** — `fogMarchCS` only reads resources already
+  bound to this dispatch (`cloudNoiseTex`, `noiseTex`, `sceneDepthTex`, `beamCloudLightBuf`).
+- **`CloudParams` UBO**: 4 new fields (`fogTopAltM`, `fogDensity`, `fogCoverage`, `fogSunGain`) fit
+  exactly into the 4 already-free pad slots (`pad10`-`pad13`) — **zero struct growth**. Confirmed
+  `cloud_params.glsl` is a genuinely shared `#include` (not hand-duplicated per-shader the way
+  CLAUDE.md's "optDepth"/aurora functions are) — both `cloud_march.comp` and `sat_sky.frag` pick up
+  the rename automatically; only the C++ `GpuCloudParams` mirror needed a matching hand-edit, per
+  that struct's own documented pairing risk.
+- **4 new sliders** (Terrain tab: "Fog top altitude (m)", "Fog density", "Fog coverage", "Fog sun
+  gain"), indices 55-58 — `hovCloudMinus/Plus`/`draggingCloud` grew 55→59 per
+  `[[feedback_cloud_slider_arrays]]`. New knockout checkbox "Fog layer (C11)", `debugDisableMask`
+  bit 2048 (the next free bit — bits 256/512/1024 turned out to already be taken by cloud-shadow/
+  beam-cloud-block/scene-depth toggles added since this doc's own bit-table was last written).
+
+Builds clean (every shader recompiled — `cloud_params.glsl` is a shared header CMake globs into
+every shader's dependency list — and C++ compiled/linked with no errors; `cloud_march.comp.spv`/
+`sat_sky.frag.spv` confirmed newer than their sources). **Not yet seen in-app** — all fog constants
+(`kFogHorizFreq`, extinction scale, vertical falloff shape, `kFogLightSteps`) are first-pass guesses,
+same as every other C12/C11 constant on first landing. Expect: patchy ground mist visible near sea
+level, thinning with altitude and fading out well before orbit; real light shafts through it under
+a low sun or near an active beam target; terrain correctly poking through/occluding it.
+
+**Follow-up #48 (2026-07-29) — first in-app-adjacent report on #47: no visible godrays, beam
+cloud-lighting flicker, and the perf regression got worse. Three real bugs found and fixed; two
+bigger architectural questions (screen-space godrays, and a persistently-visible beam column)
+deliberately left open pending a look at these fixes first.**
+
+User reported, testing #47: (1) no godrays visible even with fog ceiling/coverage turned way up,
+from either the sun or reflect flares, and asked whether screen-space godrays should replace the
+volumetric approach given "the added complexity of a light march through clouds"; (2) beam-driven
+cloud lighting "jumps around and is inconsistent," and asked where the light direction comes from;
+(3) whether a taller/broader dust layer could restore a persistently-visible "beam in the
+atmosphere" the way the old deleted tube did; (4) performance still halves near any active
+Reflect-Orbital site, and asked whether orbit/bearing knowledge could estimate lighting cheaply
+instead of "casting rays to satellites."
+
+- **Root cause of (1), confirmed by reading the code, not guessed: `fogMarchCS`'s sun lighting term
+  never checked cloud occlusion AT ALL.** `sunElev` only tested the sun's geometric elevation
+  against the fog sample's own position — a solid overcast deck and a clear gap in the clouds
+  produced IDENTICAL fog brightness, so there was nothing to create the bright/dark spatial
+  contrast a godray shaft actually is. Fixed by reusing `cloudGroundShadow()` — the exact per-pixel
+  terrain-cloud-shadow primitive `main()` already calls once per pixel to shade the ground itself
+  (see "Subsystem: Cloud Shadows" in CLAUDE.md) — computed ONCE per fog ray at its entry point
+  (fog sits close enough to the ground that this barely varies across its own ~300m shell), same
+  "compute once per ray, not per sample" pattern `cloudMarchCS` already uses for `sunColorCloud`.
+  This is the actual mechanism that makes a godray a godray: real spatial variation in how much sun
+  reaches the medium, not a march through the medium alone (the march was already there in #47 —
+  self-shadowing IS real — it just had nothing upstream telling it the sun was ever blocked).
+- **Beam godrays through fog were not separately broken** — `beamCloudLighting()` already worked;
+  see the perf/flicker fixes below for why they may have been hard to see clearly.
+- **Root cause of (2): a hard, unfaded range cutoff in the CPU aggregation** (`SatelliteSim.cpp`),
+  not the light-direction assumption the user asked about (see below). A target's entire
+  `aggIntensity` popped fully in/out of `beamLights[]` the instant `length(targetENU)` crossed
+  `beamMaxRangeM` — no transition at all — reading as cloud lighting "jumping" as the observer or
+  an orbiting satellite crossed that boundary. Fixed with a smoothstep fade over the same width the
+  deleted analytic tube used for its own equivalent cutoff (`kRangeFadeM=50000`).
+  **Where light direction comes from, answered directly:** `beamCloudLighting()`'s view-angle
+  phase term uses `normalize(p)` — a fixed "beams are vertical" assumption, not each contributing
+  satellite's real bearing (the aggregate merges possibly many satellites per target into one
+  light with no per-satellite directionality by design, per follow-up #44's structural fix for the
+  #14/#16 flicker class). This assumption doesn't itself cause frame-to-frame flicker (it's static
+  per sample), but IS a source of physical inaccuracy for very low-elevation beams — not changed
+  this round. **A second, NOT-fixed contributor flagged for awareness:** `aggIntensity` can still
+  fluctuate as which satellites currently count as "servicing" a target changes frame to frame
+  (`bestIdx` reassignment in `sat_orbit.comp`, pre-existing, architectural, unrelated to this
+  session's work) — flagged, not investigated further this round.
+- **Root cause of (4): `beamCloudLighting()` had no early-rejection before its `exp()` call**, so
+  every in-cloud/in-fog sample paid for a full Gaussian evaluation against every one of up to 16
+  lights regardless of how far that specific sample was from that specific target's actual few-km
+  visual footprint — even though targets are kept in the list out to `beamMaxRangeM` (can exceed
+  1000km) purely for inclusion purposes. Directly answers the user's proposed alternative
+  ("estimate from orbit/bearing instead of casting rays to satellites"): there was never any
+  per-satellite ray casting in this cost — follow-up #44 already eliminated that class of cost
+  entirely; the actual driver was a per-TARGET evaluation radius that was far larger than visually
+  meaningful. Fixed with a fixed-sigma (not absolute-magnitude) distance cutoff before the `exp()`
+  call — deliberately NOT an absolute-magnitude threshold, which is exactly the mistake follow-up
+  #45's live self-shadow march made (a brighter target's "relevant" radius grows with intensity
+  under a magnitude threshold; a fixed sigma multiple on the physical footprint radius does not).
+  Also relevant: adding fog in #47 roughly doubled how many places this function gets evaluated
+  (cloud samples AND fog samples both call it now), likely compounding the same underlying issue.
+
+**Deliberately NOT decided or implemented this round — screen-space godrays, and a taller ambient
+haze/dust layer for persistent beam visibility.** Recommendation: evaluate whether the three fixes
+above (which directly address the concrete, confirmed reasons godrays were invisible and lighting
+felt inconsistent/expensive) are sufficient before committing to either a screen-space rewrite (a
+genuinely new rendering technique for this codebase — no real volumetric medium needed, decoupled
+from fog's density field entirely, but a real new implementation) or extending fog's practical
+altitude range into a broader haze column (reuses all existing infrastructure — `fogMarchCS`,
+`beamCloudLighting()` — but pushes further against the "thin layer is what makes this affordable"
+premise the whole C11/C12 arc has been built on). Both remain live options depending on what this
+build actually looks like.
+
+**Backburner, logged not fixed, per explicit user request:** lens-flare/ocean-specular flicker from
+bright Reflect-Orbital satellites, and diffraction spikes rendering through clouds with no
+occlusion check. Root-caused (not guessed) to the same "azimuth-sector winner-take-all" flicker
+class this exact codebase already found and fixed once for the ground-beam list (follow-ups
+#7-#10) — `sat_flare.comp`'s `GlowBuf` never got that equivalent fix. Raising the flare slot count
+alone would only partially help (slot count and sector count are the same number in this scheme).
+Full analysis and suggested fix in the new `project_flare_slot_flicker` memory file.
+
+Builds clean (`cloud_march.comp` + `SatelliteSim.cpp`; `.spv` confirmed newer than source). **Not
+yet seen in-app.**
+
+**Follow-up #49 (2026-07-29) — #48's godray fix still didn't show; a real second bug found (fog
+altitude-fade tied to a fixed absolute observer height, not scaled to a user-widened fogTopAltM);
+flare cloud-occlusion + the flicker fix implemented; a screen-space "ray fan" stand-in added to
+`lensFlare()`.**
+
+User reported #48's fog-sun-shadow fix still produced no visible godrays, leaned toward
+screen-space specifically for satellite flares ("much easier to fan out a bright spot created by
+the flare renderer... than casting rays on every cloud edge"), reported beams still invisible
+within fog after widening `fogTopAltM`'s own slider range to 200km (self-edited — the shipped
+default max was far lower), and confirmed "let's fix this" for the backlogged flare-flicker item.
+
+- **Root cause of "the 200km fog layer disappeared," confirmed by reading the code:**
+  `fogMarchCS`'s altitude fade (`kFogFadeStartM=3000`/`kFogFadeEndM=12000`) was a fixed ABSOLUTE
+  observer-altitude range, sized for the original ~300m ground-mist default — it zeroed the ENTIRE
+  fog contribution for any observer above ~12km regardless of how tall `fogTopAltM` was set, since
+  it never referenced `fogTopAlt` at all. Testing a 200km shell (almost certainly from well above
+  12km, to see the whole column) hit this immediately. Fixed by anchoring the fade margin to how
+  far ABOVE THE FOG'S OWN CEILING the observer is (`fogTopAlt + 3000` to `fogTopAlt + 12000`) —
+  identical behavior at the ~300m default, but a tall shell now stays visible proportionately
+  higher up. The render-distance cap (`kFogMaxRangeM=12000`, tuned for real fog's short visibility)
+  had the same class of bug — also truncating a 200km shell's own visible range to 12km regardless
+  — fixed with `max(kFogMaxRangeM, fogTopAlt * 2.0)`.
+- **Screen-space godrays: implemented as a stylized analytic ray-fan in `lensFlare()`, not a real
+  per-pixel radial march against cloud/terrain occlusion buffers.** Considered and explicitly
+  rejected the "true" post-process technique (sampling the actual rendered frame radially toward
+  each light's screen position) — it needs an offscreen scene render target plus a compositing pass
+  inserted between "satellites/stars drawn" and "UI drawn," a real restructuring of `App::drawFrame`
+  (this pipeline currently draws sky→satellites→stars→UI all within one render pass, directly into
+  the swapchain-backed framebuffer, with no intermediate readable buffer). Instead: a closed-form
+  spoke pattern (`sin(ang*6 + angNoise*3)^10`, `ang`/`angNoise` already computed for the existing
+  corona) added directly into `lensFlare()`'s output, using the exact same "no framebuffer sampling,
+  pure analytic function of angle/distance from the source" technique every other element in this
+  function already uses. Matches the user's own framing precisely: "fan out the bright spot" cheaply
+  instead of casting rays against cloud edges. Called for both satellites and the sun (shared
+  function), so both get it. Does NOT model an intervening cloud patch clipping one specific ray
+  partway along its length — accepted, since avoiding exactly that per-ray cost was the explicit ask.
+  **The real volumetric fog march (sun/beam godrays through the actual medium, #47/#48) is
+  UNTOUCHED, not replaced** — the two now coexist: fog gives real light-through-medium shafts where
+  fog is actually present, the ray fan gives a flare-level "sunburst" cue everywhere, independent of
+  fog. Flagged back to the user in case the real fog mechanism should be simplified/removed now that
+  a cheaper stand-in exists for the flare case specifically.
+- **Diffraction-spike cloud occlusion (backlog item, now fixed):** `flareAccum`'s satellite and sun
+  contributions previously had NO cloud-transmittance multiply at all, confirmed by direct read.
+  Fixed by sampling `cloudTargetB` (A_total) at each source's OWN screen position — not the current
+  fragment's, which would answer the wrong question ("is this pixel behind cloud" instead of "is the
+  SOURCE behind cloud"). `satUV`/`sunUV` already live in the same "x∈[-0.5·aspect,+0.5·aspect],
+  y∈[-0.5,+0.5]" space `fragUV` does (per the existing UV-space comment), invertible to plain [0,1]
+  screen UV via `pc.aspect` — no new plumbing needed.
+- **Flare/glint flicker (backlog item, now fixed):** `GlowBuf`'s flare slots were 8 fixed
+  45°-azimuth sectors, one flare per sector via `atomicMax` — confirmed the exact "winner-take-all,
+  stored direction snaps to a new winner whenever the brightness ranking changes" flicker class
+  already found and fixed once for the ground-beam list (`GpuReflectBeams`' own azimuth-sector →
+  capped-atomic-append history). Reflect-Orbital's concentrated-arc sweep geometry means multiple
+  bright mirrors often land in the same sector. Replaced with the identical capped atomic-append
+  architecture: every satellite above `FLARE_THRESH` claims its own slot via `atomicAdd`
+  (`kMaxFlares` 8→64, first-pass generous cap), consumers loop `min(flareCount, kMaxFlares)`. Fixes
+  BOTH the lens-flare corona flicker and the ocean specular-glint flicker (confirmed both read the
+  identical buffer — one root cause, two symptoms, not two bugs). `GpuGlowBuf` grew 432→1296 bytes
+  (trivial).
+
+Builds clean (`cloud_march.comp`, `sat_flare.comp`, `sat_sky.frag`; all three `.spv` confirmed newer
+than their sources; C++ compiled/linked with no errors). **Not yet seen in-app.**
+
+**Follow-up #50 (2026-07-29) — fog godrays descoped by explicit user decision (and simplified —
+the removed mechanism was itself the noise-artifact source); the ray-fan reverted (wrong visual
+direction, and made the many-satellite case worse, not better); flare wash tempered; terrain
+occlusion added for flares (was free — the binding already existed, just unused); flicker cap
+raised 64→128.**
+
+User confirmed fog now extends correctly (the #49 altitude-fade fix worked), but still no godrays,
+and explicitly deprioritized chasing them for fog specifically ("keep fog as its own term and
+ignore the godray part of it") — also reporting NEW noise artifacts on fog since the last build.
+Separately: the ray-fan added to `lensFlare()` was rejected outright (wrong stylistic direction,
+and made "100s of Reflect-Orbital flares" look "washed and bad" — user wants soft/astigmatism-like
+blur, not defined star points, and prefers the pre-existing streak/bokeh terms). Confirmed: cloud
+occlusion for diffraction spikes is fixed; terrain occlusion for them is not, cost unknown; flare
+flicker in dense Reflect-Orbital bundles persists.
+
+- **Fog simplified back to a plain ambient term, removing exactly the two godray mechanisms —
+  which also fixes the noise regression.** The per-ray `cloudGroundShadow` lookup (#48) and the
+  per-sample self-shadow cone (#47) are BOTH removed outright — neither produced a visible godray
+  effect worth the cost, and `cloudGroundShadow` specifically was the only new per-pixel jittered
+  term added to fog this round, so it's the most likely source of the reported new noise (two
+  independently-jittered marches compounding). Fog's sun lighting is back to a simple
+  `sunElev * phaseCloud(...) * fogSunGain` — still real ambient haze, just no longer trying to
+  carry directional shaft detail. Beam lighting in fog (`beamCloudLighting()`) is untouched.
+  Screen-space godrays remain a live want, not implemented — user's own proposed direction:
+  threshold the lens-flare glow, subtract cloud/terrain depth for obstruction, radial blur. Noted
+  for whenever this is picked back up; no attempt made this round given the fog-side decision to
+  stop chasing it there.
+- **Ray-fan reverted outright in `lensFlare()`** (added and removed same day) — restores the prior
+  corona/ghost/streak-only rendering. Kept only a comment pointing at the user's screen-space
+  proposal above for the next attempt, whenever that happens.
+- **Flare wash tempered, without reintroducing arbitration.** Raising the flare cap 8→64 last round
+  fixed the flicker but exposed that a busy Reflect-Orbital cluster puts dozens of full corona
+  +ghost+streak flares on screen at once, all sharing the same visual style — "washed and bad".
+  Fixed by normalizing each flare's contribution by `1/sqrt(activeCount)` in `sat_sky.frag` (not
+  `1/count` — keeps a single bright flare at full strength, only compresses the cumulative total
+  sub-linearly as more stack up) rather than capping the rendered count back down, which would
+  reintroduce a form of "which N get shown" arbitration and the flicker that comes with it.
+- **Terrain occlusion for flares — turned out to be free, not costly.** Investigated the actual
+  cost (the user flagged this as uncertain) and found `sceneDepthTex` was ALREADY fully wired into
+  `sat_sky.frag`'s C++-side descriptor set (layout binding 19, pool size, `onResize` write) — just
+  never declared or sampled in the GLSL source itself, an existing gap, not new plumbing needed.
+  Declared it and added a single `texture()` sample at each flare source's own screen position
+  (same UV conversion as the cloud-occlusion fix): any real terrain hit in that exact direction
+  blocks the source regardless of distance (terrain tops out at a few hundred km; satellites/sun
+  are always far beyond that), so a plain hit-test is exact enough — no per-source terrain march
+  needed. Applied to both satellite and sun flares.
+- **Flicker in dense bundles — root cause was the cap, not the architecture.** User confirmed
+  flicker persists with "100s" of simultaneously-bright Reflect-Orbital satellites — `kMaxFlares=64`
+  was still a significant oversubscription (hundreds of eligible candidates for 64 slots), so WHICH
+  ~64 won by dispatch/atomic-claim order still varied enough frame to frame to read as flicker, even
+  though the atomic-append architecture itself is sound. Raised to 128 (`kMaxFlares`/`FLARE_MAX`/
+  `kFlareMax`, kept in sync across `SatelliteSim.h`/`sat_flare.comp`/`sat_sky.frag` by hand — no
+  shared-header mechanism for this one). Explicitly flagged as a pragmatic middle ground, not a
+  guaranteed fix: raising it further remains the next lever if "100s" genuinely means numbers well
+  past 128, traded against `sat_sky.frag`'s flare loop running at FULL resolution (unlike the beam
+  list, which stays inside a bounded half-res compute dispatch) — the `1/sqrt(N)` wash-tempering
+  above helps the visual side of a higher cap but doesn't reduce the per-pixel iteration cost.
+
+Builds clean (`cloud_march.comp`, `sat_flare.comp`, `sat_sky.frag`; all three `.spv` confirmed newer
+than their sources; C++ compiled/linked with no errors). **Not yet seen in-app.**
+
+**Follow-up #51 (2026-07-29) — flare cap raised 128→256; found and fixed a real gap in the
+long-standing (pre-flare-system) sun disc/corona terrain+cloud occlusion.**
+
+User confirmed #50's flicker fix helped but persists ("256 could potentially cover it") and,
+separately, reported "the old corona oddly now doesn't occlude behind clouds and terrain."
+
+- **Flare cap raised 8→64→128→256** across the three hand-synced copies (`SatelliteSim.h`'s
+  `kMaxFlares`, `sat_flare.comp`'s `FLARE_MAX`, `sat_sky.frag`'s `kFlareMax`). Same caveat as every
+  prior raise: pragmatic, not a guaranteed bound; cost is `sat_sky.frag`'s flare loop running at
+  full resolution.
+- **Root cause of "old corona doesn't occlude," found by reading the code (not guessed) — this was
+  never part of the new lens-flare system at all** (user's own report that "diffraction spikes
+  through clouds has been fixed" confirmed that system's occlusion, added in #49/#50, already
+  works). "The old corona" is the pre-existing sun disc + atmospheric-halo block (unchanged all
+  session, `sat_sky.frag`'s "Sun disc + atmospheric corona" section) — a genuinely old, unrelated
+  piece of code that had a real, standing gap:
+  - `discVis` (the disc itself) was gated by `tSurface > 0.0` (terrain/ocean hit on this fragment's
+    own view ray — the disc renders exactly along that ray, so this test is correct) but NEVER by
+    `tCloudOcclude` (the ≥90%-opaque hard gate already used for the moon disc and star points) — so
+    a fully opaque cloud deck could only ever soft-dim the sun disc via `cloudBlock` (A_total's
+    luminance), never fully hide it.
+  - `corona` (the wide atmospheric halo around the disc, ~10-20× its radius) had **no occlusion
+    term at all** — not `tSurface`, not `tCloudOcclude`. A mountain correctly hid the disc but left
+    the halo glowing right through it; same for opaque cloud.
+  - Both gaps produce the exact symptom reported: soft dimming fades but mathematically never
+    reaches zero, so anything relying on it alone reads as "doesn't occlude."
+- **Fix:** added `sunGate = (tSurface > 0.0 || tCloudOcclude >= 0.0) ? 0.0 : 1.0` — the identical
+  hard-gate pattern the moon disc already uses (`discFade` a few hundred lines up) — and applied it
+  to both `discVis` and `corona`. `cloudBlock`'s soft dimming still multiplies on top afterward, so
+  a thin/translucent cloud still realistically hazes the sun rather than binary-popping it; the new
+  hard gate only fires for the "genuinely opaque" case dimming alone couldn't reach.
+
+Builds clean (`sat_flare.comp`, `sat_sky.frag`; both `.spv` confirmed newer than their sources; C++
+untouched this round, only `SatelliteSim.h`'s constant). **Not yet seen in-app.**
+
+**Follow-up #52 (2026-07-29) — flare architecture overhaul: render-to-texture + blur/streak,
+replacing the per-pixel flareEntries loop entirely.**
+
+User reported raising the flare cap alone (follow-up #51) dropped framerate to 24fps, and proposed
+the fix directly: stop tracking "which satellites are bright enough to deserve a flare" as data
+threaded through a fragment-shader loop; instead render sources with occlusion to a texture, blur
+it for the corona, and let the same buffer drive godrays. Accepted trade: satellites lose the
+ghost/streak "lens elements" (kept sun-only); ocean-glint kept as its own small, occlusion-aware
+list per explicit user decision; godrays are a uniform streak pass over the whole buffer (sun AND
+bright satellites), not a single-source volumetric scatter, per the user's own framing ("can't we
+just do godrays on bright things from the flare pass").
+
+- **Root cause of the 24fps regression, confirmed by the cap history across #48-#51:** the deleted
+  architecture's cost was `screenPixelCount × min(flareCount, cap)` — a fixed per-pixel loop over an
+  arbitrarily large list, at FULL resolution, running `lensFlare()`'s Lorentzian/Gaussian math and
+  two texture samples per entry. Any fix that keeps this shape trades flicker against cost with no
+  good resolution: a small cap flickers (not enough slots for a dense Reflect-Orbital cluster), a
+  large cap (256) makes the fixed per-pixel cost scale with it.
+- **New architecture — three stages, all inside `recordCompute()`/`recordDraw()` (no new
+  `Simulation` interface hook needed):**
+  1. **`flare_source.vert`/`.frag`** (new) — every visible satellite (`GpuSatVisible`, read exactly
+     like `sat_point.vert` already does — no new list-building needed) plus one virtual point for
+     the sun (`gl_VertexIndex >= satCount`) is drawn as a point sprite into `flareSourceImg`, a new
+     `RGBA16F` offscreen target quarter the swap extent (one step smaller than `scene_depth.comp`/
+     `cloud_march.comp`'s half-res convention — this buffer is deliberately going to be blurred, not
+     sampled 1:1), independent of `renderScale`. Cloud occlusion reuses `sat_point.frag`'s exact
+     technique (hard `tCloudOcclude` gate + soft `A_total` dim); terrain occlusion is a new
+     `sceneDepthTex` hit-test this pass needs for itself (unlike the dot-sprite pass, it has no
+     shared hardware depth buffer to piggyback on). Cost is now proportional to visible satellite
+     count via the rasterizer (a second draw call of comparable size to the existing dot-sprite
+     draw), not to `screenPixelCount × cap`.
+  2. **`flare_blur.comp`** (new) — one pipeline, three dispatches, ping-ponging between
+     `flareSourceImg` and a new `flareScratchImg`: two separable-Gaussian passes (corona softness)
+     then one multi-directional streak pass (6 fixed angles, exponential decay) — the godray
+     mechanism. Operating uniformly on the whole (already-occluded) buffer means ANY bright,
+     unoccluded region streaks, sun and satellites alike, with no "which light source" tracking at
+     all — occluded regions are already dark in the source buffer, so streaking naturally produces
+     shafts spilling from cloud/terrain gaps. This directly answers the user's question ("can't we
+     just do godrays on bright things from the flare pass? That includes the sun and bright
+     satellites") — yes, and more simply than a single-source volumetric-scatter design would have.
+  3. **`flare_composite.vert`/`.frag`** (new) — one additive fullscreen-triangle draw appended at
+     the end of `recordDraw()`, after stars, before UI — samples the final blurred/streaked texture
+     (bilinear upsample from quarter-res gives free extra softness) into the frame. Replaces the
+     deleted `flareAccum` add at the same post-tonemap position in `sat_sky.frag`.
+- **`GpuGlowBuf` simplified**: `flareCount`/`flareEntries[256]` deleted outright; `bins[64]` (the
+  unrelated wide-Gaussian ambient sky-glow histogram) untouched. Every `kMaxFlares`/`FLARE_MAX`/
+  `kFlareMax` sync point (the three-file hand-duplication this had grown into across #48-#51) is
+  gone — there is no cap-tuning axis left to chase.
+- **Ocean-glint kept, per explicit user decision, as its own small independent system** — user's
+  condition: "as long as there is persistence and flicker reduction... should not be present under
+  cloud occlusion... if that makes preserving it too difficult, then we remove." New
+  `GpuOceanGlintBuf`: identical capped atomic-append pattern, 32 slots (not 256 — this is a minor
+  specular highlight, not the primary visibility signal), written by `sat_flare.comp` alongside
+  `GpuSatVisible`, read by `sat_sky.frag`'s ocean-glint block. That block ALSO gained cloud+terrain
+  occlusion this round (sampled at each entry's own screen position, the exact technique already
+  proven working for the corona system this session) — it previously had none at all, a real
+  pre-existing gap, not a regression.
+- **Sun handling — "lens elements on the sun" only, per explicit user decision:** the sun's existing
+  disc + atmospheric-corona block (`sunGate`-fixed, follow-up #51) and its `lensFlare()` ghost/
+  corona call are UNCHANGED. It additionally becomes one bright point in the new render-to-texture
+  pipeline (via the `gl_VertexIndex >= satCount` virtual point in `flare_source.vert`), so it now
+  gains real godray shafts through cloud/terrain gaps on top of its existing hand-authored
+  treatment — satellites get ONLY the new soft-glow+streak contribution, no ghosts/ray-fan/chromatic
+  streak elements at all (that whole apparatus, `lensFlare()`, is now sun-only).
+- **New descriptor plumbing reuses existing infrastructure rather than duplicating it** (the
+  explicit "leverage our existing render unification" ask): `flare_source.vert`/`.frag`'s pipeline
+  reuses the EXISTING `descLayout`/`descSet` (already has `satVisibleBuf` at binding 1 and
+  `cloudTargetA`/`cloudTargetB` at bindings 5/6 for `sat_point.frag`) — only two bindings were
+  genuinely new to that set: binding 7 (`sceneDepthTex`) and binding 8 (`oceanGlintBuf`). Only the
+  blur/streak compute pass (2 new `STORAGE_IMAGE` bindings) and the composite draw (1 new sampler
+  binding) needed genuinely new, small descriptor sets — nothing this codebase's existing sets could
+  cover.
+- **Barrier/lifecycle conventions all match established precedent, not new patterns:** the
+  render-pass-to-compute-read transition relies on the render pass's own `finalLayout` (GENERAL)
+  with no extra barrier — the exact convention `skyLowResRenderPass`→blit already established (its
+  own comment: "no extra barrier is needed"). The three-dispatch ping-pong barriers mirror
+  `cloudMarchTargetA/B`'s own two-image compute dependency (a full `COMPUTE_SHADER_BIT`→
+  `COMPUTE_SHADER_BIT` stage barrier serializes the dispatches regardless of which specific image
+  the accompanying memory barrier names). `flareExtent` is recreated in `onResize` alongside
+  `cloudMarchTargetA/B`/`sceneDepthImg`, same destroy/recreate/patch dance.
+- **Known limitations, accepted for this round, not fixed:**
+  - The new render pass (and therefore the sun's own godray/glow contribution) is skipped whenever
+    `activeSatCount == 0` (an early return already existing in `recordCompute()`, unchanged) — a
+    real but unlikely edge case (a user would need to disable every constellation) rather than
+    something worth restructuring the early-return for.
+  - The sun's virtual point in `flare_source.vert` gates on raw `sunDirENU.w < -0.05`, not the
+    limb-depression-corrected `limbZ` threshold `sat_sky.frag`'s own sun-disc/corona code uses — at
+    high observer altitude this can cut the sun's contribution to this pipeline off slightly before
+    it's geometrically fully set. Flagged for a follow-up if the sun's godray/glow visibly clips too
+    early from orbit.
+  - No new GPU timestamp buckets were added for the three new passes (`VulkanContext::
+    kTimestampCount`/`kPerfLabels[]`/`savePerfSnapshot()` untouched) — their cost currently lands
+    inside the same `recordCompute()`/`recordDraw()` call without its own isolated bucket. Flagged
+    as a possible follow-up if the perf-profiling toolkit needs to isolate this pipeline's cost
+    specifically.
+  - Streak "length" is a compile-time constant (`kStreakTaps`/`kStreakDirs` in `flare_blur.comp`),
+    not a runtime slider — only streak strength (`flareStreakGain`) and overall glow gain
+    (`flareGlowGain`) are exposed as Settings > Display sliders this round, to keep scope bounded.
+  - `sunFlareRefIntensity` (the sun's fixed reference brightness in the new buffer) is a hardcoded
+    C++ member, not a slider — tune in code if the sun's relative glow/godray strength looks under-
+    or over-powered next to satellites once seen in-app.
+
+**Files touched:** new `shaders/flare_source.vert`, `shaders/flare_source.frag`,
+`shaders/flare_blur.comp`, `shaders/flare_composite.vert`, `shaders/flare_composite.frag`; modified
+`shaders/sat_flare.comp` (removed old append, added ocean-glint append), `shaders/sat_sky.frag`
+(removed corona loop, ocean-glint occlusion added, `GlowBuf` shrunk), `shaders/sat_point.frag`
+(doc-comment only); `src/simulations/SatelliteSim.h` (`GpuGlowBuf` shrunk, new `GpuOceanGlintBuf`/
+`FlareSourcePC`/`FlareBlurPC`/`FlareCompositePC`, new members, new tunables, grown
+`hovPhotoMinus/Plus`/`draggingPhoto` to 11); `src/simulations/SatelliteSim.cpp` (new
+`createFlareResources`/`createFlareDescriptors`/`createFlarePipelines`, `createDescriptors()` grown
+to 9 bindings, `createGlowResources()` grown to 21 `skyDescSet` bindings + `oceanGlintBuf` creation,
+`init()`/`onResize()`/`recordCompute()`/`recordDraw()`/`cleanup()` all wired, settings.json load/
+save); `src/simulations/SatelliteSimUI.cpp` (2 new `PhotoParam` slider rows).
+
+Builds clean (all 5 new shaders + 3 modified shaders compiled via `glslc`; every touched `.spv`
+confirmed newer than its source; C++ compiled/linked with no errors). **Not yet seen in-app.**
 
 ### 2026-07-20/21 (session 31) — Cloud shape quality pass + domain-warp bake perf
 Three user-reported cloud oddities (flat bases, conical/not-fluffy shapes, shadow line artifacts

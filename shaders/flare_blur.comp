@@ -1,0 +1,74 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// ── flare_blur.comp ────────────────────────────────────────────────────────────
+// Stage 2 of the flare architecture overhaul (see FlareSourcePC's comment in SatelliteSim.h).
+// Post-processes the small (quarter-res) bright-source buffer flare_source.vert/.frag renders:
+// two passes of a separable Gaussian (softens each point into a round corona) followed by one
+// multi-directional streak pass — the godray mechanism. Operating uniformly on the WHOLE buffer
+// means any bright, unoccluded region streaks — sun and satellites alike — with no "pick a light
+// source" logic needed at all, and occlusion (already baked into the source buffer by
+// flare_source.frag) naturally produces shafts spilling from cloud/terrain gaps.
+//
+// Ping-pongs between two same-sized storage images (flareA/flareB) rather than reading/writing the
+// same image in one dispatch, which would race between neighbouring-texel reads. Three dispatches
+// per frame, same pipeline, direction/mode selected via push constants:
+//   dispatch 1: mode=0 (horizontal gaussian), direction=0 (flareA -> flareB)
+//   dispatch 2: mode=1 (vertical gaussian),   direction=1 (flareB -> flareA)
+//   dispatch 3: mode=2 (streak),               direction=0 (flareA -> flareB) -- final result in flareB
+
+layout(set = 0, binding = 0, rgba16f) uniform image2D flareA;
+layout(set = 0, binding = 1, rgba16f) uniform image2D flareB;
+
+layout(push_constant) uniform PC {
+    uint  direction;  // 0 = read flareA write flareB, 1 = read flareB write flareA
+    uint  mode;       // 0 = horizontal gaussian, 1 = vertical gaussian, 2 = streak
+    float streakGain; // user-tunable streak/godray strength
+    float pad0;
+} pc;
+
+const float kGaussWeights[9] = float[9](0.028, 0.066, 0.123, 0.180, 0.206, 0.180, 0.123, 0.066, 0.028);
+
+const int   kStreakDirs  = 6;
+const int   kStreakTaps  = 10;
+const float kStreakDecay = 0.82;
+
+void main() {
+    ivec2 size  = imageSize(flareA);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    bool readA = (pc.direction == 0u);
+
+    if (pc.mode <= 1u) {
+        // Separable Gaussian: mode 0 = horizontal, mode 1 = vertical.
+        ivec2 step = (pc.mode == 0u) ? ivec2(1, 0) : ivec2(0, 1);
+        vec4 sum = vec4(0.0);
+        for (int i = -4; i <= 4; ++i) {
+            ivec2 sc = clamp(coord + step * i, ivec2(0), size - 1);
+            vec4  v  = readA ? imageLoad(flareA, sc) : imageLoad(flareB, sc);
+            sum += v * kGaussWeights[i + 4];
+        }
+        if (readA) imageStore(flareB, coord, sum); else imageStore(flareA, coord, sum);
+        return;
+    }
+
+    // mode == 2: multi-directional streak. Samples outward along kStreakDirs fixed angles with
+    // exponential decay, additively combined on top of the (already blurred) source pixel.
+    vec4 center = readA ? imageLoad(flareA, coord) : imageLoad(flareB, coord);
+    vec4 accum = center;
+    const float TWO_PI = 6.28318530718;
+    for (int d = 0; d < kStreakDirs; ++d) {
+        float ang = (TWO_PI / float(kStreakDirs)) * float(d);
+        vec2  dir = vec2(cos(ang), sin(ang));
+        float w = 1.0;
+        for (int t = 1; t <= kStreakTaps; ++t) {
+            w *= kStreakDecay;
+            ivec2 sc = coord + ivec2(dir * float(t * 2));
+            if (sc.x < 0 || sc.y < 0 || sc.x >= size.x || sc.y >= size.y) break;
+            vec4 v = readA ? imageLoad(flareA, sc) : imageLoad(flareB, sc);
+            accum += v * (w * pc.streakGain);
+        }
+    }
+    if (readA) imageStore(flareB, coord, accum); else imageStore(flareA, coord, accum);
+}

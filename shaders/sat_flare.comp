@@ -69,21 +69,36 @@ layout(set = 0, binding = 1) writeonly buffer SatVisibleBuf {
     SatVisible visible[];
 };
 
-// ── Glow + flare buffer — matches GpuGlowBuf (std430, 784 bytes) ─────────────
-//   bins[64]         sky glow histogram: floatBitsToUint(max effectFlare) per bin.
-//   flareCount       atomic counter for per-satellite lens flare slot claim.
-//   flarePad[3]      align to vec4 boundary.
-//   flareEntries[8] per-satellite ENU dir + effectFlare for lensFlare() in sky shader.
+// ── Glow buffer — matches GpuGlowBuf ──────────────────────────────────────────
+//   bins[64] sky glow histogram: floatBitsToUint(max effectFlare) per bin. Unrelated to, and
+//   unaffected by, the flare architecture overhaul below.
 // Zeroed each frame by vkCmdFillBuffer(sizeof(GpuGlowBuf)).
+//
+// (flareCount/flareEntries[FLARE_MAX] lived here — a capped atomic-append list of "bright"
+// satellites that sat_sky.frag looped over PER SCREEN PIXEL to draw lens-flare coronas. Deleted:
+// raising the cap enough to stop flicker with "100s" of simultaneously-bright Reflect-Orbital
+// satellites made that per-pixel cost scale with it — measured to tank framerate to 24fps.
+// Replaced by actually rendering every visible satellite (plus the sun) as a point into a small
+// offscreen texture (flare_source.vert/.frag), blurred/streaked by flare_blur.comp — see
+// FlareSourcePC's comment in SatelliteSim.h for the full design. This shader's own per-satellite
+// work is otherwise unchanged; it still writes GpuSatVisible, which flare_source.vert now reads
+// the exact same way sat_point.vert always has.)
 const float GLOW_THRESH  = 1.0;
-const float FLARE_THRESH = 1.0;
-const uint  FLARE_MAX    = 8u;
 layout(set = 0, binding = 2) buffer GlowBuf {
     uint  bins[64];
-    uint  flareCount;       // unused; kept for layout compat
-    uint  flarePad[3];
-    vec4  flareEntries[8];  // xyz=ENU dir per sector (last-writer wins within sector)
-    uint  sectorBright[8];  // atomicMax(floatBitsToUint(effectFlare)) per 45°-az sector
+};
+
+// ── Ocean-glint list — matches GpuOceanGlintBuf (flare architecture overhaul) ────────────────
+// A small, INDEPENDENT capped atomic-append list — same pattern the old flareEntries used, just
+// decoupled from corona rendering and much smaller (32, not 256): ocean specular glint is a minor
+// highlight effect, not the primary visibility signal. Zeroed each frame by vkCmdFillBuffer.
+const float OCEAN_GLINT_THRESH = 1.0;
+const uint  OCEAN_GLINT_MAX    = 32u; // must match kMaxOceanGlints in SatelliteSim.h and
+                                       // kOceanGlintMax in sat_sky.frag exactly.
+layout(set = 0, binding = 8) buffer OceanGlintBuf {
+    uint oceanGlintCount;
+    uint oceanGlintPad[3];
+    vec4 oceanGlintEntries[OCEAN_GLINT_MAX]; // xyz=ENU dir, w=effectFlare
 };
 
 // ── Light pollution dome — 16 azimuth sectors (22.5° each), interpolated between sector
@@ -495,21 +510,13 @@ void main() {
         atomicMax(bins[azBin * 8u + elBin], floatBitsToUint(effectFlare));
     }
 
-    // ── Lens flares: sector-based stable selection ───────────────────────────
-    // Sky divided into 8 azimuth sectors (45° each). Each sector keeps the
-    // brightest satellite via atomicMax on sectorBright[sector]. Direction is
-    // written only if this satellite beat the previous max — ensures the stored
-    // direction belongs to the actual brightest satellite, not a random last-writer.
-    if (effectFlare >= FLARE_THRESH) {
-        const float TWO_PI = 6.28318530718;
-        float az    = mod(atan(skyDir.x, skyDir.y) + TWO_PI, TWO_PI);
-        uint sector = uint(az * (8.0 / TWO_PI)) & 7u;
-        uint oldBright = atomicMax(sectorBright[sector], floatBitsToUint(effectFlare));
-        if (floatBitsToUint(effectFlare) > oldBright) {
-            // We beat the previous max — store our direction.
-            // Minor race: another thread at the same brightness may also write here,
-            // but both represent the true sector-max, so the direction stays stable.
-            flareEntries[sector] = vec4(skyDir, effectFlare);
+    // ── Ocean-glint list: capped atomic-append, no arbitration ──────────────
+    // Every satellite above OCEAN_GLINT_THRESH claims its OWN slot — same pattern the deleted
+    // flareEntries list used, just scoped to this one small, independent consumer now.
+    if (effectFlare >= OCEAN_GLINT_THRESH) {
+        uint slot = atomicAdd(oceanGlintCount, 1u);
+        if (slot < OCEAN_GLINT_MAX) {
+            oceanGlintEntries[slot] = vec4(skyDir, effectFlare);
         }
     }
 
