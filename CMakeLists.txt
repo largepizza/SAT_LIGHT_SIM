@@ -9,6 +9,32 @@ set(EXE_BASENAME "SAT_LIGHT_SIM_V_${VERSION_UNDERSCORED}")  # e.g. SAT_LIGHT_SIM
 project(ShaderFun VERSION ${APP_VERSION} LANGUAGES CXX)
 message(STATUS "Building ${EXE_BASENAME}")
 
+# Git commit + build date for diagnostics/bug reports (NEW-1). "unknown" for
+# source-zip builds with no .git directory so this never fails a from-scratch
+# build. Only updates when CMake re-configures, not on every incremental build.
+find_package(Git QUIET)
+set(GIT_COMMIT "unknown")
+if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_COMMIT_OUT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE GIT_RESULT
+    )
+    if(GIT_RESULT EQUAL 0 AND NOT GIT_COMMIT_OUT STREQUAL "")
+        set(GIT_COMMIT "${GIT_COMMIT_OUT}")
+    endif()
+endif()
+string(TIMESTAMP BUILD_DATE "%Y-%m-%d" UTC)
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/version.h"
+    @ONLY
+)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -89,7 +115,7 @@ FetchContent_MakeAvailable(nlohmann_json)
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 add_executable(ShaderFun ${SOURCES})
 set_target_properties(ShaderFun PROPERTIES OUTPUT_NAME "${EXE_BASENAME}")
-target_include_directories(ShaderFun PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR})
+target_include_directories(ShaderFun PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(ShaderFun PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json)
 
 # Shader compilation
@@ -167,5 +193,17 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
             "${CMAKE_CURRENT_SOURCE_DIR}/assets"
             "$<TARGET_FILE_DIR:ShaderFun>/assets"
         COMMENT "Copying assets to output directory"
+    )
+endif()
+
+# THIRD_PARTY_NOTICES.txt must ship next to the executable in every distributed
+# copy — MIT/zlib library licenses require the license text to travel with the
+# binary, not just live in an in-app tab (see UC2 in RELEASE_v1_1_PLAN.md).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt")
+    add_custom_command(TARGET ShaderFun POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt"
+            "$<TARGET_FILE_DIR:ShaderFun>/THIRD_PARTY_NOTICES.txt"
+        COMMENT "Copying THIRD_PARTY_NOTICES.txt to output directory"
     )
 endif()

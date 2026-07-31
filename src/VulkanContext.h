@@ -45,6 +45,14 @@ struct VulkanContext {
     std::vector<VkImageView> swapViews;
     VkFormat                 swapFormat   = VK_FORMAT_UNDEFINED;
     VkExtent2D               swapExtent{};
+    // NEW-7 (RELEASE_v1_1_PLAN.md): Settings > Display "Frame limiter" preference, read by
+    // createSwapchain() at both initial creation and every recreateSwapchain() call. Default
+    // FIFO (V-Sync) — MAILBOX was the old unconditional default, which lets the GPU run flat out
+    // forever on a laptop (fans/heat/battery, exactly the low-end audience this release targets).
+    // createSwapchain() falls back to FIFO (spec-guaranteed present) if the requested mode isn't
+    // in the surface's supported list. A simulation changes this and then reports true from
+    // Simulation::consumeSwapchainRebuildRequest() to have App rebuild the swapchain with it.
+    VkPresentModeKHR         presentModePreference = VK_PRESENT_MODE_FIFO_KHR;
 
     // ── Render pass & framebuffers ─────────────────────────────────────────
     VkRenderPass                renderPass = VK_NULL_HANDLE;

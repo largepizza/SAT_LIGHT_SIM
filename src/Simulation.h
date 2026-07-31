@@ -79,4 +79,18 @@ public:
 
     // Window title shown while this simulation runs
     virtual const char* name() const { return "ShaderFun"; }
+
+    // NEW-7 (RELEASE_v1_1_PLAN.md): target frame rate for App-side pacing, in Hz. Vulkan present
+    // modes have no native "cap to N fps" concept — FIFO paces to the display's own refresh rate,
+    // and MAILBOX/IMMEDIATE just run flat out — so a fixed numeric cap (e.g. "60" on a 144 Hz
+    // panel) needs App::mainLoop to sleep out the difference itself. Return 0 (default) for "no
+    // manual pacing needed" — either genuinely uncapped, or already paced by FIFO/V-Sync.
+    virtual float targetFpsCap() const { return 0.0f; }
+
+    // NEW-7: one-shot flag. Return true exactly once when this simulation has changed
+    // VulkanContext::presentModePreference (e.g. the Settings > Display frame-limiter changed)
+    // and needs App to rebuild the swapchain with it — mirrors the same recreateSwapchain +
+    // onResize sequence App already runs after a window resize. Must clear its own pending state
+    // before returning true, since App calls this once per frame and won't call it again.
+    virtual bool consumeSwapchainRebuildRequest() { return false; }
 };
