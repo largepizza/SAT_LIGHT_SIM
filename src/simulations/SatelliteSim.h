@@ -195,6 +195,24 @@ struct GpuSatVisible
 };
 static_assert(sizeof(GpuSatVisible) == 32, "GpuSatVisible layout mismatch");
 
+// Mercury..Uranus — the naked-eye-relevant classical planets plus Uranus (mag ~5.7-5.9, right at
+// the edge of the star catalog's own mag-6.5 floor). Neptune excluded: never naked-eye (~mag 7.8).
+enum PlanetId { kMercury = 0, kVenus, kMars, kJupiter, kSaturn, kUranus, kPlanetCount };
+extern const char *const kPlanetNames[kPlanetCount];
+
+// Per-planet ephemeris state, recomputed every frame in updatePositions() from the Keplerian
+// elements in SatelliteSim.cpp (kPlanetElements/keplerEclipticPos) — see "Subsystem: Planets" in
+// CLAUDE.md. Distinct from GpuSatVisible: this is the astronomy (direction/distance/phase), not
+// the render-ready record (brightness/color/size), which updatePlanets() derives from it each
+// frame into planetBuf.
+struct PlanetState
+{
+    glm::vec3 eciDir{0, 1, 0};  // unit vector from Earth toward the planet, ECI
+    float distanceAU = 0.0f;    // Earth-planet distance (AU)
+    float sunDistAU = 0.0f;     // Sun-planet distance (AU)
+    float phaseAngleDeg = 0.0f; // Sun-Planet-Earth angle (illumination phase)
+};
+
 // Compute push constants (must match sat_flare.comp push_constant block exactly).
 // GLSL std430 layout, vec3 aligned to 16 bytes:
 //   enuX/Y/Z (vec4): offsets 0,16,32
@@ -225,7 +243,9 @@ struct SatFlarePC
                              // role, much smaller in practice — moon is ~14 magnitudes dimmer than the sun)
     float pad0;              // reserved — pads moonDirECI to 16-byte (vec3) alignment
     glm::vec3 moonDirECI;    // unit vector from Earth toward Moon in ECI
-    float pad1;              // reserved — rounds struct to 128 bytes
+    float sunRefIntensity;   // was pad1 — S3 (RELEASE_v1_1_PLAN.md): soft ceiling reference so no
+                              // satellite's effectFlare can render brighter than the sun; mirrors
+                              // FlareSourcePC's own sunRefIntensity (SatelliteSim::sunFlareRefIntensity)
 }; // total: 128 bytes
 static_assert(sizeof(SatFlarePC) == 128, "SatFlarePC layout mismatch");
 
@@ -297,8 +317,16 @@ struct SatDrawPC
                              // SatelliteSim::beamProximityGlow). Replaces the directional
                              // azimuth-sector dome lookup the wash used in #39/#40 — applied
                              // uniformly regardless of view direction.
-}; // total: 164 bytes
-static_assert(sizeof(SatDrawPC) == 164, "SatDrawPC layout mismatch");
+    float noTwinkle;        // offset 164 — S3/planets follow-up (RELEASE_v1_1_PLAN.md, session 30):
+                             // 0 (default) = normal star_point.vert twinkle/scintillation; 1 = gate
+                             // it off. Set only on the planet draw call's own copy of this PC —
+                             // real planets are small resolved discs and don't atmospheric-
+                             // scintillate the way point-source stars do. Only star_point.vert
+                             // reads this; every other consumer of SatDrawPC can ignore it (a GLSL
+                             // push_constant declaration only needs to be a PREFIX of the pushed
+                             // bytes, so shaders that don't declare it are unaffected).
+}; // total: 168 bytes
+static_assert(sizeof(SatDrawPC) == 168, "SatDrawPC layout mismatch");
 
 // ── Push constants for cloud_march.comp (half-res cloud compute pass, C15-perf) ──────────────
 // Matches the layout(push_constant) block in cloud_march.comp exactly. A separate struct from
@@ -1021,6 +1049,7 @@ private:
     // line per CLAY_TEXT call with no embedded-newline support.
     static constexpr int kSelInfoLines = 6;
     char selInfoLine[kSelInfoLines][40] = {};
+    char planetInfoLine[kSelInfoLines][40] = {}; // same shape, filled by formatSelectedPlanetInfo
 
     // ── Orbit pipeline buffers ────────────────────────────────────────────────
     VkBuffer satOrbitBuf = VK_NULL_HANDLE; // device-local, uploaded once at init
@@ -1147,6 +1176,17 @@ private:
     VkPipelineLayout starPipeLayout = VK_NULL_HANDLE;
     VkPipeline starPipeline = VK_NULL_HANDLE;
     uint32_t starCount = 0;
+
+    // ── Planets ──────────────────────────────────────────────────────────────
+    // Reuses starPipeline/starPipeLayout/starDescLayout unchanged (same GpuSatVisible-shaped
+    // point-sprite pipeline) — only a second small host-mapped buffer + descriptor set, drawn with
+    // a second vkCmdDraw call. See "Subsystem: Planets" in CLAUDE.md.
+    VkBuffer planetBuf = VK_NULL_HANDLE;
+    VkDeviceMemory planetMem = VK_NULL_HANDLE;
+    void *planetMapped = nullptr;
+    VkDescriptorPool planetDescPool = VK_NULL_HANDLE; // starDescPool is sized maxSets=1, so this
+                                                        // gets its own tiny pool for one more set
+    VkDescriptorSet planetDescSet = VK_NULL_HANDLE;    // allocated with starDescLayout (same shape)
 
     // ── Simulation state ──────────────────────────────────────────────────────
     SkyCamera camera;
@@ -1704,6 +1744,13 @@ private:
     glm::vec4 sunDirENU{0, 1, 0, 0}; // sun direction in ENU (xyz), w = sin(elevation)
     glm::vec3 obsECI{0, 0, 6371000}; // observer ECI position (meters)
 
+    // ── Planets (updated each frame in updatePositions/updatePlanets) ─────────
+    PlanetState planetStates[kPlanetCount]{}; // ephemeris; direction/distance/phase
+    bool planetEnabled[kPlanetCount] = {true, true, true, true, true, true}; // per-planet toggle
+    bool showPlanets = true;    // global toggle, settings-persisted
+    int selectedPlanetIndex = -1; // index into planetStates[]/kPlanetNames[], -1 = none selected;
+                                   // mutually exclusive with selectedSatIndex (see its declaration)
+
     // ── Sky-background sun-glare gate (hysteresis state, not persisted) ───────
     // Eased toward its per-frame target in recordCompute(), right after updatePositions() and
     // before updateStars(). Consumed by updateStars() (folded into nightFactorEff) and pushed to
@@ -1795,6 +1842,8 @@ private:
     // ── UI hover state (one-frame lag) ────────────────────────────────────────
     std::vector<bool> hovConst;          // one entry per constellation; sized in loadDefinitions()
     std::vector<bool> hovHighlightConst; // highlight button hover state, parallel to hovConst
+    bool hovShowPlanets = false;         // "Show planets" global toggle hover state
+    bool hovPlanetBtn[kPlanetCount] = {}; // per-planet ON/OFF toggle hover state
     bool hovTimeSlower = false;
     bool hovTimePause = false;
     bool hovTimeFaster = false;
@@ -1926,6 +1975,12 @@ private:
     void initStars(VulkanContext &ctx);
     void createStarPipeline(VulkanContext &ctx);
     void updateStars();
+    void initPlanets(VulkanContext &ctx); // planetBuf + planetDescSet, reusing starDescLayout
+    void updatePlanets();                 // mirrors updateStars(); called right after it
+    int pickPlanetAt(float clickX, float clickY, float screenW, float screenH); // mirrors
+                                           // pickSatelliteAt but reads the already host-mapped
+                                           // planetBuf directly — no device->host staging copy
+    void formatSelectedPlanetInfo();      // mirrors formatSelectedSatInfo, fills planetInfoLine[]
     void updateLightPollutionDome(); // called each frame before updateStars(): fills lightDomeAz[]
                                       // + uploads to lightDomeBuf for sat_flare.comp
     void updateGpuTimingStats(VulkanContext &ctx); // called at top of recordCompute(): EMA-smooths

@@ -139,7 +139,7 @@ layout(push_constant) uniform PC {
     float moonSuppression; // sky background suppression ratio from moonlight — offset 104
     float pad0;            // reserved — offset 108
     vec3  moonDirECI;      // unit vector from Earth toward Moon in ECI — offset 112
-    float pad1;            // reserved — offset 124
+    float sunRefIntensity; // was pad1 — S3: soft brightness ceiling relative to the sun — offset 124
 } pc;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -457,7 +457,15 @@ void main() {
     // domeAz is intentionally unclamped upstream — the clamp only happens here, after elevFalloff,
     // so high lightPollutionGain can compensate for elevFalloff's reduction at non-horizon angles
     // instead of saturating uselessly before elevFalloff is even applied (session 26 bug).
-    float domeVal = clamp(domeAz * elevFalloff, 0.0, 1.0);
+    // S2c (RELEASE_v1_1_PLAN.md): elevFalloff alone bottoms out at ~0.26 at zenith, so a satellite
+    // straight overhead could never be dimmed by more than ~26% no matter how bright the city —
+    // wrong, since real urban skyglow raises zenith brightness enormously (isotropic scattered
+    // component, not just the horizon-hugging direct-view glow elevFalloff models). kIsotropicFrac
+    // gives the dome a real floor at zenith while leaving horizon behaviour unchanged. Same
+    // constant/formula in sat_sky.frag (Milky Way + ground stars) and cloud_march.comp (aurora) —
+    // keep them coherent, this IS the "same array, coherent by construction" property.
+    const float kIsotropicFrac = 0.4;
+    float domeVal = clamp(domeAz * (kIsotropicFrac + (1.0 - kIsotropicFrac) * elevFalloff), 0.0, 1.0);
     // kSatPollutionMaxDim caps how dark it can go so the brightest flares/mirrors still peek
     // through even in a maximally lit city.
     const float kSatPollutionMaxDim = 0.85;
@@ -472,6 +480,15 @@ void main() {
     float beamDomeVal = clamp(beamDomeAz * elevFalloff, 0.0, 1.0);
     const float kBeamPollutionMaxDim = 0.85;
     effectFlare *= 1.0 - beamDomeVal * kBeamPollutionMaxDim;
+
+    // ── Soft brightness ceiling relative to the sun (S3, RELEASE_v1_1_PLAN.md) ───────────────
+    // Root cause of "reflector out-shines the sun": the flare-source pass (flare_source.vert)
+    // injects the sun as a virtual point at a FIXED pc.sunRefIntensity, while effectFlare above is
+    // otherwise unbounded — a favourably-angled mirror can exceed it outright. Reinhard-style
+    // rolloff: nothing can ever render brighter than the sun, ordering between satellites is fully
+    // preserved (monotonic in effectFlare), and the low end is untouched — at effectFlare ≪
+    // sunRefIntensity, effectFlare' ≈ effectFlare, so ordinary Starlink-class flares are unaffected.
+    effectFlare = pc.sunRefIntensity * effectFlare / (effectFlare + pc.sunRefIntensity);
 
     // ── Cull if below visibility threshold ────────────────────────────────────
     if (effectFlare < pc.visThresh) {
