@@ -67,6 +67,146 @@ static inline float computeSSOInclination(float altM)
     return (float)acos(glm::clamp(cosI, -1.0, 1.0));
 }
 
+// ── Planetary ephemeris (low-precision Keplerian) ────────────────────────────
+// Planets feature (RELEASE_v1_1_PLAN follow-up, session 30). Deliberately NOT the satellite
+// orbital-compute pipeline (GpuSatOrbit/sat_orbit.comp) — that solves near-field Earth-relative
+// geometry (shadow, attitude, specular surfaces) planets don't have. This is the same shape of
+// closed-form CPU math as the sun/moon block above, just parameterised per body.
+//
+// Elements + rates (a, e, i, L, longitude of perihelion, longitude of ascending node; centurial
+// rates) are JPL/Standish "Keplerian Elements for Approximate Positions of the Major Planets",
+// valid 1800-2050 AD (https://ssd.jpl.nasa.gov/planets/approx_pos.html) — comfortably covers the
+// sim's fixed 2036-06-21 epoch. Earth uses the table's EM Bary row (standard for this purpose).
+// The Moon uses a two-body Keplerian ellipse fit to the linear terms of its ELP2000-82B mean
+// elements (Meeus, "Astronomical Algorithms" ch. 47) — a real, if approximate (no evection/
+// variation/other periodic perturbations — "Kepler approximation is fine" per the plan this
+// implements), improvement over the previous circular-equatorial orbit with a phase constant
+// hand-calibrated for a single epoch (2026-03-30) that drifted for any other date.
+struct KeplerElements
+{
+    double a0, aDot;       // semi-major axis (AU), per Julian century
+    double e0, eDot;       // eccentricity (dimensionless), per Julian century
+    double i0, iDot;       // inclination (deg), per Julian century
+    double L0, LDot;       // mean longitude (deg), per Julian century
+    double peri0, periDot; // longitude of perihelion, ϖ = ω+Ω (deg), per Julian century
+    double node0, nodeDot; // longitude of ascending node, Ω (deg), per Julian century
+};
+
+static constexpr KeplerElements kEarthElements{
+    1.00000261, 0.00000562, 0.01671123, -0.00004392, -0.00001531, -0.01294668,
+    100.46457166, 35999.37244981, 102.93768193, 0.32327364, 0.0, 0.0};
+
+// PlanetId/kPlanetCount declared in SatelliteSim.h (shared with UI code).
+const char *const kPlanetNames[kPlanetCount] = {
+    "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus"};
+
+static constexpr KeplerElements kPlanetElements[kPlanetCount] = {
+    // Mercury
+    {0.38709927, 0.00000037, 0.20563593, 0.00001906, 7.00497902, -0.00594749,
+     252.25032350, 149472.67411175, 77.45779628, 0.16047689, 48.33076593, -0.12534081},
+    // Venus
+    {0.72333566, 0.00000390, 0.00677672, -0.00004107, 3.39467605, -0.00078890,
+     181.97909950, 58517.81538729, 131.60246718, 0.00268329, 76.67984255, -0.27769418},
+    // Mars
+    {1.52371034, 0.00001847, 0.09339410, 0.00007882, 1.84969142, -0.00813131,
+     -4.55343205, 19140.30268499, -23.94362959, 0.44441088, 49.55953891, -0.29257343},
+    // Jupiter
+    {5.20288700, -0.00011607, 0.04838624, -0.00013253, 1.30439695, -0.00183714,
+     34.39644051, 3034.74612775, 14.72847983, 0.21252668, 100.47390909, 0.20469106},
+    // Saturn
+    {9.53667594, -0.00125060, 0.05386179, -0.00050991, 2.48599187, 0.00193609,
+     49.95424423, 1222.49362201, 92.59887831, -0.41897216, 113.66242448, -0.28867794},
+    // Uranus
+    {19.18916464, -0.00196176, 0.04725744, -0.00004397, 0.77263783, -0.00242939,
+     313.23810451, 428.48202785, 170.95427630, 0.40805281, 74.01692503, 0.04240589},
+};
+
+// Moon: geocentric two-body fit. a/e/i held constant (negligible drift at this precision); L and
+// mean anomaly M' linear terms are ELP2000-82B's (Meeus ch.47); peri = L - M' (both linear in T,
+// so peri is too) recovers the "longitude of perihelion" shape kEarthElements/kPlanetElements use,
+// letting keplerEclipticPos() serve the Moon with no special-casing.
+static constexpr double kMoonL0 = 218.3164477, kMoonLDot = 481267.88123421;
+static constexpr double kMoonM0 = 134.9633964, kMoonMDot = 477198.8675055;
+static constexpr KeplerElements kMoonElements{
+    0.00256955, 0.0, 0.0549, 0.0, 5.145, 0.0,
+    kMoonL0, kMoonLDot,
+    kMoonL0 - kMoonM0, kMoonLDot - kMoonMDot,
+    125.0445479, -1934.1362891};
+
+// Solves Kepler's equation and returns position in the J2000 mean-ecliptic frame, AU (heliocentric
+// for kEarthElements/kPlanetElements, geocentric for kMoonElements — the math doesn't care which,
+// only the caller's interpretation of the origin does). T = Julian centuries since J2000 TT.
+static glm::dvec3 keplerEclipticPos(const KeplerElements &el, double T)
+{
+    double a = el.a0 + el.aDot * T;
+    double e = el.e0 + el.eDot * T;
+    double iR = glm::radians(el.i0 + el.iDot * T);
+    double L = el.L0 + el.LDot * T;
+    double peri = el.peri0 + el.periDot * T;
+    double node = el.node0 + el.nodeDot * T;
+
+    double M = fmod(L - peri, 360.0);
+    if (M > 180.0)
+        M -= 360.0;
+    if (M < -180.0)
+        M += 360.0;
+    double MR = glm::radians(M);
+
+    // Newton-Raphson solve of Kepler's equation M = E - e*sin(E). Converges in ~4-5 iterations
+    // even at Mercury's eccentricity (0.206); 8 is cheap insurance, this runs 7x once per frame.
+    double E = MR;
+    for (int iter = 0; iter < 8; ++iter)
+    {
+        double dE = (E - e * sin(E) - MR) / (1.0 - e * cos(E));
+        E -= dE;
+        if (fabs(dE) < 1e-9)
+            break;
+    }
+
+    double xOrb = a * (cos(E) - e);
+    double yOrb = a * sqrt(1.0 - e * e) * sin(E);
+
+    double wR = glm::radians(peri - node); // argument of perihelion ω = ϖ - Ω
+    double nodeR = glm::radians(node);
+    double cw = cos(wR), sw = sin(wR);
+    double cn = cos(nodeR), sn = sin(nodeR);
+    double ci = cos(iR), si = sin(iR);
+
+    // Standard 3-1-3 (ω, i, Ω) rotation from the orbital plane into J2000 mean-ecliptic XYZ.
+    double xEcl = (cw * cn - sw * sn * ci) * xOrb + (-sw * cn - cw * sn * ci) * yOrb;
+    double yEcl = (cw * sn + sw * cn * ci) * xOrb + (-sw * sn + cw * cn * ci) * yOrb;
+    double zEcl = (sw * si) * xOrb + (cw * si) * yOrb;
+
+    return glm::dvec3(xEcl, yEcl, zEcl);
+}
+
+// Apparent visual magnitude, V = V0 + 5*log10(r*delta) + phase-angle polynomial(alphaDeg).
+// Source: Paul Schlyter, "How to compute planetary positions" (stjarnhimlen.se/comp/ppcomp.html)
+// — a standard, widely-cited amateur-astronomy reference. Saturn's ring-brightness contribution
+// (which needs Saturnicentric ring-plane geometry, not just phase angle) is deliberately omitted —
+// accepted simplification, Saturn will read slightly dim near ring-plane-open oppositions.
+static float planetApparentMagnitude(PlanetId id, double rAU, double deltaAU, double alphaDeg)
+{
+    double base = 5.0 * log10(rAU * deltaAU);
+    switch (id)
+    {
+    case kMercury:
+        return (float)(-0.36 + base + 0.027 * alphaDeg + 2.2e-13 * pow(alphaDeg, 6.0));
+    case kVenus:
+        return (float)(-4.34 + base + 0.013 * alphaDeg + 4.2e-7 * pow(alphaDeg, 3.0));
+    case kMars:
+        return (float)(-1.51 + base + 0.016 * alphaDeg);
+    case kJupiter:
+        return (float)(-9.25 + base + 0.014 * alphaDeg);
+    case kSaturn:
+        return (float)(-9.00 + base + 0.044 * alphaDeg);
+    case kUranus:
+        return (float)(-7.15 + base + 0.001 * alphaDeg);
+    default:
+        return 99.0f;
+    }
+}
+
 // ─── init ─────────────────────────────────────────────────────────────────────
 void SatelliteSim::init(VulkanContext &ctx)
 {
@@ -83,7 +223,9 @@ void SatelliteSim::init(VulkanContext &ctx)
     // whatever preset that load would otherwise have chosen.
     auto crashSentinelPath = std::filesystem::path(userDataDir_) / "session.lock";
     bool crashDetected = std::filesystem::exists(crashSentinelPath);
-    { std::ofstream sentinelOut(crashSentinelPath, std::ios::trunc); }
+    {
+        std::ofstream sentinelOut(crashSentinelPath, std::ios::trunc);
+    }
 
     // Fixed start time: 2036-06-21 00:00:00 UTC
     // J2000.0 = 2000-01-01 12:00:00 UTC = Unix 946728000
@@ -105,30 +247,30 @@ void SatelliteSim::init(VulkanContext &ctx)
     //              in the settings window). KB_CINEMATIC is left unbound by default since
     //              it's a mouse-drag-flavored feature (see dispatchKeyAction).
     keybindings = {
-        {"Toggle UI", GLFW_KEY_TAB, GLFW_GAMEPAD_BUTTON_BACK, false, false},          // KB_TOGGLE_UI
-        {"Pause/Resume", GLFW_KEY_SPACE, GLFW_GAMEPAD_BUTTON_START, false, false},    // KB_PAUSE
-        {"Slow Down", GLFW_KEY_COMMA, GLFW_GAMEPAD_BUTTON_DPAD_LEFT, false, false},   // KB_SLOWER
-        {"Speed Up", GLFW_KEY_PERIOD, GLFW_GAMEPAD_BUTTON_DPAD_RIGHT, false, false},  // KB_FASTER
-        {"Reverse Time", GLFW_KEY_R, GLFW_GAMEPAD_BUTTON_DPAD_UP, false, false},      // KB_REVERSE
-        {"Move Fast", GLFW_KEY_LEFT_SHIFT, GLFW_GAMEPAD_BUTTON_LEFT_THUMB, true, false},   // KB_MOVE_BOOST (held)
+        {"Toggle UI", GLFW_KEY_TAB, GLFW_GAMEPAD_BUTTON_BACK, false, false},                // KB_TOGGLE_UI
+        {"Pause/Resume", GLFW_KEY_SPACE, GLFW_GAMEPAD_BUTTON_START, false, false},          // KB_PAUSE
+        {"Slow Down", GLFW_KEY_COMMA, GLFW_GAMEPAD_BUTTON_DPAD_LEFT, false, false},         // KB_SLOWER
+        {"Speed Up", GLFW_KEY_PERIOD, GLFW_GAMEPAD_BUTTON_DPAD_RIGHT, false, false},        // KB_FASTER
+        {"Reverse Time", GLFW_KEY_R, GLFW_GAMEPAD_BUTTON_DPAD_UP, false, false},            // KB_REVERSE
+        {"Move Fast", GLFW_KEY_LEFT_SHIFT, GLFW_GAMEPAD_BUTTON_LEFT_THUMB, true, false},    // KB_MOVE_BOOST (held)
         {"Move Fine", GLFW_KEY_LEFT_CONTROL, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB, true, false}, // KB_MOVE_FINE  (held)
-        {"Cinematic Pan", GLFW_KEY_LEFT_ALT, -1, false, false},                       // KB_CINEMATIC  (event, toggle)
-        {"Raise Elevation", GLFW_KEY_Q, -1, true, false},                             // KB_RAISE_ELEV (held) — gamepad is the analog right trigger, see gpElevRaise
-        {"Lower Elevation", GLFW_KEY_E, -1, true, false},                             // KB_LOWER_ELEV (held) — gamepad is the analog left trigger, see gpElevLower
-        {"Reset Elevation", GLFW_KEY_Z, -1, false, false},                            // KB_RESET_ELEV (event) — Y reassigned to Reset Zoom below
-        {"Zoom In", GLFW_KEY_EQUAL, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER, true, false},   // KB_ZOOM_IN    (held)
-        {"Zoom Out", GLFW_KEY_MINUS, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER, true, false},   // KB_ZOOM_OUT   (held)
-        {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_Y, false, false},              // KB_ZOOM_RESET (event)
-        {"Select Satellite", GLFW_KEY_F, GLFW_GAMEPAD_BUTTON_A, false, false},        // KB_SELECT_SAT (event) — center-of-screen pick
+        {"Cinematic Pan", GLFW_KEY_LEFT_ALT, -1, false, false},                             // KB_CINEMATIC  (event, toggle)
+        {"Raise Elevation", GLFW_KEY_Q, -1, true, false},                                   // KB_RAISE_ELEV (held) — gamepad is the analog right trigger, see gpElevRaise
+        {"Lower Elevation", GLFW_KEY_E, -1, true, false},                                   // KB_LOWER_ELEV (held) — gamepad is the analog left trigger, see gpElevLower
+        {"Reset Elevation", GLFW_KEY_Z, -1, false, false},                                  // KB_RESET_ELEV (event) — Y reassigned to Reset Zoom below
+        {"Zoom In", GLFW_KEY_EQUAL, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER, true, false},         // KB_ZOOM_IN    (held)
+        {"Zoom Out", GLFW_KEY_MINUS, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER, true, false},         // KB_ZOOM_OUT   (held)
+        {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_Y, false, false},                    // KB_ZOOM_RESET (event)
+        {"Select Satellite", GLFW_KEY_F, GLFW_GAMEPAD_BUTTON_A, false, false},              // KB_SELECT_SAT (event) — center-of-screen pick
     };
     static_assert(KB_COUNT == 15, "KB enum and keybindings initializer are out of sync");
 
     createBuffers(ctx);
     createCloudNoisePipeline(ctx);
     createCloudWarpNoisePipeline(ctx); // must run before createCloudMarchDescriptors (binding 9)
-    createAuroraNoisePipeline(ctx); // must run before createGlowResources' writes (binding 16)
-    createCloudMarchResources(ctx); // images must exist before createGlowResources' writes (bindings 10/11)
-    createSceneDepthResources(ctx); // image must exist before createGlowResources' writes (binding 19)
+    createAuroraNoisePipeline(ctx);    // must run before createGlowResources' writes (binding 16)
+    createCloudMarchResources(ctx);    // images must exist before createGlowResources' writes (bindings 10/11)
+    createSceneDepthResources(ctx);    // image must exist before createGlowResources' writes (binding 19)
     createGlowResources(ctx);
     createDescriptors(ctx);
     createComputePipeline(ctx);
@@ -163,6 +305,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     }
     uploadSatOrbits(ctx); // bake + upload GpuSatOrbit data after orbits are built
     initStars(ctx);
+    initPlanets(ctx); // must run after initStars() — reuses starDescLayout/starPipeline
 
     // Default window chrome sizes — must be set before the first updateWindowChrome()
     // call (buildUI); loadSettings() below may override x/y/w/h with persisted values.
@@ -608,6 +751,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
     updateLightPollutionDome();
     updateStars();
+    updatePlanets();
+    // Unlike formatSelectedSatInfo() (called only when the selection changes, since a satellite's
+    // orbital elements are static), a planet's distance/phase/magnitude changes every frame — so
+    // this re-derives planetInfoLine[] every frame the selection is active, from the planetStates[]
+    // updatePositions() just refreshed this frame.
+    if (selectedPlanetIndex >= 0)
+        formatSelectedPlanetInfo();
 
     // Read previous frame's GPU glow results for the magnitude UI.
     // glowBuf is HOST_COHERENT; by the time recordCompute is called the previous
@@ -639,9 +789,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         int count = std::min((int)rb->beamCount, kMaxActiveBeams);
         float nearest = -1.0f;
         float nearestBlockOpacity = 0.0f; // C11/C12 follow-up #47: blockOpacity of whichever
-                                           // entry produced `nearest`, so beamProximityGlow below
-                                           // can be dampened when cloud is actually blocking the
-                                           // nearest beam rather than brightening the sky through it.
+                                          // entry produced `nearest`, so beamProximityGlow below
+                                          // can be dampened when cloud is actually blocking the
+                                          // nearest beam rather than brightening the sky through it.
         // C12 follow-up #44: aggregate by target position into a small fixed list — satellites
         // servicing the same real-world site resolve to numerically identical targetENU (both
         // derive from the same reflectorTargetsBuf[bestIdx] entry, rotated the same way this
@@ -709,7 +859,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 {
                     lights.entries[li].aggIntensity += intensity;
                     lights.entries[li].footprintRadM = std::max(lights.entries[li].footprintRadM,
-                                                                 rb->entries[s].footprintRadM);
+                                                                rb->entries[s].footprintRadM);
                     // blockAltM/blockOpacity (C12 follow-up #46) should already be identical
                     // across satellites servicing the same target (same beamCloudBlockBuf[bestIdx]
                     // read at sat_orbit.comp's write site) — take whichever's opacity is higher
@@ -822,11 +972,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
         double dLat = latRad - cityPrevObsLatRad;
         double dLon = lonRad - cityPrevObsLonRad;
-        if (dLon > glm::pi<double>())  dLon -= glm::two_pi<double>(); // antimeridian wrap guard
-        if (dLon < -glm::pi<double>()) dLon += glm::two_pi<double>();
+        if (dLon > glm::pi<double>())
+            dLon -= glm::two_pi<double>(); // antimeridian wrap guard
+        if (dLon < -glm::pi<double>())
+            dLon += glm::two_pi<double>();
         double cosLat = std::max(0.05, cos(latRad)); // guards the /cosLat below near the poles
         cityOffsetNorthM += dLat * (double)kEarthRadius;
-        cityOffsetEastM  += dLon * (double)kEarthRadius * cosLat;
+        cityOffsetEastM += dLon * (double)kEarthRadius * cosLat;
         cityPrevObsLatRad = latRad;
         cityPrevObsLonRad = lonRad;
     }
@@ -1149,12 +1301,12 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cpc.sunDirENU = sunDirENU;
         cpc.moonDirENU = moonDirENU;
         cpc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
-        cpc.debugDisableMask = debugDisableMask; // aurora knockout toggle now lives here too
-        cpc.beamMaxRangeM = beamMaxRangeM; // C12 follow-up #6
+        cpc.debugDisableMask = debugDisableMask;             // aurora knockout toggle now lives here too
+        cpc.beamMaxRangeM = beamMaxRangeM;                   // C12 follow-up #6
         cpc.showBeamDebugRays = showBeamDebugRays ? 1u : 0u; // C12 follow-up #12
-        cpc.beamSkyGlowGain = beamSkyGlowGain; // C12 follow-up #17; #44: now gains the real
-                                               // per-sample beam->cloud term instead of the
-                                               // deleted analytic tube
+        cpc.beamSkyGlowGain = beamSkyGlowGain;               // C12 follow-up #17; #44: now gains the real
+                                                             // per-sample beam->cloud term instead of the
+                                                             // deleted analytic tube
         cpc.cloudShadowRangeM = cloudShadowRangeM;
         // C12 follow-up #39: cpc.beamGlowBleedGain removed — the near-field bleed/march it drove
         // in this shader was removed entirely; see buildSatDrawPC() for its new home.
@@ -1260,6 +1412,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pc.moonSuppression = moonSuppression;
     pc.moonDirECI = moonDirECI; // computed in updatePositions(), called earlier this frame
     pc.extinctionCoeff = extinctionCoeff;
+    pc.sunRefIntensity = sunFlareRefIntensity; // S3: soft ceiling reference, see struct comment
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1318,8 +1471,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(fpc), &fpc);
         vkCmdDraw(cmd, activeSatCount + 1, 1, 0, 0); // +1 = the sun's virtual point
-        vkCmdEndRenderPass(cmd); // finalLayout=GENERAL — ready for the compute blur below, no
-                                 // extra barrier (same convention skyLowResRenderPass established)
+        vkCmdEndRenderPass(cmd);                     // finalLayout=GENERAL — ready for the compute blur below, no
+                                                     // extra barrier (same convention skyLowResRenderPass established)
 
         // Stage 2: blur/streak — one pipeline, three dispatches ping-ponging flareSourceImg <->
         // flareScratchImg (see FlareBlurPC's comment for the direction/mode scheme). Each
@@ -1343,8 +1496,21 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 flareBlurPipeLayout, 0, 1, &flareBlurDescSet, 0, nullptr);
 
+        // S3 (RELEASE_v1_1_PLAN.md): scale the glow/streak gain with darkness (eye adaptation)
+        // rather than letting a bright flare's blown-out core keep growing — the core brightness
+        // ceiling is handled above (sat_flare.comp's Reinhard rolloff) and its size is already
+        // logarithmic in effectFlare; this is what keeps the DRAMA at night rather than in daylight,
+        // where the same bloom around a point source would look wrong against a bright sky. Same
+        // formula as updateStars()'s nightFactor (sin(elevation) = sunDirENU.w) — a fixed day floor
+        // rather than zero, so twilight doesn't pop the glow on/off.
+        const float kFlareDayFloor = 0.35f;
+        float flareDarkness = glm::clamp(-sunDirENU.w * 5.0f, 0.0f, 1.0f);
+        float flareEyeAdaptGain = glm::mix(kFlareDayFloor, 1.0f, flareDarkness);
+
         FlareBlurPC bpc{};
-        bpc.direction = 0; bpc.mode = 0; bpc.streakGain = flareStreakGain; // horizontal gaussian: source->scratch
+        bpc.direction = 0;
+        bpc.mode = 0;
+        bpc.streakGain = flareStreakGain * flareEyeAdaptGain; // horizontal gaussian: source->scratch
         vkCmdPushConstants(cmd, flareBlurPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(bpc), &bpc);
         vkCmdDispatch(cmd, gx, gy, 1);
 
@@ -1352,7 +1518,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &flareBarrier);
 
-        bpc.direction = 1; bpc.mode = 1; // vertical gaussian: scratch->source
+        bpc.direction = 1;
+        bpc.mode = 1; // vertical gaussian: scratch->source
         vkCmdPushConstants(cmd, flareBlurPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(bpc), &bpc);
         vkCmdDispatch(cmd, gx, gy, 1);
 
@@ -1360,7 +1527,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &flareBarrier);
 
-        bpc.direction = 0; bpc.mode = 2; // streak: source->scratch (final result)
+        bpc.direction = 0;
+        bpc.mode = 2; // streak: source->scratch (final result)
         vkCmdPushConstants(cmd, flareBlurPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(bpc), &bpc);
         vkCmdDispatch(cmd, gx, gy, 1);
 
@@ -1471,6 +1639,70 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
     return best;
 }
 
+// ─── pickPlanetAt ───────────────────────────────────────────────────────────────
+// Cheaper than pickSatelliteAt(): planetBuf is HOST_VISIBLE/COHERENT and already holds this
+// frame's data (updatePlanets() writes it directly from the CPU, no device-local buffer, no
+// staging copy needed at all) — just a small loop over kPlanetCount entries. Same hit-test
+// convention (nearest within its own angularSize-derived radius, kMinHitRadiusPx floor) as
+// pickSatelliteAt for a consistent feel.
+int SatelliteSim::pickPlanetAt(float clickX, float clickY, float screenW, float screenH)
+{
+    if (!planetMapped || !showPlanets)
+        return -1;
+
+    const GpuSatVisible *entries = static_cast<const GpuSatVisible *>(planetMapped);
+    constexpr float kMinHitRadiusPx = 8.0f;
+
+    int best = -1;
+    float bestDist = 0.0f;
+    for (int i = 0; i < kPlanetCount; ++i)
+    {
+        if (!planetEnabled[i])
+            continue;
+        const GpuSatVisible &v = entries[i];
+        if (v.flareIntensity <= 0.0f)
+            continue;
+        float sx, sy;
+        if (!projectSkyDirToScreen(v.skyDir, screenW, screenH, sx, sy))
+            continue;
+        float dx = sx - clickX, dy = sy - clickY;
+        float dist = sqrtf(dx * dx + dy * dy);
+        float hitRadius = std::max(v.angularSize * 0.5f, kMinHitRadiusPx);
+        if (dist <= hitRadius && (best < 0 || dist < bestDist))
+        {
+            best = i;
+            bestDist = dist;
+        }
+    }
+    return best;
+}
+
+// ─── formatSelectedPlanetInfo ────────────────────────────────────────────────────
+// Mirrors formatSelectedSatInfo below, but the planet's astronomy (distance/phase/magnitude) is
+// dynamic — recomputed fresh from this frame's planetStates[] rather than static orbital elements
+// — so unlike the satellite version, re-call this every frame the selection is active, not only
+// when the selection changes (see buildSelectedSatPanel).
+void SatelliteSim::formatSelectedPlanetInfo()
+{
+    if (selectedPlanetIndex < 0 || selectedPlanetIndex >= kPlanetCount)
+    {
+        for (auto &line : planetInfoLine)
+            line[0] = '\0';
+        return;
+    }
+
+    const PlanetState &ps = planetStates[selectedPlanetIndex];
+    float vmag = planetApparentMagnitude((PlanetId)selectedPlanetIndex, ps.sunDistAU, ps.distanceAU, ps.phaseAngleDeg);
+    float illumFrac = (1.0f + cosf(glm::radians(ps.phaseAngleDeg))) * 0.5f; // 1=full, 0=new
+
+    snprintf(planetInfoLine[0], sizeof(planetInfoLine[0]), "%s", kPlanetNames[selectedPlanetIndex]);
+    snprintf(planetInfoLine[1], sizeof(planetInfoLine[1]), "Planet");
+    snprintf(planetInfoLine[2], sizeof(planetInfoLine[2]), "Mag: %.1f", vmag);
+    snprintf(planetInfoLine[3], sizeof(planetInfoLine[3]), "Distance: %.2f AU", ps.distanceAU);
+    snprintf(planetInfoLine[4], sizeof(planetInfoLine[4]), "Phase: %.0f%%", illumFrac * 100.0f);
+    snprintf(planetInfoLine[5], sizeof(planetInfoLine[5]), "Sun dist: %.2f AU", ps.sunDistAU);
+}
+
 // ─── formatSelectedSatInfo ─────────────────────────────────────────────────────
 // Fills selInfoLine[] from static, CPU-resident orbital-element data (satOrbits/constellations/
 // satTypes) — call once when selectedSatIndex changes, not every frame; nothing here is
@@ -1539,13 +1771,13 @@ SatDrawPC SatelliteSim::buildSatDrawPC(VulkanContext &ctx, VkExtent2D targetExte
     // cloud_march.comp dispatch there needs them before this function even runs. See the
     // comment at that relocation site for why.
     pc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset); // w = user altitude offset above terrain (m); GPU computes ground height
-    pc.debugDisableMask = debugDisableMask; // perf knockout toggles — see SatelliteSim.h member comment
-    pc.skyGlareVisibility = skyGlareEased; // sun-glare gate for the Milky Way — see skyGlareEased member comment
-    pc.beamMaxRangeM = beamMaxRangeM; // C12 follow-up #6
-    pc.beamSkyGlowGain = beamSkyGlowGain; // C12 follow-up #18 — shared with cloud_march.comp's copy
-    pc.beamGlowBleedGain = beamGlowBleedGain; // C12 follow-up #39 — moved here from CloudMarchPC;
-                                               // now drives this shader's own beam sky-glow wash
-    pc.beamProximityGlow = beamProximityGlow; // C12 follow-up #41
+    pc.debugDisableMask = debugDisableMask;             // perf knockout toggles — see SatelliteSim.h member comment
+    pc.skyGlareVisibility = skyGlareEased;              // sun-glare gate for the Milky Way — see skyGlareEased member comment
+    pc.beamMaxRangeM = beamMaxRangeM;                   // C12 follow-up #6
+    pc.beamSkyGlowGain = beamSkyGlowGain;               // C12 follow-up #18 — shared with cloud_march.comp's copy
+    pc.beamGlowBleedGain = beamGlowBleedGain;           // C12 follow-up #39 — moved here from CloudMarchPC;
+                                                        // now drives this shader's own beam sky-glow wash
+    pc.beamProximityGlow = beamProximityGlow;           // C12 follow-up #41
     return pc;
 }
 
@@ -1649,14 +1881,39 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         vkCmdDraw(cmd, starCount, 1, 0, 0);
     }
 
+    // ── Pass 3.5: planets (additive blending, same pipeline/shaders as stars) ──────────────
+    // Reuses starPipeline/starPipeLayout unchanged — only the descriptor set (planetDescSet,
+    // bound to planetBuf instead of starBuf) differs. noTwinkle=1 for this draw only: real
+    // planets are small resolved discs and don't atmospheric-scintillate the way point-source
+    // stars do (see SatDrawPC's noTwinkle comment and star_point.vert's gating of it). pc is
+    // otherwise identical to the star draw above; mutating it here doesn't affect that already-
+    // recorded vkCmdDraw.
+    if (showPlanets && planetDescSet != VK_NULL_HANDLE && starPipeline != VK_NULL_HANDLE)
+    {
+        pc.noTwinkle = 1.0f;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, starPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                starPipeLayout, 0, 1, &planetDescSet, 0, nullptr);
+        vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(pc), &pc);
+        vkCmdDraw(cmd, kPlanetCount, 1, 0, 0);
+    }
+
     // ── Pass 4: flare/corona composite (flare architecture overhaul) ──────────
     // Additive fullscreen triangle sampling the blurred/streaked buffer recordCompute() built
     // this frame — replaces the old per-pixel flareEntries loop in sat_sky.frag. Deliberately
     // last: lands over terrain/ocean/clouds/satellites/stars, under the UI (drawn afterward by
     // App), matching where the deleted flareAccum add used to land (post-tonemap).
     {
+        // S3 (RELEASE_v1_1_PLAN.md): same darkness-scaled gain as the blur pass in recordCompute()
+        // (kept as a local duplicate — recordDraw() and recordCompute() are separate functions, and
+        // sunDirENU is a member updated earlier this same frame in both).
+        const float kFlareDayFloor = 0.35f;
+        float flareDarkness = glm::clamp(-sunDirENU.w * 5.0f, 0.0f, 1.0f);
+        float flareEyeAdaptGain = glm::mix(kFlareDayFloor, 1.0f, flareDarkness);
+
         FlareCompositePC cpc{};
-        cpc.gain = flareGlowGain;
+        cpc.gain = flareGlowGain * flareEyeAdaptGain;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flareCompositePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 flareCompositePipeLayout, 0, 1, &flareCompositeDescSet, 0, nullptr);
@@ -2113,6 +2370,14 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyBuffer(device, starBuf, nullptr);
     vkFreeMemory(device, starMem, nullptr);
 
+    // Planets: own descriptor pool only (planetDescSet freed with it); pipeline/pipeline-layout/
+    // desc-layout are starPipeline/starPipeLayout/starDescLayout, already destroyed above.
+    vkDestroyDescriptorPool(device, planetDescPool, nullptr);
+    if (planetMapped)
+        vkUnmapMemory(device, planetMem);
+    vkDestroyBuffer(device, planetBuf, nullptr);
+    vkFreeMemory(device, planetMem, nullptr);
+
     if (win)
         glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 }
@@ -2154,19 +2419,36 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
     case KB_SELECT_SAT:
     {
         // Center-of-screen equivalent of the mouse left-click pick in buildUI — same
-        // pickSatelliteAt/selectedSatIndex path, just at (screenW/2, screenH/2) instead of
-        // the cursor. ctx_ (set in init()) gives swapExtent without needing a UIInput here.
+        // pickPlanetAt/pickSatelliteAt priority and selectedSatIndex/selectedPlanetIndex path,
+        // just at (screenW/2, screenH/2) instead of the cursor. ctx_ (set in init()) gives
+        // swapExtent without needing a UIInput here.
         if (!ctx_)
             break;
         float w = (float)ctx_->swapExtent.width;
         float h = (float)ctx_->swapExtent.height;
-        int hit = pickSatelliteAt(w * 0.5f, h * 0.5f, w, h);
-        if (hit != selectedSatIndex)
+        int planetHit = pickPlanetAt(w * 0.5f, h * 0.5f, w, h);
+        if (planetHit >= 0)
         {
-            selectedSatIndex = hit;
-            formatSelectedSatInfo();
-            if (hit >= 0 && audio_)
-                audio_->playSfx("assets/sound/ui/buttonclick.wav");
+            if (planetHit != selectedPlanetIndex || selectedSatIndex >= 0)
+            {
+                selectedPlanetIndex = planetHit;
+                selectedSatIndex = -1;
+                formatSelectedPlanetInfo();
+                if (audio_)
+                    audio_->playSfx("assets/sound/ui/buttonclick.wav");
+            }
+        }
+        else
+        {
+            int hit = pickSatelliteAt(w * 0.5f, h * 0.5f, w, h);
+            if (hit != selectedSatIndex || selectedPlanetIndex >= 0)
+            {
+                selectedSatIndex = hit;
+                selectedPlanetIndex = -1;
+                formatSelectedSatInfo();
+                if (hit >= 0 && audio_)
+                    audio_->playSfx("assets/sound/ui/buttonclick.wav");
+            }
         }
         break;
     }
@@ -3155,15 +3437,15 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     // lightDomeBuf: same buffer as sat_flare.comp/sat_sky.frag's own read — needed now that the
     // aurora sky curtain march moved here (perf: folded into this half-res pass alongside clouds).
     bindings[7] = {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    bindings[8] = {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // aurora noise sampler3D
-    bindings[9] = {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // cloud warp noise sampler3D
-    bindings[10] = {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // reflectBeamsBuf
+    bindings[8] = {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};   // aurora noise sampler3D
+    bindings[9] = {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};   // cloud warp noise sampler3D
+    bindings[10] = {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};         // reflectBeamsBuf
     bindings[11] = {11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // earthElevTex
     bindings[12] = {12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // earthSpecTex
     // sceneDepthTex: written by scene_depth.comp earlier in the same recordCompute. Read 1:1 by
     // texelFetch — this set's dispatch grid and that image are the same half-swapExtent size.
     bindings[13] = {13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // sceneDepthTex
-    bindings[14] = {14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // beamCloudLightBuf
+    bindings[14] = {14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};         // beamCloudLightBuf
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     li.bindingCount = 15;
@@ -3201,10 +3483,10 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     // Same fallback pattern as the sky descriptor set (SatelliteSim.cpp:3432-3435) — elevation
     // texture may have failed to load, fall back to the always-valid noise sampler so this
     // descriptor set is never left pointing at a null image.
-    VkSampler   elevSamplerFinal2 = earthElevSampler ? earthElevSampler : noiseSampler;
-    VkImageView elevViewFinal2    = earthElevView ? earthElevView : noiseTexView;
-    VkSampler   specSamplerFinal2 = earthSpecSampler ? earthSpecSampler : noiseSampler;
-    VkImageView specViewFinal2    = earthSpecView ? earthSpecView : noiseTexView;
+    VkSampler elevSamplerFinal2 = earthElevSampler ? earthElevSampler : noiseSampler;
+    VkImageView elevViewFinal2 = earthElevView ? earthElevView : noiseTexView;
+    VkSampler specSamplerFinal2 = earthSpecSampler ? earthSpecSampler : noiseSampler;
+    VkImageView specViewFinal2 = earthSpecView ? earthSpecView : noiseTexView;
     VkDescriptorImageInfo elevInfo{elevSamplerFinal2, elevViewFinal2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo specInfo{specSamplerFinal2, specViewFinal2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo sceneDepthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -3232,15 +3514,15 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     writes[9] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 9, 0, 1,
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &warpNoiseInfo, nullptr, nullptr};
     writes[10] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 10, 0, 1,
-                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamInfo, nullptr};
+                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamInfo, nullptr};
     writes[11] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 11, 0, 1,
-                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo, nullptr, nullptr};
+                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo, nullptr, nullptr};
     writes[12] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 12, 0, 1,
-                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &specInfo, nullptr, nullptr};
+                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &specInfo, nullptr, nullptr};
     writes[13] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 13, 0, 1,
-                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &sceneDepthInfo, nullptr, nullptr};
+                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &sceneDepthInfo, nullptr, nullptr};
     writes[14] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 14, 0, 1,
-                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamCloudLightInfo, nullptr};
+                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamCloudLightInfo, nullptr};
     vkUpdateDescriptorSets(ctx.device, 15, writes, 0, nullptr);
 }
 
@@ -3363,10 +3645,10 @@ void SatelliteSim::createSceneDepthDescriptors(VulkanContext &ctx)
     // have failed to load, so fall back to the always-valid noise sampler rather than leaving a
     // descriptor pointing at a null image. With that fallback the depth pass reads noise as
     // "terrain", which is wrong but bounded; a null view is a device loss.
-    VkSampler   elevSamplerFinal = earthElevSampler ? earthElevSampler : noiseSampler;
-    VkImageView elevViewFinal    = earthElevView ? earthElevView : noiseTexView;
-    VkSampler   specSamplerFinal = earthSpecSampler ? earthSpecSampler : noiseSampler;
-    VkImageView specViewFinal    = earthSpecView ? earthSpecView : noiseTexView;
+    VkSampler elevSamplerFinal = earthElevSampler ? earthElevSampler : noiseSampler;
+    VkImageView elevViewFinal = earthElevView ? earthElevView : noiseTexView;
+    VkSampler specSamplerFinal = earthSpecSampler ? earthSpecSampler : noiseSampler;
+    VkImageView specViewFinal = earthSpecView ? earthSpecView : noiseTexView;
     VkDescriptorImageInfo elevInfo{elevSamplerFinal, elevViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo specInfo{specSamplerFinal, specViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo depthInfo{VK_NULL_HANDLE, sceneDepthView, VK_IMAGE_LAYOUT_GENERAL};
@@ -3878,10 +4160,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
             for (int bx = 0; bx < earthNightCpuBlurW; ++bx)
             {
                 int x0 = bx * 2, y0 = by * 2;
-                int sum = earthNightCpu[y0 * earthNightCpuW + x0]
-                        + earthNightCpu[y0 * earthNightCpuW + x0 + 1]
-                        + earthNightCpu[(y0 + 1) * earthNightCpuW + x0]
-                        + earthNightCpu[(y0 + 1) * earthNightCpuW + x0 + 1];
+                int sum = earthNightCpu[y0 * earthNightCpuW + x0] + earthNightCpu[y0 * earthNightCpuW + x0 + 1] + earthNightCpu[(y0 + 1) * earthNightCpuW + x0] + earthNightCpu[(y0 + 1) * earthNightCpuW + x0 + 1];
                 earthNightCpuBlur[by * earthNightCpuBlurW + bx] = (uint8_t)(sum / 4);
             }
         }
@@ -3938,8 +4217,15 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // ── City day/night detail textures (bindings 14/15): small tileable maps blended onto
     // dayColor/nightColor near cities (see terrain block in sat_sky.frag).
     {
-        struct { const char *path; VkImage *img; VkDeviceMemory *mem; VkImageView *view;
-                  VkSampler *sampler; uint32_t *mips; } detailTexes[2] = {
+        struct
+        {
+            const char *path;
+            VkImage *img;
+            VkDeviceMemory *mem;
+            VkImageView *view;
+            VkSampler *sampler;
+            uint32_t *mips;
+        } detailTexes[2] = {
             {"assets/textures/city_day_detail.png", &cityDayDetailImg, &cityDayDetailMem,
              &cityDayDetailView, &cityDayDetailSampler, &cityDayDetailMips},
             {"assets/textures/city_night_detail.png", &cityNightDetailImg, &cityNightDetailMem,
@@ -4695,12 +4981,18 @@ void SatelliteSim::createSkyLowResResources(VulkanContext &ctx)
 
 void SatelliteSim::destroySkyLowResResources(VkDevice device)
 {
-    if (skyLowResPipeline) vkDestroyPipeline(device, skyLowResPipeline, nullptr);
-    if (skyLowResFramebuffer) vkDestroyFramebuffer(device, skyLowResFramebuffer, nullptr);
-    if (skyLowResColorView) vkDestroyImageView(device, skyLowResColorView, nullptr);
-    if (skyLowResColorImg) vkDestroyImage(device, skyLowResColorImg, nullptr);
-    if (skyLowResColorMem) vkFreeMemory(device, skyLowResColorMem, nullptr);
-    if (skyLowResRenderPass) vkDestroyRenderPass(device, skyLowResRenderPass, nullptr);
+    if (skyLowResPipeline)
+        vkDestroyPipeline(device, skyLowResPipeline, nullptr);
+    if (skyLowResFramebuffer)
+        vkDestroyFramebuffer(device, skyLowResFramebuffer, nullptr);
+    if (skyLowResColorView)
+        vkDestroyImageView(device, skyLowResColorView, nullptr);
+    if (skyLowResColorImg)
+        vkDestroyImage(device, skyLowResColorImg, nullptr);
+    if (skyLowResColorMem)
+        vkFreeMemory(device, skyLowResColorMem, nullptr);
+    if (skyLowResRenderPass)
+        vkDestroyRenderPass(device, skyLowResRenderPass, nullptr);
     skyLowResPipeline = VK_NULL_HANDLE;
     skyLowResFramebuffer = VK_NULL_HANDLE;
     skyLowResColorView = VK_NULL_HANDLE;
@@ -4893,14 +5185,22 @@ void SatelliteSim::createFlareResources(VulkanContext &ctx)
 
 void SatelliteSim::destroyFlareResources(VkDevice device)
 {
-    if (flareSourceFramebuffer) vkDestroyFramebuffer(device, flareSourceFramebuffer, nullptr);
-    if (flareSourceRenderPass) vkDestroyRenderPass(device, flareSourceRenderPass, nullptr);
-    if (flareSourceView) vkDestroyImageView(device, flareSourceView, nullptr);
-    if (flareSourceImg) vkDestroyImage(device, flareSourceImg, nullptr);
-    if (flareSourceMem) vkFreeMemory(device, flareSourceMem, nullptr);
-    if (flareScratchView) vkDestroyImageView(device, flareScratchView, nullptr);
-    if (flareScratchImg) vkDestroyImage(device, flareScratchImg, nullptr);
-    if (flareScratchMem) vkFreeMemory(device, flareScratchMem, nullptr);
+    if (flareSourceFramebuffer)
+        vkDestroyFramebuffer(device, flareSourceFramebuffer, nullptr);
+    if (flareSourceRenderPass)
+        vkDestroyRenderPass(device, flareSourceRenderPass, nullptr);
+    if (flareSourceView)
+        vkDestroyImageView(device, flareSourceView, nullptr);
+    if (flareSourceImg)
+        vkDestroyImage(device, flareSourceImg, nullptr);
+    if (flareSourceMem)
+        vkFreeMemory(device, flareSourceMem, nullptr);
+    if (flareScratchView)
+        vkDestroyImageView(device, flareScratchView, nullptr);
+    if (flareScratchImg)
+        vkDestroyImage(device, flareScratchImg, nullptr);
+    if (flareScratchMem)
+        vkFreeMemory(device, flareScratchMem, nullptr);
     flareSourceFramebuffer = VK_NULL_HANDLE;
     flareSourceRenderPass = VK_NULL_HANDLE;
     flareSourceView = VK_NULL_HANDLE;
@@ -4955,7 +5255,7 @@ void SatelliteSim::createFlareDescriptors(VulkanContext &ctx)
     // Sampled directly in VK_IMAGE_LAYOUT_GENERAL — legal, and this image is small/short-lived
     // enough per frame that skipping a dedicated layout-transition barrier costs nothing measurable.
     VkDescriptorSetLayoutBinding compBinding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                                              VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+                                             VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo compLi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     compLi.bindingCount = 1;
     compLi.pBindings = &compBinding;
@@ -4978,8 +5278,8 @@ void SatelliteSim::createFlareDescriptors(VulkanContext &ctx)
     // call site in recordCompute()).
     VkDescriptorImageInfo flareFinalInfo{flareSampler, flareScratchView, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet compWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
-                                    flareCompositeDescSet, 0, 0, 1,
-                                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &flareFinalInfo, nullptr, nullptr};
+                                   flareCompositeDescSet, 0, 0, 1,
+                                   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &flareFinalInfo, nullptr, nullptr};
     vkUpdateDescriptorSets(ctx.device, 1, &compWrite, 0, nullptr);
 }
 
@@ -5202,16 +5502,21 @@ void SatelliteSim::initStars(VulkanContext &ctx)
                       glm::clamp(1.00f - 0.15f * bv, 0.50f, 1.0f),  // G
                       glm::clamp(1.00f - 0.90f * bv, 0.10f, 1.0f)}; // B
 
-        // Point sprite size: 1.5 px for faint stars, up to ~5.5 px for Sirius.
+        // Point sprite size: magnitude-driven, floored near 1 px (S2a, RELEASE_v1_1_PLAN.md).
+        // The old formula `1.5 + min(rawInt, 4.0)` let its additive 1.5 floor dominate for every
+        // faint star (rawInt is tiny once vmag > ~2), so a mag 6 and a mag 3 star both landed at
+        // ~6 px post-scale — invisible at 287 stars, but with the catalog expanded to 8404 (down
+        // to mag 6.5) that turned the sky to porridge. sqrt(rawInt) keeps faint stars close to the
+        // floor (fine dust) while still giving Sirius roughly its old ~21 px size.
         float starScale = 4.0f; // tweak this to make stars bigger/smaller overall
-        float angSize = 1.5f + glm::min(rawInt, 4.0f) * 1.0f;
+        float angSize = 0.25f + 2.5f * sqrtf(rawInt);
         angSize *= starScale;
 
         starRecords.push_back({eciDir, rawInt, col, angSize});
     }
     starCount = (uint32_t)starRecords.size();
 
-    // Host-visible buffer (tiny: ~287 × 32 bytes = ~9 KB).
+    // Host-visible buffer (tiny: ~8404 × 32 bytes = ~263 KB — negligible against 78,000 satellites).
     VkDeviceSize bufSize = starCount * sizeof(GpuSatVisible);
     ctx.createBuffer(bufSize,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -5257,6 +5562,48 @@ void SatelliteSim::initStars(VulkanContext &ctx)
 
     // Do an initial upload so stars are visible from frame 1.
     updateStars();
+}
+
+// ─── initPlanets ──────────────────────────────────────────────────────────────
+// Must run after initStars() (reuses starDescLayout, and starPipeline must already exist —
+// see recordDraw()'s planet draw call, which binds starPipeline with a different desc set).
+void SatelliteSim::initPlanets(VulkanContext &ctx)
+{
+    VkDeviceSize bufSize = kPlanetCount * sizeof(GpuSatVisible);
+    ctx.createBuffer(bufSize,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     planetBuf, planetMem);
+    vkMapMemory(ctx.device, planetMem, 0, bufSize, 0, &planetMapped);
+
+    // Reuses starDescLayout (binding=1, STORAGE_BUFFER, vertex-stage) unchanged — same shape,
+    // different buffer. starDescPool is sized maxSets=1 (already holds starDescSet), so this
+    // gets its own tiny pool rather than resizing that one.
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.poolSizeCount = 1;
+    pi.pPoolSizes = &ps;
+    pi.maxSets = 1;
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &planetDescPool);
+
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = planetDescPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &starDescLayout;
+    vkAllocateDescriptorSets(ctx.device, &ai, &planetDescSet);
+
+    VkDescriptorBufferInfo bufInfo{planetBuf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet wr{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    wr.dstSet = planetDescSet;
+    wr.dstBinding = 1;
+    wr.descriptorCount = 1;
+    wr.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    wr.pBufferInfo = &bufInfo;
+    vkUpdateDescriptorSets(ctx.device, 1, &wr, 0, nullptr);
+
+    // Do an initial upload so planets are visible from frame 1 (mirrors initStars() above).
+    // Requires updatePositions() to have already run at least once — see init()'s call order.
+    updatePlanets();
 }
 
 // ─── createStarPipeline ───────────────────────────────────────────────────────
@@ -5387,7 +5734,8 @@ void SatelliteSim::updateLightPollutionDome()
         float fy = v * (float)earthNightCpuBlurH - 0.5f;
         int x0 = (int)floorf(fx), y0 = (int)floorf(fy);
         float tx = fx - (float)x0, ty = fy - (float)y0;
-        auto wrapX = [this](int x) { return ((x % earthNightCpuBlurW) + earthNightCpuBlurW) % earthNightCpuBlurW; };
+        auto wrapX = [this](int x)
+        { return ((x % earthNightCpuBlurW) + earthNightCpuBlurW) % earthNightCpuBlurW; };
         int x0w = wrapX(x0), x1w = wrapX(x0 + 1);
         int y0c = std::clamp(y0, 0, earthNightCpuBlurH - 1);
         int y1c = std::clamp(y0 + 1, 0, earthNightCpuBlurH - 1);
@@ -5496,11 +5844,10 @@ void SatelliteSim::updateStars()
     // leak) through the whole flyable atmosphere and only fade toward "space, nothing to hide
     // behind" over the last stretch of the simulated atmosphere shell (R_ATMOS - R_EARTH = 100 km).
     const float kStarSpaceFadeStartM = 40000.0f;
-    const float kStarSpaceFadeEndM   = 100000.0f;
+    const float kStarSpaceFadeEndM = 100000.0f;
     float obsR = glm::length(obsECI);
     float obsHeight = obsR - kEarthRadius;
-    float atmFrac = 1.0f - glm::clamp((obsHeight - kStarSpaceFadeStartM)
-                                       / (kStarSpaceFadeEndM - kStarSpaceFadeStartM), 0.0f, 1.0f);
+    float atmFrac = 1.0f - glm::clamp((obsHeight - kStarSpaceFadeStartM) / (kStarSpaceFadeEndM - kStarSpaceFadeStartM), 0.0f, 1.0f);
     // skyGlareEased (computed once per frame in recordCompute(), right before this call) replaces
     // the old flat 1.0 space target — sun-on-screen or unshielded sunlight still gates visibility
     // even with no atmosphere left to explain it away. At atmFrac==1 (fully in-atmosphere) this
@@ -5558,7 +5905,13 @@ void SatelliteSim::updateStars()
         // domeAz is intentionally unclamped upstream — the clamp only happens here, after
         // elevFalloff, so high lightPollutionGain can compensate for elevFalloff's reduction at
         // non-horizon angles instead of saturating uselessly before elevFalloff is even applied.
-        float domeVal = glm::clamp(domeAz * elevFalloff, 0.0f, 1.0f);
+        // S2c (RELEASE_v1_1_PLAN.md): elevFalloff alone bottoms out at ~0.26 at zenith, wrong for
+        // real (isotropically-scattered) urban skyglow, which raises zenith brightness far more
+        // than that. kIsotropicFrac gives the dome a real floor at zenith; horizon behaviour is
+        // unchanged. Same constant/formula in sat_flare.comp, sat_sky.frag (Milky Way), and
+        // cloud_march.comp (aurora) — keep them coherent.
+        const float kIsotropicFrac = 0.4f;
+        float domeVal = glm::clamp(domeAz * (kIsotropicFrac + (1.0f - kIsotropicFrac) * elevFalloff), 0.0f, 1.0f);
 
         // C12 follow-up #31: same suppression shape, second independent source — a nearby
         // Reflect-Orbital beam should wash out this star the same way real light pollution does.
@@ -5582,16 +5935,112 @@ void SatelliteSim::updateStars()
 
         // Above the Earth limb: visible. Below: culled.
         float intensity = (enu.z >= limbSin)
-                              ? rec.rawIntensity * nightFactorEff * extinction
-                                * (1.0f - domeVal * kStarPollutionMaxDim)
-                                * (1.0f - beamDomeVal * kStarBeamPollutionMaxDim)
-                                * (1.0f - moonBrightStar * kStarMoonMaxDim)
+                              ? rec.rawIntensity * nightFactorEff * extinction * (1.0f - domeVal * kStarPollutionMaxDim) * (1.0f - beamDomeVal * kStarBeamPollutionMaxDim) * (1.0f - moonBrightStar * kStarMoonMaxDim)
                               : 0.0f;
 
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;
         dst[i].baseColor = rec.color;
         dst[i].angularSize = rec.angSize;
+    }
+}
+
+// ─── updatePlanets ────────────────────────────────────────────────────────────
+// Mirrors updateStars() above — same suppression chain (day/moon/pollution-dome/extinction),
+// same point-sprite size convention — but unlike stars, planetStates[].eciDir moves every frame
+// (updatePositions() recomputed it this frame), so this recomputes ENU direction AND brightness
+// from scratch each call rather than only re-touching brightness on a fixed direction. Duplicated
+// suppression math rather than shared with updateStars() — matches this codebase's established
+// per-consumer-duplication convention for this exact formula (see CLAUDE.md's "Subsystem: Light
+// Pollution Dome").
+void SatelliteSim::updatePlanets()
+{
+    if (!planetMapped)
+        return;
+
+    if (!showPlanets)
+    {
+        auto *dst = static_cast<GpuSatVisible *>(planetMapped);
+        for (int i = 0; i < kPlanetCount; ++i)
+            dst[i].flareIntensity = 0.0f;
+        return;
+    }
+
+    float nightFactor = glm::clamp(-sunDirENU.w * 5.0f, 0.0f, 1.0f);
+    const float kPlanetSpaceFadeStartM = 40000.0f;
+    const float kPlanetSpaceFadeEndM = 100000.0f;
+    float obsR = glm::length(obsECI);
+    float obsHeight = obsR - kEarthRadius;
+    float atmFrac = 1.0f - glm::clamp((obsHeight - kPlanetSpaceFadeStartM) / (kPlanetSpaceFadeEndM - kPlanetSpaceFadeStartM), 0.0f, 1.0f);
+    float nightFactorEff = glm::mix(skyGlareEased, nightFactor, atmFrac);
+
+    float r = kEarthRadius / obsR;
+    float limbSin = (obsHeight > 1.0f) ? -sqrtf(glm::max(0.0f, 1.0f - r * r)) : 0.0f;
+
+    const float kPlanetPollutionMaxDim = 0.99f;
+    const float kPlanetBeamPollutionMaxDim = 0.99f;
+
+    float moonElevP = glm::dot(moonDirECI, glm::normalize(obsECI));
+    float tmP = glm::clamp(moonElevP / 0.5f, 0.0f, 1.0f);
+    float moonBrightP = tmP * tmP * moonDirENU.w;
+    const float kPlanetMoonMaxDim = 0.9f; // matches updateStars()'s kStarMoonMaxDim
+
+    const float starScale = 4.0f; // must match initStars()'s starScale — same size convention so
+                                  // a planet reads at the same visual weight as an equally-bright star
+
+    auto *dst = static_cast<GpuSatVisible *>(planetMapped);
+    for (int i = 0; i < kPlanetCount; ++i)
+    {
+        const PlanetState &ps = planetStates[i];
+
+        glm::vec3 enu{glm::dot(ps.eciDir, glm::vec3(eci2enuX)),
+                      glm::dot(ps.eciDir, glm::vec3(eci2enuY)),
+                      glm::dot(ps.eciDir, glm::vec3(eci2enuZ))};
+
+        if (!planetEnabled[i])
+        {
+            dst[i].skyDir = enu;
+            dst[i].flareIntensity = 0.0f;
+            continue;
+        }
+
+        float vmag = planetApparentMagnitude((PlanetId)i, ps.sunDistAU, ps.distanceAU, ps.phaseAngleDeg);
+        float rawIntensity = powf(10.0f, -vmag / 2.5f);
+
+        float bearing = atan2f(enu.x, enu.y);
+        if (bearing < 0.0f)
+            bearing += 2.0f * glm::pi<float>();
+        float secF = bearing * (float(kNumLightSectors) / (2.0f * glm::pi<float>())) - 0.5f;
+        int sec0 = (int)floorf(secF);
+        float secFrac = secF - float(sec0);
+        int sec0w = ((sec0 % kNumLightSectors) + kNumLightSectors) % kNumLightSectors;
+        int sec1w = (sec0w + 1) % kNumLightSectors;
+        float domeAz = glm::mix(lightDomeAz[sec0w], lightDomeAz[sec1w], secFrac);
+        float elevFalloff = 0.35f / (std::max(enu.z, 0.0f) + 0.35f);
+        const float kIsotropicFrac = 0.4f; // S2c — same constant as updateStars()/sat_flare.comp
+        float domeVal = glm::clamp(domeAz * (kIsotropicFrac + (1.0f - kIsotropicFrac) * elevFalloff), 0.0f, 1.0f);
+
+        float beamDomeAz = glm::mix(beamGlowDomeAz[sec0w], beamGlowDomeAz[sec1w], secFrac);
+        float beamDomeVal = glm::clamp(beamDomeAz * elevFalloff, 0.0f, 1.0f);
+
+        float sinElClamped = glm::clamp(enu.z, 0.0f, 1.0f);
+        float elDeg = glm::degrees(asinf(sinElClamped));
+        float airmass = 1.0f / (sinElClamped + 0.50572f * powf(elDeg + 6.07995f, -1.6364f));
+        float extinctMag = extinctionCoeff * (airmass - 1.0f) * atmFrac;
+        float extinction = powf(10.0f, -0.4f * extinctMag);
+
+        float intensity = (enu.z >= limbSin)
+                              ? rawIntensity * nightFactorEff * extinction * (1.0f - domeVal * kPlanetPollutionMaxDim) * (1.0f - beamDomeVal * kPlanetBeamPollutionMaxDim) * (1.0f - moonBrightP * kPlanetMoonMaxDim)
+                              : 0.0f;
+
+        // Same size curve as initStars() (S2a, RELEASE_v1_1_PLAN.md) — floors near 1px for a
+        // faint/distant planet, grows for a bright one like Venus.
+        float angSize = (1.0f + 1.0f * sqrtf(std::max(rawIntensity, 0.0f))) * starScale;
+
+        dst[i].skyDir = enu;
+        dst[i].flareIntensity = intensity;
+        dst[i].baseColor = glm::vec3(1.0f, 0.97f, 0.90f); // near-white; planets don't carry a B-V color index like stars
+        dst[i].angularSize = angSize;
     }
 }
 
@@ -6272,7 +6721,8 @@ void SatelliteSim::updatePositions(double t, float dt)
     // yaw/pitch/roll tweak or V-flip. That was previously exposed as runtime sliders/toggles;
     // removed once confirmed correct, this is just the fixed result.
     {
-        auto raDecToVec = [](float raDeg, float decDeg) {
+        auto raDecToVec = [](float raDeg, float decDeg)
+        {
             float ra = glm::radians(raDeg);
             float dec = glm::radians(decDeg);
             return glm::vec3{cosf(dec) * cosf(ra), cosf(dec) * sinf(ra), sinf(dec)};
@@ -6311,16 +6761,19 @@ void SatelliteSim::updatePositions(double t, float dt)
         glm::dot(sunDirECI, up)};
     sunDirENU = glm::vec4(glm::normalize(sunENU), sunENU.z); // w = sin(elevation)
 
-    // ── Moon direction in ECI (simple circular equatorial orbit) ─────────────
-    // Period: 27.3217 days. The moon orbits in the ecliptic plane (~5° tilt);
-    // for rendering purposes an equatorial approximation is sufficient.
-    static constexpr double kMoonPeriodSec = 27.3217 * 86400.0;
-    // Phase offset originally calibrated for 2026-03-30 epoch; at 2036-06-21 the moon
-    // will be at a different phase (recalibrate if accurate phase is needed).
-    static constexpr double kMoonPhaseOffsetRad = 3.916;
-    double moonAngle = fmod(2.0 * glm::pi<double>() * (t) / kMoonPeriodSec + kMoonPhaseOffsetRad,
-                            glm::two_pi<double>());
-    moonDirECI = glm::vec3{(float)cos(moonAngle), (float)sin(moonAngle), 0.0f};
+    // ── Moon direction in ECI (Keplerian two-body ellipse — see kMoonElements) ───────────────
+    // Was a circular equatorial orbit with a phase constant hand-calibrated for one epoch
+    // (2026-03-30) that drifted for any other date (see kMoonElements' comment) — replaced as
+    // part of the planets feature (RELEASE_v1_1_PLAN follow-up, session 30), same T this frame's
+    // sun calc already computed.
+    double Tcent = dJ2000 / 36525.0; // Julian centuries since J2000 — shared by Moon + all planets
+    glm::dvec3 moonGeoEcl = keplerEclipticPos(kMoonElements, Tcent);
+    glm::dvec3 moonDirEcl = glm::normalize(moonGeoEcl);
+    glm::dvec3 moonDirEciD{
+        moonDirEcl.x,
+        moonDirEcl.y * cos(epsR) - moonDirEcl.z * sin(epsR),
+        moonDirEcl.y * sin(epsR) + moonDirEcl.z * cos(epsR)};
+    moonDirECI = glm::normalize(glm::vec3(moonDirEciD));
 
     // Moon in ENU
     glm::vec3 moonENU_local{
@@ -6331,6 +6784,36 @@ void SatelliteSim::updatePositions(double t, float dt)
     // Full moon when moon is opposite the sun; new moon when aligned.
     float moonIllum = (1.0f - glm::dot(sunDirECI, moonDirECI)) * 0.5f;
     moonDirENU = glm::vec4(moonENU_local, moonIllum);
+
+    // ── Planets (Mercury..Uranus): heliocentric Keplerian ephemeris ──────────────────────────
+    // Same Tcent, same epsR obliquity rotation the Moon/Sun above use. See kPlanetElements'
+    // comment (top of file) for the source and keplerEclipticPos() for the shared math.
+    {
+        glm::dvec3 earthHelio = keplerEclipticPos(kEarthElements, Tcent);
+        for (int p = 0; p < kPlanetCount; ++p)
+        {
+            glm::dvec3 planetHelio = keplerEclipticPos(kPlanetElements[p], Tcent);
+            glm::dvec3 geo = planetHelio - earthHelio;
+            double distAU = glm::length(geo);
+            double sunDistAU = glm::length(planetHelio);
+            glm::dvec3 geoDirEcl = geo / distAU;
+            glm::dvec3 geoDirEciD{
+                geoDirEcl.x,
+                geoDirEcl.y * cos(epsR) - geoDirEcl.z * sin(epsR),
+                geoDirEcl.y * sin(epsR) + geoDirEcl.z * cos(epsR)};
+            // Phase angle = angle at the PLANET between (planet->sun) and (planet->earth).
+            // planet->sun = -planetHelio; planet->earth = -geo (geo is earth->planet, i.e.
+            // planetHelio - earthHelio). So cos(phase) = dot(-planetHelio, -geo) / (r*delta) =
+            // dot(planetHelio, geo) / (r*delta) — NOT dot(-planetHelio, geo), which computes the
+            // supplementary angle (verified against Jupiter at this sim's epoch: the wrong sign
+            // gives ~176° where the true phase angle is ~4°, i.e. reads as new when it's near-full).
+            double cosPhase = glm::dot(planetHelio, geo) / (sunDistAU * distAU);
+            planetStates[p].eciDir = glm::normalize(glm::vec3(geoDirEciD));
+            planetStates[p].distanceAU = (float)distAU;
+            planetStates[p].sunDistAU = (float)sunDistAU;
+            planetStates[p].phaseAngleDeg = (float)glm::degrees(acos(glm::clamp(cosPhase, -1.0, 1.0)));
+        }
+    }
 
     // ── TargetedReflector: rotate target points to ECI, flag valid ones ─────
     // ECEF unit vectors rotate to ECI by the GMST angle (Earth's sidereal rotation).
@@ -6360,9 +6843,9 @@ void SatelliteSim::updatePositions(double t, float dt)
             // for real terrain elevation at this target so beams aim at the actual ground surface
             // instead of the sea-level sphere (which sat underneath any elevated terrain).
             glm::vec3 eci = reflectorTargetsRadiusM[ti] * glm::vec3(
-                                               cosG * ef.x - sinG * ef.y,
-                                               sinG * ef.x + cosG * ef.y,
-                                               ef.z);
+                                                              cosG * ef.x - sinG * ef.y,
+                                                              sinG * ef.x + cosG * ef.y,
+                                                              ef.z);
             float sunDot = glm::dot(glm::normalize(eci), sunDirECI);
             targets[ti].posECI = eci;
             targets[ti].valid = (sunDot < 0.0f) ? 1.0f : 0.0f;

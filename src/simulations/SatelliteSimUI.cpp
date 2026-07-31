@@ -436,18 +436,36 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         camera.fovYDeg = glm::clamp(camera.fovYDeg - inp.scrollY * 3.0f, 10.0f, 120.0f);
     }
 
-    // ── Left-click → satellite pick/select ────────────────────────────────────
+    // ── Left-click → satellite/planet pick/select ─────────────────────────────
     // Scene interaction like camera look/pan, so gated only on UI hover (not on uiVisible) —
     // left mouse button is otherwise unused for scene interaction (RMB drives camera look).
+    // Planets get priority on an exact overlap (pickPlanetAt tried first, only 6 candidates) —
+    // they're rare and the more interesting selection; mutually exclusive with satellite selection.
     if (inp.lmbPressed && !ui.mouseOverUI())
     {
-        int hit = pickSatelliteAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
-        if (hit != selectedSatIndex)
+        int planetHit = pickPlanetAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
+        if (planetHit >= 0)
         {
-            selectedSatIndex = hit;
-            formatSelectedSatInfo();
-            if (hit >= 0 && audio_)
-                audio_->playSfx("assets/sound/ui/buttonclick.wav"); // confirmation chirp — only on an actual (re)selection, not on deselect
+            if (planetHit != selectedPlanetIndex || selectedSatIndex >= 0)
+            {
+                selectedPlanetIndex = planetHit;
+                selectedSatIndex = -1;
+                formatSelectedPlanetInfo();
+                if (audio_)
+                    audio_->playSfx("assets/sound/ui/buttonclick.wav");
+            }
+        }
+        else
+        {
+            int hit = pickSatelliteAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
+            if (hit != selectedSatIndex || selectedPlanetIndex >= 0)
+            {
+                selectedSatIndex = hit;
+                selectedPlanetIndex = -1;
+                formatSelectedSatInfo();
+                if (hit >= 0 && audio_)
+                    audio_->playSfx("assets/sound/ui/buttonclick.wav"); // confirmation chirp — only on an actual (re)selection, not on deselect
+            }
         }
     }
 
@@ -797,28 +815,48 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
 }
 
 // ─── buildSelectedSatPanel ──────────────────────────────────────────────────
-// Floating info panel for the satellite currently selected via left-click (see the click
-// handling in buildUI above, and SatelliteSim::pickSatelliteAt/formatSelectedSatInfo). Tracks
-// the satellite's live screen position every frame by reprojecting lastPickedSkyDir — the
-// GPU-computed ENU direction mirrored back each frame via the tiny copy in recordCompute (see
-// its comments there). That readback is one-frame-stale by design (same idiom as peakMagnitude),
-// so the panel settles onto the correct position within ~2 frames of a fresh click/reselect.
-// When the satellite is currently off-screen or below the horizon, the floating panel is
-// skipped in favor of a small fixed corner chip, so the selection isn't silently lost from view.
+// Floating info panel for the satellite OR planet currently selected via left-click (see the
+// click handling in buildUI above, and SatelliteSim::pickSatelliteAt/pickPlanetAt +
+// formatSelectedSatInfo/formatSelectedPlanetInfo — mutually exclusive, selecting one clears the
+// other). Tracks the selection's live screen position every frame by reprojecting its ENU
+// direction: for a satellite that's lastPickedSkyDir, the GPU-computed direction mirrored back
+// each frame via the tiny copy in recordCompute (one-frame-stale by design, same idiom as
+// peakMagnitude, settles within ~2 frames of a fresh click); for a planet it's read straight out
+// of planetBuf's own host-mapped memory (no GPU round-trip needed — see pickPlanetAt's comment),
+// so it's never stale. When the selection is currently off-screen or below the horizon, the
+// floating panel is skipped in favor of a small fixed corner chip, so it isn't silently lost.
 void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
 {
-    if (selectedSatIndex < 0)
+    if (selectedSatIndex < 0 && selectedPlanetIndex < 0)
         return;
 
+    bool isPlanet = selectedPlanetIndex >= 0;
+    glm::vec3 pickSkyDir;
+    float pickFlare;
+    const char (*infoLines)[40];
+    if (isPlanet)
+    {
+        const GpuSatVisible *entries = static_cast<const GpuSatVisible *>(planetMapped);
+        pickSkyDir = entries[selectedPlanetIndex].skyDir;
+        pickFlare = entries[selectedPlanetIndex].flareIntensity;
+        infoLines = planetInfoLine;
+    }
+    else
+    {
+        pickSkyDir = lastPickedSkyDir;
+        pickFlare = lastPickedFlare;
+        infoLines = selInfoLine;
+    }
+
     float sx = 0.0f, sy = 0.0f;
-    bool onScreen = lastPickedFlare > 0.0f &&
-                    projectSkyDirToScreen(lastPickedSkyDir, inp.screenW, inp.screenH, sx, sy);
+    bool onScreen = pickFlare > 0.0f &&
+                    projectSkyDirToScreen(pickSkyDir, inp.screenW, inp.screenH, sx, sy);
 
     const float kMargin = 12.0f;
     if (!onScreen)
     {
         static char chipBuf[64];
-        snprintf(chipBuf, sizeof(chipBuf), "Selected: %s (out of view)", selInfoLine[0]);
+        snprintf(chipBuf, sizeof(chipBuf), "Selected: %s (out of view)", infoLines[0]);
         Clay_String chipStr{false, (int32_t)strlen(chipBuf), chipBuf};
         CLAY(CLAY_ID("SelSatChip"), {.layout = {
                                          .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
@@ -869,11 +907,11 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                                   .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
                                   .floating = {.offset = {sx + kOffsetX, sy + kOffsetY}, .zIndex = 6, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
-        Clay_String headStr{false, (int32_t)strlen(selInfoLine[0]), selInfoLine[0]};
+        Clay_String headStr{false, (int32_t)strlen(infoLines[0]), infoLines[0]};
         CLAY_TEXT(headStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(13)}));
         for (int i = 1; i < kSelInfoLines; ++i)
         {
-            Clay_String lineStr{false, (int32_t)strlen(selInfoLine[i]), selInfoLine[i]};
+            Clay_String lineStr{false, (int32_t)strlen(infoLines[i]), infoLines[i]};
             CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
         }
     }
@@ -1162,6 +1200,83 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
             {
                 Clay_String cntStr{false, (int32_t)strlen(constCntBuf[ci]), constCntBuf[ci]};
                 CLAY_TEXT(cntStr, CLAY_TEXT_CONFIG({.textColor = Pal::textCamera, .fontSize = fs(11)}));
+            }
+        }
+    }
+
+    // ── Planets ────────────────────────────────────────────────────────────
+    // Same ON/OFF toggle-row pattern as the constellation list above — no new UI pattern
+    // invented (RELEASE_v1_1_PLAN.md follow-up, session 30). A global "Show planets" toggle
+    // sits above the per-planet rows; per-planet rows still work when the global is off (so
+    // preferences survive), they're just moot until it's back on.
+    CLAY(CLAY_ID("PlanetsSectionGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(10)}}}) {}
+    CLAY(CLAY_ID("PlanetsSectionLabel"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+    {
+        CLAY_TEXT(CLAY_STRING("PLANETS"), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+    }
+    {
+        Clay_Color showBg = showPlanets ? Pal::btnAccent : (hovShowPlanets ? Pal::btnAccentHv : Pal::btnIdle);
+        CLAY(CLAY_ID("ShowPlanetsRow"), {.layout = {
+                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
+                                             .padding = {4, 4, 3, 3},
+                                             .childGap = 6,
+                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY(CLAY_ID("ShowPlanetsBtn"), {.layout = {
+                                                 .sizing = {CLAY_SIZING_FIXED(30), CLAY_SIZING_FIXED(18)},
+                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                             .backgroundColor = showBg,
+                                             .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovShowPlanets);
+                sndClick(n, inp.lmbPressed);
+                hovShowPlanets = n;
+                if (n && inp.lmbPressed)
+                    showPlanets = !showPlanets;
+                CLAY_TEXT(showPlanets ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
+            }
+            CLAY(CLAY_ID("ShowPlanetsName"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+            {
+                CLAY_TEXT(CLAY_STRING("Show planets"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            }
+        }
+    }
+    for (int pi = 0; pi < kPlanetCount; ++pi)
+    {
+        bool hov = hovPlanetBtn[pi];
+        Clay_Color rowBg = planetEnabled[pi] ? Pal::rowEnabled : Pal::rowDisabled;
+        CLAY(CLAY_IDI("PlanetRow", pi), {.layout = {
+                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
+                                             .padding = {4, 4, 3, 3},
+                                             .childGap = 6,
+                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                             .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                         .backgroundColor = rowBg,
+                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            Clay_Color btnBg = planetEnabled[pi] ? Pal::btnAccent : (hov ? Pal::btnAccentHv : Pal::btnIdle);
+            CLAY(CLAY_IDI("PlanetBtn", pi), {.layout = {
+                                                 .sizing = {CLAY_SIZING_FIXED(30), CLAY_SIZING_FIXED(18)},
+                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                             .backgroundColor = btnBg,
+                                             .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hov);
+                sndClick(n, inp.lmbPressed);
+                hovPlanetBtn[pi] = n;
+                if (hov && inp.lmbPressed)
+                    planetEnabled[pi] = !planetEnabled[pi];
+                CLAY_TEXT(planetEnabled[pi] ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
+            }
+            CLAY(CLAY_IDI("PlanetName", pi), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+            {
+                Clay_String nameStr{false, (int32_t)strlen(kPlanetNames[pi]), kPlanetNames[pi]};
+                CLAY_TEXT(nameStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
             }
         }
     }
@@ -3059,6 +3174,25 @@ void SatelliteSim::loadSettings()
         }
     }
 
+    if (j.contains("planets"))
+    {
+        auto &pj = j["planets"];
+        showPlanets = pj.value("show_planets", showPlanets);
+        if (pj.contains("list"))
+        {
+            std::unordered_map<std::string, const nlohmann::json *> byName;
+            for (const auto &jp : pj["list"])
+                if (jp.contains("name"))
+                    byName[jp["name"].get<std::string>()] = &jp;
+            for (int pi = 0; pi < kPlanetCount; ++pi)
+            {
+                auto it = byName.find(kPlanetNames[pi]);
+                if (it != byName.end())
+                    planetEnabled[pi] = it->second->value("enabled", planetEnabled[pi]);
+            }
+        }
+    }
+
     if (schemaMatches && j.contains("clouds"))
     {
         auto &c = j["clouds"];
@@ -3271,6 +3405,14 @@ void SatelliteSim::saveSettings()
     for (const auto &c : constellations)
         constArr.push_back({{"name", c.name}, {"enabled", c.enabled}, {"highlight", c.highlight}});
     j["constellations"] = constArr;
+
+    // Planets (RELEASE_v1_1_PLAN.md follow-up, session 30) — same shape as constellations above,
+    // ungated by schema_version like constellations_enabled/constellations: this isn't a
+    // graphics-tuning value that a version mismatch could make dangerous to silently reapply.
+    nlohmann::json planetArr = nlohmann::json::array();
+    for (int pi = 0; pi < kPlanetCount; ++pi)
+        planetArr.push_back({{"name", kPlanetNames[pi]}, {"enabled", planetEnabled[pi]}});
+    j["planets"] = {{"show_planets", showPlanets}, {"list", planetArr}};
 
     auto path = (std::filesystem::path(userDataDir_) / "settings.json").string();
     try

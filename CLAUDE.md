@@ -492,6 +492,24 @@ gain=500. `domeVal` feeds the existing `1 - domeVal × kPollutionMaxDim` dimming
 unchanged (`kSatPollutionMaxDim` = 0.85 in `sat_flare.comp`, `kStarPollutionMaxDim` = 0.99 in
 `updateStars()`, both user-tuned — still a hard ceiling on max dimming regardless of gain).
 
+**S2c isotropic floor (RELEASE_v1_1_PLAN.md, session 30):** `elevFalloff` alone bottoms out at
+~0.26 at zenith, so no `kPollutionMaxDim` could ever dim a straight-overhead target — satellite,
+star, or the Milky Way — by more than ~26%, regardless of how bright the city or how high
+`lightPollutionGain` went. This is why the Milky Way stayed visible near cities: it's a large,
+mostly-high-in-the-sky feature living almost entirely in the region `elevFalloff` can't reach. Real
+urban skyglow raises zenith brightness far more (Bortle 8 zenith ≈ 50× Bortle 1) via isotropically
+scattered light, not just the horizon-hugging direct glow `elevFalloff` models. Fix, applied
+identically at all four consumers (`sat_flare.comp`, `sat_sky.frag`'s Milky Way, `cloud_march.comp`'s
+aurora, `updateStars()`) — `beamDomeVal`/beam-glow dome copies are deliberately left alone, since a
+Reflect-Orbital beam flash is a genuinely horizon-hugging point source, not city skyglow:
+```
+domeVal = clamp(domeAz * (kIsotropicFrac + (1 - kIsotropicFrac) * elevFalloff), 0, 1)
+```
+`kIsotropicFrac = 0.4` (hand-duplicated at each site, same convention as `elevFalloff` itself).
+Horizon behaviour (`elevFalloff≈1`) is unchanged; zenith now floors at `domeAz * kIsotropicFrac`
+instead of `domeAz * 0.26`. Expect `lightPollutionGain` to need re-tuning after this — it now reaches
+brightness levels near cities it structurally could not reach before.
+
 **Not built:** the elevation falloff shape is a fixed analytic curve, not itself sampled/measured —
 a true 2D (azimuth × elevation) dome would need real atmospheric-scattering-height modeling, judged
 not worth the complexity over the fixed-curve approximation.
@@ -561,6 +579,86 @@ struct GpuGlowBuf {
 `static_assert(sizeof(GpuGlowBuf) == kGlowBins * 4 + 16 + kMaxFlares * 16)`
 
 `kGlowBins` and `kMaxFlares` must match constants in `sat_sky.frag`. `glowBuf` must be zeroed with `vkCmdFillBuffer` before each `sat_flare.comp` dispatch (floatBitsToUint(0.0) == 0u, so fill value 0 correctly marks bins empty).
+
+---
+
+## Subsystem: Planets
+
+Session 30. Mercury, Venus, Mars, Jupiter, Saturn, Uranus (`enum PlanetId`, `kPlanetCount = 6` —
+Neptune excluded, never naked-eye at ~mag 7.8) with real Keplerian-approximation orbital positions,
+rendered as clickable points of light. Deliberately **not** built on the satellite orbital-compute
+pipeline (`GpuSatOrbit`/`sat_orbit.comp`) — that solves near-field Earth-relative geometry (shadow,
+attitude, specular surfaces) planets don't have. Instead: closed-form CPU math in the sun/moon
+pattern (`updatePositions()`), rendered through the star pipeline's shape (direction + magnitude-
+driven brightness/size, no near-field 3D position needed at render time).
+
+**Ephemeris** (`SatelliteSim.cpp`, top-of-file constants block, `keplerEclipticPos()`): low-precision
+Keplerian elements + linear centurial rates (JPL/Standish, valid 1800-2050 —
+https://ssd.jpl.nasa.gov/planets/approx_pos.html), one `KeplerElements` row each for Earth
+(`kEarthElements`, the table's EM Bary row) and the six planets (`kPlanetElements[]`). Computed every
+frame in `updatePositions()`, right after the Sun/Moon block, using the same `Tcent` (Julian
+centuries since J2000, derived from the same `dJ2000` the Sun calc already computes) and the same
+`epsR` obliquity rotation — no separate time base. Standard Newton-Raphson Kepler-equation solve +
+3-1-3 (ω,i,Ω) orbital-plane-to-ecliptic rotation; geocentric vector = `helio_planet - helio_earth`.
+Results land in `planetStates[kPlanetCount]` (`PlanetState`: `eciDir`/`distanceAU`/`sunDistAU`/
+`phaseAngleDeg`), a plain ephemeris record — distinct from the render-ready `GpuSatVisible` entries
+`updatePlanets()` derives from it each frame.
+
+**The Moon's direction was also fixed in this session**, same block, same pattern: it was a circular
+equatorial orbit with a phase constant (`kMoonPhaseOffsetRad`) hand-calibrated for a single epoch
+(2026-03-30) that had already drifted stale for the sim's actual fixed epoch (2036-06-21) — see
+"Fixed Simulation State" above. Replaced with `kMoonElements`, a two-body Keplerian fit to the linear
+terms of the Moon's real ELP2000-82B mean elements (Meeus ch. 47) — real inclination (~5.145°) and
+eccentricity, still an approximation (no evection/variation/other periodic perturbations) but a real
+improvement, run through the exact same `keplerEclipticPos()` used for the planets (geocentric
+directly, no Earth-subtraction step). `moonIllum`'s formula is unchanged — only the direction's
+derivation changed, so `sat_sky.frag`'s Moon disc rendering needed zero changes.
+
+**Brightness** (`updatePlanets()`, mirrors `updateStars()`): apparent magnitude via
+`planetApparentMagnitude()` — Paul Schlyter's standard formulas
+(stjarnhimlen.se/comp/ppcomp.html), `V = V0 + 5*log10(r*Δ) + phase-angle polynomial`. Saturn's ring
+brightness is deliberately omitted (needs Saturnicentric ring-plane geometry, not just phase angle —
+accepted simplification, dims slightly near ring-plane-open oppositions). Converted to
+`rawIntensity = 10^(-V/2.5)` — **the same convention `initStars()` uses** — so a planet's brightness
+runs through the exact same suppression chain stars already have (day/moon/pollution-dome/
+extinction), hand-duplicated into `updatePlanets()` per this codebase's established per-consumer-
+duplication convention for that formula (see "Subsystem: Light Pollution Dome" above). Point-sprite
+size reuses `initStars()`'s `0.25 + 2.5*sqrt(rawIntensity)` curve so a planet reads at the same
+visual weight as an equally-bright star.
+
+**Rendering**: a second tiny host-mapped `planetBuf` (`GpuSatVisible`-shaped, 6 entries) + a second
+descriptor set (`planetDescSet`, reusing `starDescLayout`/`starDescPool`'s shape via its own tiny
+`planetDescPool` — `starDescPool` itself is sized `maxSets=1`) — but the **same** `starPipeline`/
+`starPipeLayout`/shaders (`star_point.vert`/`.frag`), just a second `vkCmdDraw` in `recordDraw()`
+right after the star draw. Reusing the pipeline object means `onResize()`'s existing
+`createStarPipeline()` recreation covers planets for free — no separate resize handling needed.
+One real shader difference was necessary: `star_point.vert`'s atmospheric scintillation/twinkle is
+physically wrong for planets (small resolved discs, not point sources) — gated behind a new
+`SatDrawPC.noTwinkle` field (offset 164, struct grown 164→168 bytes, same "append at the end"
+precedent as `debugDisableMask`), set to 1 only on the planet draw's own copy of the push constant.
+The pre-existing Moon-disc occlusion cull in the same shader stays active for planets unchanged
+(correct — a planet behind the Moon's disc should still be culled).
+
+**Picking**: `pickPlanetAt()` is cheaper than `pickSatelliteAt()` — `planetBuf` is already
+HOST_VISIBLE/COHERENT (`updatePlanets()` writes it directly from the CPU), so unlike satellites'
+device-local `satVisibleBuf` there's no staging-buffer copy at all, just a loop over 6 entries using
+the existing `projectSkyDirToScreen()`. `selectedPlanetIndex` (mutually exclusive with
+`selectedSatIndex` — selecting one clears the other) is tried first (planet priority on an exact
+overlap) at both click sites (`SatelliteSimUI.cpp`'s mouse-click handler and `KB_SELECT_SAT`'s
+center-screen equivalent). `formatSelectedPlanetInfo()` fills `planetInfoLine[]` (name/magnitude/
+distance/phase) — unlike `formatSelectedSatInfo()` (called only when the selection changes, since a
+satellite's orbital elements are static), this is re-called **every frame** the selection is active
+(right after `updatePlanets()` in `recordCompute()`), since a planet's distance/phase/magnitude
+changes continuously. `buildSelectedSatPanel()` branches on `isPlanet` to pick its data source
+(`planetBuf`'s own mapped memory directly for planets — never stale, vs. satellites' one-frame-stale
+`lastPickedSkyDir` GPU round-trip) and info-line array, then shares the rest of the panel/reticule
+rendering unchanged.
+
+**Settings**: `showPlanets` (global) + `planetEnabled[kPlanetCount]` (per-planet), UI in
+`buildSettingsConstellationsTab()` reusing the exact ON/OFF row pattern the constellation list
+already uses. Persisted as `j["planets"]` (`{show_planets, list:[{name,enabled}]}`) in
+`saveSettings()`/`loadSettings()`, same shape and same ungated (non-schema-versioned) treatment as
+`j["constellations"]` — not a graphics-tuning value a schema mismatch needs to guard against.
 
 ---
 

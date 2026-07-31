@@ -11,7 +11,11 @@ layout(set = 0, binding = 1) readonly buffer SatVisibleBuf {
     SatVisible satellites[];
 };
 
-// ── Push constants (full SatDrawPC, 128 bytes) ────────────────────────────────
+// ── Push constants (full SatDrawPC, 168 bytes) ────────────────────────────────
+// Declares the full struct through noTwinkle (offset 164) even though most fields in between are
+// unused by this shader — GLSL push_constant blocks must be a contiguous prefix of the pushed
+// bytes, so reaching the last field means declaring everything before it (same pattern sat_sky.frag
+// already uses for its own trailing fields).
 layout(push_constant) uniform PC {
     mat4  skyView;
     float fovYRad;
@@ -21,6 +25,16 @@ layout(push_constant) uniform PC {
     vec4  sunDirENU;   // offset 80 — unused
     vec4  moonDirENU;  // offset 96 — xyz=moon dir ENU, w=unused here (illuminated fraction)
     vec4  obsECEFDir;  // offset 112: xyz=obs ECEF, w=obsHeightOffset (m)
+    uint  debugDisableMask; // offset 128 — unused here
+    float pad0;             // offset 132 — unused here
+    vec2  screenSizePx;     // offset 136 — unused here
+    float skyGlareVisibility; // offset 144 — unused here
+    float beamMaxRangeM;      // offset 148 — unused here
+    float beamSkyGlowGain;    // offset 152 — unused here
+    float beamGlowBleedGain;  // offset 156 — unused here
+    float beamProximityGlow;  // offset 160 — unused here
+    float noTwinkle;          // offset 164 — S3/planets follow-up: 1 = skip scintillation below
+                               // (set only on the planet draw call — see SatDrawPC's own comment)
 } pc;
 
 // Matches kMoonAngR in sat_sky.frag's moon disc (0.004578 * 3.0) — the Moon is a real opaque
@@ -69,6 +83,15 @@ void main() {
     // Physics: Kolmogorov turbulence → amplitude scales with air mass (1/sin(el)).
     // Space: atmFrac → 0 so twinkling vanishes above the atmosphere.
     //
+    // Skipped for planets (pc.noTwinkle=1, see SatDrawPC's comment): real planets are small
+    // resolved discs, not point sources, and don't scintillate the way stars do — reusing this
+    // code unmodified for the planet draw call would make them flicker like stars, which reads as
+    // wrong given the whole point of this feature is real orbital/photometric accuracy.
+    if (pc.noTwinkle >= 0.5) {
+        fragTwinkle = 1.0;
+        return;
+    }
+
     // Precision note: waveTime = simSecInDay (0–86400).  Calling sin() directly
     // with a large argument (43200 × freq × 2π ≈ 1e6) loses all precision in
     // float32 GPU trig.  Fix: reduce to fractional cycle [0,1] with fract()

@@ -281,7 +281,7 @@ compose.
 
 ---
 
-### S2 — Light pollution, dimmer stars, Milky Way `[ ]` **P1** — *highest visual value in the plan*
+### S2 — Light pollution, dimmer stars, Milky Way `[x]` **P1** — *highest visual value in the plan*
 
 Three findings, one of which is a concrete bug.
 
@@ -340,9 +340,25 @@ Milky Way should be *gone* and only ~10–30 stars visible. Over a small town, c
 
 **Effort:** M. Do (a) and (c) together — (c) is what makes (a) look right.
 
+**Done (session 30):**
+- (a) `parse_bsc.py`'s `VMAG_LIMIT` raised 3.5 → 6.5; regenerated `star_catalog.h` from BSC5 —
+  8404 entries (up from 287). `initStars()`'s point-sprite size curve replaced: the old
+  `1.5 + min(rawInt, 4.0)` let its additive floor dominate every faint star, so mag 6 and mag 3
+  both landed at ~6 px; now `0.25 + 2.5 × sqrt(rawInt)` (pre-`starScale`), which floors near 1 px
+  for the faintest new stars while keeping Sirius at roughly its old ~21 px.
+- (b) No code change — verified the multiplicative model already produces the right shape.
+- (c) Isotropic-floor fix applied identically at all four `elevFalloff` consumers: `sat_flare.comp`
+  (satellites), `sat_sky.frag` (Milky Way), `cloud_march.comp` (aurora), `updateStars()` (CPU).
+  `domeVal = clamp(domeAz * (kIsotropicFrac + (1-kIsotropicFrac) * elevFalloff), 0, 1)`,
+  `kIsotropicFrac = 0.4`. Beam-glow dome copies (`beamDomeVal`) deliberately left untouched — a
+  Reflect-Orbital beam flash is a genuinely horizon-hugging point source, not city skyglow. See
+  `CLAUDE.md`'s "Subsystem: Light Pollution Dome" for the full writeup.
+- **Not done / needs your eyes:** `lightPollutionGain`'s default almost certainly needs re-tuning
+  now that the dome can actually reach zenith — the acceptance test above should be re-run in-app.
+
 ---
 
-### S3 — Flare brightness ceiling `[ ]` **P1**
+### S3 — Flare brightness ceiling `[x]` **P1**
 
 **Root cause is concrete.** The flare-source pass injects the sun as a virtual point at a fixed
 `sunFlareRefIntensity = 40.0` (`SatelliteSim.h:1330`), and satellite `effectFlare` is unbounded, so
@@ -368,6 +384,17 @@ striking at night rather than merely wider.
 
 **Effort:** S. Highest ratio of visual payoff to code changed in this plan.
 
+**Done (session 30):**
+1. Implemented as specified — `SatFlarePC`'s `pad1` repurposed to `sunRefIntensity` (mirrors
+   `sunFlareRefIntensity`, already sent to the flare-source pass), applied in `sat_flare.comp`
+   right before the visibility cull.
+2. **Already done, pre-existing.** `angSizeBase`/`glowSigmaPx` in `sat_flare.comp` already use
+   `log`/`log2` of `effectFlare`, not a linear scale — this plan item's premise (linear size) no
+   longer matched the code by the time this phase started.
+3. Implemented — `flareStreakGain`/`flareGlowGain` scaled by a darkness factor (`sunDirENU.w`,
+   same formula as `updateStars()`'s `nightFactor`) with a `0.35` day floor rather than a hard
+   on/off, at both the blur pass (`recordCompute`) and the composite pass (`recordDraw`).
+
 ---
 
 ### S4 — Previously-planned, never-completed work `[x]` (audited)
@@ -375,7 +402,7 @@ striking at night rather than merely wider.
 | Item | Status | v1.1 call |
 |---|---|---|
 | **Terrain march altitude/distance fade** | Open, and listed in `TERRAIN_PLAN.md`'s own "NEXT SESSION" as a *measured* dominant cost. `tCap` grows reach with altitude faster than the step budget grows, so `kN` pins to its 164 ceiling on essentially every pixel from LEO. | **IN — P0.** This is the single biggest low-end-hardware win available and it is already scoped. Mirrors the cloud `cloudDistFadeStartM/EndM` change; degrades to the existing sea-level sphere, so it degrades to "smooth textured Earth," not to nothing. Also exposes `kTerrainStepsMin/Max` as preset-driven values. |
-| **Step 7 / C10 — city light upwelling into sky glow** | Partially superseded. The session-26 pollution dome *dims what's behind the glow*; Step 7 spec'd *adding glow to the sky itself*. Cities currently never brighten the sky. | **IN — P1.** It is the other half of S2 and directly serves the S2 acceptance test. |
+| **Step 7 / C10 — city light upwelling into sky glow** | Partially superseded. The session-26 pollution dome *dims what's behind the glow*; Step 7 spec'd *adding glow to the sky itself*. Cities currently never brighten the sky. | **IN — P1.** It is the other half of S2 and directly serves the S2 acceptance test. **Done** — found already implemented in `sat_sky.frag` ("Step 7 / C10" comment block) by the time this phase started; not touched this session beyond the S2(c) isotropic-dome fix above, which also improves it. |
 | **C9 — composite & performance** | Effectively delivered by sessions 23 (half-res cloud compute) and 29 (profiling + fixes). | **Close as done.** Update `TERRAIN_PLAN.md`. |
 | **C14 — Anvil height-profile spread** | Not started; deferred 4+ times. | **CUT.** Cosmetic cloud shaping with no user-visible gap. Your instinct that "there is probably a good reason" is right here. |
 | **Step 10 — orbital camera / coordinate decoupling** | Not started; large rework. | **OUT of v1.1**, but do a QA pass on "what visibly breaks at 400 km" (see NEW-6) — users *will* fly up there, especially after UC3 teaches them to. |

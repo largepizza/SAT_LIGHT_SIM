@@ -546,7 +546,11 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
     int   sec1wAurora   = (sec0wAurora + 1) % 16;
     float domeAzAurora  = mix(lightDome[sec0wAurora], lightDome[sec1wAurora], secFracAurora);
     float elevFalloffAurora = 0.35 / (max(dir.z, 0.0) + 0.35);
-    float domeValAurora  = clamp(domeAzAurora * elevFalloffAurora, 0.0, 1.0);
+    // S2c (RELEASE_v1_1_PLAN.md): same isotropic-floor fix as sat_flare.comp/sat_sky.frag/
+    // updateStars() — elevFalloffAurora alone bottoms out at ~0.26 at zenith, wrong for real
+    // (isotropically-scattered) urban skyglow. Keep this constant identical across all copies.
+    const float kIsotropicFrac = 0.4;
+    float domeValAurora  = clamp(domeAzAurora * (kIsotropicFrac + (1.0 - kIsotropicFrac) * elevFalloffAurora), 0.0, 1.0);
     const float kAuroraPollutionMaxDim = 0.9;
 
     float tmAurora         = clamp(moonDirENU.z / 0.5, 0.0, 1.0);

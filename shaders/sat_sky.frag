@@ -2236,7 +2236,16 @@ void main() {
         int   sec1w   = (sec0w + 1) % 16;
         float domeAz  = mix(lightDome[sec0w], lightDome[sec1w], secFrac);
         float elevFalloffMW = 0.35 / (max(dir.z, 0.0) + 0.35);
-        float domeVal = clamp(domeAz * elevFalloffMW, 0.0, 1.0);
+        // S2c (RELEASE_v1_1_PLAN.md): this was THE Milky Way bug — elevFalloffMW alone bottoms out
+        // at ~0.26 at zenith, so kMWPollutionMaxDim=0.99 could never dim the zenith Milky Way (a
+        // large, mostly-high-in-the-sky feature) by more than ~26%, no matter how bright the city
+        // or how high lightPollutionGain went. Real urban skyglow raises zenith brightness by ~50x
+        // (Bortle 8 vs Bortle 1) via isotropic atmospheric scattering, not just the horizon-hugging
+        // direct glow elevFalloffMW models. kIsotropicFrac gives the dome a real floor at zenith;
+        // horizon behaviour is unchanged. Same constant/formula in sat_flare.comp (satellites) and
+        // cloud_march.comp (aurora), and CPU updateStars() — keep them coherent.
+        const float kIsotropicFrac = 0.4;
+        float domeVal = clamp(domeAz * (kIsotropicFrac + (1.0 - kIsotropicFrac) * elevFalloffMW), 0.0, 1.0);
         const float kMWPollutionMaxDim = 0.99;
 
         // C12 follow-up #31: same suppression shape, second independent source — a nearby

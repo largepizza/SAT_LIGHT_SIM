@@ -2,7 +2,7 @@
 """
 Yale Bright Star Catalog (BSC5) parser.
 
-Downloads catalog.gz from CDS, decompresses it, parses all stars with Vmag <= 3.5,
+Downloads catalog.gz from CDS, decompresses it, parses all stars with Vmag <= VMAG_LIMIT,
 and outputs C++ initializer list entries sorted by Vmag ascending (brightest first).
 
 Column byte positions (1-indexed) from BSC5 ReadMe, verified:
@@ -26,6 +26,11 @@ import urllib.request
 import gzip
 import io
 import sys
+
+# S2(a) (RELEASE_v1_1_PLAN.md): naked-eye limit in a genuinely dark sky is ~6.5, not BSC5's old
+# 3.5 cutoff used for v1.0's 287-star placeholder set. BSC5 itself is complete to ~6.5, so this is
+# the catalog's natural ceiling, not an arbitrary choice.
+VMAG_LIMIT = 6.5
 
 # -------------------------------------------------------------------
 # Common names by HR number (curated from IAU/standard usage)
@@ -149,7 +154,7 @@ def parse_catalog(lines):
             skipped += 1
             continue
 
-        if vmag > 3.5:
+        if vmag > VMAG_LIMIT:
             continue  # Not bright enough
 
         # Need col 90 for complete Dec
@@ -213,13 +218,13 @@ def main():
     stars, skipped = parse_catalog(lines)
     print(f"# Skipped {skipped} lines (no HR, no Vmag, or incomplete coords)",
           file=sys.stderr)
-    print(f"# Stars with Vmag <= 3.5: {len(stars)}", file=sys.stderr)
+    print(f"# Stars with Vmag <= {VMAG_LIMIT}: {len(stars)}", file=sys.stderr)
 
     # Sort by vmag ascending (brightest first); secondary sort by HR for stability
     stars.sort(key=lambda s: (s[3], s[0]))
 
     # Output C++ header content
-    print("// Yale Bright Star Catalog 5th Ed. (BSC5) — all stars with Vmag <= 3.50")
+    print(f"// Yale Bright Star Catalog 5th Ed. (BSC5) — all stars with Vmag <= {VMAG_LIMIT:.2f}")
     print("// Source: Hoffleit & Warren (1991), CDS V/50")
     print("//         https://cdsarc.cds.unistra.fr/ftp/cats/V/50/")
     print("// Coordinates: J2000.0. Sorted by Vmag ascending (brightest first).")
