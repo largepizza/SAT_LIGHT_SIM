@@ -1,6 +1,8 @@
 #include "SatelliteSim.h"
 #include "../UIRenderer.h"
 #include "../AudioSystem.h"
+#include "../Paths.h"
+#include "version.h"
 #include "clay.h"
 #include "star_catalog.h"
 #include "stb_image.h"
@@ -19,18 +21,6 @@
 
 #include <filesystem>
 #include <string>
-
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#elif defined(__linux__)
-#include <unistd.h> // readlink
-#include <limits.h> // PATH_MAX
-#elif defined(__APPLE__)
-#include <mach-o/dyld.h> // _NSGetExecutablePath
-#include <limits.h>
-#endif
 
 // ── Earth + observer constants ─────────────────────────────────────────────────
 static constexpr float kEarthRadius = 6'371'000.0f; // mean Earth radius (m)
@@ -77,35 +67,23 @@ static inline float computeSSOInclination(float altM)
     return (float)acos(glm::clamp(cosI, -1.0, 1.0));
 }
 
-static std::filesystem::path resolveExeDir()
-{
-#if defined(_WIN32)
-    char buf[MAX_PATH] = {};
-    GetModuleFileNameA(nullptr, buf, MAX_PATH);
-    return std::filesystem::path(buf).parent_path();
-
-#elif defined(__linux__)
-    char buf[PATH_MAX] = {};
-    ssize_t len = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (len != -1)
-        return std::filesystem::path(std::string(buf, len)).parent_path();
-
-#elif defined(__APPLE__)
-    char buf[PATH_MAX] = {};
-    uint32_t size = sizeof(buf);
-    if (_NSGetExecutablePath(buf, &size) == 0)
-        return std::filesystem::path(buf).parent_path();
-#endif
-
-    // Universal fallback: use current working directory
-    return std::filesystem::current_path();
-}
-
 // ─── init ─────────────────────────────────────────────────────────────────────
 void SatelliteSim::init(VulkanContext &ctx)
 {
-    // Resolve directory that contains the executable so we can find constellations.json.
-    exeDir_ = resolveExeDir().string();
+    // exeDir_: read-only game data (constellations.json, assets/, shaders/) — always next to
+    // the exe. userDataDir_: settings/perf writes — %APPDATA%/SatLightSim etc, or exeDir_ itself
+    // in portable mode (see Paths.h / NEW-4 in RELEASE_v1_1_PLAN.md).
+    exeDir_ = Paths::exeDir();
+    userDataDir_ = Paths::userDataDir();
+
+    // NEW-3 (RELEASE_v1_1_PLAN.md): crash-safe mode. If the sentinel from a PREVIOUS run is
+    // still here, that run never reached cleanup()'s clean-exit path. Recreate it now (empty
+    // file, presence is the only signal) so this run is tracked from here on; the effect
+    // (force Planetarium + notice) is applied after loadSettings() runs below, so it overrides
+    // whatever preset that load would otherwise have chosen.
+    auto crashSentinelPath = std::filesystem::path(userDataDir_) / "session.lock";
+    bool crashDetected = std::filesystem::exists(crashSentinelPath);
+    { std::ofstream sentinelOut(crashSentinelPath, std::ios::trunc); }
 
     // Fixed start time: 2036-06-21 00:00:00 UTC
     // J2000.0 = 2000-01-01 12:00:00 UTC = Unix 946728000
@@ -207,6 +185,24 @@ void SatelliteSim::init(VulkanContext &ctx)
     // after loadSettings() so a saved false sticks. viewControlsChrome.open is intentionally
     // NOT persisted — closing it only lasts for the current run (see buildViewControlsWindow).
     viewControlsChrome.open = showControlsOnStartup;
+
+    // NEW-7: fpsCapMode (just loaded above) may differ from the VulkanContext default the
+    // startup swapchain was already created with (FIFO/VSync) — push it through now. Idempotent
+    // and cheap when the loaded value already matches, same reasoning as the render-scale
+    // recreate just above.
+    applyFpsCapMode();
+
+    // NEW-3: apply the crash-recovery override AFTER loadSettings() (and the preset re-derivation
+    // inside it) so it wins over whatever preset the previous session had — the whole point is
+    // that the very next launch after a bad exit comes up in the cheapest, least-likely-to-repeat-
+    // the-crash configuration, not back in the settings that may have caused it.
+    if (crashDetected)
+    {
+        applyGraphicsPreset(GraphicsPreset::Planetarium);
+        crashRecoveryNoticeTimer = 8.0f;
+        fprintf(stderr, "[SatelliteSim] Previous session did not exit cleanly — forcing "
+                        "Planetarium preset.\n");
+    }
 }
 
 // ─── onResize ─────────────────────────────────────────────────────────────────
@@ -866,6 +862,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.fogDensity = fogDensity;
         cp.fogCoverage = fogCoverage;
         cp.fogSunGain = fogSunGain;
+        cp.terrainDistFadeStartM = terrainDistFadeStartM;
+        cp.terrainDistFadeEndM = terrainDistFadeEndM;
         cp.stormStrength = stormStrength;
         cp.auroraGain = auroraGain;
         cp.auroraCloudGain = auroraCloudGain;
@@ -1675,6 +1673,15 @@ void SatelliteSim::setAudio(AudioSystem *audio)
 void SatelliteSim::cleanup(VkDevice device)
 {
     saveSettings();
+
+    // NEW-3: reaching this point IS the clean-exit signal — remove the sentinel so the NEXT
+    // launch doesn't think this run crashed. Best-effort; a failed delete just means the next
+    // launch conservatively (and harmlessly) treats this run as unclean too.
+    {
+        std::error_code ec;
+        std::filesystem::remove(std::filesystem::path(userDataDir_) / "session.lock", ec);
+    }
+
     // ── Orbit pipeline ─────────────────────────────────────────────────────────
     vkDestroyPipeline(device, orbitPipeline, nullptr);
     vkDestroyPipelineLayout(device, orbitPipeLayout, nullptr);

@@ -1,6 +1,8 @@
 #include "App.h"
 #include <stdexcept>
 #include <algorithm>
+#include <chrono>
+#include <thread>
 
 App::App(std::unique_ptr<Simulation> s) : sim(std::move(s)) {}
 
@@ -37,8 +39,19 @@ void App::initWindow() {
 void App::mainLoop() {
     lastTime = glfwGetTime();
     while (!glfwWindowShouldClose(window)) {
+        double frameStart = glfwGetTime();
         glfwPollEvents();
         drawFrame();
+
+        // NEW-7: manual pacing for numeric FPS caps (see Simulation::targetFpsCap comment —
+        // FIFO/V-Sync already paces itself, this only fires for the 30/60/120 caps).
+        float capHz = sim->targetFpsCap();
+        if (capHz > 0.0f) {
+            double budget = 1.0 / (double)capHz;
+            double remaining = budget - (glfwGetTime() - frameStart);
+            if (remaining > 0.0)
+                std::this_thread::sleep_for(std::chrono::duration<double>(remaining));
+        }
     }
 }
 
@@ -175,7 +188,8 @@ void App::drawFrame() {
     pi.pSwapchains        = &ctx.swapchain;
     pi.pImageIndices      = &imgIdx;
     res = vkQueuePresentKHR(ctx.graphicsQueue, &pi);
-    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || resized) {
+    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || resized ||
+        sim->consumeSwapchainRebuildRequest()) {
         resized = false;
         ctx.recreateSwapchain(window);
         sim->onResize(ctx);

@@ -1,4 +1,5 @@
 #include "VulkanContext.h"
+#include "Log.h"
 
 #include <algorithm>
 #include <array>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
@@ -152,7 +154,9 @@ void VulkanContext::createInstance()
     }
 
     if (vkCreateInstance(&ci, nullptr, &instance) != VK_SUCCESS)
-        throw std::runtime_error("vkCreateInstance failed.");
+        throw std::runtime_error("vkCreateInstance failed. No Vulkan-capable driver found — "
+                                  "install/update your GPU driver from your GPU vendor's website.");
+    Log::line("Vulkan instance created.");
 }
 
 // ─── Debug messenger ──────────────────────────────────────────────────────────
@@ -302,7 +306,34 @@ void VulkanContext::pickPhysicalDevice()
         }
     }
     if (!physicalDevice)
-        throw std::runtime_error("Failed to find a suitable GPU.");
+        throw std::runtime_error("Failed to find a suitable GPU. Your graphics driver may be missing "
+                                  "Vulkan support — install/update it from your GPU vendor's website.");
+
+    VkPhysicalDeviceProperties chosen;
+    vkGetPhysicalDeviceProperties(physicalDevice, &chosen);
+    {
+        std::ostringstream oss;
+        oss << "GPU selected: " << chosen.deviceName
+            << " (driver " << VK_VERSION_MAJOR(chosen.driverVersion) << "."
+            << VK_VERSION_MINOR(chosen.driverVersion) << "." << VK_VERSION_PATCH(chosen.driverVersion)
+            << ", Vulkan API " << VK_VERSION_MAJOR(chosen.apiVersion) << "."
+            << VK_VERSION_MINOR(chosen.apiVersion) << "." << VK_VERSION_PATCH(chosen.apiVersion) << ")";
+        Log::line(oss.str());
+    }
+
+    // The Vulkan spec only guarantees 128 bytes of push-constant space; this project's largest
+    // struct (SatDrawPC) is 144. Near-universally supported in practice, but fail loudly with a
+    // clear message here rather than mysteriously corrupting push constants deep in a draw call
+    // on the rare driver that only offers the guaranteed minimum (see UC5/NEW-2 in RELEASE_v1_1_PLAN.md).
+    constexpr uint32_t kRequiredPushConstantsSize = 144;
+    if (chosen.limits.maxPushConstantsSize < kRequiredPushConstantsSize)
+    {
+        std::ostringstream oss;
+        oss << "GPU " << chosen.deviceName << " only supports " << chosen.limits.maxPushConstantsSize
+            << " bytes of push constants; this app requires " << kRequiredPushConstantsSize << ".";
+        Log::line("FATAL: " + oss.str());
+        throw std::runtime_error(oss.str());
+    }
 }
 
 // ─── Logical device ───────────────────────────────────────────────────────────
@@ -342,6 +373,7 @@ void VulkanContext::createDevice()
 
     if (vkCreateDevice(physicalDevice, &ci, nullptr, &device) != VK_SUCCESS)
         throw std::runtime_error("vkCreateDevice failed.");
+    Log::line("Logical device created.");
 
     vkGetDeviceQueue(device, graphicsFamily, 0, &graphicsQueue);
     vkGetDeviceQueue(device, computeFamily, 0, &computeQueue);
@@ -362,10 +394,12 @@ void VulkanContext::createSwapchain(GLFWwindow *window)
             break;
         }
 
-    // Pick present mode (prefer mailbox, fall back to FIFO)
+    // Pick present mode: honor presentModePreference (NEW-7 frame limiter) if the surface
+    // actually supports it, otherwise fall back to FIFO, which every Vulkan implementation
+    // guarantees.
     VkPresentModeKHR pm = VK_PRESENT_MODE_FIFO_KHR;
     for (auto &m : sc.modes)
-        if (m == VK_PRESENT_MODE_MAILBOX_KHR)
+        if (m == presentModePreference)
         {
             pm = m;
             break;
@@ -418,6 +452,12 @@ void VulkanContext::createSwapchain(GLFWwindow *window)
 
     swapFormat = fmt.format;
     swapExtent = ext;
+    {
+        std::ostringstream oss;
+        oss << "Swapchain created: " << swapExtent.width << "x" << swapExtent.height
+            << ", present mode " << pm << ", " << imgCount << " images.";
+        Log::line(oss.str());
+    }
 
     uint32_t cnt;
     vkGetSwapchainImagesKHR(device, swapchain, &cnt, nullptr);

@@ -115,4 +115,16 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // (separate from cloud.sunGain per [[feedback_shared_gain_sliders]]). See fogMarchCS.
     float fogCoverage;
     float fogSunGain;
+    // Terrain march distance fade (S4, RELEASE_v1_1_PLAN.md session 31): mirrors
+    // cloudDistFadeStartM/EndM above but gates the per-pixel terrain-relief raymarch in
+    // sat_sky.frag rather than a volumetric/flat crossfade. Keyed on the ray's own march reach
+    // (tExit, which already grows with observer altitude via tCap) — grazing/high-altitude rays
+    // fade OUT the march's step budget and, beyond terrainDistFadeEndM, skip it outright, falling
+    // back to the already-computed tSeaLvl (a smooth textured Earth, not "nothing" — the same
+    // result "terrain off" debug knockout already produces). Below terrainDistFadeStartM, full
+    // detail — chosen so the old always-250km ground-level reach is entirely unaffected.
+    float terrainDistFadeStartM;
+    float terrainDistFadeEndM;
+    float pad14; // reserved
+    float pad15; // reserved
 } cloud;

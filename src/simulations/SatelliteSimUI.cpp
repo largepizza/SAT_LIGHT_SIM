@@ -7,6 +7,7 @@
 #include "SatelliteSim.h"
 #include "../UIRenderer.h"
 #include "../AudioSystem.h"
+#include "version.h"
 #include "clay.h"
 
 #include <cstdio>
@@ -26,6 +27,14 @@ static constexpr int kIconAngleRight = 1; // pixel--angle-right.png → speed up
 static constexpr int kIconPause = 3;    // pixel--pause.png
 static constexpr int kIconPlay = 4;     // pixel--play.png
 static constexpr int kIconSettings = 5; // pixel--settings.png
+
+// Settings schema version (NEW-5). Bump this whenever a settings.json change would make an
+// old file's graphics-affecting values (photometry/clouds/render_scale) meaningless against
+// new code — e.g. re-tuned defaults, or (once UC1 lands) a preset system replacing raw
+// sliders. On mismatch, loadSettings() keeps camera/audio/keybindings/observer/constellations
+// (those don't go stale the same way) but leaves photometry/clouds/render_scale at their
+// compiled-in defaults rather than loading possibly-nonsensical old values.
+static constexpr int kSettingsSchemaVersion = 1;
 
 static constexpr const char *kSettingsTabNames[11] = {
     "Constellations", "Sound", "Controls", "Camera",
@@ -464,6 +473,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         ui.addMouseCaptureRect(viewControlsChrome.x, viewControlsChrome.y, viewControlsChrome.w, viewControlsChrome.h);
 
     buildIntroOverlay(inp, ui);
+    buildCrashRecoveryNotice(dt, inp, ui);
 }
 
 // ─── buildLeftHudPanel ──────────────────────────────────────────────────────
@@ -970,7 +980,10 @@ void SatelliteSim::buildSettingsWindow(const UIInput &inp, UIRenderer &ui)
     // little slack) — the Photometry/Clouds sliders now shrink responsively with
     // the window (settingsSliderWidth()), so the window only needs to stay above
     // the sliders' own floor, not their old fixed 228px width.
-    bool justClosed = buildResizableWindow(inp, ui, settingsChrome, 0, "Settings", true, hovSettingsClose,
+    static char settingsTitleBuf[64];
+    if (!settingsTitleBuf[0])
+        snprintf(settingsTitleBuf, sizeof(settingsTitleBuf), "Settings — v%s (%s)", APP_VERSION, APP_GIT_COMMIT);
+    bool justClosed = buildResizableWindow(inp, ui, settingsChrome, 0, settingsTitleBuf, true, hovSettingsClose,
                                            defaultX, defaultY, 500.0f, 420.0f, 1000.0f, 820.0f,
                                            [&]()
                                            { buildSettingsTabbedBody(inp, ui); });
@@ -988,8 +1001,16 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
                                            .childGap = 2,
                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
+        // UC1 settings restructure: the Clouds/Ocean/Terrain/Aurora tabs are ~46 developer
+        // sliders — hidden behind Display > "Show advanced settings" so a new user's front door
+        // is the preset selector, not a wall of tuning knobs. hovTab[]/settingsActiveTab still
+        // index by the tab's real (unchanged) id even while its button is skipped here, so
+        // nothing about the other tabs' state needs remapping.
         for (int ti = 0; ti < 11; ++ti)
         {
+            bool isAdvancedTab = (ti == 6 || ti == 7 || ti == 8 || ti == 9);
+            if (isAdvancedTab && !showAdvancedSettings)
+                continue;
             bool active = settingsActiveTab == ti;
             Clay_Color tabBg = active ? Pal::btnAccent : (hovTab[ti] ? Pal::btnHover : Clay_Color{0, 0, 0, 0});
             CLAY(CLAY_IDI("SettingsTab", ti), {.layout = {
@@ -1347,6 +1368,52 @@ void SatelliteSim::buildSettingsCameraTab(const UIInput &inp, UIRenderer &ui)
 // ─── buildSettingsDisplayTab ────────────────────────────────────────────────
 void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
 {
+    // ── Graphics preset (UC1, RELEASE_v1_1_PLAN.md) ────────────────────────
+    // The front door: a new user should see this before any of the ~46 developer sliders behind
+    // "Show advanced settings" below. Custom has no button of its own — it's a status readout for
+    // "you edited an advanced slider by hand", not something you click into.
+    CLAY(CLAY_ID("PresetRow"), {.layout = {
+                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                    .padding = {4, 4, 4, 4},
+                                    .childGap = 6,
+                                    .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Graphics preset"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
+        CLAY(CLAY_ID("PresetSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+
+        if (graphicsPreset == GraphicsPreset::Custom)
+        {
+            CLAY_TEXT(CLAY_STRING("Custom"), CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
+        }
+
+        static const char *kPresetLabels[5] = {"Planetarium", "Low", "Medium", "High", "Ultra"};
+        static const GraphicsPreset kPresetValues[5] = {
+            GraphicsPreset::Planetarium, GraphicsPreset::Low, GraphicsPreset::Medium,
+            GraphicsPreset::High, GraphicsPreset::Ultra};
+        for (int i = 0; i < 5; ++i)
+        {
+            bool isActive = graphicsPreset == kPresetValues[i];
+            Clay_Color btnBg = isActive ? Pal::btnAccent : (hovPreset[i] ? Pal::btnHover : Pal::btnIdle);
+            CLAY(CLAY_IDI("PresetBtn", i), {.layout = {
+                                                .sizing = {CLAY_SIZING_FIXED(82), CLAY_SIZING_FIXED(22)},
+                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                            .backgroundColor = btnBg,
+                                            .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovPreset[i]);
+                sndClick(n, inp.lmbPressed);
+                hovPreset[i] = n;
+                if (n && inp.lmbPressed && graphicsPreset != kPresetValues[i])
+                    applyGraphicsPreset(kPresetValues[i]);
+                Clay_String presetLabelStr{false, (int32_t)strlen(kPresetLabels[i]), kPresetLabels[i]};
+                CLAY_TEXT(presetLabelStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+            }
+        }
+    }
+
     // ── UI Scale ──────────────────────────────────────────────────
     CLAY(CLAY_ID("UiScaleRow"), {.layout = {
                                      .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
@@ -1476,6 +1543,50 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         }
     }
 
+    // ── Frame limiter (NEW-7, RELEASE_v1_1_PLAN.md) ────────────────────────
+    // MAILBOX was the old unconditional default, which runs the GPU flat out forever on a
+    // laptop — fans, heat, and battery drain, a real comfort issue for exactly the low-end
+    // audience this release targets. Defaults to V-Sync (FIFO).
+    CLAY(CLAY_ID("FpsCapRow"), {.layout = {
+                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                    .padding = {4, 4, 4, 4},
+                                    .childGap = 6,
+                                    .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Frame limiter"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
+        CLAY(CLAY_ID("FpsCapSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+
+        static const char *kFpsCapLabels[5] = {"Off", "30", "60", "120", "V-Sync"};
+        static const FpsCapMode kFpsCapValues[5] = {
+            FpsCapMode::Off, FpsCapMode::Cap30, FpsCapMode::Cap60, FpsCapMode::Cap120, FpsCapMode::VSync};
+        for (int i = 0; i < 5; ++i)
+        {
+            bool isActive = fpsCapMode == kFpsCapValues[i];
+            Clay_Color btnBg = isActive ? Pal::btnAccent : (hovFpsCap[i] ? Pal::btnHover : Pal::btnIdle);
+            CLAY(CLAY_IDI("FpsCapBtn", i), {.layout = {
+                                                .sizing = {CLAY_SIZING_FIXED(44), CLAY_SIZING_FIXED(22)},
+                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                            .backgroundColor = btnBg,
+                                            .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovFpsCap[i]);
+                sndClick(n, inp.lmbPressed);
+                hovFpsCap[i] = n;
+                if (n && inp.lmbPressed && fpsCapMode != kFpsCapValues[i])
+                {
+                    fpsCapMode = kFpsCapValues[i];
+                    applyFpsCapMode();
+                }
+                Clay_String fpsCapLabelStr{false, (int32_t)strlen(kFpsCapLabels[i]), kFpsCapLabels[i]};
+                CLAY_TEXT(fpsCapLabelStr,
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+            }
+        }
+    }
+
     // ── Fullscreen toggle ─────────────────────────────────────────
     bool isFs = win && glfwGetWindowMonitor(win) != nullptr;
     CLAY(CLAY_ID("WinModeRow"), {.layout = {
@@ -1566,6 +1677,43 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
             if (n && inp.lmbPressed)
                 unitSystem = UnitSystem::Imperial;
             CLAY_TEXT(CLAY_STRING("Imperial"), CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+        }
+    }
+
+    // ── Show advanced settings (UC1) ────────────────────────────────
+    // Reveals the Clouds/Ocean/Terrain/Aurora tabs (hidden from the tab bar above otherwise).
+    CLAY(CLAY_ID("AdvancedToggleRow"), {.layout = {
+                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                            .padding = {4, 4, 4, 4},
+                                            .childGap = 8,
+                                            .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                            .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Show advanced settings"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
+        CLAY(CLAY_ID("AdvancedToggleSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+
+        Clay_Color advBg = showAdvancedSettings ? Pal::btnAccent : (hovAdvancedToggle ? Pal::btnHover : Pal::btnIdle);
+        CLAY(CLAY_ID("AdvancedToggleChk"), {.layout = {
+                                                .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                            .backgroundColor = advBg,
+                                            .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovAdvancedToggle);
+            sndClick(n, inp.lmbPressed);
+            hovAdvancedToggle = n;
+            if (n && inp.lmbPressed)
+            {
+                showAdvancedSettings = !showAdvancedSettings;
+                // A hidden tab can't be clicked back to, so bounce off it now rather than leave
+                // its stale content showing behind a tab bar that no longer has a button for it.
+                if (!showAdvancedSettings && settingsActiveTab >= 6 && settingsActiveTab <= 9)
+                    settingsActiveTab = 4; // Display
+            }
+            CLAY_TEXT(showAdvancedSettings ? CLAY_STRING("On") : CLAY_STRING("Off"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
         }
     }
 
@@ -1793,6 +1941,47 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                       CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
         }
     }
+
+    // ── Reset to defaults (NEW-5) ───────────────────────────────────
+    // Deletes settings.json from the user data directory and asks for a restart, rather than
+    // resetting live members in place — simplest safe option given how many scattered fields
+    // loadSettings/saveSettings enumerate (a live in-place reset would need a 4th hand-maintained
+    // copy of that same field list, which is exactly the kind of permutation risk CLAUDE.md
+    // warns about for CloudParams). Once UC1's preset system lands, "reset" becomes "apply the
+    // auto-detected preset" instead and can act immediately without a restart.
+    if (resetDefaultsMsgTimer > 0.0f)
+        resetDefaultsMsgTimer = std::max(0.0f, resetDefaultsMsgTimer - inp.dt);
+    CLAY(CLAY_ID("ResetDefaultsRow"), {.layout = {
+                                           .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(30)},
+                                           .padding = {4, 4, 4, 4},
+                                           .childGap = 8,
+                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        Clay_Color resetBtnBg = resetDefaultsMsgTimer > 0.0f ? Pal::btnAccent
+                                : hovResetDefaults           ? Pal::btnHover
+                                                              : Pal::btnIdle;
+        CLAY(CLAY_ID("ResetDefaultsBtn"), {.layout = {
+                                               .sizing = {CLAY_SIZING_FIXED(140), CLAY_SIZING_FIXED(24)},
+                                               .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                           .backgroundColor = resetBtnBg,
+                                           .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovResetDefaults);
+            sndClick(n, inp.lmbPressed);
+            if (n && inp.lmbPressed)
+            {
+                std::error_code ec;
+                std::filesystem::remove((std::filesystem::path(userDataDir_) / "settings.json"), ec);
+                resetDefaultsMsgTimer = 3.0f;
+            }
+            hovResetDefaults = n;
+            ui.tooltip(inp, n, "Delete saved settings and restore defaults on next launch", fs(11));
+            CLAY_TEXT(resetDefaultsMsgTimer > 0.0f ? CLAY_STRING("Restart to apply") : CLAY_STRING("Reset to Defaults"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
+        }
+    }
 }
 
 // Everything in a Photometry/Clouds slider row except the slider itself is fixed
@@ -1983,6 +2172,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
                 {
                     float nt = (inp.mouseX - kSliderAbsX) / kSliderW;
                     *cs.val = glm::clamp(cs.vmin + nt * (cs.vmax - cs.vmin), cs.vmin, cs.vmax);
+                    graphicsPreset = GraphicsPreset::Custom; // UC1: any advanced-tab edit leaves a preset
                 }
                 float fillW = t * kSliderW;
                 if (fillW >= 1.0f)
@@ -2012,7 +2202,10 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
                 sndClick(n, inp.lmbPressed);
                 hovCloudMinus[ci] = n;
                 if (hovCloudMinus[ci] && inp.lmbPressed)
+                {
                     *cs.val = glm::clamp(*cs.val - cs.step, cs.vmin, cs.vmax);
+                    graphicsPreset = GraphicsPreset::Custom;
+                }
                 CLAY_TEXT(CLAY_STRING("-"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
             }
 
@@ -2028,7 +2221,10 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
                 sndClick(n, inp.lmbPressed);
                 hovCloudPlus[ci] = n;
                 if (hovCloudPlus[ci] && inp.lmbPressed)
+                {
                     *cs.val = glm::clamp(*cs.val + cs.step, cs.vmin, cs.vmax);
+                    graphicsPreset = GraphicsPreset::Custom;
+                }
                 CLAY_TEXT(CLAY_STRING("+"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
             }
         }
@@ -2112,6 +2308,9 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Beam glow bleed gain", &beamGlowBleedGain, 0.0f, 0.01f, 0.0001f, "%.2f", 45},
         {"Cloud shadow range (m)", &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
         {"Beam near-field fade (m)", &beamNearFieldFadeM, 1000.0f, 500000.0f, 1000.0f, "%.0f", 46},
+        // S4 (RELEASE_v1_1_PLAN.md): terrain-relief march distance fade — see cloud_params.glsl.
+        {"Terrain fade start (m)", &terrainDistFadeStartM, 50000.0f, 1000000.0f, 10000.0f, "%.0f", 59},
+        {"Terrain fade end (m)", &terrainDistFadeEndM, 100000.0f, 4000000.0f, 25000.0f, "%.0f", 60},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -2140,6 +2339,32 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
 // ─── buildSettingsAttributionsTab ───────────────────────────────────────────
 void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &ui)
 {
+    CLAY(CLAY_ID("AttrAbout"), {.layout = {
+                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                    .padding = {6, 6, 5, 5},
+                                    .childGap = 4,
+                                    .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    {
+        CLAY_TEXT(CLAY_STRING("Sat Light Sim"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        static char aboutBuf[64];
+        if (!aboutBuf[0])
+            snprintf(aboutBuf, sizeof(aboutBuf), "v%s (%s), built %s", APP_VERSION, APP_GIT_COMMIT, APP_BUILD_DATE);
+        Clay_String aboutStr{false, (int32_t)strlen(aboutBuf), aboutBuf};
+        CLAY_TEXT(aboutStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+        CLAY_TEXT(CLAY_STRING("Not affiliated with or endorsed by any company named in this simulation. "
+                               "Constellation parameters are drawn from public filings and are "
+                               "approximations for illustrative purposes."),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
+        CLAY_TEXT(CLAY_STRING("Portions of this software were written with AI assistance (Claude). "
+                               "All code was reviewed, tested, and integrated by the author."),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
+    }
+
+    CLAY(CLAY_ID("AttrDivAbout"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                          .padding = {0, 0, 2, 2}},
+                               .backgroundColor = {30, 30, 32, 255}}) {}
+
     CLAY(CLAY_ID("Attr0"), {.layout = {
                                 .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                 .padding = {6, 6, 5, 5},
@@ -2180,11 +2405,147 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
                                 .childGap = 4,
                                 .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
+        CLAY_TEXT(CLAY_STRING("Earth day/night/cloud/specular/normal/elevation maps, Milky Way skybox"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        CLAY_TEXT(CLAY_STRING("Solar System Scope — solarsystemscope.com/textures (CC BY 4.0)"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+    }
+
+    CLAY(CLAY_ID("AttrDiv2"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                          .padding = {0, 0, 2, 2}},
+                               .backgroundColor = {30, 30, 32, 255}}) {}
+
+    CLAY(CLAY_ID("Attr3"), {.layout = {
+                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                .padding = {6, 6, 5, 5},
+                                .childGap = 4,
+                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    {
+        CLAY_TEXT(CLAY_STRING("Full moon texture"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        CLAY_TEXT(CLAY_STRING("Original astrophotograph by papereater, used with permission"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+    }
+
+    CLAY(CLAY_ID("AttrDiv3"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                          .padding = {0, 0, 2, 2}},
+                               .backgroundColor = {30, 30, 32, 255}}) {}
+
+    CLAY(CLAY_ID("Attr4"), {.layout = {
+                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                .padding = {6, 6, 5, 5},
+                                .childGap = 4,
+                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    {
+        CLAY_TEXT(CLAY_STRING("City lights detail textures"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        CLAY_TEXT(CLAY_STRING("From KSP mod RSSVE, NASA Visible Earth imagery, edited by Theysen"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+        CLAY_TEXT(CLAY_STRING("CC BY-NC-SA 4.0 — Sat Light Sim is distributed as free software"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
+    }
+
+    CLAY(CLAY_ID("AttrDiv4"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                          .padding = {0, 0, 2, 2}},
+                               .backgroundColor = {30, 30, 32, 255}}) {}
+
+    CLAY(CLAY_ID("Attr5"), {.layout = {
+                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                .padding = {6, 6, 5, 5},
+                                .childGap = 4,
+                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    {
+        CLAY_TEXT(CLAY_STRING("Music"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        CLAY_TEXT(CLAY_STRING("Original compositions by papereater, used with permission"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+    }
+
+    CLAY(CLAY_ID("AttrDiv5"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                          .padding = {0, 0, 2, 2}},
+                               .backgroundColor = {30, 30, 32, 255}}) {}
+
+    CLAY(CLAY_ID("Attr6"), {.layout = {
+                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                .padding = {6, 6, 5, 5},
+                                .childGap = 4,
+                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    {
+        CLAY_TEXT(CLAY_STRING("Noise texture"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        CLAY_TEXT(CLAY_STRING("Default RGBA noise texture, shadertoy.com"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+    }
+
+    CLAY(CLAY_ID("AttrDiv6"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                          .padding = {0, 0, 2, 2}},
+                               .backgroundColor = {30, 30, 32, 255}}) {}
+
+    CLAY(CLAY_ID("Attr7"), {.layout = {
+                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                .padding = {6, 6, 5, 5},
+                                .childGap = 4,
+                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    {
+        CLAY_TEXT(CLAY_STRING("Ocean shader (heavy inspiration, modified)"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        CLAY_TEXT(CLAY_STRING("\"Seascape\" by Alexander Alekseev aka TDM — 2014"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+        CLAY_TEXT(CLAY_STRING("shadertoy.com/view/Ms2SD1 (CC BY-NC-SA 3.0)"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
+    }
+
+    CLAY(CLAY_ID("AttrDiv7"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                          .padding = {0, 0, 2, 2}},
+                               .backgroundColor = {30, 30, 32, 255}}) {}
+
+    CLAY(CLAY_ID("Attr8"), {.layout = {
+                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                .padding = {6, 6, 5, 5},
+                                .childGap = 4,
+                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    {
+        CLAY_TEXT(CLAY_STRING("Star catalogue"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        CLAY_TEXT(CLAY_STRING("Yale Bright Star Catalogue (Hoffleit & Warren 1991, CDS V/50)"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+    }
+
+    CLAY(CLAY_ID("AttrDiv8"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                          .padding = {0, 0, 2, 2}},
+                               .backgroundColor = {30, 30, 32, 255}}) {}
+
+    CLAY(CLAY_ID("Attr9"), {.layout = {
+                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                .padding = {6, 6, 5, 5},
+                                .childGap = 4,
+                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    {
         CLAY_TEXT(CLAY_STRING("Icons"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
         CLAY_TEXT(CLAY_STRING("\"HackerNoon's Pixel Icon Library"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
         CLAY_TEXT(CLAY_STRING("https://github.com/hackernoon/pixel-icon-library"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
+    }
+
+    CLAY(CLAY_ID("AttrDiv9"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                          .padding = {0, 0, 2, 2}},
+                               .backgroundColor = {30, 30, 32, 255}}) {}
+
+    CLAY(CLAY_ID("Attr10"), {.layout = {
+                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                .padding = {6, 6, 5, 5},
+                                .childGap = 4,
+                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    {
+        CLAY_TEXT(CLAY_STRING("Software libraries"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        CLAY_TEXT(CLAY_STRING("GLFW (zlib), glm (MIT), Clay (zlib), stb (MIT), miniaudio (MIT),"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+        CLAY_TEXT(CLAY_STRING("nlohmann/json (MIT) — full license texts in THIRD_PARTY_NOTICES.txt"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+        CLAY_TEXT(CLAY_STRING("next to the executable"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
     }
 }
@@ -2268,6 +2629,34 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         }
     }
     ui.scrollbar(CLAY_ID("ViewControlsScroll"));
+}
+
+// ─── buildCrashRecoveryNotice ────────────────────────────────────────────────
+// NEW-3: dismissible-by-timeout banner shown for a few seconds when init() detected the previous
+// session's sentinel still present (see the "session.lock" comment in SatelliteSim::init/cleanup).
+void SatelliteSim::buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRenderer &ui)
+{
+    (void)inp;
+    if (crashRecoveryNoticeTimer <= 0.0f)
+        return;
+    crashRecoveryNoticeTimer -= dt;
+
+    CLAY(CLAY_ID("CrashNotice"), {.layout = {
+                                      .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                      .padding = {16, 16, 10, 10},
+                                      .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
+                                  .backgroundColor = {70, 46, 12, 235},
+                                  .cornerRadius = CLAY_CORNER_RADIUS(6),
+                                  .floating = {.offset = {0, 16},
+                                               .zIndex = 25,
+                                               .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP,
+                                                                .parent = CLAY_ATTACH_POINT_CENTER_TOP},
+                                               .attachTo = CLAY_ATTACH_TO_ROOT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Recovered from an unexpected exit last time — graphics reset to Planetarium. "
+                               "Change it in Settings > Display."),
+                  CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
+    }
 }
 
 // ─── buildIntroOverlay ───────────────────────────────────────────────────────
@@ -2365,16 +2754,145 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
     }
 }
 
+// ─── seedGraphicsPresetFromDevice ────────────────────────────────────────────
+// UC1 mechanism 1 of 3 (RELEASE_v1_1_PLAN.md): coarse device-type seed. Deliberately NOT a
+// GPU-name lookup table — deviceType is the only signal guaranteed never catastrophically wrong.
+// Mechanism 2 (an in-app benchmark during the UC3 intro cinematic) is a later phase; mechanism 3
+// (tell the user, never silently re-decide) is the fprintf + one-shot-ness in loadSettings below.
+GraphicsPreset SatelliteSim::seedGraphicsPresetFromDevice(VulkanContext &ctx) const
+{
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(ctx.physicalDevice, &props);
+    switch (props.deviceType)
+    {
+    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+        return GraphicsPreset::Medium;
+    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+    case VK_PHYSICAL_DEVICE_TYPE_CPU:
+    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+    default:
+        return GraphicsPreset::Low;
+    }
+}
+
+// ─── applyGraphicsPreset ─────────────────────────────────────────────────────
+// UC1: the preset table. Planetarium/Low/Medium/High/Ultra each overwrite debugDisableMask,
+// renderScale, and the "advanced" Clouds/Ocean/Terrain/Aurora sliders wholesale; Custom is a
+// no-op (see GraphicsPreset comment in SatelliteSim.h). debugDisableMask bit values are the
+// documented knockout bits from CLAUDE.md's "GPU Performance Profiling" subsystem — every one of
+// them already has "a mathematically-safe zero/no-op fallback" per that doc, which is what makes
+// promoting them from a profiling tool to a shipped preset system safe to do without touching
+// shader code. High's numbers are the compiled-in class member defaults verbatim (today's tuned
+// values); Ultra pushes each slider toward its UI-exposed ceiling; Low/Medium/Planetarium pull
+// them down, roughly halving each tier's cost band per RELEASE_v1_1_PLAN.md's preset table.
+void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
+{
+    if (p == GraphicsPreset::Custom)
+    {
+        graphicsPreset = p;
+        return; // nothing to apply — trust whatever is currently loaded/set
+    }
+
+    static constexpr uint32_t kBitTerrain = 1u, kBitOceanRefl = 8u, kBitAirglowRed = 16u,
+                               kBitAurora = 32u, kBitBeams = 128u, kBitCloudShadow = 256u,
+                               kBitBeamBlock = 512u, kBitFog = 2048u;
+
+    struct PresetValues
+    {
+        uint32_t mask;
+        float renderScale;
+        float cloudCoverage, cloudMarchSteps, cloudLightSteps;
+        float viewSamplesMin, viewSamplesMax, lightSamples;
+        float oceanSeaOctaves, oceanDetailOctaves, oceanReflSamples;
+        float terrainFadeStartM, terrainFadeEndM;
+        float cloudFadeStartM, cloudFadeEndM;
+    } v{};
+
+    switch (p)
+    {
+    case GraphicsPreset::Planetarium:
+        // v1.0 experience: flat textured Earth (cloudCoverage 0 — no cloud layer at all), terrain
+        // relief and ocean reflection off (the sea-level sphere / flat ocean fallbacks already
+        // exist and are exactly what "terrain off" looks like), every nightglow phenomenon off.
+        v = {kBitTerrain | kBitOceanRefl | kBitAirglowRed | kBitAurora | kBitBeams | kBitCloudShadow | kBitBeamBlock | kBitFog,
+             1.0f, 0.0f, 64.0f, 2.0f, 6.0f, 48.0f, 2.0f, 1.0f, 1.0f, 1.0f, 50000.0f, 100000.0f, 5000.0f, 10000.0f};
+        break;
+    case GraphicsPreset::Low:
+        // Terrain stays on (a bare sea-level sphere with no relief reads as more "wrong" than
+        // "fast" to a player who came for the planet) but with a tight fade budget; clouds forced
+        // fully flat-2D (cloudFadeStartM/EndM at their UI-slider floor — "2D cloud paste only").
+        v = {kBitAurora | kBitBeams | kBitFog,
+             0.7f, 1.0f, 64.0f, 1.0f, 6.0f, 64.0f, 2.0f, 1.0f, 1.0f, 1.0f, 100000.0f, 300000.0f, 5000.0f, 10000.0f};
+        break;
+    case GraphicsPreset::Medium:
+        // Nothing disabled outright — volumetric clouds and aurora both run, at reduced step
+        // budgets and a tighter terrain/cloud reach than High.
+        v = {0u,
+             0.85f, 1.0f, 128.0f, 4.0f, 6.0f, 96.0f, 2.0f, 2.0f, 3.0f, 3.0f, 200000.0f, 600000.0f, 80000.0f, 200000.0f};
+        break;
+    case GraphicsPreset::High:
+        // The compiled-in class member defaults, verbatim — "today's tuned values."
+        v = {0u,
+             1.0f, 1.0f, 215.034485f, 12.896552f, 6.482759f, 124.689659f, 2.0f, 3.0f, 5.0f, 6.0f,
+             300000.0f, 900000.0f, 151902.171875f, 399347.8125f};
+        break;
+    case GraphicsPreset::Ultra:
+        // Uncapped for showcase/screenshots — pushed to each slider's UI-exposed ceiling.
+        v = {0u,
+             1.0f, 1.0f, 512.0f, 16.0f, 16.0f, 256.0f, 4.0f, 3.0f, 5.0f, 6.0f,
+             900000.0f, 3600000.0f, 400000.0f, 900000.0f};
+        break;
+    default:
+        return;
+    }
+
+    debugDisableMask = v.mask;
+    renderScale = v.renderScale;
+    cloudCoverage = v.cloudCoverage;
+    cloudMarchSteps = v.cloudMarchSteps;
+    cloudLightSteps = v.cloudLightSteps;
+    viewSamplesMin = v.viewSamplesMin;
+    viewSamplesMax = v.viewSamplesMax;
+    lightSamples = v.lightSamples;
+    oceanSeaOctaves = v.oceanSeaOctaves;
+    oceanDetailOctaves = v.oceanDetailOctaves;
+    oceanReflSamples = v.oceanReflSamples;
+    terrainDistFadeStartM = v.terrainFadeStartM;
+    terrainDistFadeEndM = v.terrainFadeEndM;
+    cloudDistFadeStartM = v.cloudFadeStartM;
+    cloudDistFadeEndM = v.cloudFadeEndM;
+    graphicsPreset = p;
+
+    if (ctx_)
+    {
+        destroySkyLowResResources(ctx_->device);
+        createSkyLowResResources(*ctx_);
+    }
+}
+
 // ─── loadSettings ─────────────────────────────────────────────────────────────
 // Reads settings.json from the exe directory.  Silently skips if the file is
 // missing (first run).  Logs a warning and returns on parse error.
 // Must be called after initConstellation() so constellations[] is populated.
 void SatelliteSim::loadSettings()
 {
-    auto path = (std::filesystem::path(exeDir_) / "settings.json").string();
+    auto path = (std::filesystem::path(userDataDir_) / "settings.json").string();
     std::ifstream f(path);
     if (!f.is_open())
-        return; // first run — silently use defaults
+    {
+        // UC1 first-run graphics selection: no persisted preference at all, so seed a preset
+        // from the device's VkPhysicalDeviceProperties::deviceType rather than leaving whatever
+        // the compiled-in defaults (High) happen to be — those are the author's own tuned values
+        // on the author's own GPU, not a safe default for unknown hardware. Everything else
+        // (camera, audio, keybindings, ...) has no persisted value either, so this is genuinely
+        // first-run only, never a silent re-decision on a later launch (see RELEASE_v1_1_PLAN.md
+        // UC1, "always tell the user, never silently re-decide" — the visible notice is UC3's
+        // job; this is the mechanism it reads from).
+        applyGraphicsPreset(seedGraphicsPresetFromDevice(*ctx_));
+        fprintf(stderr, "[SatelliteSim] First run: seeded graphics preset %d from device type.\n",
+                (int)graphicsPreset);
+        return;
+    }
 
     nlohmann::json j;
     try
@@ -2387,7 +2905,19 @@ void SatelliteSim::loadSettings()
         return;
     }
 
-    if (j.contains("photometry"))
+    // Schema versioning (NEW-5): an old/missing schema_version means the graphics-affecting
+    // sections below (photometry/clouds/render_scale) may hold values that no longer make sense
+    // against current code (re-tuned defaults, or — once UC1 lands — a preset system). Camera,
+    // audio, keybindings, observer position, time scale, and constellation toggles are not
+    // "graphics" and stay loaded regardless; only photometry/clouds/render_scale are gated.
+    int loadedSchemaVersion = j.value("schema_version", 0);
+    bool schemaMatches = loadedSchemaVersion == kSettingsSchemaVersion;
+    if (!schemaMatches)
+        fprintf(stderr, "[SatelliteSim] settings.json schema %d != current %d — resetting "
+                        "photometry/clouds/render_scale to defaults, keeping the rest.\n",
+                loadedSchemaVersion, kSettingsSchemaVersion);
+
+    if (schemaMatches && j.contains("photometry"))
     {
         auto &p = j["photometry"];
         brightnessScale = p.value("brightness_scale", brightnessScale);
@@ -2406,8 +2936,22 @@ void SatelliteSim::loadSettings()
     if (j.contains("display"))
     {
         auto &d = j["display"];
-        uiScale = d.value("ui_scale", uiScale);
-        renderScale = d.value("render_scale", renderScale);
+        if (schemaMatches)
+        {
+            uiScale = d.value("ui_scale", uiScale);
+            renderScale = d.value("render_scale", renderScale);
+            int fpsCapVal = d.value("fps_cap_mode", (int)fpsCapMode);
+            fpsCapMode = (fpsCapVal >= 0 && fpsCapVal <= 4) ? (FpsCapMode)fpsCapVal : FpsCapMode::VSync;
+            // UC1: default to Custom (NOT a device-seeded preset) when the key is simply absent —
+            // upgrading from a pre-UC1 settings.json must never silently overwrite hand-tuned
+            // values. True first-run device seeding only happens in the "no file at all" branch
+            // above; this is a different case (file exists, schema matches, preset just never
+            // existed as a concept yet).
+            int presetVal = d.value("graphics_preset", (int)GraphicsPreset::Custom);
+            graphicsPreset = (presetVal >= 0 && presetVal <= 5) ? (GraphicsPreset)presetVal : GraphicsPreset::Custom;
+            showAdvancedSettings = d.value("show_advanced_settings", showAdvancedSettings);
+            debugDisableMask = (uint32_t)d.value("debug_disable_mask", (int64_t)debugDisableMask);
+        }
         settingsChrome.x = d.value("win_x", settingsChrome.x);
         settingsChrome.y = d.value("win_y", settingsChrome.y);
         settingsChrome.w = d.value("win_w", settingsChrome.w);
@@ -2502,7 +3046,7 @@ void SatelliteSim::loadSettings()
         }
     }
 
-    if (j.contains("clouds"))
+    if (schemaMatches && j.contains("clouds"))
     {
         auto &c = j["clouds"];
         cloudCoverage = c.value("coverage", cloudCoverage);
@@ -2524,6 +3068,8 @@ void SatelliteSim::loadSettings()
         flatSunGainScale = c.value("flat_sun_gain_scale", flatSunGainScale);
         cloudDistFadeStartM = c.value("cloud_dist_fade_start_m", cloudDistFadeStartM);
         cloudDistFadeEndM = c.value("cloud_dist_fade_end_m", cloudDistFadeEndM);
+        terrainDistFadeStartM = c.value("terrain_dist_fade_start_m", terrainDistFadeStartM);
+        terrainDistFadeEndM = c.value("terrain_dist_fade_end_m", terrainDistFadeEndM);
         cloudBaseVariance = c.value("cloud_base_variance", cloudBaseVariance);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
@@ -2568,18 +3114,30 @@ void SatelliteSim::loadSettings()
         fogSunGain = c.value("fog_sun_gain", fogSunGain);
     }
 
+    // UC1: a named preset (anything but Custom) is the authority on debugDisableMask/renderScale/
+    // the advanced sliders — re-derive them from the table now. This makes preset-table retuning
+    // in a later build reach existing installs automatically, and means whatever was loaded above
+    // (which predates presets on an older file, or could otherwise disagree) never wins over the
+    // preset's own name. Custom is intentionally skipped — it means "trust what was just loaded."
+    if (graphicsPreset != GraphicsPreset::Custom)
+        applyGraphicsPreset(graphicsPreset);
+
     fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
 }
 
 // ─── saveSettings ─────────────────────────────────────────────────────────────
-// Writes the current runtime state to settings.json next to the exe.
+// Writes the current runtime state to settings.json in the per-user data directory (NEW-4).
 // Called on cleanup() and when the settings window is closed.
 void SatelliteSim::saveSettings()
 {
-    if (exeDir_.empty())
+    if (userDataDir_.empty())
         return;
 
     nlohmann::json j;
+
+    j["schema_version"] = kSettingsSchemaVersion;
+    j["app_version"] = APP_VERSION;
+    j["git_commit"] = APP_GIT_COMMIT;
 
     j["photometry"] = {
         {"brightness_scale", brightnessScale},
@@ -2597,6 +3155,10 @@ void SatelliteSim::saveSettings()
     j["display"] = {
         {"ui_scale", uiScale},
         {"render_scale", renderScale},
+        {"fps_cap_mode", (int)fpsCapMode},
+        {"graphics_preset", (int)graphicsPreset},
+        {"show_advanced_settings", showAdvancedSettings},
+        {"debug_disable_mask", debugDisableMask},
         {"active_tab", settingsActiveTab},
         {"unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0},
         {"show_controls_on_startup", showControlsOnStartup}};
@@ -2644,6 +3206,8 @@ void SatelliteSim::saveSettings()
         {"flat_sun_gain_scale", flatSunGainScale},
         {"cloud_dist_fade_start_m", cloudDistFadeStartM},
         {"cloud_dist_fade_end_m", cloudDistFadeEndM},
+        {"terrain_dist_fade_start_m", terrainDistFadeStartM},
+        {"terrain_dist_fade_end_m", terrainDistFadeEndM},
         {"cloud_base_variance", cloudBaseVariance},
         {"cloud_erosion_edge", cloudErosionEdge},
         {"cloud_erosion_core", cloudErosionCore},
@@ -2695,7 +3259,7 @@ void SatelliteSim::saveSettings()
         constArr.push_back({{"name", c.name}, {"enabled", c.enabled}, {"highlight", c.highlight}});
     j["constellations"] = constArr;
 
-    auto path = (std::filesystem::path(exeDir_) / "settings.json").string();
+    auto path = (std::filesystem::path(userDataDir_) / "settings.json").string();
     try
     {
         std::ofstream f(path);
@@ -2710,17 +3274,22 @@ void SatelliteSim::saveSettings()
 // ─── savePerfSnapshot ───────────────────────────────────────────────────────
 // Appends one JSON record — system status + the EMA-averaged GPU pass timings
 // from gpuMsSmoothed[]/gpuMsTotalSmoothed (see updateGpuTimingStats in
-// SatelliteSim.cpp) — to perf_profiles/profile_log.jsonl next to the exe.
-// JSON Lines (one object per line) rather than a JSON array so the log can
-// grow across sessions/restarts by simple appending and be bulk-loaded later
-// (e.g. pandas.read_json(path, lines=True)) without ever re-parsing the whole
-// file to add an entry.
+// SatelliteSim.cpp) — to perf_profiles/profile_log.jsonl in the per-user data
+// directory (NEW-4). JSON Lines (one object per line) rather than a JSON array
+// so the log can grow across sessions/restarts by simple appending and be
+// bulk-loaded later (e.g. pandas.read_json(path, lines=True)) without ever
+// re-parsing the whole file to add an entry.
 void SatelliteSim::savePerfSnapshot(float cpuDt)
 {
-    if (exeDir_.empty())
+    if (userDataDir_.empty())
         return;
 
     nlohmann::json j;
+
+    // Build identity (NEW-1) — without this, snapshots from different builds/commits can't be
+    // told apart once re-tuned defaults or quality-slider ranges change.
+    j["app_version"] = APP_VERSION;
+    j["git_commit"] = APP_GIT_COMMIT;
 
     // Host wall-clock capture time — distinct from simulated UTC below — so
     // records can be sorted/deduped by when they were actually taken.
@@ -2846,7 +3415,7 @@ void SatelliteSim::savePerfSnapshot(float cpuDt)
     // snapshot captured mid-profiling with bits set is only meaningful alongside this.
     j["debug_disable_mask"] = debugDisableMask;
 
-    auto dir = std::filesystem::path(exeDir_) / "perf_profiles";
+    auto dir = std::filesystem::path(userDataDir_) / "perf_profiles";
     auto path = dir / "profile_log.jsonl";
     try
     {

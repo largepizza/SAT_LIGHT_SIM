@@ -1146,7 +1146,21 @@ void main() {
         const float kTerrainStepTargetM = 2800.0;
         const int   kTerrainStepsMin = 64;
         const int   kTerrainStepsMax = 164;
-        int kN = clamp(int(2.0 * (tExit - 2.0) / kTerrainStepTargetM), kTerrainStepsMin, kTerrainStepsMax);
+        int kNFull = clamp(int(2.0 * (tExit - 2.0) / kTerrainStepTargetM), kTerrainStepsMin, kTerrainStepsMax);
+
+        // S4 (RELEASE_v1_1_PLAN.md, session 31): tCap above grows the march REACH with altitude
+        // faster than kNFull's budget grows, so kNFull pins at its 164 ceiling on essentially
+        // every screen pixel from LEO (measured via debugDisableMask bit 1 recovering a decent
+        // frame rate, more so from altitude) — because terrain relief is genuinely sub-pixel at
+        // the reach this ray is capable of. Fade the step budget down as tExit (this ray's own
+        // reach, not just observer altitude — a grazing ray pays more than a steep one at the
+        // SAME altitude) grows past terrainDistFadeStartM, and skip the march outright past
+        // terrainDistFadeEndM: tHit stays -1 and the code below falls back to tSeaLvl, already
+        // computed above at zero extra cost — the same "smooth textured Earth" result the
+        // terrain debug knockout already produces, not a pop to nothing.
+        float terrainReachFade = 1.0 - smoothstep(cloud.terrainDistFadeStartM, cloud.terrainDistFadeEndM, tExit);
+        int kN = int(float(kNFull) * terrainReachFade);
+
         float jitter  = textureLod(noiseTex, gl_FragCoord.xy * (1.0/128.0), 0.0).r;
         float tPrev   = 2.0;
 

@@ -68,6 +68,36 @@ enum class UnitSystem
     Imperial, // mi
 };
 
+// NEW-7 (RELEASE_v1_1_PLAN.md) — Settings > Display "Frame limiter". Off/Cap30/Cap60/Cap120 all
+// use VkPresentModeKHR MAILBOX/IMMEDIATE (uncapped submission) and rely on App::mainLoop's
+// sleep-based pacing (see Simulation::targetFpsCap) for the numeric caps; VSync uses FIFO and
+// needs no manual pacing at all. See VulkanContext::presentModePreference for the present-mode
+// side of this.
+enum class FpsCapMode
+{
+    Off,    // uncapped, present mode IMMEDIATE (tearing allowed) — max perf regardless of comfort
+    Cap30,
+    Cap60,
+    Cap120,
+    VSync,  // default — FIFO, paced by the display's own refresh rate
+};
+
+// UC1 (RELEASE_v1_1_PLAN.md) — Settings > Display graphics preset. Applying a named preset
+// (anything but Custom) overwrites debugDisableMask, renderScale, and the "advanced" Clouds/
+// Ocean/Terrain/Aurora sliders wholesale — see SatelliteSim::applyGraphicsPreset for the table.
+// Custom is not user-selectable directly; it is set automatically the instant any of those
+// advanced sliders is edited by hand (see buildCloudSliderRows), and simply means "trust
+// whatever is currently loaded/set — don't overwrite it with a preset table."
+enum class GraphicsPreset
+{
+    Planetarium, // v1.0 experience: flat textured Earth, stars, satellites, atmosphere. No clouds.
+    Low,         // integrated graphics / old laptops — flat 2D cloud paste, tight terrain reach
+    Medium,      // mainstream discrete GPU — volumetric clouds/terrain at reduced budgets
+    High,        // today's tuned defaults
+    Ultra,       // uncapped for showcase/screenshots
+    Custom,      // user has hand-edited an advanced slider since the last named preset was applied
+};
+
 // ── Orbit distribution type ────────────────────────────────────────────────────
 enum class OrbitDistribution
 {
@@ -792,8 +822,16 @@ struct GpuCloudParams
     float fogCoverage;           // C11 (repurposed from pad12) — ground fog global coverage gate.
     float fogSunGain;            // C11 (repurposed from pad13) — fog sun-lit brightness gain,
                                   // separate from cloud.sunGain per [[feedback_shared_gain_sliders]].
+    // Terrain march distance fade (S4, RELEASE_v1_1_PLAN.md session 31) — see cloud_params.glsl
+    // for the full design rationale. Fades out sat_sky.frag's terrain-relief march step budget
+    // as this ray's own march reach (tExit) grows, skipping it outright beyond End and falling
+    // back to the sea-level sphere, which already exists as the "no hit" result.
+    float terrainDistFadeStartM;
+    float terrainDistFadeEndM;
+    float pad14; // reserved
+    float pad15; // reserved
 };
-static_assert(sizeof(GpuCloudParams) == 384, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 400, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -917,6 +955,24 @@ public:
     void setAudio(AudioSystem *audio) override;
     void setWindow(GLFWwindow *w) override { win = w; }
     VkClearValue clearColor() const override { return {{{0.0f, 0.0f, 0.015f, 1.0f}}}; }
+    // NEW-7: numeric caps (Off/Cap30/Cap60/Cap120 all run MAILBOX/IMMEDIATE present, uncapped
+    // submission) need App::mainLoop to pace them manually; VSync (FIFO) paces itself.
+    float targetFpsCap() const override
+    {
+        switch (fpsCapMode)
+        {
+        case FpsCapMode::Cap30:  return 30.0f;
+        case FpsCapMode::Cap60:  return 60.0f;
+        case FpsCapMode::Cap120: return 120.0f;
+        default:                 return 0.0f; // Off, VSync
+        }
+    }
+    bool consumeSwapchainRebuildRequest() override
+    {
+        if (!fpsCapSwapchainRebuildPending) return false;
+        fpsCapSwapchainRebuildPending = false;
+        return true;
+    }
     void cleanup(VkDevice device) override;
     void onKey(GLFWwindow *w, int key, int action) override;
     void onCursorPos(GLFWwindow *w, double x, double y) override;
@@ -1479,6 +1535,12 @@ private:
     // near the horizon when standing on the surface, and makes everything 2D from orbit.
     float cloudDistFadeStartM = 151902.171875f;
     float cloudDistFadeEndM   = 399347.8125f;
+    // S4 (RELEASE_v1_1_PLAN.md, session 31): terrain-relief march distance fade. Ground-level
+    // grazing rays cap at 250 km reach (tCap at obsEffH=0), so 300000 leaves ground view fully
+    // unaffected; from LEO (tCap up to 3600 km) most of the screen's grazing/horizon rays fall
+    // beyond 900000 and skip the march outright, falling back to the sea-level sphere.
+    float terrainDistFadeStartM = 300000.0f;
+    float terrainDistFadeEndM   = 900000.0f;
     // C11 ground fog layer — real per-sample volumetric march in cloud_march.comp's fogMarchCS,
     // reusing beamCloudLightBuf for beam godrays and a fixed small self-shadow march for sun
     // godrays. First-pass defaults, expect retuning once seen in-app.
@@ -1533,7 +1595,16 @@ private:
     float auroraShimmerRate = 0.001754f; // C16: curtain fold noise evolution speed (wall-clock rad/s)
     VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
-    std::string exeDir_;           // directory containing the exe; set in init()
+    std::string exeDir_;           // directory containing the exe (read-only game data); set in init()
+    std::string userDataDir_;      // per-user writable dir for settings/perf (see Paths.h); set in init()
+
+    // ── NEW-3: crash-safe mode ──────────────────────────────────────────────
+    // A sentinel file is created at the top of init() and deleted at the bottom of cleanup()
+    // (the clean-exit path). If it's already present at the NEXT launch, the previous run never
+    // reached cleanup() — crash, hang + force-kill, power loss — so this run forces the
+    // Planetarium preset and shows a one-line notice, converting "launch -> crash -> uninstall"
+    // into a recoverable outcome. See applySettings-adjacent logic in init()/cleanup().
+    float crashRecoveryNoticeTimer = 0.0f; // seconds remaining to show the notice banner; see buildCrashRecoveryNotice
 
     // ── Key bindings (editable in the settings window) ────────────────────────
     // All interactive keys go here — both event keys (pressed once) and held keys
@@ -1725,6 +1796,8 @@ private:
     bool hovFullscreen = false;
     bool hovSaveSnapshot = false;
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button
+    bool hovResetDefaults = false;
+    float resetDefaultsMsgTimer = 0.0f; // seconds remaining to show the "Restart to apply" confirmation (NEW-5)
     bool hovDebugToggle[12] = {};  // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch, scene depth pass, fog layer)
     bool hovBeamDebugRaysToggle = false; // hover state for the "Show beam pointing rays" checkbox (C12 follow-up #12)
     // Sized 11, not 9 — flare_glow_gain/flare_streak_gain (flare architecture overhaul) added two
@@ -1733,9 +1806,9 @@ private:
     bool hovPhotoMinus[11] = {};
     bool hovPhotoPlus[11] = {};
     bool draggingPhoto[11] = {};
-    bool hovCloudMinus[59] = {}; // was [55] — idx 55-58 are the C11 fog layer sliders
-    bool hovCloudPlus[59] = {};
-    bool draggingCloud[59] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[61] = {}; // was [59] — idx 59-60 are the S4 terrain fade sliders
+    bool hovCloudPlus[61] = {};
+    bool draggingCloud[61] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                   // feedback_cloud_slider_arrays memory: this one was missed once
                                   // already and the out-of-bounds write corrupted the window-chrome
                                   // state declared right below, breaking the settings window.
@@ -1755,7 +1828,40 @@ private:
     UnitSystem unitSystem = UnitSystem::Metric;          // Display tab setting; affects altitude readout
     bool showControlsOnStartup = true;                   // Display tab setting; gates viewControlsChrome.open in init()
 
+    // ── NEW-7: frame limiter ────────────────────────────────────────────────
+    FpsCapMode fpsCapMode = FpsCapMode::VSync;           // Display tab setting; see FpsCapMode comment
+    bool fpsCapSwapchainRebuildPending = false;          // set true when fpsCapMode changes; see
+                                                          // consumeSwapchainRebuildRequest() override
+    bool hovFpsCap[5] = {};                              // one per FpsCapMode button, same order as the enum
+
+    // ── UC1: graphics preset ─────────────────────────────────────────────────
+    // Default High until init() either loads a persisted value or (first run only) seeds one from
+    // VkPhysicalDeviceProperties::deviceType — see seedGraphicsPresetFromDevice() in init().
+    GraphicsPreset graphicsPreset = GraphicsPreset::High;
+    bool showAdvancedSettings = false;   // Display tab "Show advanced settings" — reveals the
+                                          // Clouds/Ocean/Terrain/Aurora tabs; off by default so a
+                                          // new user's front door is Preset + the handful of
+                                          // top-level controls, not 46 developer sliders.
+    bool hovPreset[5] = {};              // one per named preset button (Custom has no button —
+                                          // it's a read-only status, not a click target)
+    bool hovAdvancedToggle = false;
+
     // ── Private helpers ───────────────────────────────────────────────────────
+    // NEW-7: pushes fpsCapMode's present-mode requirement into VulkanContext and flags App to
+    // rebuild the swapchain with it (see consumeSwapchainRebuildRequest() above). Called both from
+    // the Settings > Display button row and once after loadSettings() if the persisted mode isn't
+    // the VulkanContext default (VSync/FIFO).
+    void applyFpsCapMode()
+    {
+        if (!ctx_) return;
+        switch (fpsCapMode)
+        {
+        case FpsCapMode::VSync: ctx_->presentModePreference = VK_PRESENT_MODE_FIFO_KHR; break;
+        case FpsCapMode::Off:   ctx_->presentModePreference = VK_PRESENT_MODE_IMMEDIATE_KHR; break;
+        default:                ctx_->presentModePreference = VK_PRESENT_MODE_MAILBOX_KHR; break; // Cap30/60/120
+        }
+        fpsCapSwapchainRebuildPending = true;
+    }
     void createBuffers(VulkanContext &ctx);
     void createDescriptors(VulkanContext &ctx);
     void createOrbitDescriptors(VulkanContext &ctx);
@@ -1804,6 +1910,14 @@ private:
     void buildOrbits();                              // populates satOrbits from satTypes + constellations
     void loadSettings();                             // reads settings.json; silently uses defaults if missing
     void saveSettings();                             // writes settings.json next to exe
+    // UC1: overwrites debugDisableMask/renderScale/advanced sliders per the named preset's table
+    // (no-op data-wise for Custom — see GraphicsPreset comment). Recreates the render-scale
+    // offscreen target since presets can change renderScale.
+    void applyGraphicsPreset(GraphicsPreset p);
+    // UC1 first-run seed: VkPhysicalDeviceProperties::deviceType -> Low (integrated/CPU/virtual)
+    // or Medium (discrete). Coarse on purpose — see RELEASE_v1_1_PLAN.md UC1, "do not build a
+    // GPU-name lookup table." Only called once, from init(), when no persisted preset exists.
+    GraphicsPreset seedGraphicsPresetFromDevice(VulkanContext &ctx) const;
     void savePerfSnapshot(float cpuDt);               // appends one profiling record to perf_profiles/profile_log.jsonl
     void updatePositions(double t, float dt = 0.0f); // called each frame: fills satInputData + eci2enu
     void toggleTimeDirection() { timeDir = -timeDir; } // shared by KB_REVERSE and the left-panel Reverse button
@@ -1874,6 +1988,7 @@ private:
     void buildViewControlsWindow(const UIInput &inp, UIRenderer &ui);
     void buildViewControlsBody(const UIInput &inp, UIRenderer &ui);
     void buildIntroOverlay(const UIInput &inp, UIRenderer &ui);
+    void buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRenderer &ui); // NEW-3
     void setLat(float newLatDeg); // moves observer to a new latitude; used by the right panel's lat display scroll-adjust
     void adjustLon(float deltaDeg); // rotates observer around Earth's polar axis; right panel's lon display scroll-adjust
                                                      // dt = simulated seconds elapsed this frame (0 when paused);
