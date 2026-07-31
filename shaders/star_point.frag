@@ -1,5 +1,5 @@
 // ── star_point.frag ───────────────────────────────────────────────────────────
-// Fragment shader for background stars.
+// Fragment shader for background stars (and, since session 30, planets — same pipeline).
 //
 // Minimum-size Gaussian (same technique as sat_point.frag):
 //   sigmaAbsPx has a 0.7 px floor so even the faintest, smallest sprite
@@ -28,6 +28,33 @@ layout(location = 3) in float fragTwinkle;  // scintillation modulator [0,~2]; 1
 
 layout(location = 0) out vec4 outColor;
 
+// ── Cloud occlusion (session 30 bug fix) ──────────────────────────────────────
+// Stars/planets previously had NO cloud awareness at all — satellites gained this in C12
+// follow-up #33 (sat_point.frag) but it was never mirrored onto this pipeline, so stars always
+// rendered through clouds regardless of opacity. Most visible at Medium-and-below presets, where
+// clouds are thinner/shorter-range, but the gap was architectural at every preset. Same textures,
+// same formula, same "own descriptor set's own binding numbers" convention sat_point.frag already
+// uses (its bindings 5/6 there; this pipeline's own set only had binding 1 before this, so 2/3
+// here — see starDescLayout in SatelliteSim.cpp).
+layout(set = 0, binding = 2) uniform sampler2D cloudTargetA; // a = tCloudOcclude (>=0 => >=90% opaque)
+layout(set = 0, binding = 3) uniform sampler2D cloudTargetB; // rgb = A_total (cloud transmittance)
+
+// Declares only the fields this shader reads, at their real SatDrawPC byte offsets — same
+// "prefix of the shared push-constant block" trick sat_point.frag/star_point.vert already use.
+layout(push_constant) uniform PC {
+    mat4  skyView;          // offset 0 — unused here, declared for layout consistency
+    float fovYRad;          // offset 64
+    float aspect;           // offset 68
+    float gmst;              // offset 72
+    float waveTime;          // offset 76
+    vec4  sunDirENU;         // offset 80
+    vec4  moonDirENU;        // offset 96
+    vec4  obsECEFDir;        // offset 112
+    uint  debugDisableMask;  // offset 128 — unused here
+    float pad0;              // offset 132
+    vec2  screenSizePx;      // offset 136 — the only field this shader actually needs
+} pc;
+
 void main() {
 
     vec2  c = gl_PointCoord - 0.5;
@@ -55,6 +82,22 @@ void main() {
     float saturation = clamp(sqrt(fragIntensity) * 1.5, 0.0, 1.0);
     vec3  starColor  = mix(vec3(1.0), fragColor, saturation);
 
-    float brightness = gaussian * coreScale * fragTwinkle;
+    // ── Cloud occlusion ─────────────────────────────────────────────────────
+    // gl_FragCoord.xy must divide by THIS draw's own target size, never an assumed constant —
+    // stars/planets always draw at native resolution regardless of renderScale, but the cloud
+    // targets are always sized off the true swap extent, matching sat_point.frag's identical
+    // formula.
+    vec2 cloudUV = gl_FragCoord.xy / pc.screenSizePx;
+    vec4 cloudA  = texture(cloudTargetA, cloudUV);
+    vec4 cloudB  = texture(cloudTargetB, cloudUV);
+    float tCloudOcclude = cloudA.a;
+    float cloudBlock    = dot(cloudB.rgb, vec3(1.0 / 3.0));
+    // Same two-tier response as sat_point.frag: hard gate for genuinely opaque cloud, smooth
+    // power-curve dim otherwise.
+    float cloudHardOcclude = (tCloudOcclude >= 0.0) ? 0.0 : 1.0;
+    const float kStarCloudSuppressPower = 2.0;
+    float cloudVis = cloudHardOcclude * pow(clamp(cloudBlock, 0.0, 1.0), kStarCloudSuppressPower);
+
+    float brightness = gaussian * coreScale * fragTwinkle * cloudVis;
     outColor = vec4(starColor * brightness, brightness);
 }

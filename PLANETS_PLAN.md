@@ -41,6 +41,30 @@ desaturation curve (bright = full tint, faint = fades to white) already applies 
 planets for free, since it was written generically against `fragColor`/`fragIntensity`, not
 star-specific.
 
+### Bug fix (same day, later): stars/planets had zero cloud occlusion
+
+Reported after initial testing: on Medium graphics preset and below, clouds were transparent
+enough that stars rendered straight through them. Investigation found this was architectural, not
+preset-specific — satellites gained cloud occlusion in "C12 follow-up #33" (`sat_point.frag`
+samples `cloudTargetA`/`B`, gates brightness by `cloudVis`), but that was never mirrored onto the
+star/planet pipeline (`starPipeline`/`star_point.frag`), which had no cloud awareness at all, at
+any preset. Fixed by giving `star_point.frag` the identical sampling/gating logic, which required
+extending `starDescLayout` (shared by `starDescSet` and `planetDescSet`) with two new
+`COMBINED_IMAGE_SAMPLER` bindings pointing at the same `cloudMarchSampler`/`cloudMarchTargetA/BView`
+satellites already use, adding `VK_SHADER_STAGE_FRAGMENT_BIT` to `starPipeLayout`'s push-constant
+range so the shader can read `screenSizePx`, and patching both descriptor sets in `onResize()`
+(mirroring the existing `descSet` patch there) since the cloud targets are swapchain-size-dependent
+and get destroyed/recreated on resize.
+
+It was more visible at Medium-and-below because those presets use a shorter
+`cloudDistFadeStartM/EndM` band (80-200 km vs High's ~152-399 km) — clouds are still shown visually
+beyond that distance via a 2D-paste fallback, but `cloud_march.comp` never marks them as
+occlusion-worthy that far out (`cloudAltFade` fades `cloudTOut` toward fully-transparent regardless
+of true density), so a larger fraction of the visible sky fell into "looks like cloud, occludes
+nothing" at Medium than at High. **This distance-fade gap itself is a separate, pre-existing, and
+symmetric limitation — it affects satellites too, not just stars, and this fix does not address it.**
+Worth a look if occlusion still seems to fail specifically for far/horizon cloud after this fix.
+
 ### Known simplifications (accepted, not bugs)
 
 - **Saturn's ring brightness is omitted.** Its magnitude formula uses only the disk's phase-angle
