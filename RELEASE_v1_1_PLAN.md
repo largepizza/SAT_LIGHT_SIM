@@ -25,6 +25,13 @@ alongside the Yale Bright Star Catalogue).
 screenshots, S1 reflector targets) — see Sequencing below. Phase 4 is the cut line if time runs
 short, so it's fine to pick off items individually rather than all-or-nothing.
 
+**Same-day follow-up bug fix:** stars had no cloud occlusion at any preset (an architectural gap,
+not a preset-tuning issue) — most visible at Medium-and-below because those presets' shorter cloud
+distance-fade band leaves more of the visible sky in a "looks like cloud, occludes nothing" state.
+Fixed by mirroring satellites' existing C12-follow-up-#33 cloud-occlusion sampling onto
+`star_point.frag`. Relevant to NEW-6's QA matrix — re-check star/cloud interaction across presets.
+Full writeup in `PLANETS_PLAN.md` (shared pipeline with planets).
+
 ---
 
 ## 0. Headline framing

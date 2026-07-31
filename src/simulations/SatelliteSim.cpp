@@ -432,6 +432,22 @@ void SatelliteSim::onResize(VulkanContext &ctx)
                          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &satCloudBInfo, nullptr, nullptr};
     vkUpdateDescriptorSets(ctx.device, 2, satCloudWrites, 0, nullptr);
 
+    // Session 30 bug fix: starDescSet/planetDescSet (bindings 2/3 of starDescLayout, shared by
+    // both) also point at these same views for star_point.frag's cloud occlusion — same refresh
+    // as descSet just above, or they'd keep pointing at the image views just destroyed.
+    VkDescriptorImageInfo starCloudAInfo{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo starCloudBInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet starCloudWrites[4] = {};
+    starCloudWrites[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, starDescSet, 2, 0, 1,
+                          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &starCloudAInfo, nullptr, nullptr};
+    starCloudWrites[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, starDescSet, 3, 0, 1,
+                          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &starCloudBInfo, nullptr, nullptr};
+    starCloudWrites[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, planetDescSet, 2, 0, 1,
+                          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &starCloudAInfo, nullptr, nullptr};
+    starCloudWrites[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, planetDescSet, 3, 0, 1,
+                          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &starCloudBInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 4, starCloudWrites, 0, nullptr);
+
     // ── Shared scene depth — same swapchain-size dependency, same destroy/recreate/patch dance.
     // Two sets reference it: its own (as a storage image, for writing) and skyDescSet binding 20
     // (as a sampled image, for reading). Miss either and the next frame samples a destroyed view.
@@ -1894,7 +1910,9 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, starPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 starPipeLayout, 0, 1, &starDescSet, 0, nullptr);
-        vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT,
+        // FRAGMENT added (session 30 bug fix): star_point.frag now reads screenSizePx for cloud
+        // occlusion — must match starPipeLayout's push constant range exactly.
+        vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(pc), &pc);
         vkCmdDraw(cmd, starCount, 1, 0, 0);
     }
@@ -1912,7 +1930,7 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, starPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 starPipeLayout, 0, 1, &planetDescSet, 0, nullptr);
-        vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT,
+        vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(pc), &pc);
         vkCmdDraw(cmd, kPlanetCount, 1, 0, 0);
     }
@@ -5542,22 +5560,35 @@ void SatelliteSim::initStars(VulkanContext &ctx)
                      starBuf, starMem);
     vkMapMemory(ctx.device, starMem, 0, bufSize, 0, &starMapped);
 
-    // Descriptor layout: only binding=1 (vertex shader reads GpuSatVisible).
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 1;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    // Descriptor layout: binding=1 (vertex shader reads GpuSatVisible) + bindings=2/3 (cloud
+    // occlusion, session 30 bug fix — see star_point.frag's own comment). cloudMarchSampler/
+    // cloudMarchTargetAView/BView already exist by this point in init() (createCloudMarchResources
+    // runs well before initStars — see init()'s call order), so it's safe to bind them here.
+    VkDescriptorSetLayoutBinding bindings[3] = {};
+    bindings[0].binding = 1;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    bindings[1].binding = 2;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[2].binding = 3;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 1;
-    li.pBindings = &binding;
+    li.bindingCount = 3;
+    li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &starDescLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    VkDescriptorPoolSize ps[2] = {
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.poolSizeCount = 1;
-    pi.pPoolSizes = &ps;
+    pi.poolSizeCount = 2;
+    pi.pPoolSizes = ps;
     pi.maxSets = 1;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &starDescPool);
 
@@ -5568,13 +5599,16 @@ void SatelliteSim::initStars(VulkanContext &ctx)
     vkAllocateDescriptorSets(ctx.device, &ai, &starDescSet);
 
     VkDescriptorBufferInfo bufInfo{starBuf, 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet wr{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    wr.dstSet = starDescSet;
-    wr.dstBinding = 1;
-    wr.descriptorCount = 1;
-    wr.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    wr.pBufferInfo = &bufInfo;
-    vkUpdateDescriptorSets(ctx.device, 1, &wr, 0, nullptr);
+    VkDescriptorImageInfo cloudAInfo{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo cloudBInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet wr[3] = {};
+    wr[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+             starDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufInfo, nullptr};
+    wr[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+             starDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudAInfo, nullptr, nullptr};
+    wr[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+             starDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudBInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 3, wr, 0, nullptr);
 
     createStarPipeline(ctx);
 
@@ -5594,13 +5628,16 @@ void SatelliteSim::initPlanets(VulkanContext &ctx)
                      planetBuf, planetMem);
     vkMapMemory(ctx.device, planetMem, 0, bufSize, 0, &planetMapped);
 
-    // Reuses starDescLayout (binding=1, STORAGE_BUFFER, vertex-stage) unchanged — same shape,
-    // different buffer. starDescPool is sized maxSets=1 (already holds starDescSet), so this
-    // gets its own tiny pool rather than resizing that one.
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    // Reuses starDescLayout (binding=1 STORAGE_BUFFER vertex-stage + bindings=2/3 cloud occlusion,
+    // session 30 bug fix) unchanged — same shape, different buffer. starDescPool is sized
+    // maxSets=1 (already holds starDescSet), so this gets its own tiny pool rather than resizing
+    // that one.
+    VkDescriptorPoolSize ps[2] = {
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.poolSizeCount = 1;
-    pi.pPoolSizes = &ps;
+    pi.poolSizeCount = 2;
+    pi.pPoolSizes = ps;
     pi.maxSets = 1;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &planetDescPool);
 
@@ -5611,13 +5648,16 @@ void SatelliteSim::initPlanets(VulkanContext &ctx)
     vkAllocateDescriptorSets(ctx.device, &ai, &planetDescSet);
 
     VkDescriptorBufferInfo bufInfo{planetBuf, 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet wr{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    wr.dstSet = planetDescSet;
-    wr.dstBinding = 1;
-    wr.descriptorCount = 1;
-    wr.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    wr.pBufferInfo = &bufInfo;
-    vkUpdateDescriptorSets(ctx.device, 1, &wr, 0, nullptr);
+    VkDescriptorImageInfo cloudAInfo{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo cloudBInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet wr[3] = {};
+    wr[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+             planetDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufInfo, nullptr};
+    wr[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+             planetDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudAInfo, nullptr, nullptr};
+    wr[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+             planetDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudBInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 3, wr, 0, nullptr);
 
     // Do an initial upload so planets are visible from frame 1 (mirrors initStars() above).
     // Requires updatePositions() to have already run at least once — see init()'s call order.
@@ -5681,7 +5721,9 @@ void SatelliteSim::createStarPipeline(VulkanContext &ctx)
 
     if (starPipeLayout == VK_NULL_HANDLE)
     {
-        VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(SatDrawPC)};
+        // FRAGMENT added (session 30 bug fix): star_point.frag now reads screenSizePx for cloud
+        // occlusion, same reason sat_point.frag's drawPipeLayout adds it (C12 follow-up #33).
+        VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SatDrawPC)};
         VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         li.setLayoutCount = 1;
         li.pSetLayouts = &starDescLayout;
