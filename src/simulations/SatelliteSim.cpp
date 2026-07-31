@@ -100,6 +100,24 @@ static constexpr KeplerElements kEarthElements{
 const char *const kPlanetNames[kPlanetCount] = {
     "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus"};
 
+// Approximate true-color tint per planet (session 30 follow-up) — same role B-V color plays for
+// stars, but planets don't have a spectral index to derive one from, so these are hand-picked to
+// the real, commonly-cited visual colors (matches planetarium-software convention) rather than
+// computed. Normalized so the brightest channel is ~1.0 (matches how star colors are scaled),
+// not physically calibrated albedo/reflectance — this is a tint on top of the magnitude-driven
+// intensity, not a separate brightness source. Mars is the one that actually reads as colored to
+// the naked eye at this scale; the others are subtle by design (real gas-giant cloud tops are
+// pale, not vividly colored) — a strong gray floor stays close to the previous flat near-white
+// on Mercury/Jupiter/Saturn, with Venus/Uranus getting a faint warm/cool cast.
+static constexpr glm::vec3 kPlanetColor[kPlanetCount] = {
+    {0.92f, 0.87f, 0.80f}, // Mercury — grayish tan, faintly warm (airless, dusty regolith)
+    {1.00f, 0.94f, 0.78f}, // Venus — pale cream (sulfuric acid cloud tops)
+    {1.00f, 0.2f, 0.2f},   // Mars — the one that visibly reads as colored: rust/salmon
+    {0.96f, 0.89f, 0.76f}, // Jupiter — pale tan (ammonia cloud bands, subtle at this scale)
+    {0.95f, 0.89f, 0.68f}, // Saturn — pale gold
+    {0.72f, 0.90f, 0.93f}, // Uranus — pale cyan (methane absorption)
+};
+
 static constexpr KeplerElements kPlanetElements[kPlanetCount] = {
     // Mercury
     {0.38709927, 0.00000037, 0.20563593, 0.00001906, 7.00497902, -0.00594749,
@@ -6039,7 +6057,7 @@ void SatelliteSim::updatePlanets()
 
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;
-        dst[i].baseColor = glm::vec3(1.0f, 0.97f, 0.90f); // near-white; planets don't carry a B-V color index like stars
+        dst[i].baseColor = kPlanetColor[i]; // hand-picked approximate true color — see its own comment
         dst[i].angularSize = angSize;
     }
 }

@@ -584,6 +584,10 @@ struct GpuGlowBuf {
 
 ## Subsystem: Planets
 
+See `PLANETS_PLAN.md` for the session log and forward-looking next-steps list (in-app QA still
+outstanding, known simplifications, ring rendering, attribution follow-up) — this section is the
+architecture/design writeup only.
+
 Session 30. Mercury, Venus, Mars, Jupiter, Saturn, Uranus (`enum PlanetId`, `kPlanetCount = 6` —
 Neptune excluded, never naked-eye at ~mag 7.8) with real Keplerian-approximation orbital positions,
 rendered as clickable points of light. Deliberately **not** built on the satellite orbital-compute
@@ -624,7 +628,13 @@ runs through the exact same suppression chain stars already have (day/moon/pollu
 extinction), hand-duplicated into `updatePlanets()` per this codebase's established per-consumer-
 duplication convention for that formula (see "Subsystem: Light Pollution Dome" above). Point-sprite
 size reuses `initStars()`'s `0.25 + 2.5*sqrt(rawIntensity)` curve so a planet reads at the same
-visual weight as an equally-bright star.
+visual weight as an equally-bright star. Color (`kPlanetColor[kPlanetCount]`, same-day follow-up):
+hand-picked approximate true colors, not computed — planets have no B-V spectral index to derive
+one from the way stars do. Mars is the one that actually reads as visibly colored at naked-eye
+scale (rust/salmon); the others stay close to near-white/pale by design, matching their real subtle
+cloud-top/regolith colors. No shader change needed — `star_point.frag`'s existing intensity-driven
+desaturation (bright = full tint, faint = fades toward white) was already written generically
+against `fragColor`/`fragIntensity` and applies correctly to planets for free.
 
 **Rendering**: a second tiny host-mapped `planetBuf` (`GpuSatVisible`-shaped, 6 entries) + a second
 descriptor set (`planetDescSet`, reusing `starDescLayout`/`starDescPool`'s shape via its own tiny

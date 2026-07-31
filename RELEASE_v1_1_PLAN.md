@@ -2,9 +2,28 @@
 
 Scope: turn a well-tuned personal simulator into something a stranger can download, launch on
 unknown hardware, and enjoy without reading a manual. Read alongside `TERRAIN_PLAN.md` (rendering
-work) and `CLAUDE.md` (architecture).
+work), `PLANETS_PLAN.md` (planets feature, outside this plan's scope but touches UC2/NEW-6), and
+`CLAUDE.md` (architecture).
 
 Status legend: `[ ]` not started · `[~]` partially exists · `[x]` done
+
+---
+
+## Session log
+
+**Session 30 (2026-07-30):** Phases 1 and 2 confirmed already done (code was ahead of this doc's
+checkboxes — they've been backfilled below). Phase 3 (S2 stars/pollution, S3 flare ceiling)
+completed and documented inline below; `lightPollutionGain` re-tuned in-app by you afterward and
+confirmed good. Also shipped, **outside this plan's original scope**: real Keplerian-ephemeris
+planets (Mercury–Uranus), clickable/selectable, plus a Moon direction-calc fix found along the way
+— full writeup in the new `PLANETS_PLAN.md`, architecture in `CLAUDE.md`'s "Subsystem: Planets".
+Not itself a release gate, but worth remembering it's there when scoping QA (NEW-6) and
+attributions (UC2 — the JPL/Standish elements and Schlyter magnitude formulas should get a citation
+alongside the Yale Bright Star Catalogue).
+
+**Next session: Phase 4** (UC3 intro cinematic + UC1 benchmark hook, UC4 dual-input docs, UC6
+screenshots, S1 reflector targets) — see Sequencing below. Phase 4 is the cut line if time runs
+short, so it's fine to pick off items individually rather than all-or-nothing.
 
 ---
 
@@ -28,7 +47,7 @@ Three items below carry most of the release risk. Everything else is polish:
 
 ## User Comfort
 
-### UC1 — Graphics presets + first-run auto-detection `[ ]` **P0**
+### UC1 — Graphics presets + first-run auto-detection `[x]` **P0** (done, predates session 30)
 
 **The good news: most of the machinery already exists.** `debugDisableMask` (session 29 profiling
 knockouts) already disables terrain march, atmosphere loop, `optDepth`, ocean reflection, airglow,
@@ -401,7 +420,7 @@ striking at night rather than merely wider.
 
 | Item | Status | v1.1 call |
 |---|---|---|
-| **Terrain march altitude/distance fade** | Open, and listed in `TERRAIN_PLAN.md`'s own "NEXT SESSION" as a *measured* dominant cost. `tCap` grows reach with altitude faster than the step budget grows, so `kN` pins to its 164 ceiling on essentially every pixel from LEO. | **IN — P0.** This is the single biggest low-end-hardware win available and it is already scoped. Mirrors the cloud `cloudDistFadeStartM/EndM` change; degrades to the existing sea-level sphere, so it degrades to "smooth textured Earth," not to nothing. Also exposes `kTerrainStepsMin/Max` as preset-driven values. |
+| **Terrain march altitude/distance fade** | **`[x]` Done, predates session 30** (`TERRAIN_PLAN.md` session 31 log — `tCap`/step-budget fade implemented). Originally: open, and listed in `TERRAIN_PLAN.md`'s own "NEXT SESSION" as a *measured* dominant cost. | **IN — P0.** This was the single biggest low-end-hardware win available. Mirrors the cloud `cloudDistFadeStartM/EndM` change; degrades to the existing sea-level sphere, so it degrades to "smooth textured Earth," not to nothing. |
 | **Step 7 / C10 — city light upwelling into sky glow** | Partially superseded. The session-26 pollution dome *dims what's behind the glow*; Step 7 spec'd *adding glow to the sky itself*. Cities currently never brighten the sky. | **IN — P1.** It is the other half of S2 and directly serves the S2 acceptance test. **Done** — found already implemented in `sat_sky.frag` ("Step 7 / C10" comment block) by the time this phase started; not touched this session beyond the S2(c) isotropic-dome fix above, which also improves it. |
 | **C9 — composite & performance** | Effectively delivered by sessions 23 (half-res cloud compute) and 29 (profiling + fixes). | **Close as done.** Update `TERRAIN_PLAN.md`. |
 | **C14 — Anvil height-profile spread** | Not started; deferred 4+ times. | **CUT.** Cosmetic cloud shaping with no user-visible gap. Your instinct that "there is probably a good reason" is right here. |
@@ -416,7 +435,7 @@ striking at night rather than merely wider.
 
 Not in your list; each is either a real hazard found in the code or a standard shipping requirement.
 
-### NEW-1 — Version + commit stamp `[ ]` **P0** *(you asked for this)*
+### NEW-1 — Version + commit stamp `[x]` **P0** *(you asked for this)* (done, predates session 30 — `src/version.h.in`)
 
 `VERSION` currently feeds only `EXE_BASENAME` in CMake; **no version string exists anywhere in the
 C++**. Add:
@@ -431,7 +450,7 @@ C++**. Add:
 - Bump `VERSION` → `1.1.0`. Note `dist/` already contains a `SAT_LIGHT_SIM_v1.1.0_Light_Beams_*.zip`
   built while `VERSION` still said `1.0.0` — clean that up so the naming is trustworthy.
 
-### NEW-2 — Graceful failure + log file `[ ]` **P0**
+### NEW-2 — Graceful failure + log file `[x]` **P0** (done, predates session 30)
 
 Right now, on a machine with no Vulkan driver or a driver missing a required feature, the app
 almost certainly hard-crashes or silently exits. For a public release this is the highest-value
@@ -443,14 +462,14 @@ robustness item, because it converts "the game doesn't work" into an actionable 
   preset, resolution, and any Vulkan validation or init errors.
 - Check `maxPushConstantsSize ≥ 144` at startup (see UC5) and fail loudly rather than mysteriously.
 
-### NEW-3 — Crash-safe mode `[ ]` **P1**
+### NEW-3 — Crash-safe mode `[x]` **P1** (done, predates session 30)
 
 Write a sentinel file at startup, delete it on clean exit. If it is present at launch, come up in
 **Planetarium** preset with a one-line notice. Roughly 30 lines of code, and it converts the worst
 possible new-user outcome (launch → hang/crash → uninstall) into a recoverable one. Pairs directly
 with UC1.
 
-### NEW-4 — User-data paths `[ ]` **P0**
+### NEW-4 — User-data paths `[x]` **P0** (done, predates session 30 — `src/Paths.cpp`)
 
 `settings.json`, `perf_profiles/`, and (as proposed) `screenshots/` all write to `exeDir_`. **If the
 game is installed anywhere read-only — Program Files, or an itch.io app-managed directory — every
@@ -460,7 +479,7 @@ one of these silently fails**, and settings never persist. Move writes to
 `portable.txt` sits next to the exe, use `exeDir_` as today. Read-only data
 (`constellations.json`, `assets/`, `shaders/`) stays next to the exe — only writes move.
 
-### NEW-5 — Settings schema versioning + reset `[ ]` **P0**
+### NEW-5 — Settings schema versioning + reset `[x]` **P0** (done, predates session 30 — `kSettingsSchemaVersion`)
 
 A v1.0 `settings.json` will be read by v1.1, which now has presets, new keys, and re-tuned defaults.
 Silent partial loads produce configs no user could have chosen and no one can diagnose. Add a
@@ -477,7 +496,7 @@ major city, at the aurora oval · time-warp min and max · window resize and ful
 approximations (`renderScale < 1` disables depth-based satellite occlusion; cloud/terrain distance
 fades) — this is where those get characterized rather than discovered by a stranger.
 
-### NEW-7 — Frame pacing / FPS cap `[ ]` **P1**
+### NEW-7 — Frame pacing / FPS cap `[x]` **P1** (done, predates session 30)
 
 `VulkanContext.cpp:366` prefers `MAILBOX` over `FIFO`. On a laptop that means the GPU runs flat out
 forever: fans, heat, thermal throttling, and battery drain — a genuine comfort issue for exactly the
@@ -511,16 +530,22 @@ Each phase ends in a buildable, testable state. Phases 1 and 2 are the release g
 
 | Phase | Contents | Why here |
 |---|---|---|
-| **1 — Foundation** | NEW-1 version stamp · NEW-4 user-data paths · NEW-5 settings schema · NEW-2 graceful failure + log | Everything downstream writes files and reports versions. Doing these first means every later test run produces diagnosable output. |
-| **2 — Performance & presets** | S4 terrain fade (P0) · UC1 presets + auto-detect · NEW-7 FPS cap · NEW-3 safe mode | The release-blocking accessibility work. Terrain fade goes **before** presets so the presets are calibrated against the fixed cost, not the current one. |
-| **3 — Visual truth** | S2 stars + pollution (a & c) · S3 flare ceiling · Step 7 city sky glow | The "this looks real now" phase. S2(c) and Step 7 are both light-pollution work and share testing; do them together. |
-| **4 — Experience** | UC3 intro cinematic (+ UC1 benchmark hook) · UC4 dual-input docs · UC6 screenshots · S1 reflector targets | User-facing polish. UC3 depends on UC1's preset system existing. **This is the cut line if time runs short** — ship with the current text intro rather than delaying. |
-| **5 — Release** | UC2 attributions · NEW-8 comfort · NEW-6 QA matrix · NEW-9 docs & packaging · tag v1.1.0 | UC2 is last only because it is blocked on your provenance answers — **start gathering those now**, it is P0 and it is the one item that cannot be rushed at the end. |
+| **1 — Foundation** `[x] DONE` | NEW-1 version stamp · NEW-4 user-data paths · NEW-5 settings schema · NEW-2 graceful failure + log | Everything downstream writes files and reports versions. Doing these first means every later test run produces diagnosable output. |
+| **2 — Performance & presets** `[x] DONE` | S4 terrain fade (P0) · UC1 presets + auto-detect · NEW-7 FPS cap · NEW-3 safe mode | The release-blocking accessibility work. Terrain fade goes **before** presets so the presets are calibrated against the fixed cost, not the current one. |
+| **3 — Visual truth** `[x] DONE (session 30)` | S2 stars + pollution (a & c) · S3 flare ceiling · Step 7 city sky glow | The "this looks real now" phase. S2(c) and Step 7 are both light-pollution work and share testing; do them together. |
+| **4 — Experience** `[ ] NEXT` | UC3 intro cinematic (+ UC1 benchmark hook) · UC4 dual-input docs · UC6 screenshots · S1 reflector targets | User-facing polish. UC3 depends on UC1's preset system existing. **This is the cut line if time runs short** — ship with the current text intro rather than delaying. |
+| **5 — Release** `[ ]` | UC2 attributions · NEW-8 comfort · NEW-6 QA matrix · NEW-9 docs & packaging · tag v1.1.0 | UC2 is last only because it is blocked on your provenance answers — **start gathering those now**, it is P0 and it is the one item that cannot be rushed at the end. |
+
+*(Bonus, not in this sequencing: real-ephemeris planets — see Session log above and `PLANETS_PLAN.md`.)*
 
 ### Recommended cut line
 
 Ship-blocking: **Phase 1, Phase 2, S3, UC2, NEW-6, NEW-9.**
 Everything else improves the release but does not gate it.
+
+**As of session 30:** Phase 1, Phase 2, and S3 are all done — the only remaining ship-blockers are
+**UC2 (blocked on your provenance answers), NEW-6 (QA matrix), and NEW-9 (docs & packaging).**
+Phase 4 is genuinely cuttable if time runs short.
 
 ---
 
