@@ -117,6 +117,19 @@ layout(std430, set = 0, binding = 17) readonly buffer ReflectBeamsBuf {
     ReflectBeam  beams[BEAM_MAX_ACTIVE];
 };
 
+// Ground-beam compaction (perf follow-up): CPU-built every frame from a fresh readback of
+// ReflectBeamsBuf above, filtered to just the entries within pc.beamMaxRangeM of the observer —
+// the exact test the ground-spot loop below used to redo, unconditionally, against the FULL raw
+// list (up to BEAM_MAX_ACTIVE=2048 entries) for every ground-hit pixel. Consuming this instead
+// bounds that loop's trip count to however many beams are actually close enough to matter, capped
+// at GROUND_BEAM_MAX. See the CPU aggregation next to lastActiveBeamCount/beamProximityGlow in
+// SatelliteSim.cpp, and GpuGroundBeams in SatelliteSim.h.
+layout(std430, set = 0, binding = 21) readonly buffer GroundBeamsBuf {
+    uint         groundBeamCount;
+    uint         groundBeamPad0, groundBeamPad1, groundBeamPad2;
+    ReflectBeam  groundBeams[GROUND_BEAM_MAX];
+};
+
 // (binding 18 was cloudShadowTex, cloud_shadow.comp's 128x128 grid. That whole pass is gone —
 //  cloud_march.comp now writes a per-pixel shadow into cloudB.a. Bindings 19/20 were compacted
 //  down into 18/19 rather than leaving a hole, since the C++ side fills its binding array
@@ -2046,16 +2059,16 @@ void main() {
             // Site-referenced (C12 follow-up #5): beams are now written unconditionally by any
             // satellite above the OBSERVER's own orbital horizon, not gated by the ground
             // target's local horizon — so pc.beamMaxRangeM (settings-tunable, follow-up #6) is
-            // the render-time "is the observer close enough to this site" cutoff that replaces
-            // the old fragile gate. A smooth fixed-distance check (not a horizon calculation),
-            // same value as cloud_march.comp's copy.
-            int activeBeamCount = int(min(beamCount, BEAM_MAX_ACTIVE));
+            // the render-time "is the observer close enough to this site" cutoff. Perf follow-up:
+            // that cutoff is now applied ONCE, CPU-side, when GroundBeamsBuf is built each frame
+            // (see its declaration above) rather than redone here per ground-hit pixel against
+            // the full raw list — this loop's trip count is the real cost, not the comparison.
+            int activeBeamCount = int(min(groundBeamCount, GROUND_BEAM_MAX));
             for (int bi = 0; bi < activeBeamCount; ++bi) {
-                float intensity = beams[bi].intensity;
+                float intensity = groundBeams[bi].intensity;
                 if (intensity <= 0.0) continue;
-                if (length(beams[bi].targetENU) > pc.beamMaxRangeM) continue;
 
-                float footprintR = max(beams[bi].footprintRadM, 1.0);
+                float footprintR = max(groundBeams[bi].footprintRadM, 1.0);
                 // Tight bright "hotspot" core on top of the soft halo (C12 follow-up #18) — reads
                 // as a clear landing point where the beam meets the ground, the anchor the sky
                 // glow march (cloud_march.comp) now visually starts from (that march begins
@@ -2063,7 +2076,7 @@ void main() {
                 // C12 follow-up #34: was footprintR*0.15 (an arbitrary ratio) — now the mirror's
                 // own true physical size, with footprintR (the halo) representing the full
                 // sun-disk-broadened extent around it.
-                float coreR = max(beams[bi].mirrorRadiusM, 1.0);
+                float coreR = max(groundBeams[bi].mirrorRadiusM, 1.0);
 
                 // C12 follow-up #43: reverted #35's elliptical footprint back to an isotropic
                 // circle, per user report — tracing actual beam impact points in-app showed the
@@ -2075,12 +2088,12 @@ void main() {
                 // elevFade kept — independently reasonable (matches the sky tube's own 5° cutoff,
                 // cloud_march.comp) even without the ellipse's infinite-stretch concern that
                 // originally motivated it.
-                vec3  beamDirUp = normalize(beams[bi].satENU - beams[bi].targetENU);
+                vec3  beamDirUp = normalize(groundBeams[bi].satENU - groundBeams[bi].targetENU);
                 float sinElev   = beamDirUp.z;
                 float elevFade  = smoothstep(0.0, 0.08716, sinElev); // sin(5 deg) = 0.08716
                 if (elevFade <= 0.0) continue;
 
-                float groundDist = length(hitPt.xy - beams[bi].targetENU.xy);
+                float groundDist = length(hitPt.xy - groundBeams[bi].targetENU.xy);
                 if (groundDist > footprintR * 4.0) continue;
 
                 float footprint = exp(-0.5 * groundDist * groundDist / (footprintR * footprintR));
@@ -2095,7 +2108,7 @@ void main() {
                 // beam_cloud_block.comp/sat_orbit.comp — also what makes the beam visibly cut off
                 // in the sky (cloud_march.comp's cloudFade) consistent with its ground spot going
                 // dark, instead of one updating and not the other.
-                float shadowAtten = 1.0 - beams[bi].blockOpacity;
+                float shadowAtten = 1.0 - groundBeams[bi].blockOpacity;
 
                 surfColor += vec3(kBeamGroundScale * intensity * (footprint + core * 2.0) * skyGlowNorm)
                            * shadowAtten * elevFade;

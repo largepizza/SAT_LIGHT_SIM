@@ -664,6 +664,27 @@ struct GpuReflectBeams
 };
 static_assert(sizeof(GpuReflectBeams) == 16 + kMaxActiveBeams * 64, "GpuReflectBeams layout mismatch");
 
+// Ground-beam compaction (perf follow-up, RELEASE_v1_1_PLAN.md): CPU-built every frame from
+// ReflectBeamsBuf's readback (the same loop that already computes lastActiveBeamCount/
+// beamProximityGlow/GpuBeamCloudLights below), filtered to entries within beamMaxRangeM of the
+// observer — the exact cull sat_sky.frag's ground-spot loop used to redo per-pixel, against the
+// FULL raw (up to kMaxActiveBeams=2048) buffer, for every ground-hit pixel on screen. Consumed by
+// sat_sky.frag instead of ReflectBeamsBuf directly, so that loop's trip count is bounded by how
+// many beams are actually within range of the CAMERA, not by how many are active anywhere across
+// the whole visible constellation (measured: disabling the "Reflect-Orbital beams" debug knockout
+// bit nearly doubled frame rate — this is the dominant cost that knockout was hiding). Entries are
+// raw, unaggregated ReflectBeam records (unlike GpuBeamCloudLights, which sums by target) because
+// the ground-spot term needs each satellite's own satENU for its elevation fade.
+// Struct must match GroundBeamsBuf in sat_sky.frag exactly.
+static constexpr int kMaxGroundBeams = 256;
+struct GpuGroundBeams
+{
+    uint32_t count;
+    uint32_t pad0, pad1, pad2;
+    GpuReflectBeam entries[kMaxGroundBeams];
+};
+static_assert(sizeof(GpuGroundBeams) == 16 + kMaxGroundBeams * 64, "GpuGroundBeams layout mismatch");
+
 // ── Per-layer cloud shell descriptor (std140: 32 bytes, 2 × vec4) ─────────────
 // Each layer is an infinitely thin sphere-shell sample of earthCloudsTex.
 // Layers 0+ are evaluated in order; disabled layers (enabled=0) are skipped.
@@ -1041,6 +1062,11 @@ private:
     VkBuffer beamCloudLightBuf = VK_NULL_HANDLE;
     VkDeviceMemory beamCloudLightMem = VK_NULL_HANDLE;
     void *beamCloudLightMapped = nullptr;
+    // Ground-beam compaction (perf follow-up) — host-visible+coherent, written by the CPU each
+    // frame alongside beamCloudLightBuf (same readback loop, same reasoning). See GpuGroundBeams.
+    VkBuffer groundBeamsBuf = VK_NULL_HANDLE;
+    VkDeviceMemory groundBeamsMem = VK_NULL_HANDLE;
+    void *groundBeamsMapped = nullptr;
     // Diagnostic readback (C12): how many of the 16 sectors currently hold an active beam, and
     // the straight-line distance (meters) from the observer to the nearest one's ground target —
     // one-frame-stale, same idiom as peakMagnitude. -1 = no active beams this/last frame.

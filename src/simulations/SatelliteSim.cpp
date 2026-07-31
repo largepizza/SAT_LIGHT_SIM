@@ -166,9 +166,9 @@ void SatelliteSim::init(VulkanContext &ctx)
 
     // Default window chrome sizes — must be set before the first updateWindowChrome()
     // call (buildUI); loadSettings() below may override x/y/w/h with persisted values.
-    // settingsChrome defaults above its own 660x420 min (buildSettingsWindow) so it
+    // settingsChrome defaults above its own 680x420 min (buildSettingsWindow) so it
     // never opens already-clamped-smaller-than-its-own-content on a fresh install.
-    settingsChrome.w = 700.0f;
+    settingsChrome.w = 720.0f;
     settingsChrome.h = 480.0f;
     viewControlsChrome.w = 300.0f;
     viewControlsChrome.h = 340.0f;
@@ -652,6 +652,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // (silent, harmless — its ground spot and sky-glow suppression dome contribution are
         // unaffected, since those read reflectBeamsBuf directly and don't go through this list).
         GpuBeamCloudLights lights{};
+        // Perf follow-up: compacted raw-entry list for sat_sky.frag's ground-spot term, filtered
+        // to the same beamMaxRangeM cutoff computed per-entry below — see GpuGroundBeams comment.
+        GpuGroundBeams groundBeams{};
         for (int s = 0; s < count; ++s)
         {
             // C12 follow-up #41: point-to-segment distance to the beam's actual 3D LINE (target
@@ -674,6 +677,17 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
             float intensity = rb->entries[s].intensity;
             float targetDistM = glm::length(tE);
+
+            // Ground-spot compaction: same hard range cutoff sat_sky.frag's loop applies, done
+            // ONCE here per beam instead of unconditionally per ground-hit pixel. No soft fade
+            // here (unlike the cloud-light aggregation below) — that fade exists to stop cloud
+            // ILLUMINATION from popping as a target crosses the boundary; the ground spot's own
+            // per-pixel falloff (footprint/core gaussians, elevFade) already handles its visuals,
+            // this is purely a "could this plausibly be visible at all" cull.
+            if (intensity > 0.0f && targetDistM <= beamMaxRangeM &&
+                groundBeams.count < (uint32_t)kMaxGroundBeams)
+                groundBeams.entries[groundBeams.count++] = rb->entries[s];
+
             if (intensity <= 0.0f || targetDistM > beamMaxRangeM)
                 continue;
             // C11/C12 follow-up #48: smooth range fade instead of the hard cutoff above — a
@@ -720,6 +734,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             }
         }
         std::memcpy(beamCloudLightMapped, &lights, sizeof(GpuBeamCloudLights));
+        std::memcpy(groundBeamsMapped, &groundBeams, sizeof(GpuGroundBeams));
 
         lastActiveBeamCount = count;
         lastNearestBeamDistM = nearest;
@@ -2080,6 +2095,10 @@ void SatelliteSim::cleanup(VkDevice device)
         vkUnmapMemory(device, beamCloudLightMem);
     vkDestroyBuffer(device, beamCloudLightBuf, nullptr);
     vkFreeMemory(device, beamCloudLightMem, nullptr);
+    if (groundBeamsMapped)
+        vkUnmapMemory(device, groundBeamsMem);
+    vkDestroyBuffer(device, groundBeamsBuf, nullptr);
+    vkFreeMemory(device, groundBeamsMem, nullptr);
     if (beamGlowDomeMapped)
         vkUnmapMemory(device, beamGlowDomeMem);
     vkDestroyBuffer(device, beamGlowDomeBuf, nullptr);
@@ -2319,6 +2338,16 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
                      beamCloudLightBuf, beamCloudLightMem);
     vkMapMemory(ctx.device, beamCloudLightMem, 0, sizeof(GpuBeamCloudLights), 0, &beamCloudLightMapped);
     memset(beamCloudLightMapped, 0, sizeof(GpuBeamCloudLights));
+
+    // groundBeamsBuf (perf follow-up): HOST_VISIBLE|HOST_COHERENT, written wholesale by the CPU
+    // every frame in recordCompute() (full memcpy of a freshly-built GpuGroundBeams, same pattern
+    // as beamCloudLightBuf just above) — no vkCmdFillBuffer zero-fill needed.
+    ctx.createBuffer(sizeof(GpuGroundBeams),
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     groundBeamsBuf, groundBeamsMem);
+    vkMapMemory(ctx.device, groundBeamsMem, 0, sizeof(GpuGroundBeams), 0, &groundBeamsMapped);
+    memset(groundBeamsMapped, 0, sizeof(GpuGroundBeams));
 
     // beamGlowDomeBuf (C12 follow-up #31): HOST_VISIBLE|HOST_COHERENT, same reasoning as
     // reflectBeamsBuf — written by sat_orbit.comp (atomicMax per sector), zeroed every frame via
@@ -4234,8 +4263,8 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         memset(cloudParamsMapped, 0, sz);
     }
 
-    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=beamGlowDomeBuf, 19=sceneDepthTex, 20=oceanGlintBuf
-    VkDescriptorSetLayoutBinding bindings[21] = {};
+    // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=beamGlowDomeBuf, 19=sceneDepthTex, 20=oceanGlintBuf, 21=groundBeamsBuf
+    VkDescriptorSetLayoutBinding bindings[22] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -4268,13 +4297,16 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // ocean-glint block reads it here (flare architecture overhaul), same split as GlowBuf's
     // binding 0 here vs descSet's binding 2.
     bindings[20] = {20, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // groundBeamsBuf (perf follow-up): CPU-compacted, observer-range-culled beam list — see
+    // GpuGroundBeams comment in SatelliteSim.h and the GroundBeamsBuf declaration in sat_sky.frag.
+    bindings[21] = {21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 21;
+    li.bindingCount = 22;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
     VkDescriptorPoolSize ps[3] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 15},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
     };
@@ -4318,8 +4350,9 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     VkDescriptorBufferInfo reflectBeamsInfo{reflectBeamsBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo beamGlowDomeInfo{beamGlowDomeBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo oceanGlintInfo{oceanGlintBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo groundBeamsInfo{groundBeamsBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[21] = {};
+    VkWriteDescriptorSet writes[22] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = skyDescSet;
     writes[0].dstBinding = 0;
@@ -4447,7 +4480,13 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     writes[20].descriptorCount = 1;
     writes[20].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[20].pBufferInfo = &oceanGlintInfo;
-    vkUpdateDescriptorSets(ctx.device, 21, writes, 0, nullptr);
+    writes[21].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[21].dstSet = skyDescSet;
+    writes[21].dstBinding = 21;
+    writes[21].descriptorCount = 1;
+    writes[21].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[21].pBufferInfo = &groundBeamsInfo;
+    vkUpdateDescriptorSets(ctx.device, 22, writes, 0, nullptr);
 }
 
 // Fullscreen triangle that colors pixels sky or ground based on camera elevation.

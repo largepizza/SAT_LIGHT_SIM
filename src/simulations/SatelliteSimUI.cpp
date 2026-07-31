@@ -976,15 +976,22 @@ void SatelliteSim::buildSettingsWindow(const UIInput &inp, UIRenderer &ui)
 {
     float defaultX = (inp.screenW - settingsChrome.w) * 0.5f;
     float defaultY = (inp.screenH - settingsChrome.h) * 0.5f;
-    // minW=500 = kSliderFixedLeft+kSliderFixedRight+kSliderMinW (413+80, plus a
-    // little slack) — the Photometry/Clouds sliders now shrink responsively with
-    // the window (settingsSliderWidth()), so the window only needs to stay above
-    // the sliders' own floor, not their old fixed 228px width.
+    // minW=680: the Photometry/Clouds sliders shrink responsively with the window
+    // (settingsSliderWidth()) and only need ~500 (kSliderFixedLeft+kSliderFixedRight+
+    // kSliderMinW), but the Controls tab's keybinding rows do NOT — each row is five
+    // CLAY_SIZING_FIXED children (action label 130 + key readout 60 + rebind btn 120 +
+    // gamepad readout 70 + gamepad rebind btn 90 = 470, +4 gaps*6 +8 padding = 502) that
+    // Clay does not reflow/shrink, plus the 140px tab strip + 1px divider + 28px content
+    // padding = ~671 total. 500 let a user resize below that and run those rows off the
+    // right edge with no clip to catch it (SettingsContent's clip is vertical-only).
+    // 680 covers Controls with a little slack; also clears the Display tab's preset
+    // button row (kept single-line-safe by putting its own label on its own row above
+    // the buttons — see buildSettingsDisplayTab).
     static char settingsTitleBuf[64];
     if (!settingsTitleBuf[0])
         snprintf(settingsTitleBuf, sizeof(settingsTitleBuf), "Settings — v%s (%s)", APP_VERSION, APP_GIT_COMMIT);
     bool justClosed = buildResizableWindow(inp, ui, settingsChrome, 0, settingsTitleBuf, true, hovSettingsClose,
-                                           defaultX, defaultY, 500.0f, 420.0f, 1000.0f, 820.0f,
+                                           defaultX, defaultY, 680.0f, 420.0f, 1000.0f, 820.0f,
                                            [&]()
                                            { buildSettingsTabbedBody(inp, ui); });
     if (justClosed)
@@ -1371,45 +1378,51 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // ── Graphics preset (UC1, RELEASE_v1_1_PLAN.md) ────────────────────────
     // The front door: a new user should see this before any of the ~46 developer sliders behind
     // "Show advanced settings" below. Custom has no button of its own — it's a status readout for
-    // "you edited an advanced slider by hand", not something you click into.
-    CLAY(CLAY_ID("PresetRow"), {.layout = {
-                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                    .padding = {4, 4, 4, 4},
-                                    .childGap = 6,
-                                    .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    // "you edited an advanced slider by hand", not something you click into. Label and buttons are
+    // on separate rows (not one wide LEFT_TO_RIGHT row) deliberately: 5 buttons at 82px + gaps
+    // already need ~450px, and cramming a scaled (uiScale up to 2x) text label into whatever's
+    // left of a single row is exactly the kind of fixed-width overflow the settings window had —
+    // stacking removes the collision instead of trying to out-guess the label's rendered width.
+    CLAY(CLAY_ID("PresetSection"), {.layout = {
+                                        .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                        .padding = {4, 4, 4, 4},
+                                        .childGap = 4,
+                                        .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
-        CLAY_TEXT(CLAY_STRING("Graphics preset"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
-        CLAY(CLAY_ID("PresetSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+        char presetLabelBuf[40];
+        snprintf(presetLabelBuf, sizeof(presetLabelBuf), "Graphics preset%s",
+                 graphicsPreset == GraphicsPreset::Custom ? " — Custom" : "");
+        Clay_String presetLabelStr2{false, (int32_t)strlen(presetLabelBuf), presetLabelBuf};
+        CLAY_TEXT(presetLabelStr2, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
 
-        if (graphicsPreset == GraphicsPreset::Custom)
+        CLAY(CLAY_ID("PresetButtonRow"), {.layout = {
+                                              .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
+                                              .childGap = 6,
+                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            CLAY_TEXT(CLAY_STRING("Custom"), CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
-        }
-
-        static const char *kPresetLabels[5] = {"Planetarium", "Low", "Medium", "High", "Ultra"};
-        static const GraphicsPreset kPresetValues[5] = {
-            GraphicsPreset::Planetarium, GraphicsPreset::Low, GraphicsPreset::Medium,
-            GraphicsPreset::High, GraphicsPreset::Ultra};
-        for (int i = 0; i < 5; ++i)
-        {
-            bool isActive = graphicsPreset == kPresetValues[i];
-            Clay_Color btnBg = isActive ? Pal::btnAccent : (hovPreset[i] ? Pal::btnHover : Pal::btnIdle);
-            CLAY(CLAY_IDI("PresetBtn", i), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(82), CLAY_SIZING_FIXED(22)},
-                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                            .backgroundColor = btnBg,
-                                            .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            static const char *kPresetLabels[5] = {"Planetarium", "Low", "Medium", "High", "Ultra"};
+            static const GraphicsPreset kPresetValues[5] = {
+                GraphicsPreset::Planetarium, GraphicsPreset::Low, GraphicsPreset::Medium,
+                GraphicsPreset::High, GraphicsPreset::Ultra};
+            for (int i = 0; i < 5; ++i)
             {
-                bool n = Clay_Hovered();
-                sndRollover(n, hovPreset[i]);
-                sndClick(n, inp.lmbPressed);
-                hovPreset[i] = n;
-                if (n && inp.lmbPressed && graphicsPreset != kPresetValues[i])
-                    applyGraphicsPreset(kPresetValues[i]);
-                Clay_String presetLabelStr{false, (int32_t)strlen(kPresetLabels[i]), kPresetLabels[i]};
-                CLAY_TEXT(presetLabelStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+                bool isActive = graphicsPreset == kPresetValues[i];
+                Clay_Color btnBg = isActive ? Pal::btnAccent : (hovPreset[i] ? Pal::btnHover : Pal::btnIdle);
+                CLAY(CLAY_IDI("PresetBtn", i), {.layout = {
+                                                    .sizing = {CLAY_SIZING_FIXED(82), CLAY_SIZING_FIXED(22)},
+                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                                .backgroundColor = btnBg,
+                                                .cornerRadius = CLAY_CORNER_RADIUS(3)})
+                {
+                    bool n = Clay_Hovered();
+                    sndRollover(n, hovPreset[i]);
+                    sndClick(n, inp.lmbPressed);
+                    hovPreset[i] = n;
+                    if (n && inp.lmbPressed && graphicsPreset != kPresetValues[i])
+                        applyGraphicsPreset(kPresetValues[i]);
+                    Clay_String presetLabelStr{false, (int32_t)strlen(kPresetLabels[i]), kPresetLabels[i]};
+                    CLAY_TEXT(presetLabelStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+                }
             }
         }
     }

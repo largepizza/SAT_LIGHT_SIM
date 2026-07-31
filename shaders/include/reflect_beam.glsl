@@ -13,6 +13,11 @@
 // BEAM_MAX_ACTIVE must match kMaxActiveBeams in src/simulations/SatelliteSim.h.
 const uint BEAM_MAX_ACTIVE = 2048u;
 
+// GROUND_BEAM_MAX must match kMaxGroundBeams in src/simulations/SatelliteSim.h. Capacity of the
+// CPU-compacted, observer-range-culled beam list (GroundBeamsBuf in sat_sky.frag) — see that
+// buffer's comment and GpuGroundBeams in SatelliteSim.h for why this exists.
+const uint GROUND_BEAM_MAX = 256u;
+
 struct ReflectBeam {
     vec3  satENU;       // meters, observer-relative (East, North, Up)
     float intensity;    // groundIrradiance * beamGain
