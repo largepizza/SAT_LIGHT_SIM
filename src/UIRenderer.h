@@ -169,9 +169,20 @@ private:
         VkDeviceMemory memory  = VK_NULL_HANDLE;
         VkImageView    view    = VK_NULL_HANDLE;
         VkSampler      sampler = VK_NULL_HANDLE;
-        int            atlasW  = 512;
-        int            atlasH  = 512;
-        float          bakedSize = 32.0f;
+        // Glyphs are baked once at a fixed pixel height (stbtt_BakeFontBitmap — a plain bitmap
+        // atlas, not an SDF), then every requested Clay fontSize just scales that one baked
+        // bitmap by a ratio (see pushText's renderScale) — there's no re-rasterization per size.
+        // bakedSize was 32px, fine for normal UI text (11-19px * up to 2.0x uiScale tops out
+        // around 32-38, a mild upscale) but visibly blocky on the intro's large title captions
+        // (fs(48)/fs(34), which can request 68-96px — a 2-3x upscale of a 32px source). Bumped to
+        // 48 with the atlas area scaled by the same (48/32)^2 factor to preserve the same packing
+        // headroom stbtt_BakeFontBitmap's simple shelf-packer had at the old size (it silently
+        // drops/omits glyphs that don't fit, so this ratio isn't optional). Still a raster
+        // upscale, not resolution-independent — true crispness at arbitrary uiScale/title sizes
+        // would need an SDF font atlas instead, a larger separate change.
+        int            atlasW  = 768;
+        int            atlasH  = 768;
+        float          bakedSize = 48.0f;
         std::vector<uint8_t> charData;
         std::vector<uint8_t> fileData;
         void*                fontInfo = nullptr;

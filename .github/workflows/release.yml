@@ -47,6 +47,7 @@ jobs:
           Copy-Item build-release/Release/assets                   dist/ -Recurse
           Copy-Item data/constellations.json        dist/
           Copy-Item data/constellations.schema.json dist/
+          Copy-Item data/reflector_targets.json     dist/
           Compress-Archive -Path dist/* -DestinationPath "${{ steps.ver.outputs.archive }}.zip" -Force
         shell: pwsh
 
@@ -100,6 +101,7 @@ jobs:
           cp -r build-release/assets                  dist/
           cp data/constellations.json        dist/
           cp data/constellations.schema.json dist/
+          cp data/reflector_targets.json     dist/
           tar -czf "${{ steps.ver.outputs.archive }}.tar.gz" -C dist .
 
       - uses: actions/upload-artifact@v4
@@ -144,6 +146,7 @@ jobs:
           cp -r build-release/assets                  dist/
           cp data/constellations.json        dist/
           cp data/constellations.schema.json dist/
+          cp data/reflector_targets.json     dist/
           tar -czf "${{ steps.ver.outputs.archive }}.tar.gz" -C dist .
 
       - uses: actions/upload-artifact@v4

@@ -206,14 +206,23 @@ void UIRenderer::loadFont(VulkanContext& ctx) {
                         stbtt_GetFontOffsetForIndex(font.fileData.data(), 0)))
         throw std::runtime_error("UIRenderer: stbtt_InitFont failed.");
 
-    // Bake ASCII 32-126 (96 glyphs) into a 512x512 R8 atlas
+    // Bake ASCII 32-126 (96 glyphs) into an atlasW x atlasH R8 atlas
     font.charData.resize(96 * sizeof(stbtt_bakedchar));
     std::vector<uint8_t> pixels(font.atlasW * font.atlasH);
-    stbtt_BakeFontBitmap(font.fileData.data(), 0,
+    int bakeResult = stbtt_BakeFontBitmap(font.fileData.data(), 0,
                          font.bakedSize,
                          pixels.data(), font.atlasW, font.atlasH,
                          32, 96,
                          reinterpret_cast<stbtt_bakedchar*>(font.charData.data()));
+    // stbtt_BakeFontBitmap: positive = success (all 96 glyphs fit, value = first unused row);
+    // <=0 = ran out of atlas room partway through ("a very crappy packing", per its own comment)
+    // and silently omitted the rest — glyphs past that point would render as garbage/blank. Not
+    // fatal (rare in practice; bakedSize/atlasW/H are sized with headroom), but worth a loud
+    // warning instead of a silent missing-character bug if that headroom is ever reduced.
+    if (bakeResult <= 0)
+        fprintf(stderr, "[UIRenderer] stbtt_BakeFontBitmap: atlas too small for bakedSize=%.0f "
+                        "(%dx%d) — only %d of 96 glyphs fit. Increase atlasW/atlasH.\n",
+                font.bakedSize, font.atlasW, font.atlasH, -bakeResult);
 
     // ── Upload atlas as VK_FORMAT_R8_UNORM ────────────────────────────────
     VkDeviceSize atlasBytes = (VkDeviceSize)(font.atlasW * font.atlasH);

@@ -17,5 +17,14 @@ layout(push_constant) uniform PC {
 
 void main() {
     vec3 c = texture(flareTex, uv).rgb * pc.gain;
+
+    // Hard ceiling, per-channel: this glow layer can never add more than 0.5 in any channel, no
+    // matter how high "Flare glow gain"/"Flare streak" are pushed. Below a satellite's own point-
+    // sprite core (sat_point.frag can reach ~3x brightness at its inner core, i.e. full white on
+    // its own) the core always reads brighter than its surrounding flare, so the flare no longer
+    // washes the point itself out to white — this is what satellites AND the sun both draw
+    // through (flare_source.vert adds one virtual point for the sun, gl_VertexIndex==satCount).
+    c = min(c, vec3(0.8));
+
     outColor = vec4(c, 1.0);
 }

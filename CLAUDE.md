@@ -154,6 +154,22 @@ someone does that work. Same applies to the cloud-column sample body, which appe
 - Icons: `.image = {.imageData = (void*)(intptr_t)iconIdx}`. Renderer samples the atlas UV range for that index.
 - Shader `mode`: `0.0` = solid rect, `1.0` = text glyph, `2.0` = icon sprite. Binding 1 is always valid (1×1 white placeholder at init).
 
+### Font atlas is a fixed-size bitmap, not resolution-independent
+`loadFont()` bakes ASCII 32-126 once via `stbtt_BakeFontBitmap` at a single pixel height
+(`font.bakedSize`) into a fixed `atlasW`x`atlasH` R8 atlas. Every requested `CLAY_TEXT_CONFIG`
+`fontSize` (via `fs(base) = base * uiScale`, `SatelliteSim.h`) just scales that ONE baked bitmap by
+`fontSize / bakedSize` (`pushText`'s `renderScale`) — there is no per-size re-rasterization, so any
+requested size well above `bakedSize` visibly upscales/blocks, most noticeably on large one-off
+text like the intro's title captions (`fs(48)`/`fs(34)`, which can request 68-96px at high
+`uiScale`). Bumped `bakedSize` 32→48 (session follow-up) with `atlasW/H` scaled by the same
+`(48/32)²` factor (512→768) to preserve `stbtt_BakeFontBitmap`'s packing headroom — it's "a very
+crappy packing" (its own doc comment) that silently drops/omits glyphs past whatever fits, so
+`loadFont()` now checks its return value and logs a warning if that ever happens again. This is a
+mitigation, not a fix: text is still a raster upscale, just from a less-coarse source. True
+resolution-independence at arbitrary `uiScale`/title sizes would need an SDF font atlas instead — a
+separate, larger change (new bake step, new glyph metadata, a distance-based alpha threshold in
+the text fragment shader) not undertaken here.
+
 ### MSVC C++20 Designated Initializer Ordering
 MSVC requires designators in declaration order:
 - `Clay_LayoutConfig`: `sizing` → `padding` → `childGap` → `childAlignment` → `layoutDirection`
@@ -930,9 +946,11 @@ checks `introCaptionIndex >= kIntroControlsIndex` and stops forcing
 `obsHeightOffset`/`camera.azDeg/elDeg/fovYDeg`/`obsFacing` from that point on (safe with no
 discontinuity, since the camera has already arrived at its final framing by then); `recordCompute`
 separately runs the real WASD/Q-E/zoom movement block whenever `!showIntro || introCaptionIndex >=
-kIntroControlsIndex`, replacing the old plain `else` so both can be true at once. Mouse-look and
-the rest of the HUD stay locked until the intro actually ends (`finishIntro`) — only the
-movement/elevation/zoom block unlocks early, since only WASD/Q-E are what the on-screen text
+kIntroControlsIndex`, replacing the old plain `else` so both can be true at once. `buildUI`'s
+mouse-look block (RMB drag, cinematic pan, gamepad look, and its own `camera.azDeg`-from-
+`obsFacing` derivation) uses the identical condition, so free-look and WASD are both live from the
+same beat — the rest of the HUD (settings/view-controls windows, satellite picking) still waits
+for the intro to actually end (`finishIntro`), since only WASD/Q-E/look are what the on-screen text
 promises. Caution: any values kIntroKeyframes gives the final hold beat(s) *after*
 `kIntroControlsIndex` for alt/az/el/fov are dead data for camera purposes once this fires — only
 that beat's own `.t` still matters, as the auto-handoff time.

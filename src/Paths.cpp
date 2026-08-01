@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -41,17 +42,39 @@ namespace Paths
         return std::filesystem::current_path().string();
     }
 
+    namespace
+    {
+        // Probes writability directly rather than trusting filesystem permission bits: on
+        // Windows, UAC virtualization/ACLs can make a directory look writable while actually
+        // redirecting or silently failing real writes (e.g. some Program Files installs).
+        // Creating and removing a real file is the only check that can't be fooled by that.
+        bool isDirWritable(const std::filesystem::path &dir)
+        {
+            std::error_code ec;
+            std::filesystem::path probe = dir / ".satlightsim_write_test";
+            {
+                std::ofstream f(probe, std::ios::out | std::ios::trunc);
+                if (!f.is_open())
+                    return false;
+            }
+            std::filesystem::remove(probe, ec);
+            return true;
+        }
+    }
+
     std::string userDataDir()
     {
         std::filesystem::path dir;
         std::error_code ec;
 
-        // Portable mode: a "portable.txt" sentinel next to the exe keeps every
-        // write (settings, logs, perf snapshots) alongside the executable
-        // instead of the OS per-user directory — useful for a zip-and-run
-        // distribution where nothing should touch the user's profile.
+        // Portable by default: prefer exeDir() whenever it's actually writable, so a normal
+        // zip-and-run/dev build keeps settings/logs/perf-snapshots self-contained next to the
+        // exe. Falls through to the OS per-user directory below only if exeDir() isn't
+        // writable (e.g. installed under Program Files without elevation) — see NEW-4 in
+        // RELEASE_v1_1_PLAN.md for why that fallback exists: without it, settings silently
+        // fail to persist on any read-only install location.
         std::filesystem::path exe = exeDir();
-        if (std::filesystem::exists(exe / "portable.txt", ec))
+        if (isDirWritable(exe))
             return exe.string();
 
 #if defined(_WIN32)
