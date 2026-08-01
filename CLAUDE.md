@@ -868,12 +868,18 @@ where the observer actually starts in practice.
 
 ## Subsystem: Intro Cinematic (UC3)
 
-`showIntro` (default `true`, currently forced on every launch while UC3 is being iterated on — see
-the dated comment in `loadSettings()`) drives `updateIntroCinematic()`
-(`SatelliteSim.cpp`, called from `recordCompute()` in place of normal WASD/zoom input) through a
-fixed beat sheet, `kIntroKeyframes[]` (`SatelliteSim.h`). `buildIntroOverlay()`
-(`SatelliteSimUI.cpp`) only draws the caption/skip-hint text on top — the camera path itself *is*
-the cinematic.
+`showIntro` drives `updateIntroCinematic()` (`SatelliteSim.cpp`, called from `recordCompute()` in
+place of normal WASD/zoom input) through a fixed beat sheet, `kIntroKeyframes[]`
+(`SatelliteSim.h`). `buildIntroOverlay()` (`SatelliteSimUI.cpp`) only draws the caption/skip-hint
+text on top — the camera path itself *is* the cinematic. Whether it plays on launch is a real
+persisted toggle, `playIntroOnStartup` (Display tab "Play intro on startup") — see the persistence
+note near the bottom of this section; it is no longer forced on every launch.
+
+**Window boots maximized** (`App::initWindow`, `glfwWindowHint(GLFW_MAXIMIZED, ...)` before
+`glfwCreateWindow`) — windowed, not exclusive fullscreen, but full monitor work-area size by
+default rather than the fixed `WIN_W`x`WIN_H` (1280x720). A small window the player has to
+manually enlarge undercut the cinematic's impact and invited resizing instead of watching it.
+`WIN_W`/`WIN_H` are still passed as the restore size for whenever the player un-maximizes later.
 
 **Fixed vantage, locked every playback.** The intro always opens from `kIntroObserverLatDeg/LonDeg`
 + `kIntroStartAzDeg/ElDeg/FovDeg` (`SatelliteSim.h`) — the California coast at twilight facing the
@@ -896,13 +902,40 @@ every frame — it used to set only `obsFacing`, which meant the rendered view n
 in azimuth during playback and then snapped to match `obsFacing` on the first post-intro frame.
 Fixed by computing the mixed azimuth once and assigning it to both.
 
-**Beat sheet** (`kIntroKeyframes[]`, ~52s total): `kIntroYearIndex` (0) is a centered "2036" title
-card; `kIntroHintRevealIndex` (1) is the first narrative line and also where the bottom-right skip
-hint first appears (not from frame 0 — see below); beats 2-5 hold at ground level then pull to LEO
-starting mid-sheet; `kIntroTitleIndex` (6) is the arrival-in-LEO "SAT LIGHT SIM" reveal (camera
-motion stops here — `kIntroBenchEndT` marks this as the benchmark cutoff); `kIntroControlsIndex`
-(7) is the final WASD/Q-E controls hint, Q/E text generated at render time from live keybindings
-(`introControlsTextBuf`) same as the old system did.
+**Beat sheet** (`kIntroKeyframes[]`, timings synced to `songbeat` = 7.61s, a music-tempo unit —
+hand-tuned by the user, not derived): `kIntroYearIndex` (0) is a "2036" title card, bottom-anchored
+like every other caption but at a larger font size (not centered — that was tried and reverted, it
+read as inconsistent with the rest of the captions); `kIntroHintRevealIndex` (1) is the first
+narrative line and also where the bottom-right skip hint first appears (not from frame 0 — see
+below); the middle beats hold at ground level then pull to LEO; `kIntroTitleIndex` (6) is the
+arrival "SAT LIGHT SIM" reveal (`kIntroBenchEndT` marks this as the benchmark cutoff);
+`kIntroControlsIndex` (7) is the WASD/Q-E controls hint, Q/E text generated at render time from
+live keybindings (`introControlsTextBuf`).
+
+**Camera path is a Catmull-Rom/cubic-Hermite spline, not per-segment smoothstep.** The original
+implementation eased in/out (smoothstep) independently within each keyframe segment, which gives
+zero velocity at *every* waypoint, not just the first and last — the camera visibly decelerated to
+a stop and re-accelerated at every beat boundary, reading as a stutter rather than one continuous
+move. `updateIntroCinematic`'s local `hermite(field)` lambda instead estimates a time-weighted
+tangent at each interior key from its two neighbors and blends with cubic Hermite basis functions,
+so velocity carries through a waypoint instead of resetting there. Endpoint tangents fall back to
+the one-sided neighbor difference, which happens to already be ~0 for this specific beat sheet
+(the first two beats and the final hold beats each share identical values), so the start and end
+still ease naturally with no special-cased boundary velocity.
+
+**Controls go live mid-cinematic, at `kIntroControlsIndex`.** It read as broken to show "WASD to
+move" / "Q / E to raise/lower height" on screen while those keys visibly did nothing — control now
+unlocks the moment that caption is showing, not at the very end. Mechanism: `updateIntroCinematic`
+checks `introCaptionIndex >= kIntroControlsIndex` and stops forcing
+`obsHeightOffset`/`camera.azDeg/elDeg/fovYDeg`/`obsFacing` from that point on (safe with no
+discontinuity, since the camera has already arrived at its final framing by then); `recordCompute`
+separately runs the real WASD/Q-E/zoom movement block whenever `!showIntro || introCaptionIndex >=
+kIntroControlsIndex`, replacing the old plain `else` so both can be true at once. Mouse-look and
+the rest of the HUD stay locked until the intro actually ends (`finishIntro`) — only the
+movement/elevation/zoom block unlocks early, since only WASD/Q-E are what the on-screen text
+promises. Caution: any values kIntroKeyframes gives the final hold beat(s) *after*
+`kIntroControlsIndex` for alt/az/el/fov are dead data for camera purposes once this fires — only
+that beat's own `.t` still matters, as the auto-handoff time.
 
 **Dismissal is a single defined key, not "any key."** `onKey()` only calls `finishIntro(true)` for
 literal `GLFW_KEY_SPACE` (independent of whatever `Pause/Resume` is currently rebound to);
@@ -923,6 +956,19 @@ toggled on or off.
 looked "sometimes" wrong: a genuine first run (or any state where that key was never written)
 booted at 10x. The intro's one-time init above also force-sets it defensively, since a replay runs
 on live state that loadSettings() never touches again.
+
+**Persistence: `playIntroOnStartup`, not a raw `showIntro` save.** `showIntro` is runtime
+play-state (flips false the moment the cinematic ends), so persisting it directly conflated "did
+today's playthrough finish" with "should it play again next launch." `playIntroOnStartup` (Display
+tab checkbox, next to "Replay Intro") is the actual user preference, saved every close and applied
+to `showIntro` at load time: `playIntroOnStartup = d.value("play_intro_on_startup", false)` inside
+the `"display"` block. Absent-key default is `false` there (not the compiled-in `true`) so a
+player upgrading from a build that predates this key doesn't suddenly get a cinematic that didn't
+exist in their version — a genuine first run (no settings.json at all) never reaches that line, so
+it still keeps the compiled-in `true` default from the "no file" early-return branch. Disabling it
+does not need to separately handle "resume at last known location" — `obsDir`/`camera` are always
+restored from settings.json's own `"observer"`/`"camera"` blocks regardless of `showIntro`, so
+turning the intro off just resumes wherever the player last was.
 
 ---
 

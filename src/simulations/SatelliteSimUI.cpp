@@ -1638,6 +1638,40 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         }
     }
 
+    // ── Play intro on startup (UC3 follow-up) ─────────────────────────────────
+    // Same labeled-row + toggle pattern as "Show controls window on startup" below. Disabling
+    // this does NOT touch the observer/camera position — that's already restored from
+    // settings.json's own "observer"/"camera" blocks regardless, so turning the intro off simply
+    // resumes at whatever location was last saved.
+    CLAY(CLAY_ID("PlayIntroRow"), {.layout = {
+                                        .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                        .padding = {4, 4, 4, 4},
+                                        .childGap = 8,
+                                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Play intro on startup"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
+        CLAY(CLAY_ID("PlayIntroSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+
+        Clay_Color chkBg = playIntroOnStartup ? Pal::btnAccent : (hovPlayIntroStartup ? Pal::btnHover : Pal::btnIdle);
+        CLAY(CLAY_ID("PlayIntroChk"), {.layout = {
+                                           .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                       .backgroundColor = chkBg,
+                                       .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovPlayIntroStartup);
+            sndClick(n, inp.lmbPressed);
+            hovPlayIntroStartup = n;
+            if (n && inp.lmbPressed)
+                playIntroOnStartup = !playIntroOnStartup;
+            CLAY_TEXT(playIntroOnStartup ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+        }
+    }
+
     // ── UI Scale ──────────────────────────────────────────────────
     CLAY(CLAY_ID("UiScaleRow"), {.layout = {
                                      .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
@@ -2974,7 +3008,7 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
                                                            CLAY_SIZING_FIXED((float)inp.screenH)},
                                                 .padding = {40, 40, 0, 90},
                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER,
-                                                                   .y = isYearBeat ? CLAY_ALIGN_Y_CENTER : CLAY_ALIGN_Y_BOTTOM},
+                                                                   .y = CLAY_ALIGN_Y_BOTTOM},
                                                 .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                             .floating = {.zIndex = 30, .attachTo = CLAY_ATTACH_TO_ROOT}})
         {
@@ -3302,15 +3336,14 @@ void SatelliteSim::loadSettings()
         int unitVal = d.value("unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0);
         unitSystem = unitVal == 1 ? UnitSystem::Imperial : UnitSystem::Metric;
         showControlsOnStartup = d.value("show_controls_on_startup", showControlsOnStartup);
-        // TESTING (2026-07-31, per user request): always show the intro on every launch while
-        // UC3 is being iterated on, regardless of the persisted value. The real settings.json
-        // lives in %APPDATA%/SatLightSim/ (Paths::userDataDir(), NEW-4) — NOT next to the exe —
-        // so deleting a copy next to the exe to force "first run" silently does nothing; the
-        // persisted `show_intro: false` from any earlier dismissal keeps loading from there. Once
-        // UC3 is confirmed working, restore the commented-out line below (first-run-only, per
-        // upgrading-user reasoning) and delete/reset %APPDATA%/SatLightSim/settings.json (or use
-        // the "Reset to Defaults" button) to test the real persisted behavior.
-        // showIntro = d.value("show_intro", false);
+        // UC3 follow-up: back to real persisted behavior now that the cinematic itself is settled
+        // (the always-on-every-launch testing override is gone). "play_intro_on_startup" absent
+        // (upgrading from a build that predates this key) defaults to false, not the compiled-in
+        // true, so upgrading players don't suddenly get a cinematic that didn't exist in their
+        // version — a true first run never reaches this block at all (see the "no file" early
+        // return above), so it still keeps the compiled-in true default there.
+        playIntroOnStartup = d.value("play_intro_on_startup", false);
+        showIntro = playIntroOnStartup;
     }
 
     // Left/right HUD panels are corner-anchored, not persisted (see buildLeftHudPanel/
@@ -3533,7 +3566,7 @@ void SatelliteSim::saveSettings()
         {"active_tab", settingsActiveTab},
         {"unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0},
         {"show_controls_on_startup", showControlsOnStartup},
-        {"show_intro", showIntro}};
+        {"play_intro_on_startup", playIntroOnStartup}};
     if (settingsChrome.x >= 0.0f)
     {
         j["display"]["win_x"] = settingsChrome.x;

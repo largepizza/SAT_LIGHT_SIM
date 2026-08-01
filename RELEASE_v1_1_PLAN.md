@@ -115,6 +115,30 @@ session-31 beat sheet (table in UC3's section below) is superseded by a new narr
   satellite/planet picking, scroll-to-zoom) rather than just overlaying its caption on top of
   whatever HUD state was already visible.
 
+**Same-day follow-up (2026-08-01):** the user hand-tuned the actual `kIntroKeyframes[]` beat sheet
+afterward (new prose, a `songbeat`-synced timing scheme, a lower final LEO altitude) — the specific
+values above are illustrative of the design, not current; see `SatelliteSim.h` for the live table.
+Six more items from that pass:
+- **"2036" title card moved back to bottom-anchored** (same as every other caption) but kept its
+  larger font size — a brief centered-on-screen treatment was tried and reverted for reading
+  inconsistently against the rest of the sequence.
+- **Camera path is now a Catmull-Rom/cubic-Hermite spline**, not per-segment smoothstep easing —
+  the old scheme had zero velocity at *every* waypoint (not just the first/last), which read as a
+  stutter at each beat boundary. See `CLAUDE.md`'s UC3 section for the tangent-estimation details.
+- **WASD/Q-E go live mid-cinematic**, at the controls-hint beat (`kIntroControlsIndex`), instead of
+  waiting for the intro to fully end — it read as broken to show "WASD to move" on screen while the
+  keys did nothing. Mouse-look and the HUD still wait for the real end.
+- **Window now boots maximized** (`glfwWindowHint(GLFW_MAXIMIZED, ...)`, `App::initWindow`) instead
+  of a fixed 1280x720 — a small window undercut the cinematic and invited resizing instead of
+  watching it. Still windowed, not exclusive fullscreen.
+- **`playIntroOnStartup` restores real persisted on/off behavior**, replacing the always-play
+  testing override from session 31's follow-up. New Display-tab checkbox next to "Replay Intro";
+  saved as `play_intro_on_startup` (absent-key default `false` for upgrading players, same
+  reasoning the original commented-out `show_intro` line had — see `CLAUDE.md`). Disabling it just
+  resumes wherever `observer`/`camera` were last saved — no separate "resume" logic was needed,
+  since that restore already happens unconditionally.
+- Prose pass on the caption lines — no code change, just wording.
+
 ---
 
 ## 0. Headline framing

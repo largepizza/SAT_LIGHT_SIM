@@ -748,10 +748,17 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     if (showIntro)
     {
         // UC3: the cinematic camera path drives obsHeightOffset/camera.elDeg/fovYDeg/obsFacing
-        // directly this frame — skip normal WASD/zoom input entirely so they can't fight it.
+        // directly this frame — skip normal WASD/zoom input entirely so they can't fight it. Also
+        // advances introElapsed/introCaptionIndex and eventually calls finishIntro().
         updateIntroCinematic(dt);
     }
-    else if (win)
+    // UC3 follow-up: once the controls-hint beat is showing ("WASD to move" / "Q / E to
+    // raise/lower height" — see buildIntroOverlay), real input starts responding immediately
+    // rather than waiting for the intro to fully end. It felt wrong to display those instructions
+    // while the keys visibly did nothing. updateIntroCinematic stops forcing the camera from that
+    // beat onward (its camera-live check above), so this can run unopposed; !showIntro covers the
+    // normal post-intro case the same way the old "else" branch did.
+    if ((!showIntro || introCaptionIndex >= kIntroControlsIndex) && win)
     {
         bool boost = (win && glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS) || gpHeld(KB_MOVE_BOOST);
         bool fine = (win && glfwGetKey(win, keybindings[KB_MOVE_FINE].key) == GLFW_PRESS) || gpHeld(KB_MOVE_FINE);
@@ -2580,23 +2587,60 @@ void SatelliteSim::updateIntroCinematic(float dt)
     int i = 0;
     while (i < kIntroKeyframeCount - 2 && kIntroKeyframes[i + 1].t <= tClamped)
         ++i;
-    const IntroKeyframe &a = kIntroKeyframes[i];
-    const IntroKeyframe &b = kIntroKeyframes[i + 1];
-    float segT = (b.t > a.t) ? glm::clamp((tClamped - a.t) / (b.t - a.t), 0.0f, 1.0f) : 1.0f;
-    float ease = segT * segT * (3.0f - 2.0f * segT); // smoothstep
 
-    obsHeightOffset = std::max(0.0f, glm::mix(a.altM, b.altM, ease));
-    camera.elDeg = glm::mix(a.elDeg, b.elDeg, ease);
-    camera.fovYDeg = glm::mix(a.fovDeg, b.fovDeg, ease);
-    float azDegMixed = glm::mix(a.azDeg, b.azDeg, ease);
-    // Both must be set: camera.azDeg is what viewMatrix() actually renders with, while obsFacing
-    // is the ground-movement tangent buildUI's post-intro block re-derives camera.azDeg FROM —
-    // leaving either one stale caused a one-frame camera snap the moment the intro handed off
-    // (camera.azDeg was previously never touched here, so the rendered view didn't pan at all
-    // during playback and then jumped to match obsFacing on the very first post-intro frame).
-    camera.azDeg = azDegMixed;
-    float az = glm::radians(azDegMixed);
-    obsFacing = glm::normalize(cosf(az) * introNorthEF + sinf(az) * introEastEF);
+    // Follow-up: per-segment smoothstep easing (old code) has zero velocity at EVERY waypoint,
+    // not just the first and last — so the camera visibly decelerates to a stop and re-accelerates
+    // at every single beat boundary, which read as a stutter/stop-start rather than one continuous
+    // move. Replaced with a Catmull-Rom/cubic-Hermite spline through all the keyframes: the
+    // tangent at each interior key is estimated from its two neighbors (time-weighted, since beats
+    // aren't evenly spaced), so velocity carries through a waypoint instead of resetting there.
+    // Endpoints fall back to the one-sided neighbor difference, which happens to already be ~0 for
+    // this beat sheet (beats 0-1 and the final hold beats share identical values), so the start and
+    // end still ease naturally without a special case.
+    auto hermite = [&](float IntroKeyframe::*field) -> float
+    {
+        float p0 = kIntroKeyframes[i].*field;
+        float p1 = kIntroKeyframes[i + 1].*field;
+        float t0 = kIntroKeyframes[i].t;
+        float t1 = kIntroKeyframes[i + 1].t;
+        float segDt = t1 - t0;
+        float m0 = (i == 0)
+                       ? (p1 - p0) / segDt
+                       : (kIntroKeyframes[i + 1].*field - kIntroKeyframes[i - 1].*field) /
+                             (kIntroKeyframes[i + 1].t - kIntroKeyframes[i - 1].t);
+        float m1 = (i + 1 == kIntroKeyframeCount - 1)
+                       ? (p1 - p0) / segDt
+                       : (kIntroKeyframes[i + 2].*field - kIntroKeyframes[i].*field) /
+                             (kIntroKeyframes[i + 2].t - kIntroKeyframes[i].t);
+        float u = (segDt > 0.0f) ? glm::clamp((tClamped - t0) / segDt, 0.0f, 1.0f) : 1.0f;
+        float u2 = u * u, u3 = u2 * u;
+        float h00 = 2.0f * u3 - 3.0f * u2 + 1.0f;
+        float h10 = u3 - 2.0f * u2 + u;
+        float h01 = -2.0f * u3 + 3.0f * u2;
+        float h11 = u3 - u2;
+        return h00 * p0 + h10 * (m0 * segDt) + h01 * p1 + h11 * (m1 * segDt);
+    };
+
+    // UC3 follow-up: once the controls-hint beat is reached, WASD/Q-E become live (see
+    // recordCompute) — the camera has already arrived at its final framing there, so simply
+    // stopping the forced overwrite is enough; nothing further needs blending in.
+    bool controlsLive = introCaptionIndex >= kIntroControlsIndex;
+    if (!controlsLive)
+    {
+        obsHeightOffset = std::max(0.0f, hermite(&IntroKeyframe::altM));
+        camera.elDeg = hermite(&IntroKeyframe::elDeg);
+        camera.fovYDeg = hermite(&IntroKeyframe::fovDeg);
+        float azDegMixed = hermite(&IntroKeyframe::azDeg);
+        // Both must be set: camera.azDeg is what viewMatrix() actually renders with, while
+        // obsFacing is the ground-movement tangent buildUI's post-intro block re-derives
+        // camera.azDeg FROM — leaving either one stale caused a one-frame camera snap the moment
+        // the intro handed off (camera.azDeg was previously never touched here, so the rendered
+        // view didn't pan at all during playback and then jumped to match obsFacing on the very
+        // first post-intro frame).
+        camera.azDeg = azDegMixed;
+        float az = glm::radians(azDegMixed);
+        obsFacing = glm::normalize(cosf(az) * introNorthEF + sinf(az) * introEastEF);
+    }
 
     // Track the most recently reached non-null caption (see IntroKeyframe's text field doc).
     for (int k = 0; k <= i; ++k)

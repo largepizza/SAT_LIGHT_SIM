@@ -2095,6 +2095,14 @@ private:
                                        // it's a read-only status, not a click target)
     bool hovAdvancedToggle = false;
     bool hovReplayIntro = false; // UC3 "Replay Intro" button, Display tab
+    // UC3 follow-up: "Play intro on startup" checkbox, Display tab. Persisted (loadSettings/
+    // saveSettings) and applied to showIntro at load time. Default true so a genuine first run
+    // (no settings.json at all — loadSettings() returns before reaching this key) still opens with
+    // the cinematic; an existing settings.json missing this key (i.e. upgrading from a build that
+    // predates it) defaults to false at load time instead, so upgrading players don't suddenly get
+    // a cinematic that didn't exist in their version — see loadSettings().
+    bool playIntroOnStartup = true;
+    bool hovPlayIntroStartup = false;
 
     // ── Private helpers ───────────────────────────────────────────────────────
     // NEW-7: pushes fpsCapMode's present-mode requirement into VulkanContext and flags App to
@@ -2319,7 +2327,7 @@ struct IntroKeyframe
     float azDeg, elDeg, fovDeg;
     const char *text;
 };
-const float songbeat = 7.61;
+static constexpr float songbeat = 7.61f; // beat timings below are synced to this (music tempo)
 static constexpr IntroKeyframe kIntroKeyframes[] = {
     // Beat 0 — "2036" title/date card. Ground, twilight, facing the fixed vantage above.
     {0.0f, 0.0f, kIntroStartAzDeg, kIntroStartElDeg, kIntroStartFovDeg, "2036"},
@@ -2328,7 +2336,7 @@ static constexpr IntroKeyframe kIntroKeyframes[] = {
     {songbeat * 1.0, 0.0f, kIntroStartAzDeg, kIntroStartElDeg, kIntroStartFovDeg,
      "Satellite megaconstellations dominate the night sky"},
     // Beat 3 — level out in preparation for launch. Still ground level.
-    {songbeat * 2.0, 10000.0f, kIntroStartAzDeg - 5, 25.0f, 64.0f, "From the ground, we see the glare of sunlight reflect down from them"},
+    {songbeat * 2.0, 00000.0f, kIntroStartAzDeg - 5, 25.0f, 64.0f, "From the ground, we watch sunlight glint off their solar arrays"},
     // Beat 4 — the pull to LEO begins (ascent happens across THIS beat's transition). Still
     // facing horizontally west, per the storyboard, even as altitude climbs.
     {songbeat * 3.0, 60000.0f, kIntroStartAzDeg - 25, 35.0f, 62.0f, "They power a global network of communication and AI compute."},
