@@ -982,6 +982,10 @@ void cloudMarchCS(
 
     vec3  cloudTransmittance = vec3(1.0);
     vec3  cloudScatter       = vec3(0.0);
+    // Transmittance-weighted mean sample distance — see its use below at odAtmCloud/cloudAttn for
+    // why this exists instead of just using tEnter.
+    float cloudDistAccum   = 0.0;
+    float cloudWeightAccum = 0.0;
     float groundSteps = max(2.0, cloud.marchSteps);
     float stepAltT    = smoothstep(kMarchStepsAltStart, kMarchStepsAltEnd, obsEffH);
     int   N           = max(8, int(mix(groundSteps, kMarchStepsFloor, stepAltT)));
@@ -1262,6 +1266,12 @@ void cloudMarchCS(
                              + beamLit;
 
             cloudScatter       += cloudTransmittance * (1.0 - stepT) * inScatter;
+            // Same weight cloudScatter itself uses (.r stands in for the scalar, per stepT's own
+            // exp(-vec3(extinction)) broadcast — all three channels are identical here), applied to
+            // this step's own distance instead of its inScatter color.
+            float wStep = cloudTransmittance.r * (1.0 - stepT.r);
+            cloudDistAccum   += wStep * (t + step * 0.5);
+            cloudWeightAccum += wStep;
             cloudTransmittance *= stepT;
 
             if (cloudTransmittance.r < 0.01) break;
@@ -1274,7 +1284,23 @@ void cloudMarchCS(
     cloudTOut = mix(vec3(1.0), cloudTransmittance, cloudAltFade);
     if (dot(cloudTOut, vec3(1.0/3.0)) < 0.1 && cloudAltFade > 0.1) tCloudOcclude = tEnter;
 
-    vec2 odAtmCloud = optDepth(obsPos, dir, tEnter);
+    // Camera-to-cloud atmospheric extinction. Distance used here MUST be where the visible cloud
+    // material actually is, not tEnter — tEnter is only that when the observer is BELOW the shell
+    // (tEnter = the real distance light travels through atmosphere before reaching cloud). When
+    // the observer is INSIDE the shell (obsEffH between the base and top altitude), tEnter is
+    // pinned to 0.001 (the march starts immediately, since cloud may be right where you are) — but
+    // a horizon-ward ray from inside the shell can still travel tens of km through the shell before
+    // meeting real density. Using tEnter there collapses odAtmCloud to ~0, i.e. zero extinction
+    // regardless of how far away the visible cloud on that ray actually is — reported as clouds on
+    // the horizon suddenly rendering with no atmospheric fade at all only while the observer's own
+    // altitude sits inside the cloud layer, correct again both below and above it (where tEnter is
+    // meaningful again). cloudDistAccum/cloudWeightAccum give the transmittance-weighted mean
+    // sample distance instead — where the accumulated scattering in cloudScatter actually came
+    // from — which reduces to ~tEnter in the below/above cases (the march starts hitting density
+    // right at shell entry there) and correctly picks up the real horizon-ward travel distance in
+    // the inside-shell case, with no special-casing needed for any of the three observer positions.
+    float cloudMeanT = (cloudWeightAccum > 1e-4) ? (cloudDistAccum / cloudWeightAccum) : tEnter;
+    vec2 odAtmCloud = optDepth(obsPos, dir, max(cloudMeanT, 0.001));
     vec3 cloudAttn  = exp(-(BETA_R * odAtmCloud.x + BETA_M * 1.1 * odAtmCloud.y));
 
     A_cloud = vec3(1.0) - cloudAttn * (1.0 - cloudTOut);

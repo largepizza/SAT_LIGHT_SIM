@@ -1025,10 +1025,31 @@ void evalCloudLayer(
     // 1-exp(-x) is ~x for small x (dim clouds unchanged) and asymptotes to 1 instead of clipping,
     // which is also about right physically: a fully lit cloud's albedo is ~0.7-0.9, not unbounded.
     vec3  cloudLit     = vec3(max(0.0, cloudSunDot + 0.1) * sunGainCurve) * cloudDayFrac;
-    vec3  cloudColor   = 1.0 - exp(-cloudLit);
 
-    vec3 attn = exp(-(BETA_R * odRcam + BETA_M * 1.1 * odMcam));
-    color = mix(color, cloudColor * attn, alpha);
+    // Moonlight — this flat path had no night-side light source at all (cloudDayFrac zeroes
+    // cloudLit once the sun sets), unlike the volumetric shell's moonContrib (cloud_march.comp)
+    // or terrain's own moonContribTerrain. Same geographic-dot gate as those, and reuses
+    // cloud.moonGain so all three stay calibrated to the same brightness.
+    vec3  moonDir3     = normalize(moonDirENU.xyz);
+    vec3  moonDirECEF  = moonDir3.x * enuX + moonDir3.y * enuY + moonDir3.z * enuZ;
+    float cloudMoonDot = dot(normalize(cECEF), moonDirECEF);
+    float moonLit      = max(0.0, cloudMoonDot) * moonDirENU.w;
+    vec3  moonContrib  = vec3(0.92, 0.95, 1.0) * moonLit * cloud.moonGain;
+
+    vec3  cloudColor   = 1.0 - exp(-(cloudLit + moonContrib));
+
+    // Aerial perspective. `color` at this point already holds the atmosphere's own inscattered
+    // light along this ray (the N_VIEW loop that ran before this function), the same value the
+    // terrain/ocean surfAttn path adds its own lit color on top of. Without this, a straight
+    // mix() to cloudColor*attn at high alpha throws that inscattered light away and replaces it
+    // with a plain Beer-Lambert-dimmed cloud color, which trends to black/dark-red at grazing
+    // angles (attn shrinks, and BETA_R/BETA_M dim blue harder than red) instead of fading into
+    // the horizon haze the way the volumetric clouds do via their additive cloudA/cloudB
+    // composite. Blending toward `color` by (1-attn) — the fraction of light scattered INTO the
+    // path between the cloud and the camera — fixes that.
+    vec3 attn      = exp(-(BETA_R * odRcam + BETA_M * 1.1 * odMcam));
+    vec3 cloudSeen = cloudColor * attn + color * (1.0 - attn);
+    color = mix(color, cloudSeen, alpha);
 }
 
 // (cloudDensity lived here — dead since the cloud march moved to cloud_march.comp, removed in
@@ -1586,14 +1607,34 @@ void main() {
         float directSun   = dayFrac;
         // Cloud shadow: cloud_march.comp already marched sunward from this pixel's own terrain
         // hit point and stored the transmittance in cloudB.a (sampled earlier, alongside the rest
-        // of the composite). One multiply — no grid lookup, no UV mapping, no edge fade.
+        // of the composite).
         //
         // This replaced a 128x128 observer-centred tangent-plane grid, which needed all three of
         // those things plus a texel-snapping residual to stop shadows swimming as the observer
         // moved, and which silently stopped shadowing anything past cloudShadowRangeM. The
         // replacement has no range limit and nothing to snap, because the value is a function of
         // the world point being shaded rather than of where the camera happens to be.
-        directSun *= cloudB.a;
+        //
+        // 5x5 box-blurred over cloudTargetB's own half-res texels rather than a single tap.
+        // cloudGroundShadow (cloud_march.comp) is a 12-step raymarch dithered by one noise-texture
+        // lookup per half-res pixel, with no temporal accumulation to average it away (single
+        // frame in flight) — so the raw value reads as the noise texture itself stamped onto the
+        // ground, worst on the ocean where there's no other high-frequency detail to hide it in.
+        // A small spatial blur here is the same fix the light-pollution dome already uses (its own
+        // 5-tap blur) for the same kind of per-sector/per-texel sampling noise. Started at 3x3;
+        // still visibly grainy up close on the ocean, widened to 5x5 (radius 2 half-res texels,
+        // ~4 screen pixels at renderScale=1) — only ground-hit pixels pay for this, and 25 taps
+        // against an already-small half-res target is cheap next to the sky-ambient zenith
+        // integration and city-detail sampling this same branch already does.
+        float cloudShadowT = 0.0;
+        {
+            vec2 shadowTexel = 1.0 / vec2(textureSize(cloudTargetB, 0));
+            for (int sy = -2; sy <= 2; ++sy)
+                for (int sx = -2; sx <= 2; ++sx)
+                    cloudShadowT += texture(cloudTargetB, cloudUV + vec2(sx, sy) * shadowTexel).a;
+            cloudShadowT *= (1.0 / 25.0);
+        }
+        directSun *= cloudShadowT;
         // Antimeridian seam fix: longitude wraps at ±PI so dFdx(uvSurf.x) jumps by ~1.0
         // across that boundary. The GPU would pick the highest mip level, blurring a
         // vertical strip. Clamp the derivative to the small expected value instead.
@@ -1800,8 +1841,14 @@ void main() {
                                     * max(dot(shadingN, normalize(hitPt)), 0.0)
                                     * cloud.auroraGroundGain;
 
+        // cloudShadowT gates only the direct-sun term (real cloud shadows block the sun, not the
+        // diffuse skylight) — skyAmbientTerrain stays outside it, same split the ocean branch
+        // below already uses (directSun on the sun specular/diffuse terms, plain dayFrac on the
+        // sky reflection). Previously this term used dayFrac alone with no cloud-shadow factor at
+        // all, so cloud shadows never appeared on land — only on the ocean/sea-level branch, which
+        // is the only place `directSun` (dayFrac * cloudShadowT) was actually consumed.
         vec3 surfColor  = mix(nightColor * 0.12,
-                              dayColor * sunSpecTint * clamp(sunDot * 1.5, 0.05, 1.0)
+                              dayColor * sunSpecTint * clamp(sunDot * 1.5, 0.05, 1.0) * cloudShadowT
                             + dayColor * skyAmbientTerrain * 0.4,  // sky ambient fill (blue day, orange dusk)
                               dayFrac)
                         + moonContribTerrain

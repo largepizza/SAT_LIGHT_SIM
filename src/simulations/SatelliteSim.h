@@ -543,7 +543,13 @@ struct FlareSourcePC
     float resScale;         // offset 104 — flareExtent / ctx.swapExtent ratio; scales point size
                             //              down to this smaller target so satellites don't look
                             //              oversized once the composite upsamples back to full res
-    float pad0;             // offset 108
+    float sunDayCompensation; // offset 108 — was pad0. The shared streak/composite gain is scaled
+                            // by flareEyeAdaptGain (see recordCompute) to keep satellite glow tame
+                            // in daylight — but the sun's OWN godray/corona is meant to read
+                            // strongest at low sun angles/daytime, the opposite intent. This is
+                            // 1/flareEyeAdaptGain, applied ONLY to the sun's own written brightness
+                            // in flare_source.vert, so it nets out to full strength after the later
+                            // uniform daytime suppression — satellites are unaffected.
 }; // total: 112 bytes
 static_assert(sizeof(FlareSourcePC) == 112, "FlareSourcePC layout mismatch");
 
@@ -1495,7 +1501,10 @@ private:
     VkDeviceMemory oceanGlintMem = VK_NULL_HANDLE;
     // User tunables (Settings > Display), persisted in settings.json. First-pass defaults —
     // expected to need retuning once seen in-app, same as every other constant this session.
-    float flareGlowGain = 1.0f;         // post-composite overall multiplier
+    float flareGlowGain = 0.005f;       // post-composite overall multiplier — was 1.0f, 100x the
+                                        // UI slider's actual [0, 0.01] range (SatelliteSimUI.cpp),
+                                        // so a fresh settings.json (or any older save predating
+                                        // this key) booted the flare glow fully maxed out
     float flareStreakGain = 0.35f;      // per-tap streak/godray strength (flare_blur.comp mode=2)
     float sunFlareRefIntensity = 40.0f; // fixed reference brightness for the sun's virtual point
                                         // in the flare-source buffer — NOT a slider (kept small in
@@ -2351,7 +2360,7 @@ static constexpr IntroKeyframe kIntroKeyframes[] = {
     // generated at render time from live keybindings, not this literal (kIntroControlsIndex marks
     // which entry to override).
     {songbeat * 7.0, 300000.0f, kIntroStartAzDeg - 50, 20.0, 120.0f, "Q / E to raise/lower height"},
-    {songbeat * 7.5, 0000.0f, kIntroStartAzDeg - 50, 20.0, 80.0f, nullptr}, // hold, then auto-handoff (finishIntro(false))
+    {songbeat * 8.0, 0000.0f, kIntroStartAzDeg - 50, 20.0, 80.0f, nullptr}, // hold, then auto-handoff (finishIntro(false))
 };
 static constexpr int kIntroKeyframeCount = sizeof(kIntroKeyframes) / sizeof(kIntroKeyframes[0]);
 static constexpr int kIntroYearIndex = 0;       // "2036" title/date card
@@ -2360,5 +2369,5 @@ static constexpr int kIntroTitleIndex = 6;      // "SAT LIGHT SIM" reveal, arriv
 static constexpr int kIntroControlsIndex = 7;   // WASD / Q-E controls hint
 // Beats 0-6 (through arrival in LEO, where camera motion stops) feed the UC1 benchmark
 // accumulator; the static hold over beats 7-8 isn't representative load, so it's excluded.
-static constexpr float kIntroBenchEndT = 39.0f;
+static constexpr float kIntroBenchEndT = songbeat * 8.0f;
 static constexpr const char *kGraphicsPresetNames[] = {"Planetarium", "Low", "Medium", "High", "Ultra", "Custom"};

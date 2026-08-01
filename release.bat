@@ -68,6 +68,7 @@ if %DO_WIN%==1 (
     xcopy /E /I /Y "%BUILD_WIN%\Release\assets"              "%DIST%\windows\assets\"  >nul
     copy /Y "%PROJ%\data\constellations.json"                 "%DIST%\windows\" >nul
     copy /Y "%PROJ%\data\constellations.schema.json"          "%DIST%\windows\" >nul
+    copy /Y "%PROJ%\data\reflector_targets.json"               "%DIST%\windows\" >nul
 
     echo [Windows] Compressing to %ARCHIVE_BASE%_Windows.zip ...
     powershell -NoProfile -Command ^
@@ -107,6 +108,7 @@ if %DO_LIN%==1 (
     xcopy /E /I /Y "%BUILD_LIN%\assets"                     "%DIST%\linux\assets\"  >nul
     copy /Y "%PROJ%\data\constellations.json"                 "%DIST%\linux\" >nul
     copy /Y "%PROJ%\data\constellations.schema.json"          "%DIST%\linux\" >nul
+    copy /Y "%PROJ%\data\reflector_targets.json"               "%DIST%\linux\" >nul
 
     echo [Linux] Compressing to %ARCHIVE_BASE%_Linux.tar.gz ...
     tar -czf "%DIST%\%ARCHIVE_BASE%_Linux.tar.gz" -C "%DIST%\linux" .

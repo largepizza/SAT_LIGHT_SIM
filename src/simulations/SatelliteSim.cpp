@@ -230,8 +230,9 @@ static float planetApparentMagnitude(PlanetId id, double rAU, double deltaAU, do
 void SatelliteSim::init(VulkanContext &ctx)
 {
     // exeDir_: read-only game data (constellations.json, assets/, shaders/) — always next to
-    // the exe. userDataDir_: settings/perf writes — %APPDATA%/SatLightSim etc, or exeDir_ itself
-    // in portable mode (see Paths.h / NEW-4 in RELEASE_v1_1_PLAN.md).
+    // the exe. userDataDir_: settings/perf writes — exeDir_ itself when writable (the common
+    // case), falling back to %APPDATA%/SatLightSim etc. only on a read-only install
+    // (see Paths.h / NEW-4 in RELEASE_v1_1_PLAN.md).
     exeDir_ = Paths::exeDir();
     userDataDir_ = Paths::userDataDir();
 
@@ -908,7 +909,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             }
         }
         peakMagnitude = (maxFlare > 0.0f)
-                            ? kMagRef - 2.5f * std::log10f(maxFlare / kMagRefFlare)
+                            ? kMagRef - 2.5f * std::log10(maxFlare / kMagRefFlare)
                             : 99.0f;
     }
 
@@ -1585,6 +1586,12 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // in SatelliteSim.h for the full three-stage design this replaces the old per-pixel
     // flareEntries loop with.
     {
+        // Computed here (rather than after the draw, where this used to live) so fpc can carry
+        // the sun's compensating factor below — see FlareSourcePC::sunDayCompensation's comment.
+        const float kFlareDayFloor = 0.35f;
+        float flareDarkness = glm::clamp(-sunDirENU.w * 5.0f, 0.0f, 1.0f);
+        float flareEyeAdaptGain = glm::mix(kFlareDayFloor, 1.0f, flareDarkness);
+
         FlareSourcePC fpc{};
         fpc.skyView = camera.viewMatrix();
         fpc.fovYRad = glm::radians(camera.fovYDeg);
@@ -1594,6 +1601,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         fpc.sunDirENU = sunDirENU;
         fpc.screenSizePx = glm::vec2((float)flareExtent.width, (float)flareExtent.height);
         fpc.resScale = (float)flareExtent.width / (float)ctx.swapExtent.width;
+        fpc.sunDayCompensation = 1.0f / glm::max(flareEyeAdaptGain, 0.05f);
 
         VkClearValue flareClear{};
         flareClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
@@ -1642,10 +1650,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // logarithmic in effectFlare; this is what keeps the DRAMA at night rather than in daylight,
         // where the same bloom around a point source would look wrong against a bright sky. Same
         // formula as updateStars()'s nightFactor (sin(elevation) = sunDirENU.w) — a fixed day floor
-        // rather than zero, so twilight doesn't pop the glow on/off.
-        const float kFlareDayFloor = 0.35f;
-        float flareDarkness = glm::clamp(-sunDirENU.w * 5.0f, 0.0f, 1.0f);
-        float flareEyeAdaptGain = glm::mix(kFlareDayFloor, 1.0f, flareDarkness);
+        // rather than zero, so twilight doesn't pop the glow on/off. (flareDarkness/flareEyeAdaptGain
+        // now computed earlier, above fpc — the sun's own sunDayCompensation needs it too.)
 
         FlareBlurPC bpc{};
         bpc.direction = 0;
@@ -2833,10 +2839,11 @@ void SatelliteSim::requestScreenshot()
         return; // a previous capture is still in flight (copy pending, or already encoding) — drop this one
     // Build the output path now, at request time — not later at copy/encode time — so the
     // timestamp reflects the moment the shot was actually taken, not whenever the async copy
-    // happens to be read back a frame later. Saved next to the exe (screenshots/, user-requested —
-    // overrides NEW-4's usual "writable data dir, not next to a possibly read-only exe" default
-    // for this one feature), falling back to userDataDir_ only if that directory genuinely can't
-    // be created/written (e.g. a read-only install).
+    // happens to be read back a frame later. Saved next to the exe (screenshots/, user-requested
+    // — same directory userDataDir_ now resolves to by default anyway, but this path is
+    // independent of that so screenshots always land next to the exe even on a read-only
+    // install where userDataDir_ has fallen back to AppData), falling back to userDataDir_ only
+    // if the exe dir genuinely can't be created/written.
     std::error_code ec;
     std::filesystem::path dir = std::filesystem::path(exeDir_) / "screenshots";
     std::filesystem::create_directories(dir, ec);

@@ -28,7 +28,10 @@ layout(push_constant) uniform PC {
     vec4  sunDirENU;     // xyz = dir, w = sin(elevation)
     vec2  screenSizePx;  // this pass's own target size — unused here, read by the fragment stage
     float resScale;      // flareExtent / ctx.swapExtent ratio
-    float pad0;
+    float sunDayCompensation; // 1/flareEyeAdaptGain — cancels the later shared daytime-suppression
+                              // multiply (flare_blur.comp's streakGain, flare_composite's gain) so
+                              // the sun's own godray contribution reads at full strength all day,
+                              // not just at night. Satellites don't read this field.
 } pc;
 
 layout(location = 0) out vec3  fragColor;
@@ -42,10 +45,26 @@ void main() {
 
     if (gl_VertexIndex >= int(pc.satCount)) {
         // Virtual "sun" point — not read from satVisibleBuf at all.
-        skyDir    = normalize(pc.sunDirENU.xyz);
-        intensity = (pc.sunDirENU.w < -0.05) ? 0.0 : pc.sunRefIntensity;
+        skyDir = normalize(pc.sunDirENU.xyz);
+        // Smooth fade instead of the old hard "< -0.05 => 0" step. That step was the real bug
+        // behind "the sun's flare disappears near sunset/low angle" — it cut the sun's
+        // contribution to exactly zero the moment it dipped ~2.9 deg below the horizon, which is
+        // precisely the low-sun-angle/sunset regime this effect is meant to be strongest in (that's
+        // when godrays through clouds read best). Now: full strength through the whole daytime AND
+        // right down to the horizon, fading out smoothly over nautical twilight instead of at it.
+        float sunVisFade = smoothstep(-0.15, -0.02, pc.sunDirENU.w);
+        // sunDayCompensation cancels the shared daytime eye-adapt suppression (flare_blur.comp/
+        // flare_composite.frag both scale down during the day to keep satellite glow tame) — the
+        // sun's own godray effect is explicitly meant to be strong in daylight, the opposite intent,
+        // so its own written brightness is pre-boosted to net out at full strength regardless.
+        intensity = pc.sunRefIntensity * sunVisFade * pc.sunDayCompensation;
         baseColor = vec3(1.0, 0.95, 0.85);
-        angSize   = 64.0; // fixed base size — blur/streak passes do the rest of the spreading
+        // Small, tight seed — NOT a big disc. A satellite's corona/streak reads as "coronal"
+        // specifically because the streak pass's short directional taps clearly extend past a
+        // small bright point; a large seed (this was tried at 220-2200) just produces a big soft
+        // circle, since the same short taps get lost inside it. Sized near what a bright satellite
+        // actually uses, not its 120px hard cap.
+        angSize = 48.0;
     } else {
         SatVisible sat = satellites[gl_VertexIndex];
         skyDir    = sat.skyDir;

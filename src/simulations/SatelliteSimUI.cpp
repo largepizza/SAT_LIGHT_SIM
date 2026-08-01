@@ -328,11 +328,15 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // Cinematic mode (RMB + ALT held): mouse input adds force to a velocity that
     // drifts and decays, so the camera coasts smoothly after the mouse stops.
     // Releasing ALT instantly zeroes the velocity and returns to direct control.
-    // UC3: skip entirely during the intro cinematic — updateIntroCinematic() (recordCompute)
-    // drives camera.elDeg/obsFacing directly, and letting RMB-look run concurrently would fight it
-    // (and would leave the cursor captured/hidden partway through a cutscene the user hasn't
-    // consented to control yet).
-    if (win && !showIntro)
+    // UC3: skip during the intro cinematic — updateIntroCinematic() (recordCompute) drives
+    // camera.elDeg/obsFacing directly, and letting RMB-look run concurrently would fight it (and
+    // would leave the cursor captured/hidden partway through a cutscene the user hasn't consented
+    // to control yet). Same early-unlock exception as the WASD/Q-E movement block in
+    // recordCompute: once the controls-hint beat is showing, updateIntroCinematic has already
+    // stopped forcing the camera (see its controlsLive check), so mouse-look — and this block's
+    // own camera.azDeg-from-obsFacing derivation just below, which movement now depends on too —
+    // can safely run alongside the (by then static) cinematic hold.
+    if (win && (!showIntro || introCaptionIndex >= kIntroControlsIndex))
     {
         // Clear cinematic mode as soon as RMB is released — the toggle only lives
         // while a pan is active, so it resets automatically for the next drag.
@@ -1502,15 +1506,15 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
             {
                 Clay_String padStr{false, (int32_t)strlen(kbPadBuf[ki]), kbPadBuf[ki]};
                 Clay_Color padCol = kb.listeningPad
-                                         ? Pal::listenKey
-                                         : Pal::keyText;
+                                        ? Pal::listenKey
+                                        : Pal::keyText;
                 CLAY_TEXT(padStr,
                           CLAY_TEXT_CONFIG({.textColor = padCol, .fontSize = fs(13)}));
             }
 
             Clay_Color rebindPadBg = kb.listeningPad
-                                          ? Pal::listenBtn
-                                          : (hovRebindPad[ki] ? Pal::btnHover : Pal::btnIdle);
+                                         ? Pal::listenBtn
+                                         : (hovRebindPad[ki] ? Pal::btnHover : Pal::btnIdle);
             CLAY(CLAY_IDI("KbRebindPad", ki), {.layout = {
                                                    .sizing = {CLAY_SIZING_FIXED(90), CLAY_SIZING_FIXED(20)},
                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -1644,11 +1648,11 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // settings.json's own "observer"/"camera" blocks regardless, so turning the intro off simply
     // resumes at whatever location was last saved.
     CLAY(CLAY_ID("PlayIntroRow"), {.layout = {
-                                        .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                        .padding = {4, 4, 4, 4},
-                                        .childGap = 8,
-                                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                                       .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                       .padding = {4, 4, 4, 4},
+                                       .childGap = 8,
+                                       .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                       .layoutDirection = CLAY_LEFT_TO_RIGHT}})
     {
         CLAY_TEXT(CLAY_STRING("Play intro on startup"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
@@ -2218,7 +2222,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     {
         Clay_Color resetBtnBg = resetDefaultsMsgTimer > 0.0f ? Pal::btnAccent
                                 : hovResetDefaults           ? Pal::btnHover
-                                                              : Pal::btnIdle;
+                                                             : Pal::btnIdle;
         CLAY(CLAY_ID("ResetDefaultsBtn"), {.layout = {
                                                .sizing = {CLAY_SIZING_FIXED(140), CLAY_SIZING_FIXED(24)},
                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -2612,17 +2616,17 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
         Clay_String aboutStr{false, (int32_t)strlen(aboutBuf), aboutBuf};
         CLAY_TEXT(aboutStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
         CLAY_TEXT(CLAY_STRING("Not affiliated with or endorsed by any company named in this simulation. "
-                               "Constellation parameters are drawn from public filings and are "
-                               "approximations for illustrative purposes."),
+                              "Constellation parameters are drawn from public filings and are "
+                              "approximations for illustrative purposes."),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
         CLAY_TEXT(CLAY_STRING("Portions of this software were written with AI assistance (Claude). "
-                               "All code was reviewed, tested, and integrated by the author."),
+                              "All code was reviewed, tested, and integrated by the author."),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
     }
 
     CLAY(CLAY_ID("AttrDivAbout"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                          .padding = {0, 0, 2, 2}},
-                               .backgroundColor = {30, 30, 32, 255}}) {}
+                                              .padding = {0, 0, 2, 2}},
+                                   .backgroundColor = {30, 30, 32, 255}}) {}
 
     CLAY(CLAY_ID("Attr0"), {.layout = {
                                 .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
@@ -2793,10 +2797,10 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
                                .backgroundColor = {30, 30, 32, 255}}) {}
 
     CLAY(CLAY_ID("Attr10"), {.layout = {
-                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                .padding = {6, 6, 5, 5},
-                                .childGap = 4,
-                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+                                 .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                 .padding = {6, 6, 5, 5},
+                                 .childGap = 4,
+                                 .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
         CLAY_TEXT(CLAY_STRING("Software libraries"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
@@ -2952,14 +2956,10 @@ void SatelliteSim::buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRend
                                       .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
                                   .backgroundColor = {70, 46, 12, 235},
                                   .cornerRadius = CLAY_CORNER_RADIUS(6),
-                                  .floating = {.offset = {0, 16},
-                                               .zIndex = 25,
-                                               .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP,
-                                                                .parent = CLAY_ATTACH_POINT_CENTER_TOP},
-                                               .attachTo = CLAY_ATTACH_TO_ROOT}})
+                                  .floating = {.offset = {0, 16}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
         CLAY_TEXT(CLAY_STRING("Recovered from an unexpected exit last time — graphics reset to Planetarium. "
-                               "Change it in Settings > Display."),
+                              "Change it in Settings > Display."),
                   CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
     }
 }
@@ -2996,7 +2996,7 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
     if (isControlsBeat)
     {
         snprintf(introControlsTextBuf, sizeof(introControlsTextBuf),
-                 "%s / %s  --  or the triggers  --  to raise/lower height",
+                 "%s / %s to raise/lower height",
                  keyDisplayName(keybindings[KB_RAISE_ELEV].key), keyDisplayName(keybindings[KB_LOWER_ELEV].key));
         text = introControlsTextBuf;
     }
@@ -3057,7 +3057,7 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
     if (introCaptionIndex >= kIntroHintRevealIndex)
     {
         CLAY(CLAY_ID("IntroSkipHint"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
-                                                    .padding = {8, 8, 4, 4}},
+                                                   .padding = {8, 8, 4, 4}},
                                         .backgroundColor = {0, 0, 0, 130},
                                         .cornerRadius = CLAY_CORNER_RADIUS(4),
                                         .floating = {.offset = {-16, -16},
@@ -3092,11 +3092,7 @@ void SatelliteSim::buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRende
                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
                                          .backgroundColor = {20, 40, 70, 235},
                                          .cornerRadius = CLAY_CORNER_RADIUS(6),
-                                         .floating = {.offset = {0, 16},
-                                                      .zIndex = 25,
-                                                      .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP,
-                                                                       .parent = CLAY_ATTACH_POINT_CENTER_TOP},
-                                                      .attachTo = CLAY_ATTACH_TO_ROOT}})
+                                         .floating = {.offset = {0, 16}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
         CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
     }
@@ -3120,11 +3116,7 @@ void SatelliteSim::buildScreenshotToast(float dt, const UIInput &inp, UIRenderer
                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
                                       .backgroundColor = {20, 60, 30, 235},
                                       .cornerRadius = CLAY_CORNER_RADIUS(6),
-                                      .floating = {.offset = {0, -16},
-                                                   .zIndex = 25,
-                                                   .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_BOTTOM,
-                                                                    .parent = CLAY_ATTACH_POINT_CENTER_BOTTOM},
-                                                   .attachTo = CLAY_ATTACH_TO_ROOT}})
+                                      .floating = {.offset = {0, -16}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_BOTTOM, .parent = CLAY_ATTACH_POINT_CENTER_BOTTOM}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
         CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
     }
@@ -3170,8 +3162,8 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
     }
 
     static constexpr uint32_t kBitTerrain = 1u, kBitOceanRefl = 8u, kBitAirglowRed = 16u,
-                               kBitAurora = 32u, kBitBeams = 128u, kBitCloudShadow = 256u,
-                               kBitBeamBlock = 512u, kBitFog = 2048u;
+                              kBitAurora = 32u, kBitBeams = 128u, kBitCloudShadow = 256u,
+                              kBitBeamBlock = 512u, kBitFog = 2048u;
 
     struct PresetValues
     {

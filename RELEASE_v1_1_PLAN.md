@@ -594,6 +594,15 @@ one of these silently fails**, and settings never persist. Move writes to
 `portable.txt` sits next to the exe, use `exeDir_` as today. Read-only data
 (`constellations.json`, `assets/`, `shaders/`) stays next to the exe — only writes move.
 
+**Polarity flipped 2026-08-01.** `portable.txt` is gone; `Paths::userDataDir()` now tries
+`exeDir()` first and only falls back to the platform AppData path if `exeDir()` fails an actual
+write probe (create+delete a small file — permission bits alone aren't trustworthy on Windows
+under UAC virtualization). Net effect for a normal zip-and-run install or a local Debug/Release
+build: settings/log/session-lock/perf-snapshots all land next to the exe with zero configuration,
+which is what a dev iterating locally expects and was the original complaint that prompted this.
+The read-only-install safety net NEW-4 was written for is preserved automatically by the write
+probe — no `portable.txt` marker required either direction anymore.
+
 ### NEW-5 — Settings schema versioning + reset `[x]` **P0** (done, predates session 30 — `kSettingsSchemaVersion`)
 
 A v1.0 `settings.json` will be read by v1.1, which now has presets, new keys, and re-tuned defaults.
