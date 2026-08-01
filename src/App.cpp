@@ -28,6 +28,11 @@ void App::run() {
 void App::initWindow() {
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    // Boot maximized (windowed, not exclusive fullscreen) rather than at the fixed WIN_W x WIN_H
+    // default — a small window the player has to manually enlarge undercuts the intro cinematic's
+    // impact and invites fiddling with the window instead of watching it. WIN_W/WIN_H are still
+    // passed as the restore size for whenever the player un-maximizes later.
+    glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
     window = glfwCreateWindow(WIN_W, WIN_H, sim->name(), nullptr, nullptr);
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, cbResize);
