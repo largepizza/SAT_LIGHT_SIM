@@ -81,6 +81,40 @@ Fixed by mirroring satellites' existing C12-follow-up-#33 cloud-occlusion sampli
 `star_point.frag`. Relevant to NEW-6's QA matrix — re-check star/cloud interaction across presets.
 Full writeup in `PLANETS_PLAN.md` (shared pipeline with planets).
 
+**Session 32 (2026-08-01): UC3 beat-sheet rewrite + two real bugs found along the way.** The
+session-31 beat sheet (table in UC3's section below) is superseded by a new narrative — see
+`CLAUDE.md`'s "Subsystem: Intro Cinematic (UC3)" for the authoritative current design. Highlights:
+- **Fixed opening vantage.** The intro now always opens from a real, hand-picked spot (California
+  coast at twilight, facing the SpaceX AI-datacenter satellites and the Reflect Orbital mirrors
+  aimed at the Topaz solar farm) instead of wherever `obsDir` already happened to be — locked via
+  new `kIntroObserverLatDeg/LonDeg` + `kIntroStartAzDeg/ElDeg/FovDeg` constants, force-applied at
+  the start of every playback (including a Settings > Display replay).
+- **Narrative reorder:** the "SAT LIGHT SIM" title card moved from the opening beat to the payoff
+  beat (arrival in LEO, backlit AI sats against a rising sun); a new "2036" date card opens instead.
+  The mid-flight Q/E-specific beat is gone — WASD + Q/E are now taught together in one combined
+  controls-hint beat right after the title.
+- **Bug found: `camera.azDeg` was never updated during playback.** `SkyCamera::viewMatrix()` (what
+  actually renders) reads `camera.azDeg`, not `obsFacing` — but `buildUI`'s per-frame
+  `obsFacing`→`camera.azDeg` derivation is skipped while `showIntro` is true (same gate as RMB
+  look), and `updateIntroCinematic` only ever wrote `obsFacing`. Net effect: the rendered camera
+  never actually panned in azimuth during the whole cinematic, then snapped to the correct azimuth
+  on the very first post-intro frame. Fixed by writing `camera.azDeg` directly each frame in
+  `updateIntroCinematic` alongside `obsFacing`.
+- **Bug found: `timeScaleIdx`'s compiled-in default was `1` ("10x"), not `0` ("1x").** Explains the
+  "time base isn't consistently 1x on bootup" report — `loadSettings()` overwrites it correctly
+  whenever `settings.json` has a `time.scale_idx` key, so it only ever showed up as 10x on a state
+  where that key was absent. Fixed the default, and separately hardened the intro's one-time init
+  to force `timeScaleIdx = 0` / `timePaused = false` / `timeDir = 1.0f` regardless, since a replay
+  runs on live state that `loadSettings()` never revisits.
+- **Dismissal narrowed to a single defined key/button** (literal Space; gamepad Start), replacing
+  "any key or click skips it." The old behavior meant a stray keypress or a click to focus the
+  window skipped the cinematic before almost anyone saw it play. The skip hint itself is now also
+  gated to appear only once the first real narrative line is showing, not from frame 0, so the
+  opening title card reads clean.
+- **The intro now hides the entire normal HUD** (left/right panels, settings/view-controls windows,
+  satellite/planet picking, scroll-to-zoom) rather than just overlaying its caption on top of
+  whatever HUD state was already visible.
+
 ---
 
 ## 0. Headline framing

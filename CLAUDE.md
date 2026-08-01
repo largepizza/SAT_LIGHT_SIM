@@ -859,8 +859,70 @@ render scale needs to matter again, the fix is making those two compute passes s
 ## Fixed Simulation State
 
 **Start epoch**: UTC 2036-06-21 00:00:00 → J2000 seconds = 1,150,891,200 (stored split: day 13,320 + 43,200 s)
-**Observer**: 67°S 67°W → ECEF `obsDir = {0.1527, -0.3596, -0.9205}`, facing north
+**Observer**: 67°S 67°W → ECEF `obsDir = {0.1527, -0.3596, -0.9205}`, facing north — this is only the
+compiled-in fallback used before `loadSettings()`/the intro cinematic override it; see below for
+where the observer actually starts in practice.
 **Moon phase offset**: `kMoonPhaseOffsetRad = 3.916 rad` → originally calibrated for 2026-03-30; moon phase at new epoch will differ
+
+---
+
+## Subsystem: Intro Cinematic (UC3)
+
+`showIntro` (default `true`, currently forced on every launch while UC3 is being iterated on — see
+the dated comment in `loadSettings()`) drives `updateIntroCinematic()`
+(`SatelliteSim.cpp`, called from `recordCompute()` in place of normal WASD/zoom input) through a
+fixed beat sheet, `kIntroKeyframes[]` (`SatelliteSim.h`). `buildIntroOverlay()`
+(`SatelliteSimUI.cpp`) only draws the caption/skip-hint text on top — the camera path itself *is*
+the cinematic.
+
+**Fixed vantage, locked every playback.** The intro always opens from `kIntroObserverLatDeg/LonDeg`
++ `kIntroStartAzDeg/ElDeg/FovDeg` (`SatelliteSim.h`) — the California coast at twilight facing the
+SpaceX AI-datacenter satellites and the Reflect Orbital mirrors aimed at the nearby Topaz solar
+farm — not whatever the player's current/saved observer position happens to be.
+`updateIntroCinematic`'s one-time init block (`!introBasisValid`) force-sets
+`obsDir`/`obsLatDeg`/`obsLonDeg`/`obsHeightOffset`/`camera.azDeg/elDeg/fovYDeg` from these
+constants before computing the East/North tangent basis the rest of playback rides on. The
+Display tab's "Replay Intro" button resets `introBasisValid = false`, so a replay re-locks to the
+same spot regardless of where the player has since wandered off to. Also forces
+`timeScaleIdx = 0` / `timePaused = false` / `timeDir = 1.0f` here — the beat sheet is tuned at 1x
+and a replay runs on live state, not a fresh boot, so it can't rely on `loadSettings()` alone.
+
+**`camera.azDeg` vs `obsFacing` — read this before touching keyframe azimuth.** `camera.azDeg` is
+what `SkyCamera::viewMatrix()` actually renders with; `obsFacing` is only the ground-movement
+tangent, and outside the intro `camera.azDeg` is *derived from* `obsFacing` every frame in
+`buildUI` (search "Derive camera.azDeg from obsFacing"). That derivation is skipped entirely while
+`showIntro` is true (same gate as the RMB-look block), so `updateIntroCinematic` must set BOTH
+every frame — it used to set only `obsFacing`, which meant the rendered view never actually panned
+in azimuth during playback and then snapped to match `obsFacing` on the first post-intro frame.
+Fixed by computing the mixed azimuth once and assigning it to both.
+
+**Beat sheet** (`kIntroKeyframes[]`, ~52s total): `kIntroYearIndex` (0) is a centered "2036" title
+card; `kIntroHintRevealIndex` (1) is the first narrative line and also where the bottom-right skip
+hint first appears (not from frame 0 — see below); beats 2-5 hold at ground level then pull to LEO
+starting mid-sheet; `kIntroTitleIndex` (6) is the arrival-in-LEO "SAT LIGHT SIM" reveal (camera
+motion stops here — `kIntroBenchEndT` marks this as the benchmark cutoff); `kIntroControlsIndex`
+(7) is the final WASD/Q-E controls hint, Q/E text generated at render time from live keybindings
+(`introControlsTextBuf`) same as the old system did.
+
+**Dismissal is a single defined key, not "any key."** `onKey()` only calls `finishIntro(true)` for
+literal `GLFW_KEY_SPACE` (independent of whatever `Pause/Resume` is currently rebound to);
+`pollGamepad()` only responds to `GLFW_GAMEPAD_BUTTON_START`. Mouse clicks do NOT skip —
+`buildIntroOverlay` still covers the screen with a mouse-capture rect so a click doesn't leak
+through to satellite picking, but it no longer calls `finishIntro`. This was a real usability
+issue in the previous "any key/click" version: almost no one saw the cinematic play out, because
+touching the keyboard or clicking into the window to focus it immediately skipped it.
+
+**The intro hides the entire normal HUD**, not just its own overlay — `buildUI()` checks
+`showIntro` before icon loading/scroll-zoom/satellite-picking and before the `uiVisible` check, so
+none of the left/right HUD panels, settings/view-controls windows, or scene-interaction input run
+while the cinematic owns the camera, regardless of whether the player has the rest of the UI
+toggled on or off.
+
+**`timeScaleIdx`'s compiled-in default was `1` ("10x"), not `0` ("1x")** — a real bug, now fixed.
+`loadSettings()` overrides it from `settings.json`'s `time.scale_idx` when present, which is why it
+looked "sometimes" wrong: a genuine first run (or any state where that key was never written)
+booted at 10x. The intro's one-time init above also force-sets it defensively, since a replay runs
+on live state that loadSettings() never touches again.
 
 ---
 

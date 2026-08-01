@@ -251,7 +251,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     // 2036-06-21 00:00:00 UTC = Unix 2097619200
     // Fixed start time: 1150891200 seconds from J2000 = 13320 days + 43200 s.
     // Stored split so float deltaT stays small regardless of time-warp distance.
-    constexpr int64_t kInitWholeSec = 1150891200LL + 6 * 30 * 24 * 60 * 60 + 17.5 * 60 * 60;
+    constexpr int64_t kInitWholeSec = 1150891200LL + 6 * 30 * 24 * 60 * 60 + 20.9 * 60 * 60;
     simDayJ2000 = kInitWholeSec / 86400LL;           // 13320
     simSecInDay = (double)(kInitWholeSec % 86400LL); // 43200.0
     simInitDayJ2000 = simDayJ2000;
@@ -580,18 +580,14 @@ void SatelliteSim::pollGamepad(float dt)
     if (!glfwGetGamepadState(gamepadId, &state))
         return;
 
-    // UC3/UC4: a controller has no keyboard/mouse to dismiss the intro with — any newly-pressed
-    // button skips it, mirroring onKey()'s "any key" behavior.
+    // UC3/UC4: a controller has no Space bar, so Start is its one defined skip button — mirrors
+    // onKey()'s single-key Space rule (see its comment) rather than the old "any newly-pressed
+    // button" behavior, which was just as easy to trigger by accident as a stray keypress/click.
     if (showIntro)
     {
-        for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; ++b)
-        {
-            if (state.buttons[b] == GLFW_PRESS && prevGpButtons[b] != GLFW_PRESS)
-            {
-                finishIntro(true);
-                break;
-            }
-        }
+        if (state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS &&
+            prevGpButtons[GLFW_GAMEPAD_BUTTON_START] != GLFW_PRESS)
+            finishIntro(true);
         memcpy(prevGpButtons, state.buttons, sizeof(prevGpButtons));
         gpState = state;
         return;
@@ -2538,12 +2534,36 @@ void SatelliteSim::cleanup(VkDevice device)
 // ─── updateIntroCinematic ───────────────────────────────────────────────────
 // UC3: drives the intro's fixed beat sheet (kIntroKeyframes, SatelliteSim.h). obsDir/obsFacing's
 // tangent basis is captured once (introEastEF/introNorthEF) since the intro never changes lat/lon
-// — only altitude, look elevation/FOV, and a facing-azimuth rotation change, so azDeg(t) can be
-// turned into obsFacing directly every frame instead of accumulating incremental rotations.
+// after its one-time init below — only altitude, look elevation/FOV, and a facing-azimuth
+// rotation change, so azDeg(t) can be turned into obsFacing directly every frame instead of
+// accumulating incremental rotations.
 void SatelliteSim::updateIntroCinematic(float dt)
 {
     if (!introBasisValid)
     {
+        // Lock the intro's starting location/orientation to the fixed vantage
+        // (kIntroObserverLatDeg/LonDeg, SatelliteSim.h) rather than wherever obsDir/camera
+        // happen to already be — otherwise a replay from a different in-game location would
+        // play the whole cinematic somewhere else, and the beat sheet's altitude/az/el values
+        // (tuned against this exact spot) would no longer line up with what's actually below.
+        float lat = glm::radians(kIntroObserverLatDeg);
+        float lon = glm::radians(kIntroObserverLonDeg);
+        obsDir = {cosf(lat) * cosf(lon), cosf(lat) * sinf(lon), sinf(lat)};
+        obsFacing = {-sinf(lat) * cosf(lon), -sinf(lat) * sinf(lon), cosf(lat)};
+        obsLatDeg = kIntroObserverLatDeg;
+        obsLonDeg = kIntroObserverLonDeg;
+        obsHeightOffset = 0.0f;
+        camera.azDeg = kIntroStartAzDeg;
+        camera.elDeg = kIntroStartElDeg;
+        camera.fovYDeg = kIntroStartFovDeg;
+
+        // "Ensure we are at 1x speed on start": the intro is a fixed, tuned-at-1x cinematic —
+        // force this regardless of whatever timeScaleIdx/pause/direction the player last saved
+        // or left the sim in (a replay in particular runs on live state, not a fresh boot).
+        timeScaleIdx = 0;
+        timePaused = false;
+        timeDir = 1.0f;
+
         float sL = obsDir.z;
         float cLH = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);
         float inv = (cLH > 1e-7f) ? 1.0f / cLH : 0.0f;
@@ -2568,7 +2588,14 @@ void SatelliteSim::updateIntroCinematic(float dt)
     obsHeightOffset = std::max(0.0f, glm::mix(a.altM, b.altM, ease));
     camera.elDeg = glm::mix(a.elDeg, b.elDeg, ease);
     camera.fovYDeg = glm::mix(a.fovDeg, b.fovDeg, ease);
-    float az = glm::radians(glm::mix(a.azDeg, b.azDeg, ease));
+    float azDegMixed = glm::mix(a.azDeg, b.azDeg, ease);
+    // Both must be set: camera.azDeg is what viewMatrix() actually renders with, while obsFacing
+    // is the ground-movement tangent buildUI's post-intro block re-derives camera.azDeg FROM —
+    // leaving either one stale caused a one-frame camera snap the moment the intro handed off
+    // (camera.azDeg was previously never touched here, so the rendered view didn't pan at all
+    // during playback and then jumped to match obsFacing on the very first post-intro frame).
+    camera.azDeg = azDegMixed;
+    float az = glm::radians(azDegMixed);
     obsFacing = glm::normalize(cosf(az) * introNorthEF + sinf(az) * introEastEF);
 
     // Track the most recently reached non-null caption (see IntroKeyframe's text field doc).
@@ -2576,8 +2603,8 @@ void SatelliteSim::updateIntroCinematic(float dt)
         if (kIntroKeyframes[k].text)
             introCaptionIndex = k;
 
-    // UC1 mechanism 2: accumulate GPU frame time across beats 1-4 for the end-of-intro preset
-    // promote/demote in finishIntro().
+    // UC1 mechanism 2: accumulate GPU frame time across the camera-motion beats for the
+    // end-of-intro preset promote/demote in finishIntro().
     if (introElapsed <= kIntroBenchEndT)
     {
         introBenchMsSum += gpuMsTotalSmoothed;
@@ -2876,7 +2903,14 @@ void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
 
     if (showIntro)
     {
-        finishIntro(true);
+        // A defined single skip key, not "any key": the intro used to be dismissed by literally
+        // any keypress (or a click — see buildIntroOverlay), which meant an incidental tap or a
+        // click into the window skipped it before anyone had a chance to see it. Space is the
+        // one deliberate escape — chosen as a literal key rather than whatever KB_PAUSE is
+        // currently bound to, since the intro isn't "pausing" anything and shouldn't move if the
+        // player has rebound Pause/Resume elsewhere.
+        if (key == GLFW_KEY_SPACE)
+            finishIntro(true);
         return;
     }
 
