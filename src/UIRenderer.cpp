@@ -11,6 +11,9 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h" // UC6: screenshot PNG encoding (used from SatelliteSim.cpp)
+
 // ── Standard includes ─────────────────────────────────────────────────────────
 #include "UIRenderer.h"
 #include "VulkanContext.h"
@@ -625,10 +628,15 @@ void UIRenderer::uploadIconAtlas(VulkanContext& ctx, const std::vector<uint8_t>&
     if (vkCreateImageView(ctx.device, &vci, nullptr, &iconView) != VK_SUCCESS)
         throw std::runtime_error("UIRenderer: vkCreateImageView (icon atlas) failed.");
 
-    // Sampler
+    // Sampler — NEAREST (not LINEAR) so pixel-art icons render crisp with hard edges instead of
+    // blended/blurry ones. Icons are now stored close to their actual display size (48x48, see
+    // CLAUDE.md/RELEASE_v1_1_PLAN.md — they used to ship at 512x512, an unnecessary 100x+
+    // oversample that LINEAR minification without mipmaps turned into blur+aliasing on top of
+    // each other, the worst of both worlds), so NEAREST at typical ~16-32px UI sizes reads as
+    // clean pixel art rather than the jagged mess NEAREST would be minifying straight from 512x512.
     VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-    sci.magFilter    = VK_FILTER_LINEAR;
-    sci.minFilter    = VK_FILTER_LINEAR;
+    sci.magFilter    = VK_FILTER_NEAREST;
+    sci.minFilter    = VK_FILTER_NEAREST;
     sci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;

@@ -1,0 +1,414 @@
+{
+  "_comment": "S1 (RELEASE_v1_1_PLAN.md): hand-curated list of real, large, publicly-known solar installations for TargetedReflector mirrors to aim at, plus a handful of deliberately-arbitrary non-solar entries (agrivoltaics-representative farm-belt points, polar population centers) clearly labeled as such in their name. Coordinates are approximate (site-center, from public knowledge) — adequate for a visualization, not a survey. capacity_mw is illustrative, not authoritative (0 for the non-solar entries). No license obligations: this is a hand-typed list of well-known public facilities, not a redistributed third-party dataset. The first entry (observer_spawn=true) must match SatelliteSim's fixed spawn point (67S 67W, see CLAUDE.md 'Fixed Simulation State') so at least one target is always reachable near the observer on first launch. Every array element under \"targets\" must be a real target object (lat/lon) — this loader has no comment-skipping logic, so a stray annotation object would be parsed as a bogus (0,0) target.",
+  "targets": [
+    {
+      "name": "Observer Spawn",
+      "lat": -67.0,
+      "lon": -67.0,
+      "capacity_mw": 0,
+      "observer_spawn": true
+    },
+    {
+      "name": "Bhadla Solar Park",
+      "lat": 27.535,
+      "lon": 71.915,
+      "capacity_mw": 2245
+    },
+    {
+      "name": "Pavagada Solar Park",
+      "lat": 14.098,
+      "lon": 77.288,
+      "capacity_mw": 2050
+    },
+    {
+      "name": "Rewa Ultra Mega Solar Park",
+      "lat": 24.53,
+      "lon": 81.39,
+      "capacity_mw": 750
+    },
+    {
+      "name": "Kurnool Ultra Mega Solar Park",
+      "lat": 15.75,
+      "lon": 78.20,
+      "capacity_mw": 1000
+    },
+    {
+      "name": "Kamuthi Solar Power Project",
+      "lat": 9.335,
+      "lon": 78.395,
+      "capacity_mw": 648
+    },
+    {
+      "name": "Charanka Solar Park",
+      "lat": 23.90,
+      "lon": 71.20,
+      "capacity_mw": 790
+    },
+    {
+      "name": "NP Kunta Ultra Mega Solar Park",
+      "lat": 14.35,
+      "lon": 78.30,
+      "capacity_mw": 978
+    },
+    {
+      "name": "Tengger Desert Solar Park",
+      "lat": 37.50,
+      "lon": 105.05,
+      "capacity_mw": 1547
+    },
+    {
+      "name": "Longyangxia Dam Solar Park",
+      "lat": 36.17,
+      "lon": 100.75,
+      "capacity_mw": 850
+    },
+    {
+      "name": "Datong Solar Power Top Runner Base",
+      "lat": 40.10,
+      "lon": 113.30,
+      "capacity_mw": 1070
+    },
+    {
+      "name": "Golmud Solar Park",
+      "lat": 36.40,
+      "lon": 94.90,
+      "capacity_mw": 500
+    },
+    {
+      "name": "Zhongwei Solar Park",
+      "lat": 37.50,
+      "lon": 105.20,
+      "capacity_mw": 1000
+    },
+    {
+      "name": "Yanchi Solar Park",
+      "lat": 37.80,
+      "lon": 107.40,
+      "capacity_mw": 1000
+    },
+    {
+      "name": "Gonghe Talatan Solar Park",
+      "lat": 36.28,
+      "lon": 100.35,
+      "capacity_mw": 4200
+    },
+    {
+      "name": "Kashgar Solar Park",
+      "lat": 39.47,
+      "lon": 75.99,
+      "capacity_mw": 500
+    },
+    {
+      "name": "Hami Solar Park",
+      "lat": 42.80,
+      "lon": 93.45,
+      "capacity_mw": 500
+    },
+    {
+      "name": "Delingha Solar Park",
+      "lat": 37.37,
+      "lon": 97.37,
+      "capacity_mw": 500
+    },
+    {
+      "name": "Topaz Solar Farm",
+      "lat": 35.38,
+      "lon": -120.05,
+      "capacity_mw": 550
+    },
+    {
+      "name": "Solar Star",
+      "lat": 34.86,
+      "lon": -118.44,
+      "capacity_mw": 579
+    },
+    {
+      "name": "Desert Sunlight Solar Farm",
+      "lat": 33.82,
+      "lon": -115.40,
+      "capacity_mw": 550
+    },
+    {
+      "name": "Copper Mountain Solar Facility",
+      "lat": 35.78,
+      "lon": -114.98,
+      "capacity_mw": 802
+    },
+    {
+      "name": "Mount Signal Solar",
+      "lat": 32.67,
+      "lon": -115.55,
+      "capacity_mw": 794
+    },
+    {
+      "name": "Springbok Solar Farm",
+      "lat": 35.05,
+      "lon": -117.38,
+      "capacity_mw": 590
+    },
+    {
+      "name": "Ivanpah Solar Complex",
+      "lat": 35.56,
+      "lon": -115.47,
+      "capacity_mw": 392
+    },
+    {
+      "name": "Gemini Solar Project",
+      "lat": 36.60,
+      "lon": -114.98,
+      "capacity_mw": 690
+    },
+    {
+      "name": "Roadrunner Solar",
+      "lat": 31.85,
+      "lon": -102.35,
+      "capacity_mw": 497
+    },
+    {
+      "name": "Mammoth Solar",
+      "lat": 41.20,
+      "lon": -86.70,
+      "capacity_mw": 1300
+    },
+    {
+      "name": "Fox Squirrel Solar",
+      "lat": 39.75,
+      "lon": -83.40,
+      "capacity_mw": 577
+    },
+    {
+      "name": "Double Black Diamond Solar",
+      "lat": 39.70,
+      "lon": -89.60,
+      "capacity_mw": 593
+    },
+    {
+      "name": "Spotsylvania Solar Energy Center",
+      "lat": 38.18,
+      "lon": -77.58,
+      "capacity_mw": 620
+    },
+    {
+      "name": "Iowa Corn Belt (agrivoltaics, representative)",
+      "lat": 42.00,
+      "lon": -93.60,
+      "capacity_mw": 0
+    },
+    {
+      "name": "Mississippi Delta Farmland (agrivoltaics, representative)",
+      "lat": 33.50,
+      "lon": -90.70,
+      "capacity_mw": 0
+    },
+    {
+      "name": "Crazy Ass Casa Grande Super Farm",
+      "lat": 32.8759,
+      "lon": -111.50841,
+      "capacity_mw": 1000
+    },
+    {
+      "name": "Cestas Solar Park",
+      "lat": 44.74,
+      "lon": -0.68,
+      "capacity_mw": 300
+    },
+    {
+      "name": "Nunez de Balboa",
+      "lat": 38.75,
+      "lon": -6.20,
+      "capacity_mw": 500
+    },
+    {
+      "name": "Francisco Pizarro Solar Plant",
+      "lat": 39.30,
+      "lon": -6.05,
+      "capacity_mw": 590
+    },
+    {
+      "name": "Villanueva Solar Park",
+      "lat": 25.75,
+      "lon": -102.02,
+      "capacity_mw": 828
+    },
+    {
+      "name": "Benban Solar Park",
+      "lat": 24.48,
+      "lon": 32.87,
+      "capacity_mw": 1650
+    },
+    {
+      "name": "Noor Abu Dhabi",
+      "lat": 23.90,
+      "lon": 54.30,
+      "capacity_mw": 1177
+    },
+    {
+      "name": "Al Dhafra Solar PV",
+      "lat": 23.75,
+      "lon": 54.10,
+      "capacity_mw": 2000
+    },
+    {
+      "name": "Mohammed bin Rashid Al Maktoum Solar Park",
+      "lat": 24.76,
+      "lon": 55.35,
+      "capacity_mw": 5000
+    },
+    {
+      "name": "Sakaka Solar PV Plant",
+      "lat": 29.97,
+      "lon": 40.21,
+      "capacity_mw": 300
+    },
+    {
+      "name": "Sudair Solar Plant",
+      "lat": 25.35,
+      "lon": 46.90,
+      "capacity_mw": 1500
+    },
+    {
+      "name": "Noor Ouarzazate Solar Complex",
+      "lat": 30.94,
+      "lon": -6.86,
+      "capacity_mw": 580
+    },
+    {
+      "name": "Kalyon Karapinar Solar",
+      "lat": 37.72,
+      "lon": 33.52,
+      "capacity_mw": 1350
+    },
+    {
+      "name": "Al Kharsaah Solar Plant",
+      "lat": 25.35,
+      "lon": 50.90,
+      "capacity_mw": 800
+    },
+    {
+      "name": "Jasper Solar Energy Project",
+      "lat": -28.50,
+      "lon": 24.13,
+      "capacity_mw": 96
+    },
+    {
+      "name": "Kathu Solar Park",
+      "lat": -27.70,
+      "lon": 22.95,
+      "capacity_mw": 100
+    },
+    {
+      "name": "Garissa Solar Plant",
+      "lat": -0.45,
+      "lon": 39.65,
+      "capacity_mw": 55
+    },
+    {
+      "name": "Cerro Dominador",
+      "lat": -22.90,
+      "lon": -69.75,
+      "capacity_mw": 210
+    },
+    {
+      "name": "El Romero Solar",
+      "lat": -29.35,
+      "lon": -70.70,
+      "capacity_mw": 246
+    },
+    {
+      "name": "Maria Elena Solar",
+      "lat": -22.35,
+      "lon": -69.65,
+      "capacity_mw": 72
+    },
+    {
+      "name": "Nyngan Solar Plant",
+      "lat": -31.55,
+      "lon": 147.20,
+      "capacity_mw": 102
+    },
+    {
+      "name": "Broken Hill Solar Plant",
+      "lat": -32.00,
+      "lon": 141.55,
+      "capacity_mw": 53
+    },
+    {
+      "name": "Bungala Solar Farm",
+      "lat": -32.60,
+      "lon": 138.30,
+      "capacity_mw": 275
+    },
+    {
+      "name": "Western Downs Solar Farm",
+      "lat": -26.75,
+      "lon": 150.60,
+      "capacity_mw": 400
+    },
+    {
+      "name": "Willow Springs Solar Farm",
+      "lat": -22.30,
+      "lon": 149.90,
+      "capacity_mw": 100
+    },
+    {
+      "name": "Limondale Solar Farm",
+      "lat": -34.15,
+      "lon": 142.35,
+      "capacity_mw": 349
+    },
+    {
+      "name": "Darlington Point Solar Farm",
+      "lat": -34.57,
+      "lon": 145.98,
+      "capacity_mw": 275
+    },
+    {
+      "name": "Clare Solar Farm",
+      "lat": -19.75,
+      "lon": 146.30,
+      "capacity_mw": 100
+    },
+    {
+      "name": "Anchorage, AK (polar illumination)",
+      "lat": 61.22,
+      "lon": -149.90,
+      "capacity_mw": 0
+    },
+    {
+      "name": "Fairbanks, AK (polar illumination)",
+      "lat": 64.84,
+      "lon": -147.72,
+      "capacity_mw": 0
+    },
+    {
+      "name": "Tromso, Norway (polar illumination)",
+      "lat": 69.65,
+      "lon": 18.96,
+      "capacity_mw": 0
+    },
+    {
+      "name": "Reykjavik, Iceland (polar illumination)",
+      "lat": 64.15,
+      "lon": -21.94,
+      "capacity_mw": 0
+    },
+    {
+      "name": "Murmansk, Russia (polar illumination)",
+      "lat": 68.97,
+      "lon": 33.09,
+      "capacity_mw": 0
+    },
+    {
+      "name": "Nuuk, Greenland (polar illumination)",
+      "lat": 64.18,
+      "lon": -51.72,
+      "capacity_mw": 0
+    },
+    {
+      "name": "McMurdo Station, Antarctica (polar illumination)",
+      "lat": -77.85,
+      "lon": 166.67,
+      "capacity_mw": 0
+    }
+  ]
+}

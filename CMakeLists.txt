@@ -116,7 +116,12 @@ file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 add_executable(ShaderFun ${SOURCES})
 set_target_properties(ShaderFun PROPERTIES OUTPUT_NAME "${EXE_BASENAME}")
 target_include_directories(ShaderFun PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/generated")
-target_link_libraries(ShaderFun PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json)
+
+# UC6 (RELEASE_v1_1_PLAN.md): screenshot PNG encoding runs on a std::thread. A no-op on MSVC
+# (thread support is built into the runtime there), but GCC/Clang on Linux/macOS need an explicit
+# pthread link or std::thread silently fails to link.
+find_package(Threads REQUIRED)
+target_link_libraries(ShaderFun PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json Threads::Threads)
 
 # Shader compilation
 find_program(GLSLC glslc HINTS "$ENV{VULKAN_SDK}/bin")
@@ -182,6 +187,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data")
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/data/constellations.json"
             "$<TARGET_FILE_DIR:ShaderFun>/constellations.json"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/reflector_targets.json"
+            "$<TARGET_FILE_DIR:ShaderFun>/reflector_targets.json"
         COMMENT "Copying data files to output directory"
     )
 endif()

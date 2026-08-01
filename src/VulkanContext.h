@@ -53,6 +53,12 @@ struct VulkanContext {
     // in the surface's supported list. A simulation changes this and then reports true from
     // Simulation::consumeSwapchainRebuildRequest() to have App rebuild the swapchain with it.
     VkPresentModeKHR         presentModePreference = VK_PRESENT_MODE_FIFO_KHR;
+    // UC6 (RELEASE_v1_1_PLAN.md): true if the surface advertised TRANSFER_SRC support for
+    // swapchain images (near-universal but not spec-guaranteed) — createSwapchain() only adds
+    // VK_IMAGE_USAGE_TRANSFER_SRC_BIT to ci.imageUsage when this would be true, since requesting
+    // an unsupported usage bit is invalid and would fail swapchain creation outright. Simulations
+    // must gate screenshot capture on this rather than assuming the copy will always succeed.
+    bool                     screenshotSupported = false;
 
     // ── Render pass & framebuffers ─────────────────────────────────────────
     VkRenderPass                renderPass = VK_NULL_HANDLE;

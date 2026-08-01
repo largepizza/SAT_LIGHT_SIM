@@ -431,6 +431,13 @@ void VulkanContext::createSwapchain(GLFWwindow *window)
     ci.imageExtent = ext;
     ci.imageArrayLayers = 1;
     ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    // UC6: screenshots need to vkCmdCopyImageToBuffer straight off the swapchain image, which
+    // requires TRANSFER_SRC usage — only request it when the surface actually advertises support
+    // (near-universal, but not guaranteed by the spec); requesting an unsupported bit would fail
+    // swapchain creation outright, so this degrades to "no screenshots" instead.
+    screenshotSupported = (sc.caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    if (screenshotSupported)
+        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     uint32_t qfams[] = {graphicsFamily, computeFamily};
     if (graphicsFamily != computeFamily)
     {

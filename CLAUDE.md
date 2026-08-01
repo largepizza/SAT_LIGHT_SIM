@@ -391,20 +391,42 @@ moonDirENU (vec4) — xyz=dir, w=illum   — offset 96
 
 Mirrors in `TargetedReflector` mode aim at the nearest valid night-side ground target. All per-satellite selection and slew computation runs in `sat_orbit.comp`.
 
-### Target generation (once at init)
-`kNumReflectorTargets = 201` random ECEF unit vectors, uniformly distributed on sphere.
-Last slot (index 200) is fixed at the observer spawn point (67°S, 67°W) — always aimed here when in darkness.
+### Target generation (once at init) — S1, RELEASE_v1_1_PLAN.md
+`SatelliteSim::loadReflectorTargets()` reads `reflector_targets.json` (next to the exe, moddable
+exactly like `constellations.json`) — a hand-curated list of ~50 real, publicly-known solar
+installations (`{name, lat, lon, capacity_mw}`), with the first entry flagged
+`"observer_spawn": true` at the exact fixed spawn point (67°S, 67°W — see "Fixed Simulation
+State"). Falls back to `generateReflectorTargetsRandomFallback()` (uniformly-random ECEF points,
+still with a real fixed entry at index 0 for the observer-spawn pin) if the file is missing,
+malformed, or empty. `kNumReflectorTargets = 201` is now a **capacity** (buffer sizing), not the
+real count — `reflectorTargetCount` (≤ capacity) holds how many actually loaded.
+`reflectorObserverSpawnIdx` records which loaded index is the pin (informational/logging).
 
-### Per-frame CPU update (updatePositions)
-Rotates targets from ECEF to ECI via GMST = `kOmegaEarth × t`.
-Marks each target valid (night-side only): `dot(normalize(targetECI), sunDirECI) < 0`.
-Uploads `GpuReflectorTarget[201]` to `reflectorTargetsBuf` (host-visible, mapped).
+Per-target ground radius (`reflectorTargetsRadiusM[]`, real terrain elevation via a 3×3-max
+`earthElevCpu` lookup) is computed by the shared `computeReflectorTargetElevationRadius(ti)`
+helper — used by both the JSON path and the fallback.
+
+### Per-frame CPU update (updatePositions) — S1 compaction
+Rotates the `reflectorTargetCount` loaded targets from ECEF to ECI via GMST = `kOmegaEarth × t`,
+then **compacts**: only night-side-valid entries (`dot(normalize(targetECI), sunDirECI) < 0`) are
+written to `reflectorTargetsMapped`, packed at the front — day-side targets are simply not
+written, not flagged-and-skipped. `GpuReflectorTarget.origIdx` (renamed from the old `.valid` 0/1
+flag) carries each packed entry's **original** target index instead, since `BeamCloudBlockBuf`
+(written by `beam_cloud_block.comp`, dispatched over `reflectorTargetCount` — see its own section
+below) stays indexed by original target index and is deliberately NOT reordered.
+`reflectorActiveCount` (the packed count) is sent to `sat_orbit.comp` as
+`SatOrbitPC::activeTargetCount`.
 
 ### Per-satellite (GPU, sat_orbit.comp)
-Scans all 201 targets, picks nearest by `dot(satZenith, normalize(targetECI))`.
-Mirror normal = `normalize(sunDirECI + toTarget)` — reflects sunlight toward target by half-vector identity.
-Falls back to FlatMirror45 (straight down) if no valid targets exist.
-Slew state persists in `mirrorNormalsBuf` (device-local, read+write in place each dispatch).
+Scans only `pc.activeTargetCount` packed entries (typically well under `reflectorTargetCount`,
+which itself is already far under the old flat 201) — no per-entry validity check needed, since
+everything in that range is already night-side-valid by construction. Picks nearest by
+`dot(satZenith, normalize(targetECI))`; the winning `bestPos` is captured directly during the scan
+(the compacted buffer can't be re-indexed by the original index afterward), while `bestIdx` keeps
+the ORIGINAL index for the `beamCloudBlock[bestIdx]` lookup. Mirror normal =
+`normalize(sunDirECI + toTarget)` — reflects sunlight toward target by half-vector identity. Falls
+back to FlatMirror45 (straight down) if no valid targets exist. Slew state persists in
+`mirrorNormalsBuf` (device-local, read+write in place each dispatch).
 
 ### Mirror slew rate
 `kMirrorRotRateDegPerSec = 1.0f` degrees per **simulated** second — consistent across all time warp levels.
