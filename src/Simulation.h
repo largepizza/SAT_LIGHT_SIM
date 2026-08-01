@@ -93,4 +93,34 @@ public:
     // onResize sequence App already runs after a window resize. Must clear its own pending state
     // before returning true, since App calls this once per frame and won't call it again.
     virtual bool consumeSwapchainRebuildRequest() { return false; }
+
+    // UC4 (RELEASE_v1_1_PLAN.md): "cheap 90%" gamepad UI navigation — a virtual cursor driven by
+    // the right stick instead of full focus-based traversal. Called by App right before
+    // ui.beginFrame() each frame; when this returns true, App overrides that frame's real mouse
+    // position and left-click state with (x, y, lmb) before building the UI, so every existing
+    // Clay_Hovered()/click handler works unmodified. Default: no override (mouse/touch-only
+    // simulations ignore this).
+    virtual bool virtualCursor(float& x, float& y, bool& lmb) const { return false; }
+
+    // ── UC6: screenshots (RELEASE_v1_1_PLAN.md) ────────────────────────────────
+    // True for exactly one frame — the frame a screenshot was requested and should be captured
+    // "clean" (no UI overlay). Checked by App before ui.record() to decide whether to skip it;
+    // read-only (does not consume/clear anything) so it can be checked without side effects.
+    virtual bool wantsCleanScreenshot() const { return false; }
+
+    // Called once per frame, right after the render pass ends (image is in PRESENT_SRC_KHR
+    // layout, holding the final composited frame — including UI unless wantsCleanScreenshot()
+    // suppressed it) and before the command buffer is ended. A no-op unless a screenshot is
+    // actually pending. Implementations that need one should record a layout transition + copy of
+    // `image` into their own staging buffer here; the buffer isn't safe to read until the fence
+    // for THIS submission is waited on, which happens at the top of the NEXT drawFrame — see
+    // finalizeScreenshot(). Default: no-op.
+    virtual void recordScreenshotCopy(VkCommandBuffer /*cmd*/, VulkanContext& /*ctx*/, VkImage /*image*/) {}
+
+    // Called once per frame, right after App waits on the frame fence (same point
+    // ctx.resolveTimestamps() already reads back the previous frame's GPU timestamps — the
+    // established "read back what last frame's GPU work produced" point in this codebase) —
+    // finishes any screenshot whose copy was recorded last frame: maps the staging buffer,
+    // encodes, writes the file, clears pending state. Default: no-op.
+    virtual void finalizeScreenshot() {}
 };

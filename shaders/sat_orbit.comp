@@ -96,9 +96,14 @@ layout(set = 0, binding = 2) buffer MirrorNormalBuf {
 };
 
 // ── Reflector ground targets: updated each frame by CPU ───────────────────────
-// xyz = ECI position (Earth-radius-scaled), w = 1.0 valid / 0.0 invalid.
+// S1 compaction (RELEASE_v1_1_PLAN.md): CPU packs only the night-side-VALID targets into
+// [0, pc.activeTargetCount) — no invalid entries are ever written here, so the scan loop below
+// doesn't need to skip anything. xyz = ECI position (Earth-radius-scaled); w = the target's
+// ORIGINAL index (float, cast back to int) into reflectorTargetsECEF/RadiusM and — critically —
+// into BeamCloudBlockBuf below, which stays indexed by original target index and is NOT
+// reordered. Entries at or beyond pc.activeTargetCount are stale/unused.
 layout(set = 0, binding = 3) readonly buffer ReflectorTargetBuf {
-    vec4 reflTargets[];  // xyz=posECI, w=valid
+    vec4 reflTargets[];  // xyz=posECI, w=origIdx
 };
 
 // ── Reflect-Orbital ground beams (C12): capped atomic-append, no arbitration ────────────────
@@ -162,6 +167,10 @@ layout(push_constant) uniform PC {
                              // #34: was offset 104 — beamFootprintRadM (the old flat-constant
                              // footprint override) removed entirely; footprint is now physically
                              // derived from mirror area + range at the write site below.
+    uint  activeTargetCount; // offset 104 — S1: number of valid entries packed at the front of
+                             // ReflectorTargetBuf this frame (see that buffer's doc comment above)
+    float minBeamElevSin;   // offset 108 — S1 follow-up: sin(minimum acceptable local elevation
+                             // angle at a candidate target) — see the TargetedReflector block below
 } pc;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -181,8 +190,14 @@ const uint AM_TARGETED_REFLECTOR = 6u;
 const uint AM_KNIFE_EDGE         = 7u;
 const uint AM_SUN_PERP           = 8u;  // cross(sunDir, satNadir) — thermal radiator edge-on to sun
 
-// Number of reflector targets — must match kNumReflectorTargets in SatelliteSim.h.
-const int NUM_TARGETS = 201;
+// Cheap deterministic hash, [0,1). Not cryptographic — just needs to look unrelated for nearby
+// seeds. Used by the TargetedReflector target-selection reservoir sample below.
+float hash11(float x) {
+    x = fract(x * 0.1031);
+    x *= x + 33.33;
+    x *= x + x;
+    return fract(x);
+}
 
 // ── Compute a surface normal for non-TargetedReflector attitude modes ─────────
 vec3 computeNormal(uint mode, SatOrbit orb, vec3 satNadir, vec3 velHat, vec3 primary)
@@ -323,51 +338,115 @@ void main()
     // ── Primary surface normal ────────────────────────────────────────────────
     vec3 surfN0;
     if (orb.primaryAttitude == AM_TARGETED_REFLECTOR) {
-        // Scan all valid night-side targets; pick nearest by dot(satZenith, targetDir).
-        int   bestIdx = -1;
-        float bestCos = -2.0;
-        vec3  satZenith = -satNadir; // from Earth center toward satellite
-        for (int ti = 0; ti < NUM_TARGETS; ++ti) {
-            vec4 td = reflTargets[ti];
-            if (td.w < 0.5) continue;
-            float c = dot(satZenith, normalize(td.xyz));
-            if (c > bestCos) { bestCos = c; bestIdx = ti; }
+        // S1 follow-up: two problems with the original "always pick the single nearest target"
+        // rule, found once targets became real clustered sites instead of ~uniform random points:
+        //
+        // 1. Grazing beams. "Nearest" was angular proximity of the SUB-SATELLITE point to the
+        //    target (dot(satZenith, targetDir)) — a proxy that's monotonic with elevation for a
+        //    GIVEN satellite, but says nothing about whether the BEST available target is actually
+        //    any good. With sparse clustered sites, a satellite with no nearby cluster below it
+        //    would still confidently pick its "best" (least-bad) option even at a near-horizon
+        //    grazing angle, where atmospheric extinction (Kasten & Young airmass, same formula
+        //    sat_flare.comp/updateStars() use) destroys most of the delivered power anyway. Fixed
+        //    by computing the actual local elevation angle AT THE TARGET (the physically relevant
+        //    quantity) and rejecting anything below pc.minBeamElevSin — no target clearing the bar
+        //    means no beam at all (pre-aim/hold fallback below), not a bad one.
+        //
+        // 2. Uneven load. Deterministically picking "the" best target means every satellite that
+        //    can see a popular clustered site pointing at it does — some sites get hit by dozens
+        //    of satellites at once while others (this satellite's 2nd/3rd-best options) get none.
+        //    Fixed via reservoir sampling: each ACCEPTABLE (cleared the elevation bar) candidate
+        //    ends with equal probability of being chosen, using a hash seeded by this satellite's
+        //    own stable index `i` — a pure function of (i, this frame's target set), so it's
+        //    deterministic and won't flicker frame-to-frame, and spreads different satellites
+        //    across different acceptable targets with NO cross-satellite arbitration (satellites
+        //    never communicate or compete for a slot — see C12 follow-up #9's flicker history for
+        //    why that's a hard requirement here, not a nice-to-have).
+        int   bestIdx = -1;   // elevation-gated — the only one allowed to actually beam (see below)
+        vec3  bestPos = vec3(0.0);
+        int   acceptCount = 0;
+        int   nearIdx = -1;   // ANY night-valid target, nearest by angular proximity — no beam,
+        vec3  nearPos = vec3(0.0); // attitude-only "pre-aim" fallback, see below
+        float nearCos = -2.0;
+        vec3  satZenith = -satNadir;
+        for (int k = 0; k < int(pc.activeTargetCount); ++k) {
+            vec4 td = reflTargets[k];
+            vec3 tPos = td.xyz;
+            vec3 tDir = normalize(tPos);
+
+            float c = dot(satZenith, tDir);
+            if (c > nearCos) { nearCos = c; nearIdx = int(td.w + 0.5); nearPos = tPos; }
+
+            // Local elevation of the satellite as seen FROM the target (sin of it, to match
+            // pc.minBeamElevSin — avoids an asin() per candidate).
+            float sinElev = dot(tDir, normalize(satECI - tPos));
+            if (sinElev < pc.minBeamElevSin) continue;
+            ++acceptCount;
+            float r = hash11(float(i) * 7919.0 + float(acceptCount) * 104729.0);
+            if (r < 1.0 / float(acceptCount)) { bestIdx = int(td.w + 0.5); bestPos = tPos; }
         }
 
-        vec3 ideal;
-        if (bestIdx < 0) {
-            // No valid targets: fall back to FlatMirror45 (reflect straight down).
-            vec3  n   = pc.sunDirECI + satNadir;
-            float len = length(n);
-            ideal = (len > 1e-5) ? n / len : satNadir;
-        } else {
-            vec3 toTarget = normalize(reflTargets[bestIdx].xyz - satECI);
+        // S1 follow-up #2: limited mirror-slew "pointing budget" — homing all the way to
+        // FlatMirror45 (straight down) every time a satellite loses its target, then slewing all
+        // the way back out when a new one appears, wastes it on a detour through an orientation
+        // that serves nothing. Two-tier fallback instead:
+        //  - No beam-quality target, but SOME night-valid target exists nearby: pre-aim toward it
+        //    (nearIdx/nearPos, no elevation floor) — arriving early beats a cold start once it (or
+        //    a neighbor, as this satellite continues along its orbit) actually clears the bar. No
+        //    beam is drawn for this — see the bestIdx-gated block below.
+        //  - Nothing at all this frame: HOLD the current attitude (skip the mirror-state write
+        //    entirely) rather than homing to flat — whatever it was last doing is a more useful
+        //    orientation to already be in than nadir-down, and there's nothing to home to anyway.
+        //    FlatMirror45 is used ONLY as the very first pose a satellite ever takes (state.w<0.5,
+        //    never yet initialized) — a sane default to start from, not a repeated homing target.
+        bool haveIdeal = (bestIdx >= 0) || (nearIdx >= 0);
+        vec3 ideal = satNadir;
+        if (bestIdx >= 0) {
+            vec3 toTarget = normalize(bestPos - satECI);
+            vec3 n   = pc.sunDirECI + toTarget;
+            float nl = length(n);
+            ideal = (nl > 1e-5) ? n / nl : satNadir;
+        } else if (nearIdx >= 0) {
+            vec3 toTarget = normalize(nearPos - satECI);
             vec3 n   = pc.sunDirECI + toTarget;
             float nl = length(n);
             ideal = (nl > 1e-5) ? n / nl : satNadir;
         }
 
-        // Rate-limit mirror slew toward ideal direction.
         vec4 state = mirrorNormals[i];
-        if (state.w < 0.5) {
-            // Uninitialized: snap to ideal on first frame.
-            surfN0 = ideal;
-        } else {
-            vec3  cur      = state.xyz;
-            float maxAngle = radians(pc.mirrorSlewDegPerSec) * pc.simDt;
-            float cosA     = clamp(dot(cur, ideal), -1.0, 1.0);
-            float angle    = acos(cosA);
-            if (angle <= maxAngle) {
+        if (haveIdeal) {
+            // Rate-limit mirror slew toward ideal direction.
+            if (state.w < 0.5) {
+                // Uninitialized: snap to ideal on first frame.
                 surfN0 = ideal;
             } else {
-                surfN0 = normalize(mix(cur, ideal, maxAngle / angle));
+                vec3  cur      = state.xyz;
+                float maxAngle = radians(pc.mirrorSlewDegPerSec) * pc.simDt;
+                float cosA     = clamp(dot(cur, ideal), -1.0, 1.0);
+                float angle    = acos(cosA);
+                if (angle <= maxAngle) {
+                    surfN0 = ideal;
+                } else {
+                    surfN0 = normalize(mix(cur, ideal, maxAngle / angle));
+                }
             }
+            mirrorNormals[i] = vec4(surfN0, 1.0);
+        } else if (state.w < 0.5) {
+            // Never had a real target and none available now: FlatMirror45 as a sane starting
+            // pose, same formula as the old unconditional fallback.
+            vec3  n   = pc.sunDirECI + satNadir;
+            float len = length(n);
+            surfN0 = (len > 1e-5) ? n / len : satNadir;
+            mirrorNormals[i] = vec4(surfN0, 1.0);
+        } else {
+            // Hold last attitude — mirrorNormals[i] is deliberately left untouched.
+            surfN0 = state.xyz;
         }
-        mirrorNormals[i] = vec4(surfN0, 1.0);
 
         // ── Ground beam (C12): write into reflectBeamsBuf if a real target is locked ──
-        // Only meaningful when a valid night-side target was actually found (bestIdx >= 0);
-        // the FlatMirror45 fallback above has no real ground target to illuminate.
+        // Only meaningful when a beam-QUALITY target was actually found (bestIdx >= 0, elevation-
+        // gated) — pre-aiming at nearIdx or holding the last attitude (both above) have no real
+        // ground target worth illuminating, by design (see the S1 follow-up comment above).
         //
         // SITE-referenced, not OBSERVER-referenced (revised 2026-07-21): this used to also
         // require the TARGET to clear the observer's own local horizon (targetSinEl >
@@ -385,7 +464,7 @@ void main()
         // (cloud_march.comp / sat_sky.frag) instead, using a smooth cutoff rather than a fragile
         // horizon test — see TERRAIN_PLAN.md C12 follow-up #5 for the full rationale.
         if (bestIdx >= 0) {
-            vec3 targetECI    = reflTargets[bestIdx].xyz;
+            vec3 targetECI    = bestPos; // captured during the scan above — see its comment
             vec3 targetRelPos = targetECI - pc.obsECI;
             vec3 targetENU    = vec3(dot(targetRelPos, pc.enuX.xyz),
                                       dot(targetRelPos, pc.enuY.xyz),

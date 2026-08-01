@@ -27,6 +27,7 @@ static constexpr int kIconAngleRight = 1; // pixel--angle-right.png → speed up
 static constexpr int kIconPause = 3;    // pixel--pause.png
 static constexpr int kIconPlay = 4;     // pixel--play.png
 static constexpr int kIconSettings = 5; // pixel--settings.png
+static constexpr int kIconCamera = 6;   // camera-solid.png — UC6 screenshot button
 
 // Settings schema version (NEW-5). Bump this whenever a settings.json change would make an
 // old file's graphics-affecting values (photometry/clouds/render_scale) meaningless against
@@ -327,7 +328,11 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // Cinematic mode (RMB + ALT held): mouse input adds force to a velocity that
     // drifts and decays, so the camera coasts smoothly after the mouse stops.
     // Releasing ALT instantly zeroes the velocity and returns to direct control.
-    if (win)
+    // UC3: skip entirely during the intro cinematic — updateIntroCinematic() (recordCompute)
+    // drives camera.elDeg/obsFacing directly, and letting RMB-look run concurrently would fight it
+    // (and would leave the cursor captured/hidden partway through a cutscene the user hasn't
+    // consented to control yet).
+    if (win && !showIntro)
     {
         // Clear cinematic mode as soon as RMB is released — the toggle only lives
         // while a pan is active, so it resets automatically for the next drag.
@@ -415,6 +420,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
     const UIInput &inp = ui.input();
 
+    // UC4: mouse click/drag/scroll means the player is at the mouse, not the pad.
+    if (inp.lmbPressed || inp.rmbPressed || inp.scrollY != 0.0f || camera.captured)
+        lastInputWasGamepad = false;
+
     // ── Lazy icon loading (first buildUI call after init) ─────────────────────
     if (!iconsLoaded && ctx_)
     {
@@ -425,8 +434,9 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             "assets/icons/ui/pixel--pause.png",
             "assets/icons/ui/pixel--play.png",
             "assets/icons/ui/pixel--settings.png",
+            "assets/icons/ui/camera-solid.png",
         };
-        ui.loadIcons(*ctx_, iconPaths, 6);
+        ui.loadIcons(*ctx_, iconPaths, 7);
         iconsLoaded = true;
     }
 
@@ -492,6 +502,22 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
     buildIntroOverlay(inp, ui);
     buildCrashRecoveryNotice(dt, inp, ui);
+    buildGraphicsAutoNotice(dt, inp, ui);
+    buildScreenshotToast(dt, inp, ui);
+
+    // UC4: draw the virtual cursor itself — inp.mouseX/Y IS vCursorX/Y here (App overrode the
+    // real mouse position before this frame's ui.beginFrame()), so no separate position plumbing
+    // is needed. Drawn last so it's above every other panel.
+    if (vCursorActive)
+    {
+        Clay_Color dotCol = vCursorClick ? Pal::btnAccent : Clay_Color{255, 255, 255, 230};
+        CLAY(CLAY_ID("VirtualCursor"), {.layout = {.sizing = {CLAY_SIZING_FIXED(10), CLAY_SIZING_FIXED(10)}},
+                                        .backgroundColor = dotCol,
+                                        .cornerRadius = CLAY_CORNER_RADIUS(5),
+                                        .floating = {.offset = {inp.mouseX - 5.0f, inp.mouseY - 5.0f},
+                                                     .zIndex = 40,
+                                                     .attachTo = CLAY_ATTACH_TO_ROOT}}) {}
+    }
 }
 
 // ─── buildLeftHudPanel ──────────────────────────────────────────────────────
@@ -652,6 +678,29 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 snprintf(tip, sizeof(tip), "Reverse time (%s)", keyDisplayName(keybindings[KB_REVERSE].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY_TEXT(CLAY_STRING("R"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(13)}));
+            }
+
+            // ── Screenshot (UC6) ─────────────────────────────────────────────────
+            bool shotBusy = screenshotEncoding.load() || screenshotCopyPending || screenshotRequested;
+            Clay_Color shotBg = shotBusy ? Pal::pauseActive : (hovScreenshot ? Pal::btnHover : Pal::btnIdle);
+            CLAY(CLAY_ID("TimeScreenshotBtn"), {.layout = {
+                                                    .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                                .backgroundColor = shotBg,
+                                                .cornerRadius = CLAY_CORNER_RADIUS(4)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovScreenshot);
+                sndClick(n, inp.lmbPressed);
+                if (n && inp.lmbPressed)
+                    requestScreenshot();
+                hovScreenshot = n;
+                static char tip[32];
+                snprintf(tip, sizeof(tip), "Screenshot (%s)", keyDisplayName(keybindings[KB_SCREENSHOT].key));
+                ui.tooltip(inp, n, tip, fs(11));
+                CLAY(CLAY_ID("TimeScreenshotIcon"), {.layout = {
+                                                         .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
+                                                     .image = {.imageData = (void *)(intptr_t)(kIconCamera + 1)}}) {}
             }
         }
     }
@@ -1539,6 +1588,43 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                     CLAY_TEXT(presetLabelStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
                 }
             }
+        }
+    }
+
+    // ── Replay Intro (UC3) ───────────────────────────────────────────────────
+    CLAY(CLAY_ID("ReplayIntroRow"), {.layout = {
+                                         .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                         .padding = {4, 4, 4, 4},
+                                         .childGap = 8,
+                                         .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                         .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        Clay_Color replayBtnBg = hovReplayIntro ? Pal::btnHover : Pal::btnIdle;
+        CLAY(CLAY_ID("ReplayIntroBtn"), {.layout = {
+                                             .sizing = {CLAY_SIZING_FIXED(140), CLAY_SIZING_FIXED(22)},
+                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                         .backgroundColor = replayBtnBg,
+                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovReplayIntro);
+            sndClick(n, inp.lmbPressed);
+            hovReplayIntro = n;
+            if (n && inp.lmbPressed && !showIntro)
+            {
+                // Rewind the playhead; introIsReplay suppresses the UC1 benchmark regardless of
+                // how this playthrough ends (see finishIntro) — it's a one-shot first-run
+                // decision, not something a replay should redo.
+                showIntro = true;
+                introElapsed = 0.0f;
+                introCaptionIndex = 0;
+                introBasisValid = false;
+                introBenchMsSum = 0.0f;
+                introBenchFrames = 0;
+                introIsReplay = true;
+            }
+            ui.tooltip(inp, n, "Replay the cinematic intro", fs(11));
+            CLAY_TEXT(CLAY_STRING("Replay Intro"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
         }
     }
 
@@ -2430,9 +2516,10 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Beam max range (m)", &beamMaxRangeM, 50000.0f, 2000000.0f, 50000.0f, "%.0f", 41},
         {"Beam sky glow gain", &beamSkyGlowGain, 0.0f, 1.0f, 0.01f, "%.2f", 42},
         {"Mirror slew rate (deg/s)", &mirrorSlewDegPerSec, 1.0f, 60.0f, 1.0f, "%.0f", 43},
-        // C12 follow-up #44: slot 44 ("Beam extinction") removed along with the analytic beam
-        // sky tube it tuned — the replacement per-sample beam-cloud term has no separate
-        // extinction exponent. Index 44 deliberately left unused, same pattern as slot 40 above.
+        // S1 follow-up (RELEASE_v1_1_PLAN.md): reuses slot 44, freed by C12 follow-up #44's
+        // removed "Beam extinction" slider — see that removal's comment (still accurate re: why
+        // the slot was empty; this is the first thing to reuse it).
+        {"Min beam elevation (deg)", &reflectorMinElevDeg, 0.0f, 60.0f, 1.0f, "%.0f", 44},
         {"Beam glow bleed gain", &beamGlowBleedGain, 0.0f, 0.01f, 0.0001f, "%.2f", 45},
         {"Cloud shadow range (m)", &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
         {"Beam near-field fade (m)", &beamNearFieldFadeM, 1000.0f, 500000.0f, 1000.0f, "%.0f", 46},
@@ -2693,32 +2780,66 @@ void SatelliteSim::buildViewControlsWindow(const UIInput &inp, UIRenderer &ui)
 }
 
 // ─── buildViewControlsBody ──────────────────────────────────────────────────
+// UC4: two clearly-separated groups. "Digital" rows are all real keybindings entries — looked up
+// live, so a rebind (or a controller with a custom gpButton) is reflected immediately, including
+// KB_RAISE_ELEV/KB_LOWER_ELEV (Q/E), which used to be a hardcoded, non-rebind-aware string here.
+// "Analog" rows are the axes (WASD+stick move, mouse-drag+stick look, scroll zoom, trigger
+// elevation) that have no keybindings entry at all — deliberately not rebindable (see
+// gpElevRaise/gpElevLower's comment in SatelliteSim.h) — labeled as such instead of being mixed
+// in with the rebindable list. Within each row, lastInputWasGamepad puts whichever device the
+// player is actually holding first (RELEASE_v1_1_PLAN.md UC4: "show the active input device's
+// column first").
 void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
 {
-    struct CtrlRow
+    struct DigitalRow
     {
         const char *label;
-        const char *key; // nullptr = look up dynamically from keybindings
-        int kbIdx;       // valid only if key == nullptr
+        int kbIdx;
     };
-    CtrlRow rows[] = {
-        {"Move", "WASD / L stick", -1},
-        {"Look around", "Right-click drag / R stick", -1},
-        {"Zoom (FOV)", "Scroll wheel", -1},
-        {keybindings[KB_ZOOM_IN].action, nullptr, KB_ZOOM_IN},
-        {keybindings[KB_ZOOM_OUT].action, nullptr, KB_ZOOM_OUT},
-        {keybindings[KB_ZOOM_RESET].action, nullptr, KB_ZOOM_RESET},
-        {keybindings[KB_MOVE_BOOST].action, nullptr, KB_MOVE_BOOST},
-        {keybindings[KB_MOVE_FINE].action, nullptr, KB_MOVE_FINE},
-        {"Raise/Lower Elevation", "Q/E / RT/LT trigger", -1},
-        {keybindings[KB_RESET_ELEV].action, nullptr, KB_RESET_ELEV},
-        {keybindings[KB_SELECT_SAT].action, nullptr, KB_SELECT_SAT},
-        {keybindings[KB_CINEMATIC].action, nullptr, KB_CINEMATIC},
-        {keybindings[KB_PAUSE].action, nullptr, KB_PAUSE},
-        {keybindings[KB_SLOWER].action, nullptr, KB_SLOWER},
-        {keybindings[KB_FASTER].action, nullptr, KB_FASTER},
-        {keybindings[KB_REVERSE].action, nullptr, KB_REVERSE},
-        {keybindings[KB_TOGGLE_UI].action, nullptr, KB_TOGGLE_UI},
+    DigitalRow digitalRows[] = {
+        {keybindings[KB_ZOOM_IN].action, KB_ZOOM_IN},
+        {keybindings[KB_ZOOM_OUT].action, KB_ZOOM_OUT},
+        {keybindings[KB_ZOOM_RESET].action, KB_ZOOM_RESET},
+        {keybindings[KB_MOVE_BOOST].action, KB_MOVE_BOOST},
+        {keybindings[KB_MOVE_FINE].action, KB_MOVE_FINE},
+        {keybindings[KB_RAISE_ELEV].action, KB_RAISE_ELEV},
+        {keybindings[KB_LOWER_ELEV].action, KB_LOWER_ELEV},
+        {keybindings[KB_RESET_ELEV].action, KB_RESET_ELEV},
+        {keybindings[KB_SELECT_SAT].action, KB_SELECT_SAT},
+        {keybindings[KB_CINEMATIC].action, KB_CINEMATIC},
+        {keybindings[KB_PAUSE].action, KB_PAUSE},
+        {keybindings[KB_SLOWER].action, KB_SLOWER},
+        {keybindings[KB_FASTER].action, KB_FASTER},
+        {keybindings[KB_REVERSE].action, KB_REVERSE},
+        {keybindings[KB_TOGGLE_UI].action, KB_TOGGLE_UI},
+        {keybindings[KB_SCREENSHOT].action, KB_SCREENSHOT},
+    };
+    struct AnalogRow
+    {
+        const char *label;
+        const char *kbText;  // nullptr = no keyboard/mouse equivalent
+        const char *padText; // nullptr = no gamepad equivalent
+    };
+    AnalogRow analogRows[] = {
+        {"Move", "WASD", "L stick"},
+        {"Look around", "Right-click drag", "R stick"},
+        {"Zoom (FOV)", "Scroll wheel", nullptr},
+        {"Raise/Lower elevation", nullptr, "RT / LT trigger"},
+    };
+
+    auto ctrlRow = [&](int idx, const char *label, const char *keyText)
+    {
+        CLAY(CLAY_IDI("CtrlRow", idx), {.layout = {
+                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20)},
+                                            .childGap = 6,
+                                            .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            Clay_String lblStr{false, (int32_t)strlen(label), label};
+            CLAY_TEXT(lblStr, CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12)}));
+            CLAY(CLAY_IDI("CtrlSpacer", idx), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+            Clay_String keyStr{false, (int32_t)strlen(keyText), keyText};
+            CLAY_TEXT(keyStr, CLAY_TEXT_CONFIG({.textColor = Pal::keyText, .fontSize = fs(12)}));
+        }
     };
 
     CLAY(CLAY_ID("ViewControlsScroll"), {.layout = {
@@ -2728,31 +2849,43 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
                                              .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                          .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
     {
-        static char keyBufs[KB_COUNT + 3][32];
+        static char keyBufs[KB_COUNT + 4][40];
         int idx = 0;
-        for (auto &row : rows)
+        for (auto &row : digitalRows)
         {
-            const char *keyText = row.key;
-            if (!keyText)
+            const KeyBinding &kb = keybindings[row.kbIdx];
+            const char *kbStr = keyDisplayName(kb.key);
+            if (kb.gpButton >= 0)
             {
-                const KeyBinding &kb = keybindings[row.kbIdx];
-                if (kb.gpButton >= 0)
-                    snprintf(keyBufs[idx], sizeof(keyBufs[idx]), "%s / %s", keyDisplayName(kb.key), gamepadButtonDisplayName(kb.gpButton));
+                const char *padStr = gamepadButtonDisplayName(kb.gpButton);
+                if (lastInputWasGamepad)
+                    snprintf(keyBufs[idx], sizeof(keyBufs[idx]), "%s / %s", padStr, kbStr);
                 else
-                    snprintf(keyBufs[idx], sizeof(keyBufs[idx]), "%s", keyDisplayName(kb.key));
-                keyText = keyBufs[idx];
+                    snprintf(keyBufs[idx], sizeof(keyBufs[idx]), "%s / %s", kbStr, padStr);
             }
-            CLAY(CLAY_IDI("CtrlRow", idx), {.layout = {
-                                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(20)},
-                                                .childGap = 6,
-                                                .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+            else
+                snprintf(keyBufs[idx], sizeof(keyBufs[idx]), "%s", kbStr);
+            ctrlRow(idx, row.label, keyBufs[idx]);
+            ++idx;
+        }
+
+        CLAY(CLAY_ID("AnalogDiv"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                               .padding = {0, 0, 4, 4}},
+                                    .backgroundColor = {40, 40, 44, 255}}) {}
+        CLAY_TEXT(CLAY_STRING("ANALOG (not rebindable)"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10)}));
+        for (auto &row : analogRows)
+        {
+            if (row.kbText && row.padText)
             {
-                Clay_String lblStr{false, (int32_t)strlen(row.label), row.label};
-                CLAY_TEXT(lblStr, CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12)}));
-                CLAY(CLAY_IDI("CtrlSpacer", idx), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-                Clay_String keyStr{false, (int32_t)strlen(keyText), keyText};
-                CLAY_TEXT(keyStr, CLAY_TEXT_CONFIG({.textColor = Pal::keyText, .fontSize = fs(12)}));
+                if (lastInputWasGamepad)
+                    snprintf(keyBufs[idx], sizeof(keyBufs[idx]), "%s / %s", row.padText, row.kbText);
+                else
+                    snprintf(keyBufs[idx], sizeof(keyBufs[idx]), "%s / %s", row.kbText, row.padText);
             }
+            else
+                snprintf(keyBufs[idx], sizeof(keyBufs[idx]), "%s", row.kbText ? row.kbText : row.padText);
+            ctrlRow(idx, row.label, keyBufs[idx]);
             ++idx;
         }
     }
@@ -2788,97 +2921,150 @@ void SatelliteSim::buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRend
 }
 
 // ─── buildIntroOverlay ───────────────────────────────────────────────────────
+// UC3: the cinematic camera path (updateIntroCinematic, recordCompute) IS the intro now — this
+// just overlays the current beat's caption, translucent so the flythrough stays visible under it.
+// Dismissible from frame 1 by any click (here) or key/pad button (onKey/pollGamepad, which call
+// finishIntro(true) the same way).
 void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
 {
     if (!showIntro)
         return;
 
     if (inp.lmbPressed || inp.rmbPressed)
-        showIntro = false;
+        finishIntro(true);
     ui.addMouseCaptureRect(0, 0, inp.screenW, inp.screenH);
 
-    CLAY(CLAY_ID("IntroOverlay"), {.layout = {
-                                       .sizing = {CLAY_SIZING_FIXED((float)inp.screenW),
-                                                  CLAY_SIZING_FIXED((float)inp.screenH)},
-                                       .childAlignment = {.x = CLAY_ALIGN_X_CENTER,
-                                                          .y = CLAY_ALIGN_Y_CENTER},
-                                       .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                   .backgroundColor = {0, 0, 0, 185},
-                                   .floating = {.zIndex = 30, .attachTo = CLAY_ATTACH_TO_ROOT}})
+    // Fade the current caption in over its first 0.8s; fade everything out over the last 1.0s of
+    // the whole sequence so the final line doesn't just vanish at the auto-handoff.
+    float capStartT = kIntroKeyframes[introCaptionIndex].t;
+    float alphaIn = glm::clamp((introElapsed - capStartT) / 0.8f, 0.0f, 1.0f);
+    float tEnd = kIntroKeyframes[kIntroKeyframeCount - 1].t;
+    float alphaOut = glm::clamp((tEnd - introElapsed) / 1.0f, 0.0f, 1.0f);
+    uint8_t textA = (uint8_t)(255.0f * std::min(alphaIn, alphaOut));
+
+    bool isTitleBeat = (introCaptionIndex == 0);
+    const char *text = kIntroKeyframes[introCaptionIndex].text;
+    // Beat 3 (Q/E) reads live keybindings instead of a compile-time literal, so a rebind or a
+    // controller-only player still sees the right prompt (UC4: don't hardcode control text).
+    if (introCaptionIndex == kIntroBeat3Index)
     {
-        CLAY(CLAY_ID("IntroPanel"), {.layout = {
-                                         .sizing = {CLAY_SIZING_FIXED(660),
-                                                    CLAY_SIZING_FIT(0)},
-                                         .childGap = 0,
-                                         .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+        snprintf(introBeat3TextBuf, sizeof(introBeat3TextBuf),
+                 "%s / %s  --  or the triggers  --  change your altitude",
+                 keyDisplayName(keybindings[KB_RAISE_ELEV].key), keyDisplayName(keybindings[KB_LOWER_ELEV].key));
+        text = introBeat3TextBuf;
+    }
+
+    if (text && textA > 0)
+    {
+        CLAY(CLAY_ID("IntroCaptionOuter"), {.layout = {
+                                                .sizing = {CLAY_SIZING_FIXED((float)inp.screenW),
+                                                           CLAY_SIZING_FIXED((float)inp.screenH)},
+                                                .padding = {40, 40, 0, 90},
+                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER,
+                                                                   .y = CLAY_ALIGN_Y_BOTTOM},
+                                                .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                            .floating = {.zIndex = 30, .attachTo = CLAY_ATTACH_TO_ROOT}})
         {
-            // ── Title ─────────────────────────────────────────────────────
-            CLAY_TEXT(CLAY_STRING("SAT LIGHT SIM"),
-                      CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255},
-                                        .fontSize = fs(34)}));
-            CLAY_TEXT(CLAY_STRING("by papereater"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-
-            CLAY(CLAY_ID("IP1"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1),
-                                                        CLAY_SIZING_FIXED(22)}}}) {}
-
-            // ── Body ──────────────────────────────────────────────────────
-            CLAY(CLAY_ID("IntroBody"), {.layout = {
-                                            .sizing = {CLAY_SIZING_FIXED(660), CLAY_SIZING_FIT(0)},
-                                            .childGap = 14,
-                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+            CLAY(CLAY_ID("IntroCaptionPanel"), {.layout = {
+                                                    .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                                    .padding = {24, 24, 16, 16},
+                                                    .childGap = 4,
+                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER},
+                                                    .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                                .backgroundColor = {0, 0, 0, (float)((int)textA * 110 / 255)},
+                                                .cornerRadius = CLAY_CORNER_RADIUS(6)})
             {
-
-                CLAY_TEXT(CLAY_STRING("Welcome to the near future! Every planned major space constellation has been constructed. This simulation aims to realistically model what these will look like from the ground."),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(18)}));
-                CLAY_TEXT(CLAY_STRING("Perpetual sunshine lies in sun synchronous orbit, following the terminator line of the Earth. This has become competitive real estate for football field-sized space datacenters and mirror reflectors"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(18)}));
-                CLAY_TEXT(CLAY_STRING(
-                              "Whether or not they are profitable, useful, or even still functional, "
-                              "they are going to be up there for a very long time."),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(18)}));
-                CLAY_TEXT(CLAY_STRING("We will come to miss the quiet sky."),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(18)}));
+                if (isTitleBeat)
+                {
+                    CLAY_TEXT(CLAY_STRING("SAT LIGHT SIM"),
+                              CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(34)}));
+                    CLAY_TEXT(CLAY_STRING("by papereater"),
+                              CLAY_TEXT_CONFIG({.textColor = {200, 200, 200, (float)textA}, .fontSize = fs(13)}));
+                }
+                else
+                {
+                    Clay_String txtStr{false, (int32_t)strlen(text), text};
+                    CLAY_TEXT(txtStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(19)}));
+                }
             }
-
-            CLAY(CLAY_ID("IP2"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1),
-                                                        CLAY_SIZING_FIXED(48)}}}) {}
-
-            // ── Controls ──────────────────────────────────────────────────
-            CLAY(CLAY_ID("IntroControls"), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(660),
-                                                           CLAY_SIZING_FIT(0)},
-                                                .childGap = 7,
-                                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-            {
-                CLAY_TEXT(CLAY_STRING("WASD  =  Move"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textSection,
-                                            .fontSize = fs(13)}));
-                CLAY_TEXT(CLAY_STRING("Right click  =  Look"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textSection,
-                                            .fontSize = fs(13)}));
-                CLAY_TEXT(CLAY_STRING("Shift  =  Boost"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textSection,
-                                            .fontSize = fs(13)}));
-                CLAY_TEXT(CLAY_STRING("Space  =  Play / Pause"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textSection,
-                                            .fontSize = fs(13)}));
-                CLAY_TEXT(CLAY_STRING("Comma  =  Slow down time"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textSection,
-                                            .fontSize = fs(13)}));
-                CLAY_TEXT(CLAY_STRING("Period  =  Speed up time"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textSection,
-                                            .fontSize = fs(13)}));
-            }
-
-            CLAY(CLAY_ID("IP3"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1),
-                                                        CLAY_SIZING_FIXED(32)}}}) {}
-
-            // ── Dismiss hint ──────────────────────────────────────────────
-            CLAY_TEXT(CLAY_STRING("Click or press any key to continue"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textHint,
-                                        .fontSize = fs(11)}));
         }
+    }
+
+    // Skip hint, from ~1.5s in — bottom-right corner, not faded with the caption above (needs to
+    // stay legible/discoverable regardless of which beat is showing).
+    if (introElapsed >= 1.5f)
+    {
+        CLAY(CLAY_ID("IntroSkipHint"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                                    .padding = {8, 8, 4, 4}},
+                                        .backgroundColor = {0, 0, 0, 130},
+                                        .cornerRadius = CLAY_CORNER_RADIUS(4),
+                                        .floating = {.offset = {-16, -16},
+                                                     .zIndex = 30,
+                                                     .attachPoints = {.element = CLAY_ATTACH_POINT_RIGHT_BOTTOM,
+                                                                      .parent = CLAY_ATTACH_POINT_RIGHT_BOTTOM},
+                                                     .attachTo = CLAY_ATTACH_TO_ROOT}})
+        {
+            CLAY_TEXT(CLAY_STRING("Press any key to skip"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(12)}));
+        }
+    }
+}
+
+// ─── buildGraphicsAutoNotice ─────────────────────────────────────────────────
+// UC1 mechanism 3: dismissible-by-timeout banner shown once, right after the intro cinematic
+// finishes, telling the user what preset the UC1 benchmark chose. Same pattern as
+// buildCrashRecoveryNotice, kept as its own timer/text pair since the two notices are triggered
+// by unrelated events and can in principle both be live (though crashRecoveryMode suppresses the
+// benchmark that feeds this one — see finishIntro()).
+void SatelliteSim::buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRenderer &ui)
+{
+    (void)inp;
+    if (graphicsAutoNoticeTimer <= 0.0f)
+        return;
+    graphicsAutoNoticeTimer -= dt;
+
+    Clay_String msgStr{false, (int32_t)strlen(graphicsAutoNoticeText), graphicsAutoNoticeText};
+    CLAY(CLAY_ID("GraphicsAutoNotice"), {.layout = {
+                                             .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                             .padding = {16, 16, 10, 10},
+                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
+                                         .backgroundColor = {20, 40, 70, 235},
+                                         .cornerRadius = CLAY_CORNER_RADIUS(6),
+                                         .floating = {.offset = {0, 16},
+                                                      .zIndex = 25,
+                                                      .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP,
+                                                                       .parent = CLAY_ATTACH_POINT_CENTER_TOP},
+                                                      .attachTo = CLAY_ATTACH_TO_ROOT}})
+    {
+        CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
+    }
+}
+
+// ─── buildScreenshotToast ────────────────────────────────────────────────────
+// UC6: bottom-center confirmation toast ("Saved satlight_....png") after F12. Same dismissible-
+// timer-banner pattern as buildCrashRecoveryNotice/buildGraphicsAutoNotice, anchored to the
+// bottom instead of the top so it doesn't collide with either of those (both top-anchored).
+void SatelliteSim::buildScreenshotToast(float dt, const UIInput &inp, UIRenderer &ui)
+{
+    (void)inp;
+    if (screenshotToastTimer <= 0.0f)
+        return;
+    screenshotToastTimer -= dt;
+
+    Clay_String msgStr{false, (int32_t)strlen(screenshotToastText), screenshotToastText};
+    CLAY(CLAY_ID("ScreenshotToast"), {.layout = {
+                                          .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                          .padding = {14, 14, 8, 8},
+                                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
+                                      .backgroundColor = {20, 60, 30, 235},
+                                      .cornerRadius = CLAY_CORNER_RADIUS(6),
+                                      .floating = {.offset = {0, -16},
+                                                   .zIndex = 25,
+                                                   .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_BOTTOM,
+                                                                    .parent = CLAY_ATTACH_POINT_CENTER_BOTTOM},
+                                                   .attachTo = CLAY_ATTACH_TO_ROOT}})
+    {
+        CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
     }
 }
 
@@ -3088,6 +3274,15 @@ void SatelliteSim::loadSettings()
         int unitVal = d.value("unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0);
         unitSystem = unitVal == 1 ? UnitSystem::Imperial : UnitSystem::Metric;
         showControlsOnStartup = d.value("show_controls_on_startup", showControlsOnStartup);
+        // TESTING (2026-07-31, per user request): always show the intro on every launch while
+        // UC3 is being iterated on, regardless of the persisted value. The real settings.json
+        // lives in %APPDATA%/SatLightSim/ (Paths::userDataDir(), NEW-4) — NOT next to the exe —
+        // so deleting a copy next to the exe to force "first run" silently does nothing; the
+        // persisted `show_intro: false` from any earlier dismissal keeps loading from there. Once
+        // UC3 is confirmed working, restore the commented-out line below (first-run-only, per
+        // upgrading-user reasoning) and delete/reset %APPDATA%/SatLightSim/settings.json (or use
+        // the "Reset to Defaults" button) to test the real persisted behavior.
+        // showIntro = d.value("show_intro", false);
     }
 
     // Left/right HUD panels are corner-anchored, not persisted (see buildLeftHudPanel/
@@ -3250,6 +3445,7 @@ void SatelliteSim::loadSettings()
         beamMaxRangeM = c.value("beam_max_range_m", beamMaxRangeM);
         beamSkyGlowGain = c.value("beam_sky_glow_gain", beamSkyGlowGain);
         mirrorSlewDegPerSec = c.value("mirror_slew_deg_per_sec", mirrorSlewDegPerSec);
+        reflectorMinElevDeg = c.value("reflector_min_elev_deg", reflectorMinElevDeg);
         // beam_extinction_mult: C12 follow-up #44 — key deliberately no longer read; a stale
         // value in an old settings.json is simply ignored (no member left to load it into).
         beamGlowBleedGain = c.value("beam_glow_bleed_gain", beamGlowBleedGain);
@@ -3308,7 +3504,8 @@ void SatelliteSim::saveSettings()
         {"debug_disable_mask", debugDisableMask},
         {"active_tab", settingsActiveTab},
         {"unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0},
-        {"show_controls_on_startup", showControlsOnStartup}};
+        {"show_controls_on_startup", showControlsOnStartup},
+        {"show_intro", showIntro}};
     if (settingsChrome.x >= 0.0f)
     {
         j["display"]["win_x"] = settingsChrome.x;
@@ -3388,6 +3585,7 @@ void SatelliteSim::saveSettings()
         {"beam_max_range_m", beamMaxRangeM},
         {"beam_sky_glow_gain", beamSkyGlowGain},
         {"mirror_slew_deg_per_sec", mirrorSlewDegPerSec},
+        {"reflector_min_elev_deg", reflectorMinElevDeg},
         {"beam_glow_bleed_gain", beamGlowBleedGain},
         {"cloud_shadow_range_m", cloudShadowRangeM},
         {"beam_near_field_fade_m", beamNearFieldFadeM},

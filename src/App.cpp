@@ -61,8 +61,12 @@ void App::drawFrame() {
     // Resolve last frame's GPU timestamp queries now that the fence proves the GPU
     // is done with them. Skipped on the very first call: the fence starts pre-signaled
     // so nothing has actually been submitted yet, and there'd be no query data to read.
-    if (submittedOnce)
+    if (submittedOnce) {
         ctx.resolveTimestamps();
+        // UC6: same reasoning — a screenshot copy recorded last frame is only safe to read back
+        // once this fence wait proves the GPU has finished writing it.
+        sim->finalizeScreenshot();
+    }
 
     uint32_t imgIdx;
     VkResult res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain, UINT64_MAX,
@@ -101,6 +105,16 @@ void App::drawFrame() {
     } else {
         uiMouseX = mx;
         uiMouseY = my;
+    }
+
+    // UC4: gamepad virtual cursor — when active, overrides the real mouse position/click state
+    // for this frame's UI pass so every existing Clay_Hovered()/click handler works unmodified.
+    float vx, vy;
+    bool  vClick;
+    if (sim->virtualCursor(vx, vy, vClick)) {
+        mx  = vx;
+        my  = vy;
+        lmb = vClick;
     }
 
     // Prepare Clay layout for this frame — simulation may call CLAY() in buildUI()
@@ -155,11 +169,20 @@ void App::drawFrame() {
     sim->recordDraw(ctx.commandBuffer, ctx, dt);
     ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 7);
 
-    // 4. UI draws on top of the simulation
-    ui.record(ctx.commandBuffer, ctx);
+    // 4. UI draws on top of the simulation — UC6 clean-shot mode skips this for a captured frame
+    // (nobody shares a screenshot with a settings panel in it).
+    if (!sim->wantsCleanScreenshot())
+        ui.record(ctx.commandBuffer, ctx);
     ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 8);
 
     vkCmdEndRenderPass(ctx.commandBuffer);
+
+    // UC6: record the screenshot copy (a no-op unless one is actually pending) now that the
+    // swapchain image holds the fully composited frame — must happen after the render pass ends
+    // (the image is back in a layout a transfer op can act on) and before the command buffer is
+    // ended, since this project has one command buffer / one frame in flight.
+    sim->recordScreenshotCopy(ctx.commandBuffer, ctx, ctx.swapImages[imgIdx]);
+
     vkEndCommandBuffer(ctx.commandBuffer);
 
     // Submit

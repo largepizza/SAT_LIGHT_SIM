@@ -16,6 +16,9 @@
 #include <cmath>
 #include <algorithm>
 #include <functional>
+#include <thread>
+#include <atomic>
+#include <mutex>
 
 // ── Maximum satellites per frame ──────────────────────────────────────────────
 static constexpr uint32_t MAX_SATELLITES = 10'000'000;
@@ -600,10 +603,19 @@ static_assert(sizeof(GpuSatOrbit) == 112, "GpuSatOrbit layout mismatch");
 
 // ── Per-frame reflector target upload (host-visible, 201 × 16 bytes) ─────────
 // Written by CPU in updatePositions(); read by sat_orbit.comp each frame.
+//
+// S1 compaction (RELEASE_v1_1_PLAN.md): CPU now packs only the night-side-VALID targets into
+// [0, reflectorActiveCount) instead of writing all reflectorTargetCount entries with a 0/1 valid
+// flag — `origIdx` (renamed from `valid`) holds the target's ORIGINAL index (reflectorTargetsECEF/
+// RadiusM's index, and BeamCloudBlockBuf's index) instead, so sat_orbit.comp's scan never needs to
+// skip day-side entries and its winning bestIdx still resolves correctly against
+// BeamCloudBlockBuf, which stays indexed by original target index. Entries at or beyond
+// reflectorActiveCount are stale/unused — sat_orbit.comp's loop bound is
+// SatOrbitPC::activeTargetCount, not kNumReflectorTargets.
 struct GpuReflectorTarget
 {
     glm::vec3 posECI; // Earth-radius-scaled ECI position
-    float valid;      // 1.0 = night-side (valid target), 0.0 = dayside
+    float origIdx;    // original target index (float; sat_orbit.comp casts back to int) — see above
 };
 static_assert(sizeof(GpuReflectorTarget) == 16, "GpuReflectorTarget layout mismatch");
 
@@ -909,8 +921,16 @@ struct SatOrbitPC
                             // user-tunable instead of fixed. C12 follow-up #34: was offset 104 —
                             // beamFootprintRadM removed entirely (footprint is now physically
                             // derived in sat_orbit.comp from mirror area + range).
-}; // 104 bytes
-static_assert(sizeof(SatOrbitPC) == 104, "SatOrbitPC layout mismatch");
+    uint32_t activeTargetCount; // offset 104 — S1 (RELEASE_v1_1_PLAN.md) target compaction: number
+                            // of VALID entries at the front of ReflectorTargetBuf this frame (CPU
+                            // packs only night-side-valid targets there — see updatePositions());
+                            // replaces the old fixed NUM_TARGETS=201 scan bound in sat_orbit.comp.
+    float minBeamElevSin;   // offset 108 — S1 follow-up: sin(reflectorMinElevDeg), precomputed on
+                            // CPU. Candidate targets below this local-elevation-at-target angle are
+                            // rejected outright (grazing, not just deprioritized) — see
+                            // sat_orbit.comp's TargetedReflector block for the full rationale.
+}; // 112 bytes
+static_assert(sizeof(SatOrbitPC) == 112, "SatOrbitPC layout mismatch");
 
 // ── Sky camera ────────────────────────────────────────────────────────────────
 // Azimuth/elevation look direction in the local ENU frame.
@@ -1022,6 +1042,15 @@ public:
         fpsCapSwapchainRebuildPending = false;
         return true;
     }
+    // UC6: see Simulation.h for the calling convention (peek before ui.record(), record the copy
+    // after the render pass ends, finalize at the top of the next frame).
+    bool wantsCleanScreenshot() const override { return screenshotRequested; }
+    void recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image) override;
+    void finalizeScreenshot() override;
+    // UC6: shared by KB_SCREENSHOT (dispatchKeyAction) and the left HUD panel's camera button —
+    // builds screenshotPath and sets screenshotRequested, or no-ops if a capture is already in
+    // flight (copy pending or still encoding).
+    void requestScreenshot();
     void cleanup(VkDevice device) override;
     void onKey(GLFWwindow *w, int key, int action) override;
     void onCursorPos(GLFWwindow *w, double x, double y) override;
@@ -1486,7 +1515,13 @@ private:
     int earthNightCpuBlurW = 0, earthNightCpuBlurH = 0;
 
     // ── UI visibility & settings ──────────────────────────────────────────────
-    bool showIntro = true; // cinematic intro overlay; dismissed on click or any key
+    // UC3: persisted (see loadSettings/saveSettings) so this only auto-plays on first run —
+    // defaults true (compiled-in default), and the "no settings.json at all" branch of
+    // loadSettings() never touches it, so a genuine first run always shows it; any existing
+    // settings.json (even pre-UC3) loads a persisted value that defaults to false so upgrading
+    // users don't suddenly get a cinematic that didn't exist before. Replayable via the Display
+    // tab's "Replay Intro" button, which just sets this back to true.
+    bool showIntro = true;
     bool uiVisible = true;
     bool iconsLoaded = false;
     float uiScale = 1.5f;    // text/UI size multiplier (0.75 – 2.0)
@@ -1536,6 +1571,15 @@ private:
     // still exposed as a tunable slider (Settings → Terrain → "Mirror slew rate (deg/s)") in case
     // it's wanted later, just no longer defaulting to the faster value.
     float mirrorSlewDegPerSec = 5.068965f;
+    // S1 follow-up (RELEASE_v1_1_PLAN.md): minimum acceptable local elevation angle of the
+    // satellite as seen FROM a candidate ground target, in degrees. Below this, a target is
+    // rejected outright by sat_orbit.comp's TargetedReflector selection (grazing beams suffer
+    // heavy atmospheric extinction and aren't worth taking even as a last resort) rather than
+    // being deprioritized — see that shader's own comment for the full rationale, including why
+    // this replaced a pure "nearest target" rule. Sent as sin(radians(this)) via
+    // SatOrbitPC::minBeamElevSin (recordCompute fills it; the sin conversion happens there, not
+    // per-candidate in the shader).
+    float reflectorMinElevDeg = 20.0f;
     // (beamExtinctionMult lived here — user-tunable extra extinction for the deleted analytic
     // beam sky tube. Removed in C12 follow-up #44 along with the tube itself: the replacement
     // per-sample beam-cloud term is a real volumetric contribution composited through the cloud
@@ -1671,6 +1715,69 @@ private:
     // Planetarium preset and shows a one-line notice, converting "launch -> crash -> uninstall"
     // into a recoverable outcome. See applySettings-adjacent logic in init()/cleanup().
     float crashRecoveryNoticeTimer = 0.0f; // seconds remaining to show the notice banner; see buildCrashRecoveryNotice
+    bool crashRecoveryMode = false; // mirrors the crashDetected local in init(); read by finishIntro()
+                                     // so a crash-recovery launch never runs the UC1 benchmark promote/
+                                     // demote (that launch already forced Planetarium for a different reason)
+
+    // ── UC3: cinematic intro camera path (folds in UC1 mechanism 2, the first-run benchmark) ──
+    // Deliberately does NOT move obsDir/lat-lon — only obsHeightOffset (altitude, literally what
+    // Q/E controls), camera.elDeg/fovYDeg, and a facing-azimuth rotation change across the beat
+    // sheet (see kIntroKeyframes in SatelliteSim.cpp). Since obsDir never moves during playback,
+    // the East/North tangent basis below is computed once at the start of the very first intro
+    // frame and stays valid the whole time — no great-circle interpolation needed.
+    bool introBasisValid = false;
+    glm::vec3 introEastEF{1, 0, 0}, introNorthEF{0, 1, 0};
+    float introElapsed = 0.0f;     // seconds since the intro cinematic started
+    int introCaptionIndex = 0;     // index into kIntroKeyframes of the most recently reached caption
+    bool introSkipped = false;     // true if dismissed early (click/key/pad) — gates the benchmark below
+    bool introIsReplay = false;    // set by the Display tab's "Replay Intro" button; suppresses the
+                                    // benchmark regardless of how the replay ends (see finishIntro) —
+                                    // it's a one-shot first-run decision, not something a replay should redo
+    float introBenchMsSum = 0.0f;  // accumulates gpuMsTotalSmoothed across beats 1-4 (see updateIntroCinematic)
+    int introBenchFrames = 0;
+    char introBeat3TextBuf[96] = {}; // member buffer for the Q/E caption (built from live keybindings —
+                                      // Clay stores raw string pointers read after buildUI returns, so this
+                                      // can't be a stack local; see CLAUDE.md's Clay runtime-string rule)
+
+    // Post-intro "graphics set to X" notice (UC1 mechanism 3: always tell the user, never
+    // silently re-decide) — same dismissible-banner pattern as buildCrashRecoveryNotice, separate
+    // timer/text since the two can in principle be showing different things.
+    float graphicsAutoNoticeTimer = 0.0f;
+    char graphicsAutoNoticeText[128] = {};
+
+    // ── UC6: screenshots ────────────────────────────────────────────────────────
+    // See Simulation.h's wantsCleanScreenshot/recordScreenshotCopy/finalizeScreenshot doc
+    // comments for the three-phase (request -> copy -> readback) protocol this drives.
+    bool screenshotRequested = false;    // set by dispatchKeyAction(KB_SCREENSHOT); consumed by
+                                          // recordScreenshotCopy (also gates wantsCleanScreenshot)
+    bool screenshotCopyPending = false;  // true between "copy recorded" and "readback finalized"
+    VkBuffer screenshotStagingBuf = VK_NULL_HANDLE; // host-visible; freed/recreated per capture —
+    VkDeviceMemory screenshotStagingMem = VK_NULL_HANDLE; // screenshots are rare, not a hot path
+    uint32_t screenshotW = 0, screenshotH = 0;
+    VkFormat screenshotFormat = VK_FORMAT_UNDEFINED;
+    std::string screenshotPath; // full output path, built at request time
+    float screenshotToastTimer = 0.0f;
+    char screenshotToastText[160] = {};
+    // PNG encoding (stbi_write_png) is genuinely slow in an unoptimized Debug build — easily
+    // tens of seconds at 1080p+, which reads as "the game froze" since finalizeScreenshot() used
+    // to run it synchronously on the main thread. Moved to a detached background thread: the main
+    // thread only maps the GPU buffer, swizzles into a plain std::vector it hands off by move, and
+    // returns immediately. screenshotEncoding guards against starting a second capture while one
+    // is still encoding (the vector handoff means the GPU staging buffer itself is free again
+    // immediately, but re-entrant encodes would still race on the toast result below).
+    // screenshotResultReady/screenshotResultMutex/screenshotResultText are the thread's one-shot
+    // handoff back to the main thread (checked once per frame in buildUI) — the atomic gates
+    // whether it's worth taking the mutex at all, avoiding any per-frame lock when idle.
+    std::atomic<bool> screenshotEncoding{false};
+    std::atomic<bool> screenshotResultReady{false};
+    std::mutex screenshotResultMutex;
+    std::string screenshotResultText;
+    // Kept joinable (never .detach()ed) so cleanup() can join it before the object it captures
+    // (`this`, for the mutex/atomics/string above) is destroyed — a detached thread still running
+    // past that point would be a use-after-free. screenshotEncoding already prevents two threads
+    // existing at once, so join() here is always fast (the previous one has either already
+    // finished or is about to).
+    std::thread screenshotThread;
 
     // ── Key bindings (editable in the settings window) ────────────────────────
     // All interactive keys go here — both event keys (pressed once) and held keys
@@ -1716,7 +1823,8 @@ private:
         KB_ZOOM_OUT = 12,   // held — widens FOV (zoom out)
         KB_ZOOM_RESET = 13, // event — snap FOV back to default
         KB_SELECT_SAT = 14, // event — select the satellite nearest the center of the screen
-        KB_COUNT = 15,
+        KB_SCREENSHOT = 15, // event — UC6: capture screenshots/satlight_<timestamp>.png (clean, no UI)
+        KB_COUNT = 16,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
@@ -1732,6 +1840,9 @@ private:
     void pollGamepad(float dt);
     // True if the gamepad button bound to keybindings[bindIdx] is currently held down.
     bool gpHeld(int bindIdx) const;
+    // UC4: reports the virtual cursor's screen position/click state (updated in pollGamepad);
+    // see Simulation.h for the calling convention.
+    bool virtualCursor(float &x, float &y, bool &lmb) const override;
 
     // ── ECI → ENU rotation (updated each frame in updatePositions) ────────────
     // Encodes the surface-fixed observer's local frame in ECI coordinates.
@@ -1759,10 +1870,31 @@ private:
     float skyGlareEased = 1.0f;
 
     // ── TargetedReflector ground targets ──────────────────────────────────────
-    // Random lat/lon points generated once at init as unit ECEF vectors.
-    // Rotated to ECI each frame in updatePositions; filtered to those on the
-    // night side within 30° of the terminator (usefully dark but reachable).
+    // S1 (RELEASE_v1_1_PLAN.md): real solar-farm sites loaded from reflector_targets.json (falls
+    // back to random points — see loadReflectorTargets()), stored as unit ECEF vectors. Rotated to
+    // ECI each frame in updatePositions; filtered to those on the night side.
+    // kNumReflectorTargets is a CAPACITY (buffer sizing), not the real count — see
+    // reflectorTargetCount below. Modders can supply anywhere up to this many sites.
     static constexpr int kNumReflectorTargets = 201;
+    // Real number of loaded targets this run (<= kNumReflectorTargets); set by loadReflectorTargets()
+    // /generateReflectorTargetsRandomFallback(). Only [0, reflectorTargetCount) of the arrays below
+    // are meaningful — entries beyond it are zero-initialized and never read.
+    int reflectorTargetCount = 0;
+    // Index into the loaded array that's the observer-spawn pin (reflector_targets.json's
+    // "observer_spawn": true entry, or index 0 in the random fallback) — -1 if somehow neither
+    // path set one. Purely informational/logging today; the pin works simply by being a real,
+    // correctly-populated entry like any other (see loadReflectorTargets()'s doc comment for the
+    // bug this replaced: index 0 used to be silently left as a degenerate zero-vector).
+    int reflectorObserverSpawnIdx = -1;
+    // S1 compaction: how many of reflectorTargetCount are night-side-valid THIS FRAME — set by
+    // updatePositions(), which packs exactly this many valid entries at the front of
+    // reflectorTargetsMapped (GpuReflectorTarget[]) each frame instead of uploading all
+    // reflectorTargetCount with a per-entry valid flag. Sent to sat_orbit.comp as
+    // SatOrbitPC::activeTargetCount so its per-satellite nearest-target scan only walks the real
+    // night-side subset (typically well under reflectorTargetCount) instead of skipping day-side
+    // entries one by one. See sat_orbit.comp's ReflectorTargetBuf doc comment for the packed
+    // layout (w holds the ORIGINAL index, not a 0/1 valid flag, once compacted).
+    int reflectorActiveCount = 0;
     glm::vec3 reflectorTargetsECEF[kNumReflectorTargets]{}; // unit ECEF, set by initConstellation
     // Real ground radius per target (C12 follow-up #18) — kEarthRadius + actual terrain elevation
     // at that target's lat/lon, looked up once via earthElevCpu when targets are generated
@@ -1824,6 +1956,23 @@ private:
     // "pressure corresponds to vertical speed."
     float gpElevRaise = 0.0f, gpElevLower = 0.0f;
 
+    // UC4: which input device produced the most recent activity — set true by pollGamepad() on
+    // any stick deflection/trigger pressure/button press, set false by onKey() (any keypress) and
+    // buildUI() (mouse click/drag/scroll). Not persisted (a per-session UI nicety, not a
+    // preference). Read by buildViewControlsBody() to lead with whichever device the player is
+    // actually holding, instead of always listing keyboard first — see RELEASE_v1_1_PLAN.md UC4.
+    bool lastInputWasGamepad = false;
+
+    // ── UC4: gamepad virtual cursor ("cheap 90%" UI navigation) ────────────────
+    // Active only while a UI window (Settings/Controls) is open — outside that, the right
+    // stick drives camera look as normal (see pollGamepad). vCursorX/Y start at -1 as a
+    // "not yet positioned" sentinel; first activation centers on screen.
+    float vCursorX = -1.0f, vCursorY = -1.0f;
+    bool vCursorActive = false;
+    bool vCursorClick = false; // A button currently held (level state, like the real lmb App.cpp
+                                // reads from GLFW) — UIRenderer::beginFrame() does its own frame-to-
+                                // frame edge detection into UIInput::lmbPressed, same as the mouse path
+
     // ── Mouse state / window handle ───────────────────────────────────────────
     GLFWwindow *win = nullptr;
     int windowedX = 100, windowedY = 100;  // saved windowed position (for restore)
@@ -1848,6 +1997,7 @@ private:
     bool hovTimePause = false;
     bool hovTimeFaster = false;
     bool hovTimeReverse = false;
+    bool hovScreenshot = false; // UC6: left HUD panel camera button
     bool hovSettings = false;
     bool hovSettingsClose = false;
     bool hovAltModeToggle = false;
@@ -1920,6 +2070,7 @@ private:
     bool hovPreset[5] = {};              // one per named preset button (Custom has no button —
                                           // it's a read-only status, not a click target)
     bool hovAdvancedToggle = false;
+    bool hovReplayIntro = false; // UC3 "Replay Intro" button, Display tab
 
     // ── Private helpers ───────────────────────────────────────────────────────
     // NEW-7: pushes fpsCapMode's present-mode requirement into VulkanContext and flags App to
@@ -1989,6 +2140,21 @@ private:
     void loadDefinitions();                          // reads constellations.json; falls back to hardcoded defaults
     void loadHardcoded();                            // hardcoded satTypes + constellations (used as fallback)
     void buildOrbits();                              // populates satOrbits from satTypes + constellations
+    // S1 (RELEASE_v1_1_PLAN.md): reads reflector_targets.json (real solar-farm sites, moddable
+    // like constellations.json); falls back to generateReflectorTargetsRandomFallback() if
+    // missing/malformed/empty. Called from buildOrbits(), same call-order constraint as the old
+    // inline code it replaced (needs earthElevCpu, populated by createGlowResources() earlier in
+    // init()). Sets reflectorTargetCount and reflectorObserverSpawnIdx.
+    void loadReflectorTargets();
+    // Fallback used only when reflector_targets.json is absent/unusable: kNumReflectorTargets-1
+    // uniformly-random lat/lon points, plus a REAL fixed entry at index 0 for the observer spawn
+    // point (67S 67W) — fixes the same "index 0 left as a degenerate zero-vector" bug the JSON
+    // path fixes, so both paths guarantee a real reachable target near spawn on first launch.
+    void generateReflectorTargetsRandomFallback();
+    // Shared by both paths above: looks up real terrain elevation at reflectorTargetsECEF[ti]
+    // (3x3-max texel neighborhood, C12 follow-up #23) and writes reflectorTargetsRadiusM[ti].
+    // Defaults to sea level if earthElevCpu isn't populated for whatever reason.
+    void computeReflectorTargetElevationRadius(int ti);
     void loadSettings();                             // reads settings.json; silently uses defaults if missing
     void saveSettings();                             // writes settings.json next to exe
     // UC1: overwrites debugDisableMask/renderScale/advanced sliders per the named preset's table
@@ -2070,6 +2236,19 @@ private:
     void buildViewControlsBody(const UIInput &inp, UIRenderer &ui);
     void buildIntroOverlay(const UIInput &inp, UIRenderer &ui);
     void buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRenderer &ui); // NEW-3
+    void buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRenderer &ui);  // UC1 mechanism 3
+    void buildScreenshotToast(float dt, const UIInput &inp, UIRenderer &ui);     // UC6 confirmation toast
+    // UC3: advances introElapsed and drives obsHeightOffset/camera.elDeg/fovYDeg/obsFacing from
+    // kIntroKeyframes; called from recordCompute() in place of the normal WASD/zoom block while
+    // showIntro is true. Also accumulates the UC1 benchmark and auto-ends the intro at the last
+    // keyframe (calling finishIntro(false)).
+    void updateIntroCinematic(float dt);
+    // Ends the intro (showIntro=false). wasSkipped=true means the user dismissed early (click/key/
+    // pad) — no representative frame-time average was collected, so the benchmark promote/demote
+    // is skipped entirely and whatever preset was already active (the device-type seed, or a prior
+    // session's saved preset) stands, per RELEASE_v1_1_PLAN.md UC3: "do not run the benchmark
+    // during the skip path."
+    void finishIntro(bool wasSkipped);
     void setLat(float newLatDeg); // moves observer to a new latitude; used by the right panel's lat display scroll-adjust
     void adjustLon(float deltaDeg); // rotates observer around Earth's polar axis; right panel's lon display scroll-adjust
                                                      // dt = simulated seconds elapsed this frame (0 when paused);
@@ -2081,3 +2260,37 @@ static constexpr float kTimeScales[] = {1.0f, 10.0f, 60.0f, 300.0f, 3600.0f,
                                         86400.0f, 86400.0f * 7.0f, 86400.0f * 30.0f, 86400.0f * 365.0f};
 static constexpr const char *kTimeLabels[] = {"1x", "10x", "1m", "5m", "1h", "1d", "1w", "1mo", "1yr"};
 static constexpr int kNumTimeScales = 9;
+
+// ── UC3 intro cinematic beat sheet (RELEASE_v1_1_PLAN.md) ─────────────────────
+// Shared between SatelliteSim.cpp (updateIntroCinematic/finishIntro, the playback) and
+// SatelliteSimUI.cpp (buildIntroOverlay, the caption text) — header-scope so both translation
+// units see the identical table without a getter. `text == nullptr` means "no new caption at
+// this keyframe" (introCaptionIndex just holds whatever the last non-null one was).
+struct IntroKeyframe
+{
+    float t;      // seconds from intro start
+    float altM;   // obsHeightOffset target
+    float azDeg, elDeg, fovDeg;
+    const char *text;
+};
+static constexpr IntroKeyframe kIntroKeyframes[] = {
+    // Beat 1 — ground, night, looking up toward zenith.
+    {0.0f, 0.0f, 0.0f, 62.0f, 55.0f, "SAT LIGHT SIM"},
+    // Beat 2 — pan toward the horizon; satellite streaks cross frame.
+    {7.0f, 0.0f, 55.0f, 8.0f, 60.0f, "Every planned major constellation has been built."},
+    // Beat 3 — rise through the cloud deck, holding on the ground below. Teaches Q/E — caption
+    // text is generated at render time from live keybindings (see buildIntroOverlay), not this
+    // literal (kIntroBeat3Index marks which entry to override).
+    {15.0f, 15000.0f, 95.0f, -30.0f, 65.0f, "Q / E change your altitude"},
+    // Beat 4 — continue to LEO over the terminator; reflect beams visible below.
+    {24.0f, 550000.0f, 150.0f, -45.0f, 70.0f, "Perpetual sunshine lies in sun-synchronous orbit."},
+    // Beat 5 — settle back at a ground vantage; controls hint fades in via the Controls window.
+    {32.0f, 0.0f, 0.0f, 22.0f, 70.0f, "We will come to miss the quiet sky."},
+    {38.0f, 0.0f, 0.0f, 22.0f, 70.0f, nullptr}, // hold, then auto-handoff (finishIntro(false))
+};
+static constexpr int kIntroKeyframeCount = sizeof(kIntroKeyframes) / sizeof(kIntroKeyframes[0]);
+static constexpr int kIntroBeat3Index = 2; // index of the Q/E keyframe above
+// Beats 1-4 (through the LEO beat) feed the UC1 benchmark accumulator; beat 5's fast descent
+// back to the ground isn't representative load, so it's excluded.
+static constexpr float kIntroBenchEndT = 24.0f;
+static constexpr const char *kGraphicsPresetNames[] = {"Planetarium", "Low", "Medium", "High", "Ultra", "Custom"};

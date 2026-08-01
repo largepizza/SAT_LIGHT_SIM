@@ -6,6 +6,7 @@
 #include "clay.h"
 #include "star_catalog.h"
 #include "stb_image.h"
+#include "stb_image_write.h" // UC6 — implementation lives in UIRenderer.cpp (one TU only)
 
 #include <chrono>
 #include <cmath>
@@ -250,7 +251,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     // 2036-06-21 00:00:00 UTC = Unix 2097619200
     // Fixed start time: 1150891200 seconds from J2000 = 13320 days + 43200 s.
     // Stored split so float deltaT stays small regardless of time-warp distance.
-    constexpr int64_t kInitWholeSec = 1150891200LL - 3 * 30 * 24 * 60 * 60 + 17.5 * 60 * 60;
+    constexpr int64_t kInitWholeSec = 1150891200LL + 6 * 30 * 24 * 60 * 60 + 17.5 * 60 * 60;
     simDayJ2000 = kInitWholeSec / 86400LL;           // 13320
     simSecInDay = (double)(kInitWholeSec % 86400LL); // 43200.0
     simInitDayJ2000 = simDayJ2000;
@@ -280,8 +281,9 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Zoom Out", GLFW_KEY_MINUS, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER, true, false},         // KB_ZOOM_OUT   (held)
         {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_Y, false, false},                    // KB_ZOOM_RESET (event)
         {"Select Satellite", GLFW_KEY_F, GLFW_GAMEPAD_BUTTON_A, false, false},              // KB_SELECT_SAT (event) — center-of-screen pick
+        {"Screenshot", GLFW_KEY_F12, -1, false, false},                                     // KB_SCREENSHOT (event) — no standard gamepad "capture" button to default to
     };
-    static_assert(KB_COUNT == 15, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 16, "KB enum and keybindings initializer are out of sync");
 
     createBuffers(ctx);
     createCloudNoisePipeline(ctx);
@@ -359,6 +361,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     // the-crash configuration, not back in the settings that may have caused it.
     if (crashDetected)
     {
+        crashRecoveryMode = true;
         applyGraphicsPreset(GraphicsPreset::Planetarium);
         crashRecoveryNoticeTimer = 8.0f;
         fprintf(stderr, "[SatelliteSim] Previous session did not exit cleanly — forcing "
@@ -577,6 +580,23 @@ void SatelliteSim::pollGamepad(float dt)
     if (!glfwGetGamepadState(gamepadId, &state))
         return;
 
+    // UC3/UC4: a controller has no keyboard/mouse to dismiss the intro with — any newly-pressed
+    // button skips it, mirroring onKey()'s "any key" behavior.
+    if (showIntro)
+    {
+        for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; ++b)
+        {
+            if (state.buttons[b] == GLFW_PRESS && prevGpButtons[b] != GLFW_PRESS)
+            {
+                finishIntro(true);
+                break;
+            }
+        }
+        memcpy(prevGpButtons, state.buttons, sizeof(prevGpButtons));
+        gpState = state;
+        return;
+    }
+
     // Rebind capture: if a binding is waiting for a pad button, claim the first newly-pressed
     // one and stop — mirrors onKey()'s keyboard capture, including consuming this poll so the
     // same button press can't also fire as a normal action below.
@@ -644,12 +664,82 @@ void SatelliteSim::pollGamepad(float dt)
     };
     gpElevRaise = triggerPressure(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER]);
     gpElevLower = triggerPressure(state.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER]);
+
+    // UC4: gamepad virtual cursor ("cheap 90%" UI navigation, RELEASE_v1_1_PLAN.md). While a UI
+    // window is open, the right stick drives a screen-space cursor instead of camera look — full
+    // focus-based traversal would be a much larger job for the same practical payoff. A = click.
+    bool cursorRawX = false, cursorRawY = false; // did the stick actually move the cursor this frame?
+    bool uiWindowOpen = uiVisible && (settingsChrome.open || viewControlsChrome.open);
+    if (uiWindowOpen && ctx_)
+    {
+        if (vCursorX < 0.0f) // "not yet positioned" sentinel — first activation centers on screen
+        {
+            vCursorX = (float)ctx_->swapExtent.width * 0.5f;
+            vCursorY = (float)ctx_->swapExtent.height * 0.5f;
+        }
+        constexpr float kCursorSpeedPxPerSec = 1000.0f;
+        float rawX = deadzone(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_X], 0.15f);
+        float rawY = deadzone(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y], 0.15f);
+        cursorRawX = rawX != 0.0f;
+        cursorRawY = rawY != 0.0f;
+        vCursorX = glm::clamp(vCursorX + rawX * kCursorSpeedPxPerSec * dt, 0.0f, (float)ctx_->swapExtent.width);
+        vCursorY = glm::clamp(vCursorY + rawY * kCursorSpeedPxPerSec * dt, 0.0f, (float)ctx_->swapExtent.height);
+        vCursorActive = true;
+        vCursorClick = state.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS;
+        // Suppress the normal look-stick response so the camera doesn't also spin while the
+        // player is aiming the cursor at a button.
+        gpLookYawDeg = 0.0f;
+        gpLookPitchDeg = 0.0f;
+    }
+    else
+    {
+        vCursorActive = false;
+        vCursorClick = false;
+    }
+
+    // UC4: any real deflection/pressure this frame counts as "the player is using a gamepad
+    // right now" — button presses are already covered by the edge-triggered loop above via
+    // dispatchKeyAction, but that doesn't distinguish input source, so check the raw buttons too.
+    if (gpMoveFwd != 0.0f || gpMoveRight != 0.0f || gpLookYawDeg != 0.0f || gpLookPitchDeg != 0.0f ||
+        gpElevRaise != 0.0f || gpElevLower != 0.0f || cursorRawX || cursorRawY)
+        lastInputWasGamepad = true;
+    else
+        for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; ++b)
+            if (state.buttons[b] == GLFW_PRESS)
+            {
+                lastInputWasGamepad = true;
+                break;
+            }
+}
+
+// ─── virtualCursor ───────────────────────────────────────────────────────────
+// UC4: reports the current virtual-cursor state to App (see Simulation.h's calling convention
+// and pollGamepad's comment for how vCursorX/Y/Active/Click are maintained).
+bool SatelliteSim::virtualCursor(float &x, float &y, bool &lmb) const
+{
+    if (!vCursorActive)
+        return false;
+    x = vCursorX;
+    y = vCursorY;
+    lmb = vCursorClick;
+    return true;
 }
 
 void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
 {
     updateGpuTimingStats(ctx);
     pollGamepad(dt);
+
+    // UC6: pick up a finished background screenshot encode, if any (see finalizeScreenshot()'s
+    // comment for why the encode runs on a thread). Polled here (always runs, every frame)
+    // rather than inside buildScreenshotToast (gated on uiVisible) so a screenshot taken with the
+    // UI hidden still gets its toast queued up and ready the moment the UI is shown again.
+    if (screenshotResultReady.exchange(false))
+    {
+        std::lock_guard<std::mutex> lock(screenshotResultMutex);
+        snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", screenshotResultText.c_str());
+        screenshotToastTimer = 4.0f;
+    }
 
     // ── WASD surface navigation ───────────────────────────────────────────────
     // Pure 3D ECEF — no lat/lon arithmetic, no gimbal lock, works at any latitude.
@@ -659,7 +749,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     //
     // W/S move along obsFacing; A/D move along cross(obsFacing, obsDir) (right).
     // After each step obsFacing is parallel-transported to stay tangent at newPos.
-    if (win)
+    if (showIntro)
+    {
+        // UC3: the cinematic camera path drives obsHeightOffset/camera.elDeg/fovYDeg/obsFacing
+        // directly this frame — skip normal WASD/zoom input entirely so they can't fight it.
+        updateIntroCinematic(dt);
+    }
+    else if (win)
     {
         bool boost = (win && glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS) || gpHeld(KB_MOVE_BOOST);
         bool fine = (win && glfwGetKey(win, keybindings[KB_MOVE_FINE].key) == GLFW_PRESS) || gpHeld(KB_MOVE_FINE);
@@ -1138,7 +1234,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         orbitPc.elevCutoff = std::min(-0.01f, limbSin);
     }
     orbitPc.beamGain = beamGain;
-    orbitPc.mirrorSlewDegPerSec = mirrorSlewDegPerSec; // C12 follow-up #20
+    orbitPc.mirrorSlewDegPerSec = mirrorSlewDegPerSec;                // C12 follow-up #20
+    orbitPc.activeTargetCount = (uint32_t)reflectorActiveCount;       // S1 compaction
+    orbitPc.minBeamElevSin = sinf(glm::radians(reflectorMinElevDeg)); // S1 follow-up
 
     // ── Dispatch: scene_depth.comp — shared terrain/ocean depth (pipeline unification) ──────────
     // Runs FIRST. Everything downstream that needs to know "is this pixel's view blocked by the
@@ -1226,8 +1324,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
     // ── Dispatch: beam_cloud_block.comp — per-target cloud occlusion (C12 follow-up #33) ────────
     // Must run BEFORE sat_orbit.comp below, which reads beamCloudBlockBuf while writing beams.
-    // 201 targets, no per-frame zero-fill needed (every thread owns and fully overwrites its own
-    // index, no atomics — see the buffer's own member comment).
+    // reflectorTargetCount targets (S1, RELEASE_v1_1_PLAN.md — was a flat 201 before real
+    // coordinates), no per-frame zero-fill needed (every thread owns and fully overwrites its own
+    // index, no atomics — see the buffer's own member comment). Dispatching fewer workgroups than
+    // the shader's own NUM_TARGETS=201 bound is safe without a shader-side change: any extra
+    // thread inside a partial final workgroup (up to 63) computes a value for a slot beyond
+    // reflectorTargetCount that sat_orbit.comp's bestIdx can never select (its origIdx values are
+    // always < reflectorTargetCount by construction — see the ECEF→ECI compaction loop below).
     //
     // Knockout bit 512 skips the dispatch itself (not just its consumers — bit 128 does that).
     // Skipping leaves beamCloudBlockBuf holding the previous frame's values rather than garbage,
@@ -1245,7 +1348,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                 beamCloudBlockPipeLayout, 0, 1, &beamCloudBlockDescSet, 0, nullptr);
         vkCmdPushConstants(cmd, beamCloudBlockPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(bpc), &bpc);
-        vkCmdDispatch(cmd, (kNumReflectorTargets + 63) / 64, 1, 1);
+        vkCmdDispatch(cmd, ((uint32_t)reflectorTargetCount + 63) / 64, 1, 1);
 
         VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1980,6 +2083,12 @@ void SatelliteSim::setAudio(AudioSystem *audio)
 // ─── cleanup ──────────────────────────────────────────────────────────────────
 void SatelliteSim::cleanup(VkDevice device)
 {
+    // UC6: join any in-flight screenshot encode thread before anything below (including this
+    // object's own eventual destruction) can happen — it captures `this` for the result-handoff
+    // members, so letting it outlive the object would be a use-after-free.
+    if (screenshotThread.joinable())
+        screenshotThread.join();
+
     saveSettings();
 
     // NEW-3: reaching this point IS the clean-exit signal — remove the sentinel so the NEXT
@@ -2414,8 +2523,269 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyBuffer(device, planetBuf, nullptr);
     vkFreeMemory(device, planetMem, nullptr);
 
+    // UC6: screenshot staging buffer, if a capture happened this run (recreated per-capture, so
+    // this is the only place it's torn down for real).
+    if (screenshotStagingBuf != VK_NULL_HANDLE)
+    {
+        vkDestroyBuffer(device, screenshotStagingBuf, nullptr);
+        vkFreeMemory(device, screenshotStagingMem, nullptr);
+    }
+
     if (win)
         glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+}
+
+// ─── updateIntroCinematic ───────────────────────────────────────────────────
+// UC3: drives the intro's fixed beat sheet (kIntroKeyframes, SatelliteSim.h). obsDir/obsFacing's
+// tangent basis is captured once (introEastEF/introNorthEF) since the intro never changes lat/lon
+// — only altitude, look elevation/FOV, and a facing-azimuth rotation change, so azDeg(t) can be
+// turned into obsFacing directly every frame instead of accumulating incremental rotations.
+void SatelliteSim::updateIntroCinematic(float dt)
+{
+    if (!introBasisValid)
+    {
+        float sL = obsDir.z;
+        float cLH = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);
+        float inv = (cLH > 1e-7f) ? 1.0f / cLH : 0.0f;
+        float cLn = obsDir.x * inv, sLn = obsDir.y * inv;
+        introEastEF = {-sLn, cLn, 0.0f};
+        introNorthEF = {-sL * cLn, -sL * sLn, cLH};
+        introBasisValid = true;
+    }
+
+    introElapsed += dt;
+    float tEnd = kIntroKeyframes[kIntroKeyframeCount - 1].t;
+    float tClamped = std::min(introElapsed, tEnd);
+
+    int i = 0;
+    while (i < kIntroKeyframeCount - 2 && kIntroKeyframes[i + 1].t <= tClamped)
+        ++i;
+    const IntroKeyframe &a = kIntroKeyframes[i];
+    const IntroKeyframe &b = kIntroKeyframes[i + 1];
+    float segT = (b.t > a.t) ? glm::clamp((tClamped - a.t) / (b.t - a.t), 0.0f, 1.0f) : 1.0f;
+    float ease = segT * segT * (3.0f - 2.0f * segT); // smoothstep
+
+    obsHeightOffset = std::max(0.0f, glm::mix(a.altM, b.altM, ease));
+    camera.elDeg = glm::mix(a.elDeg, b.elDeg, ease);
+    camera.fovYDeg = glm::mix(a.fovDeg, b.fovDeg, ease);
+    float az = glm::radians(glm::mix(a.azDeg, b.azDeg, ease));
+    obsFacing = glm::normalize(cosf(az) * introNorthEF + sinf(az) * introEastEF);
+
+    // Track the most recently reached non-null caption (see IntroKeyframe's text field doc).
+    for (int k = 0; k <= i; ++k)
+        if (kIntroKeyframes[k].text)
+            introCaptionIndex = k;
+
+    // UC1 mechanism 2: accumulate GPU frame time across beats 1-4 for the end-of-intro preset
+    // promote/demote in finishIntro().
+    if (introElapsed <= kIntroBenchEndT)
+    {
+        introBenchMsSum += gpuMsTotalSmoothed;
+        ++introBenchFrames;
+    }
+
+    if (introElapsed >= tEnd)
+        finishIntro(false);
+}
+
+// ─── finishIntro ─────────────────────────────────────────────────────────────
+void SatelliteSim::finishIntro(bool wasSkipped)
+{
+    showIntro = false;
+    introSkipped = wasSkipped;
+
+    // UC1 mechanisms 2+3: only decide anything when the intro played to completion (a skip
+    // means no representative frame-time average was collected) and never during crash recovery
+    // (that launch already forced Planetarium for an unrelated reason — see init()).
+    if (!wasSkipped && !crashRecoveryMode && !introIsReplay && introBenchFrames > 0)
+    {
+        float avgMs = introBenchMsSum / (float)introBenchFrames;
+        constexpr float kTargetMs = 12.0f; // ~3 tiers of headroom, per RELEASE_v1_1_PLAN.md UC1
+        GraphicsPreset newPreset = graphicsPreset;
+        if (avgMs > kTargetMs * 1.5f)
+        {
+            if (graphicsPreset == GraphicsPreset::Medium)
+                newPreset = GraphicsPreset::Low;
+            else if (graphicsPreset == GraphicsPreset::Low)
+                newPreset = GraphicsPreset::Planetarium;
+        }
+        else if (avgMs < kTargetMs * 0.4f)
+        {
+            if (graphicsPreset == GraphicsPreset::Low)
+                newPreset = GraphicsPreset::Medium;
+            else if (graphicsPreset == GraphicsPreset::Medium)
+                newPreset = GraphicsPreset::High;
+        }
+
+        if (newPreset != graphicsPreset)
+            applyGraphicsPreset(newPreset);
+
+        // UC1 mechanism 3: always tell the user, never silently re-decide — this timer/text pair
+        // is separate from crashRecoveryNoticeTimer since the two can in principle both be live.
+        snprintf(graphicsAutoNoticeText, sizeof(graphicsAutoNoticeText),
+                 "Graphics set to %s based on your hardware -- change in Settings > Display.",
+                 kGraphicsPresetNames[(int)graphicsPreset]);
+        graphicsAutoNoticeTimer = 8.0f;
+    }
+    introBenchMsSum = 0.0f;
+    introBenchFrames = 0;
+    introIsReplay = false;
+}
+
+// ─── recordScreenshotCopy ────────────────────────────────────────────────────
+// UC6. See Simulation.h for the calling convention: App calls this once per frame, right after
+// the render pass ends (image is back in PRESENT_SRC_KHR, holding the fully composited frame —
+// or just the scene if wantsCleanScreenshot() suppressed ui.record() this frame), before the
+// command buffer is ended.
+void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image)
+{
+    if (!screenshotRequested)
+        return;
+    screenshotRequested = false; // consume — this is the one frame it's true for
+
+    if (!ctx.screenshotSupported)
+    {
+        snprintf(screenshotToastText, sizeof(screenshotToastText),
+                 "Screenshot not supported (GPU/driver lacks swapchain TRANSFER_SRC).");
+        screenshotToastTimer = 4.0f;
+        return;
+    }
+
+    screenshotW = ctx.swapExtent.width;
+    screenshotH = ctx.swapExtent.height;
+    screenshotFormat = ctx.swapFormat;
+    VkDeviceSize bufSize = (VkDeviceSize)screenshotW * (VkDeviceSize)screenshotH * 4;
+
+    // Fresh buffer per capture rather than tracking size across resizes between requests —
+    // screenshots are rare (a user keypress), not a hot path worth caching for.
+    if (screenshotStagingBuf != VK_NULL_HANDLE)
+    {
+        vkDestroyBuffer(ctx.device, screenshotStagingBuf, nullptr);
+        vkFreeMemory(ctx.device, screenshotStagingMem, nullptr);
+    }
+    ctx.createBuffer(bufSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     screenshotStagingBuf, screenshotStagingMem);
+
+    // PRESENT_SRC_KHR -> TRANSFER_SRC_OPTIMAL, copy, then back — the presentation engine still
+    // needs to consume this same image right after this command buffer's submission.
+    ctx.imageBarrier(cmd, image, VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {screenshotW, screenshotH, 1};
+    vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, screenshotStagingBuf, 1, &region);
+
+    ctx.imageBarrier(cmd, image, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
+                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
+    screenshotCopyPending = true;
+}
+
+// ─── finalizeScreenshot ──────────────────────────────────────────────────────
+// UC6. Called once per frame right after App waits on the frame fence — the same point
+// ctx.resolveTimestamps() already reads back the previous frame's GPU-written data, so the copy
+// recorded last frame's recordScreenshotCopy is guaranteed complete by the time this runs.
+void SatelliteSim::finalizeScreenshot()
+{
+    if (!screenshotCopyPending)
+        return;
+    screenshotCopyPending = false;
+    if (!ctx_)
+        return;
+
+    void *mapped = nullptr;
+    if (vkMapMemory(ctx_->device, screenshotStagingMem, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS || !mapped)
+        return;
+
+    // Copy out of the GPU-mapped memory into a plain heap buffer we own outright, then unmap
+    // immediately — the mapped memory is only needed long enough for this memcpy, and holding it
+    // open for the (much slower) encode below would block the NEXT capture from reusing/recreating
+    // screenshotStagingBuf for no reason.
+    size_t count = (size_t)screenshotW * (size_t)screenshotH;
+    std::vector<uint8_t> pixels(count * 4);
+    memcpy(pixels.data(), mapped, count * 4);
+    vkUnmapMemory(ctx_->device, screenshotStagingMem);
+
+    // Swizzle BGRA->RGBA (the swapchain format is almost certainly B8G8R8A8 — see
+    // VulkanContext::createSwapchain's format preference — but read the real format rather than
+    // assuming) and force alpha opaque: a color-attachment copy's alpha channel isn't meaningful
+    // for a screenshot (this app's render pass never blends against destination alpha).
+    bool isBgra = (screenshotFormat == VK_FORMAT_B8G8R8A8_SRGB || screenshotFormat == VK_FORMAT_B8G8R8A8_UNORM);
+    for (size_t i = 0; i < count; ++i)
+    {
+        if (isBgra)
+            std::swap(pixels[i * 4 + 0], pixels[i * 4 + 2]);
+        pixels[i * 4 + 3] = 255;
+    }
+
+    // PNG encoding (stbi_write_png) is genuinely slow in an unoptimized Debug build — tens of
+    // seconds at 1080p+ is normal for its unoptimized DEFLATE-style compressor — which reads as
+    // "the game froze" when run synchronously on the main thread. Encode on a background thread
+    // instead; it only touches the copied `pixels` buffer (not GPU/Vulkan state) and the
+    // result-handoff members below, so nothing here needs to synchronize with the render loop.
+    if (screenshotThread.joinable())
+        screenshotThread.join(); // previous capture's thread — screenshotEncoding guarantees it's
+                                 // already finished (or about to), so this never blocks noticeably
+    screenshotEncoding = true;
+    uint32_t w = screenshotW, h = screenshotH;
+    std::string path = screenshotPath;
+    screenshotThread = std::thread([this, pixels = std::move(pixels), w, h, path]() mutable
+                                   {
+        // Default compression level (8) is tuned for size over speed; screenshots don't need
+        // that, and it's the dominant cost of the encode (see the comment above this thread is
+        // spawned from). Only one of these threads ever runs at a time (join-before-start above),
+        // so mutating this global is safe. Global, not thread-local — stb_image_write's own API.
+        stbi_write_png_compression_level = 4;
+        bool ok = stbi_write_png(path.c_str(), (int)w, (int)h, 4, pixels.data(), (int)w * 4) != 0;
+        char buf[192];
+        if (ok)
+            snprintf(buf, sizeof(buf), "Saved %s", std::filesystem::path(path).filename().string().c_str());
+        else
+            snprintf(buf, sizeof(buf), "Screenshot failed to write.");
+        {
+            std::lock_guard<std::mutex> lock(screenshotResultMutex);
+            screenshotResultText = buf;
+        }
+        screenshotResultReady.store(true);
+        screenshotEncoding.store(false); });
+}
+
+// ─── requestScreenshot ────────────────────────────────────────────────────────
+// UC6: shared by KB_SCREENSHOT and the left HUD panel's camera button (buildLeftHudPanel).
+void SatelliteSim::requestScreenshot()
+{
+    if (screenshotEncoding.load() || screenshotCopyPending || screenshotRequested)
+        return; // a previous capture is still in flight (copy pending, or already encoding) — drop this one
+    // Build the output path now, at request time — not later at copy/encode time — so the
+    // timestamp reflects the moment the shot was actually taken, not whenever the async copy
+    // happens to be read back a frame later. Saved next to the exe (screenshots/, user-requested —
+    // overrides NEW-4's usual "writable data dir, not next to a possibly read-only exe" default
+    // for this one feature), falling back to userDataDir_ only if that directory genuinely can't
+    // be created/written (e.g. a read-only install).
+    std::error_code ec;
+    std::filesystem::path dir = std::filesystem::path(exeDir_) / "screenshots";
+    std::filesystem::create_directories(dir, ec);
+    if (ec)
+    {
+        fprintf(stderr, "[SatelliteSim] Couldn't create '%s' (%s); saving screenshots to the "
+                        "user data directory instead.\n",
+                dir.string().c_str(), ec.message().c_str());
+        dir = std::filesystem::path(userDataDir_) / "screenshots";
+        std::filesystem::create_directories(dir, ec);
+    }
+    std::time_t now = std::time(nullptr);
+    struct tm *lt = localtime(&now);
+    char nameBuf[64];
+    if (lt)
+        strftime(nameBuf, sizeof(nameBuf), "satlight_%Y-%m-%d_%H-%M-%S.png", lt);
+    else
+        snprintf(nameBuf, sizeof(nameBuf), "satlight_screenshot.png");
+    screenshotPath = (dir / nameBuf).string();
+    screenshotRequested = true;
 }
 
 // ─── onKey ────────────────────────────────────────────────────────────────────
@@ -2488,6 +2858,9 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         }
         break;
     }
+    case KB_SCREENSHOT:
+        requestScreenshot();
+        break;
     default:
         break; // KB_MOVE_BOOST/FINE, KB_RAISE_ELEV/LOWER_ELEV, KB_ZOOM_IN/OUT are held keys — polled directly.
     }
@@ -2499,9 +2872,11 @@ void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
     if (action != GLFW_PRESS)
         return;
 
+    lastInputWasGamepad = false; // UC4: any keypress means the player is at the keyboard
+
     if (showIntro)
     {
-        showIntro = false;
+        finishIntro(true);
         return;
     }
 
@@ -6606,80 +6981,11 @@ void SatelliteSim::buildOrbits()
         for (uint32_t oi = c.orbitStart; oi < c.orbitStart + c.orbitCount; ++oi)
             satOrbits[oi].constIdx = ci;
     }
-    // 67 Right here
-
-    // ── Generate random ground targets for TargetedReflector mode ───────────
-    // kNumReflectorTargets random lat/lon points stored as unit ECEF vectors.
-    // updatePositions() rotates them to ECI each frame and filters for the
-    // night-side terminator zone so mirrors only aim at dark-but-reachable spots.
-    // Default every slot to sea level first (covers indices 0 and kNumReflectorTargets-1, which
-    // the loop below doesn't touch) before the loop overrides 1..kNumReflectorTargets-2 with real
-    // per-target terrain elevation.
-    for (int ti = 0; ti < kNumReflectorTargets; ++ti)
-        reflectorTargetsRadiusM[ti] = kEarthRadius;
-    for (int ti = 1; ti < kNumReflectorTargets - 1; ++ti)
-    {
-        // Uniform sampling on sphere: latitude from arcsin of uniform[-1,1],
-        // longitude uniform [0, 2π).
-        float sinLat = (float)rand() / RAND_MAX * 2.0f - 1.0f;
-        float cosLat = sqrtf(std::max(0.0f, 1.0f - sinLat * sinLat));
-        float lon = (float)rand() / RAND_MAX * glm::two_pi<float>();
-        reflectorTargetsECEF[ti] = glm::vec3(cosLat * cosf(lon), cosLat * sinf(lon), sinLat);
-
-        // Real terrain elevation at this target's lat/lon (C12 follow-up #18) — without this,
-        // every target was placed on the sea-level sphere regardless of actual ground height,
-        // putting the "ground" endpoint of any beam-related ray for an elevated target (mountains,
-        // plateaus) underground relative to the terrain actually rendered there. Same CPU-side
-        // earthElevCpu lookup/formula as the observer's own terrain height above.
-        if (!earthElevCpu.empty())
-        {
-            // Derive lon/lat back from the ECEF vector just built (atan2 gives [-π, π] regardless
-            // of how `lon` above was originally sampled) — same convention the observer's own
-            // lookup and updatePositions() both use, avoiding any wrap-convention mismatch.
-            float lonRad = atan2f(reflectorTargetsECEF[ti].y, reflectorTargetsECEF[ti].x);
-            float latRad = asinf(sinLat);
-            float u = (lonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
-            float v = (0.5f * glm::pi<float>() - latRad) / glm::pi<float>();
-            int px = std::clamp((int)(u * (float)earthElevCpuW), 0, earthElevCpuW - 1);
-            int py = std::clamp((int)(v * (float)earthElevCpuH), 0, earthElevCpuH - 1);
-            // MAX over a small neighborhood, not a single point sample (C12 follow-up #23) — user
-            // reported beams still converging visibly below the rendered terrain surface. earthElevCpu
-            // is itself a 10x point-sampled downsample of the real 21600x10800 elevation texture
-            // (see createGlowResources()), so a single lookup can land on a texel a full ~9km away
-            // (10x the ~0.9km-per-texel source resolution) from the target's TRUE lat/lon, missing a
-            // nearby peak entirely and underestimating height — the direct cause of "converge below
-            // the surface." Taking the max of the surrounding 3x3 texels is a cheap, conservative
-            // fix: it can only raise the estimate toward a real nearby peak, never lower it, so at
-            // worst a target ends up slightly ABOVE ground (reads as "beam floats a little," far
-            // less objectionable than "beam sinks into the hillside"). Combined with a small fixed
-            // margin below for the same reason.
-            const float kSeaLevel = 15.0f / 255.0f;
-            uint8_t maxPix = 0;
-            for (int dy = -1; dy <= 1; ++dy)
-            {
-                int py2 = std::clamp(py + dy, 0, earthElevCpuH - 1);
-                for (int dx = -1; dx <= 1; ++dx)
-                {
-                    int px2 = ((px + dx) % earthElevCpuW + earthElevCpuW) % earthElevCpuW; // wrap longitude
-                    maxPix = std::max(maxPix, earthElevCpu[py2 * earthElevCpuW + px2]);
-                }
-            }
-            float pixVal = maxPix / 255.0f;
-            float terrainH = (pixVal <= kSeaLevel) ? 0.0f : std::max(0.0f, (pixVal - kSeaLevel) * 8848.0f);
-            const float kElevSafetyMarginM = 75.0f; // small fixed bias toward "above ground, not below"
-            reflectorTargetsRadiusM[ti] = kEarthRadius + terrainH + kElevSafetyMarginM;
-        }
-    }
-    // Last slot: fixed target at the observer spawn point (67°S, 67°W).
-    // Guarantees at least one mirror always aims here when the site is on the night side.
-    // (A duplicate assignment used to immediately follow this, overwriting this same slot with
-    // glm::vec3(0,0,-1) — the geographic South Pole, ~2555 km from the actual 67°S/67°W spawn
-    // point — under a "Zeroth slot / Antarctic Station" comment that didn't match the index it
-    // wrote to (index 0 is left unset/reserved by the loop above starting at ti=1, but the
-    // erroneous line wrote to kNumReflectorTargets-1 again instead). Found 2026-07-20 while
-    // debugging why Reflect-Orbital beams never appeared near the observer: this was silently
-    // breaking the one guaranteed-nearby target the horizon-visibility gate depends on. Removed;
-    // if a real fixed Antarctic Station target is wanted, it belongs at index 0, not here.)
+    // ── TargetedReflector ground targets (S1, RELEASE_v1_1_PLAN.md) ─────────
+    // Real solar-farm sites loaded from reflector_targets.json, falling back to random points —
+    // see loadReflectorTargets(). Must run after createGlowResources() has populated earthElevCpu
+    // (same ordering constraint the old inline code here had).
+    loadReflectorTargets();
 
     // ── Safety cap ────────────────────────────────────────────────────────────
     // satInputBuf and satVisibleBuf are allocated for exactly MAX_SATELLITES
@@ -6717,6 +7023,154 @@ void SatelliteSim::buildOrbits()
     activeSatCount = (uint32_t)satOrbits.size();
     // Mirror normals are now stored in mirrorNormalsBuf (device-local, zeroed at init).
     // satMirrorNormals is kept as an empty placeholder; GPU handles slew state.
+}
+
+// ─── computeReflectorTargetElevationRadius ───────────────────────────────────
+// Shared by loadReflectorTargets() and generateReflectorTargetsRandomFallback(). Same CPU-side
+// earthElevCpu lookup/formula as the observer's own terrain height (see "Elevation texture
+// encoding" in CLAUDE.md): MAX over a 3x3 texel neighborhood, not a single point sample (C12
+// follow-up #23) — earthElevCpu is itself a 10x downsample, so a single lookup can land a full
+// ~9km from the target's true lat/lon and miss a nearby peak. Taking the max can only raise the
+// estimate toward a real nearby peak, never lower it, so at worst a target ends up slightly ABOVE
+// ground (reads as "beam floats a little," far less objectionable than "beam sinks into the
+// hillside"). Combined with a small fixed margin below for the same reason.
+void SatelliteSim::computeReflectorTargetElevationRadius(int ti)
+{
+    reflectorTargetsRadiusM[ti] = kEarthRadius; // default: sea level
+    if (earthElevCpu.empty())
+        return;
+
+    const glm::vec3 &ef = reflectorTargetsECEF[ti];
+    float lonRad = atan2f(ef.y, ef.x);
+    float latRad = asinf(glm::clamp(ef.z, -1.0f, 1.0f));
+    float u = (lonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
+    float v = (0.5f * glm::pi<float>() - latRad) / glm::pi<float>();
+    int px = std::clamp((int)(u * (float)earthElevCpuW), 0, earthElevCpuW - 1);
+    int py = std::clamp((int)(v * (float)earthElevCpuH), 0, earthElevCpuH - 1);
+
+    const float kSeaLevel = 15.0f / 255.0f;
+    uint8_t maxPix = 0;
+    for (int dy = -1; dy <= 1; ++dy)
+    {
+        int py2 = std::clamp(py + dy, 0, earthElevCpuH - 1);
+        for (int dx = -1; dx <= 1; ++dx)
+        {
+            int px2 = ((px + dx) % earthElevCpuW + earthElevCpuW) % earthElevCpuW; // wrap longitude
+            maxPix = std::max(maxPix, earthElevCpu[py2 * earthElevCpuW + px2]);
+        }
+    }
+    float pixVal = maxPix / 255.0f;
+    float terrainH = (pixVal <= kSeaLevel) ? 0.0f : std::max(0.0f, (pixVal - kSeaLevel) * 8848.0f);
+    const float kElevSafetyMarginM = 75.0f; // small fixed bias toward "above ground, not below"
+    reflectorTargetsRadiusM[ti] = kEarthRadius + terrainH + kElevSafetyMarginM;
+}
+
+// ─── generateReflectorTargetsRandomFallback ──────────────────────────────────
+void SatelliteSim::generateReflectorTargetsRandomFallback()
+{
+    // Index 0: real fixed target at the observer spawn point (67°S, 67°W) — see loadReflectorTargets()'s
+    // doc comment for the bug this replaces (index 0 used to be silently left as a degenerate
+    // zero-vector in this exact fallback). Matches CLAUDE.md's "Fixed Simulation State" spawn.
+    {
+        const float kSpawnLatDeg = -67.0f, kSpawnLonDeg = -67.0f;
+        float latRad = glm::radians(kSpawnLatDeg), lonRad = glm::radians(kSpawnLonDeg);
+        float cosLat = cosf(latRad);
+        reflectorTargetsECEF[0] = glm::vec3(cosLat * cosf(lonRad), cosLat * sinf(lonRad), sinf(latRad));
+        computeReflectorTargetElevationRadius(0);
+        reflectorObserverSpawnIdx = 0;
+    }
+    // Remaining slots: uniformly-random lat/lon points stored as unit ECEF vectors. Leaves the
+    // last slot (kNumReflectorTargets-1) untouched/degenerate, same as the old behavior — not
+    // worth using every last slot of a 201-capacity buffer for a fallback path.
+    for (int ti = 1; ti < kNumReflectorTargets - 1; ++ti)
+    {
+        // Uniform sampling on sphere: latitude from arcsin of uniform[-1,1], longitude uniform [0, 2π).
+        float sinLat = (float)rand() / RAND_MAX * 2.0f - 1.0f;
+        float cosLat = sqrtf(std::max(0.0f, 1.0f - sinLat * sinLat));
+        float lon = (float)rand() / RAND_MAX * glm::two_pi<float>();
+        reflectorTargetsECEF[ti] = glm::vec3(cosLat * cosf(lon), cosLat * sinf(lon), sinLat);
+        computeReflectorTargetElevationRadius(ti);
+    }
+    reflectorTargetCount = kNumReflectorTargets - 1;
+    fprintf(stderr, "[SatelliteSim] Using %d procedurally-random reflector targets.\n", reflectorTargetCount);
+}
+
+// ─── loadReflectorTargets ─────────────────────────────────────────────────────
+// S1 (RELEASE_v1_1_PLAN.md): reads reflector_targets.json (real, hand-curated solar-farm sites —
+// see that file's own header comment for provenance/license notes), moddable exactly like
+// constellations.json. Falls back to generateReflectorTargetsRandomFallback() on any failure.
+//
+// Fixes a real bug along the way: CLAUDE.md's "TargetedReflector" subsystem doc claimed index
+// (kNumReflectorTargets-1) was a fixed pin at the observer spawn point "guaranteeing a mirror
+// always aims here when in darkness" — but the code that wrote it had already been removed (see
+// the historical comment this replaced), leaving that slot a degenerate zero-vector that
+// normalize() turns into NaN, silently marked invalid, and never selected. There was no working
+// observer-spawn-pinned target at all. reflector_targets.json's first entry (observer_spawn:
+// true) is a REAL, correctly-populated site at the exact same coordinates, so the guarantee is
+// real again — see generateReflectorTargetsRandomFallback() for the same fix in the fallback path.
+void SatelliteSim::loadReflectorTargets()
+{
+    reflectorTargetCount = 0;
+    reflectorObserverSpawnIdx = -1;
+
+    auto jsonPath = (std::filesystem::path(exeDir_) / "reflector_targets.json").string();
+    std::ifstream f(jsonPath);
+    if (!f.is_open())
+    {
+        fprintf(stderr, "[SatelliteSim] reflector_targets.json not found at '%s';"
+                        " using procedurally-random targets.\n",
+                jsonPath.c_str());
+        generateReflectorTargetsRandomFallback();
+        return;
+    }
+
+    nlohmann::json j;
+    try
+    {
+        f >> j;
+    }
+    catch (const nlohmann::json::exception &e)
+    {
+        fprintf(stderr, "[SatelliteSim] Failed to parse reflector_targets.json: %s\n"
+                        "              Using procedurally-random targets.\n",
+                e.what());
+        generateReflectorTargetsRandomFallback();
+        return;
+    }
+
+    int count = 0;
+    for (const auto &jt : j.value("targets", nlohmann::json::array()))
+    {
+        if (count >= kNumReflectorTargets)
+        {
+            fprintf(stderr, "[SatelliteSim] reflector_targets.json has more than %d entries; "
+                            "truncating.\n",
+                    kNumReflectorTargets);
+            break;
+        }
+        float latDeg = jt.value("lat", 0.0f);
+        float lonDeg = jt.value("lon", 0.0f);
+        float latRad = glm::radians(latDeg), lonRad = glm::radians(lonDeg);
+        float cosLat = cosf(latRad);
+        reflectorTargetsECEF[count] = glm::vec3(cosLat * cosf(lonRad), cosLat * sinf(lonRad), sinf(latRad));
+        computeReflectorTargetElevationRadius(count);
+        if (jt.value("observer_spawn", false) && reflectorObserverSpawnIdx < 0)
+            reflectorObserverSpawnIdx = count;
+        ++count;
+    }
+
+    if (count == 0)
+    {
+        fprintf(stderr, "[SatelliteSim] reflector_targets.json has no usable \"targets\" entries; "
+                        "using procedurally-random targets.\n");
+        generateReflectorTargetsRandomFallback();
+        return;
+    }
+
+    reflectorTargetCount = count;
+    fprintf(stderr, "[SatelliteSim] Loaded %d reflector targets from reflector_targets.json%s.\n",
+            reflectorTargetCount,
+            reflectorObserverSpawnIdx >= 0 ? " (observer-spawn pin found)" : " (no observer-spawn pin!)");
 }
 
 // ─── updatePositions ──────────────────────────────────────────────────────────
@@ -6890,13 +7344,18 @@ void SatelliteSim::updatePositions(double t, float dt)
     // spread all the way from the dusk terminator to the dawn terminator.  As Earth
     // rotates under the constellation, different geographic points enter/exit the
     // night side and the flare directions visibly sweep across the sky.
-    // ── TargetedReflector targets: ECEF→ECI + validity → upload to GPU ─────────
-    // Written to reflectorTargetsMapped (host-coherent); read by sat_orbit.comp.
+    // ── TargetedReflector targets: ECEF→ECI + validity → compact → upload to GPU ───────────────
+    // S1 compaction (RELEASE_v1_1_PLAN.md): only night-side-valid targets get written, packed at
+    // the front of reflectorTargetsMapped — see GpuReflectorTarget's doc comment for why bestIdx
+    // still resolves correctly against BeamCloudBlockBuf despite the reordering. Written to
+    // reflectorTargetsMapped (host-coherent); read by sat_orbit.comp, bound by
+    // SatOrbitPC::activeTargetCount (== reflectorActiveCount).
     {
         float gmst = (float)fmod(kOmegaEarth * t, glm::two_pi<double>());
         float cosG = cosf(gmst), sinG = sinf(gmst);
         GpuReflectorTarget *targets = static_cast<GpuReflectorTarget *>(reflectorTargetsMapped);
-        for (int ti = 0; ti < kNumReflectorTargets; ++ti)
+        int activeCount = 0;
+        for (int ti = 0; ti < reflectorTargetCount; ++ti)
         {
             const glm::vec3 &ef = reflectorTargetsECEF[ti];
             // reflectorTargetsRadiusM (C12 follow-up #18), not the bare kEarthRadius — accounts
@@ -6907,9 +7366,13 @@ void SatelliteSim::updatePositions(double t, float dt)
                                                               sinG * ef.x + cosG * ef.y,
                                                               ef.z);
             float sunDot = glm::dot(glm::normalize(eci), sunDirECI);
-            targets[ti].posECI = eci;
-            targets[ti].valid = (sunDot < 0.0f) ? 1.0f : 0.0f;
+            if (sunDot >= 0.0f)
+                continue; // day-side — simply not written; nothing downstream ever scans past activeCount
+            targets[activeCount].posECI = eci;
+            targets[activeCount].origIdx = (float)ti;
+            ++activeCount;
         }
+        reflectorActiveCount = activeCount;
     }
 
     // ── Satellite loop runs on GPU (sat_orbit.comp + sat_flare.comp) ─────────────

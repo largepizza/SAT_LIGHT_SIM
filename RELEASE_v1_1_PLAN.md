@@ -25,6 +25,55 @@ alongside the Yale Bright Star Catalogue).
 screenshots, S1 reflector targets) — see Sequencing below. Phase 4 is the cut line if time runs
 short, so it's fine to pick off items individually rather than all-or-nothing.
 
+**Session 31: Phase 4 complete, all four items.**
+- **UC3 + UC1 mechanism 2:** the old static-text intro overlay is gone, replaced by a fixed
+  camera-path cinematic (`kIntroKeyframes`, `SatelliteSim.h`) — ground/zenith → horizon pan → rise
+  through the cloud deck (teaches Q/E, generated live from `keybindings` so a rebind is reflected)
+  → LEO → settle back on the ground, with fading captions and a "press any key to skip" hint from
+  1.5s in. Deliberately never moves `obsDir`/lat-lon — only altitude/look/FOV/facing-azimuth — so
+  no great-circle interpolation was needed. `gpuMsTotalSmoothed` is accumulated across beats 1-4
+  and used for a one-shot promote/demote against a 12ms target at natural completion only (not on
+  skip, not on replay, not during crash recovery) — `finishIntro()`. `showIntro` is now persisted
+  (first-run-only); a "Replay Intro" button was added to Settings > Display.
+- **UC4:** the intro's old hardcoded keyboard-only control list is gone (see UC3 above). The
+  Controls window now splits into rebindable "digital" rows (including Q/E, which used to be a
+  hardcoded string) and a labeled read-only "ANALOG (not rebindable)" section for the true axes
+  (WASD/stick move, mouse-drag/stick look, scroll zoom, trigger elevation). `lastInputWasGamepad`
+  tracks which device was last active and reorders each row's "Key / Pad" text accordingly. A
+  gamepad virtual cursor (right stick moves it, A clicks, active only while a Settings/Controls
+  window is open) was added via a new `Simulation::virtualCursor()` hook — no changes needed to any
+  existing Clay hover/click code, since App just overrides that frame's mouse position/click state.
+- **UC6:** `VulkanContext::createSwapchain` now requests `TRANSFER_SRC` when the surface supports
+  it (`screenshotSupported`, near-universal but gated, not assumed). F12 (`KB_SCREENSHOT`) copies
+  the swapchain image to a host-visible staging buffer (`vkCmdCopyImageToBuffer`, avoiding the
+  linear-tiling row-pitch problem entirely) right after the render pass ends; the copy is read back
+  and PNG-encoded (`stb_image_write`, BGRA→RGBA swizzle) at the top of the NEXT frame, once the
+  frame fence proves the GPU finished writing it — same "read back what last frame's GPU work
+  produced" point `ctx.resolveTimestamps()` already uses. Clean-shot mode (`wantsCleanScreenshot()`)
+  skips `ui.record()` for the captured frame. Saved to `<userDataDir>/screenshots/`, confirmation
+  toast on completion. PNG `tEXt` metadata (version/observer/sim-time) was scoped as optional and
+  **not implemented** — `stb_image_write`'s monolithic writer has no chunk-injection API, and
+  hand-rolling PNG chunk manipulation wasn't judged worth it for an optional item.
+- **S1:** `data/reflector_targets.json` — ~50 hand-curated real solar installations (no license
+  obligations; hand-typed from public knowledge, not a redistributed dataset) plus an
+  `"observer_spawn": true` pin at the exact 67°S/67°W spawn point, loaded by
+  `SatelliteSim::loadReflectorTargets()` (falls back to the old procedural-random generator on any
+  failure). Fixed a real, previously-undiscovered bug along the way: the documented "index 200 is a
+  fixed observer-spawn pin" was already broken — the code that wrote it had been removed in an
+  earlier session, leaving that slot a degenerate zero-vector (`normalize` → NaN → silently
+  invalid) — so there was no working guaranteed-nearby target at all before this session. Also
+  implemented the CPU-side compaction the plan called for, in a lower-risk form than originally
+  scoped: `updatePositions()` packs only night-side-valid targets to the front of
+  `reflectorTargetsMapped` each frame (`GpuReflectorTarget.origIdx` replaces the old 0/1 `.valid`
+  flag with the target's original index), and `sat_orbit.comp`'s per-satellite scan is bounded by
+  the new `SatOrbitPC::activeTargetCount` instead of a flat 201 — this is the dominant cost the
+  plan identified and gets the full win. `beam_cloud_block.comp` was deliberately left
+  un-reordered (its dispatch count now scales with `reflectorTargetCount` from the real-coordinates
+  change alone, a ~4x win already) rather than also compacting it to the night-side subset — doing
+  so safely would need a second per-frame-rewritten buffer and was judged not worth the added risk
+  for a pass with no way to runtime-test the result; revisit if `beam_cloud_block.comp` shows up as
+  a real cost in a future profiling pass.
+
 **Same-day follow-up bug fix:** stars had no cloud occlusion at any preset (an architectural gap,
 not a preset-tuning issue) — most visible at Medium-and-below because those presets' shorter cloud
 distance-fade band leaves more of the visible sky in a "looks like cloud, occludes nothing" state.
@@ -154,7 +203,7 @@ repo alone. Before this can be finished I need the source and license of each:
 
 ---
 
-### UC3 — Cinematic intro `[ ]` **P1** (fold with UC1)
+### UC3 — Cinematic intro `[x]` **P1** (fold with UC1) — done session 31
 
 Replaces the current wall-of-text overlay (`buildIntroOverlay`, ~90 lines of hardcoded Clay text).
 
@@ -189,7 +238,7 @@ there* before handing over control, so the altitude axis is already in their men
 
 ---
 
-### UC4 — Dual-input controls documentation `[~]` **P1**
+### UC4 — Dual-input controls documentation `[x]` **P1** — done session 31
 
 Already good: every `KeyBinding` carries a `gpButton`, `gamepadButtonDisplayName()` exists, and the
 Controls window renders `"Key / Pad"` pairs. Gaps:
@@ -247,7 +296,7 @@ constants baked at pipeline creation, no source duplication).
 
 ---
 
-### UC6 — Screenshots `[ ]` **P2**
+### UC6 — Screenshots `[x]` **P2** — done session 31 (PNG tEXt metadata scoped out, see session log)
 
 **Real blocker found:** `VulkanContext.cpp:399` sets
 `ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT` only. Copying from a swapchain image without
@@ -275,7 +324,8 @@ Then:
 
 ## Simulation
 
-### S1 — Real reflector target coordinates `[ ]` **P1**
+### S1 — Real reflector target coordinates `[x]` **P1** — done session 31 (see session log for the
+compaction scope decision)
 
 Current: `kNumReflectorTargets = 201` uniformly-random ECEF points, index 200 pinned to the observer
 spawn (67°S 67°W).
@@ -540,7 +590,7 @@ Each phase ends in a buildable, testable state. Phases 1 and 2 are the release g
 | **1 — Foundation** `[x] DONE` | NEW-1 version stamp · NEW-4 user-data paths · NEW-5 settings schema · NEW-2 graceful failure + log | Everything downstream writes files and reports versions. Doing these first means every later test run produces diagnosable output. |
 | **2 — Performance & presets** `[x] DONE` | S4 terrain fade (P0) · UC1 presets + auto-detect · NEW-7 FPS cap · NEW-3 safe mode | The release-blocking accessibility work. Terrain fade goes **before** presets so the presets are calibrated against the fixed cost, not the current one. |
 | **3 — Visual truth** `[x] DONE (session 30)` | S2 stars + pollution (a & c) · S3 flare ceiling · Step 7 city sky glow | The "this looks real now" phase. S2(c) and Step 7 are both light-pollution work and share testing; do them together. |
-| **4 — Experience** `[ ] NEXT` | UC3 intro cinematic (+ UC1 benchmark hook) · UC4 dual-input docs · UC6 screenshots · S1 reflector targets | User-facing polish. UC3 depends on UC1's preset system existing. **This is the cut line if time runs short** — ship with the current text intro rather than delaying. |
+| **4 — Experience** `[x] DONE (session 31)` | UC3 intro cinematic (+ UC1 benchmark hook) · UC4 dual-input docs · UC6 screenshots · S1 reflector targets | User-facing polish. UC3 depends on UC1's preset system existing. |
 | **5 — Release** `[ ]` | UC2 attributions · NEW-8 comfort · NEW-6 QA matrix · NEW-9 docs & packaging · tag v1.1.0 | UC2 is last only because it is blocked on your provenance answers — **start gathering those now**, it is P0 and it is the one item that cannot be rushed at the end. |
 
 *(Bonus, not in this sequencing: real-ephemeris planets — see Session log above and `PLANETS_PLAN.md`.)*
@@ -550,9 +600,9 @@ Each phase ends in a buildable, testable state. Phases 1 and 2 are the release g
 Ship-blocking: **Phase 1, Phase 2, S3, UC2, NEW-6, NEW-9.**
 Everything else improves the release but does not gate it.
 
-**As of session 30:** Phase 1, Phase 2, and S3 are all done — the only remaining ship-blockers are
-**UC2 (blocked on your provenance answers), NEW-6 (QA matrix), and NEW-9 (docs & packaging).**
-Phase 4 is genuinely cuttable if time runs short.
+**As of session 31:** Phases 1, 2, and 4 are done, plus S3. The only remaining ship-blockers are
+**UC2 (blocked on your provenance answers), NEW-6 (QA matrix), and NEW-9 (docs & packaging)** —
+i.e. all of Phase 5. UC2 is still the long pole and still worth starting now.
 
 ---
 
