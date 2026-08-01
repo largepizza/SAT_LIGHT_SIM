@@ -78,11 +78,11 @@ enum class UnitSystem
 // side of this.
 enum class FpsCapMode
 {
-    Off,    // uncapped, present mode IMMEDIATE (tearing allowed) — max perf regardless of comfort
+    Off, // uncapped, present mode IMMEDIATE (tearing allowed) — max perf regardless of comfort
     Cap30,
     Cap60,
     Cap120,
-    VSync,  // default — FIFO, paced by the display's own refresh rate
+    VSync, // default — FIFO, paced by the display's own refresh rate
 };
 
 // UC1 (RELEASE_v1_1_PLAN.md) — Settings > Display graphics preset. Applying a named preset
@@ -200,7 +200,16 @@ static_assert(sizeof(GpuSatVisible) == 32, "GpuSatVisible layout mismatch");
 
 // Mercury..Uranus — the naked-eye-relevant classical planets plus Uranus (mag ~5.7-5.9, right at
 // the edge of the star catalog's own mag-6.5 floor). Neptune excluded: never naked-eye (~mag 7.8).
-enum PlanetId { kMercury = 0, kVenus, kMars, kJupiter, kSaturn, kUranus, kPlanetCount };
+enum PlanetId
+{
+    kMercury = 0,
+    kVenus,
+    kMars,
+    kJupiter,
+    kSaturn,
+    kUranus,
+    kPlanetCount
+};
 extern const char *const kPlanetNames[kPlanetCount];
 
 // Per-planet ephemeris state, recomputed every frame in updatePositions() from the Keplerian
@@ -239,16 +248,16 @@ struct SatFlarePC
     float mirrorBoost;     // mirror peak multiplier (mirrors MIRROR_BOOST)
     float visThresh;       // visibility cull threshold (mirrors VIS_THRESH)
     float highlightFlare;  // fixed flare for constellation census (mirrors HIGHLIGHT_FLARE)
-    float extinctionCoeff;  // atmospheric extinction, magnitudes per airmass (reuses the slot that
-                            // was lightPollution — see SatelliteSim::updateLightPollutionDome for
-                            // why that moved to the lightDomeBuf SSBO instead of push-constant space)
-    float moonSuppression;  // sky background suppression ratio from moonlight (mirrors daySuppression's
-                             // role, much smaller in practice — moon is ~14 magnitudes dimmer than the sun)
-    float pad0;              // reserved — pads moonDirECI to 16-byte (vec3) alignment
-    glm::vec3 moonDirECI;    // unit vector from Earth toward Moon in ECI
-    float sunRefIntensity;   // was pad1 — S3 (RELEASE_v1_1_PLAN.md): soft ceiling reference so no
-                              // satellite's effectFlare can render brighter than the sun; mirrors
-                              // FlareSourcePC's own sunRefIntensity (SatelliteSim::sunFlareRefIntensity)
+    float extinctionCoeff; // atmospheric extinction, magnitudes per airmass (reuses the slot that
+                           // was lightPollution — see SatelliteSim::updateLightPollutionDome for
+                           // why that moved to the lightDomeBuf SSBO instead of push-constant space)
+    float moonSuppression; // sky background suppression ratio from moonlight (mirrors daySuppression's
+                           // role, much smaller in practice — moon is ~14 magnitudes dimmer than the sun)
+    float pad0;            // reserved — pads moonDirECI to 16-byte (vec3) alignment
+    glm::vec3 moonDirECI;  // unit vector from Earth toward Moon in ECI
+    float sunRefIntensity; // was pad1 — S3 (RELEASE_v1_1_PLAN.md): soft ceiling reference so no
+                           // satellite's effectFlare can render brighter than the sun; mirrors
+                           // FlareSourcePC's own sunRefIntensity (SatelliteSim::sunFlareRefIntensity)
 }; // total: 128 bytes
 static_assert(sizeof(SatFlarePC) == 128, "SatFlarePC layout mismatch");
 
@@ -265,39 +274,39 @@ static_assert(sizeof(SatFlarePC) == 128, "SatFlarePC layout mismatch");
 //   total: 128 bytes
 struct SatDrawPC
 {
-    glm::mat4 skyView;    // ENU → camera space
-    float fovYRad;        // vertical field of view (radians)
-    float aspect;         // viewport width / height
-    float gmst;           // Greenwich Mean Sidereal Time (radians)
-    float waveTime;       // wall-clock seconds for wave animation (glfwGetTime)
-    glm::vec4 sunDirENU;  // sun direction in ENU (xyz unit vec, w = sin(elevation))
-    glm::vec4 moonDirENU; // moon direction in ENU (xyz unit vec, w = illuminated fraction)
-    glm::vec4 obsECEFDir; // xyz = observer ECEF unit vector (lets sat_sky.frag convert ENU hit →
-                          // ECEF → geographic lat/lon for texture UV); w = obsHeightOffset (m,
-                          // user altitude offset above terrain — maxed with the GPU's own
-                          // ground-height lookup as obsEffH). Despite the field's original "w
-                          // unused" comment (stale — corrected here), it IS read.
+    glm::mat4 skyView;         // ENU → camera space
+    float fovYRad;             // vertical field of view (radians)
+    float aspect;              // viewport width / height
+    float gmst;                // Greenwich Mean Sidereal Time (radians)
+    float waveTime;            // wall-clock seconds for wave animation (glfwGetTime)
+    glm::vec4 sunDirENU;       // sun direction in ENU (xyz unit vec, w = sin(elevation))
+    glm::vec4 moonDirENU;      // moon direction in ENU (xyz unit vec, w = illuminated fraction)
+    glm::vec4 obsECEFDir;      // xyz = observer ECEF unit vector (lets sat_sky.frag convert ENU hit →
+                               // ECEF → geographic lat/lon for texture UV); w = obsHeightOffset (m,
+                               // user altitude offset above terrain — maxed with the GPU's own
+                               // ground-height lookup as obsEffH). Despite the field's original "w
+                               // unused" comment (stale — corrected here), it IS read.
     uint32_t debugDisableMask; // profiling-only knockout toggles consumed by sat_sky.frag
                                // (dbgSkipTerrain/dbgSkipAtmosphere/dbgSkipSunOD/dbgSkipOceanRefl);
                                // 0 = everything enabled (normal rendering). See Display settings tab.
-    float pad0;            // explicit — GLSL push_constant layout aligns the vec2 below to 8
-                            // bytes (std430 rules), same as std140/std430 buffers; C++ doesn't
-                            // insert this padding automatically the way GLSL requires it, so it
-                            // must be here explicitly or screenSizePx reads garbage in the shader.
-    glm::vec2 screenSizePx; // CURRENT render target's pixel dimensions (session 29, resolution
-                             // scaling) — skyLowResExtent when recordPrePass renders the scaled
-                             // background, ctx.swapExtent everywhere else (full-res draws, and
-                             // Pass 1 at renderScale==1.0). Needed because gl_FragCoord.xy is
-                             // relative to whatever framebuffer THIS draw call targets, not
-                             // always the full swapchain — any shader code deriving a [0,1] UV
-                             // from gl_FragCoord (e.g. sampling the half-res cloud composite
-                             // targets, which are ALWAYS sized off the true swap extent
-                             // regardless of renderScale) must divide by this, not by an assumed
-                             // full-res constant, or the result is wrong whenever the two differ.
-    float skyGlareVisibility; // offset 144 — eased sun-glare gate (recordCompute(), see
-                             // skyGlareEased member comment); used only by sat_sky.frag's Milky
-                             // Way (stars read the CPU-side skyGlareEased directly in
-                             // updateStars(), no GPU copy needed for them).
+    float pad0;                // explicit — GLSL push_constant layout aligns the vec2 below to 8
+                               // bytes (std430 rules), same as std140/std430 buffers; C++ doesn't
+                               // insert this padding automatically the way GLSL requires it, so it
+                               // must be here explicitly or screenSizePx reads garbage in the shader.
+    glm::vec2 screenSizePx;    // CURRENT render target's pixel dimensions (session 29, resolution
+                               // scaling) — skyLowResExtent when recordPrePass renders the scaled
+                               // background, ctx.swapExtent everywhere else (full-res draws, and
+                               // Pass 1 at renderScale==1.0). Needed because gl_FragCoord.xy is
+                               // relative to whatever framebuffer THIS draw call targets, not
+                               // always the full swapchain — any shader code deriving a [0,1] UV
+                               // from gl_FragCoord (e.g. sampling the half-res cloud composite
+                               // targets, which are ALWAYS sized off the true swap extent
+                               // regardless of renderScale) must divide by this, not by an assumed
+                               // full-res constant, or the result is wrong whenever the two differ.
+    float skyGlareVisibility;  // offset 144 — eased sun-glare gate (recordCompute(), see
+                               // skyGlareEased member comment); used only by sat_sky.frag's Milky
+                               // Way (stars read the CPU-side skyGlareEased directly in
+                               // updateStars(), no GPU copy needed for them).
     // (cloudShadowRangeM at 148 and cloudShadowResidualM at 152 lived here — both existed only to
     //  map hitPt.xy into cloud_shadow.comp's observer-centred grid, and to undo that grid's
     //  texel-snapping. The grid is gone; the shadow now arrives in cloudTargetB.a, already
@@ -320,7 +329,7 @@ struct SatDrawPC
                              // SatelliteSim::beamProximityGlow). Replaces the directional
                              // azimuth-sector dome lookup the wash used in #39/#40 — applied
                              // uniformly regardless of view direction.
-    float noTwinkle;        // offset 164 — S3/planets follow-up (RELEASE_v1_1_PLAN.md, session 30):
+    float noTwinkle;         // offset 164 — S3/planets follow-up (RELEASE_v1_1_PLAN.md, session 30):
                              // 0 (default) = normal star_point.vert twinkle/scintillation; 1 = gate
                              // it off. Set only on the planet draw call's own copy of this PC —
                              // real planets are small resolved discs and don't atmospheric-
@@ -346,30 +355,30 @@ struct CloudMarchPC
     glm::vec4 sunDirENU;
     glm::vec4 moonDirENU;
     glm::vec4 obsECEFDir;
-    uint32_t debugDisableMask; // perf knockout toggles — see SatDrawPC's member comment. Needed
-                               // here too now that the aurora sky curtain march moved into
-                               // cloud_march.comp; mirrors the same debugDisableMask value.
-    float beamMaxRangeM;       // offset 132 — C12 follow-up #6: settings-tunable "how far around
-                               // the observer do Reflect-Orbital beams render" cutoff, mirrors
-                               // SatDrawPC's own copy (same frame's value).
+    uint32_t debugDisableMask;  // perf knockout toggles — see SatDrawPC's member comment. Needed
+                                // here too now that the aurora sky curtain march moved into
+                                // cloud_march.comp; mirrors the same debugDisableMask value.
+    float beamMaxRangeM;        // offset 132 — C12 follow-up #6: settings-tunable "how far around
+                                // the observer do Reflect-Orbital beams render" cutoff, mirrors
+                                // SatDrawPC's own copy (same frame's value).
     uint32_t showBeamDebugRays; // offset 136 — C12 follow-up #12: debug-only "draw each active
-                               // mirror's actual current pointing direction as a long ray" toggle.
-                               // Deliberately NOT part of debugDisableMask — that mask means
-                               // "disable this normally-on thing" (0 = normal rendering); this is
-                               // the opposite shape ("enable this normally-off extra"), so it gets
-                               // its own field rather than overloading that convention.
-    float beamSkyGlowGain;     // offset 140 — C12 follow-up #17: settings-tunable brightness for
-                               // the beam->cloud illumination term (C12 follow-up #44 — this used
-                               // to gain the old analytic sky tube; it's that term's direct
-                               // successor, not a new concept, so it keeps the same slider, per
-                               // [[feedback_shared_gain_sliders]]).
-    float cloudShadowRangeM;   // offset 144 — distance (m) beyond which the per-pixel terrain
-                               // cloud shadow fades out and stops being marched. Restored (with a
-                               // new meaning) after the 128x128 grid was deleted: that grid had a
-                               // hard extent which accidentally kept its cost near zero from
-                               // altitude, and dropping it made the per-pixel replacement run over
-                               // the whole screen from orbit. Now a smooth fade rather than a hard
-                               // edge — see the call site in cloud_march.comp's main().
+                                // mirror's actual current pointing direction as a long ray" toggle.
+                                // Deliberately NOT part of debugDisableMask — that mask means
+                                // "disable this normally-on thing" (0 = normal rendering); this is
+                                // the opposite shape ("enable this normally-off extra"), so it gets
+                                // its own field rather than overloading that convention.
+    float beamSkyGlowGain;      // offset 140 — C12 follow-up #17: settings-tunable brightness for
+                                // the beam->cloud illumination term (C12 follow-up #44 — this used
+                                // to gain the old analytic sky tube; it's that term's direct
+                                // successor, not a new concept, so it keeps the same slider, per
+                                // [[feedback_shared_gain_sliders]]).
+    float cloudShadowRangeM;    // offset 144 — distance (m) beyond which the per-pixel terrain
+                                // cloud shadow fades out and stops being marched. Restored (with a
+                                // new meaning) after the 128x128 grid was deleted: that grid had a
+                                // hard extent which accidentally kept its cost near zero from
+                                // altitude, and dropping it made the per-pixel replacement run over
+                                // the whole screen from orbit. Now a smooth fade rather than a hard
+                                // edge — see the call site in cloud_march.comp's main().
     // (daySuppression/beamExtinctionMult/beamNearFieldFadeM lived here, at offsets 148/152/156 —
     //  all three existed only for the analytic beam sky-glow block deleted in C12 follow-up #44.
     //  The new per-sample beam-cloud term gates day/night with the march's own per-sample
@@ -395,9 +404,9 @@ static_assert(sizeof(CloudMarchPC) == 148, "CloudMarchPC layout mismatch");
 static constexpr int kMaxCloudBeamLights = 16;
 struct GpuBeamCloudLight
 {
-    glm::vec3 targetENU;    // meters, observer-relative
-    float     aggIntensity; // sum of groundIrradiance*beamGain across every satellite servicing this target
-    float     footprintRadM; // largest ground footprint radius among contributing satellites
+    glm::vec3 targetENU; // meters, observer-relative
+    float aggIntensity;  // sum of groundIrradiance*beamGain across every satellite servicing this target
+    float footprintRadM; // largest ground footprint radius among contributing satellites
     // blockAltM/blockOpacity (C12 follow-up #46): repurposed from pad0/pad1, zero size change.
     // Copied straight from a contributing GpuReflectBeam entry — beam_cloud_block.comp already
     // computes this ONCE PER TARGET PER FRAME (a 12-step vertical march, not per screen sample),
@@ -407,9 +416,9 @@ struct GpuBeamCloudLight
     // height-based directional cutoff (bright above this target's own cloud-opacity altitude, dark
     // below) as a cheap per-light lookup instead of a second live self-shadow march — see that
     // follow-up's log entry for why the live march (#45) was too expensive and got replaced.
-    float     blockAltM;    // altitude (m) where this target's column first drops below 50% transmittance
-    float     blockOpacity; // 0 = clear column, 1 = fully opaque
-    float     pad2;         // std430 array-of-vec4-pairs alignment
+    float blockAltM;    // altitude (m) where this target's column first drops below 50% transmittance
+    float blockOpacity; // 0 = clear column, 1 = fully opaque
+    float pad2;         // std430 array-of-vec4-pairs alignment
 };
 static_assert(sizeof(GpuBeamCloudLight) == 32, "GpuBeamCloudLight layout mismatch");
 
@@ -521,20 +530,20 @@ static_assert(sizeof(GpuOceanGlintBuf) == 16 + kMaxOceanGlints * 16, "GpuOceanGl
 // godray shafts through cloud/terrain gaps on top of its existing hand-authored treatment.
 struct FlareSourcePC
 {
-    glm::mat4 skyView;         // offset 0
-    float fovYRad;             // offset 64
-    float aspect;              // offset 68
-    uint32_t satCount;         // offset 72 — gl_VertexIndex >= satCount means "this is the sun"
-    float sunRefIntensity;     // offset 76 — fixed reference brightness for the sun's virtual point
-    glm::vec4 sunDirENU;       // offset 80 — xyz=dir, w=sin(elevation)
-    glm::vec2 screenSizePx;    // offset 96 — THIS pass's own (small) target size, for the fragment
-                               //             shader's occlusion UV — never assume a constant, see
-                               //             the resolution-scaling gotcha this codebase already
-                               //             learned once for sat_sky.frag.
-    float resScale;            // offset 104 — flareExtent / ctx.swapExtent ratio; scales point size
-                               //              down to this smaller target so satellites don't look
-                               //              oversized once the composite upsamples back to full res
-    float pad0;                // offset 108
+    glm::mat4 skyView;      // offset 0
+    float fovYRad;          // offset 64
+    float aspect;           // offset 68
+    uint32_t satCount;      // offset 72 — gl_VertexIndex >= satCount means "this is the sun"
+    float sunRefIntensity;  // offset 76 — fixed reference brightness for the sun's virtual point
+    glm::vec4 sunDirENU;    // offset 80 — xyz=dir, w=sin(elevation)
+    glm::vec2 screenSizePx; // offset 96 — THIS pass's own (small) target size, for the fragment
+                            //             shader's occlusion UV — never assume a constant, see
+                            //             the resolution-scaling gotcha this codebase already
+                            //             learned once for sat_sky.frag.
+    float resScale;         // offset 104 — flareExtent / ctx.swapExtent ratio; scales point size
+                            //              down to this smaller target so satellites don't look
+                            //              oversized once the composite upsamples back to full res
+    float pad0;             // offset 108
 }; // total: 112 bytes
 static_assert(sizeof(FlareSourcePC) == 112, "FlareSourcePC layout mismatch");
 
@@ -543,9 +552,9 @@ static_assert(sizeof(FlareSourcePC) == 112, "FlareSourcePC layout mismatch");
 // dispatch, mode picks horizontal-gaussian / vertical-gaussian / streak.
 struct FlareBlurPC
 {
-    uint32_t direction;  // 0 = read flareSourceImg write flareScratchImg, 1 = reverse
-    uint32_t mode;       // 0 = horizontal gaussian, 1 = vertical gaussian, 2 = streak
-    float streakGain;    // user-tunable streak/godray strength (Settings > Display)
+    uint32_t direction; // 0 = read flareSourceImg write flareScratchImg, 1 = reverse
+    uint32_t mode;      // 0 = horizontal gaussian, 1 = vertical gaussian, 2 = streak
+    float streakGain;   // user-tunable streak/godray strength (Settings > Display)
     float pad0;
 }; // total: 16 bytes
 static_assert(sizeof(FlareBlurPC) == 16, "FlareBlurPC layout mismatch");
@@ -662,44 +671,44 @@ static_assert(sizeof(GpuReflectorTarget) == 16, "GpuReflectorTarget layout misma
 static constexpr int kMaxActiveBeams = 2048;
 struct GpuReflectBeam
 {
-    glm::vec3 satENU;      // meters, observer-relative (East, North, Up)
-    float intensity;       // groundIrradiance * beamGain — NOT the view-dependent
-                           // mirrorPeak specular term; see sat_orbit.comp writer comment
-    glm::vec3 targetENU;   // meters, observer-relative; exact 3D ENU projection of the
-                           // chosen ground target — correctly encodes Earth curvature
-    float footprintRadM;   // ground footprint radius
+    glm::vec3 satENU;        // meters, observer-relative (East, North, Up)
+    float intensity;         // groundIrradiance * beamGain — NOT the view-dependent
+                             // mirrorPeak specular term; see sat_orbit.comp writer comment
+    glm::vec3 targetENU;     // meters, observer-relative; exact 3D ENU projection of the
+                             // chosen ground target — correctly encodes Earth curvature
+    float footprintRadM;     // ground footprint radius
     glm::vec3 reflectDirENU; // unit direction, observer ENU basis — the mirror's ACTUAL current
-                           // reflected-sunlight direction (reflect(-sunDirECI, surfN0)), which
-                           // may differ from normalize(targetENU-satENU) while the mirror is
-                           // still slewing toward bestIdx's target (MIRROR_ROT_RATE-limited).
-                           // Debug-only (C12 follow-up #12): drawn as a long "pointing ray" from
-                           // the satellite so a busy site's convergence — and any satellites
-                           // still mid-slew and not yet converged — can be seen directly.
-    float debugPad;        // Repurposed (C12 follow-up #20): carries the originating satellite's
-                           // own stable dispatch index (written as float(i) in sat_orbit.comp) —
-                           // used by cloud_march.comp's sky glow to downsample by a STABLE subset
-                           // of satellites rather than by the atomic-append slot index (which
-                           // isn't stable frame-to-frame). Name kept for minimal diff; no longer
-                           // debug-only or padding.
-    float blockAltM;       // C12 follow-up #33: altitude (m above sea level) at which this
-                           // beam's own ground target's vertical cloud column first drops below
-                           // 50% transmittance — copied from beamCloudBlockBuf[bestIdx] at write
-                           // time (sat_orbit.comp). Irrelevant when blockOpacity==0.
-    float blockOpacity;    // 0 = clear column, 1 = fully opaque — see beam_cloud_block.comp.
-                           // Consumed by cloud_march.comp (fades the tube/bleed out below the
-                           // cloud) and sat_sky.frag (replaces the ground-spot's old, range-
-                           // limited cloudShadowTex lookup).
-    float mirrorRadiusM;   // C12 follow-up #34: repurposed from padding — equivalent-circle radius
-                           // of the physical mirror (sqrt(mirrorAreaM2/PI)). Consumed by
-                           // cloud_march.comp (sky tube radius) and sat_sky.frag (ground-spot core).
-    float pad1;            // std430 16-byte alignment
+                             // reflected-sunlight direction (reflect(-sunDirECI, surfN0)), which
+                             // may differ from normalize(targetENU-satENU) while the mirror is
+                             // still slewing toward bestIdx's target (MIRROR_ROT_RATE-limited).
+                             // Debug-only (C12 follow-up #12): drawn as a long "pointing ray" from
+                             // the satellite so a busy site's convergence — and any satellites
+                             // still mid-slew and not yet converged — can be seen directly.
+    float debugPad;          // Repurposed (C12 follow-up #20): carries the originating satellite's
+                             // own stable dispatch index (written as float(i) in sat_orbit.comp) —
+                             // used by cloud_march.comp's sky glow to downsample by a STABLE subset
+                             // of satellites rather than by the atomic-append slot index (which
+                             // isn't stable frame-to-frame). Name kept for minimal diff; no longer
+                             // debug-only or padding.
+    float blockAltM;         // C12 follow-up #33: altitude (m above sea level) at which this
+                             // beam's own ground target's vertical cloud column first drops below
+                             // 50% transmittance — copied from beamCloudBlockBuf[bestIdx] at write
+                             // time (sat_orbit.comp). Irrelevant when blockOpacity==0.
+    float blockOpacity;      // 0 = clear column, 1 = fully opaque — see beam_cloud_block.comp.
+                             // Consumed by cloud_march.comp (fades the tube/bleed out below the
+                             // cloud) and sat_sky.frag (replaces the ground-spot's old, range-
+                             // limited cloudShadowTex lookup).
+    float mirrorRadiusM;     // C12 follow-up #34: repurposed from padding — equivalent-circle radius
+                             // of the physical mirror (sqrt(mirrorAreaM2/PI)). Consumed by
+                             // cloud_march.comp (sky tube radius) and sat_sky.frag (ground-spot core).
+    float pad1;              // std430 16-byte alignment
 };
 static_assert(sizeof(GpuReflectBeam) == 64, "GpuReflectBeam layout mismatch");
 
 struct GpuReflectBeams
 {
-    uint32_t beamCount;    // atomicAdd counter — total claims this frame, may exceed kMaxActiveBeams
-    uint32_t pad0, pad1, pad2; // std430 array-of-16-byte-aligned-struct alignment padding
+    uint32_t beamCount;                      // atomicAdd counter — total claims this frame, may exceed kMaxActiveBeams
+    uint32_t pad0, pad1, pad2;               // std430 array-of-16-byte-aligned-struct alignment padding
     GpuReflectBeam entries[kMaxActiveBeams]; // only entries[0 .. min(beamCount,kMaxActiveBeams)) are valid
 };
 static_assert(sizeof(GpuReflectBeams) == 16 + kMaxActiveBeams * 64, "GpuReflectBeams layout mismatch");
@@ -750,21 +759,21 @@ static constexpr int kNumCloudLayers = 4;
 struct GpuCloudParams
 {
     // Global controls — shared across all layers
-    float coverage;         // global coverage gate [0,1]
-    float density;          // global density sharpness scale
-    float driftRate;        // base longitude drift rate (rad/s sim-time)
-    float sunGain;          // global sun brightness multiplier
-    float ambientGain;      // night-side ambient (for future use in volumetrics)
-    float hgG;              // Henyey-Greenstein g (C7+ volumetric march)
-    float marchSteps;       // volumetric march step count (C7+)
-    float lightSteps;       // volumetric light-cone step count (C7+)
-    float cloudPhase;       // CPU: fmod(driftRate * simTime, 2π) — uploaded each frame
-    float extinctionCoeff;  // was pad0 (freed session 23 when cloudShadowFactor was removed); now
-                            // carries the same atmospheric-extinction coefficient sat_flare.comp
-                            // gets via push constant, so sat_sky.frag's Milky Way term can apply
-                            // identical Kasten & Young dimming without its own push-constant field
-    float cirrusWindAngle;  // C13: cirrus streak wind axis, radians (was pad1)
-    float cirrusStretch;    // C13: cirrus noise anisotropic elongation factor (was pad2)
+    float coverage;           // global coverage gate [0,1]
+    float density;            // global density sharpness scale
+    float driftRate;          // base longitude drift rate (rad/s sim-time)
+    float sunGain;            // global sun brightness multiplier
+    float ambientGain;        // night-side ambient (for future use in volumetrics)
+    float hgG;                // Henyey-Greenstein g (C7+ volumetric march)
+    float marchSteps;         // volumetric march step count (C7+)
+    float lightSteps;         // volumetric light-cone step count (C7+)
+    float cloudPhase;         // CPU: fmod(driftRate * simTime, 2π) — uploaded each frame
+    float extinctionCoeff;    // was pad0 (freed session 23 when cloudShadowFactor was removed); now
+                              // carries the same atmospheric-extinction coefficient sat_flare.comp
+                              // gets via push constant, so sat_sky.frag's Milky Way term can apply
+                              // identical Kasten & Young dimming without its own push-constant field
+    float cirrusWindAngle;    // C13: cirrus streak wind axis, radians (was pad1)
+    float cirrusStretch;      // C13: cirrus noise anisotropic elongation factor (was pad2)
     float airglowGain;        // C15: master airglow brightness multiplier
     float airglowGreenGain;   // C15: green (557.7nm) band gain
     float airglowRedGain;     // C15: red (630.0nm) band gain
@@ -778,16 +787,16 @@ struct GpuCloudParams
     float oceanReflSamples;   // perf (session 24): ocean sky-reflection loop sample count (N_REFL)
     float viewSamplesMax;     // perf (session 24 round 2): N_VIEW ceiling for long/grazing rays (was pad4)
     float sunGainZenith;      // was pad3 — sun-gain multiplier near sun zenith, blended against
-                               // `sunGain` (effectively the near-horizon/sunset value) by sun
-                               // elevation in both cloudMarchCS/cirrusMarchCS and evalCloudLayer.
+                              // `sunGain` (effectively the near-horizon/sunset value) by sun
+                              // elevation in both cloudMarchCS/cirrusMarchCS and evalCloudLayer.
     float moonGain;           // shared moonlight brightness master — terrain direct term AND
-                               // cloud_march.comp's moonContrib (was a hardcoded 0.015 there) both
-                               // read this, so one slider keeps moonlit terrain and moonlit clouds
-                               // calibrated to the same brightness instead of drifting apart
+                              // cloud_march.comp's moonContrib (was a hardcoded 0.015 there) both
+                              // read this, so one slider keeps moonlit terrain and moonlit clouds
+                              // calibrated to the same brightness instead of drifting apart
     float pad1;               // ACTUALLY repurposed (see SatelliteSim.cpp) — city-detail world-fixed
-                               // east offset (m); kept named pad1 since sat_sky.frag/cloud_march.comp
-                               // don't need to read it (CPU computes the offset, GPU just samples the
-                               // resulting texture), name is stale but layout-critical, don't rename
+                              // east offset (m); kept named pad1 since sat_sky.frag/cloud_march.comp
+                              // don't need to read it (CPU computes the offset, GPU just samples the
+                              // resulting texture), name is stale but layout-critical, don't rename
     float pad2;               // ACTUALLY repurposed — city-detail world-fixed north offset (m); see pad1
     // Milky Way skybox (session 27): CPU-computed ENU->galactic basis rows (fixed orientation,
     // confirmed by eye against the real star field), mirroring the eciX/Y/Z basis-vector
@@ -799,54 +808,54 @@ struct GpuCloudParams
     // Per-layer descriptors
     GpuCloudLayerParams layers[kNumCloudLayers];
     // Aurora (C16, TERRAIN_PLAN.md Phase E): geomagnetic curtain primitive.
-    float stormStrength;     // [0,1] drives oval equatorward expansion, brightness, fold chaos
-    float auroraGain;        // master aurora brightness multiplier (sky curtain itself)
-    float auroraCloudGain;   // master gain for LOCAL aurora ambient upwelling on CLOUDS only —
-                              // split from auroraGroundGain (session 28 follow-up #6) because the
-                              // two formulas' magnitudes aren't comparable: clouds have no albedo
-                              // term at all (roughly full reflectivity assumed) while terrain/ocean
-                              // multiply by the surface's own dark albedo, so one shared slider
-                              // couldn't hit "plausible" for both at once.
-    float auroraGroundGain;  // master gain for the LOCAL, per-point aurora ambient/reflection
-                              // lighting on TERRAIN/OCEAN (evaluated in-shader per pixel/sample,
-                              // mirroring how moonlight is local) — distinct from auroraGain above
-                              // (the sky curtain's own brightness) and auroraCloudGain (clouds).
+    float stormStrength;    // [0,1] drives oval equatorward expansion, brightness, fold chaos
+    float auroraGain;       // master aurora brightness multiplier (sky curtain itself)
+    float auroraCloudGain;  // master gain for LOCAL aurora ambient upwelling on CLOUDS only —
+                            // split from auroraGroundGain (session 28 follow-up #6) because the
+                            // two formulas' magnitudes aren't comparable: clouds have no albedo
+                            // term at all (roughly full reflectivity assumed) while terrain/ocean
+                            // multiply by the surface's own dark albedo, so one shared slider
+                            // couldn't hit "plausible" for both at once.
+    float auroraGroundGain; // master gain for the LOCAL, per-point aurora ambient/reflection
+                            // lighting on TERRAIN/OCEAN (evaluated in-shader per pixel/sample,
+                            // mirroring how moonlight is local) — distinct from auroraGain above
+                            // (the sky curtain's own brightness) and auroraCloudGain (clouds).
     // Aurora "erosion" coverage gate (session 28 follow-up #8) — breaks the oval into patchy arcs.
     // See auroraCoverage() in sat_sky.frag/cloud_march.comp for the full design.
     float auroraCoverageFreq;      // per-degree colatitude frequency — patch size across the band
     float auroraCoverageAzFreq;    // azimuthal wobble frequency — keeps the boundary non-circular
     float auroraCoverageDriftRate; // wall-clock rad/s evolution speed
     float auroraShimmerRate;       // curtain fold noise evolution speed (wall-clock rad/s) — was a
-                                    // fixed kAuroraShimmerRate constant (session 28 follow-up #9)
+                                   // fixed kAuroraShimmerRate constant (session 28 follow-up #9)
     // Struct grew 320->336 here (session 30): appended rather than reusing pad1/pad2 above, which
     // turned out to already be repurposed (city-detail world offset, read by name as cloud.pad1/
     // pad2 in sat_sky.frag) despite their stale "reserved" comments — do not repurpose those.
     float cloudTwilightAmbientGain; // gain on cloud_march.comp's twilightAmbient term — sky-lit
-                                  // cloud at dusk/dawn only (twilightWeight is a bell, so this
-                                  // contributes nothing in daylight or full night). Same UBO slot
-                                  // that used to drive a non-decaying night floor; that term was
-                                  // the wrong effect and is gone. Deliberately separate from
-                                  // ambientGain, which also drives city-light upwelling.
-                                  // Unused in sat_sky.frag — kept for layout parity.
-    float cloudBaseVariance;     // was pad4 — noise-driven cloud base height undulation (hNorm
-                                  // units, 0 = old perfectly flat base). See cloudMarchCS.
-    float cloudErosionEdge;      // was pad5 — cloudDensity() erosion strength at the silhouette
-                                  // edge (base near 0).
-    float cloudErosionCore;      // was pad6 — cloudDensity() erosion strength at the dense core
-                                  // (base near 1); kept lower than cloudErosionEdge.
+                                    // cloud at dusk/dawn only (twilightWeight is a bell, so this
+                                    // contributes nothing in daylight or full night). Same UBO slot
+                                    // that used to drive a non-decaying night floor; that term was
+                                    // the wrong effect and is gone. Deliberately separate from
+                                    // ambientGain, which also drives city-light upwelling.
+                                    // Unused in sat_sky.frag — kept for layout parity.
+    float cloudBaseVariance;        // was pad4 — noise-driven cloud base height undulation (hNorm
+                                    // units, 0 = old perfectly flat base). See cloudMarchCS.
+    float cloudErosionEdge;         // was pad5 — cloudDensity() erosion strength at the silhouette
+                                    // edge (base near 0).
+    float cloudErosionCore;         // was pad6 — cloudDensity() erosion strength at the dense core
+                                    // (base near 1); kept lower than cloudErosionEdge.
     // Struct grew 336->352. std140 rounds a uniform block up to a multiple of 16, so a single
     // trailing float would have left the GLSL block at 352 while this struct stayed 340 — a
     // silent mismatch. The three pads keep both at 352; take one when the next field is needed.
-    float sunGainElevBand;       // sin(sun elevation) at which sunGainZenith fully replaces
-                                  // sunGain. Was a hardcoded smoothstep(0,1,sinElev): only
-                                  // half-way to the zenith value at 30 degrees up, so a sunset-
-                                  // tuned gain stayed dominant through most of the morning.
-    float twilightBandHi;        // sin(sun elev) above which twilight cloud ambient is zero.
-                                  // Raise to bring the term FORWARD into sunset — the original
-                                  // hardcoded 0.15 left a gap where direct sun had faded but the
-                                  // sky term had not arrived (clouds briefly went black).
-    float twilightBandLo;        // sin(sun elev) below which it is zero — how far into night it
-                                  // carries.
+    float sunGainElevBand; // sin(sun elevation) at which sunGainZenith fully replaces
+                           // sunGain. Was a hardcoded smoothstep(0,1,sinElev): only
+                           // half-way to the zenith value at 30 degrees up, so a sunset-
+                           // tuned gain stayed dominant through most of the morning.
+    float twilightBandHi;  // sin(sun elev) above which twilight cloud ambient is zero.
+                           // Raise to bring the term FORWARD into sunset — the original
+                           // hardcoded 0.15 left a gap where direct sun had faded but the
+                           // sky term had not arrived (clouds briefly went black).
+    float twilightBandLo;  // sin(sun elev) below which it is zero — how far into night it
+                           // carries.
     // ORDER BELOW MUST MATCH shaders/include/cloud_params.glsl EXACTLY, field for field.
     //
     // This is the one pairing the shared header cannot protect — GLSL and C++ can't share a
@@ -859,30 +868,30 @@ struct GpuCloudParams
     //
     // A size check cannot catch a permutation. When adding a field, add it in the same position
     // in both files, and prefer appending at the end of both.
-    float coverageMipLod;        // mip the volumetric march samples earthCloudsTex at. Was a
-                                  // hardcoded 4.0 (~78 km/texel on the 8K source): the volumetric
-                                  // shape could only ever follow large blobs, while the flat 2D
-                                  // layer sampled sharply — which is why the two never matched
-                                  // and the 3D->2D crossfade had to be pushed out to 800 km.
-    float flatCoverageScale;     // see cloud_params.glsl — maps the shared Coverage slider onto
-                                  // the flat 2D layer, which needs a lower value than the
-                                  // volumetric for the same apparent cloud amount.
-    float flatSunGainScale;      // same idea for Sun gain: the flat layer is a single multiply
-                                  // while the volumetric accumulates through transmittance, so
-                                  // the same slider lands ~4x dimmer on the flat path.
-    float fogTopAltM;            // C11 (repurposed from pad10) — ground fog shell top altitude
-                                  // (m above sea level); see fogMarchCS in cloud_march.comp.
-    float fogDensity;            // C11 (repurposed from pad11) — fog density scale.
-    float cloudDistFadeStartM;   // distance-based 3D->2D crossfade: fully volumetric nearer than
-                                  // this, fully flat-2D beyond cloudDistFadeEndM. Keyed on the
-                                  // per-ray distance to the cloud shell, so it actually bounds the
-                                  // march — maxRenderDistM caps march LENGTH from the shell entry
-                                  // and so does nothing from orbit, where that span is just the
-                                  // ~9 km shell crossing.
+    float coverageMipLod;      // mip the volumetric march samples earthCloudsTex at. Was a
+                               // hardcoded 4.0 (~78 km/texel on the 8K source): the volumetric
+                               // shape could only ever follow large blobs, while the flat 2D
+                               // layer sampled sharply — which is why the two never matched
+                               // and the 3D->2D crossfade had to be pushed out to 800 km.
+    float flatCoverageScale;   // see cloud_params.glsl — maps the shared Coverage slider onto
+                               // the flat 2D layer, which needs a lower value than the
+                               // volumetric for the same apparent cloud amount.
+    float flatSunGainScale;    // same idea for Sun gain: the flat layer is a single multiply
+                               // while the volumetric accumulates through transmittance, so
+                               // the same slider lands ~4x dimmer on the flat path.
+    float fogTopAltM;          // C11 (repurposed from pad10) — ground fog shell top altitude
+                               // (m above sea level); see fogMarchCS in cloud_march.comp.
+    float fogDensity;          // C11 (repurposed from pad11) — fog density scale.
+    float cloudDistFadeStartM; // distance-based 3D->2D crossfade: fully volumetric nearer than
+                               // this, fully flat-2D beyond cloudDistFadeEndM. Keyed on the
+                               // per-ray distance to the cloud shell, so it actually bounds the
+                               // march — maxRenderDistM caps march LENGTH from the shell entry
+                               // and so does nothing from orbit, where that span is just the
+                               // ~9 km shell crossing.
     float cloudDistFadeEndM;
-    float fogCoverage;           // C11 (repurposed from pad12) — ground fog global coverage gate.
-    float fogSunGain;            // C11 (repurposed from pad13) — fog sun-lit brightness gain,
-                                  // separate from cloud.sunGain per [[feedback_shared_gain_sliders]].
+    float fogCoverage; // C11 (repurposed from pad12) — ground fog global coverage gate.
+    float fogSunGain;  // C11 (repurposed from pad13) — fog sun-lit brightness gain,
+                       // separate from cloud.sunGain per [[feedback_shared_gain_sliders]].
     // Terrain march distance fade (S4, RELEASE_v1_1_PLAN.md session 31) — see cloud_params.glsl
     // for the full design rationale. Fades out sat_sky.frag's terrain-relief march step budget
     // as this ray's own march reach (tExit) grows, skipping it outright beyond End and falling
@@ -899,36 +908,36 @@ static_assert(sizeof(GpuCloudParams) == 400, "GpuCloudParams layout mismatch");
 // Total: 96 bytes.
 struct SatOrbitPC
 {
-    glm::vec4 enuX;         // East  basis in ECI (w unused) — offset 0
-    glm::vec4 enuY;         // North basis in ECI (w unused) — offset 16
-    glm::vec4 enuZ;         // Up    basis in ECI (w unused) — offset 32
-    glm::vec3 sunDirECI;    // unit vector toward sun — offset 48
-    float deltaT;           // simTime - epochT0 (float precision) — offset 60
-    glm::vec3 obsECI;       // observer ECI position (meters) — offset 64
-    uint32_t satCount;      // total satellite count — offset 76
-    uint32_t highlightMask; // bit i = constellation i in highlight mode — offset 80
-    uint32_t enabledMask;   // bit i = constellation i is enabled — offset 84
-    float simDt;            // simulated seconds this frame (mirror slew) — offset 88
-    float elevCutoff;       // sin(Earth-limb angle) — horizon cull threshold (≤ -0.01) — offset 92
-    float beamGain;         // Reflect-Orbital ground-beam intensity multiplier — offset 96
-    float mirrorSlewDegPerSec; // offset 100 — C12 follow-up #20: settings-tunable mirror slew
-                            // rate (was a hardcoded 1 deg/sec, MIRROR_ROT_RATE in sat_orbit.comp).
-                            // At 1 deg/sec a satellite retargeting after the observer moves to a
-                            // new area can take minutes to visually catch up — noticeable and
-                            // frustrating while exploring interactively, even though it's a
-                            // reasonable rate for passive/stationary observation. Default raised
-                            // substantially (see SatelliteSim::mirrorSlewDegPerSec) and now
-                            // user-tunable instead of fixed. C12 follow-up #34: was offset 104 —
-                            // beamFootprintRadM removed entirely (footprint is now physically
-                            // derived in sat_orbit.comp from mirror area + range).
+    glm::vec4 enuX;             // East  basis in ECI (w unused) — offset 0
+    glm::vec4 enuY;             // North basis in ECI (w unused) — offset 16
+    glm::vec4 enuZ;             // Up    basis in ECI (w unused) — offset 32
+    glm::vec3 sunDirECI;        // unit vector toward sun — offset 48
+    float deltaT;               // simTime - epochT0 (float precision) — offset 60
+    glm::vec3 obsECI;           // observer ECI position (meters) — offset 64
+    uint32_t satCount;          // total satellite count — offset 76
+    uint32_t highlightMask;     // bit i = constellation i in highlight mode — offset 80
+    uint32_t enabledMask;       // bit i = constellation i is enabled — offset 84
+    float simDt;                // simulated seconds this frame (mirror slew) — offset 88
+    float elevCutoff;           // sin(Earth-limb angle) — horizon cull threshold (≤ -0.01) — offset 92
+    float beamGain;             // Reflect-Orbital ground-beam intensity multiplier — offset 96
+    float mirrorSlewDegPerSec;  // offset 100 — C12 follow-up #20: settings-tunable mirror slew
+                                // rate (was a hardcoded 1 deg/sec, MIRROR_ROT_RATE in sat_orbit.comp).
+                                // At 1 deg/sec a satellite retargeting after the observer moves to a
+                                // new area can take minutes to visually catch up — noticeable and
+                                // frustrating while exploring interactively, even though it's a
+                                // reasonable rate for passive/stationary observation. Default raised
+                                // substantially (see SatelliteSim::mirrorSlewDegPerSec) and now
+                                // user-tunable instead of fixed. C12 follow-up #34: was offset 104 —
+                                // beamFootprintRadM removed entirely (footprint is now physically
+                                // derived in sat_orbit.comp from mirror area + range).
     uint32_t activeTargetCount; // offset 104 — S1 (RELEASE_v1_1_PLAN.md) target compaction: number
-                            // of VALID entries at the front of ReflectorTargetBuf this frame (CPU
-                            // packs only night-side-valid targets there — see updatePositions());
-                            // replaces the old fixed NUM_TARGETS=201 scan bound in sat_orbit.comp.
-    float minBeamElevSin;   // offset 108 — S1 follow-up: sin(reflectorMinElevDeg), precomputed on
-                            // CPU. Candidate targets below this local-elevation-at-target angle are
-                            // rejected outright (grazing, not just deprioritized) — see
-                            // sat_orbit.comp's TargetedReflector block for the full rationale.
+                                // of VALID entries at the front of ReflectorTargetBuf this frame (CPU
+                                // packs only night-side-valid targets there — see updatePositions());
+                                // replaces the old fixed NUM_TARGETS=201 scan bound in sat_orbit.comp.
+    float minBeamElevSin;       // offset 108 — S1 follow-up: sin(reflectorMinElevDeg), precomputed on
+                                // CPU. Candidate targets below this local-elevation-at-target angle are
+                                // rejected outright (grazing, not just deprioritized) — see
+                                // sat_orbit.comp's TargetedReflector block for the full rationale.
 }; // 112 bytes
 static_assert(sizeof(SatOrbitPC) == 112, "SatOrbitPC layout mismatch");
 
@@ -1030,15 +1039,20 @@ public:
     {
         switch (fpsCapMode)
         {
-        case FpsCapMode::Cap30:  return 30.0f;
-        case FpsCapMode::Cap60:  return 60.0f;
-        case FpsCapMode::Cap120: return 120.0f;
-        default:                 return 0.0f; // Off, VSync
+        case FpsCapMode::Cap30:
+            return 30.0f;
+        case FpsCapMode::Cap60:
+            return 60.0f;
+        case FpsCapMode::Cap120:
+            return 120.0f;
+        default:
+            return 0.0f; // Off, VSync
         }
     }
     bool consumeSwapchainRebuildRequest() override
     {
-        if (!fpsCapSwapchainRebuildPending) return false;
+        if (!fpsCapSwapchainRebuildPending)
+            return false;
         fpsCapSwapchainRebuildPending = false;
         return true;
     }
@@ -1174,7 +1188,7 @@ private:
     // Depth is deliberately NOT blitted (depth-format blit support isn't spec-guaranteed, a real
     // portability concern specifically on the lower-end hardware this feature targets) — a known,
     // accepted tradeoff: satellites/stars are not occluded by terrain while scaled below 100%.
-    float renderScale = 1.0f; // [0.5, 1.0], Settings > Display "Render scale"
+    float renderScale = 1.0f;                          // [0.5, 1.0], Settings > Display "Render scale"
     VkRenderPass skyLowResRenderPass = VK_NULL_HANDLE; // color-only, CLEAR, finalLayout=TRANSFER_SRC_OPTIMAL
     VkImage skyLowResColorImg = VK_NULL_HANDLE;
     VkDeviceMemory skyLowResColorMem = VK_NULL_HANDLE;
@@ -1214,8 +1228,8 @@ private:
     VkDeviceMemory planetMem = VK_NULL_HANDLE;
     void *planetMapped = nullptr;
     VkDescriptorPool planetDescPool = VK_NULL_HANDLE; // starDescPool is sized maxSets=1, so this
-                                                        // gets its own tiny pool for one more set
-    VkDescriptorSet planetDescSet = VK_NULL_HANDLE;    // allocated with starDescLayout (same shape)
+                                                      // gets its own tiny pool for one more set
+    VkDescriptorSet planetDescSet = VK_NULL_HANDLE;   // allocated with starDescLayout (same shape)
 
     // ── Simulation state ──────────────────────────────────────────────────────
     SkyCamera camera;
@@ -1228,7 +1242,12 @@ private:
     double simSecInDay = 0.0;    // seconds within current day [0, 86400)
     int64_t simInitDayJ2000 = 0; // values at construction — used for display
     double simInitSecInDay = 0.0;
-    int timeScaleIdx = 1;
+    // Bug fix: this was 1 ("10x"), so a launch that never touched settings.json's "time" key
+    // (or replayed the intro, which doesn't re-run loadSettings) came up at 10x instead of the
+    // intended 1x default — the inconsistency the user reported ("time base doesn't seem to be
+    // consistently set on bootup"). loadSettings() still overrides this with whatever was
+    // persisted; this is only the compiled-in fallback.
+    int timeScaleIdx = 0;
     bool timePaused = false;
     float timeDir = 1.0f; // +1 = forward, -1 = reverse
     // Observer position/facing in Earth-fixed ECEF — canonical movement state.
@@ -1258,9 +1277,9 @@ private:
     // GPU time when buildUI reads them, and get refreshed for the following frame's
     // display at the top of recordCompute().
     float gpuMsSmoothed[8] = {};     // scene depth, beam cloud block, orbit compute, cloud march,
-                                      // flare compute, sky background draw, satellite+star draw,
-                                      // UI overlay — order fixed by VulkanContext's slot table;
-                                      // kPerfLabels[] and savePerfSnapshot() mirror it
+                                     // flare compute, sky background draw, satellite+star draw,
+                                     // UI overlay — order fixed by VulkanContext's slot table;
+                                     // kPerfLabels[] and savePerfSnapshot() mirror it
     float gpuMsTotalSmoothed = 0.0f; // whole-frame GPU time
 
     // ── Perf knockout toggles (profiling-only; not persisted) ──────────────────
@@ -1439,13 +1458,13 @@ private:
     // buffer is deliberately going to be blurred, not sampled 1:1), independent of renderScale,
     // recreated in onResize alongside those.
     VkExtent2D flareExtent{};
-    VkImage flareSourceImg = VK_NULL_HANDLE;   // RGBA16F, COLOR_ATTACHMENT|STORAGE|SAMPLED
+    VkImage flareSourceImg = VK_NULL_HANDLE; // RGBA16F, COLOR_ATTACHMENT|STORAGE|SAMPLED
     VkDeviceMemory flareSourceMem = VK_NULL_HANDLE;
     VkImageView flareSourceView = VK_NULL_HANDLE;
-    VkImage flareScratchImg = VK_NULL_HANDLE;  // RGBA16F, STORAGE|SAMPLED — compute ping-pong + final composite source
+    VkImage flareScratchImg = VK_NULL_HANDLE; // RGBA16F, STORAGE|SAMPLED — compute ping-pong + final composite source
     VkDeviceMemory flareScratchMem = VK_NULL_HANDLE;
     VkImageView flareScratchView = VK_NULL_HANDLE;
-    VkSampler flareSampler = VK_NULL_HANDLE;   // shared by both images; resolution-independent, created once
+    VkSampler flareSampler = VK_NULL_HANDLE;             // shared by both images; resolution-independent, created once
     VkRenderPass flareSourceRenderPass = VK_NULL_HANDLE; // single color attachment, CLEAR, finalLayout=COLOR_ATTACHMENT_OPTIMAL
     VkFramebuffer flareSourceFramebuffer = VK_NULL_HANDLE;
     // Stage 1 (render): reuses the EXISTING descLayout/descSet (satVisibleBuf binding 1,
@@ -1476,8 +1495,8 @@ private:
     VkDeviceMemory oceanGlintMem = VK_NULL_HANDLE;
     // User tunables (Settings > Display), persisted in settings.json. First-pass defaults —
     // expected to need retuning once seen in-app, same as every other constant this session.
-    float flareGlowGain = 1.0f;    // post-composite overall multiplier
-    float flareStreakGain = 0.35f; // per-tap streak/godray strength (flare_blur.comp mode=2)
+    float flareGlowGain = 1.0f;         // post-composite overall multiplier
+    float flareStreakGain = 0.35f;      // per-tap streak/godray strength (flare_blur.comp mode=2)
     float sunFlareRefIntensity = 40.0f; // fixed reference brightness for the sun's virtual point
                                         // in the flare-source buffer — NOT a slider (kept small in
                                         // scope this round); tune in code if the sun's godray/glow
@@ -1536,19 +1555,19 @@ private:
     float mirrorBoost = 429.17f;
     float visThresh = 0.0001f;
     float highlightFlare = 0.17066f;
-    float moonSuppression = 6.57895f; // sky background suppression from moonlight (mirrors daySuppression,
-                                   // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
+    float moonSuppression = 6.57895f;    // sky background suppression from moonlight (mirrors daySuppression,
+                                         // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
     float lightPollutionGain = 6.14035f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
-                                      // so satellites + stars stay coherently scaled by construction
-    float extinctionCoeff = 0.39912f;   // atmospheric extinction, magnitudes per airmass (Kasten & Young
-                                      // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
-                                      // in both sat_flare.comp and updateStars() so a star and a
-                                      // satellite at the same elevation dim identically
-    float sunlitBgVisibility = 0.15f; // Stars/Milky Way visibility fraction in space when the sun is
-                                    // off-screen but the observer is still in direct sunlight — 0 =
-                                    // fully hidden (like being fully day-suppressed), 1 = as visible as
-                                    // true night. Sun-on-screen always forces 0 regardless of this
-                                    // slider. See recordCompute()'s sky-glare gate and updateStars().
+                                         // so satellites + stars stay coherently scaled by construction
+    float extinctionCoeff = 0.39912f;    // atmospheric extinction, magnitudes per airmass (Kasten & Young
+                                         // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
+                                         // in both sat_flare.comp and updateStars() so a star and a
+                                         // satellite at the same elevation dim identically
+    float sunlitBgVisibility = 0.15f;    // Stars/Milky Way visibility fraction in space when the sun is
+                                         // off-screen but the observer is still in direct sunlight — 0 =
+                                         // fully hidden (like being fully day-suppressed), 1 = as visible as
+                                         // true night. Sun-on-screen always forces 0 regardless of this
+                                         // slider. See recordCompute()'s sky-glare gate and updateStars().
     // ── Reflect-Orbital ground beams (C12) ────────────────────────────────────
     // groundIrradiance * beamGain is NOT the same quantity as mirrorBoost/mirrorPeak (that's the
     // view-dependent specular term the OBSERVER sees the mirror glint by; this is the physical
@@ -1615,23 +1634,23 @@ private:
     float cloudCoverage = 1.0f;
     float cloudDensity = 8.179311f;
     float cloudBaseAltM = 5585.964844f; // layer 0 shell altitude (low cloud / stratus)
-    float cloudTopAltM = 15000.0f; // layer 1 shell altitude (high cirrus)
+    float cloudTopAltM = 15000.0f;      // layer 1 shell altitude (high cirrus)
     float cloudDriftRate = 1.0438595e-05f;
-    float cloudSunGain = 1.471264f; // near-horizon/sunset sun-gain endpoint — blended toward
-                                    // cloudSunGainZenith by sun elevation (see cloud_march.comp)
+    float cloudSunGain = 1.471264f;      // near-horizon/sunset sun-gain endpoint — blended toward
+                                         // cloudSunGainZenith by sun elevation (see cloud_march.comp)
     float cloudSunGainZenith = 0.45977f; // sun-gain endpoint when the sun is near zenith (midday)
     float cloudAmbientGain = 4.827586f;
     float cloudTwilightAmbientGain = 10.574713f; // manual gain on sky-lit cloud during twilight (was piggybacking
-                                         // on cloudAmbientGain, which also drives city-light
-                                         // upwelling — see kNightSkyAmbientColor in cloud_march.comp)
-    float cloudBaseVariance = 0.367816f; // noise-driven cloud base height undulation, hNorm units
-                                     // (0 = old perfectly flat base) — see cloudMarchCS
-    float cloudErosionEdge = 0.965517f;  // cloudDensity() erosion strength at the silhouette edge
-    float sunGainElevBand = 0.121379f;  // ~14.5 deg elevation; was effectively 1.0 (half at 30 deg)
+                                                 // on cloudAmbientGain, which also drives city-light
+                                                 // upwelling — see kNightSkyAmbientColor in cloud_march.comp)
+    float cloudBaseVariance = 0.367816f;         // noise-driven cloud base height undulation, hNorm units
+                                                 // (0 = old perfectly flat base) — see cloudMarchCS
+    float cloudErosionEdge = 0.965517f;          // cloudDensity() erosion strength at the silhouette edge
+    float sunGainElevBand = 0.121379f;           // ~14.5 deg elevation; was effectively 1.0 (half at 30 deg)
     // Brought forward from the original hardcoded 0.15 so the sky term overlaps the tail of
     // direct sunlight instead of starting after it; 0.35 is ~20 deg of sun elevation.
     float twilightBandHi = 0.013793f;
-    float twilightBandLo = -0.382759f;  // unchanged from the original hardcoded value
+    float twilightBandLo = -0.382759f; // unchanged from the original hardcoded value
     // 1.0 rather than 0.0: a compromise starting point. Lower = more small-scale structure and
     // a closer match to the flat layer, at the cost of worse texture-cache behaviour (mip 0 of
     // the 8K map is ~33 MB and is sampled once per in-cloud march step).
@@ -1640,42 +1659,42 @@ private:
     // matched flat (coverage 0.69, sun gain 1.84). Defaults encode those ratios so the shared
     // sliders now move both paths together instead of only ever suiting one of them.
     float flatCoverageScale = 0.602299f;
-    float flatSunGainScale  = 3.968965f;
+    float flatSunGainScale = 3.968965f;
     // Clouds at 11 km have a ground-level horizon of ~374 km, so this band puts the transition
     // near the horizon when standing on the surface, and makes everything 2D from orbit.
     float cloudDistFadeStartM = 151902.171875f;
-    float cloudDistFadeEndM   = 399347.8125f;
+    float cloudDistFadeEndM = 399347.8125f;
     // S4 (RELEASE_v1_1_PLAN.md, session 31): terrain-relief march distance fade. Ground-level
     // grazing rays cap at 250 km reach (tCap at obsEffH=0), so 300000 leaves ground view fully
     // unaffected; from LEO (tCap up to 3600 km) most of the screen's grazing/horizon rays fall
     // beyond 900000 and skip the march outright, falling back to the sea-level sphere.
     float terrainDistFadeStartM = 300000.0f;
-    float terrainDistFadeEndM   = 900000.0f;
+    float terrainDistFadeEndM = 900000.0f;
     // C11 ground fog layer — real per-sample volumetric march in cloud_march.comp's fogMarchCS,
     // reusing beamCloudLightBuf for beam godrays and a fixed small self-shadow march for sun
     // godrays. First-pass defaults, expect retuning once seen in-app.
-    float fogTopAltM = 300.0f;   // shell top altitude (m above sea level); sea level is the base
-    float fogDensity = 1.0f;    // density scale, analogous to cloud.density
-    float fogCoverage = 0.6f;   // global coverage gate for the patchiness noise, [0,1]
-    float fogSunGain = 1.0f;    // sun-lit fog brightness gain, own slider (not cloud.sunGain)
+    float fogTopAltM = 300.0f;         // shell top altitude (m above sea level); sea level is the base
+    float fogDensity = 1.0f;           // density scale, analogous to cloud.density
+    float fogCoverage = 0.6f;          // global coverage gate for the patchiness noise, [0,1]
+    float fogSunGain = 1.0f;           // sun-lit fog brightness gain, own slider (not cloud.sunGain)
     float cloudErosionCore = 0.37931f; // cloudDensity() erosion strength at the dense core
     float cloudHgG = 0.356053f;
     float cloudMarchSteps = 215.034485f;
     float cloudLightSteps = 12.896552f;
-    float cloudCirrusWindDeg = 40.0f; // C13: cirrus streak wind azimuth (degrees, converted to radians for the UBO)
-    float cloudCirrusStretch = 2.184211f;  // C13: cirrus noise anisotropic elongation factor (1 = no stretch)
-    float airglowGain = 0.065789f;         // C15: master airglow brightness multiplier
-    float airglowGreenGain = 0.052632f;    // C15: green (557.7nm) band gain
-    float airglowRedGain = 0.013158f;      // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
-    float airglowSodiumGain = 0.065789f;   // C15: sodium (589.3nm) band gain — kept dim relative to green
+    float cloudCirrusWindDeg = 40.0f;          // C13: cirrus streak wind azimuth (degrees, converted to radians for the UBO)
+    float cloudCirrusStretch = 2.184211f;      // C13: cirrus noise anisotropic elongation factor (1 = no stretch)
+    float airglowGain = 0.065789f;             // C15: master airglow brightness multiplier
+    float airglowGreenGain = 0.052632f;        // C15: green (557.7nm) band gain
+    float airglowRedGain = 0.013158f;          // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
+    float airglowSodiumGain = 0.065789f;       // C15: sodium (589.3nm) band gain — kept dim relative to green
     float cloudShadowMaxDistM = 22022.988281f; // sun self-shadow cone (N_CONE) fades out beyond this distance
-    float cloudMaxRenderDistM = 800000.0f; // cloudMarch tExit distance cap — raised to ~400km
-                                            // (session 28 follow-up #10): the low-cloud shell's own
-                                            // geometric horizon distance at 11km altitude is
-                                            // ~sqrt(2*R_EARTH*11000)≈374km; the prior 165km default
-                                            // cut the march off well short of that, letting
-                                            // aurora/Milky Way/stars show straight through clouds
-                                            // near the horizon instead of them thinning out naturally
+    float cloudMaxRenderDistM = 800000.0f;     // cloudMarch tExit distance cap — raised to ~400km
+                                               // (session 28 follow-up #10): the low-cloud shell's own
+                                               // geometric horizon distance at 11km altitude is
+                                               // ~sqrt(2*R_EARTH*11000)≈374km; the prior 165km default
+                                               // cut the march off well short of that, letting
+                                               // aurora/Milky Way/stars show straight through clouds
+                                               // near the horizon instead of them thinning out naturally
     // Perf follow-up (session 24): main atmosphere loop + ocean wave quality, all previously
     // hardcoded compile-time constants.
     // N_VIEW is now adaptive per-ray (round 2): a fixed sample count badly serves a loop whose
@@ -1687,26 +1706,26 @@ private:
     // correct at all altitudes before this change.
     float viewSamplesMin = 6.482759f;
     float viewSamplesMax = 124.689659f;
-    float lightSamples = 2.0f;        // N_LIGHT: optDepth sun-side sub-march count
-    float oceanSeaOctaves = 3.0f;      // seaMap() octave count (height-trace geometry)
-    float oceanDetailOctaves = 5.0f;   // seaMapDetail() octave count (wave normal)
-    float oceanReflSamples = 6.0f;     // ocean sky-reflection loop sample count (N_REFL)
-    float moonGain = 0.005263f;         // shared moonlight brightness: terrain direct term + cloud
-                                        // moonContrib (default matches the prior hardcoded cloud value)
-    float stormStrength = 0.333333f;    // C16: aurora oval expansion/brightness/chaos [0,1]
-    float auroraGain = 0.1f;           // C16: master aurora brightness multiplier
-    float auroraCloudGain = 0.001754f;  // C16: ambient aurora light on clouds only (no albedo term
-                                        // in that formula, so it needs a much lower default than
-                                        // terrain/ocean to land in the same plausible range)
-    float auroraGroundGain = 0.007456f; // C16: ambient aurora light on terrain/ocean only
+    float lightSamples = 2.0f;                 // N_LIGHT: optDepth sun-side sub-march count
+    float oceanSeaOctaves = 3.0f;              // seaMap() octave count (height-trace geometry)
+    float oceanDetailOctaves = 5.0f;           // seaMapDetail() octave count (wave normal)
+    float oceanReflSamples = 6.0f;             // ocean sky-reflection loop sample count (N_REFL)
+    float moonGain = 0.005263f;                // shared moonlight brightness: terrain direct term + cloud
+                                               // moonContrib (default matches the prior hardcoded cloud value)
+    float stormStrength = 0.333333f;           // C16: aurora oval expansion/brightness/chaos [0,1]
+    float auroraGain = 0.1f;                   // C16: master aurora brightness multiplier
+    float auroraCloudGain = 0.001754f;         // C16: ambient aurora light on clouds only (no albedo term
+                                               // in that formula, so it needs a much lower default than
+                                               // terrain/ocean to land in the same plausible range)
+    float auroraGroundGain = 0.007456f;        // C16: ambient aurora light on terrain/ocean only
     float auroraCoverageFreq = 0.426316f;      // C16: coverage patch size (per-degree colat frequency)
     float auroraCoverageAzFreq = 4.289474f;    // C16: coverage azimuthal wobble frequency
     float auroraCoverageDriftRate = 0.001193f; // C16: coverage evolution speed (wall-clock rad/s)
-    float auroraShimmerRate = 0.001754f; // C16: curtain fold noise evolution speed (wall-clock rad/s)
-    VulkanContext *ctx_ = nullptr; // set in init(), used for lazy icon loading
-    AudioSystem *audio_ = nullptr; // set via setAudio(), used in buildUI()
-    std::string exeDir_;           // directory containing the exe (read-only game data); set in init()
-    std::string userDataDir_;      // per-user writable dir for settings/perf (see Paths.h); set in init()
+    float auroraShimmerRate = 0.001754f;       // C16: curtain fold noise evolution speed (wall-clock rad/s)
+    VulkanContext *ctx_ = nullptr;             // set in init(), used for lazy icon loading
+    AudioSystem *audio_ = nullptr;             // set via setAudio(), used in buildUI()
+    std::string exeDir_;                       // directory containing the exe (read-only game data); set in init()
+    std::string userDataDir_;                  // per-user writable dir for settings/perf (see Paths.h); set in init()
 
     // ── NEW-3: crash-safe mode ──────────────────────────────────────────────
     // A sentinel file is created at the top of init() and deleted at the bottom of cleanup()
@@ -1715,29 +1734,34 @@ private:
     // Planetarium preset and shows a one-line notice, converting "launch -> crash -> uninstall"
     // into a recoverable outcome. See applySettings-adjacent logic in init()/cleanup().
     float crashRecoveryNoticeTimer = 0.0f; // seconds remaining to show the notice banner; see buildCrashRecoveryNotice
-    bool crashRecoveryMode = false; // mirrors the crashDetected local in init(); read by finishIntro()
-                                     // so a crash-recovery launch never runs the UC1 benchmark promote/
-                                     // demote (that launch already forced Planetarium for a different reason)
+    bool crashRecoveryMode = false;        // mirrors the crashDetected local in init(); read by finishIntro()
+                                           // so a crash-recovery launch never runs the UC1 benchmark promote/
+                                           // demote (that launch already forced Planetarium for a different reason)
 
     // ── UC3: cinematic intro camera path (folds in UC1 mechanism 2, the first-run benchmark) ──
-    // Deliberately does NOT move obsDir/lat-lon — only obsHeightOffset (altitude, literally what
-    // Q/E controls), camera.elDeg/fovYDeg, and a facing-azimuth rotation change across the beat
-    // sheet (see kIntroKeyframes in SatelliteSim.cpp). Since obsDir never moves during playback,
-    // the East/North tangent basis below is computed once at the start of the very first intro
-    // frame and stays valid the whole time — no great-circle interpolation needed.
+    // Does not move obsDir/lat-lon DURING playback — only obsHeightOffset (altitude, literally
+    // what Q/E controls), camera.elDeg/fovYDeg, and a facing-azimuth rotation change across the
+    // beat sheet (see kIntroKeyframes in SatelliteSim.cpp). It DOES force obsDir/lat-lon once, at
+    // the very start of playback (see updateIntroCinematic's one-time init block) — to the fixed
+    // kIntroObserverLatDeg/LonDeg vantage point, not whatever the player's last position happened
+    // to be — so the intro (including a Display-tab replay) is reproducible regardless of where
+    // the player has since wandered off to. Since obsDir is fixed for the rest of playback after
+    // that, the East/North tangent basis below is computed once and stays valid the whole time —
+    // no great-circle interpolation needed.
     bool introBasisValid = false;
     glm::vec3 introEastEF{1, 0, 0}, introNorthEF{0, 1, 0};
-    float introElapsed = 0.0f;     // seconds since the intro cinematic started
-    int introCaptionIndex = 0;     // index into kIntroKeyframes of the most recently reached caption
-    bool introSkipped = false;     // true if dismissed early (click/key/pad) — gates the benchmark below
-    bool introIsReplay = false;    // set by the Display tab's "Replay Intro" button; suppresses the
-                                    // benchmark regardless of how the replay ends (see finishIntro) —
-                                    // it's a one-shot first-run decision, not something a replay should redo
-    float introBenchMsSum = 0.0f;  // accumulates gpuMsTotalSmoothed across beats 1-4 (see updateIntroCinematic)
+    float introElapsed = 0.0f;    // seconds since the intro cinematic started
+    int introCaptionIndex = 0;    // index into kIntroKeyframes of the most recently reached caption
+    bool introSkipped = false;    // true if dismissed early (Space/gamepad Start) — gates the benchmark below
+    bool introIsReplay = false;   // set by the Display tab's "Replay Intro" button; suppresses the
+                                  // benchmark regardless of how the replay ends (see finishIntro) —
+                                  // it's a one-shot first-run decision, not something a replay should redo
+    float introBenchMsSum = 0.0f; // accumulates gpuMsTotalSmoothed across the camera-motion beats (see updateIntroCinematic)
     int introBenchFrames = 0;
-    char introBeat3TextBuf[96] = {}; // member buffer for the Q/E caption (built from live keybindings —
-                                      // Clay stores raw string pointers read after buildUI returns, so this
-                                      // can't be a stack local; see CLAUDE.md's Clay runtime-string rule)
+    char introControlsTextBuf[96] = {}; // member buffer for the final WASD/Q-E controls caption (built
+                                        // from live keybindings — Clay stores raw string pointers read
+                                        // after buildUI returns, so this can't be a stack local; see
+                                        // CLAUDE.md's Clay runtime-string rule)
 
     // Post-intro "graphics set to X" notice (UC1 mechanism 3: always tell the user, never
     // silently re-decide) — same dismissible-banner pattern as buildCrashRecoveryNotice, separate
@@ -1748,10 +1772,10 @@ private:
     // ── UC6: screenshots ────────────────────────────────────────────────────────
     // See Simulation.h's wantsCleanScreenshot/recordScreenshotCopy/finalizeScreenshot doc
     // comments for the three-phase (request -> copy -> readback) protocol this drives.
-    bool screenshotRequested = false;    // set by dispatchKeyAction(KB_SCREENSHOT); consumed by
-                                          // recordScreenshotCopy (also gates wantsCleanScreenshot)
-    bool screenshotCopyPending = false;  // true between "copy recorded" and "readback finalized"
-    VkBuffer screenshotStagingBuf = VK_NULL_HANDLE; // host-visible; freed/recreated per capture —
+    bool screenshotRequested = false;                     // set by dispatchKeyAction(KB_SCREENSHOT); consumed by
+                                                          // recordScreenshotCopy (also gates wantsCleanScreenshot)
+    bool screenshotCopyPending = false;                   // true between "copy recorded" and "readback finalized"
+    VkBuffer screenshotStagingBuf = VK_NULL_HANDLE;       // host-visible; freed/recreated per capture —
     VkDeviceMemory screenshotStagingMem = VK_NULL_HANDLE; // screenshots are rare, not a hot path
     uint32_t screenshotW = 0, screenshotH = 0;
     VkFormat screenshotFormat = VK_FORMAT_UNDEFINED;
@@ -1856,11 +1880,11 @@ private:
     glm::vec3 obsECI{0, 0, 6371000}; // observer ECI position (meters)
 
     // ── Planets (updated each frame in updatePositions/updatePlanets) ─────────
-    PlanetState planetStates[kPlanetCount]{}; // ephemeris; direction/distance/phase
+    PlanetState planetStates[kPlanetCount]{};                                // ephemeris; direction/distance/phase
     bool planetEnabled[kPlanetCount] = {true, true, true, true, true, true}; // per-planet toggle
-    bool showPlanets = true;    // global toggle, settings-persisted
-    int selectedPlanetIndex = -1; // index into planetStates[]/kPlanetNames[], -1 = none selected;
-                                   // mutually exclusive with selectedSatIndex (see its declaration)
+    bool showPlanets = true;                                                 // global toggle, settings-persisted
+    int selectedPlanetIndex = -1;                                            // index into planetStates[]/kPlanetNames[], -1 = none selected;
+                                                                             // mutually exclusive with selectedSatIndex (see its declaration)
 
     // ── Sky-background sun-glare gate (hysteresis state, not persisted) ───────
     // Eased toward its per-frame target in recordCompute(), right after updatePositions() and
@@ -1947,8 +1971,8 @@ private:
     int gamepadId = -1;
     GLFWgamepadstate gpState{};                                     // last frame's full state (for held-button checks in recordCompute)
     unsigned char prevGpButtons[GLFW_GAMEPAD_BUTTON_LAST + 1] = {}; // previous frame's buttons, for edge detection
-    float gpMoveFwd = 0.0f, gpMoveRight = 0.0f;       // left stick, deadzoned, [-1,1] — combines additively with WASD
-    float gpLookYawDeg = 0.0f, gpLookPitchDeg = 0.0f; // right stick, this-frame look delta in degrees (already dt-scaled)
+    float gpMoveFwd = 0.0f, gpMoveRight = 0.0f;                     // left stick, deadzoned, [-1,1] — combines additively with WASD
+    float gpLookYawDeg = 0.0f, gpLookPitchDeg = 0.0f;               // right stick, this-frame look delta in degrees (already dt-scaled)
     // Analog triggers for elevation — deliberately NOT part of the keybindings/gpButton
     // rebind system (triggers are axes, not digital buttons; same reasoning as WASD/sticks
     // not being rebindable). [0,1] pressure, combined via max() with the (still rebindable)
@@ -1970,8 +1994,8 @@ private:
     float vCursorX = -1.0f, vCursorY = -1.0f;
     bool vCursorActive = false;
     bool vCursorClick = false; // A button currently held (level state, like the real lmb App.cpp
-                                // reads from GLFW) — UIRenderer::beginFrame() does its own frame-to-
-                                // frame edge detection into UIInput::lmbPressed, same as the mouse path
+                               // reads from GLFW) — UIRenderer::beginFrame() does its own frame-to-
+                               // frame edge detection into UIInput::lmbPressed, same as the mouse path
 
     // ── Mouse state / window handle ───────────────────────────────────────────
     GLFWwindow *win = nullptr;
@@ -1989,9 +2013,9 @@ private:
     bool cinematicActive = false;   // true last frame — used to detect transition-out
 
     // ── UI hover state (one-frame lag) ────────────────────────────────────────
-    std::vector<bool> hovConst;          // one entry per constellation; sized in loadDefinitions()
-    std::vector<bool> hovHighlightConst; // highlight button hover state, parallel to hovConst
-    bool hovShowPlanets = false;         // "Show planets" global toggle hover state
+    std::vector<bool> hovConst;           // one entry per constellation; sized in loadDefinitions()
+    std::vector<bool> hovHighlightConst;  // highlight button hover state, parallel to hovConst
+    bool hovShowPlanets = false;          // "Show planets" global toggle hover state
     bool hovPlanetBtn[kPlanetCount] = {}; // per-planet ON/OFF toggle hover state
     bool hovTimeSlower = false;
     bool hovTimePause = false;
@@ -2022,8 +2046,8 @@ private:
     bool hovSaveSnapshot = false;
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button
     bool hovResetDefaults = false;
-    float resetDefaultsMsgTimer = 0.0f; // seconds remaining to show the "Restart to apply" confirmation (NEW-5)
-    bool hovDebugToggle[12] = {};  // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch, scene depth pass, fog layer)
+    float resetDefaultsMsgTimer = 0.0f;  // seconds remaining to show the "Restart to apply" confirmation (NEW-5)
+    bool hovDebugToggle[12] = {};        // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch, scene depth pass, fog layer)
     bool hovBeamDebugRaysToggle = false; // hover state for the "Show beam pointing rays" checkbox (C12 follow-up #12)
     // Sized 11, not 9 — flare_glow_gain/flare_streak_gain (flare architecture overhaul) added two
     // more PhotoParam rows; per [[feedback_cloud_slider_arrays]], all three hover/dragging arrays
@@ -2034,9 +2058,9 @@ private:
     bool hovCloudMinus[61] = {}; // was [59] — idx 59-60 are the S4 terrain fade sliders
     bool hovCloudPlus[61] = {};
     bool draggingCloud[61] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
-                                  // feedback_cloud_slider_arrays memory: this one was missed once
-                                  // already and the out-of-bounds write corrupted the window-chrome
-                                  // state declared right below, breaking the settings window.
+                                 // feedback_cloud_slider_arrays memory: this one was missed once
+                                 // already and the out-of-bounds write corrupted the window-chrome
+                                 // state declared right below, breaking the settings window.
 
     // ── Window chrome (drag+resize; see UIRenderer::WindowChrome) ──────────────
     // x/y default to -1 (uninitialized, centers/places on first open); w/h are set
@@ -2049,26 +2073,26 @@ private:
     int settingsActiveTab = 0; // index into the 8 settings tabs (persisted)
 
     // ── Right HUD panel: altitude display mode + unit system ──────────────────
-    bool altModeSeaLevel = true;                        // true = MSL (sea level), false = AGL (above terrain)
-    UnitSystem unitSystem = UnitSystem::Metric;          // Display tab setting; affects altitude readout
-    bool showControlsOnStartup = true;                   // Display tab setting; gates viewControlsChrome.open in init()
+    bool altModeSeaLevel = true;                // true = MSL (sea level), false = AGL (above terrain)
+    UnitSystem unitSystem = UnitSystem::Metric; // Display tab setting; affects altitude readout
+    bool showControlsOnStartup = true;          // Display tab setting; gates viewControlsChrome.open in init()
 
     // ── NEW-7: frame limiter ────────────────────────────────────────────────
-    FpsCapMode fpsCapMode = FpsCapMode::VSync;           // Display tab setting; see FpsCapMode comment
-    bool fpsCapSwapchainRebuildPending = false;          // set true when fpsCapMode changes; see
-                                                          // consumeSwapchainRebuildRequest() override
-    bool hovFpsCap[5] = {};                              // one per FpsCapMode button, same order as the enum
+    FpsCapMode fpsCapMode = FpsCapMode::VSync;  // Display tab setting; see FpsCapMode comment
+    bool fpsCapSwapchainRebuildPending = false; // set true when fpsCapMode changes; see
+                                                // consumeSwapchainRebuildRequest() override
+    bool hovFpsCap[5] = {};                     // one per FpsCapMode button, same order as the enum
 
     // ── UC1: graphics preset ─────────────────────────────────────────────────
     // Default High until init() either loads a persisted value or (first run only) seeds one from
     // VkPhysicalDeviceProperties::deviceType — see seedGraphicsPresetFromDevice() in init().
     GraphicsPreset graphicsPreset = GraphicsPreset::High;
-    bool showAdvancedSettings = false;   // Display tab "Show advanced settings" — reveals the
-                                          // Clouds/Ocean/Terrain/Aurora tabs; off by default so a
-                                          // new user's front door is Preset + the handful of
-                                          // top-level controls, not 46 developer sliders.
-    bool hovPreset[5] = {};              // one per named preset button (Custom has no button —
-                                          // it's a read-only status, not a click target)
+    bool showAdvancedSettings = false; // Display tab "Show advanced settings" — reveals the
+                                       // Clouds/Ocean/Terrain/Aurora tabs; off by default so a
+                                       // new user's front door is Preset + the handful of
+                                       // top-level controls, not 46 developer sliders.
+    bool hovPreset[5] = {};            // one per named preset button (Custom has no button —
+                                       // it's a read-only status, not a click target)
     bool hovAdvancedToggle = false;
     bool hovReplayIntro = false; // UC3 "Replay Intro" button, Display tab
 
@@ -2079,12 +2103,19 @@ private:
     // the VulkanContext default (VSync/FIFO).
     void applyFpsCapMode()
     {
-        if (!ctx_) return;
+        if (!ctx_)
+            return;
         switch (fpsCapMode)
         {
-        case FpsCapMode::VSync: ctx_->presentModePreference = VK_PRESENT_MODE_FIFO_KHR; break;
-        case FpsCapMode::Off:   ctx_->presentModePreference = VK_PRESENT_MODE_IMMEDIATE_KHR; break;
-        default:                ctx_->presentModePreference = VK_PRESENT_MODE_MAILBOX_KHR; break; // Cap30/60/120
+        case FpsCapMode::VSync:
+            ctx_->presentModePreference = VK_PRESENT_MODE_FIFO_KHR;
+            break;
+        case FpsCapMode::Off:
+            ctx_->presentModePreference = VK_PRESENT_MODE_IMMEDIATE_KHR;
+            break;
+        default:
+            ctx_->presentModePreference = VK_PRESENT_MODE_MAILBOX_KHR;
+            break; // Cap30/60/120
         }
         fpsCapSwapchainRebuildPending = true;
     }
@@ -2114,32 +2145,32 @@ private:
     void createFlareResources(VulkanContext &ctx);   // images, samplers, render pass, framebuffer
     void destroyFlareResources(VkDevice device);     // called from onResize (before recreate) and cleanup
     void createFlareDescriptors(VulkanContext &ctx); // new flareBlur (2 storage images) and
-                                                      // flareComposite (1 sampler) descriptor sets.
-                                                      // descLayout/descSet bindings 7/8 and
-                                                      // skyDescSet binding 20 are added directly in
-                                                      // createDescriptors()/createGlowResources()
-                                                      // themselves (descriptor set layouts are
-                                                      // immutable once created, so those two can't
-                                                      // be "extended" afterward from here).
+                                                     // flareComposite (1 sampler) descriptor sets.
+                                                     // descLayout/descSet bindings 7/8 and
+                                                     // skyDescSet binding 20 are added directly in
+                                                     // createDescriptors()/createGlowResources()
+                                                     // themselves (descriptor set layouts are
+                                                     // immutable once created, so those two can't
+                                                     // be "extended" afterward from here).
     void createFlarePipelines(VulkanContext &ctx);   // flareSource (graphics), flareBlur (compute),
-                                                      // flareComposite (graphics) pipelines
+                                                     // flareComposite (graphics) pipelines
     void initStars(VulkanContext &ctx);
     void createStarPipeline(VulkanContext &ctx);
     void updateStars();
-    void initPlanets(VulkanContext &ctx); // planetBuf + planetDescSet, reusing starDescLayout
-    void updatePlanets();                 // mirrors updateStars(); called right after it
+    void initPlanets(VulkanContext &ctx);                                       // planetBuf + planetDescSet, reusing starDescLayout
+    void updatePlanets();                                                       // mirrors updateStars(); called right after it
     int pickPlanetAt(float clickX, float clickY, float screenW, float screenH); // mirrors
-                                           // pickSatelliteAt but reads the already host-mapped
-                                           // planetBuf directly — no device->host staging copy
-    void formatSelectedPlanetInfo();      // mirrors formatSelectedSatInfo, fills planetInfoLine[]
-    void updateLightPollutionDome(); // called each frame before updateStars(): fills lightDomeAz[]
-                                      // + uploads to lightDomeBuf for sat_flare.comp
-    void updateGpuTimingStats(VulkanContext &ctx); // called at top of recordCompute(): EMA-smooths
-                                                    // ctx.timestampMs into gpuMsSmoothed[]/gpuMsTotalSmoothed
-    void initConstellation();                        // called once: loads definitions then builds orbits
-    void loadDefinitions();                          // reads constellations.json; falls back to hardcoded defaults
-    void loadHardcoded();                            // hardcoded satTypes + constellations (used as fallback)
-    void buildOrbits();                              // populates satOrbits from satTypes + constellations
+                                                                                // pickSatelliteAt but reads the already host-mapped
+                                                                                // planetBuf directly — no device->host staging copy
+    void formatSelectedPlanetInfo();                                            // mirrors formatSelectedSatInfo, fills planetInfoLine[]
+    void updateLightPollutionDome();                                            // called each frame before updateStars(): fills lightDomeAz[]
+                                                                                // + uploads to lightDomeBuf for sat_flare.comp
+    void updateGpuTimingStats(VulkanContext &ctx);                              // called at top of recordCompute(): EMA-smooths
+                                                                                // ctx.timestampMs into gpuMsSmoothed[]/gpuMsTotalSmoothed
+    void initConstellation();                                                   // called once: loads definitions then builds orbits
+    void loadDefinitions();                                                     // reads constellations.json; falls back to hardcoded defaults
+    void loadHardcoded();                                                       // hardcoded satTypes + constellations (used as fallback)
+    void buildOrbits();                                                         // populates satOrbits from satTypes + constellations
     // S1 (RELEASE_v1_1_PLAN.md): reads reflector_targets.json (real solar-farm sites, moddable
     // like constellations.json); falls back to generateReflectorTargetsRandomFallback() if
     // missing/malformed/empty. Called from buildOrbits(), same call-order constraint as the old
@@ -2155,8 +2186,8 @@ private:
     // (3x3-max texel neighborhood, C12 follow-up #23) and writes reflectorTargetsRadiusM[ti].
     // Defaults to sea level if earthElevCpu isn't populated for whatever reason.
     void computeReflectorTargetElevationRadius(int ti);
-    void loadSettings();                             // reads settings.json; silently uses defaults if missing
-    void saveSettings();                             // writes settings.json next to exe
+    void loadSettings(); // reads settings.json; silently uses defaults if missing
+    void saveSettings(); // writes settings.json next to exe
     // UC1: overwrites debugDisableMask/renderScale/advanced sliders per the named preset's table
     // (no-op data-wise for Custom — see GraphicsPreset comment). Recreates the render-scale
     // offscreen target since presets can change renderScale.
@@ -2165,8 +2196,8 @@ private:
     // or Medium (discrete). Coarse on purpose — see RELEASE_v1_1_PLAN.md UC1, "do not build a
     // GPU-name lookup table." Only called once, from init(), when no persisted preset exists.
     GraphicsPreset seedGraphicsPresetFromDevice(VulkanContext &ctx) const;
-    void savePerfSnapshot(float cpuDt);               // appends one profiling record to perf_profiles/profile_log.jsonl
-    void updatePositions(double t, float dt = 0.0f); // called each frame: fills satInputData + eci2enu
+    void savePerfSnapshot(float cpuDt);                // appends one profiling record to perf_profiles/profile_log.jsonl
+    void updatePositions(double t, float dt = 0.0f);   // called each frame: fills satInputData + eci2enu
     void toggleTimeDirection() { timeDir = -timeDir; } // shared by KB_REVERSE and the left-panel Reverse button
 
     // ── Satellite picking (see "Satellite picking / selection tracking" members above) ────
@@ -2200,10 +2231,10 @@ private:
     // close button was clicked (closable windows only), so callers can react (e.g.
     // save settings).
     bool buildResizableWindow(const UIInput &inp, UIRenderer &ui, WindowChrome &chrome,
-                               int winId, const char *title, bool closable, bool &hovCloseFlag,
-                               float defaultX, float defaultY,
-                               float minW, float minH, float maxW, float maxH,
-                               const std::function<void()> &buildBody);
+                              int winId, const char *title, bool closable, bool &hovCloseFlag,
+                              float defaultX, float defaultY,
+                              float minW, float minH, float maxW, float maxH,
+                              const std::function<void()> &buildBody);
 
     void buildSettingsWindow(const UIInput &inp, UIRenderer &ui);
     void buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui);
@@ -2249,10 +2280,10 @@ private:
     // session's saved preset) stands, per RELEASE_v1_1_PLAN.md UC3: "do not run the benchmark
     // during the skip path."
     void finishIntro(bool wasSkipped);
-    void setLat(float newLatDeg); // moves observer to a new latitude; used by the right panel's lat display scroll-adjust
+    void setLat(float newLatDeg);   // moves observer to a new latitude; used by the right panel's lat display scroll-adjust
     void adjustLon(float deltaDeg); // rotates observer around Earth's polar axis; right panel's lon display scroll-adjust
-                                                     // dt = simulated seconds elapsed this frame (0 when paused);
-                                                     // used for mirror slew rate so behaviour is consistent at all time scales
+                                    // dt = simulated seconds elapsed this frame (0 when paused);
+                                    // used for mirror slew rate so behaviour is consistent at all time scales
 };
 
 // Time scale options (simulated seconds per real second)
@@ -2261,6 +2292,21 @@ static constexpr float kTimeScales[] = {1.0f, 10.0f, 60.0f, 300.0f, 3600.0f,
 static constexpr const char *kTimeLabels[] = {"1x", "10x", "1m", "5m", "1h", "1d", "1w", "1mo", "1yr"};
 static constexpr int kNumTimeScales = 9;
 
+// ── UC3 intro cinematic fixed vantage (session follow-up) ─────────────────────
+// The intro always opens from this exact real-world spot — the California coast at twilight,
+// facing out toward the SpaceX AI-datacenter satellites and the Reflect Orbital mirrors aimed at
+// the nearby Topaz solar farm — rather than wherever the player's last saved/current observer
+// position happens to be. Values are the live camera/observer state the vantage was designed
+// against (settings.json: observer.lat_deg/lon_deg, camera.az_deg/el_deg/fov_y_deg). Forced onto
+// obsDir/obsLatDeg/obsLonDeg/camera.azDeg/elDeg/fovYDeg once, at the start of every intro playback
+// (see updateIntroCinematic's one-time init block) — including a Display-tab replay — so the
+// cinematic is reproducible no matter where the player has since wandered off to.
+static constexpr float kIntroObserverLatDeg = 35.871456f;
+static constexpr float kIntroObserverLonDeg = -121.400291f;
+static constexpr float kIntroStartAzDeg = -61.32f;
+static constexpr float kIntroStartElDeg = 20.8f;
+static constexpr float kIntroStartFovDeg = 70.0f;
+
 // ── UC3 intro cinematic beat sheet (RELEASE_v1_1_PLAN.md) ─────────────────────
 // Shared between SatelliteSim.cpp (updateIntroCinematic/finishIntro, the playback) and
 // SatelliteSimUI.cpp (buildIntroOverlay, the caption text) — header-scope so both translation
@@ -2268,29 +2314,43 @@ static constexpr int kNumTimeScales = 9;
 // this keyframe" (introCaptionIndex just holds whatever the last non-null one was).
 struct IntroKeyframe
 {
-    float t;      // seconds from intro start
-    float altM;   // obsHeightOffset target
+    float t;    // seconds from intro start
+    float altM; // obsHeightOffset target
     float azDeg, elDeg, fovDeg;
     const char *text;
 };
+const float songbeat = 7.61;
 static constexpr IntroKeyframe kIntroKeyframes[] = {
-    // Beat 1 — ground, night, looking up toward zenith.
-    {0.0f, 0.0f, 0.0f, 62.0f, 55.0f, "SAT LIGHT SIM"},
-    // Beat 2 — pan toward the horizon; satellite streaks cross frame.
-    {7.0f, 0.0f, 55.0f, 8.0f, 60.0f, "Every planned major constellation has been built."},
-    // Beat 3 — rise through the cloud deck, holding on the ground below. Teaches Q/E — caption
-    // text is generated at render time from live keybindings (see buildIntroOverlay), not this
-    // literal (kIntroBeat3Index marks which entry to override).
-    {15.0f, 15000.0f, 95.0f, -30.0f, 65.0f, "Q / E change your altitude"},
-    // Beat 4 — continue to LEO over the terminator; reflect beams visible below.
-    {24.0f, 550000.0f, 150.0f, -45.0f, 70.0f, "Perpetual sunshine lies in sun-synchronous orbit."},
-    // Beat 5 — settle back at a ground vantage; controls hint fades in via the Controls window.
-    {32.0f, 0.0f, 0.0f, 22.0f, 70.0f, "We will come to miss the quiet sky."},
-    {38.0f, 0.0f, 0.0f, 22.0f, 70.0f, nullptr}, // hold, then auto-handoff (finishIntro(false))
+    // Beat 0 — "2036" title/date card. Ground, twilight, facing the fixed vantage above.
+    {0.0f, 0.0f, kIntroStartAzDeg, kIntroStartElDeg, kIntroStartFovDeg, "2036"},
+    // Beat 1 — first narrative line; holds the same framing. The skip hint (buildIntroOverlay)
+    // only appears once this beat is reached — see kIntroHintRevealIndex.
+    {songbeat * 1.0, 0.0f, kIntroStartAzDeg, kIntroStartElDeg, kIntroStartFovDeg,
+     "Satellite megaconstellations dominate the night sky"},
+    // Beat 3 — level out in preparation for launch. Still ground level.
+    {songbeat * 2.0, 10000.0f, kIntroStartAzDeg - 5, 25.0f, 64.0f, "From the ground, we see the glare of sunlight reflect down from them"},
+    // Beat 4 — the pull to LEO begins (ascent happens across THIS beat's transition). Still
+    // facing horizontally west, per the storyboard, even as altitude climbs.
+    {songbeat * 3.0, 60000.0f, kIntroStartAzDeg - 25, 35.0f, 62.0f, "They power a global network of communication and AI compute."},
+    // Beat 5 — pull continues; camera starts rotating away from due-west as we climb high enough
+    // to reveal the Earth's curve.
+    {songbeat * 4.0, 140000.0f, kIntroStartAzDeg - 35, 20.0f, 62.0f, "A promise to the markets above all else"},
+    {songbeat * 5.0, 250000.0f, kIntroStartAzDeg - 45, 10.0, 70.0f, "We will come to miss the quiet sky"},
+    // Beat 6 — arrival in LEO: pulled back and up enough to see the backlit AI sats against a
+    // rising sun. Camera motion stops here; beats 7-8 hold this exact framing. Title reveal.
+    {songbeat * 6.0, 300000.0f, kIntroStartAzDeg - 50, 0.0, 80.0f, "SAT LIGHT SIM"},
+    // Beat 7 — controls hint. "WASD to move" is a fixed line (buildIntroOverlay); the Q/E line is
+    // generated at render time from live keybindings, not this literal (kIntroControlsIndex marks
+    // which entry to override).
+    {songbeat * 7.0, 300000.0f, kIntroStartAzDeg - 50, 20.0, 120.0f, "Q / E to raise/lower height"},
+    {songbeat * 7.5, 0000.0f, kIntroStartAzDeg - 50, 20.0, 80.0f, nullptr}, // hold, then auto-handoff (finishIntro(false))
 };
 static constexpr int kIntroKeyframeCount = sizeof(kIntroKeyframes) / sizeof(kIntroKeyframes[0]);
-static constexpr int kIntroBeat3Index = 2; // index of the Q/E keyframe above
-// Beats 1-4 (through the LEO beat) feed the UC1 benchmark accumulator; beat 5's fast descent
-// back to the ground isn't representative load, so it's excluded.
-static constexpr float kIntroBenchEndT = 24.0f;
+static constexpr int kIntroYearIndex = 0;       // "2036" title/date card
+static constexpr int kIntroHintRevealIndex = 1; // skip hint doesn't show before this beat is reached
+static constexpr int kIntroTitleIndex = 6;      // "SAT LIGHT SIM" reveal, arrival in LEO
+static constexpr int kIntroControlsIndex = 7;   // WASD / Q-E controls hint
+// Beats 0-6 (through arrival in LEO, where camera motion stops) feed the UC1 benchmark
+// accumulator; the static hold over beats 7-8 isn't representative load, so it's excluded.
+static constexpr float kIntroBenchEndT = 39.0f;
 static constexpr const char *kGraphicsPresetNames[] = {"Planetarium", "Low", "Medium", "High", "Ultra", "Custom"};

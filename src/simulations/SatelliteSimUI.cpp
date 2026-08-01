@@ -424,6 +424,17 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     if (inp.lmbPressed || inp.rmbPressed || inp.scrollY != 0.0f || camera.captured)
         lastInputWasGamepad = false;
 
+    // UC3: the cinematic intro hides the entire normal HUD — no left/right panels, no
+    // settings/view-controls windows, no satellite/planet picking, no scroll-to-zoom — nothing
+    // but buildIntroOverlay's own caption + skip-hint. Checked ahead of uiVisible (and ahead of
+    // icon loading/scroll/click handling below) so none of that runs while the intro owns the
+    // camera, independent of whether the player has the rest of the UI toggled on or off.
+    if (showIntro)
+    {
+        buildIntroOverlay(inp, ui);
+        return;
+    }
+
     // ── Lazy icon loading (first buildUI call after init) ─────────────────────
     if (!iconsLoaded && ctx_)
     {
@@ -500,7 +511,6 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     if (viewControlsChrome.open)
         ui.addMouseCaptureRect(viewControlsChrome.x, viewControlsChrome.y, viewControlsChrome.w, viewControlsChrome.h);
 
-    buildIntroOverlay(inp, ui);
     buildCrashRecoveryNotice(dt, inp, ui);
     buildGraphicsAutoNotice(dt, inp, ui);
     buildScreenshotToast(dt, inp, ui);
@@ -2923,15 +2933,16 @@ void SatelliteSim::buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRend
 // ─── buildIntroOverlay ───────────────────────────────────────────────────────
 // UC3: the cinematic camera path (updateIntroCinematic, recordCompute) IS the intro now — this
 // just overlays the current beat's caption, translucent so the flythrough stays visible under it.
-// Dismissible from frame 1 by any click (here) or key/pad button (onKey/pollGamepad, which call
-// finishIntro(true) the same way).
+// Dismissal is intentionally narrow: only the literal Space bar (onKey) or gamepad Start
+// (pollGamepad) end it early. It used to be dismissible by any click or any keypress, which meant
+// an incidental click into the window (or just touching the keyboard) skipped it before most
+// players ever saw it play — the mouse capture rect below still exists to swallow clicks so they
+// don't leak through to satellite picking or camera look, but a click no longer skips anything.
 void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
 {
     if (!showIntro)
         return;
 
-    if (inp.lmbPressed || inp.rmbPressed)
-        finishIntro(true);
     ui.addMouseCaptureRect(0, 0, inp.screenW, inp.screenH);
 
     // Fade the current caption in over its first 0.8s; fade everything out over the last 1.0s of
@@ -2942,16 +2953,18 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
     float alphaOut = glm::clamp((tEnd - introElapsed) / 1.0f, 0.0f, 1.0f);
     uint8_t textA = (uint8_t)(255.0f * std::min(alphaIn, alphaOut));
 
-    bool isTitleBeat = (introCaptionIndex == 0);
+    bool isYearBeat = (introCaptionIndex == kIntroYearIndex);
+    bool isTitleBeat = (introCaptionIndex == kIntroTitleIndex);
+    bool isControlsBeat = (introCaptionIndex == kIntroControlsIndex);
     const char *text = kIntroKeyframes[introCaptionIndex].text;
-    // Beat 3 (Q/E) reads live keybindings instead of a compile-time literal, so a rebind or a
-    // controller-only player still sees the right prompt (UC4: don't hardcode control text).
-    if (introCaptionIndex == kIntroBeat3Index)
+    // The controls beat reads live keybindings instead of a compile-time literal, so a rebind or
+    // a controller-only player still sees the right prompt (UC4: don't hardcode control text).
+    if (isControlsBeat)
     {
-        snprintf(introBeat3TextBuf, sizeof(introBeat3TextBuf),
-                 "%s / %s  --  or the triggers  --  change your altitude",
+        snprintf(introControlsTextBuf, sizeof(introControlsTextBuf),
+                 "%s / %s  --  or the triggers  --  to raise/lower height",
                  keyDisplayName(keybindings[KB_RAISE_ELEV].key), keyDisplayName(keybindings[KB_LOWER_ELEV].key));
-        text = introBeat3TextBuf;
+        text = introControlsTextBuf;
     }
 
     if (text && textA > 0)
@@ -2961,7 +2974,7 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
                                                            CLAY_SIZING_FIXED((float)inp.screenH)},
                                                 .padding = {40, 40, 0, 90},
                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER,
-                                                                   .y = CLAY_ALIGN_Y_BOTTOM},
+                                                                   .y = isYearBeat ? CLAY_ALIGN_Y_CENTER : CLAY_ALIGN_Y_BOTTOM},
                                                 .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                             .floating = {.zIndex = 30, .attachTo = CLAY_ATTACH_TO_ROOT}})
         {
@@ -2974,12 +2987,24 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
                                                 .backgroundColor = {0, 0, 0, (float)((int)textA * 110 / 255)},
                                                 .cornerRadius = CLAY_CORNER_RADIUS(6)})
             {
-                if (isTitleBeat)
+                if (isYearBeat)
+                {
+                    CLAY_TEXT(CLAY_STRING("2036"),
+                              CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(48)}));
+                }
+                else if (isTitleBeat)
                 {
                     CLAY_TEXT(CLAY_STRING("SAT LIGHT SIM"),
                               CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(34)}));
                     CLAY_TEXT(CLAY_STRING("by papereater"),
                               CLAY_TEXT_CONFIG({.textColor = {200, 200, 200, (float)textA}, .fontSize = fs(13)}));
+                }
+                else if (isControlsBeat)
+                {
+                    CLAY_TEXT(CLAY_STRING("WASD to move"),
+                              CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(19)}));
+                    Clay_String txtStr{false, (int32_t)strlen(text), text};
+                    CLAY_TEXT(txtStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(19)}));
                 }
                 else
                 {
@@ -2990,9 +3015,12 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
         }
     }
 
-    // Skip hint, from ~1.5s in — bottom-right corner, not faded with the caption above (needs to
-    // stay legible/discoverable regardless of which beat is showing).
-    if (introElapsed >= 1.5f)
+    // Skip hint, bottom-right corner, not faded with the caption above (needs to stay legible/
+    // discoverable regardless of which beat is showing). Only appears once the first real
+    // narrative line ("Satellite megaconstellations...") has been reached — not from frame 1 —
+    // so the opening "2036" title card reads as a clean establishing beat, and the hint (the only
+    // thing that reveals Space can skip at all) doesn't compete with it for attention immediately.
+    if (introCaptionIndex >= kIntroHintRevealIndex)
     {
         CLAY(CLAY_ID("IntroSkipHint"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                     .padding = {8, 8, 4, 4}},
@@ -3004,7 +3032,7 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
                                                                       .parent = CLAY_ATTACH_POINT_RIGHT_BOTTOM},
                                                      .attachTo = CLAY_ATTACH_TO_ROOT}})
         {
-            CLAY_TEXT(CLAY_STRING("Press any key to skip"),
+            CLAY_TEXT(CLAY_STRING("Press SPACE to skip"),
                       CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(12)}));
         }
     }
