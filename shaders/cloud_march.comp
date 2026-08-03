@@ -1068,7 +1068,28 @@ void cloudMarchCS(
 
         if (d > 0.001) {
             inCloud = true;
-            float extinction = d * step * 3e-3;
+            // cloud.cloudOpacityScale (default 1.0, settings "Opacity scale"): d is clamped to
+            // [0,1] above, so `density` alone cannot push a saturated column past whatever
+            // opacity this fixed extinction-per-metre constant gives.
+            //
+            // A flat multiplier on extinction (the first attempt) scaled EVERY sample equally,
+            // including the thin erosion-carved wisps at a cloud's own silhouette — those need
+            // only a little accumulated depth to fully extinguish once boosted, so raising the
+            // scale to fix opaque cores also flattened soft edges into a hard silhouette,
+            // reported as clouds losing their fluffy look.
+            //
+            // Fix: ramp the boost in from 1.0 (no change) using how much transmittance THIS RAY
+            // has already lost before this sample, not a flat constant. A ray still near
+            // cloudTransmittance≈1 is, by definition, still in the thin entry/edge region — it
+            // gets none of the extra boost, so edges keep their original unscaled softness
+            // exactly. Only once a column has already proven itself genuinely thick (transmittance
+            // dropping) does the boost ramp toward the full scale, accelerating an
+            // already-committed thick core the rest of the way to true opacity. Self-reinforcing:
+            // the boost grows because the column is getting thicker, not because of raw density
+            // alone, so a moderately dense but genuine cloud deck (not just its silhouette wisps)
+            // reliably converges to opaque instead of only the mathematical d=1 extreme.
+            float coreBoost  = 1.0 + (cloud.cloudOpacityScale - 1.0) * (1.0 - cloudTransmittance.r);
+            float extinction = d * step * 3e-3 * coreBoost;
             vec3  stepT      = exp(-vec3(extinction));
             float powder     = 1.0 - exp(-extinction * 2.0);
 
@@ -1303,7 +1324,17 @@ void cloudMarchCS(
     vec2 odAtmCloud = optDepth(obsPos, dir, max(cloudMeanT, 0.001));
     vec3 cloudAttn  = exp(-(BETA_R * odAtmCloud.x + BETA_M * 1.1 * odAtmCloud.y));
 
-    A_cloud = vec3(1.0) - cloudAttn * (1.0 - cloudTOut);
+    // A_cloud is the multiplicative term applied to `color` in sat_sky.frag — and `color` at that
+    // point already carries FULL camera-to-surface atmospheric transmittance (odR_cam/odM_cam,
+    // truncated at tSurface — see sat_sky.frag's surfAttn comment). cloudAttn here is only the
+    // camera-to-cloud SUBSET of that same path, so folding it into A_cloud (as `1 - cloudAttn*(1-
+    // cloudTOut)` used to) double-counts that segment's extinction AND, worse, leaks a constant
+    // `1-cloudAttn` fraction of background through even a perfectly opaque cloud (cloudTOut=0) —
+    // it never converges to true occlusion. That read as "even the densest clouds are semi-
+    // transparent to city lights," worst from altitude/distance where cloudAttn is furthest below
+    // 1. A_cloud must depend on cloudTOut alone; cloudAttn still legitimately dims the cloud's OWN
+    // scattered light in B_cloud below, which has no other atmospheric attenuation applied to it.
+    A_cloud = cloudTOut;
     B_cloud = cloudAttn * cloudScatter * cloudAltFade;
 }
 
@@ -1523,7 +1554,9 @@ void cirrusMarchCS(
     vec2 odAtmCirrus = optDepth(obsPos, dir, tEnter);
     vec3 cirrusAttn  = exp(-(BETA_R * odAtmCirrus.x + BETA_M * 1.1 * odAtmCirrus.y));
     vec3 cirrusT     = mix(vec3(1.0), cirrusTransmittance, cirrusAltFade);
-    A_cirrus = vec3(1.0) - cirrusAttn * (1.0 - cirrusT);
+    // See cloudMarchCS's A_cloud comment — same fix, same reason: A_cirrus must be the layer's own
+    // transmittance alone, not blended with cirrusAttn (which belongs to B_cirrus only).
+    A_cirrus = cirrusT;
     B_cirrus = cirrusAttn * cirrusScatter * cirrusAltFade;
 }
 
@@ -1664,7 +1697,8 @@ void fogMarchCS(
     vec2 odAtmFog = optDepth(obsPos, dir, tEnter);
     vec3 fogAttn  = exp(-(BETA_R * odAtmFog.x + BETA_M * 1.1 * odAtmFog.y));
     vec3 fogT     = mix(vec3(1.0), fogTransmittance, fogAltFade);
-    A_fog = vec3(1.0) - fogAttn * (1.0 - fogT);
+    // See cloudMarchCS's A_cloud comment — same fix, same reason.
+    A_fog = fogT;
     B_fog = fogAttn * fogScatter * fogAltFade;
 }
 

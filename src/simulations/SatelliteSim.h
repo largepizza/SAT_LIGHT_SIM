@@ -904,8 +904,14 @@ struct GpuCloudParams
     // back to the sea-level sphere, which already exists as the "no hit" result.
     float terrainDistFadeStartM;
     float terrainDistFadeEndM;
-    float pad14; // reserved
-    float pad15; // reserved
+    float cloudOpacityScale;   // repurposed from pad14 — see cloud_params.glsl for the full
+                               // rationale: scales the volumetric cloud march's extinction
+                               // coefficient directly, since per-sample density `d` is clamped to
+                               // [0,1] before extinction is derived, so the `density` slider alone
+                               // has a hard ceiling on achievable opacity. Default 1.0.
+    float cityLightBlurLod;    // repurposed from pad15 — see cloud_params.glsl. Mip LOD blend
+                               // target for earthNightTex/cityNightDetailTex under cloud, at full
+                               // local cloud opacity. Default 3.0; 0 disables the blur.
 };
 static_assert(sizeof(GpuCloudParams) == 400, "GpuCloudParams layout mismatch");
 
@@ -1679,6 +1685,18 @@ private:
     // beyond 900000 and skip the march outright, falling back to the sea-level sphere.
     float terrainDistFadeStartM = 300000.0f;
     float terrainDistFadeEndM = 900000.0f;
+    // Cloud opacity scale (see GpuCloudParams::cloudOpacityScale) — multiplies the volumetric
+    // cloud march's extinction-per-metre constant directly (and, since this same value also
+    // scales layer 0's flat-2D-crossfade alphaMax ceiling in recordCompute(), the flat layer used
+    // at higher observer altitude too), since raising `cloudDensity` alone cannot push a
+    // saturated column past full opacity. 1.0 would reproduce the original hardcoded extinction/
+    // alphaMax exactly; 7.0 is the user-tuned system default (2026-08-02) that reads as properly
+    // opaque through moderately dense cloud without visibly hardening thin/wispy edges.
+    float cloudOpacityScale = 7.0f;
+    // City-lights blur-through-cloud (see GpuCloudParams::cityLightBlurLod) — mip LOD
+    // earthNightTex/cityNightDetailTex blend toward under full local cloud opacity, so light
+    // diffused through haze reads as a soft glow instead of a sharp copy of the raw texture.
+    float cityLightBlurLod = 3.0f;
     // C11 ground fog layer — real per-sample volumetric march in cloud_march.comp's fogMarchCS,
     // reusing beamCloudLightBuf for beam godrays and a fixed small self-shadow march for sun
     // godrays. First-pass defaults, expect retuning once seen in-app.
@@ -1855,9 +1873,10 @@ private:
         KB_ZOOM_IN = 11,    // held — narrows FOV (zoom in)
         KB_ZOOM_OUT = 12,   // held — widens FOV (zoom out)
         KB_ZOOM_RESET = 13, // event — snap FOV back to default
-        KB_SELECT_SAT = 14, // event — select the satellite nearest the center of the screen
-        KB_SCREENSHOT = 15, // event — UC6: capture screenshots/satlight_<timestamp>.png (clean, no UI)
-        KB_COUNT = 16,
+        KB_SELECT_SAT = 14,    // event — select the satellite nearest the center of the screen
+        KB_SCREENSHOT = 15,    // event — UC6: capture screenshots/satlight_<timestamp>.png (clean, no UI)
+        KB_TOGGLE_CURSOR = 16, // event — UC5: gamepad virtual-cursor mode toggle (default: Menu/Start)
+        KB_COUNT = 17,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
@@ -1980,6 +1999,17 @@ private:
     int gamepadId = -1;
     GLFWgamepadstate gpState{};                                     // last frame's full state (for held-button checks in recordCompute)
     unsigned char prevGpButtons[GLFW_GAMEPAD_BUTTON_LAST + 1] = {}; // previous frame's buttons, for edge detection
+
+    // Gamepad rebind-capture anti-self-satisfy guard (see pollGamepad's rebind-capture block).
+    // The "Bind Pad" click that sets some binding's listeningPad=true happens via the SAME A
+    // press pollGamepad's own edge-detect loop would otherwise see as "a fresh button press" one
+    // function call later in the same frame — without this, clicking "Bind Pad" with A instantly
+    // self-captured A as the new binding, before the player ever got a chance to press anything
+    // else. gpRebindListenIdx tracks which keybinding index the snapshot below belongs to (-1 =
+    // none); gpRebindHeldAtStart snapshots which buttons were already down the moment that listen
+    // session began, and each stays ineligible for capture until seen released at least once.
+    int gpRebindListenIdx = -1;
+    bool gpRebindHeldAtStart[GLFW_GAMEPAD_BUTTON_LAST + 1] = {};
     float gpMoveFwd = 0.0f, gpMoveRight = 0.0f;                     // left stick, deadzoned, [-1,1] — combines additively with WASD
     float gpLookYawDeg = 0.0f, gpLookPitchDeg = 0.0f;               // right stick, this-frame look delta in degrees (already dt-scaled)
     // Analog triggers for elevation — deliberately NOT part of the keybindings/gpButton
@@ -1996,12 +2026,16 @@ private:
     // actually holding, instead of always listing keyboard first — see RELEASE_v1_1_PLAN.md UC4.
     bool lastInputWasGamepad = false;
 
-    // ── UC4: gamepad virtual cursor ("cheap 90%" UI navigation) ────────────────
-    // Active only while a UI window (Settings/Controls) is open — outside that, the right
-    // stick drives camera look as normal (see pollGamepad). vCursorX/Y start at -1 as a
-    // "not yet positioned" sentinel; first activation centers on screen.
+    // ── UC4/UC5: gamepad virtual cursor ("cheap 90%" UI navigation) ────────────
+    // Explicitly toggled by KB_TOGGLE_CURSOR (default: Menu/Start), not merely "a UI window is
+    // open" — the earlier automatic version hijacked the right stick the instant Settings/Controls
+    // was open, which fought free-look and dropped new gamepad players straight into cursor mode
+    // on first launch (see RELEASE_v1_1_PLAN.md UC5). While the toggle is off, the right stick
+    // always drives camera look, UI visible or not. vCursorX/Y start at -1 as a "not yet
+    // positioned" sentinel; first activation centers on screen.
     float vCursorX = -1.0f, vCursorY = -1.0f;
-    bool vCursorActive = false;
+    bool vCursorToggled = false; // player-facing on/off state, flipped by KB_TOGGLE_CURSOR
+    bool vCursorActive = false;  // this-frame effective state = vCursorToggled && uiVisible && !showIntro
     bool vCursorClick = false; // A button currently held (level state, like the real lmb App.cpp
                                // reads from GLFW) — UIRenderer::beginFrame() does its own frame-to-
                                // frame edge detection into UIInput::lmbPressed, same as the mouse path
@@ -2064,9 +2098,9 @@ private:
     bool hovPhotoMinus[11] = {};
     bool hovPhotoPlus[11] = {};
     bool draggingPhoto[11] = {};
-    bool hovCloudMinus[61] = {}; // was [59] — idx 59-60 are the S4 terrain fade sliders
-    bool hovCloudPlus[61] = {};
-    bool draggingCloud[61] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[63] = {}; // was [62] — idx 62 is the new city-lights blur LOD slider
+    bool hovCloudPlus[63] = {};
+    bool draggingCloud[63] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.

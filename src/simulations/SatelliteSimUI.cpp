@@ -424,8 +424,17 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
     const UIInput &inp = ui.input();
 
-    // UC4: mouse click/drag/scroll means the player is at the mouse, not the pad.
-    if (inp.lmbPressed || inp.rmbPressed || inp.scrollY != 0.0f || camera.captured)
+    // UC4/UC5: mouse click/drag/scroll means the player is at the mouse, not the pad. lmbPressed
+    // specifically needs the !vCursorActive guard — App.cpp overrides inp.lmbDown/lmbPressed with
+    // the gamepad cursor's own A-button click whenever the virtual cursor is active (see
+    // virtualCursor()'s contract in Simulation.h), so an unqualified lmbPressed check here treated
+    // every gamepad-cursor click as "player switched to mouse," immediately fighting pollGamepad's
+    // own (correct) lastInputWasGamepad=true for that same press. That fight was visible as a
+    // one-two-frame flicker in the Controls window's key-label order (e.g. "WASD / L stick" vs
+    // "L stick / WASD") every time A was pressed with the cursor up. vCursorActive here is exactly
+    // the same value App.cpp consulted to decide whether to override lmb this frame, so it
+    // correctly distinguishes a real mouse click from a relayed gamepad one.
+    if ((inp.lmbPressed && !vCursorActive) || inp.rmbPressed || inp.scrollY != 0.0f || camera.captured)
         lastInputWasGamepad = false;
 
     // UC3: the cinematic intro hides the entire normal HUD — no left/right panels, no
@@ -522,6 +531,17 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // UC4: draw the virtual cursor itself — inp.mouseX/Y IS vCursorX/Y here (App overrode the
     // real mouse position before this frame's ui.beginFrame()), so no separate position plumbing
     // is needed. Drawn last so it's above every other panel.
+    //
+    // pointerCaptureMode = PASSTHROUGH is load-bearing, not decorative: a floating element with
+    // no explicit pointerCaptureMode defaults to CLAY_POINTER_CAPTURE_MODE_CAPTURE, which stops
+    // Clay_SetPointerState's root DFS dead as soon as it finds the pointer inside THAT element —
+    // and the pointer is *always* inside this 10x10 dot, by construction, since it's drawn
+    // exactly at the pointer's own position. Every root below it (every panel, every button)
+    // never even gets hit-tested. This is why real hover/click looked totally dead while
+    // stationary (the dot's own stale hitbox from last frame permanently overlapped the current
+    // test point) but worked in brief "blips" while moving (the one-frame-stale dot briefly
+    // lagged behind the live cursor, leaving a gap for the real element underneath to get
+    // tested) — not a coordinate or deadzone bug at all. PASSTHROUGH makes the dot purely visual.
     if (vCursorActive)
     {
         Clay_Color dotCol = vCursorClick ? Pal::btnAccent : Clay_Color{255, 255, 255, 230};
@@ -530,6 +550,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                                         .cornerRadius = CLAY_CORNER_RADIUS(5),
                                         .floating = {.offset = {inp.mouseX - 5.0f, inp.mouseY - 5.0f},
                                                      .zIndex = 40,
+                                                     .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
                                                      .attachTo = CLAY_ATTACH_TO_ROOT}}) {}
     }
 }
@@ -2391,11 +2412,13 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
 {
     const float kSliderAbsX = settingsChrome.x + kSliderFixedLeft;
     const float kSliderW = settingsSliderWidth(settingsChrome.w);
-    // Was [33] — already undersized relative to the live idx range before this fix (a latent
-    // OOB stack write nobody had hit yet, found while adding C12's sliders, idx 38-40; see
-    // feedback_cloud_slider_arrays memory). Must stay >= (highest idx in use) + 1, same as
-    // hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[46][16];
+    // Was [46] — undersized again relative to the live idx range (idx 61/62, "Opacity scale" and
+    // "City light blur LOD"), same class of bug as the [33]->[46] fix documented in
+    // feedback_cloud_slider_arrays memory: an OOB static-array write that doesn't crash, it just
+    // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
+    // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
+    // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
+    static char cloudBufs[63][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -2530,6 +2553,19 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Fog density", &fogDensity, 0.0f, 10.0f, 0.1f, "%.1f", 56},
         {"Fog coverage", &fogCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 57},
         {"Fog sun gain", &fogSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 58},
+        // `density` alone can't push a saturated cloud column past full opacity (per-sample
+        // density is clamped to [0,1] before extinction is derived from it). This boosts
+        // extinction only once a ray has already accumulated real depth (see cloudMarchCS's
+        // coreBoost comment) — thin edges/wisps are unaffected, so pushing this high solidifies
+        // genuinely thick decks (city lights at night, the sun disc, should fully disappear
+        // under one) without flattening cloud silhouettes into hard-edged blobs. Wider range than
+        // a flat multiplier would tolerate, precisely because edges no longer pay for it.
+        {"Opacity scale", &cloudOpacityScale, 0.2f, 15.0f, 0.2f, "%.1f", 61},
+        // A correct opacity value still looks wrong if what leaks through a hazy/thin cloud is a
+        // pixel-sharp copy of the raw city-lights texture — real light diffuses through cloud
+        // droplets. Blends earthNightTex/cityNightDetailTex toward this mip LOD as local cloud
+        // opacity rises (0 = no blur, higher = softer glow). See sat_sky.frag's terrain branch.
+        {"City light blur LOD", &cityLightBlurLod, 0.0f, 20.0f, 0.5f, "%.1f", 62},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -2861,6 +2897,7 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         {keybindings[KB_REVERSE].action, KB_REVERSE},
         {keybindings[KB_TOGGLE_UI].action, KB_TOGGLE_UI},
         {keybindings[KB_SCREENSHOT].action, KB_SCREENSHOT},
+        {keybindings[KB_TOGGLE_CURSOR].action, KB_TOGGLE_CURSOR},
     };
     struct AnalogRow
     {
@@ -3508,6 +3545,8 @@ void SatelliteSim::loadSettings()
         fogDensity = c.value("fog_density", fogDensity);
         fogCoverage = c.value("fog_coverage", fogCoverage);
         fogSunGain = c.value("fog_sun_gain", fogSunGain);
+        cloudOpacityScale = c.value("cloud_opacity_scale", cloudOpacityScale);
+        cityLightBlurLod = c.value("city_light_blur_lod", cityLightBlurLod);
     }
 
     // UC1: a named preset (anything but Custom) is the authority on debugDisableMask/renderScale/
@@ -3645,7 +3684,9 @@ void SatelliteSim::saveSettings()
         {"fog_top_alt_m", fogTopAltM},
         {"fog_density", fogDensity},
         {"fog_coverage", fogCoverage},
-        {"fog_sun_gain", fogSunGain}};
+        {"fog_sun_gain", fogSunGain},
+        {"cloud_opacity_scale", cloudOpacityScale},
+        {"city_light_blur_lod", cityLightBlurLod}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

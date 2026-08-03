@@ -268,7 +268,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     //              it's a mouse-drag-flavored feature (see dispatchKeyAction).
     keybindings = {
         {"Toggle UI", GLFW_KEY_TAB, GLFW_GAMEPAD_BUTTON_BACK, false, false},                // KB_TOGGLE_UI
-        {"Pause/Resume", GLFW_KEY_SPACE, GLFW_GAMEPAD_BUTTON_START, false, false},          // KB_PAUSE
+        {"Pause/Resume", GLFW_KEY_SPACE, GLFW_GAMEPAD_BUTTON_B, false, false},              // KB_PAUSE — moved off Start (session follow-up) to free it for KB_TOGGLE_CURSOR below
         {"Slow Down", GLFW_KEY_COMMA, GLFW_GAMEPAD_BUTTON_DPAD_LEFT, false, false},         // KB_SLOWER
         {"Speed Up", GLFW_KEY_PERIOD, GLFW_GAMEPAD_BUTTON_DPAD_RIGHT, false, false},        // KB_FASTER
         {"Reverse Time", GLFW_KEY_R, GLFW_GAMEPAD_BUTTON_DPAD_UP, false, false},            // KB_REVERSE
@@ -283,8 +283,9 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_Y, false, false},                    // KB_ZOOM_RESET (event)
         {"Select Satellite", GLFW_KEY_F, GLFW_GAMEPAD_BUTTON_A, false, false},              // KB_SELECT_SAT (event) — center-of-screen pick
         {"Screenshot", GLFW_KEY_F12, -1, false, false},                                     // KB_SCREENSHOT (event) — no standard gamepad "capture" button to default to
+        {"Toggle Cursor", GLFW_KEY_C, GLFW_GAMEPAD_BUTTON_START, false, false},             // KB_TOGGLE_CURSOR (event) — UC5: gamepad virtual-cursor mode; no meaningful effect for KBM (mouse is always a free cursor), kept rebindable/listed for consistency
     };
-    static_assert(KB_COUNT == 16, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 17, "KB enum and keybindings initializer are out of sync");
 
     createBuffers(ctx);
     createCloudNoisePipeline(ctx);
@@ -584,49 +585,108 @@ void SatelliteSim::pollGamepad(float dt)
     // UC3/UC4: a controller has no Space bar, so Start is its one defined skip button — mirrors
     // onKey()'s single-key Space rule (see its comment) rather than the old "any newly-pressed
     // button" behavior, which was just as easy to trigger by accident as a stray keypress/click.
+    // Kept live for the WHOLE intro (both before and after controls unlock below), same as Space.
     if (showIntro)
     {
         if (state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS &&
             prevGpButtons[GLFW_GAMEPAD_BUTTON_START] != GLFW_PRESS)
             finishIntro(true);
-        memcpy(prevGpButtons, state.buttons, sizeof(prevGpButtons));
-        gpState = state;
-        return;
+
+        // UC3 follow-up: movement/look go live once the controls-hint beat is showing, same
+        // handoff point recordCompute's WASD block and buildUI's mouse-look block already use
+        // (introCaptionIndex >= kIntroControlsIndex) — this used to be missing here, so gamepad
+        // movement/look silently stayed dead for the rest of the intro even after the on-screen
+        // text said otherwise (keyboard/mouse already worked via those two call sites; only this
+        // early-return was gamepad-specific). Rebind capture, edge-triggered button actions, and
+        // the virtual cursor stay fully cinematic-locked for the whole intro though — mirroring
+        // onKey()'s Space-only gate, which blocks everything else regardless of caption index.
+        if (introCaptionIndex < kIntroControlsIndex)
+        {
+            memcpy(prevGpButtons, state.buttons, sizeof(prevGpButtons));
+            gpState = state;
+            return;
+        }
     }
 
-    // Rebind capture: if a binding is waiting for a pad button, claim the first newly-pressed
-    // one and stop — mirrors onKey()'s keyboard capture, including consuming this poll so the
-    // same button press can't also fire as a normal action below.
-    for (auto &kb : keybindings)
+    if (!showIntro)
     {
-        if (!kb.listeningPad)
-            continue;
-        for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; ++b)
-        {
-            bool down = state.buttons[b] == GLFW_PRESS;
-            bool wasDown = prevGpButtons[b] == GLFW_PRESS;
-            if (down && !wasDown)
+        // Rebind capture: if a binding is waiting for a pad button, claim the first newly-pressed
+        // one and stop — mirrors onKey()'s keyboard capture, including consuming this poll so the
+        // same button press can't also fire as a normal action below.
+        //
+        // Anti-self-satisfy guard: the settings UI's "Bind Pad" button is itself clicked with a
+        // gamepad button (A, via the virtual cursor's click) — WITHOUT this guard, that exact same
+        // still-held A press looked, one function call later in this same frame, like "a fresh
+        // button press" to the capture loop below, instantly binding A to whatever row was just
+        // clicked before the player ever got a chance to press anything else. (This is how
+        // "Raise Elevation" ended up silently bound to A in a real run — self-captured by the
+        // click that opened its own "Bind Pad" listening state.) Snapshot whichever buttons are
+        // already held the moment a NEW listen session starts (tracked by keybinding index, so
+        // switching which row is listening re-snapshots too); each stays ineligible until seen
+        // released at least once.
+        int listeningIdx = -1;
+        for (size_t i = 0; i < keybindings.size(); ++i)
+            if (keybindings[i].listeningPad)
             {
-                kb.gpButton = b;
-                kb.listeningPad = false;
-                memcpy(prevGpButtons, state.buttons, sizeof(prevGpButtons));
-                gpState = state;
-                return;
+                listeningIdx = (int)i;
+                break; // only one binding can listen at a time (enforced by the settings UI)
+            }
+
+        if (listeningIdx != gpRebindListenIdx)
+        {
+            gpRebindListenIdx = listeningIdx;
+            for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; ++b)
+                gpRebindHeldAtStart[b] = (state.buttons[b] == GLFW_PRESS);
+        }
+
+        if (listeningIdx >= 0)
+        {
+            KeyBinding &kb = keybindings[listeningIdx];
+            for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; ++b)
+            {
+                bool down = state.buttons[b] == GLFW_PRESS;
+                if (gpRebindHeldAtStart[b])
+                {
+                    if (!down)
+                        gpRebindHeldAtStart[b] = false; // released — eligible from next press
+                    continue;
+                }
+                bool wasDown = prevGpButtons[b] == GLFW_PRESS;
+                if (down && !wasDown)
+                {
+                    kb.gpButton = b;
+                    kb.listeningPad = false;
+                    gpRebindListenIdx = -1;
+                    memcpy(prevGpButtons, state.buttons, sizeof(prevGpButtons));
+                    gpState = state;
+                    return;
+                }
             }
         }
-        break; // only one binding can listen at a time (enforced by the settings UI)
-    }
 
-    // Edge-triggered (event) actions.
-    for (size_t i = 0; i < keybindings.size(); ++i)
-    {
-        const KeyBinding &kb = keybindings[i];
-        if (kb.held || kb.gpButton < 0 || kb.gpButton > GLFW_GAMEPAD_BUTTON_LAST)
-            continue;
-        bool down = state.buttons[kb.gpButton] == GLFW_PRESS;
-        bool wasDown = prevGpButtons[kb.gpButton] == GLFW_PRESS;
-        if (down && !wasDown)
-            dispatchKeyAction((int)i);
+        // UC5: whether the virtual cursor will be active this frame, computed ahead of the
+        // edge-triggered loop below purely so KB_SELECT_SAT (also bound to A) can be skipped for
+        // the same press that clicks the cursor — see that skip's comment.
+        bool cursorWillBeActive = vCursorToggled && uiVisible;
+
+        // Edge-triggered (event) actions.
+        for (size_t i = 0; i < keybindings.size(); ++i)
+        {
+            const KeyBinding &kb = keybindings[i];
+            if (kb.held || kb.gpButton < 0 || kb.gpButton > GLFW_GAMEPAD_BUTTON_LAST)
+                continue;
+            // UC5: A double-books as both "select nearest satellite to screen center" and the
+            // virtual cursor's click. While the cursor is up, A should only click whatever it's
+            // pointed at (handled by vCursorClick below, consumed as the UI/pick lmb in App.cpp)
+            // — firing the center-screen pick on the same press used to also silently reselect
+            // whatever satellite sat behind the menu, fighting the cursor click.
+            if ((int)i == KB_SELECT_SAT && cursorWillBeActive)
+                continue;
+            bool down = state.buttons[kb.gpButton] == GLFW_PRESS;
+            bool wasDown = prevGpButtons[kb.gpButton] == GLFW_PRESS;
+            if (down && !wasDown)
+                dispatchKeyAction((int)i);
+        }
     }
 
     memcpy(prevGpButtons, state.buttons, sizeof(prevGpButtons));
@@ -662,25 +722,43 @@ void SatelliteSim::pollGamepad(float dt)
     gpElevRaise = triggerPressure(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER]);
     gpElevLower = triggerPressure(state.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER]);
 
-    // UC4: gamepad virtual cursor ("cheap 90%" UI navigation, RELEASE_v1_1_PLAN.md). While a UI
-    // window is open, the right stick drives a screen-space cursor instead of camera look — full
-    // focus-based traversal would be a much larger job for the same practical payoff. A = click.
+    // UC4/UC5: gamepad virtual cursor ("cheap 90%" UI navigation, RELEASE_v1_1_PLAN.md). Gated on
+    // the explicit KB_TOGGLE_CURSOR toggle (default: Menu/Start) rather than "a UI window is
+    // open" — see vCursorToggled's comment in SatelliteSim.h for why. While off, the right stick
+    // always drives camera look, UI visible or not. A = click.
     bool cursorRawX = false, cursorRawY = false; // did the stick actually move the cursor this frame?
-    bool uiWindowOpen = uiVisible && (settingsChrome.open || viewControlsChrome.open);
-    if (uiWindowOpen && ctx_)
+    bool cursorActive = vCursorToggled && uiVisible;
+    if (cursorActive && win)
     {
+        // Cursor bounds/position must match the coordinate space buildUI() feeds Clay (window
+        // logical size, from glfwGetWindowSize — same space glfwGetCursorPos's real mouse uses),
+        // NOT ctx_->swapExtent (framebuffer/physical-pixel size). The two differ under Windows
+        // display scaling (125%/150%/etc.), which used to put the drawn cursor dot and Clay's
+        // actual hit-tested position at different points on screen — the root cause of hover/
+        // click landing on the wrong element ("finicky" button selection).
+        int ww = 0, wh = 0;
+        glfwGetWindowSize(win, &ww, &wh);
         if (vCursorX < 0.0f) // "not yet positioned" sentinel — first activation centers on screen
         {
-            vCursorX = (float)ctx_->swapExtent.width * 0.5f;
-            vCursorY = (float)ctx_->swapExtent.height * 0.5f;
+            vCursorX = (float)ww * 0.5f;
+            vCursorY = (float)wh * 0.5f;
         }
+        // Wider deadzone than the look-stick's 0.15 (used above for camera look/gpLookYawDeg):
+        // a worn/imperfectly-centered stick resting a few % past 0.15 is imperceptible for
+        // camera look (which just drifts a hair, self-correcting), but for a rate-based pointer
+        // aimed at a small button it reads as the cursor never actually stopping — it creeps out
+        // of the button's hit-box a moment after arriving, which looks exactly like "hover blips
+        // on contact but never sticks, and doesn't register at all when the player thinks they've
+        // let go." 0.30 costs some fine-aim range at the low end but removes that failure mode for
+        // any stick whose true rest position falls short of it.
         constexpr float kCursorSpeedPxPerSec = 1000.0f;
-        float rawX = deadzone(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_X], 0.15f);
-        float rawY = deadzone(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y], 0.15f);
+        constexpr float kCursorDeadzone = 0.30f;
+        float rawX = deadzone(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_X], kCursorDeadzone);
+        float rawY = deadzone(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y], kCursorDeadzone);
         cursorRawX = rawX != 0.0f;
         cursorRawY = rawY != 0.0f;
-        vCursorX = glm::clamp(vCursorX + rawX * kCursorSpeedPxPerSec * dt, 0.0f, (float)ctx_->swapExtent.width);
-        vCursorY = glm::clamp(vCursorY + rawY * kCursorSpeedPxPerSec * dt, 0.0f, (float)ctx_->swapExtent.height);
+        vCursorX = glm::clamp(vCursorX + rawX * kCursorSpeedPxPerSec * dt, 0.0f, (float)ww);
+        vCursorY = glm::clamp(vCursorY + rawY * kCursorSpeedPxPerSec * dt, 0.0f, (float)wh);
         vCursorActive = true;
         vCursorClick = state.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS;
         // Suppress the normal look-stick response so the camera doesn't also spin while the
@@ -1165,6 +1243,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.fogSunGain = fogSunGain;
         cp.terrainDistFadeStartM = terrainDistFadeStartM;
         cp.terrainDistFadeEndM = terrainDistFadeEndM;
+        cp.cloudOpacityScale = cloudOpacityScale;
+        cp.cityLightBlurLod = cityLightBlurLod;
         cp.stormStrength = stormStrength;
         cp.auroraGain = auroraGain;
         cp.auroraCloudGain = auroraCloudGain;
@@ -1178,8 +1258,16 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.mwBasisRow2 = glm::vec4(mwRow2, 0.0f);
         cp.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
                                     glm::two_pi<double>());
-        // Layer 0: low cloud / stratus shell
-        cp.layers[0] = {cloudBaseAltM, 1.0f, 0.80f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f};
+        // Layer 0: low cloud / stratus shell. alphaMax was a flat, hardcoded 0.80 ceiling from the
+        // layer system's original session-14 introduction — completely independent of
+        // cloudOpacityScale (that only reaches the VOLUMETRIC march in cloud_march.comp), and this
+        // flat layer is what's actually active from ~800km+ observer altitude (kCloud3DFadeStart
+        // in both shaders) — i.e. most orbital viewing in this sim. A flat 20% floor with no depth
+        // falloff at all is what was still letting city lights through "2D clouds" even after the
+        // volumetric fix. Reuses the same already-tuned cloudOpacityScale rather than adding a
+        // second opacity slider users would have to discover; layer 1 (cirrus) deliberately does
+        // NOT scale by it — cirrus is meant to stay thin/translucent, not become a solid deck.
+        cp.layers[0] = {cloudBaseAltM, 1.0f, glm::min(1.0f, 0.80f * cloudOpacityScale), 0.0f, 1.0f, 1.0f, 1.0f, 0.0f};
         // Layer 1: high cirrus shell
         cp.layers[1] = {cloudTopAltM, 2.0f, 0.15f, 2.0f, 0.5f, 0.4f, 1.0f, 0.0f};
         // Layers 2-3: unused
@@ -2939,6 +3027,11 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
     case KB_SCREENSHOT:
         requestScreenshot();
         break;
+    case KB_TOGGLE_CURSOR:
+        // UC5: effective activation also requires uiVisible && !showIntro (see pollGamepad's
+        // cursorActive computation) — this just flips the player-facing on/off state.
+        vCursorToggled = !vCursorToggled;
+        break;
     default:
         break; // KB_MOVE_BOOST/FINE, KB_RAISE_ELEV/LOWER_ELEV, KB_ZOOM_IN/OUT are held keys — polled directly.
     }
@@ -2951,6 +3044,28 @@ void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
         return;
 
     lastInputWasGamepad = false; // UC4: any keypress means the player is at the keyboard
+
+    // F11: toggle fullscreen. Checked before the showIntro early-return below (and unlike every
+    // other key, not folded into the keybindings dispatch table) — a player stuck in a badly
+    // scaled/positioned window needs to be able to fix that without first having to sit through
+    // or skip the cinematic to reach it.
+    if (key == GLFW_KEY_F11)
+    {
+        bool isFs = glfwGetWindowMonitor(win) != nullptr;
+        if (!isFs)
+        {
+            glfwGetWindowPos(win, &windowedX, &windowedY);
+            glfwGetWindowSize(win, &windowedW, &windowedH);
+            GLFWmonitor *mon = glfwGetPrimaryMonitor();
+            const GLFWvidmode *mode = glfwGetVideoMode(mon);
+            glfwSetWindowMonitor(win, mon, 0, 0, mode->width, mode->height, mode->refreshRate);
+        }
+        else
+        {
+            glfwSetWindowMonitor(win, nullptr, windowedX, windowedY, windowedW, windowedH, 0);
+        }
+        return;
+    }
 
     if (showIntro)
     {
@@ -2990,24 +3105,6 @@ void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
     for (size_t i = 0; i < keybindings.size(); ++i)
         if (key == keybindings[i].key)
             dispatchKeyAction((int)i);
-
-    // F11: toggle fullscreen
-    if (key == GLFW_KEY_F11)
-    {
-        bool isFs = glfwGetWindowMonitor(win) != nullptr;
-        if (!isFs)
-        {
-            glfwGetWindowPos(win, &windowedX, &windowedY);
-            glfwGetWindowSize(win, &windowedW, &windowedH);
-            GLFWmonitor *mon = glfwGetPrimaryMonitor();
-            const GLFWvidmode *mode = glfwGetVideoMode(mon);
-            glfwSetWindowMonitor(win, mon, 0, 0, mode->width, mode->height, mode->refreshRate);
-        }
-        else
-        {
-            glfwSetWindowMonitor(win, nullptr, windowedX, windowedY, windowedW, windowedH, 0);
-        }
-    }
 }
 
 // ─── onCursorPos ──────────────────────────────────────────────────────────────
@@ -5998,14 +6095,19 @@ void SatelliteSim::initStars(VulkanContext &ctx)
                       glm::clamp(1.00f - 0.15f * bv, 0.50f, 1.0f),  // G
                       glm::clamp(1.00f - 0.90f * bv, 0.10f, 1.0f)}; // B
 
-        // Point sprite size: magnitude-driven, floored near 1 px (S2a, RELEASE_v1_1_PLAN.md).
+        // Point sprite size: magnitude-driven, floored near 2 px (S2a, RELEASE_v1_1_PLAN.md;
+        // floor raised 1px->2px in a later pass to fight movement flicker — a 1px sprite covers
+        // so few pixels that the rasterizer's covered-pixel SET changes in discrete jumps as the
+        // sprite's sub-pixel center drifts frame-to-frame under camera motion, with no MSAA
+        // anywhere in this project to smooth that transition; 2px gives more pixels to spread
+        // that quantization error across).
         // The old formula `1.5 + min(rawInt, 4.0)` let its additive 1.5 floor dominate for every
         // faint star (rawInt is tiny once vmag > ~2), so a mag 6 and a mag 3 star both landed at
         // ~6 px post-scale — invisible at 287 stars, but with the catalog expanded to 8404 (down
         // to mag 6.5) that turned the sky to porridge. sqrt(rawInt) keeps faint stars close to the
         // floor (fine dust) while still giving Sirius roughly its old ~21 px size.
         float starScale = 4.0f; // tweak this to make stars bigger/smaller overall
-        float angSize = 0.25f + 2.5f * sqrtf(rawInt);
+        float angSize = 0.5f + 2.5f * sqrtf(rawInt);
         angSize *= starScale;
 
         starRecords.push_back({eciDir, rawInt, col, angSize});
