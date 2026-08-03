@@ -1335,7 +1335,30 @@ void cloudMarchCS(
     // 1. A_cloud must depend on cloudTOut alone; cloudAttn still legitimately dims the cloud's OWN
     // scattered light in B_cloud below, which has no other atmospheric attenuation applied to it.
     A_cloud = cloudTOut;
-    B_cloud = cloudAttn * cloudScatter * cloudAltFade;
+
+    // Aerial perspective / airlight. cloudAttn above only extinguishes the cloud's OWN scattered
+    // light (cloudScatter) — it has no compensating term for the sunlight the SAME stretch of
+    // atmosphere scatters INTO the camera-to-cloud path, which is what makes real distant clouds
+    // fade pale/blue-hazy rather than just dim. Missing that made a distant, fully-opaque cloud
+    // (cloudAttn well below 1) render as near-black and skewed red/orange — BETA_R/BETA_M
+    // extinguish blue harder than red over a long low-altitude path — instead of fading into the
+    // sky. Only visible once cloudDistFadeEndM/maxRenderDistM are pushed far enough (Ultra preset,
+    // or a manually-raised render distance) for a ray to stay substantially volumetric at a
+    // distance where this extinction is severe; short/default ranges crossfade to the flat 2D
+    // layer (evalCloudLayer in sat_sky.frag, which already has its own version of this fix) first.
+    //
+    // skyAmbientBase (computed once above, a 6-step analytic single-scattering zenith Rayleigh/Mie
+    // integral anchored at the cloud, already day/night- and shadow-gated) stands in for the
+    // in-scattered light along this path — a reasonable proxy since it's the same general slab of
+    // atmosphere, not a second march. Weighted by (1-cloudAttn) (the fraction of light actually
+    // extinguished — negligible for near clouds, so this only engages at real distance) and by
+    // (1-cloudTOut.r) (the SAME continuous per-ray opacity that already softens the cloud's visual
+    // edge, so the fix fades in/out exactly where the cloud material itself does — no separate
+    // threshold, no seam, unlike an earlier attempt gated on the ≥90%-opacity tCloudOcclude flag,
+    // which produced a hard-edged brightening confined to fully opaque cores).
+    vec3 airlight = skyAmbientBase * (1.0 - cloudAttn) * (1.0 - cloudTOut.r);
+
+    B_cloud = cloudAttn * cloudScatter * cloudAltFade + airlight * cloudAltFade;
 }
 
 // ── Per-pixel cloud shadow on terrain/ocean ───────────────────────────────────────────────────
