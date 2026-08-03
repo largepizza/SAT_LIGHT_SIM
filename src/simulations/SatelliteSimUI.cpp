@@ -3231,9 +3231,12 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         break;
     case GraphicsPreset::Medium:
         // Nothing disabled outright — volumetric clouds and aurora both run, at reduced step
-        // budgets and a tighter terrain/cloud reach than High.
+        // budgets and a tighter terrain/cloud reach than High. Ocean sea/detail octaves and
+        // reflection samples are maxed out here (matching High/Ultra) rather than scaled down
+        // with everything else — measured cost of those three sliders is negligible, so there is
+        // no real budget to save by tightening them at this tier.
         v = {0u,
-             0.85f, 1.0f, 128.0f, 4.0f, 6.0f, 96.0f, 2.0f, 2.0f, 3.0f, 3.0f, 200000.0f, 600000.0f, 80000.0f, 200000.0f};
+             0.85f, 1.0f, 128.0f, 4.0f, 6.0f, 96.0f, 2.0f, 3.0f, 5.0f, 6.0f, 200000.0f, 600000.0f, 80000.0f, 200000.0f};
         break;
     case GraphicsPreset::High:
         // The compiled-in class member defaults, verbatim — "today's tuned values."
