@@ -3236,7 +3236,7 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // with everything else — measured cost of those three sliders is negligible, so there is
         // no real budget to save by tightening them at this tier.
         v = {0u,
-             0.85f, 1.0f, 128.0f, 4.0f, 6.0f, 96.0f, 2.0f, 3.0f, 5.0f, 6.0f, 200000.0f, 600000.0f, 80000.0f, 200000.0f};
+             0.85f, 1.0f, 128.0f, 10.0f, 6.0f, 96.0f, 2.0f, 3.0f, 5.0f, 6.0f, 200000.0f, 600000.0f, 80000.0f, 200000.0f};
         break;
     case GraphicsPreset::High:
         // The compiled-in class member defaults, verbatim — "today's tuned values."
