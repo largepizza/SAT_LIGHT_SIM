@@ -849,6 +849,7 @@ void cloudMarchCS(
     vec2 shellT = raySphere(obsPos, dir, cloudTop);
 
     float tEnter, tExit;
+    bool  obsInsideShell = (obsEffH >= cloudBaseAlt && obsEffH <= cloudTopAlt);
 
     if (obsEffH < cloudBaseAlt) {
         tEnter = shellB.y;
@@ -876,6 +877,14 @@ void cloudMarchCS(
     // away the clouds on this ray are — makes the fade cheap where it matters, because a fully
     // faded ray returns here before the coverage lookup, the step-count setup or the march.
     // It also gives a horizon transition from the ground, which an altitude-only fade cannot.
+    //
+    // NOTE: tEnter is pinned to ~0 when the observer is inside the shell, so this fade never
+    // engages there (see [[project_cloud_inside_shell_rejection_bug]] for the full analysis). A
+    // fix keying this off tExit instead when inside the shell was tried and REVERTED — it produced
+    // a large gap/hole through the middle of the cloud layer and broke rendering outright. Root
+    // cause not yet understood; likely tExit's own behaviour is far less well-behaved near the
+    // shell's tangent/grazing angles than assumed. Do not retry the same approach without figuring
+    // out why first.
     float cloudDistFade = 1.0 - smoothstep(cloud.cloudDistFadeStartM, cloud.cloudDistFadeEndM, tEnter);
     cloudAltFade = min(cloudAltFade, cloudDistFade);
     if (cloudAltFade < 0.001) return;
@@ -884,7 +893,20 @@ void cloudMarchCS(
     if (tEnter >= tExit || tExit <= 0.0) return;
 
     {
-        vec3  ePt   = obsPos + tEnter * dir;
+        // The rejection point normally IS the shell entry (tEnter) — a real, direction-dependent
+        // position when the observer is below or above the shell. When the observer is INSIDE the
+        // shell, tEnter is pinned to ~0 (the march starts immediately, right where the camera is),
+        // so `obsPos + tEnter*dir` collapses to the observer's OWN geographic column regardless of
+        // `dir` — the coarse mip-4 sample then just re-reads whatever's directly overhead/underfoot
+        // and rejects the ENTIRE march for every ray on the screen whenever that one column happens
+        // to be clear, even while genuinely looking at cloud elsewhere. Reported as clouds cutting
+        // out and deforming near the horizon starting around the low shell altitude, and vanishing
+        // outright (every cloud on screen) while flying inside the shell away from directly-overhead
+        // cloud. Use a forward point along THIS ray instead when inside the shell — clamped so a
+        // near-horizontal ray doesn't sample absurdly far away, and a near-vertical ray (small
+        // tExit already) isn't pushed past its own real shell crossing.
+        float covT  = obsInsideShell ? clamp(tExit, 2000.0, 40000.0) : tEnter;
+        vec3  ePt   = obsPos + covT * dir;
         vec3  eECEF = ePt.x * enuX + ePt.y * enuY + ePt.z * enuZ;
         float eLen  = length(eECEF);
         float eLon  = atan(eECEF.y, eECEF.x);
@@ -893,12 +915,13 @@ void cloudMarchCS(
                                  + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
                            (0.5*PI - eLat) / PI);
         // DELIBERATELY coarser than cloud.coverageMipLod, and deliberately not tunable.
-        // This is a whole-column rejection test taken from a SINGLE point (the shell entry),
-        // used to skip the march entirely. A blurry read is what makes that single sample
-        // representative of the column's neighbourhood. Sampling it sharply would let a ray
-        // reject because its entry point happened to land in a gap between two cloud cells even
-        // though it passes through plenty of cloud further along — holes and popping, not detail.
-        // A rejection test wants to be conservative; only the per-sample lookups want to be sharp.
+        // This is a whole-column rejection test taken from a SINGLE point (the shell entry, or the
+        // forward point above when inside the shell), used to skip the march entirely. A blurry
+        // read is what makes that single sample representative of the column's neighbourhood.
+        // Sampling it sharply would let a ray reject because its entry point happened to land in a
+        // gap between two cloud cells even though it passes through plenty of cloud further along —
+        // holes and popping, not detail. A rejection test wants to be conservative; only the
+        // per-sample lookups want to be sharp.
         const float kCoverageRejectMipLod = 4.0;
         float cMap  = textureLod(earthCloudsTex, eUV, kCoverageRejectMipLod).r;
         if (cloud.coverage * cMap < 0.02) return;
