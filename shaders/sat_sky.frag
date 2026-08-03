@@ -1047,8 +1047,21 @@ void evalCloudLayer(
     // the horizon haze the way the volumetric clouds do via their additive cloudA/cloudB
     // composite. Blending toward `color` by (1-attn) — the fraction of light scattered INTO the
     // path between the cloud and the camera — fixes that.
+    //
+    // BUT `color` here is the FULL accumulated ray color, not just sky inscatter — over a terrain
+    // hit it already has the ground's own lit surface (including night-lights, `surfColor *
+    // surfAttn`, added earlier in main()) folded in. Blending toward it by a flat `(1-attn)`
+    // therefore leaked ground light through this layer via a path that has nothing to do with
+    // `alpha`/`alphaMax` at all — reported as "opacity scale has zero effect once alpha already
+    // saturates," and worst from orbital altitude specifically because `attn` (camera-to-cloud
+    // atmosphere) is naturally lower over that much longer path, so the leaked fraction is larger
+    // exactly where this layer is doing the most work (the 3D->2D crossfade's flat regime).
+    // Gating the leak by `(1-alpha)` fixes it without losing the original horizon-haze intent:
+    // thin/translucent cloud (low alpha, where the outer mix() below already lets background
+    // through anyway) keeps the full haze blend; a sample alpha has already judged opaque gets
+    // none of it, so a solid deck can't reintroduce the ground behind it through this side door.
     vec3 attn      = exp(-(BETA_R * odRcam + BETA_M * 1.1 * odMcam));
-    vec3 cloudSeen = cloudColor * attn + color * (1.0 - attn);
+    vec3 cloudSeen = cloudColor * attn + color * (1.0 - attn) * (1.0 - alpha);
     color = mix(color, cloudSeen, alpha);
 }
 
@@ -1269,6 +1282,13 @@ void main() {
     // against tSurface to suppress the whole composite. Every volumetric layer is now clamped to
     // the shared scene depth inside cloud_march.comp instead, so there is nothing to test here.
     // The channel is free; the next step gives it the per-pixel cloud shadow.
+    //
+    // Local cloud opacity at THIS pixel's view ray (0 = clear sky/no cloud, 1 = fully opaque),
+    // same formula `cloudBlock` derives from cloudB.rgb further below — computed here too so the
+    // night-lights blur-through-cloud blend (city detail block below) can use it before that
+    // later point. A soft edge, not a hard cutoff on purpose: even a thin/wispy cloud should
+    // diffuse city light a little, not switch abruptly from sharp to blurred.
+    float localCloudOpacity = 1.0 - clamp(dot(cloudB.rgb, vec3(1.0 / 3.0)), 0.0, 1.0);
 
     // ── Phase 2: atmosphere integration, truncated at the surface ─────────────
     vec2  tAtmos = raySphere(obsPos, dir, R_ATMOS);
@@ -1646,6 +1666,17 @@ void main() {
         if (uvd_dy.x < -0.5) uvd_dy.x += 1.0;
         vec3 dayColor   = textureGrad(earthDayTex,   uvSurf, uvd_dx, uvd_dy).rgb;
         vec3 nightColor = textureGrad(earthNightTex, uvSurf, uvd_dx, uvd_dy).rgb;
+        // Blur city lights toward a coarser mip under cloud (see localCloudOpacity above and
+        // cloud.cityLightBlurLod) — real light passing through cloud droplets is diffused, not a
+        // clean pass-through of whatever's behind it, so a sharp copy of earthNightTex's city
+        // silhouette bleeding through a hazy/thin cloud reads as an artifact even when the
+        // OPACITY itself is physically reasonable. Skipped below the horizon (dayFrac path has no
+        // night lights anyway) is unnecessary — nightColor is cheap and already computed for the
+        // dayFrac mix regardless of whether it's actually night at this point.
+        if (cloud.cityLightBlurLod > 0.01 && localCloudOpacity > 0.001) {
+            vec3 nightColorBlur = textureLod(earthNightTex, uvSurf, cloud.cityLightBlurLod).rgb;
+            nightColor = mix(nightColor, nightColorBlur, localCloudOpacity);
+        }
 
         // ── City detail texture blend ───────────────────────────────────────────
         // Fades in a tileable high-frequency detail texture over bright earthNightTex pixels
@@ -1749,6 +1780,13 @@ void main() {
                     vec2 duv_dy = dFdy(detailUV);
                     vec3 dayDetail   = textureGrad(cityDayDetailTex,   detailUV, duv_dx, duv_dy).rgb;
                     vec3 nightDetail = textureGrad(cityNightDetailTex, detailUV, duv_dx, duv_dy).rgb;
+                    // Same blur-through-cloud treatment as the base nightColor sample above —
+                    // this is the HIGHER-frequency of the two textures, so left sharp it would be
+                    // the more visible half of the "sharp texture cutting through cloud" artifact.
+                    if (cloud.cityLightBlurLod > 0.01 && localCloudOpacity > 0.001) {
+                        vec3 nightDetailBlur = textureLod(cityNightDetailTex, detailUV, cloud.cityLightBlurLod).rgb;
+                        nightDetail = mix(nightDetail, nightDetailBlur, localCloudOpacity);
+                    }
                     dayColor   = mix(dayColor,   dayDetail,   cityMask);
                     nightColor = mix(nightColor, nightDetail, cityMask);
                 }

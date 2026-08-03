@@ -125,6 +125,20 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // detail — chosen so the old always-250km ground-level reach is entirely unaffected.
     float terrainDistFadeStartM;
     float terrainDistFadeEndM;
-    float pad14; // reserved
-    float pad15; // reserved
+    // Cloud opacity tuning knob (repurposed from pad14): multiplies the volumetric cloud march's
+    // per-step extinction coefficient directly. `density` alone cannot push a cloud past full
+    // opacity because the per-sample density `d` is clamped to [0,1] before extinction is derived
+    // from it (cloudDensity() in cloud_march.comp) — once a column is saturated at d=1, raising
+    // `density` further does nothing, so a persistently "leaky" thick cloud (city lights or the
+    // sun disc visibly showing through what should read as solid overcast) had no slider that
+    // could ever fix it. This scales the extinction-per-metre constant itself, independent of
+    // cloud shape/coverage. Default 1.0 reproduces the original hardcoded behavior exactly.
+    float cloudOpacityScale;
+    // City-lights blur-through-cloud (repurposed from pad15): sat_sky.frag's terrain branch
+    // blends earthNightTex/cityNightDetailTex toward a blurrier mip as this pixel's local cloud
+    // opacity rises, so light diffused through haze/overcast reads as a soft glow instead of a
+    // sharp copy of the raw city-lights texture cutting through partially-transmissive cloud —
+    // even a fully correct opacity value still looks wrong if what leaks through is pixel-sharp.
+    // This is the mip LOD used at full (opacity=1) blur strength; 0 disables the effect.
+    float cityLightBlurLod;
 } cloud;
