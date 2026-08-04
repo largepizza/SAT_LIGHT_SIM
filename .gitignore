@@ -2,7 +2,6 @@
 build/
 build-linux/
 out/
-ShaderFun-linux/
 dist/
 build-win-release/
 build-linux-release/
@@ -28,6 +27,8 @@ Thumbs.db
 
 # - Debug
 .renderDoc_captures/
+.claude
+.plans
 
 # ── Python tooling (tools/perf_analysis, etc.) ─────────────────────────────────
 .venv/

@@ -134,7 +134,7 @@ void VulkanContext::createInstance()
         throw std::runtime_error("Validation layers requested but not available.");
 
     VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    ai.pApplicationName = "ShaderFun";
+    ai.pApplicationName = "SAT LIGHT SIM";
     ai.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
     ai.apiVersion = VK_API_VERSION_1_2;
 

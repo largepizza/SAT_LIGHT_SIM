@@ -1,5 +1,5 @@
-#ifndef SHADERFUN_TERRAIN_GLSL
-#define SHADERFUN_TERRAIN_GLSL
+#ifndef SATLIGHTSIM_TERRAIN_GLSL
+#define SATLIGHTSIM_TERRAIN_GLSL
 
 // Terrain / DEM sampling and observer-frame helpers, shared by sat_sky.frag (full-res terrain
 // march + shading), scene_depth.comp (half-res depth-only march), and cloud_march.comp.
@@ -96,4 +96,4 @@ vec3 observerPos(float obsEffH) {
     return vec3(0.0, 0.0, R_EARTH + obsEffH + 2.0);
 }
 
-#endif // SHADERFUN_TERRAIN_GLSL
+#endif // SATLIGHTSIM_TERRAIN_GLSL

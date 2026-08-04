@@ -2651,12 +2651,10 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
             snprintf(aboutBuf, sizeof(aboutBuf), "v%s (%s), built %s", APP_VERSION, APP_GIT_COMMIT, APP_BUILD_DATE);
         Clay_String aboutStr{false, (int32_t)strlen(aboutBuf), aboutBuf};
         CLAY_TEXT(aboutStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-        CLAY_TEXT(CLAY_STRING("Not affiliated with or endorsed by any company named in this simulation. "
-                              "Constellation parameters are drawn from public filings and are "
+        CLAY_TEXT(CLAY_STRING("Constellation parameters are drawn from public filings and are "
                               "approximations for illustrative purposes."),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
-        CLAY_TEXT(CLAY_STRING("Portions of this software were written with AI assistance (Claude). "
-                              "All code was reviewed, tested, and integrated by the author."),
+        CLAY_TEXT(CLAY_STRING("This simulator uses AI generated code. There's an irony there."),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
     }
 
@@ -2722,7 +2720,7 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
     {
         CLAY_TEXT(CLAY_STRING("Full moon texture"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("Original astrophotograph by papereater, used with permission"),
+        CLAY_TEXT(CLAY_STRING("papereater"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
     }
 
@@ -2756,7 +2754,7 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
     {
         CLAY_TEXT(CLAY_STRING("Music"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("Original compositions by papereater, used with permission"),
+        CLAY_TEXT(CLAY_STRING("papereater"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
     }
 
@@ -3067,8 +3065,6 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
                 {
                     CLAY_TEXT(CLAY_STRING("SAT LIGHT SIM"),
                               CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(34)}));
-                    CLAY_TEXT(CLAY_STRING("by papereater"),
-                              CLAY_TEXT_CONFIG({.textColor = {200, 200, 200, (float)textA}, .fontSize = fs(13)}));
                 }
                 else if (isControlsBeat)
                 {

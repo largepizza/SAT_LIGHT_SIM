@@ -977,6 +977,7 @@ void evalCloudLayer(
     float shellAltM, float driftMult, float alphaMax, float mipLod,
     float cloudPhase,
     float obsEffH, float volumetricPair,
+    vec3  skyOnlyColor,
     inout vec3 color)
 {
     vec2  tc = raySphere(obsPos, dir, R_EARTH + shellAltM);
@@ -1056,12 +1057,30 @@ void evalCloudLayer(
     // saturates," and worst from orbital altitude specifically because `attn` (camera-to-cloud
     // atmosphere) is naturally lower over that much longer path, so the leaked fraction is larger
     // exactly where this layer is doing the most work (the 3D->2D crossfade's flat regime).
-    // Gating the leak by `(1-alpha)` fixes it without losing the original horizon-haze intent:
-    // thin/translucent cloud (low alpha, where the outer mix() below already lets background
-    // through anyway) keeps the full haze blend; a sample alpha has already judged opaque gets
-    // none of it, so a solid deck can't reintroduce the ground behind it through this side door.
-    vec3 attn      = exp(-(BETA_R * odRcam + BETA_M * 1.1 * odMcam));
-    vec3 cloudSeen = cloudColor * attn + color * (1.0 - attn) * (1.0 - alpha);
+    // Gating the leak by `(1-alpha)` fixed THAT leak, but it over-corrected: `(1-alpha)` also
+    // zeroes out the airlight (atmosphere-scattered sunlight added INTO the camera-to-cloud
+    // segment) for exactly the fully-opaque case, which is the one case that most needs it — a
+    // solid horizon-hugging deck at real distance (this is the common case at the true horizon:
+    // the shell's own curvature-limited entry point is already 100+ km out at ground level) has
+    // `attn` crushed toward zero by BETA_R/BETA_M over that path, so with no airlight term
+    // `cloudColor * attn` alone collapses toward black and, because BETA_R/BETA_M extinguish
+    // blue/green harder than red, does so through an increasingly saturated yellow/red before
+    // going dark — reported as horizon clouds rendering "too yellow, red, and dark" instead of
+    // fading into the same orange sunset glow the sky around them already correctly shows.
+    //
+    // Fix: split `color` into its sky-only part (`skyOnlyColor`, captured in main() right after
+    // the N_VIEW atmosphere loop and before any ground/surface light is added) and whatever
+    // ground contributed on top (`groundLeak = color - skyOnlyColor`). Airlight drawn from the
+    // sky-only part is legitimate regardless of alpha — it represents light scattered in FRONT of
+    // the cloud, not whatever is behind it — so it is weighted only by `(1-attn)` and, to match
+    // the volumetric shell's own airlight (cloud_march.comp's `airlight`, weighted by how opaque
+    // the cloud itself is), by `alpha`: a fully opaque cloud gets the full sky-glow substitute for
+    // its own extinguished light, a clear pixel gets none. `groundLeak` keeps exactly the previous
+    // `(1-alpha)`-gated treatment, so the original leak fix is untouched.
+    vec3 attn       = exp(-(BETA_R * odRcam + BETA_M * 1.1 * odMcam));
+    vec3 groundLeak = color - skyOnlyColor;
+    vec3 airlight   = skyOnlyColor * (1.0 - attn) * alpha;
+    vec3 cloudSeen  = cloudColor * attn + airlight + groundLeak * (1.0 - attn) * (1.0 - alpha);
     color = mix(color, cloudSeen, alpha);
 }
 
@@ -2203,6 +2222,13 @@ void main() {
         color += surfColor * surfAttn;
     }
 
+    // Sky-only snapshot for evalCloudLayer's aerial-perspective term below — everything folded
+    // into `color` up to this point is atmosphere/sky (Rayleigh/Mie inscatter, city/beam glow,
+    // airglow, moon disc/corona) with no ground/terrain/ocean surface light yet, since that was
+    // just added immediately above. See evalCloudLayer's own comment for why this needs to be
+    // kept separate from the ground-inclusive `color`.
+    vec3 skyOnlyColor = color;
+
     // ── Cloud layers (C3/C4 unified: thin-shell 2D overlays) ─────────────────
     // Layers 0/1 double as the volumetric shell's base/top (same shellAltM values cloudMarch
     // reads below), so their flat paste here must crossfade against cloudMarch's own fade using
@@ -2238,6 +2264,7 @@ void main() {
             cloud.layers[li].mipLod,
             cloud.cloudPhase,
             obsEffH, volumetricPair,
+            skyOnlyColor,
             color);
     }
 

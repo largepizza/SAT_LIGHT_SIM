@@ -6,7 +6,7 @@ string(STRIP "${APP_VERSION}" APP_VERSION)           # remove trailing newline
 string(REPLACE "." "_" VERSION_UNDERSCORED "${APP_VERSION}")
 set(EXE_BASENAME "SAT_LIGHT_SIM_V_${VERSION_UNDERSCORED}")  # e.g. SAT_LIGHT_SIM_V_1_0_0
 
-project(ShaderFun VERSION ${APP_VERSION} LANGUAGES CXX)
+project(SatLightSim VERSION ${APP_VERSION} LANGUAGES CXX)
 message(STATUS "Building ${EXE_BASENAME}")
 
 # Git commit + build date for diagnostics/bug reports (NEW-1). "unknown" for
@@ -113,15 +113,15 @@ set(JSON_Install    OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(nlohmann_json)
 
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
-add_executable(ShaderFun ${SOURCES})
-set_target_properties(ShaderFun PROPERTIES OUTPUT_NAME "${EXE_BASENAME}")
-target_include_directories(ShaderFun PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_executable(SatLightSim ${SOURCES})
+set_target_properties(SatLightSim PROPERTIES OUTPUT_NAME "${EXE_BASENAME}")
+target_include_directories(SatLightSim PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 # UC6 (RELEASE_v1_1_PLAN.md): screenshot PNG encoding runs on a std::thread. A no-op on MSVC
 # (thread support is built into the runtime there), but GCC/Clang on Linux/macOS need an explicit
 # pthread link or std::thread silently fails to link.
 find_package(Threads REQUIRED)
-target_link_libraries(ShaderFun PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json Threads::Threads)
+target_link_libraries(SatLightSim PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json Threads::Threads)
 
 # Shader compilation
 find_program(GLSLC glslc HINTS "$ENV{VULKAN_SDK}/bin")
@@ -166,13 +166,13 @@ foreach(SHADER ${SHADERS})
 endforeach()
 
 add_custom_target(CompileShaders ALL DEPENDS ${SPV_FILES})
-add_dependencies(ShaderFun CompileShaders)
+add_dependencies(SatLightSim CompileShaders)
 
 # Copy compiled shaders next to the executable
-add_custom_command(TARGET ShaderFun POST_BUILD
+add_custom_command(TARGET SatLightSim POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${SHADER_OUT_DIR}
-        $<TARGET_FILE_DIR:ShaderFun>/shaders
+        $<TARGET_FILE_DIR:SatLightSim>/shaders
     COMMENT "Copying shaders to output directory"
 )
 
@@ -180,26 +180,26 @@ add_custom_command(TARGET ShaderFun POST_BUILD
 # Both files are tracked in source control; copy_if_different keeps the output
 # in sync without unnecessary writes when nothing has changed.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data")
-    add_custom_command(TARGET ShaderFun POST_BUILD
+    add_custom_command(TARGET SatLightSim POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/data/constellations.schema.json"
-            "$<TARGET_FILE_DIR:ShaderFun>/constellations.schema.json"
+            "$<TARGET_FILE_DIR:SatLightSim>/constellations.schema.json"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/data/constellations.json"
-            "$<TARGET_FILE_DIR:ShaderFun>/constellations.json"
+            "$<TARGET_FILE_DIR:SatLightSim>/constellations.json"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/data/reflector_targets.json"
-            "$<TARGET_FILE_DIR:ShaderFun>/reflector_targets.json"
+            "$<TARGET_FILE_DIR:SatLightSim>/reflector_targets.json"
         COMMENT "Copying data files to output directory"
     )
 endif()
 
 # Copy assets (icons, textures, etc.) next to the executable
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
-    add_custom_command(TARGET ShaderFun POST_BUILD
+    add_custom_command(TARGET SatLightSim POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets"
-            "$<TARGET_FILE_DIR:ShaderFun>/assets"
+            "$<TARGET_FILE_DIR:SatLightSim>/assets"
         COMMENT "Copying assets to output directory"
     )
 endif()
@@ -208,10 +208,10 @@ endif()
 # copy — MIT/zlib library licenses require the license text to travel with the
 # binary, not just live in an in-app tab (see UC2 in RELEASE_v1_1_PLAN.md).
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt")
-    add_custom_command(TARGET ShaderFun POST_BUILD
+    add_custom_command(TARGET SatLightSim POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt"
-            "$<TARGET_FILE_DIR:ShaderFun>/THIRD_PARTY_NOTICES.txt"
+            "$<TARGET_FILE_DIR:SatLightSim>/THIRD_PARTY_NOTICES.txt"
         COMMENT "Copying THIRD_PARTY_NOTICES.txt to output directory"
     )
 endif()

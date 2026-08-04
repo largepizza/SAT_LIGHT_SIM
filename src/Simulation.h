@@ -78,7 +78,7 @@ public:
     virtual void setWindow(GLFWwindow* /*window*/) {}
 
     // Window title shown while this simulation runs
-    virtual const char* name() const { return "ShaderFun"; }
+    virtual const char* name() const { return "SAT LIGHT SIM"; }
 
     // NEW-7 (RELEASE_v1_1_PLAN.md): target frame rate for App-side pacing, in Hz. Vulkan present
     // modes have no native "cap to N fps" concept — FIFO paces to the display's own refresh rate,

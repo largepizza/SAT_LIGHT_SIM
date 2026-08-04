@@ -14,7 +14,8 @@ cmake --build build                           # build + compile shaders + copy S
 cmake --build build --config Release          # release build
 ```
 
-Run: `build/Debug/ShaderFun.exe`
+Run: `build/Debug/SAT_LIGHT_SIM_V_<version>.exe` (e.g. `build/Debug/SAT_LIGHT_SIM_V_1_1_0.exe` — the
+exact name tracks `VERSION`; see `CMakeLists.txt`'s `EXE_BASENAME`).
 
 Shaders: auto-detected glob (`shaders/*.vert|.frag|.comp`), compiled by `glslc`, copied as `shaders/*.spv`. New shader files are picked up automatically on next build.
 
