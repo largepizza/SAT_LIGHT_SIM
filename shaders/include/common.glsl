@@ -1,5 +1,5 @@
-#ifndef SHADERFUN_COMMON_GLSL
-#define SHADERFUN_COMMON_GLSL
+#ifndef SATLIGHTSIM_COMMON_GLSL
+#define SATLIGHTSIM_COMMON_GLSL
 
 // Shared scalar constants and small pure helpers.
 //
@@ -110,4 +110,4 @@ float phaseCloud(float cosA) {
     return mix(fwd, bwd, 0.3);
 }
 
-#endif // SHADERFUN_COMMON_GLSL
+#endif // SATLIGHTSIM_COMMON_GLSL

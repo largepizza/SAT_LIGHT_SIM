@@ -1,25 +1,24 @@
-# Satellite Constellation Visualizer
+# SAT LIGHT SIM
 
-Real-time GPU visualization of Earth's satellite megaconstellations and speculative space infrastructure, rendered from any point on the surface with physically-based photometry, atmospheric scattering, and accurate orbital mechanics.
+A real-time GPU visualization of Earth's satellite megaconstellations, seen from any point on the
+surface — physically-based photometry, atmospheric scattering, volumetric clouds, terrain, ocean,
+aurora, and a real star catalog, all rendered through a Vulkan compute + graphics pipeline.
 
-Built on a Vulkan compute + graphics pipeline. Other simulations (Game of Life, Particles, Scene3D) remain in the codebase but SatelliteSim is the primary focus.
+v1.0 was a satellite simulator. v1.1 is a full atmospheric/terrain renderer that happens to
+contain a satellite simulator.
 
 ---
 
-## What it shows
+## Screenshots
 
-You are standing on Earth's surface looking up at the night sky. Every bright point is a real satellite from a real constellation, reflecting sunlight with a physically modeled BRDF. The intensity, color, and flash pattern depend on the satellite's type, orientation, range, and your position relative to the terminator.
+<!--
+  Drop images here, e.g.:
+  ![Twilight over the terminator](docs/screenshots/twilight.png)
+  ![Aurora oval from orbit](docs/screenshots/aurora.png)
+  ![Reflect Orbital mirrors over a solar farm](docs/screenshots/mirrors.png)
+-->
 
-- **~100k satellites** across 11 constellations (Starlink, OneWeb, Kuiper, Xingwang, ISS, SpaceX ODC, and more)
-- **Multi-surface photometry** — primary + secondary reflective surfaces, Phong specular lobes, mirror-peak flash model (Iridium-class flares), and isotropic diffuse floor
-- **Physically-based sky** — Rayleigh + Mie atmospheric scattering, sun disc + corona, moon disc + phase, star catalog with spectral colors
-- **Satellite sky glow** — top-64 brightest flares per frame contribute Gaussian sky illumination with atmospheric extinction
-- **Daytime suppression** — realistic terminator ramp; flares survive daylight only above a brightness threshold
-- **SSO precession** — sun-synchronous orbits precess at 360°/year via J2 nodal formula
-- **Reflect Orbital mirrors** — speculative 55 m flat mirror constellation with FlatMirror45 or TargetedReflector attitude modes; mirrors physically slew toward ground targets at a configurable rate
-- **Audio** — spatial flare sound events, music playlist, UI sounds via miniaudio
-- **Time controls** — pause, reverse, 8 warp levels from 1× to 1 year/s
-- **Rebindable controls** — all keyboard bindings editable in the Settings panel at runtime
+
 
 ---
 
@@ -31,7 +30,8 @@ You are standing on Earth's surface looking up at the night sky. Every bright po
 | CMake 3.20+ | `winget install Kitware.CMake` |
 | Visual Studio 2022 | C++20 + MSBuild |
 
-GLFW, GLM, Clay (UI), stb (fonts/images), and miniaudio are fetched automatically at configure time.
+GLFW, GLM, Clay (UI), stb (fonts/images), miniaudio, and nlohmann/json are fetched automatically at
+configure time via CMake FetchContent.
 
 ---
 
@@ -42,46 +42,19 @@ cmake -B build -S .
 cmake --build build
 ```
 
-Or open the folder in **VS Code** with CMake Tools — **F5** to build + debug, **F7** to build only.
+Or open the folder in **VS Code** with the CMake Tools extension — **F5** to build + debug, **F7**
+to build only.
 
-Shaders are auto-detected by CMake, compiled by `glslc`, and copied next to the executable. No manual shader step needed.
-
----
-
-## Controls
-
-All keybindings except right-click and WASD are rebindable in the Settings panel.
-
-| Input | Action |
-|-------|--------|
-| Right-click drag | Look around (camera) |
-| WASD | Move observer along Earth's surface |
-| Shift + WASD | Move fast |
-| Ctrl + WASD | Move fine (precise placement) |
-| `,` / `.` | Decrease / increase time warp |
-| `Space` | Pause / resume simulation |
-| `R` | Reverse time direction |
-| `Tab` | Toggle UI visibility |
-| `F11` | Toggle fullscreen |
-| `Esc` | Quit |
+Shaders are auto-detected by CMake, compiled by `glslc`, and copied next to the executable. No
+manual shader step needed. The built executable is named `SAT_LIGHT_SIM_V_<version>` (tracks the
+`VERSION` file), e.g. `build/Debug/SAT_LIGHT_SIM_V_1_1_0.exe`.
 
 ---
+
 
 ## Constellations
 
-| Name | Satellites | Altitude | Inclination | Type |
-|------|-----------|----------|-------------|------|
-| Starlink Gen1 | 4,392 | 550 km | 53° | Walker |
-| Starlink Gen2 | 30,480 | 525 km | 53.2° | Walker |
-| OneWeb | 648 | 1,200 km | 87.9° | Walker |
-| Amazon LEO (Kuiper) | 7,742 | 630 km | 51.9° | Walker |
-| Guowang (GW) | 13,920 | 508 km | 85° | Walker |
-| ISS | 1 | 408 km | 51.6° | Walker |
-| SpaceX AI Sat (ODC) | 20,000 | 575–1,925 km | SSO | Disk, alignTerminator |
-| Reflect Orbital | 1,000 | 500 km | SSO | Disk, alignTerminator |
-
-
-Data sources: planet4589.org/space/con/conlist.html, FCC filings, public orbital data.
+Fully moddable via `constellations.json` next to the executable — see `CONSTELLATION_MODDING.md`.
 
 ---
 
@@ -96,31 +69,37 @@ src/
 ├── UIRenderer.h / .cpp         ← Clay UI → Vulkan pipeline
 ├── AudioSystem.h / .cpp        ← miniaudio wrapper
 └── simulations/
-    ├── SatelliteSim.h / .cpp   ← primary simulation (this project)
-    ├── StarCatalog.h / .cpp    ← star catalog renderer (precursor)
-    ├── GameOfLife.h / .cpp     ← Conway's Game of Life
-    ├── Particles.h / .cpp      ← GPU particle system
-    └── Scene3DDemo.h / .cpp    ← 3D mesh + SDF rendering
+    ├── SatelliteSim.h/.cpp/SatelliteSimUI.cpp  ← primary simulation (this project)
+    ├── StarCatalog.h / .cpp    ← star catalog renderer (precursor, legacy)
+    ├── GameOfLife.h / .cpp     ← Conway's Game of Life (legacy)
+    ├── Particles.h / .cpp      ← GPU particle system (legacy)
+    └── Scene3DDemo.h / .cpp    ← 3D mesh + SDF rendering (legacy)
 shaders/
-    sat_flare.comp              ← photometry compute: CPU positions → GPU visibility records
-    sat_point.vert/frag         ← satellite point sprites (additive blend)
-    sat_sky.vert/frag           ← sky background: atmosphere + sun + moon + glow
-    star_point.vert/frag        ← star catalog points
-    ui.vert/frag                ← Clay UI quads + text + icons
+    sat_orbit.comp               ← GPU orbital mechanics + attitude
+    sat_flare.comp               ← photometry compute: visibility + glow histogram
+    scene_depth.comp             ← shared terrain/ocean depth buffer
+    cloud_march.comp             ← half-res volumetric clouds/cirrus/aurora/airglow
+    beam_cloud_block.comp        ← Reflect Orbital target illumination
+    sat_point.vert/frag          ← satellite point sprites (additive blend)
+    sat_sky.vert/frag            ← sky background: atmosphere + terrain + ocean + sun + moon
+    star_point.vert/frag         ← star catalog + planet points
+    flare_source/blur/composite  ← render-to-texture lens flare pipeline
+    ui.vert/frag                 ← Clay UI quads + text + icons
+    include/                     ← shared GLSL headers (common/terrain/cloud_params/reflect_beam)
+data/
+    constellations.json           ← satellite types + constellation definitions (moddable)
+    reflector_targets.json        ← real solar-farm sites for Reflect Orbital mirrors
 assets/
-    sound/                      ← audio: music tracks, flare SFX, UI sounds
-    icons/ui/                   ← PNG icon sprites packed into GPU atlas
+    textures/                    ← Earth day/night/elevation/clouds, moon, Milky Way
+    sound/                       ← music tracks, flare SFX, UI sounds
+    icons/ui/                    ← PNG icon sprites packed into GPU atlas
 ```
+
+AI Code was used in this project.
+See `CLAUDE.md` for the full architecture writeup (frame loop order, GPU buffer layouts, subsystem
+design notes) and `THIRD_PARTY_NOTICES.txt` for third-party licenses.
 
 ---
 
-## Switching simulations
 
-Edit `src/main.cpp`:
-```cpp
-App app(std::make_unique<SatelliteSim>());
-// App app(std::make_unique<GameOfLife>());
-// App app(std::make_unique<Particles>());
-```
 
-Rebuild. No CMake reconfigure needed.

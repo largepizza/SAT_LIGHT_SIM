@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 
 :: ============================================================================
-::  ShaderFun Release Builder
+::  SAT LIGHT SIM Release Builder
 ::  Reads version from VERSION file, builds release packages, and compresses
 ::  them into distributable archives ready for Git/itch.io upload.
 ::

@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "SatelliteSim Constellation Configuration",
-  "description": "Defines satellite types and constellation shells loaded at runtime by ShaderFun/SatelliteSim.",
+  "description": "Defines satellite types and constellation shells loaded at runtime by SAT LIGHT SIM.",
   "type": "object",
   "required": ["satellite_types", "constellations"],
   "properties": {
