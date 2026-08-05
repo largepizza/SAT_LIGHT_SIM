@@ -2418,7 +2418,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
     // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
     // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[65][16];
+    static char cloudBufs[75][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -2545,7 +2545,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Light steps", &cloudLightSteps, 1.0f, 16.0f, 1.0f, "%.0f", 9},
         {"Cirrus wind (deg)", &cloudCirrusWindDeg, 0.0f, 360.0f, 5.0f, "%.0f", 10},
         {"Cirrus stretch", &cloudCirrusStretch, 1.0f, 10.0f, 0.5f, "%.1f", 11},
-        {"Shadow max dist (m)", &cloudShadowMaxDistM, 1000.0f, 60000.0f, 1000.0f, "%.0f", 16},
+        {"Shadow max dist (m)", &cloudShadowMaxDistM, 1000.0f, 6000000.0f, 1000.0f, "%.0f", 16},
         {"Render dist (m)", &cloudMaxRenderDistM, 20000.0f, 800000.0f, 10000.0f, "%.0f", 17},
         // C11 ground fog layer (fogMarchCS, cloud_march.comp) — real volumetric mist shell with
         // sun/beam godrays. First-pass defaults, expect retuning once seen in-app.
@@ -2574,6 +2574,20 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         // much wavelength-neutral haze dilutes that color back toward white/grey.
         {"Rayleigh gain", &atmosRayleighGain, 0.0f, 3.0f, 0.05f, "%.2f", 63},
         {"Mie/haze gain", &atmosMieGain, 0.0f, 3.0f, 0.05f, "%.2f", 64},
+        // Domain-warp shear. The noise field folds (pinched/banded/"wavy chip" clouds) once
+        // strength * 2 * freq / 480 exceeds ~1 — see cloud_params.glsl. Strength is how far
+        // cloud structure is displaced; frequency is how fast that displacement varies. Want
+        // big movement without pinching? Raise strength AND lower frequency.
+        {"Warp strength", &cloudWarpStrength, 0.0f, 64.0f, 1.0f, "%.0f", 65},
+        {"Warp frequency", &cloudWarpFreq, 0.5f, 12.0f, 0.25f, "%.2f", 66},
+        {"Surface carve", &cloudSurfaceCarve, 0.0f, 1.0f, 0.05f, "%.2f", 67},
+        {"Erosion billow", &cloudErosionBillow, 0.0f, 1.0f, 0.05f, "%.2f", 68},
+        {"Billow height", &cloudErosionBillowH, 0.0f, 1.0f, 0.05f, "%.2f", 69},
+        {"Erosion freq", &cloudErosionFreq, 0.5f, 6.0f, 0.1f, "%.2f", 70},
+        {"Multi-scatter", &cloudMultiScatter, 0.0f, 1.0f, 0.05f, "%.2f", 71},
+        {"Shadow floor", &cloudShadowFloorT, 0.0f, 0.3f, 0.01f, "%.3f", 72},
+        {"Sunset shadow", &cloudGrazeShadow, 0.0f, 1.0f, 0.05f, "%.2f", 73},
+        {"Shadow cone len", &cloudConeLenScale, 0.25f, 4.0f, 0.25f, "%.2f", 74},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -3565,6 +3579,16 @@ void SatelliteSim::loadSettings()
         fogSunGain = c.value("fog_sun_gain", fogSunGain);
         cloudOpacityScale = c.value("cloud_opacity_scale", cloudOpacityScale);
         cityLightBlurLod = c.value("city_light_blur_lod", cityLightBlurLod);
+        cloudWarpStrength = c.value("cloud_warp_strength", cloudWarpStrength);
+        cloudWarpFreq = c.value("cloud_warp_freq", cloudWarpFreq);
+        cloudSurfaceCarve = c.value("cloud_surface_carve", cloudSurfaceCarve);
+        cloudErosionBillow = c.value("cloud_erosion_billow", cloudErosionBillow);
+        cloudErosionBillowH = c.value("cloud_erosion_billow_h", cloudErosionBillowH);
+        cloudErosionFreq = c.value("cloud_erosion_freq", cloudErosionFreq);
+        cloudMultiScatter = c.value("cloud_multi_scatter", cloudMultiScatter);
+        cloudShadowFloorT = c.value("cloud_shadow_floor_t", cloudShadowFloorT);
+        cloudGrazeShadow = c.value("cloud_graze_shadow", cloudGrazeShadow);
+        cloudConeLenScale = c.value("cloud_cone_len_scale", cloudConeLenScale);
         atmosRayleighGain = c.value("atmos_rayleigh_gain", atmosRayleighGain);
         atmosMieGain = c.value("atmos_mie_gain", atmosMieGain);
     }
@@ -3707,6 +3731,16 @@ void SatelliteSim::saveSettings()
         {"fog_sun_gain", fogSunGain},
         {"cloud_opacity_scale", cloudOpacityScale},
         {"city_light_blur_lod", cityLightBlurLod},
+        {"cloud_warp_strength", cloudWarpStrength},
+        {"cloud_warp_freq", cloudWarpFreq},
+        {"cloud_surface_carve", cloudSurfaceCarve},
+        {"cloud_erosion_billow", cloudErosionBillow},
+        {"cloud_erosion_billow_h", cloudErosionBillowH},
+        {"cloud_erosion_freq", cloudErosionFreq},
+        {"cloud_multi_scatter", cloudMultiScatter},
+        {"cloud_shadow_floor_t", cloudShadowFloorT},
+        {"cloud_graze_shadow", cloudGrazeShadow},
+        {"cloud_cone_len_scale", cloudConeLenScale},
         {"atmos_rayleigh_gain", atmosRayleighGain},
         {"atmos_mie_gain", atmosMieGain}};
 

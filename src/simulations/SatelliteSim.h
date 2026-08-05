@@ -917,10 +917,25 @@ struct GpuCloudParams
     // Default 1.0 each reproduces the original hardcoded constants exactly.
     float atmosRayleighGain;
     float atmosMieGain;
-    float pad16;  // std140 rounds the GLSL block to a multiple of 16; keeps this struct in sync
-    float pad17;  // until the next field is needed — see cloud_params.glsl's matching comment.
+    float cloudWarpStrength; // domain-warp amplitude / spatial frequency — their PRODUCT is the
+    float cloudWarpFreq;     // shear. See cloud_params.glsl for the folding threshold.	
+    // Erosion redesign, 416 -> 432. APPENDED rather than reusing pad1/pad2 above, which are
+    // already repurposed as the city-detail world offsets despite their stale names.
+    float cloudSurfaceCarve;    // 0 = heightProfile multiplies the eroded field (original),
+                                // 1 = it is subtracted, displacing the top/bottom SURFACE by the
+                                // erosion noise instead of fading the noise out at it
+    float cloudErosionBillow;   // 0 = original inverted-Worley polarity (removes round blobs,
+                                // leaves a web), 1 = flipped (removes the web, leaves lumps)
+    float cloudErosionBillowH;  // normalised column height over which polarity ramps wispy->billowy
+    float cloudErosionFreq;     // erosion lookup coordinate scale (was a hardcoded 1.5)
+    // Directional-shading contrast, 432 -> 448. See cloud_params.glsl for why all four of these
+    // were flattening the only term that carries lit-side/dark-side variation.
+    float cloudMultiScatter;    // 0 = single scatter (hard shadows), 1 = original 3-octave sum
+    float cloudShadowFloorT;    // hard floor on sun transmittance (was a fixed 0.05)
+    float cloudGrazeShadow;     // sunOptDepth multiplier at zero sun elevation (was a fixed 0.35)
+    float cloudConeLenScale;    // multiplier on the self-shadow cone's length cap
 };
-static_assert(sizeof(GpuCloudParams) == 416, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 448, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -1710,6 +1725,30 @@ private:
     // pick up at grazing angles/low sun elevation (preserves the R:G:B ratio, just deepens or
     // shallows the effect); Mie gain controls how much wavelength-neutral haze dilutes that color
     // back toward white/grey.
+    // Domain-warp shear controls (see GpuCloudParams::cloudWarpStrength and cloud_params.glsl's
+    // folding-threshold note). Were hardcoded kWarpStrength/kWarpFreq in cloud_march.comp.
+    // Frequency defaulted to 6.0 until the warp was measured against the noise domains it feeds:
+    // that put the detail lookup at a shear ratio of 0.8 and the per-column lookup at 4.8, i.e.
+    // badly folded — the reported pinching/banding/"wavy chips". 3.0 halves the shear while
+    // leaving displacement magnitude (the large-scale structure movement) untouched.
+    float cloudWarpStrength = 32.0f;
+    float cloudWarpFreq = 3.0f;
+    // Erosion redesign (see GpuCloudParams and cloud_params.glsl). cloudSurfaceCarve = 0 and
+    // cloudErosionBillow = 0 together reproduce the previous erosion exactly, so the two of them
+    // bisect this change; cloudErosionFreq = 1.5 is the old hardcoded coordinate scale.
+    // 1.0 (fully subtractive) per in-app review — it also happened to mask the density-clamp
+    // plateau documented in cloudDensity(), which is now fixed at its source.
+    float cloudSurfaceCarve = 1.0f;
+    float cloudErosionBillow = 1.0f;
+    float cloudErosionBillowH = 0.35f;
+    float cloudErosionFreq = 1.5f;
+    // Directional-shading contrast. Previous hardcoded equivalents were 1.0 / 0.05 / 0.35 / 1.0;
+    // all four moved toward more contrast, since together they were flattening cloud shading to
+    // near-uniform at sunset. See cloud_params.glsl.
+    float cloudMultiScatter = 0.6f;
+    float cloudShadowFloorT = 0.02f;
+    float cloudGrazeShadow = 0.6f;
+    float cloudConeLenScale = 1.5f;
     float atmosRayleighGain = 1.0f;
     float atmosMieGain = 1.0f;
     // C11 ground fog layer — real per-sample volumetric march in cloud_march.comp's fogMarchCS,
@@ -2113,9 +2152,9 @@ private:
     bool hovPhotoMinus[11] = {};
     bool hovPhotoPlus[11] = {};
     bool draggingPhoto[11] = {};
-    bool hovCloudMinus[65] = {}; // was [63] — idx 63/64 are the new Rayleigh/Mie atmosphere gain sliders
-    bool hovCloudPlus[65] = {};
-    bool draggingCloud[65] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[75] = {}; // was [71] — idx 71-74 are the shading-contrast sliders
+    bool hovCloudPlus[75] = {};
+    bool draggingCloud[75] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.

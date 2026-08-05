@@ -343,6 +343,50 @@ capture pair.**
 
 ---
 
+## Domain-warp shear (2026-08-04) — not a perf item, but found while chasing one
+
+Reported after the T1.2 revert: the warp "does a good job at large scale cloud structure
+movements, but it pinches the noise texture significantly and creates a lot of horizontal
+banding. Clouds look like wavy chips."
+
+**Diagnosis.** A domain warp `x → x·base + A·W(f·x)` stays a well-behaved (non-folding)
+deformation only while `A·f·|∇W| / base < 1`. Past 1 the Jacobian determinant passes through zero
+and the field **folds** — mirrored back on itself and infinitely compressed along one direction at
+the fold line. Measuring the actual terms (`|∇W| ≈ 2` in the bake's cell space — the FBM's 2×
+octave contributes nearly as much *gradient* as the base octave despite only 0.3 amplitude
+weight):
+
+| lookup | base freq | shear ratio, old | verdict |
+|---|---|---|---|
+| detail / presence | `kCloudHorizFreq` = 480 | **0.8** | at the edge; peaks exceed 1 |
+| per-column `colH`/`baseH` | `kCloudColFreq` = 80 | **4.8** | folded several times over |
+
+**Root cause: one *absolute* warp offset added to two lookups whose base frequencies differ by
+6×.** It was tuned as a sensible fraction of the 480 domain, which makes it 6× too strong for the
+80 domain. `colH` sets each column's cloud top and `baseH` its base, so a folded field there is
+precisely "wavy chips" with horizontal banding.
+
+**Two changes:**
+
+- **Per-lookup scaling (structural).** The column lookup now takes `warpUVW * kWarpColScale`,
+  `kWarpColScale = kCloudColFreq / kCloudHorizFreq = 1/6`. This makes the warp a constant
+  *fraction* of whichever domain it is applied to — which is what "advect both fields together"
+  actually means — so the two land at the same shear ratio instead of 6× apart. Applied at all
+  four column sites (view march, sun cone, ground shadow, `beam_cloud_block.comp`).
+
+- **`kWarpStrength`/`kWarpFreq` → `cloud.cloudWarpStrength`/`cloudWarpFreq`** (UBO, repurposed
+  from `pad16`/`pad17`, zero size change; sliders "Warp strength" / "Warp frequency"; persisted).
+  Shear is the **product** of the two, while the large-scale structure movement worth keeping is
+  the **amplitude alone** — so the two knobs are exactly the balance the question was asking for:
+  *raise strength and lower frequency* for big movement without pinching.
+
+  Defaults: strength **32** (unchanged — displacement magnitude preserved) and frequency **6 → 3**,
+  which halves the shear. Both domains now sit at ratio **0.4**, comfortably clear of folding.
+
+`cirrusDomainWarp` reads the same two values, so cirrus shear drops proportionally.
+
+---
+
 ## Tier 4 — architectural
 
 - [ ] **T4.1 — blue-noise jitter on the primary cloud march.** `cirrusMarchCS` and `fogMarchCS`
