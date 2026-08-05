@@ -912,8 +912,15 @@ struct GpuCloudParams
     float cityLightBlurLod;    // repurposed from pad15 — see cloud_params.glsl. Mip LOD blend
                                // target for earthNightTex/cityNightDetailTex under cloud, at full
                                // local cloud opacity. Default 3.0; 0 disables the blur.
+    // Atmospheric scattering strength gains — see cloud_params.glsl for the full rationale.
+    // Scale BETA_R_BASE/BETA_M_BASE (common.glsl) uniformly across every shader that shadows them.
+    // Default 1.0 each reproduces the original hardcoded constants exactly.
+    float atmosRayleighGain;
+    float atmosMieGain;
+    float pad16;  // std140 rounds the GLSL block to a multiple of 16; keeps this struct in sync
+    float pad17;  // until the next field is needed — see cloud_params.glsl's matching comment.
 };
-static_assert(sizeof(GpuCloudParams) == 400, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 416, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -1651,21 +1658,21 @@ private:
     float cloudBaseAltM = 5585.964844f; // layer 0 shell altitude (low cloud / stratus)
     float cloudTopAltM = 15000.0f;      // layer 1 shell altitude (high cirrus)
     float cloudDriftRate = 1.0438595e-05f;
-    float cloudSunGain = 1.471264f;      // near-horizon/sunset sun-gain endpoint — blended toward
+    float cloudSunGain = 3.001422f;      // near-horizon/sunset sun-gain endpoint — blended toward
                                          // cloudSunGainZenith by sun elevation (see cloud_march.comp)
-    float cloudSunGainZenith = 0.45977f; // sun-gain endpoint when the sun is near zenith (midday)
+    float cloudSunGainZenith = 1.001422f; // sun-gain endpoint when the sun is near zenith (midday)
     float cloudAmbientGain = 4.827586f;
-    float cloudTwilightAmbientGain = 10.574713f; // manual gain on sky-lit cloud during twilight (was piggybacking
+    float cloudTwilightAmbientGain = 18.117590f; // manual gain on sky-lit cloud during twilight (was piggybacking
                                                  // on cloudAmbientGain, which also drives city-light
                                                  // upwelling — see kNightSkyAmbientColor in cloud_march.comp)
     float cloudBaseVariance = 0.367816f;         // noise-driven cloud base height undulation, hNorm units
                                                  // (0 = old perfectly flat base) — see cloudMarchCS
     float cloudErosionEdge = 0.965517f;          // cloudDensity() erosion strength at the silhouette edge
-    float sunGainElevBand = 0.121379f;           // ~14.5 deg elevation; was effectively 1.0 (half at 30 deg)
+    float sunGainElevBand = 0.020000f;           // ~1.1 deg elevation band — user-tuned 2026-08-04
     // Brought forward from the original hardcoded 0.15 so the sky term overlaps the tail of
     // direct sunlight instead of starting after it; 0.35 is ~20 deg of sun elevation.
-    float twilightBandHi = 0.013793f;
-    float twilightBandLo = -0.382759f; // unchanged from the original hardcoded value
+    float twilightBandHi = 0.004765f;
+    float twilightBandLo = -0.862340f; // user-tuned 2026-08-04
     // 1.0 rather than 0.0: a compromise starting point. Lower = more small-scale structure and
     // a closer match to the flat layer, at the cost of worse texture-cache behaviour (mip 0 of
     // the 8K map is ~33 MB and is sampled once per in-cloud march step).
@@ -1697,6 +1704,14 @@ private:
     // earthNightTex/cityNightDetailTex blend toward under full local cloud opacity, so light
     // diffused through haze reads as a soft glow instead of a sharp copy of the raw texture.
     float cityLightBlurLod = 3.0f;
+    // Atmospheric scattering strength gains (see GpuCloudParams::atmosRayleighGain/atmosMieGain
+    // and common.glsl's BETA_R_BASE/BETA_M_BASE) — 1.0 reproduces the original hardcoded physical
+    // constants exactly. Rayleigh gain controls how much red/orange the sky and horizon clouds
+    // pick up at grazing angles/low sun elevation (preserves the R:G:B ratio, just deepens or
+    // shallows the effect); Mie gain controls how much wavelength-neutral haze dilutes that color
+    // back toward white/grey.
+    float atmosRayleighGain = 1.0f;
+    float atmosMieGain = 1.0f;
     // C11 ground fog layer — real per-sample volumetric march in cloud_march.comp's fogMarchCS,
     // reusing beamCloudLightBuf for beam godrays and a fixed small self-shadow march for sun
     // godrays. First-pass defaults, expect retuning once seen in-app.
@@ -2098,9 +2113,9 @@ private:
     bool hovPhotoMinus[11] = {};
     bool hovPhotoPlus[11] = {};
     bool draggingPhoto[11] = {};
-    bool hovCloudMinus[63] = {}; // was [62] — idx 62 is the new city-lights blur LOD slider
-    bool hovCloudPlus[63] = {};
-    bool draggingCloud[63] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[65] = {}; // was [63] — idx 63/64 are the new Rayleigh/Mie atmosphere gain sliders
+    bool hovCloudPlus[65] = {};
+    bool draggingCloud[65] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.

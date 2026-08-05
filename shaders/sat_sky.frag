@@ -980,6 +980,12 @@ void evalCloudLayer(
     vec3  skyOnlyColor,
     inout vec3 color)
 {
+    // Runtime-tunable scattering strength — shadows the physical base constants (common.glsl)
+    // with the user-facing "Rayleigh gain"/"Mie/haze gain" sliders. See cloud_params.glsl's
+    // atmosRayleighGain/atmosMieGain comment for what each one does perceptually.
+    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+    float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
+
     vec2  tc = raySphere(obsPos, dir, R_EARTH + shellAltM);
     float t  = (tc.x > 0.001) ? tc.x : tc.y;
     if (t <= 0.001) return;
@@ -1133,6 +1139,13 @@ void evalCloudLayer(
 // of calling these directly. See TERRAIN_PLAN.md session 23 log for the design.
 
 void main() {
+    // Runtime-tunable scattering strength — shadows the physical base constants (common.glsl)
+    // with the user-facing "Rayleigh gain"/"Mie/haze gain" sliders, visible to every use of
+    // BETA_R/BETA_M below (atmosphere loop, terrain ambient, ocean reflection, moon/sun
+    // attenuation). See cloud_params.glsl's atmosRayleighGain/atmosMieGain comment.
+    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+    float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
+
     vec3 dir    = normalize(enuDir);
     vec3 sunDir = normalize(sunDirENU.xyz);
 
