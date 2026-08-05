@@ -65,8 +65,7 @@ layout(set = 0, binding = 5) buffer BeamCloudBlockBuf {
 
 // ── Baked cloud/cirrus domain-warp field sampling — ported verbatim from cloud_march.comp ────
 const float kWarpBakeN   = 16.0;
-const float kWarpFreq       = 6.0;
-const float kWarpStrength   = 32.0;
+// kWarpFreq/kWarpStrength come from CloudParams — see cloud_march.comp's matching note.
 const float kWarpDriftRate  = 0.08;
 const float kWarpEvolveRate = 0.00002;
 
@@ -76,10 +75,13 @@ vec3 cloudWarpOffset(vec3 dirECEF) {
     vec3 windOfs = vec3(pc.cloudPhase * kWarpDriftRate + pc.waveTime * kWarpEvolveRate,
                          pc.waveTime * kWarpEvolveRate * 0.6,
                          pc.cloudPhase * kWarpDriftRate * 0.7 + pc.waveTime * kWarpEvolveRate * 0.8);
-    vec3 uvw = (dirECEF * kWarpFreq + windOfs) / kWarpBakeN;
+    vec3 uvw = (dirECEF * cloud.cloudWarpFreq + windOfs) / kWarpBakeN;
     vec3 n   = cloudWarpNoiseSample(cloudWarpNoiseTex, uvw) * 2.0 - 1.0;
-    return n * kWarpStrength;
+    return n * cloud.cloudWarpStrength;
 }
+
+// Per-column warp down-scale — kept in sync with cloud_march.comp's copy; see there for why.
+const float kWarpColScale = kCloudColFreq / kCloudHorizFreq;
 
 // Ported verbatim from cloud_march.comp's canonical (3-slice, tunable edge/core erosion) version.
 // (kCloudHorizFreq/kCloudColFreq now come from common.glsl.)
@@ -99,12 +101,28 @@ float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, floa
                              : mix(midA, topA, (hc - 0.5) * 2.0);
     if (base <= 0.0) return 0.0;
 
-    float erosion = textureLod(cloudNoiseTex, uvwDetail * 1.5 + vec3(0.37, 0.53, 0.71), 0.0).g;
+    // Erosion redesign — kept in sync with cloud_march.comp's canonical copy; see there for the
+    // full derivation of the polarity flip, the height-ramped billow blend, and why the vertical
+    // profile is subtracted rather than multiplied.
+    float erosionRaw = textureLod(cloudNoiseTex,
+                                  uvwDetail * cloud.cloudErosionFreq + vec3(0.37, 0.53, 0.71),
+                                  0.0).g;
+    float billowAmt = cloud.cloudErosionBillow
+                    * smoothstep(0.0, max(cloud.cloudErosionBillowH, 1e-4), hc);
+    float erosion   = mix(erosionRaw, 1.0 - erosionRaw, billowAmt);
 
     float erosionAmt = mix(cloud.cloudErosionEdge, cloud.cloudErosionCore, base);
-    float eroded  = remap(base, erosionAmt * erosion, 1.0, 0.0, 1.0);
+    float carve      = erosionAmt * erosion;
+    float denom      = max(1.0 - carve, 1e-3);
 
-    return clamp(eroded * heightProfile * density, 0.0, 1.0);
+    float erodedMul = clamp((base - carve) / denom, 0.0, 1.0) * heightProfile;
+    float erodedSub = clamp((base - carve - (1.0 - heightProfile)) / denom, 0.0, 1.0);
+    float eroded    = mix(erodedMul, erodedSub, cloud.cloudSurfaceCarve);
+
+    // Upper clamp removed — kept in sync with cloud_march.comp's canonical copy; see there for
+    // why the [0,1] ceiling caused hard-edged flat-coloured blobs and made `density` a no-op above
+    // its saturation point.
+    return max(eroded * density, 0.0);
 }
 
 void main() {
@@ -157,7 +175,7 @@ void main() {
                 vec3 dirECEFDrift = rotateZ(dirECEF, pc.cloudPhase * cloud.layers[0].driftMult);
                 vec3 warpUVW      = cloudWarpOffset(dirECEFDrift);
 
-                vec2  colSample = cloudColumnNoise(dirECEFDrift * kCloudColFreq + warpUVW); // T2.2
+                vec2  colSample = cloudColumnNoise(dirECEFDrift * kCloudColFreq + warpUVW * kWarpColScale); // T2.2
                 float colH  = remap(colSample.x, 1.0 - localCov, 1.0, 0.0, 1.0);
                 float baseH = (colSample.y - 0.5) * cloud.cloudBaseVariance;
 

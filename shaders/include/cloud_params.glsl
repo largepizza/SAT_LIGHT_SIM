@@ -153,11 +153,77 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // purer, more intensely colored one.
     float atmosRayleighGain;
     float atmosMieGain;
-    // std140 rounds the whole uniform block up to a multiple of 16 bytes; the C++ mirror
-    // (GpuCloudParams, SatelliteSim.h) does not auto-round the same way, so a lone trailing pair
-    // of floats here would silently desync sizeof(GpuCloudParams) from this block's real GPU size
-    // (see the "Struct grew 336->352" comment above for the same pitfall hit before). These two
-    // keep both sides at 416; take one when the next field is needed.
-    float pad16;
-    float pad17;
+    // Domain-warp shear controls (repurposed from pad16/pad17 - zero size change; the block
+    // stays 416). Together these set how much the warp DISTORTS the cloud noise as opposed to
+    // merely translating it.
+    //
+    // The warp maps x -> x*base + A*W(f*x). That stays a well-behaved (non-folding) deformation
+    // only while A*f*|grad W| / base < 1. Past 1 the Jacobian determinant passes through zero and
+    // the field FOLDS - mirrored back on itself and infinitely compressed along one direction at
+    // the fold line. That reads as pinched/squished noise, horizontal banding, and cloud tops
+    // undulating like "wavy chips".
+    //
+    // With |grad W| ~ 2 in the bake's cell space (the FBM's 2x octave contributes nearly as much
+    // gradient as the base octave despite only 0.3 amplitude weight), the ratio for the detail
+    // lookup is cloudWarpStrength * 2 * cloudWarpFreq / kCloudHorizFreq. Defaults 32 / 3.0 give
+    // 0.4 - comfortably clear of folding. It was 32 / 6.0 = 0.8, i.e. right at the edge.
+    //
+    // Raise STRENGTH for bigger cloud-structure displacement, lower FREQUENCY to keep that
+    // displacement smooth. Shear is the PRODUCT, so trading one against the other is how you get
+    // large-scale movement without pinching.
+    float cloudWarpStrength;
+    float cloudWarpFreq;
+    // ── Erosion redesign (416 -> 432; APPENDED, not folded into pad1/pad2, which look free but
+    // are already repurposed as the city-detail world offsets — see GpuCloudParams) ────────────
+    //
+    // cloudSurfaceCarve: how the vertical height profile enters cloudDensity().
+    //   0 = the original MULTIPLICATIVE form, `eroded * heightProfile`.
+    //   1 = fully SUBTRACTIVE, `eroded - (1 - heightProfile)`.
+    // This is the single most important knob of the four. Multiplying by a smooth analytic ramp
+    // scales the erosion noise toward zero exactly at the cloud's top and bottom surfaces, so
+    // those surfaces are defined by the ramp (smooth, per-column, fixed 0.05 width) and the noise
+    // only ever appears as speckle superimposed on the interior. Subtracting instead DISPLACES
+    // the surface by the noise, which is what makes a boundary bumpy. Containment is preserved at
+    // any blend: heightProfile -> 0 drives both forms to zero.
+    //
+    // cloudErosionBillow: polarity of the erosion field, 0 = original, 1 = flipped.
+    // The bake's G channel is an inverted-Worley FBM, which PEAKS at Worley feature points. Used
+    // as the erosion threshold that means density is removed in round blobs centred on those
+    // points, and what survives is the connected Voronoi web between them — a sponge with holes
+    // punched through it. Flipping to (1 - G) removes the web instead and leaves the blobs, i.e.
+    // rounded lumps: cauliflower. The three octave weights sum to exactly 1.0, so (1 - G) is
+    // exactly the non-inverted Worley FBM and the flip is free.
+    //
+    // cloudErosionBillowH: normalised column height over which erosion ramps from web-polarity
+    // (wispy, streaky — correct for cloud BASES) up to full cloudErosionBillow (billowy lumps —
+    // correct for cloud TOPS). This is Schneider/Nubis's height-varying erosion character. 0
+    // disables the ramp and applies cloudErosionBillow everywhere.
+    //
+    // cloudErosionFreq: multiplier on the erosion lookup's coordinate (was a hardcoded 1.5).
+    // Raise for smaller-scale surface detail; it re-tiles the same 192^3 bake, so far above ~4
+    // expect visible repetition.
+    float cloudSurfaceCarve;
+    float cloudErosionBillow;
+    float cloudErosionBillowH;
+    float cloudErosionFreq;
+    // ── Directional-shading contrast (432 -> 448) ────────────────────────────────────────────
+    // A cloud's only source of lit-side/dark-side variation is sunOptDepth from the self-shadow
+    // cone: the view-angle phase function is constant across the whole cloud from any one
+    // viewpoint, and every ambient term is additive and non-directional. So everything that
+    // compresses sunOptDepth's dynamic range flattens the cloud, and four separate things did.
+    //
+    // cloudMultiScatter: 0 = pure single-scatter exp(-OD), 1 = the original 3-octave sum. The
+    //   slow-decaying octaves fill shadows in on purpose; at typical sunset optical depths they
+    //   supplied more than half the remaining light, so most of the "shadow" carried no shape.
+    // cloudShadowFloorT: hard floor on sun transmittance (was a fixed 0.05) — directly sets how
+    //   dark a fully shadowed cloud side may get, so it caps contrast on its own.
+    // cloudGrazeShadow: sunOptDepth multiplier at zero sun elevation (was a fixed
+    //   kGrazeShadowFloor = 0.35, i.e. self-shadowing was cut to a third exactly at sunset).
+    // cloudConeLenScale: multiplier on the cone's shellThick*2 length cap, which bounds the
+    //   maximum optical depth the cone can accumulate and therefore the darkest back-lit shadow
+    //   available at any sun angle.
+    float cloudMultiScatter;
+    float cloudShadowFloorT;
+    float cloudGrazeShadow;
+    float cloudConeLenScale;
 } cloud;

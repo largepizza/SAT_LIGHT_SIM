@@ -1245,6 +1245,16 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.terrainDistFadeEndM = terrainDistFadeEndM;
         cp.cloudOpacityScale = cloudOpacityScale;
         cp.cityLightBlurLod = cityLightBlurLod;
+        cp.cloudWarpStrength = cloudWarpStrength;
+        cp.cloudWarpFreq = cloudWarpFreq;
+        cp.cloudSurfaceCarve = cloudSurfaceCarve;
+        cp.cloudErosionBillow = cloudErosionBillow;
+        cp.cloudErosionBillowH = cloudErosionBillowH;
+        cp.cloudErosionFreq = cloudErosionFreq;
+        cp.cloudMultiScatter = cloudMultiScatter;
+        cp.cloudShadowFloorT = cloudShadowFloorT;
+        cp.cloudGrazeShadow = cloudGrazeShadow;
+        cp.cloudConeLenScale = cloudConeLenScale;
         cp.atmosRayleighGain = atmosRayleighGain;
         cp.atmosMieGain = atmosMieGain;
         cp.stormStrength = stormStrength;

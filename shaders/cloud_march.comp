@@ -179,8 +179,9 @@ layout(std430, set = 0, binding = 14) readonly buffer BeamCloudLightBuf {
 
 // (kCloudHorizFreq / kCloudColFreq come from common.glsl.)
 
-const float kWarpFreq       = 6.0;
-const float kWarpStrength   = 32.0;
+// kWarpFreq/kWarpStrength moved to CloudParams (cloud.cloudWarpFreq/cloudWarpStrength) so the
+// warp's shear can be balanced without a rebuild — see cloud_params.glsl for the folding
+// threshold their product has to stay under.
 const float kWarpDriftRate  = 0.08;
 const float kWarpEvolveRate = 0.00002;
 
@@ -647,10 +648,29 @@ vec3 cloudWarpOffset(vec3 dirECEF) {
     vec3 windOfs = vec3(cloud.cloudPhase * kWarpDriftRate + pc.waveTime * kWarpEvolveRate,
                          pc.waveTime * kWarpEvolveRate * 0.6,
                          cloud.cloudPhase * kWarpDriftRate * 0.7 + pc.waveTime * kWarpEvolveRate * 0.8);
-    vec3 uvw = (dirECEF * kWarpFreq + windOfs) / kWarpBakeN;
+    vec3 uvw = (dirECEF * cloud.cloudWarpFreq + windOfs) / kWarpBakeN;
     vec3 n   = cloudWarpNoiseSample(cloudWarpNoiseTex, uvw) * 2.0 - 1.0;
-    return n * kWarpStrength;
+    return n * cloud.cloudWarpStrength;
 }
+
+// Ratio by which the warp must be scaled down for the per-COLUMN lookup.
+//
+// The warp is one absolute offset, but it is added to two lookups whose base frequencies differ
+// by 6x: the detail/presence field at kCloudHorizFreq (480) and the per-column colH/baseH field
+// at kCloudColFreq (80). An offset tuned as a sensible FRACTION of the 480 domain is therefore
+// 6x too large as a fraction of the 80 domain.
+//
+// Measured, 2026-08-04: at the then-current strength/frequency the shear ratio (see
+// cloud_params.glsl for the folding threshold) was 0.8 for the detail lookup — already at the
+// edge — and 4.8 for the column lookup, i.e. folded over itself several times. Since colH sets
+// each column's cloud TOP height and baseH its base, a folded field there makes tops and bottoms
+// undulate with repeated, mirrored structure: the reported "wavy chips" and horizontal banding.
+//
+// Scaling by the frequency ratio makes the warp a constant fraction of whichever domain it is
+// applied to, which is what "advect both fields together" actually means — the two now land at
+// the same shear ratio instead of 6x apart.
+const float kWarpColScale = kCloudColFreq / kCloudHorizFreq;   // 80/480 = 1/6
+
 
 float cityBrightness(float lum) {
     float raw = max(0.0, lum - kNightFloor);
@@ -698,17 +718,90 @@ float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, floa
 
     // G is the erosion FBM with the three Worley octaves already summed at their fixed
     // 0.625/0.25/0.125 weights — was a fourth fetch plus that sum done here per sample.
-    float erosion = textureLod(cloudNoiseTex, uvwDetail * 1.5 + vec3(0.37, 0.53, 0.71), 0.0).g;
+    // The *1.5 coordinate scale is now cloud.cloudErosionFreq (default 1.5 = unchanged).
+    float erosionRaw = textureLod(cloudNoiseTex,
+                                  uvwDetail * cloud.cloudErosionFreq + vec3(0.37, 0.53, 0.71),
+                                  0.0).g;
+
+    // ── Erosion POLARITY (cloud.cloudErosionBillow) ──────────────────────────────────────────
+    // erosionRaw is an INVERTED-Worley FBM: it peaks AT the Worley feature points. Since it is
+    // used below as the threshold `base` must exceed, density is removed in round blobs centred
+    // on those points and what SURVIVES is the connected Voronoi web between them. That is a
+    // sponge — round holes bored through a lattice — which is why the old erosion read as "pokey
+    // and speckled" rather than puffy, and why its holes all had the same blobby character.
+    //
+    // Cauliflower is the exact dual: survive in the lumps, remove the thin cracks between them.
+    // That is what (1.0 - erosionRaw) gives. The bake's three octave weights sum to exactly 1.0,
+    // so (1 - G) IS the non-inverted Worley FBM — the flip is algebraically exact and free.
+    //
+    // The blend is ramped by height (cloud.cloudErosionBillowH) rather than applied flat, which
+    // is Schneider/Nubis's height-varying erosion character: web-polarity near the base gives
+    // wispy, streaky, torn edges; lump-polarity toward the top gives billowy cauliflower. A
+    // single polarity everywhere is part of why bases and tops looked like the same material.
+    float billowAmt = cloud.cloudErosionBillow
+                    * smoothstep(0.0, max(cloud.cloudErosionBillowH, 1e-4), hc);
+    float erosion   = mix(erosionRaw, 1.0 - erosionRaw, billowAmt);
 
     // Edge-biased erosion: `base` doubles as a proxy for how deep inside the cloud's own presence
     // threshold this point sits (near 0 at the silhouette edge, toward 1 at the core). Biting
     // harder near the edge than at the core carves cauliflower/wisp detail into the boundary while
     // leaving dense cores comparatively solid — the previous single uniform erosion strength just
     // scaled the whole shape down evenly, which reads as smooth/rounded rather than fluffy.
+    //
+    // Deliberately still keyed on `base` (the purely horizontal presence depth) and NOT on the
+    // height-profiled value below: keying it on the latter drives erosionAmt to full strength
+    // everywhere heightProfile is small, which does not carve the top and bottom bands, it
+    // DELETES them — the bases end up flat again, just higher up.
     float erosionAmt = mix(cloud.cloudErosionEdge, cloud.cloudErosionCore, base);
-    float eroded  = remap(base, erosionAmt * erosion, 1.0, 0.0, 1.0);
+    float carve      = erosionAmt * erosion;
+    float denom      = max(1.0 - carve, 1e-3);
 
-    return clamp(eroded * heightProfile * density, 0.0, 1.0);
+    // ── How the vertical profile enters (cloud.cloudSurfaceCarve) ────────────────────────────
+    // heightProfile is a smooth analytic per-column window: smoothstep up from baseH, smoothstep
+    // down at colH, both with a fixed 0.05 normalised width. Multiplying the eroded field by it —
+    // the original form, reproduced exactly at cloudSurfaceCarve == 0 — scales the erosion noise
+    // toward ZERO precisely at the two surfaces the noise is supposed to be sculpting. So the
+    // silhouette is set by the smooth ramp and the noise survives only as interior speckle: flat
+    // tops, flat bases, and (with no shape detail at the base) nothing for low-sun self-shadowing
+    // to pick out.
+    //
+    // Subtracting instead DISPLACES the surface by the erosion field, which is the standard way
+    // to make an isosurface bumpy: the boundary moves to wherever base - carve - (1 - p) crosses
+    // zero, so a Worley lump pushes the surface outward and a crack pulls it in. Same erosion
+    // texture, same cost, structurally different silhouette.
+    //
+    // Containment is safe at any blend value: as heightProfile -> 0 the subtractive form's
+    // numerator goes to base - carve - 1 <= 0 (base is already clamped to [0,1]), so cloud cannot
+    // leak past colH/baseH no matter how the knob is set.
+    float erodedMul = clamp((base - carve) / denom, 0.0, 1.0) * heightProfile;
+    float erodedSub = clamp((base - carve - (1.0 - heightProfile)) / denom, 0.0, 1.0);
+    float eroded    = mix(erodedMul, erodedSub, cloud.cloudSurfaceCarve);
+
+    // NOT clamped to [0,1] any more — only to >= 0. The upper clamp was the direct cause of two
+    // separate reported problems:
+    //
+    // 1. Hard-edged flat-coloured blobs, worst looking straight UP at cloud bases and straight
+    //    DOWN at cloud tops, absent toward the horizon. A near-radial ray holds dirECEF (and so
+    //    uvwXY, localCov, colH, baseH) essentially CONSTANT along its whole length, so `eroded`
+    //    varies only through hNorm — a smooth, slowly-varying function. Wherever that pushed
+    //    `eroded * density` past 1.0 the clamp made `d` exactly 1.0 over a large contiguous
+    //    region, and with cloudOpacityScale's coreBoost a single d=1 step at 250 m is already
+    //    ~exp(-5) opaque, so the ray terminated on its first sample and every pixel in that region
+    //    resolved to the SAME inScatter value. Flat colour, and a hard edge exactly on the clamp
+    //    boundary. Toward the horizon the ray sweeps horizontally through the noise fast enough to
+    //    break the region up, which is why it did not show there. (Surface carve = 1 masked it by
+    //    subtracting (1 - heightProfile), pulling the boundary bands back under the ceiling —
+    //    which is precisely why that slider "fixed" it.)
+    //
+    // 2. "Even with the highest density setting, clouds pass a lot of light." Once a column
+    //    saturated at d = 1, RAISING `density` did nothing at all — the slider was a no-op above
+    //    its saturation point. That limitation is what cloudOpacityScale was added to work around;
+    //    with the ceiling gone, `density` is a real control again across its whole range.
+    //
+    // Nothing downstream needs d <= 1: extinction feeds exp(-extinction), which is monotone and
+    // already bounded, and the sun-cone accumulator is a plain weighted sum. Expect to re-tune
+    // `density` / `Opacity scale` DOWNWARD — clouds are genuinely more opaque now.
+    return max(eroded * density, 0.0);
 }
 
 // ── Moved (exclusive to cirrusMarch) ──────────────────────────────────────────
@@ -723,11 +816,11 @@ float cirrusWindAngleAt(vec3 dirECEF) {
 
 vec3 cirrusDomainWarp(vec3 dirECEF) {
     vec3 w1 = cloudWarpOffset(dirECEF);
-    vec3 p2 = dirECEF * (kWarpFreq * 0.35) + vec3(19.0, -7.0, 41.0)
+    vec3 p2 = dirECEF * (cloud.cloudWarpFreq * 0.35) + vec3(19.0, -7.0, 41.0)
             + vec3(pc.waveTime * kWarpEvolveRate * 0.5);
     vec3 w2 = vec3(warpPerlin3(p2),
                     warpPerlin3(p2 + vec3(5.2, 1.1, 9.3)),
-                    warpPerlin3(p2 + vec3(3.3, 8.8, 2.2))) * (kWarpStrength * 1.5);
+                    warpPerlin3(p2 + vec3(3.3, 8.8, 2.2))) * (cloud.cloudWarpStrength * 1.5);
     return w1 + w2;
 }
 
@@ -1095,7 +1188,7 @@ void cloudMarchCS(
         vec3  warpUVW      = cloudWarpOffset(dirECEFDrift);
 
         // T2.2 — one fetch feeds both colH and baseH; see cloudColumnNoise().
-        vec2  colSample = cloudColumnNoise(dirECEFDrift * kCloudColFreq + warpUVW);
+        vec2  colSample = cloudColumnNoise(dirECEFDrift * kCloudColFreq + warpUVW * kWarpColScale);
         float colH = remap(colSample.x, 1.0 - localCov, 1.0, 0.0, 1.0);
 
         // Variable base height: was a hardcoded 0.0 for every column, so every cloud in the shell
@@ -1148,7 +1241,12 @@ void cloudMarchCS(
             float sunOptDepth = 0.0;
             if (shadowFade > 0.01 && (pc.debugDisableMask & 64u) == 0u) {
                 vec2  tConeExit = raySphere(p, sunDir, cloudTop);
-                float coneLen   = min((tConeExit.y > 0.0) ? tConeExit.y : shellThick, shellThick * 2.0);
+                // The shellThick*2 cap is what bounds how much optical depth the cone can ever
+                // accumulate, and therefore how dark a back-lit cloud can get. At a grazing sun
+                // the true path to the shell top is far longer than this, so the cap — not the
+                // cloud — was setting the maximum shadow depth. cloudConeLenScale reopens it.
+                float coneLen   = min((tConeExit.y > 0.0) ? tConeExit.y : shellThick,
+                                      shellThick * 2.0 * max(cloud.cloudConeLenScale, 0.05));
 
                 // ── T3.3 REDESIGNED: reuse the cone RESULT, do not shrink the cone ────────────
                 // The first version of this scaled N_CONE down with cloudTransmittance. It hit its
@@ -1264,7 +1362,7 @@ void cloudMarchCS(
                         // how little of that column the visible march actually filled in, so a nearly-
                         // clear column (or one whose visible cloud is only a single-step sliver) could
                         // still cast a full-height shadow with no corresponding visible cloud.
-                        vec2  cColSample = cloudColumnNoise(cDirDrift * kCloudColFreq + cWarpUVW); // T2.2
+                        vec2  cColSample = cloudColumnNoise(cDirDrift * kCloudColFreq + cWarpUVW * kWarpColScale); // T2.2
                         float cColH      = remap(cColSample.x, 1.0 - cLoc, 1.0, 0.0, 1.0);
                         float cBaseH     = (cColSample.y - 0.5) * cloud.cloudBaseVariance;
                         float chFade = smoothstep(cBaseH, cBaseH + 0.05, chN) * (1.0 - smoothstep(cColH - 0.05, cColH + 0.05, chN));
@@ -1297,19 +1395,51 @@ void cloudMarchCS(
                 // heuristic below, which already fudges the same sunset transition for the same
                 // reason.
                 float sunElevSin = clamp(abs(cloudSunDotRaw), 0.0, 1.0);
-                float grazeAtten = mix(kGrazeShadowFloor, 1.0, smoothstep(0.0, kGrazeShadowFullSin, sunElevSin));
+                // kGrazeShadowFloor is now only the compiled-in default for cloud.cloudGrazeShadow.
+                // This term deliberately DAMPS self-shadowing at low sun elevation, i.e. exactly at
+                // sunset, which is when directional shading is most wanted — it was a workaround for
+                // the cone undersampling a near-tangential path at a low N_CONE, and the T3.3 sun-OD
+                // cache has since restored the cone to the full slider count, so the original
+                // justification is much weaker. Raise this toward 1.0 for real sunset shadowing.
+                float grazeAtten = mix(cloud.cloudGrazeShadow, 1.0, smoothstep(0.0, kGrazeShadowFullSin, sunElevSin));
                 sunOptDepth *= grazeAtten;
             }
 
+            // Multi-scatter octaves: ms2/ms3 decay 2x and 4x more slowly than true single
+            // scattering, standing in for light that reaches this sample after bouncing. They are
+            // also, by construction, a CONTRAST KILLER — at sunOptDepth 2.4 (about the deepest a
+            // dense cloud reached at sunset before this change) the three-octave sum is 0.22 while
+            // pure single scatter is 0.09, so more than half the remaining "shadow" is octave tail
+            // rather than anything to do with cloud shape. That is the main reason a cloud reads as
+            // uniformly lit with no dark side.
+            //
+            // cloudMultiScatter blends between pure single scatter (0) and the original
+            // three-octave sum (1). Lower it for a harder, more directional look; raise it if
+            // shadowed sides go flat black. cloudShadowFloorT is the hard floor underneath (was a
+            // fixed 0.05) — it sets how dark the fully-shadowed side of a cloud is allowed to get,
+            // so it caps the achievable contrast independently of everything above.
             float ms1 = exp(-sunOptDepth);
             float ms2 = exp(-sunOptDepth * 0.5) * 0.5;
             float ms3 = exp(-sunOptDepth * 0.25) * 0.25;
-            float sunTransmittance = max((ms1 + ms2 + ms3) / 1.75, 0.05);
+            float msSum = (ms1 + ms2 + ms3) / 1.75;
+            float sunTransmittance = max(mix(ms1, msSum, clamp(cloud.cloudMultiScatter, 0.0, 1.0)),
+                                         cloud.cloudShadowFloorT);
 
             float sunElev     = smoothstep(-0.04, 0.12, cloudSunDotRaw);
             float sunElevSoft = sunElev;
             float shadowFloor = mix(0.1, 0.5, clamp(1.0 - sunElev * 4.0, 0.0, 1.0));
-            float selfShadow  = mix(shadowFloor, 1.0, hNorm);
+            // Column-relative, not shell-relative. This used to interpolate on hNorm, which is
+            // the sample's height within the whole 2-11 km SHELL — so a cloud sitting low in the
+            // shell was shaded as though its TOP were also its base, uniformly dark from top to
+            // bottom, and only a cloud that happened to reach the shell ceiling ever received
+            // full self-lighting. It is also a pure analytic function of altitude, i.e. it
+            // carries no cloud shape at all, which is the direct reason bases render as a flat
+            // gradient at sunset regardless of how much geometric detail erosion puts there.
+            // colH/baseH are this column's own warped top/bottom, so this term now varies
+            // horizontally with the cloud field.
+            float colSpan    = max(colH - baseH, 1e-3);
+            float colRel     = clamp((hNorm - baseH) / colSpan, 0.0, 1.0);
+            float selfShadow  = mix(shadowFloor, 1.0, colRel);
             float sunLit      = sunElevSoft * sunTransmittance * selfShadow;
 
             float sampleDayness = clamp((cloudSunDotRaw + 0.2) / 0.5, 0.0, 1.0);
@@ -1607,7 +1737,7 @@ float cloudGroundShadow(vec3 groundECEF, vec3 sunDirECEF, float jitter) {
         vec3 dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[0].driftMult);
         vec3 warpUVW      = cloudWarpOffset(dirECEFDrift);
 
-        vec2  colSample = cloudColumnNoise(dirECEFDrift * kCloudColFreq + warpUVW); // T2.2
+        vec2  colSample = cloudColumnNoise(dirECEFDrift * kCloudColFreq + warpUVW * kWarpColScale); // T2.2
         float colH  = remap(colSample.x, 1.0 - localCov, 1.0, 0.0, 1.0);
         float baseH = (colSample.y - 0.5) * cloud.cloudBaseVariance;
 
