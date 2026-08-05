@@ -141,4 +141,23 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // even a fully correct opacity value still looks wrong if what leaks through is pixel-sharp.
     // This is the mip LOD used at full (opacity=1) blur strength; 0 disables the effect.
     float cityLightBlurLod;
+    // Atmospheric scattering strength gains: scale the physical Rayleigh/Mie coefficients
+    // (BETA_R_BASE/BETA_M_BASE, common.glsl) uniformly across every consumer that shadows them
+    // (sat_sky.frag's evalCloudLayer/main — atmosphere, terrain ambient, ocean reflection, moon/
+    // sun attenuation — and cloud_march.comp's cloudMarchCS/cirrusMarchCS/fogMarchCS). Default 1.0
+    // reproduces the original hardcoded constants exactly. Rayleigh gain scales the whole vec3
+    // uniformly, so it preserves the R:G:B ratio that gives sunsets their color — it only changes
+    // how much path length it takes for that color to show up (deepens/shallows the effect, not
+    // the hue). Mie gain scales the wavelength-neutral haze term that dilutes Rayleigh's
+    // saturation with white/grey — raise it to soften an overly saturated sunset, lower it for a
+    // purer, more intensely colored one.
+    float atmosRayleighGain;
+    float atmosMieGain;
+    // std140 rounds the whole uniform block up to a multiple of 16 bytes; the C++ mirror
+    // (GpuCloudParams, SatelliteSim.h) does not auto-round the same way, so a lone trailing pair
+    // of floats here would silently desync sizeof(GpuCloudParams) from this block's real GPU size
+    // (see the "Struct grew 336->352" comment above for the same pitfall hit before). These two
+    // keep both sides at 416; take one when the next field is needed.
+    float pad16;
+    float pad17;
 } cloud;

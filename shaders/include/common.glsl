@@ -20,12 +20,33 @@ const float R_EARTH = 6371000.0;
 const float R_ATMOS = 6471000.0;   // 100 km above surface
 
 // ── Rayleigh scattering (wavelength-dependent: R=650nm, G=510nm, B=440nm) ─────
-const vec3  BETA_R = vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level
+// _BASE suffix: these are the physical reference coefficients. Every consumer (sat_sky.frag's
+// evalCloudLayer/main, cloud_march.comp's cloudMarchCS/cirrusMarchCS/fogMarchCS) shadows these
+// with a local `BETA_R`/`BETA_M` scaled by CloudParams' `atmosRayleighGain`/`atmosMieGain`
+// (settings sliders "Rayleigh gain" / "Mie/haze gain", default 1.0 = reproduces these exactly) —
+// see cloud_params.glsl. Kept as plain consts here rather than folded into the gain directly so
+// the physical baseline stays visible/greppable on its own.
+const vec3  BETA_R_BASE = vec3(5.8e-6, 13.5e-6, 33.1e-6);  // 1/m, sea level
 const float H_R    = 7994.0;   // Rayleigh scale height (m)
 
 // ── Mie scattering (aerosols, wavelength-independent) ─────────────────────────
-const float BETA_M = 2.1e-5;   // 1/m, sea level
-const float H_M    = 12.0;     // Mie scale height (m)
+const float BETA_M_BASE = 2.1e-5;   // 1/m, sea level
+// H_M was 12.0 (meters) from commit 384df33 ("Specular reflections, moon fix, terrain fix, lots
+// of fixes") until this session — 100x smaller than the ~1200m real aerosol scale height that
+// pairs with BETA_M_BASE/H_R above, and with no comment explaining the drop. That commit also
+// dropped G_MIE 0.76->0.26 in the same diff to fix a real, independently-documented "cone of
+// light" artifact near the sun (see phaseCloud's comment below for the same failure mode) — G_MIE
+// alone is a complete fix for that (it's the phase function's angular sharpness, unrelated to
+// H_M's vertical density falloff), so H_M's drop looks like collateral damage from the same edit
+// rather than a deliberate choice; the same diff also left a stray duplicated comment on BETA_R's
+// line, consistent with a messy/exploratory pass rather than a considered redesign.
+//
+// Practical effect while it was 12: exp(-h/12) is ~2e-4 by 100m altitude and ~0 by 1000m, so Mie
+// contributed essentially nothing to any optical-depth integral in this sim (cloud shells start
+// at 2km; the atmosphere march spans 0-100km) — Mie has been silently dead system-wide, not just
+// in one shader. Restored to the physically-paired reference value; cloud.atmosMieGain (settings
+// "Mie/haze gain") is now a real, load-bearing control instead of scaling an already-zero term.
+const float H_M    = 1200.0;   // Mie scale height (m)
 const float G_MIE  = 0.26;     // forward-scatter asymmetry (higher = sharper corona)
 
 const float SUN_INTENSITY = 1.0;

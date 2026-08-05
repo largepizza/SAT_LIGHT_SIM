@@ -2418,7 +2418,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
     // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
     // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[63][16];
+    static char cloudBufs[65][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -2566,6 +2566,14 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         // droplets. Blends earthNightTex/cityNightDetailTex toward this mip LOD as local cloud
         // opacity rises (0 = no blur, higher = softer glow). See sat_sky.frag's terrain branch.
         {"City light blur LOD", &cityLightBlurLod, 0.0f, 20.0f, 0.5f, "%.1f", 62},
+        // Atmospheric scattering strength — scales the physical Rayleigh/Mie coefficients shared
+        // by the sky atmosphere, clouds, cirrus, fog, terrain ambient, ocean reflection, and moon/
+        // sun attenuation (see common.glsl's BETA_R_BASE/BETA_M_BASE and cloud_params.glsl's
+        // atmosRayleighGain/atmosMieGain). 1.0 = original hardcoded behavior. Rayleigh gain
+        // controls how much red/orange the horizon and sunsets pick up; Mie gain controls how
+        // much wavelength-neutral haze dilutes that color back toward white/grey.
+        {"Rayleigh gain", &atmosRayleighGain, 0.0f, 3.0f, 0.05f, "%.2f", 63},
+        {"Mie/haze gain", &atmosMieGain, 0.0f, 3.0f, 0.05f, "%.2f", 64},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -3215,15 +3223,26 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // v1.0 experience: flat textured Earth (cloudCoverage 0 — no cloud layer at all), terrain
         // relief and ocean reflection off (the sea-level sphere / flat ocean fallbacks already
         // exist and are exactly what "terrain off" looks like), every nightglow phenomenon off.
+        // Ocean sea/detail octaves still run full quality (3/5) even though reflection itself is
+        // knocked out — those two octave counts drive the height-trace/wave-normal geometry the
+        // flat-ocean fallback still uses, and are cheap enough to never scale down (user directive
+        // 2026-08-04: "never compromise on ocean quality"); reflSamples is the one ocean slider
+        // still turned down here since kBitOceanRefl makes it a true no-op at this tier.
         v = {kBitTerrain | kBitOceanRefl | kBitAirglowRed | kBitAurora | kBitBeams | kBitCloudShadow | kBitBeamBlock | kBitFog,
-             1.0f, 0.0f, 64.0f, 2.0f, 6.0f, 48.0f, 2.0f, 1.0f, 1.0f, 1.0f, 50000.0f, 100000.0f, 5000.0f, 10000.0f};
+             1.0f, 0.0f, 64.0f, 2.0f, 6.0f, 48.0f, 2.0f, 3.0f, 5.0f, 3.0f, 50000.0f, 100000.0f, 5000.0f, 10000.0f};
         break;
     case GraphicsPreset::Low:
         // Terrain stays on (a bare sea-level sphere with no relief reads as more "wrong" than
         // "fast" to a player who came for the planet) but with a tight fade budget; clouds forced
-        // fully flat-2D (cloudFadeStartM/EndM at their UI-slider floor — "2D cloud paste only").
+        // fully flat-2D (cloudFadeStartM at its UI-slider floor — "2D cloud paste only" — but
+        // cloudFadeEndM raised to 50000 so a sea-level player looking straight up still catches the
+        // volumetric layer at the zenith instead of transitioning to flat before it's ever visible;
+        // this was the main source of Low looking broken rather than just cheap). Ocean sea/detail/
+        // reflection octaves matched to Medium/High/Ultra (3/5/6) per the same "never compromise on
+        // ocean quality" directive — those sliders are effectively free relative to everything else
+        // this tier turns down.
         v = {kBitAurora | kBitBeams | kBitFog,
-             0.7f, 1.0f, 64.0f, 1.0f, 6.0f, 64.0f, 2.0f, 1.0f, 1.0f, 1.0f, 100000.0f, 300000.0f, 5000.0f, 10000.0f};
+             0.7f, 1.0f, 64.0f, 1.0f, 6.0f, 64.0f, 2.0f, 3.0f, 5.0f, 6.0f, 100000.0f, 300000.0f, 5000.0f, 50000.0f};
         break;
     case GraphicsPreset::Medium:
         // Nothing disabled outright — volumetric clouds and aurora both run, at reduced step
@@ -3546,6 +3565,8 @@ void SatelliteSim::loadSettings()
         fogSunGain = c.value("fog_sun_gain", fogSunGain);
         cloudOpacityScale = c.value("cloud_opacity_scale", cloudOpacityScale);
         cityLightBlurLod = c.value("city_light_blur_lod", cityLightBlurLod);
+        atmosRayleighGain = c.value("atmos_rayleigh_gain", atmosRayleighGain);
+        atmosMieGain = c.value("atmos_mie_gain", atmosMieGain);
     }
 
     // UC1: a named preset (anything but Custom) is the authority on debugDisableMask/renderScale/
@@ -3685,7 +3706,9 @@ void SatelliteSim::saveSettings()
         {"fog_coverage", fogCoverage},
         {"fog_sun_gain", fogSunGain},
         {"cloud_opacity_scale", cloudOpacityScale},
-        {"city_light_blur_lod", cityLightBlurLod}};
+        {"city_light_blur_lod", cityLightBlurLod},
+        {"atmos_rayleigh_gain", atmosRayleighGain},
+        {"atmos_mie_gain", atmosMieGain}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

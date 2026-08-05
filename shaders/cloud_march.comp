@@ -830,6 +830,11 @@ void cloudMarchCS(
     out   float tCloudOcclude,
     float tScene)  // shared scene depth (metres to the first surface, or kNoSurfaceT)
 {
+    // Runtime-tunable scattering strength — see cloud_params.glsl's atmosRayleighGain/
+    // atmosMieGain comment and common.glsl's BETA_R_BASE/BETA_M_BASE.
+    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+    float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
+
     A_cloud = vec3(1.0);
     B_cloud = vec3(0.0);
     cloudTOut = vec3(1.0);
@@ -1370,16 +1375,61 @@ void cloudMarchCS(
     // distance where this extinction is severe; short/default ranges crossfade to the flat 2D
     // layer (evalCloudLayer in sat_sky.frag, which already has its own version of this fix) first.
     //
-    // skyAmbientBase (computed once above, a 6-step analytic single-scattering zenith Rayleigh/Mie
-    // integral anchored at the cloud, already day/night- and shadow-gated) stands in for the
-    // in-scattered light along this path — a reasonable proxy since it's the same general slab of
-    // atmosphere, not a second march. Weighted by (1-cloudAttn) (the fraction of light actually
-    // extinguished — negligible for near clouds, so this only engages at real distance) and by
-    // (1-cloudTOut.r) (the SAME continuous per-ray opacity that already softens the cloud's visual
-    // edge, so the fix fades in/out exactly where the cloud material itself does — no separate
-    // threshold, no seam, unlike an earlier attempt gated on the ≥90%-opacity tCloudOcclude flag,
-    // which produced a hard-edged brightening confined to fully opaque cores).
-    vec3 airlight = skyAmbientBase * (1.0 - cloudAttn) * (1.0 - cloudTOut.r);
+    // skyAmbientBase (a 6-step analytic single-scattering ZENITH Rayleigh/Mie integral anchored at
+    // the cloud) was the original stand-in for the in-scattered light along this path — reasoned
+    // as "the same general slab of atmosphere, not a second march." That reasoning missed that
+    // the GEOMETRY matters, not just the slab: skyAmbientBase integrates a short (~100km) VERTICAL
+    // path, while the real quantity needed here is inscatter along the camera-to-cloud path, which
+    // at the horizon is a much longer, near-HORIZONTAL path (150km+ for a 2-11km shell viewed from
+    // ground level — Earth's curvature alone puts the shell entry that far out). A horizontal path
+    // accumulates far more total inscattered sunlight than a vertical one of similar altitude
+    // range (the same reason a real sky is hazier/brighter near the horizon than at the zenith,
+    // even at local noon with the sun high). Reusing the dim zenith value under-lit this term, so
+    // as cloudAttn crushed toward 0 for a genuinely distant/grazing cloud, the airlight it faded
+    // into was dimmer than the real sky around it — reported as horizon clouds darkening to grey
+    // at any time of day, not just fading paler into the haze the way real aerial perspective does.
+    //
+    // camPathInscatter is a dedicated short march (kAirCamSteps, same step budget as
+    // skyAmbientBase) along the ACTUAL obsPos->dir segment out to cloudMeanT — the same physics as
+    // sat_sky.frag's own N_VIEW atmosphere loop (see main()'s `color` there), just truncated to
+    // this shorter camera-to-cloud distance instead of the full ray. skyAmbientBase itself is left
+    // untouched (still correct for twilightAmbient's "ambient sky light falling ON the cloud from
+    // above" purpose, a genuinely different, legitimately-vertical quantity).
+    vec3 camPathInscatter = vec3(0.0);
+    {
+        const int kAirCamSteps = 6;
+        float segAC  = max(cloudMeanT, 0.001) / float(kAirCamSteps);
+        float cosAAC = dot(dir, sunDir);
+        float pR_ac  = phaseR(cosAAC);
+        float pM_ac  = phaseM(cosAAC);
+        float odR_ac = 0.0, odM_ac = 0.0;
+        vec3  accumR_ac = vec3(0.0);
+        float accumM_ac = 0.0;
+        for (int ai = 0; ai < kAirCamSteps; ++ai) {
+            vec3  ap = obsPos + dir * ((float(ai) + 0.5) * segAC);
+            float ah = max(0.0, length(ap) - R_EARTH);
+            float dRA = exp(-ah / H_R) * segAC;
+            float dMA = exp(-ah / H_M) * segAC;
+            odR_ac += dRA;
+            odM_ac += dMA;
+            vec2 tSE_ac = raySphere(ap, sunDir, R_EARTH);
+            if (tSE_ac.x > 0.0 && tSE_ac.y > 0.0) continue;
+            vec2 tSun_ac  = raySphere(ap, sunDir, R_ATMOS);
+            vec2 sunOD_ac = (tSun_ac.y > 0.0) ? optDepth(ap, sunDir, tSun_ac.y) : vec2(0.0);
+            vec3 tauAC  = BETA_R * (odR_ac + sunOD_ac.x) + BETA_M * 1.1 * (odM_ac + sunOD_ac.y);
+            vec3 attnAC = exp(-tauAC);
+            accumR_ac += attnAC * dRA;
+            accumM_ac += dot(attnAC, vec3(1.0 / 3.0)) * dMA;
+        }
+        camPathInscatter = SUN_INTENSITY * (pR_ac * BETA_R * accumR_ac + vec3(pM_ac * BETA_M * accumM_ac));
+    }
+    // Weighted by (1-cloudAttn) (the fraction of light actually extinguished — negligible for near
+    // clouds, so this only engages at real distance) and by (1-cloudTOut.r) (the SAME continuous
+    // per-ray opacity that already softens the cloud's visual edge, so the fix fades in/out exactly
+    // where the cloud material itself does — no separate threshold, no seam, unlike an earlier
+    // attempt gated on the ≥90%-opacity tCloudOcclude flag, which produced a hard-edged brightening
+    // confined to fully opaque cores).
+    vec3 airlight = camPathInscatter * (1.0 - cloudAttn) * (1.0 - cloudTOut.r);
 
     B_cloud = cloudAttn * cloudScatter * cloudAltFade + airlight * cloudAltFade;
 }
@@ -1483,6 +1533,10 @@ void cirrusMarchCS(
     out   vec3  A_cirrus, out vec3 B_cirrus,
     float tScene)  // shared scene depth — see cloudMarchCS
 {
+    // Runtime-tunable scattering strength — see cloudMarchCS's matching declaration.
+    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+    float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
+
     A_cirrus = vec3(1.0);
     B_cirrus = vec3(0.0);
     if (cloud.layers[1].enabled < 0.5) return;
@@ -1639,6 +1693,10 @@ void fogMarchCS(
     out   vec3  A_fog, out vec3 B_fog,
     float tScene)
 {
+    // Runtime-tunable scattering strength — see cloudMarchCS's matching declaration.
+    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+    float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
+
     A_fog = vec3(1.0);
     B_fog = vec3(0.0);
     if ((pc.debugDisableMask & 2048u) != 0u) return;
