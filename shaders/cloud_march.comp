@@ -673,24 +673,7 @@ vec2 cloudColumnNoise(vec3 uvwCol) {
     return textureLod(cloudNoiseTex, uvwCol + vec3(0.0, 0.0, kCloudColNoiseZ), 0.0).ra;
 }
 
-// Mean of the baked erosion field (cloudNoiseTex.g), used by the shadow cone in place of an actual
-// lookup — see cloudDensityErosion()'s callers and T3.2 in CLOUD_PERF_PLAN.md.
-//
-// The field is (1-worleyF1) at three frequencies with weights summing to 1. For Worley F1 at one
-// feature point per unit cell in 3D, E[F1] = gamma(4/3) / (4*PI/3)^(1/3) ~= 0.554, so
-// E[1-F1] ~= 0.446; the clamp at 1.0 truncates a small tail and nudges it up slightly. 0.45 is
-// therefore mean-preserving to within a percent or so, which is the property that matters: it is
-// what stops the cone's shadows darkening when the sampled term is replaced by a constant.
-//
-// THIS IS THE KNOB if cone shadows come out too dark (raise) or too light (lower).
-const float kConeErosionMean = 0.45;
-
-// Density with the erosion term supplied by the caller. Split out of cloudDensity so the shadow
-// cone can pass a constant instead of paying for — and aliasing on — a lookup it cannot resolve.
-// (Plain scalar parameter, so this is not the kind of extraction CLAUDE.md's optDepth note warns
-// about: no compile-time trip count becomes a runtime one.)
-float cloudDensityErosion(vec3 uvwXY, float hNorm, float coverage, float density,
-                          float heightProfile, float erosion) {
+float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, float density, float heightProfile) {
     // Vertical presence: THREE fixed Z-slices, not a continuous Z lookup — see
     // project_cloud_march_steps memory: sampling Z continuously at this codebase's typical
     // march-step counts reintroduces altitude-slab banding, which is why the original design
@@ -713,6 +696,10 @@ float cloudDensityErosion(vec3 uvwXY, float hNorm, float coverage, float density
                              : mix(midA, topA, (hc - 0.5) * 2.0);
     if (base <= 0.0) return 0.0;
 
+    // G is the erosion FBM with the three Worley octaves already summed at their fixed
+    // 0.625/0.25/0.125 weights — was a fourth fetch plus that sum done here per sample.
+    float erosion = textureLod(cloudNoiseTex, uvwDetail * 1.5 + vec3(0.37, 0.53, 0.71), 0.0).g;
+
     // Edge-biased erosion: `base` doubles as a proxy for how deep inside the cloud's own presence
     // threshold this point sits (near 0 at the silhouette edge, toward 1 at the core). Biting
     // harder near the edge than at the core carves cauliflower/wisp detail into the boundary while
@@ -722,14 +709,6 @@ float cloudDensityErosion(vec3 uvwXY, float hNorm, float coverage, float density
     float eroded  = remap(base, erosionAmt * erosion, 1.0, 0.0, 1.0);
 
     return clamp(eroded * heightProfile * density, 0.0, 1.0);
-}
-
-// Full-detail density: samples the baked erosion FBM (channel G — the three Worley octaves already
-// summed at their fixed 0.625/0.25/0.125 weights). This is what the VIEW march and the ground
-// shadow use; the sun cone deliberately does not (see kConeErosionMean).
-float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, float density, float heightProfile) {
-    float erosion = textureLod(cloudNoiseTex, uvwDetail * 1.5 + vec3(0.37, 0.53, 0.71), 0.0).g;
-    return cloudDensityErosion(uvwXY, hNorm, coverage, density, heightProfile, erosion);
 }
 
 // ── Moved (exclusive to cirrusMarch) ──────────────────────────────────────────
@@ -1042,25 +1021,6 @@ void cloudMarchCS(
     float sunODCache     = 0.0;
     float sunODCacheDist = -1e30;
 
-    // ── Domain-warp cache (T3.7) ──────────────────────────────────────────────────────────────
-    // cloudWarpOffset is 8 texelFetches (see common.glsl — the manual blend is load-bearing and
-    // cannot be collapsed into one filtered read), which with T1.2 reverted makes it 8 of the 12
-    // texture ops on every in-cloud sample: the single biggest per-sample cost left in this march.
-    //
-    // It is also, by a wide margin, the smoothest thing being sampled. uvw = dirECEF * kWarpFreq /
-    // kWarpBakeN = dirECEF * 0.375, so moving 1 km tangentially shifts it by 1/6371000 * 0.375 =
-    // 5.9e-5 — against a bake texel of 1/192 = 5.2e-3. That is 0.011 texels per kilometre, so the
-    // 4 km stride below costs under a twentieth of a texel: far below the RGBA8 quantization
-    // already baked into the field.
-    //
-    // This is not a new approximation, it is the one the shadow cone below already makes and
-    // documents ("cone samples sit within ~2*shellThick of p along sunDir, a few km at most, which
-    // is a negligible angular displacement against kWarpFreq=6's basis over the full unit sphere").
-    // 4 km keeps the view march comfortably inside that same "a few km" envelope.
-    const float kWarpCacheStrideM = 4000.0;
-    vec3  warpCache     = vec3(0.0);
-    float warpCacheDist = -1e30;
-
     float cosA    = dot(dir, sunDir);
     float ph      = phaseCloud(cosA);
     vec3  moonDir3 = normalize(moonDirENU.xyz);
@@ -1132,12 +1092,7 @@ void cloudMarchCS(
         if (localCov < 0.02) { inCloud = false; t += step; continue; }
 
         vec3  dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[0].driftMult);
-        // T3.7 — reuse the warp across a 4 km stride along the ray; see the cache declaration.
-        if (t - warpCacheDist > kWarpCacheStrideM) {
-            warpCache     = cloudWarpOffset(dirECEFDrift);
-            warpCacheDist = t;
-        }
-        vec3  warpUVW = warpCache;
+        vec3  warpUVW      = cloudWarpOffset(dirECEFDrift);
 
         // T2.2 — one fetch feeds both colH and baseH; see cloudColumnNoise().
         vec2  colSample = cloudColumnNoise(dirECEFDrift * kCloudColFreq + warpUVW);
@@ -1291,6 +1246,7 @@ void cloudMarchCS(
                         // cone step per in-cloud sample.
                         float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, cloud.coverageMipLod + 1.0).r;
                         if (cLoc < 0.02) continue;
+                        float cPosZ      = sin(cpUV.x * 21.3 + cpUV.y * 17.7) * 0.5 + 0.5;
                         vec3  cDirDrift  = rotateZ(cDir, cloud.cloudPhase * cloud.layers[0].driftMult);
                         // Reuse the PARENT sample's already-computed warp offset instead of calling
                         // cloudWarpOffset (3 warpPerlin3 evaluations) again per cone step — perf
@@ -1300,6 +1256,7 @@ void cloudMarchCS(
                         // new cost from making the shadow cone warp-consistent with the visible cloud.
                         vec3  cWarpUVW   = warpUVW;
                         vec3  cUVWXY = cDirDrift * kCloudHorizFreq + cWarpUVW;
+                        vec3  cUVWD  = cUVWXY + vec3(0.0, 0.0, chN * kVertTiles + cPosZ * 2.0);
 
                         // Match the cone's own vertical coverage limit and base variance to the SAME
                         // per-column noise the visible march uses (colH/baseH above) — without this the
@@ -1311,23 +1268,7 @@ void cloudMarchCS(
                         float cColH      = remap(cColSample.x, 1.0 - cLoc, 1.0, 0.0, 1.0);
                         float cBaseH     = (cColSample.y - 0.5) * cloud.cloudBaseVariance;
                         float chFade = smoothstep(cBaseH, cBaseH + 0.05, chN) * (1.0 - smoothstep(cColH - 0.05, cColH + 0.05, chN));
-                        // ── T3.2 (CLOUD_PERF_PLAN.md): CONSTANT erosion in the cone ──────────
-                        // The cone used to call full cloudDensity(), which samples the erosion FBM
-                        // — the highest-frequency component of the density field (Worley at 8/16/32
-                        // cells). The cone cannot resolve it: even its smallest step is ~136 m and
-                        // its largest ~5 km. Point-sampling a field far above your sampling rate is
-                        // aliasing, and it showed up as the reported "odd blobby artifacts in
-                        // shadows, worse with higher edge erosion, SHARPER with more light steps."
-                        // Sharper-with-more-samples is the tell: noise would average out with more
-                        // samples, aliased structure just gets painted in more definitively.
-                        //
-                        // Passing the field's MEAN instead of a sample removes the aliasing source
-                        // and the fetch, without darkening the shadow the way simply dropping the
-                        // erosion term would (that leaves nothing carving density away, so the cone
-                        // reads systematically denser — the reason this was deferred earlier).
-                        // cUVWD (the detail-lookup coordinate) and cPosZ are gone with it.
-                        od += cloudDensityErosion(cUVWXY, chN, cLoc, cloud.density, chFade,
-                                                  kConeErosionMean) * seg * 3.75e-4;
+                        od += cloudDensity(cUVWXY, cUVWD, chN, cLoc, cloud.density, chFade) * seg * 3.75e-4;
                     }
                     sunODCache     = od;
                     sunODCacheDist = sampleDist;
@@ -1641,14 +1582,6 @@ float cloudGroundShadow(vec3 groundECEF, vec3 sunDirECEF, float jitter) {
     const int kShadowSteps = 12;
     float segLen = (tExit - tEnter) / float(kShadowSteps);
 
-    // T3.7 — the warp was being recomputed at all 12 steps: 96 texelFetches per shaded ground
-    // pixel, for a field that is effectively constant over this march. The whole traverse spans
-    // the cloud shell (~9 km vertically, up to ~19 km along a grazing sun ray), and the warp moves
-    // ~0.011 bake texels per kilometre (derivation at the view march's own warp cache), so the
-    // worst case here is ~0.2 texels end to end. One evaluation, anchored at the ground point.
-    vec3 groundDirDrift = rotateZ(normalize(groundECEF), cloud.cloudPhase * cloud.layers[0].driftMult);
-    vec3 warpUVW        = cloudWarpOffset(groundDirDrift);
-
     float T = 1.0;
     for (int i = 0; i < kShadowSteps; ++i) {
         // Jittered sample phase. Neighbouring screen texels can map to ground points kilometres
@@ -1672,7 +1605,7 @@ float cloudGroundShadow(vec3 groundECEF, vec3 sunDirECEF, float jitter) {
         if (localCov < 0.02) continue;
 
         vec3 dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[0].driftMult);
-        // warpUVW is hoisted above the loop (T3.7) — one evaluation for the whole march.
+        vec3 warpUVW      = cloudWarpOffset(dirECEFDrift);
 
         vec2  colSample = cloudColumnNoise(dirECEFDrift * kCloudColFreq + warpUVW); // T2.2
         float colH  = remap(colSample.x, 1.0 - localCov, 1.0, 0.0, 1.0);

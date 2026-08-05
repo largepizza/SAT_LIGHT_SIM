@@ -318,56 +318,13 @@ shading and simply updates less often along the ray. `shadowMaxDistM` should now
 whatever looks right — **that is the next thing to try, and it needs a look pass plus a fresh
 capture pair.**
 
-- [x] **T3.2 — constant mean erosion in the cone.** ✅ DONE 2026-08-04. Promoted from "deferred
-      perf nicety" to "bug fix" once the visual symptom showed up.
-
-      The cone called full `cloudDensity`, which samples the erosion FBM — the highest-frequency
-      component of the density field (Worley at 8/16/32 cells). The cone cannot resolve it: its
-      smallest step is ~136 m and its largest ~5 km. Point-sampling a field far above your sampling
-      rate is aliasing, and it was reported as **"odd blobby artifacts in shadows, worse with
-      higher edge erosion, sharper with more light steps."**
-
-      *Sharper-with-more-samples is the diagnostic.* Noise averages out as samples increase;
-      aliased structure just gets painted in more definitively. That is what separates this from
-      the T3.3-v1 noise problem, which behaved the opposite way.
-
-      Fix: pass the field's **mean** (`kConeErosionMean = 0.45`) instead of a sample.
-      `cloudDensity` was split into `cloudDensityErosion(..., erosion)` plus a sampling wrapper, so
-      the view march / ground shadow / cirrus are untouched.
-
-      This also resolves the objection that deferred it. Simply *dropping* the erosion term leaves
-      nothing carving density away, so the cone reads systematically denser and shadows darken. A
-      mean-preserving constant does not: for Worley F1 at one feature point per unit cell in 3D,
-      `E[F1] = Γ(4/3)/(4π/3)^(1/3) ≈ 0.554`, so `E[1-F1] ≈ 0.446`, and the weights sum to 1.
-      **`kConeErosionMean` is the knob** if cone shadows come out too dark (raise) or light (lower).
-
-      Bonus: cone step 4 fetches → 3, and `cUVWD`/`cPosZ` disappear with it.
-
-- [x] **T3.7 — cache the domain warp (NEW).** ✅ DONE 2026-08-04. With T1.2 reverted,
-      `cloudWarpOffset` is 8 texelFetches and became the single biggest per-sample cost left — 8 of
-      the 12 texture ops on every in-cloud sample.
-
-      It is also by a wide margin the smoothest thing being sampled: `uvw = dirECEF * kWarpFreq /
-      kWarpBakeN = dirECEF * 0.375`, so 1 km of tangential motion shifts it 5.9e-5 against a bake
-      texel of 1/192 = 5.2e-3 — **0.011 texels per kilometre.**
-
-      **This is not a new approximation.** It is exactly the one the shadow cone already makes and
-      documents ("cone samples sit within ~2*shellThick of p along sunDir, a few km at most, which
-      is a negligible angular displacement against kWarpFreq=6's basis"). Applied in two places:
-
-      - View march: cached across a 4 km stride (≈0.045 texels of error — well below the RGBA8
-        quantization already in the field). At 100-250 m steps that is 16-40 steps per evaluation.
-      - `cloudGroundShadow`: hoisted **out of the loop entirely**. It was recomputing the warp at
-        all 12 steps — 96 texelFetches per shaded ground pixel — over a march spanning at most
-        ~19 km, i.e. ~0.2 texels end to end.
-
-### Identified but not done
-
-`cirrusDomainWarp` still calls `cloudWarpOffset` (8 fetches) **plus three `warpPerlin3`
-evaluations (24 gradient hashes)** per in-cirrus sample, with `N_CIRRUS` up to 200. Its second
-warp component is at `kWarpFreq * 0.35 = 2.1`, i.e. *lower* frequency than the one just cached, so
-the same stride argument applies with more margin. Deliberately left for a separate round so this
-batch can be verified on its own.
+- [ ] **T3.2 — low-frequency density in the cone.** cloud_march.comp calls the full `cloudDensity`
+      including the erosion octave; erosion-scale detail is invisible in self-shadowing. A
+      `cloudDensityLowFreq` (presence + height profile only) drops the cone from 4 fetches/step to
+      3 and removes the `remap`/edge-bias chain. **Deferred deliberately:** it is the smallest of
+      the three cone items (25%) and the only one whose look change is unquantified — dropping
+      erosion makes cone density systematically *higher* (nothing carves it away), so shadows
+      darken and it needs a compensating factor tuned in-app rather than derived.
 
 - [ ] **T3.4 — distance-based step growth along the view ray.** `stepLen` is constant for the
       whole ray (cloud_march.comp:1022): a sample 380 km out gets the same 250 m as one 2 km out,
