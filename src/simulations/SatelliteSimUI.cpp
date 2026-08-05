@@ -3846,6 +3846,14 @@ void SatelliteSim::savePerfSnapshot(float cpuDt)
         {"cloud_march_steps", cloudMarchSteps},
         {"cloud_light_steps", cloudLightSteps},
         {"cloud_coverage", cloudCoverage},
+        // The three that actually bound cloud_march's cost, added while tuning the sun
+        // self-shadow cone (CLOUD_PERF_PLAN.md Tier 3): without shadow_max_dist_m in particular,
+        // two captures at the same viewpoint and the same light-step count were indistinguishable
+        // in the log even though the shadow range between them had been changed deliberately —
+        // which is the whole reason the capture was taken.
+        {"cloud_shadow_max_dist_m", cloudShadowMaxDistM},
+        {"cloud_max_render_dist_m", cloudMaxRenderDistM},
+        {"cloud_dist_fade_end_m", cloudDistFadeEndM},
         {"view_samples_min", viewSamplesMin},
         {"view_samples_max", viewSamplesMax},
         {"light_samples", lightSamples},
