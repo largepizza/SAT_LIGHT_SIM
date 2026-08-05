@@ -58,6 +58,94 @@ const float SUN_INTENSITY = 1.0;
 const float kCloudHorizFreq = 480.0;   // ~13 km detail features
 const float kCloudColFreq   = 80.0;    // ~20 km cloud-system footprints
 
+// ── Baked cloud noise channel layout (cloud_noise.comp) — READ BEFORE CHANGING ────────────────
+// The 192³ volume packs four values per texel:
+//   R = presence (Perlin-Worley) at this texel
+//   G = erosion FBM — the three Worley octaves PRE-SUMMED at their fixed 0.625/0.25/0.125 weights
+//   B = presence, shifted +54 texels in Z
+//   A = presence, shifted +108 texels in Z
+//
+// The packing exists so cloudDensity() gets all three vertical presence slices from ONE fetch
+// (.rba) instead of three, and the erosion octave from one more (.g) instead of a fourth read
+// plus a weighted sum — T2.1 in CLOUD_PERF_PLAN.md.
+//
+// The B/A shifts are INTEGER TEXEL COUNTS, and that is load-bearing: it makes reading .b/.a
+// bit-identical to re-reading .r at the corresponding Z offset, because a whole-texel shift
+// commutes with trilinear interpolation. It holds only while (a) these constants match
+// cloud_noise.comp's own kPresenceMidTexels/kPresenceTopTexels, (b) kCloudNoiseRes matches that
+// file's bake resolution, and (c) the sampler stays REPEAT on W so the wrap matches the bake's
+// seamless Z tiling. Change one, change all of them.
+//
+// The offsets used to be hand-written 0.28 / 0.56, which are 53.76 / 107.52 texels — not integer,
+// so they could not be packed this way. Rounding them to 54 / 108 moved each presence slice by
+// under a quarter of a texel.
+const float kCloudNoiseRes     = 192.0;
+const float kCloudPresenceZMid = 54.0  / kCloudNoiseRes;  // 0.28125 (was 0.28)
+const float kCloudPresenceZTop = 108.0 / kCloudNoiseRes;  // 0.5625  (was 0.56)
+
+// Z offset of the per-column shape lookup (colH). 48 texels = 0.25 exactly, unchanged from the
+// hand-written value it replaces. Sampling .a at this offset yields the presence field a further
+// +108 texels up (0.8125 total) — which is what the per-column BASE height noise now reads,
+// letting one fetch serve both. See cloudColumnNoise() in cloud_march.comp.
+const float kCloudColNoiseZ    = 48.0  / kCloudNoiseRes;  // 0.25
+
+// ── Baked domain-warp field sampling (cloud_warp_noise.comp) — DO NOT "OPTIMIZE" THIS ─────────
+// kWarpBakeRes MUST match cloud_warp_noise.comp's own bake resolution (kSz).
+const int kWarpBakeRes = 192;
+
+// Wraps a texel index into [0,N) — the same explicit pattern gradHash uses in the bake shader,
+// not GLSL's `%`, whose sign behaviour for negative operands isn't safe to rely on across drivers.
+int   wrapTexel(int x, int n) { int r = x % n; return r < 0 ? r + n : r; }
+ivec3 wrapTexel3(ivec3 c, int n) { return ivec3(wrapTexel(c.x, n), wrapTexel(c.y, n), wrapTexel(c.z, n)); }
+
+// Manual smoothstep-weighted trilinear blend of the baked warp texels — 8 texelFetch calls, NOT a
+// plain filtered texture() read. This is deliberate and has now been established the hard way
+// TWICE. Read the whole comment before changing it.
+//
+// Hardware trilinear interpolates LINEARLY (straight-edged) between texels; the live analytic
+// Perlin this bake replaced was smoothstep-interpolated (curved) between gradient corners. At this
+// bake's texel density that mismatch is geometrically legible as "tessellating triangle" faceting,
+// because the value is used as a raw COORDINATE DISPLACEMENT (scaled by kWarpStrength = 32) into
+// cloudNoiseTex — so the error becomes cloud *geometry*, not a small brightness shift. Raising the
+// bake to 192³/2 octaves reduced but did not eliminate it; the interpolation METHOD is the cause.
+//
+// ── Failed attempt, 2026-08-04 (T1.2 in CLOUD_PERF_PLAN.md) ───────────────────────────────────
+// It looks like this can be one filtered fetch instead of eight, by folding the smoothstep into
+// the COORDINATE rather than the weight: hardware LINEAR blends with weight frac(c*R - 0.5), so
+// passing c = (i0 + u + 0.5)/R should make that weight exactly `u`. That algebra is correct with
+// exact arithmetic, and it was verified at the interior case and both wrap edges. It still shipped
+// the faceting straight back.
+//
+// What it misses: **GPU texture filtering carries only ~8 bits of subtexel precision**, so the
+// weight is re-quantized to 1/256 steps AFTER the smoothstep. The justification given at the time
+// was that 1/256 is finer than the RGBA8 bake's own 1/255 value quantization — which is true and
+// irrelevant, because the two act completely differently. The stored-value quantization is a
+// static per-texel offset that interpolation then SMOOTHS into a continuous field. The weight
+// quantization creates steps WITHIN each texel span — which is precisely the across-the-cell
+// stair/facet structure this function exists to remove, and it is amplified 32x into a coordinate
+// whose noise domain repeats every ~1 unit.
+//
+// If you want this cheaper, the lever is the bake (resolution/format//octaves) or removing the
+// need for a coordinate warp — not the interpolation. Measure by eye, not by algebra.
+vec3 cloudWarpNoiseSample(sampler3D warpTex, vec3 uvw) {
+    vec3  tc = fract(uvw) * float(kWarpBakeRes) - 0.5; // texel-centered, wrapped into [0,texSize)
+    ivec3 i0 = ivec3(floor(tc));
+    vec3  f  = tc - vec3(i0);
+    vec3  u  = f * f * (3.0 - 2.0 * f); // same smoothstep curve the analytic Perlin interpolant used
+
+    vec3 c000 = texelFetch(warpTex, wrapTexel3(i0 + ivec3(0,0,0), kWarpBakeRes), 0).rgb;
+    vec3 c100 = texelFetch(warpTex, wrapTexel3(i0 + ivec3(1,0,0), kWarpBakeRes), 0).rgb;
+    vec3 c010 = texelFetch(warpTex, wrapTexel3(i0 + ivec3(0,1,0), kWarpBakeRes), 0).rgb;
+    vec3 c110 = texelFetch(warpTex, wrapTexel3(i0 + ivec3(1,1,0), kWarpBakeRes), 0).rgb;
+    vec3 c001 = texelFetch(warpTex, wrapTexel3(i0 + ivec3(0,0,1), kWarpBakeRes), 0).rgb;
+    vec3 c101 = texelFetch(warpTex, wrapTexel3(i0 + ivec3(1,0,1), kWarpBakeRes), 0).rgb;
+    vec3 c011 = texelFetch(warpTex, wrapTexel3(i0 + ivec3(0,1,1), kWarpBakeRes), 0).rgb;
+    vec3 c111 = texelFetch(warpTex, wrapTexel3(i0 + ivec3(1,1,1), kWarpBakeRes), 0).rgb;
+
+    return mix(mix(mix(c000, c100, u.x), mix(c010, c110, u.x), u.y),
+               mix(mix(c001, c101, u.x), mix(c011, c111, u.x), u.y), u.z);
+}
+
 // "No surface along this ray" sentinel for the shared scene-depth buffer.
 //
 // Deliberately a large finite value rather than -1.0: every consumer's operation is either

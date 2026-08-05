@@ -136,7 +136,9 @@ layout(std430, set = 0, binding = 21) readonly buffer GroundBeamsBuf {
 //  contiguously.)
 
 // Cloud 3D noise volume (binding 8): 128³ RGBA, baked by cloud_noise.comp at init.
-// R = Perlin-Worley FBM (base shape), G/B/A = inverted Worley erosion octaves.
+// R = presence (Perlin-Worley), G = pre-summed erosion FBM, B/A = presence at +54/+108 texels
+// in Z. See common.glsl's channel-layout block — this packing changed in T2.1, and the only
+// reader left in THIS file is the CLOUD_DEBUG==6 visualization below.
 layout(set = 0, binding = 8) uniform sampler3D cloudNoiseTex;
 
 // CloudParams UBO + CloudLayer come from the shared header. This block used to be

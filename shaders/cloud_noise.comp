@@ -1,8 +1,10 @@
 #version 450
 
 // Bake a 192³ RGBA noise volume for the Nubis cloud model.
-// R = Perlin-Worley FBM (base cloud macrostructure).
-// G,B,A = inverted Worley F1 at three increasing frequencies (erosion octaves).
+// R = Perlin-Worley FBM (base cloud macrostructure / vertical presence).
+// G = erosion FBM — three inverted Worley F1 octaves PRE-SUMMED at fixed 0.625/0.25/0.125 weights.
+// B = R shifted +54 texels in Z    } the two extra vertical presence slices cloudDensity() blends,
+// A = R shifted +108 texels in Z   } baked so all three come from ONE .rba fetch (see common.glsl).
 // All channels tile seamlessly at the volume boundary.
 // Dispatch (24,24,24) with local_size (8,8,8) → 192³ threads.
 // Resolution bumped from 128³ so the higher erosion frequencies below (up to 36
@@ -118,6 +120,54 @@ float remap(float v, float lo, float hi, float newLo, float newHi)
     return newLo + clamp((v - lo) / max(hi - lo, 1e-6), 0.0, 1.0) * (newHi - newLo);
 }
 
+// R: Perlin-Worley FBM — large-scale cloud macrostructure.
+// Three-octave Perlin FBM remapped by an inverted Worley field so the result has
+// cauliflower-like bulges (the Nubis Perlin-Worley channel).
+//
+// Octave frequencies MUST be powers of 2 — see CLOUD_SEAM_BUG.md #13-#15. Confirmed via two
+// rounds of RenderDoc pixel measurement: "divides 192 evenly" was NOT the real rule (N=3,6,
+// 12,24 all divide 192 exactly and are all still badly broken); the actual rule is that N
+// must be a power of 2, independent of the bake resolution entirely. Likely mechanism: the
+// cell-wrap `cell.x % int(N)` (used for hash-lookup wrapping, only exercised with a NEGATIVE
+// cell.x right at the domain edge, texel 0's dx=-1 neighbor) reduces to a correct bitmask
+// for power-of-2 N even for negative two's-complement operands, but likely lowers to a
+// multiply-by-reciprocal "magic number" division for non-power-of-2 constant N — a common
+// place for signed/negative-operand compiler bugs to hide. Not independently verified via
+// disassembly, but the empirical N-must-be-power-of-2 rule is airtight across 8 tested
+// values (4 clean: 8,32 [round 1] + power-of-2 sanity; 6 broken: 5,37 [round 1], 3,6,12,24
+// [round 2]). Do not introduce a non-power-of-2 octave frequency without re-reading this.
+//
+// Factored out of main() (T2.1, CLOUD_PERF_PLAN.md) so it can be evaluated at three Z offsets.
+float perlinWorleyAt(vec3 uvw)
+{
+    float pln  = perlinTile(uvw, 4)  * 0.5 + 0.5;
+    pln += (perlinTile(uvw, 8)  * 0.5 + 0.5) * 0.5;
+    pln += (perlinTile(uvw, 16) * 0.5 + 0.5) * 0.25;
+    pln /= 1.75;                                        // normalise octave sum → [0,1]
+    // w0: TWO Worley octaves blended (was one) — a broad macro-blob shape (freq 2) plus a
+    // secondary finer bumpiness (freq 4) gives the base silhouette organic structure instead
+    // of the smoother single-scale blob the old single-octave floor produced.
+    float w0a = 1.0 - worleyTile(uvw, 2.0);
+    float w0b = 1.0 - worleyTile(uvw, 4.0);
+    float w0  = w0a * 0.7 + w0b * 0.3;                 // inverted: high = far from cell centres
+    return remap(pln, 0.0, 1.0, w0, 1.0);
+}
+
+// ── Channel packing (T2.1, CLOUD_PERF_PLAN.md) — MUST match common.glsl ───────────────────────
+// Vertical presence slice offsets, in TEXELS. cloudDensity() reads all three presence slices from
+// a single .rba fetch instead of three separate .r reads at Z + 0.28 / Z + 0.56.
+//
+// Integer texel counts are the whole point: a whole-texel shift commutes with trilinear
+// interpolation, so B/A are bit-identical to what a Z-offset read of R returns. The old
+// hand-written 0.28/0.56 are 53.76/107.52 texels — non-integer, so they could not be packed.
+// Rounding to 54/108 moves each slice by under a quarter texel.
+//
+// These MUST equal common.glsl's kCloudPresenceZMid/kCloudPresenceZTop (expressed there as
+// 54/192 and 108/192). The noise tiles seamlessly in Z and the sampler is REPEAT on W, so the
+// wrap at the volume boundary is exact.
+const int kPresenceMidTexels = 54;
+const int kPresenceTopTexels = 108;
+
 // --- main -------------------------------------------------------------------
 
 void main()
@@ -138,40 +188,24 @@ void main()
     return;
 #endif
 
-    // R: Perlin-Worley FBM — large-scale cloud macrostructure
-    // Three-octave Perlin FBM remapped by an inverted Worley field so the
-    // result has cauliflower-like bulges (the Nubis Perlin-Worley channel).
-    // Octave frequencies MUST be powers of 2 — see CLOUD_SEAM_BUG.md #13-#15. Confirmed via two
-    // rounds of RenderDoc pixel measurement: "divides 192 evenly" was NOT the real rule (N=3,6,
-    // 12,24 all divide 192 exactly and are all still badly broken); the actual rule is that N
-    // must be a power of 2, independent of the bake resolution entirely. Likely mechanism: the
-    // cell-wrap `cell.x % int(N)` (used for hash-lookup wrapping, only exercised with a NEGATIVE
-    // cell.x right at the domain edge, texel 0's dx=-1 neighbor) reduces to a correct bitmask
-    // for power-of-2 N even for negative two's-complement operands, but likely lowers to a
-    // multiply-by-reciprocal "magic number" division for non-power-of-2 constant N — a common
-    // place for signed/negative-operand compiler bugs to hide. Not independently verified via
-    // disassembly, but the empirical N-must-be-power-of-2 rule is airtight across 8 tested
-    // values (4 clean: 8,32 [round 1] + power-of-2 sanity; 6 broken: 5,37 [round 1], 3,6,12,24
-    // [round 2]). Do not introduce a non-power-of-2 octave frequency without re-reading this.
-    float pln  = perlinTile(uvw, 4)  * 0.5 + 0.5;
-    pln += (perlinTile(uvw, 8)  * 0.5 + 0.5) * 0.5;
-    pln += (perlinTile(uvw, 16) * 0.5 + 0.5) * 0.25;
-    pln /= 1.75;                                        // normalise octave sum → [0,1]
-    // w0: TWO Worley octaves blended (was one) — a broad macro-blob shape (freq 2) plus a
-    // secondary finer bumpiness (freq 4) gives the base silhouette organic structure instead
-    // of the smoother single-scale blob the old single-octave floor produced.
-    float w0a = 1.0 - worleyTile(uvw, 2.0);
-    float w0b = 1.0 - worleyTile(uvw, 4.0);
-    float w0  = w0a * 0.7 + w0b * 0.3;                 // inverted: high = far from cell centres
-    float perlinWorley = remap(pln, 0.0, 1.0, w0, 1.0);
+    // R / B / A: the presence (Perlin-Worley) field at this texel and at two fixed Z offsets.
+    // Baking the offsets means cloudDensity() gets its whole vertical presence blend from one
+    // .rba fetch. Costs ~1.8x this bake's Worley work (5 octaves/texel -> 9), paid once at init.
+    float presenceBase = perlinWorleyAt(uvw);
+    float presenceMid  = perlinWorleyAt(uvw + vec3(0.0, 0.0, float(kPresenceMidTexels) / float(texSize.z)));
+    float presenceTop  = perlinWorleyAt(uvw + vec3(0.0, 0.0, float(kPresenceTopTexels) / float(texSize.z)));
 
-    // G, B, A: inverted Worley at three increasing frequencies (erosion octaves).
-    // Spread for a coarse bites -> mid fraying -> fine wisps hierarchy, same intent as before,
-    // but all three MUST be powers of 2 (see R-channel comment above and CLOUD_SEAM_BUG.md
-    // #13-#15) — 8/16/32 replaces the non-power-of-2 12/24/32.
-    float worleyG = 1.0 - worleyTile(uvw,  8.0);
-    float worleyB = 1.0 - worleyTile(uvw, 16.0);
-    float worleyA = 1.0 - worleyTile(uvw, 32.0);
+    // G: erosion FBM — inverted Worley at three increasing frequencies, PRE-SUMMED at the exact
+    // weights cloudDensity() used to apply after reading them as three separate channels. Coarse
+    // bites -> mid fraying -> fine wisps, same intent and same result; all three MUST be powers
+    // of 2 (see perlinWorleyAt's comment and CLOUD_SEAM_BUG.md #13-#15).
+    //
+    // Weights sum to exactly 1.0, so the sum spans the same [0,1] the individual channels did and
+    // suffers ONE round of RGBA8 quantization instead of three — marginally better precision, not
+    // worse. This frees B and A for the presence slices above.
+    float erosion = (1.0 - worleyTile(uvw,  8.0)) * 0.625
+                  + (1.0 - worleyTile(uvw, 16.0)) * 0.25
+                  + (1.0 - worleyTile(uvw, 32.0)) * 0.125;
 
-    imageStore(cloudNoiseTex, coord, vec4(perlinWorley, worleyG, worleyB, worleyA));
+    imageStore(cloudNoiseTex, coord, vec4(presenceBase, erosion, presenceMid, presenceTop));
 }
