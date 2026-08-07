@@ -934,8 +934,13 @@ struct GpuCloudParams
     float cloudShadowFloorT;    // hard floor on sun transmittance (was a fixed 0.05)
     float cloudGrazeShadow;     // sunOptDepth multiplier at zero sun elevation (was a fixed 0.35)
     float cloudConeLenScale;    // multiplier on the self-shadow cone's length cap
+    // Shape-aware shading + flat-layer decoupling, 448 -> 464. See cloud_params.glsl.
+    float cloudVertShadeGain;   // strength of the height-only shading ramp ("lasagna" banding)
+    float cloudDensityAO;       // occlusion driven by local density — carries real cloud shape
+    float cloudAOPower;         // where 1-exp(-d*power) bites; tune against `density`
+    float flatDensityScale;     // flat 2D layer opacity, decoupled from volumetric `density`
 };
-static_assert(sizeof(GpuCloudParams) == 448, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 464, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -1749,6 +1754,13 @@ private:
     float cloudShadowFloorT = 0.02f;
     float cloudGrazeShadow = 0.6f;
     float cloudConeLenScale = 1.5f;
+    // Height-only shading was the "lasagna" cause; halved and now sun-elevation weighted, with a
+    // density-driven occlusion term supplying the horizontal variation it never had.
+    float cloudVertShadeGain = 0.5f;
+    float cloudDensityAO = 0.45f;
+    float cloudAOPower = 1.0f;
+    // 1.0 = previous coupled behaviour. Raise after lowering `density` for the volumetric path.
+    float flatDensityScale = 1.0f;
     float atmosRayleighGain = 1.0f;
     float atmosMieGain = 1.0f;
     // C11 ground fog layer — real per-sample volumetric march in cloud_march.comp's fogMarchCS,
@@ -2152,12 +2164,19 @@ private:
     bool hovPhotoMinus[11] = {};
     bool hovPhotoPlus[11] = {};
     bool draggingPhoto[11] = {};
-    bool hovCloudMinus[75] = {}; // was [71] — idx 71-74 are the shading-contrast sliders
-    bool hovCloudPlus[75] = {};
-    bool draggingCloud[75] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[79] = {}; // was [75] — idx 75-78 are the shape-shading / flat-decoupling sliders
+    bool hovCloudPlus[79] = {};
+    bool draggingCloud[79] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.
+    // Collapsible section state for the Clouds tab (see buildCloudSliderSections). Indexed by a
+    // section's position in its tab's own section array, NOT by slider idx — sections are a pure
+    // presentation grouping and own no slider state. Sized 24 (capacity) so adding a category
+    // needs no array edit; kCloudSectionSlots is asserted against in buildCloudSliderSections.
+    static constexpr int kCloudSectionSlots = 24;
+    bool cloudSectionOpen[kCloudSectionSlots] = {}; // all collapsed on open — the point of the grouping
+    bool hovCloudSection[kCloudSectionSlots] = {};
 
     // ── Window chrome (drag+resize; see UIRenderer::WindowChrome) ──────────────
     // x/y default to -1 (uninitialized, centers/places on first open); w/h are set
@@ -2368,6 +2387,17 @@ private:
         int idx;
     };
     void buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, CloudSlider *sliders, int count);
+    // Collapsible category grouping on top of buildCloudSliderRows. A section owns no slider
+    // state — it only decides whether its slice of the array is rendered this frame — so a
+    // slider's global `idx` (and therefore its hover/drag/text-buffer slots) is untouched by
+    // which section it lands in, and sliders can be regrouped freely without renumbering.
+    struct CloudSliderSection
+    {
+        const char *title;
+        CloudSlider *sliders;
+        int count;
+    };
+    void buildCloudSliderSections(const UIInput &inp, UIRenderer &ui, CloudSliderSection *sections, int count);
     void buildViewControlsWindow(const UIInput &inp, UIRenderer &ui);
     void buildViewControlsBody(const UIInput &inp, UIRenderer &ui);
     void buildIntroOverlay(const UIInput &inp, UIRenderer &ui);
@@ -2411,6 +2441,13 @@ static constexpr float kIntroObserverLonDeg = -121.400291f;
 static constexpr float kIntroStartAzDeg = -61.32f;
 static constexpr float kIntroStartElDeg = 20.8f;
 static constexpr float kIntroStartFovDeg = 70.0f;
+// Cloud drift rate forced for the duration of intro playback. This is a POSITION constant as much
+// as a speed one: cloudPhase = fmod(cloudDriftRate * simTime, 2pi) and the intro always starts at
+// the same fixed epoch, so this value picks which part of the cloud noise field sits over the
+// vantage above on frame 1. Retuned when cloud-noise changes left the intro opening under solid
+// overcast. Applied in updateIntroCinematic's one-time init block, overriding the settings.json
+// value (see cloudDriftRate's own default for the non-intro case).
+static constexpr float kIntroCloudDriftRate = 6.8e-6f;
 
 // ── UC3 intro cinematic beat sheet (RELEASE_v1_1_PLAN.md) ─────────────────────
 // Shared between SatelliteSim.cpp (updateIntroCinematic/finishIntro, the playback) and

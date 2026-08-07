@@ -1588,7 +1588,10 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                                         .childGap = 4,
                                         .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
-        char presetLabelBuf[40];
+        // static, not automatic: Clay stores this pointer and dereferences it in ui.record(),
+        // after this frame's buildUI has returned. A stack buffer survives that only by luck
+        // (Debug keeps it; Release reuses the frame and the label renders as garbage).
+        static char presetLabelBuf[40];
         snprintf(presetLabelBuf, sizeof(presetLabelBuf), "Graphics preset%s",
                  graphicsPreset == GraphicsPreset::Custom ? " — Custom" : "");
         Clay_String presetLabelStr2{false, (int32_t)strlen(presetLabelBuf), presetLabelBuf};
@@ -2418,7 +2421,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
     // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
     // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[75][16];
+    static char cloudBufs[79][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -2516,43 +2519,80 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     }
 }
 
+// ─── buildCloudSliderSections ────────────────────────────────────────────────
+// Collapsible category headers wrapping buildCloudSliderRows. The Clouds tab had grown to ~47
+// sliders in one flat list — long past the point where scrolling to a known knob was faster than
+// reading every label on the way there. Sections are pure presentation: each one just gates
+// whether its slice of the array gets rendered this frame, so every slider keeps its original
+// global `idx` (and therefore its draggingCloud/hovCloudMinus/hovCloudPlus/cloudBufs slots)
+// regardless of which category it is filed under. Regrouping is free; renumbering is never needed.
+//
+// Collapse state is deliberately NOT persisted to settings.json — it is transient view state, not
+// a preference, and every section starts collapsed so the tab opens as a short list of categories.
+void SatelliteSim::buildCloudSliderSections(const UIInput &inp, UIRenderer &ui,
+                                            CloudSliderSection *sections, int count)
+{
+    static char sectCountBufs[kCloudSectionSlots][8];
+    for (int si = 0; si < count && si < kCloudSectionSlots; ++si)
+    {
+        CloudSliderSection &sec = sections[si];
+        bool open = cloudSectionOpen[si];
+        snprintf(sectCountBufs[si], sizeof(sectCountBufs[si]), "%d", sec.count);
+        Clay_String cntStr{false, (int32_t)strlen(sectCountBufs[si]), sectCountBufs[si]};
+
+        CLAY(CLAY_IDI("CloudSectHdr", si), {.layout = {
+                                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
+                                                .padding = {8, 10, 0, 0},
+                                                .childGap = 8,
+                                                .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                            .backgroundColor = hovCloudSection[si] ? Pal::btnHover : Pal::sectionHdr,
+                                            .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovCloudSection[si]);
+            sndClick(n, inp.lmbPressed);
+            hovCloudSection[si] = n;
+            if (n && inp.lmbPressed)
+                cloudSectionOpen[si] = !open;
+
+            // "-"/"+" rather than a chevron glyph: the font atlas bakes ASCII 32-126 only
+            // (see CLAUDE.md, "Font atlas is a fixed-size bitmap") — a Unicode triangle would
+            // render as a missing-glyph box.
+            CLAY(CLAY_IDI("CloudSectMark", si), {.layout = {
+                                                     .sizing = {CLAY_SIZING_FIXED(10), CLAY_SIZING_FIT(0)},
+                                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+            {
+                CLAY_TEXT(open ? CLAY_STRING("-") : CLAY_STRING("+"),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12)}));
+            }
+            CLAY(CLAY_IDI("CloudSectTitle", si), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+            {
+                Clay_String tStr{false, (int32_t)strlen(sec.title), sec.title};
+                CLAY_TEXT(tStr, CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12)}));
+            }
+            CLAY_TEXT(cntStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(11)}));
+        }
+
+        if (cloudSectionOpen[si])
+            buildCloudSliderRows(inp, ui, sec.sliders, sec.count);
+    }
+}
+
 // ─── buildSettingsCloudsTab ──────────────────────────────────────────────────
+// Sliders are grouped into collapsible categories (buildCloudSliderSections). Grouping is by what
+// a knob *does* to the render, not by which shader it lands in — a user hunting for "why are my
+// clouds too dark at sunset" should find every relevant knob in one place.
 void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
 {
-    CloudSlider sliders[] = {
+    // Bulk / layer geometry — how much cloud there is and where the deck sits.
+    CloudSlider secCoverage[] = {
         {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
         {"Density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
         {"L0 alt (m)", &cloudBaseAltM, 100.0f, 6000.0f, 100.0f, "%.0f", 2},
         {"L1 alt (m)", &cloudTopAltM, 4000.0f, 15000.0f, 250.0f, "%.0f", 3},
-        {"Drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
-        {"Sun gain (horizon)", &cloudSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 5},
-        {"Sun gain (zenith)", &cloudSunGainZenith, 0.0f, 8.0f, 0.1f, "%.2f", 37},
-        {"Ambient", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
-        {"Twilight ambient", &cloudTwilightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
-        {"Sun gain elev band", &sunGainElevBand, 0.02f, 1.0f, 0.01f, "%.2f", 47},
-        {"Twilight band hi", &twilightBandHi, -0.1f, 0.8f, 0.01f, "%.2f", 48},
-        {"Twilight band lo", &twilightBandLo, -0.9f, 0.0f, 0.01f, "%.2f", 49},
-        {"Coverage mip", &coverageMipLod, 0.0f, 6.0f, 0.25f, "%.2f", 50},
-        {"Flat coverage scale", &flatCoverageScale, 0.1f, 2.0f, 0.01f, "%.2f", 51},
-        {"Flat sun gain scale", &flatSunGainScale, 0.1f, 10.0f, 0.05f, "%.2f", 52},
-        {"Cloud 3D fade start (m)", &cloudDistFadeStartM, 5000.0f, 800000.0f, 5000.0f, "%.0f", 53},
-        {"Cloud 3D fade end (m)", &cloudDistFadeEndM, 10000.0f, 2000000.0f, 10000.0f, "%.0f", 54},
         {"Base variance", &cloudBaseVariance, 0.0f, 1.0f, 0.05f, "%.2f", 34},
-        {"Erosion (edge)", &cloudErosionEdge, 0.0f, 1.0f, 0.05f, "%.2f", 35},
-        {"Erosion (core)", &cloudErosionCore, 0.0f, 1.0f, 0.05f, "%.2f", 36},
-        {"HG g", &cloudHgG, 0.0f, 0.99f, 0.05f, "%.2f", 7},
-        {"March steps", &cloudMarchSteps, 4.0f, 1024.0f, 4.0f, "%.0f", 8},
-        {"Light steps", &cloudLightSteps, 1.0f, 16.0f, 1.0f, "%.0f", 9},
-        {"Cirrus wind (deg)", &cloudCirrusWindDeg, 0.0f, 360.0f, 5.0f, "%.0f", 10},
-        {"Cirrus stretch", &cloudCirrusStretch, 1.0f, 10.0f, 0.5f, "%.1f", 11},
-        {"Shadow max dist (m)", &cloudShadowMaxDistM, 1000.0f, 6000000.0f, 1000.0f, "%.0f", 16},
-        {"Render dist (m)", &cloudMaxRenderDistM, 20000.0f, 800000.0f, 10000.0f, "%.0f", 17},
-        // C11 ground fog layer (fogMarchCS, cloud_march.comp) — real volumetric mist shell with
-        // sun/beam godrays. First-pass defaults, expect retuning once seen in-app.
-        {"Fog top altitude (m)", &fogTopAltM, 50.0f, 200000.0f, 50.0f, "%.0f", 55},
-        {"Fog density", &fogDensity, 0.0f, 10.0f, 0.1f, "%.1f", 56},
-        {"Fog coverage", &fogCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 57},
-        {"Fog sun gain", &fogSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 58},
+        {"Drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
         // `density` alone can't push a saturated cloud column past full opacity (per-sample
         // density is clamped to [0,1] before extinction is derived from it). This boosts
         // extinction only once a ray has already accumulated real depth (see cloudMarchCS's
@@ -2561,35 +2601,112 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         // under one) without flattening cloud silhouettes into hard-edged blobs. Wider range than
         // a flat multiplier would tolerate, precisely because edges no longer pay for it.
         {"Opacity scale", &cloudOpacityScale, 0.2f, 15.0f, 0.2f, "%.1f", 61},
-        // A correct opacity value still looks wrong if what leaks through a hazy/thin cloud is a
-        // pixel-sharp copy of the raw city-lights texture — real light diffuses through cloud
-        // droplets. Blends earthNightTex/cityNightDetailTex toward this mip LOD as local cloud
-        // opacity rises (0 = no blur, higher = softer glow). See sat_sky.frag's terrain branch.
-        {"City light blur LOD", &cityLightBlurLod, 0.0f, 20.0f, 0.5f, "%.1f", 62},
-        // Atmospheric scattering strength — scales the physical Rayleigh/Mie coefficients shared
-        // by the sky atmosphere, clouds, cirrus, fog, terrain ambient, ocean reflection, and moon/
-        // sun attenuation (see common.glsl's BETA_R_BASE/BETA_M_BASE and cloud_params.glsl's
-        // atmosRayleighGain/atmosMieGain). 1.0 = original hardcoded behavior. Rayleigh gain
-        // controls how much red/orange the horizon and sunsets pick up; Mie gain controls how
-        // much wavelength-neutral haze dilutes that color back toward white/grey.
-        {"Rayleigh gain", &atmosRayleighGain, 0.0f, 3.0f, 0.05f, "%.2f", 63},
-        {"Mie/haze gain", &atmosMieGain, 0.0f, 3.0f, 0.05f, "%.2f", 64},
+    };
+
+    // Silhouette / noise detail — what an individual cloud looks like up close.
+    CloudSlider secShape[] = {
+        {"Erosion (edge)", &cloudErosionEdge, 0.0f, 1.0f, 0.05f, "%.2f", 35},
+        {"Erosion (core)", &cloudErosionCore, 0.0f, 1.0f, 0.05f, "%.2f", 36},
+        {"Erosion billow", &cloudErosionBillow, 0.0f, 1.0f, 0.05f, "%.2f", 68},
+        {"Billow height", &cloudErosionBillowH, 0.0f, 1.0f, 0.05f, "%.2f", 69},
+        {"Erosion freq", &cloudErosionFreq, 0.5f, 6.0f, 0.1f, "%.2f", 70},
+        {"Surface carve", &cloudSurfaceCarve, 0.0f, 1.0f, 0.05f, "%.2f", 67},
         // Domain-warp shear. The noise field folds (pinched/banded/"wavy chip" clouds) once
         // strength * 2 * freq / 480 exceeds ~1 — see cloud_params.glsl. Strength is how far
         // cloud structure is displaced; frequency is how fast that displacement varies. Want
         // big movement without pinching? Raise strength AND lower frequency.
         {"Warp strength", &cloudWarpStrength, 0.0f, 64.0f, 1.0f, "%.0f", 65},
         {"Warp frequency", &cloudWarpFreq, 0.5f, 12.0f, 0.25f, "%.2f", 66},
-        {"Surface carve", &cloudSurfaceCarve, 0.0f, 1.0f, 0.05f, "%.2f", 67},
-        {"Erosion billow", &cloudErosionBillow, 0.0f, 1.0f, 0.05f, "%.2f", 68},
-        {"Billow height", &cloudErosionBillowH, 0.0f, 1.0f, 0.05f, "%.2f", 69},
-        {"Erosion freq", &cloudErosionFreq, 0.5f, 6.0f, 0.1f, "%.2f", 70},
+    };
+
+    // Direct sun + ambient response, including the twilight-band falloff that governs how clouds
+    // colour through sunset. Shadowing/self-occlusion is its own section below.
+    CloudSlider secLighting[] = {
+        {"Sun gain (horizon)", &cloudSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 5},
+        {"Sun gain (zenith)", &cloudSunGainZenith, 0.0f, 8.0f, 0.1f, "%.2f", 37},
+        {"Sun gain elev band", &sunGainElevBand, 0.02f, 1.0f, 0.01f, "%.2f", 47},
+        {"Ambient", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
+        {"Twilight ambient", &cloudTwilightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
+        {"Twilight band hi", &twilightBandHi, -0.1f, 0.8f, 0.01f, "%.2f", 48},
+        {"Twilight band lo", &twilightBandLo, -0.9f, 0.0f, 0.01f, "%.2f", 49},
+        {"HG g", &cloudHgG, 0.0f, 0.99f, 0.05f, "%.2f", 7},
         {"Multi-scatter", &cloudMultiScatter, 0.0f, 1.0f, 0.05f, "%.2f", 71},
+    };
+
+    // Self-shadowing and the shadow clouds cast down onto terrain/ocean/city lights.
+    CloudSlider secShadow[] = {
+        {"Shadow max dist (m)", &cloudShadowMaxDistM, 1000.0f, 6000000.0f, 1000.0f, "%.0f", 16},
+        {"Shadow cone len", &cloudConeLenScale, 0.25f, 4.0f, 0.25f, "%.2f", 74},
         {"Shadow floor", &cloudShadowFloorT, 0.0f, 0.3f, 0.01f, "%.3f", 72},
         {"Sunset shadow", &cloudGrazeShadow, 0.0f, 1.0f, 0.05f, "%.2f", 73},
-        {"Shadow cone len", &cloudConeLenScale, 0.25f, 4.0f, 0.25f, "%.2f", 74},
+        {"Vert shade gain", &cloudVertShadeGain, 0.0f, 1.0f, 0.05f, "%.2f", 75},
+        {"Density AO", &cloudDensityAO, 0.0f, 1.0f, 0.05f, "%.2f", 76},
+        {"Density AO power", &cloudAOPower, 0.05f, 4.0f, 0.05f, "%.2f", 77},
+        // A correct opacity value still looks wrong if what leaks through a hazy/thin cloud is a
+        // pixel-sharp copy of the raw city-lights texture — real light diffuses through cloud
+        // droplets. Blends earthNightTex/cityNightDetailTex toward this mip LOD as local cloud
+        // opacity rises (0 = no blur, higher = softer glow). See sat_sky.frag's terrain branch.
+        {"City light blur LOD", &cityLightBlurLod, 0.0f, 20.0f, 0.5f, "%.1f", 62},
     };
-    buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
+
+    // The flat 2D cloud paste that the volumetric march crossfades into with distance, plus the
+    // crossfade range itself — these only matter together, so they share a section.
+    CloudSlider secDistance[] = {
+        {"Render dist (m)", &cloudMaxRenderDistM, 20000.0f, 800000.0f, 10000.0f, "%.0f", 17},
+        {"Cloud 3D fade start (m)", &cloudDistFadeStartM, 5000.0f, 800000.0f, 5000.0f, "%.0f", 53},
+        {"Cloud 3D fade end (m)", &cloudDistFadeEndM, 10000.0f, 2000000.0f, 10000.0f, "%.0f", 54},
+        {"Coverage mip", &coverageMipLod, 0.0f, 6.0f, 0.25f, "%.2f", 50},
+        {"Flat coverage scale", &flatCoverageScale, 0.1f, 2.0f, 0.01f, "%.2f", 51},
+        {"Flat sun gain scale", &flatSunGainScale, 0.1f, 10.0f, 0.05f, "%.2f", 52},
+        {"2D density scale", &flatDensityScale, 0.1f, 8.0f, 0.1f, "%.2f", 78},
+    };
+
+    CloudSlider secCirrus[] = {
+        {"Cirrus wind (deg)", &cloudCirrusWindDeg, 0.0f, 360.0f, 5.0f, "%.0f", 10},
+        {"Cirrus stretch", &cloudCirrusStretch, 1.0f, 10.0f, 0.5f, "%.1f", 11},
+    };
+
+    // C11 ground fog layer (fogMarchCS, cloud_march.comp) — real volumetric mist shell with
+    // sun/beam godrays. First-pass defaults, expect retuning once seen in-app.
+    CloudSlider secFog[] = {
+        {"Fog top altitude (m)", &fogTopAltM, 50.0f, 200000.0f, 50.0f, "%.0f", 55},
+        {"Fog density", &fogDensity, 0.0f, 10.0f, 0.1f, "%.1f", 56},
+        {"Fog coverage", &fogCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 57},
+        {"Fog sun gain", &fogSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 58},
+    };
+
+    // Atmospheric scattering strength — scales the physical Rayleigh/Mie coefficients shared
+    // by the sky atmosphere, clouds, cirrus, fog, terrain ambient, ocean reflection, and moon/
+    // sun attenuation (see common.glsl's BETA_R_BASE/BETA_M_BASE and cloud_params.glsl's
+    // atmosRayleighGain/atmosMieGain). 1.0 = original hardcoded behavior. Rayleigh gain
+    // controls how much red/orange the horizon and sunsets pick up; Mie gain controls how
+    // much wavelength-neutral haze dilutes that color back toward white/grey. Not cloud-specific,
+    // but it lives here because it is tuned against the cloud/sunset look more than anything else.
+    CloudSlider secAtmos[] = {
+        {"Rayleigh gain", &atmosRayleighGain, 0.0f, 3.0f, 0.05f, "%.2f", 63},
+        {"Mie/haze gain", &atmosMieGain, 0.0f, 3.0f, 0.05f, "%.2f", 64},
+    };
+
+    // Sample budgets — the only two knobs here that trade image quality directly against GPU cost.
+    CloudSlider secQuality[] = {
+        {"March steps", &cloudMarchSteps, 4.0f, 1024.0f, 4.0f, "%.0f", 8},
+        {"Light steps", &cloudLightSteps, 1.0f, 16.0f, 1.0f, "%.0f", 9},
+    };
+
+#define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
+    CloudSliderSection sections[] = {
+        CLOUD_SEC("Coverage & layers", secCoverage),
+        CLOUD_SEC("Shape & noise", secShape),
+        CLOUD_SEC("Lighting", secLighting),
+        CLOUD_SEC("Shadowing & AO", secShadow),
+        CLOUD_SEC("Distance & 2D falloff", secDistance),
+        CLOUD_SEC("Cirrus", secCirrus),
+        CLOUD_SEC("Ground fog", secFog),
+        CLOUD_SEC("Atmospheric scattering", secAtmos),
+        CLOUD_SEC("Quality / performance", secQuality),
+    };
+#undef CLOUD_SEC
+    buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])));
 }
 
 // ─── buildSettingsOceanTab ───────────────────────────────────────────────────
@@ -3589,6 +3706,10 @@ void SatelliteSim::loadSettings()
         cloudShadowFloorT = c.value("cloud_shadow_floor_t", cloudShadowFloorT);
         cloudGrazeShadow = c.value("cloud_graze_shadow", cloudGrazeShadow);
         cloudConeLenScale = c.value("cloud_cone_len_scale", cloudConeLenScale);
+        cloudVertShadeGain = c.value("cloud_vert_shade_gain", cloudVertShadeGain);
+        cloudDensityAO = c.value("cloud_density_ao", cloudDensityAO);
+        cloudAOPower = c.value("cloud_ao_power", cloudAOPower);
+        flatDensityScale = c.value("cloud_flat_density_scale", flatDensityScale);
         atmosRayleighGain = c.value("atmos_rayleigh_gain", atmosRayleighGain);
         atmosMieGain = c.value("atmos_mie_gain", atmosMieGain);
     }
@@ -3741,6 +3862,10 @@ void SatelliteSim::saveSettings()
         {"cloud_shadow_floor_t", cloudShadowFloorT},
         {"cloud_graze_shadow", cloudGrazeShadow},
         {"cloud_cone_len_scale", cloudConeLenScale},
+        {"cloud_vert_shade_gain", cloudVertShadeGain},
+        {"cloud_density_ao", cloudDensityAO},
+        {"cloud_ao_power", cloudAOPower},
+        {"cloud_flat_density_scale", flatDensityScale},
         {"atmos_rayleigh_gain", atmosRayleighGain},
         {"atmos_mie_gain", atmosMieGain}};
 

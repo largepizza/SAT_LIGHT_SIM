@@ -231,6 +231,11 @@ const float kMarchStepsFloor    = 12.0;
 const float kGrazeShadowFloor   = 0.35;
 const float kGrazeShadowFullSin = 0.3;
 
+// Sun elevation (sin) at which the analytic vertical shading ramp reaches full strength. A
+// top-bright/bottom-dark gradient is only physically meaningful when the light actually comes from
+// above; at a horizontal sun it is simply wrong, and it fights the real cone-derived shadow.
+const float kVertShadeSunBand = 0.35;
+
 // UNUSED. Was the colour of a non-decaying night-sky floor for cloud tops (starlight + multiple-
 // scattered air) intended to hold cloud tops above black after skyAmbientBase collapses post-
 // sunset. That term persisted through full night, which is the wrong effect — what was wanted is
@@ -1439,7 +1444,38 @@ void cloudMarchCS(
             // horizontally with the cloud field.
             float colSpan    = max(colH - baseH, 1e-3);
             float colRel     = clamp((hNorm - baseH) / colSpan, 0.0, 1.0);
-            float selfShadow  = mix(shadowFloor, 1.0, colRel);
+
+            // ── Why clouds read as "lasagna" ────────────────────────────────────────────────
+            // Nearly every shading term here is a function of HEIGHT ALONE — this ramp, the
+            // twilight ambient's mix(0.3,0.9,hNorm), cityUp's heightFalloff, auroraUp's
+            // mix(0.2,1.0,hNorm). A function of height has, by construction, the same value
+            // everywhere on a horizontal plane, so it paints horizontal bands: dark bottoms,
+            // mid sides, mid tops. Changing erosion cannot fix that, because erosion changes
+            // GEOMETRY while the shading stays f(height) — the bands just move up or down, which
+            // is exactly the reported behaviour.
+            //
+            // Two changes, both aimed at putting horizontal variation back in:
+            //
+            // 1. The vertical ramp is now weighted by how overhead the sun is. It stands in for
+            //    "light arrives from above", which is true at midday and false at sunset — where
+            //    it actively fights the cone-derived shadow that does carry real shape.
+            //    cloudVertShadeGain scales what remains; 0 removes the analytic ramp entirely and
+            //    leaves all shading to the cone.
+            //
+            // 2. A density-driven occlusion term. `d` is this sample's own local density, which
+            //    varies with the erosion field — so unlike everything above it carries the cloud's
+            //    actual 3D shape. Dense interior darkens, wispy edges and protruding lumps stay
+            //    bright, which is what makes cauliflower read as cauliflower. It is an
+            //    approximation (local density stands in for local mean free path, not a real
+            //    gathered integral), but it is free: d is already computed.
+            //    1-exp(-d*power) maps the now-unbounded d into [0,1); cloudAOPower sets where that
+            //    curve bites, which needs tuning against whatever `density` ends up at.
+            float vertRamp   = mix(shadowFloor, 1.0, colRel);
+            float overhead   = smoothstep(0.0, kVertShadeSunBand, max(cloudSunDotRaw, 0.0));
+            float vertTerm   = mix(1.0, vertRamp, overhead * cloud.cloudVertShadeGain);
+            float aoTerm     = 1.0 - cloud.cloudDensityAO
+                                     * (1.0 - exp(-d * max(cloud.cloudAOPower, 1e-3)));
+            float selfShadow = vertTerm * aoTerm;
             float sunLit      = sunElevSoft * sunTransmittance * selfShadow;
 
             float sampleDayness = clamp((cloudSunDotRaw + 0.2) / 0.5, 0.0, 1.0);

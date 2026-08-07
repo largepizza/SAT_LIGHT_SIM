@@ -226,4 +226,20 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     float cloudShadowFloorT;
     float cloudGrazeShadow;
     float cloudConeLenScale;
+    // ── Shape-aware shading + flat-layer decoupling (448 -> 464) ─────────────────────────────
+    // cloudVertShadeGain: strength of the analytic top-bright/bottom-dark ramp, which is a pure
+    //   function of height and therefore paints horizontal bands ("lasagna"). It is additionally
+    //   weighted by sun elevation now, since a vertical light gradient only makes sense when the
+    //   light comes from above. 0 hands all shading to the self-shadow cone.
+    // cloudDensityAO / cloudAOPower: occlusion driven by the sample's own local density, the one
+    //   cheap shading input that carries real 3D cloud shape rather than height. Power sets where
+    //   1-exp(-d*power) bites, and needs tuning against whatever `density` is set to.
+    // flatDensityScale: the flat 2D layer's opacity, decoupled from the volumetric `density`.
+    //   The two reach opacity by different routes — volumetric accumulates transmittance across
+    //   many samples, flat multiplies once — so a `density` low enough to give the volumetric
+    //   soft shading left the flat layer visibly translucent. Raise this to compensate.
+    float cloudVertShadeGain;
+    float cloudDensityAO;
+    float cloudAOPower;
+    float flatDensityScale;
 } cloud;
