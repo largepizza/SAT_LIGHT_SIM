@@ -1255,6 +1255,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.cloudShadowFloorT = cloudShadowFloorT;
         cp.cloudGrazeShadow = cloudGrazeShadow;
         cp.cloudConeLenScale = cloudConeLenScale;
+        cp.cloudVertShadeGain = cloudVertShadeGain;
+        cp.cloudDensityAO = cloudDensityAO;
+        cp.cloudAOPower = cloudAOPower;
+        cp.flatDensityScale = flatDensityScale;
         cp.atmosRayleighGain = atmosRayleighGain;
         cp.atmosMieGain = atmosMieGain;
         cp.stormStrength = stormStrength;
@@ -2676,6 +2680,16 @@ void SatelliteSim::updateIntroCinematic(float dt)
         timeScaleIdx = 0;
         timePaused = false;
         timeDir = 1.0f;
+
+        // Cloud drift is not just a speed — cloudPhase is fmod(cloudDriftRate * simTime, 2pi),
+        // and the intro always starts at the same fixed epoch, so this rate alone decides WHERE
+        // the cloud noise pattern sits over the California vantage on frame 1. Later cloud-noise
+        // changes moved that pattern so the intro opened socked in under overcast, hiding the
+        // satellites the whole cinematic is framed around. Pinned to the rate that puts a clear
+        // patch overhead. Forced here (not just changed as the compiled default) for the same
+        // reason as timeScaleIdx above: settings.json would otherwise restore the player's own
+        // saved rate and put the overcast back.
+        cloudDriftRate = kIntroCloudDriftRate;
 
         float sL = obsDir.z;
         float cLH = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);

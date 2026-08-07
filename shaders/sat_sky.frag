@@ -1033,7 +1033,49 @@ void evalCloudLayer(
     // because the volumetric accumulates through transmittance while this is a single multiply.
     // 1-exp(-x) is ~x for small x (dim clouds unchanged) and asymptotes to 1 instead of clipping,
     // which is also about right physically: a fully lit cloud's albedo is ~0.7-0.9, not unbounded.
-    vec3  cloudLit     = vec3(max(0.0, cloudSunDot + 0.1) * sunGainCurve) * cloudDayFrac;
+    // Spectral sun colour at the CLOUD's own geographic position. This term used to be a pure
+    // white vec3, which is precisely why raising sun gain only ever made 2D clouds BRIGHTER and
+    // never orange: the flat path had no wavelength-dependent factor anywhere in it, while the
+    // volumetric path multiplies by sunColorCloud — its own optDepth-derived sun transmittance at
+    // shell entry. This is the same integral, evaluated in ECEF from the cloud point toward the
+    // sun, so at a grazing sun the long air path extinguishes blue and green and what actually
+    // reaches the cloud is genuinely orange/red rather than white scaled up.
+    //
+    // The soft 1-exp(-x) compression below then works per channel, so at high gain red saturates
+    // first and the colour survives instead of washing to white the way a scaled grey did.
+    //
+    // dbgSkipSunOD() makes optDepth return 0, hence vec3(1.0) — exactly the old white behaviour —
+    // so the existing sun-OD knockout bit isolates this cleanly at zero extra plumbing.
+    // Two details here are copied deliberately from cloudMarchCS's sunColorCloud block rather
+    // than reinvented, because getting either one wrong shifts the HUE relative to the volumetric
+    // path — which is exactly what the first version of this did (2D read distinctly redder):
+    //
+    //   * BETA_M * 1.1, not BETA_M. Mie extinction is wavelength-neutral, so it is the term that
+    //     dilutes Rayleigh's red with grey. Using a 10% weaker Mie coefficient than the volumetric
+    //     leaves proportionally less grey in the mix, i.e. a MORE saturated red, for the same
+    //     geometry.
+    //   * The Earth-shadow gate. raySphere against R_EARTH first: if the sun ray from this cloud
+    //     point enters the planet, the cloud is in Earth's shadow and gets no sunlight at all.
+    //     Without it, optDepth happily integrates a chord that passes underground — where its
+    //     max(0, length-R_EARTH) altitude clamp reads maximum air density the whole way — yielding
+    //     an enormous, extremely red-shifted colour just past the terminator. The volumetric has
+    //     already gone to zero there, so that band was the "dark red" tail with no 3D counterpart.
+    //     cloudDayFrac's smoothstep only fades this out by cloudSunDot = -0.1, leaving the whole
+    //     sunset band running on the ungated value.
+    //
+    // SUN_INTENSITY is deliberately NOT copied — the flat path's magnitude calibration lives in
+    // sunGain * flatSunGainScale instead, and folding in a second large constant would just move
+    // where those sit. Only the wavelength RATIO has to match, and it now does.
+    vec3  sunColorFlat = vec3(0.0);
+    vec2  tSunEarth    = raySphere(cECEF, sunDirECEF, R_EARTH);
+    if (!(tSunEarth.x > 0.0 && tSunEarth.y > 0.0)) {
+        vec2 tSunAtm = raySphere(cECEF, sunDirECEF, R_ATMOS);
+        if (tSunAtm.y > 0.0) {
+            vec2 odSun = optDepth(cECEF, sunDirECEF, tSunAtm.y);
+            sunColorFlat = exp(-(BETA_R * odSun.x + BETA_M * 1.1 * odSun.y));
+        }
+    }
+    vec3  cloudLit     = sunColorFlat * (max(0.0, cloudSunDot + 0.1) * sunGainCurve) * cloudDayFrac;
 
     // Moonlight — this flat path had no night-side light source at all (cloudDayFrac zeroes
     // cloudLit once the sun sets), unlike the volumetric shell's moonContrib (cloud_march.comp)
@@ -1045,7 +1087,32 @@ void evalCloudLayer(
     float moonLit      = max(0.0, cloudMoonDot) * moonDirENU.w;
     vec3  moonContrib  = vec3(0.92, 0.95, 1.0) * moonLit * cloud.moonGain;
 
-    vec3  cloudColor   = 1.0 - exp(-(cloudLit + moonContrib));
+    // Compression applied to LUMINANCE, then scaled back onto the original colour, rather than
+    // per channel. This is what caused the reported yellow -> orange -> red -> dark red march
+    // across a single sunset while the volumetric only went orange -> dark orange.
+    //
+    // Per-channel 1-exp(-x) is a saturating curve, so it compresses BRIGHT channels harder than
+    // dim ones. On a sunset colour like (1.0, 0.5, 0.2) it lifts green and blue relative to red —
+    // it DESATURATES. How much depends on absolute magnitude: near x=0 the curve is the identity
+    // (no desaturation at all, full sunset red), and at large x every channel pins near 1 (heavy
+    // desaturation, toward yellow/white). So as the sun sets and cloudLit's magnitude falls, the
+    // flat layer slides continuously from the compressed end of that curve to the linear end,
+    // traversing the whole hue range on the way down. The volumetric never does this because it
+    // has no per-channel compressor at all — it accumulates linearly through transmittance.
+    // flatSunGainScale (~4x) put this path even deeper into the compressed regime to begin with,
+    // which is why its bright end read as yellow rather than orange.
+    //
+    // Compressing the luminance and rescaling preserves chromaticity exactly, so the hue is now
+    // whatever sunColorFlat says it is at every brightness — the same thing the volumetric does.
+    // The magnitude roll-off (the reason this compressor exists: an unbounded product drove the
+    // flat layer to pure white at volumetric-tuned sun gains) is unchanged.
+    //
+    // Note this can leave an individual channel above 1.0 for a strongly tinted colour, where the
+    // per-channel form could not. That is correct for an HDR value feeding the tone map below, but
+    // it is a real change in what this function can return.
+    vec3  litSum       = cloudLit + moonContrib;
+    float litLum       = dot(litSum, vec3(0.2126, 0.7152, 0.0722));
+    vec3  cloudColor   = litSum * ((1.0 - exp(-litLum)) / max(litLum, 1e-4));
 
     // Aerial perspective. `color` at this point already holds the atmosphere's own inscattered
     // light along this ray (the N_VIEW loop that ran before this function), the same value the
@@ -2270,7 +2337,12 @@ void main() {
             // layer, never both — which is what made the 3D->2D crossfade untunable and forced
             // kCloud3DFadeStart out to 800 km to hide the mismatch.
             cloud.coverage * cloud.layers[li].coverageMult * cloud.flatCoverageScale,
-            cloud.density  * cloud.layers[li].densityMult,
+            // flatDensityScale decouples the flat layer's opacity from the volumetric one. They
+            // reach opacity by completely different routes — the volumetric accumulates
+            // transmittance over many samples, so lowering `density` to soften its shading
+            // necessarily thins it; the flat layer multiplies once, so the same value drops
+            // straight out as translucency. One shared slider could only ever satisfy one of them.
+            cloud.density  * cloud.layers[li].densityMult * cloud.flatDensityScale,
             cloud.sunGain      * cloud.flatSunGainScale,
             cloud.sunGainZenith * cloud.flatSunGainScale,
             cloud.layers[li].shellAltM,
