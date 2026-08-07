@@ -318,13 +318,58 @@ shading and simply updates less often along the ray. `shadowMaxDistM` should now
 whatever looks right — **that is the next thing to try, and it needs a look pass plus a fresh
 capture pair.**
 
-- [ ] **T3.2 — low-frequency density in the cone.** cloud_march.comp calls the full `cloudDensity`
-      including the erosion octave; erosion-scale detail is invisible in self-shadowing. A
-      `cloudDensityLowFreq` (presence + height profile only) drops the cone from 4 fetches/step to
-      3 and removes the `remap`/edge-bias chain. **Deferred deliberately:** it is the smallest of
-      the three cone items (25%) and the only one whose look change is unquantified — dropping
-      erosion makes cone density systematically *higher* (nothing carves it away), so shadows
-      darken and it needs a compensating factor tuned in-app rather than derived.
+- [x] **T3.2 — constant mean erosion in the cone.** ✅ DONE. Landed as a **bug fix**, not the perf
+      nicety it was filed as.
+
+      ### The sliced-noise blobs
+
+      Symptom: blobby artifacts in cloud shadows, worse with higher edge erosion, **sharper** with
+      more light steps, described as *"a slice of the noise at the first layer of the raymarch"* —
+      and recognised as the same layer-slice pitfall this project already fought during early
+      cloud work.
+
+      That reading is correct, and it localises precisely. After T2.1, the cone has exactly **one**
+      lookup whose Z varies with altitude: the erosion detail coordinate
+      `cUVWD = cUVWXY + vec3(0, 0, chN * kVertTiles + cPosZ * 2.0)`. Everything else it samples
+      (presence via `.rba`, the column noise, coverage) is either altitude-pinned or a direction
+      that barely moves along the cone.
+
+      That is the exact hazard `cloudDensity`'s own presence comment documents — "sampling Z
+      continuously at this codebase's typical march-step counts reintroduces altitude-slab
+      banding" — and the reason presence was pinned to three fixed slices in the first place. The
+      **view** march survives it only by brute force: ~215 steps at ≤250 m, above the documented
+      150-step minimum. The **cone** runs the same lookup at ~13 steps across the same 9.4 km
+      shell — **16× under that minimum** — so each step reads one thin Z-slab of the erosion
+      volume and holds it across kilometres of altitude. T3.1's geometric growth pushed the late
+      steps to ~5 km and made it worse.
+
+      It is aliased *horizontally* too: the erosion octaves are Worley at 8/16/32 cells sampled at
+      `kCloudHorizFreq` scale, so a km-scale step samples them essentially at random. **There is
+      no sampling rate the cone can afford at which this term carries real information** — which
+      is why the mean is the honest fix rather than a cheaper lookup.
+
+      Fix: `cloudDensity` gained a `useMeanErosion` flag; only the cone passes true, substituting
+      `kConeErosionMean = 0.45`. Structurally the same remedy already applied to presence — pin
+      the altitude axis instead of sampling it. `cUVWD`/`cPosZ` are deleted with it.
+
+      Mean-preserving by derivation, so it does not darken shadows the way simply *dropping* the
+      term would (that was the objection that deferred it): for Worley F1 at one feature point per
+      unit cell in 3D, `E[F1] = Γ(4/3)/(4π/3)^(1/3) ≈ 0.554`, so `E[1−F1] ≈ 0.446`, weights sum to
+      1. **`kConeErosionMean` is the knob** if shadows land too dark (raise) or too light (lower).
+
+      The flag sits *below* the `base <= 0.0` early-out deliberately — hoisting the sample into a
+      wrapper would have cost the view march that rejection on every sample.
+
+      **Middle option if shadow erosion detail is wanted back:** keep the fetch but drop only the
+      `hNorm * kVertTiles` term from `cUVWD`. That removes the vertical slicing while preserving
+      horizontal structure — at no perf saving.
+
+      **Next suspect if slabs persist:** the T3.3-v2 cone cache also produces constant-shadow
+      slabs along the ray (500 m at the camera, growing). Set `kSunODStrideBaseM = 0.0` to disable
+      caching entirely — the stride test then always misses — and see whether the banding survives.
+
+- [ ] ~~**T3.7 — cache the domain warp.**~~ **Declined.** Written, then removed deliberately.
+      Do not re-apply, and do not add the `cirrusDomainWarp` equivalent, without asking first.
 
 - [ ] **T3.4 — distance-based step growth along the view ray.** `stepLen` is constant for the
       whole ray (cloud_march.comp:1022): a sample 380 km out gets the same 250 m as one 2 km out,

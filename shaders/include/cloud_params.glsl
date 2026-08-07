@@ -242,4 +242,28 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     float cloudDensityAO;
     float cloudAOPower;
     float flatDensityScale;
+    // ── Flat-2D Rayleigh decoupling (464 -> 480) ─────────────────────────────────────────────
+    // flatRayleighGain: an EXTRA multiplier on the Rayleigh coefficient used by sat_sky.frag's
+    //   evalCloudLayer ONLY — i.e. the flat 2D paste, not the volumetric march, not the sky.
+    //   It stacks on top of atmosRayleighGain (which stays global), so 1.0 is an exact no-op.
+    //   Exists because the two cloud paths reach their colour by structurally different routes:
+    //   the flat layer applies BETA_R twice over (once for sunColorFlat, the sun transmittance
+    //   AT the cloud, once for attn/airlight, the camera->cloud path) as a single closed-form
+    //   multiply, while the volumetric accumulates through transmittance per step. So a Rayleigh
+    //   gain tuned to give the volumetric clouds the right sunset depth does NOT land the flat
+    //   layer in the same place, and the 3D->2D crossfade shows a hue/depth step across
+    //   cloudDistFadeStartM..EndM. This is the knob that closes that step, in the same spirit as
+    //   flatCoverageScale/flatSunGainScale/flatDensityScale above.
+    // flatTwilightAmbientGain (claimed pad18): the flat layer's share of the twilight sky-ambient
+    //   term, stacked on the shared cloudTwilightAmbientGain the volumetric march uses — so the
+    //   shared slider still moves both together and this one only sets their RATIO. Before it
+    //   existed the flat path had no ambient term at all and went black through twilight while
+    //   the volumetric clouds beside it stayed sky-lit blue; see evalCloudLayer in sat_sky.frag.
+    //   1.0 = the same strength the volumetric gets.
+    // The remaining pads keep the block a multiple of 16 bytes (std140 rounds the block size up
+    // to 16 regardless, so the C++ mirror must too or the descriptor range undershoots the block).
+    float flatRayleighGain;
+    float flatTwilightAmbientGain;
+    float pad19;
+    float pad20;
 } cloud;
