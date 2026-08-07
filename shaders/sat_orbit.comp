@@ -171,6 +171,14 @@ layout(push_constant) uniform PC {
                              // ReflectorTargetBuf this frame (see that buffer's doc comment above)
     float minBeamElevSin;   // offset 108 — S1 follow-up: sin(minimum acceptable local elevation
                              // angle at a candidate target) — see the TargetedReflector block below
+    uint  mirrorSnap;       // offset 112 — 1 = ignore the slew rate limit and place every mirror
+                             // directly at its ideal attitude this dispatch (sim start / after any
+                             // event that invalidates persisted slew state)
+    float minBeamElevSinRelease; // offset 116 — sin of the RELEASE elevation floor, always below
+                             // minBeamElevSin. A target already locked by a satellite is only given
+                             // up once it falls under this; a fresh one must clear the higher
+                             // minBeamElevSin to be acquired. The gap is the anti-chatter
+                             // hysteresis — see the TargetedReflector selection block.
 } pc;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -338,6 +346,10 @@ void main()
     // ── Primary surface normal ────────────────────────────────────────────────
     vec3 surfN0;
     if (orb.primaryAttitude == AM_TARGETED_REFLECTOR) {
+        // Read once, up here: the selection loop below needs .w's locked-target index, and the
+        // slew block further down needs .xyz and the same .w. See the .w encoding note below.
+        vec4 state = mirrorNormals[i];
+
         // S1 follow-up: two problems with the original "always pick the single nearest target"
         // rule, found once targets became real clustered sites instead of ~uniform random points:
         //
@@ -355,16 +367,52 @@ void main()
         // 2. Uneven load. Deterministically picking "the" best target means every satellite that
         //    can see a popular clustered site pointing at it does — some sites get hit by dozens
         //    of satellites at once while others (this satellite's 2nd/3rd-best options) get none.
-        //    Fixed via reservoir sampling: each ACCEPTABLE (cleared the elevation bar) candidate
-        //    ends with equal probability of being chosen, using a hash seeded by this satellite's
-        //    own stable index `i` — a pure function of (i, this frame's target set), so it's
-        //    deterministic and won't flicker frame-to-frame, and spreads different satellites
-        //    across different acceptable targets with NO cross-satellite arbitration (satellites
-        //    never communicate or compete for a slot — see C12 follow-up #9's flicker history for
-        //    why that's a hard requirement here, not a nice-to-have).
+        //    The fix must spread satellites across acceptable targets with NO cross-satellite
+        //    arbitration (satellites never communicate or compete for a slot — see C12 follow-up
+        //    #9's flicker history for why that's a hard requirement here, not a nice-to-have).
+        //
+        // 2026-08-06: the ORIGINAL fix for (2) — reservoir sampling, each acceptable candidate
+        // ending with equal probability via hash11(i*7919 + acceptCount*104729) — was replaced. It
+        // spread load correctly but had no temporal coherence whatsoever, and in target-dense
+        // regions satellites visibly strobed between sites every frame. The seed was keyed on
+        // `acceptCount`, a candidate's RANK IN THIS FRAME'S SCAN ORDER, which is the CPU's
+        // night-side compaction order: one target rotating into or out of the night side shifts
+        // every later candidate's rank by one, re-rolling the satellite's whole hash sequence onto
+        // an unrelated target. Targets crossing the elevation bar as the satellite moves did the
+        // same. So the pick was deterministic within a frame but an effectively fresh uniform draw
+        // between frames, over the entire acceptable set — worst exactly where the set is largest.
+        //
+        // Replaced by two pieces that are individually insufficient and together stable:
+        //
+        //   a. STABLE SCORE, argmax instead of reservoir. score = hash11(i, ORIGINAL target index)
+        //      — a pure function of the (satellite, target) pair, independent of scan order and of
+        //      how many other candidates exist. Load spreading is unchanged in character (every
+        //      satellite still gets its own pseudo-random preference ordering over sites), but no
+        //      unrelated target can perturb it.
+        //
+        //   b. AN ACTUAL LOCK, in mirrorNormals[i].w. Argmax alone still switches the instant a
+        //      higher-scoring target crosses the elevation bar, which in a dense region is often.
+        //      The incumbent target is kept while it is still present and still above a RELAXED
+        //      floor (pc.minBeamElevSinRelease < pc.minBeamElevSin) — the two-threshold gap is what
+        //      stops a target sitting exactly on the bar from chattering across it. Only when the
+        //      lock is genuinely lost (target rotated to the day side, or fell below the release
+        //      floor) does the argmax above choose a replacement. This is also the more physical
+        //      behaviour: a mirror commits to a site for a pass rather than reshuffling per frame.
+        //
+        // .w encoding: 0 = uninitialized (snap on first use), 1 = initialized with no locked beam
+        // target, 2+k = initialized and locked to ORIGINAL target index k. Every existing
+        // `state.w < 0.5` uninitialized test still means the same thing.
+        // pc.mirrorSnap frames also discard the incumbent lock, not just the slew limit: the events
+        // that request a snap are exactly the ones that make this index's stored lock belong to a
+        // different satellite, and holding it would silently pin the wrong site until it happened
+        // to drop below the release floor on its own.
+        int   lockIdx = (state.w >= 1.5 && pc.mirrorSnap == 0u) ? int(state.w + 0.5) - 2 : -1;
+        vec3  lockPos = vec3(0.0);
+        bool  lockOk  = false;
+
         int   bestIdx = -1;   // elevation-gated — the only one allowed to actually beam (see below)
         vec3  bestPos = vec3(0.0);
-        int   acceptCount = 0;
+        float bestScore = -1.0;
         int   nearIdx = -1;   // ANY night-valid target, nearest by angular proximity — no beam,
         vec3  nearPos = vec3(0.0); // attitude-only "pre-aim" fallback, see below
         float nearCos = -2.0;
@@ -373,18 +421,29 @@ void main()
             vec4 td = reflTargets[k];
             vec3 tPos = td.xyz;
             vec3 tDir = normalize(tPos);
+            int  oi   = int(td.w + 0.5); // ORIGINAL target index — see ReflectorTargetBuf's comment
 
             float c = dot(satZenith, tDir);
-            if (c > nearCos) { nearCos = c; nearIdx = int(td.w + 0.5); nearPos = tPos; }
+            if (c > nearCos) { nearCos = c; nearIdx = oi; nearPos = tPos; }
 
             // Local elevation of the satellite as seen FROM the target (sin of it, to match
             // pc.minBeamElevSin — avoids an asin() per candidate).
             float sinElev = dot(tDir, normalize(satECI - tPos));
+
+            // Incumbent check uses the RELEASE floor, so a locked target is given up later than a
+            // fresh one would be acquired. Being in this buffer at all already proves it is still
+            // night-side, so that half of the lock condition needs no explicit test.
+            if (oi == lockIdx && sinElev >= pc.minBeamElevSinRelease) { lockOk = true; lockPos = tPos; }
+
             if (sinElev < pc.minBeamElevSin) continue;
-            ++acceptCount;
-            float r = hash11(float(i) * 7919.0 + float(acceptCount) * 104729.0);
-            if (r < 1.0 / float(acceptCount)) { bestIdx = int(td.w + 0.5); bestPos = tPos; }
+            float score = hash11(float(i) * 7919.0 + float(oi) * 104729.0);
+            if (score > bestScore) { bestScore = score; bestIdx = oi; bestPos = tPos; }
         }
+
+        // Incumbent wins outright — the argmax result is only a replacement candidate for when the
+        // lock is gone. Note this can hold a target the acquire bar would currently reject (that is
+        // the entire point of the release floor being lower).
+        if (lockOk) { bestIdx = lockIdx; bestPos = lockPos; }
 
         // S1 follow-up #2: limited mirror-slew "pointing budget" — homing all the way to
         // FlatMirror45 (straight down) every time a satellite loses its target, then slewing all
@@ -413,11 +472,18 @@ void main()
             ideal = (nl > 1e-5) ? n / nl : satNadir;
         }
 
-        vec4 state = mirrorNormals[i];
         if (haveIdeal) {
             // Rate-limit mirror slew toward ideal direction.
-            if (state.w < 0.5) {
-                // Uninitialized: snap to ideal on first frame.
+            if (state.w < 0.5 || pc.mirrorSnap != 0u) {
+                // Uninitialized, or a snap frame requested by the CPU: go straight to ideal.
+                // pc.mirrorSnap exists because mirrorNormalsBuf is PERSISTENT device-local state
+                // keyed by dispatch index `i` — it survives events that invalidate what that index
+                // means (an orbit rebake / constellation rebuild remaps satellites onto indices,
+                // and a disabled constellation's satellites return early above so their entries go
+                // stale while disabled). Without it, every affected mirror slews out of a pose that
+                // belonged to a different satellite (or to a different moment) at
+                // mirrorSlewDegPerSec, which at the 1x default is tens of seconds of visible
+                // wandering right when the sim starts. See SatelliteSim::mirrorSnapFrames.
                 surfN0 = ideal;
             } else {
                 vec3  cur      = state.xyz;
@@ -430,14 +496,26 @@ void main()
                     surfN0 = normalize(mix(cur, ideal, maxAngle / angle));
                 }
             }
-            mirrorNormals[i] = vec4(surfN0, 1.0);
+            // Carry the lock forward in .w (0 = uninitialized, 1 = initialized but no locked beam
+            // target, 2+k = locked to original target index k). bestIdx is the incumbent whenever
+            // the incumbent survived, so a satellite holding a site rewrites the same value every
+            // frame; losing the lock without finding a replacement writes 1, which correctly frees
+            // the next frame's argmax to choose fresh.
+            mirrorNormals[i] = vec4(surfN0, (bestIdx >= 0) ? float(bestIdx + 2) : 1.0);
         } else if (state.w < 0.5) {
             // Never had a real target and none available now: FlatMirror45 as a sane starting
             // pose, same formula as the old unconditional fallback.
+            //
+            // Deliberately does NOT mark the state initialized (w stays 0). This pose is a
+            // placeholder, not an attitude the mirror ever chose — marking it initialized meant the
+            // satellite's FIRST real target was slewed to from straight-down at
+            // mirrorSlewDegPerSec rather than snapped to, which is exactly the "takes a good moment
+            // to reach its target attitude" startup lag: any frame where the target set is
+            // momentarily empty (or a satellite is processed before it has one) permanently pinned
+            // that satellite to a nadir-down cold start.
             vec3  n   = pc.sunDirECI + satNadir;
             float len = length(n);
             surfN0 = (len > 1e-5) ? n / len : satNadir;
-            mirrorNormals[i] = vec4(surfN0, 1.0);
         } else {
             // Hold last attitude — mirrorNormals[i] is deliberately left untouched.
             surfN0 = state.xyz;

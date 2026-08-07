@@ -379,8 +379,20 @@ Output of `sat_flare.comp`; read by `sat_point.vert`.
 enuX (vec4), enuY (vec4), enuZ (vec4)  — ECI→ENU basis, offsets 0/16/32
 sunDirECI (vec3), deltaT (float)       — offset 48/60
 obsECI (vec3), satCount (uint)         — offset 64/76
-highlightMask (uint), enabledMask (uint), simDt (float), pad (float)  — offset 80/84/88/92
+highlightMask (uint), enabledMask (uint), simDt (float), elevCutoff (float) — offset 80/84/88/92
+beamGain (float), mirrorSlewDegPerSec (float), activeTargetCount (uint),
+minBeamElevSin (float)                 — offsets 96/100/104/108
+mirrorSnap (uint), minBeamElevSinRelease (float), pad1/pad2 — offset 112/116, padded to 128
 ```
+The header said 96 bytes long after the struct had grown past it; it is 128 as of the mirror-snap
+field. `mirrorSnap = 1` makes `sat_orbit.comp` place every `TargetedReflector` mirror directly at
+its ideal attitude for that dispatch instead of rate-limiting toward it. `mirrorNormalsBuf` is
+persistent state keyed by dispatch index, so anything that changes what an index MEANS — sim start,
+an orbit rebake, a constellation rebuild, re-enabling a constellation whose satellites were
+skipping the attitude block — leaves stale poses behind that would otherwise be slewed out of at
+`mirrorSlewDegPerSec`. `SatelliteSim::requestMirrorSnap()` arms it for 3 frames (the ideal
+directions depend on `reflectorTargetsBuf` and on `beam_cloud_block.comp`'s output, neither
+guaranteed coherent on the exact frame the snap is requested).
 
 **SatFlarePC** (128 bytes) — sat_flare.comp:
 ```
@@ -438,17 +450,50 @@ below) stays indexed by original target index and is deliberately NOT reordered.
 ### Per-satellite (GPU, sat_orbit.comp)
 Scans only `pc.activeTargetCount` packed entries (typically well under `reflectorTargetCount`,
 which itself is already far under the old flat 201) — no per-entry validity check needed, since
-everything in that range is already night-side-valid by construction. Picks nearest by
-`dot(satZenith, normalize(targetECI))`; the winning `bestPos` is captured directly during the scan
-(the compacted buffer can't be re-indexed by the original index afterward), while `bestIdx` keeps
-the ORIGINAL index for the `beamCloudBlock[bestIdx]` lookup. Mirror normal =
+everything in that range is already night-side-valid by construction. `bestPos` is captured
+directly during the scan (the compacted buffer can't be re-indexed by the original index
+afterward), while `bestIdx` keeps the ORIGINAL index for the `beamCloudBlock[bestIdx]` lookup.
+
+**Selection is lock-based with hysteresis (2026-08-06), not per-frame re-selection.** Candidates
+below `pc.minBeamElevSin` (local elevation of the satellite *as seen from the target*, 20° default)
+are rejected outright; survivors are scored `hash11(satIdx, ORIGINAL target index)` and the argmax
+wins. A satellite's currently-locked target — carried in `mirrorNormals[i].w`, encoded `0` =
+uninitialized / `1` = no lock / `2+k` = locked to original index `k` — overrides that argmax as
+long as it is still in the night-side buffer and still above the lower `pc.minBeamElevSinRelease`
+floor (`reflectorMinElevDeg - kBeamLockReleaseMarginDeg`, 12° default).
+
+Both halves are load-bearing and neither works alone:
+- The score must be a function of the **original** target index, never of scan position. The
+  previous implementation reservoir-sampled with a seed keyed on `acceptCount` — a candidate's rank
+  in the CPU's night-side compaction order — so a single unrelated target rotating across the
+  terminator shifted every later rank by one and re-rolled the satellite's entire hash sequence
+  onto a different site. Deterministic within a frame, an effectively fresh uniform draw between
+  frames, and visibly strobing in target-dense regions.
+- Argmax alone still switches the moment a higher-scoring target crosses the acquire bar, which in
+  a dense region is constant. Hence the lock.
+- The acquire and release floors must **differ**. A single threshold puts a target sitting on the
+  bar into drop/re-acquire chatter.
+
+Load spreading (the original reason for randomized selection — otherwise every satellite that can
+see a popular clustered site aims at it) is preserved: each satellite still has its own
+pseudo-random preference ordering over sites, and there is still zero cross-satellite arbitration.
+
+Mirror normal =
 `normalize(sunDirECI + toTarget)` — reflects sunlight toward target by half-vector identity. Falls
 back to FlatMirror45 (straight down) if no valid targets exist. Slew state persists in
 `mirrorNormalsBuf` (device-local, read+write in place each dispatch).
 
 ### Mirror slew rate
 `kMirrorRotRateDegPerSec = 1.0f` degrees per **simulated** second — consistent across all time warp levels.
-Zero-vector in `mirrorNormalsBuf` = uninitialized; snaps to target on first frame, then slews at the clamped rate.
+`mirrorNormalsBuf[i].w == 0` = uninitialized; snaps to target on first frame, then slews at the
+clamped rate. **`.w` is not a bare flag** — it also carries the locked target index (`1` = no lock,
+`2+k` = locked to original index `k`); see the selection section above.
+
+The FlatMirror45 "no target at all" fallback deliberately does **not** mark the state initialized —
+it is a placeholder pose, not an attitude the mirror chose. Marking it initialized meant a satellite
+that hit even one frame with an empty target set was pinned to a nadir-down cold start and had to
+slew all the way out of it when it first acquired a real target. See also `SatOrbitPC::mirrorSnap`
+above for the other half of this (stale state after an index remap).
 
 ---
 
