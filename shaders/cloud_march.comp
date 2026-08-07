@@ -698,7 +698,41 @@ vec2 cloudColumnNoise(vec3 uvwCol) {
     return textureLod(cloudNoiseTex, uvwCol + vec3(0.0, 0.0, kCloudColNoiseZ), 0.0).ra;
 }
 
-float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, float density, float heightProfile) {
+// Mean of the baked erosion field (cloudNoiseTex.g). See `useMeanErosion` below.
+//
+// The field is (1-worleyF1) at three frequencies with weights summing to exactly 1. For Worley F1
+// at one feature point per unit cell in 3D, E[F1] = gamma(4/3) / (4*PI/3)^(1/3) ~= 0.554, so
+// E[1-F1] ~= 0.446; the clamp at 1.0 truncates a small tail and nudges it up slightly. Being
+// mean-preserving is the property that matters — it is what stops shadows darkening or lightening
+// when the sampled term is swapped for a constant.
+//
+// THIS IS THE KNOB if cone shadows come out too dark (raise it) or too light (lower it).
+const float kConeErosionMean = 0.45;
+
+// `useMeanErosion` — when true, the erosion FBM is replaced by kConeErosionMean instead of being
+// sampled, and `uvwDetail` goes unused. Only the sun self-shadow cone passes true.
+//
+// This is the fix for the "blob is a slice of the noise at the first layer of the raymarch"
+// artifact, and it is the SAME remedy this function already applies to vertical presence three
+// lines below — pin the altitude axis instead of sampling it.
+//
+// `uvwDetail`'s Z is `hNorm * kVertTiles + posZ * 2.0`, i.e. it varies CONTINUOUSLY with altitude.
+// That is exactly what the presence comment below warns about, and the view march only gets away
+// with it because it runs ~215 steps at <=250 m — above the documented 150-step minimum. The cone
+// evaluates the same lookup at ~13 steps across the same 9.4 km shell, 16x under that minimum, and
+// T3.1's geometric growth pushed its late steps to ~5 km. So the cone reads one thin Z-slab of the
+// erosion volume per step and holds it across kilometres of altitude: a slice of the noise.
+//
+// It is aliased horizontally too — the erosion octaves are Worley at 8/16/32 cells sampled at
+// kCloudHorizFreq scale, so a km-scale step samples them essentially at random. There is no
+// sampling rate the cone can afford at which this term carries real information, which is why the
+// mean is the honest answer rather than a cheaper lookup.
+//
+// If shadow erosion detail is wanted back, the middle option is to keep the fetch but drop only
+// the `hNorm * kVertTiles` term from cUVWD — that removes the vertical slicing while preserving
+// horizontal structure, at no perf saving.
+float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, float density,
+                   float heightProfile, bool useMeanErosion) {
     // Vertical presence: THREE fixed Z-slices, not a continuous Z lookup — see
     // project_cloud_march_steps memory: sampling Z continuously at this codebase's typical
     // march-step counts reintroduces altitude-slab banding, which is why the original design
@@ -724,7 +758,11 @@ float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, floa
     // G is the erosion FBM with the three Worley octaves already summed at their fixed
     // 0.625/0.25/0.125 weights — was a fourth fetch plus that sum done here per sample.
     // The *1.5 coordinate scale is now cloud.cloudErosionFreq (default 1.5 = unchanged).
-    float erosionRaw = textureLod(cloudNoiseTex,
+    // Kept BELOW the `base <= 0.0` early-out on purpose: hoisting the sample into a thin wrapper
+    // would have cost the view march that rejection on every cleared-threshold sample.
+    float erosionRaw = useMeanErosion
+                     ? kConeErosionMean
+                     : textureLod(cloudNoiseTex,
                                   uvwDetail * cloud.cloudErosionFreq + vec3(0.37, 0.53, 0.71),
                                   0.0).g;
 
@@ -1212,7 +1250,7 @@ void cloudMarchCS(
         vec3  uvwXY   = dirECEFDrift * kCloudHorizFreq + warpUVW;
         vec3  uvwDetail = uvwXY
                                + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0);
-        float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade);
+        float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade, false);
 
         if (d > 0.001) {
             inCloud = true;
@@ -1349,7 +1387,6 @@ void cloudMarchCS(
                         // cone step per in-cloud sample.
                         float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, cloud.coverageMipLod + 1.0).r;
                         if (cLoc < 0.02) continue;
-                        float cPosZ      = sin(cpUV.x * 21.3 + cpUV.y * 17.7) * 0.5 + 0.5;
                         vec3  cDirDrift  = rotateZ(cDir, cloud.cloudPhase * cloud.layers[0].driftMult);
                         // Reuse the PARENT sample's already-computed warp offset instead of calling
                         // cloudWarpOffset (3 warpPerlin3 evaluations) again per cone step — perf
@@ -1359,7 +1396,9 @@ void cloudMarchCS(
                         // new cost from making the shadow cone warp-consistent with the visible cloud.
                         vec3  cWarpUVW   = warpUVW;
                         vec3  cUVWXY = cDirDrift * kCloudHorizFreq + cWarpUVW;
-                        vec3  cUVWD  = cUVWXY + vec3(0.0, 0.0, chN * kVertTiles + cPosZ * 2.0);
+                        // (cUVWD / cPosZ removed with T3.2 — the cone no longer samples the
+                        //  erosion volume, so it needs no detail coordinate. That vec3 WAS the
+                        //  altitude-varying Z lookup responsible for the sliced-noise blobs.)
 
                         // Match the cone's own vertical coverage limit and base variance to the SAME
                         // per-column noise the visible march uses (colH/baseH above) — without this the
@@ -1371,7 +1410,10 @@ void cloudMarchCS(
                         float cColH      = remap(cColSample.x, 1.0 - cLoc, 1.0, 0.0, 1.0);
                         float cBaseH     = (cColSample.y - 0.5) * cloud.cloudBaseVariance;
                         float chFade = smoothstep(cBaseH, cBaseH + 0.05, chN) * (1.0 - smoothstep(cColH - 0.05, cColH + 0.05, chN));
-                        od += cloudDensity(cUVWXY, cUVWD, chN, cLoc, cloud.density, chFade) * seg * 3.75e-4;
+                        // T3.2 — mean erosion (see cloudDensity). cUVWD goes unused in this mode; passing
+                        // cUVWXY keeps the call honest rather than inventing a dummy value.
+                        od += cloudDensity(cUVWXY, cUVWXY, chN, cLoc, cloud.density, chFade,
+                                           true) * seg * 3.75e-4;
                     }
                     sunODCache     = od;
                     sunODCacheDist = sampleDist;
@@ -1785,7 +1827,7 @@ float cloudGroundShadow(vec3 groundECEF, vec3 sunDirECEF, float jitter) {
         float posZ      = sin(pUV.x * 21.3 + pUV.y * 17.7) * 0.5 + 0.5;
         vec3  uvwXY     = dirECEFDrift * kCloudHorizFreq + warpUVW;
         vec3  uvwDetail = uvwXY + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0);
-        float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade);
+        float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade, false);
 
         if (d > 0.001) {
             T *= exp(-d * segLen * 3e-3); // same density->optical-depth mapping as the view march
@@ -1906,7 +1948,7 @@ void cirrusMarchCS(
                         + cirrusDomainWarp(dirECEFDrift);
         vec3  uvwDetail = uvwXY + vec3(0.0, 0.0, hNorm * 1.5);
         float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov,
-                                cloud.density * cloud.layers[1].densityMult, hFade);
+                                cloud.density * cloud.layers[1].densityMult, hFade, false);
         if (d < 0.001) continue;
 
         float extinction = d * segLen * 8e-5;

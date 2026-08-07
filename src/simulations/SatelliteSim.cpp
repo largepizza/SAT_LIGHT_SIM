@@ -1259,6 +1259,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.cloudDensityAO = cloudDensityAO;
         cp.cloudAOPower = cloudAOPower;
         cp.flatDensityScale = flatDensityScale;
+        cp.flatRayleighGain = flatRayleighGain;
+        cp.flatTwilightAmbientGain = flatTwilightAmbientGain;
         cp.atmosRayleighGain = atmosRayleighGain;
         cp.atmosMieGain = atmosMieGain;
         cp.stormStrength = stormStrength;

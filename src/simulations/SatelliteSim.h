@@ -939,8 +939,16 @@ struct GpuCloudParams
     float cloudDensityAO;     // occlusion driven by local density — carries real cloud shape
     float cloudAOPower;       // where 1-exp(-d*power) bites; tune against `density`
     float flatDensityScale;   // flat 2D layer opacity, decoupled from volumetric `density`
+    // Flat-2D Rayleigh decoupling, 464 -> 480. See cloud_params.glsl for why the flat layer needs
+    // its own Rayleigh multiplier to make the 3D->2D crossfade match. pad19/20 only exist to keep
+    // the block a multiple of 16 bytes; take them before appending.
+    float flatRayleighGain;         // extra BETA_R multiplier for evalCloudLayer only; 1.0 = no-op
+    float flatTwilightAmbientGain;  // flat layer's share of the twilight sky ambient, stacked on
+                                    // cloudTwilightAmbientGain; 1.0 = volumetric-equal strength
+    float pad19;
+    float pad20;
 };
-static_assert(sizeof(GpuCloudParams) == 464, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 480, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -1781,6 +1789,15 @@ private:
     float cloudAOPower = 1.0f;
     // 1.0 = previous coupled behaviour. Raise after lowering `density` for the volumetric path.
     float flatDensityScale = 1.0f;
+    // Flat 2D layer's own Rayleigh multiplier, stacked on atmosRayleighGain (see
+    // GpuCloudParams::flatRayleighGain). 1.0 = the previous fully-coupled behaviour; raise or
+    // lower it to close the hue/depth step across the 3D->2D crossfade.
+    float flatRayleighGain = 1.0f;
+    // Flat 2D layer's twilight sky ambient, stacked on cloudTwilightAmbientGain (see
+    // GpuCloudParams::flatTwilightAmbientGain). The flat path had no ambient term at all before
+    // this, so there is no prior behaviour to preserve — 1.0 starts it at the same strength the
+    // volumetric shell gets, which is the matched-crossfade starting point; 0 disables it.
+    float flatTwilightAmbientGain = 1.0f;
     float atmosRayleighGain = 1.0f;
     float atmosMieGain = 1.0f;
     // C11 ground fog layer — real per-sample volumetric march in cloud_march.comp's fogMarchCS,
@@ -2197,9 +2214,9 @@ private:
     bool hovPhotoMinus[11] = {};
     bool hovPhotoPlus[11] = {};
     bool draggingPhoto[11] = {};
-    bool hovCloudMinus[79] = {}; // was [75] — idx 75-78 are the shape-shading / flat-decoupling sliders
-    bool hovCloudPlus[79] = {};
-    bool draggingCloud[79] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[81] = {}; // was [79] — idx 79/80 are the flat-2D Rayleigh / twilight sliders
+    bool hovCloudPlus[81] = {};
+    bool draggingCloud[81] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.

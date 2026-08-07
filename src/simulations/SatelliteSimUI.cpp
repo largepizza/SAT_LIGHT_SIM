@@ -2380,7 +2380,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
     // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
     // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[79][16];
+    static char cloudBufs[81][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -2618,6 +2618,16 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Flat coverage scale", &flatCoverageScale, 0.1f, 2.0f, 0.01f, "%.2f", 51},
         {"Flat sun gain scale", &flatSunGainScale, 0.1f, 10.0f, 0.05f, "%.2f", 52},
         {"2D density scale", &flatDensityScale, 0.1f, 8.0f, 0.1f, "%.2f", 78},
+        // Flat-layer-only Rayleigh multiplier, stacked on the global "Rayleigh gain" in the
+        // Atmospheric scattering section. The flat paste and the volumetric march respond to
+        // Rayleigh completely differently (closed-form double multiply vs. per-step transmittance
+        // accumulation), so this is what closes the hue/depth step across the crossfade above.
+        {"2D Rayleigh gain", &flatRayleighGain, 0.0f, 4.0f, 0.05f, "%.2f", 79},
+        // The flat layer's share of the twilight sky ambient, on top of the shared "Twilight
+        // ambient" slider in the Lighting section — so that one still moves both paths together
+        // and this only sets the ratio between them. 0 = flat clouds go dark through twilight the
+        // way they did before this term existed.
+        {"2D twilight ambient", &flatTwilightAmbientGain, 0.0f, 4.0f, 0.05f, "%.2f", 80},
     };
 
     CloudSlider secCirrus[] = {
@@ -3748,6 +3758,9 @@ void SatelliteSim::loadSettings()
         cloudDensityAO = c.value("cloud_density_ao", cloudDensityAO);
         cloudAOPower = c.value("cloud_ao_power", cloudAOPower);
         flatDensityScale = c.value("cloud_flat_density_scale", flatDensityScale);
+        flatRayleighGain = c.value("cloud_flat_rayleigh_gain", flatRayleighGain);
+        flatTwilightAmbientGain =
+            c.value("cloud_flat_twilight_ambient_gain", flatTwilightAmbientGain);
         atmosRayleighGain = c.value("atmos_rayleigh_gain", atmosRayleighGain);
         atmosMieGain = c.value("atmos_mie_gain", atmosMieGain);
     }
@@ -3904,6 +3917,8 @@ void SatelliteSim::saveSettings()
         {"cloud_density_ao", cloudDensityAO},
         {"cloud_ao_power", cloudAOPower},
         {"cloud_flat_density_scale", flatDensityScale},
+        {"cloud_flat_rayleigh_gain", flatRayleighGain},
+        {"cloud_flat_twilight_ambient_gain", flatTwilightAmbientGain},
         {"atmos_rayleigh_gain", atmosRayleighGain},
         {"atmos_mie_gain", atmosMieGain}};
 

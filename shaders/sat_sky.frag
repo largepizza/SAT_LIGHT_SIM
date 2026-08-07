@@ -985,7 +985,15 @@ void evalCloudLayer(
     // Runtime-tunable scattering strength — shadows the physical base constants (common.glsl)
     // with the user-facing "Rayleigh gain"/"Mie/haze gain" sliders. See cloud_params.glsl's
     // atmosRayleighGain/atmosMieGain comment for what each one does perceptually.
-    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+    //
+    // flatRayleighGain ("2D Rayleigh gain") stacks on top of the global Rayleigh gain and applies
+    // to THIS function only — the flat 2D paste — so the 3D->2D crossfade can be matched without
+    // moving the sky/volumetric look. It lands on both uses of BETA_R below, which is the point:
+    // sunColorFlat (the sun's own colour arriving AT the cloud) and attn/airlight (the
+    // camera->cloud path) together are what set how red and how washed-out the flat layer reads
+    // relative to the volumetric shell it fades into. 1.0 = the previous coupled behaviour
+    // exactly. See cloud_params.glsl's flatRayleighGain comment.
+    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain * cloud.flatRayleighGain;
     float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
 
     vec2  tc = raySphere(obsPos, dir, R_EARTH + shellAltM);
@@ -1087,6 +1095,90 @@ void evalCloudLayer(
     float moonLit      = max(0.0, cloudMoonDot) * moonDirENU.w;
     vec3  moonContrib  = vec3(0.92, 0.95, 1.0) * moonLit * cloud.moonGain;
 
+    // ── Twilight sky ambient (flat 2D path) ──────────────────────────────────────────────────
+    // Until this was added the flat layer had NO ambient term of any kind — its only light
+    // sources were direct sun (cloudLit, which cloudDayFrac drives to zero at the terminator) and
+    // moonlight. The volumetric shell has had a twilight ambient since session 28: sky-lit cloud
+    // at dusk/dawn, so clouds read consistently against the sky-lit TERRAIN beside them instead
+    // of dropping dark while the ground is still visibly blue. Across the 3D->2D crossfade that
+    // asymmetry read as flat clouds going black through twilight while the volumetric ones next
+    // to them stayed blue — the airlight term below is NOT a substitute, since that is light
+    // scattered in FRONT of the cloud (so it grows with distance and vanishes on near clouds),
+    // not downwelling sky light falling ON it.
+    //
+    // Deliberately a near-verbatim copy of cloudMarchCS's twilightAmbient + skyAmbientBase blocks
+    // (same bell, same fixed widths, same UBO edges, same 6-step zenith integral, same
+    // cloud-anchored p0) — matching the crossfade is the entire purpose of this term, so anything
+    // reinvented here would just have to be re-matched by hand afterwards. Keep the two in sync;
+    // same standing rule as the rest of the duplicated cloud code in this file.
+    //
+    // Three deliberate differences from the volumetric copy:
+    //   * The volumetric's `mix(0.3, 0.9, hNorm)` becomes the constant kFlatAmbientHeightMix.
+    //     That factor is its vertical shading ramp across a cloud COLUMN, and a flat shell has no
+    //     column — 0.6 is that ramp's own midpoint, i.e. what a full column averages to.
+    //   * The anchor is this layer's own shell hit point rather than a march entry point, and
+    //     needs no altitude clamp: a cloud shell sits at 2-11 km by construction, decades inside
+    //     R_ATMOS, so the guard the volumetric keeps has nothing to guard against here.
+    //   * The whole block is gated on twilightWeight > 0. That is EXACT, not an approximation —
+    //     the weight is a bell, zero in full daylight and zero deep into night — and it keeps six
+    //     optDepth calls off every daylit cloud pixel, which at full resolution matters.
+    //
+    // BETA_R here is the flat-scaled one (flatRayleighGain), so this term's colour tracks the 2D
+    // Rayleigh slider the same way sunColorFlat and attn do. That is intended: all three are "how
+    // this path sees the atmosphere", and splitting them would make the 2D slider shift hue.
+    vec3 twilightAmbient = vec3(0.0);
+    {
+        // Widths are fixed; only the edges move. Both constants match cloudMarchCS exactly.
+        const float kTwilightRiseWidth = 0.2;
+        const float kTwilightFallWidth = 0.3;
+        const float kFlatAmbientHeightMix = 0.6;
+        float twiHi = cloud.twilightBandHi;
+        float twiLo = cloud.twilightBandLo;
+        float twilightRise = 1.0 - smoothstep(twiHi - kTwilightRiseWidth, twiHi, cloudSunDot);
+        float twilightFall = smoothstep(twiLo, twiLo + kTwilightFallWidth, cloudSunDot);
+        float twilightWeight = twilightRise * twilightFall;
+        float twiGain = cloud.cloudTwilightAmbientGain * cloud.flatTwilightAmbientGain;
+
+        if (twilightWeight > 0.0 && twiGain > 0.0) {
+            // Downwelling sky light AT the cloud: a short zenith-ray single-scattering integral
+            // anchored on the cloud point itself, not on the observer. Anchoring at the observer
+            // is only equivalent when the two are co-located (true from the ground, badly false
+            // from orbit, where you can be over the night side looking at a cloud that is still
+            // in full twilight) — see the long note on this in cloud_march.comp.
+            vec3 skyAmbientBase = vec3(0.0);
+            vec3 p0     = cECEF;
+            vec3 zenith = normalize(p0);
+            vec2 tSA    = raySphere(p0, zenith, R_ATMOS);
+            if (tSA.y > 0.0) {
+                const int N_Z = 6;
+                float zSeg   = tSA.y / float(N_Z);
+                float cosAUp = dot(zenith, sunDirECEF);
+                float pR_up  = 0.75 * (1.0 + cosAUp * cosAUp);
+                float odR_z = 0.0, odM_z = 0.0;
+                float skyAmbientBaseM = 0.0;
+                for (int zi = 0; zi < N_Z; ++zi) {
+                    vec3  sp = p0 + zenith * ((float(zi) + 0.5) * zSeg);
+                    float h  = max(0.0, length(sp) - R_EARTH);
+                    float dR = exp(-h / H_R) * zSeg;
+                    float dM = exp(-h / H_M) * zSeg;
+                    odR_z += dR;  odM_z += dM;
+                    vec2 tSE = raySphere(sp, sunDirECEF, R_EARTH);
+                    if (tSE.x > 0.0 && tSE.y > 0.0) continue;   // this step is in Earth's shadow
+                    vec2 tSun  = raySphere(sp, sunDirECEF, R_ATMOS);
+                    vec2 sunOD = (tSun.y > 0.0) ? optDepth(sp, sunDirECEF, tSun.y) : vec2(0.0);
+                    vec3 tau      = BETA_R * (odR_z + sunOD.x) + BETA_M * 1.1 * (odM_z + sunOD.y);
+                    vec3 attnStep = exp(-tau);
+                    skyAmbientBase  += attnStep * dR;
+                    skyAmbientBaseM += dot(attnStep, vec3(1.0 / 3.0)) * dM;
+                }
+                float pM_up = phaseM(cosAUp);
+                skyAmbientBase = SUN_INTENSITY * (pR_up * BETA_R * skyAmbientBase
+                                                + vec3(pM_up * BETA_M * skyAmbientBaseM));
+            }
+            twilightAmbient = skyAmbientBase * kFlatAmbientHeightMix * twilightWeight * twiGain;
+        }
+    }
+
     // Compression applied to LUMINANCE, then scaled back onto the original colour, rather than
     // per channel. This is what caused the reported yellow -> orange -> red -> dark red march
     // across a single sunset while the volumetric only went orange -> dark orange.
@@ -1110,7 +1202,7 @@ void evalCloudLayer(
     // Note this can leave an individual channel above 1.0 for a strongly tinted colour, where the
     // per-channel form could not. That is correct for an HDR value feeding the tone map below, but
     // it is a real change in what this function can return.
-    vec3  litSum       = cloudLit + moonContrib;
+    vec3  litSum       = cloudLit + moonContrib + twilightAmbient;
     float litLum       = dot(litSum, vec3(0.2126, 0.7152, 0.0722));
     vec3  cloudColor   = litSum * ((1.0 - exp(-litLum)) / max(litLum, 1e-4));
 
