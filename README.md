@@ -4,8 +4,6 @@ A real-time GPU visualization of Earth's satellite megaconstellations, seen from
 surface — physically-based photometry, atmospheric scattering, volumetric clouds, terrain, ocean,
 aurora, and a real star catalog, all rendered through a Vulkan compute + graphics pipeline.
 
-v1.0 was a satellite simulator. v1.1 is a full atmospheric/terrain renderer that happens to
-contain a satellite simulator.
 
 ---
 

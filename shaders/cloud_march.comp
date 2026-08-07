@@ -2177,20 +2177,32 @@ void main() {
     // still mid-slew and not yet aimed at its target — can be seen directly, for profiling/
     // debugging rather than production rendering. Opt-in and off by default.
     //
-    // Multi-sample instead of a single-reference-point trick: a multi-hundred-km debug ray needs
-    // to look continuous from many different viewing angles, so it's sampled at several points
-    // along its length. Each sample point is found via a safe fixed-point projection (never
-    // solving a closest-approach system built from obsPos/satWorldPos's large-magnitude
-    // difference — that cancellation risk is why beam-adjacent math elsewhere in this codebase
-    // works from ENU-relative vectors directly rather than re-deriving world-space differences).
+    // Analytic closest approach, NOT point sampling. The original version walked 40 discrete
+    // points along each ray and splatted a Gaussian at each — which reads as a dotted line
+    // whenever the spacing exceeds the tube radius, and it always does: a ray traced from LEO to
+    // the ground is 500-2000 km long, so 40 samples sit 12-50 km apart against a tube a couple of
+    // km wide. Adding samples only pushes the threshold around; solving for the single nearest
+    // point on the beam SEGMENT makes the line exactly continuous at any length and any viewing
+    // angle, and costs one closed-form solve per beam instead of 40 splats.
+    //
+    // The cancellation hazard that motivated the old sampling approach is avoided the same way
+    // the rest of the beam code avoids it: the system is set up from beams[bi].satENU (the small
+    // observer-relative offset) rather than from an obsPos/satWorldPos difference, so no
+    // large-magnitude subtraction is ever formed. Both direction vectors are unit length, which
+    // is what collapses the usual 2x2 solve to the 1 - b*b denominator below.
     if (pc.showBeamDebugRays != 0u) {
-        // Thinned + dimmed (C12 follow-up #13, 2026-07-21 — user report: rays were "too thick and
-        // bright... difficult to tell when they blend into one another"). Radius 15000->2500,
-        // scale 0.12->0.03 — dense convergence at a busy site should now read as many distinct
-        // thin lines rather than one blown-out mass.
-        const float kDebugRayRadiusM = 2500.0;
-        const float kDebugRayScale   = 0.03;
-        const int   kDebugRaySamples = 40;
+        // Thin off-white/yellow line (2026-08-06 user request; previously a 2500 m green tube,
+        // itself already thinned from 15000 m in C12 follow-up #13). kDebugRayMinAngRad keeps a
+        // distant ray from thinning below roughly one half-res pixel and breaking up into an
+        // aliased dashed line — the exact artifact this rewrite exists to remove, just spatial
+        // rather than along-ray. Beyond ~470 km the angular floor is what sets the width.
+        const float kDebugRayRadiusM  = 700.0;
+        const float kDebugRayMinAngRad = 0.0015; // ~1.2 half-res pixels at the default FOV
+        // One evaluation now, not a 40-sample accumulation. Kept low deliberately: rays are
+        // additive, so a site with dozens of satellites converging on it stacks them into a solid
+        // wash unless each individual line is faint enough to still read through its neighbours.
+        const float kDebugRayScale    = 0.09;
+        const vec3  kDebugRayColor    = vec3(1.0, 0.95, 0.72); // off-white leaning yellow
         // Trace to the ACTUAL ground intersection instead of a fixed length (C12 follow-up #13 —
         // user report: rays "terminate once they get enough into the atmosphere" instead of
         // tracing back to the ground). A fixed 1000km length could stop well short of the
@@ -2210,18 +2222,33 @@ void main() {
 
             vec2  groundHit = raySphere(satWorldPos, rayDir, R_EARTH);
             float rayLen    = (groundHit.x > 0.0) ? min(groundHit.x, kDebugRayMaxLenM) : kDebugRayMaxLenM;
-            float sampleLen = rayLen / float(kDebugRaySamples);
 
-            for (int si = 0; si < kDebugRaySamples; ++si) {
-                vec3  refPt        = satWorldPos + rayDir * ((float(si) + 0.5) * sampleLen);
-                float tRay         = dot(refPt - obsPos, dir);
-                if (tRay < 0.0) continue;
-                vec3  closestRayPt = obsPos + tRay * dir;
-                float perpDist     = length(refPt - closestRayPt);
-                if (perpDist > kDebugRayRadiusM * 3.0) continue;
-                float proximity = exp(-(perpDist * perpDist) / (2.0 * kDebugRayRadiusM * kDebugRayRadiusM));
-                B_total += vec3(0.2, 1.0, 0.35) * (kDebugRayScale * proximity); // green — visually distinct from the natural glow's warm/white tint
+            // View ray P(t) = obsPos + t*dir, beam segment Q(s) = satWorldPos + s*rayDir,
+            // s in [0, rayLen]. w0 = obsPos - satWorldPos = -satENU, formed directly.
+            vec3  w0  = -beams[bi].satENU;
+            float b   = dot(dir, rayDir);
+            float d   = dot(dir, w0);
+            float e   = dot(rayDir, w0);
+            float den = 1.0 - b * b; // both unit length, so this is the full ac - b^2
+            // Near-parallel (den -> 0) has no unique solution; fall back to the point on the beam
+            // closest to the observer, which is the right answer for a ray seen end-on.
+            float s = (den > 1e-6) ? (e - b * d) / den : e;
+            s = clamp(s, 0.0, rayLen);
+            float t = s * b - d; // dot(Q(s) - obsPos, dir)
+            if (t < 0.0) {
+                // Nearest point is behind the camera. Re-clamp against t = 0 (the standard
+                // segment-segment clamp step) so a beam that crosses behind the viewer still
+                // draws the part of it that is in front.
+                t = 0.0;
+                s = clamp(e, 0.0, rayLen);
             }
+            // Kept in observer-relative terms — never (satWorldPos + rayDir*s) - (obsPos + t*dir).
+            float perpDist = length(beams[bi].satENU + rayDir * s - dir * t);
+
+            float radiusM = max(kDebugRayRadiusM, t * kDebugRayMinAngRad);
+            if (perpDist > radiusM * 4.0) continue;
+            float proximity = exp(-(perpDist * perpDist) / (2.0 * radiusM * radiusM));
+            B_total += kDebugRayColor * (kDebugRayScale * proximity);
         }
     }
 

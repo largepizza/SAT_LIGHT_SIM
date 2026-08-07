@@ -1345,6 +1345,15 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     orbitPc.mirrorSlewDegPerSec = mirrorSlewDegPerSec;                // C12 follow-up #20
     orbitPc.activeTargetCount = (uint32_t)reflectorActiveCount;       // S1 compaction
     orbitPc.minBeamElevSin = sinf(glm::radians(reflectorMinElevDeg)); // S1 follow-up
+    // Release floor for an already-locked target — see kBeamLockReleaseMarginDeg. Clamped at 0 so a
+    // low reflectorMinElevDeg can't push the release angle negative and let a satellite hold a
+    // target that has dropped below its own horizon.
+    orbitPc.minBeamElevSinRelease =
+        sinf(glm::radians(std::max(0.0f, reflectorMinElevDeg - kBeamLockReleaseMarginDeg)));
+    // Mirror slew-state snap: see requestMirrorSnap()/mirrorSnapFrames in SatelliteSim.h.
+    orbitPc.mirrorSnap = (mirrorSnapFrames > 0) ? 1u : 0u;
+    if (mirrorSnapFrames > 0)
+        --mirrorSnapFrames;
 
     // ── Dispatch: scene_depth.comp — shared terrain/ocean depth (pipeline unification) ──────────
     // Runs FIRST. Everything downstream that needs to know "is this pixel's view blocked by the
@@ -3472,6 +3481,11 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
 {
     if (satOrbits.empty())
         return;
+
+    // A rebake re-writes what every dispatch index means, so the persistent per-index mirror slew
+    // state in mirrorNormalsBuf no longer describes the satellite that will read it. Snap instead
+    // of slewing out of a stranger's attitude.
+    requestMirrorSnap();
 
     orbitEpochDay = simDayJ2000;
     orbitEpochSec = simSecInDay;

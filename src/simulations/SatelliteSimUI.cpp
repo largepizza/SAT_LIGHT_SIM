@@ -37,9 +37,15 @@ static constexpr int kIconCamera = 6;   // camera-solid.png — UC6 screenshot b
 // compiled-in defaults rather than loading possibly-nonsensical old values.
 static constexpr int kSettingsSchemaVersion = 1;
 
-static constexpr const char *kSettingsTabNames[11] = {
+// 2026-08-06: "Beams" inserted at 10, shifting Attributions 10 -> 11. Everything that indexes tabs
+// by number (hovTab[], the advanced-tab predicate and its bounce, the switch in
+// buildSettingsTabbedBody, loadSettings' active_tab clamp) moved with it. The only user-visible
+// consequence is that a settings.json saved with active_tab == 10 reopens on Beams rather than
+// Attributions once — appending at 11 instead would have avoided that but put the tab button
+// underneath Attributions in the strip, which reads as an afterthought.
+static constexpr const char *kSettingsTabNames[12] = {
     "Constellations", "Sound", "Controls", "Camera",
-    "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Aurora", "Attributions"};
+    "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Aurora", "Beams", "Attributions"};
 
 // Helper: short display name for a GLFW key code (used in settings window + tooltips).
 static const char *keyDisplayName(int key)
@@ -1130,14 +1136,14 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
                                            .childGap = 2,
                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
-        // UC1 settings restructure: the Clouds/Ocean/Terrain/Aurora tabs are ~46 developer
+        // UC1 settings restructure: the Clouds/Ocean/Terrain/Aurora/Beams tabs are ~46 developer
         // sliders — hidden behind Display > "Show advanced settings" so a new user's front door
         // is the preset selector, not a wall of tuning knobs. hovTab[]/settingsActiveTab still
         // index by the tab's real (unchanged) id even while its button is skipped here, so
         // nothing about the other tabs' state needs remapping.
-        for (int ti = 0; ti < 11; ++ti)
+        for (int ti = 0; ti < 12; ++ti)
         {
-            bool isAdvancedTab = (ti == 6 || ti == 7 || ti == 8 || ti == 9);
+            bool isAdvancedTab = (ti >= 6 && ti <= 10);
             if (isAdvancedTab && !showAdvancedSettings)
                 continue;
             bool active = settingsActiveTab == ti;
@@ -1204,6 +1210,9 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
             buildSettingsAuroraTab(inp, ui);
             break;
         case 10:
+            buildSettingsBeamsTab(inp, ui);
+            break;
+        case 11:
             buildSettingsAttributionsTab(inp, ui);
             break;
         }
@@ -1249,7 +1258,13 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                 if (ci < (int)hovConst.size())
                     hovConst[ci] = n;
                 if (hov && inp.lmbPressed)
+                {
                     c.enabled = !c.enabled;
+                    // Disabled satellites return early in sat_orbit.comp without touching their
+                    // mirror slew state, so re-enabling one resumes from however it was aimed when
+                    // it was switched off. Snap rather than slew out of that stale pose.
+                    requestMirrorSnap();
+                }
                 CLAY_TEXT(c.enabled ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
             }
@@ -1967,7 +1982,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     }
 
     // ── Show advanced settings (UC1) ────────────────────────────────
-    // Reveals the Clouds/Ocean/Terrain/Aurora tabs (hidden from the tab bar above otherwise).
+    // Reveals the Clouds/Ocean/Terrain/Aurora/Beams tabs (hidden from the tab bar above otherwise).
     CLAY(CLAY_ID("AdvancedToggleRow"), {.layout = {
                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
                                             .padding = {4, 4, 4, 4},
@@ -1995,7 +2010,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                 showAdvancedSettings = !showAdvancedSettings;
                 // A hidden tab can't be clicked back to, so bounce off it now rather than leave
                 // its stale content showing behind a tab bar that no longer has a button for it.
-                if (!showAdvancedSettings && settingsActiveTab >= 6 && settingsActiveTab <= 9)
+                if (!showAdvancedSettings && settingsActiveTab >= 6 && settingsActiveTab <= 10)
                     settingsActiveTab = 4; // Display
             }
             CLAY_TEXT(showAdvancedSettings ? CLAY_STRING("On") : CLAY_STRING("Off"),
@@ -2134,66 +2149,10 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         }
     }
 
-    // ── Reflect-Orbital beam diagnostic (C12) ────────────────────────
-    // lastActiveBeamCount/lastNearestBeamDistM are read back from reflectBeamsBuf each frame
-    // (one-frame-stale, same idiom as peakMagnitude) — a quick way to tell "is anything being
-    // written at all" and "how far is the nearest one" apart from the render itself, since a
-    // beam's target being merely tens of km away can still be too far to notice visually.
-    {
-        static char beamCountBuf[24];
-        static char beamDistBuf[24];
-        snprintf(beamCountBuf, sizeof(beamCountBuf), "%d", lastActiveBeamCount);
-        if (lastNearestBeamDistM >= 0.0f)
-            snprintf(beamDistBuf, sizeof(beamDistBuf), "%.1f km", lastNearestBeamDistM / 1000.0f);
-        else
-            snprintf(beamDistBuf, sizeof(beamDistBuf), "none");
-        CLAY(CLAY_ID("BeamDiagRow"), {.layout = {
-                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
-                                          .padding = {4, 4, 2, 2},
-                                          .childGap = 8,
-                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-        {
-            CLAY_TEXT(CLAY_STRING("Active beams / nearest"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            CLAY(CLAY_ID("BeamDiagSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-            Clay_String countStr{false, (int32_t)strlen(beamCountBuf), beamCountBuf};
-            Clay_String distStr{false, (int32_t)strlen(beamDistBuf), beamDistBuf};
-            CLAY_TEXT(countStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-            CLAY_TEXT(CLAY_STRING(" / "), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            CLAY_TEXT(distStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        }
-    }
-
-    // ── Debug pointing-ray visualization (C12 follow-up #12) ─────────
-    // Draws each active beam's mirror's ACTUAL current reflected-sunlight direction as a long
-    // bright green ray from the satellite — not a knockout toggle (doesn't disable anything
-    // normal), so it gets its own checkbox rather than living in debugDisableMask.
-    CLAY(CLAY_ID("BeamDebugRayRow"), {.layout = {
-                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26)},
-                                          .padding = {4, 4, 2, 2},
-                                          .childGap = 8,
-                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Show beam pointing rays"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-        CLAY(CLAY_ID("BeamDebugRaySpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-        Clay_Color rayChkBg = showBeamDebugRays ? Pal::btnAccent : (hovBeamDebugRaysToggle ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("BeamDebugRayChk"), {.layout = {
-                                              .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                          .backgroundColor = rayChkBg,
-                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovBeamDebugRaysToggle);
-            sndClick(n, inp.lmbPressed);
-            if (n && inp.lmbPressed)
-                showBeamDebugRays = !showBeamDebugRays;
-            hovBeamDebugRaysToggle = n;
-            CLAY_TEXT(showBeamDebugRays ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-        }
-    }
+    // (The Reflect-Orbital beam diagnostic readout and the "Show beam pointing rays" toggle used to
+    // sit here, between the knockout toggles and Save Snapshot. Moved to the Beams tab 2026-08-06 —
+    // they belong with the beam sliders they are used to interpret, not next to the GPU profiling
+    // controls they only ever shared a tab with by accident of when they were written.)
 
     // ── Save snapshot ────────────────────────────────────────────
     // Appends the current status + averaged GPU timing above to
@@ -2731,6 +2690,28 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"View samples (max)", &viewSamplesMax, 32.0f, 256.0f, 4.0f, "%.0f", 19},
         {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 20},
         {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
+        {"Cloud shadow range (m)", &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
+        // S4 (RELEASE_v1_1_PLAN.md): terrain-relief march distance fade — see cloud_params.glsl.
+        {"Terrain fade start (m)", &terrainDistFadeStartM, 50000.0f, 1000000.0f, 10000.0f, "%.0f", 59},
+        {"Terrain fade end (m)", &terrainDistFadeEndM, 100000.0f, 4000000.0f, 25000.0f, "%.0f", 60},
+    };
+    buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
+}
+
+// ─── buildSettingsBeamsTab ───────────────────────────────────────────────────
+// Reflect-Orbital mirror beams (C12), split out of Terrain 2026-08-06. They had accumulated there
+// for no reason beyond the ground spot landing on terrain — the sliders tune a satellite
+// subsystem, not the ground, and by the time there were seven of them they were the majority of a
+// tab whose name gave no hint they existed. The live beam-count readout and the pointing-ray debug
+// toggle came over from Display at the same time so everything beam-related is in one place.
+//
+// Slider `idx` values are unchanged by the move (39/41-46) — they are global ids indexing
+// hovCloudMinus/hovCloudPlus/draggingCloud/cloudBufs, not per-tab positions. See
+// [[feedback_cloud_slider_arrays]]: those four arrays are sized against the id space, so moving a
+// row between tabs is free but adding one is not.
+void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
+{
+    CloudSlider sliders[] = {
         {"Beam gain", &beamGain, 0.0f, 0.01f, 0.0001f, "%.3f", 39},
         // C12 follow-up #34: slot 40 ("Beam footprint (m)") removed — footprint is now physically
         // derived from mirror area + range in sat_orbit.comp, not a free-parameter slider. Index
@@ -2744,13 +2725,70 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         // the slot was empty; this is the first thing to reuse it).
         {"Min beam elevation (deg)", &reflectorMinElevDeg, 0.0f, 60.0f, 1.0f, "%.0f", 44},
         {"Beam glow bleed gain", &beamGlowBleedGain, 0.0f, 0.01f, 0.0001f, "%.2f", 45},
-        {"Cloud shadow range (m)", &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
         {"Beam near-field fade (m)", &beamNearFieldFadeM, 1000.0f, 500000.0f, 1000.0f, "%.0f", 46},
-        // S4 (RELEASE_v1_1_PLAN.md): terrain-relief march distance fade — see cloud_params.glsl.
-        {"Terrain fade start (m)", &terrainDistFadeStartM, 50000.0f, 1000000.0f, 10000.0f, "%.0f", 59},
-        {"Terrain fade end (m)", &terrainDistFadeEndM, 100000.0f, 4000000.0f, 25000.0f, "%.0f", 60},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
+
+    // ── Reflect-Orbital beam diagnostic (C12) ────────────────────────
+    // lastActiveBeamCount/lastNearestBeamDistM are read back from reflectBeamsBuf each frame
+    // (one-frame-stale, same idiom as peakMagnitude) — a quick way to tell "is anything being
+    // written at all" and "how far is the nearest one" apart from the render itself, since a
+    // beam's target being merely tens of km away can still be too far to notice visually.
+    {
+        static char beamCountBuf[24];
+        static char beamDistBuf[24];
+        snprintf(beamCountBuf, sizeof(beamCountBuf), "%d", lastActiveBeamCount);
+        if (lastNearestBeamDistM >= 0.0f)
+            snprintf(beamDistBuf, sizeof(beamDistBuf), "%.1f km", lastNearestBeamDistM / 1000.0f);
+        else
+            snprintf(beamDistBuf, sizeof(beamDistBuf), "none");
+        CLAY(CLAY_ID("BeamDiagRow"), {.layout = {
+                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
+                                          .padding = {4, 4, 2, 2},
+                                          .childGap = 8,
+                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY_TEXT(CLAY_STRING("Active beams / nearest"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            CLAY(CLAY_ID("BeamDiagSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+            Clay_String countStr{false, (int32_t)strlen(beamCountBuf), beamCountBuf};
+            Clay_String distStr{false, (int32_t)strlen(beamDistBuf), beamDistBuf};
+            CLAY_TEXT(countStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+            CLAY_TEXT(CLAY_STRING(" / "), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            CLAY_TEXT(distStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        }
+    }
+
+    // ── Debug pointing-ray visualization (C12 follow-up #12) ─────────
+    // Draws each active beam's mirror's ACTUAL current reflected-sunlight direction as a thin
+    // off-white ray from the satellite — not a knockout toggle (doesn't disable anything normal),
+    // so it gets its own checkbox rather than living in debugDisableMask.
+    CLAY(CLAY_ID("BeamDebugRayRow"), {.layout = {
+                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26)},
+                                          .padding = {4, 4, 2, 2},
+                                          .childGap = 8,
+                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Show beam pointing rays"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+        CLAY(CLAY_ID("BeamDebugRaySpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+        Clay_Color rayChkBg = showBeamDebugRays ? Pal::btnAccent : (hovBeamDebugRaysToggle ? Pal::btnHover : Pal::btnIdle);
+        CLAY(CLAY_ID("BeamDebugRayChk"), {.layout = {
+                                              .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                          .backgroundColor = rayChkBg,
+                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovBeamDebugRaysToggle);
+            sndClick(n, inp.lmbPressed);
+            if (n && inp.lmbPressed)
+                showBeamDebugRays = !showBeamDebugRays;
+            hovBeamDebugRaysToggle = n;
+            CLAY_TEXT(showBeamDebugRays ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+        }
+    }
 }
 
 // ─── buildSettingsAuroraTab ──────────────────────────────────────────────────
@@ -3510,7 +3548,7 @@ void SatelliteSim::loadSettings()
         settingsChrome.y = d.value("win_y", settingsChrome.y);
         settingsChrome.w = d.value("win_w", settingsChrome.w);
         settingsChrome.h = d.value("win_h", settingsChrome.h);
-        settingsActiveTab = std::clamp(d.value("active_tab", settingsActiveTab), 0, 10);
+        settingsActiveTab = std::clamp(d.value("active_tab", settingsActiveTab), 0, 11);
         int unitVal = d.value("unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0);
         unitSystem = unitVal == 1 ? UnitSystem::Imperial : UnitSystem::Metric;
         showControlsOnStartup = d.value("show_controls_on_startup", showControlsOnStartup);
