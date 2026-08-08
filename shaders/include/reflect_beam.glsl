@@ -32,5 +32,7 @@ struct ReflectBeam {
     float mirrorRadiusM;   // C12 follow-up #34: repurposed from padding — equivalent-circle radius
                           // of the physical mirror (sqrt(mirrorAreaM2/PI)), used by cloud_march.comp
                           // (sky tube radius) and sat_sky.frag (ground-spot core radius).
-    float pad1;            // std430 16-byte alignment
+    float aimErrorRad;     // Repurposed from padding (2026-08-06): radians remaining in the
+                          // mirror's rate-limited slew toward its current target this frame — 0
+                          // once converged. See GpuReflectBeam's comment in SatelliteSim.h.
 };

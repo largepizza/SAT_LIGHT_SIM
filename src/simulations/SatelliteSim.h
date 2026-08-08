@@ -616,23 +616,10 @@ struct GpuSatOrbit
 };
 static_assert(sizeof(GpuSatOrbit) == 112, "GpuSatOrbit layout mismatch");
 
-// ── Per-frame reflector target upload (host-visible, 201 × 16 bytes) ─────────
-// Written by CPU in updatePositions(); read by sat_orbit.comp each frame.
-//
-// S1 compaction (RELEASE_v1_1_PLAN.md): CPU now packs only the night-side-VALID targets into
-// [0, reflectorActiveCount) instead of writing all reflectorTargetCount entries with a 0/1 valid
-// flag — `origIdx` (renamed from `valid`) holds the target's ORIGINAL index (reflectorTargetsECEF/
-// RadiusM's index, and BeamCloudBlockBuf's index) instead, so sat_orbit.comp's scan never needs to
-// skip day-side entries and its winning bestIdx still resolves correctly against
-// BeamCloudBlockBuf, which stays indexed by original target index. Entries at or beyond
-// reflectorActiveCount are stale/unused — sat_orbit.comp's loop bound is
-// SatOrbitPC::activeTargetCount, not kNumReflectorTargets.
-struct GpuReflectorTarget
-{
-    glm::vec3 posECI; // Earth-radius-scaled ECI position
-    float origIdx;    // original target index (float; sat_orbit.comp casts back to int) — see above
-};
-static_assert(sizeof(GpuReflectorTarget) == 16, "GpuReflectorTarget layout mismatch");
+// GpuReflectorTarget / the per-frame CPU-compacted night-side buffer it described were removed
+// 2026-08-06: sat_orbit.comp now reads the static per-target ECEF buffer directly (the same one
+// beam_cloud_block.comp already used) and rotates to live ECI itself via SatOrbitPC::gmstNow — see
+// CLAUDE.md's TargetedReflector section for why the CPU-side compaction became dead code.
 
 // ── Reflect-Orbital ground beams (device-local, written by sat_orbit.comp) ───
 // History: originally azimuth-sector-keyed (16 sectors, GpuGlowBuf's flareEntries/sectorBright
@@ -707,7 +694,15 @@ struct GpuReflectBeam
     float mirrorRadiusM;     // C12 follow-up #34: repurposed from padding — equivalent-circle radius
                              // of the physical mirror (sqrt(mirrorAreaM2/PI)). Consumed by
                              // cloud_march.comp (sky tube radius) and sat_sky.frag (ground-spot core).
-    float pad1;              // std430 16-byte alignment
+    float aimErrorRad;       // Repurposed from padding (2026-08-06): angle, in radians, between the
+                             // mirror's current attitude and the exact ideal half-vector toward
+                             // `bestIdx`'s target this frame. 0 outside a window-boundary crossfade
+                             // (the mirror aims exactly at its target); non-zero only during the
+                             // brief blend between two different targets at a lock-window boundary
+                             // (see sat_orbit.comp's TargetedReflector block and CLAUDE.md) — lets a
+                             // consumer distinguish "mid-crossfade" from "locked and settled" the
+                             // same way it always could, just driven by the new stateless windowed
+                             // selection instead of the old rate-limited slew.
 };
 static_assert(sizeof(GpuReflectBeam) == 64, "GpuReflectBeam layout mismatch");
 
@@ -940,13 +935,16 @@ struct GpuCloudParams
     float cloudAOPower;       // where 1-exp(-d*power) bites; tune against `density`
     float flatDensityScale;   // flat 2D layer opacity, decoupled from volumetric `density`
     // Flat-2D Rayleigh decoupling, 464 -> 480. See cloud_params.glsl for why the flat layer needs
-    // its own Rayleigh multiplier to make the 3D->2D crossfade match. pad19/20 only exist to keep
-    // the block a multiple of 16 bytes; take them before appending.
-    float flatRayleighGain;         // extra BETA_R multiplier for evalCloudLayer only; 1.0 = no-op
-    float flatTwilightAmbientGain;  // flat layer's share of the twilight sky ambient, stacked on
-                                    // cloudTwilightAmbientGain; 1.0 = volumetric-equal strength
-    float pad19;
-    float pad20;
+    // its own Rayleigh multiplier to make the 3D->2D crossfade match.
+    float flatRayleighGain;        // extra BETA_R multiplier for evalCloudLayer only; 1.0 = no-op
+    float flatTwilightAmbientGain; // flat layer's share of the twilight sky ambient, stacked on
+                                   // cloudTwilightAmbientGain; 1.0 = volumetric-equal strength
+    // Orbital terminator gate — claimed the last two pads, so the block is still 480 but there is
+    // no slack left. The NEXT field added here has to grow this struct AND cloud_params.glsl by a
+    // full 16 bytes together. See cloud_params.glsl for what these do and why they are altitude-
+    // gated.
+    float atmosTermStrength; // 0 = previous behaviour exactly; 1 = full suppression past the cut
+    float atmosTermWidth;    // rolloff half-width in sin(sun elev); smaller = harder cliff
 };
 static_assert(sizeof(GpuCloudParams) == 480, "GpuCloudParams layout mismatch");
 
@@ -955,49 +953,48 @@ static_assert(sizeof(GpuCloudParams) == 480, "GpuCloudParams layout mismatch");
 // Total: 96 bytes.
 struct SatOrbitPC
 {
-    glm::vec4 enuX;              // East  basis in ECI (w unused) — offset 0
-    glm::vec4 enuY;              // North basis in ECI (w unused) — offset 16
-    glm::vec4 enuZ;              // Up    basis in ECI (w unused) — offset 32
-    glm::vec3 sunDirECI;         // unit vector toward sun — offset 48
-    float deltaT;                // simTime - epochT0 (float precision) — offset 60
-    glm::vec3 obsECI;            // observer ECI position (meters) — offset 64
-    uint32_t satCount;           // total satellite count — offset 76
-    uint32_t highlightMask;      // bit i = constellation i in highlight mode — offset 80
-    uint32_t enabledMask;        // bit i = constellation i is enabled — offset 84
-    float simDt;                 // simulated seconds this frame (mirror slew) — offset 88
-    float elevCutoff;            // sin(Earth-limb angle) — horizon cull threshold (≤ -0.01) — offset 92
-    float beamGain;              // Reflect-Orbital ground-beam intensity multiplier — offset 96
-    float mirrorSlewDegPerSec;   // offset 100 — C12 follow-up #20: settings-tunable mirror slew
-                                 // rate (was a hardcoded 1 deg/sec, MIRROR_ROT_RATE in sat_orbit.comp).
-                                 // At 1 deg/sec a satellite retargeting after the observer moves to a
-                                 // new area can take minutes to visually catch up — noticeable and
-                                 // frustrating while exploring interactively, even though it's a
-                                 // reasonable rate for passive/stationary observation. Default raised
-                                 // substantially (see SatelliteSim::mirrorSlewDegPerSec) and now
-                                 // user-tunable instead of fixed. C12 follow-up #34: was offset 104 —
-                                 // beamFootprintRadM removed entirely (footprint is now physically
-                                 // derived in sat_orbit.comp from mirror area + range).
-    uint32_t activeTargetCount;  // offset 104 — S1 (RELEASE_v1_1_PLAN.md) target compaction: number
-                                 // of VALID entries at the front of ReflectorTargetBuf this frame (CPU
-                                 // packs only night-side-valid targets there — see updatePositions());
-                                 // replaces the old fixed NUM_TARGETS=201 scan bound in sat_orbit.comp.
-    float minBeamElevSin;        // offset 108 — S1 follow-up: sin(reflectorMinElevDeg), precomputed on
-                                 // CPU. Candidate targets below this local-elevation-at-target angle are
-                                 // rejected outright (grazing, not just deprioritized) — see
-                                 // sat_orbit.comp's TargetedReflector block for the full rationale.
-    uint32_t mirrorSnap;         // offset 112 — 1 = bypass the mirror slew rate limit entirely this
-                                 // dispatch and place every TargetedReflector mirror directly at its
-                                 // ideal attitude. Set for the first few frames after sim start and
-                                 // after any event that invalidates persisted slew state (orbit
-                                 // rebake / constellation rebuild / enable-toggle) — see
-                                 // SatelliteSim::mirrorSnapFrames.
-    float minBeamElevSinRelease; // offset 116 — sin(reflectorMinElevDeg - kBeamLockReleaseMarginDeg),
-                                 // the floor at which an ALREADY-LOCKED target is given up. Always
-                                 // below minBeamElevSin (the acquire floor); the gap is what stops a
-                                 // target sitting exactly on the threshold from being dropped and
-                                 // re-acquired every frame. See sat_orbit.comp's selection block.
-    uint32_t pad1;               // offset 120
-    uint32_t pad2;               // offset 124
+    glm::vec4 enuX;             // East  basis in ECI (w unused) — offset 0
+    glm::vec4 enuY;             // North basis in ECI (w unused) — offset 16
+    glm::vec4 enuZ;             // Up    basis in ECI (w unused) — offset 32
+    glm::vec3 sunDirECI;        // unit vector toward sun — offset 48
+    float deltaT;               // simTime - epochT0 (float precision) — offset 60
+    glm::vec3 obsECI;           // observer ECI position (meters) — offset 64
+    uint32_t satCount;          // total satellite count — offset 76
+    uint32_t highlightMask;     // bit i = constellation i in highlight mode — offset 80
+    uint32_t enabledMask;       // bit i = constellation i is enabled — offset 84
+    float simDt;                // simulated seconds this frame — offset 88
+    float elevCutoff;           // sin(Earth-limb angle) — horizon cull threshold (≤ -0.01) — offset 92
+    float beamGain;             // Reflect-Orbital ground-beam intensity multiplier — offset 96
+    float reflectorLockWindowS; // offset 100 — 2026-08-06 reversibility rework: fixed-width sim-time
+                                // window (seconds) a TargetedReflector satellite commits to one target
+                                // for. Target IDENTITY is chosen per-window (see sat_orbit.comp), not
+                                // by a persisted per-satellite lock — this is also the extrapolation
+                                // step the shader uses to reach a window's midpoint from `deltaT`/
+                                // `gmstNow` (see those fields below), so it doubles as "windowS".
+                                // Replaces the old rate-limited-slew design's mirrorSlewDegPerSec
+                                // (same push-constant slot, same settings-window slider).
+    uint32_t targetCount;       // offset 104 — total loaded reflector targets (reflectorTargetCount).
+                                // sat_orbit.comp scans the full static ECEF set itself now (rotating
+                                // by gmstNow/derived gmstEval on the fly) instead of reading a
+                                // per-frame CPU-compacted night-side buffer — see CLAUDE.md's
+                                // TargetedReflector section. Replaces the old activeTargetCount.
+    float minBeamElevSin;       // offset 108 — sin(reflectorMinElevDeg), precomputed on CPU. Candidate
+                                // targets below this local-elevation-at-target angle are rejected
+                                // outright (grazing, not just deprioritized).
+    float gmstNow;              // offset 112 — current-frame GMST (rad), for rotating a target's
+                                // static ECEF entry to its LIVE ECI position (the actual aim/beam
+                                // position — see CLAUDE.md). Replaces the old mirrorSnap flag; nothing
+                                // persists across frames anymore, so there is no snap state to force.
+    float windowFrac;           // offset 116 — fract(simTimeAbs / reflectorLockWindowS): this
+                                // satellite-independent frame's fractional position within the
+                                // current lock window, in [0,1). sat_orbit.comp uses
+                                // (0.5-windowFrac)*reflectorLockWindowS to extrapolate deltaT/gmstNow
+                                // out to the current and next window's midpoints (see that shader for
+                                // why this extrapolation is exact, not approximate, for both
+                                // quantities). Replaces the old minBeamElevSinRelease — hysteresis is
+                                // gone; window-boundary crossfade is time-based instead.
+    uint32_t pad1;              // offset 120
+    uint32_t pad2;              // offset 124
 }; // 128 bytes
 static_assert(sizeof(SatOrbitPC) == 128, "SatOrbitPC layout mismatch");
 
@@ -1157,18 +1154,18 @@ private:
     // ── Orbit pipeline buffers ────────────────────────────────────────────────
     VkBuffer satOrbitBuf = VK_NULL_HANDLE; // device-local, uploaded once at init
     VkDeviceMemory satOrbitMem = VK_NULL_HANDLE;
-    VkBuffer mirrorNormalsBuf = VK_NULL_HANDLE; // device-local, persistent slew state
-    VkDeviceMemory mirrorNormalsMem = VK_NULL_HANDLE;
-    VkBuffer reflectorTargetsBuf = VK_NULL_HANDLE; // host-visible, updated each frame
-    VkDeviceMemory reflectorTargetsMem = VK_NULL_HANDLE;
-    void *reflectorTargetsMapped = nullptr;
-    // C12 follow-up #33: static ECEF companion to reflectorTargetsBuf (which is ECI, rotates with
-    // GMST every frame) — reflectorTargetsECEF[]/reflectorTargetsRadiusM[] never change after
+    // mirrorNormalsBuf (persistent mirror lock/slew state) and reflectorTargetsBuf (the per-frame
+    // CPU-compacted night-side ECI buffer) were removed 2026-08-06 — see CLAUDE.md's
+    // TargetedReflector section. sat_orbit.comp now derives everything it needs (live AND
+    // window-eval target positions) directly from reflectorTargetsECEFBuf below plus
+    // SatOrbitPC::gmstNow, with no per-frame CPU rotation/compaction step and no persisted GPU
+    // state — target selection and mirror orientation are both pure functions of sim time.
+    //
+    // C12 follow-up #33: reflectorTargetsECEF[]/reflectorTargetsRadiusM[] never change after
     // target generation, so this is uploaded ONCE (right after initConstellation() in init(), see
     // that call site) rather than refreshed per frame. xyz = unit ECEF direction, w = ground
-    // radius incl. terrain elevation. Read by beam_cloud_block.comp, which needs true ECEF (cloud
-    // lon/lat sampling) and would otherwise need to redo the GMST rotation reflectorTargetsBuf
-    // already has baked in.
+    // radius incl. terrain elevation. Read by beam_cloud_block.comp (needs true ECEF for cloud
+    // lon/lat sampling) and, as of the same 2026-08-06 rework, by sat_orbit.comp too.
     VkBuffer reflectorTargetsECEFBuf = VK_NULL_HANDLE; // host-visible+coherent, written once
     VkDeviceMemory reflectorTargetsECEFMem = VK_NULL_HANDLE;
     void *reflectorTargetsECEFMapped = nullptr;
@@ -1360,7 +1357,7 @@ private:
     // Reflect-Orbital beam's ACTUAL current mirror-pointing direction as a long ray, so
     // convergence at a busy site (and any satellite still mid-slew, not yet aimed at its target)
     // can be seen directly. See GpuReflectBeam::reflectDirENU and cloud_march.comp (C12 follow-up #12).
-    bool showBeamDebugRays = false;
+    bool showBeamDebugRays = true;
 
     // ── Sky glow SSBO ─────────────────────────────────────────────────────────
     // Written by sat_flare.comp each frame via binned atomicMax; read by sat_sky.frag.
@@ -1618,19 +1615,19 @@ private:
     float mirrorBoost = 429.17f;
     float visThresh = 0.0001f;
     float highlightFlare = 0.17066f;
-    float moonSuppression = 6.57895f;    // sky background suppression from moonlight (mirrors daySuppression,
-                                         // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
-    float lightPollutionGain = 6.14035f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
-                                         // so satellites + stars stay coherently scaled by construction
-    float extinctionCoeff = 0.39912f;    // atmospheric extinction, magnitudes per airmass (Kasten & Young
-                                         // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
-                                         // in both sat_flare.comp and updateStars() so a star and a
-                                         // satellite at the same elevation dim identically
-    float sunlitBgVisibility = 0.15f;    // Stars/Milky Way visibility fraction in space when the sun is
-                                         // off-screen but the observer is still in direct sunlight — 0 =
-                                         // fully hidden (like being fully day-suppressed), 1 = as visible as
-                                         // true night. Sun-on-screen always forces 0 regardless of this
-                                         // slider. See recordCompute()'s sky-glare gate and updateStars().
+    float moonSuppression = 6.57895f; // sky background suppression from moonlight (mirrors daySuppression,
+                                      // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
+    float lightPollutionGain = 20.0f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
+                                      // so satellites + stars stay coherently scaled by construction
+    float extinctionCoeff = 0.39912f; // atmospheric extinction, magnitudes per airmass (Kasten & Young
+                                      // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
+                                      // in both sat_flare.comp and updateStars() so a star and a
+                                      // satellite at the same elevation dim identically
+    float sunlitBgVisibility = 0.15f; // Stars/Milky Way visibility fraction in space when the sun is
+                                      // off-screen but the observer is still in direct sunlight — 0 =
+                                      // fully hidden (like being fully day-suppressed), 1 = as visible as
+                                      // true night. Sun-on-screen always forces 0 regardless of this
+                                      // slider. See recordCompute()'s sky-glare gate and updateStars().
     // ── Reflect-Orbital ground beams (C12) ────────────────────────────────────
     // groundIrradiance * beamGain is NOT the same quantity as mirrorBoost/mirrorPeak (that's the
     // view-dependent specular term the OBSERVER sees the mirror glint by; this is the physical
@@ -1647,12 +1644,12 @@ private:
     // yet). Own gain, separate from beamGain (that's the physical ground-irradiance term feeding
     // the ground spot; this purely scales the visual glow's brightness) — dim default, tunable.
     float beamSkyGlowGain = 0.022989f;
-    // C12 follow-up #20 raised this to 15 deg/sec by default (was a hardcoded 1 deg/sec constant,
-    // MIRROR_ROT_RATE) to reduce a noticeable catch-up delay after the observer moves. Follow-up
-    // #21: user preferred the original slew rate/behavior, so the default is back to 1 deg/sec —
-    // still exposed as a tunable slider (Settings → Beams → "Mirror slew rate (deg/s)") in case
-    // it's wanted later, just no longer defaulting to the faster value.
-    float mirrorSlewDegPerSec = 5.068965f;
+    // 2026-08-06 reversibility rework: replaced the old rate-limited mirror slew (deg/sec,
+    // integrated frame-by-frame — inherently history-dependent, so it could not be made
+    // reversible) with a fixed-width sim-time window a satellite commits to one target for. See
+    // sat_orbit.comp's TargetedReflector block and CLAUDE.md for the full design. Same settings
+    // slider slot (Settings → Beams), retitled "Target lock window (s)".
+    float reflectorLockWindowS = 90.0f;
     // S1 follow-up (RELEASE_v1_1_PLAN.md): minimum acceptable local elevation angle of the
     // satellite as seen FROM a candidate ground target, in degrees. Below this, a target is
     // rejected outright by sat_orbit.comp's TargetedReflector selection (grazing beams suffer
@@ -1660,15 +1657,10 @@ private:
     // being deprioritized — see that shader's own comment for the full rationale, including why
     // this replaced a pure "nearest target" rule. Sent as sin(radians(this)) via
     // SatOrbitPC::minBeamElevSin (recordCompute fills it; the sin conversion happens there, not
-    // per-candidate in the shader).
-    float reflectorMinElevDeg = 20.0f;
-    // 2026-08-06: how far BELOW reflectorMinElevDeg a target a satellite has already locked onto is
-    // allowed to sink before the lock is released. Acquire at reflectorMinElevDeg, release at
-    // (reflectorMinElevDeg - this) — classic two-threshold hysteresis, and the reason a target
-    // hovering exactly at the acquire bar can no longer be dropped and re-acquired on alternating
-    // frames. Not a slider: it is a stability constant, not a look/quality knob, and the value only
-    // has to be comfortably larger than the per-frame change in a target's elevation angle.
-    static constexpr float kBeamLockReleaseMarginDeg = 8.0f;
+    // per-candidate in the shader). This is now the ONLY floor — the 2026-08-06 reversibility
+    // rework removed the separate release floor/hysteresis margin along with the persisted lock it
+    // existed to protect (temporal stability now comes from reflectorLockWindowS instead).
+    float reflectorMinElevDeg = 10.142244f;
     // (beamExtinctionMult lived here — user-tunable extra extinction for the deleted analytic
     // beam sky tube. Removed in C12 follow-up #44 along with the tube itself: the replacement
     // per-sample beam-cloud term is a real volumetric contribution composited through the cloud
@@ -1679,12 +1671,16 @@ private:
     // designed for a camera near/inside the volume). The tube fades out approaching a beam
     // (crossfade in the shader) while this purely angular (no segment geometry) glow term fades
     // in — own gain per [[feedback_shared_gain_sliders]], not a reuse of beamSkyGlowGain.
-    float beamGlowBleedGain = 0.001379f;
+    float beamGlowBleedGain = 0.000901f;
     // C12 follow-up #40: radius (meters) of the crossfade blend zone around a beam's own 3D line —
     // was a hardcoded kNearFieldCrossoverM constant in cloud_march.comp, now user-tunable.
-    // Per-pixel cloud shadow fade distance. 80 km matches the deleted grid's half-extent, so
-    // anything previously shadowed still is; beyond it the shadow was sub-pixel anyway.
-    float cloudShadowRangeM = 80000.0f;
+    // Per-pixel cloud shadow fade distance. Was 80 km (matching the deleted 128x128 grid's
+    // half-extent, so anything the grid shadowed still was). Measured 2026-08-06: pushing this to
+    // the slider ceiling costs nothing, because the shadow march is per-terrain-pixel and gated on
+    // `tScene < kNoSurfaceT` — raising the range does not add samples, it only stops the fade from
+    // killing shadows the march already computed. So it now defaults maxed, and it is deliberately
+    // NOT in applyGraphicsPreset's table; Planetarium still removes the whole pass via bit 256.
+    float cloudShadowRangeM = 300000.0f;
     float beamNearFieldFadeM = 71510.867188f;
     // C12 follow-up #41: 0-1, how close the observer is to ANY active beam's actual 3D line —
     // smoothstepped from lastNearestBeamDistM/beamNearFieldFadeM each frame in recordCompute().
@@ -1699,28 +1695,32 @@ private:
     glm::vec3 mwRow1{0.0f, 1.0f, 0.0f};
     glm::vec3 mwRow2{0.0f, 0.0f, 1.0f};
     // Cloud tunables (CPU-side; uploaded to cloudParamsBuf each frame)
-    // Defaults below are the user-tuned values as of the C16 (aurora) session-28 follow-up #21/#22
-    // (2026-07-16) commit — baked in from settings.json rather than the original placeholder guesses.
+    // Defaults below are the user-tuned values baked in from settings.json (most recently
+    // 2026-08-06, the cloud/atmosphere tuning close-out) rather than placeholder guesses. They are
+    // a measured, self-consistent SET — the flat-2D scales calibrate against the volumetric path,
+    // and the lighting gains against each other. Do not re-derive any one of them in isolation.
+    // Anything here that GraphicsPreset::High also lists must change in both places at once:
+    // High's table row is documented as "the compiled-in class member defaults, verbatim."
     float cloudCoverage = 1.0f;
-    float cloudDensity = 8.179311f;
-    float cloudBaseAltM = 5585.964844f; // layer 0 shell altitude (low cloud / stratus)
-    float cloudTopAltM = 15000.0f;      // layer 1 shell altitude (high cirrus)
-    float cloudDriftRate = 1.0438595e-05f;
-    float cloudSunGain = 3.001422f;       // near-horizon/sunset sun-gain endpoint — blended toward
+    float cloudDensity = 1.252418f;
+    float cloudBaseAltM = 6000.0f; // layer 0 shell altitude (low cloud / stratus)
+    float cloudTopAltM = 15000.0f; // layer 1 shell altitude (high cirrus)
+    float cloudDriftRate = 6.55e-06f;
+    float cloudSunGain = 1.141773f;       // near-horizon/sunset sun-gain endpoint — blended toward
                                           // cloudSunGainZenith by sun elevation (see cloud_march.comp)
     float cloudSunGainZenith = 1.001422f; // sun-gain endpoint when the sun is near zenith (midday)
-    float cloudAmbientGain = 4.827586f;
-    float cloudTwilightAmbientGain = 18.117590f; // manual gain on sky-lit cloud during twilight (was piggybacking
-                                                 // on cloudAmbientGain, which also drives city-light
-                                                 // upwelling — see kNightSkyAmbientColor in cloud_march.comp)
-    float cloudBaseVariance = 0.367816f;         // noise-driven cloud base height undulation, hNorm units
-                                                 // (0 = old perfectly flat base) — see cloudMarchCS
-    float cloudErosionEdge = 0.965517f;          // cloudDensity() erosion strength at the silhouette edge
-    float sunGainElevBand = 0.020000f;           // ~1.1 deg elevation band — user-tuned 2026-08-04
+    float cloudAmbientGain = 1.8f;
+    float cloudTwilightAmbientGain = 0.398292f; // manual gain on sky-lit cloud during twilight (was piggybacking
+                                                // on cloudAmbientGain, which also drives city-light
+                                                // upwelling — see kNightSkyAmbientColor in cloud_march.comp)
+    float cloudBaseVariance = 0.269915f;        // noise-driven cloud base height undulation, hNorm units
+                                                // (0 = old perfectly flat base) — see cloudMarchCS
+    float cloudErosionEdge = 0.914651f;         // cloudDensity() erosion strength at the silhouette edge
+    float sunGainElevBand = 0.020000f;          // ~1.1 deg elevation band — user-tuned 2026-08-04
     // Brought forward from the original hardcoded 0.15 so the sky term overlaps the tail of
     // direct sunlight instead of starting after it; 0.35 is ~20 deg of sun elevation.
-    float twilightBandHi = 0.004765f;
-    float twilightBandLo = -0.862340f; // user-tuned 2026-08-04
+    float twilightBandHi = 0.142923f;
+    float twilightBandLo = -0.254445f; // user-tuned 2026-08-04
     // 1.0 rather than 0.0: a compromise starting point. Lower = more small-scale structure and
     // a closer match to the flat layer, at the cost of worse texture-cache behaviour (mip 0 of
     // the 8K map is ~33 MB and is sampled once per in-cloud march step).
@@ -1728,30 +1728,37 @@ private:
     // Measured against the volumetric at MIP 0: volumetric (coverage 1.00, sun gain 0.46)
     // matched flat (coverage 0.69, sun gain 1.84). Defaults encode those ratios so the shared
     // sliders now move both paths together instead of only ever suiting one of them.
-    float flatCoverageScale = 0.602299f;
-    float flatSunGainScale = 3.968965f;
+    float flatCoverageScale = 0.687838f;
+    float flatSunGainScale = 2.424786f;
     // Clouds at 11 km have a ground-level horizon of ~374 km, so this band puts the transition
     // near the horizon when standing on the surface, and makes everything 2D from orbit.
     float cloudDistFadeStartM = 151902.171875f;
     float cloudDistFadeEndM = 399347.8125f;
-    // S4 (RELEASE_v1_1_PLAN.md, session 31): terrain-relief march distance fade. Ground-level
-    // grazing rays cap at 250 km reach (tCap at obsEffH=0), so 300000 leaves ground view fully
-    // unaffected; from LEO (tCap up to 3600 km) most of the screen's grazing/horizon rays fall
-    // beyond 900000 and skip the march outright, falling back to the sea-level sphere.
-    float terrainDistFadeStartM = 300000.0f;
+    // S4 (RELEASE_v1_1_PLAN.md, session 31): terrain-relief march distance fade. Below the start
+    // distance the march gets its full step budget; between start and end the budget fades out;
+    // past the end it is skipped entirely and the ray falls back to the sea-level sphere (exactly
+    // what the "terrain off" knockout produces). So a LOWER start is CHEAPER.
+    // The start was 300000 (chosen so ground views, whose grazing rays cap at ~250 km reach, were
+    // untouched) until the 2026-08-06 pass took it to 50000 for a long, gradual roll-off instead of
+    // a late abrupt one — distant relief now dissolves into the sphere over 50-900 km rather than
+    // holding full detail to 300 km and then dropping. NOTE this is now lower than Medium's and
+    // Low's start distances in applyGraphicsPreset; see the comment on that table.
+    float terrainDistFadeStartM = 50000.0f;
     float terrainDistFadeEndM = 900000.0f;
     // Cloud opacity scale (see GpuCloudParams::cloudOpacityScale) — multiplies the volumetric
     // cloud march's extinction-per-metre constant directly (and, since this same value also
     // scales layer 0's flat-2D-crossfade alphaMax ceiling in recordCompute(), the flat layer used
     // at higher observer altitude too), since raising `cloudDensity` alone cannot push a
-    // saturated column past full opacity. 1.0 would reproduce the original hardcoded extinction/
-    // alphaMax exactly; 7.0 is the user-tuned system default (2026-08-02) that reads as properly
-    // opaque through moderately dense cloud without visibly hardening thin/wispy edges.
-    float cloudOpacityScale = 7.0f;
+    // saturated column past full opacity. 1.0 reproduces the original hardcoded extinction/alphaMax
+    // exactly. This briefly defaulted to 7.0 (2026-08-02) to force opacity through moderately dense
+    // cloud; the 2026-08-06 tuning pass took it back to ~1.0 and got the opacity from `density`/
+    // erosion instead, which does not harden thin/wispy edges the way a raw extinction multiplier
+    // does. Treat 1.014 as "effectively neutral" — the knob is still live if it's ever needed.
+    float cloudOpacityScale = 1.014034f;
     // City-lights blur-through-cloud (see GpuCloudParams::cityLightBlurLod) — mip LOD
     // earthNightTex/cityNightDetailTex blend toward under full local cloud opacity, so light
     // diffused through haze reads as a soft glow instead of a sharp copy of the raw texture.
-    float cityLightBlurLod = 3.0f;
+    float cityLightBlurLod = 8.117590f;
     // Atmospheric scattering strength gains (see GpuCloudParams::atmosRayleighGain/atmosMieGain
     // and common.glsl's BETA_R_BASE/BETA_M_BASE) — 1.0 reproduces the original hardcoded physical
     // constants exactly. Rayleigh gain controls how much red/orange the sky and horizon clouds
@@ -1764,79 +1771,97 @@ private:
     // that put the detail lookup at a shear ratio of 0.8 and the per-column lookup at 4.8, i.e.
     // badly folded — the reported pinching/banding/"wavy chips". 3.0 halves the shear while
     // leaving displacement magnitude (the large-scale structure movement) untouched.
-    float cloudWarpStrength = 32.0f;
-    float cloudWarpFreq = 3.0f;
+    float cloudWarpStrength = 32.151726f;
+    float cloudWarpFreq = 3.704895f;
     // Erosion redesign (see GpuCloudParams and cloud_params.glsl). cloudSurfaceCarve = 0 and
     // cloudErosionBillow = 0 together reproduce the previous erosion exactly, so the two of them
-    // bisect this change; cloudErosionFreq = 1.5 is the old hardcoded coordinate scale.
+    // bisect this change; cloudErosionFreq = 1.5 was the old hardcoded coordinate scale (the
+    // 2026-08-06 pass took it to 0.5, i.e. coarser erosion lumps than the original constant).
     // 1.0 (fully subtractive) per in-app review — it also happened to mask the density-clamp
     // plateau documented in cloudDensity(), which is now fixed at its source.
     float cloudSurfaceCarve = 1.0f;
     float cloudErosionBillow = 1.0f;
-    float cloudErosionBillowH = 0.35f;
-    float cloudErosionFreq = 1.5f;
-    // Directional-shading contrast. Previous hardcoded equivalents were 1.0 / 0.05 / 0.35 / 1.0;
-    // all four moved toward more contrast, since together they were flattening cloud shading to
-    // near-uniform at sunset. See cloud_params.glsl.
-    float cloudMultiScatter = 0.6f;
-    float cloudShadowFloorT = 0.02f;
-    float cloudGrazeShadow = 0.6f;
-    float cloudConeLenScale = 1.5f;
+    float cloudErosionBillowH = 0.449739f;
+    float cloudErosionFreq = 0.5f;
+    // Directional-shading contrast. Previous hardcoded equivalents were 1.0 / 0.05 / 0.35 / 1.0.
+    // These were first pushed hard toward contrast (clouds were shading near-uniform at sunset),
+    // then pulled back by the 2026-08-06 pass once the erosion redesign and the terminator gate
+    // were supplying that contrast structurally: shadowFloorT/grazeShadow/coneLenScale now sit
+    // near or below the original constants and multiScatter roughly halved. See cloud_params.glsl.
+    float cloudMultiScatter = 0.546230f;
+    float cloudShadowFloorT = 0.111238f;
+    float cloudGrazeShadow = 0.326932f;
+    float cloudConeLenScale = 0.785206f;
     // Height-only shading was the "lasagna" cause; halved and now sun-elevation weighted, with a
     // density-driven occlusion term supplying the horizontal variation it never had.
-    float cloudVertShadeGain = 0.5f;
-    float cloudDensityAO = 0.45f;
-    float cloudAOPower = 1.0f;
+    float cloudVertShadeGain = 0.528687f;
+    float cloudDensityAO = 0.497985f;
+    float cloudAOPower = 0.05f;
     // 1.0 = previous coupled behaviour. Raise after lowering `density` for the volumetric path.
-    float flatDensityScale = 1.0f;
+    float flatDensityScale = 2.024431f;
     // Flat 2D layer's own Rayleigh multiplier, stacked on atmosRayleighGain (see
     // GpuCloudParams::flatRayleighGain). 1.0 = the previous fully-coupled behaviour; raise or
     // lower it to close the hue/depth step across the 3D->2D crossfade.
-    float flatRayleighGain = 1.0f;
+    float flatRayleighGain = 0.184922f;
     // Flat 2D layer's twilight sky ambient, stacked on cloudTwilightAmbientGain (see
     // GpuCloudParams::flatTwilightAmbientGain). The flat path had no ambient term at all before
     // this, so there is no prior behaviour to preserve — 1.0 starts it at the same strength the
     // volumetric shell gets, which is the matched-crossfade starting point; 0 disables it.
-    float flatTwilightAmbientGain = 1.0f;
-    float atmosRayleighGain = 1.0f;
-    float atmosMieGain = 1.0f;
+    float flatTwilightAmbientGain = 2.079658f;
+    // Orbital terminator gate (see GpuCloudParams::atmosTermStrength). Defaulted ON at the "mid"
+    // setting measured during design — SZA 92 about 23x down, day side untouched — because the
+    // whole point is to look at it. Drag strength to 0 for an exact A/B against the old look;
+    // nothing else in the frame changes when you do.
+    float atmosTermStrength = 1.0f;
+    float atmosTermWidth = 0.070793f;
+    float atmosRayleighGain = 0.980796f;
+    float atmosMieGain = 1.020270f;
     // C11 ground fog layer — real per-sample volumetric march in cloud_march.comp's fogMarchCS,
     // reusing beamCloudLightBuf for beam godrays and a fixed small self-shadow march for sun
-    // godrays. First-pass defaults, expect retuning once seen in-app.
-    float fogTopAltM = 300.0f;         // shell top altitude (m above sea level); sea level is the base
-    float fogDensity = 1.0f;           // density scale, analogous to cloud.density
-    float fogCoverage = 0.6f;          // global coverage gate for the patchiness noise, [0,1]
-    float fogSunGain = 1.0f;           // sun-lit fog brightness gain, own slider (not cloud.sunGain)
-    float cloudErosionCore = 0.37931f; // cloudDensity() erosion strength at the dense core
-    float cloudHgG = 0.356053f;
+    // godrays. Retuned in-app 2026-08-06: a much taller (1.4 km) but far thinner (density ~0.07)
+    // layer than the first-pass 300 m / 1.0 guess — the thin tall version reads as real haze the
+    // camera can fly up through, where the thick shallow one read as a hard ground-hugging slab.
+    float fogTopAltM = 1401.001953f; // shell top altitude (m above sea level); sea level is the base
+    float fogDensity = 0.067567f;    // density scale, analogous to cloud.density
+    float fogCoverage = 0.6f;        // global coverage gate for the patchiness noise, [0,1]
+    float fogSunGain = 1.106685f;    // sun-lit fog brightness gain, own slider (not cloud.sunGain)
+    float cloudErosionCore = 1.0f;   // cloudDensity() erosion strength at the dense core
+    float cloudHgG = 0.99f;
     float cloudMarchSteps = 215.034485f;
     float cloudLightSteps = 12.896552f;
-    float cloudCirrusWindDeg = 40.0f;          // C13: cirrus streak wind azimuth (degrees, converted to radians for the UBO)
-    float cloudCirrusStretch = 2.184211f;      // C13: cirrus noise anisotropic elongation factor (1 = no stretch)
-    float airglowGain = 0.065789f;             // C15: master airglow brightness multiplier
-    float airglowGreenGain = 0.052632f;        // C15: green (557.7nm) band gain
-    float airglowRedGain = 0.013158f;          // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
-    float airglowSodiumGain = 0.065789f;       // C15: sodium (589.3nm) band gain — kept dim relative to green
-    float cloudShadowMaxDistM = 22022.988281f; // sun self-shadow cone (N_CONE) fades out beyond this distance
-    float cloudMaxRenderDistM = 800000.0f;     // cloudMarch tExit distance cap — raised to ~400km
-                                               // (session 28 follow-up #10): the low-cloud shell's own
-                                               // geometric horizon distance at 11km altitude is
-                                               // ~sqrt(2*R_EARTH*11000)≈374km; the prior 165km default
-                                               // cut the march off well short of that, letting
-                                               // aurora/Milky Way/stars show straight through clouds
-                                               // near the horizon instead of them thinning out naturally
+    float cloudCirrusWindDeg = 40.0f;     // C13: cirrus streak wind azimuth (degrees, converted to radians for the UBO)
+    float cloudCirrusStretch = 2.363442f; // C13: cirrus noise anisotropic elongation factor (1 = no stretch)
+    float airglowGain = 0.065789f;        // C15: master airglow brightness multiplier
+    float airglowGreenGain = 0.052632f;   // C15: green (557.7nm) band gain
+    float airglowRedGain = 0.013158f;     // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
+    float airglowSodiumGain = 0.08f;      // C15: sodium (589.3nm) band gain — kept dim relative to green
+    // Sun self-shadow cone (N_CONE) fades out beyond this distance. Was 22 km, when the cone
+    // marched a fixed stride and distance directly bought samples. The cone now absorbs distance
+    // into its stride (see cloud_march.comp's shadowFade comment), so this became a reach knob
+    // rather than a cost knob and the 2026-08-06 pass effectively unbounded it — self-shadowing
+    // now survives all the way out to the cloud shell's own horizon instead of dropping off a
+    // cliff at 22 km and leaving distant cloud flat-lit.
+    float cloudShadowMaxDistM = 6000000.0f;
+    float cloudMaxRenderDistM = 800000.0f; // cloudMarch tExit distance cap — raised to ~400km
+                                           // (session 28 follow-up #10): the low-cloud shell's own
+                                           // geometric horizon distance at 11km altitude is
+                                           // ~sqrt(2*R_EARTH*11000)≈374km; the prior 165km default
+                                           // cut the march off well short of that, letting
+                                           // aurora/Milky Way/stars show straight through clouds
+                                           // near the horizon instead of them thinning out naturally
     // Perf follow-up (session 24): main atmosphere loop + ocean wave quality, all previously
     // hardcoded compile-time constants.
     // N_VIEW is now adaptive per-ray (round 2): a fixed sample count badly serves a loop whose
     // path length (tEnd) varies from ~100km (straight up) to 2000+km (grazing/horizon/orbit) —
     // see the adaptive-N_VIEW comment in sat_sky.frag for the full reasoning. viewSamplesMin is
     // the user-validated "looks convincing" floor for short ground-level rays (4 showed visible
-    // artifacts in testing; 6 was clean — round 3); viewSamplesMax is the prior universal fixed
-    // value (124), kept as the ceiling for long/grazing rays since that was already proven
-    // correct at all altitudes before this change.
+    // artifacts in testing; 6 was clean — round 3); viewSamplesMax is the ceiling for long/grazing
+    // rays. That ceiling was the prior universal fixed value (124) until the 2026-08-06 tuning
+    // pass raised it to ~157: the orbital terminator gate (atmosTermStrength) puts real structure
+    // in the deep-twilight tail of the integral, where 124 samples banded on long limb rays.
     float viewSamplesMin = 6.482759f;
-    float viewSamplesMax = 124.689659f;
-    float lightSamples = 2.0f;                 // N_LIGHT: optDepth sun-side sub-march count
+    float viewSamplesMax = 157.302979f;
+    float lightSamples = 2.374584f;            // N_LIGHT: optDepth sun-side sub-march count
     float oceanSeaOctaves = 3.0f;              // seaMap() octave count (height-trace geometry)
     float oceanDetailOctaves = 5.0f;           // seaMapDetail() octave count (wave normal)
     float oceanReflSamples = 6.0f;             // ocean sky-reflection loop sample count (N_REFL)
@@ -2041,15 +2066,10 @@ private:
     // correctly-populated entry like any other (see loadReflectorTargets()'s doc comment for the
     // bug this replaced: index 0 used to be silently left as a degenerate zero-vector).
     int reflectorObserverSpawnIdx = -1;
-    // S1 compaction: how many of reflectorTargetCount are night-side-valid THIS FRAME — set by
-    // updatePositions(), which packs exactly this many valid entries at the front of
-    // reflectorTargetsMapped (GpuReflectorTarget[]) each frame instead of uploading all
-    // reflectorTargetCount with a per-entry valid flag. Sent to sat_orbit.comp as
-    // SatOrbitPC::activeTargetCount so its per-satellite nearest-target scan only walks the real
-    // night-side subset (typically well under reflectorTargetCount) instead of skipping day-side
-    // entries one by one. See sat_orbit.comp's ReflectorTargetBuf doc comment for the packed
-    // layout (w holds the ORIGINAL index, not a 0/1 valid flag, once compacted).
-    int reflectorActiveCount = 0;
+    // reflectorActiveCount (S1's per-frame night-side compaction count) was removed 2026-08-06 —
+    // sat_orbit.comp now scans all reflectorTargetCount targets itself each frame, gating night-
+    // side per-candidate from the live/eval-time sun direction instead of relying on a CPU-
+    // precompacted subset. See sat_orbit.comp's TargetedReflector block and CLAUDE.md.
     glm::vec3 reflectorTargetsECEF[kNumReflectorTargets]{}; // unit ECEF, set by initConstellation
     // Real ground radius per target (C12 follow-up #18) — kEarthRadius + actual terrain elevation
     // at that target's lat/lon, looked up once via earthElevCpu when targets are generated
@@ -2075,22 +2095,11 @@ private:
     static constexpr float kKnifeMaxRollDeg = 80.0f;
 
     // Per-satellite current mirror normal in ECI (TargetedReflector only).
-    // Persistent between frames; slews toward the ideal target normal at
-    // kMirrorRotRateDegPerSec.  Zero-vector = uninitialized (snaps on first frame).
-    std::vector<glm::vec3> satMirrorNormals;
-
-    // Frames remaining for which sat_orbit.comp should place every TargetedReflector mirror
-    // directly at its ideal attitude instead of rate-limiting toward it (SatOrbitPC::mirrorSnap).
-    // Counted down in recordCompute(); re-armed by requestMirrorSnap() whenever the persisted
-    // per-index slew state in mirrorNormalsBuf stops meaning what it did — sim start, an orbit
-    // rebake, a constellation rebuild, or a constellation being re-enabled after its satellites
-    // spent time skipping the attitude block entirely.
-    //
-    // More than one frame because the mirrors' ideal directions depend on reflectorTargetsBuf,
-    // which the CPU refills each frame, and on beamCloudBlock, produced by an earlier dispatch —
-    // one clean frame of both is not guaranteed at the exact instant the snap is requested.
-    int mirrorSnapFrames = 0;
-    void requestMirrorSnap() { mirrorSnapFrames = 3; }
+    // satMirrorNormals (CPU-era placeholder for GPU mirror slew state) and mirrorSnapFrames/
+    // requestMirrorSnap() (forced every TargetedReflector mirror to its ideal attitude for a few
+    // frames after an event that invalidated persisted GPU lock/slew state) were removed
+    // 2026-08-06 — the reversibility rework deleted the persisted state itself, so there is
+    // nothing left to snap out of. See sat_orbit.comp's TargetedReflector block.
 
     // ── Satellite type catalogue (defined once in initConstellation) ──────────
     std::vector<SatelliteType> satTypes;
@@ -2205,18 +2214,24 @@ private:
     bool hovSaveSnapshot = false;
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button
     bool hovResetDefaults = false;
-    float resetDefaultsMsgTimer = 0.0f;  // seconds remaining to show the "Restart to apply" confirmation (NEW-5)
-    bool hovDebugToggle[12] = {};        // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch, scene depth pass, fog layer)
-    bool hovBeamDebugRaysToggle = false; // hover state for the "Show beam pointing rays" checkbox (C12 follow-up #12)
+    float resetDefaultsMsgTimer = 0.0f;       // seconds remaining to show the "Restart to apply" confirmation (NEW-5)
+    bool hovDebugToggle[12] = {};             // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch, scene depth pass, fog layer)
+    bool hovBeamDebugRaysToggle = false;      // hover state for the "Show beam pointing rays" checkbox (C12 follow-up #12)
+    bool hovBeamDebugRaysToggleQuick = false; // hover state for the Display-tab quick-access copy
+                                              // of the same checkbox, next to Graphics preset
+                                              // (2026-08-06) — separate bool because it's a second,
+                                              // simultaneously-visible Clay element bound to the
+                                              // same showBeamDebugRays bool; sharing one hover bool
+                                              // between two elements would fight over it.
     // Sized 11, not 9 — flare_glow_gain/flare_streak_gain (flare architecture overhaul) added two
     // more PhotoParam rows; per [[feedback_cloud_slider_arrays]], all three hover/dragging arrays
     // must grow together with any new slider id.
     bool hovPhotoMinus[11] = {};
     bool hovPhotoPlus[11] = {};
     bool draggingPhoto[11] = {};
-    bool hovCloudMinus[81] = {}; // was [79] — idx 79/80 are the flat-2D Rayleigh / twilight sliders
-    bool hovCloudPlus[81] = {};
-    bool draggingCloud[81] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[83] = {}; // was [81] — idx 81/82 are the orbital terminator gate sliders
+    bool hovCloudPlus[83] = {};
+    bool draggingCloud[83] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.
@@ -2524,7 +2539,7 @@ static constexpr IntroKeyframe kIntroKeyframes[] = {
     {songbeat * 2.0, 00000.0f, kIntroStartAzDeg - 5, 25.0f, 64.0f, "From the ground, we watch sunlight glint off their solar arrays"},
     // Beat 4 — the pull to LEO begins (ascent happens across THIS beat's transition). Still
     // facing horizontally west, per the storyboard, even as altitude climbs.
-    {songbeat * 3.0, 60000.0f, kIntroStartAzDeg - 25, 35.0f, 62.0f, "They power a global network of communication and AI compute."},
+    {songbeat * 3.0, 60000.0f, kIntroStartAzDeg - 25, 35.0f, 62.0f, "They power an orbital network of communications and AI compute."},
     // Beat 5 — pull continues; camera starts rotating away from due-west as we climb high enough
     // to reveal the Earth's curve.
     {songbeat * 4.0, 140000.0f, kIntroStartAzDeg - 35, 20.0f, 62.0f, "A promise to the markets above all else"},

@@ -1006,8 +1006,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                           // nearest beam rather than brightening the sky through it.
         // C12 follow-up #44: aggregate by target position into a small fixed list — satellites
         // servicing the same real-world site resolve to numerically identical targetENU (both
-        // derive from the same reflectorTargetsBuf[bestIdx] entry, rotated the same way this
-        // frame), so a small epsilon match buckets and sums them with no target-ID plumbing.
+        // derive from the same reflectorTargetsECEFBuf[bestIdx] entry, rotated by the same
+        // gmstNow this frame), so a small epsilon match buckets and sums them with no target-ID
+        // plumbing.
         // Bounded at kMaxCloudBeamLights: reflector targets are globally sparse (~1500km+ typical
         // spacing), so more than a handful simultaneously within beamMaxRangeM is already an edge
         // case, and a target that overflows this list simply doesn't light clouds this frame
@@ -1040,13 +1041,16 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             float intensity = rb->entries[s].intensity;
             float targetDistM = glm::length(tE);
 
-            // Ground-spot compaction: same hard range cutoff sat_sky.frag's loop applies, done
-            // ONCE here per beam instead of unconditionally per ground-hit pixel. No soft fade
-            // here (unlike the cloud-light aggregation below) — that fade exists to stop cloud
-            // ILLUMINATION from popping as a target crosses the boundary; the ground spot's own
-            // per-pixel falloff (footprint/core gaussians, elevFade) already handles its visuals,
-            // this is purely a "could this plausibly be visible at all" cull.
-            if (intensity > 0.0f && targetDistM <= beamMaxRangeM &&
+            // Ground-spot compaction: same range cutoff sat_sky.frag's loop applies, done ONCE
+            // here per beam instead of unconditionally per ground-hit pixel. Widened by
+            // kGroundBeamFadeM (2026-08-07 user report: beams "pop in" at full brightness the
+            // instant they cross beamMaxRangeM) so the fade band itself is still included in the
+            // compacted list — sat_sky.frag applies the actual smooth fade per-pixel using this
+            // same width, since the intensity used there needs to ramp, not just the membership
+            // test here. Kept in sync with kSkyBeamFadeM in cloud_march.comp (same visual beam,
+            // same fade feel) and sat_sky.frag's own copy of this constant.
+            const float kGroundBeamFadeM = 200000.0f;
+            if (intensity > 0.0f && targetDistM <= beamMaxRangeM + kGroundBeamFadeM &&
                 groundBeams.count < (uint32_t)kMaxGroundBeams)
                 groundBeams.entries[groundBeams.count++] = rb->entries[s];
 
@@ -1261,6 +1265,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.flatDensityScale = flatDensityScale;
         cp.flatRayleighGain = flatRayleighGain;
         cp.flatTwilightAmbientGain = flatTwilightAmbientGain;
+        cp.atmosTermStrength = atmosTermStrength;
+        cp.atmosTermWidth = atmosTermWidth;
         cp.atmosRayleighGain = atmosRayleighGain;
         cp.atmosMieGain = atmosMieGain;
         cp.stormStrength = stormStrength;
@@ -1344,18 +1350,21 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         orbitPc.elevCutoff = std::min(-0.01f, limbSin);
     }
     orbitPc.beamGain = beamGain;
-    orbitPc.mirrorSlewDegPerSec = mirrorSlewDegPerSec;                // C12 follow-up #20
-    orbitPc.activeTargetCount = (uint32_t)reflectorActiveCount;       // S1 compaction
+    orbitPc.reflectorLockWindowS = reflectorLockWindowS;
+    orbitPc.targetCount = (uint32_t)reflectorTargetCount;
     orbitPc.minBeamElevSin = sinf(glm::radians(reflectorMinElevDeg)); // S1 follow-up
-    // Release floor for an already-locked target — see kBeamLockReleaseMarginDeg. Clamped at 0 so a
-    // low reflectorMinElevDeg can't push the release angle negative and let a satellite hold a
-    // target that has dropped below its own horizon.
-    orbitPc.minBeamElevSinRelease =
-        sinf(glm::radians(std::max(0.0f, reflectorMinElevDeg - kBeamLockReleaseMarginDeg)));
-    // Mirror slew-state snap: see requestMirrorSnap()/mirrorSnapFrames in SatelliteSim.h.
-    orbitPc.mirrorSnap = (mirrorSnapFrames > 0) ? 1u : 0u;
-    if (mirrorSnapFrames > 0)
-        --mirrorSnapFrames;
+    // 2026-08-06 reversibility rework: gmstNow/windowFrac are pure functions of absolute sim time
+    // (computed here in double precision, narrowed only after the periodic reduction — same
+    // "epoch-delta trick" spirit as deltaT above) so sat_orbit.comp can extrapolate exactly to its
+    // lock-window boundaries without any persisted GPU state. See that shader's TargetedReflector
+    // block and CLAUDE.md for the full design.
+    {
+        double simTimeAbs = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        orbitPc.gmstNow = (float)fmod(kOmegaEarth * simTimeAbs, glm::two_pi<double>());
+        double windowS = std::max(1.0f, reflectorLockWindowS);
+        double windowRatio = simTimeAbs / windowS;
+        orbitPc.windowFrac = (float)(windowRatio - floor(windowRatio));
+    }
 
     // ── Dispatch: scene_depth.comp — shared terrain/ocean depth (pipeline unification) ──────────
     // Runs FIRST. Everything downstream that needs to know "is this pixel's view blocked by the
@@ -2601,12 +2610,6 @@ void SatelliteSim::cleanup(VkDevice device)
     vkFreeMemory(device, lightDomeMem, nullptr);
     vkDestroyBuffer(device, satOrbitBuf, nullptr);
     vkFreeMemory(device, satOrbitMem, nullptr);
-    vkDestroyBuffer(device, mirrorNormalsBuf, nullptr);
-    vkFreeMemory(device, mirrorNormalsMem, nullptr);
-    if (reflectorTargetsMapped)
-        vkUnmapMemory(device, reflectorTargetsMem);
-    vkDestroyBuffer(device, reflectorTargetsBuf, nullptr);
-    vkFreeMemory(device, reflectorTargetsMem, nullptr);
     if (reflectorTargetsECEFMapped)
         vkUnmapMemory(device, reflectorTargetsECEFMem);
     vkDestroyBuffer(device, reflectorTargetsECEFBuf, nullptr);
@@ -3189,30 +3192,15 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                      satOrbitBuf, satOrbitMem);
 
-    // mirrorNormalsBuf: device-local, read-write each frame by sat_orbit.comp.
-    // Zero-initialised so w=0 triggers the snap-to-target path on first invocation.
-    ctx.createBuffer(sizeof(glm::vec4) * MAX_SATELLITES,
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                     mirrorNormalsBuf, mirrorNormalsMem);
-    {
-        VkCommandBuffer cmd = ctx.beginOneTimeCommands();
-        vkCmdFillBuffer(cmd, mirrorNormalsBuf, 0, VK_WHOLE_SIZE, 0);
-        ctx.endOneTimeCommands(cmd);
-    }
-
-    // reflectorTargetsBuf: host-visible + coherent, updated every frame by CPU.
-    VkDeviceSize reflSize = sizeof(GpuReflectorTarget) * kNumReflectorTargets;
-    ctx.createBuffer(reflSize,
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     reflectorTargetsBuf, reflectorTargetsMem);
-    vkMapMemory(ctx.device, reflectorTargetsMem, 0, reflSize, 0, &reflectorTargetsMapped);
-    memset(reflectorTargetsMapped, 0, reflSize);
+    // mirrorNormalsBuf (persistent lock/slew state) and reflectorTargetsBuf (per-frame CPU-
+    // compacted night-side buffer) were removed 2026-08-06 — sat_orbit.comp now derives
+    // everything from reflectorTargetsECEFBuf below, a pure function of sim time each frame, with
+    // no persisted GPU state. See CLAUDE.md's TargetedReflector section.
 
     // reflectorTargetsECEFBuf: host-visible + coherent, but written ONCE (right after
     // initConstellation() in init(), not every frame — see the member comment). Sized as
-    // vec4 per target (xyz=unit ECEF dir, w=radius); consumed by beam_cloud_block.comp.
+    // vec4 per target (xyz=unit ECEF dir, w=radius); consumed by beam_cloud_block.comp and, as of
+    // the 2026-08-06 reversibility rework, sat_orbit.comp too.
     VkDeviceSize reflECEFSize = sizeof(glm::vec4) * kNumReflectorTargets;
     ctx.createBuffer(reflECEFSize,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -3387,28 +3375,28 @@ void SatelliteSim::createComputePipeline(VulkanContext &ctx)
 // Descriptor set for sat_orbit.comp:
 //   binding 0  satOrbitBuf       (readonly  SSBO)
 //   binding 1  satInputBuf       (write     SSBO — same buffer that sat_flare.comp reads)
-//   binding 2  mirrorNormalsBuf  (readwrite SSBO)
-//   binding 3  reflectorTargetsBuf (readonly SSBO)
-//   binding 4  reflectBeamsBuf   (readwrite SSBO — capped atomic-append beam list, C12)
-//   binding 5  beamGlowDomeBuf  (readwrite SSBO — 16-sector beam sky-glow dome, C12 follow-up #31)
-//   binding 6  beamCloudBlockBuf (readonly SSBO — per-target cloud occlusion, C12 follow-up #33)
+//   binding 2  reflectorTargetsECEFBuf (readonly SSBO — static, same buffer beam_cloud_block.comp
+//                                       reads; replaces the old mirrorNormalsBuf/reflectorTargetsBuf
+//                                       pair as of the 2026-08-06 reversibility rework)
+//   binding 3  reflectBeamsBuf   (readwrite SSBO — capped atomic-append beam list, C12)
+//   binding 4  beamGlowDomeBuf  (readwrite SSBO — 16-sector beam sky-glow dome, C12 follow-up #31)
+//   binding 5  beamCloudBlockBuf (readonly SSBO — per-target cloud occlusion, C12 follow-up #33)
 void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[7] = {};
+    VkDescriptorSetLayoutBinding bindings[6] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    bindings[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    bindings[6] = {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // beamCloudBlockBuf, C12 follow-up #33
+    bindings[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // beamCloudBlockBuf, C12 follow-up #33
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 7;
+    li.bindingCount = 6;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &orbitDescLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &ps;
@@ -3423,28 +3411,25 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
 
     VkDescriptorBufferInfo orbitInfo{satOrbitBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo inputInfo{satInputBuf, 0, VK_WHOLE_SIZE};
-    VkDescriptorBufferInfo mirrorInfo{mirrorNormalsBuf, 0, VK_WHOLE_SIZE};
-    VkDescriptorBufferInfo reflInfo{reflectorTargetsBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo targetEcefInfo{reflectorTargetsECEFBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo beamInfo{reflectBeamsBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo beamDomeInfo{beamGlowDomeBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo beamCloudBlockInfo{beamCloudBlockBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[7] = {};
+    VkWriteDescriptorSet writes[6] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 0, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &orbitInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 1, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &inputInfo, nullptr};
     writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 2, 0, 1,
-                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &mirrorInfo, nullptr};
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &targetEcefInfo, nullptr};
     writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 3, 0, 1,
-                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &reflInfo, nullptr};
-    writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 4, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamInfo, nullptr};
-    writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 5, 0, 1,
+    writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 4, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamDomeInfo, nullptr};
-    writes[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 6, 0, 1,
+    writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 5, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamCloudBlockInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 7, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device, 6, writes, 0, nullptr);
 }
 
 // ─── createOrbitPipeline ──────────────────────────────────────────────────────
@@ -3484,10 +3469,10 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
     if (satOrbits.empty())
         return;
 
-    // A rebake re-writes what every dispatch index means, so the persistent per-index mirror slew
-    // state in mirrorNormalsBuf no longer describes the satellite that will read it. Snap instead
-    // of slewing out of a stranger's attitude.
-    requestMirrorSnap();
+    // A rebake re-writes what every dispatch index means, but TargetedReflector selection and
+    // orientation no longer persist any per-index GPU state (2026-08-06 reversibility rework) —
+    // nothing here needs invalidating; the next frame's sat_orbit.comp dispatch derives everything
+    // fresh from the rebaked orbits and the current sim time regardless.
 
     orbitEpochDay = simDayJ2000;
     orbitEpochSec = simSecInDay;
@@ -6419,8 +6404,20 @@ void SatelliteSim::updateLightPollutionDome()
     // towns) — without a near sample the dome can miss the pollution source entirely and read as
     // "no effect" even directly under city lights. This is the direct analog of the old scalar's
     // distance-0 sample, which this replaced.
-    const float kSampleRadiiM[4] = {2000.0f, 8000.0f, 20000.0f, 45000.0f};
-    const float kRadiusFalloffM = 20000.0f;
+    //
+    // Radii/falloff widened (session follow-up, per user feedback): the old 45km outer sample with
+    // a 20km falloff scale meant a city's contribution was already down to ~10% by 45km and
+    // essentially gone by 60-80km, so any gap between two cities much wider than that read as flat
+    // pitch black — reads as far more localized than real skyglow, which stays visible over tens
+    // to a hundred+ km for a sizeable city (Falchi et al., World Atlas of Artificial Night Sky
+    // Brightness). Two more (90/150km) far radii plus a longer 35km falloff scale spread the same
+    // weighted-max combine further out: close-in behaviour barely changes (all four original radii
+    // still land at broadly the same relative weights), 45km roughly triples in contribution, and
+    // the two new far radii add a gentle regional tail that only a genuinely large/bright city can
+    // still reach by 150km. A spot with no city within that whole radius still correctly falls to
+    // ~0 and stays dark enough for the Milky Way — this is reach, not a raised floor.
+    const float kSampleRadiiM[6] = {2000.0f, 8000.0f, 20000.0f, 45000.0f, 90000.0f, 150000.0f};
+    const float kRadiusFalloffM = 35000.0f;
     float obsLatRad = glm::radians(obsLatDeg);
     float obsLonRad = glm::radians(obsLonDeg);
     float cosObsLat = std::max(0.05f, cosf(obsLatRad)); // guard near the poles
@@ -7250,8 +7247,6 @@ void SatelliteSim::buildOrbits()
     }
 
     activeSatCount = (uint32_t)satOrbits.size();
-    // Mirror normals are now stored in mirrorNormalsBuf (device-local, zeroed at init).
-    // satMirrorNormals is kept as an empty placeholder; GPU handles slew state.
 }
 
 // ─── computeReflectorTargetElevationRadius ───────────────────────────────────
@@ -7558,51 +7553,10 @@ void SatelliteSim::updatePositions(double t, float dt)
         }
     }
 
-    // ── TargetedReflector: rotate target points to ECI, flag valid ones ─────
-    // ECEF unit vectors rotate to ECI by the GMST angle (Earth's sidereal rotation).
-    // Same rotation formula used for obsECI — consistent frame.
-    //
-    // Validity: the whole night side (sunDot < 0).  Why not restrict to the terminator
-    // zone?  With targets spread across the full night hemisphere, valid targets appear
-    // at DIFFERENT azimuth/elevation positions in the observer's sky as Earth rotates.
-    // Restricting to just the terminator (sunDot > -0.5) puts all valid targets in the
-    // same narrow azimuth band, making the rotation indistinguishable — they all look
-    // "fixed" even though the ECEF rotation is working correctly.
-    //
-    // With 200 targets across the full night side, ~100 are valid at any moment,
-    // spread all the way from the dusk terminator to the dawn terminator.  As Earth
-    // rotates under the constellation, different geographic points enter/exit the
-    // night side and the flare directions visibly sweep across the sky.
-    // ── TargetedReflector targets: ECEF→ECI + validity → compact → upload to GPU ───────────────
-    // S1 compaction (RELEASE_v1_1_PLAN.md): only night-side-valid targets get written, packed at
-    // the front of reflectorTargetsMapped — see GpuReflectorTarget's doc comment for why bestIdx
-    // still resolves correctly against BeamCloudBlockBuf despite the reordering. Written to
-    // reflectorTargetsMapped (host-coherent); read by sat_orbit.comp, bound by
-    // SatOrbitPC::activeTargetCount (== reflectorActiveCount).
-    {
-        float gmst = (float)fmod(kOmegaEarth * t, glm::two_pi<double>());
-        float cosG = cosf(gmst), sinG = sinf(gmst);
-        GpuReflectorTarget *targets = static_cast<GpuReflectorTarget *>(reflectorTargetsMapped);
-        int activeCount = 0;
-        for (int ti = 0; ti < reflectorTargetCount; ++ti)
-        {
-            const glm::vec3 &ef = reflectorTargetsECEF[ti];
-            // reflectorTargetsRadiusM (C12 follow-up #18), not the bare kEarthRadius — accounts
-            // for real terrain elevation at this target so beams aim at the actual ground surface
-            // instead of the sea-level sphere (which sat underneath any elevated terrain).
-            glm::vec3 eci = reflectorTargetsRadiusM[ti] * glm::vec3(
-                                                              cosG * ef.x - sinG * ef.y,
-                                                              sinG * ef.x + cosG * ef.y,
-                                                              ef.z);
-            float sunDot = glm::dot(glm::normalize(eci), sunDirECI);
-            if (sunDot >= 0.0f)
-                continue; // day-side — simply not written; nothing downstream ever scans past activeCount
-            targets[activeCount].posECI = eci;
-            targets[activeCount].origIdx = (float)ti;
-            ++activeCount;
-        }
-        reflectorActiveCount = activeCount;
-    }
+    // TargetedReflector per-frame ECEF→ECI rotation + night-side compaction was removed
+    // 2026-08-06 — sat_orbit.comp now does this rotation itself (reflectorTargetsECEFBuf +
+    // SatOrbitPC::gmstNow/windowFrac), scanning the full static target set every frame instead of
+    // reading a CPU-precompacted subset. See CLAUDE.md's TargetedReflector section.
 
     // ── Satellite loop runs on GPU (sat_orbit.comp + sat_flare.comp) ─────────────
     // peakMagnitude is computed in recordCompute() from the previous frame's glowBuf.
