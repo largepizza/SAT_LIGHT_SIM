@@ -264,6 +264,26 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // to 16 regardless, so the C++ mirror must too or the descriptor range undershoots the block).
     float flatRayleighGain;
     float flatTwilightAmbientGain;
-    float pad19;
-    float pad20;
+    // ── Orbital terminator gate (claimed pad19/pad20 — zero size change, block stays 480) ─────
+    // Read only by sat_sky.frag's N_VIEW atmosphere loop. An ARTISTIC suppression of scattered
+    // sunlight past the terminator, not a correction to the scattering: the integral was measured
+    // to fall ~1 decade per 6 degrees across the terminator, which is real twilight's rate. What
+    // it compensates for is that this renderer composites an eyeballed HDR scene instead of
+    // shooting at a fixed exposure, so that physically-correct tail reads far brighter than the
+    // orbital photography it gets compared against — leaving hard-cutoff clouds looking like dark
+    // patches against a still-lit atmosphere.
+    //
+    // atmosTermStrength: 0 = exact previous behaviour (the multiply becomes 1.0 — keep this as the
+    //   A/B), 1 = full suppression past the cutoff. Additionally scaled by observer altitude over
+    //   40-100 km, so it is inert at ground level. That gating is load-bearing, not caution:
+    //   applied globally it takes the western afterglow down 4-8x with the sun 2 degrees below the
+    //   horizon and removes the Belt of Venus, because the samples it suppresses are the ones over
+    //   night-side ground — the unwanted wash seen from orbit, but the actual post-sunset sky seen
+    //   from below.
+    // atmosTermWidth: half-width of the rolloff in sin(sun elevation), centred on the geometric
+    //   terminator — smaller is a harder cliff. Centring on 0 rather than exposing both edges is
+    //   deliberate: it anchors the cut to the same place the clouds cut, which is the entire point
+    //   of the feature. 0.08 puts SZA 92 about 23x down, 0.035 effectively removes it outright.
+    float atmosTermStrength;
+    float atmosTermWidth;
 } cloud;

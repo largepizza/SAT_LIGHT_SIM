@@ -952,6 +952,9 @@ void cloudMarchCS(
     out   vec3  A_cloud, out vec3 B_cloud,
     out   vec3  cloudTOut,
     out   float tCloudOcclude,
+    out   float tCloudEnter,  // shell entry distance for THIS ray, kNoSurfaceT if none — lets a
+                              // caller (the debug beam overlay) tell "in front of the cloud" from
+                              // "behind it" instead of just how opaque the whole column reads
     float tScene)  // shared scene depth (metres to the first surface, or kNoSurfaceT)
 {
     // Runtime-tunable scattering strength — see cloud_params.glsl's atmosRayleighGain/
@@ -963,6 +966,7 @@ void cloudMarchCS(
     B_cloud = vec3(0.0);
     cloudTOut = vec3(1.0);
     tCloudOcclude = -1.0;
+    tCloudEnter = kNoSurfaceT;
     if (cloud.layers[0].enabled < 0.5) return;
 
     float cloudAltFade = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
@@ -999,6 +1003,7 @@ void cloudMarchCS(
     // shared post-hoc gate explicitly could not do (it could only suppress all layers or none).
     if (tEnter >= tScene) return;
     tExit = min(tExit, tScene);
+    tCloudEnter = tEnter; // real distance the ray reaches this shell — see param comment above
 
     // Distance-based 3D->2D crossfade. This, not maxRenderDistM, is what actually bounds the
     // march: maxRenderDistM caps the span from tEnter, which from orbit is only the ~9 km shell
@@ -1844,6 +1849,8 @@ void cirrusMarchCS(
     vec3  enuX,    vec3  enuY,        vec3  enuZ,
     vec3  sunDir,  vec3  sunDirECEF,  float obsEffH,
     out   vec3  A_cirrus, out vec3 B_cirrus,
+    out   float tCirrusEnter,  // shell entry distance for THIS ray, kNoSurfaceT if none — see
+                               // cloudMarchCS's tCloudEnter, same purpose
     float tScene)  // shared scene depth — see cloudMarchCS
 {
     // Runtime-tunable scattering strength — see cloudMarchCS's matching declaration.
@@ -1852,6 +1859,7 @@ void cirrusMarchCS(
 
     A_cirrus = vec3(1.0);
     B_cirrus = vec3(0.0);
+    tCirrusEnter = kNoSurfaceT;
     if (cloud.layers[1].enabled < 0.5) return;
     float cirrusAltFade = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
     if (cirrusAltFade < 0.001) return;
@@ -1883,6 +1891,7 @@ void cirrusMarchCS(
     // Terrain occlusion on this layer's own bounds — see cloudMarchCS.
     if (tEnter >= tScene) return;
     tExit = min(tExit, tScene);
+    tCirrusEnter = tEnter; // see param comment above
 
     // Distance-based crossfade, same as cloudMarchCS — see there for why this and not
     // maxRenderDistM is what bounds the march.
@@ -2157,14 +2166,15 @@ void main() {
     // 1:1 mapping with no filtering, so the value read is exactly the value written.
     float tScene = texelFetch(sceneDepthTex, coord, 0).r;
 
-    vec3 A_cirrus, B_cirrus;
+    vec3  A_cirrus, B_cirrus;
+    float tCirrusEnter;
     cirrusMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, obsEffH,
-                  A_cirrus, B_cirrus, tScene);
+                  A_cirrus, B_cirrus, tCirrusEnter, tScene);
 
     vec3  A_cloud, B_cloud, cloudTOut;
-    float tCloudOcclude;
+    float tCloudOcclude, tCloudEnter;
     cloudMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, obsEffH, pc.moonDirENU,
-                 A_cloud, B_cloud, cloudTOut, tCloudOcclude, tScene);
+                 A_cloud, B_cloud, cloudTOut, tCloudOcclude, tCloudEnter, tScene);
 
     vec3  A_total = A_cirrus * A_cloud;
     vec3  B_total = B_cirrus * A_cloud + B_cloud;
@@ -2243,8 +2253,19 @@ void main() {
         // One evaluation now, not a 40-sample accumulation. Kept low deliberately: rays are
         // additive, so a site with dozens of satellites converging on it stacks them into a solid
         // wash unless each individual line is faint enough to still read through its neighbours.
-        const float kDebugRayScale    = 0.09;
-        const vec3  kDebugRayColor    = vec3(1.0, 0.95, 0.72); // off-white leaning yellow
+        const float kDebugRayScale    = 0.05;
+        const vec3  kDebugRayColor    = vec3(1.0, 0.95, 0.72) * 0.004; // off-white leaning yellow
+        // Altitude fade (2026-08-06 experiment): invisible in vacuum, brightening as the beam
+        // descends — the cheap stand-in for the deleted tube's scattering falloff, which really
+        // was an air-density effect. Free here: the closest-approach solve below already yields
+        // the exact point on the beam this pixel is looking at, so its altitude is the honest one
+        // to fade on (no extra sampling, no second march). kDebugRayFadeTopM is the top of the
+        // modelled atmosphere (R_ATMOS - R_EARTH); kDebugRayFadeBotM is where it reaches full
+        // strength. kDebugRayFadeExp > 1 keeps the brightening weighted toward the low end
+        // instead of ramping linearly across the whole 100 km.
+        const float kDebugRayFadeTopM = 50000.0;
+        const float kDebugRayFadeBotM = 8000.0;
+        const float kDebugRayFadeExp  = 2.0;
         // Trace to the ACTUAL ground intersection instead of a fixed length (C12 follow-up #13 —
         // user report: rays "terminate once they get enough into the atmosphere" instead of
         // tracing back to the ground). A fixed 1000km length could stop well short of the
@@ -2253,11 +2274,39 @@ void main() {
         // whatever the satellite's altitude or aim. kDebugRayMaxLenM is just a safety fallback
         // for the (should-be-rare) case where the ray points away from Earth entirely.
         const float kDebugRayMaxLenM = 3000000.0;
+        // Aim fade (2026-08-06 user request): mirrors slew toward a NEW target at a fixed rate
+        // (kMirrorRotRateDegPerSec in SatelliteSim.h), but target ACQUISITION is a hard lock
+        // switch (see the reflector-target-selection doc in CLAUDE.md) — the instant a satellite's
+        // argmax/lock flips to a different site, its beam direction jumps immediately and only
+        // then eases toward the new target over the slew. That jump-then-ease is what read as
+        // "pop-in"/glitchy, not the slew itself. beams[bi].aimErrorRad (written in sat_orbit.comp,
+        // radians still remaining in THIS frame's rate-limited step) is 0 once converged and large
+        // right after a fresh acquisition, so it fades the WHOLE ray in as one unit rather than
+        // per-point along it — the satellite's convergence state, not a property of where along
+        // the beam this pixel happens to be looking. kDebugRayAimMaxRad is the error at which the
+        // ray is fully dark; ~30 deg covers a full antipodal-ish target swap without over-fading
+        // routine small slew corrections.
+        const float kDebugRayAimMaxRad = radians(10.0);
         int debugActiveBeamCount = int(min(beamCount, BEAM_MAX_ACTIVE)); // own scope — the main
                                                                           // beam block's activeBeamCount is local to its own `if`
         for (int bi = 0; bi < debugActiveBeamCount; ++bi) {
             if (beams[bi].intensity <= 0.0) continue;
-            if (length(beams[bi].targetENU) > pc.beamMaxRangeM) continue;
+
+            // 2026-08-07 user report: the sky beam ray popped in at full brightness the instant
+            // a target crossed beamMaxRangeM (was a hard cutoff here, no fade). Widened cutoff by
+            // kSkyBeamFadeM so the fade band itself still renders, with rangeFade ramping the
+            // ray's contribution smoothly across it — same smoothstep shape as aimFade/fade below,
+            // just keyed on range instead of slew/altitude. Kept in sync with kGroundBeamFadeM in
+            // SatelliteSim.cpp/sat_sky.frag (same visual beam, same fade feel).
+            float targetDistM = length(beams[bi].targetENU);
+            const float kSkyBeamFadeM = 200000.0;
+            if (targetDistM > pc.beamMaxRangeM + kSkyBeamFadeM) continue;
+            float rangeX = clamp((targetDistM - (pc.beamMaxRangeM - kSkyBeamFadeM)) / kSkyBeamFadeM, 0.0, 1.0);
+            float rangeFade = 1.0 - (rangeX * rangeX * (3.0 - 2.0 * rangeX));
+            if (rangeFade <= 0.0) continue;
+
+            float aimFade = 1.0 - smoothstep(0.0, kDebugRayAimMaxRad, beams[bi].aimErrorRad);
+            if (aimFade <= 0.0) continue; // still swinging onto a freshly-acquired target
 
             vec3 satWorldPos = obsPos + beams[bi].satENU;
             vec3 rayDir      = beams[bi].reflectDirENU;
@@ -2284,13 +2333,45 @@ void main() {
                 t = 0.0;
                 s = clamp(e, 0.0, rayLen);
             }
+            // Terrain occlusion (2026-08-06 fix): t is the distance along THIS pixel's view ray
+            // to the nearest point on the beam, in the same units/frame as tScene — the exact
+            // comparison every other layer in this shader uses to clamp to the shared depth
+            // buffer. Without it a beam whose sampled point sits behind a ridge or mountain, as
+            // seen from the camera (not from the beam's own path), drew straight through solid
+            // ground — the one occlusion form this debug overlay never actually got despite the
+            // "every beam is clamped to tScene" claim above, written when the whole composite
+            // still funneled through the now-deleted tEnterCombined and never updated when this
+            // ray-drawing block was added afterward.
+            if (tScene < kNoSurfaceT && t > tScene) continue;
+
             // Kept in observer-relative terms — never (satWorldPos + rayDir*s) - (obsPos + t*dir).
             float perpDist = length(beams[bi].satENU + rayDir * s - dir * t);
 
             float radiusM = max(kDebugRayRadiusM, t * kDebugRayMinAngRad);
             if (perpDist > radiusM * 4.0) continue;
+
+            // Altitude of the point on the beam this pixel is actually looking at. Same
+            // length()-R_EARTH idiom every other altitude in this shader uses.
+            float qAltM = length(satWorldPos + rayDir * s) - R_EARTH;
+            float fade  = 1.0 - smoothstep(kDebugRayFadeBotM, kDebugRayFadeTopM, qAltM);
+            if (fade <= 0.0) continue; // whole visible span is in vacuum — skip the exp
+            fade = pow(fade, kDebugRayFadeExp);
+
+            // Cloud/cirrus occlusion: only dim the beam if the point it's actually looking at
+            // (distance t along the view ray) is FARTHER than the cloud/cirrus shell this same
+            // ray enters — tCloudEnter/tCirrusEnter are the real geometric entry distances
+            // cloudMarchCS/cirrusMarchCS already solved for above, in the same units as t. A
+            // first version of this used A_total (this ray's combined transmittance) unconditionally,
+            // which occluded beams no matter how close they were to the camera — anything in
+            // front of a distant cloud bank read as behind it, since A_total has no notion of
+            // WHERE along the ray the opacity sits. Comparing against the entry distance is what
+            // lets a beam segment nearer than the cloud render fully lit in front of it.
+            float cloudEntryT = min(tCloudEnter, tCirrusEnter);
+            float cloudGate = (t <= cloudEntryT) ? 1.0 : dot(A_total, vec3(1.0 / 3.0));
+            if (cloudGate <= 0.001) continue; // fully opaque along this ray — nothing to draw
+
             float proximity = exp(-(perpDist * perpDist) / (2.0 * radiusM * radiusM));
-            B_total += kDebugRayColor * (kDebugRayScale * proximity);
+            B_total += kDebugRayColor * (kDebugRayScale * proximity * fade * aimFade * cloudGate * rangeFade);
         }
     }
 

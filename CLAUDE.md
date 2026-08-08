@@ -326,7 +326,7 @@ All per-satellite orbital mechanics and attitude computation runs on the GPU. Th
 
 ### Two-dispatch pattern (recordCompute)
 ```
-sat_orbit.comp dispatch   → reads satOrbitBuf; writes satInputBuf + mirrorNormalsBuf
+sat_orbit.comp dispatch   → reads satOrbitBuf + reflectorTargetsECEFBuf; writes satInputBuf
 barrier satInputBuf       → SHADER_WRITE → SHADER_READ, compute→compute
 vkCmdFillBuffer(glowBuf)  → zeros the glow histogram for this frame
 barrier glowBuf           → TRANSFER_WRITE → SHADER_READ|SHADER_WRITE, transfer→compute
@@ -340,9 +340,15 @@ barrier satVisibleBuf     → SHADER_WRITE → SHADER_READ, compute→vertex
 | `satOrbitBuf` | device-local | uploaded once; rebaked every 7 sim-days | `uploadSatOrbits()` |
 | `satInputBuf` | device-local | per-frame | `sat_orbit.comp` |
 | `satVisibleBuf` | device-local | per-frame | `sat_flare.comp` |
-| `mirrorNormalsBuf` | device-local | persistent (slew state) | `sat_orbit.comp` read+write |
-| `reflectorTargetsBuf` | host-visible, mapped | per-frame | `updatePositions()` CPU |
+| `reflectorTargetsECEFBuf` | host-visible, mapped | uploaded once at target-generation time | `loadReflectorTargets()`/fallback |
 | `glowBuf` | host-coherent, mapped | per-frame | `sat_flare.comp` write; App reads back |
+
+`mirrorNormalsBuf` (persistent per-satellite mirror lock/slew state) and the old per-frame
+CPU-compacted `reflectorTargetsBuf` were both removed 2026-08-06 — see "Subsystem: TargetedReflector
+/ Mirror Ground Targets" below. `sat_orbit.comp` now reads target data from the same static
+`reflectorTargetsECEFBuf` `beam_cloud_block.comp` already used, and carries no persisted GPU state
+of its own: every frame's TargetedReflector selection and orientation is a pure function of that
+frame's push constants.
 
 ### Orbit rebake
 `kOrbitRebakeDays = 7`. Each `GpuSatOrbit` bakes `u0 = fmod(orig_u0 + meanMot × epochT0, 2π)` so the shader only adds `meanMot × deltaT` where deltaT < 7×86400 s. Float ULP at that scale ≈ 0.07 s, well within tolerable orbital error. `uploadSatOrbits()` auto-triggers in `recordCompute()` when `|simDayJ2000 - orbitEpochDay| >= 7`.
@@ -374,25 +380,26 @@ Output of `sat_flare.comp`; read by `sat_point.vert`.
 
 ### Push constants
 
-**SatOrbitPC** (96 bytes) — sat_orbit.comp:
+**SatOrbitPC** (128 bytes) — sat_orbit.comp:
 ```
 enuX (vec4), enuY (vec4), enuZ (vec4)  — ECI→ENU basis, offsets 0/16/32
 sunDirECI (vec3), deltaT (float)       — offset 48/60
 obsECI (vec3), satCount (uint)         — offset 64/76
 highlightMask (uint), enabledMask (uint), simDt (float), elevCutoff (float) — offset 80/84/88/92
-beamGain (float), mirrorSlewDegPerSec (float), activeTargetCount (uint),
+beamGain (float), reflectorLockWindowS (float), targetCount (uint),
 minBeamElevSin (float)                 — offsets 96/100/104/108
-mirrorSnap (uint), minBeamElevSinRelease (float), pad1/pad2 — offset 112/116, padded to 128
+gmstNow (float), windowFrac (float), pad1/pad2 — offset 112/116, padded to 128
 ```
-The header said 96 bytes long after the struct had grown past it; it is 128 as of the mirror-snap
-field. `mirrorSnap = 1` makes `sat_orbit.comp` place every `TargetedReflector` mirror directly at
-its ideal attitude for that dispatch instead of rate-limiting toward it. `mirrorNormalsBuf` is
-persistent state keyed by dispatch index, so anything that changes what an index MEANS — sim start,
-an orbit rebake, a constellation rebuild, re-enabling a constellation whose satellites were
-skipping the attitude block — leaves stale poses behind that would otherwise be slewed out of at
-`mirrorSlewDegPerSec`. `SatelliteSim::requestMirrorSnap()` arms it for 3 frames (the ideal
-directions depend on `reflectorTargetsBuf` and on `beam_cloud_block.comp`'s output, neither
-guaranteed coherent on the exact frame the snap is requested).
+2026-08-06 reversibility rework repurposed the four fields at offset 100-116 in place (same total
+size, no growth): `mirrorSlewDegPerSec` → `reflectorLockWindowS` (a duration instead of a rate —
+see below), `activeTargetCount` → `targetCount` (now the full loaded count, not a per-frame
+night-side-compacted subset), `mirrorSnap` → `gmstNow` (current-frame GMST, for rotating a target's
+static ECEF entry to its live ECI position), `minBeamElevSinRelease` → `windowFrac` (fractional
+position within the current lock window, `fract(simTimeAbs / reflectorLockWindowS)`). All of
+`deltaT`, `gmstNow`, and `windowFrac` are pure functions of absolute sim time, computed on the CPU
+in double precision and narrowed to float only after the relevant periodic reduction — so
+`sat_orbit.comp` can extrapolate exactly to a lock window's midpoint (see below) with no persisted
+GPU state anywhere in the pipeline.
 
 **SatFlarePC** (128 bytes) — sat_flare.comp:
 ```
@@ -419,7 +426,28 @@ moonDirENU (vec4) — xyz=dir, w=illum   — offset 96
 
 ## Subsystem: TargetedReflector / Mirror Ground Targets
 
-Mirrors in `TargetedReflector` mode aim at the nearest valid night-side ground target. All per-satellite selection and slew computation runs in `sat_orbit.comp`.
+Mirrors in `TargetedReflector` mode aim at a ground target chosen by each satellite. All
+per-satellite selection and orientation computation runs in `sat_orbit.comp`.
+
+**2026-08-06 reversibility rework.** The previous design (lock + acquire/release hysteresis in
+`mirrorNormalsBuf`, rate-limited slew integrated frame-by-frame) was persistent, history-dependent
+GPU state: which target a satellite held and how far its mirror had slewed toward it were both a
+function of the *sequence of frames* used to reach the current sim time, not of that sim time
+alone. Playing forward to an instant and reaching the same instant by reversing time therefore
+accumulated different lock/slew histories and could show different satellite/target pairings —
+structural, not a tunable-away bug, since hysteresis is deliberately not time-symmetric. Separately,
+the per-(satellite,target) preference hash (`hash11(float) `on a large combined index) silently
+collapsed to a constant `0.0` for every candidate once a satellite's global dispatch index exceeded
+~15,000 float32 mantissa range — Reflect Orbital satellites sit at index ~57,000+ given the
+constellation upload order, so EVERY score was tied and argmax degenerated to "first eligible
+candidate in scan order," meaning only the lowest-original-index site among a satellite's
+simultaneously-eligible set ever won and other co-eligible sites were never picked.
+
+Both are fixed together: `mirrorNormalsBuf` and the old per-frame CPU-compacted
+`reflectorTargetsBuf` are gone. TargetedReflector selection and orientation are now pure functions
+of the current frame's push constants (themselves pure functions of absolute sim time), so forward
+and reverse playback of the same instant produce bit-identical results, and the hash is an
+all-integer mix (`pairScore`, `sat_orbit.comp`) immune to magnitude collapse.
 
 ### Target generation (once at init) — S1, RELEASE_v1_1_PLAN.md
 `SatelliteSim::loadReflectorTargets()` reads `reflector_targets.json` (next to the exe, moddable
@@ -428,72 +456,70 @@ installations (`{name, lat, lon, capacity_mw}`), with the first entry flagged
 `"observer_spawn": true` at the exact fixed spawn point (67°S, 67°W — see "Fixed Simulation
 State"). Falls back to `generateReflectorTargetsRandomFallback()` (uniformly-random ECEF points,
 still with a real fixed entry at index 0 for the observer-spawn pin) if the file is missing,
-malformed, or empty. `kNumReflectorTargets = 201` is now a **capacity** (buffer sizing), not the
-real count — `reflectorTargetCount` (≤ capacity) holds how many actually loaded.
+malformed, or empty. `kNumReflectorTargets = 201` is a **capacity** (buffer sizing), not the real
+count — `reflectorTargetCount` (≤ capacity) holds how many actually loaded.
 `reflectorObserverSpawnIdx` records which loaded index is the pin (informational/logging).
 
 Per-target ground radius (`reflectorTargetsRadiusM[]`, real terrain elevation via a 3×3-max
 `earthElevCpu` lookup) is computed by the shared `computeReflectorTargetElevationRadius(ti)`
-helper — used by both the JSON path and the fallback.
+helper — used by both the JSON path and the fallback. Both xyz (unit ECEF direction) and this
+radius are uploaded ONCE, at generation time, into `reflectorTargetsECEFBuf` (host-visible,
+`vec4` per target: xyz=ECEF dir, w=radius) — the same static buffer `beam_cloud_block.comp` reads.
+There is no per-frame CPU rotation step any more; `sat_orbit.comp` rotates ECEF→ECI itself, on
+demand, for whichever instant it needs (see below).
 
-### Per-frame CPU update (updatePositions) — S1 compaction
-Rotates the `reflectorTargetCount` loaded targets from ECEF to ECI via GMST = `kOmegaEarth × t`,
-then **compacts**: only night-side-valid entries (`dot(normalize(targetECI), sunDirECI) < 0`) are
-written to `reflectorTargetsMapped`, packed at the front — day-side targets are simply not
-written, not flagged-and-skipped. `GpuReflectorTarget.origIdx` (renamed from the old `.valid` 0/1
-flag) carries each packed entry's **original** target index instead, since `BeamCloudBlockBuf`
-(written by `beam_cloud_block.comp`, dispatched over `reflectorTargetCount` — see its own section
-below) stays indexed by original target index and is deliberately NOT reordered.
-`reflectorActiveCount` (the packed count) is sent to `sat_orbit.comp` as
-`SatOrbitPC::activeTargetCount`.
+### Per-satellite selection (GPU, sat_orbit.comp) — deterministic lock windows
+Target IDENTITY is chosen per fixed-width **sim-time window**
+(`SatOrbitPC::reflectorLockWindowS`, default 90s, settings-window "Target lock window (s)"), not by
+a persisted per-satellite lock. For the CURRENT window and the NEXT window, `sat_orbit.comp`
+extrapolates this frame's `deltaT`/`gmstNow` out to each window's midpoint —
+`toMid = (0.5 - windowFrac) × reflectorLockWindowS`, then `evalDeltaT = deltaT + toMid` and
+`gmstEval = gmstNow + K_OMEGA_EARTH × toMid` (and `+ reflectorLockWindowS` again for the next
+window). **This extrapolation is exact, not approximate**, for both quantities in this sim's model:
+orbital phase (`u = u0 + meanMot×deltaT`) and GMST are both exactly linear in time, so evaluating at
+a shifted `deltaT` is algebraically identical to the CPU having computed `deltaT` relative to a
+different reference instant — no precision or physical approximation beyond what `deltaT`/`gmstNow`
+already carry. The one real approximation is treating `sunDirECI` as constant across one window
+(true to within the sun's ~1°/day drift against a ~90s window).
 
-### Per-satellite (GPU, sat_orbit.comp)
-Scans only `pc.activeTargetCount` packed entries (typically well under `reflectorTargetCount`,
-which itself is already far under the old flat 201) — no per-entry validity check needed, since
-everything in that range is already night-side-valid by construction. `bestPos` is captured
-directly during the scan (the compacted buffer can't be re-indexed by the original index
-afterward), while `bestIdx` keeps the ORIGINAL index for the `beamCloudBlock[bestIdx]` lookup.
+At each eval instant, `findWinner()` re-derives the satellite's own ECI position (`satEciAt`, same
+closed-form math as the real position, evaluated at `evalDeltaT`) and scans **every** loaded target
+(`pc.targetCount`, not a pre-filtered subset — the old per-frame CPU night-side compaction is gone),
+rotating each target's static ECEF entry by `gmstEval`, rejecting day-side-at-that-instant and
+anything below `pc.minBeamElevSin` (local elevation of the satellite *as seen from the target*), and
+taking the `pairScore(satIdx, ORIGINAL target index)` argmax among survivors. This yields `bestIdxA`
+(current window's winner) and `bestIdxB` (next window's winner) — both constant across their whole
+window, since they only depend on that window's own midpoint, not on which frame within it asks.
 
-**Selection is lock-based with hysteresis (2026-08-06), not per-frame re-selection.** Candidates
-below `pc.minBeamElevSin` (local elevation of the satellite *as seen from the target*, 20° default)
-are rejected outright; survivors are scored `hash11(satIdx, ORIGINAL target index)` and the argmax
-wins. A satellite's currently-locked target — carried in `mirrorNormals[i].w`, encoded `0` =
-uninitialized / `1` = no lock / `2+k` = locked to original index `k` — overrides that argmax as
-long as it is still in the night-side buffer and still above the lower `pc.minBeamElevSinRelease`
-floor (`reflectorMinElevDeg - kBeamLockReleaseMarginDeg`, 12° default).
+`pairScore` is a pure function of the `(satellite, target)` pair (all-integer hash, see the block
+comment above `hashU`/`pairScore` in `sat_orbit.comp`), independent of scan order and of how many
+other candidates exist — the same load-spreading property the old `hash11`-based score was designed
+to have, minus the magnitude-collapse bug.
 
-Both halves are load-bearing and neither works alone:
-- The score must be a function of the **original** target index, never of scan position. The
-  previous implementation reservoir-sampled with a seed keyed on `acceptCount` — a candidate's rank
-  in the CPU's night-side compaction order — so a single unrelated target rotating across the
-  terminator shifted every later rank by one and re-rolled the satellite's entire hash sequence
-  onto a different site. Deterministic within a frame, an effectively fresh uniform draw between
-  frames, and visibly strobing in target-dense regions.
-- Argmax alone still switches the moment a higher-scoring target crosses the acquire bar, which in
-  a dense region is constant. Hence the lock.
-- The acquire and release floors must **differ**. A single threshold puts a target sitting on the
-  bar into drop/re-acquire chatter.
+### Orientation — always live geometry, windowing only decides identity
+The mirror's actual aim direction never uses the eval-time position — only the CHOICE of target
+comes from the windowed evaluation above. Once a window's winner is known, its live (this-frame,
+unquantized) position is an O(1) lookup: rotate its static ECEF entry by `pc.gmstNow`
+(`targetLivePos`). This is what lets a locked-in target be tracked exactly for the run of a window
+without needing to re-derive or store anything.
+- `bestIdxA == bestIdxB` (the common case) or only one valid: aim directly at that target's live
+  ideal half-vector (`normalize(sunDirECI + toTarget)`), no blending, `aimErrorRad = 0`.
+- Both valid and different (a genuine window-boundary transition): crossfade over the LAST
+  `BEAM_CROSSFADE_FRAC` (hardcoded 0.15, i.e. ~13.5s of a 90s window) of the window —
+  `mix(idealA, idealB, smoothstep(1-frac, 1, windowFrac))` — a fixed sim-time duration, not a rate
+  limit, so there's no abrupt snap. `bestIdx` (for beam bookkeeping) follows whichever side the
+  blend currently favors; `aimErrorRad` is the residual angle from the exact target during the
+  blend (0 outside it) — same field, same downstream consumers (cloud_march.comp's beam debug ray
+  fade) as before, just driven by window-crossfade progress instead of slew-rate residual.
+- Neither valid: pre-aim at the nearest LIVE night-valid target (no beam drawn — `bestIdx` stays
+  -1), computed fresh each frame (mirrors the old `nearIdx` pre-aim concept, just without a stale
+  lock to fall back on). `FlatMirror45` only if there is truly nothing night-valid at all right now.
 
-Load spreading (the original reason for randomized selection — otherwise every satellite that can
-see a popular clustered site aims at it) is preserved: each satellite still has its own
-pseudo-random preference ordering over sites, and there is still zero cross-satellite arbitration.
-
-Mirror normal =
-`normalize(sunDirECI + toTarget)` — reflects sunlight toward target by half-vector identity. Falls
-back to FlatMirror45 (straight down) if no valid targets exist. Slew state persists in
-`mirrorNormalsBuf` (device-local, read+write in place each dispatch).
-
-### Mirror slew rate
-`kMirrorRotRateDegPerSec = 1.0f` degrees per **simulated** second — consistent across all time warp levels.
-`mirrorNormalsBuf[i].w == 0` = uninitialized; snaps to target on first frame, then slews at the
-clamped rate. **`.w` is not a bare flag** — it also carries the locked target index (`1` = no lock,
-`2+k` = locked to original index `k`); see the selection section above.
-
-The FlatMirror45 "no target at all" fallback deliberately does **not** mark the state initialized —
-it is a placeholder pose, not an attitude the mirror chose. Marking it initialized meant a satellite
-that hit even one frame with an empty target set was pinned to a nadir-down cold start and had to
-slew all the way out of it when it first acquired a real target. See also `SatOrbitPC::mirrorSnap`
-above for the other half of this (stale state after an index remap).
+Because every one of these quantities — `windowFrac`, `evalDeltaT`/`gmstEval`, `bestIdxA/B`, the
+crossfade blend — is a pure function of the current frame's push constants (which are themselves
+pure functions of absolute sim time computed in double precision on the CPU), the whole pipeline is
+reversible by construction: there is nothing to accumulate differently depending on playback
+direction.
 
 ---
 

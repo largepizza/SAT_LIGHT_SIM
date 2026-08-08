@@ -143,16 +143,17 @@ static const char *keyDisplayName(int key)
     case GLFW_KEY_EQUAL:
         return "=";
     default:
-        if (key >= GLFW_KEY_A && key <= GLFW_KEY_Z)
+        // Rotating pool, not a single shared buffer: callers that pass two keyDisplayName()
+        // results to the same snprintf/format call (e.g. the intro's "Q / E" controls hint)
+        // evaluate both arguments before either is read, so a single static buffer let the
+        // second call's letter silently clobber the first (shipped as "Q / Q" in the intro).
+        if ((key >= GLFW_KEY_A && key <= GLFW_KEY_Z) || (key >= GLFW_KEY_0 && key <= GLFW_KEY_9))
         {
-            static char buf[2] = {};
-            buf[0] = (char)('A' + (key - GLFW_KEY_A));
-            return buf;
-        }
-        if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9)
-        {
-            static char buf[2] = {};
-            buf[0] = (char)('0' + (key - GLFW_KEY_0));
+            static char bufs[4][2] = {};
+            static int slot = 0;
+            char *buf = bufs[slot];
+            slot = (slot + 1) % 4;
+            buf[0] = (key <= GLFW_KEY_Z) ? (char)('A' + (key - GLFW_KEY_A)) : (char)('0' + (key - GLFW_KEY_0));
             return buf;
         }
         return "?";
@@ -1260,10 +1261,9 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                 if (hov && inp.lmbPressed)
                 {
                     c.enabled = !c.enabled;
-                    // Disabled satellites return early in sat_orbit.comp without touching their
-                    // mirror slew state, so re-enabling one resumes from however it was aimed when
-                    // it was switched off. Snap rather than slew out of that stale pose.
-                    requestMirrorSnap();
+                    // TargetedReflector mirrors carry no persisted state to invalidate any more
+                    // (2026-08-06 reversibility rework) — re-enabling a constellation just resumes
+                    // normal per-frame selection, no snap needed.
                 }
                 CLAY_TEXT(c.enabled ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
@@ -1640,6 +1640,39 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                     Clay_String presetLabelStr{false, (int32_t)strlen(kPresetLabels[i]), kPresetLabels[i]};
                     CLAY_TEXT(presetLabelStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
                 }
+            }
+        }
+
+        // Quick-access copy of the "Show beam pointing rays" checkbox (buildSettingsBeamsTab owns
+        // the canonical one, next to the beam diagnostics). Placed here too (2026-08-06 user
+        // request) so a low-end preset + beams-on "planetarium demo" combo — the reason this
+        // debug view is graduating toward a real display mode — is a single-tab operation instead
+        // of a tab switch. Both checkboxes drive the same showBeamDebugRays bool; only the hover
+        // state is duplicated (hovBeamDebugRaysToggleQuick), since Clay hover is per-element.
+        CLAY(CLAY_ID("BeamDebugRayRowQuick"), {.layout = {
+                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
+                                             .padding = {0, 0, 2, 2},
+                                             .childGap = 8,
+                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY_TEXT(CLAY_STRING("Show beam pointing rays"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            CLAY(CLAY_ID("BeamDebugRaySpacerQuick"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+            Clay_Color rayChkBgQuick = showBeamDebugRays ? Pal::btnAccent : (hovBeamDebugRaysToggleQuick ? Pal::btnHover : Pal::btnIdle);
+            CLAY(CLAY_ID("BeamDebugRayChkQuick"), {.layout = {
+                                                  .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                                  .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                              .backgroundColor = rayChkBgQuick,
+                                              .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovBeamDebugRaysToggleQuick);
+                sndClick(n, inp.lmbPressed);
+                if (n && inp.lmbPressed)
+                    showBeamDebugRays = !showBeamDebugRays;
+                hovBeamDebugRaysToggleQuick = n;
+                CLAY_TEXT(showBeamDebugRays ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
             }
         }
     }
@@ -2235,7 +2268,20 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
 // Used for both the CLAY_SIZING_FIXED() the slider renders at AND the hit-test
 // math, so they can never disagree — the slider now shrinks with the window
 // instead of the old fixed 228px (which could extend past a narrow window).
-static constexpr float kSliderFixedLeft = 140.0f + 1.0f + 14.0f + 4.0f + 110.0f + 6.0f;               // tab strip+divider+pad+label+gap = 275
+// Label column width. Was 110, which the longest labels in use ("Mirror slew rate (deg/s)",
+// "Beam near-field fade (m)" — 24 chars) overflowed at fs(12) even at uiScale 1.0, and which
+// most of the two-word labels overflowed once uiScale went up (fs() scales the FONT; none of
+// these layout constants scale with it). 150 fits every current label on one line at uiScale 1.0.
+// Raising this costs slider width 1:1 via kSliderFixedLeft, but the slider is clamped to
+// kSliderMaxW long before that matters: at the window's 680px minimum the slider still gets
+// 680-315-138 = 227 of its 228 max.
+static constexpr float kSliderLabelW = 150.0f;
+// Minimum slider-row height. The row is FIT, not FIXED, at this value — a label that still wraps
+// (long label + high uiScale) grows its row instead of spilling over the next one. It was FIXED,
+// which is what made wrapped label text overlap the row below it and run past the bottom of the
+// scroll content.
+static constexpr float kSliderRowMinH = 28.0f;
+static constexpr float kSliderFixedLeft = 140.0f + 1.0f + 14.0f + 4.0f + kSliderLabelW + 6.0f;        // tab strip+divider+pad+label+gap = 315
 static constexpr float kSliderFixedRight = 6.0f + 58.0f + 6.0f + 22.0f + 6.0f + 22.0f + 4.0f + 14.0f; // gap+value+gap+minus+gap+plus+pad = 138
 static constexpr float kSliderMinW = 80.0f;
 static constexpr float kSliderMaxW = 228.0f;
@@ -2284,13 +2330,13 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         float t = glm::clamp((*pp.val - pp.vmin) / (pp.vmax - pp.vmin), 0.0f, 1.0f);
 
         CLAY(CLAY_IDI("PhotoRow", pi), {.layout = {
-                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(kSliderRowMinH)},
                                             .padding = {4, 4, 4, 4},
                                             .childGap = 6,
                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            CLAY(CLAY_IDI("PhotoLbl", pi), {.layout = {.sizing = {CLAY_SIZING_FIXED(110), CLAY_SIZING_FIT(0)}}})
+            CLAY(CLAY_IDI("PhotoLbl", pi), {.layout = {.sizing = {CLAY_SIZING_FIXED(kSliderLabelW), CLAY_SIZING_FIT(0)}}})
             {
                 Clay_String lblStr{false, (int32_t)strlen(pp.label), pp.label};
                 CLAY_TEXT(lblStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
@@ -2380,7 +2426,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
     // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
     // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[81][16];
+    static char cloudBufs[83][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -2391,13 +2437,13 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
         float t = glm::clamp((*cs.val - cs.vmin) / (cs.vmax - cs.vmin), 0.0f, 1.0f);
 
         CLAY(CLAY_IDI("CloudRow", ci), {.layout = {
-                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(kSliderRowMinH)},
                                             .padding = {4, 4, 4, 4},
                                             .childGap = 6,
                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            CLAY(CLAY_IDI("CloudLbl", ci), {.layout = {.sizing = {CLAY_SIZING_FIXED(110), CLAY_SIZING_FIT(0)}}})
+            CLAY(CLAY_IDI("CloudLbl", ci), {.layout = {.sizing = {CLAY_SIZING_FIXED(kSliderLabelW), CLAY_SIZING_FIT(0)}}})
             {
                 Clay_String lblStr{false, (int32_t)strlen(cs.label), cs.label};
                 CLAY_TEXT(lblStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
@@ -2654,6 +2700,12 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
     CloudSlider secAtmos[] = {
         {"Rayleigh gain", &atmosRayleighGain, 0.0f, 3.0f, 0.05f, "%.2f", 63},
         {"Mie/haze gain", &atmosMieGain, 0.0f, 3.0f, 0.05f, "%.2f", 64},
+        // Orbital terminator gate — artistic suppression of scattered sunlight past the
+        // terminator, inert below 40 km observer altitude. Strength 0 is an exact A/B against the
+        // previous look. Width is the rolloff half-width in sin(sun elevation): 0.08 puts solar
+        // zenith 92 about 23x down, 0.035 is effectively a hard cliff. See cloud_params.glsl.
+        {"Terminator cut", &atmosTermStrength, 0.0f, 1.0f, 0.05f, "%.2f", 81},
+        {"Terminator width", &atmosTermWidth, 0.01f, 0.40f, 0.005f, "%.3f", 82},
     };
 
     // Sample budgets — the only two knobs here that trade image quality directly against GPU cost.
@@ -2729,7 +2781,10 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
         // [[feedback_cloud_slider_arrays]] — hovCloudMinus/Plus/draggingCloud stay sized 46).
         {"Beam max range (m)", &beamMaxRangeM, 50000.0f, 2000000.0f, 50000.0f, "%.0f", 41},
         {"Beam sky glow gain", &beamSkyGlowGain, 0.0f, 1.0f, 0.01f, "%.2f", 42},
-        {"Mirror slew rate (deg/s)", &mirrorSlewDegPerSec, 1.0f, 60.0f, 1.0f, "%.0f", 43},
+        // 2026-08-06 reversibility rework: replaces the old rate-limited "Mirror slew rate
+        // (deg/s)" slider — target lock is now a fixed sim-time window instead of a persisted
+        // per-satellite lock, so the tunable is a duration, not a rate. Same slot (43).
+        {"Target lock window (s)", &reflectorLockWindowS, 10.0f, 300.0f, 5.0f, "%.0f", 43},
         // S1 follow-up (RELEASE_v1_1_PLAN.md): reuses slot 44, freed by C12 follow-up #44's
         // removed "Beam extinction" slider — see that removal's comment (still accurate re: why
         // the slot was empty; this is the first thing to reuse it).
@@ -3373,6 +3428,16 @@ GraphicsPreset SatelliteSim::seedGraphicsPresetFromDevice(VulkanContext &ctx) co
 // shader code. High's numbers are the compiled-in class member defaults verbatim (today's tuned
 // values); Ultra pushes each slider toward its UI-exposed ceiling; Low/Medium/Planetarium pull
 // them down, roughly halving each tier's cost band per RELEASE_v1_1_PLAN.md's preset table.
+//
+// TIER ORDERING IS A REAL INVARIANT, and one field can silently break it: terrainFadeStartM is the
+// distance at which the terrain march's step budget BEGINS fading out, so a LOWER value is CHEAPER,
+// the opposite direction from every other number in this table. When the 2026-08-06 tuning pass
+// took the compiled-in default from 300000 down to 50000 (for a long gradual relief roll-off rather
+// than a late abrupt one), High became cheaper on that axis than Medium and Low, which still had
+// 200000/100000. Fixed by pinning Planetarium/Low/Medium/High all to the same 50000 start and
+// letting terrainFadeEndM alone carry the tier scaling (equal start + lower end = strictly fewer
+// samples at every distance, so the ordering holds by construction and can't invert again).
+// Ultra deliberately keeps a much higher start (900000) — that is the "no fade until far" end.
 void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
 {
     if (p == GraphicsPreset::Custom)
@@ -3421,7 +3486,7 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // ocean quality" directive — those sliders are effectively free relative to everything else
         // this tier turns down.
         v = {kBitAurora | kBitBeams | kBitFog,
-             0.7f, 1.0f, 64.0f, 1.0f, 6.0f, 64.0f, 2.0f, 3.0f, 5.0f, 6.0f, 100000.0f, 300000.0f, 5000.0f, 50000.0f};
+             0.7f, 1.0f, 64.0f, 4.0f, 6.0f, 64.0f, 2.0f, 3.0f, 5.0f, 6.0f, 50000.0f, 300000.0f, 5000.0f, 50000.0f};
         break;
     case GraphicsPreset::Medium:
         // Nothing disabled outright — volumetric clouds and aurora both run, at reduced step
@@ -3430,13 +3495,16 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // with everything else — measured cost of those three sliders is negligible, so there is
         // no real budget to save by tightening them at this tier.
         v = {0u,
-             0.85f, 1.0f, 128.0f, 10.0f, 6.0f, 96.0f, 2.0f, 3.0f, 5.0f, 6.0f, 200000.0f, 600000.0f, 80000.0f, 200000.0f};
+             0.85f, 1.0f, 128.0f, 10.0f, 6.0f, 96.0f, 2.0f, 3.0f, 5.0f, 6.0f, 50000.0f, 600000.0f, 80000.0f, 200000.0f};
         break;
     case GraphicsPreset::High:
-        // The compiled-in class member defaults, verbatim — "today's tuned values."
+        // The compiled-in class member defaults, verbatim — "today's tuned values." Re-synced
+        // 2026-08-06 with the cloud/atmosphere tuning close-out (viewSamplesMax 124->157,
+        // lightSamples 2->2.37, terrainFadeStart 300000->50000). If you change a default in
+        // SatelliteSim.h that appears in PresetValues, change it here in the same edit.
         v = {0u,
-             1.0f, 1.0f, 215.034485f, 12.896552f, 6.482759f, 124.689659f, 2.0f, 3.0f, 5.0f, 6.0f,
-             300000.0f, 900000.0f, 151902.171875f, 399347.8125f};
+             1.0f, 1.0f, 215.034485f, 12.896552f, 6.482759f, 157.302979f, 2.374584f, 3.0f, 5.0f, 6.0f,
+             50000.0f, 900000.0f, 151902.171875f, 399347.8125f};
         break;
     case GraphicsPreset::Ultra:
         // Uncapped for showcase/screenshots — pushed to each slider's UI-exposed ceiling.
@@ -3731,7 +3799,10 @@ void SatelliteSim::loadSettings()
         beamGain = c.value("beam_gain", beamGain);
         beamMaxRangeM = c.value("beam_max_range_m", beamMaxRangeM);
         beamSkyGlowGain = c.value("beam_sky_glow_gain", beamSkyGlowGain);
-        mirrorSlewDegPerSec = c.value("mirror_slew_deg_per_sec", mirrorSlewDegPerSec);
+        // mirror_slew_deg_per_sec: pre-2026-08-06 key, superseded by reflector_lock_window_s
+        // below (rate-limited slew replaced by a fixed sim-time lock window) — absent-key default
+        // pattern means an old settings.json simply falls back to the compiled-in default here.
+        reflectorLockWindowS = c.value("reflector_lock_window_s", reflectorLockWindowS);
         reflectorMinElevDeg = c.value("reflector_min_elev_deg", reflectorMinElevDeg);
         // beam_extinction_mult: C12 follow-up #44 — key deliberately no longer read; a stale
         // value in an old settings.json is simply ignored (no member left to load it into).
@@ -3763,6 +3834,8 @@ void SatelliteSim::loadSettings()
             c.value("cloud_flat_twilight_ambient_gain", flatTwilightAmbientGain);
         atmosRayleighGain = c.value("atmos_rayleigh_gain", atmosRayleighGain);
         atmosMieGain = c.value("atmos_mie_gain", atmosMieGain);
+        atmosTermStrength = c.value("atmos_term_strength", atmosTermStrength);
+        atmosTermWidth = c.value("atmos_term_width", atmosTermWidth);
     }
 
     // UC1: a named preset (anything but Custom) is the authority on debugDisableMask/renderScale/
@@ -3892,7 +3965,7 @@ void SatelliteSim::saveSettings()
         {"beam_gain", beamGain},
         {"beam_max_range_m", beamMaxRangeM},
         {"beam_sky_glow_gain", beamSkyGlowGain},
-        {"mirror_slew_deg_per_sec", mirrorSlewDegPerSec},
+        {"reflector_lock_window_s", reflectorLockWindowS},
         {"reflector_min_elev_deg", reflectorMinElevDeg},
         {"beam_glow_bleed_gain", beamGlowBleedGain},
         {"cloud_shadow_range_m", cloudShadowRangeM},
@@ -3920,7 +3993,9 @@ void SatelliteSim::saveSettings()
         {"cloud_flat_rayleigh_gain", flatRayleighGain},
         {"cloud_flat_twilight_ambient_gain", flatTwilightAmbientGain},
         {"atmos_rayleigh_gain", atmosRayleighGain},
-        {"atmos_mie_gain", atmosMieGain}};
+        {"atmos_mie_gain", atmosMieGain},
+        {"atmos_term_strength", atmosTermStrength},
+        {"atmos_term_width", atmosTermWidth}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

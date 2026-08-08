@@ -1527,6 +1527,21 @@ void main() {
     float odR_cam = 0.0;
     float odM_cam = 0.0;
 
+    // ── Orbital terminator gate (artistic) ───────────────────────────────────
+    // Strength of the per-sample terminator suppression applied to accumR/accumM below, faded in
+    // by observer altitude so ground level is bit-identical to having no gate at all. Reuses the
+    // same 40-100 km fade constants as the Milky Way block further down; below 40 km this is 0 and
+    // the whole feature compiles out to a multiply by 1.0.
+    //
+    // Why altitude-gated rather than global: the gate suppresses samples sitting over night-side
+    // ground, which from orbit is exactly the unwanted twilight wash, but from the GROUND is the
+    // post-sunset sky itself. Measured at sun 2 degrees below the horizon, applying it globally
+    // took the western afterglow down 4-8x and removed the Belt of Venus entirely. It is an
+    // orbital art knob, not a scattering correction, and it is scoped to say so.
+    float atmTermSpace = clamp((obsEffH - 40000.0) / 60000.0, 0.0, 1.0)
+                       * clamp(cloud.atmosTermStrength, 0.0, 1.0);
+    float atmTermW     = max(1e-4, cloud.atmosTermWidth);
+
     // ── Single-scattering atmosphere integration (Rayleigh + Mie) ────────────
     // N_VIEW uniform steps from the observer toward the atmosphere exit (or truncated at
     // the surface).  At each step the scattered sunlight is accumulated using:
@@ -1547,6 +1562,13 @@ void main() {
         float densM = exp(-h / H_M) * segLen;   // Mie: concentrated near surface, scale height H_M
         odR_cam += densR;
         odM_cam += densM;
+
+        // sin(sun elevation) at THIS SAMPLE's own geographic point — the same quantity the cloud
+        // march gates on (cloudSunDotRaw), which is the whole point: it is what lets the
+        // atmosphere cut off on the same variable the clouds already do. Set inside the block
+        // below (which computes spDirECEF for city glow / airglow anyway) and consumed at the
+        // accumulation, so it costs one dot product that was already being taken.
+        float sampleSunDotGeo = 1.0;
 
         // City light-pollution upwelling (Step 7 / C10, TERRAIN_PLAN.md). An INDEPENDENT light
         // source, not derived from sunlight, so it's computed here — BEFORE the sun-shadow test
@@ -1575,7 +1597,8 @@ void main() {
             // physically correct since the glow originates at that geographic point, not at the
             // observer. Horizontal patchiness from a slow analytic domain warp avoids a flat,
             // featureless ring (a pure function of altitude alone has none).
-            float airDayness = clamp((dot(spDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
+            sampleSunDotGeo  = dot(spDirECEF, sunDirECEF);
+            float airDayness = clamp((sampleSunDotGeo + 0.15) / 0.3, 0.0, 1.0);
             float airNight   = 1.0 - airDayness;
             if (airNight > 0.001) {
                 float airPatch = 0.6 + 0.4 * warpPerlin3(spDirECEF * kAirglowNoiseFreq
@@ -1608,10 +1631,30 @@ void main() {
                   + BETA_M * 1.1 * (odM_cam + sunOD.y);
         vec3 attn = exp(-tau);  // total transmittance: sun → this sample → camera
 
+        // Orbital terminator gate. Deliberately NOT physical: the scattering integral itself was
+        // measured (against a clean-room reimplementation of this exact loop) to fall about one
+        // decade per 6 degrees across the terminator, which is real twilight's rate. The problem
+        // it solves is a tone-mapping mismatch, not a scattering error — this renderer composites
+        // an eyeballed HDR scene rather than shooting at a fixed exposure the way the orbital
+        // photography it is being compared against does, so the physically-correct twilight tail
+        // survives tone mapping far more visibly than a camera would record it. That leaves the
+        // clouds (which cut off hard on their own geographic sun angle) reading as oddly dark
+        // patches against a still-bright atmosphere. Suppressing the atmosphere is the correct
+        // direction to close that gap; raising the clouds' twilight ambient to meet the
+        // atmosphere, which was tried first, drives them to full-bright neon seen from the ground.
+        //
+        // Weighting by the SAMPLE's own geographic sun elevation is what makes this free of
+        // daylight cost: samples over daylit ground never enter the rolloff at all, so the day
+        // side is untouched to six decimal places while SZA 92 drops ~23x at width 0.08.
+        float atmTermW8 = mix(1.0, smoothstep(-atmTermW, atmTermW, sampleSunDotGeo), atmTermSpace);
+
         // Accumulate in-scattered radiance for each particle type.
         // Multiplying by density (densR/densM) weights by how many particles are at this altitude.
-        accumR += attn * densR;                              // Rayleigh: wavelength-dependent (blue sky)
-        accumM += dot(attn, vec3(1.0 / 3.0)) * densM;       // Mie: wavelength-neutral (white haze/corona)
+        // accumCity and accumAirglow above are deliberately NOT gated — they are independent
+        // emissive sources, not scattered sunlight, and suppressing them past the terminator is
+        // the exact opposite of what they exist to do.
+        accumR += attn * densR * atmTermW8;                  // Rayleigh: wavelength-dependent (blue sky)
+        accumM += dot(attn, vec3(1.0 / 3.0)) * densM * atmTermW8; // Mie: wavelength-neutral (white haze/corona)
     }
 
     vec3 color = SUN_INTENSITY * (pR * BETA_R * accumR + vec3(pM * BETA_M * accumM));
@@ -2344,6 +2387,21 @@ void main() {
             int activeBeamCount = int(min(groundBeamCount, GROUND_BEAM_MAX));
             for (int bi = 0; bi < activeBeamCount; ++bi) {
                 float intensity = groundBeams[bi].intensity;
+                if (intensity <= 0.0) continue;
+
+                // 2026-08-07 user report: the ground spot popped in at full brightness the
+                // instant a target crossed beamMaxRangeM (the CPU compaction above used to be a
+                // hard cull with no fade — see its own comment history). Mirrors the smooth
+                // range fade already used for cloud illumination (SatelliteSim.cpp's kRangeFadeM)
+                // and the sky beam ray below (cloud_march.comp's kSkyBeamFadeM), just wider per
+                // user request ("very gradual"). targetENU is observer-relative, so its length is
+                // the same targetDistM the CPU computed when deciding whether to include this
+                // entry (which now widens its own cutoff by this same kGroundBeamFadeM).
+                float targetDistM = length(groundBeams[bi].targetENU);
+                const float kGroundBeamFadeM = 200000.0;
+                float rangeX = clamp((targetDistM - (pc.beamMaxRangeM - kGroundBeamFadeM)) / kGroundBeamFadeM, 0.0, 1.0);
+                float rangeFade = 1.0 - (rangeX * rangeX * (3.0 - 2.0 * rangeX));
+                intensity *= rangeFade;
                 if (intensity <= 0.0) continue;
 
                 float footprintR = max(groundBeams[bi].footprintRadM, 1.0);
