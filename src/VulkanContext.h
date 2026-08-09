@@ -93,8 +93,9 @@ struct VulkanContext {
     // kPerfLabels[] in SatelliteSimUI.cpp, and the JSON keys in savePerfSnapshot):
     //   0 frame start                 App.cpp
     //   1 scene_depth.comp done       SatelliteSim::recordCompute
-    //   2 beam_cloud_block.comp done  SatelliteSim::recordCompute
-    //   3 sat_orbit.comp done         SatelliteSim::recordCompute
+    //   2 (vestigial — see below)     SatelliteSim::recordCompute
+    //   3 sat_orbit.comp AND          SatelliteSim::recordCompute
+    //     beam_self_march.comp done
     //   4 cloud_march.comp done       SatelliteSim::recordCompute
     //   5 sat_flare.comp done         SatelliteSim::recordCompute
     //   6 sky background draw done    SatelliteSim::recordPrePass XOR ::recordDraw
@@ -103,8 +104,15 @@ struct VulkanContext {
     //
     // History: cloud_shadow.comp (C12) held a slot here until the pipeline-unification pass
     // folded its work into cloud_march.comp; beam_cloud_block.comp was added when its cost was
-    // found to be hiding inside the orbit bucket; scene_depth.comp then took slot 1 at the head
-    // of the pass. Every downstream slot shifted each time — which is why the slot NUMBERS are
+    // found to be hiding inside the orbit bucket, taking slot 2 ("beam_cloud_block.comp done");
+    // scene_depth.comp then took slot 1 at the head of the pass. 2026-08-09: beam_cloud_block.comp
+    // itself was retired (replaced by beam_self_march.comp, a per-BEAM march dispatched AFTER
+    // sat_orbit.comp instead of before it — see BEAM_CLOUD_PLAN.md) — rather than renumber every
+    // downstream slot again, slot 2 was left in place as a vestigial marker (written right before
+    // sat_orbit.comp now starts, so its own bucket, delta(1,2), reads ~0 every frame) and slot 3
+    // was pushed out to also cover beam_self_march.comp's dispatch, so delta(2,3) — labeled
+    // "orbit_compute" in kPerfLabels[]/the JSON keys — now measures both passes combined. Every
+    // downstream slot NUMBER is unchanged from before this pass existed. Slot numbers are
     // documented here and nowhere else authoritative.
     static constexpr uint32_t kTimestampCount = 9;
     VkQueryPool queryPool         = VK_NULL_HANDLE;

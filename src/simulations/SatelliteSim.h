@@ -408,14 +408,16 @@ struct GpuBeamCloudLight
     float aggIntensity;  // sum of groundIrradiance*beamGain across every satellite servicing this target
     float footprintRadM; // largest ground footprint radius among contributing satellites
     // blockAltM/blockOpacity (C12 follow-up #46): repurposed from pad0/pad1, zero size change.
-    // Copied straight from a contributing GpuReflectBeam entry — beam_cloud_block.comp already
-    // computes this ONCE PER TARGET PER FRAME (a 12-step vertical march, not per screen sample),
-    // and every satellite servicing the same target reads the identical beamCloudBlockBuf[bestIdx]
-    // value, so no re-aggregation logic is needed beyond copying whichever contributing entry's
-    // value (see SatelliteSim.cpp's beamCloudLightBuf aggregation). Lets cloud_march.comp derive a
-    // height-based directional cutoff (bright above this target's own cloud-opacity altitude, dark
-    // below) as a cheap per-light lookup instead of a second live self-shadow march — see that
-    // follow-up's log entry for why the live march (#45) was too expensive and got replaced.
+    // Copied from a contributing GpuReflectBeam entry — SatelliteSim.cpp's CPU aggregation picks
+    // the highest-opacity contributor (paired with its own altitude) across every satellite
+    // servicing this target, rather than assuming equality. 2026-08-09: values genuinely DIFFER
+    // per satellite now — beam_self_march.comp computes a real per-BEAM slant march (each
+    // satellite's own path to the same ground target can cross different cloud), replacing
+    // beam_cloud_block.comp's per-TARGET vertical march (which DID produce one identical value
+    // for every contributor, the premise this comment used to document). Lets cloud_march.comp
+    // derive a height-based directional cutoff (bright above the chosen altitude, dark below) as a
+    // cheap per-light lookup instead of a second live self-shadow march — see follow-up #46's log
+    // entry for why the live march (#45) was too expensive and got replaced.
     float blockAltM;    // altitude (m) where this target's column first drops below 50% transmittance
     float blockOpacity; // 0 = clear column, 1 = fully opaque
     float pad2;         // std430 array-of-vec4-pairs alignment
@@ -435,15 +437,21 @@ static_assert(sizeof(GpuBeamCloudLights) == 16 + kMaxCloudBeamLights * 32, "GpuB
 //  whole pass is gone; the per-pixel replacement in cloud_march.comp needs no snapping because
 //  its value is a function of the world point being shaded, not of the camera's position.)
 
-// ── Push constants for beam_cloud_block.comp (C12 follow-up #33) ─────────────────────────────
-// No sun/observer fields needed — this pass evaluates a fixed set of ground targets in true
-// ECEF, independent of view direction or observer position.
-struct BeamCloudBlockPC
+// ── Push constants for beam_self_march.comp (2026-08-09) ─────────────────────────────────────
+// Replaces beam_cloud_block.comp's per-TARGET vertical march (BeamCloudBlockPC, now retired) with
+// a per-BEAM slant march — needs the observer frame (obsECEFDir/obsEffH) to reconstruct each
+// beam's true ECEF endpoints from its observer-relative ENU offsets, which the per-target version
+// never needed (it worked in absolute ECEF target coordinates directly). See that shader's own
+// header for the full design and BEAM_CLOUD_PLAN.md for the session history.
+struct BeamSelfMarchPC
 {
+    glm::vec4 obsECEFDir; // xyz = observer ECEF unit direction (w unused)
+    float obsEffH;
     float waveTime;
     float cloudPhase;
-}; // total: 8 bytes
-static_assert(sizeof(BeamCloudBlockPC) == 8, "BeamCloudBlockPC layout mismatch");
+    float pad0;
+}; // total: 32 bytes
+static_assert(sizeof(BeamSelfMarchPC) == 32, "BeamSelfMarchPC layout mismatch");
 
 // ── Push constants for scene_depth.comp (pipeline unification) ───────────────────────────────
 // Camera-only: this pass marches terrain, so it needs the view ray and the observer, nothing
@@ -683,14 +691,18 @@ struct GpuReflectBeam
                              // of satellites rather than by the atomic-append slot index (which
                              // isn't stable frame-to-frame). Name kept for minimal diff; no longer
                              // debug-only or padding.
-    float blockAltM;         // C12 follow-up #33: altitude (m above sea level) at which this
-                             // beam's own ground target's vertical cloud column first drops below
-                             // 50% transmittance — copied from beamCloudBlockBuf[bestIdx] at write
-                             // time (sat_orbit.comp). Irrelevant when blockOpacity==0.
-    float blockOpacity;      // 0 = clear column, 1 = fully opaque — see beam_cloud_block.comp.
-                             // Consumed by cloud_march.comp (fades the tube/bleed out below the
-                             // cloud) and sat_sky.frag (replaces the ground-spot's old, range-
-                             // limited cloudShadowTex lookup).
+    float blockAltM;         // Altitude (m above sea level) at which THIS BEAM's own real 3D path
+                             // (ground intersection -> satellite) first drops below 50%
+                             // transmittance. Written by beam_self_march.comp (2026-08-09), a
+                             // per-beam slant march — was beam_cloud_block.comp's per-TARGET
+                             // vertical-column approximation (C12 follow-up #33) before that. See
+                             // beam_self_march.comp's own header for the full design and why this
+                             // (not the per-target version) is what beam physics actually needs.
+                             // Irrelevant when blockOpacity==0.
+    float blockOpacity;      // 0 = clear path, 1 = fully opaque — see beam_self_march.comp.
+                             // Consumed by cloud_march.comp (fades the volumetric glow and, as of
+                             // 2026-08-09, the visible pointing ray below the cloud) and
+                             // sat_sky.frag (ground-spot dimming).
     float mirrorRadiusM;     // C12 follow-up #34: repurposed from padding — equivalent-circle radius
                              // of the physical mirror (sqrt(mirrorAreaM2/PI)). Consumed by
                              // cloud_march.comp (sky tube radius) and sat_sky.frag (ground-spot core).
@@ -1173,18 +1185,16 @@ private:
     // C12 follow-up #33: reflectorTargetsECEF[]/reflectorTargetsRadiusM[] never change after
     // target generation, so this is uploaded ONCE (right after initConstellation() in init(), see
     // that call site) rather than refreshed per frame. xyz = unit ECEF direction, w = ground
-    // radius incl. terrain elevation. Read by beam_cloud_block.comp (needs true ECEF for cloud
-    // lon/lat sampling) and, as of the same 2026-08-06 rework, by sat_orbit.comp too.
+    // radius incl. terrain elevation. Read by sat_orbit.comp (TargetedReflector target search).
+    // beam_cloud_block.comp, the buffer's other former reader, was retired 2026-08-09 —
+    // beam_self_march.comp doesn't need it (reconstructs ECEF from ReflectBeamsBuf's own ENU
+    // offsets instead — see that shader's header).
     VkBuffer reflectorTargetsECEFBuf = VK_NULL_HANDLE; // host-visible+coherent, written once
     VkDeviceMemory reflectorTargetsECEFMem = VK_NULL_HANDLE;
     void *reflectorTargetsECEFMapped = nullptr;
-    // C12 follow-up #33: per-target cloud occlusion result — x=blockAltM, y=blockOpacity, one
-    // entry per reflector target (kNumReflectorTargets). Device-local: written every frame by
-    // beam_cloud_block.comp (each of the 201 threads owns exactly one index, no atomics, full
-    // overwrite every dispatch), read the same frame by sat_orbit.comp — no CPU involvement at
-    // all, so no host-visible mapping and no per-frame zero-fill needed (nothing to go stale).
-    VkBuffer beamCloudBlockBuf = VK_NULL_HANDLE;
-    VkDeviceMemory beamCloudBlockMem = VK_NULL_HANDLE;
+    // beamCloudBlockBuf (per-TARGET cloud occlusion result, beam_cloud_block.comp's own output)
+    // retired 2026-08-09 — beam_self_march.comp now writes blockAltM/blockOpacity directly into
+    // each beam's own ReflectBeamsBuf entry (per BEAM, not per target), no intermediate buffer.
     // Reflect-Orbital ground beams (host-visible+coherent; written by sat_orbit.comp, indexed
     // by target identity + atomicMax, zeroed every frame via vkCmdFillBuffer — same pattern as
     // glowBuf, including CPU readback of the previous frame's contents for a diagnostic). Read by
@@ -1210,6 +1220,17 @@ private:
     // one-frame-stale, same idiom as peakMagnitude. -1 = no active beams this/last frame.
     int lastActiveBeamCount = 0;
     float lastNearestBeamDistM = -1.0f;
+    // 2026-08-09 debug instrumentation (BEAM_CLOUD_PLAN.md): raw min/max/avg blockOpacity across
+    // every active beam this frame, computed straight from reflectBeamsBuf's readback with no
+    // per-target aggregation/argmax in the way — see the Beams settings tab. If Max stays ~0.00
+    // regardless of visible cloud cover, beam_self_march.comp's own march isn't finding cloud
+    // (a shell/geometry/binding bug upstream of every consumer). If Max is meaningfully >0 but
+    // rendering still looks unaffected, the bug is downstream in a consumer instead.
+    float dbgBeamOpacityMin = 0.0f;
+    float dbgBeamOpacityMax = 0.0f;
+    float dbgBeamOpacityAvg = 0.0f;
+    int dbgBeamOccludedCount = 0;   // count of beams this frame with blockOpacity > 0.1
+    int dbgBeamSampleCount = 0;     // same as lastActiveBeamCount, kept alongside for clarity
     // Beam-driven sky-glow "pollution dome" (C12 follow-up #31) — parallel to lightDomeBuf's
     // 16-sector scheme, but populated by ACTIVE Reflect-Orbital beams instead of a static
     // night-lights texture, so satellites/stars/Milky Way dim near a bright beam the same way
@@ -1358,14 +1379,26 @@ private:
     // bit 128 (Reflect-Orbital beam volumetric term) are checked directly in cloud_march.comp;
     // bit 128 (beam ground-spot term) and bit 256 (cloud shadow map) are also checked in
     // sat_sky.frag (128 gates both consumers of the same feature, checked in both shaders).
-    // Bit 512 gates the beam_cloud_block.comp DISPATCH itself, in recordCompute() — no shader
-    // reads it. Bits 256 and 512 are the two producer-side knockouts; every other bit disables a
-    // consumer block inside a shader.
+    // Bit 512 gates the beam_self_march.comp DISPATCH itself (2026-08-09 — repurposed from
+    // beam_cloud_block.comp's own identical producer-side skip bit, now retired along with that
+    // pass), in recordCompute() — no shader reads it. Bits 256 and 512 are the two producer-side
+    // knockouts; every other bit disables a consumer block inside a shader.
     uint32_t debugDisableMask = 0;
-    // Debug-only, not persisted (same convention as debugDisableMask) — draws each active
-    // Reflect-Orbital beam's ACTUAL current mirror-pointing direction as a long ray, so
-    // convergence at a busy site (and any satellite still mid-slew, not yet aimed at its target)
-    // can be seen directly. See GpuReflectBeam::reflectDirENU and cloud_march.comp (C12 follow-up #12).
+    // NAME IS STALE, BEHAVIOR IS NOT A BUG — read this before "fixing" the default again. This
+    // started as a literal debug-only visualization (a green line) back when the volumetric tube
+    // it now replaces was live. When that tube was thrown out for graphics/perf reasons, this ray
+    // was reworked in a later session (realistic color, altitude attenuation) into THE actual beam
+    // visual — it is the genuine, production Reflect-Orbital beam rendering now, not a diagnostic
+    // overlay, and correctly defaults to true. (A same-session pass mistakenly "fixed" this to
+    // false, reasoning from the still-stale shader-side header comment in cloud_march.comp that
+    // calls it "Opt-in and off by default" — reverted; see BEAM_CLOUD_PLAN.md 2026-08-09.) It
+    // draws each active beam's ACTUAL current mirror-pointing direction as a long ray, occluded by
+    // terrain ONLY — genuinely no cloud awareness at all, which is the real, still-open bug (this
+    // ray is what a player actually sees, so its lack of cloud occlusion is why beams read as
+    // passing straight through cloud regardless of the ground-spot/glow fixes elsewhere). Being
+    // replaced by the per-beam march project — see BEAM_CLOUD_PLAN.md. Not persisted to
+    // settings.json (unlike debugDisableMask, which is).
+    // See GpuReflectBeam::reflectDirENU and cloud_march.comp (C12 follow-up #12).
     bool showBeamDebugRays = true;
 
     // ── Sky glow SSBO ─────────────────────────────────────────────────────────
@@ -1572,15 +1605,17 @@ private:
                                         // contribution looks under- or over-powered relative to
                                         // satellites once seen in-app.
 
-    // ── Per-target beam cloud block (C12 follow-up #33) ───────────────────────
-    // Own small descriptor set/pipeline, modeled on the cloud-shadow one just above but
-    // deliberately NOT sharing its observer-centered grid — see beam_cloud_block.comp's header
-    // for why. Dispatched with kNumReflectorTargets (201) threads, 64 per workgroup.
-    VkDescriptorSetLayout beamCloudBlockDescLayout = VK_NULL_HANDLE;
-    VkDescriptorPool beamCloudBlockDescPool = VK_NULL_HANDLE;
-    VkDescriptorSet beamCloudBlockDescSet = VK_NULL_HANDLE;
-    VkPipelineLayout beamCloudBlockPipeLayout = VK_NULL_HANDLE;
-    VkPipeline beamCloudBlockPipeline = VK_NULL_HANDLE;
+    // ── Per-beam cloud occlusion march (2026-08-09) ────────────────────────────
+    // Replaces the per-target beam_cloud_block.comp pass (retired) — own small descriptor set/
+    // pipeline, same shape (SSBO + 3 cloud textures + CloudParams UBO), but binding 0 is
+    // reflectBeamsBuf itself (read+write) instead of a separate target buffer + output buffer, and
+    // it's dispatched over BEAM_MAX_ACTIVE (2048) threads instead of 201 targets. See
+    // beam_self_march.comp's header for the full design.
+    VkDescriptorSetLayout beamSelfMarchDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool beamSelfMarchDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet beamSelfMarchDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout beamSelfMarchPipeLayout = VK_NULL_HANDLE;
+    VkPipeline beamSelfMarchPipeline = VK_NULL_HANDLE;
     // Earth elevation texture (binding 5): 21600×10800 R8_UNORM land-elevation DEM.
     // Pixel p → elevation_m = p * 8848; ocean stored as 0. Terrain shell = R_EARTH + 9000 m.
     VkImage earthElevImg = VK_NULL_HANDLE;
@@ -2231,7 +2266,7 @@ private:
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button
     bool hovResetDefaults = false;
     float resetDefaultsMsgTimer = 0.0f;       // seconds remaining to show the "Restart to apply" confirmation (NEW-5)
-    bool hovDebugToggle[12] = {};             // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch, scene depth pass, fog layer)
+    bool hovDebugToggle[13] = {};             // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch, scene depth pass, fog layer, satellite cloud occlusion)
     bool hovBeamDebugRaysToggle = false;      // hover state for the "Show beam pointing rays" checkbox (C12 follow-up #12)
     bool hovBeamDebugRaysToggleQuick = false; // hover state for the Display-tab quick-access copy
                                               // of the same checkbox, next to Graphics preset
@@ -2338,8 +2373,8 @@ private:
     void createSceneDepthResources(VulkanContext &ctx);
     void createSceneDepthDescriptors(VulkanContext &ctx);
     void createSceneDepthPipeline(VulkanContext &ctx);
-    void createBeamCloudBlockDescriptors(VulkanContext &ctx);
-    void createBeamCloudBlockPipeline(VulkanContext &ctx);
+    void createBeamSelfMarchDescriptors(VulkanContext &ctx);
+    void createBeamSelfMarchPipeline(VulkanContext &ctx);
     void createGlowResources(VulkanContext &ctx);
     void createComputePipeline(VulkanContext &ctx);
     void createSkyBgPipeline(VulkanContext &ctx);

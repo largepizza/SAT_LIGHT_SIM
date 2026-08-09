@@ -870,8 +870,10 @@ vec3 cirrusDomainWarp(vec3 dirECEF) {
 // ── Reflect-Orbital beam volumetric lighting (C12 follow-up #44/#46/#47) ─────────────────────
 // Shared by cloudMarchCS and fogMarchCS (follow-up #47) — the per-target lookup is IDENTICAL for
 // both volumes: a per-TARGET Gaussian lateral falloff (beamLights[], the CPU-aggregated per-target
-// buffer built in SatelliteSim.cpp), the beam_cloud_block.comp-derived blockAltM/blockOpacity
-// height cutoff, and the phaseCloud() view-angle term. Unlike the sun self-shadow cone (which
+// buffer built in SatelliteSim.cpp), the beam_self_march.comp-derived blockAltM/blockOpacity
+// height cutoff (2026-08-09: a real per-beam slant march, aggregated to per-target here by taking
+// the highest-opacity contributor — was beam_cloud_block.comp's per-target vertical approximation
+// before that), and the phaseCloud() view-angle term. Unlike the sun self-shadow cone (which
 // legitimately differs per volume — colH/baseH cloud-shape sculpting has no fog equivalent — kept
 // duplicated on purpose, see fogMarchCS's own comment), this body has no per-volume tuning at all,
 // so sharing it is a plain, low-risk deduplication rather than the codegen-risking kind
@@ -1220,11 +1222,10 @@ void cloudMarchCS(
         // vastly outnumber in-cloud ones — a ground-level horizon ray crosses ~200 km of shell at
         // bigStep, ~400 steps, most of them through clear air.
         //
-        // The 0.02 threshold is not new: the sun self-shadow cone below, cloudGroundShadow,
-        // cirrusMarchCS and beam_cloud_block.comp ALL already reject on exactly this value. The
-        // view march was the one site that didn't, so it could draw a wisp that cast no
-        // self-shadow, no ground shadow, and blocked no beam. This removes that inconsistency
-        // rather than introducing one.
+        // The 0.02 threshold is not new: the sun self-shadow cone below, cloudGroundShadow, and
+        // cirrusMarchCS ALL already reject on exactly this value. The view march was the one site
+        // that didn't, so it could draw a wisp that cast no self-shadow, no ground shadow, and
+        // blocked no beam. This removes that inconsistency rather than introducing one.
         //
         // Not strictly bit-identical, and it is worth knowing why: below the threshold the
         // downstream remap(colNoise, 1-localCov, 1, 0, 1) needs colNoise > ~0.981 AND the
@@ -2221,13 +2222,17 @@ void main() {
         B_total += airglowRedMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, obsEffH, tScene);
     }
 
-    // ── Reflect-Orbital beam DEBUG pointing rays (C12 follow-up #12) ─────────────────────────
+    // ── Reflect-Orbital beam pointing ray — NAME IS STALE, THIS IS THE REAL BEAM (C12 follow-up
+    // #12, reworked into production visual in a later session — see showBeamDebugRays' own comment
+    // in SatelliteSim.h, and BEAM_CLOUD_PLAN.md 2026-08-09) ───────────────────────────────────────
     // Draws each active beam's mirror's ACTUAL current reflected-sunlight direction
-    // (reflectDirENU) as a long, bright, deliberately-oversized line extending from the
-    // satellite — independent of the physically-shaped glow above (no phase function, no cloud
-    // gating, no altitude restriction), purely so convergence at a busy site — and any satellite
-    // still mid-slew and not yet aimed at its target — can be seen directly, for profiling/
-    // debugging rather than production rendering. Opt-in and off by default.
+    // (reflectDirENU) as a line extending from the satellite to its ground intersection — this IS
+    // the beam a player sees, not a diagnostic overlay, on by default. Independent of the
+    // physically-shaped glow above (no phase function, no altitude restriction) and — this is the
+    // real, currently-open bug, not a design choice — **no cloud gating at all**, occluded by
+    // terrain only. Since this ray is what's actually visible, its lack of cloud awareness is why
+    // beams read as passing straight through cloud regardless of the ground-spot/glow fixes
+    // elsewhere in this file. Being replaced by the per-beam march project (BEAM_CLOUD_PLAN.md).
     //
     // Analytic closest approach, NOT point sampling. The original version walked 40 discrete
     // points along each ray and splatted a Gaussian at each — which reads as a dotted line
@@ -2357,6 +2362,21 @@ void main() {
             if (fade <= 0.0) continue; // whole visible span is in vacuum — skip the exp
             fade = pow(fade, kDebugRayFadeExp);
 
+            // Beam-physics occlusion (2026-08-09): does the beam's OWN sunlight actually reach
+            // this point before being absorbed by cloud somewhere above it along its real path?
+            // This ray previously had NO cloud awareness at all — only the cloudGate term below,
+            // which answers a DIFFERENT question (is the CAMERA's own line of sight to this point
+            // blocked by unrelated cloud). Both signals are needed, neither substitutes for the
+            // other — see beam_self_march.comp's header and BEAM_CLOUD_PLAN.md finding 1 for why.
+            // blockAltM/blockOpacity come from a real per-beam slant march along this exact
+            // satellite-to-ground segment, so qAltM (already computed above, same segment) is
+            // directly comparable — same feather/mix shape beamCloudLighting() already uses for
+            // the volumetric glow term, just applied here to the visible ray for the first time.
+            const float kRayCloudFeatherM = 500.0;
+            float rayHCut = smoothstep(beams[bi].blockAltM - kRayCloudFeatherM, beams[bi].blockAltM, qAltM);
+            float beamPhysicsFade = mix(1.0, rayHCut, beams[bi].blockOpacity);
+            if (beamPhysicsFade <= 0.001) continue; // beam's own light already absorbed above this point
+
             // Cloud/cirrus occlusion: only dim the beam if the point it's actually looking at
             // (distance t along the view ray) is FARTHER than the cloud/cirrus shell this same
             // ray enters — tCloudEnter/tCirrusEnter are the real geometric entry distances
@@ -2371,7 +2391,8 @@ void main() {
             if (cloudGate <= 0.001) continue; // fully opaque along this ray — nothing to draw
 
             float proximity = exp(-(perpDist * perpDist) / (2.0 * radiusM * radiusM));
-            B_total += kDebugRayColor * (kDebugRayScale * proximity * fade * aimFade * cloudGate * rangeFade);
+            B_total += kDebugRayColor * (kDebugRayScale * proximity * fade * aimFade * cloudGate
+                                        * beamPhysicsFade * rangeFade);
         }
     }
 

@@ -43,10 +43,15 @@ sim->recordCompute(cmd)  → WASD movement; simTime advance;
                            CPU updatePositions() — sun/moon/obsECI/eci2enu/reflector targets only;
                            orbit rebake check (every 7 sim-days);
                            dispatch 1: scene_depth.comp   (half-res shared terrain/ocean depth)
-                           dispatch 2: beam_cloud_block.comp (201 reflector targets)
-                           dispatch 3: sat_orbit.comp     (orbital mechanics + attitude + beam list)
+                           dispatch 2: sat_orbit.comp     (orbital mechanics + attitude + beam list)
+                           dispatch 3: beam_self_march.comp (per-beam cloud occlusion, up to 2048
+                                                            beams — replaced beam_cloud_block.comp's
+                                                            201-target version 2026-08-09, see
+                                                            "Subsystem: Reflect-Orbital Beam Cloud
+                                                            Occlusion" below)
                            dispatch 4: cloud_march.comp   (half-res clouds/cirrus/aurora/airglow-red/
-                                                            beam tubes + per-pixel cloud shadow)
+                                                            beam pointing ray + volumetric glow +
+                                                            per-pixel cloud shadow)
                            dispatch 5: sat_flare.comp     (lighting + visibility culling)
                            barriers between each (see recordCompute for exact stage/access pairs)
 sim->recordPrePass(cmd)  → renderScale < 1.0 only: low-res sky → vkCmdBlitImage into swapchain
@@ -134,7 +139,8 @@ and `cloud_march.comp`. Verified byte-identical (comments stripped) as of this p
 active bug — but they bind `auroraNoiseTex` at different indices and read different PC structs, so
 sharing them needs sampler parameters threaded through all five. Keep both copies in sync until
 someone does that work. Same applies to the cloud-column sample body, which appears in
-`cloud_march.comp` (view march + sun cone + terrain shadow) and `beam_cloud_block.comp`.
+`cloud_march.comp` (view march + sun cone + terrain shadow) and `beam_self_march.comp` (per-beam
+cloud occlusion march — see "Subsystem: Reflect-Orbital Beam Cloud Occlusion" below).
 
 ---
 
@@ -345,10 +351,10 @@ barrier satVisibleBuf     → SHADER_WRITE → SHADER_READ, compute→vertex
 
 `mirrorNormalsBuf` (persistent per-satellite mirror lock/slew state) and the old per-frame
 CPU-compacted `reflectorTargetsBuf` were both removed 2026-08-06 — see "Subsystem: TargetedReflector
-/ Mirror Ground Targets" below. `sat_orbit.comp` now reads target data from the same static
-`reflectorTargetsECEFBuf` `beam_cloud_block.comp` already used, and carries no persisted GPU state
-of its own: every frame's TargetedReflector selection and orientation is a pure function of that
-frame's push constants.
+/ Mirror Ground Targets" below. `sat_orbit.comp` now reads target data from a static
+`reflectorTargetsECEFBuf` (uploaded once at target-generation time), and carries no persisted GPU
+state of its own: every frame's TargetedReflector selection and orientation is a pure function of
+that frame's push constants.
 
 ### Orbit rebake
 `kOrbitRebakeDays = 7`. Each `GpuSatOrbit` bakes `u0 = fmod(orig_u0 + meanMot × epochT0, 2π)` so the shader only adds `meanMot × deltaT` where deltaT < 7×86400 s. Float ULP at that scale ≈ 0.07 s, well within tolerable orbital error. `uploadSatOrbits()` auto-triggers in `recordCompute()` when `|simDayJ2000 - orbitEpochDay| >= 7`.
@@ -468,9 +474,9 @@ Per-target ground radius (`reflectorTargetsRadiusM[]`, real terrain elevation vi
 `earthElevCpu` lookup) is computed by the shared `computeReflectorTargetElevationRadius(ti)`
 helper — used by both the JSON path and the fallback. Both xyz (unit ECEF direction) and this
 radius are uploaded ONCE, at generation time, into `reflectorTargetsECEFBuf` (host-visible,
-`vec4` per target: xyz=ECEF dir, w=radius) — the same static buffer `beam_cloud_block.comp` reads.
-There is no per-frame CPU rotation step any more; `sat_orbit.comp` rotates ECEF→ECI itself, on
-demand, for whichever instant it needs (see below).
+`vec4` per target: xyz=ECEF dir, w=radius) — read by `sat_orbit.comp` for TargetedReflector target
+search. There is no per-frame CPU rotation step any more; `sat_orbit.comp` rotates ECEF→ECI itself,
+on demand, for whichever instant it needs (see below).
 
 ### Per-satellite selection (GPU, sat_orbit.comp) — deterministic lock windows
 Target IDENTITY is chosen per fixed-width **sim-time window**
@@ -561,6 +567,73 @@ frame's push constants (themselves pure functions of absolute sim time computed 
 on the CPU), the whole pipeline remains reversible by construction: there is nothing to accumulate
 differently depending on playback direction, even though the visual result now has a genuine
 physically-motivated slew rate.
+
+---
+
+## Subsystem: Reflect-Orbital Beam Cloud Occlusion
+
+See `.plans/BEAM_CLOUD_PLAN.md` for the full session-by-session history — this section is the
+current-architecture summary only.
+
+**The visible beam is not called "the debug ray" despite its name.** `showBeamDebugRays`
+(`SatelliteSim.h`) started as a literal debug-only visualization (a green line, C12 follow-up #12)
+back when a separate volumetric "tube" was the real beam visual. Once that tube was thrown out for
+graphics/performance reasons, this ray was reworked in a later session (realistic color, altitude
+attenuation) into the actual production beam visual — it defaults to `true` and is what a player
+sees, not a diagnostic overlay. The shader-side header comment in `cloud_march.comp` calling it
+"Opt-in and off by default" is itself the stale artifact of that history, not a bug — a same-session
+pass mistakenly "fixed" the default to `false` reasoning from that comment before this was
+clarified (2026-08-09); do not repeat that mistake. This ray was, until 2026-08-09, occluded by
+terrain ONLY — genuinely no cloud awareness at all — which is almost certainly what a string of
+"beams pass through clouds no matter what" reports were actually seeing, independent of whatever
+was fixed in the occlusion math underneath it.
+
+**`beam_self_march.comp`** (2026-08-09) computes real per-BEAM cloud occlusion, replacing
+`beam_cloud_block.comp`'s per-TARGET vertical-column approximation (deleted). Dispatched over
+`BEAM_MAX_ACTIVE` (2048) threads right after `sat_orbit.comp` (needs the `satENU`/`targetENU`
+that shader just wrote), fixed-size every frame (`beamCount` is a GPU atomic counter, not known at
+command-buffer record time — inactive slots return immediately). For each active beam it
+reconstructs true ECEF endpoints from `ReflectBeamsBuf`'s observer-relative ENU offsets (via
+`terrain.glsl`'s `observerPos()`/`enuBasis()` — the same "obsPos + offset, then project through the
+ECEF basis" convention `beamCloudLighting()`/the pointing-ray block already use for this exact
+buffer) and marches the SEGMENT from ground intersection to satellite through the cloud shell,
+overwriting `blockAltM`/`blockOpacity` on that same `ReflectBeam` entry in place — no separate
+output buffer, unlike the retired per-target pass.
+
+**Why per-beam, when "Deliberately NOT per-satellite" was the standing design rule** (see
+`beam_cloud_block.comp`'s own retired header, and `TERRAIN_PLAN.md` follow-ups #14-#16): that rule
+was about a DIFFERENT failure shape. Follow-up #14's cost blowup was a real `cloudDensity()` march
+evaluated per SCREEN PIXEL near each beam's line, once per satellite — cost multiplied by
+(satellites × pixels). Follow-up #16's flicker came from a dedup fix that picked one "winning"
+satellite's geometry per target per frame, and the winner's identity flipped frame-to-frame among
+near-equal candidates. `beam_self_march.comp` is neither: a single bounded march per beam (same
+shape `beam_cloud_block.comp` itself already proved cheap at 201 threads — beam_self_march is
+~10x the thread count along a segment instead of straight up, still well under 1ms against
+`cloud_march.comp`'s own ~16ms), with zero arbitration — every beam computes its own value from its
+own stable geometry, so there is nothing to flicker between.
+
+**`blockAltM`/`blockOpacity` keep their pre-existing meaning** (altitude where the path's
+transmittance first drops below 50%, and overall 0-1 opacity — including the weighted-mean-
+absorption-altitude fallback for a column that never crosses that threshold, so a thin/scattered
+cloud doesn't produce a fake cutoff edge pinned to the shell's nominal ceiling). Every existing
+consumer needed zero changes and automatically reads more physically-accurate, per-beam data:
+- `sat_sky.frag`'s ground-spot `shadowAtten = 1.0 - groundBeams[bi].blockOpacity` — already
+  per-beam (raw, non-deduplicated `groundBeams[]` list), so this was a pure data-accuracy win.
+- `cloud_march.comp`'s `beamCloudLighting()` height-cutoff (volumetric glow) — still fed by the
+  CPU-aggregated per-TARGET `beamLights[]` (`SatelliteSim.cpp`, unbounded satellite count reduced
+  to `kMaxCloudBeamLights`=16 targets), which already picks the highest-opacity contributor rather
+  than assuming every satellite at a target agrees — true now (per-beam values genuinely differ)
+  where it used to be true trivially (the old per-target march gave every co-located satellite an
+  identical value).
+
+**One consumer needed new code**: the visible pointing ray itself never read `blockAltM`/
+`blockOpacity` at all before 2026-08-09. It now applies the same height-cutoff `smoothstep`/`mix`
+shape `beamCloudLighting()` uses, evaluated at the ray point's own altitude (already computed
+there for the vacuum/altitude fade), ADDITIONALLY multiplied with the pre-existing `cloudGate` term
+— the two answer different questions and neither substitutes for the other: `cloudGate` gates
+whether the CAMERA's own line of sight to this point is blocked by unrelated cloud; the new term
+gates whether the BEAM's own sunlight survives to reach this point along its real path. Both must
+be open for the ray to render there.
 
 ---
 
@@ -877,14 +950,23 @@ displayed in Settings → Display → "GPU FRAME BREAKDOWN" (one-frame-stale, sa
 `peakMagnitude`).
 
 **Perf knockout toggles**: `debugDisableMask` (uint32, in both `SatDrawPC` and `CloudMarchPC` — see
-their own entries above) is a profiling-only bitmask. Six checkboxes in Settings → Display →
-"KNOCKOUT PROFILING" each disable one shader block — terrain march, atmosphere loop, sun optical
-depth (`optDepth`, called from 4 sites — zeroing it there is a single early-return in the function
-itself, not 4 separate call-site edits), ocean sky reflection, airglow red, aurora — each with a
-mathematically-safe zero/no-op fallback (e.g. terrain-skip leaves `tHit=-1`, the same value the
-"no hit" path already produces). Default mask 0 is bit-identical to normal rendering. Use this to
-isolate one block's real GPU cost via before/after `gpuMsSmoothed` deltas, without a GPU capture
-tool — bit assignments: 1=terrain, 2=atmosphere, 4=sunOD, 8=oceanRefl, 16=airglowRed, 32=aurora.
+their own entries above) is a profiling-only bitmask. Checkboxes in Settings → Display →
+"KNOCKOUT PROFILING" (13 as of 2026-08-09, `kDebugToggleLabels`/`kDebugToggleBits` in
+`SatelliteSimUI.cpp`) each disable one shader block or dispatch — each with a mathematically-safe
+zero/no-op fallback (e.g. terrain-skip leaves `tHit=-1`, the same value the "no hit" path already
+produces) or, for the two producer-side bits, a "reproduce pre-feature behaviour" fallback. Default
+mask 0 is bit-identical to normal rendering. Use this to isolate one block's real GPU cost via
+before/after `gpuMsSmoothed` deltas, without a GPU capture tool — bit assignments: 1=terrain,
+2=atmosphere, 4=sunOD (`optDepth`, called from 4 sites — zeroing it there is a single early-return
+in the function itself, not 4 separate call-site edits), 8=oceanRefl, 16=airglowRed, 32=aurora
+curtain, 64=cloud self-shadow cone, 128=Reflect-Orbital beams (both `cloud_march.comp`'s
+volumetric term and `sat_sky.frag`'s ground-spot term), 256=cloud shadow (per-pixel, in
+`cloud_march.comp`), 512=`beam_self_march.comp` DISPATCH itself (producer-side; repurposed
+2026-08-09 from the now-retired `beam_cloud_block.comp`'s identical bit), 1024=scene depth pass
+DISPATCH itself (producer-side — the big one: skipping it reverts the entire shared-depth
+architecture to pre-unification occlusion behaviour), 2048=fog layer (C11), 4096=satellite point
+cloud occlusion (`sat_point.frag` — added 2026-08-09 to isolate a reported perf question, see
+`BEAM_CLOUD_PLAN.md`; ruled out as the cause, kept as a real diagnostic).
 
 **`perf_profiles/profile_log.jsonl`**: the "Save Snapshot" button (same panel) appends one JSON
 record per press — GPU timing breakdown, resolution, observer lat/lon/altitude, sim time, active

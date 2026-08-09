@@ -5,18 +5,18 @@
 // Reads:
 //   binding 0  satOrbitBuf     — GpuSatOrbit array, uploaded once at init
 //   binding 2  reflectorTargetsECEFBuf — static per-target ECEF direction + ground radius,
-//                                uploaded once at target-generation time (same buffer
-//                                beam_cloud_block.comp reads)
+//                                uploaded once at target-generation time (TargetedReflector
+//                                target search — this shader is now the buffer's only reader)
 //
 // Writes:
 //   binding 1  SatInputBuf     — GpuSatInput array consumed by sat_flare.comp
 //   binding 3  reflectBeamsBuf — Reflect-Orbital ground beams (C12), capped atomic-append, no arbitration;
 //                                zeroed each frame by vkCmdFillBuffer, consumed by
 //                                cloud_march.comp (volumetric in-scatter) and sat_sky.frag
-//                                (ground-spot direct lighting)
-//   binding 5  beamCloudBlockBuf — per-target cloud occlusion (C12 follow-up #33), written by
-//                                beam_cloud_block.comp earlier this frame; read here to bake
-//                                blockAltM/blockOpacity into each beam
+//                                (ground-spot direct lighting). blockAltM/blockOpacity are left
+//                                unwritten here (2026-08-09) — beam_self_march.comp, dispatched
+//                                right after this shader, overwrites them with a real per-beam
+//                                slant march. See that file's header for the full design.
 //
 // Below-horizon and disabled satellites write elevation = -π/2 and return early.
 // sat_flare.comp's existing horizon cull (elevation < -0.01 rad) discards them.
@@ -99,9 +99,10 @@ layout(set = 0, binding = 1) buffer SatInputBuf {
 };
 
 // ── Reflector ground targets: static per-target ECEF direction + ground radius ────────────────
-// Same buffer beam_cloud_block.comp reads (its binding 0) — uploaded once at target-generation
-// time and never rewritten per frame (unlike the old per-frame CPU-compacted ECI buffer this
-// replaced). xyz = unit ECEF direction, w = ground radius (m, incl. terrain elevation).
+// Uploaded once at target-generation time and never rewritten per frame (unlike the old per-frame
+// CPU-compacted ECI buffer this replaced). xyz = unit ECEF direction, w = ground radius (m, incl.
+// terrain elevation). This shader is the only reader — beam_cloud_block.comp, the buffer's other
+// former reader, was retired 2026-08-09; beam_self_march.comp doesn't need it (see its own header).
 // sat_orbit.comp rotates entries to ECI itself, either at the CURRENT instant (pc.gmstNow, for the
 // actual live aim/beam position) or at an extrapolated window-boundary instant (see the
 // TargetedReflector block below) — there is no day/night pre-filtering here, every loaded entry
@@ -141,14 +142,6 @@ layout(set = 0, binding = 3) buffer ReflectBeamsBuf {
 const uint NUM_BEAM_GLOW_SECTORS = 16u;
 layout(set = 0, binding = 4) buffer BeamGlowDomeBuf {
     uint beamGlowDome[NUM_BEAM_GLOW_SECTORS];
-};
-
-// C12 follow-up #33: per-target cloud occlusion, written by beam_cloud_block.comp EARLIER this
-// same frame (dispatched before this shader in recordCompute(), with a barrier in between).
-// x = blockAltM, y = blockOpacity — indexed directly by bestIdx (0..200), copied straight into
-// each beam's own ReflectBeam entry below. Must match kNumReflectorTargets in SatelliteSim.h.
-layout(set = 0, binding = 5) readonly buffer BeamCloudBlockBuf {
-    vec2 beamCloudBlock[];
 };
 
 // ── Push constants ────────────────────────────────────────────────────────────
@@ -670,12 +663,13 @@ void main()
                     // satellites (mod(debugPad, stride)==0) instead of by slot index, which would
                     // show a different random subset each frame (visible flicker).
                     beams[slot].debugPad       = float(i);
-                    // C12 follow-up #33: bake this target's precomputed vertical cloud-column
-                    // result directly into the beam entry — cloud_march.comp/sat_sky.frag then
-                    // read it straight off beams[bi], no bestIdx indirection needed downstream.
-                    vec2 cloudBlock = beamCloudBlock[bestIdx];
-                    beams[slot].blockAltM      = cloudBlock.x;
-                    beams[slot].blockOpacity   = cloudBlock.y;
+                    // blockAltM/blockOpacity are intentionally left unwritten here (2026-08-09 —
+                    // was: copied from beam_cloud_block.comp's per-TARGET vertical-column result).
+                    // beam_self_march.comp now runs immediately after this shader, dispatched over
+                    // this exact same [0, beamCount) range, and unconditionally overwrites both
+                    // fields for every slot with a real per-BEAM slant march — see that file's own
+                    // header for why. No read-before-write hazard: nothing reads these fields
+                    // between this shader finishing and beam_self_march.comp's own write.
                     beams[slot].mirrorRadiusM  = mirrorRadiusM;
                     beams[slot].aimErrorRad    = aimErrorRad;
                 }

@@ -2440,10 +2440,12 @@ void main() {
                 // not an approximation: any target beyond 80km (the common case; the 201 reflector
                 // targets are scattered globally, ~1500km+ typical spacing) always fell outside the
                 // grid and got shadowAtten=1.0 (no shadow), silently. Replaced with the exact,
-                // unlimited-range per-target value baked into this same beam entry by
-                // beam_cloud_block.comp/sat_orbit.comp — also what makes the beam visibly cut off
-                // in the sky (cloud_march.comp's cloudFade) consistent with its ground spot going
-                // dark, instead of one updating and not the other.
+                // unlimited-range per-BEAM value baked into this same beam entry by
+                // beam_self_march.comp (2026-08-09 — a real per-beam slant march; was
+                // beam_cloud_block.comp's per-target vertical approximation before that) — also
+                // what makes the beam visibly cut off in the sky (cloud_march.comp's pointing ray
+                // and volumetric glow) consistent with its ground spot going dark, instead of one
+                // updating and not the other.
                 float shadowAtten = 1.0 - groundBeams[bi].blockOpacity;
 
                 surfColor += vec3(kBeamGroundScale * intensity * (footprint + core * 2.0) * skyGlowNorm)

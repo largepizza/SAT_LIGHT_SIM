@@ -302,8 +302,9 @@ void SatelliteSim::init(VulkanContext &ctx)
     createCloudMarchPipeline(ctx);
     createSceneDepthDescriptors(ctx); // needs earthElev/earthSpec from createGlowResources above
     createSceneDepthPipeline(ctx);
-    createBeamCloudBlockDescriptors(ctx); // needs same cloudParamsBuf/earthClouds/cloudNoise/cloudWarpNoise
-    createBeamCloudBlockPipeline(ctx);
+    createBeamSelfMarchDescriptors(ctx); // needs cloudParamsBuf/earthClouds/cloudNoise/cloudWarpNoise
+                                          // (createGlowResources above) and reflectBeamsBuf (createBuffers)
+    createBeamSelfMarchPipeline(ctx);
     createSkyBgPipeline(ctx);
     createSkyLowResResources(ctx); // resolution scaling — needs skyBgPipeLayout from just above
     createDrawPipeline(ctx);
@@ -317,8 +318,8 @@ void SatelliteSim::init(VulkanContext &ctx)
     initConstellation();
     // C12 follow-up #33: one-time upload of reflectorTargetsECEF[]/RadiusM[] (fixed for the
     // simulation's lifetime once initConstellation() generates them) into their GPU-visible
-    // companion buffer — beam_cloud_block.comp reads this every frame, but it never needs
-    // refreshing since the CPU arrays themselves never change after this point.
+    // companion buffer — sat_orbit.comp reads this every frame (TargetedReflector target search),
+    // but it never needs refreshing since the CPU arrays themselves never change after this point.
     {
         std::vector<glm::vec4> targetsECEF(kNumReflectorTargets);
         for (int ti = 0; ti < kNumReflectorTargets; ++ti)
@@ -1004,6 +1005,18 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                           // entry produced `nearest`, so beamProximityGlow below
                                           // can be dampened when cloud is actually blocking the
                                           // nearest beam rather than brightening the sky through it.
+
+        // 2026-08-09 debug instrumentation: raw distribution of beam_self_march.comp's own output
+        // across every active beam THIS frame, with no aggregation/arbitration in the way — lets
+        // the Beams settings tab answer "is the march producing any signal at all" numerically,
+        // instead of inferring it from the rendered ray/ground-spot/cloud-lighting, which also
+        // depend on several consumer-side terms (fade, cloudGate, CPU per-target argmax) that can
+        // mask or distort a working march. See BEAM_CLOUD_PLAN.md.
+        dbgBeamSampleCount = count;
+        dbgBeamOpacityMin = count > 0 ? 1.0f : 0.0f;
+        dbgBeamOpacityMax = 0.0f;
+        float opacitySum = 0.0f;
+        int occludedCount = 0;
         // C12 follow-up #44: aggregate by target position into a small fixed list — satellites
         // servicing the same real-world site resolve to numerically identical targetENU (both
         // derive from the same reflectorTargetsECEFBuf[bestIdx] entry, rotated by the same
@@ -1015,6 +1028,11 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // (silent, harmless — its ground spot and sky-glow suppression dome contribution are
         // unaffected, since those read reflectBeamsBuf directly and don't go through this list).
         GpuBeamCloudLights lights{};
+        // Intensity-weighted running sums for blockAltM/blockOpacity, parallel to lights.entries[]
+        // — see the 2026-08-09 comment at the matched-entry update below for why this replaced a
+        // discrete argmax.
+        float weightedAltSum[kMaxCloudBeamLights] = {};
+        float weightedOpacitySum[kMaxCloudBeamLights] = {};
         // Perf follow-up: compacted raw-entry list for sat_sky.frag's ground-spot term, filtered
         // to the same beamMaxRangeM cutoff computed per-entry below — see GpuGroundBeams comment.
         GpuGroundBeams groundBeams{};
@@ -1032,6 +1050,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             glm::vec3 dirUp = (slantRangeM > 1.0f) ? (sE - tE) / slantRangeM : glm::vec3(0, 0, 1);
             float t = glm::clamp(-glm::dot(tE, dirUp), 0.0f, slantRangeM);
             float d = glm::length(tE + dirUp * t);
+
+            float bOpacity = rb->entries[s].blockOpacity;
+            dbgBeamOpacityMin = std::min(dbgBeamOpacityMin, bOpacity);
+            dbgBeamOpacityMax = std::max(dbgBeamOpacityMax, bOpacity);
+            opacitySum += bOpacity;
+            if (bOpacity > 0.1f)
+                ++occludedCount;
+
             if (nearest < 0.0f || d < nearest)
             {
                 nearest = d;
@@ -1076,31 +1102,44 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                     lights.entries[li].aggIntensity += intensity;
                     lights.entries[li].footprintRadM = std::max(lights.entries[li].footprintRadM,
                                                                 rb->entries[s].footprintRadM);
-                    // blockAltM/blockOpacity (C12 follow-up #46) should already be identical
-                    // across satellites servicing the same target (same beamCloudBlockBuf[bestIdx]
-                    // read at sat_orbit.comp's write site) — take whichever's opacity is higher
-                    // defensively, paired with its own altitude, rather than assuming equality.
-                    if (rb->entries[s].blockOpacity > lights.entries[li].blockOpacity)
-                    {
-                        lights.entries[li].blockOpacity = rb->entries[s].blockOpacity;
-                        lights.entries[li].blockAltM = rb->entries[s].blockAltM;
-                    }
+                    // 2026-08-09: was "take whichever satellite's opacity is higher, paired with
+                    // its own altitude" — correct back when every satellite servicing a target
+                    // shared one identical beam_cloud_block.comp per-target value (a true no-op
+                    // tie). Now beam_self_march.comp gives each satellite a genuinely different
+                    // per-beam value (different slant path through the shell), so that argmax
+                    // became a real winner-take-all pick that flips between near-equal
+                    // contributors as satellites move — the exact flicker shape TERRAIN_PLAN.md
+                    // follow-up #16 already named and designed around, just reintroduced one layer
+                    // up. Intensity-weighted running average instead: smooth as contribution
+                    // shares shift, no discrete winner to flip. Finalized after the loop below.
+                    weightedAltSum[li] += rb->entries[s].blockAltM * intensity;
+                    weightedOpacitySum[li] += rb->entries[s].blockOpacity * intensity;
                     matched = true;
                     break;
                 }
             }
             if (!matched && lights.count < (uint32_t)kMaxCloudBeamLights)
             {
-                GpuBeamCloudLight &light = lights.entries[lights.count++];
+                uint32_t li = lights.count++;
+                GpuBeamCloudLight &light = lights.entries[li];
                 light.targetENU = tE;
                 light.aggIntensity = intensity;
                 light.footprintRadM = rb->entries[s].footprintRadM;
-                light.blockAltM = rb->entries[s].blockAltM;
-                light.blockOpacity = rb->entries[s].blockOpacity;
+                weightedAltSum[li] = rb->entries[s].blockAltM * intensity;
+                weightedOpacitySum[li] = rb->entries[s].blockOpacity * intensity;
             }
+        }
+        for (uint32_t li = 0; li < lights.count; ++li)
+        {
+            float w = lights.entries[li].aggIntensity;
+            lights.entries[li].blockAltM = (w > 0.0f) ? weightedAltSum[li] / w : 0.0f;
+            lights.entries[li].blockOpacity = (w > 0.0f) ? weightedOpacitySum[li] / w : 0.0f;
         }
         std::memcpy(beamCloudLightMapped, &lights, sizeof(GpuBeamCloudLights));
         std::memcpy(groundBeamsMapped, &groundBeams, sizeof(GpuGroundBeams));
+
+        dbgBeamOpacityAvg = count > 0 ? opacitySum / (float)count : 0.0f;
+        dbgBeamOccludedCount = occludedCount;
 
         lastActiveBeamCount = count;
         lastNearestBeamDistM = nearest;
@@ -1451,49 +1490,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              0, 0, nullptr, 1, &bmb, 0, nullptr);
     }
 
-    // ── Dispatch: beam_cloud_block.comp — per-target cloud occlusion (C12 follow-up #33) ────────
-    // Must run BEFORE sat_orbit.comp below, which reads beamCloudBlockBuf while writing beams.
-    // reflectorTargetCount targets (S1, RELEASE_v1_1_PLAN.md — was a flat 201 before real
-    // coordinates), no per-frame zero-fill needed (every thread owns and fully overwrites its own
-    // index, no atomics — see the buffer's own member comment). Dispatching fewer workgroups than
-    // the shader's own NUM_TARGETS=201 bound is safe without a shader-side change: any extra
-    // thread inside a partial final workgroup (up to 63) computes a value for a slot beyond
-    // reflectorTargetCount that sat_orbit.comp's bestIdx can never select (its origIdx values are
-    // always < reflectorTargetCount by construction — see the ECEF→ECI compaction loop below).
-    //
-    // Knockout bit 512 skips the dispatch itself (not just its consumers — bit 128 does that).
-    // Skipping leaves beamCloudBlockBuf holding the previous frame's values rather than garbage,
-    // since every thread fully overwrites its own slot; same convention bit 1024 uses for the
-    // scene depth pass.
-    if ((debugDisableMask & 512u) == 0u)
-    {
-        BeamCloudBlockPC bpc{};
-        bpc.waveTime = (float)(simSecInDay * 1.0);
-        bpc.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
-                                     glm::two_pi<double>());
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, beamCloudBlockPipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                beamCloudBlockPipeLayout, 0, 1, &beamCloudBlockDescSet, 0, nullptr);
-        vkCmdPushConstants(cmd, beamCloudBlockPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
-                           0, sizeof(bpc), &bpc);
-        vkCmdDispatch(cmd, ((uint32_t)reflectorTargetCount + 63) / 64, 1, 1);
-
-        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bmb.buffer = beamCloudBlockBuf;
-        bmb.offset = 0;
-        bmb.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(cmd,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             0, 0, nullptr, 1, &bmb, 0, nullptr);
-    }
-    // Written unconditionally, including on the knockout-skipped path — the bucket then reads ~0,
-    // which is exactly the measurement the knockout is there to produce.
+    // beam_cloud_block.comp (per-target vertical cloud occlusion, C12 follow-up #33) retired
+    // 2026-08-09 — replaced by beam_self_march.comp, a per-BEAM slant march dispatched AFTER
+    // sat_orbit.comp below (it needs each beam's real satENU/targetENU, which that shader writes
+    // this same frame) instead of before it. See that shader's own header and BEAM_CLOUD_PLAN.md.
+    // Timestamp slot 2 (this used to bound beam_cloud_block.comp's own dispatch) now reads ~0 every
+    // frame — harmless, same convention every knockout-skipped bucket already uses; not worth
+    // rewiring the timestamp pool for a bucket that no longer has a dispatch to measure.
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, orbitPipeline);
@@ -1518,9 +1521,61 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 0, nullptr, 1, &bmb, 0, nullptr);
     }
-    // Barrier: sat_orbit.comp writes reflectBeamsBuf → read THIS frame by cloud_march.comp
-    // (compute, right below) and sat_sky.frag (fragment, later in the render pass) — include both
-    // stages now so downstream consumers don't need to revisit this barrier.
+    // Barrier: sat_orbit.comp writes reflectBeamsBuf → beam_self_march.comp (below) reads
+    // satENU/targetENU and overwrites blockAltM/blockOpacity for the same [0, beamCount) range.
+    // Compute-only dependency here — the fragment-stage consumers (sat_sky.frag) wait on
+    // beam_self_march's OWN barrier further below instead, since blockOpacity isn't valid until
+    // that pass has run.
+    {
+        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.buffer = reflectBeamsBuf;
+        bmb.offset = 0;
+        bmb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 1, &bmb, 0, nullptr);
+    }
+
+    // ── Dispatch: beam_self_march.comp — per-beam cloud occlusion (2026-08-09) ──────────────────
+    // Fixed-size dispatch (BEAM_MAX_ACTIVE/64 workgroups, always) since beamCount is a GPU atomic
+    // counter written by sat_orbit.comp just above, not known at command-buffer record time —
+    // inactive slots (i >= beamCount) return immediately inside the shader. See that shader's own
+    // header for the full design, and why this is NOT the same shape as the historically-reverted
+    // per-satellite attempts (TERRAIN_PLAN.md follow-ups #14-16).
+    //
+    // Knockout bit 512 skips the dispatch itself — repurposed from beam_cloud_block.comp's own
+    // producer-side skip bit, now retired along with that pass. Skipping leaves blockAltM/
+    // blockOpacity at 0.0 (reflectBeamsBuf is vkCmdFillBuffer-zeroed every frame above, and
+    // sat_orbit.comp no longer writes these two fields at all — see that shader's own comment) —
+    // blockOpacity=0 reads as "fully unoccluded," i.e. every beam renders as if no cloud exists,
+    // the same reproduces-pre-feature-behavior convention bit 1024's scene-depth skip uses.
+    if ((debugDisableMask & 512u) == 0u)
+    {
+        BeamSelfMarchPC bmPc{};
+        bmPc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
+        bmPc.obsEffH = std::max(obsTerrainH, obsHeightOffset);
+        bmPc.waveTime = (float)(simSecInDay * 1.0);
+        bmPc.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
+                                     glm::two_pi<double>());
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, beamSelfMarchPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                beamSelfMarchPipeLayout, 0, 1, &beamSelfMarchDescSet, 0, nullptr);
+        vkCmdPushConstants(cmd, beamSelfMarchPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(bmPc), &bmPc);
+        vkCmdDispatch(cmd, (kMaxActiveBeams + 63) / 64, 1, 1);
+    }
+
+    // Barrier: beam_self_march.comp writes reflectBeamsBuf (blockAltM/blockOpacity) → read THIS
+    // frame by cloud_march.comp (compute, right below) and sat_sky.frag (fragment, later in the
+    // render pass). Also covers every OTHER ReflectBeam field sat_orbit.comp wrote (targetENU,
+    // satENU, reflectDirENU, ...) for those same two consumers — strictly safe to fold into this
+    // later barrier since it's a superset of what the earlier one already guaranteed.
     {
         VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1628,7 +1683,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
         // sat_flare.comp below is skipped this frame — write the same timestamp into its slot so
         // updateGpuTimingStats() sees a zero-duration bucket next frame instead of stale or
-        // unavailable query data. scene_depth/beam_cloud_block/sat_orbit/cloud_march above already
+        // unavailable query data. scene_depth/sat_orbit/beam_self_march/cloud_march above already
         // ran unconditionally this frame (sat_orbit.comp with 0 satellite workgroups when
         // applicable — a legal no-op dispatch) and got their own real timestamps, so only the
         // flare slot needs a placeholder here. See C12 follow-up #22 for why sat_orbit.comp now
@@ -2252,11 +2307,11 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyImageView(device, sceneDepthView, nullptr);
     vkDestroyImage(device, sceneDepthImg, nullptr);
     vkFreeMemory(device, sceneDepthMem, nullptr);
-    // ── Beam cloud block pipeline (C12 follow-up #33) ──────────────────────────
-    vkDestroyPipeline(device, beamCloudBlockPipeline, nullptr);
-    vkDestroyPipelineLayout(device, beamCloudBlockPipeLayout, nullptr);
-    vkDestroyDescriptorPool(device, beamCloudBlockDescPool, nullptr);
-    vkDestroyDescriptorSetLayout(device, beamCloudBlockDescLayout, nullptr);
+    // ── Beam self-march pipeline (2026-08-09, replaces beam_cloud_block.comp) ──
+    vkDestroyPipeline(device, beamSelfMarchPipeline, nullptr);
+    vkDestroyPipelineLayout(device, beamSelfMarchPipeLayout, nullptr);
+    vkDestroyDescriptorPool(device, beamSelfMarchDescPool, nullptr);
+    vkDestroyDescriptorSetLayout(device, beamSelfMarchDescLayout, nullptr);
     // ── Flare + draw + sky pipelines ───────────────────────────────────────────
     vkDestroyPipeline(device, compPipeline, nullptr);
     vkDestroyPipeline(device, skyBgPipeline, nullptr);
@@ -2615,8 +2670,8 @@ void SatelliteSim::cleanup(VkDevice device)
         vkUnmapMemory(device, reflectorTargetsECEFMem);
     vkDestroyBuffer(device, reflectorTargetsECEFBuf, nullptr);
     vkFreeMemory(device, reflectorTargetsECEFMem, nullptr);
-    vkDestroyBuffer(device, beamCloudBlockBuf, nullptr);
-    vkFreeMemory(device, beamCloudBlockMem, nullptr);
+    // beamCloudBlockBuf destroy removed 2026-08-09 — that buffer no longer exists (see its
+    // creation-site comment, createBuffers()).
     if (reflectBeamsMapped)
         vkUnmapMemory(device, reflectBeamsMem);
     vkDestroyBuffer(device, reflectBeamsBuf, nullptr);
@@ -3200,8 +3255,11 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
 
     // reflectorTargetsECEFBuf: host-visible + coherent, but written ONCE (right after
     // initConstellation() in init(), not every frame — see the member comment). Sized as
-    // vec4 per target (xyz=unit ECEF dir, w=radius); consumed by beam_cloud_block.comp and, as of
-    // the 2026-08-06 reversibility rework, sat_orbit.comp too.
+    // vec4 per target (xyz=unit ECEF dir, w=radius); consumed by sat_orbit.comp (TargetedReflector
+    // target search — the 2026-08-06 reversibility rework). beam_cloud_block.comp, the buffer's
+    // other former reader, was retired 2026-08-09 — beam_self_march.comp doesn't need this buffer
+    // at all, since it reconstructs each beam's ECEF endpoints from ReflectBeamsBuf's own ENU
+    // offsets instead (see that shader's header).
     VkDeviceSize reflECEFSize = sizeof(glm::vec4) * kNumReflectorTargets;
     ctx.createBuffer(reflECEFSize,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -3210,13 +3268,8 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
     vkMapMemory(ctx.device, reflectorTargetsECEFMem, 0, reflECEFSize, 0, &reflectorTargetsECEFMapped);
     memset(reflectorTargetsECEFMapped, 0, reflECEFSize);
 
-    // beamCloudBlockBuf: device-local. Written every frame by beam_cloud_block.comp (each of the
-    // 201 threads owns one index, no atomics), read the same frame by sat_orbit.comp. No CPU
-    // involvement, no per-frame zero-fill needed (full overwrite every dispatch).
-    ctx.createBuffer(sizeof(glm::vec2) * kNumReflectorTargets,
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                     beamCloudBlockBuf, beamCloudBlockMem);
+    // beamCloudBlockBuf (beam_cloud_block.comp's own output buffer) retired 2026-08-09 —
+    // beam_self_march.comp writes directly into reflectBeamsBuf below, no intermediate buffer.
 
     // reflectBeamsBuf: HOST_VISIBLE|HOST_COHERENT (same reasoning as glowBuf: single frame in
     // flight, so the previous frame's atomicMax writes from sat_orbit.comp are safely readable
@@ -3376,28 +3429,29 @@ void SatelliteSim::createComputePipeline(VulkanContext &ctx)
 // Descriptor set for sat_orbit.comp:
 //   binding 0  satOrbitBuf       (readonly  SSBO)
 //   binding 1  satInputBuf       (write     SSBO — same buffer that sat_flare.comp reads)
-//   binding 2  reflectorTargetsECEFBuf (readonly SSBO — static, same buffer beam_cloud_block.comp
-//                                       reads; replaces the old mirrorNormalsBuf/reflectorTargetsBuf
-//                                       pair as of the 2026-08-06 reversibility rework)
+//   binding 2  reflectorTargetsECEFBuf (readonly SSBO — static; replaces the old
+//                                       mirrorNormalsBuf/reflectorTargetsBuf pair as of the
+//                                       2026-08-06 reversibility rework)
 //   binding 3  reflectBeamsBuf   (readwrite SSBO — capped atomic-append beam list, C12)
 //   binding 4  beamGlowDomeBuf  (readwrite SSBO — 16-sector beam sky-glow dome, C12 follow-up #31)
-//   binding 5  beamCloudBlockBuf (readonly SSBO — per-target cloud occlusion, C12 follow-up #33)
+// Binding 5 (beamCloudBlockBuf, per-target cloud occlusion, C12 follow-up #33) removed 2026-08-09
+// — beam_self_march.comp now writes blockAltM/blockOpacity directly, per beam, in its own later
+// dispatch; this shader no longer reads or writes those two fields at all.
 void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[6] = {};
+    VkDescriptorSetLayoutBinding bindings[5] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    bindings[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // beamCloudBlockBuf, C12 follow-up #33
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 6;
+    li.bindingCount = 5;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &orbitDescLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &ps;
@@ -3415,9 +3469,8 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
     VkDescriptorBufferInfo targetEcefInfo{reflectorTargetsECEFBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo beamInfo{reflectBeamsBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo beamDomeInfo{beamGlowDomeBuf, 0, VK_WHOLE_SIZE};
-    VkDescriptorBufferInfo beamCloudBlockInfo{beamCloudBlockBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[6] = {};
+    VkWriteDescriptorSet writes[5] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 0, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &orbitInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 1, 0, 1,
@@ -3428,9 +3481,7 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamInfo, nullptr};
     writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 4, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamDomeInfo, nullptr};
-    writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 5, 0, 1,
-                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamCloudBlockInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 6, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device, 5, writes, 0, nullptr);
 }
 
 // ─── createOrbitPipeline ──────────────────────────────────────────────────────
@@ -4318,95 +4369,92 @@ void SatelliteSim::createSceneDepthPipeline(VulkanContext &ctx)
 //  per pixel from the terrain hit point the scene-depth pass supplies, using bindings that pass
 //  already had.)
 
-// ─── createBeamCloudBlockDescriptors ──────────────────────────────────────────
-// Descriptor set for beam_cloud_block.comp (C12 follow-up #33):
-//   binding 0  reflectorTargetsECEFBuf (readonly SSBO) — static, uploaded once
-//   binding 1  earthCloudsTex  (sampler2D)  — same texture as cloud_shadow.comp binding 0
-//   binding 2  cloudNoiseTex   (sampler3D)  — same texture as cloud_shadow.comp binding 1
-//   binding 3  cloudWarpNoiseTex (sampler3D) — same texture as cloud_shadow.comp binding 2
+// ─── createBeamSelfMarchDescriptors ────────────────────────────────────────────
+// Descriptor set for beam_self_march.comp (2026-08-09, replaces beam_cloud_block.comp):
+//   binding 0  reflectBeamsBuf (readwrite SSBO) — same buffer sat_orbit.comp/cloud_march.comp/
+//                               sat_sky.frag all reference; this pass reads satENU/targetENU and
+//                               overwrites blockAltM/blockOpacity in place, no separate output
+//                               buffer needed (unlike beam_cloud_block.comp's own beamCloudBlockBuf)
+//   binding 1  earthCloudsTex  (sampler2D)
+//   binding 2  cloudNoiseTex   (sampler3D)
+//   binding 3  cloudWarpNoiseTex (sampler3D)
 //   binding 4  CloudParams UBO (same underlying buffer as skyDescSet binding 9)
-//   binding 5  beamCloudBlockBuf (SSBO, write)
-// Deliberately its own small descriptor set — different buffer shapes
-// (no storage image here) and the two passes are conceptually independent (see
-// beam_cloud_block.comp's header for why this isn't built on cloud_shadow.comp's grid).
-void SatelliteSim::createBeamCloudBlockDescriptors(VulkanContext &ctx)
+// Same shape as beam_cloud_block.comp's own set otherwise (deliberately its own small descriptor
+// set — see that shader's header, still applicable, for why this isn't built on any shared grid).
+void SatelliteSim::createBeamSelfMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[6] = {};
+    VkDescriptorSetLayoutBinding bindings[5] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[3] = {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[4] = {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    bindings[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 6;
+    li.bindingCount = 5;
     li.pBindings = bindings;
-    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &beamCloudBlockDescLayout);
+    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &beamSelfMarchDescLayout);
 
     VkDescriptorPoolSize ps[3] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 3;
     pi.pPoolSizes = ps;
     pi.maxSets = 1;
-    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &beamCloudBlockDescPool);
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &beamSelfMarchDescPool);
 
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool = beamCloudBlockDescPool;
+    ai.descriptorPool = beamSelfMarchDescPool;
     ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &beamCloudBlockDescLayout;
-    vkAllocateDescriptorSets(ctx.device, &ai, &beamCloudBlockDescSet);
+    ai.pSetLayouts = &beamSelfMarchDescLayout;
+    vkAllocateDescriptorSets(ctx.device, &ai, &beamSelfMarchDescSet);
 
-    VkDescriptorBufferInfo targetEcefInfo{reflectorTargetsECEFBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo beamInfo{reflectBeamsBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo cloudsInfo{earthCloudsSampler, earthCloudsView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo noise3DInfo{cloudNoiseSampler, cloudNoiseView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo warpNoiseInfo{cloudWarpNoiseSampler, cloudWarpNoiseView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo cloudParamsInfo{cloudParamsBuf, 0, sizeof(GpuCloudParams)};
-    VkDescriptorBufferInfo blockOutInfo{beamCloudBlockBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[6] = {};
-    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, beamCloudBlockDescSet, 0, 0, 1,
-                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &targetEcefInfo, nullptr};
-    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, beamCloudBlockDescSet, 1, 0, 1,
+    VkWriteDescriptorSet writes[5] = {};
+    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, beamSelfMarchDescSet, 0, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamInfo, nullptr};
+    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, beamSelfMarchDescSet, 1, 0, 1,
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudsInfo, nullptr, nullptr};
-    writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, beamCloudBlockDescSet, 2, 0, 1,
+    writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, beamSelfMarchDescSet, 2, 0, 1,
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &noise3DInfo, nullptr, nullptr};
-    writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, beamCloudBlockDescSet, 3, 0, 1,
+    writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, beamSelfMarchDescSet, 3, 0, 1,
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &warpNoiseInfo, nullptr, nullptr};
-    writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, beamCloudBlockDescSet, 4, 0, 1,
+    writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, beamSelfMarchDescSet, 4, 0, 1,
                  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &cloudParamsInfo, nullptr};
-    writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, beamCloudBlockDescSet, 5, 0, 1,
-                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &blockOutInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 6, writes, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device, 5, writes, 0, nullptr);
 }
 
-// ─── createBeamCloudBlockPipeline ─────────────────────────────────────────────
-void SatelliteSim::createBeamCloudBlockPipeline(VulkanContext &ctx)
+// ─── createBeamSelfMarchPipeline ───────────────────────────────────────────────
+void SatelliteSim::createBeamSelfMarchPipeline(VulkanContext &ctx)
 {
-    VkShaderModule mod = ctx.loadShader("shaders/beam_cloud_block.comp.spv");
+    VkShaderModule mod = ctx.loadShader("shaders/beam_self_march.comp.spv");
 
     VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = mod;
     stage.pName = "main";
 
-    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(BeamCloudBlockPC)};
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(BeamSelfMarchPC)};
 
     VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     li.setLayoutCount = 1;
-    li.pSetLayouts = &beamCloudBlockDescLayout;
+    li.pSetLayouts = &beamSelfMarchDescLayout;
     li.pushConstantRangeCount = 1;
     li.pPushConstantRanges = &pcr;
-    vkCreatePipelineLayout(ctx.device, &li, nullptr, &beamCloudBlockPipeLayout);
+    vkCreatePipelineLayout(ctx.device, &li, nullptr, &beamSelfMarchPipeLayout);
 
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = stage;
-    ci.layout = beamCloudBlockPipeLayout;
-    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &beamCloudBlockPipeline) != VK_SUCCESS)
-        throw std::runtime_error("SatelliteSim: failed to create beam_cloud_block compute pipeline");
+    ci.layout = beamSelfMarchPipeLayout;
+    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &beamSelfMarchPipeline) != VK_SUCCESS)
+        throw std::runtime_error("SatelliteSim: failed to create beam_self_march compute pipeline");
 
     vkDestroyShaderModule(ctx.device, mod, nullptr);
 }
