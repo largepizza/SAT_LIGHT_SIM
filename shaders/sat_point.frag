@@ -62,23 +62,34 @@ void main() {
     float d = length(c);
     if (d > 0.5) discard;
 
-    // gl_FragCoord.xy must divide by THIS draw's own target size, never an assumed constant —
-    // see sat_sky.frag's documented render-scale gotcha (CLAUDE.md "Subsystem: Resolution
-    // Scaling"). Satellites always draw at native resolution regardless of renderScale, but the
-    // cloud targets are always sized off the true swap extent, so this is the correct divisor
-    // in both cases (matches sat_sky.frag's own cloudUV formula exactly).
-    vec2 cloudUV = gl_FragCoord.xy / pc.screenSizePx;
-    vec4 cloudA  = texture(cloudTargetA, cloudUV);
-    vec4 cloudB  = texture(cloudTargetB, cloudUV);
-    float tCloudOcclude = cloudA.a;
-    float cloudBlock    = dot(cloudB.rgb, vec3(1.0 / 3.0));
-    // Two-tier response, mirroring the two ways sat_sky.frag already treats cloud opacity:
-    // a hard gate for genuinely opaque cloud (same tCloudOcclude convention that hides the moon
-    // disc), and a smooth power-curve dim otherwise (same shape the Milky Way/sun disc use), so
-    // satellites join the same existing visual language instead of a new one.
-    float cloudHardOcclude = (tCloudOcclude >= 0.0) ? 0.0 : 1.0;
-    const float kSatCloudSuppressPower = 2.0;
-    float cloudVis = cloudHardOcclude * pow(clamp(cloudBlock, 0.0, 1.0), kSatCloudSuppressPower);
+    // Knockout bit 4096 (profiling-only, added 2026-08-09): this pipeline had no knockout bit at
+    // all before now, unlike every other perf-sensitive block in the codebase (see CLAUDE.md's
+    // "GPU Performance Profiling" subsystem) — added specifically to let a per-fragment cost
+    // hypothesis (2 cloud texture fetches x every covered pixel of every satellite sprite, up to
+    // 120px each, potentially many simultaneously near that cap for Reflect Orbital's near-perfect
+    // mirror alignment) be confirmed or ruled out with real GPU FRAME BREAKDOWN data instead of
+    // guessed at — see BEAM_CLOUD_PLAN.md's session 2026-08-09 log for the reported satellite/star
+    // draw cost jump this is meant to isolate.
+    float cloudVis = 1.0;
+    if ((pc.debugDisableMask & 4096u) == 0u) {
+        // gl_FragCoord.xy must divide by THIS draw's own target size, never an assumed constant —
+        // see sat_sky.frag's documented render-scale gotcha (CLAUDE.md "Subsystem: Resolution
+        // Scaling"). Satellites always draw at native resolution regardless of renderScale, but the
+        // cloud targets are always sized off the true swap extent, so this is the correct divisor
+        // in both cases (matches sat_sky.frag's own cloudUV formula exactly).
+        vec2 cloudUV = gl_FragCoord.xy / pc.screenSizePx;
+        vec4 cloudA  = texture(cloudTargetA, cloudUV);
+        vec4 cloudB  = texture(cloudTargetB, cloudUV);
+        float tCloudOcclude = cloudA.a;
+        float cloudBlock    = dot(cloudB.rgb, vec3(1.0 / 3.0));
+        // Two-tier response, mirroring the two ways sat_sky.frag already treats cloud opacity:
+        // a hard gate for genuinely opaque cloud (same tCloudOcclude convention that hides the moon
+        // disc), and a smooth power-curve dim otherwise (same shape the Milky Way/sun disc use), so
+        // satellites join the same existing visual language instead of a new one.
+        float cloudHardOcclude = (tCloudOcclude >= 0.0) ? 0.0 : 1.0;
+        const float kSatCloudSuppressPower = 2.0;
+        cloudVis = cloudHardOcclude * pow(clamp(cloudBlock, 0.0, 1.0), kSatCloudSuppressPower);
+    }
 
 
     // ── Inner core: tight pinpoint, log-compressed brightness ─────────────────

@@ -2092,8 +2092,11 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
 
     // Order must match gpuMsSmoothed[]'s slot semantics — see VulkanContext::kTimestampCount
     // for the authoritative table, and savePerfSnapshot() below for the matching JSON keys.
+    // "Beam cloud block (retired)" always reads ~0.00ms as of 2026-08-09 — that dispatch was
+    // replaced by beam_self_march.comp, whose real cost now folds into "Orbit compute" instead
+    // (see savePerfSnapshot()'s own comment on gpu_timing_ms for why the slot wasn't rewired).
     static const char *kPerfLabels[8] = {
-        "Scene depth", "Beam cloud block", "Orbit compute", "Cloud march", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
+        "Scene depth", "Beam cloud block (retired)", "Orbit compute", "Cloud march", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
     static char perfBufs[8][20];
     for (int pi = 0; pi < 8; ++pi)
     {
@@ -2133,7 +2136,9 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // debugDisableMask comment: 1=terrain, 2=atmosphere, 4=sun optical depth, 8=ocean reflection,
     // 16=airglow red, 32=aurora curtain, 64=cloud self-shadow cone, 128=Reflect-Orbital beams
     // (C12, both the cloud_march.comp volumetric term and the sat_sky.frag ground-spot term),
-    // 256=cloud shadow on terrain/ocean, 512=beam cloud block dispatch, 1024=scene depth pass.
+    // 256=cloud shadow on terrain/ocean, 512=beam cloud block dispatch, 1024=scene depth pass,
+    // 4096=satellite point cloud occlusion (sat_point.frag — added 2026-08-09 to isolate a
+    // reported satellite/star draw cost jump; see BEAM_CLOUD_PLAN.md).
     // 512 and 1024 are the PRODUCER-side knockouts (they skip a whole dispatch in recordCompute);
     // every other bit disables a block inside a shader. 256 used to be producer-side too, back
     // when the shadow was its own 128x128 dispatch; it now gates the per-pixel shadow march
@@ -2144,13 +2149,13 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // That makes the entire shared-depth architecture a single A/B checkbox.
     CLAY_TEXT(CLAY_STRING("KNOCKOUT PROFILING (disables rendering correctness for cost isolation)"),
               CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
-    static const char *kDebugToggleLabels[12] = {
+    static const char *kDebugToggleLabels[13] = {
         "Terrain march", "Atmosphere loop (N_VIEW)", "Sun optical depth (N_LIGHT)", "Ocean sky reflection",
         "Airglow red (16-step march)", "Aurora curtain march", "Cloud self-shadow cone",
         "Reflect-Orbital beams", "Cloud shadow (per-pixel)", "Beam cloud block dispatch", "Scene depth pass",
-        "Fog layer (C11)"};
-    static const uint32_t kDebugToggleBits[12] = {1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u, 512u, 1024u, 2048u};
-    for (int ti = 0; ti < 12; ++ti)
+        "Fog layer (C11)", "Satellite point cloud occlusion"};
+    static const uint32_t kDebugToggleBits[13] = {1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u, 512u, 1024u, 2048u, 4096u};
+    for (int ti = 0; ti < 13; ++ti)
     {
         bool on = (debugDisableMask & kDebugToggleBits[ti]) != 0u;
         Clay_String lblStr{false, (int32_t)strlen(kDebugToggleLabels[ti]), kDebugToggleLabels[ti]};
@@ -2822,6 +2827,32 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
             CLAY_TEXT(countStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
             CLAY_TEXT(CLAY_STRING(" / "), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
             CLAY_TEXT(distStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        }
+    }
+
+    // ── beam_self_march.comp occlusion debug (2026-08-09, BEAM_CLOUD_PLAN.md) ────────
+    // Raw min/max/avg blockOpacity across every active beam this frame, and how many currently
+    // read as occluded (>0.1) — no per-target aggregation in the way, unlike what the ray/ground
+    // spot/cloud-lighting consumers each apply on top. Max stuck at 0.00 with visible cloud cover
+    // on screen means the MARCH itself isn't finding cloud; Max >0 but no visible change means the
+    // bug is in a consumer instead. See that shader's header and the memory note this was added
+    // to debug.
+    {
+        static char opBuf[64];
+        snprintf(opBuf, sizeof(opBuf), "min %.2f / max %.2f / avg %.2f / occluded %d/%d",
+                 dbgBeamOpacityMin, dbgBeamOpacityMax, dbgBeamOpacityAvg,
+                 dbgBeamOccludedCount, dbgBeamSampleCount);
+        CLAY(CLAY_ID("BeamOpacityDiagRow"), {.layout = {
+                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
+                                          .padding = {4, 4, 2, 2},
+                                          .childGap = 8,
+                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY_TEXT(CLAY_STRING("Beam blockOpacity"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            CLAY(CLAY_ID("BeamOpacityDiagSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+            Clay_String opStr{false, (int32_t)strlen(opBuf), opBuf};
+            CLAY_TEXT(opStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
         }
     }
 
@@ -4165,6 +4196,13 @@ void SatelliteSim::savePerfSnapshot(float cpuDt)
     // cloud_shadow_map disappeared when that dispatch was folded into cloud_march.comp - its
     // cost now lives inside the cloud_march bucket. Snapshots that still carry the old key
     // predate that change.
+    // 2026-08-09: beam_cloud_block.comp itself was retired (replaced by beam_self_march.comp,
+    // dispatched in a different pipeline position — see SatelliteSim.cpp's recordCompute) but its
+    // timestamp slot (gpuMsSmoothed[1]) was deliberately left in place rather than rewired, so this
+    // key now reads ~0 always. beam_self_march.comp's real cost instead folds into orbit_compute
+    // (gpuMsSmoothed[2]) — it's dispatched between sat_orbit.comp's own barriers and that bucket's
+    // timestamp write, the same reasoning bit-1024/scene-depth's "reads ~0 when skipped" convention
+    // already establishes for a bucket with nothing left to measure.
     j["gpu_timing_ms"] = {
         {"scene_depth", gpuMsSmoothed[0]},
         {"beam_cloud_block", gpuMsSmoothed[1]},
