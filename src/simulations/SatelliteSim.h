@@ -986,14 +986,23 @@ struct SatOrbitPC
                                 // position — see CLAUDE.md). Replaces the old mirrorSnap flag; nothing
                                 // persists across frames anymore, so there is no snap state to force.
     float windowFrac;           // offset 116 — fract(simTimeAbs / reflectorLockWindowS): this
-                                // satellite-independent frame's fractional position within the
-                                // current lock window, in [0,1). sat_orbit.comp uses
-                                // (0.5-windowFrac)*reflectorLockWindowS to extrapolate deltaT/gmstNow
-                                // out to the current and next window's midpoints (see that shader for
-                                // why this extrapolation is exact, not approximate, for both
-                                // quantities). Replaces the old minBeamElevSinRelease — hysteresis is
-                                // gone; window-boundary crossfade is time-based instead.
-    uint32_t pad1;              // offset 120
+                                // frame's fractional position within the current lock window, in
+                                // [0,1). sat_orbit.comp uses -windowFrac*reflectorLockWindowS to
+                                // extrapolate deltaT/gmstNow back to the current window's START
+                                // instant (and one window further back for the previous window's),
+                                // exact rather than approximate for the same reason deltaT/gmstNow
+                                // themselves are (see that shader). Replaces the old
+                                // minBeamElevSinRelease — hysteresis is gone; a rate-limited ease
+                                // sized off windowFrac is what smooths a target change instead.
+    float mirrorMaxRateDegPerSec; // offset 120 — real angular-rate cap for the closed-form ease
+                                // above: sat_orbit.comp derives an ease duration from the actual
+                                // angle between the previous and current window's targets (at the
+                                // current window's start instant) and this rate, then eases the
+                                // live orientation over that duration — a genuine max attitude
+                                // rate, unlike the old design's fixed-fraction-of-window crossfade
+                                // (2026-08-06 same-day follow-up: satellites were visibly snapping
+                                // to target because that crossfade only covered ONE of several
+                                // transition cases and wasn't derived from real angular distance).
     uint32_t pad2;              // offset 124
 }; // 128 bytes
 static_assert(sizeof(SatOrbitPC) == 128, "SatOrbitPC layout mismatch");
@@ -1650,6 +1659,13 @@ private:
     // sat_orbit.comp's TargetedReflector block and CLAUDE.md for the full design. Same settings
     // slider slot (Settings → Beams), retitled "Target lock window (s)".
     float reflectorLockWindowS = 90.0f;
+    // 2026-08-06 same-day follow-up: real angular-rate cap for the rate-limited ease that smooths
+    // a TargetedReflector mirror's orientation across a target change — see sat_orbit.comp's
+    // TargetedReflector block (nearFallbackIdeal/startAim/destAtStart) for how the ease duration
+    // is derived from this and the actual angle to cover. The window-crossfade-only version
+    // shipped earlier the same day only covered one of several transition cases and wasn't tied to
+    // real angular distance, which read as satellites snapping to target.
+    float mirrorMaxRateDegPerSec = 8.0f;
     // S1 follow-up (RELEASE_v1_1_PLAN.md): minimum acceptable local elevation angle of the
     // satellite as seen FROM a candidate ground target, in degrees. Below this, a target is
     // rejected outright by sat_orbit.comp's TargetedReflector selection (grazing beams suffer

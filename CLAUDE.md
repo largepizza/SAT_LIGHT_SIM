@@ -388,18 +388,22 @@ obsECI (vec3), satCount (uint)         — offset 64/76
 highlightMask (uint), enabledMask (uint), simDt (float), elevCutoff (float) — offset 80/84/88/92
 beamGain (float), reflectorLockWindowS (float), targetCount (uint),
 minBeamElevSin (float)                 — offsets 96/100/104/108
-gmstNow (float), windowFrac (float), pad1/pad2 — offset 112/116, padded to 128
+gmstNow (float), windowFrac (float), mirrorMaxRateDegPerSec (float), pad2 — offset 112/116/120,
+padded to 128
 ```
-2026-08-06 reversibility rework repurposed the four fields at offset 100-116 in place (same total
-size, no growth): `mirrorSlewDegPerSec` → `reflectorLockWindowS` (a duration instead of a rate —
-see below), `activeTargetCount` → `targetCount` (now the full loaded count, not a per-frame
+2026-08-06 reversibility rework repurposed the fields at offset 100-124 in place (same total size,
+no growth): `mirrorSlewDegPerSec` → `reflectorLockWindowS` (a duration instead of a rate — see
+below), `activeTargetCount` → `targetCount` (now the full loaded count, not a per-frame
 night-side-compacted subset), `mirrorSnap` → `gmstNow` (current-frame GMST, for rotating a target's
 static ECEF entry to its live ECI position), `minBeamElevSinRelease` → `windowFrac` (fractional
-position within the current lock window, `fract(simTimeAbs / reflectorLockWindowS)`). All of
-`deltaT`, `gmstNow`, and `windowFrac` are pure functions of absolute sim time, computed on the CPU
-in double precision and narrowed to float only after the relevant periodic reduction — so
-`sat_orbit.comp` can extrapolate exactly to a lock window's midpoint (see below) with no persisted
-GPU state anywhere in the pipeline.
+position within the current lock window, `fract(simTimeAbs / reflectorLockWindowS)`), and (same-day
+follow-up) `pad1` → `mirrorMaxRateDegPerSec` — a real angular-rate cap, added once the original
+fixed-fraction-of-window crossfade turned out to read as satellites snapping to target (it only
+covered one of several transition cases and wasn't derived from actual angular distance — see
+"Orientation" below). All of `deltaT`, `gmstNow`, and `windowFrac` are pure functions of absolute
+sim time, computed on the CPU in double precision and narrowed to float only after the relevant
+periodic reduction — so `sat_orbit.comp` can extrapolate exactly to a lock window's start instant
+(see below) with no persisted GPU state anywhere in the pipeline.
 
 **SatFlarePC** (128 bytes) — sat_flare.comp:
 ```
@@ -471,55 +475,92 @@ demand, for whichever instant it needs (see below).
 ### Per-satellite selection (GPU, sat_orbit.comp) — deterministic lock windows
 Target IDENTITY is chosen per fixed-width **sim-time window**
 (`SatOrbitPC::reflectorLockWindowS`, default 90s, settings-window "Target lock window (s)"), not by
-a persisted per-satellite lock. For the CURRENT window and the NEXT window, `sat_orbit.comp`
-extrapolates this frame's `deltaT`/`gmstNow` out to each window's midpoint —
-`toMid = (0.5 - windowFrac) × reflectorLockWindowS`, then `evalDeltaT = deltaT + toMid` and
-`gmstEval = gmstNow + K_OMEGA_EARTH × toMid` (and `+ reflectorLockWindowS` again for the next
-window). **This extrapolation is exact, not approximate**, for both quantities in this sim's model:
-orbital phase (`u = u0 + meanMot×deltaT`) and GMST are both exactly linear in time, so evaluating at
-a shifted `deltaT` is algebraically identical to the CPU having computed `deltaT` relative to a
-different reference instant — no precision or physical approximation beyond what `deltaT`/`gmstNow`
-already carry. The one real approximation is treating `sunDirECI` as constant across one window
-(true to within the sun's ~1°/day drift against a ~90s window).
+a persisted per-satellite lock.
+
+**Per-satellite phase offset (2026-08-06 same-day follow-up).** `SatOrbitPC::windowFrac` is one
+GLOBAL value, identical for every satellite dispatched this frame — without correction, every
+TargetedReflector satellite's window boundary lands at the exact same sim-time instant, so all of
+them ease toward a new target simultaneously: reported as one large synchronized wave of motion
+regardless of how `reflectorLockWindowS`/`mirrorMaxRateDegPerSec` were tuned (a short window reads
+as constant chaos, a long one as periodic mass movement). Fixed with a per-satellite hash offset —
+`windowFracI = fract(pc.windowFrac + hashU(i × 0x2545F491u)/2³²)` — which is exactly the fractional
+part of `(simTimeAbs + offsetSeconds_i) / W` (dropping the integer part doesn't care which multiple
+of `W` `offsetSeconds_i` came from), i.e. this satellite's OWN window fraction, needing no extra
+CPU-side work or push-constant fields. Every use of `windowFrac` in this section below is really
+`windowFracI` in the shader; still a pure function of (sim time, satellite index), so still fully
+reversible.
+
+`sat_orbit.comp` extrapolates this frame's `deltaT`/`gmstNow` back to the CURRENT window's own
+START instant — `toWinStart = -windowFracI × reflectorLockWindowS`, then
+`evalDeltaT = deltaT + toWinStart` and `gmstEval = gmstNow + K_OMEGA_EARTH × toWinStart` (and one
+more `reflectorLockWindowS` further back for the PREVIOUS window's start). **This extrapolation is
+exact, not approximate**, for both quantities in this sim's model: orbital phase
+(`u = u0 + meanMot×deltaT`) and GMST are both exactly linear in time, so evaluating at a shifted
+`deltaT` is algebraically identical to the CPU having computed `deltaT` relative to a different
+reference instant — no precision or physical approximation beyond what `deltaT`/`gmstNow` already
+carry. The one real approximation is treating `sunDirECI` as constant across one window (true to
+within the sun's ~1°/day drift against a ~90s window).
 
 At each eval instant, `findWinner()` re-derives the satellite's own ECI position (`satEciAt`, same
 closed-form math as the real position, evaluated at `evalDeltaT`) and scans **every** loaded target
 (`pc.targetCount`, not a pre-filtered subset — the old per-frame CPU night-side compaction is gone),
 rotating each target's static ECEF entry by `gmstEval`, rejecting day-side-at-that-instant and
 anything below `pc.minBeamElevSin` (local elevation of the satellite *as seen from the target*), and
-taking the `pairScore(satIdx, ORIGINAL target index)` argmax among survivors. This yields `bestIdxA`
-(current window's winner) and `bestIdxB` (next window's winner) — both constant across their whole
-window, since they only depend on that window's own midpoint, not on which frame within it asks.
+taking the `pairScore(satIdx, ORIGINAL target index)` argmax among survivors. Called once for the
+CURRENT window's start (`bestIdx`) and once for the PREVIOUS window's (`bestIdxPrev`) — both
+constant across their own whole window, since they only depend on that window's own start instant,
+not on which frame within it asks. `pairScore` doesn't depend on the eval instant at all, only on
+which targets are eligible — so a satellite's top-scoring target keeps winning unprompted across
+consecutive windows as long as it stays eligible; a window boundary only actually changes the
+winner when the incumbent drops out (day-side, or below `minBeamElevSin`).
 
 `pairScore` is a pure function of the `(satellite, target)` pair (all-integer hash, see the block
 comment above `hashU`/`pairScore` in `sat_orbit.comp`), independent of scan order and of how many
 other candidates exist — the same load-spreading property the old `hash11`-based score was designed
 to have, minus the magnitude-collapse bug.
 
-### Orientation — always live geometry, windowing only decides identity
-The mirror's actual aim direction never uses the eval-time position — only the CHOICE of target
-comes from the windowed evaluation above. Once a window's winner is known, its live (this-frame,
-unquantized) position is an O(1) lookup: rotate its static ECEF entry by `pc.gmstNow`
-(`targetLivePos`). This is what lets a locked-in target be tracked exactly for the run of a window
-without needing to re-derive or store anything.
-- `bestIdxA == bestIdxB` (the common case) or only one valid: aim directly at that target's live
-  ideal half-vector (`normalize(sunDirECI + toTarget)`), no blending, `aimErrorRad = 0`.
-- Both valid and different (a genuine window-boundary transition): crossfade over the LAST
-  `BEAM_CROSSFADE_FRAC` (hardcoded 0.15, i.e. ~13.5s of a 90s window) of the window —
-  `mix(idealA, idealB, smoothstep(1-frac, 1, windowFrac))` — a fixed sim-time duration, not a rate
-  limit, so there's no abrupt snap. `bestIdx` (for beam bookkeeping) follows whichever side the
-  blend currently favors; `aimErrorRad` is the residual angle from the exact target during the
-  blend (0 outside it) — same field, same downstream consumers (cloud_march.comp's beam debug ray
-  fade) as before, just driven by window-crossfade progress instead of slew-rate residual.
-- Neither valid: pre-aim at the nearest LIVE night-valid target (no beam drawn — `bestIdx` stays
-  -1), computed fresh each frame (mirrors the old `nearIdx` pre-aim concept, just without a stale
-  lock to fall back on). `FlatMirror45` only if there is truly nothing night-valid at all right now.
+### Orientation — a rate-limited ease, not integrated slew
+2026-08-06 same-day follow-up: the first cut of this rework smoothed only ONE transition case (both
+the current and a look-AHEAD "next window" valid and different) via a fixed-fraction-of-window
+crossfade, unrelated to how far the mirror actually had to swing. Every other transition (acquiring
+a target from nothing, losing one, falling back to the nearest night-valid site) snapped instantly,
+and even the smoothed case could look abrupt for a wide swing compressed into a fixed ~13.5s —
+reported as satellites visibly snapping to target. Replaced with a genuine angular-rate cap
+(`SatOrbitPC::mirrorMaxRateDegPerSec`, settings-window "Mirror max slew rate (deg/s)") applied via a
+closed-form ease, covering every transition uniformly:
+- `bestIdxPrev` (previous window's winner — a one-window lookback, not unbounded history, so still
+  a pure function of current sim time) gives `startAim`: the ideal aim direction toward whatever the
+  mirror was presumably doing right as the CURRENT window began, evaluated AT the current window's
+  own start instant (`idealTowards(satEciCur, targetPosAt(bestIdxPrev, gmstEvalCur), ...)`).
+  `nearFallbackIdeal()` (nearest night-valid target, no elevation gate, or `FlatMirror45` if truly
+  nothing night-valid exists) substitutes whenever the relevant index is `< 0`, used identically for
+  "previous window had nothing" and "current window has nothing."
+- `destAtStart` is the same computation for `bestIdx` (current window's own winner) at that same
+  start instant — directly comparable to `startAim` since both are evaluated at the identical
+  moment, only the target differs. `angle0 = acos(dot(startAim, destAtStart))` is therefore a
+  single stable angle for the whole window, not something that recomputes every frame.
+- `slewDuration = clamp(angle0 / radians(mirrorMaxRateDegPerSec), ~0, reflectorLockWindowS)` — the
+  real time a slew at the configured max rate would take, capped at one window so a huge swing
+  can't bleed into the NEXT window's own (independently computed) ease.
+- The mirror eases from `startAim` toward `liveIdeal` (the target's true LIVE, unquantized position
+  right now — this is what makes it track exactly once caught up, not toward a stale window-start
+  snapshot) via `smoothstep(0, slewDuration, windowFrac × reflectorLockWindowS)`. When
+  `bestIdxPrev == bestIdx` (the common case — nothing actually changed), `angle0` is exactly 0, the
+  ease completes within a clamped instant, and the mirror simply tracks `liveIdeal` for the whole
+  window, matching the previous design's "once slew has caught up" steady state.
+- `bestIdx` (for beam bookkeeping — footprint, `beamCloudBlock` lookup) is always the CURRENT
+  window's winner, using its live position, regardless of ease progress — only ORIENTATION lags
+  during a transition, never where the beam is drawn. `aimErrorRad` is the residual angle between
+  the eased orientation and `liveIdeal` (0 once caught up) — same field, same downstream consumer
+  (`cloud_march.comp`'s beam debug ray fade) as before, just driven by the rate-limited ease instead
+  of window-crossfade progress.
 
-Because every one of these quantities — `windowFrac`, `evalDeltaT`/`gmstEval`, `bestIdxA/B`, the
-crossfade blend — is a pure function of the current frame's push constants (which are themselves
-pure functions of absolute sim time computed in double precision on the CPU), the whole pipeline is
-reversible by construction: there is nothing to accumulate differently depending on playback
-direction.
+Because every one of these quantities — `windowFrac`, `evalDeltaT`/`gmstEval` (current AND
+previous), `bestIdx`/`bestIdxPrev`, `angle0`, the ease itself — is a pure function of the current
+frame's push constants (themselves pure functions of absolute sim time computed in double precision
+on the CPU), the whole pipeline remains reversible by construction: there is nothing to accumulate
+differently depending on playback direction, even though the visual result now has a genuine
+physically-motivated slew rate.
 
 ---
 

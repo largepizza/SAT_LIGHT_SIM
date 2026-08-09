@@ -168,9 +168,9 @@ layout(push_constant) uniform PC {
     float beamGain;          // Reflect-Orbital ground-beam intensity multiplier — offset 96
     float reflectorLockWindowS; // offset 100 — 2026-08-06: fixed-width sim-time window (seconds) a
                              // TargetedReflector satellite commits to one target for; also the
-                             // extrapolation step used to reach a window's midpoint from deltaT/
-                             // gmstNow (see the TargetedReflector block below). Replaces the old
-                             // rate-limited mirrorSlewDegPerSec.
+                             // extrapolation step used to reach a window's start instant from
+                             // deltaT/gmstNow (see the TargetedReflector block below). Replaces the
+                             // old rate-limited mirrorSlewDegPerSec.
     uint  targetCount;      // offset 104 — total loaded reflector targets (reflectorTargetCount).
                              // Replaces the old activeTargetCount / per-frame night-side compaction
                              // — this shader now scans every loaded target itself each frame.
@@ -182,7 +182,11 @@ layout(push_constant) uniform PC {
     float windowFrac;        // offset 116 — fract(simTimeAbs / reflectorLockWindowS): fractional
                              // position within the current lock window, in [0,1). Replaces the old
                              // minBeamElevSinRelease.
-    uint  pad1;              // offset 120
+    float mirrorMaxRateDegPerSec; // offset 120 — real angular-rate cap for the rate-limited ease in
+                             // the TargetedReflector block (2026-08-06 same-day follow-up — the
+                             // original crossfade wasn't derived from actual angular distance and
+                             // didn't cover every transition case, which read as satellites
+                             // snapping to target).
     uint  pad2;              // offset 124
 } pc;
 
@@ -313,11 +317,17 @@ vec3 rotateEcefToEci(vec3 ecefDir, float gmst)
     return vec3(c * ecefDir.x - s * ecefDir.y, s * ecefDir.x + c * ecefDir.y, ecefDir.z);
 }
 
-// A target's LIVE (current-frame, unquantized) ECI position — O(1), no scan.
-vec3 targetLivePos(int oi)
+// A target's ECI position at an arbitrary gmst — O(1), no scan.
+vec3 targetPosAt(int oi, float gmst)
 {
     vec4 ecefR = targetsECEF[oi];
-    return ecefR.w * rotateEcefToEci(ecefR.xyz, pc.gmstNow);
+    return ecefR.w * rotateEcefToEci(ecefR.xyz, gmst);
+}
+
+// A target's LIVE (current-frame, unquantized) ECI position.
+vec3 targetLivePos(int oi)
+{
+    return targetPosAt(oi, pc.gmstNow);
 }
 
 // Ideal mirror half-vector aiming reflected sunlight at targetPos.
@@ -331,9 +341,12 @@ vec3 idealTowards(vec3 satEci, vec3 targetPos, vec3 fallback)
 
 // Winning target (ORIGINAL index, or -1) for satellite satIdx at the given eval instant: argmax of
 // pairScore among night-side (at that instant), elevation-eligible candidates. A pure function of
-// its arguments — called once for the current lock window's own midpoint and once for the next
-// window's, so temporal stability comes from the window boundaries themselves, not from any
-// persisted choice.
+// its arguments — called once for the current lock window's own start instant and once for the
+// PREVIOUS window's, so temporal stability comes from the window boundaries themselves, not from
+// any persisted choice. (pairScore itself doesn't depend on the eval instant at all, only on the
+// eligible SET — so as long as a satellite's top-scoring target stays eligible across consecutive
+// windows, findWinner keeps returning it unprompted; a window boundary only actually changes the
+// winner when the incumbent drops out of eligibility.)
 int findWinner(uint satIdx, vec3 satEciEval, float gmstEval)
 {
     int   best      = -1;
@@ -349,6 +362,30 @@ int findWinner(uint satIdx, vec3 satEciEval, float gmstEval)
         if (score > bestScore) { bestScore = score; best = int(k); }
     }
     return best;
+}
+
+// Nearest night-valid target's ideal aim direction, no elevation gate — the "there's nothing
+// beam-worthy right now, but don't do anything jarring" pre-aim fallback. Evaluated at an
+// arbitrary (satellite position, gmst) instant so it can serve both a live lookup and a
+// window-start lookup with the same function.
+vec3 nearFallbackIdeal(vec3 satEciEval, float gmstEval)
+{
+    vec3  nadirEval  = -normalize(satEciEval);
+    vec3  zenithEval = -nadirEval;
+    int   nearIdx = -1;
+    float nearCos = -2.0;
+    for (uint k = 0u; k < pc.targetCount; ++k) {
+        vec4 ecefR = targetsECEF[k];
+        vec3 tDir  = rotateEcefToEci(ecefR.xyz, gmstEval);
+        if (dot(tDir, pc.sunDirECI) >= 0.0) continue;
+        float c = dot(zenithEval, tDir);
+        if (c > nearCos) { nearCos = c; nearIdx = int(k); }
+    }
+    if (nearIdx >= 0)
+        return idealTowards(satEciEval, targetPosAt(nearIdx, gmstEval), nadirEval);
+    vec3  n   = pc.sunDirECI + nadirEval;
+    float len = length(n);
+    return (len > 1e-5) ? n / len : nadirEval;
 }
 
 void main()
@@ -439,82 +476,81 @@ void main()
     int  bestIdx = -1; // resolved ground-target ORIGINAL index; -1 = no beam-quality target
     float aimErrorRad = 0.0;
     if (orb.primaryAttitude == AM_TARGETED_REFLECTOR) {
-        // 2026-08-06 reversibility rework — see this file's header comment and CLAUDE.md's
-        // TargetedReflector section for the full design. Summary: target IDENTITY is chosen per
-        // fixed-width sim-time window (pc.reflectorLockWindowS), not by a persisted per-satellite
-        // lock — the winner for a window is a pure function of that window's own midpoint, found
-        // by extrapolating this frame's deltaT/gmstNow out to it. That extrapolation is EXACT (not
-        // approximate) for both quantities in this sim's model (orbital phase and GMST are both
-        // exactly linear in time), so it is algebraically identical to recomputing them from
-        // scratch relative to the window midpoint — no precision or physical approximation is
-        // introduced beyond what deltaT/gmstNow already carry. The satellite/sun position used for
-        // this evaluation is therefore also "as of the window midpoint," which is what makes the
-        // winner constant across the whole window regardless of which frame within it asks.
+        // 2026-08-06 reversibility rework, refined same day — see this file's header comment and
+        // CLAUDE.md's TargetedReflector section for the full design. Summary: target IDENTITY is
+        // chosen per fixed-width sim-time window (pc.reflectorLockWindowS), not by a persisted
+        // per-satellite lock — the winner for a window is a pure function of that window's own
+        // START instant, found by extrapolating this frame's deltaT/gmstNow back to it. That
+        // extrapolation is EXACT (not approximate) for both quantities in this sim's model
+        // (orbital phase and GMST are both exactly linear in time), so it is algebraically
+        // identical to recomputing them from scratch relative to the window's start — no precision
+        // or physical approximation beyond what deltaT/gmstNow already carry.
         //
-        // Mirror ORIENTATION, in contrast, always uses LIVE (this frame's real, unquantized)
-        // geometry — the windowing only ever decides WHICH target, never where it currently sits.
-        // A window's winner is looked up by original index directly (targetLivePos, O(1)), so a
-        // locked-in target is tracked exactly for the run of a window.
+        // Orientation is a rate-limited EASE, computed in closed form rather than integrated
+        // frame-by-frame — accumulating a persisted "current attitude" is exactly what made the
+        // old design history-dependent and irreversible. Instead, the mirror eases from a
+        // deterministic "start-of-window" anchor toward the LIVE current ideal, over a duration
+        // derived from the real angle to cover and pc.mirrorMaxRateDegPerSec — an actual rate cap,
+        // not a fixed fraction of the window. The anchor is the ideal direction toward the
+        // PREVIOUS window's own winner (itself just as deterministic as the current window's — one
+        // window of lookback, not unbounded history), evaluated at THIS window's start instant so
+        // it's directly comparable to the current window's own start-instant ideal. Every quantity
+        // here is a pure function of the current frame's push constants, so the whole thing is
+        // still reversible by construction: playing the same instant forward or backward yields
+        // the identical ease.
         //
-        // The two window evaluations (current + next) exist purely to smooth the moment the
-        // winner changes: for most windows they agree, and the mirror just aims at the live
-        // position of that one target, `aimErrorRad` staying 0. When they disagree (a genuine
-        // window-boundary transition), orientation crossfades between the two live ideal
-        // directions over the LAST kBeamCrossfadeFrac of the window — a fixed sim-time duration,
-        // not a rate limit — so there is no abrupt snap, and the blend is itself a pure function
-        // of windowFrac (hence fully reversible: playing the same instant forward or backward
-        // yields the identical blend).
-        float toMidCur       = (0.5 - pc.windowFrac) * pc.reflectorLockWindowS;
-        float evalDeltaTCur  = pc.deltaT + toMidCur;
-        float evalDeltaTNext = evalDeltaTCur + pc.reflectorLockWindowS;
-        float gmstEvalCur    = pc.gmstNow + K_OMEGA_EARTH * toMidCur;
-        float gmstEvalNext   = gmstEvalCur + K_OMEGA_EARTH * pc.reflectorLockWindowS;
+        // Per-satellite phase offset (2026-08-06 same-day follow-up): pc.windowFrac is a single
+        // GLOBAL value, the same for every satellite this frame — without an offset, EVERY
+        // TargetedReflector satellite hits its window boundary at the exact same sim-time instant,
+        // so all of them ease toward a new target simultaneously, reading as one large synchronized
+        // wave of motion no matter how the lock window or slew rate are tuned. Shifting each
+        // satellite's own window schedule by a hash of its dispatch index desynchronizes that wave
+        // while staying a pure function of (sim time, satellite index) — still fully reversible,
+        // and cheap: fract(globalWindowFrac + perSatOffset) is exactly the fractional part of
+        // ((simTimeAbs + offsetSeconds) / W), i.e. this satellite's OWN window fraction, with no
+        // extra CPU-side work or push-constant fields needed.
+        float phaseOffsetFrac = float(hashU(i * 0x2545F491u)) * (1.0 / 4294967296.0);
+        float windowFracI     = fract(pc.windowFrac + phaseOffsetFrac);
 
-        vec3 satEciEvalCur  = satEciAt(orb, evalDeltaTCur);
-        vec3 satEciEvalNext = satEciAt(orb, evalDeltaTNext);
+        float toWinStart     = -windowFracI * pc.reflectorLockWindowS; // <=0: back to this window's start
+        float toPrevWinStart = toWinStart - pc.reflectorLockWindowS;     // back to the PREVIOUS window's start
 
-        int bestIdxA = findWinner(i, satEciEvalCur,  gmstEvalCur);
-        int bestIdxB = findWinner(i, satEciEvalNext, gmstEvalNext);
+        float evalDeltaTCur  = pc.deltaT + toWinStart;
+        float evalDeltaTPrev = pc.deltaT + toPrevWinStart;
+        float gmstEvalCur    = pc.gmstNow + K_OMEGA_EARTH * toWinStart;
+        float gmstEvalPrev   = pc.gmstNow + K_OMEGA_EARTH * toPrevWinStart;
 
-        vec3 ideal;
-        const float BEAM_CROSSFADE_FRAC = 0.15; // last ~15% of a window blends into the next
+        vec3 satEciCur  = satEciAt(orb, evalDeltaTCur);
+        vec3 satEciPrev = satEciAt(orb, evalDeltaTPrev);
 
-        if (bestIdxA >= 0 && bestIdxB >= 0 && bestIdxA != bestIdxB) {
-            vec3 idealA = idealTowards(satECI, targetLivePos(bestIdxA), satNadir);
-            vec3 idealB = idealTowards(satECI, targetLivePos(bestIdxB), satNadir);
-            float blend = smoothstep(1.0 - BEAM_CROSSFADE_FRAC, 1.0, pc.windowFrac);
-            vec3  mixedN = mix(idealA, idealB, blend);
-            float mixedLen = length(mixedN);
-            ideal   = (mixedLen > 1e-5) ? mixedN / mixedLen : idealA;
-            bestIdx = (blend < 0.5) ? bestIdxA : bestIdxB;
-            vec3 exactIdeal = (blend < 0.5) ? idealA : idealB;
-            aimErrorRad = acos(clamp(dot(ideal, exactIdeal), -1.0, 1.0));
-        } else if (bestIdxA >= 0 || bestIdxB >= 0) {
-            bestIdx = (bestIdxA >= 0) ? bestIdxA : bestIdxB;
-            ideal   = idealTowards(satECI, targetLivePos(bestIdx), satNadir);
-        } else {
-            // Neither window has a beam-quality target: pre-aim at the nearest LIVE night-valid
-            // target (no beam drawn — bestIdx stays -1), same "don't do anything jarring" intent
-            // the old design's nearIdx pre-aim had, just computed fresh instead of from a stale
-            // lock. FlatMirror45 only if there is truly nothing night-valid at all right now.
-            int   nearIdx = -1;
-            float nearCos = -2.0;
-            vec3  satZenith = -satNadir;
-            for (uint k = 0u; k < pc.targetCount; ++k) {
-                vec4 ecefR = targetsECEF[k];
-                vec3 tDir  = rotateEcefToEci(ecefR.xyz, pc.gmstNow); // unit
-                if (dot(tDir, pc.sunDirECI) >= 0.0) continue;
-                float c = dot(satZenith, tDir);
-                if (c > nearCos) { nearCos = c; nearIdx = int(k); }
-            }
-            if (nearIdx >= 0) {
-                ideal = idealTowards(satECI, targetLivePos(nearIdx), satNadir);
-            } else {
-                vec3  n   = pc.sunDirECI + satNadir;
-                float len = length(n);
-                ideal = (len > 1e-5) ? n / len : satNadir;
-            }
-        }
+        bestIdx         = findWinner(i, satEciCur,  gmstEvalCur);  // THIS window's identity
+        int bestIdxPrev = findWinner(i, satEciPrev, gmstEvalPrev); // PREVIOUS window's identity
+
+        // Where the mirror was, right as this window began (previous window's target, evaluated at
+        // THIS window's start instant) — and where it needs to end up, both at window start (to
+        // size the ease duration off a stable, per-window angle) and live right now (the actual
+        // blend target, so the mirror keeps tracking exactly once the ease completes).
+        vec3 startAim = (bestIdxPrev >= 0)
+            ? idealTowards(satEciCur, targetPosAt(bestIdxPrev, gmstEvalCur), -normalize(satEciCur))
+            : nearFallbackIdeal(satEciCur, gmstEvalCur);
+        vec3 destAtStart = (bestIdx >= 0)
+            ? idealTowards(satEciCur, targetPosAt(bestIdx, gmstEvalCur), -normalize(satEciCur))
+            : nearFallbackIdeal(satEciCur, gmstEvalCur);
+        vec3 liveIdeal = (bestIdx >= 0)
+            ? idealTowards(satECI, targetLivePos(bestIdx), satNadir)
+            : nearFallbackIdeal(satECI, pc.gmstNow);
+
+        float angle0       = acos(clamp(dot(startAim, destAtStart), -1.0, 1.0));
+        float slewDuration = clamp(angle0 / radians(max(0.01, pc.mirrorMaxRateDegPerSec)),
+                                    0.001, pc.reflectorLockWindowS);
+        float tSinceStart  = windowFracI * pc.reflectorLockWindowS;
+        float blend        = smoothstep(0.0, slewDuration, tSinceStart);
+
+        vec3  mixedN   = mix(startAim, liveIdeal, blend);
+        float mixedLen = length(mixedN);
+        vec3  ideal    = (mixedLen > 1e-5) ? mixedN / mixedLen : liveIdeal;
+        aimErrorRad    = acos(clamp(dot(ideal, liveIdeal), -1.0, 1.0));
+
         surfN0 = ideal;
 
         // ── Ground beam (C12): write into reflectBeamsBuf if a real target is locked ──
@@ -548,8 +584,9 @@ void main()
                                 dot(relPos, pc.enuZ.xyz));
 
             // Debug-only: the mirror's ACTUAL current reflected-sunlight direction — may differ
-            // from normalize(targetECI-satECI) during a window-boundary crossfade (see
-            // aimErrorRad above). A direction, not a position, so it projects onto the ENU basis
+            // from normalize(targetECI-satECI) while the rate-limited ease (see aimErrorRad above)
+            // is still catching up after a target change. A direction, not a position, so it
+            // projects onto the ENU basis
             // directly (no obsECI subtraction needed).
             vec3 reflectDirECI = reflect(-pc.sunDirECI, surfN0);
             vec3 reflectDirENU = vec3(dot(reflectDirECI, pc.enuX.xyz),
