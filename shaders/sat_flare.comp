@@ -9,7 +9,8 @@
 //   1. Horizon cull       — skip satellite if elevation < HORIZON_EL (early out)
 //   2. ECI→ENU projection — 3 dot products to get skyDir
 //   3. Distance falloff   — inverse-square law normalised to REF_RANGE=500 km
-//   4. Earth shadow       — penumbra via smoothstep across ±1% R_Earth (~64 km)
+//   4. Earth shadow       — true umbra/penumbra cone geometry (tapers/widens with distance
+//                           behind Earth) + Rayleigh eclipse-reddening tint mid-transition
 //   5. Specular flare     — spec0 (primary) + spec1*w1 (secondary) + diffuse floor
 //   6. Daytime suppression— attenuate by sun elevation (satellites invisible
 //                           in daylight unless flare > ~0.25 effectiveIntensity)
@@ -146,6 +147,21 @@ layout(push_constant) uniform PC {
 const float R_EARTH      = 6371000.0;   // Earth radius (meters)
 // Horizon cull threshold comes from pc.elevCutoff (dynamic: opens to Earth limb at altitude).
 const float REF_RANGE    = 500000.0;    // 500 km reference distance for 1/r² normalisation
+
+// ── Eclipse cone geometry ──────────────────────────────────────────────────────
+// The umbra/penumbra are cones, not a cylinder: their cross-sectional radius tapers/widens
+// with distance behind Earth along the shadow axis, driven by the Sun's real angular size
+// (~0.53°) as seen from Earth. tanUmbra/tanPenumbra are the two cones' half-angles (small-angle
+// tangent of Sun angular radius ∓ Earth angular radius, standard eclipse-cone derivation).
+// R_SUN/D_SUN only exist to derive these two ratios — eccentricity ignored (±1.7% on D_SUN,
+// negligible next to the effect being modeled), not needed anywhere else in this shader.
+// At LEO (~550 km alt) this reproduces the old fixed ±1% R_EARTH band almost exactly (~64 km
+// wide); at GEO the real penumbra is ~400 km wide — the old fixed band underestimated that by
+// 6×, making GEO eclipse entry/exit look far more abrupt than it really is.
+const float R_SUN         = 6.96e8;     // Sun radius (meters)
+const float D_SUN         = 1.496e11;   // Earth-Sun distance, 1 AU (meters)
+const float kTanUmbra     = (R_SUN - R_EARTH) / D_SUN;  // umbra cone narrows with distance
+const float kTanPenumbra  = (R_SUN + R_EARTH) / D_SUN;  // penumbra cone widens with distance
 // VIS_THRESH, HIGHLIGHT_FLARE, BRIGHTNESS_SCALE, MIRROR_BOOST, DAY_SUPPRESSION
 // are now runtime values in pc — see push_constant block above.
 
@@ -283,10 +299,11 @@ void main() {
     float distFactor = REF_RANGE / max(sat.range, REF_RANGE);
     distFactor *= distFactor;  // 1/r²
 
-    // ── Soft Earth shadow (penumbra) ──────────────────────────────────────────
-    // Project satellite into the shadow cylinder and measure how far its cross-
-    // sectional radius is from R_Earth. Smoothstep over ±1% R_Earth (~64 km)
-    // gives a realistic penumbra instead of a hard binary switch.
+    // ── Soft Earth shadow (umbra/penumbra cones) ──────────────────────────────
+    // Project satellite onto the shadow axis and measure how far its cross-sectional radius
+    // is from the umbra/penumbra cone radii AT THAT DISTANCE (see kTanUmbra/kTanPenumbra above)
+    // — not a fixed-width band. smoothstep between the two cone radii gives a realistic
+    // penumbra whose width scales correctly with satellite altitude instead of a hard switch.
     vec3  satAbs    = sat.eciRelPos + pc.obsECI;   // absolute ECI position
     float R_sat     = length(satAbs);
     vec3  satNadir  = -satAbs / R_sat;             // unit vector: satellite → Earth center
@@ -294,8 +311,11 @@ void main() {
     float proj      = dot(satAbs, shadowDir);       // + = on the night side
     vec3  perpVec   = satAbs - proj * shadowDir;    // component ⊥ shadow axis
     float perpLen   = length(perpVec);
+    float dShadow   = max(proj, 0.0);                        // distance behind Earth center
+    float rUmbra    = max(0.0, R_EARTH - dShadow * kTanUmbra);
+    float rPenumbra = R_EARTH + dShadow * kTanPenumbra;
     float litFactor = (proj > 0.0)
-        ? smoothstep(-R_EARTH * 0.01, R_EARTH * 0.01, perpLen - R_EARTH)
+        ? smoothstep(rUmbra, rPenumbra, perpLen)
         : 1.0;
 
     // ── Earthshine irradiance (analytical horizon correction) ─────────────────
@@ -537,9 +557,20 @@ void main() {
         }
     }
 
+    // ── Eclipse reddening ──────────────────────────────────────────────────────
+    // Sunlight reaching a satellite deep in the penumbra grazes Earth's atmosphere along a very
+    // long slant path — the same Rayleigh scattering that reddens sunsets strips blue/green out
+    // of it before it reaches orbit. Tint strength peaks mid-transition (litFactor≈0.5) and
+    // vanishes at both ends: at litFactor=1 the sunlight path is clean (no grazing), and at
+    // litFactor=0 there's no direct sunlight left to tint (earthFlare, an unrelated light
+    // source, is deliberately left unaffected — see its own comment above).
+    const vec3 kEclipseTint = vec3(1.0, 0.45, 0.15);      // grazing-path Rayleigh reddening
+    float eclipseTintAmt    = 4.0 * litFactor * (1.0 - litFactor); // 0 at ends, 1 at litFactor=0.5
+    vec3  outBaseColor      = mix(sat.baseColor, sat.baseColor * kEclipseTint, eclipseTintAmt);
+
     // ── Output ───────────────────────────────────────────────────────────────
     visible[idx].skyDir         = skyDir;
     visible[idx].flareIntensity = effectFlare;
-    visible[idx].baseColor      = sat.baseColor;
+    visible[idx].baseColor      = outBaseColor;
     visible[idx].angularSize    = angSize;
 }

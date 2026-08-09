@@ -1650,20 +1650,20 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         // of a tab switch. Both checkboxes drive the same showBeamDebugRays bool; only the hover
         // state is duplicated (hovBeamDebugRaysToggleQuick), since Clay hover is per-element.
         CLAY(CLAY_ID("BeamDebugRayRowQuick"), {.layout = {
-                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
-                                             .padding = {0, 0, 2, 2},
-                                             .childGap = 8,
-                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                                                   .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
+                                                   .padding = {0, 0, 2, 2},
+                                                   .childGap = 8,
+                                                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                   .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
             CLAY_TEXT(CLAY_STRING("Show beam pointing rays"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
             CLAY(CLAY_ID("BeamDebugRaySpacerQuick"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
             Clay_Color rayChkBgQuick = showBeamDebugRays ? Pal::btnAccent : (hovBeamDebugRaysToggleQuick ? Pal::btnHover : Pal::btnIdle);
             CLAY(CLAY_ID("BeamDebugRayChkQuick"), {.layout = {
-                                                  .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                                  .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                              .backgroundColor = rayChkBgQuick,
-                                              .cornerRadius = CLAY_CORNER_RADIUS(3)})
+                                                       .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                                       .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                                   .backgroundColor = rayChkBgQuick,
+                                                   .cornerRadius = CLAY_CORNER_RADIUS(3)})
             {
                 bool n = Clay_Hovered();
                 sndRollover(n, hovBeamDebugRaysToggleQuick);
@@ -2775,10 +2775,11 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
 {
     CloudSlider sliders[] = {
         {"Beam gain", &beamGain, 0.0f, 0.01f, 0.0001f, "%.3f", 39},
-        // C12 follow-up #34: slot 40 ("Beam footprint (m)") removed — footprint is now physically
-        // derived from mirror area + range in sat_orbit.comp, not a free-parameter slider. Index
-        // 40 is deliberately left unused rather than renumbering every slider after it (see
-        // [[feedback_cloud_slider_arrays]] — hovCloudMinus/Plus/draggingCloud stay sized 46).
+        // 2026-08-06 same-day follow-up: reuses slot 40, freed by C12 follow-up #34's removed
+        // "Beam footprint (m)" slider (see [[feedback_cloud_slider_arrays]] — no array resize
+        // needed, this is filling an already-accounted-for index). Real angular-rate cap for the
+        // TargetedReflector orientation ease — see sat_orbit.comp's TargetedReflector block.
+        {"Mirror max slew rate (deg/s)", &mirrorMaxRateDegPerSec, 0.001f, 1.0f, 0.001f, "%.3f", 40},
         {"Beam max range (m)", &beamMaxRangeM, 50000.0f, 2000000.0f, 50000.0f, "%.0f", 41},
         {"Beam sky glow gain", &beamSkyGlowGain, 0.0f, 1.0f, 0.01f, "%.2f", 42},
         // 2026-08-06 reversibility rework: replaces the old rate-limited "Mirror slew rate
@@ -3803,6 +3804,7 @@ void SatelliteSim::loadSettings()
         // below (rate-limited slew replaced by a fixed sim-time lock window) — absent-key default
         // pattern means an old settings.json simply falls back to the compiled-in default here.
         reflectorLockWindowS = c.value("reflector_lock_window_s", reflectorLockWindowS);
+        mirrorMaxRateDegPerSec = c.value("mirror_max_rate_deg_per_sec", mirrorMaxRateDegPerSec);
         reflectorMinElevDeg = c.value("reflector_min_elev_deg", reflectorMinElevDeg);
         // beam_extinction_mult: C12 follow-up #44 — key deliberately no longer read; a stale
         // value in an old settings.json is simply ignored (no member left to load it into).
@@ -3966,6 +3968,7 @@ void SatelliteSim::saveSettings()
         {"beam_max_range_m", beamMaxRangeM},
         {"beam_sky_glow_gain", beamSkyGlowGain},
         {"reflector_lock_window_s", reflectorLockWindowS},
+        {"mirror_max_rate_deg_per_sec", mirrorMaxRateDegPerSec},
         {"reflector_min_elev_deg", reflectorMinElevDeg},
         {"beam_glow_bleed_gain", beamGlowBleedGain},
         {"cloud_shadow_range_m", cloudShadowRangeM},

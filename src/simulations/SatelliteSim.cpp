@@ -1351,6 +1351,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     }
     orbitPc.beamGain = beamGain;
     orbitPc.reflectorLockWindowS = reflectorLockWindowS;
+    orbitPc.mirrorMaxRateDegPerSec = mirrorMaxRateDegPerSec;
     orbitPc.targetCount = (uint32_t)reflectorTargetCount;
     orbitPc.minBeamElevSin = sinf(glm::radians(reflectorMinElevDeg)); // S1 follow-up
     // 2026-08-06 reversibility rework: gmstNow/windowFrac are pure functions of absolute sim time
