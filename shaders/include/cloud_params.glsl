@@ -286,4 +286,20 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     //   of the feature. 0.08 puts SZA 92 about 23x down, 0.035 effectively removes it outright.
     float atmosTermStrength;
     float atmosTermWidth;
+    // ── Airglow coverage + polar boost (480 -> 496) ──────────────────────────────────────────
+    // airglowCoverageGain: blends green/sodium/red airglow from a uniform, gently-shimmering
+    // sky (0) to a genuinely patchy coverage field with real dark gaps between brighter patches
+    // (1) — the same threshold-remap idiom auroraCoverage/cloud coverage already use, applied
+    // to airglow's existing but much milder airPatch/rPatch shimmer (+-40%, which reads as
+    // nearly flat on screen).
+    // airglowPolarGain: RED-band-only extra multiplier that ramps up toward the geomagnetic
+    // pole (see kGeomagPoleECEF), patchily rather than as a uniform ring. Real 630nm redline
+    // nightglow brightens toward the auroral zone from diffuse particle precipitation, well
+    // beyond the discrete aurora curtain that auroraGain/auroraGroundGain/auroraCloudGain
+    // already control — green/sodium deliberately do NOT get this term, only broader coverage
+    // patchiness (see airglowCoverageGain above).
+    float airglowCoverageGain;
+    float airglowPolarGain;
+    float pad21;
+    float pad22;
 } cloud;

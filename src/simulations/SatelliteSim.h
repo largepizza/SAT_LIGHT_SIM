@@ -1029,8 +1029,13 @@ struct GpuCloudParams
     // gated.
     float atmosTermStrength; // 0 = previous behaviour exactly; 1 = full suppression past the cut
     float atmosTermWidth;    // rolloff half-width in sin(sun elev); smaller = harder cliff
+    // Airglow coverage + polar boost, 480 -> 496. See cloud_params.glsl for the full design.
+    float airglowCoverageGain; // 0 = uniform shimmer (old behaviour), 1 = full patchy coverage
+    float airglowPolarGain;    // RED band only: extra boost ramping toward the geomagnetic pole
+    float pad21;
+    float pad22;
 };
-static_assert(sizeof(GpuCloudParams) == 480, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 496, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -2132,6 +2137,8 @@ private:
     float airglowGreenGain = 0.052632f;   // C15: green (557.7nm) band gain
     float airglowRedGain = 0.013158f;     // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
     float airglowSodiumGain = 0.08f;      // C15: sodium (589.3nm) band gain — kept dim relative to green
+    float airglowCoverageGain = 0.7f;     // patchy-coverage strength for all 3 airglow bands, [0,1]
+    float airglowPolarGain = 2.5f;        // red band only: extra boost toward the geomagnetic pole
     // Sun self-shadow cone (N_CONE) fades out beyond this distance. Was 22 km, when the cone
     // marched a fixed stride and distance directly bought samples. The cone now absorbs distance
     // into its stride (see cloud_march.comp's shadowFade comment), so this became a reach knob
@@ -2535,9 +2542,9 @@ private:
     bool hovPhotoMinus[15] = {};
     bool hovPhotoPlus[15] = {};
     bool draggingPhoto[15] = {};
-    bool hovCloudMinus[84] = {}; // was [83] — idx 83 is the beam cluster direction threshold slider
-    bool hovCloudPlus[84] = {};
-    bool draggingCloud[84] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[86] = {}; // was [84] — idx 84/85 are the airglow coverage/polar sliders
+    bool hovCloudPlus[86] = {};
+    bool draggingCloud[86] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.

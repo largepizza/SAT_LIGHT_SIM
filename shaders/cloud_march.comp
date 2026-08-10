@@ -615,6 +615,27 @@ const float kAirglowNoiseFreq     = 4.0;
 const float kAirglowDriftRate     = 0.015;
 const float kAirglowScale         = 0.0000005;
 
+// Coverage patchiness (cloud.airglowCoverageGain) — a lower-frequency companion to rPatch/
+// airPatch above, which only wobbles the band +-40% and reads as nearly flat on screen. This
+// remaps a warped noise field through a threshold, same idiom as auroraCoverage/cloud coverage
+// (see auroraOvalMaskLocal above), so there are real dim/dark gaps between brighter patches
+// rather than a gentle shimmer. gain=0 reproduces the old uniform-minus-shimmer look exactly;
+// gain=1 is full patchiness. Takes a seed offset so different callers (coverage vs. the polar
+// boost's own patch below) don't sample identical noise and end up perfectly correlated.
+float airglowCoverageMask(vec3 dirECEF, float t, vec3 seedOffset) {
+    float n = warpPerlin3(dirECEF * (kAirglowNoiseFreq * 0.5)
+                          + vec3(t * kAirglowDriftRate * 0.6, 0.0, 0.0) + seedOffset);
+    return smoothstep(-0.2, 0.5, n);
+}
+
+// Auroral-zone polar boost (cloud.airglowPolarGain, RED band only). Real 630nm redline
+// nightglow brightens toward the geomagnetic pole from diffuse particle precipitation, a much
+// broader effect than the discrete aurora curtain itself (kGeomagPoleECEF/auroraOvalMaskLocal
+// above), so this is a wide smooth colatitude ramp rather than the tight oval band, further
+// broken up by its own coverage patch so it doesn't read as a uniform bright ring.
+const float kAirglowPolarInnerDeg = 12.0; // full boost within this colatitude of the pole
+const float kAirglowPolarOuterDeg = 45.0; // boost fades to zero by this colatitude
+
 vec3 airglowRedMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
                         vec3 sunDirECEF, float obsEffH, float tScene) {
     const float kAirglowInnerM = 100000.0; // = R_ATMOS - R_EARTH
@@ -653,9 +674,20 @@ vec3 airglowRedMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
         if (rNight > 0.001) {
             float rPatch = 0.6 + 0.4 * warpPerlin3(rDirECEF * kAirglowNoiseFreq
                                 + vec3(pc.waveTime * kAirglowDriftRate, 17.0, -5.0));
+
+            float coverage = airglowCoverageMask(rDirECEF, pc.waveTime, vec3(41.0, -7.0, 12.0));
+            float coverageFactor = mix(1.0, coverage, clamp(cloud.airglowCoverageGain, 0.0, 1.0));
+
+            vec3  polePos   = (dot(rDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
+            float colatDeg  = degrees(acos(clamp(dot(rDirECEF, polePos), -1.0, 1.0)));
+            float polarRamp = smoothstep(kAirglowPolarOuterDeg, kAirglowPolarInnerDeg, colatDeg);
+            float polarPatch = airglowCoverageMask(rDirECEF, pc.waveTime, vec3(-19.0, 53.0, 8.0));
+            float polarBoost = 1.0 + cloud.airglowPolarGain * polarRamp * polarPatch;
+
             float dzR      = (rh - kAirglowRedPeakM) / kAirglowRedHalfWidthM;
             float densAirR = exp(-dzR * dzR) * rSegLen;
-            accumAirglowRed += kAirglowRedColor * cloud.airglowRedGain * densAirR * rNight * rPatch;
+            accumAirglowRed += kAirglowRedColor * cloud.airglowRedGain * densAirR * rNight * rPatch
+                                * coverageFactor * polarBoost;
         }
     }
     return accumAirglowRed * kAirglowScale * cloud.airglowGain;

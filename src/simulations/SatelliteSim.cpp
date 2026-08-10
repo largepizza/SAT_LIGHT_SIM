@@ -1617,6 +1617,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.airglowGreenGain = airglowGreenGain;
         cp.airglowRedGain = airglowRedGain;
         cp.airglowSodiumGain = airglowSodiumGain;
+        cp.airglowCoverageGain = airglowCoverageGain;
+        cp.airglowPolarGain = airglowPolarGain;
         cp.shadowMaxDistM = cloudShadowMaxDistM;
         cp.maxRenderDistM = cloudMaxRenderDistM;
         cp.viewSamplesMin = viewSamplesMin;
