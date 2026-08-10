@@ -414,6 +414,19 @@ float warpPerlin3(vec3 p) {
                mix(mix(v001, v101, u.x), mix(v011, v111, u.x), u.y), u.z);
 }
 
+// Airglow coverage patchiness (cloud.airglowCoverageGain) for the green/sodium bands — a
+// lower-frequency companion to kAirglowNoiseFreq's mild +-40% shimmer above, remapped through a
+// threshold (same idiom as cloud_march.comp's own copy / auroraCoverage) so there are real dim
+// gaps between brighter patches instead of a gentle wobble. gain=0 reproduces the old uniform-
+// minus-shimmer look exactly; gain=1 is full patchiness. Duplicated in cloud_march.comp (which
+// needs its own copy for the red band's supplemental march) rather than shared — matches this
+// file's standing convention for small per-shader noise helpers, see the aurora functions above.
+float airglowCoverageMask(vec3 dirECEF, float t, vec3 seedOffset) {
+    float n = warpPerlin3(dirECEF * (kAirglowNoiseFreq * 0.5)
+                          + vec3(t * kAirglowDriftRate * 0.6, 0.0, 0.0) + seedOffset);
+    return smoothstep(-0.2, 0.5, n);
+}
+
 // (cloudWarpOffset lived here — dead since the cloud march moved to cloud_march.comp, removed in
 // the pipeline-unification pass. Worth knowing if you go looking for it: this copy still used
 // THREE LIVE warpPerlin3 evaluations, while cloud_march.comp's live version reads the baked
@@ -1633,12 +1646,18 @@ void main() {
             if (airNight > 0.001) {
                 float airPatch = 0.6 + 0.4 * warpPerlin3(spDirECEF * kAirglowNoiseFreq
                                     + vec3(pc.waveTime * kAirglowDriftRate, 17.0, -5.0));
+                // Coverage patchiness — independent noise samples per band so green and sodium
+                // don't brighten/dim in perfect lockstep (real thermospheric density variation
+                // doesn't affect both emission layers identically).
+                float coverageG = airglowCoverageMask(spDirECEF, pc.waveTime, vec3(3.0, 29.0, -11.0));
+                float coverageS = airglowCoverageMask(spDirECEF, pc.waveTime, vec3(-37.0, 6.0, 44.0));
+                float covGainC  = clamp(cloud.airglowCoverageGain, 0.0, 1.0);
                 float dzG = (h - kAirglowGreenPeakM) / kAirglowGreenHalfWidthM;
                 float dzS = (h - kAirglowSodiumPeakM) / kAirglowSodiumHalfWidthM;
                 float densAirG = exp(-dzG * dzG) * segLen;
                 float densAirS = exp(-dzS * dzS) * segLen;
-                accumAirglow += (kAirglowGreenColor  * cloud.airglowGreenGain  * densAirG
-                                + kAirglowSodiumColor * cloud.airglowSodiumGain * densAirS)
+                accumAirglow += (kAirglowGreenColor  * cloud.airglowGreenGain  * densAirG * mix(1.0, coverageG, covGainC)
+                                + kAirglowSodiumColor * cloud.airglowSodiumGain * densAirS * mix(1.0, coverageS, covGainC))
                                 * airNight * airPatch;
             }
         }
