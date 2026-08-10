@@ -19,6 +19,7 @@ the repo root.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -64,6 +65,105 @@ def find_default_log(repo_root: Path) -> Path | None:
 def load(path: Path) -> pd.DataFrame:
     raw = pd.read_json(path, lines=True)
     return pd.json_normalize(raw.to_dict(orient="records"))
+
+
+def load_records(path: Path) -> list[dict]:
+    """Raw per-line dicts, unflattened - the knockout-sweep report needs the nested
+    knockout_sweep.steps list, which json_normalize turns into an opaque object column."""
+    records = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+    return records
+
+
+def print_sweep_report(records: list[dict], top_n: int = 0) -> None:
+    """Per-effect cost table from the in-app automated knockout sweep (Display tab ->
+    'Run knockout sweep'). Each sweep record already holds a baseline plus one measured step
+    per knockout bit, all captured at one frozen viewpoint with sim time paused - so unlike the
+    knockout summary below (which infers costs by comparing INDEPENDENT snapshots, and is only
+    as good as how well those snapshots' scenes match), these deltas are directly comparable to
+    each other by construction."""
+    sweeps = [r for r in records if r.get("record_kind") == "knockout_sweep"]
+    if not sweeps:
+        return
+    print(f"\n=== Automated knockout sweeps ({len(sweeps)}) ===")
+    for rec in sweeps:
+        sw = rec["knockout_sweep"]
+        base = sw["baseline"]
+        res = rec.get("resolution", {})
+        obs = rec.get("observer", {})
+        beams = rec.get("beams", {})
+        print(
+            f"\n-- {rec.get('captured_at_utc', '?')} | {rec.get('graphics_preset', '?')} "
+            f"| {res.get('width')}x{res.get('height')} @ scale {rec.get('quality', {}).get('render_scale')} "
+            f"| lat {obs.get('lat_deg'):.2f} lon {obs.get('lon_deg'):.2f} alt {obs.get('height_offset_m'):.0f}m "
+            f"| beams {beams.get('active_count')} (spots {beams.get('ground_spot_count')})"
+        )
+        print(f"   window: {sw['sample_frames']} frames after {sw['settle_frames']} settle")
+        # baseline_mask is the preset's own knockouts, which the sweep measures ON TOP of rather
+        # than clearing - so this baseline is the preset AS SHIPPED. Sweeps written before that
+        # fix (2026-08-10) have no such key and used mask 0, which inflates their baseline on any
+        # preset that disables things; flag them rather than silently mixing the two conventions.
+        if "baseline_mask" in sw:
+            off = sw.get("already_disabled", [])
+            print(f"   baseline mask 0x{sw['baseline_mask']:X}"
+                  + (f" - not rendered, so not measured: {', '.join(off)}" if off else " (nothing pre-disabled)"))
+        else:
+            print("   [legacy sweep: baseline forced mask=0, so any preset knockouts were RE-ENABLED"
+                  " - baseline is inflated and steps are not a profile of the preset as shipped]")
+        # Scene drift over the sweep, measured rather than assumed: same mask, re-run at the end.
+        drift = sw.get("baseline_drift_ms")
+        if drift is not None:
+            flag = "  <-- LARGE, retake" if abs(drift) > 0.05 * base["total"] else ""
+            print(f"   baseline drift over the sweep {drift:+.2f} ms{flag}")
+        print(f"   BASELINE total {base['total']:.2f} ms  ->  {1000.0 / base['total']:.1f} fps GPU-bound"
+              + (f"   [{rec.get('build_config')} build, limiter {rec.get('frame_limiter')}]"
+                 if rec.get("build_config") else ""))
+        # Once the GPU total clears the frame-cap interval, this is what actually bounds frame rate.
+        cpu = base.get("cpu_frame_ms")
+        if cpu:
+            print(f"   WALL-CLOCK frame {cpu:.2f} ms -> {1000.0 / cpu:.1f} fps actual"
+                  f"   (non-GPU-shader remainder {cpu - base['total']:+.2f} ms)")
+        # CPU bucket breakdown of exactly that remainder. Sorted descending, same as the knockout
+        # table, so the biggest CPU cost reads off the top the way the biggest GPU cost does.
+        cpub = sw.get("baseline_cpu")
+        if cpub:
+            print("   CPU breakdown of that remainder:")
+            rows = sorted(((k, v) for k, v in cpub.items() if k != "measured_total"),
+                          key=lambda kv: -kv[1])
+            for k, v in rows:
+                pct = 100.0 * v / cpu if cpu else 0.0
+                print(f"      {k:<24} {v:6.2f} ms  ({pct:4.1f}% of frame)")
+        for k in ("cloud_march", "sky_background_draw", "scene_depth", "orbit_compute",
+                  "flare_compute", "satellite_star_draw"):
+            if base.get(k):
+                print(f"      {k:<22} {base[k]:6.2f} ms  ({100.0 * base[k] / base['total']:4.1f}%)")
+
+        # Derive cost from the buckets rather than trusting the stored cost_ms scalar. The buckets
+        # have always been correct; cost_ms was mis-indexed in sweeps written before 2026-08-10
+        # (it read the row's kDebugToggles index instead of its accumulator slot, which only
+        # coincide when the baseline mask is 0). Recomputing here repairs those records on read.
+        for s in sw["steps"]:
+            s["cost_ms"] = base["total"] - s["buckets"]["total"]
+        steps = sorted(sw["steps"], key=lambda s: -s["cost_ms"])
+        if top_n:
+            steps = steps[:top_n]
+        print(f"   {'effect':<34}{'cost ms':>9}{'% frame':>9}   moves which bucket")
+        for s in steps:
+            # Attribute the cost to whichever bucket actually changed most - a knockout bit can
+            # sit in a different pass than you'd guess (bit 128 spans two shaders; bit 1024 is a
+            # producer whose skip shows up downstream), and this is measured, not assumed.
+            # cpu_frame_ms is excluded: it is wall-clock, so it moves with EVERY GPU saving and
+            # would otherwise win this argmax for any bit whose own bucket delta is small, naming
+            # a "bucket" that isn't a GPU pass at all.
+            deltas = {k: base[k] - s["buckets"][k]
+                      for k in base if k not in ("total", "cpu_frame_ms")}
+            where = max(deltas, key=lambda k: deltas[k])
+            print(f"   {s['label']:<34}{s['cost_ms']:9.2f}{100.0 * s['cost_ms'] / base['total']:8.1f}%"
+                  f"   {where} ({deltas[where]:+.2f})")
 
 
 def add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -320,12 +420,17 @@ def main() -> None:
         log_path = found
 
     print(f"Loading {log_path}")
+    records = load_records(log_path)
     df = load(log_path)
     df = add_derived_columns(df)
 
-    print(f"\n{len(df)} snapshot(s) loaded.")
+    print(f"\n{len(df)} record(s) loaded.")
     if "gpu_device" in df.columns:
         print("GPU device(s):", ", ".join(sorted(df["gpu_device"].unique())))
+
+    # Sweep records first: they are the highest-signal thing in the log when present, since every
+    # step inside one was captured at the same frozen viewpoint.
+    print_sweep_report(records)
 
     print_resolution_breakdown(df)
     print_matched_altitude_ratios(df)

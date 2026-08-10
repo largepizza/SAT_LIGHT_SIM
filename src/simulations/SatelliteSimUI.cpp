@@ -37,6 +37,57 @@ static constexpr int kIconCamera = 6;   // camera-solid.png — UC6 screenshot b
 // compiled-in defaults rather than loading possibly-nonsensical old values.
 static constexpr int kSettingsSchemaVersion = 1;
 
+// ── Knockout profiling table ────────────────────────────────────────────────────────────────────
+// The single source of truth for the Display tab's knockout checkboxes AND for the automated
+// knockout sweep (updateKnockoutSweep / startKnockoutSweep below). Bit values are documented in
+// SatelliteSim.h's debugDisableMask comment and CLAUDE.md's "GPU Performance Profiling" subsystem;
+// every one has a mathematically-safe zero/no-op fallback, which is what makes them safe both as a
+// profiling tool and as the backing store for the shipped graphics presets (applyGraphicsPreset).
+//
+// json_key is the sweep log's per-step identifier: a stable, greppable name that does NOT change
+// when a display label is reworded, so sweeps captured across sessions stay comparable.
+//
+// The last four (8192-65536) were added 2026-08-10 for the Anchorage worst-case profiling session.
+// Each covers a block that had real, suspected-large cost but NO knockout at all, so it was
+// permanently invisible inside a lumped timestamp bucket: the beam pointing-ray loop and the
+// satellite sky-glow bin loop additionally had no quality slider and no preset reach either, so
+// they were paid in full at every tier including Planetarium.
+struct DebugToggleEntry
+{
+    uint32_t    bit;
+    const char *label;    // Display tab checkbox text
+    const char *jsonKey;  // stable key in the sweep log
+};
+static constexpr DebugToggleEntry kDebugToggles[] = {
+    {1u,     "Terrain march",                   "terrain_march"},
+    {2u,     "Atmosphere loop (N_VIEW)",        "atmosphere_loop"},
+    {4u,     "Sun optical depth (N_LIGHT)",     "sun_optical_depth"},
+    {8u,     "Ocean sky reflection",            "ocean_sky_reflection"},
+    {16u,    "Airglow red (16-step march)",     "airglow_red"},
+    {32u,    "Aurora curtain march",            "aurora_curtain"},
+    {64u,    "Cloud self-shadow cone",          "cloud_self_shadow_cone"},
+    {128u,   "Reflect-Orbital beams",           "reflect_beams_glow_and_spot"},
+    {256u,   "Cloud shadow (per-pixel)",        "cloud_shadow_per_pixel"},
+    {512u,   "Beam self-march dispatch",        "beam_self_march_dispatch"},
+    {1024u,  "Scene depth pass",                "scene_depth_pass"},
+    {2048u,  "Fog layer (C11)",                 "fog_layer"},
+    {4096u,  "Satellite point cloud occlusion", "sat_point_cloud_occlusion"},
+    {8192u,  "Beam pointing rays (per-pixel)",  "beam_pointing_rays"},
+    {16384u, "Cirrus march",                    "cirrus_march"},
+    {32768u, "Volumetric cloud march",          "volumetric_cloud_march"},
+    {65536u, "Satellite sky-glow bins (64)",    "sat_sky_glow_bins"},
+    // Not a feature knockout — an OPTIMIZATION knockout. Setting it forces cloud_march.comp's beam
+    // pointing-ray loop back to the pre-2026-08-10 full-buffer scan instead of the per-tile culled
+    // list. The image must be pixel-identical either way (the fallback recomputes exactly what the
+    // cull supplies), so this is both the correctness A/B for the cull and the way to measure what
+    // it actually bought: sweep cost_ms here is the SAVING, reported with the opposite sign to
+    // every other row.
+    {131072u, "Beam tile cull OFF (A/B)",       "beam_tile_cull_disabled"},
+};
+static constexpr int kDebugToggleCount = (int)(sizeof(kDebugToggles) / sizeof(kDebugToggles[0]));
+// The matching static_assert against SatelliteSim::kDebugToggleSlots lives inside
+// startKnockoutSweep() — that constant is a private member, so only a member function can see it.
+
 // 2026-08-06: "Beams" inserted at 10, shifting Attributions 10 -> 11. Everything that indexes tabs
 // by number (hovTab[], the advanced-tab predicate and its bounce, the switch in
 // buildSettingsTabbedBody, loadSettings' active_tab clamp) moved with it. The only user-visible
@@ -328,6 +379,14 @@ static void formatAltitude(char *buf, size_t bufSize, float meters, UnitSystem u
 // ─── buildUI ──────────────────────────────────────────────────────────────────
 void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 {
+    // First sim entry point of the frame — publish the previous (complete) frame's CPU bucket
+    // timings and clear the accumulator before anything starts filling it again. See
+    // beginCpuFrameTiming()'s own comment for why the resulting one-frame staleness is deliberate
+    // and matches gpuMsRaw[]'s. Must stay the FIRST statement here: the CpuTimer immediately below
+    // writes into the accumulator this call resets.
+    beginCpuFrameTiming();
+    CpuTimer _tUI(cpuAccumMs[CPU_BUILD_UI]);
+
     // Apply camera mouse look.
     // Yaw  (dmx): rotate obsFacing around obsDir via Rodrigues — no ENU frame, no pole issue.
     // Pitch (dmy): handled by camera.update → camera.elDeg as usual.
@@ -2129,16 +2188,67 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         CLAY_TEXT(totalStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
     }
 
+    // ── CPU frame breakdown (2026-08-10) ────────────────────────────
+    // Same instrument as the GPU rows above, for the other side of the frame. "Other" is the
+    // wall-clock frame time minus everything measured here — present/vsync wait, driver submit,
+    // App-side work, and any CPU block that doesn't have a bucket yet. A large "Other" means the
+    // cost is somewhere this table doesn't look, which is itself the finding.
+    CLAY(CLAY_ID("CpuPerfDiv"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                            .padding = {0, 0, 6, 4}},
+                                 .backgroundColor = {30, 30, 32, 255}}) {}
+    CLAY_TEXT(CLAY_STRING("CPU FRAME BREAKDOWN"),
+              CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
+    {
+        static const char *kCpuLabels[CPU_COUNT] = {
+            "Build UI (Clay)", "Update positions", "Beam readback + cluster",
+            "Update stars", "Light pollution dome", "Update planets"};
+        static char cpuBufs[CPU_COUNT + 2][20];
+        float measured = 0.0f;
+        for (int ci = 0; ci < CPU_COUNT; ++ci)
+            measured += cpuMsSmoothed[ci];
+        for (int ci = 0; ci < CPU_COUNT; ++ci)
+        {
+            snprintf(cpuBufs[ci], sizeof(cpuBufs[ci]), "%.2f ms", cpuMsSmoothed[ci]);
+            Clay_String lbl{false, (int32_t)strlen(kCpuLabels[ci]), kCpuLabels[ci]};
+            Clay_String val{false, (int32_t)strlen(cpuBufs[ci]), cpuBufs[ci]};
+            CLAY(CLAY_IDI("CpuPerfRow", ci), {.layout = {
+                                                  .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
+                                                  .padding = {4, 4, 2, 2},
+                                                  .childGap = 8,
+                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                  .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+            {
+                CLAY_TEXT(lbl, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+                CLAY(CLAY_IDI("CpuPerfSpacer", ci), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+                CLAY_TEXT(val, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
+            }
+        }
+        // inp.dt is this frame's real wall clock; the buckets are last frame's. At steady state
+        // that's the same number, and a one-frame skew is not worth a second smoothing chain.
+        float other = std::max(0.0f, inp.dt * 1000.0f - gpuMsTotalSmoothed - measured);
+        snprintf(cpuBufs[CPU_COUNT], sizeof(cpuBufs[CPU_COUNT]), "%.2f ms", other);
+        Clay_String otherStr{false, (int32_t)strlen(cpuBufs[CPU_COUNT]), cpuBufs[CPU_COUNT]};
+        CLAY(CLAY_ID("CpuPerfOtherRow"), {.layout = {
+                                              .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
+                                              .padding = {4, 4, 2, 2},
+                                              .childGap = 8,
+                                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY_TEXT(CLAY_STRING("Other (present/submit/App)"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+            CLAY(CLAY_ID("CpuPerfOtherSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+            CLAY_TEXT(otherStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        }
+    }
+
     // ── Knockout profiling toggles ──────────────────────────────────
-    // Each disables one block of sat_sky.frag (see dbgSkip* in the shader). Compare
-    // "Sky background draw" above with a toggle on vs. off to read off that block's
-    // isolated GPU cost directly, without a GPU capture tool. Bits match SatelliteSim.h's
-    // debugDisableMask comment: 1=terrain, 2=atmosphere, 4=sun optical depth, 8=ocean reflection,
-    // 16=airglow red, 32=aurora curtain, 64=cloud self-shadow cone, 128=Reflect-Orbital beams
-    // (C12, both the cloud_march.comp volumetric term and the sat_sky.frag ground-spot term),
-    // 256=cloud shadow on terrain/ocean, 512=beam cloud block dispatch, 1024=scene depth pass,
-    // 4096=satellite point cloud occlusion (sat_point.frag — added 2026-08-09 to isolate a
-    // reported satellite/star draw cost jump; see BEAM_CLOUD_PLAN.md).
+    // Each disables one shader block or one whole dispatch. Compare the bucket rows above with a
+    // toggle on vs. off to read that block's isolated GPU cost directly, without a GPU capture
+    // tool — or press "Run knockout sweep" below to have the app do the whole table automatically.
+    // The bit/label/json-key table is kDebugToggles at the top of this file; the bit semantics are
+    // documented in SatelliteSim.h's debugDisableMask comment.
+    //
     // 512 and 1024 are the PRODUCER-side knockouts (they skip a whole dispatch in recordCompute);
     // every other bit disables a block inside a shader. 256 used to be producer-side too, back
     // when the shadow was its own 128x128 dispatch; it now gates the per-pixel shadow march
@@ -2149,16 +2259,12 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // That makes the entire shared-depth architecture a single A/B checkbox.
     CLAY_TEXT(CLAY_STRING("KNOCKOUT PROFILING (disables rendering correctness for cost isolation)"),
               CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
-    static const char *kDebugToggleLabels[13] = {
-        "Terrain march", "Atmosphere loop (N_VIEW)", "Sun optical depth (N_LIGHT)", "Ocean sky reflection",
-        "Airglow red (16-step march)", "Aurora curtain march", "Cloud self-shadow cone",
-        "Reflect-Orbital beams", "Cloud shadow (per-pixel)", "Beam cloud block dispatch", "Scene depth pass",
-        "Fog layer (C11)", "Satellite point cloud occlusion"};
-    static const uint32_t kDebugToggleBits[13] = {1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u, 512u, 1024u, 2048u, 4096u};
-    for (int ti = 0; ti < 13; ++ti)
+    // kDebugToggles also drives the automated knockout sweep below — adding a row there adds a
+    // checkbox here and a sweep step, both for free.
+    for (int ti = 0; ti < kDebugToggleCount; ++ti)
     {
-        bool on = (debugDisableMask & kDebugToggleBits[ti]) != 0u;
-        Clay_String lblStr{false, (int32_t)strlen(kDebugToggleLabels[ti]), kDebugToggleLabels[ti]};
+        bool on = (debugDisableMask & kDebugToggles[ti].bit) != 0u;
+        Clay_String lblStr{false, (int32_t)strlen(kDebugToggles[ti].label), kDebugToggles[ti].label};
         CLAY(CLAY_IDI("DebugToggleRow", ti), {.layout = {
                                                   .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26)},
                                                   .padding = {4, 4, 2, 2},
@@ -2178,8 +2284,8 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                 bool n = Clay_Hovered();
                 sndRollover(n, hovDebugToggle[ti]);
                 sndClick(n, inp.lmbPressed);
-                if (n && inp.lmbPressed)
-                    debugDisableMask ^= kDebugToggleBits[ti];
+                if (n && inp.lmbPressed && !sweepActive) // a sweep owns the mask while it runs
+                    debugDisableMask ^= kDebugToggles[ti].bit;
                 hovDebugToggle[ti] = n;
                 CLAY_TEXT(on ? CLAY_STRING("SKIP") : CLAY_STRING("ON"),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
@@ -2222,6 +2328,52 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
             ui.tooltip(inp, n, "Append current status + GPU timing to perf_profiles/profile_log.jsonl", fs(11));
             CLAY_TEXT(snapshotMsgTimer > 0.0f ? CLAY_STRING("Saved") : CLAY_STRING("Save Snapshot"),
                       CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
+        }
+    }
+
+    // ── Automated knockout sweep ─────────────────────────────────
+    // One press measures every knockout bit in turn and writes a single record carrying the whole
+    // per-effect cost table (see updateKnockoutSweep). The label doubles as the progress readout —
+    // the sweep runs over several seconds and pauses sim time, so it needs to be obvious that it's
+    // running and roughly how far along it is.
+    {
+        static char sweepBtnBuf[32];
+        if (sweepActive)
+            // +2 total steps: the baseline, every measured bit, and the trailing baseline re-measure.
+            snprintf(sweepBtnBuf, sizeof(sweepBtnBuf), "Sweeping %d/%d...", sweepStep + 1, sweepBitCount + 2);
+        else if (sweepDoneMsgTimer > 0.0f)
+            snprintf(sweepBtnBuf, sizeof(sweepBtnBuf), "Sweep saved");
+        else
+            snprintf(sweepBtnBuf, sizeof(sweepBtnBuf), "Run knockout sweep");
+        Clay_String sweepStr{false, (int32_t)strlen(sweepBtnBuf), sweepBtnBuf};
+        CLAY(CLAY_ID("RunSweepRow"), {.layout = {
+                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(30)},
+                                          .padding = {4, 4, 4, 4},
+                                          .childGap = 8,
+                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            Clay_Color sweepBg = (sweepActive || sweepDoneMsgTimer > 0.0f) ? Pal::btnAccent
+                                 : hovRunSweep                             ? Pal::btnHover
+                                                                           : Pal::btnIdle;
+            CLAY(CLAY_ID("RunSweepBtn"), {.layout = {
+                                              .sizing = {CLAY_SIZING_FIXED(180), CLAY_SIZING_FIXED(24)},
+                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                          .backgroundColor = sweepBg,
+                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovRunSweep);
+                sndClick(n, inp.lmbPressed);
+                if (n && inp.lmbPressed && !sweepActive)
+                    startKnockoutSweep();
+                hovRunSweep = n;
+                ui.tooltip(inp, n,
+                           "Measures every knockout bit automatically (~15s, pauses time). "
+                           "Hold the camera still. Writes one record with the full cost table.",
+                           fs(11));
+                CLAY_TEXT(sweepStr, CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
+            }
         }
     }
 
@@ -2311,7 +2463,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[11][12];
+    static char photoBufs[15][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -2326,6 +2478,13 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         // render-to-texture + blur/streak pipeline (see FlareSourcePC's comment in SatelliteSim.h).
         {"Flare glow gain", &flareGlowGain, 0.0f, 0.01f, 0.0005f, "%.2f", 9},
         {"Flare streak", &flareStreakGain, 0.0f, 1.0f, 0.02f, "%.2f", 10},
+        // Milky Way's own light-pollution threshold + fade hysteresis — deliberately separate from
+        // "Pollution gain"/"Extinction" above so tuning those for star/satellite realism never
+        // forces a Milky Way retune. See mwSuppressEased member comment (SatelliteSim.h).
+        {"MW pollut. lo", &mwPollutionThresholdLo, 0.0f, 0.5f, 0.005f, "%.3f", 11},
+        {"MW pollut. hi", &mwPollutionThresholdHi, 0.001f, 0.5f, 0.005f, "%.3f", 12},
+        {"MW fade in (s)", &mwFadeInTimeS, 0.0f, 120.0f, 1.0f, "%.1f", 13},
+        {"MW fade out (s)", &mwFadeOutTimeS, 0.0f, 60.0f, 0.5f, "%.1f", 14},
     };
     for (auto &pp : photoParams)
     {
@@ -3637,6 +3796,10 @@ void SatelliteSim::loadSettings()
         sunlitBgVisibility = p.value("sunlit_bg_visibility", sunlitBgVisibility);
         flareGlowGain = p.value("flare_glow_gain", flareGlowGain);
         flareStreakGain = p.value("flare_streak_gain", flareStreakGain);
+        mwPollutionThresholdLo = p.value("mw_pollution_threshold_lo", mwPollutionThresholdLo);
+        mwPollutionThresholdHi = p.value("mw_pollution_threshold_hi", mwPollutionThresholdHi);
+        mwFadeInTimeS = p.value("mw_fade_in_time_s", mwFadeInTimeS);
+        mwFadeOutTimeS = p.value("mw_fade_out_time_s", mwFadeOutTimeS);
     }
 
     if (j.contains("display"))
@@ -3912,7 +4075,11 @@ void SatelliteSim::saveSettings()
         {"extinction_coeff", extinctionCoeff},
         {"sunlit_bg_visibility", sunlitBgVisibility},
         {"flare_glow_gain", flareGlowGain},
-        {"flare_streak_gain", flareStreakGain}};
+        {"flare_streak_gain", flareStreakGain},
+        {"mw_pollution_threshold_lo", mwPollutionThresholdLo},
+        {"mw_pollution_threshold_hi", mwPollutionThresholdHi},
+        {"mw_fade_in_time_s", mwFadeInTimeS},
+        {"mw_fade_out_time_s", mwFadeOutTimeS}};
 
     j["display"] = {
         {"ui_scale", uiScale},
@@ -4075,11 +4242,12 @@ void SatelliteSim::saveSettings()
 // so the log can grow across sessions/restarts by simple appending and be
 // bulk-loaded later (e.g. pandas.read_json(path, lines=True)) without ever
 // re-parsing the whole file to add an entry.
-void SatelliteSim::savePerfSnapshot(float cpuDt)
+// Split out of savePerfSnapshot() so the automated knockout sweep can reuse every context field
+// (build identity, GPU, resolution, observer, camera, sim time, quality settings, ...) verbatim
+// and simply attach its own "knockout_sweep" object — rather than growing a second, inevitably
+// drifting copy of the same 100 lines. savePerfSnapshot() is now just this plus a write.
+nlohmann::json SatelliteSim::buildPerfSnapshotJson(float cpuDt)
 {
-    if (userDataDir_.empty())
-        return;
-
     nlohmann::json j;
 
     // Build identity (NEW-1) — without this, snapshots from different builds/commits can't be
@@ -4222,10 +4390,72 @@ void SatelliteSim::savePerfSnapshot(float cpuDt)
     j["cpu_frame"] = {
         {"dt_ms", cpuDt * 1000.0f},
         {"fps", cpuDt > 0.0f ? 1.0f / cpuDt : 0.0f}};
+    // EMA-smoothed CPU bucket breakdown (2026-08-10) — the counterpart to gpu_timing_ms. On a
+    // knockout_sweep record this is superseded by knockout_sweep.baseline_cpu, which is averaged
+    // over the sweep's own window rather than EMA-smoothed; both are kept so a plain snapshot
+    // still carries the breakdown.
+    {
+        static const char *kKeys[CPU_COUNT] = {
+            "build_ui", "update_positions", "beam_readback", "update_stars",
+            "light_pollution_dome", "update_planets"};
+        nlohmann::json c;
+        float measured = 0.0f;
+        for (int i = 0; i < CPU_COUNT; ++i)
+        {
+            c[kKeys[i]] = cpuMsSmoothed[i];
+            measured += cpuMsSmoothed[i];
+        }
+        c["measured_total"] = measured;
+        c["other"] = cpuDt * 1000.0f - gpuMsTotalSmoothed - measured;
+        j["cpu_timing_ms"] = c;
+    }
     // Which knockout toggles (if any) were active when this snapshot was taken — a
     // snapshot captured mid-profiling with bits set is only meaningful alongside this.
     j["debug_disable_mask"] = debugDisableMask;
 
+    // Reflect-Orbital beam load (2026-08-10). Added because the Anchorage worst-case captures were
+    // uninterpretable without it: the per-pixel pointing-ray loop in cloud_march.comp iterates
+    // min(beamCount, 2048) times for EVERY half-res pixel, so beam count is a first-order driver of
+    // that bucket's cost — yet nothing in the log recorded it, and it varies enormously by observer
+    // location (a site that is itself a reflector target with few neighbours concentrates far more
+    // beams than a typical viewpoint). show_beam_rays matters for the same reason: it is the only
+    // thing that gated that loop before bit 8192 existed, so two otherwise-identical snapshots can
+    // differ by several ms on this field alone.
+    j["beams"] = {
+        {"active_count", lastActiveBeamCount},
+        {"ground_spot_count", lastGroundBeamCount},
+        {"max_active_capacity", kMaxActiveBeams},
+        {"ground_spot_capacity", kMaxGroundBeams},
+        {"show_beam_rays", showBeamDebugRays},
+        {"max_range_m", beamMaxRangeM}};
+
+    j["graphics_preset"] = kGraphicsPresetNames[(int)graphicsPreset];
+
+    // Frame limiter (2026-08-10). Without it a CPU-vs-GPU gap is ambiguous: under VSync/FIFO the
+    // wall-clock frame time is quantised to the display's refresh interval, so a frame that
+    // "costs" 16.7 ms may really be 6 ms of work waiting on present — which is exactly what
+    // Planetarium looked like once its GPU total fell to ~6 ms. Under a numeric cap or Off there
+    // is no such quantisation and the gap is real work. Also records the build config, since these
+    // numbers were being read across Debug and Release captures and only the CPU side differs.
+    {
+        static const char *kCapNames[] = {"Off", "Cap30", "Cap60", "Cap120", "VSync"};
+        int capIdx = (int)fpsCapMode;
+        j["frame_limiter"] = (capIdx >= 0 && capIdx < 5) ? kCapNames[capIdx] : "unknown";
+    }
+#ifdef NDEBUG
+    j["build_config"] = "Release";
+#else
+    j["build_config"] = "Debug";
+#endif
+
+    return j;
+}
+
+// One JSONL line appended to perf_profiles/profile_log.jsonl in the per-user data directory.
+void SatelliteSim::appendPerfRecord(const nlohmann::json &j)
+{
+    if (userDataDir_.empty())
+        return;
     auto dir = std::filesystem::path(userDataDir_) / "perf_profiles";
     auto path = dir / "profile_log.jsonl";
     try
@@ -4233,10 +4463,214 @@ void SatelliteSim::savePerfSnapshot(float cpuDt)
         std::filesystem::create_directories(dir);
         std::ofstream f(path, std::ios::app);
         f << j.dump() << '\n';
-        snapshotMsgTimer = 1.5f;
     }
     catch (const std::exception &e)
     {
-        fprintf(stderr, "[SatelliteSim] Failed to save perf snapshot: %s\n", e.what());
+        fprintf(stderr, "[SatelliteSim] Failed to append perf record: %s\n", e.what());
     }
+}
+
+void SatelliteSim::savePerfSnapshot(float cpuDt)
+{
+    if (userDataDir_.empty())
+        return;
+    nlohmann::json j = buildPerfSnapshotJson(cpuDt);
+    j["record_kind"] = "snapshot";
+    appendPerfRecord(j);
+    snapshotMsgTimer = 1.5f;
+}
+
+// ─── Automated knockout sweep ────────────────────────────────────────────────
+// Walks kDebugToggles on its own: step 0 measures the baseline (mask 0), steps 1..N each measure
+// exactly one bit set. Every step holds its mask for kSweepSettleFrames discarded frames and then
+// accumulates gpuMsRaw[] over kSweepSampleFrames, so the result is a real average over a fixed
+// window rather than a single noisy sample or a half-settled EMA read.
+//
+// Two things are forced for the sweep's duration and restored afterwards:
+//   - the user's own debugDisableMask (the sweep needs a clean baseline to subtract, and a
+//     user-set bit would make every "delta" a difference against the wrong reference)
+//   - sim time is PAUSED, so all N+1 steps measure the same frame. Without this a sweep of even a
+//     few seconds at 30fps sees satellites move, beams re-target and clouds drift, and the
+//     resulting per-bit deltas mix real cost against scene change — the single most likely way to
+//     read a spurious result out of this tool.
+// Camera/observer are already static unless the user moves them, which is what the on-screen
+// progress readout is for.
+void SatelliteSim::startKnockoutSweep()
+{
+    static_assert(kDebugToggleCount == kDebugToggleSlots,
+                  "hovDebugToggle[]/sweepAccum[] in SatelliteSim.h are sized by kDebugToggleSlots — "
+                  "bump it in the same edit that adds a kDebugToggles row");
+    if (sweepActive || userDataDir_.empty())
+        return;
+    // Every number the sweep produces comes from the timestamp query pool. Without it the record
+    // would be a full page of zeros that looks like a measurement — refuse rather than mislead.
+    if (!ctx_ || ctx_->timestampPeriodNs <= 0.0)
+    {
+        fprintf(stderr, "[SatelliteSim] Knockout sweep unavailable: GPU timestamp queries not supported.\n");
+        return;
+    }
+    sweepActive = true;
+    sweepStep = 0;
+    sweepFrame = 0;
+    sweepSavedMask = debugDisableMask; // the BASELINE — see the header comment on why this is not 0
+    sweepSavedPaused = timePaused;
+    timePaused = true;
+    // Measure only what this configuration still renders. A bit the preset already disables has
+    // nothing left to knock out, so setting it again would just re-measure the baseline.
+    sweepBitCount = 0;
+    for (int i = 0; i < kDebugToggleCount; ++i)
+        if ((sweepSavedMask & kDebugToggles[i].bit) == 0u)
+            sweepBits[sweepBitCount++] = i;
+    for (int s = 0; s <= kDebugToggleSlots + 1; ++s)
+    {
+        sweepAccumTotal[s] = 0.0f;
+        sweepAccumCpu[s] = 0.0f;
+        for (int b = 0; b < 8; ++b)
+            sweepAccum[s][b] = 0.0f;
+        for (int c = 0; c < CPU_COUNT; ++c)
+            sweepAccumCpuBucket[s][c] = 0.0f;
+    }
+}
+
+void SatelliteSim::updateKnockoutSweep(float cpuDt)
+{
+    if (sweepDoneMsgTimer > 0.0f)
+        sweepDoneMsgTimer = std::max(0.0f, sweepDoneMsgTimer - cpuDt);
+    if (!sweepActive)
+        return;
+
+    ++sweepFrame;
+    if (sweepFrame > kSweepSettleFrames)
+    {
+        for (int b = 0; b < 8; ++b)
+            sweepAccum[sweepStep][b] += gpuMsRaw[b];
+        sweepAccumTotal[sweepStep] += gpuMsRawTotal;
+        sweepAccumCpu[sweepStep] += cpuDt * 1000.0f;
+        for (int c = 0; c < CPU_COUNT; ++c)
+            sweepAccumCpuBucket[sweepStep][c] += cpuMsRaw[c];
+    }
+    if (sweepFrame < kSweepSettleFrames + kSweepSampleFrames)
+        return;
+
+    // Step complete — advance, or finish and write the record.
+    ++sweepStep;
+    sweepFrame = 0;
+    if (sweepStep <= sweepBitCount)
+    {
+        // Baseline mask PLUS this row's bit — an incremental knockout on top of whatever the
+        // preset already disables, not a from-scratch mask.
+        debugDisableMask = sweepSavedMask | kDebugToggles[sweepBits[sweepStep - 1]].bit;
+        return;
+    }
+    if (sweepStep == sweepBitCount + 1)
+    {
+        // Trailing baseline re-measure — see the sweepStep comment in SatelliteSim.h for why.
+        debugDisableMask = sweepSavedMask;
+        return;
+    }
+
+    const float inv = 1.0f / (float)kSweepSampleFrames;
+    // Bucket key order matches gpuMsSmoothed[]'s slot semantics — same names savePerfSnapshot's
+    // gpu_timing_ms uses, so a sweep step and a plain snapshot are directly comparable.
+    static const char *kBucketKeys[8] = {
+        "scene_depth", "beam_cloud_block", "orbit_compute", "cloud_march",
+        "flare_compute", "sky_background_draw", "satellite_star_draw", "ui_overlay"};
+    // Order must match the CpuBucket enum in SatelliteSim.h.
+    static const char *kCpuBucketKeys[CPU_COUNT] = {
+        "build_ui", "update_positions", "beam_readback", "update_stars",
+        "light_pollution_dome", "update_planets"};
+    auto bucketsOf = [&](int step) {
+        nlohmann::json o;
+        for (int b = 0; b < 8; ++b)
+            o[kBucketKeys[b]] = sweepAccum[step][b] * inv;
+        o["total"] = sweepAccumTotal[step] * inv;
+        // Wall-clock frame time over the same window. `cpu_frame_ms` MINUS `total` is the
+        // non-GPU-shader part of the frame — CPU work, present/vsync pacing, driver overhead — and
+        // once the GPU total drops below the frame-cap interval that difference is what actually
+        // bounds frame rate, so it belongs in the same record as the GPU buckets rather than being
+        // reconstructed from a separate one-frame sample.
+        o["cpu_frame_ms"] = sweepAccumCpu[step] * inv;
+        return o;
+    };
+    // CPU bucket breakdown, same windows. "other" is what the wall-clock frame cost beyond the GPU
+    // total and every measured bucket — present/vsync wait, driver submit, App-side work, and any
+    // CPU block that doesn't have a bucket yet. Reported rather than hidden precisely because a
+    // large "other" is the signal that the cost is somewhere this table doesn't look.
+    auto cpuBucketsOf = [&](int step) {
+        nlohmann::json o;
+        float measured = 0.0f;
+        for (int c = 0; c < CPU_COUNT; ++c)
+        {
+            float v = sweepAccumCpuBucket[step][c] * inv;
+            o[kCpuBucketKeys[c]] = v;
+            measured += v;
+        }
+        float wall = sweepAccumCpu[step] * inv;
+        o["measured_total"] = measured;
+        o["other"] = wall - sweepAccumTotal[step] * inv - measured;
+        return o;
+    };
+
+    // Restore the user's state BEFORE building the record, so the record's own
+    // debug_disable_mask/time_scale fields describe the session rather than the sweep's last step.
+    debugDisableMask = sweepSavedMask;
+    timePaused = sweepSavedPaused;
+    sweepActive = false;
+
+    nlohmann::json j = buildPerfSnapshotJson(cpuDt);
+    j["record_kind"] = "knockout_sweep";
+    // Overwrite the EMA-derived gpu_timing_ms buildPerfSnapshotJson just filled in. At this instant
+    // gpuMsSmoothed[] is still decaying out of the sweep's LAST knockout step, so it describes a
+    // deliberately-broken renderer, not this viewpoint. The sweep's own baseline window is the
+    // honest answer to "what does this scene cost", and putting it under the standard key keeps
+    // sweep records directly comparable to plain snapshots in the same log.
+    j["gpu_timing_ms"] = bucketsOf(0);
+
+    nlohmann::json steps = nlohmann::json::array();
+    const float baseTotal = sweepAccumTotal[0] * inv;
+    // Rows the baseline mask already disabled were never measured — list them by key so a reader
+    // can tell "this preset doesn't render that" apart from "that turned out to be free."
+    nlohmann::json alreadyOff = nlohmann::json::array();
+    for (int i = 0; i < kDebugToggleCount; ++i)
+        if ((sweepSavedMask & kDebugToggles[i].bit) != 0u)
+            alreadyOff.push_back(kDebugToggles[i].jsonKey);
+    for (int si = 0; si < sweepBitCount; ++si)
+    {
+        const int i = sweepBits[si];
+        nlohmann::json s;
+        s["key"] = kDebugToggles[i].jsonKey;
+        s["label"] = kDebugToggles[i].label;
+        s["bit"] = kDebugToggles[i].bit;
+        s["buckets"] = bucketsOf(si + 1);
+        // Positive = this block costs that many ms. A knockout can legitimately come out slightly
+        // NEGATIVE (measurement noise, or a skip that makes a later pass do more work because
+        // nothing occludes it any more — bit 1024/scene depth is the standing example), so this is
+        // deliberately not clamped: a negative number is information, not an error to hide.
+        // si + 1, NOT i + 1. `i` is the row's index in kDebugToggles; `si` is its slot in the
+        // accumulators, and the two only coincide when the baseline mask is 0 (which is why this
+        // read correctly on Medium/Ultra and produced garbage on Planetarium, whose mask skips
+        // eight rows: it indexed accumulator slots that were never written, so cost_ms came back as
+        // the full baseline). The stored buckets were always right — only this scalar was wrong.
+        s["cost_ms"] = baseTotal - sweepAccumTotal[si + 1] * inv;
+        steps.push_back(s);
+    }
+    j["knockout_sweep"] = {
+        {"settle_frames", kSweepSettleFrames},
+        {"sample_frames", kSweepSampleFrames},
+        {"baseline_mask", sweepSavedMask},
+        {"baseline", bucketsOf(0)},
+        {"baseline_cpu", cpuBucketsOf(0)},
+        // Same mask, measured again after every knockout step. If baseline_end differs materially
+        // from baseline, the scene moved during the sweep and every cost_ms carries that drift —
+        // retake rather than reason around it.
+        {"baseline_end", bucketsOf(sweepBitCount + 1)},
+        {"baseline_drift_ms", sweepAccumTotal[sweepBitCount + 1] * inv - baseTotal},
+        {"already_disabled", alreadyOff},
+        {"steps", steps}};
+
+    appendPerfRecord(j);
+    sweepDoneMsgTimer = 3.0f;
+    printf("[SatelliteSim] Knockout sweep complete (%d steps measured, %d already disabled by the "
+           "baseline mask 0x%X, baseline %.2f ms) -> profile_log.jsonl\n",
+           sweepBitCount, kDebugToggleCount - sweepBitCount, sweepSavedMask, baseTotal);
 }

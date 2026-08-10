@@ -653,7 +653,9 @@ DIFFERENT architectures, after an intermediate design that didn't work out:
 - **The glow's current (third) design restores the per-sample shape** (`beamCloudLighting()`,
   called from `cloudMarchCS`'s own loop and added into `inScatter` right alongside
   `sunColorCloud`/`moonContrib` — the "feed forward" the user asked for), fed from a small
-  CPU-built list (`SatelliteSim.cpp`, `kMaxCloudBeamLights`=16, `GpuBeamCloudLights`) — the only
+  CPU-built list (`SatelliteSim.cpp`, `kMaxCloudBeamLights`=**512**, `GpuBeamCloudLights`; this
+  doc said 16 for a long time and was simply wrong — the cap was raised for coverage and the
+  number here was never updated, which is exactly why that function's real cost went unnoticed) — the only
   shape proven affordable at per-march-sample call frequency (TERRAIN_PLAN.md follow-ups #14/#16).
   Each list entry is now ONE individual real beam (no per-target aggregation, so nothing to
   average/argmax and nothing to flicker between): `posENU` is that beam's REAL ground intersection
@@ -668,11 +670,96 @@ DIFFERENT architectures, after an intermediate design that didn't work out:
   deliberately stays keyed to the fixed target site position, not the transient ray-ground point —
   that's "is the observer close enough to this SITE," which shouldn't flicker as a mid-slew ray
   briefly touches down elsewhere.
-- Known pre-existing gap, not introduced this session: knockout bit 128 ("Reflect-Orbital beams")
-  gates `sat_sky.frag`'s ground-spot loop and `beamCloudLighting()`'s per-sample glow, but NOT
-  `cloud_march.comp`'s per-pixel ray loop — that loop has only ever been gated by
-  `showBeamDebugRays`. Left as-is; flagged here so a future profiling session doesn't assume bit
-  128 isolates the full beam rendering cost.
+- That pre-existing gap — knockout bit 128 gates `sat_sky.frag`'s ground-spot loop and
+  `beamCloudLighting()`'s per-sample glow, but NOT `cloud_march.comp`'s per-pixel ray loop, which
+  had only ever been gated by `showBeamDebugRays` — **was closed 2026-08-10 by knockout bit 8192**,
+  and measuring it is what found the cost below.
+
+### Beam pointing-ray tile culling (2026-08-10)
+
+The Anchorage worst-case sweep measured that per-pixel ray loop at **7.54 ms at Medium — 28% of the
+whole frame**, and 4.72 ms of Planetarium's ~10.9 ms (43%). It ran `min(beamCount, 2048)` iterations
+on every half-res texel (571 beams × 484,800 texels = **277M iterations/frame**) and rejected on
+distance only at the END, after ~7 SSBO loads, a `raySphere` with a sqrt and the full
+closest-approach solve. Beam rendering in total (this loop + bit 128's two consumers + the
+`beam_self_march.comp` dispatch) was **14.0 ms, 52% of the Medium frame** — more than the volumetric
+cloud march.
+
+`cullBeamsForTile()` is the standard Forward+ light-cull answer, and it fits for free because this
+shader is already dispatched at `local_size 16x16`: one workgroup owns a 16×16-texel screen tile, so
+its 256 threads cooperatively test every beam ONCE against the tile's bounding view cone and leave a
+short shared-memory list (`sTileBeamIdx`/`RayLen`/`Fade`, cap `kTileBeamMax`=384, ~4.6 KB shared)
+that each thread walks. Per-thread iteration count becomes "beams crossing this tile" rather than
+"beams that exist", so **cost stops scaling with the observer's location** — Anchorage concentrating
+beams was the entire problem.
+
+It also does the **Tier-1 hoist**: `rayLen` (a `raySphere` against `R_EARTH`), `targetDistM`/
+`rangeFade` and `aimFade` are per-beam constants the old loop recomputed once per texel — 484,800
+times each. They are now computed once per workgroup and passed through shared memory. Doing the
+hoist here rather than in `beam_self_march.comp` needs no new `ReflectBeam` fields and no
+producer-side plumbing, and — the deciding reason — does **not** make bit 512 (that dispatch's
+knockout) an unsafe fallback.
+
+**Three invariants, all easy to break:**
+1. **`kDebugRayRadiusM`/`kDebugRayMinAngRad`/`kDebugRayMaxLenM`/`kDebugRayAimMaxRad`/`kSkyBeamFadeM`
+   moved to file scope** precisely so the cull and the per-texel loop cannot disagree. If they
+   diverge the cull stops being conservative and beams pop at tile boundaries.
+2. **The conservatism bound.** Two rays sharing an origin and diverging by at most the tile
+   half-angle are separated by at most `tFar * tileHalfAngle` anywhere within `tFar`; the closest
+   point on the view ray to any point of the beam segment lies within `tFar` of the origin. So the
+   accept test uses `radiusMax*4 + tFar*tileHalfAngle` with `radiusMax` derived from `tFar` (not the
+   centre ray's own `t`). The failure mode is unmistakable: beams appearing/disappearing on a
+   16×16-texel grid.
+3. **The barriers must stay in uniform control flow.** `cullBeamsForTile` is called BEFORE `main()`'s
+   out-of-bounds early return, so every thread of an edge workgroup reaches both `barrier()` calls;
+   the scan itself sits in a push-constant-only (workgroup-uniform) branch, and the barriers are at
+   the function's top level, outside it. `obsEffH`/`obsPos` are therefore also resolved above that
+   early return — safe, since `observerEffHeight` depends only on `pc.obsECEFDir`, not on `coord`.
+
+Overflow past `kTileBeamMax` sets `sTileOverflow` and falls back to scanning the whole buffer,
+recomputing exactly what the cull would have supplied — a pathological tile gets slow, never wrong.
+**Knockout bit 131072 forces that same fallback**, which makes it the cull's correctness A/B (image
+must be pixel-identical with it on) and the way to measure what the cull bought — its sweep
+`cost_ms` is the SAVING, reported with the opposite sign to every other row.
+
+**Measured:** beam pointing rays 7.54 ms → **1.08 ms** at Medium; the in-sweep A/B says the cull
+saves **6.78 ms** there and **3.29 ms** at Planetarium (which dropped 10.9 → 6.85 ms total).
+
+### Cloud-light tile culling (`cullCloudLightsForTile`, 2026-08-10)
+
+Same workgroup, same pattern, different list. `beamCloudLighting()` is called from `cloudMarchCS`'s
+innermost loop — once per in-cloud SAMPLE — and walked all `beamLightCount` entries every time,
+against a cap of **512**. That was 3.48 ms of the `cloud_march` bucket at Medium. The cull reduces
+512 lights to the handful whose influence cylinder can reach any ray in the tile; the per-sample
+loop walks that shared list instead.
+
+Its conservatism argument differs from the ray cull's in one place worth understanding:
+`tRangeMax` is the tile-centre ray's own far crossing of the **cloud-top sphere**, which
+upper-bounds where `cloudMarchCS` can march (`tExit` is min'd against exactly that shell exit, and
+both `tScene` and `maxRenderDistM` only shorten it), scaled by `kTileRangeMargin` = 1.25 so a
+tile-edge ray whose own shell crossing runs slightly longer is still covered. `kBeamCutoffSigma`
+moved to file scope for the same reason the ray constants did — the cull and the per-sample test
+must bound against the identical radius. Bit 131072 disables this cull too.
+
+### Beam ground-spot CPU hoist (2026-08-10)
+
+`sat_sky.frag`'s ground-spot loop measured 1.59 ms at Medium, on a `GroundBeamsBuf` sitting at its
+full `kMaxGroundBeams` = 256 cap, so every ground-hit pixel paid all 256 iterations at full
+resolution. Almost the entire body was view-INDEPENDENT: a `length(targetENU)` + smoothstep range
+fade, an `obsPos + satENU` and a `raySphere` (two sqrts) for the real ray/ground intersection, the
+elevation fade, and the shadow attenuation. Only the horizontal distance to the landing spot and
+the two Gaussians built from it genuinely vary per pixel.
+
+All of it moved to the CPU loop that already builds this buffer each frame, into a new packed
+`GpuGroundBeam` (32 bytes, mirrored as `GroundBeam` in `sat_sky.frag` — hand-mirrored, same
+convention and same hazard as `GpuCloudParams`): `weight` (= intensity × rangeFade × elevFade ×
+shadowAtten) plus `invFootprintSq`/`invCoreSq`/`cutoffSq`. The shader's per-beam work is now a 2D
+subtract, a dot, a squared-distance reject and two exps — **with the reject first rather than
+last**, and no sqrt anywhere. `intensity` is still carried, unread by the shader, purely so the
+CPU top-K eviction ranks on exactly the quantity it did before (ranking stability is load-bearing —
+see the flicker history at the insertion site). Entries that fail the elevation/range/ground-hit
+tests keep their slot with `weight = 0` rather than being skipped, so top-K membership stays a
+function of intensity alone and doesn't churn frame to frame.
 
 ---
 
@@ -988,10 +1075,33 @@ draws that follow it in the same render pass; they used to be one fused bucket).
 displayed in Settings → Display → "GPU FRAME BREAKDOWN" (one-frame-stale, same pattern as
 `peakMagnitude`).
 
+**CPU frame timing** (`CpuBucket` / `cpuMsRaw[]` / `cpuMsSmoothed[]` / `beginCpuFrameTiming()`,
+2026-08-10): the counterpart to the GPU timestamp buckets, displayed in Settings → Display →
+"CPU FRAME BREAKDOWN" and logged as `cpu_timing_ms` (snapshots) / `knockout_sweep.baseline_cpu`
+(sweeps). Buckets: `build_ui`, `update_positions`, `beam_readback`, `update_stars`,
+`light_pollution_dome`, `update_planets`, plus a derived `other` = wall clock − GPU total −
+everything measured (present/vsync wait, driver submit, App-side work, and any CPU block without a
+bucket yet). **A large `other` is a finding, not a gap to hide** — it says the cost is somewhere
+this table doesn't look.
+
+Built because the GPU work above succeeded: once Medium's Anchorage GPU frame reached 15.5 ms, the
+Release wall clock was 18.3 ms, and the ~2.8 ms remainder was *near-identical at Planetarium*
+(2.73 ms against a 6.0 ms GPU frame — 31% of that frame). Fixed per-frame cost that doesn't scale
+with rendering load is exactly what the GPU buckets exist to expose, and nothing equivalent existed
+on the CPU side, so that number was opaque and unshrinkable without guessing.
+
+Timers are scoped (`SatelliteSim::CpuTimer`, an RAII adder — it ACCUMULATES rather than assigns, so
+one bucket can be timed at several sites or inside a loop). `beginCpuFrameTiming()` must stay the
+**first statement in `buildUI()`**, the first sim entry point of a frame: it publishes the previous
+*complete* frame and clears the accumulator, so it can never publish a half-filled one. The
+resulting one-frame staleness deliberately matches `gpuMsRaw[]`'s, which is what lets a sweep step
+sample a CPU frame and a GPU frame from the same moment instead of one lagging the other.
+
 **Perf knockout toggles**: `debugDisableMask` (uint32, in both `SatDrawPC` and `CloudMarchPC` — see
 their own entries above) is a profiling-only bitmask. Checkboxes in Settings → Display →
-"KNOCKOUT PROFILING" (13 as of 2026-08-09, `kDebugToggleLabels`/`kDebugToggleBits` in
-`SatelliteSimUI.cpp`) each disable one shader block or dispatch — each with a mathematically-safe
+"KNOCKOUT PROFILING" (18 as of 2026-08-10, driven by the single `kDebugToggles` table at the top of
+`SatelliteSimUI.cpp` — bit, display label, and stable JSON key per row; adding a row there adds a
+checkbox AND a sweep step for free) each disable one shader block or dispatch — each with a mathematically-safe
 zero/no-op fallback (e.g. terrain-skip leaves `tHit=-1`, the same value the "no hit" path already
 produces) or, for the two producer-side bits, a "reproduce pre-feature behaviour" fallback. Default
 mask 0 is bit-identical to normal rendering. Use this to isolate one block's real GPU cost via
@@ -1005,12 +1115,54 @@ volumetric term and `sat_sky.frag`'s ground-spot term), 256=cloud shadow (per-pi
 DISPATCH itself (producer-side — the big one: skipping it reverts the entire shared-depth
 architecture to pre-unification occlusion behaviour), 2048=fog layer (C11), 4096=satellite point
 cloud occlusion (`sat_point.frag` — added 2026-08-09 to isolate a reported perf question, see
-`BEAM_CLOUD_PLAN.md`; ruled out as the cause, kept as a real diagnostic).
+`BEAM_CLOUD_PLAN.md`; ruled out as the cause, kept as a real diagnostic),
+8192=Reflect-Orbital beam POINTING-RAY loop (`cloud_march.comp`'s per-pixel loop in `main()`),
+16384=`cirrusMarchCS`, 32768=`cloudMarchCS` (the volumetric low/mid march itself),
+65536=`sat_sky.frag`'s 64-bin satellite sky-glow loop, 131072=**beam tile cull OFF** (not a feature
+knockout — an optimization A/B; see "Beam pointing-ray tile culling" below).
+
+**Bits 8192-65536 were added 2026-08-10** for the Anchorage worst-case profiling session, and all
+four cover blocks that previously had NO knockout, so their cost was permanently invisible inside a
+lumped bucket. Two of them (8192, 65536) additionally had no quality slider and **no preset reach**
+— `applyGraphicsPreset` could not turn them off at any tier, so Planetarium paid for them in full.
+Bit 8192 in particular closes the gap this document already flagged under "Subsystem:
+Reflect-Orbital Beam Cloud Occlusion" ("knockout bit 128 gates … but NOT `cloud_march.comp`'s
+per-pixel ray loop … flagged here so a future profiling session doesn't assume bit 128 isolates the
+full beam rendering cost").
+
+**Automated knockout sweep** (Settings → Display → "Run knockout sweep", `startKnockoutSweep`/
+`updateKnockoutSweep` in `SatelliteSimUI.cpp`): walks the whole `kDebugToggles` table on its own —
+baseline first, then one step per bit — holding each mask for `kSweepSettleFrames` (6) discarded
+frames then averaging `gpuMsRaw[]` over `kSweepSampleFrames` (24), and appends ONE
+`"record_kind": "knockout_sweep"` record carrying every step's full bucket breakdown plus its
+`cost_ms` delta against the baseline. ~15 s for the whole table.
+
+Two things make it trustworthy where a hand capture isn't. It reads `gpuMsRaw[]`, **not**
+`gpuMsSmoothed[]` — the HUD's EMA (α=0.1) takes ~40 frames to settle, so a hand capture taken soon
+after flipping a checkbox silently reads a blend of two configurations. And it **forces
+`timePaused` for its duration** (restoring the user's value after), so all 18 steps measure the same
+frame; without that, satellites move, beams re-target and clouds drift across a multi-second sweep
+and the per-bit deltas mix real cost with scene change. The record's top-level `gpu_timing_ms` is
+overwritten with the sweep's own baseline window rather than the EMA, which at write time is still
+decaying out of the last knockout step. `cost_ms` is deliberately **not** clamped at zero — a
+knockout can legitimately come out negative (noise, or a skip that makes a later pass do more work
+because nothing occludes it any more, bit 1024 being the standing example), and that is information.
+
+`analyze_profile.py`'s `print_sweep_report()` prints each sweep as a ranked cost table and, per row,
+which bucket actually moved most — measured rather than assumed, since a bit can sit in a different
+pass than expected (128 spans two shaders; 1024 is a producer whose skip shows up downstream).
 
 **`perf_profiles/profile_log.jsonl`**: the "Save Snapshot" button (same panel) appends one JSON
 record per press — GPU timing breakdown, resolution, observer lat/lon/altitude, sim time, active
-knockout mask, GPU device name, quality settings. JSON Lines (not a JSON array) so the log grows by
-simple appending across sessions/restarts. `SatelliteSim::savePerfSnapshot()`.
+knockout mask, GPU device name, quality settings, graphics preset name, and (2026-08-10) a `beams`
+block: `active_count`/`ground_spot_count` and their capacities, plus `show_beam_rays`. Beam count is
+a first-order driver of `cloud_march`'s cost (its pointing-ray loop iterates
+`min(beamCount, 2048)` times per half-res pixel) and varies enormously by observer location, so
+without it the Anchorage captures were not interpretable. JSON Lines (not a JSON array) so the log
+grows by simple appending across sessions/restarts. Every record now carries `record_kind`
+(`"snapshot"` or `"knockout_sweep"`). `SatelliteSim::savePerfSnapshot()` and
+`buildPerfSnapshotJson()`/`appendPerfRecord()`, which the sweep shares so the two record kinds
+can't drift apart.
 
 **`tools/perf_analysis/`**: a small Python toolkit (gitignored `.venv`, `requirements.txt`: pandas
 + matplotlib) — `analyze_profile.py` reads the JSONL log and reports GPU cost by resolution bucket,
@@ -1318,7 +1470,7 @@ Read it at the start of any terrain-related session before making changes.
   w = obsHeightOffset), `debugDisableMask (uint)` at offset 128 (perf knockout toggles, session 29
   — see "Subsystem: GPU Performance Profiling"). `CloudMarchPC` is also 132 bytes for the same
   reason (mirrors `debugDisableMask` — only the aurora/airglow-red bits are meaningful there).
-- Sky descriptor set has 22 bindings (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h
+- Sky descriptor set has 22 bindings (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h. **As of 2026-08-10 its entries are `GpuGroundBeam` (32 bytes), not raw `GpuReflectBeam`** — a pre-solved record, see "Beam ground-spot CPU hoist" below
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
 - `sat_sky.frag` ground path: terrain march step count is path-length-adaptive as of session 29
   (`kN` scales with this ray's own `tExit`, clamped to a user-tuned [64,164] range — the old

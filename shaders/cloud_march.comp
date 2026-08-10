@@ -425,6 +425,26 @@ vec3 auroraCurtainSample(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirEC
     return col * (oval * fold * vert * columnWindow * night);
 }
 
+// One adaptive-step march over [segEnter, segExit], returning the INTEGRATED (not raw-summed)
+// contribution — i.e. already multiplied by its own step length. Factored out of auroraMarchCS so
+// the "ray dips below the inner shell and re-emerges on the far side" case (see that function's
+// comment) can march both legs with the same step-density logic instead of duplicating the loop.
+vec3 auroraMarchSegment(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
+                         vec3 sunDirECEF, float segEnter, float segExit) {
+    const float kAuroraMaxStepM = 15000.0;
+    const int   kAuroraStepsMin = 4;
+    const int   kAuroraStepsMax = 64;
+    float segLen = segExit - segEnter;
+    int   N      = clamp(int(segLen / kAuroraMaxStepM), kAuroraStepsMin, kAuroraStepsMax);
+    float step   = segLen / float(N);
+    vec3  accum  = vec3(0.0);
+    for (int i = 0; i < N; ++i) {
+        vec3 ap = obsPos + dir * (segEnter + (float(i) + 0.5) * step);
+        accum += auroraCurtainSample(ap, enuX, enuY, enuZ, sunDirECEF, pc.waveTime, cloud.stormStrength);
+    }
+    return accum * step;
+}
+
 // Full sky curtain march: whole-ray bounding pre-check + adaptive-step march + light-pollution/
 // moonlight suppression + atmospheric extinction. Returns the raw contribution BEFORE cloud
 // suppression — main() applies that using the ALREADY-COMPUTED local cloud transmittance (A_total)
@@ -440,31 +460,71 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
     vec2 tAuroraFar = raySphere(obsPos, dir, R_EARTH + kAuroraMarchOuterM);
     vec2 tAuroraIn  = raySphere(obsPos, dir, R_EARTH + kAuroraMarchInnerM);
 
+    // Near leg [atEnter, atExit] always. From orbit/space looking toward the horizon, a ray whose
+    // closest approach dips below the padded inner sphere ALSO has a far leg [farEnter, farExit] —
+    // it re-emerges from the inner sphere on the opposite side of that dip and keeps climbing back
+    // out through the real (95-300km) shell before finally leaving the padded outer sphere. The
+    // inner sphere's near/far crossings (tAuroraIn.x/.y) straddle the ray's closest-approach point
+    // almost symmetrically (both are on the same concentric-sphere line as the outer crossings), so
+    // stopping at tAuroraIn.x alone discards that entire far leg — real, un-occluded aurora most of
+    // the time, since 40km (the padded inner radius) sits below all real terrain (~8.8km max) and
+    // the ray only needs to graze that low, not hit ground, to reach it.
+    //
+    // Before this fix, atExit jumped from tAuroraFar.y (far exit of the WHOLE outer sphere) straight
+    // down to tAuroraIn.x (roughly the MIDPOINT of that same chord — the two near-inner-sphere and
+    // near-outer-sphere crossings are colinear with the same closest-approach foot) the instant the
+    // closest-approach altitude crossed 40km — a hard ~50% drop in integrated path length at a fixed
+    // world altitude, independent of camera position. Panned continuously toward the horizon from
+    // space, that reads exactly as "the aurora cuts off below a fixed altitude": the curtain that
+    // should dip toward the horizon and curve back up on the far side instead just stops at the dip.
     float atEnter, atExit;
+    float farEnter = 0.0, farExit = 0.0;
+    bool  hasFarLeg = false;
     if (obsEffH < kAuroraMarchInnerM) {
         atEnter = tAuroraIn.y;
         atExit  = tAuroraFar.y;
     } else if (obsEffH <= kAuroraMarchOuterM) {
         atEnter = 0.0;
         atExit  = tAuroraFar.y;
-        if (tAuroraIn.x > 0.0 && tAuroraIn.x < atExit) atExit = tAuroraIn.x;
+        if (tAuroraIn.x > 0.0 && tAuroraIn.x < atExit) {
+            atExit    = tAuroraIn.x;
+            farEnter  = tAuroraIn.y;
+            farExit   = tAuroraFar.y;
+            hasFarLeg = true;
+        }
     } else {
         atEnter = tAuroraFar.x;
-        atExit  = (tAuroraIn.x > 0.0) ? tAuroraIn.x : tAuroraFar.y;
+        if (tAuroraIn.x > 0.0) {
+            atExit    = tAuroraIn.x;
+            farEnter  = tAuroraIn.y;
+            farExit   = tAuroraFar.y;
+            hasFarLeg = true;
+        } else {
+            atExit = tAuroraFar.y;
+        }
     }
     // Terrain occlusion. Clamp the PADDED bounds used by the step loop, but test entry against
     // the REAL shell below — the padding (55/110km) exists to catch the emission falloff tail
     // smoothly and is not itself emissive, so gating on it would re-introduce exactly the
     // "aurora pops in at ~38-40km" bug that motivated the padded/real split in the first place.
+    // tScene is the FIRST terrain hit along the whole ray, so it clamps whichever leg it falls in
+    // and (correctly) everything beyond — a far leg whose start is already past tScene is occluded.
     atExit = min(atExit, tScene);
-    if (atEnter >= atExit || atExit <= 0.0) return vec3(0.0);
+    if (hasFarLeg) farExit = min(farExit, tScene);
+    bool nearValid = atEnter < atExit && atExit > 0.0;
+    bool farValid  = hasFarLeg && farEnter < farExit && farExit > 0.0;
+    if (!nearValid && !farValid) return vec3(0.0);
 
     // Whole-ray bounding pre-check (ported from sat_sky.frag this session) — same 80deg
     // conservative bound (70deg worst-case oval reach + margin for 5-sample undersampling).
+    // Spans the full [enter, exit] envelope (near leg's start through the far leg's end, when a far
+    // leg survives) so a far-only ray can't be rejected for having sampled just the near leg.
+    float boundLo = nearValid ? atEnter : farEnter;
+    float boundHi = farValid ? farExit : atExit;
     const int kAuroraBoundSamples = 5;
     float minBoundColatDeg = 1e6;
     for (int bi = 0; bi < kAuroraBoundSamples; ++bi) {
-        vec3 bp       = obsPos + dir * mix(atEnter, atExit, float(bi) / float(kAuroraBoundSamples - 1));
+        vec3 bp       = obsPos + dir * mix(boundLo, boundHi, float(bi) / float(kAuroraBoundSamples - 1));
         vec3 bDirECEF = normalize(bp.x * enuX + bp.y * enuY + bp.z * enuZ);
         vec3 bPole    = (dot(bDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
         minBoundColatDeg = min(minBoundColatDeg, degrees(acos(clamp(dot(bDirECEF, bPole), -1.0, 1.0))));
@@ -496,17 +556,9 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
     // The real (unpadded) shell starts behind terrain — nothing emissive is visible on this ray.
     if (realEnter >= tScene) return vec3(0.0);
 
-    const float kAuroraMaxStepM = 15000.0;
-    const int   kAuroraStepsMin = 4;
-    const int   kAuroraStepsMax = 64;
-    float aPathLen = atExit - atEnter;
-    int   N_AURORA = clamp(int(aPathLen / kAuroraMaxStepM), kAuroraStepsMin, kAuroraStepsMax);
-    float aSegLen = aPathLen / float(N_AURORA);
-    vec3  accumAurora = vec3(0.0);
-    for (int i = 0; i < N_AURORA; ++i) {
-        vec3 ap = obsPos + dir * (atEnter + (float(i) + 0.5) * aSegLen);
-        accumAurora += auroraCurtainSample(ap, enuX, enuY, enuZ, sunDirECEF, pc.waveTime, cloud.stormStrength);
-    }
+    vec3 accumAurora = vec3(0.0);
+    if (nearValid) accumAurora += auroraMarchSegment(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, atEnter, atExit);
+    if (farValid)  accumAurora += auroraMarchSegment(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, farEnter, farExit);
 
     // Light pollution + moonlight suppression — identical formula to sat_sky.frag's copy.
     float azLPAurora    = mod(atan(dir.x, dir.y) + 6.283185307, 6.283185307);
@@ -532,14 +584,20 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
                              * (1.0 - moonBrightAurora * kAuroraMoonMaxDim);
 
     // Atmospheric extinction — same Kasten & Young 1989 approximation as sat_sky.frag's copy.
-    float atmFracAurora = clamp(exp(-obsEffH / 20000.0), 0.0, 1.0);
+    // Gated on THIS RAY's own tangent altitude (see rayTangentAltM in common.glsl), not obsEffH —
+    // an observer far above the atmosphere looking toward the horizon still sends this ray through
+    // a long real atmospheric column; gating on observer height alone silently turned extinction
+    // off entirely near the horizon as soon as the OBSERVER left the atmosphere.
+    float atmFracAurora = clamp(exp(-max(rayTangentAltM(obsPos, dir), 0.0) / 20000.0), 0.0, 1.0);
     float sinElAurora    = clamp(dir.z, 0.0, 1.0);
     float elDegAurora    = degrees(asin(sinElAurora));
     float airmassAurora  = 1.0 / (sinElAurora + 0.50572 * pow(elDegAurora + 6.07995, -1.6364));
     float extinctMagAurora = cloud.extinctionCoeff * (airmassAurora - 1.0) * atmFracAurora;
     float extinctionAurora = pow(10.0, -0.4 * extinctMagAurora);
 
-    return accumAurora * aSegLen * kAuroraScale * cloud.auroraGain * auroraVisSuppress * extinctionAurora;
+    // accumAurora is already integrated (each auroraMarchSegment call scales by its own step
+    // length) — do not multiply by a step length again here.
+    return accumAurora * kAuroraScale * cloud.auroraGain * auroraVisSuppress * extinctionAurora;
 }
 
 // Airglow red band (630nm) supplemental march — moved here from sat_sky.frag this session (perf:
@@ -877,6 +935,79 @@ layout(std430, set = 0, binding = 14) readonly buffer BeamCloudLightBuf {
     BeamCloudLight  beamLights[kMaxCloudBeamLights];
 };
 
+// Perf: fixed-sigma cutoff BEFORE the exp() call — see the retired version's own comment for
+// why this bounds cost the same way regardless of a light's brightness. At file scope (2026-08-10)
+// because cullCloudLightsForTile below must use the identical value; if the two ever disagree the
+// cull stops being conservative and beam glow pops on a 16x16-texel grid.
+const float kBeamCutoffSigma = 4.0;
+
+// ── Per-tile cloud-light culling (2026-08-10) ────────────────────────────────────────────────────
+// beamCloudLighting() is called from cloudMarchCS's innermost loop — once per in-cloud SAMPLE, so
+// ~128 march steps x 484,800 texels — and walked all beamLightCount entries every time. That list
+// is capped at kMaxCloudBeamLights = 512 (not 16; CLAUDE.md said 16 and was stale), which is why
+// knockout bit 128 measured 3.48 ms inside the cloud_march bucket at Medium in the Anchorage sweep.
+//
+// Same fix, same workgroup, same reasoning as cullBeamsForTile above: one 16x16-texel tile per
+// workgroup, 256 threads cooperatively reduce 512 lights to the handful whose influence cylinder
+// can reach any ray in this tile, and the per-sample loop walks that shared list instead. The cost
+// of the test moves from (lights x samples x texels) to (lights / 256) per workgroup.
+//
+// CONSERVATISM. beamCloudLighting accepts a sample when its perpendicular distance to the light's
+// infinite line (posENU, dirToSource) is within footprintRadM * kBeamCutoffSigma. Every sample lies
+// on this tile's view rays somewhere inside the cloud shell, so the tile test is the minimum of
+// that same perpendicular distance over the tile-centre ray restricted to [0, tRangeMax], widened
+// by tRangeMax * tileHalfAngle to cover rays at the tile's edge. tRangeMax is the tile-centre ray's
+// own far crossing of the cloud-top sphere, which upper-bounds where cloudMarchCS can march
+// (tExit is min'd against exactly that shell exit), scaled by kTileRangeMargin so a tile-edge ray
+// whose own shell crossing runs slightly longer is still covered.
+//
+// Distances are formed observer-relative throughout (w0 = -posENU, never obsPos - lightWorldPos),
+// the same cancellation-avoidance every other beam computation in this file uses.
+const uint  kTileCloudLightMax = 128u;
+const float kTileRangeMargin   = 1.25;
+shared uint sTileLightCount;
+shared uint sTileLightOverflow;
+shared uint sTileLightIdx[kTileCloudLightMax];
+
+void cullCloudLightsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos) {
+    if (gl_LocalInvocationIndex == 0u) {
+        sTileLightCount = 0u;
+        // Bit 131072 turns this cull off alongside the pointing-ray one — same A/B, same
+        // requirement that the image be pixel-identical either way.
+        sTileLightOverflow = ((pc.debugDisableMask & 131072u) != 0u) ? 1u : 0u;
+    }
+    barrier();
+
+    if ((pc.debugDisableMask & 128u) == 0u && pc.beamSkyGlowGain > 0.0
+        && (pc.debugDisableMask & 131072u) == 0u) {
+        vec2  shellT    = raySphere(obsPos, cAxis, R_EARTH + cloud.layers[1].shellAltM);
+        float tRangeMax = max(shellT.y, 0.0) * kTileRangeMargin;
+        float slack     = tRangeMax * tileHalfAngle;
+        uint  n         = min(beamLightCount, kMaxCloudBeamLights);
+        for (uint bli = gl_LocalInvocationIndex; bli < n; bli += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+            if (beamLights[bli].intensity <= 0.0) continue;
+            vec3  lp   = beamLights[bli].posENU;   // observer-relative
+            vec3  dirS = beamLights[bli].dirToSource;
+            vec3  w0   = -lp;                      // observer - light origin
+            float b  = dot(cAxis, dirS);
+            float dd = dot(cAxis, w0);
+            float e  = dot(dirS, w0);
+            float den = 1.0 - b * b;
+            float t = (den > 1e-6) ? (b * e - dd) / den : 0.0;
+            t = clamp(t, 0.0, tRangeMax);
+            vec3  toP  = cAxis * t - lp;           // P(t) - lightWorldPos, small-magnitude by construction
+            vec3  perp = toP - dirS * dot(toP, dirS);
+            float cutoff = max(beamLights[bli].footprintRadM, 100.0) * kBeamCutoffSigma + slack;
+            if (dot(perp, perp) > cutoff * cutoff) continue;
+
+            uint slot = atomicAdd(sTileLightCount, 1u);
+            if (slot < kTileCloudLightMax) sTileLightIdx[slot] = bli;
+            else                            sTileLightOverflow = 1u;
+        }
+    }
+    barrier();
+}
+
 // Takes the evaluation point (`p`/`h`) and `sampleDayness` (caller's own per-sample geographic
 // day/night gate) — same signature shape the retired function used, still cloud-only (fog no
 // longer carries a beam term at all, removed with the second design).
@@ -887,11 +1018,15 @@ vec3 beamCloudLighting(vec3 p, float h, vec3 dir, vec3 obsPos, float sampleDayne
 
     const float kBeamCloudGlowScale = 1e-6;
     const float kCloudFeatherM = 500.0; // soft edge width for the height cutoff below
-    // Perf: fixed-sigma cutoff BEFORE the exp() call — see the retired version's own comment for
-    // why this bounds cost the same way regardless of a light's brightness.
-    const float kBeamCutoffSigma = 4.0;
+    // 2026-08-10: walk the workgroup's culled list, not all beamLightCount entries. Overflow past
+    // kTileCloudLightMax (or bit 131072) falls back to the full scan, which is exactly the old
+    // behaviour — slow on a pathological tile, never wrong.
+    bool lightOverflow = (sTileLightOverflow != 0u);
+    uint iterCount = lightOverflow ? min(beamLightCount, kMaxCloudBeamLights)
+                                   : min(sTileLightCount, kTileCloudLightMax);
     vec3 mag = vec3(0.0);
-    for (uint bli = 0u; bli < beamLightCount; ++bli) {
+    for (uint li = 0u; li < iterCount; ++li) {
+        uint bli = lightOverflow ? li : sTileLightIdx[li];
         // 2026-08-09 (in-app finding: cloud bottoms near a busy target read as uniformly lit,
         // independent of illumination/density sliders): this used to be a HORIZONTAL-only
         // distance from the sample to the light's ground point, with brightness gated purely
@@ -908,7 +1043,7 @@ vec3 beamCloudLighting(vec3 p, float h, vec3 dir, vec3 obsPos, float sampleDayne
         vec3  perp = toP - dirS * dot(toP, dirS);
         float distSq = dot(perp, perp);
         float radius = max(beamLights[bli].footprintRadM, 100.0);
-        float cutoff = radius * kBeamCutoffSigma;
+        float cutoff = radius * kBeamCutoffSigma; // same sigma cullCloudLightsForTile bounds against
         if (distSq > cutoff * cutoff) continue;
         float g = beamLights[bli].intensity * exp(-distSq / (2.0 * radius * radius));
         float hCut = smoothstep(beamLights[bli].blockAltM - kCloudFeatherM,
@@ -967,6 +1102,12 @@ void cloudMarchCS(
     tCloudOcclude = -1.0;
     tCloudMeanT = kNoSurfaceT;
     tCloudEnter = kNoSurfaceT;
+    // Knockout bit 32768 (2026-08-10): isolates the volumetric low/mid cloud march — the single
+    // biggest block inside this shader — from everything else sharing the "cloud march" timestamp
+    // bucket (cirrus, fog, aurora, airglow red, the beam pointing ray, the per-pixel cloud shadow).
+    // The out-params above are already the exact "no cloud on this ray" values every early-return
+    // below leaves them at, so skipping here is the same no-op fallback, not a new code path.
+    if ((pc.debugDisableMask & 32768u) != 0u) return;
     if (cloud.layers[0].enabled < 0.5) return;
 
     float cloudAltFade = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
@@ -1858,6 +1999,11 @@ void cirrusMarchCS(
     A_cirrus = vec3(1.0);
     B_cirrus = vec3(0.0);
     tCirrusEnter = kNoSurfaceT;
+    // Knockout bit 16384 (2026-08-10) — see cloudMarchCS's bit-32768 comment; same no-op fallback,
+    // same reason. Cirrus had no knockout at all before this, so its cost was permanently invisible
+    // inside the cloud_march bucket AND unreachable by the preset system (no preset can turn it
+    // off — the tiers only scale cloudDistFadeStartM/EndM, which it happens to share with cloud).
+    if ((pc.debugDisableMask & 16384u) != 0u) return;
     if (cloud.layers[1].enabled < 0.5) return;
     float cirrusAltFade = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
     if (cirrusAltFade < 0.001) return;
@@ -2123,19 +2269,154 @@ void fogMarchCS(
     B_fog = fogAttn * fogScatter * fogAltFade;
 }
 
+// ── Per-tile beam culling (2026-08-10) ───────────────────────────────────────────────────────────
+// The beam pointing-ray loop in main() measured 7.54 ms at Medium in the Anchorage worst case —
+// 28% of the whole frame, and 43% of Planetarium's — because it ran min(beamCount, 2048) iterations
+// on EVERY half-res texel (571 beams x 484,800 texels = 277M iterations/frame) and only rejected on
+// distance at the very END, after ~7 SSBO loads, a raySphere with a sqrt and the full
+// closest-approach solve.
+//
+// This is the standard Forward+ light-culling answer, and it fits here for free because this shader
+// is already dispatched at local_size 16x16: one workgroup owns a 16x16-texel screen tile, so the
+// workgroup's 256 threads can cooperatively test every beam ONCE against the tile's bounding view
+// cone and leave a short shared-memory list that each thread then walks. Beams nowhere near this
+// tile are rejected 256x more cheaply than before, and the per-thread iteration count becomes "how
+// many beams actually cross this tile" instead of "how many beams exist anywhere" — which also
+// means cost stops scaling with the observer's location (Anchorage concentrating beams was the
+// whole problem).
+//
+// The cull ALSO hoists the loop's view-independent work. rayLen (a raySphere against R_EARTH),
+// targetDistM/rangeFade and aimFade are per-beam constants that the old loop recomputed once per
+// texel, 484,800 times each. They are computed here once per workgroup and passed through shared
+// memory. Doing the hoist this way needs no new ReflectBeam fields and no producer-side plumbing —
+// notably it does NOT depend on beam_self_march.comp, whose dispatch knockout (bit 512) would
+// otherwise have been left with an unsafe fallback.
+//
+// CONSERVATISM ARGUMENT — this must never reject a beam that any texel in the tile would have
+// drawn, or beams pop at tile boundaries. The per-texel test is
+// perpDist <= max(kDebugRayRadiusM, t*kDebugRayMinAngRad) * 4. Two rays sharing an origin and
+// diverging by at most the tile's half-angle are separated by at most tFar*tileHalfAngle anywhere
+// within range tFar; the closest point on the view ray to any point of the beam segment lies within
+// tFar of the origin (tFar bounds the segment's own distance), so the per-texel perpDist differs
+// from the tile-centre one by at most that. Using tFar rather than the centre ray's own t for the
+// radius term bounds the threshold the same way. Hence tile-centre perpDist <= radiusMax*4 + slack
+// is implied by the per-texel test passing — the cull is a strict superset.
+//
+// Overflow falls back to scanning the whole buffer rather than dropping beams, so a pathological
+// tile is slow, never wrong.
+const uint kTileBeamMax = 384u;
+shared uint  sTileBeamCount;
+shared uint  sTileOverflow;
+shared uint  sTileBeamIdx[kTileBeamMax];
+shared float sTileBeamRayLen[kTileBeamMax];
+shared float sTileBeamFade[kTileBeamMax];   // rangeFade * aimFade, both view-independent
+
+// Shared by the cull and by main()'s own per-texel loop — they must agree exactly on the accept
+// radius or the cull stops being conservative.
+const float kDebugRayRadiusM   = 700.0;
+const float kDebugRayMinAngRad = 0.0015; // ~1.2 half-res pixels at the default FOV
+const float kDebugRayMaxLenM   = 3000000.0;
+const float kDebugRayAimMaxRad = radians(10.0);
+const float kSkyBeamFadeM      = 200000.0;
+
+vec3 tileRayDir(vec2 texel, ivec2 size, float tanHalfFov, mat3 camToENU) {
+    vec2 ndc = (texel / vec2(size)) * 2.0 - 1.0;
+    return normalize(camToENU * vec3(ndc.x * tanHalfFov * pc.aspect, -ndc.y * tanHalfFov, -1.0));
+}
+
+// The workgroup's bounding view cone: axis plus half-angle covering every texel it owns. Shared by
+// both per-tile culls (beam pointing rays and cloud lights) so they cannot disagree about what
+// "this tile" means. Edge workgroups extend past the image, giving a slightly wider cone — the
+// conservative direction.
+void tileViewCone(ivec2 size, float tanHalfFov, mat3 camToENU, out vec3 cAxis, out float halfAngle) {
+    vec2 tileMin = vec2(gl_WorkGroupID.xy) * vec2(gl_WorkGroupSize.xy);
+    vec2 tileMax = tileMin + vec2(gl_WorkGroupSize.xy);
+    vec3 d00 = tileRayDir(vec2(tileMin.x, tileMin.y), size, tanHalfFov, camToENU);
+    vec3 d10 = tileRayDir(vec2(tileMax.x, tileMin.y), size, tanHalfFov, camToENU);
+    vec3 d01 = tileRayDir(vec2(tileMin.x, tileMax.y), size, tanHalfFov, camToENU);
+    vec3 d11 = tileRayDir(vec2(tileMax.x, tileMax.y), size, tanHalfFov, camToENU);
+    cAxis = normalize(d00 + d10 + d01 + d11);
+    float cosHalf = min(min(dot(cAxis, d00), dot(cAxis, d10)),
+                        min(dot(cAxis, d01), dot(cAxis, d11)));
+    halfAngle = acos(clamp(cosHalf, -1.0, 1.0));
+}
+
+void cullBeamsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos) {
+    if (gl_LocalInvocationIndex == 0u) {
+        sTileBeamCount = 0u;
+        // Knockout bit 131072 forces the overflow path, i.e. the exact pre-cull full-buffer scan.
+        // This is the cull's correctness A/B: toggle it and the rendered image must be pixel-
+        // identical, because the fallback recomputes precisely what the cull would have supplied.
+        // If beams instead appear/disappear on a 16x16-texel grid with the cull ON, the
+        // conservatism bound in this function's header is wrong and the slack term needs widening
+        // — that is the one failure mode this design can have, and it is unmistakable on screen.
+        sTileOverflow  = ((pc.debugDisableMask & 131072u) != 0u) ? 1u : 0u;
+    }
+    barrier();
+
+    // Uniform across the workgroup (push constants only), so the barriers above and below stay in
+    // uniform control flow while the scan itself is skipped when beams aren't drawn at all.
+    if (pc.showBeamDebugRays != 0u && (pc.debugDisableMask & 8192u) == 0u
+        && (pc.debugDisableMask & 131072u) == 0u) {
+        uint activeCount = min(beamCount, BEAM_MAX_ACTIVE);
+        for (uint bi = gl_LocalInvocationIndex; bi < activeCount; bi += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+            if (beams[bi].intensity <= 0.0) continue;
+
+            // View-independent fades, hoisted out of the per-texel loop.
+            float targetDistM = length(beams[bi].targetENU);
+            if (targetDistM > pc.beamMaxRangeM + kSkyBeamFadeM) continue;
+            float rangeX    = clamp((targetDistM - (pc.beamMaxRangeM - kSkyBeamFadeM)) / kSkyBeamFadeM, 0.0, 1.0);
+            float rangeFade = 1.0 - (rangeX * rangeX * (3.0 - 2.0 * rangeX));
+            float aimFade   = 1.0 - smoothstep(0.0, kDebugRayAimMaxRad, beams[bi].aimErrorRad);
+            float fade      = rangeFade * aimFade;
+            if (fade <= 0.0) continue;
+
+            vec3  satENU = beams[bi].satENU;
+            vec3  rayDir = beams[bi].reflectDirENU;
+            vec2  groundHit = raySphere(obsPos + satENU, rayDir, R_EARTH);
+            float rayLen = (groundHit.x > 0.0) ? min(groundHit.x, kDebugRayMaxLenM) : kDebugRayMaxLenM;
+
+            // Closest approach of the TILE CENTRE ray to this beam segment — the same solve main()
+            // does per texel, run once per workgroup here.
+            vec3  w0 = -satENU;
+            float b = dot(cAxis, rayDir);
+            float d = dot(cAxis, w0);
+            float e = dot(rayDir, w0);
+            float den = 1.0 - b * b;
+            float s = (den > 1e-6) ? (e - b * d) / den : e;
+            s = clamp(s, 0.0, rayLen);
+            float t = s * b - d;
+            if (t < 0.0) { t = 0.0; s = clamp(e, 0.0, rayLen); }
+            float perpDist = length(satENU + rayDir * s - cAxis * t);
+
+            float tFar      = max(length(satENU), length(satENU + rayDir * rayLen));
+            float radiusMax = max(kDebugRayRadiusM, tFar * kDebugRayMinAngRad);
+            if (perpDist > radiusMax * 4.0 + tFar * tileHalfAngle) continue;
+
+            uint slot = atomicAdd(sTileBeamCount, 1u);
+            if (slot < kTileBeamMax) {
+                sTileBeamIdx[slot]    = bi;
+                sTileBeamRayLen[slot] = rayLen;
+                sTileBeamFade[slot]   = fade;
+            } else {
+                sTileOverflow = 1u;
+            }
+        }
+    }
+    barrier();
+}
+
 void main() {
     ivec2 size  = imageSize(targetA);
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
-    if (coord.x >= size.x || coord.y >= size.y) return;
 
     // Reconstruct the same view ray sat_sky.vert/sat_sky.frag build, evaluated directly at this
     // half-res texel instead of via vertex interpolation — identical affine transform, just
     // sampled at a coarser grid.
-    vec2 uv  = (vec2(coord) + 0.5) / vec2(size);
-    vec2 ndc = uv * 2.0 - 1.0;
     float tanHalfFov = tan(pc.fovYRad * 0.5);
-    vec3  camDir = vec3(ndc.x * tanHalfFov * pc.aspect, -ndc.y * tanHalfFov, -1.0);
-    vec3  dir    = normalize(mat3(transpose(pc.skyView)) * camDir);
+    mat3  camToENU   = mat3(transpose(pc.skyView));
+    vec3  dir        = tileRayDir(vec2(coord) + 0.5, size, tanHalfFov, camToENU);
+
     vec3  sunDir = normalize(pc.sunDirENU.xyz);
 
     vec3 enuZ = normalize(pc.obsECEFDir.xyz);
@@ -2150,8 +2431,22 @@ void main() {
     // it is not once one pass produces a depth buffer the other consumes — a few metres of
     // disagreement at the observer becomes a visible occlusion mismatch along grazing rays.
     // pc.obsEffH is still the CPU's value and is deliberately no longer read here.
+    //
+    // Resolved here, ABOVE the out-of-bounds return, because the beam cull below needs it. Safe for
+    // the out-of-range threads of an edge workgroup: it depends only on pc.obsECEFDir, not on
+    // coord, so it is workgroup-uniform and reads nothing out of range.
     float obsEffH = observerEffHeight(earthElevTex, earthSpecTex, pc.obsECEFDir);
     vec3  obsPos  = observerPos(obsEffH);
+
+    // Both per-tile culls run BEFORE the out-of-bounds return: they contain barriers, which every
+    // thread in the workgroup must reach.
+    vec3  tileAxis;
+    float tileHalfAngle;
+    tileViewCone(size, tanHalfFov, camToENU, tileAxis, tileHalfAngle);
+    cullBeamsForTile(tileAxis, tileHalfAngle, obsPos);
+    cullCloudLightsForTile(tileAxis, tileHalfAngle, obsPos);
+
+    if (coord.x >= size.x || coord.y >= size.y) return;
 
     // Shared scene depth for this exact texel. Read ONCE here, not per beam: the beam loop below
     // runs up to 2048 iterations and every one of them needs the same value. texelFetch rather
@@ -2239,19 +2534,43 @@ void main() {
     // observer-relative offset) rather than from an obsPos/satWorldPos difference, so no
     // large-magnitude subtraction is ever formed. Both direction vectors are unit length, which
     // is what collapses the usual 2x2 solve to the 1 - b*b denominator below.
-    if (pc.showBeamDebugRays != 0u) {
+    // Knockout bit 8192 (2026-08-10). This loop is per-PIXEL over up to BEAM_MAX_ACTIVE (2048)
+    // beams and, until now, was gated ONLY by showBeamDebugRays — knockout bit 128
+    // ("Reflect-Orbital beams") gates sat_sky.frag's ground spot and the per-sample volumetric
+    // glow but has never reached this loop, a gap CLAUDE.md already flagged as "left as-is;
+    // flagged here so a future profiling session doesn't assume bit 128 isolates the full beam
+    // rendering cost." This IS that session. Its cost is therefore invisible in every capture
+    // taken so far AND unreachable by every graphics preset (Planetarium sets bit 128 and still
+    // pays for this in full), which makes it the prime suspect for the several-ms floor the
+    // cloud_march bucket keeps even at Planetarium with cloudCoverage=0.
+    if (pc.showBeamDebugRays != 0u && (pc.debugDisableMask & 8192u) == 0u) {
         // Thin off-white/yellow line (2026-08-06 user request; previously a 2500 m green tube,
         // itself already thinned from 15000 m in C12 follow-up #13). kDebugRayMinAngRad keeps a
         // distant ray from thinning below roughly one half-res pixel and breaking up into an
         // aliased dashed line — the exact artifact this rewrite exists to remove, just spatial
         // rather than along-ray. Beyond ~470 km the angular floor is what sets the width.
-        const float kDebugRayRadiusM  = 700.0;
-        const float kDebugRayMinAngRad = 0.0015; // ~1.2 half-res pixels at the default FOV
+        // (kDebugRayRadiusM/kDebugRayMinAngRad/kDebugRayMaxLenM/kDebugRayAimMaxRad/kSkyBeamFadeM
+        // moved to file scope 2026-08-10 — cullBeamsForTile must use the identical values or its
+        // conservatism argument breaks.)
         // One evaluation now, not a 40-sample accumulation. Kept low deliberately: rays are
         // additive, so a site with dozens of satellites converging on it stacks them into a solid
         // wash unless each individual line is faint enough to still read through its neighbours.
         const float kDebugRayScale    = 0.05;
         const vec3  kDebugRayColor    = vec3(1.0, 0.95, 0.72) * 0.004; // off-white leaning yellow
+        // Atmospheric extinction (2026-08-10 follow-up to the aurora/star fix — same bug, same
+        // fix, this consumer just hadn't been touched yet): a beam whose ground site sits far
+        // around the curve of the Earth is seen along a long, near-tangent atmospheric sightline,
+        // exactly the geometry Kasten & Young's airmass term exists for — but this ray previously
+        // had NO extinction applied at all, so it stayed at full off-white brightness right to the
+        // horizon regardless of how much real atmosphere the view path crossed. Same formula, same
+        // rayTangentAltM(obsPos, dir) gating as auroraMarchCS above (constant for this whole pixel,
+        // so hoisted out of the per-beam loop below rather than recomputed per iteration).
+        float atmFracBeamRay = clamp(exp(-max(rayTangentAltM(obsPos, dir), 0.0) / 20000.0), 0.0, 1.0);
+        float sinElBeamRay   = clamp(dir.z, 0.0, 1.0);
+        float elDegBeamRay   = degrees(asin(sinElBeamRay));
+        float airmassBeamRay = 1.0 / (sinElBeamRay + 0.50572 * pow(elDegBeamRay + 6.07995, -1.6364));
+        float extinctMagBeamRay = cloud.extinctionCoeff * (airmassBeamRay - 1.0) * atmFracBeamRay;
+        float beamRayExtinction = pow(10.0, -0.4 * extinctMagBeamRay);
         // Altitude fade (2026-08-06 experiment): invisible in vacuum, brightening as the beam
         // descends — the cheap stand-in for the deleted tube's scattering falloff, which really
         // was an air-density effect. Free here: the closest-approach solve below already yields
@@ -2270,7 +2589,8 @@ void main() {
         // constellation's altitude range; raySphere() against R_EARTH finds the true distance
         // whatever the satellite's altitude or aim. kDebugRayMaxLenM is just a safety fallback
         // for the (should-be-rare) case where the ray points away from Earth entirely.
-        const float kDebugRayMaxLenM = 3000000.0;
+        // 2026-08-10: that raySphere is view-independent, so it now runs once per workgroup in
+        // cullBeamsForTile and arrives here through sTileBeamRayLen.
         // Aim fade (2026-08-06 user request): mirrors slew toward a NEW target at a fixed rate
         // (kMirrorRotRateDegPerSec in SatelliteSim.h), but target ACQUISITION is a hard lock
         // switch (see the reflector-target-selection doc in CLAUDE.md) — the instant a satellite's
@@ -2283,33 +2603,47 @@ void main() {
         // the beam this pixel happens to be looking. kDebugRayAimMaxRad is the error at which the
         // ray is fully dark; ~30 deg covers a full antipodal-ish target swap without over-fading
         // routine small slew corrections.
-        const float kDebugRayAimMaxRad = radians(10.0);
-        int debugActiveBeamCount = int(min(beamCount, BEAM_MAX_ACTIVE)); // own scope — the main
-                                                                          // beam block's activeBeamCount is local to its own `if`
-        for (int bi = 0; bi < debugActiveBeamCount; ++bi) {
-            if (beams[bi].intensity <= 0.0) continue;
-
-            // 2026-08-07 user report: the sky beam ray popped in at full brightness the instant
-            // a target crossed beamMaxRangeM (was a hard cutoff here, no fade). Widened cutoff by
-            // kSkyBeamFadeM so the fade band itself still renders, with rangeFade ramping the
-            // ray's contribution smoothly across it — same smoothstep shape as aimFade/fade below,
-            // just keyed on range instead of slew/altitude. Kept in sync with kGroundBeamFadeM in
-            // SatelliteSim.cpp/sat_sky.frag (same visual beam, same fade feel).
-            float targetDistM = length(beams[bi].targetENU);
-            const float kSkyBeamFadeM = 200000.0;
-            if (targetDistM > pc.beamMaxRangeM + kSkyBeamFadeM) continue;
-            float rangeX = clamp((targetDistM - (pc.beamMaxRangeM - kSkyBeamFadeM)) / kSkyBeamFadeM, 0.0, 1.0);
-            float rangeFade = 1.0 - (rangeX * rangeX * (3.0 - 2.0 * rangeX));
-            if (rangeFade <= 0.0) continue;
-
-            float aimFade = 1.0 - smoothstep(0.0, kDebugRayAimMaxRad, beams[bi].aimErrorRad);
-            if (aimFade <= 0.0) continue; // still swinging onto a freshly-acquired target
+        // 2026-08-10: iterate the workgroup's CULLED list, not the whole buffer — see
+        // cullBeamsForTile above for the design and the conservatism argument. sTileOverflow means
+        // more beams crossed this tile than kTileBeamMax could hold, in which case we fall back to
+        // scanning everything: pathological tiles get slow, never wrong. The per-beam view-
+        // independent work (rangeFade, aimFade, the rayLen raySphere) has already been done once
+        // per workgroup and arrives via shared memory, so the loop body below starts at the
+        // geometry that genuinely varies per texel.
+        bool tileOverflow = (sTileOverflow != 0u);
+        int  beamIterCount = tileOverflow ? int(min(beamCount, BEAM_MAX_ACTIVE))
+                                          : int(min(sTileBeamCount, kTileBeamMax));
+        for (int k = 0; k < beamIterCount; ++k) {
+            int   bi;
+            float rayLen;
+            float preFade; // rangeFade * aimFade
+            if (tileOverflow) {
+                // Full-scan fallback: recompute what the cull would have supplied.
+                bi = k;
+                if (beams[bi].intensity <= 0.0) continue;
+                // 2026-08-07 user report: the sky beam ray popped in at full brightness the instant
+                // a target crossed beamMaxRangeM (was a hard cutoff here, no fade). Widened cutoff
+                // by kSkyBeamFadeM so the fade band itself still renders, with rangeFade ramping
+                // the ray's contribution smoothly across it — same smoothstep shape as aimFade/fade
+                // below, just keyed on range instead of slew/altitude. Kept in sync with
+                // kGroundBeamFadeM in SatelliteSim.cpp/sat_sky.frag (same visual beam, same feel).
+                float targetDistM = length(beams[bi].targetENU);
+                if (targetDistM > pc.beamMaxRangeM + kSkyBeamFadeM) continue;
+                float rangeX = clamp((targetDistM - (pc.beamMaxRangeM - kSkyBeamFadeM)) / kSkyBeamFadeM, 0.0, 1.0);
+                float rangeFade = 1.0 - (rangeX * rangeX * (3.0 - 2.0 * rangeX));
+                float aimFade = 1.0 - smoothstep(0.0, kDebugRayAimMaxRad, beams[bi].aimErrorRad);
+                preFade = rangeFade * aimFade;
+                vec2 groundHit = raySphere(obsPos + beams[bi].satENU, beams[bi].reflectDirENU, R_EARTH);
+                rayLen = (groundHit.x > 0.0) ? min(groundHit.x, kDebugRayMaxLenM) : kDebugRayMaxLenM;
+            } else {
+                bi      = int(sTileBeamIdx[k]);
+                rayLen  = sTileBeamRayLen[k];
+                preFade = sTileBeamFade[k];
+            }
+            if (preFade <= 0.0) continue; // out of range, or still swinging onto a fresh target
 
             vec3 satWorldPos = obsPos + beams[bi].satENU;
             vec3 rayDir      = beams[bi].reflectDirENU;
-
-            vec2  groundHit = raySphere(satWorldPos, rayDir, R_EARTH);
-            float rayLen    = (groundHit.x > 0.0) ? min(groundHit.x, kDebugRayMaxLenM) : kDebugRayMaxLenM;
 
             // View ray P(t) = obsPos + t*dir, beam segment Q(s) = satWorldPos + s*rayDir,
             // s in [0, rayLen]. w0 = obsPos - satWorldPos = -satENU, formed directly.
@@ -2412,8 +2746,10 @@ void main() {
             if (cloudGate <= 0.001) continue; // fully opaque along this ray — nothing to draw
 
             float proximity = exp(-(perpDist * perpDist) / (2.0 * radiusM * radiusM));
-            B_total += kDebugRayColor * (kDebugRayScale * proximity * fade * aimFade * cloudGate
-                                        * beamPhysicsFade * rangeFade);
+            // preFade is aimFade * rangeFade, both computed once per workgroup in cullBeamsForTile
+            // (2026-08-10) — same product, same order of multiplication as before.
+            B_total += kDebugRayColor * (kDebugRayScale * proximity * fade * cloudGate
+                                        * beamPhysicsFade * preFade * beamRayExtinction);
         }
     }
 

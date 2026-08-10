@@ -38,6 +38,21 @@ layout(push_constant) uniform PC {
                         // to any active beam's actual line" value (SatelliteSim::beamProximityGlow).
                         // Replaces the directional azimuth-sector dome lookup the wash used in
                         // #39/#40 — applied uniformly regardless of view direction.
+    float noTwinkle; // offset 164 — unused here (only star_point.vert reads it); MUST still be
+                     // declared — a push_constant block must be a byte-exact CONTIGUOUS prefix of
+                     // the pushed struct, not a sparse one. Omitting this field entirely (as an
+                     // earlier version of this file did) silently shifted mwSuppressEased below to
+                     // offset 164 in THIS shader's own layout while the CPU still wrote it at 168,
+                     // so the value actually read here was noTwinkle's (always 0.0 for this draw)
+                     // instead — the Milky Way's pollution suppression was permanently a no-op.
+    float mwSuppressEased; // offset 168 — Milky Way's OWN light-pollution suppression — deliberately NOT the
+                        // shared domeVal/kMWPollutionMaxDim shape stars/satellites use below, so
+                        // tuning lightPollutionGain for those never requires retuning this. Its
+                        // threshold curve and asymmetric fade-in/fade-out hysteresis (moving from
+                        // a bright area into a dark one, or into space, fades the Milky Way back
+                        // in gradually rather than popping instantly) are entirely CPU-side — see
+                        // SatelliteSim.h's mwSuppressEased member and updateLightPollutionDome().
+                        // [0,1], 0 = fully visible, 1 = fully suppressed.
 } pc;
 
 // ── Perf knockout toggles (profiling-only) ──────────────────────────────────────
@@ -124,10 +139,25 @@ layout(std430, set = 0, binding = 17) readonly buffer ReflectBeamsBuf {
 // bounds that loop's trip count to however many beams are actually close enough to matter, capped
 // at GROUND_BEAM_MAX. See the CPU aggregation next to lastActiveBeamCount/beamProximityGlow in
 // SatelliteSim.cpp, and GpuGroundBeams in SatelliteSim.h.
+//
+// 2026-08-10: these are no longer raw ReflectBeam records. Everything in the old loop body that did
+// not vary per pixel — the range fade, the elevation fade, the shadow attenuation, and the
+// obsPos+satENU / raySphere solve for the beam's real ray/ground intersection — is now folded on
+// the CPU into `weight` plus a few reciprocals, once per beam instead of once per ground-hit pixel
+// at full resolution. Must match GpuGroundBeam in SatelliteSim.h exactly (hand-mirrored).
+struct GroundBeam {
+    vec2  groundHitXY;    // observer-relative ENU horizontal position of the REAL landing spot
+    float invFootprintSq; // 1 / footprintR^2
+    float invCoreSq;      // 1 / coreR^2
+    float cutoffSq;       // (footprintR * 4)^2 — the loop's first and cheapest reject
+    float weight;         // intensity * rangeFade * elevFade * shadowAtten
+    float intensity;      // CPU-side top-K ranking only; deliberately unread here
+    float pad0;
+};
 layout(std430, set = 0, binding = 21) readonly buffer GroundBeamsBuf {
-    uint         groundBeamCount;
-    uint         groundBeamPad0, groundBeamPad1, groundBeamPad2;
-    ReflectBeam  groundBeams[GROUND_BEAM_MAX];
+    uint        groundBeamCount;
+    uint        groundBeamPad0, groundBeamPad1, groundBeamPad2;
+    GroundBeam  groundBeams[GROUND_BEAM_MAX];
 };
 
 // (binding 18 was cloudShadowTex, cloud_shadow.comp's 128x128 grid. That whole pass is gone —
@@ -1803,7 +1833,12 @@ void main() {
     // Each occupied bin represents the brightest satellite in that 45°×11.25° cell.
     // Runs pre-tonemap so the exposure system scales it: invisible at noon,
     // visible at dusk, prominent at night.
-    {
+    // Knockout bit 65536 (2026-08-10): 64 iterations with an acos() each, on EVERY full-res pixel,
+    // unconditionally — the only fixed-cost loop in this shader with no knockout and no quality
+    // slider behind it, so its share of the "sky background draw" bucket was previously
+    // unmeasurable. Skipping just leaves `color` without the glow term, which is exactly what an
+    // all-empty glowBuf already produces.
+    if ((pc.debugDisableMask & 65536u) == 0u) {
         const float TWO_PI = 6.28318530718;
         vec3  flareAttn = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
         const float kSig = 0.90;
@@ -2111,9 +2146,14 @@ void main() {
         // location, so the noise pattern appeared to follow the observer instead of the ground.
         vec3  hitDirECEF           = normalize(hitPt.x * enuX + hitPt.y * enuY + hitPt.z * enuZ);
         vec3  auroraGlowTerrain    = auroraGlowAt(hitDirECEF, sunDirECEF, pc.waveTime, cloud.stormStrength);
+        // Same cloud-awareness gap as the ocean reflection fix (see that block's comment) — this
+        // is a plain ambient wash, so the simplest gate is reusing cloudB, already sampled for
+        // THIS pixel's own camera ray up top: an overcast view of this ground point dims its
+        // aurora glow along with everything else, no new march or texture read needed.
+        float auroraGroundCloudOccl = dot(cloudB.rgb, vec3(1.0 / 3.0));
         vec3  auroraContribTerrain = dayColor * auroraGlowTerrain
                                     * max(dot(shadingN, normalize(hitPt)), 0.0)
-                                    * cloud.auroraGroundGain;
+                                    * cloud.auroraGroundGain * auroraGroundCloudOccl;
 
         // cloudShadowT gates only the direct-sun term (real cloud shadows block the sun, not the
         // diffuse skylight) — skyAmbientTerrain stays outside it, same split the ocean branch
@@ -2291,7 +2331,26 @@ void main() {
                     float airmassAuroraRefl = 1.0 / (sinElAuroraRefl + 0.50572 * pow(elDegAuroraRefl + 6.07995, -1.6364));
                     float extinctMagAuroraRefl = cloud.extinctionCoeff * (airmassAuroraRefl - 1.0);
                     float extinctionAuroraRefl = pow(10.0, -0.4 * extinctMagAuroraRefl);
-                    reflColor += accumAuroraRefl * raSeg * kAuroraScale * cloud.auroraGain * extinctionAuroraRefl;
+
+                    // Cloud occlusion: this march reused auroraSampleAt() (the raw curtain
+                    // function) directly rather than going through cloud_march.comp's
+                    // auroraMarchCS, so it had none of that pass's cloud-suppression — the water
+                    // mirrored the aurora right through an overcast sky. Same fix as the
+                    // satellite/sun lens-flare occlusion above: project reflDir into screen space
+                    // with the same skyView transform and sample the transmittance
+                    // cloud_march.comp already wrote for that direction into cloudTargetB, rather
+                    // than re-marching cloud density along reflDir here.
+                    float auroraReflCloudOccl = 1.0;
+                    vec3  reflCam = mat3(pc.skyView) * reflDir;
+                    if (reflCam.z < -0.01) {
+                        float tanHFRefl = tan(pc.fovYRad * 0.5);
+                        vec2  reflUV       = vec2(reflCam.x, -reflCam.y) / (-reflCam.z * tanHFRefl * 2.0);
+                        vec2  reflScreenUV = vec2(reflUV.x / pc.aspect + 0.5, reflUV.y + 0.5);
+                        auroraReflCloudOccl = dot(texture(cloudTargetB, reflScreenUV).rgb, vec3(1.0 / 3.0));
+                    }
+
+                    reflColor += accumAuroraRefl * raSeg * kAuroraScale * cloud.auroraGain
+                               * extinctionAuroraRefl * auroraReflCloudOccl;
                 }
             }
 
@@ -2331,8 +2390,11 @@ void main() {
             // needs a TRUE ECEF direction instead (see the terrain block's own comment on this same
             // bug), so it goes through enuX/enuY/enuZ first rather than being passed straight in.
             vec3 surfUpECEF = normalize(surfUp.x * enuX + surfUp.y * enuY + surfUp.z * enuZ);
+            // Same cloud gate as the terrain ground-glow and the aurora reflection above — this
+            // is why the water kept turning aurora-green straight through an overcast sky.
+            float auroraGroundCloudOcclOcean = dot(cloudB.rgb, vec3(1.0 / 3.0));
             surfColor += auroraGlowAt(surfUpECEF, sunDirECEF, pc.waveTime, cloud.stormStrength)
-                       * cloud.auroraGroundGain * 0.5 * atten;
+                       * cloud.auroraGroundGain * 0.5 * atten * auroraGroundCloudOcclOcean;
             // Mirror satellite flare glints — own small independent capped atomic-append list
             // (flare architecture overhaul), decoupled from the deleted per-pixel corona system.
             // Now also occlusion-aware (previously had NONE at all): sampled at each entry's own
@@ -2384,89 +2446,36 @@ void main() {
             // that cutoff is now applied ONCE, CPU-side, when GroundBeamsBuf is built each frame
             // (see its declaration above) rather than redone here per ground-hit pixel against
             // the full raw list — this loop's trip count is the real cost, not the comparison.
+            // 2026-08-10: the loop body is now almost entirely per-pixel work. Everything that
+            // did not vary across the screen — the range fade keyed to the chosen target's site,
+            // the 5-degree elevation fade, the per-beam cloud shadow attenuation, and the
+            // obsPos+satENU / raySphere solve for the beam's REAL ray/ground intersection (two
+            // sqrts) — was hoisted to the CPU, which already visits these entries once per frame
+            // when it builds GroundBeamsBuf. That loop measured 1.59 ms of this shader at Medium in
+            // the Anchorage worst-case sweep, on a list sitting at its full GROUND_BEAM_MAX cap, so
+            // every ground-hit pixel paid all of it 256 times.
+            //
+            // The squared-distance reject is now FIRST rather than last: a pixel nowhere near a
+            // landing spot costs one 2D subtract, one dot and one compare per beam, and the two
+            // Gaussians (the only genuinely per-pixel maths left) are reached only by pixels that
+            // are actually inside a footprint. Working in squared distance also drops the
+            // length() sqrt the old reject needed.
             int activeBeamCount = int(min(groundBeamCount, GROUND_BEAM_MAX));
             for (int bi = 0; bi < activeBeamCount; ++bi) {
-                float intensity = groundBeams[bi].intensity;
-                if (intensity <= 0.0) continue;
+                vec2  d  = hitPt.xy - groundBeams[bi].groundHitXY;
+                float d2 = dot(d, d);
+                if (d2 > groundBeams[bi].cutoffSq) continue;
+                float w = groundBeams[bi].weight;
+                if (w <= 0.0) continue;
 
-                // 2026-08-07 user report: the ground spot popped in at full brightness the
-                // instant a target crossed beamMaxRangeM (the CPU compaction above used to be a
-                // hard cull with no fade — see its own comment history). Mirrors the smooth
-                // range fade already used for cloud illumination (SatelliteSim.cpp's kRangeFadeM)
-                // and the sky beam ray below (cloud_march.comp's kSkyBeamFadeM), just wider per
-                // user request ("very gradual"). targetENU is observer-relative, so its length is
-                // the same targetDistM the CPU computed when deciding whether to include this
-                // entry (which now widens its own cutoff by this same kGroundBeamFadeM). Deliberately
-                // stays keyed to the CHOSEN target's fixed site position, not the transient real
-                // ray-ground intersection below (2026-08-09) — this answers "is the observer close
-                // enough to this SITE," which shouldn't flicker in/out as a mid-slew ray briefly
-                // touches down somewhere else entirely.
-                float targetDistM = length(groundBeams[bi].targetENU);
-                const float kGroundBeamFadeM = 200000.0;
-                float rangeX = clamp((targetDistM - (pc.beamMaxRangeM - kGroundBeamFadeM)) / kGroundBeamFadeM, 0.0, 1.0);
-                float rangeFade = 1.0 - (rangeX * rangeX * (3.0 - 2.0 * rangeX));
-                intensity *= rangeFade;
-                if (intensity <= 0.0) continue;
+                // Tight bright "hotspot" core (the mirror's own true physical size) on top of the
+                // soft halo (the full sun-disk-broadened extent around it) — C12 follow-up #18/#34,
+                // and an isotropic circle rather than #35's reverted ellipse (follow-up #43).
+                // Reciprocals come precomputed so this is two multiplies and two exps.
+                float footprint = exp(-0.5 * d2 * groundBeams[bi].invFootprintSq);
+                float core      = exp(-0.5 * d2 * groundBeams[bi].invCoreSq);
 
-                // 2026-08-09: footprint is now anchored at the beam's ACTUAL real ground
-                // intersection (satENU + reflectDirENU traced to R_EARTH), not the idealized
-                // targetENU — the same fix beam_self_march.comp's occlusion march got, applied
-                // here so the visible landing spot agrees with it instead of sitting at the
-                // (only-correct-once-converged) chosen-target position while the mirror slews.
-                // reflectDirENU points satellite->ground (see cloud_march.comp's own use of it
-                // for raySphere(satWorldPos, rayDir, R_EARTH)), so -reflectDirENU is ground->
-                // satellite — the "up" direction elevFade below already wanted.
-                vec3 satWorldPosLocal = obsPos + groundBeams[bi].satENU;
-                vec2 rayGroundHit = raySphere(satWorldPosLocal, groundBeams[bi].reflectDirENU, R_EARTH);
-                if (rayGroundHit.x <= 0.0) continue; // aimed away from Earth this frame — no landing spot to draw
-                vec3 groundHitENU = groundBeams[bi].satENU
-                                   + groundBeams[bi].reflectDirENU * rayGroundHit.x;
-
-                float footprintR = max(groundBeams[bi].footprintRadM, 1.0);
-                // Tight bright "hotspot" core on top of the soft halo (C12 follow-up #18) — reads
-                // as a clear landing point where the beam meets the ground, the anchor the sky
-                // glow march (cloud_march.comp) now visually starts from (that march begins at
-                // this same real ground-hit position and heads upward — see its comment).
-                // C12 follow-up #34: was footprintR*0.15 (an arbitrary ratio) — now the mirror's
-                // own true physical size, with footprintR (the halo) representing the full
-                // sun-disk-broadened extent around it.
-                float coreR = max(groundBeams[bi].mirrorRadiusM, 1.0);
-
-                // C12 follow-up #43: reverted #35's elliptical footprint back to an isotropic
-                // circle, per user report — tracing actual beam impact points in-app showed the
-                // ellipse's stretch axis/magnitude (derived from this ONE satellite's own beam
-                // angle) didn't match where the light visibly appeared to land, especially once the
-                // sky extension (#42) made the true landing geometry more visible. footprintR/coreR
-                // are unchanged (still the physically-derived minor-axis-equivalent radii from
-                // sat_orbit.comp); only this term's own consumption goes back to isotropic.
-                // elevFade kept — independently reasonable (matches the sky tube's own 5° cutoff,
-                // cloud_march.comp) even without the ellipse's infinite-stretch concern that
-                // originally motivated it.
-                float sinElev   = -groundBeams[bi].reflectDirENU.z;
-                float elevFade  = smoothstep(0.0, 0.08716, sinElev); // sin(5 deg) = 0.08716
-                if (elevFade <= 0.0) continue;
-
-                float groundDist = length(hitPt.xy - groundHitENU.xy);
-                if (groundDist > footprintR * 4.0) continue;
-
-                float footprint = exp(-0.5 * groundDist * groundDist / (footprintR * footprintR));
-                float core      = exp(-0.5 * groundDist * groundDist / (coreR * coreR));
-
-                // C12 follow-up #33: was a lookup into cloudShadowTex, the general-purpose
-                // 80km-half-extent grid centered on the OBSERVER (cloud_shadow.comp) — a real bug,
-                // not an approximation: any target beyond 80km (the common case; the 201 reflector
-                // targets are scattered globally, ~1500km+ typical spacing) always fell outside the
-                // grid and got shadowAtten=1.0 (no shadow), silently. Replaced with the exact,
-                // unlimited-range per-BEAM value baked into this same beam entry by
-                // beam_self_march.comp (2026-08-09 — a real per-beam slant march; was
-                // beam_cloud_block.comp's per-target vertical approximation before that) — also
-                // what makes the beam visibly cut off in the sky (cloud_march.comp's pointing ray
-                // and volumetric glow) consistent with its ground spot going dark, instead of one
-                // updating and not the other.
-                float shadowAtten = 1.0 - groundBeams[bi].blockOpacity;
-
-                surfColor += vec3(kBeamGroundScale * intensity * (footprint + core * 2.0) * skyGlowNorm)
-                           * shadowAtten * elevFade;
+                surfColor += vec3(kBeamGroundScale * w * (footprint + core * 2.0) * skyGlowNorm);
             }
         }
 
@@ -2591,30 +2600,29 @@ void main() {
         float moonBrightSky = tm * tm * moonDirENU.w;
         const float kMWMoonMaxDim = 0.95;
 
-        // Directional light-pollution dome — copied from sat_flare.comp's domeVal computation
-        // (session 26), using this fragment's own view direction (dir) in place of a satellite's
-        // skyDir. Third independent copy of this formula in the codebase (sat_flare.comp,
-        // CPU updateStars(), here), matching the existing precedent of duplicating it per-consumer
-        // rather than sharing a function across GLSL stages / CPU-GPU boundaries.
+        // Directional dome geometry — copied from sat_flare.comp's domeVal computation (session
+        // 26), using this fragment's own view direction (dir) in place of a satellite's skyDir.
+        // Only sec0w/sec1w/secFrac/elevFalloffMW are still needed here (for beamDomeVal below) —
+        // the shared domeAz/kIsotropicFrac/domeVal curve itself is NOT used for the Milky Way's
+        // own pollution response any more (see mwSuppressEased below for why).
         float azLP    = mod(atan(dir.x, dir.y) + 6.283185307, 6.283185307);
         float secF    = azLP * (16.0 / 6.283185307) - 0.5;
         int   sec0    = int(floor(secF));
         float secFrac = secF - float(sec0);
         int   sec0w   = ((sec0 % 16) + 16) % 16;
         int   sec1w   = (sec0w + 1) % 16;
-        float domeAz  = mix(lightDome[sec0w], lightDome[sec1w], secFrac);
         float elevFalloffMW = 0.35 / (max(dir.z, 0.0) + 0.35);
-        // S2c (RELEASE_v1_1_PLAN.md): this was THE Milky Way bug — elevFalloffMW alone bottoms out
-        // at ~0.26 at zenith, so kMWPollutionMaxDim=0.99 could never dim the zenith Milky Way (a
-        // large, mostly-high-in-the-sky feature) by more than ~26%, no matter how bright the city
-        // or how high lightPollutionGain went. Real urban skyglow raises zenith brightness by ~50x
-        // (Bortle 8 vs Bortle 1) via isotropic atmospheric scattering, not just the horizon-hugging
-        // direct glow elevFalloffMW models. kIsotropicFrac gives the dome a real floor at zenith;
-        // horizon behaviour is unchanged. Same constant/formula in sat_flare.comp (satellites) and
-        // cloud_march.comp (aurora), and CPU updateStars() — keep them coherent.
-        const float kIsotropicFrac = 0.4;
-        float domeVal = clamp(domeAz * (kIsotropicFrac + (1.0 - kIsotropicFrac) * elevFalloffMW), 0.0, 1.0);
-        const float kMWPollutionMaxDim = 0.99;
+
+        // Milky Way-specific pollution response (replaces the old shared domeVal/kMWPollutionMaxDim
+        // linear dim, which started dimming the Milky Way the instant ANY light pollution was
+        // present and never fully hid it — 0.99 max dim still lets 1% through). The Milky Way
+        // should read as invisible until skies are genuinely dark, and pc.mwSuppressEased is a
+        // CPU-side value already hysteresis-eased over mwPollutionThresholdLo/Hi (SatelliteSim.h,
+        // see updateLightPollutionDome()) — a single non-directional "is it dark enough here" gate,
+        // deliberately not per-pixel like domeVal/beamDomeVal: the Milky Way is a large diffuse
+        // feature, not something whose suppression should pop differently by look direction the
+        // way a single city's horizon glow does.
+        float mwPollutionSuppress = pc.mwSuppressEased;
 
         // C12 follow-up #31: same suppression shape, second independent source — a nearby
         // Reflect-Orbital beam should wash out the Milky Way the same way real light pollution
@@ -2626,10 +2634,19 @@ void main() {
 
         // Atmospheric extinction — same Kasten & Young 1989 airmass approximation used by
         // sat_flare.comp/updateStars(), reusing cloud.extinctionCoeff (was pad0 — see CloudParams).
+        // Deliberately NOT atmFracSky (that one is keyed on the OBSERVER's own altitude, correct
+        // for "is there scattering atmosphere near me to explain a bright sky" but wrong for "how
+        // much atmosphere does THIS RAY pass through" — a ray aimed near the horizon from orbit can
+        // still graze deep into the atmosphere even though the observer itself is far above it, see
+        // rayTangentAltM in common.glsl). Uses this ray's own tangent altitude instead, same shape
+        // (linear fade over kMWSpaceFadeStartM/EndM) as atmFracSky so near-zenith views (where the
+        // two coincide) are unchanged.
+        float atmFracExtinctMW = 1.0 - clamp((rayTangentAltM(obsPos, dir) - kMWSpaceFadeStartM)
+                                              / (kMWSpaceFadeEndM - kMWSpaceFadeStartM), 0.0, 1.0);
         float sinElMW  = clamp(dir.z, 0.0, 1.0);
         float elDegMW  = degrees(asin(sinElMW));
         float airmassMW = 1.0 / (sinElMW + 0.50572 * pow(elDegMW + 6.07995, -1.6364));
-        float extinctMagMW = cloud.extinctionCoeff * (airmassMW - 1.0) * atmFracSky;
+        float extinctMagMW = cloud.extinctionCoeff * (airmassMW - 1.0) * atmFracExtinctMW;
         float extinctionMW = pow(10.0, -0.4 * extinctMagMW);
 
         // Sun glare: even in space (where nightFactorEffSky doesn't suppress anything — there's
@@ -2661,7 +2678,7 @@ void main() {
         // works without needing that.
         const float kMWCloudSuppressPower = 3.0;
         float visibility = nightFactorEffSky
-                          * (1.0 - domeVal * kMWPollutionMaxDim)
+                          * (1.0 - mwPollutionSuppress)
                           * (1.0 - beamDomeVal * kMWBeamPollutionMaxDim)
                           * (1.0 - moonBrightSky * kMWMoonMaxDim)
                           * extinctionMW

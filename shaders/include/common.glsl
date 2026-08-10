@@ -177,6 +177,30 @@ vec2 raySphere(vec3 ro, vec3 rd, float r) {
     return vec2(-b - sq, -b + sq);            // tNear = entry distance, tFar = exit distance
 }
 
+// Altitude of this ray's closest approach to Earth's CENTER, restricted to the forward ray
+// (t >= 0) — i.e. how deep this specific line of sight dips toward the ground, independent of
+// the observer's own altitude. This is the quantity atmospheric-extinction gating should read,
+// not observer height: an observer high in orbit still has a long real atmospheric path along any
+// ray aimed near the horizon (that ray's closest approach can be right down at the surface, even
+// though the observer itself is far above all air) — that's the physical reason astronaut photos
+// show a reddened, extinguished band right at Earth's limb. Using observer altitude alone made
+// every consumer of this formula (aurora, satellites, stars, planets, the Milky Way) go completely
+// unextincted near the horizon as soon as the OBSERVER left the atmosphere, regardless of how much
+// atmosphere that particular ray actually still crossed.
+//
+// b = dot(ro,rd) >= 0 means rd has a component pointing away from Earth, so the closest approach
+// on the forward ray is the observer's own position (distance only increases from t=0 onward) —
+// this reduces to the observer's own altitude, matching the old (correct-for-that-case) behaviour
+// exactly. b < 0 means rd points at least partly toward Earth; the closest approach is the usual
+// point-line perpendicular distance, sqrt(|ro|²-b²), factored as (roLen-b)(roLen+b) to avoid the
+// same near-tangent float32 cancellation raySphere's own c term avoids (see its comment above).
+float rayTangentAltM(vec3 ro, vec3 rd) {
+    float b     = dot(ro, rd);
+    float roLen = length(ro);
+    float dMin  = (b >= 0.0) ? roLen : sqrt(max((roLen - b) * (roLen + b), 0.0));
+    return dMin - R_EARTH;
+}
+
 // Rotates a direction vector around the Z (polar) axis by angle theta — used to advect the 3D
 // cloud noise's sampling position in lockstep with the 2D coverage map's own longitude drift
 // (cloudPhase * driftMult). Without this the coverage silhouette slides while the 3D structure
