@@ -537,8 +537,30 @@ void SatelliteSim::updateGpuTimingStats(VulkanContext &ctx)
     };
     const float kAlpha = 0.1f; // low-pass so the HUD numbers don't flicker frame to frame
     for (int i = 0; i < 8; ++i)
+    {
+        gpuMsRaw[i] = raw[i];
         gpuMsSmoothed[i] = glm::mix(gpuMsSmoothed[i], raw[i], kAlpha);
-    gpuMsTotalSmoothed = glm::mix(gpuMsTotalSmoothed, (float)(t[8] - t[0]), kAlpha);
+    }
+    gpuMsRawTotal = (float)(t[8] - t[0]);
+    gpuMsTotalSmoothed = glm::mix(gpuMsTotalSmoothed, gpuMsRawTotal, kAlpha);
+}
+
+// ─── beginCpuFrameTiming ──────────────────────────────────────────────────────
+// Publishes the previous frame's accumulated CPU bucket times and clears the accumulator for the
+// frame about to run. Called first thing in buildUI() — the first sim entry point of a frame — so
+// what it publishes is always a COMPLETE frame's worth of timers, never a partially-filled one.
+// The resulting one-frame staleness matches gpuMsRaw[]'s (App resolves the query pool for the
+// previous frame just before this), which is what lets a sweep step sample both from the same
+// moment. Same EMA constant as the GPU side, for the same reason: readable HUD numbers.
+void SatelliteSim::beginCpuFrameTiming()
+{
+    const float kAlpha = 0.1f;
+    for (int i = 0; i < CPU_COUNT; ++i)
+    {
+        cpuMsRaw[i] = cpuAccumMs[i];
+        cpuMsSmoothed[i] = glm::mix(cpuMsSmoothed[i], cpuMsRaw[i], kAlpha);
+        cpuAccumMs[i] = 0.0f;
+    }
 }
 
 bool SatelliteSim::gpHeld(int bindIdx) const
@@ -801,9 +823,62 @@ bool SatelliteSim::virtualCursor(float &x, float &y, bool &lmb) const
     return true;
 }
 
+// ── Bounded top-K helper (2026-08-10 perf) ────────────────────────────────────────────
+// Three separate places below keep a fixed-capacity "strongest N by intensity" table and,
+// once full, found the weakest entry with a FULL LINEAR SCAN for every remaining candidate:
+// ground beams (256 slots), cloud clusters (256) and individual cloud lights (256), against
+// up to kMaxActiveBeams=2048 candidates — worst case ~1.5M comparisons per frame, all in
+// the block that measured 1.89 ms.
+//
+// This caches the current minimum instead. A candidate that cannot beat the cached minimum
+// is rejected without touching the table at all (the overwhelmingly common case once the
+// table is full of strong entries); only an actual insertion pays a rescan. The result is
+// BIT-IDENTICAL to the old full scan, including tie-breaking: both pick the first index
+// holding the minimum value, and the reject path was already a no-op.
+struct TopK
+{
+    uint32_t weakestIdx = 0;
+    float weakestVal = 0.0f;
+    bool dirty = true; // recompute before the next comparison
+
+    // Returns the slot to write, or ~0u to reject. `values` is a stride-agnostic accessor
+    // so the three call sites can keep their own differently-shaped arrays.
+    template <typename GetVal>
+    uint32_t claim(uint32_t &count, uint32_t capacity, float candidate, GetVal getVal)
+    {
+        if (count < capacity)
+        {
+            dirty = true; // a fresh slot changes the minimum
+            return count++;
+        }
+        if (dirty)
+        {
+            weakestIdx = 0;
+            weakestVal = getVal(0u);
+            for (uint32_t i = 1u; i < capacity; ++i)
+            {
+                float v = getVal(i);
+                if (v < weakestVal)
+                {
+                    weakestVal = v;
+                    weakestIdx = i;
+                }
+            }
+            dirty = false;
+        }
+        if (candidate <= weakestVal)
+            return ~0u;
+        dirty = true; // we are about to overwrite the minimum
+        return weakestIdx;
+    }
+};
+
 void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
 {
     updateGpuTimingStats(ctx);
+    // Immediately after, so the sweep accumulates THIS frame's freshly-resolved gpuMsRaw[] and any
+    // mask change it makes takes effect in the push constants filled later in this same call.
+    updateKnockoutSweep(dt);
     pollGamepad(dt);
 
     // UC6: pick up a finished background screenshot encode, if any (see finalizeScreenshot()'s
@@ -922,7 +997,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     if (std::abs(simDayJ2000 - orbitEpochDay) >= kOrbitRebakeDays)
         uploadSatOrbits(ctx);
 
-    updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, simDt);
+    {
+        CpuTimer _t(cpuAccumMs[CPU_UPDATE_POSITIONS]);
+        updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, simDt);
+    }
 
     // ── Sky-background sun-glare gate (stars / Milky Way, space only) ──────────
     // updateStars()'s atmFrac fade (see that function) lets the day/night sky-brightness gate
@@ -962,9 +1040,32 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         skyGlareEased = glm::mix(skyGlareEased, glareTarget, 1.0f - expf(-dt * rate));
     }
 
-    updateLightPollutionDome();
-    updateStars();
-    updatePlanets();
+    {
+        CpuTimer _t(cpuAccumMs[CPU_LIGHT_DOME]);
+        updateLightPollutionDome();
+
+        // Milky Way pollution hysteresis — same asymmetric-rate pattern as skyGlareEased above
+        // (target computed instantly, eased toward it at a rate that differs by direction), but
+        // driven by mwPollutionRaw (updateLightPollutionDome()'s pre-gain local pollution level)
+        // against its own mwPollutionThresholdLo/Hi band, not the shared domeVal/lightPollutionGain
+        // stars and satellites use. Hand-rolled smoothstep — no glm::smoothstep used elsewhere in
+        // this file (see the beamProximityGlow comment above for the same convention).
+        float mwX = glm::clamp((mwPollutionRaw - mwPollutionThresholdLo)
+                                    / std::max(mwPollutionThresholdHi - mwPollutionThresholdLo, 1e-5f),
+                                0.0f, 1.0f);
+        float mwTarget = mwX * mwX * (3.0f - 2.0f * mwX); // 0 = fully visible, 1 = fully suppressed
+        float mwRate = (mwTarget > mwSuppressEased) ? (1.0f / std::max(mwFadeOutTimeS, 0.01f))
+                                                      : (1.0f / std::max(mwFadeInTimeS, 0.01f));
+        mwSuppressEased = glm::mix(mwSuppressEased, mwTarget, 1.0f - expf(-dt * mwRate));
+    }
+    {
+        CpuTimer _t(cpuAccumMs[CPU_UPDATE_STARS]);
+        updateStars();
+    }
+    {
+        CpuTimer _t(cpuAccumMs[CPU_UPDATE_PLANETS]);
+        updatePlanets();
+    }
     // Unlike formatSelectedSatInfo() (called only when the selection changes, since a satellite's
     // orbital elements are static), a planet's distance/phase/magnitude changes every frame — so
     // this re-derives planetInfoLine[] every frame the selection is active, from the planetStates[]
@@ -999,8 +1100,33 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // aggregation any more — see GpuBeamCloudLights' own comment). Same one-frame-stale,
     // HOST_COHERENT idiom as peakMagnitude above.
     {
-        const GpuReflectBeams *rb = static_cast<const GpuReflectBeams *>(reflectBeamsMapped);
-        int count = std::min((int)rb->beamCount, kMaxActiveBeams);
+        // CPU timing (2026-08-10): this whole block is the prime suspect for the ~2.8 ms non-GPU
+        // remainder the Release Anchorage capture exposed — it scans up to kMaxActiveBeams (2048)
+        // entries, std::sorts them, and for each one runs LINEAR scans over the 256-slot
+        // ground-beam top-K and the 256-slot cluster table, so its worst case is O(n*k) with
+        // n*k ~= 1e6 per frame. Measured rather than assumed, same discipline as the GPU side.
+        CpuTimer _t(cpuAccumMs[CPU_BEAM_READBACK]);
+        const GpuReflectBeams *rbMapped = static_cast<const GpuReflectBeams *>(reflectBeamsMapped);
+        int count = std::min((int)rbMapped->beamCount, kMaxActiveBeams);
+
+        // ── Staging copy (2026-08-10 perf) ────────────────────────────────────────────────────
+        // reflectBeamsBuf is HOST_VISIBLE|HOST_COHERENT device memory, which on a discrete GPU is
+        // typically uncached / write-combined: sequential CPU reads are fine, RANDOM reads are
+        // brutally slow (no cache line reuse, every access a fresh uncached fetch). This block did
+        // exactly the pathological thing — a std::sort whose comparator dereferences two mapped
+        // entries per comparison, followed by a main loop that visits entries in that SORTED order
+        // (so, randomly with respect to memory layout) and reads eight-plus fields from each.
+        //
+        // One sequential memcpy of just the active region into ordinary RAM turns all of that into
+        // cached reads. This is the same "read mapped memory once, linearly" discipline the glow
+        // readback above already follows by accident of being a single tight scan.
+        //
+        // Measured at 1.89 ms (9.7% of the frame, 65% of the entire non-GPU remainder) in the
+        // 2026-08-10 Release Anchorage sweep, which is what prompted this.
+        static GpuReflectBeam beamsLocal[kMaxActiveBeams]; // 128 KB — static, not stack
+        if (count > 0)
+            std::memcpy(beamsLocal, rbMapped->entries, (size_t)count * sizeof(GpuReflectBeam));
+        const GpuReflectBeam *beamsIn = beamsLocal;
         float nearest = -1.0f;
         float nearestBlockOpacity = 0.0f; // C11/C12 follow-up #47: blockOpacity of whichever
                                           // entry produced `nearest`, so beamProximityGlow below
@@ -1055,6 +1181,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         static GpuBeamCloudLight individualEntries[kMaxIndividualCloudLights];
         uint32_t individualCount = 0;
 
+        TopK groundTopK, clusterTopK, individualTopK;
+
         // 2026-08-09: user-tunable ("How can we control the thresholding on what gets considered a
         // group?") — see beamClusterDirThresholdDeg's own comment in SatelliteSim.h. Converted once
         // per frame, not per beam.
@@ -1107,7 +1235,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         for (int s = 0; s < count; ++s)
             order[s] = s;
         std::sort(order, order + count, [&](int a, int b) {
-            return rb->entries[a].debugPad < rb->entries[b].debugPad;
+            return beamsIn[a].debugPad < beamsIn[b].debugPad;
         });
 
         for (int oi = 0; oi < count; ++oi)
@@ -1119,14 +1247,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             // "getting farther from the beam" even while staying right next to its line. Same
             // formula as cloud_march.comp's own obsToBeamDist, simplified: these vectors are
             // already observer-relative (origin = observer), so no obsPos subtraction is needed.
-            glm::vec3 tE = rebase(rb->entries[s].targetENU);
-            glm::vec3 sE = rebase(rb->entries[s].satENU);
+            glm::vec3 tE = rebase(beamsIn[s].targetENU);
+            glm::vec3 sE = rebase(beamsIn[s].satENU);
             float slantRangeM = glm::length(sE - tE);
             glm::vec3 dirUp = (slantRangeM > 1.0f) ? (sE - tE) / slantRangeM : glm::vec3(0, 0, 1);
             float t = glm::clamp(-glm::dot(tE, dirUp), 0.0f, slantRangeM);
             float d = glm::length(tE + dirUp * t);
 
-            float bOpacity = rb->entries[s].blockOpacity;
+            float bOpacity = beamsIn[s].blockOpacity;
             dbgBeamOpacityMin = std::min(dbgBeamOpacityMin, bOpacity);
             dbgBeamOpacityMax = std::max(dbgBeamOpacityMax, bOpacity);
             opacitySum += bOpacity;
@@ -1136,12 +1264,12 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             if (nearest < 0.0f || d < nearest)
             {
                 nearest = d;
-                nearestBlockOpacity = rb->entries[s].blockOpacity;
+                nearestBlockOpacity = beamsIn[s].blockOpacity;
             }
 
-            float intensity = rb->entries[s].intensity;
+            float intensity = beamsIn[s].intensity;
             float targetDistM = glm::length(tE);
-            glm::vec3 rDir = rebase(rb->entries[s].reflectDirENU);
+            glm::vec3 rDir = rebase(beamsIn[s].reflectDirENU);
 
             // Ground-spot compaction: same range cutoff sat_sky.frag's loop applies, done ONCE
             // here per beam instead of unconditionally per ground-hit pixel. Widened by
@@ -1169,34 +1297,62 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             const float kGroundBeamFadeM = 200000.0f;
             if (intensity > 0.0f && targetDistM <= beamMaxRangeM + kGroundBeamFadeM)
             {
-                uint32_t insertIdx = ~0u;
-                if (groundBeams.count < (uint32_t)kMaxGroundBeams)
-                {
-                    insertIdx = groundBeams.count++;
-                }
-                else
-                {
-                    uint32_t weakestIdx = 0;
-                    float weakestIntensity = groundBeams.entries[0].intensity;
-                    for (uint32_t gi = 1; gi < (uint32_t)kMaxGroundBeams; ++gi)
-                    {
-                        if (groundBeams.entries[gi].intensity < weakestIntensity)
-                        {
-                            weakestIntensity = groundBeams.entries[gi].intensity;
-                            weakestIdx = gi;
-                        }
-                    }
-                    if (intensity > weakestIntensity)
-                        insertIdx = weakestIdx;
-                }
+                uint32_t insertIdx = groundTopK.claim(
+                    groundBeams.count, (uint32_t)kMaxGroundBeams, intensity,
+                    [&](uint32_t i) { return groundBeams.entries[i].intensity; });
                 if (insertIdx != ~0u)
                 {
-                    groundBeams.entries[insertIdx] = rb->entries[s];
-                    // Overwrite with the rebased (current-frame-basis) vectors — the raw copy
-                    // above still carries last frame's basis for these three fields.
-                    groundBeams.entries[insertIdx].targetENU = tE;
-                    groundBeams.entries[insertIdx].satENU = sE;
-                    groundBeams.entries[insertIdx].reflectDirENU = rDir;
+                    // 2026-08-10: solve the whole view-independent half of sat_sky.frag's
+                    // ground-spot loop here, once per beam, instead of once per ground-hit pixel.
+                    // See GpuGroundBeam's comment for the measurement that motivated this. Every
+                    // line below is a direct port of what that shader loop used to do per pixel;
+                    // the rebased (current-frame-basis) tE/sE/rDir are used throughout, since the
+                    // raw entry still carries last frame's basis for those three vectors.
+                    GpuGroundBeam gb{};
+
+                    // Smooth range fade, keyed to the CHOSEN target's fixed site position rather
+                    // than the transient ray-ground point below — "is the observer close enough to
+                    // this SITE", which shouldn't flicker as a mid-slew ray briefly lands
+                    // elsewhere. Same widened cutoff/shape the membership test above uses.
+                    float rangeX = glm::clamp(
+                        (targetDistM - (beamMaxRangeM - kGroundBeamFadeM)) / kGroundBeamFadeM, 0.0f, 1.0f);
+                    float rangeFade = 1.0f - (rangeX * rangeX * (3.0f - 2.0f * rangeX));
+
+                    // Elevation fade — sin(5 deg) cutoff, matching the sky beam's own. rDir points
+                    // satellite->ground, so -rDir.z is the sine of the beam's elevation.
+                    float sinElev = -rDir.z;
+                    float ex = glm::clamp(sinElev / 0.08716f, 0.0f, 1.0f);
+                    float elevFade = ex * ex * (3.0f - 2.0f * ex);
+
+                    float shadowAtten = 1.0f - beamsIn[s].blockOpacity;
+
+                    // Real ray/ground intersection (NOT the idealized target site) via the same
+                    // rotation-invariant local-frame raySphere the cloud-light block below uses.
+                    glm::vec3 satPosLocalGB = obsPosLocalForLights + sE;
+                    float bGB = glm::dot(satPosLocalGB, rDir);
+                    float roLenGB = glm::length(satPosLocalGB);
+                    float cGB = (roLenGB - kEarthRadius) * (roLenGB + kEarthRadius);
+                    float discGB = bGB * bGB - cGB;
+                    float tHitGB = (discGB >= 0.0f) ? (-bGB - std::sqrt(discGB)) : -1.0f;
+
+                    if (tHitGB > 0.0f && elevFade > 0.0f && rangeFade > 0.0f)
+                    {
+                        glm::vec3 hitENU = sE + rDir * tHitGB;
+                        float footprintR = std::max(beamsIn[s].footprintRadM, 1.0f);
+                        float coreR = std::max(beamsIn[s].mirrorRadiusM, 1.0f);
+                        gb.groundHitX = hitENU.x;
+                        gb.groundHitY = hitENU.y;
+                        gb.invFootprintSq = 1.0f / (footprintR * footprintR);
+                        gb.invCoreSq = 1.0f / (coreR * coreR);
+                        gb.cutoffSq = (footprintR * 4.0f) * (footprintR * 4.0f);
+                        gb.weight = intensity * rangeFade * elevFade * shadowAtten;
+                    }
+                    // else: weight/cutoffSq stay 0, so the shader's own reject drops it. This is
+                    // the same outcome as the shader's old `continue` on those conditions —
+                    // deliberately still occupying its slot rather than being skipped, so top-K
+                    // membership stays a function of intensity alone and doesn't churn.
+                    gb.intensity = intensity; // ranking key only — see GpuGroundBeam's comment
+                    groundBeams.entries[insertIdx] = gb;
                 }
             }
 
@@ -1230,7 +1386,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                         // now — and always gets an individual slot.
                         const float kConvergedAimErrorRad = glm::radians(10.0f); // matches
                             // cloud_march.comp's kDebugRayAimMaxRad, same underlying question
-                        bool converged = rb->entries[s].aimErrorRad <= kConvergedAimErrorRad;
+                        bool converged = beamsIn[s].aimErrorRad <= kConvergedAimErrorRad;
 
                         // 2026-08-09 (in-app finding: cloud glow at busy targets flickered badly
                         // and appeared to come from "almost the exact opposite" direction):
@@ -1270,11 +1426,11 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                             uint32_t li = (uint32_t)matchedIdx;
                             cloudLights.entries[li].intensity += intensity;
                             cloudLights.entries[li].footprintRadM =
-                                std::max(cloudLights.entries[li].footprintRadM, rb->entries[s].footprintRadM);
+                                std::max(cloudLights.entries[li].footprintRadM, beamsIn[s].footprintRadM);
                             weightedPosSum[li] += groundPosENU * intensity;
                             weightedDirSum[li] += dirToSourceCand * intensity;
-                            weightedAltSum[li] += rb->entries[s].blockAltM * intensity;
-                            weightedOpacitySum[li] += rb->entries[s].blockOpacity * intensity;
+                            weightedAltSum[li] += beamsIn[s].blockAltM * intensity;
+                            weightedOpacitySum[li] += beamsIn[s].blockOpacity * intensity;
                         }
                         else if (converged)
                         {
@@ -1283,36 +1439,19 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                             // kMaxClusterCloudLights, its OWN reserved pool — see that constant's
                             // comment for why this can no longer compete with individual beams for
                             // slots.
-                            uint32_t insertIdx = ~0u;
-                            if (cloudLights.count < (uint32_t)kMaxClusterCloudLights)
-                            {
-                                insertIdx = cloudLights.count++;
-                            }
-                            else
-                            {
-                                uint32_t weakestIdx = 0;
-                                float weakestIntensity = cloudLights.entries[0].intensity;
-                                for (uint32_t li = 1; li < (uint32_t)kMaxClusterCloudLights; ++li)
-                                {
-                                    if (cloudLights.entries[li].intensity < weakestIntensity)
-                                    {
-                                        weakestIntensity = cloudLights.entries[li].intensity;
-                                        weakestIdx = li;
-                                    }
-                                }
-                                if (intensity > weakestIntensity)
-                                    insertIdx = weakestIdx;
-                            }
+                            uint32_t insertIdx = clusterTopK.claim(
+                                cloudLights.count, (uint32_t)kMaxClusterCloudLights, intensity,
+                                [&](uint32_t i) { return cloudLights.entries[i].intensity; });
                             if (insertIdx != ~0u)
                             {
                                 GpuBeamCloudLight &light = cloudLights.entries[insertIdx];
                                 light.intensity = intensity;
-                                light.footprintRadM = rb->entries[s].footprintRadM;
+                                light.footprintRadM = beamsIn[s].footprintRadM;
                                 clusterKeyENU[insertIdx] = tE;
                                 weightedPosSum[insertIdx] = groundPosENU * intensity;
                                 weightedDirSum[insertIdx] = dirToSourceCand * intensity;
-                                weightedAltSum[insertIdx] = rb->entries[s].blockAltM * intensity;
-                                weightedOpacitySum[insertIdx] = rb->entries[s].blockOpacity * intensity;
+                                weightedAltSum[insertIdx] = beamsIn[s].blockAltM * intensity;
+                                weightedOpacitySum[insertIdx] = beamsIn[s].blockOpacity * intensity;
                             }
                         }
                         else
@@ -1321,35 +1460,18 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                             // reserved pool (kMaxIndividualCloudLights), own top-K eviction. Never
                             // competes with clusters for a slot, so a busy target's summed
                             // intensity can no longer starve a lone transiting beam out entirely.
-                            uint32_t insertIdx = ~0u;
-                            if (individualCount < (uint32_t)kMaxIndividualCloudLights)
-                            {
-                                insertIdx = individualCount++;
-                            }
-                            else
-                            {
-                                uint32_t weakestIdx = 0;
-                                float weakestIntensity = individualEntries[0].intensity;
-                                for (uint32_t ii = 1; ii < (uint32_t)kMaxIndividualCloudLights; ++ii)
-                                {
-                                    if (individualEntries[ii].intensity < weakestIntensity)
-                                    {
-                                        weakestIntensity = individualEntries[ii].intensity;
-                                        weakestIdx = ii;
-                                    }
-                                }
-                                if (intensity > weakestIntensity)
-                                    insertIdx = weakestIdx;
-                            }
+                            uint32_t insertIdx = individualTopK.claim(
+                                individualCount, (uint32_t)kMaxIndividualCloudLights, intensity,
+                                [&](uint32_t i) { return individualEntries[i].intensity; });
                             if (insertIdx != ~0u)
                             {
                                 GpuBeamCloudLight &light = individualEntries[insertIdx];
                                 light.intensity = intensity;
-                                light.footprintRadM = rb->entries[s].footprintRadM;
+                                light.footprintRadM = beamsIn[s].footprintRadM;
                                 light.posENU = groundPosENU;
                                 light.dirToSource = dirToSourceCand;
-                                light.blockAltM = rb->entries[s].blockAltM;
-                                light.blockOpacity = rb->entries[s].blockOpacity;
+                                light.blockAltM = beamsIn[s].blockAltM;
+                                light.blockOpacity = beamsIn[s].blockOpacity;
                             }
                         }
                     }
@@ -1379,6 +1501,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         dbgBeamOccludedCount = occludedCount;
 
         lastActiveBeamCount = count;
+        lastGroundBeamCount = (int)groundBeams.count;
         lastNearestBeamDistM = nearest;
 
         // C12 follow-up #41: ready-to-use [0,1] sky-glow wash value — smoothstepped from the
@@ -2350,6 +2473,7 @@ SatDrawPC SatelliteSim::buildSatDrawPC(VulkanContext &ctx, VkExtent2D targetExte
     pc.beamGlowBleedGain = beamGlowBleedGain;           // C12 follow-up #39 — moved here from CloudMarchPC;
                                                         // now drives this shader's own beam sky-glow wash
     pc.beamProximityGlow = beamProximityGlow;           // C12 follow-up #41
+    pc.mwSuppressEased = mwSuppressEased;               // Milky Way's own pollution hysteresis — see member comment
     return pc;
 }
 
@@ -6667,6 +6791,7 @@ void SatelliteSim::updateLightPollutionDome()
         for (int i = 0; i < kNumLightSectors; ++i)
             lightDomeAz[i] = 0.0f;
         memcpy(lightDomeMapped, lightDomeAz, sizeof(lightDomeAz));
+        mwPollutionRaw = 0.0f; // no data (or above the skyglow altitude falloff) — reads as "dark"
         return;
     }
 
@@ -6720,6 +6845,10 @@ void SatelliteSim::updateLightPollutionDome()
     float obsLonRad = glm::radians(obsLonDeg);
     float cosObsLat = std::max(0.05f, cosf(obsLatRad)); // guard near the poles
 
+    float mwRawMax = 0.0f; // max cityBrightness*altFalloff across sectors, BEFORE lightPollutionGain
+                            // — feeds the Milky Way's own threshold (mwPollutionThresholdLo/Hi),
+                            // deliberately independent of the gain slider that scales lightDomeAz[]
+                            // for stars/satellites below.
     for (int sec = 0; sec < kNumLightSectors; ++sec)
     {
         float bearing = (float(sec) + 0.5f) * (2.0f * glm::pi<float>() / float(kNumLightSectors));
@@ -6754,7 +6883,9 @@ void SatelliteSim::updateLightPollutionDome()
         // gain=500 read identically to gain=5. Leaving this unclamped lets high gain compensate
         // for elevFalloff's reduction; the final domeVal clamp downstream still bounds the result.
         lightDomeAz[sec] = cityBrightness * altFalloff * lightPollutionGain;
+        mwRawMax = std::max(mwRawMax, cityBrightness * altFalloff);
     }
+    mwPollutionRaw = mwRawMax;
 
     // Circular smoothing pass (session 26 follow-up): each sector is a single bearing ray, so a
     // real city's edge — which doesn't line up with 22.5° sector boundaries — can put a bright
@@ -6783,6 +6914,20 @@ void SatelliteSim::updateLightPollutionDome()
 
 // ─── updateStars ──────────────────────────────────────────────────────────────
 // Transforms star ECI unit vectors into ENU each frame (Earth rotates under stars).
+// Altitude of a ray's closest approach to Earth's center, restricted to the forward ray (t >= 0) —
+// CPU mirror of the GLSL rayTangentAltM in common.glsl (see that copy's comment for the full
+// derivation/rationale). Used by updateStars()/updatePlanets() so a star/planet's atmospheric
+// extinction is gated on how deep ITS OWN line of sight dips toward the ground, not on the
+// observer's own altitude — an observer in orbit looking near the horizon still sends that ray
+// through a long real atmospheric column even though the observer itself is above all air.
+static inline float rayTangentAltM(const glm::vec3 &ro, const glm::vec3 &rd)
+{
+    float b = glm::dot(ro, rd);
+    float roLen = glm::length(ro);
+    float dMin = (b >= 0.0f) ? roLen : sqrtf(std::max((roLen - b) * (roLen + b), 0.0f));
+    return dMin - kEarthRadius;
+}
+
 // Stars fade out during civil/nautical twilight — invisible in full daylight.
 void SatelliteSim::updateStars()
 {
@@ -6886,10 +7031,14 @@ void SatelliteSim::updateStars()
         // dim by the same amount. Independent of light pollution/moon; this is what gives the
         // pollution dome's directional variation a smooth baseline to sit on top of instead of
         // being the only source of horizon-vs-zenith brightness difference.
+        // Gated on THIS star's own tangent altitude (rayTangentAltM above), not the observer-height
+        // atmFrac used for nightFactorEff above — a star near the observer's local horizon can
+        // still have a line of sight that grazes deep into the atmosphere even from orbit.
         float sinElClamped = glm::clamp(enu.z, 0.0f, 1.0f);
         float elDeg = glm::degrees(asinf(sinElClamped));
         float airmass = 1.0f / (sinElClamped + 0.50572f * powf(elDeg + 6.07995f, -1.6364f));
-        float extinctMag = extinctionCoeff * (airmass - 1.0f) * atmFrac;
+        float atmFracExtinct = expf(-std::max(rayTangentAltM(obsECI, rec.eciDir), 0.0f) / 80000.0f);
+        float extinctMag = extinctionCoeff * (airmass - 1.0f) * atmFracExtinct;
         float extinction = powf(10.0f, -0.4f * extinctMag);
 
         // Above the Earth limb: visible. Below: culled.
@@ -6982,10 +7131,13 @@ void SatelliteSim::updatePlanets()
         float beamDomeAz = glm::mix(beamGlowDomeAz[sec0w], beamGlowDomeAz[sec1w], secFrac);
         float beamDomeVal = glm::clamp(beamDomeAz * elevFalloff, 0.0f, 1.0f);
 
+        // Gated on this planet's own tangent altitude, not the observer-height atmFrac used for
+        // nightFactorEff above — same fix, same reason, as updateStars()'s copy of this block.
         float sinElClamped = glm::clamp(enu.z, 0.0f, 1.0f);
         float elDeg = glm::degrees(asinf(sinElClamped));
         float airmass = 1.0f / (sinElClamped + 0.50572f * powf(elDeg + 6.07995f, -1.6364f));
-        float extinctMag = extinctionCoeff * (airmass - 1.0f) * atmFrac;
+        float atmFracExtinct = expf(-std::max(rayTangentAltM(obsECI, ps.eciDir), 0.0f) / 80000.0f);
+        float extinctMag = extinctionCoeff * (airmass - 1.0f) * atmFracExtinct;
         float extinction = powf(10.0f, -0.4f * extinctMag);
 
         float intensity = (enu.z >= limbSin)

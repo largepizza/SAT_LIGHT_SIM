@@ -10,6 +10,11 @@
 #include "../Simulation.h"
 #include "../UIRenderer.h" // WindowChrome — used by member state below (needs complete type)
 
+// Forward declaration only — savePerfSnapshot/buildPerfSnapshotJson are the sole users and both
+// live in SatelliteSimUI.cpp, which includes the real header. Pulling all of nlohmann/json.hpp in
+// here would put it in every TU that touches this simulation for two method signatures.
+#include <nlohmann/json_fwd.hpp>
+
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -19,6 +24,7 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <chrono>
 
 // ── Maximum satellites per frame ──────────────────────────────────────────────
 static constexpr uint32_t MAX_SATELLITES = 10'000'000;
@@ -337,8 +343,16 @@ struct SatDrawPC
                              // reads this; every other consumer of SatDrawPC can ignore it (a GLSL
                              // push_constant declaration only needs to be a PREFIX of the pushed
                              // bytes, so shaders that don't declare it are unaffected).
-}; // total: 168 bytes
-static_assert(sizeof(SatDrawPC) == 168, "SatDrawPC layout mismatch");
+    // Milky Way's own light-pollution suppression — deliberately NOT the shared
+    // domeVal/kMWPollutionMaxDim shape sat_flare.comp/updateStars() use for stars/satellites, so
+    // tuning lightPollutionGain for those doesn't also require retuning the Milky Way. The
+    // threshold curve (mwPollutionThresholdLo/Hi) and fade-in/out hysteresis are entirely
+    // CPU-side (recordCompute(), updateLightPollutionDome()) — this is just the final eased
+    // result, [0,1], 0 = fully visible, 1 = fully suppressed. See mwSuppressEased member comment
+    // (SatelliteSim.h) and sat_sky.frag's Milky Way section for how it's consumed.
+    float mwSuppressEased; // offset 168
+}; // total: 172 bytes
+static_assert(sizeof(SatDrawPC) == 172, "SatDrawPC layout mismatch");
 
 // ── Push constants for cloud_march.comp (half-res cloud compute pass, C15-perf) ──────────────
 // Matches the layout(push_constant) block in cloud_march.comp exactly. A separate struct from
@@ -764,15 +778,46 @@ static_assert(sizeof(GpuReflectBeams) == 16 + kMaxActiveBeams * 64, "GpuReflectB
 // doubled frame rate — this is the dominant cost that knockout was hiding). Entries are raw,
 // unaggregated ReflectBeam records (per-satellite, not summed by target) because the ground-spot
 // term needs each satellite's own satENU for its elevation fade.
-// Struct must match GroundBeamsBuf in sat_sky.frag exactly.
+//
+// 2026-08-10: entries are no longer raw GpuReflectBeam records — they are a PRE-SOLVED
+// GpuGroundBeam, which is what makes the shader loop cheap. The Anchorage sweep measured that loop
+// at 1.59 ms of sky_background_draw at Medium, and the reason was that essentially its whole body
+// was view-INDEPENDENT and being recomputed for every ground-hit pixel at full resolution: a
+// length(targetENU) plus a smoothstep for the range fade, an obsPos+satENU and a raySphere (two
+// sqrts) for the real ray/ground intersection, the elevation fade, and the shadow attenuation. Only
+// the horizontal distance from the shaded point to the landing spot, and the two Gaussians built
+// from it, genuinely vary per pixel. All the rest is now folded on the CPU — once per beam, at most
+// kMaxGroundBeams times per frame, in the readback loop that was already visiting these entries —
+// into `weight` and a few reciprocals, so the shader's per-beam work drops to a 2D difference, a
+// dot, a squared-distance reject and two exps, with the reject FIRST rather than last.
+//
+// Struct must match GroundBeam/GroundBeamsBuf in sat_sky.frag exactly (hand-mirrored, same
+// convention and same hazard as GpuCloudParams — all plain floats so std430 needs no padding
+// beyond what is written here).
 static constexpr int kMaxGroundBeams = 256;
+struct GpuGroundBeam
+{
+    float groundHitX, groundHitY; // observer-relative ENU horizontal position of the beam's REAL
+                                  // ray/ground intersection (not the chosen target's site)
+    float invFootprintSq;         // 1 / footprintR^2   — halo Gaussian
+    float invCoreSq;              // 1 / coreR^2        — hotspot Gaussian
+    float cutoffSq;               // (footprintR * 4)^2 — the shader's first and cheapest reject
+    float weight;                 // intensity * rangeFade * elevFade * shadowAtten, i.e. every
+                                  // view-independent multiplier the old shader loop applied
+    float intensity;              // raw pre-fade intensity — CPU-side top-K ranking ONLY, never read
+                                  // by the shader. Kept so eviction ranks on exactly the same
+                                  // quantity it did before this rework (see the top-K comment at
+                                  // the insertion site for why ranking stability matters).
+    float pad0;
+};
+static_assert(sizeof(GpuGroundBeam) == 32, "GpuGroundBeam layout mismatch");
 struct GpuGroundBeams
 {
     uint32_t count;
     uint32_t pad0, pad1, pad2;
-    GpuReflectBeam entries[kMaxGroundBeams];
+    GpuGroundBeam entries[kMaxGroundBeams];
 };
-static_assert(sizeof(GpuGroundBeams) == 16 + kMaxGroundBeams * 64, "GpuGroundBeams layout mismatch");
+static_assert(sizeof(GpuGroundBeams) == 16 + kMaxGroundBeams * 32, "GpuGroundBeams layout mismatch");
 
 // ── Per-layer cloud shell descriptor (std140: 32 bytes, 2 × vec4) ─────────────
 // Each layer is an infinitely thin sphere-shell sample of earthCloudsTex.
@@ -1246,6 +1291,12 @@ private:
     // the straight-line distance (meters) from the observer to the nearest one's ground target —
     // one-frame-stale, same idiom as peakMagnitude. -1 = no active beams this/last frame.
     int lastActiveBeamCount = 0;
+    // How many of those survived the observer-range cull into the compacted ground-spot list
+    // (kMaxGroundBeams cap). Logged in perf snapshots alongside lastActiveBeamCount because the two
+    // drive different shaders: lastActiveBeamCount bounds cloud_march.comp's per-pixel pointing-ray
+    // loop, this one bounds sat_sky.frag's per-ground-pixel spot loop, and at a site like Anchorage
+    // (itself a reflector target, few neighbouring targets) they diverge sharply.
+    int lastGroundBeamCount = 0;
     float lastNearestBeamDistM = -1.0f;
     // 2026-08-09 debug instrumentation (BEAM_CLOUD_PLAN.md): raw min/max/avg blockOpacity across
     // every active beam this frame, computed straight from reflectBeamsBuf's readback with no
@@ -1406,6 +1457,60 @@ private:
                                      // UI overlay — order fixed by VulkanContext's slot table;
                                      // kPerfLabels[] and savePerfSnapshot() mirror it
     float gpuMsTotalSmoothed = 0.0f; // whole-frame GPU time
+    // UNSMOOTHED copies of the same eight deltas, written by the same updateGpuTimingStats() call.
+    // The EMA above exists so the HUD numbers don't flicker; the automated knockout sweep wants
+    // the opposite (a clean per-frame sample it can average over its OWN fixed window), and reading
+    // an EMA there would have meant either waiting out its ~40-frame settle at every one of the
+    // sweep's kDebugToggleCount+1 steps or silently letting the previous step bleed into the next.
+    float gpuMsRaw[8] = {};
+    float gpuMsRawTotal = 0.0f;
+
+    // ── CPU frame timing (2026-08-10) ─────────────────────────────────────────
+    // The GPU side of the Anchorage worst-case work brought Medium to 15.5 ms GPU, at which point
+    // the Release wall-clock frame was 18.3 ms — a ~2.8 ms non-GPU remainder that was NEARLY
+    // IDENTICAL at Planetarium (2.73 ms against a 6.0 ms GPU frame, i.e. 31% of that frame). Fixed
+    // per-frame cost that doesn't scale with rendering load is exactly the shape the GPU timestamp
+    // buckets were built to expose, and nothing equivalent existed on the CPU side — so the
+    // remainder was a single opaque number and any attempt to shrink it would have been guesswork.
+    // This is the same instrument, same conventions: raw per-frame values, an EMA for the HUD, and
+    // the sweep/snapshot logging the raw ones.
+    //
+    // ONE-FRAME-STALE, and deliberately so: timers accumulate into cpuAccumMs[] as the frame runs,
+    // and beginCpuFrameTiming() (first thing in buildUI, the first sim call of a frame) publishes
+    // the completed previous frame into cpuMsRaw[]/cpuMsSmoothed[] and clears the accumulator. That
+    // matches gpuMsRaw[]'s own staleness, so a sweep step samples a CPU frame and a GPU frame from
+    // the same moment rather than one lagging the other.
+    enum CpuBucket
+    {
+        CPU_BUILD_UI = 0,       // Clay layout for the whole HUD/settings window
+        CPU_UPDATE_POSITIONS,   // sun/moon/planets/observer basis (O(1), not per-satellite)
+        CPU_BEAM_READBACK,      // reflectBeamsBuf readback + sort + clustering + ground-beam top-K
+        CPU_UPDATE_STARS,       // per-star ENU + suppression chain over the catalogue
+        CPU_LIGHT_DOME,         // updateLightPollutionDome's 16 sectors x 4 radii
+        CPU_UPDATE_PLANETS,     // 6 planets, render-ready entries
+        CPU_COUNT,
+    };
+    float cpuAccumMs[CPU_COUNT] = {};    // accumulating, current (incomplete) frame
+    float cpuMsRaw[CPU_COUNT] = {};      // last COMPLETE frame, unsmoothed — sweep reads this
+    float cpuMsSmoothed[CPU_COUNT] = {}; // EMA, for the HUD
+    void beginCpuFrameTiming();
+
+    // Scoped accumulator. Deliberately adds rather than assigns, so a bucket whose work happens in
+    // several places (or inside a loop) can be timed with several instances in the same frame.
+    struct CpuTimer
+    {
+        float *acc;
+        std::chrono::steady_clock::time_point t0;
+        explicit CpuTimer(float &a) : acc(&a), t0(std::chrono::steady_clock::now()) {}
+        ~CpuTimer()
+        {
+            *acc += std::chrono::duration<float, std::milli>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+        }
+        CpuTimer(const CpuTimer &) = delete;
+        CpuTimer &operator=(const CpuTimer &) = delete;
+    };
 
     // ── Perf knockout toggles (profiling-only; not persisted) ──────────────────
     // Bitmask sent to sat_sky.frag as SatDrawPC::debugDisableMask, so the individual cost of
@@ -1421,7 +1526,84 @@ private:
     // beam_cloud_block.comp's own identical producer-side skip bit, now retired along with that
     // pass), in recordCompute() — no shader reads it. Bits 256 and 512 are the two producer-side
     // knockouts; every other bit disables a consumer block inside a shader.
+    //
+    // 2026-08-10 (Anchorage worst-case profiling session) added four bits for blocks that had no
+    // knockout at all and were therefore permanently invisible inside a lumped timestamp bucket:
+    // 8192 = the per-pixel Reflect-Orbital beam POINTING-RAY loop in cloud_march.comp (up to 2048
+    // iterations per half-res pixel; bit 128 never reached it — CLAUDE.md flagged that gap and this
+    // closes it), 16384 = cirrusMarchCS, 32768 = cloudMarchCS (the volumetric low/mid march itself),
+    // 65536 = sat_sky.frag's unconditional 64-bin satellite sky-glow loop. 8192 and 65536 are also
+    // the two blocks no graphics preset could reach, so they were paid in full even at Planetarium.
+    //
+    // The authoritative bit/label/json-key table is kDebugToggles at the top of SatelliteSimUI.cpp.
     uint32_t debugDisableMask = 0;
+
+    // ── Automated knockout sweep (profiling-only) ──────────────────────────────
+    // "Run knockout sweep" (Display tab) walks the kDebugToggles table on its own — baseline first,
+    // then one step per bit — holding each mask for a fixed frame window and averaging gpuMsRaw[]
+    // over it, then appends ONE profile_log.jsonl record carrying every step's bucket breakdown
+    // plus its delta against the baseline.
+    //
+    // Why this exists: doing it by hand is ~18 checkbox toggles x 8 numbers read off a HUD, which is
+    // both slow and unreliable — the scene has to hold still for the whole session or the steps
+    // aren't comparable, and the HUD values are EMA-smoothed, so a hand capture taken too soon
+    // after a toggle silently reads a blend of two configurations. The sweep pauses sim time for
+    // its duration (restored afterwards) so every step measures the same frame.
+    //
+    // THE BASELINE IS THE CURRENT MASK, NOT ZERO — this was a real defect in the first version
+    // (2026-08-10) and is the single thing most likely to be "fixed" back into a bug. Zeroing the
+    // mask for the baseline means that on any preset which knocks effects out (Planetarium disables
+    // eight of them; Low three), the sweep silently RE-ENABLES all of them and then measures the
+    // cost of removing each one again. That is a valid cost table for "this preset's slider values
+    // with every effect on", but it is NOT a profile of the preset as shipped, and it inflates the
+    // baseline — the Planetarium sweep read 18.73 ms against a real 10.4 ms. Anchoring to the live
+    // mask instead makes every step answer the question actually being asked: "of what this preset
+    // still renders, what does each piece cost me?" Bits already set in the baseline have nothing
+    // left to remove, so they are skipped outright and reported as already_disabled rather than
+    // logged as a meaningless ~0 ms row.
+    //
+    // kDebugToggleSlots sizes hovDebugToggle[] and the accumulators below; the static_assert in
+    // startKnockoutSweep() keeps it honest.
+    static constexpr int kDebugToggleSlots = 18;
+    static constexpr int kSweepSettleFrames = 6;  // discard after a mask change — covers the
+                                                  // one-frame-stale timestamp readback plus a
+                                                  // little driver/clock hysteresis
+    static constexpr int kSweepSampleFrames = 24; // then average this many consecutive frames
+    // A sweep now measures the baseline TWICE — step 0 at the start and one extra step at the end,
+    // both with the baseline mask — and logs the pair plus their drift. Two reasons, both seen in
+    // real captures: (1) the 2026-08-10 Release Medium sweep showed a systematic ~+0.32 ms
+    // orbit_compute delta on ten unrelated knockout rows, i.e. the FIRST window alone was elevated,
+    // which silently inflates every cost_ms by the same amount; (2) "the scene drifted between
+    // captures" has been the standing caveat on every cross-sweep comparison this session, and a
+    // start/end pair measures that drift instead of leaving it to be argued about. Large drift
+    // means the whole sweep is suspect and should be retaken.
+    bool     sweepActive = false;
+    int      sweepStep = 0;        // 0 = baseline, 1..sweepBitCount = sweepBits[step-1],
+                                    // sweepBitCount+1 = baseline re-measure
+    int      sweepFrame = 0;       // frames elapsed within the current step
+    uint32_t sweepSavedMask = 0;   // the baseline mask — restored when the sweep finishes
+    // Indices into kDebugToggles for the rows this sweep will actually measure: everything NOT
+    // already disabled by sweepSavedMask. Sized for the whole table (the mask==0 case).
+    int      sweepBits[kDebugToggleSlots] = {};
+    int      sweepBitCount = 0;
+    bool     sweepSavedPaused = false;
+    // Sized +2, not +1: baseline, every measured bit, and the trailing baseline re-measure.
+    float    sweepAccum[kDebugToggleSlots + 2][8] = {}; // [step][bucket] running sum, ms
+    float    sweepAccumTotal[kDebugToggleSlots + 2] = {};
+    // CPU wall-clock frame time, averaged over the SAME windows as the GPU buckets. Originally the
+    // record carried only `cpuDt` — a single instantaneous frame sampled on whichever frame the
+    // sweep happened to finish, right after a mask change, while every GPU number beside it was a
+    // 24-frame average. Comparing the two produced a GPU-vs-CPU gap that jumped around by several
+    // ms between otherwise-identical captures. Now that the GPU side of the Anchorage work is done
+    // and CPU frame time is the binding constraint, that scalar has to be measured as carefully as
+    // the GPU ones are.
+    float    sweepAccumCpu[kDebugToggleSlots + 2] = {};
+    // Per-bucket CPU breakdown, same windows again. A knockout bit should barely move these (they
+    // are almost all GPU-independent work), so a row that DOES move one is telling you the bit has
+    // a CPU-side consumer you didn't know about — which is the other half of why this is logged.
+    float    sweepAccumCpuBucket[kDebugToggleSlots + 2][CPU_COUNT] = {};
+    bool     hovRunSweep = false;
+    float    sweepDoneMsgTimer = 0.0f; // seconds remaining to show the "Sweep saved" confirmation
     // NAME IS STALE, BEHAVIOR IS NOT A BUG — read this before "fixing" the default again. This
     // started as a literal debug-only visualization (a green line) back when the volumetric tube
     // it now replaces was live. When that tube was thrown out for graphics/perf reasons, this ray
@@ -1458,6 +1640,10 @@ private:
     VkDeviceMemory lightDomeMem = VK_NULL_HANDLE;
     void *lightDomeMapped = nullptr;
     float lightDomeAz[kNumLightSectors]{}; // CPU-side copy, shared with updateStars()
+    // Raw (pre-lightPollutionGain) max local city-brightness across all sectors, written each
+    // frame by updateLightPollutionDome() and consumed immediately after by recordCompute()'s
+    // mwSuppressEased hysteresis step — see that member's comment. Transient, not persisted.
+    float mwPollutionRaw = 0.0f;
     VkDescriptorSetLayout skyDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool skyDescPool = VK_NULL_HANDLE;
     VkDescriptorSet skyDescSet = VK_NULL_HANDLE;
@@ -1705,6 +1891,17 @@ private:
                                       // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
                                       // in both sat_flare.comp and updateStars() so a star and a
                                       // satellite at the same elevation dim identically
+    // ── Milky Way pollution response (own threshold + hysteresis, decoupled from
+    //    lightPollutionGain/kMWPollutionMaxDim above — see updateLightPollutionDome() and
+    //    SatDrawPC::mwSuppressEased) ────────────────────────────────────────────
+    // Thresholds are against the RAW (pre-lightPollutionGain) local city-brightness signal, so
+    // retuning lightPollutionGain for star/satellite realism never silently shifts where the Milky
+    // Way cuts off — these two sliders are the only knob for that.
+    float mwPollutionThresholdLo = 0.01f; // below this: Milky Way at full brightness
+    float mwPollutionThresholdHi = 0.05f; // at/above this: fully suppressed (narrow band = steep cutoff)
+    float mwFadeInTimeS = 25.0f;  // seconds to fade back IN once local pollution drops out of the
+                                  // band above (bright area -> dark, or ascending into space)
+    float mwFadeOutTimeS = 4.0f; // seconds to fade back OUT once it rises back into the band
     float sunlitBgVisibility = 0.15f; // Stars/Milky Way visibility fraction in space when the sun is
                                       // off-screen but the observer is still in direct sunlight — 0 =
                                       // fully hidden (like being fully day-suppressed), 1 = as visible as
@@ -2149,6 +2346,14 @@ private:
     // logic and rationale (asymmetric fast-dim/slow-recover rates).
     float skyGlareEased = 1.0f;
 
+    // ── Milky Way pollution suppression (hysteresis state, not persisted) ─────
+    // [0,1], 0 = fully visible, 1 = fully suppressed. Eased each frame in
+    // updateLightPollutionDome() toward a target derived from the RAW (pre-lightPollutionGain)
+    // local light-pollution level via mwPollutionThresholdLo/Hi, using mwFadeInTimeS/mwFadeOutTimeS
+    // as asymmetric rates (same shape as skyGlareEased above, see that member/recordCompute() for
+    // the pattern this mirrors). Pushed to sat_sky.frag via SatDrawPC::mwSuppressEased.
+    float mwSuppressEased = 0.0f;
+
     // ── TargetedReflector ground targets ──────────────────────────────────────
     // S1 (RELEASE_v1_1_PLAN.md): real solar-farm sites loaded from reflector_targets.json (falls
     // back to random points — see loadReflectorTargets()), stored as unit ECEF vectors. Rotated to
@@ -2315,7 +2520,8 @@ private:
     float snapshotMsgTimer = 0.0f; // seconds remaining to show "Saved" confirmation on the perf snapshot button
     bool hovResetDefaults = false;
     float resetDefaultsMsgTimer = 0.0f;       // seconds remaining to show the "Restart to apply" confirmation (NEW-5)
-    bool hovDebugToggle[13] = {};             // one per knockout checkbox (terrain, atmosphere, sun OD, ocean refl, airglow red, aurora, cloud shadow cone, Reflect-Orbital beams, cloud shadow map, beam cloud block dispatch, scene depth pass, fog layer, satellite cloud occlusion)
+    bool hovDebugToggle[kDebugToggleSlots] = {}; // one per knockout checkbox — see kDebugToggles
+                                                 // (top of SatelliteSimUI.cpp) for the row list
     bool hovBeamDebugRaysToggle = false;      // hover state for the "Show beam pointing rays" checkbox (C12 follow-up #12)
     bool hovBeamDebugRaysToggleQuick = false; // hover state for the Display-tab quick-access copy
                                               // of the same checkbox, next to Graphics preset
@@ -2326,9 +2532,9 @@ private:
     // Sized 11, not 9 — flare_glow_gain/flare_streak_gain (flare architecture overhaul) added two
     // more PhotoParam rows; per [[feedback_cloud_slider_arrays]], all three hover/dragging arrays
     // must grow together with any new slider id.
-    bool hovPhotoMinus[11] = {};
-    bool hovPhotoPlus[11] = {};
-    bool draggingPhoto[11] = {};
+    bool hovPhotoMinus[15] = {};
+    bool hovPhotoPlus[15] = {};
+    bool draggingPhoto[15] = {};
     bool hovCloudMinus[84] = {}; // was [83] — idx 83 is the beam cluster direction threshold slider
     bool hovCloudPlus[84] = {};
     bool draggingCloud[84] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
@@ -2486,6 +2692,11 @@ private:
     // GPU-name lookup table." Only called once, from init(), when no persisted preset exists.
     GraphicsPreset seedGraphicsPresetFromDevice(VulkanContext &ctx) const;
     void savePerfSnapshot(float cpuDt);                // appends one profiling record to perf_profiles/profile_log.jsonl
+    nlohmann::json buildPerfSnapshotJson(float cpuDt);  // the shared body of the above and of the sweep record
+    void appendPerfRecord(const nlohmann::json &j);     // one JSONL line into perf_profiles/profile_log.jsonl
+    void startKnockoutSweep();                         // Display tab "Run knockout sweep" button
+    void updateKnockoutSweep(float cpuDt);             // one step of the sweep state machine; called
+                                                        // once per frame from recordCompute()
     void updatePositions(double t, float dt = 0.0f);   // called each frame: fills satInputData + eci2enu
     void toggleTimeDirection() { timeDir = -timeDir; } // shared by KB_REVERSE and the left-panel Reverse button
 

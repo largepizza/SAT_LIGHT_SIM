@@ -148,6 +148,18 @@ layout(push_constant) uniform PC {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const float R_EARTH      = 6371000.0;   // Earth radius (meters)
+
+// Altitude of THIS satellite's line of sight at its closest approach to Earth's center — see the
+// identical helper's comment in common.glsl (not included here; this file is deliberately
+// self-contained, so it gets its own copy, same convention as its local R_EARTH above). Used ONLY
+// for the extinction term below, not for dayBright/moonBright suppression (those legitimately key
+// off the OBSERVER's own altitude — "is there scattering atmosphere near me").
+float rayTangentAltM(vec3 ro, vec3 rd) {
+    float b     = dot(ro, rd);
+    float roLen = length(ro);
+    float dMin  = (b >= 0.0) ? roLen : sqrt(max((roLen - b) * (roLen + b), 0.0));
+    return dMin - R_EARTH;
+}
 // Horizon cull threshold comes from pc.elevCutoff (dynamic: opens to Earth limb at altitude).
 const float REF_RANGE    = 500000.0;    // 500 km reference distance for 1/r² normalisation
 
@@ -456,9 +468,14 @@ void main() {
     float sinElClamped = clamp(skyDir.z, 0.0, 1.0);
     float elDeg      = degrees(asin(sinElClamped));
     float airmass    = 1.0 / (sinElClamped + 0.50572 * pow(elDeg + 6.07995, -1.6364));
-    // atmFrac-gated: from orbit there's no atmospheric column along the line of sight at all,
-    // regardless of the satellite's apparent "elevation" in the observer's local frame.
-    float extinctMag = pc.extinctionCoeff * (airmass - 1.0) * atmFrac;
+    // Gated on THIS satellite's own line-of-sight tangent altitude (rayTangentAltM above), NOT the
+    // observer-height atmFrac used for day/moon suppression above — from orbit, a satellite sitting
+    // near the observer's local horizon can still have a line of sight that grazes deep into the
+    // atmosphere even though the OBSERVER itself is far above it. Using atmFrac here silently
+    // turned extinction off entirely near the horizon as soon as the observer left the atmosphere,
+    // regardless of the sightline's real atmospheric path.
+    float atmFracExtinct = exp(-max(rayTangentAltM(pc.obsECI, normalize(rel)), 0.0) / 80000.0);
+    float extinctMag = pc.extinctionCoeff * (airmass - 1.0) * atmFracExtinct;
     effectFlare *= pow(10.0, -0.4 * extinctMag);
 
     // Light pollution: dims (scales down) rather than culls — matches the observation that
