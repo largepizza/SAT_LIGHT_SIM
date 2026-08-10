@@ -1881,8 +1881,9 @@ private:
     float musicVol_ = 0.6f;
     float sfxVol_ = 1.0f;
     // ── Photometry tuning (synced to SatFlarePC each frame) ───────────────────
-    // Defaults below are the user-tuned values as of the C16 (aurora) session-28 follow-up #21/#22
-    // (2026-07-16) commit — baked in from settings.json rather than the original placeholder guesses.
+    // Defaults below are the user-tuned values baked in from settings.json rather than placeholder
+    // guesses — re-synced 2026-08-10 (extinctionCoeff, lightPollutionGain, and the Milky Way
+    // pollution-response block moved noticeably; the rest were already current).
     float brightnessScale = 1.0125f;
     float daySuppression = 574.605f;
     float mirrorBoost = 429.17f;
@@ -1890,9 +1891,9 @@ private:
     float highlightFlare = 0.17066f;
     float moonSuppression = 6.57895f; // sky background suppression from moonlight (mirrors daySuppression,
                                       // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
-    float lightPollutionGain = 20.0f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
+    float lightPollutionGain = 7.017544f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
                                       // so satellites + stars stay coherently scaled by construction
-    float extinctionCoeff = 0.39912f; // atmospheric extinction, magnitudes per airmass (Kasten & Young
+    float extinctionCoeff = 0.092105f; // atmospheric extinction, magnitudes per airmass (Kasten & Young
                                       // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
                                       // in both sat_flare.comp and updateStars() so a star and a
                                       // satellite at the same elevation dim identically
@@ -1902,11 +1903,11 @@ private:
     // Thresholds are against the RAW (pre-lightPollutionGain) local city-brightness signal, so
     // retuning lightPollutionGain for star/satellite realism never silently shifts where the Milky
     // Way cuts off — these two sliders are the only knob for that.
-    float mwPollutionThresholdLo = 0.01f; // below this: Milky Way at full brightness
-    float mwPollutionThresholdHi = 0.05f; // at/above this: fully suppressed (narrow band = steep cutoff)
-    float mwFadeInTimeS = 25.0f;  // seconds to fade back IN once local pollution drops out of the
+    float mwPollutionThresholdLo = 0.002193f; // below this: Milky Way at full brightness
+    float mwPollutionThresholdHi = 0.036018f; // at/above this: fully suppressed (narrow band = steep cutoff)
+    float mwFadeInTimeS = 3.157895f;  // seconds to fade back IN once local pollution drops out of the
                                   // band above (bright area -> dark, or ascending into space)
-    float mwFadeOutTimeS = 4.0f; // seconds to fade back OUT once it rises back into the band
+    float mwFadeOutTimeS = 0.0f; // seconds to fade back OUT once it rises back into the band
     float sunlitBgVisibility = 0.15f; // Stars/Milky Way visibility fraction in space when the sun is
                                       // off-screen but the observer is still in direct sunlight — 0 =
                                       // fully hidden (like being fully day-suppressed), 1 = as visible as
@@ -1917,17 +1918,17 @@ private:
     // view-dependent specular term the OBSERVER sees the mirror glint by; this is the physical
     // irradiance the mirror delivers to its ground target, independent of view angle — see
     // sat_orbit.comp's beam-writer comment). Uploaded via SatOrbitPC.
-    float beamGain = 0.004023f;
+    float beamGain = 0.001711f;
     // C12 follow-up #34: beamFootprintRadM (a flat, tunable constant) removed — the ground
     // footprint is now physically derived in sat_orbit.comp from mirror area + range to target.
-    float beamMaxRangeM = 1305172.5f; // C12 follow-up #6 — render-time "is the observer close
+    float beamMaxRangeM = 1067763.125f; // C12 follow-up #6 — render-time "is the observer close
                                       // enough to this site" cutoff (site-referenced beams have
                                       // no observer-side write gate any more, see sat_orbit.comp)
     // C12 follow-up #17: simple atmospheric-scattering beam sky glow (replaces the removed real
     // cloud-density march from follow-ups #14-#16, reverted per user request — no cloud lighting
     // yet). Own gain, separate from beamGain (that's the physical ground-irradiance term feeding
     // the ground spot; this purely scales the visual glow's brightness) — dim default, tunable.
-    float beamSkyGlowGain = 0.022989f;
+    float beamSkyGlowGain = 0.008772f;
     // 2026-08-06 reversibility rework: replaced the old rate-limited mirror slew (deg/sec,
     // integrated frame-by-frame — inherently history-dependent, so it could not be made
     // reversible) with a fixed-width sim-time window a satellite commits to one target for. See
@@ -1940,7 +1941,7 @@ private:
     // is derived from this and the actual angle to cover. The window-crossfade-only version
     // shipped earlier the same day only covered one of several transition cases and wasn't tied to
     // real angular distance, which read as satellites snapping to target.
-    float mirrorMaxRateDegPerSec = 8.0f;
+    float mirrorMaxRateDegPerSec = 0.110539f;
     // S1 follow-up (RELEASE_v1_1_PLAN.md): minimum acceptable local elevation angle of the
     // satellite as seen FROM a candidate ground target, in degrees. Below this, a target is
     // rejected outright by sat_orbit.comp's TargetedReflector selection (grazing beams suffer
@@ -1951,7 +1952,7 @@ private:
     // per-candidate in the shader). This is now the ONLY floor — the 2026-08-06 reversibility
     // rework removed the separate release floor/hysteresis margin along with the persisted lock it
     // existed to protect (temporal stability now comes from reflectorLockWindowS instead).
-    float reflectorMinElevDeg = 10.142244f;
+    float reflectorMinElevDeg = 10.0f;
     // (beamExtinctionMult lived here — user-tunable extra extinction for the deleted analytic
     // beam sky tube. Removed in C12 follow-up #44 along with the tube itself: the replacement
     // per-sample beam-cloud term is a real volumetric contribution composited through the cloud
@@ -1962,7 +1963,7 @@ private:
     // designed for a camera near/inside the volume). The tube fades out approaching a beam
     // (crossfade in the shader) while this purely angular (no segment geometry) glow term fades
     // in — own gain per [[feedback_shared_gain_sliders]], not a reuse of beamSkyGlowGain.
-    float beamGlowBleedGain = 0.000901f;
+    float beamGlowBleedGain = 0.001228f;
     // C12 follow-up #40: radius (meters) of the crossfade blend zone around a beam's own 3D line —
     // was a hardcoded kNearFieldCrossoverM constant in cloud_march.comp, now user-tunable.
     // Per-pixel cloud shadow fade distance. Was 80 km (matching the deleted 128x128 grid's
@@ -1972,7 +1973,7 @@ private:
     // killing shadows the march already computed. So it now defaults maxed, and it is deliberately
     // NOT in applyGraphicsPreset's table; Planetarium still removes the whole pass via bit 256.
     float cloudShadowRangeM = 300000.0f;
-    float beamNearFieldFadeM = 71510.867188f;
+    float beamNearFieldFadeM = 1000.0f;
     // 2026-08-09: exposed per explicit user request ("How can we control the thresholding on what
     // gets considered a group?"). Two beams converged on the same real target only merge into one
     // cloud-lighting cluster if their approach directions are also within this angle of the
@@ -1982,7 +1983,7 @@ private:
     // clusters, more risk of blending genuinely distinct directions); higher = stricter (more
     // individual-looking clusters, less blending risk). Stored in degrees for the UI; converted to
     // a cosine threshold at the one use site.
-    float beamClusterDirThresholdDeg = 20.0f;
+    float beamClusterDirThresholdDeg = 38.083332f;
     // C12 follow-up #41: 0-1, how close the observer is to ANY active beam's actual 3D line —
     // smoothstepped from lastNearestBeamDistM/beamNearFieldFadeM each frame in recordCompute().
     // Drives the non-directional sky-glow wash in sat_sky.frag, replacing #39/#40's directional
@@ -1997,20 +1998,22 @@ private:
     glm::vec3 mwRow2{0.0f, 0.0f, 1.0f};
     // Cloud tunables (CPU-side; uploaded to cloudParamsBuf each frame)
     // Defaults below are the user-tuned values baked in from settings.json (most recently
-    // 2026-08-06, the cloud/atmosphere tuning close-out) rather than placeholder guesses. They are
+    // 2026-08-10 — cloudDensity, cloudAmbientGain, airglowCoverageGain/PolarGain, and most of the
+    // Reflect-Orbital beam gains/ranges moved; the rest of the block was already current) rather
+    // than placeholder guesses. They are
     // a measured, self-consistent SET — the flat-2D scales calibrate against the volumetric path,
     // and the lighting gains against each other. Do not re-derive any one of them in isolation.
     // Anything here that GraphicsPreset::High also lists must change in both places at once:
     // High's table row is documented as "the compiled-in class member defaults, verbatim."
     float cloudCoverage = 1.0f;
-    float cloudDensity = 1.252418f;
+    float cloudDensity = 0.838158f;
     float cloudBaseAltM = 6000.0f; // layer 0 shell altitude (low cloud / stratus)
     float cloudTopAltM = 15000.0f; // layer 1 shell altitude (high cirrus)
     float cloudDriftRate = 6.55e-06f;
     float cloudSunGain = 1.141773f;       // near-horizon/sunset sun-gain endpoint — blended toward
                                           // cloudSunGainZenith by sun elevation (see cloud_march.comp)
     float cloudSunGainZenith = 1.001422f; // sun-gain endpoint when the sun is near zenith (midday)
-    float cloudAmbientGain = 1.8f;
+    float cloudAmbientGain = 0.438596f;
     float cloudTwilightAmbientGain = 0.398292f; // manual gain on sky-lit cloud during twilight (was piggybacking
                                                 // on cloudAmbientGain, which also drives city-light
                                                 // upwelling — see kNightSkyAmbientColor in cloud_march.comp)
@@ -2137,8 +2140,8 @@ private:
     float airglowGreenGain = 0.052632f;   // C15: green (557.7nm) band gain
     float airglowRedGain = 0.013158f;     // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
     float airglowSodiumGain = 0.08f;      // C15: sodium (589.3nm) band gain — kept dim relative to green
-    float airglowCoverageGain = 0.7f;     // patchy-coverage strength for all 3 airglow bands, [0,1]
-    float airglowPolarGain = 2.5f;        // red band only: extra boost toward the geomagnetic pole
+    float airglowCoverageGain = 0.324561f;     // patchy-coverage strength for all 3 airglow bands, [0,1]
+    float airglowPolarGain = 2.421053f;        // red band only: extra boost toward the geomagnetic pole
     // Sun self-shadow cone (N_CONE) fades out beyond this distance. Was 22 km, when the cone
     // marched a fixed stride and distance directly bought samples. The cone now absorbs distance
     // into its stride (see cloud_march.comp's shadowFade comment), so this became a reach knob
