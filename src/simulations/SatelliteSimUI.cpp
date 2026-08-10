@@ -2431,7 +2431,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
     // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
     // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[83][16];
+    static char cloudBufs[84][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -2797,6 +2797,10 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
         {"Min beam elevation (deg)", &reflectorMinElevDeg, 0.0f, 60.0f, 1.0f, "%.0f", 44},
         {"Beam glow bleed gain", &beamGlowBleedGain, 0.0f, 0.01f, 0.0001f, "%.2f", 45},
         {"Beam near-field fade (m)", &beamNearFieldFadeM, 1000.0f, 500000.0f, 1000.0f, "%.0f", 46},
+        // 2026-08-09: new slot (83) — see [[feedback_cloud_slider_arrays]], hovCloudMinus/Plus/
+        // draggingCloud/cloudBufs all resized to 84 for this one. Controls how aggressively
+        // beam-cloud lights sharing a target merge into one cluster — see the member's own comment.
+        {"Beam cluster direction threshold (deg)", &beamClusterDirThresholdDeg, 1.0f, 90.0f, 1.0f, "%.0f", 83},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 
@@ -3842,6 +3846,7 @@ void SatelliteSim::loadSettings()
         beamGlowBleedGain = c.value("beam_glow_bleed_gain", beamGlowBleedGain);
         cloudShadowRangeM = c.value("cloud_shadow_range_m", cloudShadowRangeM);
         beamNearFieldFadeM = c.value("beam_near_field_fade_m", beamNearFieldFadeM);
+        beamClusterDirThresholdDeg = c.value("beam_cluster_dir_threshold_deg", beamClusterDirThresholdDeg);
         fogTopAltM = c.value("fog_top_alt_m", fogTopAltM);
         fogDensity = c.value("fog_density", fogDensity);
         fogCoverage = c.value("fog_coverage", fogCoverage);
@@ -4004,6 +4009,7 @@ void SatelliteSim::saveSettings()
         {"beam_glow_bleed_gain", beamGlowBleedGain},
         {"cloud_shadow_range_m", cloudShadowRangeM},
         {"beam_near_field_fade_m", beamNearFieldFadeM},
+        {"beam_cluster_dir_threshold_deg", beamClusterDirThresholdDeg},
         {"fog_top_alt_m", fogTopAltM},
         {"fog_density", fogDensity},
         {"fog_coverage", fogCoverage},

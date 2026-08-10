@@ -65,8 +65,8 @@ layout(std430, set = 0, binding = 0) readonly buffer GlowBuf {
 
 // Ocean-glint list (flare architecture overhaul) — matches GpuOceanGlintBuf exactly. Same buffer
 // sat_flare.comp's binding 8 writes; read here via skyDescSet's own binding 20.
-const uint kOceanGlintMax = 32u; // must match kMaxOceanGlints in SatelliteSim.h and
-                                 // OCEAN_GLINT_MAX in sat_flare.comp exactly.
+const uint kOceanGlintMax = 512; // must match kMaxOceanGlints in SatelliteSim.h and
+                                  // OCEAN_GLINT_MAX in sat_flare.comp exactly.
 layout(std430, set = 0, binding = 20) readonly buffer OceanGlintBuf {
     uint oceanGlintCount;
     uint oceanGlintPad[3];
@@ -2396,7 +2396,11 @@ void main() {
                 // and the sky beam ray below (cloud_march.comp's kSkyBeamFadeM), just wider per
                 // user request ("very gradual"). targetENU is observer-relative, so its length is
                 // the same targetDistM the CPU computed when deciding whether to include this
-                // entry (which now widens its own cutoff by this same kGroundBeamFadeM).
+                // entry (which now widens its own cutoff by this same kGroundBeamFadeM). Deliberately
+                // stays keyed to the CHOSEN target's fixed site position, not the transient real
+                // ray-ground intersection below (2026-08-09) — this answers "is the observer close
+                // enough to this SITE," which shouldn't flicker in/out as a mid-slew ray briefly
+                // touches down somewhere else entirely.
                 float targetDistM = length(groundBeams[bi].targetENU);
                 const float kGroundBeamFadeM = 200000.0;
                 float rangeX = clamp((targetDistM - (pc.beamMaxRangeM - kGroundBeamFadeM)) / kGroundBeamFadeM, 0.0, 1.0);
@@ -2404,11 +2408,25 @@ void main() {
                 intensity *= rangeFade;
                 if (intensity <= 0.0) continue;
 
+                // 2026-08-09: footprint is now anchored at the beam's ACTUAL real ground
+                // intersection (satENU + reflectDirENU traced to R_EARTH), not the idealized
+                // targetENU — the same fix beam_self_march.comp's occlusion march got, applied
+                // here so the visible landing spot agrees with it instead of sitting at the
+                // (only-correct-once-converged) chosen-target position while the mirror slews.
+                // reflectDirENU points satellite->ground (see cloud_march.comp's own use of it
+                // for raySphere(satWorldPos, rayDir, R_EARTH)), so -reflectDirENU is ground->
+                // satellite — the "up" direction elevFade below already wanted.
+                vec3 satWorldPosLocal = obsPos + groundBeams[bi].satENU;
+                vec2 rayGroundHit = raySphere(satWorldPosLocal, groundBeams[bi].reflectDirENU, R_EARTH);
+                if (rayGroundHit.x <= 0.0) continue; // aimed away from Earth this frame — no landing spot to draw
+                vec3 groundHitENU = groundBeams[bi].satENU
+                                   + groundBeams[bi].reflectDirENU * rayGroundHit.x;
+
                 float footprintR = max(groundBeams[bi].footprintRadM, 1.0);
                 // Tight bright "hotspot" core on top of the soft halo (C12 follow-up #18) — reads
                 // as a clear landing point where the beam meets the ground, the anchor the sky
-                // glow march (cloud_march.comp) now visually starts from (that march begins
-                // exactly at this same targetENU position and heads upward — see its comment).
+                // glow march (cloud_march.comp) now visually starts from (that march begins at
+                // this same real ground-hit position and heads upward — see its comment).
                 // C12 follow-up #34: was footprintR*0.15 (an arbitrary ratio) — now the mirror's
                 // own true physical size, with footprintR (the halo) representing the full
                 // sun-disk-broadened extent around it.
@@ -2424,12 +2442,11 @@ void main() {
                 // elevFade kept — independently reasonable (matches the sky tube's own 5° cutoff,
                 // cloud_march.comp) even without the ellipse's infinite-stretch concern that
                 // originally motivated it.
-                vec3  beamDirUp = normalize(groundBeams[bi].satENU - groundBeams[bi].targetENU);
-                float sinElev   = beamDirUp.z;
+                float sinElev   = -groundBeams[bi].reflectDirENU.z;
                 float elevFade  = smoothstep(0.0, 0.08716, sinElev); // sin(5 deg) = 0.08716
                 if (elevFade <= 0.0) continue;
 
-                float groundDist = length(hitPt.xy - groundBeams[bi].targetENU.xy);
+                float groundDist = length(hitPt.xy - groundHitENU.xy);
                 if (groundDist > footprintR * 4.0) continue;
 
                 float footprint = exp(-0.5 * groundDist * groundDist / (footprintR * footprintR));

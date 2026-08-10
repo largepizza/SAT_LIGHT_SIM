@@ -994,8 +994,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
     // Read previous frame's reflectBeamsBuf — diagnostic for C12 (is anything actually being
     // written, and how far is the nearest one) — AND (C12 follow-up #41) the source signal for
-    // the beam-proximity sky-glow wash below — AND (C12 follow-up #44) the per-target aggregation
-    // that feeds cloud_march.comp's real beam->cloud illumination term. Same one-frame-stale,
+    // the beam-proximity sky-glow wash below — AND (2026-08-09) the small capped per-BEAM light
+    // list that feeds cloud_march.comp's real beam->cloud illumination term (no per-target
+    // aggregation any more — see GpuBeamCloudLights' own comment). Same one-frame-stale,
     // HOST_COHERENT idiom as peakMagnitude above.
     {
         const GpuReflectBeams *rb = static_cast<const GpuReflectBeams *>(reflectBeamsMapped);
@@ -1017,35 +1018,109 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         dbgBeamOpacityMax = 0.0f;
         float opacitySum = 0.0f;
         int occludedCount = 0;
-        // C12 follow-up #44: aggregate by target position into a small fixed list — satellites
-        // servicing the same real-world site resolve to numerically identical targetENU (both
-        // derive from the same reflectorTargetsECEFBuf[bestIdx] entry, rotated by the same
-        // gmstNow this frame), so a small epsilon match buckets and sums them with no target-ID
-        // plumbing.
-        // Bounded at kMaxCloudBeamLights: reflector targets are globally sparse (~1500km+ typical
-        // spacing), so more than a handful simultaneously within beamMaxRangeM is already an edge
-        // case, and a target that overflows this list simply doesn't light clouds this frame
-        // (silent, harmless — its ground spot and sky-glow suppression dome contribution are
-        // unaffected, since those read reflectBeamsBuf directly and don't go through this list).
-        GpuBeamCloudLights lights{};
-        // Intensity-weighted running sums for blockAltM/blockOpacity, parallel to lights.entries[]
-        // — see the 2026-08-09 comment at the matched-entry update below for why this replaced a
-        // discrete argmax.
-        float weightedAltSum[kMaxCloudBeamLights] = {};
-        float weightedOpacitySum[kMaxCloudBeamLights] = {};
         // Perf follow-up: compacted raw-entry list for sat_sky.frag's ground-spot term, filtered
         // to the same beamMaxRangeM cutoff computed per-entry below — see GpuGroundBeams comment.
         GpuGroundBeams groundBeams{};
+        // Reflect-Orbital beam->cloud light sources (2026-08-09 design — see GpuBeamCloudLights'
+        // own comment for the full history: this replaced first a per-target aggregation, then a
+        // screen-space glow that produced visible ring artifacts, then a flat per-beam top-K that
+        // needed 512 slots for full coverage and tanked frame rate). A bounded list where a
+        // CONVERGED beam (locked onto its target) is folded into a shared per-target cluster, and
+        // a TRANSITING beam (still slewing) keeps its own individual slot — see the clustering
+        // decision inline below. Ground intersections computed via the same rotation-invariant
+        // local-frame raySphere trick the GPU side already uses (obsPos at local "north pole",
+        // ENU offsets added directly, R_EARTH sphere at true origin) — no ECEF conversion needed.
+        // Uses whatever obsTerrainH/obsHeightOffset currently hold (one-frame-stale is fine, same
+        // tolerance every CPU aggregation in this loop already has); beam_self_march.comp's own
+        // push-constant fill later this frame computes the identical obsEffH the same way.
+        GpuBeamCloudLights cloudLights{};
+        float obsEffHForLights = std::max(obsTerrainH, obsHeightOffset);
+        glm::vec3 obsPosLocalForLights(0.0f, 0.0f, kEarthRadius + obsEffHForLights + 2.0f);
+
+        // Local (CPU-only) parallel tracking for the clustering below — not part of the
+        // GPU-uploaded struct. clusterKeyENU is the target position a converged cluster slot is
+        // matched against; the weighted* arrays are intensity-weighted running sums, finalized
+        // (divided by accumulated intensity) after the loop. Sized to kMaxClusterCloudLights, not
+        // kMaxCloudBeamLights — clusters and individual/transiting beams now build into two
+        // SEPARATE pools with independent eviction budgets (see kMaxClusterCloudLights's own
+        // comment in SatelliteSim.h for why: a shared pool let clusters, whose intensity is a SUM
+        // of every beam folded in, always outbid and starve lone transiting beams under any
+        // capacity pressure). individualEntries/individualCount is the second pool, appended onto
+        // the end of cloudLights.entries after clusters are finalized below.
+        glm::vec3 clusterKeyENU[kMaxClusterCloudLights] = {};
+        glm::vec3 weightedPosSum[kMaxClusterCloudLights] = {};
+        glm::vec3 weightedDirSum[kMaxClusterCloudLights] = {};
+        float weightedAltSum[kMaxClusterCloudLights] = {};
+        float weightedOpacitySum[kMaxClusterCloudLights] = {};
+        static GpuBeamCloudLight individualEntries[kMaxIndividualCloudLights];
+        uint32_t individualCount = 0;
+
+        // 2026-08-09: user-tunable ("How can we control the thresholding on what gets considered a
+        // group?") — see beamClusterDirThresholdDeg's own comment in SatelliteSim.h. Converted once
+        // per frame, not per beam.
+        const float kClusterDirCosThreshold = std::cos(glm::radians(beamClusterDirThresholdDeg));
+
+        // 2026-08-09 (in-app finding: beams/ground spots visibly drag behind the observer while
+        // moving): satENU/targetENU/reflectDirENU in reflectBeamsBuf are true East/North/Up
+        // physical measurements at whatever obsDir was in effect when sat_orbit.comp/
+        // beam_self_march.comp wrote them (lastBeamObsDir, cached one frame ago — see its own
+        // comment in SatelliteSim.h). That basis rotates with the observer's lat/lon, so reading
+        // last frame's numbers and combining them with THIS frame's obsPos (as every downstream
+        // consumer does) without re-projecting is a real rotation error proportional to how far
+        // the observer moved. Rebase once here, before anything below uses these vectors — a
+        // small CPU port of terrain.glsl's enuBasis() (normalize + 2 cross products), applied to
+        // the OLD and NEW bases once per frame, not per beam.
+        auto enuBasisCPU = [](const glm::vec3 &dir, glm::vec3 &x, glm::vec3 &y, glm::vec3 &z) {
+            z = glm::normalize(dir);
+            x = glm::normalize(glm::cross(glm::vec3(0.0f, 0.0f, 1.0f), z));
+            y = glm::cross(z, x);
+        };
+        glm::vec3 oldEnuX, oldEnuY, oldEnuZ, newEnuX, newEnuY, newEnuZ;
+        enuBasisCPU(lastBeamObsDir, oldEnuX, oldEnuY, oldEnuZ);
+        enuBasisCPU(obsDir, newEnuX, newEnuY, newEnuZ);
+        auto rebase = [&](const glm::vec3 &v) {
+            glm::vec3 worldish = v.x * oldEnuX + v.y * oldEnuY + v.z * oldEnuZ;
+            return glm::vec3(glm::dot(worldish, newEnuX), glm::dot(worldish, newEnuY), glm::dot(worldish, newEnuZ));
+        };
+
+        // 2026-08-09 (in-app finding: raising kMaxCloudBeamLights 512->1024 made flicker WORSE,
+        // including on individual/transiting beams that never enter the clustering branch at
+        // all): the cluster-merge logic above is order-dependent — which beam is processed FIRST
+        // for a given target establishes clusterKeyENU/the initial running-average direction that
+        // every subsequent candidate is compared against (kClusterDirCosThreshold), so the same
+        // physical set of beams servicing one target can fold into ONE cluster or split into
+        // SEVERAL depending purely on scan order. `s` (the slot index into reflectBeamsBuf) is
+        // explicitly NOT stable frame to frame — sat_orbit.comp's own header documents it as a
+        // GPU atomicAdd race — so scan order reshuffles every frame even when the underlying
+        // satellites and their geometry haven't changed, and the resulting cluster split/merge
+        // outcome flickers along with it. Raising the cap didn't cause this; it let more
+        // previously-evicted (and therefore invisible) borderline beams actually render, which is
+        // what made the pre-existing order-dependence visible. debugPad carries each beam's
+        // ORIGINATING SATELLITE dispatch index (`float(gl_GlobalInvocationID.x)` in
+        // sat_orbit.comp, see reflect_beam.glsl) — stable frame to frame except at the 7-day orbit
+        // rebake — so sorting the scan order by it makes clustering a deterministic function of
+        // which satellites are active, independent of the atomicAdd race. This does not fix
+        // "individual beam" flicker directly (those never merge), but it removes the order
+        // dependence that was making beams flip between individual and clustered from one frame
+        // to the next, which is what made non-clustered beams appear to jump too.
+        static int order[kMaxActiveBeams];
         for (int s = 0; s < count; ++s)
+            order[s] = s;
+        std::sort(order, order + count, [&](int a, int b) {
+            return rb->entries[a].debugPad < rb->entries[b].debugPad;
+        });
+
+        for (int oi = 0; oi < count; ++oi)
         {
+            int s = order[oi];
             // C12 follow-up #41: point-to-segment distance to the beam's actual 3D LINE (target
             // to satellite), not just its ground endpoint (`length(targetENU)`, the old formula)
             // — climbing up alongside a long beam away from the ground previously read as
             // "getting farther from the beam" even while staying right next to its line. Same
             // formula as cloud_march.comp's own obsToBeamDist, simplified: these vectors are
             // already observer-relative (origin = observer), so no obsPos subtraction is needed.
-            const glm::vec3 &tE = rb->entries[s].targetENU;
-            const glm::vec3 &sE = rb->entries[s].satENU;
+            glm::vec3 tE = rebase(rb->entries[s].targetENU);
+            glm::vec3 sE = rebase(rb->entries[s].satENU);
             float slantRangeM = glm::length(sE - tE);
             glm::vec3 dirUp = (slantRangeM > 1.0f) ? (sE - tE) / slantRangeM : glm::vec3(0, 0, 1);
             float t = glm::clamp(-glm::dot(tE, dirUp), 0.0f, slantRangeM);
@@ -1066,6 +1141,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
             float intensity = rb->entries[s].intensity;
             float targetDistM = glm::length(tE);
+            glm::vec3 rDir = rebase(rb->entries[s].reflectDirENU);
 
             // Ground-spot compaction: same range cutoff sat_sky.frag's loop applies, done ONCE
             // here per beam instead of unconditionally per ground-hit pixel. Widened by
@@ -1075,68 +1151,229 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             // same width, since the intensity used there needs to ramp, not just the membership
             // test here. Kept in sync with kSkyBeamFadeM in cloud_march.comp (same visual beam,
             // same fade feel) and sat_sky.frag's own copy of this constant.
+            //
+            // 2026-08-09 (in-app finding: "enormous flicker" on both cloud lighting and ground
+            // spots): both this list and cloudLights below used to just take the first N beams
+            // encountered IN SCAN ORDER (`s` = GPU dispatch slot index). Slot index is explicitly
+            // NOT stable frame to frame — sat_orbit.comp's own header comment documents it as a
+            // GPU atomicAdd race (see also cloud_march.comp's sky-glow downsampling, which hit and
+            // fixed this exact failure mode once already, differently, for a different consumer).
+            // Whenever the number of ELIGIBLE beams exceeded either cap, a near-fully-different
+            // RANDOM subset got selected every single frame — the real cause of the reported
+            // flicker, not "the cap is too small" per se (raising either cap only reduces how
+            // often the overflow condition triggers, it doesn't fix the instability itself).
+            // Fixed by ranking on intensity (a smooth per-satellite physical quantity, independent
+            // of iteration order) via a bounded top-K: once full, only replace the CURRENT weakest
+            // entry, and only if this candidate is actually stronger. The selected set now changes
+            // only as real relevance changes, not randomly every frame.
             const float kGroundBeamFadeM = 200000.0f;
-            if (intensity > 0.0f && targetDistM <= beamMaxRangeM + kGroundBeamFadeM &&
-                groundBeams.count < (uint32_t)kMaxGroundBeams)
-                groundBeams.entries[groundBeams.count++] = rb->entries[s];
-
-            if (intensity <= 0.0f || targetDistM > beamMaxRangeM)
-                continue;
-            // C11/C12 follow-up #48: smooth range fade instead of the hard cutoff above — a
-            // target's own aggIntensity used to snap fully in/out of beamLights[] as it crossed
-            // beamMaxRangeM (no transition at all), read as cloud lighting "jumping around" as the
-            // observer or an orbiting satellite crossed that boundary. Same fade width the
-            // deleted analytic tube used for its own equivalent range cutoff.
-            const float kRangeFadeM = 50000.0f;
-            float rangeX = glm::clamp((targetDistM - (beamMaxRangeM - kRangeFadeM)) / kRangeFadeM, 0.0f, 1.0f);
-            float rangeFade = 1.0f - (rangeX * rangeX * (3.0f - 2.0f * rangeX));
-            intensity *= rangeFade;
-            if (intensity <= 0.0f)
-                continue;
-            bool matched = false;
-            for (uint32_t li = 0; li < lights.count; ++li)
+            if (intensity > 0.0f && targetDistM <= beamMaxRangeM + kGroundBeamFadeM)
             {
-                glm::vec3 d2v = lights.entries[li].targetENU - tE;
-                if (glm::dot(d2v, d2v) < 4.0f)
+                uint32_t insertIdx = ~0u;
+                if (groundBeams.count < (uint32_t)kMaxGroundBeams)
                 {
-                    lights.entries[li].aggIntensity += intensity;
-                    lights.entries[li].footprintRadM = std::max(lights.entries[li].footprintRadM,
-                                                                rb->entries[s].footprintRadM);
-                    // 2026-08-09: was "take whichever satellite's opacity is higher, paired with
-                    // its own altitude" — correct back when every satellite servicing a target
-                    // shared one identical beam_cloud_block.comp per-target value (a true no-op
-                    // tie). Now beam_self_march.comp gives each satellite a genuinely different
-                    // per-beam value (different slant path through the shell), so that argmax
-                    // became a real winner-take-all pick that flips between near-equal
-                    // contributors as satellites move — the exact flicker shape TERRAIN_PLAN.md
-                    // follow-up #16 already named and designed around, just reintroduced one layer
-                    // up. Intensity-weighted running average instead: smooth as contribution
-                    // shares shift, no discrete winner to flip. Finalized after the loop below.
-                    weightedAltSum[li] += rb->entries[s].blockAltM * intensity;
-                    weightedOpacitySum[li] += rb->entries[s].blockOpacity * intensity;
-                    matched = true;
-                    break;
+                    insertIdx = groundBeams.count++;
+                }
+                else
+                {
+                    uint32_t weakestIdx = 0;
+                    float weakestIntensity = groundBeams.entries[0].intensity;
+                    for (uint32_t gi = 1; gi < (uint32_t)kMaxGroundBeams; ++gi)
+                    {
+                        if (groundBeams.entries[gi].intensity < weakestIntensity)
+                        {
+                            weakestIntensity = groundBeams.entries[gi].intensity;
+                            weakestIdx = gi;
+                        }
+                    }
+                    if (intensity > weakestIntensity)
+                        insertIdx = weakestIdx;
+                }
+                if (insertIdx != ~0u)
+                {
+                    groundBeams.entries[insertIdx] = rb->entries[s];
+                    // Overwrite with the rebased (current-frame-basis) vectors — the raw copy
+                    // above still carries last frame's basis for these three fields.
+                    groundBeams.entries[insertIdx].targetENU = tE;
+                    groundBeams.entries[insertIdx].satENU = sE;
+                    groundBeams.entries[insertIdx].reflectDirENU = rDir;
                 }
             }
-            if (!matched && lights.count < (uint32_t)kMaxCloudBeamLights)
+
+            if (intensity > 0.0f)
             {
-                uint32_t li = lights.count++;
-                GpuBeamCloudLight &light = lights.entries[li];
-                light.targetENU = tE;
-                light.aggIntensity = intensity;
-                light.footprintRadM = rb->entries[s].footprintRadM;
-                weightedAltSum[li] = rb->entries[s].blockAltM * intensity;
-                weightedOpacitySum[li] = rb->entries[s].blockOpacity * intensity;
+                glm::vec3 satPosLocal = obsPosLocalForLights + sE;
+                float b = glm::dot(satPosLocal, rDir);
+                float roLen = glm::length(satPosLocal);
+                float c = (roLen - kEarthRadius) * (roLen + kEarthRadius);
+                float disc = b * b - c;
+                if (disc >= 0.0f)
+                {
+                    float tHit = -b - std::sqrt(disc); // near root — satellite starts outside the sphere
+                    if (tHit > 0.0f)
+                    {
+                        glm::vec3 groundPosENU = sE + rDir * tHit;
+                        glm::vec3 dirToSourceCand = -rDir; // ground -> satellite, the beam's real direction
+
+                        // 2026-08-09 (user direction: "beam cloud effects really only need to be
+                        // considered for beams near the observer, and beams that aren't exactly
+                        // over target — for those [converged, redundant with each other] we can
+                        // simplify and combine"). A beam locked onto its target (small aimErrorRad
+                        // — same convergence signal cloud_march.comp's own aimFade already uses)
+                        // is folded into a shared per-target cluster via intensity-weighted
+                        // running average (same technique already proven for the blockAltM/
+                        // blockOpacity flicker fix two rounds ago) instead of eating its own slot
+                        // — dozens of satellites converged on one site produce nearly identical
+                        // geometry, so this recovers full visual coverage at a small fraction of
+                        // 512's flat per-beam cost. A beam still slewing (aimErrorRad above the
+                        // threshold) is never merged — its geometry is genuinely its own right
+                        // now — and always gets an individual slot.
+                        const float kConvergedAimErrorRad = glm::radians(10.0f); // matches
+                            // cloud_march.comp's kDebugRayAimMaxRad, same underlying question
+                        bool converged = rb->entries[s].aimErrorRad <= kConvergedAimErrorRad;
+
+                        // 2026-08-09 (in-app finding: cloud glow at busy targets flickered badly
+                        // and appeared to come from "almost the exact opposite" direction):
+                        // matching by ground position ALONE was wrong — multiple satellites can be
+                        // simultaneously converged on the SAME real target from very DIFFERENT
+                        // parts of the sky (different orbital passes), and intensity-weighted-
+                        // averaging their dirToSource vectors together produces a blended
+                        // direction that may not resemble any real contributor's actual direction.
+                        // With this shell's very sharply forward-peaked phase function
+                        // (cloud.hgG~0.99), even a modest averaging error reads as "completely
+                        // wrong" rather than "slightly off" — exactly the reported symptom. Fixed
+                        // by also requiring direction similarity to merge, checked against the
+                        // cluster's own running-average direction so far (weightedDirSum is not
+                        // yet normalized/finalized mid-loop). kClusterDirCosThreshold is computed
+                        // once above from the user-tunable beamClusterDirThresholdDeg (Settings ->
+                        // Beams): raise toward 90 deg to only merge near-identical approach
+                        // directions (safer, more individual slots); lower toward 0 to merge more
+                        // aggressively (cheaper, more blending risk).
+                        int matchedIdx = -1;
+                        if (converged)
+                        {
+                            for (uint32_t li = 0; li < cloudLights.count; ++li)
+                            {
+                                glm::vec3 d2v = clusterKeyENU[li] - tE;
+                                if (glm::dot(d2v, d2v) >= 4.0f) continue;
+                                glm::vec3 curDir = glm::length(weightedDirSum[li]) > 1e-6f
+                                                        ? glm::normalize(weightedDirSum[li])
+                                                        : dirToSourceCand;
+                                if (glm::dot(curDir, dirToSourceCand) < kClusterDirCosThreshold) continue;
+                                matchedIdx = (int)li;
+                                break;
+                            }
+                        }
+
+                        if (matchedIdx >= 0)
+                        {
+                            uint32_t li = (uint32_t)matchedIdx;
+                            cloudLights.entries[li].intensity += intensity;
+                            cloudLights.entries[li].footprintRadM =
+                                std::max(cloudLights.entries[li].footprintRadM, rb->entries[s].footprintRadM);
+                            weightedPosSum[li] += groundPosENU * intensity;
+                            weightedDirSum[li] += dirToSourceCand * intensity;
+                            weightedAltSum[li] += rb->entries[s].blockAltM * intensity;
+                            weightedOpacitySum[li] += rb->entries[s].blockOpacity * intensity;
+                        }
+                        else if (converged)
+                        {
+                            // New cluster needed — either a free slot, or evict the current
+                            // weakest cluster (top-K by summed intensity). Bounded by
+                            // kMaxClusterCloudLights, its OWN reserved pool — see that constant's
+                            // comment for why this can no longer compete with individual beams for
+                            // slots.
+                            uint32_t insertIdx = ~0u;
+                            if (cloudLights.count < (uint32_t)kMaxClusterCloudLights)
+                            {
+                                insertIdx = cloudLights.count++;
+                            }
+                            else
+                            {
+                                uint32_t weakestIdx = 0;
+                                float weakestIntensity = cloudLights.entries[0].intensity;
+                                for (uint32_t li = 1; li < (uint32_t)kMaxClusterCloudLights; ++li)
+                                {
+                                    if (cloudLights.entries[li].intensity < weakestIntensity)
+                                    {
+                                        weakestIntensity = cloudLights.entries[li].intensity;
+                                        weakestIdx = li;
+                                    }
+                                }
+                                if (intensity > weakestIntensity)
+                                    insertIdx = weakestIdx;
+                            }
+                            if (insertIdx != ~0u)
+                            {
+                                GpuBeamCloudLight &light = cloudLights.entries[insertIdx];
+                                light.intensity = intensity;
+                                light.footprintRadM = rb->entries[s].footprintRadM;
+                                clusterKeyENU[insertIdx] = tE;
+                                weightedPosSum[insertIdx] = groundPosENU * intensity;
+                                weightedDirSum[insertIdx] = dirToSourceCand * intensity;
+                                weightedAltSum[insertIdx] = rb->entries[s].blockAltM * intensity;
+                                weightedOpacitySum[insertIdx] = rb->entries[s].blockOpacity * intensity;
+                            }
+                        }
+                        else
+                        {
+                            // Individual/transiting beam — never matched against anything, its own
+                            // reserved pool (kMaxIndividualCloudLights), own top-K eviction. Never
+                            // competes with clusters for a slot, so a busy target's summed
+                            // intensity can no longer starve a lone transiting beam out entirely.
+                            uint32_t insertIdx = ~0u;
+                            if (individualCount < (uint32_t)kMaxIndividualCloudLights)
+                            {
+                                insertIdx = individualCount++;
+                            }
+                            else
+                            {
+                                uint32_t weakestIdx = 0;
+                                float weakestIntensity = individualEntries[0].intensity;
+                                for (uint32_t ii = 1; ii < (uint32_t)kMaxIndividualCloudLights; ++ii)
+                                {
+                                    if (individualEntries[ii].intensity < weakestIntensity)
+                                    {
+                                        weakestIntensity = individualEntries[ii].intensity;
+                                        weakestIdx = ii;
+                                    }
+                                }
+                                if (intensity > weakestIntensity)
+                                    insertIdx = weakestIdx;
+                            }
+                            if (insertIdx != ~0u)
+                            {
+                                GpuBeamCloudLight &light = individualEntries[insertIdx];
+                                light.intensity = intensity;
+                                light.footprintRadM = rb->entries[s].footprintRadM;
+                                light.posENU = groundPosENU;
+                                light.dirToSource = dirToSourceCand;
+                                light.blockAltM = rb->entries[s].blockAltM;
+                                light.blockOpacity = rb->entries[s].blockOpacity;
+                            }
+                        }
+                    }
+                }
             }
         }
-        for (uint32_t li = 0; li < lights.count; ++li)
+        // Finalize converged clusters: divide each's weighted sums by its own accumulated
+        // (summed) intensity. cloudLights.entries[0..count) is clusters-only at this point.
+        for (uint32_t li = 0; li < cloudLights.count; ++li)
         {
-            float w = lights.entries[li].aggIntensity;
-            lights.entries[li].blockAltM = (w > 0.0f) ? weightedAltSum[li] / w : 0.0f;
-            lights.entries[li].blockOpacity = (w > 0.0f) ? weightedOpacitySum[li] / w : 0.0f;
+            float w = cloudLights.entries[li].intensity;
+            if (w <= 0.0f) continue;
+            cloudLights.entries[li].posENU = weightedPosSum[li] / w;
+            cloudLights.entries[li].dirToSource = glm::normalize(weightedDirSum[li]);
+            cloudLights.entries[li].blockAltM = weightedAltSum[li] / w;
+            cloudLights.entries[li].blockOpacity = weightedOpacitySum[li] / w;
         }
-        std::memcpy(beamCloudLightMapped, &lights, sizeof(GpuBeamCloudLights));
+        // Append the individual/transiting pool after the finalized clusters — its own reserved
+        // budget (kMaxIndividualCloudLights), so it always lands in the buffer regardless of how
+        // many cluster slots were used.
+        for (uint32_t ii = 0; ii < individualCount; ++ii)
+            cloudLights.entries[cloudLights.count++] = individualEntries[ii];
         std::memcpy(groundBeamsMapped, &groundBeams, sizeof(GpuGroundBeams));
+        std::memcpy(beamCloudLightMapped, &cloudLights, sizeof(GpuBeamCloudLights));
 
         dbgBeamOpacityAvg = count > 0 ? opacitySum / (float)count : 0.0f;
         dbgBeamOccludedCount = occludedCount;
@@ -1554,6 +1791,15 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // sat_orbit.comp no longer writes these two fields at all — see that shader's own comment) —
     // blockOpacity=0 reads as "fully unoccluded," i.e. every beam renders as if no cloud exists,
     // the same reproduces-pre-feature-behavior convention bit 1024's scene-depth skip uses.
+    // Cache the observer basis THIS frame's dispatches used — sat_orbit.comp (just above, same
+    // unchanged obsDir) writes satENU/targetENU/reflectDirENU in this exact East/North/Up basis
+    // regardless of whether the bit-512 knockout below skips beam_self_march.comp itself. Next
+    // frame's CPU readback needs this to un-rotate those vectors before reuse — see
+    // lastBeamObsDir's own comment in SatelliteSim.h. Kept unconditional (outside the knockout
+    // gate) so toggling that debug bit can never leave this cache stale.
+    lastBeamObsDir = obsDir;
+    lastBeamObsEffH = std::max(obsTerrainH, obsHeightOffset);
+
     if ((debugDisableMask & 512u) == 0u)
     {
         BeamSelfMarchPC bmPc{};
@@ -3282,10 +3528,10 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
     vkMapMemory(ctx.device, reflectBeamsMem, 0, sizeof(GpuReflectBeams), 0, &reflectBeamsMapped);
     memset(reflectBeamsMapped, 0, sizeof(GpuReflectBeams));
 
-    // beamCloudLightBuf (C12 follow-up #44): HOST_VISIBLE|HOST_COHERENT, written wholesale by the
-    // CPU every frame in recordCompute() (a full memcpy of a freshly-built GpuBeamCloudLights, not
-    // an incremental GPU atomic-append) — no vkCmdFillBuffer zero-fill needed, since each frame's
-    // write already fully overwrites the struct including its own count.
+    // beamCloudLightBuf: HOST_VISIBLE|HOST_COHERENT, written wholesale by the CPU every frame in
+    // recordCompute() (a full memcpy of a freshly-built GpuBeamCloudLights — see its own comment
+    // for the 2026-08-09 design) — no vkCmdFillBuffer zero-fill needed, since each frame's write
+    // already fully overwrites the struct including its own count.
     ctx.createBuffer(sizeof(GpuBeamCloudLights),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -3294,8 +3540,8 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
     memset(beamCloudLightMapped, 0, sizeof(GpuBeamCloudLights));
 
     // groundBeamsBuf (perf follow-up): HOST_VISIBLE|HOST_COHERENT, written wholesale by the CPU
-    // every frame in recordCompute() (full memcpy of a freshly-built GpuGroundBeams, same pattern
-    // as beamCloudLightBuf just above) — no vkCmdFillBuffer zero-fill needed.
+    // every frame in recordCompute() (full memcpy of a freshly-built GpuGroundBeams) — no
+    // vkCmdFillBuffer zero-fill needed.
     ctx.createBuffer(sizeof(GpuGroundBeams),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -4088,12 +4334,15 @@ void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
 //   binding 5  targetA (storage image, rgba16f)
 //   binding 6  targetB (storage image, rgba16f)
 //   binding 9  cloudWarpNoiseTex (sampler3D) — baked domain-warp field, see cloud_warp_noise.comp
-//   binding 10 reflectBeamsBuf  (readonly SSBO) — Reflect-Orbital beams, C12; debug rays only as
-//              of follow-up #44 (the real beam->cloud illumination reads binding 14 instead)
+//   binding 10 reflectBeamsBuf  (readonly SSBO) — Reflect-Orbital beams; the visible pointing ray
+//              reads this directly (main()'s per-pixel debug-ray loop)
 //   binding 11 earthElevTex    (sampler2D) — needed by observerEffHeight() in main()
 //   binding 12 earthSpecTex    (sampler2D) — land/ocean mask, same pair sat_sky.frag already binds
-//   binding 14 beamCloudLightBuf (readonly SSBO) — C12 follow-up #44: per-target beam->cloud
-//              light source aggregate, built on the CPU each frame; see cloud_march.comp
+//   binding 14 beamCloudLightBuf (readonly SSBO) — 2026-08-09 (third design, see
+//              GpuBeamCloudLights' own comment): small capped list of individual real-beam light
+//              sources, fed forward into cloudMarchCS's per-sample loop the same way sun/moon
+//              light the cloud — NOT the per-pixel screen-space glow that shipped briefly the same
+//              day and produced visible ring artifacts (removed).
 // Requires createGlowResources() to already have run (needs cloudParamsBuf, earthClouds/Night
 // textures) — see init() ordering.
 void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
