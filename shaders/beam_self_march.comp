@@ -33,11 +33,15 @@
 //     so there is nothing to flicker between.
 //
 // blockAltM/blockOpacity KEEP THEIR EXISTING MEANING (altitude where column transmittance first
-// drops below 50%, and overall 0-1 opacity) — every existing consumer (sat_sky.frag's ground-spot
-// shadowAtten, cloud_march.comp's beamCloudLighting height-cutoff, and the CPU per-target
-// aggregation in SatelliteSim.cpp feeding beamLights[]) needs ZERO changes; they automatically
-// read more physically-accurate data. Only the visible pointing-ray block in cloud_march.comp
-// needed a new consumer, since it never read these fields at all before now.
+// drops below 50%, and overall 0-1 opacity) — sat_sky.frag's ground-spot shadowAtten needed ZERO
+// changes and automatically reads more physically-accurate per-beam data. cloud_march.comp's
+// beam->cloud illumination went through two more designs the same day (a per-target CPU
+// aggregation, then a broken screen-space glow) before landing on its current one: a small
+// per-BEAM (not per-target) light list, geometrically anchored at each beam's real ground
+// intersection, fed forward into the per-sample volumetric march the same way sun/moon light it —
+// see that file's beamCloudLighting()/BeamCloudLightBuf for the current design. The visible ray
+// (main()'s per-pixel loop, separate from the volumetric march) needed a new consumer here for
+// the first time — see that file's own comments.
 layout(local_size_x = 64) in;
 
 #include "reflect_beam.glsl"   // ReflectBeam + BEAM_MAX_ACTIVE
@@ -132,8 +136,8 @@ void main() {
 
     // Reconstruct true ECEF endpoints from the observer-relative ENU offsets sat_orbit.comp wrote
     // this frame — same "obsPos + offset" then "x*enuX + y*enuY + z*enuZ" convention
-    // beamCloudLighting()/the visible-ray block in cloud_march.comp already use for this exact
-    // buffer, so this march sees the identical world position those consumers do.
+    // cloud_march.comp's per-pixel ray loop already uses for this exact buffer, so this march sees
+    // the identical world position that consumer does.
     vec3 enuX, enuY, enuZ;
     enuBasis(pc.obsECEFDir.xyz, enuX, enuY, enuZ);
     vec3 obsPos = observerPos(pc.obsEffH);
@@ -214,8 +218,26 @@ void main() {
                 const int   kMaxSteps = 96;
                 int   kSteps = clamp(int(ceil((tExit - tEnter) / kMaxStepM)), 1, kMaxSteps);
                 float segLen = (tExit - tEnter) / float(kSteps);
+                // March direction (2026-08-09 fix, found in-app: reducing cloud.density did not
+                // move blockAltM down, beams kept cutting off at a fixed altitude near cloudTopAlt
+                // regardless). This walked tEnter->tExit, i.e. from the GROUND/cloud-base side of
+                // the segment up toward the satellite/cloud-top side — backwards from how the
+                // beam's own sunlight actually travels (satellite -> ground, decreasing altitude).
+                // T accumulated in that reversed order models "transmittance looking up from cloud
+                // base", not "transmittance of light coming down from the satellite": since hFade
+                // is near-zero right at cloud base (smoothstep(baseH, baseH+0.05, hNorm)), the first
+                // several samples near tEnter contribute almost no extinction no matter how high
+                // cloud.density is set, so accumulation only picks up once the march reaches the
+                // real cloud body higher up — pushing the 50%-transmittance crossing toward the
+                // TOP of the shell for any non-trivial density, and asymptoting to the hard
+                // cloudTopAlt ceiling (the loop's own fallback default) as density is lowered
+                // rather than tracking it down through the actual cloud. Walking tExit->tEnter
+                // instead starts at the satellite-facing (top) end, so the first crossing found is
+                // the true altitude — measured from where the beam's light first meets the shell —
+                // at which it goes dark, correctly following the real per-column cloud shape/density
+                // instead of converging on a fixed altitude.
                 for (int i = 0; i < kSteps; ++i) {
-                    vec3 p = groundECEF + segDir * (tEnter + (float(i) + 0.5) * segLen);
+                    vec3 p = groundECEF + segDir * (tExit - (float(i) + 0.5) * segLen);
                     float h = length(p) - R_EARTH;
                     if (h < cloudBaseAlt || h > cloudTopAlt) continue;
                     float hNorm = (h - cloudBaseAlt) / shellThick;

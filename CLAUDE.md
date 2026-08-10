@@ -590,15 +590,24 @@ was fixed in the occlusion math underneath it.
 
 **`beam_self_march.comp`** (2026-08-09) computes real per-BEAM cloud occlusion, replacing
 `beam_cloud_block.comp`'s per-TARGET vertical-column approximation (deleted). Dispatched over
-`BEAM_MAX_ACTIVE` (2048) threads right after `sat_orbit.comp` (needs the `satENU`/`targetENU`
+`BEAM_MAX_ACTIVE` (2048) threads right after `sat_orbit.comp` (needs the `satENU`/`reflectDirENU`
 that shader just wrote), fixed-size every frame (`beamCount` is a GPU atomic counter, not known at
 command-buffer record time — inactive slots return immediately). For each active beam it
-reconstructs true ECEF endpoints from `ReflectBeamsBuf`'s observer-relative ENU offsets (via
-`terrain.glsl`'s `observerPos()`/`enuBasis()` — the same "obsPos + offset, then project through the
-ECEF basis" convention `beamCloudLighting()`/the pointing-ray block already use for this exact
-buffer) and marches the SEGMENT from ground intersection to satellite through the cloud shell,
-overwriting `blockAltM`/`blockOpacity` on that same `ReflectBeam` entry in place — no separate
-output buffer, unlike the retired per-target pass.
+reconstructs the satellite's true ECEF position from `ReflectBeamsBuf`'s observer-relative ENU
+offset (via `terrain.glsl`'s `observerPos()`/`enuBasis()`), then marches the SEGMENT from the
+satellite to the mirror's **actual current ground intersection** — `reflectDirENU` traced to
+`R_EARTH` via `raySphere`, NOT the chosen target's fixed `targetENU` position — through the cloud
+shell, overwriting `blockAltM`/`blockOpacity` on that same `ReflectBeam` entry in place.
+
+**Marching toward `targetENU` instead of the real ray was a second, subtler bug**, found in-app
+the same day after the ground-intersection fix above already shipped: occlusion looked correct for
+a beam locked onto its target (where `reflectDirENU` and the target direction coincide) but did
+nothing for a beam still slewing between two targets (where they genuinely diverge — see
+`aimErrorRad`/the TargetedReflector orientation section above). The march was checking cloud along
+a path the beam wasn't physically following. Fixed by using `raySphere(satECEF, reflectDirECEF,
+R_EARTH)`'s hit point as the near endpoint instead of `targetECEF` — same shell-crossing math
+otherwise (the hit point is still guaranteed inside both cloud-base/cloud-top spheres, same as
+before), just anchored to reality instead of intent.
 
 **Why per-beam, when "Deliberately NOT per-satellite" was the standing design rule** (see
 `beam_cloud_block.comp`'s own retired header, and `TERRAIN_PLAN.md` follow-ups #14-#16): that rule
@@ -615,25 +624,55 @@ own stable geometry, so there is nothing to flicker between.
 **`blockAltM`/`blockOpacity` keep their pre-existing meaning** (altitude where the path's
 transmittance first drops below 50%, and overall 0-1 opacity — including the weighted-mean-
 absorption-altitude fallback for a column that never crosses that threshold, so a thin/scattered
-cloud doesn't produce a fake cutoff edge pinned to the shell's nominal ceiling). Every existing
-consumer needed zero changes and automatically reads more physically-accurate, per-beam data:
-- `sat_sky.frag`'s ground-spot `shadowAtten = 1.0 - groundBeams[bi].blockOpacity` — already
-  per-beam (raw, non-deduplicated `groundBeams[]` list), so this was a pure data-accuracy win.
-- `cloud_march.comp`'s `beamCloudLighting()` height-cutoff (volumetric glow) — still fed by the
-  CPU-aggregated per-TARGET `beamLights[]` (`SatelliteSim.cpp`, unbounded satellite count reduced
-  to `kMaxCloudBeamLights`=16 targets), which already picks the highest-opacity contributor rather
-  than assuming every satellite at a target agrees — true now (per-beam values genuinely differ)
-  where it used to be true trivially (the old per-target march gave every co-located satellite an
-  identical value).
+cloud doesn't produce a fake cutoff edge pinned to the shell's nominal ceiling). `sat_sky.frag`'s
+ground-spot `shadowAtten = 1.0 - groundBeams[bi].blockOpacity` needed zero changes and automatically
+reads more physically-accurate per-beam data.
 
-**One consumer needed new code**: the visible pointing ray itself never read `blockAltM`/
-`blockOpacity` at all before 2026-08-09. It now applies the same height-cutoff `smoothstep`/`mix`
-shape `beamCloudLighting()` uses, evaluated at the ray point's own altitude (already computed
-there for the vacuum/altitude fade), ADDITIONALLY multiplied with the pre-existing `cloudGate` term
-— the two answer different questions and neither substitutes for the other: `cloudGate` gates
-whether the CAMERA's own line of sight to this point is blocked by unrelated cloud; the new term
-gates whether the BEAM's own sunlight survives to reach this point along its real path. Both must
-be open for the ray to render there.
+**The visible pointing ray and the volumetric cloud glow were reworked together, same day, per
+explicit user direction, once the march above was marching the real path.** Both previously read
+NOTHING from `blockAltM`/`blockOpacity` (the ray) or read it through a per-TARGET CPU aggregation
+with no directionality at all (the old `beamCloudLighting()`/`BeamCloudLightBuf` glow — a purely
+horizontal Gaussian around the target's ground position, gated by a height cutoff averaged/argmaxed
+across every satellite servicing that site). The visible ray and the cloud glow ended up on two
+DIFFERENT architectures, after an intermediate design that didn't work out:
+- **The ray** stayed in `cloud_march.comp`'s `main()`, per-pixel, folded into its existing
+  closest-approach loop (`showBeamDebugRays`-gated). It applies a height-cutoff `smoothstep`/`mix`
+  shape at its own closest-approach altitude (`qAltM`, already computed there for the vacuum/
+  altitude fade), ADDITIONALLY multiplied with the pre-existing `cloudGate` term — the two answer
+  different questions and neither substitutes for the other: `cloudGate` gates whether the
+  CAMERA's own line of sight to this point is blocked by unrelated cloud; the height-cutoff term
+  gates whether the BEAM's own sunlight survives to reach this point along its real path. Both
+  must be open for the ray to render there.
+- **The cloud glow went through a second design that shipped and was reverted the same day.**
+  First attempt folded it into that same per-pixel ray loop, reusing `perpDist` (the CAMERA's
+  view-ray-to-beam-line distance) for proximity — cheap, but geometrically wrong: that distance's
+  iso-contours are not soft blobs, they're hyperbola-like curves, and it rendered as large white
+  rings intersecting the beams. Explicit user correction: this needs to work exactly like the
+  sun/moon terms already do, evaluated PER CLOUD SAMPLE inside the volumetric march, not as a
+  screen-space effect. Reverted outright (not patched) back to the ray-only per-pixel loop.
+- **The glow's current (third) design restores the per-sample shape** (`beamCloudLighting()`,
+  called from `cloudMarchCS`'s own loop and added into `inScatter` right alongside
+  `sunColorCloud`/`moonContrib` — the "feed forward" the user asked for), fed from a small
+  CPU-built list (`SatelliteSim.cpp`, `kMaxCloudBeamLights`=16, `GpuBeamCloudLights`) — the only
+  shape proven affordable at per-march-sample call frequency (TERRAIN_PLAN.md follow-ups #14/#16).
+  Each list entry is now ONE individual real beam (no per-target aggregation, so nothing to
+  average/argmax and nothing to flicker between): `posENU` is that beam's REAL ground intersection
+  (`satENU + reflectDirENU` traced to `R_EARTH`, via the same rotation-invariant local-frame
+  `raySphere` trick the GPU shaders use — valid on the CPU too, no ECEF conversion needed), and
+  `dirToSource` is its REAL direction (ground toward satellite), driving `phaseCloud()` per light
+  instead of a shared `normalize(p)` local-zenith stand-in the old per-target version used.
+- `sat_sky.frag`'s ground spot separately anchors at the same real ray-ground intersection
+  (`raySphere(satWorldPos, reflectDirENU, R_EARTH)`) instead of `targetENU` — this part of the fix
+  was correct from the start (not implicated in the ring bug, a genuinely different computation)
+  and was left alone through the glow's redesign. The range-cutoff fade (`beamMaxRangeM`)
+  deliberately stays keyed to the fixed target site position, not the transient ray-ground point —
+  that's "is the observer close enough to this SITE," which shouldn't flicker as a mid-slew ray
+  briefly touches down elsewhere.
+- Known pre-existing gap, not introduced this session: knockout bit 128 ("Reflect-Orbital beams")
+  gates `sat_sky.frag`'s ground-spot loop and `beamCloudLighting()`'s per-sample glow, but NOT
+  `cloud_march.comp`'s per-pixel ray loop — that loop has only ever been gated by
+  `showBeamDebugRays`. Left as-is; flagged here so a future profiling session doesn't assume bit
+  128 isolates the full beam rendering cost.
 
 ---
 

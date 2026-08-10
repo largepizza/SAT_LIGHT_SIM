@@ -91,11 +91,14 @@ layout(set = 0, binding = 2) buffer GlowBuf {
 
 // ── Ocean-glint list — matches GpuOceanGlintBuf (flare architecture overhaul) ────────────────
 // A small, INDEPENDENT capped atomic-append list — same pattern the old flareEntries used, just
-// decoupled from corona rendering and much smaller (32, not 256): ocean specular glint is a minor
+// decoupled from corona rendering and much smaller (128, not 256): ocean specular glint is a minor
 // highlight effect, not the primary visibility signal. Zeroed each frame by vkCmdFillBuffer.
+// Bumped 32->128 (session): with >32 bright satellites in view the list overflowed every frame,
+// and which 32 of the candidates won their atomicAdd race was unstable frame-to-frame (no sort by
+// brightness, pure first-come-first-served) — that instability is what read as ocean glint flicker.
 const float OCEAN_GLINT_THRESH = 1.0;
-const uint  OCEAN_GLINT_MAX    = 32u; // must match kMaxOceanGlints in SatelliteSim.h and
-                                       // kOceanGlintMax in sat_sky.frag exactly.
+const uint  OCEAN_GLINT_MAX    = 512; // must match kMaxOceanGlints in SatelliteSim.h and
+                                        // kOceanGlintMax in sat_sky.frag exactly.
 layout(set = 0, binding = 8) buffer OceanGlintBuf {
     uint oceanGlintCount;
     uint oceanGlintPad[3];

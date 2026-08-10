@@ -392,37 +392,64 @@ struct CloudMarchPC
 }; // total: 148 bytes.
 static_assert(sizeof(CloudMarchPC) == 148, "CloudMarchPC layout mismatch");
 
-// ── Per-target beam->cloud light sources (C12 follow-up #44, host-visible) ───────────────────
-// Built each frame on the CPU in recordCompute() by aggregating ReflectBeamsBuf's per-satellite
-// entries by target position (the same readback loop that already computes lastActiveBeamCount/
-// beamProximityGlow — see that comment for why grouping by targetENU needs no target-ID
-// plumbing). Consumed by cloud_march.comp's cloudMarchCS as a real per-sample volumetric light
-// source, replacing the deleted analytic sky tube. Bounded at kMaxCloudBeamLights regardless of
-// how many satellites are servicing any given target — the structural fix for the per-satellite
-// cost/flicker problems the original C12 follow-up #14/#16 real-march attempt hit.
-// Struct must match BeamCloudLight/BeamCloudLightBuf in cloud_march.comp exactly.
-static constexpr int kMaxCloudBeamLights = 16;
+// ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
+// 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
+// the idealized targetENU (retired same day once beam_self_march.comp made per-beam values real).
+// Second was a true per-beam screen-space glow folded into cloud_march.comp's per-pixel debug-ray
+// loop (distance from the CAMERA's own view ray to the beam's line) — cheap, but WRONG: that
+// distance's iso-contours are not soft blobs, they're hyperbola-like curves, which read in-app as
+// large white rings intersecting the beams. Third was a true per-beam list fed forward into the
+// per-sample volumetric march (the correct architecture, kept since) — but at a small cap (16) the
+// cloud effect was barely visible, and getting "appreciable" coverage needed raising the cap to
+// 512, which tanked frame rate (the per-sample loop's cost is linear in the cap).
+//
+// This fourth version keeps the third's per-sample architecture and its two geometric fixes
+// (`posENU` is the beam's REAL ground intersection — `satENU + reflectDirENU` traced to `R_EARTH`,
+// computed on the CPU below via the same rotation-invariant local-frame `raySphere` trick the GPU
+// side uses, no ECEF conversion needed; `dirToSource` is the beam's REAL direction, ground toward
+// satellite), but adds clustering: a beam LOCKED onto its target (`aimErrorRad` below a threshold
+// — the same convergence signal `cloud_march.comp`'s own `aimFade` already uses) is folded into a
+// shared per-target cluster via intensity-weighted running average (same technique already used
+// for the blockAltM/blockOpacity flicker fix); a beam still SLEWING keeps its own individual slot,
+// since its geometry is genuinely unique right now. Per explicit user direction: converged beams
+// at a busy site are redundant with each other and should combine; transiting beams shouldn't.
+// This recovers full coverage — the effective distinct-light count is bounded near the active-
+// target count (times however many DISTINCT approach directions are simultaneously converged on
+// one target — see the direction-similarity gate on the cluster match, added same day: merging by
+// ground position alone let satellites arriving from very different parts of the sky get blended
+// into one nonsensical averaged direction) — not total active-satellite count. In-app testing
+// after the clustering fix showed this cap is no longer the cost driver it was as a flat
+// (non-clustered) list, so it was raised back to 512 for headroom.
+// Struct must match BeamCloudLight/BeamCloudLightBuf in cloud_march.comp exactly — including
+// kMaxCloudBeamLights itself, hand-duplicated there (not shared via a header); a mismatch
+// silently over/under-reads the buffer with no compile or validation error.
+static constexpr int kMaxCloudBeamLights = 512;
+// 2026-08-09 (in-app finding: "I do not see cloud lighting on singular beams anymore" after
+// clustering became stable): a converged cluster's intensity is the SUM of every beam folded into
+// it, so a busy target with dozens of locked satellites is legitimately dozens of times brighter
+// than any one transiting beam's own single intensity — that part is physically correct, not a
+// bug. But the CPU build below used one shared top-K-by-intensity eviction pool for both
+// categories: once total distinct entries (clusters + individuals) reached kMaxCloudBeamLights,
+// eviction always removes the globally weakest entry, and a lone transiting beam is essentially
+// always weaker than an established multi-satellite cluster — so under any capacity pressure,
+// individual beams are evicted first, potentially entirely, while clusters are never at risk.
+// Split the budget into two reserved, independently-evicted pools so transiting beams keep a
+// guaranteed floor of visibility regardless of how many targets are simultaneously busy: clusters
+// are bounded near the real target count (kNu                                                                                       mReflectorTargets capacity is 201; 320 leaves
+// generous headroom), individuals get the rest.
+static constexpr int kMaxClusterCloudLights = 256;
+static constexpr int kMaxIndividualCloudLights = kMaxCloudBeamLights - kMaxClusterCloudLights;
 struct GpuBeamCloudLight
 {
-    glm::vec3 targetENU; // meters, observer-relative
-    float aggIntensity;  // sum of groundIrradiance*beamGain across every satellite servicing this target
-    float footprintRadM; // largest ground footprint radius among contributing satellites
-    // blockAltM/blockOpacity (C12 follow-up #46): repurposed from pad0/pad1, zero size change.
-    // Copied from a contributing GpuReflectBeam entry — SatelliteSim.cpp's CPU aggregation picks
-    // the highest-opacity contributor (paired with its own altitude) across every satellite
-    // servicing this target, rather than assuming equality. 2026-08-09: values genuinely DIFFER
-    // per satellite now — beam_self_march.comp computes a real per-BEAM slant march (each
-    // satellite's own path to the same ground target can cross different cloud), replacing
-    // beam_cloud_block.comp's per-TARGET vertical march (which DID produce one identical value
-    // for every contributor, the premise this comment used to document). Lets cloud_march.comp
-    // derive a height-based directional cutoff (bright above the chosen altitude, dark below) as a
-    // cheap per-light lookup instead of a second live self-shadow march — see follow-up #46's log
-    // entry for why the live march (#45) was too expensive and got replaced.
-    float blockAltM;    // altitude (m) where this target's column first drops below 50% transmittance
+    glm::vec3 posENU;      // meters, observer-relative — REAL ground intersection of this beam
+    float intensity;       // groundIrradiance * beamGain for this ONE satellite
+    glm::vec3 dirToSource; // unit direction from posENU toward the satellite (real beam direction)
+    float footprintRadM;
+    float blockAltM;    // altitude (m) where THIS beam's own path first drops below 50% transmittance
     float blockOpacity; // 0 = clear column, 1 = fully opaque
-    float pad2;         // std430 array-of-vec4-pairs alignment
+    float pad0, pad1;   // std430 array-of-vec4-pairs alignment
 };
-static_assert(sizeof(GpuBeamCloudLight) == 32, "GpuBeamCloudLight layout mismatch");
+static_assert(sizeof(GpuBeamCloudLight) == 48, "GpuBeamCloudLight layout mismatch");
 
 struct GpuBeamCloudLights
 {
@@ -430,7 +457,7 @@ struct GpuBeamCloudLights
     uint32_t pad0, pad1, pad2;
     GpuBeamCloudLight entries[kMaxCloudBeamLights];
 };
-static_assert(sizeof(GpuBeamCloudLights) == 16 + kMaxCloudBeamLights * 32, "GpuBeamCloudLights layout mismatch");
+static_assert(sizeof(GpuBeamCloudLights) == 16 + kMaxCloudBeamLights * 48, "GpuBeamCloudLights layout mismatch");
 
 // (CloudShadowPC lived here — push constants for cloud_shadow.comp's 128x128 grid, including the
 //  shadowResidualM texel-snapping term that stopped shadows swimming as the observer moved. The
@@ -505,7 +532,7 @@ static_assert(sizeof(GpuGlowBuf) == kGlowBins * 4, "GpuGlowBuf layout mismatch")
 // effect, not the primary visibility signal. Written by sat_flare.comp alongside GpuSatVisible;
 // read by sat_sky.frag's ocean-glint block, which ALSO gained cloud + terrain occlusion tests at
 // each entry's own screen position this round (the previous version had none at all).
-static constexpr int kMaxOceanGlints = 32;
+static constexpr int kMaxOceanGlints = 512;
 struct GpuOceanGlintBuf
 {
     uint32_t count;
@@ -728,15 +755,15 @@ static_assert(sizeof(GpuReflectBeams) == 16 + kMaxActiveBeams * 64, "GpuReflectB
 
 // Ground-beam compaction (perf follow-up, RELEASE_v1_1_PLAN.md): CPU-built every frame from
 // ReflectBeamsBuf's readback (the same loop that already computes lastActiveBeamCount/
-// beamProximityGlow/GpuBeamCloudLights below), filtered to entries within beamMaxRangeM of the
-// observer — the exact cull sat_sky.frag's ground-spot loop used to redo per-pixel, against the
-// FULL raw (up to kMaxActiveBeams=2048) buffer, for every ground-hit pixel on screen. Consumed by
-// sat_sky.frag instead of ReflectBeamsBuf directly, so that loop's trip count is bounded by how
-// many beams are actually within range of the CAMERA, not by how many are active anywhere across
-// the whole visible constellation (measured: disabling the "Reflect-Orbital beams" debug knockout
-// bit nearly doubled frame rate — this is the dominant cost that knockout was hiding). Entries are
-// raw, unaggregated ReflectBeam records (unlike GpuBeamCloudLights, which sums by target) because
-// the ground-spot term needs each satellite's own satENU for its elevation fade.
+// beamProximityGlow), filtered to entries within beamMaxRangeM of the observer — the exact cull
+// sat_sky.frag's ground-spot loop used to redo per-pixel, against the FULL raw (up to
+// kMaxActiveBeams=2048) buffer, for every ground-hit pixel on screen. Consumed by sat_sky.frag
+// instead of ReflectBeamsBuf directly, so that loop's trip count is bounded by how many beams are
+// actually within range of the CAMERA, not by how many are active anywhere across the whole
+// visible constellation (measured: disabling the "Reflect-Orbital beams" debug knockout bit nearly
+// doubled frame rate — this is the dominant cost that knockout was hiding). Entries are raw,
+// unaggregated ReflectBeam records (per-satellite, not summed by target) because the ground-spot
+// term needs each satellite's own satENU for its elevation fade.
 // Struct must match GroundBeamsBuf in sat_sky.frag exactly.
 static constexpr int kMaxGroundBeams = 256;
 struct GpuGroundBeams
@@ -965,57 +992,57 @@ static_assert(sizeof(GpuCloudParams) == 480, "GpuCloudParams layout mismatch");
 // Total: 96 bytes.
 struct SatOrbitPC
 {
-    glm::vec4 enuX;             // East  basis in ECI (w unused) — offset 0
-    glm::vec4 enuY;             // North basis in ECI (w unused) — offset 16
-    glm::vec4 enuZ;             // Up    basis in ECI (w unused) — offset 32
-    glm::vec3 sunDirECI;        // unit vector toward sun — offset 48
-    float deltaT;               // simTime - epochT0 (float precision) — offset 60
-    glm::vec3 obsECI;           // observer ECI position (meters) — offset 64
-    uint32_t satCount;          // total satellite count — offset 76
-    uint32_t highlightMask;     // bit i = constellation i in highlight mode — offset 80
-    uint32_t enabledMask;       // bit i = constellation i is enabled — offset 84
-    float simDt;                // simulated seconds this frame — offset 88
-    float elevCutoff;           // sin(Earth-limb angle) — horizon cull threshold (≤ -0.01) — offset 92
-    float beamGain;             // Reflect-Orbital ground-beam intensity multiplier — offset 96
-    float reflectorLockWindowS; // offset 100 — 2026-08-06 reversibility rework: fixed-width sim-time
-                                // window (seconds) a TargetedReflector satellite commits to one target
-                                // for. Target IDENTITY is chosen per-window (see sat_orbit.comp), not
-                                // by a persisted per-satellite lock — this is also the extrapolation
-                                // step the shader uses to reach a window's midpoint from `deltaT`/
-                                // `gmstNow` (see those fields below), so it doubles as "windowS".
-                                // Replaces the old rate-limited-slew design's mirrorSlewDegPerSec
-                                // (same push-constant slot, same settings-window slider).
-    uint32_t targetCount;       // offset 104 — total loaded reflector targets (reflectorTargetCount).
-                                // sat_orbit.comp scans the full static ECEF set itself now (rotating
-                                // by gmstNow/derived gmstEval on the fly) instead of reading a
-                                // per-frame CPU-compacted night-side buffer — see CLAUDE.md's
-                                // TargetedReflector section. Replaces the old activeTargetCount.
-    float minBeamElevSin;       // offset 108 — sin(reflectorMinElevDeg), precomputed on CPU. Candidate
-                                // targets below this local-elevation-at-target angle are rejected
-                                // outright (grazing, not just deprioritized).
-    float gmstNow;              // offset 112 — current-frame GMST (rad), for rotating a target's
-                                // static ECEF entry to its LIVE ECI position (the actual aim/beam
-                                // position — see CLAUDE.md). Replaces the old mirrorSnap flag; nothing
-                                // persists across frames anymore, so there is no snap state to force.
-    float windowFrac;           // offset 116 — fract(simTimeAbs / reflectorLockWindowS): this
-                                // frame's fractional position within the current lock window, in
-                                // [0,1). sat_orbit.comp uses -windowFrac*reflectorLockWindowS to
-                                // extrapolate deltaT/gmstNow back to the current window's START
-                                // instant (and one window further back for the previous window's),
-                                // exact rather than approximate for the same reason deltaT/gmstNow
-                                // themselves are (see that shader). Replaces the old
-                                // minBeamElevSinRelease — hysteresis is gone; a rate-limited ease
-                                // sized off windowFrac is what smooths a target change instead.
+    glm::vec4 enuX;               // East  basis in ECI (w unused) — offset 0
+    glm::vec4 enuY;               // North basis in ECI (w unused) — offset 16
+    glm::vec4 enuZ;               // Up    basis in ECI (w unused) — offset 32
+    glm::vec3 sunDirECI;          // unit vector toward sun — offset 48
+    float deltaT;                 // simTime - epochT0 (float precision) — offset 60
+    glm::vec3 obsECI;             // observer ECI position (meters) — offset 64
+    uint32_t satCount;            // total satellite count — offset 76
+    uint32_t highlightMask;       // bit i = constellation i in highlight mode — offset 80
+    uint32_t enabledMask;         // bit i = constellation i is enabled — offset 84
+    float simDt;                  // simulated seconds this frame — offset 88
+    float elevCutoff;             // sin(Earth-limb angle) — horizon cull threshold (≤ -0.01) — offset 92
+    float beamGain;               // Reflect-Orbital ground-beam intensity multiplier — offset 96
+    float reflectorLockWindowS;   // offset 100 — 2026-08-06 reversibility rework: fixed-width sim-time
+                                  // window (seconds) a TargetedReflector satellite commits to one target
+                                  // for. Target IDENTITY is chosen per-window (see sat_orbit.comp), not
+                                  // by a persisted per-satellite lock — this is also the extrapolation
+                                  // step the shader uses to reach a window's midpoint from `deltaT`/
+                                  // `gmstNow` (see those fields below), so it doubles as "windowS".
+                                  // Replaces the old rate-limited-slew design's mirrorSlewDegPerSec
+                                  // (same push-constant slot, same settings-window slider).
+    uint32_t targetCount;         // offset 104 — total loaded reflector targets (reflectorTargetCount).
+                                  // sat_orbit.comp scans the full static ECEF set itself now (rotating
+                                  // by gmstNow/derived gmstEval on the fly) instead of reading a
+                                  // per-frame CPU-compacted night-side buffer — see CLAUDE.md's
+                                  // TargetedReflector section. Replaces the old activeTargetCount.
+    float minBeamElevSin;         // offset 108 — sin(reflectorMinElevDeg), precomputed on CPU. Candidate
+                                  // targets below this local-elevation-at-target angle are rejected
+                                  // outright (grazing, not just deprioritized).
+    float gmstNow;                // offset 112 — current-frame GMST (rad), for rotating a target's
+                                  // static ECEF entry to its LIVE ECI position (the actual aim/beam
+                                  // position — see CLAUDE.md). Replaces the old mirrorSnap flag; nothing
+                                  // persists across frames anymore, so there is no snap state to force.
+    float windowFrac;             // offset 116 — fract(simTimeAbs / reflectorLockWindowS): this
+                                  // frame's fractional position within the current lock window, in
+                                  // [0,1). sat_orbit.comp uses -windowFrac*reflectorLockWindowS to
+                                  // extrapolate deltaT/gmstNow back to the current window's START
+                                  // instant (and one window further back for the previous window's),
+                                  // exact rather than approximate for the same reason deltaT/gmstNow
+                                  // themselves are (see that shader). Replaces the old
+                                  // minBeamElevSinRelease — hysteresis is gone; a rate-limited ease
+                                  // sized off windowFrac is what smooths a target change instead.
     float mirrorMaxRateDegPerSec; // offset 120 — real angular-rate cap for the closed-form ease
-                                // above: sat_orbit.comp derives an ease duration from the actual
-                                // angle between the previous and current window's targets (at the
-                                // current window's start instant) and this rate, then eases the
-                                // live orientation over that duration — a genuine max attitude
-                                // rate, unlike the old design's fixed-fraction-of-window crossfade
-                                // (2026-08-06 same-day follow-up: satellites were visibly snapping
-                                // to target because that crossfade only covered ONE of several
-                                // transition cases and wasn't derived from real angular distance).
-    uint32_t pad2;              // offset 124
+                                  // above: sat_orbit.comp derives an ease duration from the actual
+                                  // angle between the previous and current window's targets (at the
+                                  // current window's start instant) and this rate, then eases the
+                                  // live orientation over that duration — a genuine max attitude
+                                  // rate, unlike the old design's fixed-fraction-of-window crossfade
+                                  // (2026-08-06 same-day follow-up: satellites were visibly snapping
+                                  // to target because that crossfade only covered ONE of several
+                                  // transition cases and wasn't derived from real angular distance).
+    uint32_t pad2;                // offset 124
 }; // 128 bytes
 static_assert(sizeof(SatOrbitPC) == 128, "SatOrbitPC layout mismatch");
 
@@ -1203,15 +1230,15 @@ private:
     VkBuffer reflectBeamsBuf = VK_NULL_HANDLE;
     VkDeviceMemory reflectBeamsMem = VK_NULL_HANDLE;
     void *reflectBeamsMapped = nullptr;
-    // Per-target beam->cloud light sources (C12 follow-up #44) — host-visible+coherent, written
-    // by the CPU each frame in recordCompute() (aggregated from reflectBeamsBuf's readback, same
-    // place lastActiveBeamCount/beamProximityGlow are computed), read by cloud_march.comp's real
-    // per-sample beam illumination term. See GpuBeamCloudLights.
+    // beamCloudLightBuf — host-visible+coherent, written by the CPU each frame in recordCompute()
+    // (a small capped list of individual real-beam light sources, no per-target aggregation — see
+    // GpuBeamCloudLights' own comment for the 2026-08-09 design history), read by
+    // cloud_march.comp's cloudMarchCS as a real per-sample directional light source.
     VkBuffer beamCloudLightBuf = VK_NULL_HANDLE;
     VkDeviceMemory beamCloudLightMem = VK_NULL_HANDLE;
     void *beamCloudLightMapped = nullptr;
     // Ground-beam compaction (perf follow-up) — host-visible+coherent, written by the CPU each
-    // frame alongside beamCloudLightBuf (same readback loop, same reasoning). See GpuGroundBeams.
+    // frame from reflectBeamsBuf's readback (same loop lastActiveBeamCount/beamProximityGlow use).
     VkBuffer groundBeamsBuf = VK_NULL_HANDLE;
     VkDeviceMemory groundBeamsMem = VK_NULL_HANDLE;
     void *groundBeamsMapped = nullptr;
@@ -1229,8 +1256,8 @@ private:
     float dbgBeamOpacityMin = 0.0f;
     float dbgBeamOpacityMax = 0.0f;
     float dbgBeamOpacityAvg = 0.0f;
-    int dbgBeamOccludedCount = 0;   // count of beams this frame with blockOpacity > 0.1
-    int dbgBeamSampleCount = 0;     // same as lastActiveBeamCount, kept alongside for clarity
+    int dbgBeamOccludedCount = 0; // count of beams this frame with blockOpacity > 0.1
+    int dbgBeamSampleCount = 0;   // same as lastActiveBeamCount, kept alongside for clarity
     // Beam-driven sky-glow "pollution dome" (C12 follow-up #31) — parallel to lightDomeBuf's
     // 16-sector scheme, but populated by ACTIVE Reflect-Orbital beams instead of a static
     // night-lights texture, so satellites/stars/Milky Way dim near a bright beam the same way
@@ -1350,6 +1377,17 @@ private:
     float obsLonDeg = -67.0f;                         // display cache — derived from obsDir
     float obsTerrainH = 0.0f;                         // terrain elevation at observer lat/lon (m)
     float obsHeightOffset = 0.0f;                     // user-controlled height above terrain (m, Q/E/Z)
+    // 2026-08-09 (in-app finding: beam/cloud-glow ground spots visibly "drag" behind the observer
+    // while moving): satENU/reflectDirENU/targetENU read back from reflectBeamsBuf each frame are
+    // expressed in the East/North/Up basis at whatever obsDir PRODUCED them (beam_self_march.comp's
+    // own push-constant fill, one frame ago) — that basis ROTATES as obsLatDeg/obsLonDeg change via
+    // WASD movement, so reinterpreting last frame's ENU numbers against this frame's obsPos without
+    // re-projecting them is a real rotation error, not just ordinary 1-frame staleness. These cache
+    // exactly the obsDir/obsEffH that produced the data currently sitting in reflectBeamsMapped, so
+    // recordCompute's readback loop can un-rotate it into the current frame's basis before use.
+    // Defaulted to match obsDir/0 so the very first frame's correction is a no-op.
+    glm::vec3 lastBeamObsDir = {0.1527f, -0.3596f, -0.9205f};
+    float lastBeamObsEffH = 0.0f;
     uint32_t activeSatCount = 0;
     uint32_t visibleCount = 0;   // above-horizon sats this frame (UI display)
     uint32_t gpuSatCount = 0;    // in-frustum sats written to GPU buffer
@@ -1733,6 +1771,16 @@ private:
     // NOT in applyGraphicsPreset's table; Planetarium still removes the whole pass via bit 256.
     float cloudShadowRangeM = 300000.0f;
     float beamNearFieldFadeM = 71510.867188f;
+    // 2026-08-09: exposed per explicit user request ("How can we control the thresholding on what
+    // gets considered a group?"). Two beams converged on the same real target only merge into one
+    // cloud-lighting cluster if their approach directions are also within this angle of the
+    // cluster's running-average direction — see the cluster-match block in recordCompute() for the
+    // full rationale (satellites arriving from very different parts of the sky must NOT blend into
+    // one nonsensical averaged direction). Lower = merges more aggressively (fewer, cheaper
+    // clusters, more risk of blending genuinely distinct directions); higher = stricter (more
+    // individual-looking clusters, less blending risk). Stored in degrees for the UI; converted to
+    // a cosine threshold at the one use site.
+    float beamClusterDirThresholdDeg = 20.0f;
     // C12 follow-up #41: 0-1, how close the observer is to ANY active beam's actual 3D line —
     // smoothstepped from lastNearestBeamDistM/beamNearFieldFadeM each frame in recordCompute().
     // Drives the non-directional sky-glow wash in sat_sky.frag, replacing #39/#40's directional
@@ -1867,9 +1915,10 @@ private:
     float atmosTermWidth = 0.070793f;
     float atmosRayleighGain = 0.980796f;
     float atmosMieGain = 1.020270f;
-    // C11 ground fog layer — real per-sample volumetric march in cloud_march.comp's fogMarchCS,
-    // reusing beamCloudLightBuf for beam godrays and a fixed small self-shadow march for sun
-    // godrays. Retuned in-app 2026-08-06: a much taller (1.4 km) but far thinner (density ~0.07)
+    // C11 ground fog layer — real per-sample volumetric march in cloud_march.comp's fogMarchCS.
+    // (Originally also reused beamCloudLighting() for beam godrays through fog; that reuse was
+    // removed with the function itself 2026-08-09 — fog no longer carries a beam term.) Retuned
+    // in-app 2026-08-06: a much taller (1.4 km) but far thinner (density ~0.07)
     // layer than the first-pass 300 m / 1.0 guess — the thin tall version reads as real haze the
     // camera can fly up through, where the thick shallow one read as a hard ground-hugging slab.
     float fogTopAltM = 1401.001953f; // shell top altitude (m above sea level); sea level is the base
@@ -2280,9 +2329,9 @@ private:
     bool hovPhotoMinus[11] = {};
     bool hovPhotoPlus[11] = {};
     bool draggingPhoto[11] = {};
-    bool hovCloudMinus[83] = {}; // was [81] — idx 81/82 are the orbital terminator gate sliders
-    bool hovCloudPlus[83] = {};
-    bool draggingCloud[83] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[84] = {}; // was [83] — idx 83 is the beam cluster direction threshold slider
+    bool hovCloudPlus[84] = {};
+    bool draggingCloud[84] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.

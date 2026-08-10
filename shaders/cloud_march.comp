@@ -86,9 +86,10 @@ layout(set = 0, binding = 9) uniform sampler3D cloudWarpNoiseTex;
 
 // ── Reflect-Orbital ground beams (C12) — written by sat_orbit.comp. Capped atomic-append, no site
 // keying/arbitration — see the ReflectBeamsBuf comment in sat_orbit.comp for the full history/
-// rationale. As of C12 follow-up #44 this per-SATELLITE list is only read here by the debug
-// pointing-ray visualization (main(), gated by pc.showBeamDebugRays) — the real beam->cloud
-// illumination term reads BeamCloudLightBuf below instead, a per-TARGET aggregate.
+// rationale. Read here by main()'s per-pixel beam loop (gated by pc.showBeamDebugRays) for the
+// visible ray only. Cloud illumination reads BeamCloudLightBuf below instead — a small CPU-built
+// per-BEAM (not per-target) list, fed forward into cloudMarchCS's per-sample loop; see that
+// struct's own comment for the 2026-08-09 design history.
 // Struct must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h and sat_orbit.comp exactly.
 #include "reflect_beam.glsl"   // ReflectBeam + BEAM_MAX_ACTIVE
 layout(std430, set = 0, binding = 10) readonly buffer ReflectBeamsBuf {
@@ -110,42 +111,6 @@ layout(set = 0, binding = 12) uniform sampler2D earthSpecTex;
 // recordCompute. This dispatch grid and that image are both half ctx.swapExtent, so it is read
 // with a plain texelFetch at gl_GlobalInvocationID: no UV math, no filtering, nothing to get wrong.
 layout(set = 0, binding = 13) uniform sampler2D sceneDepthTex;
-
-// ── Reflect-Orbital beam->cloud light sources (C12 follow-up #44) ────────────────────────────
-// Per-TARGET (not per-satellite) aggregate, built on the CPU each frame from the same
-// ReflectBeamsBuf readback SatelliteSim.cpp already does for beamProximityGlow (C12 follow-up
-// #41): satellites servicing the same real-world target resolve to numerically identical
-// targetENU (both derive from the same reflectorTargetsBuf[bestIdx] entry, rotated the same way
-// this frame), so a simple epsilon match buckets and sums them without any target-ID plumbing.
-// This is what bounds cloudMarchCS's per-sample beam lookup below by TARGET count (kMaxCloudBeamLights,
-// generous headroom over the realistic simultaneous count given how globally sparse the 201
-// reflector targets are) instead of by satellite count — the structural fix that made follow-up
-// #14's real per-satellite march both expensive (scaled with servicing satellite count at a busy
-// site) and flicker-prone (follow-up #16's dedup picked a per-frame "winning" satellite whose
-// identity changed frame to frame). Host-visible/coherent, CPU writes this frame + GPU reads this
-// same frame — same one-frame-stale-input-but-fresh-upload idiom as reflectorTargetsBuf/lightDomeBuf.
-// Struct must match GpuBeamCloudLight/GpuBeamCloudLights in SatelliteSim.h exactly.
-const uint kMaxCloudBeamLights = 16u;
-struct BeamCloudLight {
-    vec3  targetENU;     // meters, observer-relative — same frame as obsPos/p in cloudMarchCS
-    float aggIntensity;  // sum of groundIrradiance*beamGain across every satellite servicing this target
-    float footprintRadM; // largest ground footprint radius among contributing satellites
-    // blockAltM/blockOpacity (C12 follow-up #46): repurposed from pad0/pad1, zero size change.
-    // Copied on the CPU from beamCloudBlockBuf's per-target result (computed there ONCE PER
-    // TARGET PER FRAME, a 12-step vertical march — not per screen sample). Used below as a cheap
-    // height-based directional cutoff, replacing the live self-shadow march follow-up #45 added
-    // and found too expensive (it duplicated a full sun-cone-style march per in-cloud sample
-    // across the whole area where any target's Gaussian falloff was non-negligible, not just its
-    // visually-significant core).
-    float blockAltM;     // altitude (m) where this target's column first drops below 50% transmittance
-    float blockOpacity;  // 0 = clear column, 1 = fully opaque
-    float pad2;          // std430 array-of-vec4-pairs alignment
-};
-layout(std430, set = 0, binding = 14) readonly buffer BeamCloudLightBuf {
-    uint            beamLightCount;
-    uint            beamLightPad0, beamLightPad1, beamLightPad2;
-    BeamCloudLight  beamLights[kMaxCloudBeamLights];
-};
 
 // PI, R_EARTH, R_ATMOS, BETA_R/H_R, BETA_M/H_M/G_MIE, SUN_INTENSITY, kCloudHorizFreq/kCloudColFreq,
 // raySphere, rotateZ, remap, phaseM/phaseCloud and the scene-depth sentinels come from the shared
@@ -867,74 +832,98 @@ vec3 cirrusDomainWarp(vec3 dirECEF) {
     return w1 + w2;
 }
 
-// ── Reflect-Orbital beam volumetric lighting (C12 follow-up #44/#46/#47) ─────────────────────
-// Shared by cloudMarchCS and fogMarchCS (follow-up #47) — the per-target lookup is IDENTICAL for
-// both volumes: a per-TARGET Gaussian lateral falloff (beamLights[], the CPU-aggregated per-target
-// buffer built in SatelliteSim.cpp), the beam_self_march.comp-derived blockAltM/blockOpacity
-// height cutoff (2026-08-09: a real per-beam slant march, aggregated to per-target here by taking
-// the highest-opacity contributor — was beam_cloud_block.comp's per-target vertical approximation
-// before that), and the phaseCloud() view-angle term. Unlike the sun self-shadow cone (which
-// legitimately differs per volume — colH/baseH cloud-shape sculpting has no fog equivalent — kept
-// duplicated on purpose, see fogMarchCS's own comment), this body has no per-volume tuning at all,
-// so sharing it is a plain, low-risk deduplication rather than the codegen-risking kind
-// [[feedback_shared_ubo_duplication]]/CLAUDE.md's optDepth cautionary tale warns about:
-// beamLightCount was already a runtime (not compile-time-unrolled) trip count in the original
-// cloud-only version, so factoring it out loses no unrolling that existed before.
+// ── Reflect-Orbital beam->cloud light sources (2026-08-09, fourth design) ────────────────────
+// First was a per-target CPU aggregation anchored at the idealized targetENU — retired once
+// beam_self_march.comp started marching the beam's REAL path and made per-beam values genuinely
+// differ, which a horizontal-only Gaussian around an idealized target position could never read
+// as directional. Second was a true per-beam glow folded into main()'s per-pixel debug-ray loop,
+// using the CAMERA's own view-ray-to-beam-line distance for proximity — cheap, but geometrically
+// wrong: that distance's iso-contours are not soft blobs, they're hyperbola-like curves, and it
+// showed up in-app as large white rings intersecting the beams. Third restored the correct
+// architecture — evaluated PER CLOUD SAMPLE inside the march (`inScatter`, right alongside
+// `sunColorCloud`/`moonContrib`), exactly like sun/moon — with each list entry as one individual
+// real beam, no aggregation. That was affordable at a 16-slot cap but visually starved; getting
+// "appreciable" coverage needed raising the cap to 512, which tanked frame rate (this loop's cost
+// is linear in the cap, evaluated per IN-CLOUD SAMPLE, not per pixel).
 //
-// Takes the evaluation point (`p`/`h`, works for a cloud OR fog sample) and `sampleDayness`
-// (each caller's own per-sample geographic day/night gate, computed the same way both places).
-// Height-cutoff note: fog's own `h` is always far below any target's `blockAltM` (a quantity
-// derived from a march through the 2-11km CLOUD shell), so whenever `blockOpacity>0` the
-// smoothstep already reads as "fully blocked" for a fog-altitude sample — a beam blocked by
-// opaque cloud above therefore also doesn't light fog below it, with no extra code.
+// This fourth version keeps the third's per-sample architecture and geometric accuracy (`posENU`
+// is the beam's REAL ground intersection, satENU + reflectDirENU traced to R_EARTH; `dirToSource`
+// is its REAL direction, ground toward satellite) but clusters: a beam LOCKED onto its target
+// (small `aimErrorRad`, checked on the CPU) is folded into a shared per-target light via
+// intensity-weighted average — dozens of satellites converged on one site produce nearly
+// identical geometry, so representing them as one combined light recovers full visual coverage at
+// a fraction of the cost. A beam still SLEWING keeps its own individual slot, since its geometry
+// is genuinely unique right now. See `GpuBeamCloudLights`' own comment (SatelliteSim.h) for the
+// CPU-side clustering logic. Cap dropped back to 256 (from 512) — same real coverage, since the
+// effective distinct-light count is now bounded near the active-target count, not total
+// active-satellite count.
+// Struct must match GpuBeamCloudLight/GpuBeamCloudLights in SatelliteSim.h exactly — including
+// kMaxCloudBeamLights itself, hand-duplicated here (not shared via a header) same as this
+// project's other CPU/GPU struct-layout pairs; a mismatch silently truncates or wastes capacity,
+// not a crash, so it will NOT show up as a compile or validation error if missed.
+const uint kMaxCloudBeamLights = 512u;
+struct BeamCloudLight {
+    vec3  posENU;       // meters, observer-relative — REAL ground intersection of this ONE beam
+    float intensity;    // groundIrradiance * beamGain for this satellite
+    vec3  dirToSource;  // unit direction from posENU toward the satellite (real beam direction)
+    float footprintRadM;
+    float blockAltM;    // altitude (m) where THIS beam's own path drops below 50% transmittance
+    float blockOpacity; // 0 = clear column, 1 = fully opaque
+    float pad0, pad1;   // std430 array-of-vec4-pairs alignment
+};
+layout(std430, set = 0, binding = 14) readonly buffer BeamCloudLightBuf {
+    uint            beamLightCount;
+    uint            beamLightPad0, beamLightPad1, beamLightPad2;
+    BeamCloudLight  beamLights[kMaxCloudBeamLights];
+};
+
+// Takes the evaluation point (`p`/`h`) and `sampleDayness` (caller's own per-sample geographic
+// day/night gate) — same signature shape the retired function used, still cloud-only (fog no
+// longer carries a beam term at all, removed with the second design).
 vec3 beamCloudLighting(vec3 p, float h, vec3 dir, vec3 obsPos, float sampleDayness) {
     vec3 beamLit = vec3(0.0);
-    // T1.4 (CLOUD_PERF_PLAN.md): beamLightCount == 0 added to the existing gate. With no active
-    // targets the loop below did nothing, but the phaseCloud() lobe and normalize(p) after it
-    // still ran on every in-cloud and in-fog sample to scale a beamMag of exactly zero.
     if ((pc.debugDisableMask & 128u) != 0u || pc.beamSkyGlowGain <= 0.0 || beamLightCount == 0u)
         return beamLit;
 
-    // First-pass guess — matches the deleted tube's kBeamScale order of magnitude, since it
-    // multiplies the same groundIrradiance-scale intensity value. Expect retuning once seen
-    // in-app, same as every other C12 constant on first landing.
     const float kBeamCloudGlowScale = 1e-6;
     const float kCloudFeatherM = 500.0; // soft edge width for the height cutoff below
-    // Perf (C11/C12 follow-up #48): fixed-sigma cutoff BEFORE the exp() call, not an absolute-
-    // magnitude threshold — comparing raw magnitude against a fixed value (as follow-up #45's
-    // live-march gate mistakenly did) extends the "relevant" radius further for a brighter target,
-    // exactly backwards from what a rejection test should do. A Gaussian is already ~1.5e-6 of its
-    // OWN peak at 5 sigma regardless of amplitude, so a fixed sigma multiple on `radius` bounds the
-    // truly-negligible tail the same way for every target, dim or bright. This is what actually
-    // bounds the measured "halved near any active site" cost: targets are kept in beamLights[] out
-    // to beamMaxRangeM (can be >1000km) for range-check purposes, but their visual footprint is
-    // only a few km — so most in-cloud/in-fog samples anywhere in view were paying for a full
-    // exp() every time despite being nowhere near that target's actual few-km-wide glow.
+    // Perf: fixed-sigma cutoff BEFORE the exp() call — see the retired version's own comment for
+    // why this bounds cost the same way regardless of a light's brightness.
     const float kBeamCutoffSigma = 4.0;
-    float beamMag = 0.0;
+    vec3 mag = vec3(0.0);
     for (uint bli = 0u; bli < beamLightCount; ++bli) {
-        vec3  targetWorldPos = obsPos + beamLights[bli].targetENU;
-        vec2  delta  = p.xy - targetWorldPos.xy;
-        float distSq = dot(delta, delta);
+        // 2026-08-09 (in-app finding: cloud bottoms near a busy target read as uniformly lit,
+        // independent of illumination/density sliders): this used to be a HORIZONTAL-only
+        // distance from the sample to the light's ground point, with brightness gated purely
+        // on/off by the height cutoff below — i.e. no real falloff from a source position at
+        // all, just a flat disc. Replaced with true 3D perpendicular distance from the sample to
+        // the light's actual LINE (posENU + dirToSource) — the same point-to-line shape
+        // beam_self_march.comp/the debug ray already use elsewhere, just applied here for the
+        // first time. Samples near where the beam actually crosses the shell now read brighter
+        // than samples merely near the ground point at any height, which is what actually
+        // produces a top-bright/bottom-dark gradient instead of a wash.
+        vec3  lightWorldPos = obsPos + beamLights[bli].posENU;
+        vec3  toP  = p - lightWorldPos;
+        vec3  dirS = beamLights[bli].dirToSource;
+        vec3  perp = toP - dirS * dot(toP, dirS);
+        float distSq = dot(perp, perp);
         float radius = max(beamLights[bli].footprintRadM, 100.0);
         float cutoff = radius * kBeamCutoffSigma;
         if (distSq > cutoff * cutoff) continue;
-        float g = beamLights[bli].aggIntensity * exp(-distSq / (2.0 * radius * radius));
+        float g = beamLights[bli].intensity * exp(-distSq / (2.0 * radius * radius));
         float hCut = smoothstep(beamLights[bli].blockAltM - kCloudFeatherM,
                                   beamLights[bli].blockAltM, h);
         float hFadeBeam = mix(1.0, hCut, beamLights[bli].blockOpacity);
-        beamMag += g * hFadeBeam;
+        // Directional shading using THIS beam's own real direction (2026-08-09) — not a shared
+        // local-zenith approximation, since an oblique beam's true source direction can differ
+        // substantially from straight up. Reuses the same phaseCloud() Henyey-Greenstein lobe the
+        // sun/moon terms already use, so looking up along a beam reads as a brighter forward-
+        // scattered shaft — now genuinely toward where the light is actually coming from.
+        float ph = phaseCloud(dot(dir, beamLights[bli].dirToSource));
+        mag += vec3(1.0, 0.97, 0.92) * (g * hFadeBeam * ph);
     }
 
-    // View-angle directional shading (see this function's header comment): a beam is a
-    // near-vertical light column, so the direction FROM this sample TOWARD its source is
-    // approximately local zenith — `normalize(p)` gives that exactly in this file's local
-    // ENU-ish frame. Reuses the same phaseCloud() Henyey-Greenstein lobe the sun/moon terms
-    // already use, so looking up along a beam reads as a brighter forward-scattered shaft.
-    vec3  beamUpDir = normalize(p);
-    float beamPh    = phaseCloud(dot(dir, beamUpDir));
-    beamLit = vec3(1.0, 0.97, 0.92) * beamMag * beamPh * pc.beamSkyGlowGain
-            * (1.0 - sampleDayness) * kBeamCloudGlowScale;
+    beamLit = mag * pc.beamSkyGlowGain * (1.0 - sampleDayness) * kBeamCloudGlowScale;
     return beamLit;
 }
 
@@ -957,6 +946,14 @@ void cloudMarchCS(
     out   float tCloudEnter,  // shell entry distance for THIS ray, kNoSurfaceT if none — lets a
                               // caller (the debug beam overlay) tell "in front of the cloud" from
                               // "behind it" instead of just how opaque the whole column reads
+    out   float tCloudMeanT,  // 2026-08-09: transmittance-weighted mean distance to where this
+                              // ray's REAL cloud material sits (same value odAtmCloud already
+                              // derives below as cloudMeanT) — kNoSurfaceT if the march never ran.
+                              // tCloudEnter is only the IDEALIZED shell-boundary sphere crossing,
+                              // true for any ray pointed into the shell's altitude band regardless
+                              // of whether real density is there; tCloudMeanT is anchored to where
+                              // the density actually accumulated. See the debug-ray cloudGate call
+                              // site for why the distinction matters.
     float tScene)  // shared scene depth (metres to the first surface, or kNoSurfaceT)
 {
     // Runtime-tunable scattering strength — see cloud_params.glsl's atmosRayleighGain/
@@ -968,6 +965,7 @@ void cloudMarchCS(
     B_cloud = vec3(0.0);
     cloudTOut = vec3(1.0);
     tCloudOcclude = -1.0;
+    tCloudMeanT = kNoSurfaceT;
     tCloudEnter = kNoSurfaceT;
     if (cloud.layers[0].enabled < 0.5) return;
 
@@ -1608,15 +1606,13 @@ void cloudMarchCS(
                          * (1.0 - sampleDayness) * mix(0.2, 1.0, hNorm);
             }
 
-            // Reflect-Orbital beam->cloud illumination (C12 follow-up #44, factored into the
-            // shared beamCloudLighting() in follow-up #47 so fogMarchCS can reuse it verbatim) —
-            // replaces the deleted analytic sky tube outright. Naturally invisible in clear air
-            // (this whole branch only runs where d>0.001, i.e. real cloud density already exists
-            // here) and naturally respects terrain/cloud depth ordering (p/tExit are already
-            // clipped to tScene and composited through cloudTransmittance like every other term in
-            // this loop) — no separate occlusion march or cloud-cutoff fade needed, unlike the
-            // deleted tube. See beamCloudLighting()'s own header comment for the height-cutoff/
-            // view-angle design.
+            // Reflect-Orbital beam->cloud illumination (2026-08-09, third design — see
+            // beamCloudLighting()'s own header comment above for the full history). Fed forward
+            // into this per-sample loop exactly like sunLit/moonContrib are, from a small
+            // geometrically-accurate per-beam light list. Naturally invisible in clear air (this
+            // whole branch only runs where d>0.001) and naturally respects terrain/cloud depth
+            // ordering (p/tExit are already clipped to tScene and composited through
+            // cloudTransmittance like every other term in this loop).
             vec3 beamLit = beamCloudLighting(p, h, dir, obsPos, sampleDayness);
 
             // Sun gain blended by sun elevation: cloud.sunGain (near-horizon/sunset) tuned high
@@ -1672,6 +1668,7 @@ void cloudMarchCS(
     // right at shell entry there) and correctly picks up the real horizon-ward travel distance in
     // the inside-shell case, with no special-casing needed for any of the three observer positions.
     float cloudMeanT = (cloudWeightAccum > 1e-4) ? (cloudDistAccum / cloudWeightAccum) : tEnter;
+    tCloudMeanT = cloudMeanT;
     vec2 odAtmCloud = optDepth(obsPos, dir, max(cloudMeanT, 0.001));
     vec3 cloudAttn  = exp(-(BETA_R * odAtmCloud.x + BETA_M * 1.1 * odAtmCloud.y));
 
@@ -2005,9 +2002,9 @@ void cirrusMarchCS(
 // compounding with this one's own jitter). Sun godrays are being pursued separately, if at all, as
 // a screen-space technique instead of a real march through this layer.
 //
-// Beam godrays reuse beamCloudLighting() (follow-up #44/#46/#47) completely unmodified — see that
-// function's header comment for why fog's own altitude already makes it respect cloud occlusion
-// with no extra code.
+// Beam godrays through fog (the old beamCloudLighting() reuse) were removed with that function
+// 2026-08-09 — fog no longer carries a beam-lighting term at all; the new directional glow lives
+// only in the per-pixel beam-ray loop in main(), which composites against cloud/cirrus, not fog.
 const float kFogHorizFreq  = kCloudHorizFreq * 0.12; // much broader features than cloud cells
 const float kFogMaxRangeM  = 12000.0; // real fog has short visibility; also bounds march cost
 
@@ -2109,15 +2106,10 @@ void fogMarchCS(
         // longer tries to carry directional light-shaft detail. Sun (and beam, terrain, ocean)
         // godrays are being pursued separately as a screen-space technique instead, if at all.
         float cloudSunDotRaw = dot(dirECEF, sunDirECEF);
-        float sampleDayness  = clamp((cloudSunDotRaw + 0.2) / 0.5, 0.0, 1.0);
         float sunElev        = smoothstep(-0.04, 0.12, cloudSunDotRaw);
         vec3  sunInScatter    = vec3(1.0) * sunElev * ph * cloud.fogSunGain;
 
-        // Beam godrays — see beamCloudLighting()'s header comment for why this needs no separate
-        // occlusion handling: fog's h is always far below any target's (cloud-shell) blockAltM.
-        vec3 beamLit = beamCloudLighting(p, h, dir, obsPos, sampleDayness);
-
-        vec3 inScatter = sunInScatter + beamLit;
+        vec3 inScatter = sunInScatter;
         fogScatter       += fogTransmittance * (1.0 - stepT) * inScatter;
         fogTransmittance *= stepT;
         if (fogTransmittance.r < 0.02) break;
@@ -2173,9 +2165,9 @@ void main() {
                   A_cirrus, B_cirrus, tCirrusEnter, tScene);
 
     vec3  A_cloud, B_cloud, cloudTOut;
-    float tCloudOcclude, tCloudEnter;
+    float tCloudOcclude, tCloudEnter, tCloudMeanT;
     cloudMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, obsEffH, pc.moonDirENU,
-                 A_cloud, B_cloud, cloudTOut, tCloudOcclude, tCloudEnter, tScene);
+                 A_cloud, B_cloud, cloudTOut, tCloudOcclude, tCloudEnter, tCloudMeanT, tScene);
 
     vec3  A_total = A_cirrus * A_cloud;
     vec3  B_total = B_cirrus * A_cloud + B_cloud;
@@ -2370,8 +2362,8 @@ void main() {
             // other — see beam_self_march.comp's header and BEAM_CLOUD_PLAN.md finding 1 for why.
             // blockAltM/blockOpacity come from a real per-beam slant march along this exact
             // satellite-to-ground segment, so qAltM (already computed above, same segment) is
-            // directly comparable — same feather/mix shape beamCloudLighting() already uses for
-            // the volumetric glow term, just applied here to the visible ray for the first time.
+            // directly comparable — the directional glow block below reuses this same
+            // beamPhysicsFade value directly, so both terms agree on where the beam goes dark.
             const float kRayCloudFeatherM = 500.0;
             float rayHCut = smoothstep(beams[bi].blockAltM - kRayCloudFeatherM, beams[bi].blockAltM, qAltM);
             float beamPhysicsFade = mix(1.0, rayHCut, beams[bi].blockOpacity);
@@ -2386,7 +2378,36 @@ void main() {
             // front of a distant cloud bank read as behind it, since A_total has no notion of
             // WHERE along the ray the opacity sits. Comparing against the entry distance is what
             // lets a beam segment nearer than the cloud render fully lit in front of it.
-            float cloudEntryT = min(tCloudEnter, tCirrusEnter);
+            //
+            // 2026-08-09 fix: tCloudEnter/tCirrusEnter are GEOMETRIC — the distance where the ray
+            // crosses the idealized shell sphere, true for every ray that passes through the
+            // shell's altitude band at all, independent of whether there is any actual cloud
+            // density along that specific line of sight. Gating on it unconditionally meant any
+            // beam point below the shell's nominal ceiling got multiplied by A_total the instant
+            // it crossed that fixed sphere — a hard wall at the shell's geometric top, not at the
+            // real (noise-shaped, often lower/patchier) cloud surface. Symptom: beams appeared to
+            // terminate at a fixed altitude "on top of" the cloud layer rather than fading out at
+            // the actual cloud tops. Fixed by only engaging the gate where the ray's OWN march
+            // found real, substantially-opaque cloud (mirrors tCloudOcclude's own ≥90%-opacity
+            // threshold, computed the same way here for cirrus since cirrusMarchCS has no
+            // equivalent out-param) — an empty/thin column along this sightline now leaves the
+            // beam fully visible no matter how deep past the idealized shell sphere it sits.
+            //
+            // 2026-08-09 follow-up (in-app finding: still a hard edge, exactly at the shell's
+            // geometric ceiling, with a visible gap down to where the cloud actually renders): the
+            // fix above only changed WHETHER to gate, not WHERE the gate starts — that was still
+            // tCloudOcclude, which cloudMarchCS sets to tEnter, the SAME idealized shell-boundary
+            // sphere as before. For any ordinarily-cloudy sky (the normal case, not the edge case
+            // the previous fix targeted) the whole column easily reads ≥90% opaque, so the gate
+            // kept firing right at the shell's geometric top regardless. tCloudMeanT is the
+            // transmittance-weighted mean distance to where this ray's density actually
+            // accumulated (cloudMarchCS already derived it for its own atmospheric-extinction term
+            // as cloudMeanT) — anchored to the real, noise-shaped cloud surface instead of the
+            // abstract sphere, matching how the 2D fallback cloud layer (which samples real
+            // coverage directly) already occludes beams correctly.
+            float cirrusOccludeT = (dot(A_cirrus, vec3(1.0 / 3.0)) < 0.1) ? tCirrusEnter : kNoSurfaceT;
+            float cloudOccludeT  = (tCloudOcclude >= 0.0) ? tCloudMeanT : kNoSurfaceT;
+            float cloudEntryT = min(cloudOccludeT, cirrusOccludeT);
             float cloudGate = (t <= cloudEntryT) ? 1.0 : dot(A_total, vec3(1.0 / 3.0));
             if (cloudGate <= 0.001) continue; // fully opaque along this ray — nothing to draw
 
