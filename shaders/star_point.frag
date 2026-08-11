@@ -38,9 +38,15 @@ layout(location = 0) out vec4 outColor;
 // here — see starDescLayout in SatelliteSim.cpp).
 layout(set = 0, binding = 2) uniform sampler2D cloudTargetA; // a = tCloudOcclude (>=0 => >=90% opaque)
 layout(set = 0, binding = 3) uniform sampler2D cloudTargetB; // rgb = A_total (cloud transmittance)
+// Shared terrain/ocean depth — new binding (long-exposure trail follow-up, see SatelliteSim.cpp's
+// initStars()). This pipeline's LIVE draw gets terrain occlusion for free from the main render
+// pass's hardware depth test, so this binding is normally unused here — only the trail draw (no
+// depth attachment of its own) sets pc.manualTerrainTest and pays for the fetch.
+layout(set = 0, binding = 4) uniform sampler2D sceneDepthTex;
 
 // Declares only the fields this shader reads, at their real SatDrawPC byte offsets — same
-// "prefix of the shared push-constant block" trick sat_point.frag/star_point.vert already use.
+// "prefix of the shared push-constant block" trick sat_point.frag/star_point.vert already use,
+// extended through manualTerrainTest (offset 172) for the long-exposure trail follow-up.
 layout(push_constant) uniform PC {
     mat4  skyView;          // offset 0 — unused here, declared for layout consistency
     float fovYRad;          // offset 64
@@ -52,8 +58,19 @@ layout(push_constant) uniform PC {
     vec4  obsECEFDir;        // offset 112
     uint  debugDisableMask;  // offset 128 — unused here
     float pad0;              // offset 132
-    vec2  screenSizePx;      // offset 136 — the only field this shader actually needs
+    vec2  screenSizePx;      // offset 136
+    float skyGlareVisibility; // offset 144 — unused here
+    float beamMaxRangeM;      // offset 148 — unused here
+    float beamSkyGlowGain;    // offset 152 — unused here
+    float beamGlowBleedGain;  // offset 156 — unused here
+    float beamProximityGlow;  // offset 160 — unused here
+    float noTwinkle;          // offset 164 — unused here (star_point.vert reads its own copy)
+    float mwSuppressEased;    // offset 168 — unused here
+    float manualTerrainTest;  // offset 172 — 1 = do the manual sceneDepthTex hit-test below
 } pc;
+
+const float kNoSurfaceT = 1e30; // mirrors common.glsl's constant — this shader skips the #include
+                                 // machinery for a single value, same idiom flare_source.frag uses
 
 void main() {
 
@@ -98,6 +115,20 @@ void main() {
     const float kStarCloudSuppressPower = 2.0;
     float cloudVis = cloudHardOcclude * pow(clamp(cloudBlock, 0.0, 1.0), kStarCloudSuppressPower);
 
-    float brightness = gaussian * coreScale * fragTwinkle * cloudVis;
+    // ── Terrain occlusion (long-exposure trail follow-up) ──────────────────────
+    // Only the trail draw sets this — the live draw already gets terrain occlusion for free from
+    // the main render pass's hardware depth test (this pipeline is drawn at a fixed depth of 0.5,
+    // which loses against any real terrain hit and wins against pure sky). The trail's offscreen
+    // render pass has no depth attachment at all, so it needs this explicit test instead — same
+    // technique flare_source.frag/sat_point.frag already use for the same reason: any real
+    // terrain/ocean hit along this screen ray occludes a star, regardless of how far away that hit
+    // actually is (stars have no real depth of their own to compare against).
+    float terrainVis = 1.0;
+    if (pc.manualTerrainTest >= 0.5) {
+        vec2 depthUV = gl_FragCoord.xy / pc.screenSizePx;
+        terrainVis = (texture(sceneDepthTex, depthUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
+    }
+
+    float brightness = gaussian * coreScale * fragTwinkle * cloudVis * terrainVis;
     outColor = vec4(starColor * brightness, brightness);
 }

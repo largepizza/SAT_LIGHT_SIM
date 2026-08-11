@@ -351,8 +351,18 @@ struct SatDrawPC
     // result, [0,1], 0 = fully visible, 1 = fully suppressed. See mwSuppressEased member comment
     // (SatelliteSim.h) and sat_sky.frag's Milky Way section for how it's consumed.
     float mwSuppressEased; // offset 168
-}; // total: 172 bytes
-static_assert(sizeof(SatDrawPC) == 172, "SatDrawPC layout mismatch");
+    float manualTerrainTest; // offset 172 — long-exposure trail follow-up: 0 (default) = normal
+                             // live draw, which already gets terrain occlusion for free from the
+                             // main render pass's hardware depth test; 1 = do a manual sceneDepthTex
+                             // hit-test instead (set only on the trail draw's own copy of this PC,
+                             // in recordCompute()'s trail block) — the trail's offscreen render pass
+                             // has no depth attachment of its own to piggyback on, same reason
+                             // flare_source.frag already needed this exact technique. Only
+                             // sat_point.frag/star_point.frag read this; every other consumer of
+                             // SatDrawPC can ignore it (same "a push_constant declaration only needs
+                             // to be a PREFIX" note as noTwinkle above).
+}; // total: 176 bytes
+static_assert(sizeof(SatDrawPC) == 176, "SatDrawPC layout mismatch");
 
 // ── Push constants for cloud_march.comp (half-res cloud compute pass, C15-perf) ──────────────
 // Matches the layout(push_constant) block in cloud_march.comp exactly. A separate struct from
@@ -620,6 +630,23 @@ struct FlareCompositePC
     float gain; // user-tunable overall glow gain (Settings > Display)
 }; // total: 4 bytes
 static_assert(sizeof(FlareCompositePC) == 4, "FlareCompositePC layout mismatch");
+
+// Push constants for trail_fade.comp — see the long-exposure trail member block below.
+struct TrailFadePC
+{
+    float decayFactor; // exp(-dt / trailDecaySeconds); dt = real wall-clock frame delta, never simDt
+    float ceiling;      // per-channel soft cap on the decayed value (defense-in-depth; the primary
+                        // ceiling is trail_composite.frag's own hard clamp)
+    float pad0, pad1;
+}; // total: 16 bytes
+static_assert(sizeof(TrailFadePC) == 16, "TrailFadePC layout mismatch");
+
+// Push constants for trail_composite.frag — the final additive draw into the main frame.
+struct TrailCompositePC
+{
+    float gain; // user-tunable overall trail gain (Settings > Photometry, "Trail gain")
+}; // total: 4 bytes
+static_assert(sizeof(TrailCompositePC) == 4, "TrailCompositePC layout mismatch");
 
 // ── GPU orbital parameters (uploaded once per buildOrbits, device-local) ─────
 // 28 × 4-byte fields = 112 bytes.  All plain floats/uints — no vec3 — so
@@ -1834,6 +1861,74 @@ private:
                                         // contribution looks under- or over-powered relative to
                                         // satellites once seen in-app.
 
+    // ── Long-exposure trail pipeline (fun side feature) ──────────────────────────────────────
+    // Persistent, real-time-decayed accumulator for satellite/star/planet point splats — leaves
+    // fading trails behind them, most dramatic at high timeScaleIdx. Same three-stage shape as the
+    // flare pipeline above (fade/splat entirely inside recordCompute(), composite draw appended in
+    // recordDraw()), reusing sat_point.vert/frag and star_point.vert/frag UNCHANGED against a new
+    // render pass — no new pipeline LAYOUTS needed for the splat stage, only new VkPipeline objects
+    // targeting trailAccumRenderPass instead of ctx.renderPass.
+    //
+    // Decay is REAL-TIME (wall-clock), not sim-time: a fixed real-world persistence window, so
+    // cranking timeScaleIdx up automatically makes trails longer/showier (more simulated motion
+    // fits inside the same real-world window) with no retuning. Runs every frame trails are
+    // enabled, even while timePaused — matches a real camera shutter aging even when nothing new
+    // is landing on it.
+    //
+    // Splats are drawn from the LIVE satVisibleBuf/starBuf/planetBuf this same frame's sat_flare.comp/
+    // updateStars()/updatePlanets() already computed — one sample per real display frame. At very
+    // high timeScaleIdx (where a satellite/star can move a large angle between two real frames)
+    // this reads as short dashes rather than one continuous streak rather than smoothly interpolated
+    // motion — accepted for this pass (temporal supersampling to resample positions several times
+    // per real frame, reusing the fact that this sim's orbital/rotational math is a pure function of
+    // absolute time, is a natural follow-up but not implemented here).
+    VkExtent2D trailAccumExtent{};
+    VkImage trailAccumImg = VK_NULL_HANDLE; // RGBA16F, COLOR_ATTACHMENT|STORAGE|SAMPLED, full ctx.swapExtent
+                                            // (NOT quarter-res like flareExtent — downscaling would
+                                            // blur thin satellite/star streaks; matches the
+                                            // "satellites/stars/UI always render at native
+                                            // resolution" Resolution Scaling design goal)
+    VkDeviceMemory trailAccumMem = VK_NULL_HANDLE;
+    VkImageView trailAccumView = VK_NULL_HANDLE;
+    // trailSampler intentionally absent — reuses flareSampler (LINEAR/CLAMP_TO_EDGE, resolution-
+    // independent) for the composite's sampled read.
+    VkRenderPass trailAccumRenderPass = VK_NULL_HANDLE; // 1 color attachment, LOAD_OP_LOAD (never
+                                                        // cleared by the render pass itself —
+                                                        // persistence is the whole point),
+                                                        // VK_IMAGE_LAYOUT_GENERAL throughout (same
+                                                        // "sample directly in GENERAL" trick
+                                                        // flareScratchImg already uses)
+    VkFramebuffer trailAccumFramebuffer = VK_NULL_HANDLE;
+    // Stage A (fade, compute): multiplies trailAccumImg in place by a real-time exponential decay.
+    VkDescriptorSetLayout trailFadeDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool trailFadeDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet trailFadeDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout trailFadePipeLayout = VK_NULL_HANDLE;
+    VkPipeline trailFadePipeline = VK_NULL_HANDLE;
+    // Stage B (splat, graphics): reuses drawPipeLayout/descSet and starPipeLayout/starDescSet/
+    // planetDescSet completely unchanged (same SatDrawPC push-constant range, same bound buffers) —
+    // only new VkPipeline objects, targeting trailAccumRenderPass with depthTestEnable=false (this
+    // offscreen target has no depth attachment) instead of ctx.renderPass.
+    VkPipeline trailSatPipeline = VK_NULL_HANDLE;
+    VkPipeline trailStarPipeline = VK_NULL_HANDLE; // also used for the planet trail draw, exactly
+                                                    // like the live starPipeline is
+    // Stage C (composite, graphics): additive fullscreen-triangle draw into ctx.renderPass, appended
+    // after the flare composite draw in recordDraw() (order between the two doesn't matter — both
+    // are ONE/ONE additive blending, which is commutative).
+    VkDescriptorSetLayout trailCompositeDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool trailCompositeDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet trailCompositeDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout trailCompositePipeLayout = VK_NULL_HANDLE;
+    VkPipeline trailCompositePipeline = VK_NULL_HANDLE;
+    // User tunables (Settings > Display / Photometry), persisted in settings.json.
+    bool trailEnabled = false;
+    float trailDecaySeconds = 4.0f;  // real-world exponential decay time constant
+    float trailCompositeGain = 1.0f;
+    // One-shot flag consumed at the top of the trail block in recordCompute(): set on toggle-on,
+    // resize, and the manual "Clear Trail" button. NOT set on timescale/observer/pause changes —
+    // trails are meant to persist through those.
+    bool trailClearPending = true;
+
     // ── Per-beam cloud occlusion march (2026-08-09) ────────────────────────────
     // Replaces the per-target beam_cloud_block.comp pass (retired) — own small descriptor set/
     // pipeline, same shape (SSBO + 3 cloud textures + CloudParams UBO), but binding 0 is
@@ -2311,7 +2406,9 @@ private:
         KB_SELECT_SAT = 14,    // event — select the satellite nearest the center of the screen
         KB_SCREENSHOT = 15,    // event — UC6: capture screenshots/satlight_<timestamp>.png (clean, no UI)
         KB_TOGGLE_CURSOR = 16, // event — UC5: gamepad virtual-cursor mode toggle (default: Menu/Start)
-        KB_COUNT = 17,
+        KB_TOGGLE_TRAILS = 17, // event — long-exposure trail on/off (default: F; Select Satellite
+                               // moved off F to T to free this up — see keybindings init)
+        KB_COUNT = 18,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
@@ -2517,6 +2614,7 @@ private:
     bool hovScalePlus = false;
     bool hovRenderScaleMinus = false;
     bool hovRenderScalePlus = false;
+    bool hovTrailsBtn = false; // "Star Trails" HUD icon-button hover state (buildLeftHudPanel)
     bool hovMasterVolMinus = false;
     bool hovMasterVolPlus = false;
     bool hovMusicVolMinus = false;
@@ -2542,9 +2640,9 @@ private:
     // Sized 11, not 9 — flare_glow_gain/flare_streak_gain (flare architecture overhaul) added two
     // more PhotoParam rows; per [[feedback_cloud_slider_arrays]], all three hover/dragging arrays
     // must grow together with any new slider id.
-    bool hovPhotoMinus[15] = {};
-    bool hovPhotoPlus[15] = {};
-    bool draggingPhoto[15] = {};
+    bool hovPhotoMinus[17] = {}; // 15 existing photometry params + 2 trail sliders (Trail decay/gain)
+    bool hovPhotoPlus[17] = {};
+    bool draggingPhoto[17] = {};
     bool hovCloudMinus[86] = {}; // was [84] — idx 84/85 are the airglow coverage/polar sliders
     bool hovCloudPlus[86] = {};
     bool draggingCloud[86] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
@@ -2659,6 +2757,16 @@ private:
                                                      // be "extended" afterward from here).
     void createFlarePipelines(VulkanContext &ctx);   // flareSource (graphics), flareBlur (compute),
                                                      // flareComposite (graphics) pipelines
+    // ── Long-exposure trail pipeline ───────────────────────────────────────────────────────────
+    // Must run after createFlarePipelines (needs drawPipeLayout/descSet) AND after initPlanets
+    // (needs starPipeLayout/starDescSet/planetDescSet) — see init()'s call order.
+    void createTrailResources(VulkanContext &ctx);   // image/view/mem, render pass, framebuffer
+    void destroyTrailResources(VkDevice device);     // called from onResize (before recreate) and cleanup
+    void createTrailDescriptors(VulkanContext &ctx); // trailFade (1 storage image) and
+                                                     // trailComposite (1 sampler) descriptor sets
+    void createTrailPipelines(VulkanContext &ctx);   // trailFade (compute), trailSat/trailStar
+                                                     // (graphics, reuse existing pipeline layouts),
+                                                     // trailComposite (graphics) pipelines
     void initStars(VulkanContext &ctx);
     void createStarPipeline(VulkanContext &ctx);
     void updateStars();

@@ -281,11 +281,12 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Zoom In", GLFW_KEY_EQUAL, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER, true, false},         // KB_ZOOM_IN    (held)
         {"Zoom Out", GLFW_KEY_MINUS, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER, true, false},         // KB_ZOOM_OUT   (held)
         {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_Y, false, false},                    // KB_ZOOM_RESET (event)
-        {"Select Satellite", GLFW_KEY_F, GLFW_GAMEPAD_BUTTON_A, false, false},              // KB_SELECT_SAT (event) — center-of-screen pick
+        {"Select Satellite", GLFW_KEY_T, GLFW_GAMEPAD_BUTTON_A, false, false},              // KB_SELECT_SAT (event) — center-of-screen pick; moved off F (session follow-up) to free F for KB_TOGGLE_TRAILS below
         {"Screenshot", GLFW_KEY_F12, -1, false, false},                                     // KB_SCREENSHOT (event) — no standard gamepad "capture" button to default to
         {"Toggle Cursor", GLFW_KEY_C, GLFW_GAMEPAD_BUTTON_START, false, false},             // KB_TOGGLE_CURSOR (event) — UC5: gamepad virtual-cursor mode; no meaningful effect for KBM (mouse is always a free cursor), kept rebindable/listed for consistency
+        {"Star Trails", GLFW_KEY_F, GLFW_GAMEPAD_BUTTON_X, false, false},                   // KB_TOGGLE_TRAILS (event) — long-exposure trail on/off
     };
-    static_assert(KB_COUNT == 17, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 18, "KB enum and keybindings initializer are out of sync");
 
     createBuffers(ctx);
     createCloudNoisePipeline(ctx);
@@ -329,6 +330,13 @@ void SatelliteSim::init(VulkanContext &ctx)
     uploadSatOrbits(ctx); // bake + upload GpuSatOrbit data after orbits are built
     initStars(ctx);
     initPlanets(ctx); // must run after initStars() — reuses starDescLayout/starPipeline
+    // Long-exposure trail pipeline — needs drawPipeLayout/descSet (createDrawPipeline/
+    // createDescriptors above) AND starPipeLayout/starDescSet/planetDescSet (initStars/initPlanets
+    // just above) for its splat-stage pipelines, plus flareSampler (createFlareResources above)
+    // for its composite stage.
+    createTrailResources(ctx);
+    createTrailDescriptors(ctx);
+    createTrailPipelines(ctx);
 
     // Default window chrome sizes — must be set before the first updateWindowChrome()
     // call (buildUI); loadSettings() below may override x/y/w/h with persisted values.
@@ -467,7 +475,7 @@ void SatelliteSim::onResize(VulkanContext &ctx)
 
     VkDescriptorImageInfo depthStorageInfo{VK_NULL_HANDLE, sceneDepthView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo depthSampledInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet depthWrites[4] = {};
+    VkWriteDescriptorSet depthWrites[6] = {};
     depthWrites[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 2, 0, 1,
                       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &depthStorageInfo, nullptr, nullptr};
     depthWrites[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 13, 0, 1,
@@ -478,7 +486,13 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     // terrain occlusion test needs the same repatch every other sceneDepthView consumer gets here.
     depthWrites[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descSet, 7, 0, 1,
                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 4, depthWrites, 0, nullptr);
+    // starDescSet/planetDescSet binding 4 (sceneDepthTex, long-exposure trail terrain occlusion) —
+    // same repatch, both share starDescLayout's shape.
+    depthWrites[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, starDescSet, 4, 0, 1,
+                      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
+    depthWrites[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, planetDescSet, 4, 0, 1,
+                      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 6, depthWrites, 0, nullptr);
 
     // ── Flare/corona render-to-texture pipeline (flare architecture overhaul) — flareExtent
     // derives from ctx.swapExtent, same destroy/recreate/patch dance as the targets above.
@@ -508,6 +522,37 @@ void SatelliteSim::onResize(VulkanContext &ctx)
                                         flareCompositeDescSet, 0, 0, 1,
                                         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &flareFinalInfo, nullptr, nullptr};
     vkUpdateDescriptorSets(ctx.device, 1, &flareCompWrite, 0, nullptr);
+
+    // ── Long-exposure trail pipeline — trailAccumExtent derives from ctx.swapExtent, same
+    // destroy/recreate/patch dance as the flare block above. trailSatPipeline/trailStarPipeline/
+    // trailCompositePipeline bake their viewport size at creation so all three need destroying
+    // first; trailFadePipeline is swapchain-size-independent (compute, no viewport) and
+    // createTrailPipelines() guards its own recreation, so it's left alone here.
+    vkDestroyPipeline(ctx.device, trailSatPipeline, nullptr);
+    trailSatPipeline = VK_NULL_HANDLE;
+    vkDestroyPipeline(ctx.device, trailStarPipeline, nullptr);
+    trailStarPipeline = VK_NULL_HANDLE;
+    vkDestroyPipeline(ctx.device, trailCompositePipeline, nullptr);
+    trailCompositePipeline = VK_NULL_HANDLE;
+    destroyTrailResources(ctx.device);
+    createTrailResources(ctx);
+    createTrailPipelines(ctx);
+    // Resize policy: clear trail contents — createTrailResources() already zeroed the freshly
+    // recreated image, this just documents that intent defensively (see the trailClearPending
+    // member comment).
+    trailClearPending = true;
+
+    VkDescriptorImageInfo trailFadeImgInfo{VK_NULL_HANDLE, trailAccumView, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet trailFadeWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                                        trailFadeDescSet, 0, 0, 1,
+                                        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &trailFadeImgInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 1, &trailFadeWrite, 0, nullptr);
+
+    VkDescriptorImageInfo trailCompImgInfo{flareSampler, trailAccumView, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet trailCompWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                                        trailCompositeDescSet, 0, 0, 1,
+                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &trailCompImgInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 1, &trailCompWrite, 0, nullptr);
 }
 
 // ─── recordCompute ────────────────────────────────────────────────────────────
@@ -2237,6 +2282,109 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              0, 0, nullptr, 0, nullptr, 1, &flareBarrier);
     }
 
+    // ── Long-exposure trail pipeline (fun side feature) ───────────────────────────────────────
+    // See the trailAccumImg/trailEnabled member block comment in SatelliteSim.h for the full
+    // design. Splats are drawn from THIS frame's live satVisibleBuf/starBuf/planetBuf (already
+    // fully computed above by sat_flare.comp/updateStars()/updatePlanets()) — one sample per real
+    // display frame, no separate orbital/rotational recompute (see that comment for the accepted
+    // limitation this implies at very high timeScaleIdx). Real-time decay (dt, never simDt) runs
+    // every frame trails are enabled, even while timePaused — matches a real camera shutter aging
+    // even when nothing new is landing on it.
+    if (trailEnabled)
+    {
+        if (trailClearPending)
+        {
+            VkClearColorValue zero{};
+            VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(cmd, trailAccumImg, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+            trailClearPending = false;
+
+            ctx.imageBarrier(cmd, trailAccumImg,
+                             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                             VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        }
+
+        // Barrier: previous frame's splat draws (COLOR_ATTACHMENT_OUTPUT/WRITE) -> this frame's
+        // fade compute READ|WRITE. Needed because trailAccumRenderPass uses LOAD_OP_LOAD (unlike
+        // flareSourceImg above, which is CLEARed every frame and has no such prior-content
+        // dependency to protect).
+        ctx.imageBarrier(cmd, trailAccumImg,
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                         VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+        TrailFadePC tfpc{};
+        tfpc.decayFactor = expf(-dt / std::max(trailDecaySeconds, 0.05f));
+        // Deliberately far above anything normal accumulation reaches (worst case: a near-static
+        // bright point at the slowest decay the slider allows, trailDecaySeconds=30s at 60fps, has
+        // decayFactor~0.9994 -> steady-state amplification ~1800x a single splat's peak per-frame
+        // contribution, itself bounded well under 4.0 by sat_point.frag's/star_point.frag's own
+        // coreScale caps — comfortably under this ceiling, and this ceiling itself stays comfortably
+        // under RGBA16F's ~65504 max). Only meant to bound truly unbounded drift over an extremely
+        // long unattended/paused session — see trail_fade.comp's own comment for why raising this
+        // from its previous 4.0f (which routinely saturated and flattened real brightness
+        // differences, defeating trail_composite.frag's tonemap below it) was necessary, not optional.
+        tfpc.ceiling = 50000.0f;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, trailFadePipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                trailFadePipeLayout, 0, 1, &trailFadeDescSet, 0, nullptr);
+        vkCmdPushConstants(cmd, trailFadePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(tfpc), &tfpc);
+        vkCmdDispatch(cmd, (trailAccumExtent.width + 15) / 16, (trailAccumExtent.height + 15) / 16, 1);
+
+        // Barrier: fade compute WRITE -> the splat render pass's implicit GENERAL->COLOR_ATTACHMENT
+        // transition + LOAD.
+        ctx.imageBarrier(cmd, trailAccumImg,
+                         VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                         VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+
+        SatDrawPC tpc = buildSatDrawPC(ctx, trailAccumExtent); // trailAccumExtent == ctx.swapExtent
+        // This offscreen render pass has no depth attachment — see sat_point.frag/star_point.frag's
+        // own terrain-occlusion comment. ppc below inherits this via its `= tpc` copy.
+        tpc.manualTerrainTest = 1.0f;
+
+        VkRenderPassBeginInfo trbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        trbi.renderPass = trailAccumRenderPass;
+        trbi.framebuffer = trailAccumFramebuffer;
+        trbi.renderArea = {{0, 0}, trailAccumExtent};
+        trbi.clearValueCount = 0; // LOAD_OP_LOAD — nothing to clear
+        vkCmdBeginRenderPass(cmd, &trbi, VK_SUBPASS_CONTENTS_INLINE);
+
+        if (activeSatCount > 0)
+        {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, trailSatPipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    drawPipeLayout, 0, 1, &descSet, 0, nullptr);
+            vkCmdPushConstants(cmd, drawPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(tpc), &tpc);
+            vkCmdDraw(cmd, activeSatCount, 1, 0, 0);
+        }
+        if (starCount > 0 && trailStarPipeline != VK_NULL_HANDLE)
+        {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, trailStarPipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    starPipeLayout, 0, 1, &starDescSet, 0, nullptr);
+            vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(tpc), &tpc);
+            vkCmdDraw(cmd, starCount, 1, 0, 0);
+        }
+        if (showPlanets && planetDescSet != VK_NULL_HANDLE && trailStarPipeline != VK_NULL_HANDLE)
+        {
+            SatDrawPC ppc = tpc;
+            ppc.noTwinkle = 1.0f;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, trailStarPipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    starPipeLayout, 0, 1, &planetDescSet, 0, nullptr);
+            vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(ppc), &ppc);
+            vkCmdDraw(cmd, kPlanetCount, 1, 0, 0);
+        }
+
+        vkCmdEndRenderPass(cmd); // finalLayout=GENERAL — ready for next frame's fade compute /
+                                 // this frame's composite sample (recordDraw), no extra barrier
+    }
+
     // Selected-satellite tracking: mirror just that one 32-byte entry into pickedVisibleBuf so
     // next frame's buildUI can reproject it (see the one-frame-stale read near peakMagnitude
     // above). No-op — no command recorded at all — when nothing is selected.
@@ -2621,6 +2769,22 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
                            0, sizeof(cpc), &cpc);
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
+
+    // ── Pass 5: long-exposure trail composite ──────────────────────────────────
+    // Additive fullscreen triangle sampling trailAccumImg (decayed + splatted this frame in
+    // recordCompute()). Order relative to the flare composite above doesn't matter — both are
+    // ONE/ONE additive blending, which is commutative.
+    if (trailEnabled)
+    {
+        TrailCompositePC tcpc{};
+        tcpc.gain = trailCompositeGain;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, trailCompositePipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                trailCompositePipeLayout, 0, 1, &trailCompositeDescSet, 0, nullptr);
+        vkCmdPushConstants(cmd, trailCompositePipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(tcpc), &tcpc);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+    }
 }
 
 // ─── setAudio ─────────────────────────────────────────────────────────────────
@@ -2713,6 +2877,18 @@ void SatelliteSim::cleanup(VkDevice device)
         vkDestroySampler(device, flareSampler, nullptr);
         flareSampler = VK_NULL_HANDLE;
     }
+    // ── Long-exposure trail pipeline ──
+    vkDestroyPipeline(device, trailSatPipeline, nullptr);
+    vkDestroyPipeline(device, trailStarPipeline, nullptr);
+    vkDestroyPipeline(device, trailFadePipeline, nullptr);
+    vkDestroyPipelineLayout(device, trailFadePipeLayout, nullptr);
+    vkDestroyDescriptorPool(device, trailFadeDescPool, nullptr);
+    vkDestroyDescriptorSetLayout(device, trailFadeDescLayout, nullptr);
+    vkDestroyPipeline(device, trailCompositePipeline, nullptr);
+    vkDestroyPipelineLayout(device, trailCompositePipeLayout, nullptr);
+    vkDestroyDescriptorPool(device, trailCompositeDescPool, nullptr);
+    vkDestroyDescriptorSetLayout(device, trailCompositeDescLayout, nullptr);
+    destroyTrailResources(device);
     vkUnmapMemory(device, glowMem);
     if (noiseSampler)
     {
@@ -3499,6 +3675,14 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         // UC5: effective activation also requires uiVisible && !showIntro (see pollGamepad's
         // cursorActive computation) — this just flips the player-facing on/off state.
         vCursorToggled = !vCursorToggled;
+        break;
+    case KB_TOGGLE_TRAILS:
+        // Single consolidated control (session follow-up) — same action the HUD "TrailsBtn" icon
+        // button performs. OFF hides the trail immediately (recordDraw()'s composite draw is
+        // itself gated on trailEnabled); ON always starts from a blank buffer.
+        trailEnabled = !trailEnabled;
+        if (trailEnabled)
+            trailClearPending = true;
         break;
     default:
         break; // KB_MOVE_BOOST/FINE, KB_RAISE_ELEV/LOWER_ELEV, KB_ZOOM_IN/OUT are held keys — polled directly.
@@ -6516,6 +6700,413 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
     }
 }
 
+// ─── createTrailResources ──────────────────────────────────────────────────────
+// Long-exposure trail pipeline (see the trailAccumImg member block comment in SatelliteSim.h).
+// trailAccumExtent is the FULL ctx.swapExtent (unlike flareExtent's quarter-res) — satellites and
+// stars always render at native resolution in this app, and a downscaled trail buffer would blur
+// thin streaks.
+void SatelliteSim::createTrailResources(VulkanContext &ctx)
+{
+    trailAccumExtent = ctx.swapExtent;
+
+    // ── Render pass: single color attachment, LOAD -> GENERAL throughout ─────────────────────
+    // LOAD_OP_LOAD (not CLEAR) because persistence across frames is the whole point. initialLayout/
+    // finalLayout are both GENERAL — the image never leaves GENERAL between frames (fade compute
+    // read/write, splat render pass, composite sampled read all use it), same "stay in GENERAL"
+    // convention flareScratchImg already uses for the same reason (skip pointless transitions on a
+    // small/short-lived-per-frame image).
+    VkAttachmentDescription color{};
+    color.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    color.samples = VK_SAMPLE_COUNT_1_BIT;
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    color.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+    color.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription sub{};
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 1;
+    sub.pColorAttachments = &colorRef;
+    VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+    rpci.attachmentCount = 1;
+    rpci.pAttachments = &color;
+    rpci.subpassCount = 1;
+    rpci.pSubpasses = &sub;
+    if (vkCreateRenderPass(ctx.device, &rpci, nullptr, &trailAccumRenderPass) != VK_SUCCESS)
+        throw std::runtime_error("SatelliteSim: failed to create trail accum render pass");
+
+    // ── Image + view ──────────────────────────────────────────────────────────────────────────
+    ctx.createImage(trailAccumExtent.width, trailAccumExtent.height, VK_FORMAT_R16G16B16A16_SFLOAT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    trailAccumImg, trailAccumMem);
+
+    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vci.image = trailAccumImg;
+    vkCreateImageView(ctx.device, &vci, nullptr, &trailAccumView);
+
+    // First use each frame is either vkCmdClearColorImage (trailClearPending, recordCompute()) or
+    // the fade compute's imageLoad/imageStore — both need GENERAL, so transition it here (same
+    // one-time UNDEFINED->GENERAL idiom flareScratchImg's own setup uses) and zero it so a
+    // fresh/resized buffer starts blank regardless of trailClearPending's own state.
+    {
+        auto cmd = ctx.beginOneTimeCommands();
+        ctx.imageBarrier(cmd, trailAccumImg, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkClearColorValue zero{};
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cmd, trailAccumImg, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
+        ctx.imageBarrier(cmd, trailAccumImg, VK_ACCESS_TRANSFER_WRITE_BIT,
+                         VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                         VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        ctx.endOneTimeCommands(cmd);
+    }
+
+    // ── Framebuffer ───────────────────────────────────────────────────────────────────────────
+    VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fci.renderPass = trailAccumRenderPass;
+    fci.attachmentCount = 1;
+    fci.pAttachments = &trailAccumView;
+    fci.width = trailAccumExtent.width;
+    fci.height = trailAccumExtent.height;
+    fci.layers = 1;
+    if (vkCreateFramebuffer(ctx.device, &fci, nullptr, &trailAccumFramebuffer) != VK_SUCCESS)
+        throw std::runtime_error("SatelliteSim: failed to create trail accum framebuffer");
+}
+
+void SatelliteSim::destroyTrailResources(VkDevice device)
+{
+    if (trailAccumFramebuffer)
+        vkDestroyFramebuffer(device, trailAccumFramebuffer, nullptr);
+    if (trailAccumRenderPass)
+        vkDestroyRenderPass(device, trailAccumRenderPass, nullptr);
+    if (trailAccumView)
+        vkDestroyImageView(device, trailAccumView, nullptr);
+    if (trailAccumImg)
+        vkDestroyImage(device, trailAccumImg, nullptr);
+    if (trailAccumMem)
+        vkFreeMemory(device, trailAccumMem, nullptr);
+    trailAccumFramebuffer = VK_NULL_HANDLE;
+    trailAccumRenderPass = VK_NULL_HANDLE;
+    trailAccumView = VK_NULL_HANDLE;
+    trailAccumImg = VK_NULL_HANDLE;
+    trailAccumMem = VK_NULL_HANDLE;
+}
+
+// ─── createTrailDescriptors ─────────────────────────────────────────────────────
+// Two small, NEW descriptor sets (trailSatPipeline/trailStarPipeline reuse the existing
+// descSet/starDescSet/planetDescSet directly — see createTrailPipelines()).
+void SatelliteSim::createTrailDescriptors(VulkanContext &ctx)
+{
+    // ── Stage A (fade compute): 1 STORAGE_IMAGE binding ───────────────────────────────────────
+    VkDescriptorSetLayoutBinding fadeBinding{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo fadeLi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    fadeLi.bindingCount = 1;
+    fadeLi.pBindings = &fadeBinding;
+    vkCreateDescriptorSetLayout(ctx.device, &fadeLi, nullptr, &trailFadeDescLayout);
+
+    VkDescriptorPoolSize fadePs{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
+    VkDescriptorPoolCreateInfo fadePi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    fadePi.poolSizeCount = 1;
+    fadePi.pPoolSizes = &fadePs;
+    fadePi.maxSets = 1;
+    vkCreateDescriptorPool(ctx.device, &fadePi, nullptr, &trailFadeDescPool);
+
+    VkDescriptorSetAllocateInfo fadeAi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    fadeAi.descriptorPool = trailFadeDescPool;
+    fadeAi.descriptorSetCount = 1;
+    fadeAi.pSetLayouts = &trailFadeDescLayout;
+    vkAllocateDescriptorSets(ctx.device, &fadeAi, &trailFadeDescSet);
+
+    VkDescriptorImageInfo fadeImgInfo{VK_NULL_HANDLE, trailAccumView, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet fadeWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                                   trailFadeDescSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &fadeImgInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 1, &fadeWrite, 0, nullptr);
+
+    // ── Stage C (composite draw): 1 COMBINED_IMAGE_SAMPLER binding ────────────────────────────
+    // Sampled directly in VK_IMAGE_LAYOUT_GENERAL — same convention flareCompositeDescSet already
+    // uses for flareScratchImg. Reuses flareSampler (LINEAR/CLAMP_TO_EDGE, resolution-independent).
+    VkDescriptorSetLayoutBinding compBinding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                             VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo compLi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    compLi.bindingCount = 1;
+    compLi.pBindings = &compBinding;
+    vkCreateDescriptorSetLayout(ctx.device, &compLi, nullptr, &trailCompositeDescLayout);
+
+    VkDescriptorPoolSize compPs{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+    VkDescriptorPoolCreateInfo compPi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    compPi.poolSizeCount = 1;
+    compPi.pPoolSizes = &compPs;
+    compPi.maxSets = 1;
+    vkCreateDescriptorPool(ctx.device, &compPi, nullptr, &trailCompositeDescPool);
+
+    VkDescriptorSetAllocateInfo compAi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    compAi.descriptorPool = trailCompositeDescPool;
+    compAi.descriptorSetCount = 1;
+    compAi.pSetLayouts = &trailCompositeDescLayout;
+    vkAllocateDescriptorSets(ctx.device, &compAi, &trailCompositeDescSet);
+
+    VkDescriptorImageInfo compImgInfo{flareSampler, trailAccumView, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet compWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                                   trailCompositeDescSet, 0, 0, 1,
+                                   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &compImgInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 1, &compWrite, 0, nullptr);
+}
+
+// ─── createTrailPipelines ───────────────────────────────────────────────────────
+void SatelliteSim::createTrailPipelines(VulkanContext &ctx)
+{
+    // ── Stage A: trailFadePipeline (compute) — swapchain-size independent, NOT recreated on
+    // resize, so guard both the layout and the pipeline itself (same convention as flareBlurPipeline).
+    if (trailFadePipeline == VK_NULL_HANDLE)
+    {
+        VkShaderModule mod = ctx.loadShader("shaders/trail_fade.comp.spv");
+        VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage.module = mod;
+        stage.pName = "main";
+
+        VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TrailFadePC)};
+        VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        li.setLayoutCount = 1;
+        li.pSetLayouts = &trailFadeDescLayout;
+        li.pushConstantRangeCount = 1;
+        li.pPushConstantRanges = &pcr;
+        vkCreatePipelineLayout(ctx.device, &li, nullptr, &trailFadePipeLayout);
+
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage = stage;
+        ci.layout = trailFadePipeLayout;
+        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &trailFadePipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create trail fade pipeline");
+
+        vkDestroyShaderModule(ctx.device, mod, nullptr);
+    }
+
+    // ── Stage B: trailSatPipeline / trailStarPipeline (graphics, point list, additive blend, no
+    // depth — this offscreen target has no depth attachment). Reuse the EXISTING drawPipeLayout/
+    // starPipeLayout + sat_point/star_point shaders UNCHANGED — only new VkPipeline objects,
+    // targeting trailAccumRenderPass instead of ctx.renderPass.
+    {
+        VkShaderModule vert = ctx.loadShader("shaders/sat_point.vert.spv");
+        VkShaderModule frag = ctx.loadShader("shaders/sat_point.frag.spv");
+        VkPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                     VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                     VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main", nullptr};
+
+        VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+
+        VkViewport vp{0, 0, (float)trailAccumExtent.width, (float)trailAccumExtent.height, 0, 1};
+        VkRect2D sc{{0, 0}, trailAccumExtent};
+        VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        vps.viewportCount = 1;
+        vps.pViewports = &vp;
+        vps.scissorCount = 1;
+        vps.pScissors = &sc;
+
+        VkPipelineRasterizationStateCreateInfo rast{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rast.polygonMode = VK_POLYGON_MODE_FILL;
+        rast.cullMode = VK_CULL_MODE_NONE;
+        rast.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rast.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        ds.depthTestEnable = VK_FALSE;
+        ds.depthWriteEnable = VK_FALSE;
+
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.blendEnable = VK_TRUE;
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.colorBlendOp = VK_BLEND_OP_ADD;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        cb.attachmentCount = 1;
+        cb.pAttachments = &cba;
+
+        VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        ci.stageCount = 2;
+        ci.pStages = stages;
+        ci.pVertexInputState = &vi;
+        ci.pInputAssemblyState = &ia;
+        ci.pViewportState = &vps;
+        ci.pRasterizationState = &rast;
+        ci.pMultisampleState = &ms;
+        ci.pDepthStencilState = &ds;
+        ci.pColorBlendState = &cb;
+        ci.layout = drawPipeLayout; // reused unchanged — same SatDrawPC push-constant range
+        ci.renderPass = trailAccumRenderPass;
+        ci.subpass = 0;
+        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &trailSatPipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create trail satellite pipeline");
+
+        vkDestroyShaderModule(ctx.device, vert, nullptr);
+        vkDestroyShaderModule(ctx.device, frag, nullptr);
+    }
+    {
+        VkShaderModule vert = ctx.loadShader("shaders/star_point.vert.spv");
+        VkShaderModule frag = ctx.loadShader("shaders/star_point.frag.spv");
+        VkPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                     VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                     VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main", nullptr};
+
+        VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+
+        VkViewport vp{0, 0, (float)trailAccumExtent.width, (float)trailAccumExtent.height, 0, 1};
+        VkRect2D sc{{0, 0}, trailAccumExtent};
+        VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        vps.viewportCount = 1;
+        vps.pViewports = &vp;
+        vps.scissorCount = 1;
+        vps.pScissors = &sc;
+
+        VkPipelineRasterizationStateCreateInfo rast{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rast.polygonMode = VK_POLYGON_MODE_FILL;
+        rast.cullMode = VK_CULL_MODE_NONE;
+        rast.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rast.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        ds.depthTestEnable = VK_FALSE;
+        ds.depthWriteEnable = VK_FALSE;
+
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.blendEnable = VK_TRUE;
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.colorBlendOp = VK_BLEND_OP_ADD;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        cb.attachmentCount = 1;
+        cb.pAttachments = &cba;
+
+        VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        ci.stageCount = 2;
+        ci.pStages = stages;
+        ci.pVertexInputState = &vi;
+        ci.pInputAssemblyState = &ia;
+        ci.pViewportState = &vps;
+        ci.pRasterizationState = &rast;
+        ci.pMultisampleState = &ms;
+        ci.pDepthStencilState = &ds;
+        ci.pColorBlendState = &cb;
+        ci.layout = starPipeLayout; // reused unchanged — also used for the planet trail draw
+        ci.renderPass = trailAccumRenderPass;
+        ci.subpass = 0;
+        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &trailStarPipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create trail star pipeline");
+
+        vkDestroyShaderModule(ctx.device, vert, nullptr);
+        vkDestroyShaderModule(ctx.device, frag, nullptr);
+    }
+
+    // ── Stage C: trailCompositePipeline (graphics, fullscreen tri, additive blend into ctx.renderPass)
+    {
+        VkShaderModule vert = ctx.loadShader("shaders/trail_composite.vert.spv");
+        VkShaderModule frag = ctx.loadShader("shaders/trail_composite.frag.spv");
+        VkPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                     VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                     VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main", nullptr};
+
+        VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkViewport vp{0, 0, (float)ctx.swapExtent.width, (float)ctx.swapExtent.height, 0, 1};
+        VkRect2D sc{{0, 0}, ctx.swapExtent};
+        VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        vps.viewportCount = 1;
+        vps.pViewports = &vp;
+        vps.scissorCount = 1;
+        vps.pScissors = &sc;
+
+        VkPipelineRasterizationStateCreateInfo rast{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rast.polygonMode = VK_POLYGON_MODE_FILL;
+        rast.cullMode = VK_CULL_MODE_NONE;
+        rast.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rast.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        ds.depthTestEnable = VK_FALSE;
+        ds.depthWriteEnable = VK_FALSE;
+
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.blendEnable = VK_TRUE;
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.colorBlendOp = VK_BLEND_OP_ADD;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        cb.attachmentCount = 1;
+        cb.pAttachments = &cba;
+
+        if (trailCompositePipeLayout == VK_NULL_HANDLE)
+        {
+            VkPushConstantRange pcr{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(TrailCompositePC)};
+            VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            li.setLayoutCount = 1;
+            li.pSetLayouts = &trailCompositeDescLayout;
+            li.pushConstantRangeCount = 1;
+            li.pPushConstantRanges = &pcr;
+            vkCreatePipelineLayout(ctx.device, &li, nullptr, &trailCompositePipeLayout);
+        }
+
+        VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        ci.stageCount = 2;
+        ci.pStages = stages;
+        ci.pVertexInputState = &vi;
+        ci.pInputAssemblyState = &ia;
+        ci.pViewportState = &vps;
+        ci.pRasterizationState = &rast;
+        ci.pMultisampleState = &ms;
+        ci.pDepthStencilState = &ds;
+        ci.pColorBlendState = &cb;
+        ci.layout = trailCompositePipeLayout;
+        ci.renderPass = ctx.renderPass;
+        ci.subpass = 0;
+        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &trailCompositePipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create trail composite pipeline");
+
+        vkDestroyShaderModule(ctx.device, vert, nullptr);
+        vkDestroyShaderModule(ctx.device, frag, nullptr);
+    }
+}
+
 // ─── initStars ────────────────────────────────────────────────────────────────
 // Parses the embedded Yale BSC catalog, builds star records with ECI vectors,
 // creates a host-visible GPU buffer, and sets up the star descriptor set + pipeline.
@@ -6574,10 +7165,13 @@ void SatelliteSim::initStars(VulkanContext &ctx)
     vkMapMemory(ctx.device, starMem, 0, bufSize, 0, &starMapped);
 
     // Descriptor layout: binding=1 (vertex shader reads GpuSatVisible) + bindings=2/3 (cloud
-    // occlusion, session 30 bug fix — see star_point.frag's own comment). cloudMarchSampler/
-    // cloudMarchTargetAView/BView already exist by this point in init() (createCloudMarchResources
-    // runs well before initStars — see init()'s call order), so it's safe to bind them here.
-    VkDescriptorSetLayoutBinding bindings[3] = {};
+    // occlusion, session 30 bug fix — see star_point.frag's own comment) + binding=4 (shared
+    // terrain/ocean depth, added for the long-exposure trail's manual terrain-occlusion test — see
+    // star_point.frag's own comment and SatDrawPC::manualTerrainTest). cloudMarchSampler/
+    // cloudMarchTargetAView/BView/sceneDepthSampler/sceneDepthView already exist by this point in
+    // init() (createCloudMarchResources/createSceneDepthResources run well before initStars — see
+    // init()'s call order), so it's safe to bind them here.
+    VkDescriptorSetLayoutBinding bindings[4] = {};
     bindings[0].binding = 1;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -6590,15 +7184,19 @@ void SatelliteSim::initStars(VulkanContext &ctx)
     bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[3].binding = 4;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 3;
+    li.bindingCount = 4;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &starDescLayout);
 
     VkDescriptorPoolSize ps[2] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}};
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 2;
     pi.pPoolSizes = ps;
@@ -6614,14 +7212,17 @@ void SatelliteSim::initStars(VulkanContext &ctx)
     VkDescriptorBufferInfo bufInfo{starBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo cloudAInfo{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cloudBInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet wr[3] = {};
+    VkDescriptorImageInfo sceneDepthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet wr[4] = {};
     wr[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
              starDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufInfo, nullptr};
     wr[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
              starDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudAInfo, nullptr, nullptr};
     wr[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
              starDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudBInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 3, wr, 0, nullptr);
+    wr[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+             starDescSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &sceneDepthInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 4, wr, 0, nullptr);
 
     createStarPipeline(ctx);
 
@@ -6641,13 +7242,13 @@ void SatelliteSim::initPlanets(VulkanContext &ctx)
                      planetBuf, planetMem);
     vkMapMemory(ctx.device, planetMem, 0, bufSize, 0, &planetMapped);
 
-    // Reuses starDescLayout (binding=1 STORAGE_BUFFER vertex-stage + bindings=2/3 cloud occlusion,
-    // session 30 bug fix) unchanged — same shape, different buffer. starDescPool is sized
-    // maxSets=1 (already holds starDescSet), so this gets its own tiny pool rather than resizing
-    // that one.
+    // Reuses starDescLayout (binding=1 STORAGE_BUFFER vertex-stage + bindings=2/3 cloud occlusion +
+    // binding=4 shared terrain/ocean depth) unchanged — same shape, different buffer. starDescPool
+    // is sized maxSets=1 (already holds starDescSet), so this gets its own tiny pool rather than
+    // resizing that one.
     VkDescriptorPoolSize ps[2] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}};
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 2;
     pi.pPoolSizes = ps;
@@ -6663,14 +7264,17 @@ void SatelliteSim::initPlanets(VulkanContext &ctx)
     VkDescriptorBufferInfo bufInfo{planetBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo cloudAInfo{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cloudBInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet wr[3] = {};
+    VkDescriptorImageInfo sceneDepthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet wr[4] = {};
     wr[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
              planetDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufInfo, nullptr};
     wr[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
              planetDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudAInfo, nullptr, nullptr};
     wr[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
              planetDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudBInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 3, wr, 0, nullptr);
+    wr[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+             planetDescSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &sceneDepthInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 4, wr, 0, nullptr);
 
     // Do an initial upload so planets are visible from frame 1 (mirrors initStars() above).
     // Requires updatePositions() to have already run at least once — see init()'s call order.

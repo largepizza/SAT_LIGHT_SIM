@@ -1,0 +1,34 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// ── trail_fade.comp ────────────────────────────────────────────────────────────
+// Stage A of the long-exposure trail pipeline (see the trail block comment in SatelliteSim.h).
+// Multiplies the persistent trailAccumImg in place by a real-time (wall-clock) exponential decay
+// factor each frame, before this frame's satellite/star/planet splats are drawn additively on top
+// in the trailAccumRenderPass that follows. Runs every frame trails are enabled, even while
+// timePaused, matching a real camera shutter: no new light lands, but the exposure still ages.
+
+layout(set = 0, binding = 0, rgba16f) uniform image2D trailAccumImg;
+
+layout(push_constant) uniform PC {
+    float decayFactor; // exp(-dt / trailDecaySeconds); dt = real wall-clock frame delta, never simDt
+    float ceiling;      // per-channel hard cap on the STORED value — deliberately set far above
+                        // any value normal accumulation reaches (SatelliteSim.cpp), purely to bound
+                        // unbounded HDR drift over a long unattended/paused session. Must stay a
+                        // hard clamp here (not a tonemap like trail_composite.frag's) since this
+                        // value keeps getting decayed and re-accumulated every subsequent frame —
+                        // tonemapping it here would corrupt the exponential-decay math itself. A
+                        // clamp that binds in normal use would reproduce the flattened-brightness
+                        // bug the composite-side tonemap was just added to fix, one stage earlier.
+    float pad0, pad1;
+} pc;
+
+void main() {
+    ivec2 size  = imageSize(trailAccumImg);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec4 c = imageLoad(trailAccumImg, coord) * pc.decayFactor;
+    c = min(c, vec4(pc.ceiling));
+    imageStore(trailAccumImg, coord, c);
+}
