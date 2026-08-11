@@ -36,10 +36,16 @@ layout(location = 0) out vec4 outColor;
 // awareness at all — this is the first time this pipeline reads cloud data.
 layout(set = 0, binding = 5) uniform sampler2D cloudTargetA; // a = tCloudOcclude (>=0 => >=90% opaque)
 layout(set = 0, binding = 6) uniform sampler2D cloudTargetB; // rgb = A_total (cloud transmittance)
+// Shared terrain/ocean depth (flare architecture overhaul added this binding for
+// flare_source.frag's own terrain test — already valid here, no descriptor changes needed).
+// Long-exposure trail follow-up: this pipeline's LIVE draw gets terrain occlusion for free from
+// the main render pass's hardware depth test, so this binding is normally unused here — only the
+// trail draw (no depth attachment of its own) sets pc.manualTerrainTest and pays for the fetch.
+layout(set = 0, binding = 7) uniform sampler2D sceneDepthTex;
 
 // Declares only the fields this shader reads, at their real SatDrawPC byte offsets — same
-// "prefix of the shared push-constant block" trick sat_point.vert already uses, just extended
-// far enough to reach screenSizePx (offset 136) instead of stopping at offset 76.
+// "prefix of the shared push-constant block" trick sat_point.vert already uses, extended through
+// manualTerrainTest (offset 172) for the long-exposure trail follow-up.
 layout(push_constant) uniform PC {
     mat4  skyView;          // offset 0 — unused here, declared for layout consistency
     float fovYRad;          // offset 64
@@ -51,8 +57,19 @@ layout(push_constant) uniform PC {
     vec4  obsECEFDir;       // offset 112
     uint  debugDisableMask; // offset 128 — unused here
     float pad0;             // offset 132
-    vec2  screenSizePx;     // offset 136 — the only field this shader actually needs
+    vec2  screenSizePx;     // offset 136
+    float skyGlareVisibility; // offset 144 — unused here
+    float beamMaxRangeM;      // offset 148 — unused here
+    float beamSkyGlowGain;    // offset 152 — unused here
+    float beamGlowBleedGain;  // offset 156 — unused here
+    float beamProximityGlow;  // offset 160 — unused here
+    float noTwinkle;          // offset 164 — unused here
+    float mwSuppressEased;    // offset 168 — unused here
+    float manualTerrainTest;  // offset 172 — 1 = do the manual sceneDepthTex hit-test below
 } pc;
+
+const float kNoSurfaceT = 1e30; // mirrors common.glsl's constant — this shader skips the #include
+                                 // machinery for a single value, same idiom flare_source.frag uses
 
 void main() {
     // gl_PointCoord is [0,1] across the point sprite quad; c is centred at (0,0), d is the
@@ -91,6 +108,19 @@ void main() {
         cloudVis = cloudHardOcclude * pow(clamp(cloudBlock, 0.0, 1.0), kSatCloudSuppressPower);
     }
 
+    // ── Terrain occlusion (long-exposure trail follow-up) ──────────────────────
+    // Only the trail draw sets this — the live draw already gets terrain occlusion for free from
+    // the main render pass's hardware depth test (this pipeline is drawn at a fixed depth of 0.5,
+    // which loses against any real terrain hit and wins against pure sky — see SatDrawPC's own
+    // comment). The trail's offscreen render pass has no depth attachment at all, so it needs this
+    // explicit test instead — same technique flare_source.frag already uses for the same reason:
+    // any real terrain/ocean hit along this screen ray occludes a satellite, regardless of how far
+    // away that hit actually is (satellites/stars have no real depth of their own to compare against).
+    float terrainVis = 1.0;
+    if (pc.manualTerrainTest >= 0.5) {
+        vec2 depthUV = gl_FragCoord.xy / pc.screenSizePx;
+        terrainVis = (texture(sceneDepthTex, depthUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
+    }
 
     // ── Inner core: tight pinpoint, log-compressed brightness ─────────────────
     // sigmaInner = 0.045 (relative): 4.5% of sprite half-width.
@@ -136,6 +166,6 @@ void main() {
     float glow           = (1.0 / (1.0 + r * r)) * glowBrightness;
     glow                *= 1.0 - smoothstep(0.0, 0.5, d);
 
-    float brightness = (inner + glow) * cloudVis;
+    float brightness = (inner + glow) * cloudVis * terrainVis;
     outColor = vec4(fragColor * brightness, brightness);
 }

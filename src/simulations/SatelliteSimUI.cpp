@@ -28,6 +28,7 @@ static constexpr int kIconPause = 3;    // pixel--pause.png
 static constexpr int kIconPlay = 4;     // pixel--play.png
 static constexpr int kIconSettings = 5; // pixel--settings.png
 static constexpr int kIconCamera = 6;   // camera-solid.png — UC6 screenshot button
+static constexpr int kIconStarTrails = 7; // pixel--star-trails.png — long-exposure trail toggle
 
 // Settings schema version (NEW-5). Bump this whenever a settings.json change would make an
 // old file's graphics-affecting values (photometry/clouds/render_scale) meaningless against
@@ -525,8 +526,9 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             "assets/icons/ui/pixel--play.png",
             "assets/icons/ui/pixel--settings.png",
             "assets/icons/ui/camera-solid.png",
+            "assets/icons/ui/pixel--star-trails.png",
         };
-        ui.loadIcons(*ctx_, iconPaths, 7);
+        ui.loadIcons(*ctx_, iconPaths, 8);
         iconsLoaded = true;
     }
 
@@ -802,6 +804,35 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 CLAY(CLAY_ID("TimeScreenshotIcon"), {.layout = {
                                                          .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
                                                      .image = {.imageData = (void *)(intptr_t)(kIconCamera + 1)}}) {}
+            }
+
+            // ── Star Trails ───────────────────────────────────────────────────────
+            // Single consolidated control: OFF hides the trail immediately (recordDraw()'s
+            // composite draw is itself gated on trailEnabled) and ON always starts from a blank
+            // buffer (trailClearPending) — there is no separate "clear" affordance anywhere else.
+            Clay_Color trailsBg = trailEnabled ? Pal::pauseActive : (hovTrailsBtn ? Pal::btnHover : Pal::btnIdle);
+            CLAY(CLAY_ID("TrailsBtn"), {.layout = {
+                                            .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                        .backgroundColor = trailsBg,
+                                        .cornerRadius = CLAY_CORNER_RADIUS(4)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovTrailsBtn);
+                sndClick(n, inp.lmbPressed);
+                if (n && inp.lmbPressed)
+                {
+                    trailEnabled = !trailEnabled;
+                    if (trailEnabled)
+                        trailClearPending = true; // always start a fresh exposure on enable
+                }
+                hovTrailsBtn = n;
+                static char tip[40];
+                snprintf(tip, sizeof(tip), "Star trails (%s)", keyDisplayName(keybindings[KB_TOGGLE_TRAILS].key));
+                ui.tooltip(inp, n, tip, fs(11));
+                CLAY(CLAY_ID("TrailsIcon"), {.layout = {
+                                                 .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
+                                             .image = {.imageData = (void *)(intptr_t)(kIconStarTrails + 1)}}) {}
             }
         }
     }
@@ -1936,6 +1967,14 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         }
     }
 
+    // Long-exposure trails: consolidated to a single ON/OFF control (turning OFF immediately hides
+    // the trail — recordDraw()'s composite draw is itself gated on trailEnabled — and turning ON
+    // always starts from a blank buffer via trailClearPending, so there is nothing separate to
+    // "clear"). Lives as an icon button next to the Screenshot button (buildLeftHudPanel,
+    // "TrailsBtn") and on the Star Trails hotkey (default F, KB_TOGGLE_TRAILS), not here — no
+    // settings-window control for it. "Trail decay (s)"/"Trail gain" sliders (tuning, not the
+    // on/off control itself) still live in the Photometry tab alongside flareGlowGain/flareStreakGain.
+
     // ── Frame limiter (NEW-7, RELEASE_v1_1_PLAN.md) ────────────────────────
     // MAILBOX was the old unconditional default, which runs the GPU flat out forever on a
     // laptop — fans, heat, and battery drain, a real comfort issue for exactly the low-end
@@ -2463,7 +2502,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[15][12];
+    static char photoBufs[17][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -2485,6 +2524,11 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"MW pollut. hi", &mwPollutionThresholdHi, 0.001f, 0.5f, 0.005f, "%.3f", 12},
         {"MW fade in (s)", &mwFadeInTimeS, 0.0f, 120.0f, 1.0f, "%.1f", 13},
         {"MW fade out (s)", &mwFadeOutTimeS, 0.0f, 60.0f, 0.5f, "%.1f", 14},
+        // Long-exposure trail pipeline — "Long exposure trails" ON/OFF + "Clear Trail" live in the
+        // Display tab (near "Render scale"); these two gains are siblings of flareGlowGain/
+        // flareStreakGain just above, so they live in this same tab.
+        {"Trail decay (s)", &trailDecaySeconds, 0.2f, 30.0f, 0.2f, "%.1f", 15},
+        {"Trail gain", &trailCompositeGain, 0.0f, 5.0f, 0.05f, "%.2f", 16},
     };
     for (auto &pp : photoParams)
     {
@@ -3802,6 +3846,8 @@ void SatelliteSim::loadSettings()
         mwPollutionThresholdHi = p.value("mw_pollution_threshold_hi", mwPollutionThresholdHi);
         mwFadeInTimeS = p.value("mw_fade_in_time_s", mwFadeInTimeS);
         mwFadeOutTimeS = p.value("mw_fade_out_time_s", mwFadeOutTimeS);
+        trailDecaySeconds = p.value("trail_decay_seconds", trailDecaySeconds);
+        trailCompositeGain = p.value("trail_composite_gain", trailCompositeGain);
     }
 
     if (j.contains("display"))
@@ -3831,6 +3877,10 @@ void SatelliteSim::loadSettings()
         int unitVal = d.value("unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0);
         unitSystem = unitVal == 1 ? UnitSystem::Imperial : UnitSystem::Metric;
         showControlsOnStartup = d.value("show_controls_on_startup", showControlsOnStartup);
+        // Feature preference, not a graphics-tuning value — unconditional like showControlsOnStartup
+        // above, not gated behind schemaMatches. trailClearPending stays true regardless (its own
+        // compiled-in default), so a trail-enabled load always starts from a blank buffer.
+        trailEnabled = d.value("trail_enabled", trailEnabled);
         // UC3 follow-up: back to real persisted behavior now that the cinematic itself is settled
         // (the always-on-every-launch testing override is gone). "play_intro_on_startup" absent
         // (upgrading from a build that predates this key) defaults to false, not the compiled-in
@@ -4083,7 +4133,9 @@ void SatelliteSim::saveSettings()
         {"mw_pollution_threshold_lo", mwPollutionThresholdLo},
         {"mw_pollution_threshold_hi", mwPollutionThresholdHi},
         {"mw_fade_in_time_s", mwFadeInTimeS},
-        {"mw_fade_out_time_s", mwFadeOutTimeS}};
+        {"mw_fade_out_time_s", mwFadeOutTimeS},
+        {"trail_decay_seconds", trailDecaySeconds},
+        {"trail_composite_gain", trailCompositeGain}};
 
     j["display"] = {
         {"ui_scale", uiScale},
@@ -4095,7 +4147,8 @@ void SatelliteSim::saveSettings()
         {"active_tab", settingsActiveTab},
         {"unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0},
         {"show_controls_on_startup", showControlsOnStartup},
-        {"play_intro_on_startup", playIntroOnStartup}};
+        {"play_intro_on_startup", playIntroOnStartup},
+        {"trail_enabled", trailEnabled}};
     if (settingsChrome.x >= 0.0f)
     {
         j["display"]["win_x"] = settingsChrome.x;
