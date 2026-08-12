@@ -180,7 +180,9 @@ layout(push_constant) uniform PC {
                              // original crossfade wasn't derived from actual angular distance and
                              // didn't cover every transition case, which read as satellites
                              // snapping to target).
-    uint  pad2;              // offset 124
+    float flareMitigationTiltRad; // offset 124 — was pad2. Global tilt for AM_SUN_TRACKING_TILTED
+                             // (flare mitigation for space datacenters) — see computeNormal() and
+                             // AttitudeMode::SunTrackingTilted's comment in SatelliteSim.h.
 } pc;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -200,6 +202,7 @@ const uint AM_FLAT_MIRROR_45     = 5u;
 const uint AM_TARGETED_REFLECTOR = 6u;
 const uint AM_KNIFE_EDGE         = 7u;
 const uint AM_SUN_PERP           = 8u;  // cross(sunDir, satNadir) — thermal radiator edge-on to sun
+const uint AM_SUN_TRACKING_TILTED = 9u; // sun-tracking, pitched toward zenith by pc.flareMitigationTiltRad
 
 // ── Integer hash for TargetedReflector target scoring ──────────────────────────
 // 2026-08-06: replaces a float-magnitude-sensitive hash11(float) that silently collapsed to a
@@ -270,6 +273,24 @@ vec3 computeNormal(uint mode, SatOrbit orb, vec3 satNadir, vec3 velHat, vec3 pri
         vec3  n   = cross(pc.sunDirECI, satNadir);
         float len = length(n);
         return (len > 1e-5) ? n / len : satNadir;
+    }
+
+    if (mode == AM_SUN_TRACKING_TILTED) {
+        // Flare mitigation for space datacenters: as AM_SUN_TRACKING, but the panel normal is
+        // pitched away from nadir toward zenith by pc.flareMitigationTiltRad, so the specular
+        // lobe (and the Earthshine reflect term in sat_flare.comp, which uses satNadir in place
+        // of sunDirECI) point up and away from the ground instead of straight down at twilight.
+        // Rotating sunDirECI toward zenith WITHIN the plane the two span — same cos/sin
+        // basis-blend idiom as AM_KNIFE_EDGE above — keeps dot(result, sunDirECI) exactly
+        // cos(tiltRad) regardless of geometry, which is the real power loss vs. optimal
+        // sun-facing (Lambert's cosine law); see the "Power output" readout this drives in
+        // formatSelectedSatInfo() (SatelliteSim.cpp).
+        vec3  zenith  = -satNadir;
+        vec3  tangent = zenith - dot(zenith, pc.sunDirECI) * pc.sunDirECI;
+        float tLen    = length(tangent);
+        if (tLen < 1e-5) return pc.sunDirECI; // sun ≈ zenith: no well-defined tilt direction
+        tangent /= tLen;
+        return cos(pc.flareMitigationTiltRad) * pc.sunDirECI + sin(pc.flareMitigationTiltRad) * tangent;
     }
 
     // Default / AM_SUN_TRACKING fallback
@@ -672,6 +693,14 @@ void main()
                     // between this shader finishing and beam_self_march.comp's own write.
                     beams[slot].mirrorRadiusM  = mirrorRadiusM;
                     beams[slot].aimErrorRad    = aimErrorRad;
+                    // 2026-08-12: the resolved target's ORIGINAL index. Guaranteed >= 0 here —
+                    // this whole block is inside `if (bestIdx >= 0)`. Costs nothing to write and
+                    // gives the CPU cloud-light build a stable integer cluster key, replacing the
+                    // seed-dependent targetENU epsilon match. See reflect_beam.glsl's field comment.
+                    beams[slot].targetIdx      = uint(bestIdx);
+                    beams[slot].pad0 = 0u;
+                    beams[slot].pad1 = 0u;
+                    beams[slot].pad2 = 0u;
                 }
             }
         }

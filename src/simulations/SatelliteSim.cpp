@@ -869,11 +869,16 @@ bool SatelliteSim::virtualCursor(float &x, float &y, bool &lmb) const
 }
 
 // ── Bounded top-K helper (2026-08-10 perf) ────────────────────────────────────────────
-// Three separate places below keep a fixed-capacity "strongest N by intensity" table and,
+// Three separate places below used to keep a fixed-capacity "strongest N by intensity" table and,
 // once full, found the weakest entry with a FULL LINEAR SCAN for every remaining candidate:
 // ground beams (256 slots), cloud clusters (256) and individual cloud lights (256), against
 // up to kMaxActiveBeams=2048 candidates — worst case ~1.5M comparisons per frame, all in
 // the block that measured 1.89 ms.
+//
+// 2026-08-12: only the ground-beam table still uses this. The two cloud-light tables were replaced
+// by persistent key-addressed pools (see TrackedBeamLight in SatelliteSim.h) whose eviction is a
+// genuinely rare path rather than a per-candidate one, so they scan directly instead of needing a
+// cached minimum. Kept as-is for ground beams, where the per-candidate reject is still the hot path.
 //
 // This caches the current minimum instead. A candidate that cannot beat the cached minimum
 // is rejected without touching the table at all (the overwhelmingly common case once the
@@ -1208,30 +1213,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         float obsEffHForLights = std::max(obsTerrainH, obsHeightOffset);
         glm::vec3 obsPosLocalForLights(0.0f, 0.0f, kEarthRadius + obsEffHForLights + 2.0f);
 
-        // Local (CPU-only) parallel tracking for the clustering below — not part of the
-        // GPU-uploaded struct. clusterKeyENU is the target position a converged cluster slot is
-        // matched against; the weighted* arrays are intensity-weighted running sums, finalized
-        // (divided by accumulated intensity) after the loop. Sized to kMaxClusterCloudLights, not
-        // kMaxCloudBeamLights — clusters and individual/transiting beams now build into two
-        // SEPARATE pools with independent eviction budgets (see kMaxClusterCloudLights's own
-        // comment in SatelliteSim.h for why: a shared pool let clusters, whose intensity is a SUM
-        // of every beam folded in, always outbid and starve lone transiting beams under any
-        // capacity pressure). individualEntries/individualCount is the second pool, appended onto
-        // the end of cloudLights.entries after clusters are finalized below.
-        glm::vec3 clusterKeyENU[kMaxClusterCloudLights] = {};
-        glm::vec3 weightedPosSum[kMaxClusterCloudLights] = {};
-        glm::vec3 weightedDirSum[kMaxClusterCloudLights] = {};
-        float weightedAltSum[kMaxClusterCloudLights] = {};
-        float weightedOpacitySum[kMaxClusterCloudLights] = {};
-        static GpuBeamCloudLight individualEntries[kMaxIndividualCloudLights];
-        uint32_t individualCount = 0;
-
-        TopK groundTopK, clusterTopK, individualTopK;
-
-        // 2026-08-09: user-tunable ("How can we control the thresholding on what gets considered a
-        // group?") — see beamClusterDirThresholdDeg's own comment in SatelliteSim.h. Converted once
-        // per frame, not per beam.
-        const float kClusterDirCosThreshold = std::cos(glm::radians(beamClusterDirThresholdDeg));
+        TopK groundTopK;
 
         // 2026-08-09 (in-app finding: beams/ground spots visibly drag behind the observer while
         // moving): satENU/targetENU/reflectDirENU in reflectBeamsBuf are true East/North/Up
@@ -1256,36 +1238,167 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             return glm::vec3(glm::dot(worldish, newEnuX), glm::dot(worldish, newEnuY), glm::dot(worldish, newEnuZ));
         };
 
-        // 2026-08-09 (in-app finding: raising kMaxCloudBeamLights 512->1024 made flicker WORSE,
-        // including on individual/transiting beams that never enter the clustering branch at
-        // all): the cluster-merge logic above is order-dependent — which beam is processed FIRST
-        // for a given target establishes clusterKeyENU/the initial running-average direction that
-        // every subsequent candidate is compared against (kClusterDirCosThreshold), so the same
-        // physical set of beams servicing one target can fold into ONE cluster or split into
-        // SEVERAL depending purely on scan order. `s` (the slot index into reflectBeamsBuf) is
-        // explicitly NOT stable frame to frame — sat_orbit.comp's own header documents it as a
-        // GPU atomicAdd race — so scan order reshuffles every frame even when the underlying
-        // satellites and their geometry haven't changed, and the resulting cluster split/merge
-        // outcome flickers along with it. Raising the cap didn't cause this; it let more
-        // previously-evicted (and therefore invisible) borderline beams actually render, which is
-        // what made the pre-existing order-dependence visible. debugPad carries each beam's
-        // ORIGINATING SATELLITE dispatch index (`float(gl_GlobalInvocationID.x)` in
-        // sat_orbit.comp, see reflect_beam.glsl) — stable frame to frame except at the 7-day orbit
-        // rebake — so sorting the scan order by it makes clustering a deterministic function of
-        // which satellites are active, independent of the atomicAdd race. This does not fix
-        // "individual beam" flicker directly (those never merge), but it removes the order
-        // dependence that was making beams flip between individual and clustered from one frame
-        // to the next, which is what made non-clustered beams appear to jump too.
-        static int order[kMaxActiveBeams];
-        for (int s = 0; s < count; ++s)
-            order[s] = s;
-        std::sort(order, order + count, [&](int a, int b) {
-            return beamsIn[a].debugPad < beamsIn[b].debugPad;
-        });
+        // ── Cloud-light identity (2026-08-12 rewrite) ─────────────────────────────────────────
+        // See TrackedBeamLight in SatelliteSim.h for the full rationale. Summary: a light's
+        // identity is now DECLARED by an exact integer key — (targetIdx, direction bucket) for a
+        // converged cluster, originating satellite index for a transiting beam — instead of being
+        // derived from an epsilon match against whichever beam the scan reached first. That makes
+        // the partition a pure function of each beam's own geometry, so it is independent of scan
+        // order, of what else is in the cluster, and of where the observer is.
+        //
+        // A direct consequence: the std::sort by debugPad that used to sit here is GONE. It existed
+        // only to make the old order-dependent merge deterministic frame to frame (2026-08-09 test
+        // #9). Nothing below depends on scan order any more — groundTopK ranks on intensity, the
+        // opacity diagnostics and `nearest` are commutative, and the tracked-pool accumulation is a
+        // sum. That removes a per-frame sort of up to kMaxActiveBeams=2048 entries whose comparator
+        // touched two records each, from a block that measured 1.89 ms.
 
-        for (int oi = 0; oi < count; ++oi)
+        // ENU <-> Earth-fixed ECEF, in double precision. The tracked pools store geometry in ECEF
+        // specifically so an entry that goes unmatched for its whole fade-out cannot drift as the
+        // observer moves — a ground site is stationary in ECEF, full stop. This is the lesson the
+        // 2026-08-11 attempt spent three rounds relearning; do not store observer-relative ENU in
+        // anything that outlives a frame.
+        //
+        // The "local" frame here is the same one obsPosLocalForLights/raySphere already use above:
+        // ENU axes, origin at Earth's centre, observer at (0, 0, R+h). newEnuX/Y/Z (built from THIS
+        // frame's obsDir by enuBasisCPU) are those axes expressed in ECEF, so the conversion is a
+        // pure rotation plus that one fixed offset, and round-trips exactly within a frame.
+        // Doubles because ECEF magnitudes are ~6.4e6 m and these get differenced at emit time —
+        // float would quantize a light's position to ~0.4 m and lose more to cancellation.
+        const glm::dvec3 dEnuX(newEnuX), dEnuY(newEnuY), dEnuZ(newEnuZ);
+        const glm::dvec3 dObsLocal(0.0, 0.0, (double)obsPosLocalForLights.z);
+        auto enuPosToEcef = [&](const glm::vec3 &e) -> glm::dvec3 {
+            glm::dvec3 l = dObsLocal + glm::dvec3(e);
+            return dEnuX * l.x + dEnuY * l.y + dEnuZ * l.z;
+        };
+        auto ecefPosToEnu = [&](const glm::dvec3 &p) -> glm::vec3 {
+            glm::dvec3 l(glm::dot(p, dEnuX), glm::dot(p, dEnuY), glm::dot(p, dEnuZ));
+            return glm::vec3(l - dObsLocal);
+        };
+        auto enuDirToEcef = [&](const glm::vec3 &d) -> glm::dvec3 {
+            return dEnuX * (double)d.x + dEnuY * (double)d.y + dEnuZ * (double)d.z;
+        };
+        auto ecefDirToEnu = [&](const glm::dvec3 &d) -> glm::vec3 {
+            return glm::vec3(glm::dot(d, dEnuX), glm::dot(d, dEnuY), glm::dot(d, dEnuZ));
+        };
+
+        // Direction bucketing. beamClusterDirThresholdDeg is now the angular SIZE of a bucket (see
+        // its comment in SatelliteSim.h for the semantics change). Elevation rings of that size,
+        // with each ring's azimuth sector count scaled by cos(elevation) so cells stay roughly
+        // equal angular size instead of collapsing to slivers near the site's zenith. Floored at
+        // 2 deg: finer than that just thrashes the 256-slot pool without producing visually
+        // distinct lights, since the pool cap — not the bucket count — is the real limit.
+        const float kBucketMinDeg = 2.0f;
+        const float bucketRad = glm::radians(glm::clamp(beamClusterDirThresholdDeg, kBucketMinDeg, 90.0f));
+        // Flat bucket index is iEl * kMaxAzSectors + iAz, and the cluster key packs it into 16 bits
+        // alongside targetIdx — so these two bounds must satisfy
+        // (kMaxElRings-1)*kMaxAzSectors + (kMaxAzSectors-1) <= 65535. 127*512+511 = 65535 exactly.
+        // The 2 deg floor above already caps the real ring count at 45, well inside this.
+        const int kMaxAzSectors = 512;
+        const int kMaxElRings = 127;
+        auto dirBucketFor = [&](int ti, const glm::dvec3 &dirEcef) -> uint32_t {
+            // Project into the TARGET SITE's own local frame — observer-independent by
+            // construction, which is what stops camera motion from repartitioning a cluster.
+            glm::dvec3 sx(reflectorSiteEnuX[ti]), sy(reflectorSiteEnuY[ti]), sz(reflectorSiteEnuZ[ti]);
+            float dx = (float)glm::dot(dirEcef, sx);
+            float dy = (float)glm::dot(dirEcef, sy);
+            float dz = (float)glm::dot(dirEcef, sz);
+            // dirToSource points ground -> satellite, so elevation is >= 0 in practice (the
+            // satellite has to clear the site's horizon to be selected at all). Clamped anyway.
+            float el = std::asin(glm::clamp(dz, -1.0f, 1.0f));
+            el = glm::clamp(el, 0.0f, glm::half_pi<float>() - 1e-4f);
+            int iEl = std::clamp((int)(el / bucketRad), 0, kMaxElRings - 1);
+            float elCentre = std::min((iEl + 0.5f) * bucketRad, glm::half_pi<float>());
+            int nAz = std::clamp((int)std::lround(glm::two_pi<float>() * std::cos(elCentre) / bucketRad),
+                                  1, kMaxAzSectors);
+            float az = std::atan2(dy, dx);
+            if (az < 0.0f) az += glm::two_pi<float>();
+            int iAz = std::clamp((int)(az / (glm::two_pi<float>() / (float)nAz)), 0, nAz - 1);
+            return (uint32_t)(iEl * kMaxAzSectors + iAz);
+        };
+
+        // lowbias32 (Chris Wellons) — cheap, well-distributed integer mix for the open-addressed
+        // index below. Keys are dense-ish (targetIdx<<16 | bucket), so a raw modulo would cluster.
+        auto hashKey32 = [](uint32_t k) -> uint32_t {
+            k ^= k >> 16; k *= 0x7feb352du;
+            k ^= k >> 15; k *= 0x846ca68bu;
+            k ^= k >> 16;
+            return k;
+        };
+
+        // Rebuild each pool's key->slot index from its live slots, and clear this frame's
+        // accumulators. Rebuilding (rather than maintaining it incrementally) is O(live) <= 256 and
+        // sidesteps tombstones entirely, which is the only genuinely error-prone part of open
+        // addressing with deletion.
+        auto resetPool = [&](TrackedBeamLight *pool, uint32_t *hash, int cap) {
+            std::memset(hash, 0, sizeof(uint32_t) * kTrackedLightHashSize);
+            for (int i = 0; i < cap; ++i)
+            {
+                TrackedBeamLight &L = pool[i];
+                L.tgtIntensity = 0.0f;
+                L.tgtFootprintRadM = 0.0f;
+                L.tgtPosSum = glm::dvec3(0.0);
+                L.tgtDirSum = glm::dvec3(0.0);
+                L.tgtAltSum = 0.0f;
+                L.tgtOpacitySum = 0.0f;
+                if (!L.key) continue;
+                uint32_t h = hashKey32(L.key) & (uint32_t)(kTrackedLightHashSize - 1);
+                while (hash[h] != 0u) h = (h + 1u) & (uint32_t)(kTrackedLightHashSize - 1);
+                hash[h] = (uint32_t)i + 1u;
+            }
+        };
+        resetPool(trackedClusters, trackedClusterHash, kMaxClusterCloudLights);
+        resetPool(trackedIndividuals, trackedIndividualHash, kMaxIndividualCloudLights);
+
+        // Find this key's slot, allocating (or, only under real capacity pressure, evicting the
+        // weakest) if it isn't live yet. Returns -1 if the beam can't be placed this frame.
+        //
+        // Entries are only ever INSERTED into the hash, never deleted mid-frame — an evicted slot's
+        // stale entry is left in place and rejected by the `pool[slot].key == key` verification
+        // below, then cleared by next frame's rebuild. Deleting from an open-addressed table
+        // without tombstones would break the probe chains of unrelated keys.
+        auto findOrAlloc = [&](TrackedBeamLight *pool, uint32_t *hash, int cap,
+                                uint32_t key, float candidate) -> int {
+            const uint32_t mask = (uint32_t)(kTrackedLightHashSize - 1);
+            uint32_t h = hashKey32(key) & mask;
+            uint32_t firstFreeH = 0xFFFFFFFFu;
+            for (int probe = 0; probe < 128; ++probe)
+            {
+                uint32_t e = hash[h];
+                if (e == 0u) { firstFreeH = h; break; }
+                int slot = (int)e - 1;
+                if (pool[slot].key == key) return slot;  // live match — the common case
+                h = (h + 1u) & mask;                     // occupied by another key (or a stale
+                                                          // post-eviction entry) — keep probing
+            }
+            if (firstFreeH == 0xFFFFFFFFu) return -1; // pathological probe chain; skip this beam
+
+            // Allocate: first free pool slot, else evict the weakest. Ranked on
+            // max(easedIntensity, tgtIntensity) so a slot already accumulating THIS frame is
+            // protected — evicting one would silently discard contributions already folded in.
+            int slot = -1;
+            for (int i = 0; i < cap; ++i)
+                if (!pool[i].key) { slot = i; break; }
+            if (slot < 0)
+            {
+                int weakest = 0;
+                float weakestVal = std::max(pool[0].easedIntensity, pool[0].tgtIntensity);
+                for (int i = 1; i < cap; ++i)
+                {
+                    float v = std::max(pool[i].easedIntensity, pool[i].tgtIntensity);
+                    if (v < weakestVal) { weakestVal = v; weakest = i; }
+                }
+                if (candidate <= weakestVal) return -1; // not worth displacing anything
+                slot = weakest;
+            }
+            pool[slot] = TrackedBeamLight{};
+            pool[slot].key = key;
+            hash[firstFreeH] = (uint32_t)slot + 1u;
+            return slot;
+        };
+
+        for (int s = 0; s < count; ++s)
         {
-            int s = order[oi];
             // C12 follow-up #41: point-to-segment distance to the beam's actual 3D LINE (target
             // to satellite), not just its ground endpoint (`length(targetENU)`, the old formula)
             // — climbing up alongside a long beam away from the ground previously read as
@@ -1421,124 +1534,160 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                         // over target — for those [converged, redundant with each other] we can
                         // simplify and combine"). A beam locked onto its target (small aimErrorRad
                         // — same convergence signal cloud_march.comp's own aimFade already uses)
-                        // is folded into a shared per-target cluster via intensity-weighted
-                        // running average (same technique already proven for the blockAltM/
-                        // blockOpacity flicker fix two rounds ago) instead of eating its own slot
-                        // — dozens of satellites converged on one site produce nearly identical
-                        // geometry, so this recovers full visual coverage at a small fraction of
-                        // 512's flat per-beam cost. A beam still slewing (aimErrorRad above the
-                        // threshold) is never merged — its geometry is genuinely its own right
-                        // now — and always gets an individual slot.
+                        // shares a per-target cluster with every other beam converged on that site
+                        // from a similar direction; a beam still slewing gets its own light, since
+                        // its geometry is genuinely unique right now.
+                        //
+                        // 2026-08-12: this is no longer a discontinuity. A beam crossing the
+                        // threshold moves between two entries that are BOTH temporally eased, so
+                        // its contribution crossfades out of one and into the other rather than
+                        // teleporting. That is why no hysteresis is needed here despite the hard
+                        // comparison — the old design needed it precisely because both sides
+                        // snapped.
                         const float kConvergedAimErrorRad = glm::radians(10.0f); // matches
                             // cloud_march.comp's kDebugRayAimMaxRad, same underlying question
                         bool converged = beamsIn[s].aimErrorRad <= kConvergedAimErrorRad;
 
-                        // 2026-08-09 (in-app finding: cloud glow at busy targets flickered badly
-                        // and appeared to come from "almost the exact opposite" direction):
-                        // matching by ground position ALONE was wrong — multiple satellites can be
-                        // simultaneously converged on the SAME real target from very DIFFERENT
-                        // parts of the sky (different orbital passes), and intensity-weighted-
-                        // averaging their dirToSource vectors together produces a blended
-                        // direction that may not resemble any real contributor's actual direction.
-                        // With this shell's very sharply forward-peaked phase function
-                        // (cloud.hgG~0.99), even a modest averaging error reads as "completely
-                        // wrong" rather than "slightly off" — exactly the reported symptom. Fixed
-                        // by also requiring direction similarity to merge, checked against the
-                        // cluster's own running-average direction so far (weightedDirSum is not
-                        // yet normalized/finalized mid-loop). kClusterDirCosThreshold is computed
-                        // once above from the user-tunable beamClusterDirThresholdDeg (Settings ->
-                        // Beams): raise toward 90 deg to only merge near-identical approach
-                        // directions (safer, more individual slots); lower toward 0 to merge more
-                        // aggressively (cheaper, more blending risk).
-                        int matchedIdx = -1;
-                        if (converged)
-                        {
-                            for (uint32_t li = 0; li < cloudLights.count; ++li)
-                            {
-                                glm::vec3 d2v = clusterKeyENU[li] - tE;
-                                if (glm::dot(d2v, d2v) >= 4.0f) continue;
-                                glm::vec3 curDir = glm::length(weightedDirSum[li]) > 1e-6f
-                                                        ? glm::normalize(weightedDirSum[li])
-                                                        : dirToSourceCand;
-                                if (glm::dot(curDir, dirToSourceCand) < kClusterDirCosThreshold) continue;
-                                matchedIdx = (int)li;
-                                break;
-                            }
-                        }
+                        // Geometry into Earth-fixed ECEF once, here — everything downstream (the
+                        // direction bucket, the accumulators, the stored state) works in that
+                        // frame. See the conversion helpers above for why.
+                        glm::dvec3 gEcef = enuPosToEcef(groundPosENU);
+                        glm::dvec3 dEcef = enuDirToEcef(dirToSourceCand);
 
-                        if (matchedIdx >= 0)
+                        // Pick the pool and the KEY. This replaces the old epsilon-match scan over
+                        // every existing cluster entirely: identity is declared, not searched for.
+                        int ti = (int)beamsIn[s].targetIdx;
+                        bool asCluster = converged && ti >= 0 && ti < reflectorTargetCount;
+                        TrackedBeamLight *pool;
+                        int slot;
+                        if (asCluster)
                         {
-                            uint32_t li = (uint32_t)matchedIdx;
-                            cloudLights.entries[li].intensity += intensity;
-                            cloudLights.entries[li].footprintRadM =
-                                std::max(cloudLights.entries[li].footprintRadM, beamsIn[s].footprintRadM);
-                            weightedPosSum[li] += groundPosENU * intensity;
-                            weightedDirSum[li] += dirToSourceCand * intensity;
-                            weightedAltSum[li] += beamsIn[s].blockAltM * intensity;
-                            weightedOpacitySum[li] += beamsIn[s].blockOpacity * intensity;
-                        }
-                        else if (converged)
-                        {
-                            // New cluster needed — either a free slot, or evict the current
-                            // weakest cluster (top-K by summed intensity). Bounded by
-                            // kMaxClusterCloudLights, its OWN reserved pool — see that constant's
-                            // comment for why this can no longer compete with individual beams for
-                            // slots.
-                            uint32_t insertIdx = clusterTopK.claim(
-                                cloudLights.count, (uint32_t)kMaxClusterCloudLights, intensity,
-                                [&](uint32_t i) { return cloudLights.entries[i].intensity; });
-                            if (insertIdx != ~0u)
-                            {
-                                GpuBeamCloudLight &light = cloudLights.entries[insertIdx];
-                                light.intensity = intensity;
-                                light.footprintRadM = beamsIn[s].footprintRadM;
-                                clusterKeyENU[insertIdx] = tE;
-                                weightedPosSum[insertIdx] = groundPosENU * intensity;
-                                weightedDirSum[insertIdx] = dirToSourceCand * intensity;
-                                weightedAltSum[insertIdx] = beamsIn[s].blockAltM * intensity;
-                                weightedOpacitySum[insertIdx] = beamsIn[s].blockOpacity * intensity;
-                            }
+                            uint32_t key = 0x80000000u | ((uint32_t)ti << 16) |
+                                            (dirBucketFor(ti, dEcef) & 0xFFFFu);
+                            pool = trackedClusters;
+                            slot = findOrAlloc(trackedClusters, trackedClusterHash,
+                                                kMaxClusterCloudLights, key, intensity);
                         }
                         else
                         {
-                            // Individual/transiting beam — never matched against anything, its own
-                            // reserved pool (kMaxIndividualCloudLights), own top-K eviction. Never
-                            // competes with clusters for a slot, so a busy target's summed
-                            // intensity can no longer starve a lone transiting beam out entirely.
-                            uint32_t insertIdx = individualTopK.claim(
-                                individualCount, (uint32_t)kMaxIndividualCloudLights, intensity,
-                                [&](uint32_t i) { return individualEntries[i].intensity; });
-                            if (insertIdx != ~0u)
-                            {
-                                GpuBeamCloudLight &light = individualEntries[insertIdx];
-                                light.intensity = intensity;
-                                light.footprintRadM = beamsIn[s].footprintRadM;
-                                light.posENU = groundPosENU;
-                                light.dirToSource = dirToSourceCand;
-                                light.blockAltM = beamsIn[s].blockAltM;
-                                light.blockOpacity = beamsIn[s].blockOpacity;
-                            }
+                            // Transiting (or, defensively, a beam whose targetIdx somehow isn't a
+                            // loaded target). Keyed by the ORIGINATING SATELLITE's dispatch index,
+                            // which sat_orbit.comp guarantees is stable frame to frame — unlike the
+                            // atomic-append slot index `s`. The two key namespaces live in separate
+                            // pools, so the high bits are documentation rather than necessity.
+                            uint32_t satIdx = (uint32_t)std::max(0.0f, beamsIn[s].debugPad);
+                            uint32_t key = 0x40000000u | (satIdx & 0x3FFFFFFFu);
+                            pool = trackedIndividuals;
+                            slot = findOrAlloc(trackedIndividuals, trackedIndividualHash,
+                                                kMaxIndividualCloudLights, key, intensity);
+                        }
+
+                        if (slot >= 0)
+                        {
+                            // Accumulate into THIS frame's target values. Order-independent by
+                            // construction — these are sums and a max, so the same set of beams
+                            // produces the same result no matter what order they arrive in.
+                            TrackedBeamLight &L = pool[slot];
+                            L.tgtIntensity += intensity;
+                            L.tgtFootprintRadM = std::max(L.tgtFootprintRadM, beamsIn[s].footprintRadM);
+                            L.tgtPosSum += gEcef * (double)intensity;
+                            L.tgtDirSum += dEcef * (double)intensity;
+                            L.tgtAltSum += beamsIn[s].blockAltM * intensity;
+                            L.tgtOpacitySum += beamsIn[s].blockOpacity * intensity;
                         }
                     }
                 }
             }
         }
-        // Finalize converged clusters: divide each's weighted sums by its own accumulated
-        // (summed) intensity. cloudLights.entries[0..count) is clusters-only at this point.
-        for (uint32_t li = 0; li < cloudLights.count; ++li)
-        {
-            float w = cloudLights.entries[li].intensity;
-            if (w <= 0.0f) continue;
-            cloudLights.entries[li].posENU = weightedPosSum[li] / w;
-            cloudLights.entries[li].dirToSource = glm::normalize(weightedDirSum[li]);
-            cloudLights.entries[li].blockAltM = weightedAltSum[li] / w;
-            cloudLights.entries[li].blockOpacity = weightedOpacitySum[li] / w;
-        }
-        // Append the individual/transiting pool after the finalized clusters — its own reserved
-        // budget (kMaxIndividualCloudLights), so it always lands in the buffer regardless of how
-        // many cluster slots were used.
-        for (uint32_t ii = 0; ii < individualCount; ++ii)
-            cloudLights.entries[cloudLights.count++] = individualEntries[ii];
+
+        // ── Finalize, ease, emit ───────────────────────────────────────────────────────────────
+        // Same 1 - exp(-dt/timeConstant) idiom as mwSuppressEased/skyGlareEased. Asymmetric on
+        // intensity (fast in, slow out) so a light registers promptly but lingers on the way out;
+        // geometry runs on its own much shorter constant so a light can't visibly lag real beam
+        // motion. Clamped because dt can be 0 (paused presentation) or large after a hitch.
+        auto blendFactor = [&](float timeConstS) {
+            return glm::clamp(1.0f - std::exp(-dt / std::max(timeConstS, 1e-3f)), 0.0f, 1.0f);
+        };
+        const float kFadeIn = blendFactor(beamClusterFadeInS);
+        const float kFadeOut = blendFactor(beamClusterFadeOutS);
+        const float kGeom = blendFactor(kTrackedLightGeomEaseS);
+
+        auto easeAndEmit = [&](TrackedBeamLight *pool, int cap) {
+            int live = 0;
+            for (int i = 0; i < cap; ++i)
+            {
+                TrackedBeamLight &L = pool[i];
+                if (!L.key) continue;
+                float w = L.tgtIntensity;
+                if (w > 0.0f)
+                {
+                    glm::dvec3 p = L.tgtPosSum / (double)w;
+                    glm::dvec3 d = L.tgtDirSum;
+                    double dl = glm::length(d);
+                    // Fallback is the local vertical at this light's own ground position — a real,
+                    // physically sensible "light from straight overhead" rather than a zero vector.
+                    // Cannot trigger in practice (a bucket spans well under 90 deg, so its member
+                    // directions can't sum to zero) but a fresh slot's stored dirECEF IS zero, so
+                    // falling back to it would be a live NaN source rather than a theoretical one.
+                    d = (dl > 1e-9) ? d / dl : glm::normalize(p);
+                    float alt = L.tgtAltSum / w;
+                    float opa = L.tgtOpacitySum / w;
+                    if (L.easedIntensity <= 0.0f)
+                    {
+                        // First frame alive: SNAP geometry. There is no meaningful previous value
+                        // to ease from, and easing from a zeroed slot would drag the light in from
+                        // the centre of the Earth.
+                        L.posECEF = p;
+                        L.dirECEF = d;
+                        L.easedFootprintRadM = L.tgtFootprintRadM;
+                        L.easedBlockAltM = alt;
+                        L.easedBlockOpacity = opa;
+                    }
+                    else
+                    {
+                        L.posECEF += (p - L.posECEF) * (double)kGeom;
+                        L.dirECEF += (d - L.dirECEF) * (double)kGeom;
+                        double nl = glm::length(L.dirECEF); // nlerp — renormalize after the blend
+                        L.dirECEF = (nl > 1e-9) ? L.dirECEF / nl : d;
+                        L.easedFootprintRadM += (L.tgtFootprintRadM - L.easedFootprintRadM) * kGeom;
+                        L.easedBlockAltM += (alt - L.easedBlockAltM) * kGeom;
+                        L.easedBlockOpacity += (opa - L.easedBlockOpacity) * kGeom;
+                    }
+                }
+                // else: nothing fed this slot — it fades out while HOLDING its geometry, which is
+                // only safe because that geometry is Earth-fixed and cannot drift with the observer.
+                L.easedIntensity += (w - L.easedIntensity) * ((w > L.easedIntensity) ? kFadeIn : kFadeOut);
+                if (w <= 0.0f && L.easedIntensity < kTrackedLightEpsilon)
+                {
+                    L.key = 0; // fully faded and unfed — retire the slot
+                    L.easedIntensity = 0.0f;
+                    continue;
+                }
+                ++live;
+                if (cloudLights.count < (uint32_t)kMaxCloudBeamLights)
+                {
+                    GpuBeamCloudLight &e = cloudLights.entries[cloudLights.count++];
+                    e.posENU = ecefPosToEnu(L.posECEF);
+                    e.intensity = L.easedIntensity;
+                    // Guarded normalize rather than glm::normalize: a bucket spans well under 90
+                    // deg so its member directions physically cannot cancel to zero, but this is
+                    // the one place a degenerate value would escape to the GPU, and a single NaN
+                    // dirToSource poisons every cloud sample that light reaches.
+                    glm::vec3 dEnu = ecefDirToEnu(L.dirECEF);
+                    float dEnuLen = glm::length(dEnu);
+                    e.dirToSource = (dEnuLen > 1e-6f) ? dEnu / dEnuLen : glm::vec3(0.0f, 0.0f, 1.0f);
+                    e.footprintRadM = L.easedFootprintRadM;
+                    e.blockAltM = L.easedBlockAltM;
+                    e.blockOpacity = L.easedBlockOpacity;
+                }
+            }
+            return live;
+        };
+        // Clusters first, then individuals — the same ordering the previous build produced. The two
+        // pools sum to exactly kMaxCloudBeamLights, so the emit above can never truncate.
+        lastClusterLightCount = easeAndEmit(trackedClusters, kMaxClusterCloudLights);
+        lastIndividualLightCount = easeAndEmit(trackedIndividuals, kMaxIndividualCloudLights);
+
         std::memcpy(groundBeamsMapped, &groundBeams, sizeof(GpuGroundBeams));
         std::memcpy(beamCloudLightMapped, &cloudLights, sizeof(GpuBeamCloudLights));
 
@@ -1798,6 +1947,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     orbitPc.beamGain = beamGain;
     orbitPc.reflectorLockWindowS = reflectorLockWindowS;
     orbitPc.mirrorMaxRateDegPerSec = mirrorMaxRateDegPerSec;
+    orbitPc.flareMitigationTiltRad = glm::radians(flareMitigationTiltDeg);
     orbitPc.targetCount = (uint32_t)reflectorTargetCount;
     orbitPc.minBeamElevSin = sinf(glm::radians(reflectorMinElevDeg)); // S1 follow-up
     // 2026-08-06 reversibility rework: gmstNow/windowFrac are pure functions of absolute sim time
@@ -2546,6 +2696,7 @@ void SatelliteSim::formatSelectedPlanetInfo()
     snprintf(planetInfoLine[3], sizeof(planetInfoLine[3]), "Distance: %.2f AU", ps.distanceAU);
     snprintf(planetInfoLine[4], sizeof(planetInfoLine[4]), "Phase: %.0f%%", illumFrac * 100.0f);
     snprintf(planetInfoLine[5], sizeof(planetInfoLine[5]), "Sun dist: %.2f AU", ps.sunDistAU);
+    planetInfoLine[6][0] = '\0'; // 7th slot is satellite-only (flare-mitigation power readout)
 }
 
 // ─── formatSelectedSatInfo ─────────────────────────────────────────────────────
@@ -2564,6 +2715,7 @@ void SatelliteSim::formatSelectedSatInfo()
     const SatOrbit &orb = satOrbits[selectedSatIndex];
     const char *constName = "?";
     const char *typeName = "?";
+    const SatelliteType *type = nullptr;
     int localId = selectedSatIndex;
     if (orb.constIdx < constellations.size())
     {
@@ -2571,7 +2723,10 @@ void SatelliteSim::formatSelectedSatInfo()
         constName = c.name.c_str();
         localId = selectedSatIndex - (int)c.orbitStart;
         if (c.typeIdx < satTypes.size())
-            typeName = satTypes[c.typeIdx].name.c_str();
+        {
+            type = &satTypes[c.typeIdx];
+            typeName = type->name.c_str();
+        }
     }
 
     float altKm = orb.altM / 1000.0f;
@@ -2587,6 +2742,21 @@ void SatelliteSim::formatSelectedSatInfo()
     else
         snprintf(selInfoLine[4], sizeof(selInfoLine[4]), "RAAN: %.1f deg", glm::degrees(orb.raan));
     snprintf(selInfoLine[5], sizeof(selInfoLine[5]), "Period: %.1f min", periodMin);
+    // Flare-mitigation power readout — only for satellites whose primary surface actually uses
+    // the tilt (datacenter types), so an unrelated constellation's panel doesn't show a
+    // meaningless "100%" row. Power loss is exactly cos(tiltDeg): computeNormal()'s
+    // AM_SUN_TRACKING_TILTED case rotates sunDirECI by exactly tiltRad, so
+    // dot(tiltedNormal, sunDirECI) == cos(tiltRad) — see that shader comment.
+    if (type && type->primary.attitude == AttitudeMode::SunTrackingTilted)
+    {
+        float powerPct = cosf(glm::radians(flareMitigationTiltDeg)) * 100.0f;
+        snprintf(selInfoLine[6], sizeof(selInfoLine[6]), "Power: %.0f%% (tilt %.0f deg)",
+                 powerPct, flareMitigationTiltDeg);
+    }
+    else
+    {
+        selInfoLine[6][0] = '\0';
+    }
 }
 
 // ─── recordDraw ───────────────────────────────────────────────────────────────
@@ -7792,6 +7962,8 @@ static AttitudeMode parseAttitudeMode(const std::string &s)
         return AttitudeMode::KnifeEdge;
     if (s == "SunPerp")
         return AttitudeMode::SunPerp;
+    if (s == "SunTrackingTilted")
+        return AttitudeMode::SunTrackingTilted;
     fprintf(stderr, "[SatelliteSim] Unknown AttitudeMode '%s'; using NadirPointing.\n", s.c_str());
     return AttitudeMode::NadirPointing;
 }
@@ -7967,12 +8139,15 @@ void SatelliteSim::loadHardcoded()
          // crossSection = sqrt(600/10) ≈ 7.75 for the dominant solar wing area.
 
          "SpaceX AI Sats",
-         {1.00f, 1.00f, 0.92f},                    // cyan-teal (distinct from Starlink blue-white)
-         600.0f,                                   // 600 m² solar array area (150 kW / 250 W/m²)
-         {AttitudeMode::SunTracking, 25.0f, 1.0f}, // solar wings — always face sun, sharp specular
-         {AttitudeMode::SunPerp, 3.0f, 0.18f},     // radiators 110 m² — edge-on to sun, irr=0
-         0.06f,                                    // bus body + radiator structure bulk scatter
-         0.01f},                                   // mirrorFrac: polished solar panel glass
+         {1.00f, 1.00f, 0.92f},                          // cyan-teal (distinct from Starlink blue-white)
+         600.0f,                                         // 600 m² solar array area (150 kW / 250 W/m²)
+         {AttitudeMode::SunTrackingTilted, 25.0f, 1.0f}, // solar wings — sun-tracking with the global
+                                                          // flareMitigationTiltDeg pitch applied (see
+                                                          // that enum value's comment); tiltDeg=0
+                                                          // is bit-identical to plain SunTracking
+         {AttitudeMode::SunPerp, 3.0f, 0.18f},           // radiators 110 m² — edge-on to sun, irr=0
+         0.06f,                                          // bus body + radiator structure bulk scatter
+         0.01f},                                         // mirrorFrac: polished solar panel glass
         {                                          // 5 — Reflect Orbital mirror (speculative, 55 m diameter flat mirror).
          // FlatMirror45: normal = normalize(sunDir + satNadir).
          // By construction reflect(-sunDir, n) = satNadir — reflected sunlight
@@ -8316,6 +8491,38 @@ void SatelliteSim::buildOrbits()
 // hillside"). Combined with a small fixed margin below for the same reason.
 void SatelliteSim::computeReflectorTargetElevationRadius(int ti)
 {
+    // 2026-08-12: also build this site's own local ENU frame here. Both callers set
+    // reflectorTargetsECEF[ti] immediately before calling this, and neither the direction nor the
+    // frame ever changes afterwards, so this is the one place that can't be forgotten by a future
+    // third loading path. Done BEFORE the early-return below — the frame doesn't depend on
+    // earthElevCpu, and a target whose elevation lookup was skipped still needs a valid frame.
+    {
+        glm::vec3 z = reflectorTargetsECEF[ti];
+        float zLen = glm::length(z);
+        if (zLen > 1e-6f)
+        {
+            z /= zLen;
+            // Reference axis chosen away from z so the cross product can't degenerate. terrain.glsl's
+            // enuBasis() always uses +Z and simply breaks at the poles; that's tolerable there
+            // (the observer is never exactly polar) but not here, where the result feeds an integer
+            // bucket index and a NaN would propagate silently.
+            glm::vec3 ref = (std::fabs(z.z) < 0.99f) ? glm::vec3(0.0f, 0.0f, 1.0f)
+                                                     : glm::vec3(1.0f, 0.0f, 0.0f);
+            glm::vec3 x = glm::normalize(glm::cross(ref, z));
+            reflectorSiteEnuX[ti] = x;
+            reflectorSiteEnuY[ti] = glm::cross(z, x);
+            reflectorSiteEnuZ[ti] = z;
+        }
+        else
+        {
+            // Degenerate/unpopulated slot (the fallback path leaves the last one zeroed). Give it an
+            // identity frame rather than NaNs — it is never a real beam's targetIdx anyway.
+            reflectorSiteEnuX[ti] = glm::vec3(1.0f, 0.0f, 0.0f);
+            reflectorSiteEnuY[ti] = glm::vec3(0.0f, 1.0f, 0.0f);
+            reflectorSiteEnuZ[ti] = glm::vec3(0.0f, 0.0f, 1.0f);
+        }
+    }
+
     reflectorTargetsRadiusM[ti] = kEarthRadius; // default: sea level
     if (earthElevCpu.empty())
         return;
