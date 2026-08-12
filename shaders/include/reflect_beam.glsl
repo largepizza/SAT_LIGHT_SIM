@@ -36,4 +36,17 @@ struct ReflectBeam {
     float aimErrorRad;     // Repurposed from padding (2026-08-06): radians remaining in the
                           // mirror's rate-limited slew toward its current target this frame — 0
                           // once converged. See GpuReflectBeam's comment in SatelliteSim.h.
+    uint  targetIdx;       // 2026-08-12: this beam's resolved ground-target ORIGINAL index
+                          // (sat_orbit.comp's own `bestIdx`, always >= 0 wherever a beam is
+                          // written). A STABLE INTEGER IDENTITY — the whole point of carrying it.
+                          // The CPU cloud-light build keys its per-target clusters on this instead
+                          // of epsilon-matching targetENU positions against a seed beam, which is
+                          // what made the old partition order-dependent and discontinuous. See
+                          // GpuBeamCloudLights / TrackedBeamLight in SatelliteSim.h.
+    uint  pad0, pad1, pad2; // std430 struct alignment is 16 (vec3 members), so the record is 80
+                          // bytes with or without these. They are DECLARED EXPLICITLY so the C++
+                          // mirror (GpuReflectBeam — glm::vec3 is 4-aligned, so C++ does NOT insert
+                          // this tail padding on its own) matches byte-for-byte rather than relying
+                          // on the total happening to be a multiple of 16. Same hazard class as
+                          // GpuCloudParams: a silent permutation, no compile error.
 };

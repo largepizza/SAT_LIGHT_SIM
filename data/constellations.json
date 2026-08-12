@@ -42,7 +42,7 @@
             "name": "SpaceX AI Satellites",
             "base_color": [1.00, 1.00, 0.92],
             "cross_section_m2": 600.0,
-            "primary": { "attitude": "SunTracking", "spec_exp": 25.0, "weight": 1.0 },
+            "primary": { "attitude": "SunTrackingTilted", "spec_exp": 25.0, "weight": 1.0 },
             "secondary": { "attitude": "SunPerp", "spec_exp": 3.0, "weight": 0.18 },
             "diffuse": 0.005,
             "mirror_frac": 0.5

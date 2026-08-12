@@ -24,10 +24,10 @@
 static constexpr int kIconAngleLeft = 0;  // pixel--angle-left.png  → slow down
 static constexpr int kIconAngleRight = 1; // pixel--angle-right.png → speed up
 // 2 = controller (unused in time controls)
-static constexpr int kIconPause = 3;    // pixel--pause.png
-static constexpr int kIconPlay = 4;     // pixel--play.png
-static constexpr int kIconSettings = 5; // pixel--settings.png
-static constexpr int kIconCamera = 6;   // camera-solid.png — UC6 screenshot button
+static constexpr int kIconPause = 3;      // pixel--pause.png
+static constexpr int kIconPlay = 4;       // pixel--play.png
+static constexpr int kIconSettings = 5;   // pixel--settings.png
+static constexpr int kIconCamera = 6;     // camera-solid.png — UC6 screenshot button
 static constexpr int kIconStarTrails = 7; // pixel--star-trails.png — long-exposure trail toggle
 
 // Settings schema version (NEW-5). Bump this whenever a settings.json change would make an
@@ -55,35 +55,35 @@ static constexpr int kSettingsSchemaVersion = 1;
 // they were paid in full at every tier including Planetarium.
 struct DebugToggleEntry
 {
-    uint32_t    bit;
-    const char *label;    // Display tab checkbox text
-    const char *jsonKey;  // stable key in the sweep log
+    uint32_t bit;
+    const char *label;   // Display tab checkbox text
+    const char *jsonKey; // stable key in the sweep log
 };
 static constexpr DebugToggleEntry kDebugToggles[] = {
-    {1u,     "Terrain march",                   "terrain_march"},
-    {2u,     "Atmosphere loop (N_VIEW)",        "atmosphere_loop"},
-    {4u,     "Sun optical depth (N_LIGHT)",     "sun_optical_depth"},
-    {8u,     "Ocean sky reflection",            "ocean_sky_reflection"},
-    {16u,    "Airglow red (16-step march)",     "airglow_red"},
-    {32u,    "Aurora curtain march",            "aurora_curtain"},
-    {64u,    "Cloud self-shadow cone",          "cloud_self_shadow_cone"},
-    {128u,   "Reflect-Orbital beams",           "reflect_beams_glow_and_spot"},
-    {256u,   "Cloud shadow (per-pixel)",        "cloud_shadow_per_pixel"},
-    {512u,   "Beam self-march dispatch",        "beam_self_march_dispatch"},
-    {1024u,  "Scene depth pass",                "scene_depth_pass"},
-    {2048u,  "Fog layer (C11)",                 "fog_layer"},
-    {4096u,  "Satellite point cloud occlusion", "sat_point_cloud_occlusion"},
-    {8192u,  "Beam pointing rays (per-pixel)",  "beam_pointing_rays"},
-    {16384u, "Cirrus march",                    "cirrus_march"},
-    {32768u, "Volumetric cloud march",          "volumetric_cloud_march"},
-    {65536u, "Satellite sky-glow bins (64)",    "sat_sky_glow_bins"},
+    {1u, "Terrain march", "terrain_march"},
+    {2u, "Atmosphere loop (N_VIEW)", "atmosphere_loop"},
+    {4u, "Sun optical depth (N_LIGHT)", "sun_optical_depth"},
+    {8u, "Ocean sky reflection", "ocean_sky_reflection"},
+    {16u, "Airglow red (16-step march)", "airglow_red"},
+    {32u, "Aurora curtain march", "aurora_curtain"},
+    {64u, "Cloud self-shadow cone", "cloud_self_shadow_cone"},
+    {128u, "Reflect-Orbital beams", "reflect_beams_glow_and_spot"},
+    {256u, "Cloud shadow (per-pixel)", "cloud_shadow_per_pixel"},
+    {512u, "Beam self-march dispatch", "beam_self_march_dispatch"},
+    {1024u, "Scene depth pass", "scene_depth_pass"},
+    {2048u, "Fog layer (C11)", "fog_layer"},
+    {4096u, "Satellite point cloud occlusion", "sat_point_cloud_occlusion"},
+    {8192u, "Beam pointing rays (per-pixel)", "beam_pointing_rays"},
+    {16384u, "Cirrus march", "cirrus_march"},
+    {32768u, "Volumetric cloud march", "volumetric_cloud_march"},
+    {65536u, "Satellite sky-glow bins (64)", "sat_sky_glow_bins"},
     // Not a feature knockout — an OPTIMIZATION knockout. Setting it forces cloud_march.comp's beam
     // pointing-ray loop back to the pre-2026-08-10 full-buffer scan instead of the per-tile culled
     // list. The image must be pixel-identical either way (the fallback recomputes exactly what the
     // cull supplies), so this is both the correctness A/B for the cull and the way to measure what
     // it actually bought: sweep cost_ms here is the SAVING, reported with the opposite sign to
     // every other row.
-    {131072u, "Beam tile cull OFF (A/B)",       "beam_tile_cull_disabled"},
+    {131072u, "Beam tile cull OFF (A/B)", "beam_tile_cull_disabled"},
 };
 static constexpr int kDebugToggleCount = (int)(sizeof(kDebugToggles) / sizeof(kDebugToggles[0]));
 // The matching static_assert against SatelliteSim::kDebugToggleSlots lives inside
@@ -1092,6 +1092,8 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
         CLAY_TEXT(headStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(13)}));
         for (int i = 1; i < kSelInfoLines; ++i)
         {
+            if (infoLines[i][0] == '\0') // e.g. the power-readout line, blank for non-datacenter picks
+                continue;
             Clay_String lineStr{false, (int32_t)strlen(infoLines[i]), infoLines[i]};
             CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
         }
@@ -2502,7 +2504,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[17][12];
+    static char photoBufs[18][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -2529,6 +2531,12 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         // flareStreakGain just above, so they live in this same tab.
         {"Trail decay (s)", &trailDecaySeconds, 0.2f, 30.0f, 0.2f, "%.1f", 15},
         {"Trail gain", &trailCompositeGain, 0.0f, 5.0f, 0.05f, "%.2f", 16},
+        // Datacenter flare mitigation tilt — see AttitudeMode::SunTrackingTilted (SatelliteSim.h)
+        // and formatSelectedSatInfo's "Power output" readout. 0-45 deg: past ~45 deg the specular
+        // lobe is pitched further from nadir than from zenith, so mitigation gains diminish while
+        // the cos(tilt) power cost keeps climbing — not a hard physical limit, just past the
+        // useful range for a gimbal-limited real panel.
+        {"Flare mitigate tilt (deg)", &flareMitigationTiltDeg, 0.0f, 45.0f, 1.0f, "%.0f", 17},
     };
     for (auto &pp : photoParams)
     {
@@ -2634,7 +2642,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
     // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
     // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[86][16];
+    static char cloudBufs[88][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -2982,14 +2990,14 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
 void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
 {
     CloudSlider sliders[] = {
-        {"Beam gain", &beamGain, 0.0f, 0.01f, 0.0001f, "%.3f", 39},
+        {"Beam gain", &beamGain, 0.0f, 1.0f, 0.0001f, "%.3f", 39},
         // 2026-08-06 same-day follow-up: reuses slot 40, freed by C12 follow-up #34's removed
         // "Beam footprint (m)" slider (see [[feedback_cloud_slider_arrays]] — no array resize
         // needed, this is filling an already-accounted-for index). Real angular-rate cap for the
         // TargetedReflector orientation ease — see sat_orbit.comp's TargetedReflector block.
         {"Mirror max slew rate (deg/s)", &mirrorMaxRateDegPerSec, 0.001f, 1.0f, 0.001f, "%.3f", 40},
         {"Beam max range (m)", &beamMaxRangeM, 50000.0f, 2000000.0f, 50000.0f, "%.0f", 41},
-        {"Beam sky glow gain", &beamSkyGlowGain, 0.0f, 1.0f, 0.01f, "%.2f", 42},
+        {"Beam sky glow gain", &beamSkyGlowGain, 0.0f, 0.05f, 0.001f, "%.3f", 42},
         // 2026-08-06 reversibility rework: replaces the old rate-limited "Mirror slew rate
         // (deg/s)" slider — target lock is now a fixed sim-time window instead of a persisted
         // per-satellite lock, so the tunable is a duration, not a rate. Same slot (43).
@@ -3001,9 +3009,17 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
         {"Beam glow bleed gain", &beamGlowBleedGain, 0.0f, 0.01f, 0.0001f, "%.2f", 45},
         {"Beam near-field fade (m)", &beamNearFieldFadeM, 1000.0f, 500000.0f, 1000.0f, "%.0f", 46},
         // 2026-08-09: new slot (83) — see [[feedback_cloud_slider_arrays]], hovCloudMinus/Plus/
-        // draggingCloud/cloudBufs all resized to 84 for this one. Controls how aggressively
-        // beam-cloud lights sharing a target merge into one cluster — see the member's own comment.
+        // draggingCloud/cloudBufs all resized to 84 for this one. 2026-08-12: the member's meaning
+        // changed (it is now the angular SIZE of a fixed direction bucket rather than a
+        // running-average merge tolerance) but the label, slot, range and direction of effect are
+        // all unchanged, so nothing here needed touching — see the member's own comment.
         {"Beam cluster direction threshold (deg)", &beamClusterDirThresholdDeg, 1.0f, 90.0f, 1.0f, "%.0f", 83},
+        // 2026-08-12: new slots (86/87) — hovCloudMinus/Plus/draggingCloud/cloudBufs all resized
+        // 86 -> 88 for these two, per [[feedback_cloud_slider_arrays]]. Cross-frame fade for the
+        // cloud-light list, which only became possible once lights got stable identities; see
+        // TrackedBeamLight in SatelliteSim.h.
+        {"Beam light fade in (s)", &beamClusterFadeInS, 0.0f, 3.0f, 0.05f, "%.2f", 86},
+        {"Beam light fade out (s)", &beamClusterFadeOutS, 0.0f, 6.0f, 0.05f, "%.2f", 87},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 
@@ -3037,6 +3053,33 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
         }
     }
 
+    // ── Cloud-light pool occupancy (2026-08-12) ────────────────────────
+    // Live tracked lights in each reserved pool, against their caps. Directly answers the two
+    // questions the 2026-08-11 revert left open: is the cluster count sitting near the real active
+    // TARGET count (healthy — identities are being recognized frame to frame) or pinned at the cap
+    // (churn: entries respawning instead of matching, which is what made that attempt expensive),
+    // and are transiting beams actually getting slots. A count that climbs well past the number of
+    // sites in view and stays there means fade-out is holding entries longer than it should — turn
+    // "Beam light fade out (s)" down.
+    {
+        static char lightPoolBuf[48];
+        snprintf(lightPoolBuf, sizeof(lightPoolBuf), "%d/%d clusters, %d/%d individual",
+                 lastClusterLightCount, kMaxClusterCloudLights,
+                 lastIndividualLightCount, kMaxIndividualCloudLights);
+        CLAY(CLAY_ID("BeamLightPoolRow"), {.layout = {
+                                               .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
+                                               .padding = {4, 4, 2, 2},
+                                               .childGap = 8,
+                                               .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                               .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY_TEXT(CLAY_STRING("Cloud lights"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            CLAY(CLAY_ID("BeamLightPoolSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+            Clay_String poolStr{false, (int32_t)strlen(lightPoolBuf), lightPoolBuf};
+            CLAY_TEXT(poolStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        }
+    }
+
     // ── beam_self_march.comp occlusion debug (2026-08-09, BEAM_CLOUD_PLAN.md) ────────
     // Raw min/max/avg blockOpacity across every active beam this frame, and how many currently
     // read as occluded (>0.1) — no per-target aggregation in the way, unlike what the ray/ground
@@ -3050,11 +3093,11 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
                  dbgBeamOpacityMin, dbgBeamOpacityMax, dbgBeamOpacityAvg,
                  dbgBeamOccludedCount, dbgBeamSampleCount);
         CLAY(CLAY_ID("BeamOpacityDiagRow"), {.layout = {
-                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
-                                          .padding = {4, 4, 2, 2},
-                                          .childGap = 8,
-                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                                                 .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
+                                                 .padding = {4, 4, 2, 2},
+                                                 .childGap = 8,
+                                                 .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
             CLAY_TEXT(CLAY_STRING("Beam blockOpacity"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
             CLAY(CLAY_ID("BeamOpacityDiagSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
@@ -3848,6 +3891,7 @@ void SatelliteSim::loadSettings()
         mwFadeOutTimeS = p.value("mw_fade_out_time_s", mwFadeOutTimeS);
         trailDecaySeconds = p.value("trail_decay_seconds", trailDecaySeconds);
         trailCompositeGain = p.value("trail_composite_gain", trailCompositeGain);
+        flareMitigationTiltDeg = p.value("flare_mitigation_tilt_deg", flareMitigationTiltDeg);
     }
 
     if (j.contains("display"))
@@ -4064,6 +4108,8 @@ void SatelliteSim::loadSettings()
         cloudShadowRangeM = c.value("cloud_shadow_range_m", cloudShadowRangeM);
         beamNearFieldFadeM = c.value("beam_near_field_fade_m", beamNearFieldFadeM);
         beamClusterDirThresholdDeg = c.value("beam_cluster_dir_threshold_deg", beamClusterDirThresholdDeg);
+        beamClusterFadeInS = c.value("beam_cluster_fade_in_s", beamClusterFadeInS);
+        beamClusterFadeOutS = c.value("beam_cluster_fade_out_s", beamClusterFadeOutS);
         fogTopAltM = c.value("fog_top_alt_m", fogTopAltM);
         fogDensity = c.value("fog_density", fogDensity);
         fogCoverage = c.value("fog_coverage", fogCoverage);
@@ -4135,7 +4181,8 @@ void SatelliteSim::saveSettings()
         {"mw_fade_in_time_s", mwFadeInTimeS},
         {"mw_fade_out_time_s", mwFadeOutTimeS},
         {"trail_decay_seconds", trailDecaySeconds},
-        {"trail_composite_gain", trailCompositeGain}};
+        {"trail_composite_gain", trailCompositeGain},
+        {"flare_mitigation_tilt_deg", flareMitigationTiltDeg}};
 
     j["display"] = {
         {"ui_scale", uiScale},
@@ -4236,6 +4283,8 @@ void SatelliteSim::saveSettings()
         {"cloud_shadow_range_m", cloudShadowRangeM},
         {"beam_near_field_fade_m", beamNearFieldFadeM},
         {"beam_cluster_dir_threshold_deg", beamClusterDirThresholdDeg},
+        {"beam_cluster_fade_in_s", beamClusterFadeInS},
+        {"beam_cluster_fade_out_s", beamClusterFadeOutS},
         {"fog_top_alt_m", fogTopAltM},
         {"fog_density", fogDensity},
         {"fog_coverage", fogCoverage},
@@ -4638,7 +4687,8 @@ void SatelliteSim::updateKnockoutSweep(float cpuDt)
     static const char *kCpuBucketKeys[CPU_COUNT] = {
         "build_ui", "update_positions", "beam_readback", "update_stars",
         "light_pollution_dome", "update_planets"};
-    auto bucketsOf = [&](int step) {
+    auto bucketsOf = [&](int step)
+    {
         nlohmann::json o;
         for (int b = 0; b < 8; ++b)
             o[kBucketKeys[b]] = sweepAccum[step][b] * inv;
@@ -4655,7 +4705,8 @@ void SatelliteSim::updateKnockoutSweep(float cpuDt)
     // total and every measured bucket — present/vsync wait, driver submit, App-side work, and any
     // CPU block that doesn't have a bucket yet. Reported rather than hidden precisely because a
     // large "other" is the signal that the cost is somewhere this table doesn't look.
-    auto cpuBucketsOf = [&](int step) {
+    auto cpuBucketsOf = [&](int step)
+    {
         nlohmann::json o;
         float measured = 0.0f;
         for (int c = 0; c < CPU_COUNT; ++c)

@@ -68,6 +68,17 @@ enum class AttitudeMode
                        // this orientation.  irr = |dot(sun, normal)| = 0 always — the radiator
                        // intentionally never receives direct sunlight (correct thermal design).
                        // Visual contribution is through the overall diffuse scatter parameter.
+    SunTrackingTilted, // flare mitigation: as SunTracking, but the sun-facing normal is pitched
+                       // away from nadir toward zenith by the global flareMitigationTiltDeg
+                       // setting, so the specular lobe (and the Earthshine reflect term in
+                       // sat_flare.comp) point up and away from the ground instead of straight
+                       // down at twilight. Pure rotation of sunDirECI within the plane it spans
+                       // with zenith (-satNadir), so dot(result, sunDirECI) == cos(tiltDeg)
+                       // exactly — that cosine IS the operator's real power loss vs. optimal
+                       // sun-facing (Lambert's cosine law), used to compute the "power output"
+                       // readout in the satellite selection panel. tiltDeg=0 is bit-identical to
+                       // plain SunTracking. Used by the SpaceX AI Sats (datacenter) primary
+                       // surface — see loadHardcoded()/constellations.json.
 };
 
 // ── Display unit system (right HUD panel altitude readout, settings Display tab) ──
@@ -444,6 +455,15 @@ static_assert(sizeof(CloudMarchPC) == 148, "CloudMarchPC layout mismatch");
 // into one nonsensical averaged direction) — not total active-satellite count. In-app testing
 // after the clustering fix showed this cap is no longer the cost driver it was as a flat
 // (non-clustered) list, so it was raised back to 512 for headroom.
+//
+// 2026-08-12 — this struct is UNCHANGED, but it is no longer built from scratch each frame. It is
+// now the per-frame EMIT of the persistent TrackedBeamLight pools below: same clustering intent,
+// same two reserved budgets, same ordering (clusters then individuals), but each entry has a stable
+// cross-frame identity and its values are temporally eased rather than snapped. The parts of the
+// history above that describe the intra-frame epsilon match and the running-average direction gate
+// are retained as background — that mechanism is gone. See TrackedBeamLight for what replaced it
+// and why.
+//
 // Struct must match BeamCloudLight/BeamCloudLightBuf in cloud_march.comp exactly — including
 // kMaxCloudBeamLights itself, hand-duplicated there (not shared via a header); a mismatch
 // silently over/under-reads the buffer with no compile or validation error.
@@ -459,8 +479,8 @@ static constexpr int kMaxCloudBeamLights = 512;
 // individual beams are evicted first, potentially entirely, while clusters are never at risk.
 // Split the budget into two reserved, independently-evicted pools so transiting beams keep a
 // guaranteed floor of visibility regardless of how many targets are simultaneously busy: clusters
-// are bounded near the real target count (kNu                                                                                       mReflectorTargets capacity is 201; 320 leaves
-// generous headroom), individuals get the rest.
+// are bounded near the real target count (kNumReflectorTargets capacity is 201, so 256 leaves
+// headroom), individuals get the rest.
 static constexpr int kMaxClusterCloudLights = 256;
 static constexpr int kMaxIndividualCloudLights = kMaxCloudBeamLights - kMaxClusterCloudLights;
 struct GpuBeamCloudLight
@@ -482,6 +502,78 @@ struct GpuBeamCloudLights
     GpuBeamCloudLight entries[kMaxCloudBeamLights];
 };
 static_assert(sizeof(GpuBeamCloudLights) == 16 + kMaxCloudBeamLights * 48, "GpuBeamCloudLights layout mismatch");
+
+// ── TrackedBeamLight: persistent, cross-frame cloud-light identity (2026-08-12) ────────────────
+// CPU-only — this is the state the GPU-facing GpuBeamCloudLights above is DERIVED from each frame,
+// not a mirror of it.
+//
+// Why this exists. Until now the light list was rebuilt from scratch every frame, and a cluster's
+// identity was EMERGENT: it was seeded by whichever beam the scan happened to reach first at a
+// target, and admitted members by comparing them against a running partial average that changed as
+// members were added. That partition is discontinuous in its own inputs — when the seed satellite
+// drops out (a lock-window reassignment, or setting below minBeamElevSin) the survivors repartition
+// from scratch, so cluster count, every direction and every summed intensity can all change in one
+// frame. Since posENU/dirToSource/blockAltM/blockOpacity are all intensity-weighted means, and the
+// cloud phase function is very sharply forward-peaked (hgG~0.99), that reads as lights popping in
+// and out and re-aiming instantly. See BEAM_CLOUD_PLAN.md for the four in-app test rounds that
+// established this, and for the 2026-08-11 attempt that tried to fix it purely by adding a fade
+// on top — reverted, because easing a slot whose MEANING changes underneath it does not help, and
+// recovering identity by proximity-searching a pool cost O(rawClusters x 256) per frame (20 FPS).
+//
+// The fix is to DECLARE identity instead of deriving it, which is possible now that sat_orbit.comp
+// carries its `bestIdx` through as GpuReflectBeam::targetIdx:
+//   * a CLUSTER is keyed by (targetIdx, direction bucket). The bucket is a FIXED quantization of
+//     the beam's approach direction in the TARGET SITE's own local frame (reflectorSiteEnu*[]) —
+//     so it depends only on that beam's own geometry, never on scan order, on a seed, or on what
+//     else is in the cluster, and never on where the observer is. Nothing repartitions when a
+//     member leaves.
+//   * an INDIVIDUAL (transiting) beam is keyed by its originating satellite's dispatch index,
+//     which sat_orbit.comp already guarantees is stable (GpuReflectBeam::debugPad).
+// Both are exact integer keys, so cross-frame matching is an O(1) hash lookup rather than a
+// proximity search, and a beam crossing the converged/transiting boundary simply moves between two
+// eased entries — a crossfade, not a pop, with no hysteresis needed.
+//
+// Geometry is stored in EARTH-FIXED ECEF, in double precision, and re-projected into the current
+// frame's observer ENU only at emit time. This is the single most important detail: a ground site
+// is stationary in ECEF, so an entry that goes unmatched for the whole release window cannot drift,
+// regardless of how far or fast the observer moves. The 2026-08-11 attempt burned three rounds
+// rediscovering this — it stored observer-relative ENU and tried to correct it incrementally with
+// rebase(), which is rotation-only and built for exactly ONE frame of GPU-readback staleness. Do
+// not reintroduce observer-relative storage here. (doubles, not floats, because ECEF magnitudes are
+// ~6.4e6 m and these values are differenced against the observer's own position at emit time.)
+//
+// Accepted: the eased list is history-dependent, so it is not bit-reversible under time reversal,
+// unlike the orbital pipeline. Same class and precedent as skyGlareEased/mwSuppressEased — a
+// visual smoothing of a derived quantity, not simulation state.
+struct TrackedBeamLight
+{
+    // 0 = free slot. Real keys always set a high bit so that (targetIdx=0, bucket=0) and
+    // (satIdx=0) can't collide with "free".
+    uint32_t key = 0;
+    // Eased state — what actually gets emitted.
+    glm::dvec3 posECEF{0.0};      // Earth-fixed ground position of this light
+    glm::dvec3 dirECEF{0.0};      // Earth-fixed unit direction, ground -> satellite
+    float easedIntensity = 0.0f;
+    float easedFootprintRadM = 0.0f;
+    float easedBlockAltM = 0.0f;
+    float easedBlockOpacity = 0.0f;
+    // Per-frame accumulators (this frame's target values), zeroed at the top of every build. A slot
+    // with tgtIntensity == 0 after the scan had no contributing beam this frame and is fading out
+    // while HOLDING its geometry — which is exactly why the geometry has to be drift-free.
+    float tgtIntensity = 0.0f;
+    float tgtFootprintRadM = 0.0f;
+    glm::dvec3 tgtPosSum{0.0};    // intensity-weighted
+    glm::dvec3 tgtDirSum{0.0};    // intensity-weighted
+    float tgtAltSum = 0.0f;
+    float tgtOpacitySum = 0.0f;
+};
+// Power-of-two open-addressed index (key -> slot), rebuilt from the live slots at the top of every
+// build. Rebuilding is O(live) <= 256 and sidesteps tombstones entirely, which is the only fiddly
+// part of open addressing with deletion. Sized well above the pool so probe chains stay short.
+static constexpr int kTrackedLightHashSize = 1024;
+// A slot is retired once its eased intensity falls below this AND nothing is feeding it. Keeps
+// fully-faded entries from occupying pool slots (and GPU light-list entries) indefinitely.
+static constexpr float kTrackedLightEpsilon = 1e-4f;
 
 // (CloudShadowPC lived here — push constants for cloud_shadow.comp's 128x128 grid, including the
 //  shadowResidualM texel-snapping term that stopped shadows swimming as the observer moved. The
@@ -783,8 +875,24 @@ struct GpuReflectBeam
                              // consumer distinguish "mid-crossfade" from "locked and settled" the
                              // same way it always could, just driven by the new stateless windowed
                              // selection instead of the old rate-limited slew.
+    uint32_t targetIdx;      // 2026-08-12: sat_orbit.comp's own `bestIdx` — the resolved ground
+                             // target's ORIGINAL index into reflectorTargetsECEF[]/
+                             // reflectorTargetsRadiusM[]/reflectorSiteEnu*[]. Always valid
+                             // ([0, reflectorTargetCount)) for any entry that exists at all, since
+                             // sat_orbit.comp only writes a beam inside `if (bestIdx >= 0)`.
+                             // This is a STABLE INTEGER IDENTITY, which is the entire reason it
+                             // exists: the cloud-light build below keys clusters on it directly
+                             // instead of epsilon-matching targetENU against whichever beam
+                             // happened to be scanned first. See TrackedBeamLight's comment.
+    uint32_t pad0, pad1, pad2; // MUST be declared explicitly, in both this struct and ReflectBeam
+                             // in shaders/include/reflect_beam.glsl. std430 rounds the GLSL struct
+                             // up to its 16-byte alignment (vec3 members) whether or not the pads
+                             // are written; C++ does NOT, because glm::vec3 is 4-aligned. Before
+                             // targetIdx the total happened to be exactly 64 and the two agreed by
+                             // luck. Same silent-permutation hazard as GpuCloudParams — no compile
+                             // error, every field past the divergence point reads its neighbour.
 };
-static_assert(sizeof(GpuReflectBeam) == 64, "GpuReflectBeam layout mismatch");
+static_assert(sizeof(GpuReflectBeam) == 80, "GpuReflectBeam layout mismatch"); // 64 -> 80, 2026-08-12 (targetIdx + explicit pads)
 
 struct GpuReflectBeams
 {
@@ -792,7 +900,7 @@ struct GpuReflectBeams
     uint32_t pad0, pad1, pad2;               // std430 array-of-16-byte-aligned-struct alignment padding
     GpuReflectBeam entries[kMaxActiveBeams]; // only entries[0 .. min(beamCount,kMaxActiveBeams)) are valid
 };
-static_assert(sizeof(GpuReflectBeams) == 16 + kMaxActiveBeams * 64, "GpuReflectBeams layout mismatch");
+static_assert(sizeof(GpuReflectBeams) == 16 + kMaxActiveBeams * 80, "GpuReflectBeams layout mismatch");
 
 // Ground-beam compaction (perf follow-up, RELEASE_v1_1_PLAN.md): CPU-built every frame from
 // ReflectBeamsBuf's readback (the same loop that already computes lastActiveBeamCount/
@@ -1119,7 +1227,13 @@ struct SatOrbitPC
                                   // (2026-08-06 same-day follow-up: satellites were visibly snapping
                                   // to target because that crossfade only covered ONE of several
                                   // transition cases and wasn't derived from real angular distance).
-    uint32_t pad2;                // offset 124
+    float flareMitigationTiltRad; // offset 124 — was pad2. Global flare-mitigation tilt angle
+                                  // (radians) for AttitudeMode::SunTrackingTilted satellites — see
+                                  // that enum value's comment and computeNormal() in sat_orbit.comp.
+                                  // Deliberately global rather than per-satellite-type: it's an
+                                  // operator policy knob, not orbital geometry, so it belongs beside
+                                  // the other live photometry sliders (flareMitigationTiltDeg,
+                                  // SatelliteSim.h) rather than growing GpuSatOrbit.
 }; // 128 bytes
 static_assert(sizeof(SatOrbitPC) == 128, "SatOrbitPC layout mismatch");
 
@@ -1272,7 +1386,11 @@ private:
     // Cached info text, reformatted only when selectedSatIndex changes (see formatSelectedSatInfo).
     // Separate per-line buffers, not one multi-line string — Clay/UIRenderer text draws a single
     // line per CLAY_TEXT call with no embedded-newline support.
-    static constexpr int kSelInfoLines = 6;
+    // 7th slot (session follow-up): optional "Power output" line, filled only for satellites whose
+    // primary surface uses AttitudeMode::SunTrackingTilted (see formatSelectedSatInfo); left empty
+    // (and skipped by buildSelectedSatPanel's render loop) for everything else, including planets —
+    // formatSelectedPlanetInfo never touches planetInfoLine[6].
+    static constexpr int kSelInfoLines = 7;
     char selInfoLine[kSelInfoLines][40] = {};
     char planetInfoLine[kSelInfoLines][40] = {}; // same shape, filled by formatSelectedPlanetInfo
 
@@ -1471,6 +1589,21 @@ private:
     // Defaulted to match obsDir/0 so the very first frame's correction is a no-op.
     glm::vec3 lastBeamObsDir = {0.1527f, -0.3596f, -0.9205f};
     float lastBeamObsEffH = 0.0f;
+    // Persistent cloud-light pools (2026-08-12) — see TrackedBeamLight's own comment for the whole
+    // design. Two pools with independently reserved eviction budgets, exactly as the previous
+    // per-frame build had, so a busy target's summed intensity can never starve lone transiting
+    // beams out of the list. NOTE these are the one piece of cross-frame state in this subsystem;
+    // everything else in the readback loop is rebuilt from scratch each frame. rebase() must NOT be
+    // applied to them — they are stored in Earth-fixed ECEF precisely so that they need no such
+    // correction (the 2026-08-11 revert is the cautionary tale).
+    TrackedBeamLight trackedClusters[kMaxClusterCloudLights]{};
+    TrackedBeamLight trackedIndividuals[kMaxIndividualCloudLights]{};
+    // key -> slot+1 (0 = empty), rebuilt from live slots at the top of every build.
+    uint32_t trackedClusterHash[kTrackedLightHashSize]{};
+    uint32_t trackedIndividualHash[kTrackedLightHashSize]{};
+    // Live-slot counts, for the Beams settings tab's diagnostics readout.
+    int lastClusterLightCount = 0;
+    int lastIndividualLightCount = 0;
     uint32_t activeSatCount = 0;
     uint32_t visibleCount = 0;   // above-horizon sats this frame (UI display)
     uint32_t gpuSatCount = 0;    // in-frustum sats written to GPU buffer
@@ -1992,6 +2125,15 @@ private:
                                       // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
                                       // in both sat_flare.comp and updateStars() so a star and a
                                       // satellite at the same elevation dim identically
+    // Ground-directed flare mitigation attitude control for space datacenters (AttitudeMode::
+    // SunTrackingTilted). A single global operator-policy knob rather than a per-satellite-type
+    // JSON constant — real operators would tune one mitigation posture across a fleet, and it
+    // needs to be live-tunable to compare against the unmitigated (0°) baseline. Pitches the
+    // sun-tracking normal away from nadir toward zenith by this many degrees; power output drops
+    // by cos(tiltDeg) (Lambert's cosine law — see the enum comment and sat_orbit.comp's
+    // computeNormal()), read back for the selection-panel "Power output" line in
+    // formatSelectedSatInfo(). 0° = no mitigation, bit-identical to plain SunTracking.
+    float flareMitigationTiltDeg = 0.0f;
     // ── Milky Way pollution response (own threshold + hysteresis, decoupled from
     //    lightPollutionGain/kMWPollutionMaxDim above — see updateLightPollutionDome() and
     //    SatDrawPC::mwSuppressEased) ────────────────────────────────────────────
@@ -2070,15 +2212,37 @@ private:
     float cloudShadowRangeM = 300000.0f;
     float beamNearFieldFadeM = 1000.0f;
     // 2026-08-09: exposed per explicit user request ("How can we control the thresholding on what
-    // gets considered a group?"). Two beams converged on the same real target only merge into one
-    // cloud-lighting cluster if their approach directions are also within this angle of the
-    // cluster's running-average direction — see the cluster-match block in recordCompute() for the
-    // full rationale (satellites arriving from very different parts of the sky must NOT blend into
-    // one nonsensical averaged direction). Lower = merges more aggressively (fewer, cheaper
-    // clusters, more risk of blending genuinely distinct directions); higher = stricter (more
-    // individual-looking clusters, less blending risk). Stored in degrees for the UI; converted to
-    // a cosine threshold at the one use site.
+    // gets considered a group?"). Beams converged on the same real target must not all blend into
+    // one cloud light when they arrive from very different parts of the sky — satellites on
+    // different orbital passes genuinely illuminate that cloud from different directions, and with
+    // hgG~0.99 averaging them together doesn't read as "slightly off", it reads as light arriving
+    // from the wrong place entirely (in-app test #8, BEAM_CLOUD_PLAN.md).
+    //
+    // 2026-08-12 — SEMANTICS CHANGED, same slider, same settings key, same direction of effect.
+    // Was: the maximum angle between a candidate beam and a cluster's RUNNING-AVERAGE direction for
+    // the two to merge. That test depended on which beams had already joined, which is precisely
+    // what made the partition order-dependent and discontinuous. Now: the angular SIZE of a fixed
+    // direction bucket in the target site's own local frame. A beam's bucket is a pure function of
+    // its own direction, so a cluster can no longer repartition when a member leaves. Lower =
+    // finer buckets (more, more coherent clusters); higher = coarser (fewer, cheaper, more
+    // blending). Stored in degrees for the UI; converted to bucket counts once per frame.
     float beamClusterDirThresholdDeg = 38.083332f;
+    // 2026-08-12: cross-frame fade for the cloud-light list. Now that every light has a stable
+    // integer identity (see TrackedBeamLight), a light that appears, disappears or changes strength
+    // can be eased instead of snapping. Deliberately asymmetric fast-in/slow-out, the same
+    // convention mwFadeInTimeS/mwFadeOutTimeS and skyGlareEased already use here: a beam becoming
+    // relevant should register promptly, but one dropping out should linger rather than blink off.
+    // A pure appearance-smoothing knob — it does not change which lights exist, only how quickly
+    // their contribution ramps.
+    float beamClusterFadeInS = 0.35f;
+    float beamClusterFadeOutS = 1.5f;
+    // Geometry (position/direction/block altitude/opacity) eases on its own, much shorter constant,
+    // deliberately NOT user-exposed. It exists to absorb the small residual steps that survive
+    // stable keying — a beam entering or leaving a bucket shifts that bucket's intensity-weighted
+    // mean geometry slightly — without letting a light visibly lag genuinely fast beam motion. If
+    // this ever needs tuning it should become a slider rather than being folded into the fade
+    // times above, which answer a different question.
+    static constexpr float kTrackedLightGeomEaseS = 0.12f;
     // C12 follow-up #41: 0-1, how close the observer is to ANY active beam's actual 3D line —
     // smoothstepped from lastNearestBeamDistM/beamNearFieldFadeM each frame in recordCompute().
     // Drives the non-directional sky-glow wash in sat_sky.frag, replacing #39/#40's directional
@@ -2492,6 +2656,17 @@ private:
     // whatever reason. Consumed by updatePositions() in place of the bare kEarthRadius constant
     // when converting reflectorTargetsECEF to a real ECI position.
     float reflectorTargetsRadiusM[kNumReflectorTargets]{};
+    // Per-site local ENU frame (2026-08-12), computed once alongside the radius above and never
+    // changed after — a target site is fixed in ECEF, so its own local East/North/Up frame is too.
+    // Used ONLY by the cloud-light build's direction bucketing: quantizing a beam's approach
+    // direction in the SITE's frame (rather than the observer's) makes a beam's bucket a pure
+    // function of its own geometry — observer-independent, so panning/flying the camera cannot
+    // repartition a cluster. Purely an internal quantization frame, so it deliberately does NOT
+    // have to match terrain.glsl's enuBasis() convention; unlike that one it guards the polar
+    // degeneracy, since a NaN here would silently poison a bucket index.
+    glm::vec3 reflectorSiteEnuX[kNumReflectorTargets]{};
+    glm::vec3 reflectorSiteEnuY[kNumReflectorTargets]{};
+    glm::vec3 reflectorSiteEnuZ[kNumReflectorTargets]{};
 
     // Mirror slew rate for TargetedReflector: maximum degrees the mirror normal
     // may rotate per real second.  Prevents instant snapping when the nearest
@@ -2640,12 +2815,13 @@ private:
     // Sized 11, not 9 — flare_glow_gain/flare_streak_gain (flare architecture overhaul) added two
     // more PhotoParam rows; per [[feedback_cloud_slider_arrays]], all three hover/dragging arrays
     // must grow together with any new slider id.
-    bool hovPhotoMinus[17] = {}; // 15 existing photometry params + 2 trail sliders (Trail decay/gain)
-    bool hovPhotoPlus[17] = {};
-    bool draggingPhoto[17] = {};
-    bool hovCloudMinus[86] = {}; // was [84] — idx 84/85 are the airglow coverage/polar sliders
-    bool hovCloudPlus[86] = {};
-    bool draggingCloud[86] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovPhotoMinus[18] = {}; // 15 existing photometry params + 2 trail sliders (Trail decay/gain)
+                                 // + 1 flare-mitigation tilt (idx 17)
+    bool hovPhotoPlus[18] = {};
+    bool draggingPhoto[18] = {};
+    bool hovCloudMinus[88] = {}; // was [86] — idx 86/87 are the beam light fade in/out sliders
+    bool hovCloudPlus[88] = {};
+    bool draggingCloud[88] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.

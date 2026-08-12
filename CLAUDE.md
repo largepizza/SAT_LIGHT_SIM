@@ -663,6 +663,10 @@ DIFFERENT architectures, after an intermediate design that didn't work out:
   `raySphere` trick the GPU shaders use — valid on the CPU too, no ECEF conversion needed), and
   `dirToSource` is its REAL direction (ground toward satellite), driving `phaseCloud()` per light
   instead of a shared `normalize(p)` local-zenith stand-in the old per-target version used.
+  (**"ONE individual real beam per entry" is history, not current behaviour** — clustering was added
+  2026-08-09 and reworked 2026-08-12. The per-beam GEOMETRY described here is still exactly what
+  feeds the list; what an entry represents is not. See "Cloud-light identity and cross-frame easing"
+  below.)
 - `sat_sky.frag`'s ground spot separately anchors at the same real ray-ground intersection
   (`raySphere(satWorldPos, reflectDirENU, R_EARTH)`) instead of `targetENU` — this part of the fix
   was correct from the start (not implicated in the ring bug, a genuinely different computation)
@@ -674,6 +678,62 @@ DIFFERENT architectures, after an intermediate design that didn't work out:
   `beamCloudLighting()`'s per-sample glow, but NOT `cloud_march.comp`'s per-pixel ray loop, which
   had only ever been gated by `showBeamDebugRays` — **was closed 2026-08-10 by knockout bit 8192**,
   and measuring it is what found the cost below.
+
+### Cloud-light identity and cross-frame easing (2026-08-12)
+
+`GpuBeamCloudLights`, the GPU-side struct and its 512 cap, is **unchanged** — so is every consumer
+(`beamCloudLighting()`, `cullCloudLightsForTile`). What changed is how the CPU builds it. Full
+session history in `.plans/BEAM_CLOUD_PLAN.md`; this is the architecture summary.
+
+The list used to be rebuilt from scratch every frame, and a cluster's identity was **emergent**: it
+was seeded by whichever beam the scan reached first at a target (a 2 m `targetENU` epsilon match)
+and admitted members by comparing them against a running partial average that changed as members
+were added. That partition is discontinuous in its own inputs — one satellite dropping out
+repartitions the survivors, changing cluster count, every direction and every summed intensity in a
+single frame. Since `posENU`/`dirToSource`/`blockAltM`/`blockOpacity` are all intensity-weighted
+means and `hgG≈0.99`, that reads as lights popping and re-aiming instantly. **A 2026-08-11 attempt
+to fix this by adding a fade on top was reverted** (still flickery, 20 FPS): easing a slot whose
+*meaning* changes underneath it doesn't help, and recovering identity by proximity-searching a pool
+cost O(rawClusters × 256) per frame.
+
+Identity is now **declared**, which is possible because `sat_orbit.comp` carries its `bestIdx`
+through as `ReflectBeam::targetIdx` (**this is why the record grew 64 → 80 bytes** — the three pads
+next to it are load-bearing, see below):
+
+| | key | why it's stable |
+|---|---|---|
+| cluster | `(targetIdx, direction bucket)` | bucket is a FIXED quantization of the beam's direction in the **target site's own** local ENU frame (`reflectorSiteEnu*[]`, computed once in `computeReflectorTargetElevationRadius()`) — a pure function of that beam's geometry, independent of scan order, of the cluster's contents, and of the observer |
+| individual (transiting) | originating satellite dispatch index (`debugPad`) | already guaranteed stable by `sat_orbit.comp`, unlike the atomic-append slot `s` |
+
+`TrackedBeamLight` (`SatelliteSim.h`) holds the persistent state: two pools with the same reserved
+budgets as before (256 + 256 = `kMaxCloudBeamLights`, so the emit can't truncate), each with a
+power-of-two open-addressed key→slot index **rebuilt from live slots every frame** — O(live) ≤ 256,
+and it avoids tombstones entirely. Values are eased with the `1 - exp(-dt/τ)` idiom
+(`mwSuppressEased`'s): intensity asymmetric (`beamClusterFadeInS`/`OutS`, Beams tab), geometry on a
+shorter fixed `kTrackedLightGeomEaseS`.
+
+**Three invariants:**
+1. **Geometry is stored in Earth-fixed ECEF, in `glm::dvec3` — never observer-relative ENU.** A
+   ground site is stationary in ECEF, so an entry that goes unmatched for its whole fade-out cannot
+   drift however far or fast the observer moves. `rebase()` still applies to the raw per-beam fields
+   (genuinely one frame stale) and must NOT be applied to tracked state: it is rotation-only, built
+   for exactly one frame of lag, and the 2026-08-11 revert burned three rounds relearning that.
+2. **`ReflectBeam`'s three explicit `uint` pads must exist in BOTH `reflect_beam.glsl` and
+   `GpuReflectBeam`.** std430 rounds the GLSL struct up to its 16-byte alignment; C++ does not,
+   because `glm::vec3` is 4-aligned. The pre-`targetIdx` total agreed at 64 only by luck. Same
+   silent-permutation hazard as `GpuCloudParams`, and the `static_assert` only catches a size change.
+3. **Nothing in the readback loop may depend on scan order again.** The `std::sort` by `debugPad`
+   that used to enforce determinism is deleted — the partition is order-independent now (sums and a
+   max), `groundTopK` ranks on intensity, and `nearest`/the opacity diagnostics are commutative.
+
+`beamClusterDirThresholdDeg` kept its slider, label, range and settings key, but its **meaning
+changed**: it was the merge tolerance against a running-average direction, it is now the angular
+size of a fixed bucket. Settings → Beams also shows live pool occupancy, which is the instrument for
+the failure mode that killed the previous attempt — a count pinned at 256 means entries are
+respawning instead of matching; a count near the real active-site count means keying is working.
+
+Accepted: the eased list is history-dependent, so it is **not** bit-reversible under time reversal
+the way the orbital pipeline is. Same class and precedent as `skyGlareEased`/`mwSuppressEased`.
 
 ### Beam pointing-ray tile culling (2026-08-10)
 

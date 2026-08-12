@@ -143,7 +143,7 @@
       "properties": {
         "attitude": {
           "type": "string",
-          "description": "How the surface normal is oriented each frame. NadirPointing: face toward Earth. SunTracking: track the sun. Tumbling: random spin. Perpendicular: cross(primary, nadir). AntiNadir: face away from Earth. FlatMirror45: reflect sunlight straight down. TargetedReflector: aim reflected beam at nearest night-side ground target. KnifeEdge: roll around velocity axis to put sun edge-on; clamped to ±80° for solar-panel power. SunPerp: cross(sunDir, nadir) — thermal radiator always edge-on to sun; irr=0, contribution via diffuse.",
+          "description": "How the surface normal is oriented each frame. NadirPointing: face toward Earth. SunTracking: track the sun. Tumbling: random spin. Perpendicular: cross(primary, nadir). AntiNadir: face away from Earth. FlatMirror45: reflect sunlight straight down. TargetedReflector: aim reflected beam at nearest night-side ground target. KnifeEdge: roll around velocity axis to put sun edge-on; clamped to ±80° for solar-panel power. SunPerp: cross(sunDir, nadir) — thermal radiator always edge-on to sun; irr=0, contribution via diffuse. SunTrackingTilted: sun-tracking pitched away from nadir toward zenith by the global 'Flare mitigate tilt' setting, to steer reflected glare away from ground observers; power output drops by cos(tilt).",
           "enum": [
             "NadirPointing",
             "SunTracking",
@@ -153,7 +153,8 @@
             "FlatMirror45",
             "TargetedReflector",
             "KnifeEdge",
-            "SunPerp"
+            "SunPerp",
+            "SunTrackingTilted"
           ]
         },
         "spec_exp": {

@@ -2589,6 +2589,17 @@ void main() {
         // wash unless each individual line is faint enough to still read through its neighbours.
         const float kDebugRayScale    = 0.05;
         const vec3  kDebugRayColor    = vec3(1.0, 0.95, 0.72) * 0.004; // off-white leaning yellow
+        // "Beam gain" (pc.beamGain in sat_orbit.comp, folded into beams[bi].intensity =
+        // groundIrradiance * beamGain there) previously only gated this ray on/off (see the
+        // `intensity <= 0.0` rejects below) — the visible line itself was a flat kDebugRayColor *
+        // kDebugRayScale regardless of the slider, which is why turning "Beam gain" up or down had
+        // no visible effect on the ray players actually see. beamCloudLighting() and sat_sky.frag's
+        // ground spot already scale off this same `intensity` field (kBeamCloudGlowScale=1e-6,
+        // kBeamGroundScale=4e-8 respectively) — kDebugRayIntensityScale joins that precedent rather
+        // than plumbing a separate pc.beamGain field through, and is picked so a Reflect Mirror at
+        // the default beamGain (0.001711) and a representative ~0.7 sun-incidence angle reproduces
+        // roughly the old fixed brightness.
+        const float kDebugRayIntensityScale = 2.7e-4;
         // Atmospheric extinction (2026-08-10 follow-up to the aurora/star fix — same bug, same
         // fix, this consumer just hadn't been touched yet): a beam whose ground site sits far
         // around the curve of the Earth is seen along a long, near-tangent atmospheric sightline,
@@ -2778,9 +2789,10 @@ void main() {
             if (cloudGate <= 0.001) continue; // fully opaque along this ray — nothing to draw
 
             float proximity = exp(-(perpDist * perpDist) / (2.0 * radiusM * radiusM));
+            float intensityScale = beams[bi].intensity * kDebugRayIntensityScale;
             // preFade is aimFade * rangeFade, both computed once per workgroup in cullBeamsForTile
             // (2026-08-10) — same product, same order of multiplication as before.
-            B_total += kDebugRayColor * (kDebugRayScale * proximity * fade * cloudGate
+            B_total += kDebugRayColor * (kDebugRayScale * intensityScale * proximity * fade * cloudGate
                                         * beamPhysicsFade * preFade * beamRayExtinction);
         }
     }
