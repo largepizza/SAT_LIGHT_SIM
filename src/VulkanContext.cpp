@@ -144,10 +144,29 @@ void VulkanContext::createInstance()
     if (VALIDATION)
         exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
+    // MoltenVK (macOS) is a non-conformant Vulkan ICD; the loader refuses to enumerate it
+    // during vkCreateInstance unless VK_KHR_portability_enumeration is requested and the
+    // matching instance flag is set. Checked at runtime rather than #ifdef __APPLE__ so this
+    // is a true no-op on Windows/Linux (the extension simply won't be in the supported list).
+    uint32_t availExtCount = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &availExtCount, nullptr);
+    std::vector<VkExtensionProperties> availExts(availExtCount);
+    vkEnumerateInstanceExtensionProperties(nullptr, &availExtCount, availExts.data());
+    bool portabilityEnumeration = false;
+    for (auto &e : availExts)
+        if (strcmp(e.extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0)
+        {
+            portabilityEnumeration = true;
+            break;
+        }
+    if (portabilityEnumeration)
+        exts.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &ai;
     ci.enabledExtensionCount = (uint32_t)exts.size();
     ci.ppEnabledExtensionNames = exts.data();
+    ci.flags = portabilityEnumeration ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0;
     if (VALIDATION)
     {
         ci.enabledLayerCount = (uint32_t)VALIDATION_LAYERS.size();
@@ -360,11 +379,29 @@ void VulkanContext::createDevice()
     features.shaderStorageImageExtendedFormats = VK_TRUE; // for rgba8 storage images
     features.largePoints = VK_TRUE;                       // for gl_PointSize in particles
 
+    // On MoltenVK, VK_KHR_portability_subset MUST be enabled if the device supports it (spec
+    // requirement, not optional). Its name macro lives behind vulkan_beta.h/VK_ENABLE_BETA_EXTENSIONS
+    // on most SDK versions, so it's matched by literal string here rather than pulling that header
+    // in project-wide. No-op on Windows/Linux: the device never reports this extension there.
+    std::vector<const char *> deviceExts = DEVICE_EXTENSIONS;
+    {
+        uint32_t extCount = 0;
+        vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extCount, nullptr);
+        std::vector<VkExtensionProperties> exts(extCount);
+        vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extCount, exts.data());
+        for (auto &e : exts)
+            if (strcmp(e.extensionName, "VK_KHR_portability_subset") == 0)
+            {
+                deviceExts.push_back("VK_KHR_portability_subset");
+                break;
+            }
+    }
+
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.queueCreateInfoCount = (uint32_t)qCIs.size();
     ci.pQueueCreateInfos = qCIs.data();
-    ci.enabledExtensionCount = (uint32_t)DEVICE_EXTENSIONS.size();
-    ci.ppEnabledExtensionNames = DEVICE_EXTENSIONS.data();
+    ci.enabledExtensionCount = (uint32_t)deviceExts.size();
+    ci.ppEnabledExtensionNames = deviceExts.data();
     ci.pEnabledFeatures = &features;
     if (VALIDATION)
     {
