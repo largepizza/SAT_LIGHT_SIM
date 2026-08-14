@@ -2785,7 +2785,14 @@ void main() {
             float cirrusOccludeT = (dot(A_cirrus, vec3(1.0 / 3.0)) < 0.1) ? tCirrusEnter : kNoSurfaceT;
             float cloudOccludeT  = (tCloudOcclude >= 0.0) ? tCloudMeanT : kNoSurfaceT;
             float cloudEntryT = min(cloudOccludeT, cirrusOccludeT);
-            float cloudGate = (t <= cloudEntryT) ? 1.0 : dot(A_total, vec3(1.0 / 3.0));
+            // Feathered, not a hard t<=cloudEntryT step: the step made a beam crossing into cloud
+            // read as a sharp bright/dark seam right at the crossing point (in-app finding — the
+            // WHERE was already fixed above via tCloudMeanT, but the transition itself was still a
+            // wall). Same kCloudFeatherM/kRayCloudFeatherM convention (500m) used elsewhere in this
+            // loop. cloudEntryT == kNoSurfaceT degrades to the same always-1.0 result as before.
+            const float kCloudGateFeatherM = 500.0;
+            float gateBlend = smoothstep(cloudEntryT - kCloudGateFeatherM, cloudEntryT + kCloudGateFeatherM, t);
+            float cloudGate = mix(1.0, dot(A_total, vec3(1.0 / 3.0)), gateBlend);
             if (cloudGate <= 0.001) continue; // fully opaque along this ray — nothing to draw
 
             float proximity = exp(-(perpDist * perpDist) / (2.0 * radiusM * radiusM));
