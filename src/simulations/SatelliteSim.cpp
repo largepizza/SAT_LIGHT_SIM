@@ -7696,12 +7696,21 @@ void SatelliteSim::updateLightPollutionDome()
 // extinction is gated on how deep ITS OWN line of sight dips toward the ground, not on the
 // observer's own altitude — an observer in orbit looking near the horizon still sends that ray
 // through a long real atmospheric column even though the observer itself is above all air.
-static inline float rayTangentAltM(const glm::vec3 &ro, const glm::vec3 &rd)
+// maxT (meters, default effectively-infinite) bounds the closest-approach parameter to a finite
+// target range along the ray, instead of the unconstrained infinite forward ray — needed for any
+// target that actually SITS somewhere finite (a planet) rather than being effectively background/
+// infinite (a star's direction-only eciDir). Mirrors the GLSL 3-arg overload added to
+// common.glsl/sat_flare.comp for the same reason: a target appearing in front of Earth from a
+// space-based observer has a ray direction pointing roughly toward the planet, so the unbounded
+// tangent point can sit far beyond the target's own much closer actual position, wrongly applying
+// extinction to a sightline that never gets anywhere near the atmosphere. The default (1e15, far
+// beyond anything this sim renders — Saturn, the farthest body, sits at ~1.5e12 m) reproduces the
+// old always-unbounded behavior exactly for every call site that doesn't pass its own maxT.
+static inline float rayTangentAltM(const glm::vec3 &ro, const glm::vec3 &rd, float maxT = 1e15f)
 {
-    float b = glm::dot(ro, rd);
-    float roLen = glm::length(ro);
-    float dMin = (b >= 0.0f) ? roLen : sqrtf(std::max((roLen - b) * (roLen + b), 0.0f));
-    return dMin - kEarthRadius;
+    float t = glm::clamp(-glm::dot(ro, rd), 0.0f, maxT);
+    glm::vec3 p = ro + rd * t;
+    return glm::length(p) - kEarthRadius;
 }
 
 // Stars fade out during civil/nautical twilight — invisible in full daylight.
@@ -7909,10 +7918,16 @@ void SatelliteSim::updatePlanets()
 
         // Gated on this planet's own tangent altitude, not the observer-height atmFrac used for
         // nightFactorEff above — same fix, same reason, as updateStars()'s copy of this block.
+        // Bounded by the planet's own real distance (unlike stars, a planet has one) — same
+        // in-front-of-Earth fix as the satellite call site in sat_flare.comp: without this, a
+        // planet whose ray direction happens to point roughly toward Earth (a rare but real transit/
+        // occultation-adjacent geometry) would wrongly pick up extinction from the unbounded ray's
+        // tangent point sitting near the surface, far beyond where the planet actually is.
+        const float kAuM = 1.495978707e11f; // IAU-defined astronomical unit, meters
         float sinElClamped = glm::clamp(enu.z, 0.0f, 1.0f);
         float elDeg = glm::degrees(asinf(sinElClamped));
         float airmass = 1.0f / (sinElClamped + 0.50572f * powf(elDeg + 6.07995f, -1.6364f));
-        float atmFracExtinct = expf(-std::max(rayTangentAltM(obsECI, ps.eciDir), 0.0f) / 80000.0f);
+        float atmFracExtinct = expf(-std::max(rayTangentAltM(obsECI, ps.eciDir, ps.distanceAU * kAuM), 0.0f) / 80000.0f);
         float extinctMag = extinctionCoeff * (airmass - 1.0f) * atmFracExtinct;
         float extinction = powf(10.0f, -0.4f * extinctMag);
 
