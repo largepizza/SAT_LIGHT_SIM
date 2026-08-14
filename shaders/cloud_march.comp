@@ -1,0 +1,2854 @@
+#version 450
+
+// ── Half-resolution cloud/cirrus compute march ────────────────────────────────
+// Moved out of sat_sky.frag's per-pixel fragment shader (where cloudMarch/cirrusMarch used to
+// live) into its own compute dispatch, run once per frame in recordCompute() at half the swap
+// extent in each dimension (1/4 the pixels). sat_sky.frag now just samples the two output
+// images below and composites the precomputed result — see TERRAIN_PLAN.md session 23 log and
+// the "velvet-rolling-squirrel" plan for the full design rationale (why two RGBA16F targets,
+// the combined-attenuation algebra, and the accepted terrain-occlusion approximation).
+//
+// This shader marches the cloud shell's full potential extent regardless of terrain — sat_sky.frag
+// does a post-hoc terrain-occlusion correction using its own accurate tSurface against the
+// tCloudOcclude distance stored here (Target A alpha). See the "Known limitation" note in the
+// plan: this is exact for "terrain fully blocks the cloud" but does not replicate a mid-shell
+// partial truncation. C12 follow-up #28 added `earthElevTex`/`earthSpecTex` (bindings 11/12,
+// below) — but ONLY for a per-beam terrain occlusion check in the Reflect-Orbital beam block;
+// nothing else in this file uses them, and cloud/cirrus/aurora still have no terrain awareness.
+//
+// Everything below down to `cirrusMarchCS`/`cloudMarchCS` is a DUPLICATE of code that also still
+// exists in sat_sky.frag (this codebase has no #include mechanism — every shader file is self-
+// contained by convention). Keep both copies in sync if the shared math changes. Verified via
+// grep before duplicating: every one of these helpers has call sites in sat_sky.frag OTHER than
+// cloudMarch/cirrusMarch (cloudShadowFactor, the main atmosphere loop, or airglow), so none of
+// them could simply be deleted from sat_sky.frag.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// ── Push constants (148 bytes, matches C++ CloudMarchPC) ──────────────────────
+layout(push_constant) uniform PC {
+    mat4  skyView;     // ENU -> camera space (rotation, no translation) — same as SatDrawPC
+    float fovYRad;
+    float aspect;
+    float waveTime;    // wall-clock seconds — used by cloudWarpOffset/cirrusWindAngleAt/cirrusDomainWarp
+    float obsEffH;      // observer altitude above local terrain (m) — CPU-computed, see recordCompute
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;   // xyz = observer ECEF unit vector
+    uint  debugDisableMask; // perf knockout toggles — mirrors SatDrawPC's; bit 32 (aurora curtain
+                            // march), bit 64 (cloud self-shadow light cone), and bit 128
+                            // (Reflect-Orbital beams, C12 follow-up #44) are the ones meaningful
+                            // here — all three live only in this shader now
+    float beamMaxRangeM; // C12 follow-up #6 — settings-tunable Reflect-Orbital beam render range
+    uint  showBeamDebugRays; // C12 follow-up #12 — debug pointing-ray visualization toggle
+    float beamSkyGlowGain; // C12 follow-up #17 — settings-tunable brightness for the beam->cloud
+                           // illumination term (C12 follow-up #44 — this used to gain the old
+                           // analytic sky tube; it's that term's direct successor, not a new
+                           // concept, so it keeps the same slider).
+    float cloudShadowRangeM;  // distance (m) beyond which the per-pixel terrain cloud shadow fades
+                              // out and stops being marched — see the call site in main()
+    // (daySuppression/beamExtinctionMult/beamNearFieldFadeM lived here — all three existed only
+    //  for the analytic beam sky-glow block deleted in C12 follow-up #44. The new per-sample
+    //  beam-cloud term gates day/night with the march's own per-sample sampleDayness instead, and
+    //  has no separate extinction/near-field-fade concept — it's a real volumetric term, not a
+    //  closed-form stand-in that needed its own fade heuristics.)
+} pc;
+
+layout(set = 0, binding = 0) uniform sampler2D earthCloudsTex;
+layout(set = 0, binding = 1) uniform sampler3D cloudNoiseTex;
+layout(set = 0, binding = 2) uniform sampler2D earthNightTex;
+layout(set = 0, binding = 3) uniform sampler2D noiseTex;
+
+// CloudParams UBO + CloudLayer come from the shared header. This block used to be
+// hand-copied here; see cloud_params.glsl for why that was a standing hazard.
+#define CLOUD_PARAMS_BINDING 4
+#include "cloud_params.glsl"
+
+// Target A: rgb = combined additive radiance (B_total), a = tCloudOcclude (m, -1 = none)
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D targetA;
+// Target B: rgb = combined multiplicative attenuation (A_total), a = cloudBlock (sun-dimming scalar)
+layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D targetB;
+
+// Perf (this session): the aurora sky curtain march moved here from sat_sky.frag, alongside
+// clouds/cirrus, so it runs at this pass's half resolution instead of full-res — one of the two
+// remaining big levers identified from "why is aurora so much more expensive than clouds" (the
+// other, baking its noise, is already done — see aurora_noise.comp). Needs its own read of
+// lightDomeBuf (light-pollution suppression, same buffer sat_flare.comp/sat_sky.frag consume) and
+// auroraNoiseTex (binding 16 in sat_sky.frag's descriptor set, binding 8 here — separate
+// descriptor sets, same underlying resources).
+layout(std430, set = 0, binding = 7) readonly buffer LightDomeBuf {
+    float lightDome[16];
+};
+layout(set = 0, binding = 8) uniform sampler3D auroraNoiseTex;
+// Baked cloud/cirrus domain-warp field (see cloud_warp_noise.comp) — replaces the 3 live
+// warpPerlin3 evaluations cloudWarpOffset used to do per call. R/G/B = the three offset warp
+// channels, [0,1]-normalized (decode via *2-1 at the call site).
+layout(set = 0, binding = 9) uniform sampler3D cloudWarpNoiseTex;
+
+// ── Reflect-Orbital ground beams (C12) — written by sat_orbit.comp. Capped atomic-append, no site
+// keying/arbitration — see the ReflectBeamsBuf comment in sat_orbit.comp for the full history/
+// rationale. Read here by main()'s per-pixel beam loop (gated by pc.showBeamDebugRays) for the
+// visible ray only. Cloud illumination reads BeamCloudLightBuf below instead — a small CPU-built
+// per-BEAM (not per-target) list, fed forward into cloudMarchCS's per-sample loop; see that
+// struct's own comment for the 2026-08-09 design history.
+// Struct must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h and sat_orbit.comp exactly.
+#include "reflect_beam.glsl"   // ReflectBeam + BEAM_MAX_ACTIVE
+layout(std430, set = 0, binding = 10) readonly buffer ReflectBeamsBuf {
+    uint         beamCount;
+    uint         beamPad0, beamPad1, beamPad2;
+    ReflectBeam  beams[BEAM_MAX_ACTIVE];
+};
+
+// Same pair sat_sky.frag binds. Originally added (C12 follow-up #28) purely so the beam-glow block
+// could run its own per-beam terrain occlusion march; that march is gone, replaced by the shared
+// scene depth below. These are still required, for observerEffHeight() in main() — the observer's
+// own ground height, which must be resolved identically here, in sat_sky.frag and in
+// scene_depth.comp or the three disagree about where the observer is. Decode lives in
+// terrain.glsl (see its header for the DEM pixel table).
+layout(set = 0, binding = 11) uniform sampler2D earthElevTex;
+layout(set = 0, binding = 12) uniform sampler2D earthSpecTex;
+// Shared scene depth — linear metres to the first terrain/ocean surface along each view ray, or
+// kNoSurfaceT for rays that reach space. Written by scene_depth.comp earlier in this same
+// recordCompute. This dispatch grid and that image are both half ctx.swapExtent, so it is read
+// with a plain texelFetch at gl_GlobalInvocationID: no UV math, no filtering, nothing to get wrong.
+layout(set = 0, binding = 13) uniform sampler2D sceneDepthTex;
+
+// PI, R_EARTH, R_ATMOS, BETA_R/H_R, BETA_M/H_M/G_MIE, SUN_INTENSITY, kCloudHorizFreq/kCloudColFreq,
+// raySphere, rotateZ, remap, phaseM/phaseCloud and the scene-depth sentinels come from the shared
+// header. terrain.glsl supplies the DEM decode and observer-frame helpers — kElevRangeBeam /
+// kElevOffsetBeam were a local re-declaration of exactly kElevRange / kElevOffset.
+#include "common.glsl"
+#include "terrain.glsl"
+
+// Terrain height (m above sea level) at an ECEF-frame direction. Thin wrapper binding this
+// shader's own earthElevTex/earthSpecTex to the shared decode, so the caller below is unchanged.
+//
+// Was a full local copy until the unification pass, carrying its own kElevRangeBeam/
+// kElevOffsetBeam re-declarations of kElevRange/kElevOffset. It also fract()'d the U coordinate,
+// which the shared dirToUV does not — a no-op in practice, since atan2 returns [-PI,PI] so
+// (lon+PI)/(2*PI) is already in [0,1] and only the exact-1.0 endpoint differs.
+//
+// Mip 0.0 is deliberate (C12 follow-up #42): this used to sample mip 2.0 while sat_sky.frag's
+// terrain march/bisection/normals all sampled mip 0.0 — an undocumented precision mismatch that
+// let beams clip through hills the occlusion test could not "see". Sharing the decode is what
+// stops that class of mismatch recurring.
+// (the local terrainHeightAtDir wrapper lived here — its only caller was beamTerrainVisibility,
+//  removed just below. terrain.glsl's own terrainHeightAtDir(elevTex, specTex, dir) is still
+//  available if anything here needs a DEM height again.)
+
+// (beamTerrainVisibility lived here — an up-to-32-sample line-of-sight terrain march run PER
+//  BEAM PER PIXEL, i.e. up to ~1e9 DEM fetches per frame, and by a wide margin the most
+//  expensive thing in this shader. It existed only because this pass had no depth buffer to
+//  ask. Replaced in the pipeline-unification pass by a single comparison against sceneDepthTex;
+//  see the call site in the beam loop for exactly what the substitution preserves and what it
+//  deliberately changes.)
+
+// (kCloudHorizFreq / kCloudColFreq come from common.glsl.)
+
+// kWarpFreq/kWarpStrength moved to CloudParams (cloud.cloudWarpFreq/cloudWarpStrength) so the
+// warp's shear can be balanced without a rebuild — see cloud_params.glsl for the folding
+// threshold their product has to stay under.
+const float kWarpDriftRate  = 0.08;
+const float kWarpEvolveRate = 0.00002;
+
+const float kCityUpwellStrength = 0.004;
+const float kNightFloor    = 0.002;
+const float kCityCompressK = 0.08;
+
+// Aurora ground-glow (C16 follow-up, redo — session 28 follow-up #5). Duplicates sat_sky.frag's
+// kGeomagPoleECEF/kAuroraOvalColatDeg/kAuroraOvalWidthDeg and a stripped-down oval mask (no
+// ripple warp, no fold noise — this evaluates once per IN-CLOUD march sample, the hottest loop in
+// the renderer, so kept as cheap as possible) rather than sharing code with the full curtain
+// primitive there. Evaluated LOCALLY using each sample's own dirECEF (already computed in the
+// march loop below), NOT a CPU-computed observer-position scalar — the first version lit the
+// whole visible cloud deck uniformly whenever the OBSERVER was under the oval and went dark
+// the instant they left it, regardless of what was actually under the curtain.
+const vec3  kAuroraGroundColor  = vec3(0.15, 1.0, 0.35);
+const vec3  kGeomagPoleECEF     = vec3(0.0481, -0.1543, 0.9868);
+const float kAuroraOvalColatDeg = 20.0;
+const float kAuroraOvalWidthDeg = 6.0;
+// Large-scale coverage gate — mirrors sat_sky.frag's auroraCoverage (see that file's comment for
+// the full "why patches, not a solid ring" reasoning, and why it varies primarily with COLATITUDE
+// rather than azimuth — a colat-constant/az-varying field's threshold crossings fall on
+// constant-azimuth contours, i.e. meridians pointing straight at the pole, which is backwards from
+// the intended "tracks parallel to latitude lines" look). Kept here despite the perf-sensitive
+// loop because dropping it would make cloud-underside lighting look like a uniform ring while the
+// sky curtain right above it is visibly patchy — worse than the extra warpPerlin3 call costs.
+// Frequency/az-frequency/drift-rate are now user-tunable (cloud.auroraCoverageFreq/AzFreq/
+// DriftRate, settings window "Coverage freq"/"Coverage az freq"/"Coverage drift") — only the edge
+// softness stays a fixed constant here.
+const float kAuroraCoverageSoftness  = 0.45;
+// auroraOvalMaskLocal itself is defined further down, right after warpPerlin3 (which it calls) —
+// GLSL has no forward declarations, and warpPerlin3 lives below the noise-warp block.
+
+const float kCloud3DFadeStart = 800000.0;
+const float kCloud3DFadeEnd   = 3000000.0;
+
+const float kMarchStepsAltStart = 2000.0;
+const float kMarchStepsAltEnd   = 200000.0;
+const float kMarchStepsFloor    = 12.0;
+
+// Self-shadow light-march cone grazing-angle attenuation (see cloudMarchCS): damps sunOptDepth
+// directly at low sun elevation rather than extending the cone's reach (which undersamples badly
+// at this codebase's low default light-step counts — see the comment at the call site).
+// kGrazeShadowFloor: sunOptDepth multiplier right at the horizon (sun elevation sin == 0).
+// kGrazeShadowFullSin: sin(elevation) above which no attenuation is applied — full cone-computed
+// shadow strength. sin(0.3) is roughly a 17.5 degree solar elevation.
+const float kGrazeShadowFloor   = 0.35;
+const float kGrazeShadowFullSin = 0.3;
+
+// Sun elevation (sin) at which the analytic vertical shading ramp reaches full strength. A
+// top-bright/bottom-dark gradient is only physically meaningful when the light actually comes from
+// above; at a horizontal sun it is simply wrong, and it fights the real cone-derived shadow.
+const float kVertShadeSunBand = 0.35;
+
+// UNUSED. Was the colour of a non-decaying night-sky floor for cloud tops (starlight + multiple-
+// scattered air) intended to hold cloud tops above black after skyAmbientBase collapses post-
+// sunset. That term persisted through full night, which is the wrong effect — what was wanted is
+// twilight-only sky lighting, and twilightAmbient already provides it. Kept only because the
+// colour is a reasonable starting point if a genuine night floor is ever wanted; nothing reads it.
+const vec3  kNightSkyAmbientColor = vec3(0.015, 0.02, 0.035);
+
+// (BETA_R/H_R, BETA_M/H_M/G_MIE and SUN_INTENSITY come from common.glsl.)
+
+// NOTE — this is a REAL drift against sat_sky.frag, kept deliberately for now.
+// sat_sky.frag's optDepth reads `cloud.lightSamples` (the "Light samples" settings slider); this
+// one is hardcoded, so the slider has never affected cloud/cirrus/aurora sun lighting at all.
+// Step 6 of the unification pass gives the shared optDepth an explicit nLight parameter with each
+// caller passing what it passes today, so the drift becomes visible and unifying the VALUE stays
+// a separate, opt-in decision rather than a silent side effect of de-duplication.
+const int N_LIGHT = 12;
+
+const float kCirrusWindWarpFreq  = 1.5;
+const float kCirrusWindWarpAmp   = 1.2;
+const float kCirrusWindDriftRate = 0.05;
+
+const float kCirrusThicknessM = 700.0;
+const float kCirrusFreqScale  = 0.4;
+
+// (phaseM / phaseCloud are in common.glsl. The "── Duplicated shared helpers, keep in sync ──"
+// section that used to live here is gone along with the duplication it was warning about.)
+
+// (raySphere is in common.glsl — one copy now, so the "keep both copies in sync" note this
+// comment used to carry no longer applies.)
+
+// DELIBERATELY NOT the shared optDepthN(), despite being the same integral.
+//
+// This is a specialization, and the specialization is the point: N_LIGHT is a compile-time
+// constant here, so this loop can be fully unrolled. Routing it through the shared function makes
+// the trip count a runtime parameter — which is unavoidable for a function that also has to serve
+// sat_sky.frag's settings-tunable count — and that measurably hurt, because optDepth is called
+// from five sites in this shader including inside the march.
+//
+// The de-duplication attempt and its revert are recorded here rather than deleted, because the
+// tension is real and someone will be tempted again: what made these two copies look like
+// "drift" (12 vs cloud.lightSamples) is exactly what let each one be compiled well. Sharing the
+// body costs more than the duplication does. If you unify them, measure cloud_march before and
+// after, at altitude and near the surface.
+vec2 optDepth(vec3 p, vec3 d, float segTotal) {
+    float sLen = segTotal / float(N_LIGHT);
+    float odR = 0.0, odM = 0.0;
+    for (int i = 0; i < N_LIGHT; ++i) {
+        float h = max(0.0, length(p + d * (float(i) + 0.5) * sLen) - R_EARTH);
+        odR += exp(-h / H_R);
+        odM += exp(-h / H_M);
+    }
+    return vec2(odR, odM) * sLen;
+}
+
+// (rotateZ and remap are in common.glsl.)
+
+uvec3 warpHashU(uvec3 v) {
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    return v;
+}
+vec3 warpGradHash(ivec3 c) {
+    return normalize(-1.0 + 2.0 * (vec3(warpHashU(uvec3(c))) * (1.0 / 4294967296.0)));
+}
+float warpPerlin3(vec3 p) {
+    ivec3 i = ivec3(floor(p));
+    vec3  f = fract(p);
+    vec3  u = f * f * (3.0 - 2.0 * f);
+    float v000 = dot(warpGradHash(i),                   f              );
+    float v100 = dot(warpGradHash(i + ivec3(1,0,0)), f - vec3(1,0,0));
+    float v010 = dot(warpGradHash(i + ivec3(0,1,0)), f - vec3(0,1,0));
+    float v110 = dot(warpGradHash(i + ivec3(1,1,0)), f - vec3(1,1,0));
+    float v001 = dot(warpGradHash(i + ivec3(0,0,1)), f - vec3(0,0,1));
+    float v101 = dot(warpGradHash(i + ivec3(1,0,1)), f - vec3(1,0,1));
+    float v011 = dot(warpGradHash(i + ivec3(0,1,1)), f - vec3(0,1,1));
+    float v111 = dot(warpGradHash(i + ivec3(1,1,1)), f - vec3(1,1,1));
+    return mix(mix(mix(v000, v100, u.x), mix(v010, v110, u.x), u.y),
+               mix(mix(v001, v101, u.x), mix(v011, v111, u.x), u.y), u.z);
+}
+
+float auroraOvalMaskLocal(vec3 posDirECEF, float t, float storm) {
+    vec3  poleDir   = (dot(posDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
+    float colatDeg  = degrees(acos(clamp(dot(posDirECEF, poleDir), -1.0, 1.0)));
+    float centerDeg = kAuroraOvalColatDeg + storm * 8.0;
+    float widthDeg  = kAuroraOvalWidthDeg * (1.0 + storm * 1.5);
+    float band = clamp(1.0 - abs(colatDeg - centerDeg) / widthDeg, 0.0, 1.0);
+    if (band <= 0.001) return 0.0;
+
+    vec3  ref      = abs(poleDir.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3  tangentT = normalize(cross(poleDir, ref));
+    vec3  radialT  = normalize(cross(tangentT, poleDir));
+    vec3  localDir = posDirECEF - poleDir * dot(posDirECEF, poleDir);
+    float az       = atan(dot(localDir, tangentT), dot(localDir, radialT));
+
+    // Time is mixed into the azimuthal embedding (x,y), NOT the colatitude axis (z) — see
+    // sat_sky.frag's auroraCoverage for why: adding t to colat directly made the pattern visibly
+    // slide toward/away from the pole over time instead of evolving in place.
+    vec2  azWarp = vec2(cos(az), sin(az)) * cloud.auroraCoverageAzFreq + t * cloud.auroraCoverageDriftRate;
+    float n = warpPerlin3(vec3(azWarp, colatDeg * cloud.auroraCoverageFreq));
+    float threshold = mix(0.2, -0.6, clamp(storm, 0.0, 1.0));
+    float coverage  = smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
+    return band * coverage;
+}
+
+// ── Aurora sky curtain (moved here from sat_sky.frag this session — perf) ──────────────────────
+// Full-featured versions (ripple warp, smoothstep fade zone) of the oval mask, distinct from
+// auroraOvalMaskLocal above (that stripped-down version stays sat_sky.frag-only-style, used just
+// for cloud-top upwelling here). These four are a near-verbatim duplicate of sat_sky.frag's own
+// auroraFrame/auroraCoverage/auroraOvalMask/auroraCurtainNoise — keep both copies in sync, same
+// convention this file already documents at the top for cloudMarch/cirrusMarch's shared helpers.
+// sat_sky.frag still needs its own copies too: auroraGlowAt (terrain/ocean ambient lighting) and
+// the ocean sky-reflection's aurora sample both stay full-resolution and keep calling them there.
+const float kAuroraShellInnerM  = 95000.0;
+const float kAuroraShellOuterM  = 300000.0;
+const float kAuroraRingWarpFreq = 3.0;
+const float kAuroraOvalWarpDeg  = 4.0;
+const float kAuroraOvalDriftRate = 0.003;
+const float kAuroraTangentFreq  = 40.0;
+const float kAuroraRadialFreq   = 70.0;
+const float kAuroraAltFreq      = 0.000006;
+const float kAuroraScale        = 0.000001;
+const vec3  kAuroraTopColor     = vec3(0.65, 0.15, 0.45);
+// kAuroraGroundColor (already declared above) is numerically identical to sat_sky.frag's
+// kAuroraBaseColor — reused directly below rather than redeclaring under a second name.
+const vec3  kAirglowGreenColor  = vec3(0.35, 1.0, 0.25);
+const vec3  kAirglowSodiumColor = vec3(1.0, 0.65, 0.15);
+const vec3  kAirglowRedColor    = vec3(1.0, 0.12, 0.05);
+
+void auroraFrame(vec3 dirECEF, vec3 poleDir, out float colat, out float az,
+                  out vec3 radialT, out vec3 tangentT) {
+    colat = acos(clamp(dot(dirECEF, poleDir), -1.0, 1.0));
+    vec3 ref = abs(poleDir.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    tangentT = normalize(cross(poleDir, ref));
+    radialT  = normalize(cross(tangentT, poleDir));
+    vec3 localDir = dirECEF - poleDir * dot(dirECEF, poleDir);
+    az = atan(dot(localDir, tangentT), dot(localDir, radialT));
+}
+
+float auroraCoverage(float colat, float az, float t, float storm) {
+    vec2  azWarp = vec2(cos(az), sin(az)) * cloud.auroraCoverageAzFreq + t * cloud.auroraCoverageDriftRate;
+    float n = warpPerlin3(vec3(azWarp, degrees(colat) * cloud.auroraCoverageFreq));
+    float threshold = mix(0.2, -0.6, clamp(storm, 0.0, 1.0));
+    return smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
+}
+
+float auroraOvalMask(float colat, float az, float t, float storm) {
+    // Same conservative 70deg pre-filter as sat_sky.frag's copy — see that file for the full
+    // worst-case-reach derivation.
+    if (degrees(colat) > 70.0)
+        return 0.0;
+    vec2  ringP  = vec2(cos(az), sin(az)) * kAuroraRingWarpFreq;
+    float ripple = warpPerlin3(vec3(ringP, t * kAuroraOvalDriftRate)) * kAuroraOvalWarpDeg;
+    float centerDeg = kAuroraOvalColatDeg + ripple + storm * 8.0;
+    float widthDeg  = kAuroraOvalWidthDeg * (1.0 + storm * 1.5);
+    float distDeg = abs(degrees(colat) - centerDeg);
+    float band = smoothstep(widthDeg * 2.0, widthDeg * 0.5, distDeg);
+    return band * auroraCoverage(colat, az, t, storm);
+}
+
+// "base" is a texture read against auroraNoiseTex's R channel (baked by aurora_noise.comp)
+// instead of a live warpPerlin3 call — see that file's header and sat_sky.frag's own copy of this
+// function for the full derivation of the UVW mapping and the storm/frequency approximation.
+float auroraCurtainNoise(float colat, float az, float altM, float t, float storm) {
+    float shimmerPhase = warpPerlin3(vec3(colat * kAuroraRadialFreq * 0.3,
+                                           altM * kAuroraAltFreq * 0.3,
+                                           t * cloud.auroraShimmerRate)) * 2.5;
+    vec3 p = vec3(az * kAuroraTangentFreq * (1.0 + storm * 0.8) + shimmerPhase,
+                  altM * kAuroraAltFreq,
+                  colat * kAuroraRadialFreq);
+    const float kAuroraCurtainPeriod = kAuroraTangentFreq * 2.0 * PI;
+    float texU = fract(p.x / kAuroraCurtainPeriod);
+    float texV = clamp((p.y - 0.24) / (2.46 - 0.24), 0.0, 1.0);
+    float texW = clamp(p.z / 91.6, 0.0, 1.0);
+    float base = textureLod(auroraNoiseTex, vec3(texU, texV, texW), 0.0).r * 2.0 - 1.0;
+    return remap(base, -0.3, 0.9, 0.0, 1.0);
+}
+
+// Per-sample curtain color/intensity — near-verbatim port of sat_sky.frag's auroraSampleAt, minus
+// the (unused here) enuX/enuY/enuZ basis-rebuild since the caller already works in ECEF-relative
+// terms consistent with the rest of this file.
+vec3 auroraCurtainSample(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirECEF, float t, float storm) {
+    vec3 pDirECEF = normalize(rp.x * enuX + rp.y * enuY + rp.z * enuZ);
+    float dayness = clamp((dot(pDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
+    float night   = 1.0 - dayness;
+    if (night <= 0.001) return vec3(0.0);
+    vec3 poleDir  = (dot(pDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
+    float colat, az; vec3 radialT, tangentT;
+    auroraFrame(pDirECEF, poleDir, colat, az, radialT, tangentT);
+    float oval = auroraOvalMask(colat, az, t, storm);
+    if (oval <= 0.001) return vec3(0.0);
+    float altM = length(rp) - R_EARTH;
+    const float kAuroraInnerFalloffM = 7500.0;
+    const float kAuroraOuterFalloffM = 15000.0;
+    float innerVert = 1.0 / (1.0 + exp(-(altM - kAuroraShellInnerM) / kAuroraInnerFalloffM));
+    float outerVert = 1.0 / (1.0 + exp((altM - kAuroraShellOuterM) / kAuroraOuterFalloffM));
+    float vert = innerVert * outerVert;
+    if (vert <= 0.001) return vec3(0.0);
+
+    // Column window colA/colB — same baked-texture read as sat_sky.frag's copy (G/B channels).
+    float colTexU = fract(az / (2.0 * PI));
+    float colTexW = clamp(colat / radians(75.0), 0.0, 1.0);
+    vec2  colSample = textureLod(auroraNoiseTex, vec3(colTexU, 0.5, colTexW), 0.0).gb;
+    float colA = colSample.x;
+    float colB = colSample.y;
+    float colLoFrac = clamp(min(colA, colB) - 0.08, 0.0, 1.0);
+    float colHiFrac = clamp(max(colA, colB) + 0.08, 0.0, 1.0);
+    float colLoM = mix(kAuroraShellInnerM, kAuroraShellOuterM, colLoFrac);
+    float colHiM = mix(kAuroraShellInnerM, kAuroraShellOuterM, colHiFrac);
+    const float kAuroraColumnFalloffM = 12000.0;
+    float columnWindow = (1.0 / (1.0 + exp(-(altM - colLoM) / kAuroraColumnFalloffM)))
+                        * (1.0 / (1.0 + exp((altM - colHiM) / kAuroraColumnFalloffM)));
+    if (columnWindow <= 0.001) return vec3(0.0);
+
+    float fold = mix(1.0, auroraCurtainNoise(colat, az, altM, t, storm), vert);
+    vec3  col  = mix(kAuroraGroundColor, kAuroraTopColor,
+                      clamp(remap(altM, kAuroraShellInnerM, kAuroraShellOuterM, 0.0, 1.0), 0.0, 1.0));
+    vec3 innerAirglowCol = mix(kAirglowSodiumColor, kAirglowGreenColor, 0.5);
+    col = mix(innerAirglowCol, col, innerVert);
+    col = mix(kAirglowRedColor, col, outerVert);
+    return col * (oval * fold * vert * columnWindow * night);
+}
+
+// One adaptive-step march over [segEnter, segExit], returning the INTEGRATED (not raw-summed)
+// contribution — i.e. already multiplied by its own step length. Factored out of auroraMarchCS so
+// the "ray dips below the inner shell and re-emerges on the far side" case (see that function's
+// comment) can march both legs with the same step-density logic instead of duplicating the loop.
+vec3 auroraMarchSegment(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
+                         vec3 sunDirECEF, float segEnter, float segExit) {
+    const float kAuroraMaxStepM = 15000.0;
+    const int   kAuroraStepsMin = 4;
+    const int   kAuroraStepsMax = 64;
+    float segLen = segExit - segEnter;
+    int   N      = clamp(int(segLen / kAuroraMaxStepM), kAuroraStepsMin, kAuroraStepsMax);
+    float step   = segLen / float(N);
+    vec3  accum  = vec3(0.0);
+    for (int i = 0; i < N; ++i) {
+        vec3 ap = obsPos + dir * (segEnter + (float(i) + 0.5) * step);
+        accum += auroraCurtainSample(ap, enuX, enuY, enuZ, sunDirECEF, pc.waveTime, cloud.stormStrength);
+    }
+    return accum * step;
+}
+
+// Full sky curtain march: whole-ray bounding pre-check + adaptive-step march + light-pollution/
+// moonlight suppression + atmospheric extinction. Returns the raw contribution BEFORE cloud
+// suppression — main() applies that using the ALREADY-COMPUTED local cloud transmittance (A_total)
+// from this same pixel/frame, more accurate than sat_sky.frag's old "early" texture pre-sample
+// (which existed only because sat_sky.frag runs at full-res and needed a cheap same-frame proxy;
+// this compute shader already has the real value on hand).
+vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
+                    vec3 sunDir, vec3 sunDirECEF, float obsEffH, vec4 moonDirENU,
+                    float tScene)  // shared scene depth — see cloudMarchCS
+{
+    const float kAuroraMarchInnerM = kAuroraShellInnerM - 55000.0;
+    const float kAuroraMarchOuterM = kAuroraShellOuterM + 110000.0;
+    vec2 tAuroraFar = raySphere(obsPos, dir, R_EARTH + kAuroraMarchOuterM);
+    vec2 tAuroraIn  = raySphere(obsPos, dir, R_EARTH + kAuroraMarchInnerM);
+
+    // Near leg [atEnter, atExit] always. From orbit/space looking toward the horizon, a ray whose
+    // closest approach dips below the padded inner sphere ALSO has a far leg [farEnter, farExit] —
+    // it re-emerges from the inner sphere on the opposite side of that dip and keeps climbing back
+    // out through the real (95-300km) shell before finally leaving the padded outer sphere. The
+    // inner sphere's near/far crossings (tAuroraIn.x/.y) straddle the ray's closest-approach point
+    // almost symmetrically (both are on the same concentric-sphere line as the outer crossings), so
+    // stopping at tAuroraIn.x alone discards that entire far leg — real, un-occluded aurora most of
+    // the time, since 40km (the padded inner radius) sits below all real terrain (~8.8km max) and
+    // the ray only needs to graze that low, not hit ground, to reach it.
+    //
+    // Before this fix, atExit jumped from tAuroraFar.y (far exit of the WHOLE outer sphere) straight
+    // down to tAuroraIn.x (roughly the MIDPOINT of that same chord — the two near-inner-sphere and
+    // near-outer-sphere crossings are colinear with the same closest-approach foot) the instant the
+    // closest-approach altitude crossed 40km — a hard ~50% drop in integrated path length at a fixed
+    // world altitude, independent of camera position. Panned continuously toward the horizon from
+    // space, that reads exactly as "the aurora cuts off below a fixed altitude": the curtain that
+    // should dip toward the horizon and curve back up on the far side instead just stops at the dip.
+    float atEnter, atExit;
+    float farEnter = 0.0, farExit = 0.0;
+    bool  hasFarLeg = false;
+    if (obsEffH < kAuroraMarchInnerM) {
+        atEnter = tAuroraIn.y;
+        atExit  = tAuroraFar.y;
+    } else if (obsEffH <= kAuroraMarchOuterM) {
+        atEnter = 0.0;
+        atExit  = tAuroraFar.y;
+        if (tAuroraIn.x > 0.0 && tAuroraIn.x < atExit) {
+            atExit    = tAuroraIn.x;
+            farEnter  = tAuroraIn.y;
+            farExit   = tAuroraFar.y;
+            hasFarLeg = true;
+        }
+    } else {
+        atEnter = tAuroraFar.x;
+        if (tAuroraIn.x > 0.0) {
+            atExit    = tAuroraIn.x;
+            farEnter  = tAuroraIn.y;
+            farExit   = tAuroraFar.y;
+            hasFarLeg = true;
+        } else {
+            atExit = tAuroraFar.y;
+        }
+    }
+    // Terrain occlusion. Clamp the PADDED bounds used by the step loop, but test entry against
+    // the REAL shell below — the padding (55/110km) exists to catch the emission falloff tail
+    // smoothly and is not itself emissive, so gating on it would re-introduce exactly the
+    // "aurora pops in at ~38-40km" bug that motivated the padded/real split in the first place.
+    // tScene is the FIRST terrain hit along the whole ray, so it clamps whichever leg it falls in
+    // and (correctly) everything beyond — a far leg whose start is already past tScene is occluded.
+    atExit = min(atExit, tScene);
+    if (hasFarLeg) farExit = min(farExit, tScene);
+    bool nearValid = atEnter < atExit && atExit > 0.0;
+    bool farValid  = hasFarLeg && farEnter < farExit && farExit > 0.0;
+    if (!nearValid && !farValid) return vec3(0.0);
+
+    // Whole-ray bounding pre-check (ported from sat_sky.frag this session) — same 80deg
+    // conservative bound (70deg worst-case oval reach + margin for 5-sample undersampling).
+    // Spans the full [enter, exit] envelope (near leg's start through the far leg's end, when a far
+    // leg survives) so a far-only ray can't be rejected for having sampled just the near leg.
+    float boundLo = nearValid ? atEnter : farEnter;
+    float boundHi = farValid ? farExit : atExit;
+    const int kAuroraBoundSamples = 5;
+    float minBoundColatDeg = 1e6;
+    for (int bi = 0; bi < kAuroraBoundSamples; ++bi) {
+        vec3 bp       = obsPos + dir * mix(boundLo, boundHi, float(bi) / float(kAuroraBoundSamples - 1));
+        vec3 bDirECEF = normalize(bp.x * enuX + bp.y * enuY + bp.z * enuZ);
+        vec3 bPole    = (dot(bDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
+        minBoundColatDeg = min(minBoundColatDeg, degrees(acos(clamp(dot(bDirECEF, bPole), -1.0, 1.0))));
+    }
+    if (minBoundColatDeg > 80.0) return vec3(0.0);
+
+    // Past this point the march genuinely runs — record the entry distance for terrain
+    // suppression. Unlike cloudMarchCS/cirrusMarchCS, this canNOT just reuse atEnter: the march
+    // bounds above (kAuroraMarchInnerM/OuterM) are deliberately padded 55/110km beyond the REAL
+    // shell (kAuroraShellInnerM/OuterM) to catch the falloff/oval-mask tail smoothly, so "inside
+    // the padded march range" (atEnter==0 in the branch above) does NOT mean "inside the real
+    // emissive shell." Using atEnter directly told the terrain gate aurora content starts at
+    // distance 0 — i.e. nothing can ever occlude it — for the entire padding band (~40-95km
+    // altitude), well below where the aurora is actually bright. That's the real cause of a
+    // reported "pops in over terrain at ~38-40km" (matches kAuroraMarchInnerM = 95000-55000 =
+    // 40000 almost exactly) — a hard gate failure over that whole band, not a smooth fade. Fixed
+    // by computing the entry distance against the REAL (unpadded) shell bounds instead, fully
+    // decoupled from the padded range used for the step loop below.
+    float realEnter;
+    if (obsEffH < kAuroraShellInnerM) {
+        vec2 tRealIn = raySphere(obsPos, dir, R_EARTH + kAuroraShellInnerM);
+        realEnter = max(tRealIn.y, 0.0);
+    } else if (obsEffH <= kAuroraShellOuterM) {
+        realEnter = 0.0; // genuinely inside the real shell — content starts at the camera
+    } else {
+        vec2 tRealOut = raySphere(obsPos, dir, R_EARTH + kAuroraShellOuterM);
+        realEnter = max(tRealOut.x, 0.0);
+    }
+    // The real (unpadded) shell starts behind terrain — nothing emissive is visible on this ray.
+    if (realEnter >= tScene) return vec3(0.0);
+
+    vec3 accumAurora = vec3(0.0);
+    if (nearValid) accumAurora += auroraMarchSegment(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, atEnter, atExit);
+    if (farValid)  accumAurora += auroraMarchSegment(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, farEnter, farExit);
+
+    // Light pollution + moonlight suppression — identical formula to sat_sky.frag's copy.
+    float azLPAurora    = mod(atan(dir.x, dir.y) + 6.283185307, 6.283185307);
+    float secFAurora    = azLPAurora * (16.0 / 6.283185307) - 0.5;
+    int   sec0Aurora    = int(floor(secFAurora));
+    float secFracAurora = secFAurora - float(sec0Aurora);
+    int   sec0wAurora   = ((sec0Aurora % 16) + 16) % 16;
+    int   sec1wAurora   = (sec0wAurora + 1) % 16;
+    float domeAzAurora  = mix(lightDome[sec0wAurora], lightDome[sec1wAurora], secFracAurora);
+    float elevFalloffAurora = 0.35 / (max(dir.z, 0.0) + 0.35);
+    // S2c (RELEASE_v1_1_PLAN.md): same isotropic-floor fix as sat_flare.comp/sat_sky.frag/
+    // updateStars() — elevFalloffAurora alone bottoms out at ~0.26 at zenith, wrong for real
+    // (isotropically-scattered) urban skyglow. Keep this constant identical across all copies.
+    const float kIsotropicFrac = 0.4;
+    float domeValAurora  = clamp(domeAzAurora * (kIsotropicFrac + (1.0 - kIsotropicFrac) * elevFalloffAurora), 0.0, 1.0);
+    const float kAuroraPollutionMaxDim = 0.9;
+
+    float tmAurora         = clamp(moonDirENU.z / 0.5, 0.0, 1.0);
+    float moonBrightAurora = tmAurora * tmAurora * moonDirENU.w;
+    const float kAuroraMoonMaxDim = 0.85;
+
+    float auroraVisSuppress = (1.0 - domeValAurora * kAuroraPollutionMaxDim)
+                             * (1.0 - moonBrightAurora * kAuroraMoonMaxDim);
+
+    // Atmospheric extinction — same Kasten & Young 1989 approximation as sat_sky.frag's copy.
+    // Gated on THIS RAY's own tangent altitude (see rayTangentAltM in common.glsl), not obsEffH —
+    // an observer far above the atmosphere looking toward the horizon still sends this ray through
+    // a long real atmospheric column; gating on observer height alone silently turned extinction
+    // off entirely near the horizon as soon as the OBSERVER left the atmosphere.
+    float atmFracAurora = clamp(exp(-max(rayTangentAltM(obsPos, dir), 0.0) / 20000.0), 0.0, 1.0);
+    float sinElAurora    = clamp(dir.z, 0.0, 1.0);
+    float elDegAurora    = degrees(asin(sinElAurora));
+    float airmassAurora  = 1.0 / (sinElAurora + 0.50572 * pow(elDegAurora + 6.07995, -1.6364));
+    float extinctMagAurora = cloud.extinctionCoeff * (airmassAurora - 1.0) * atmFracAurora;
+    float extinctionAurora = pow(10.0, -0.4 * extinctMagAurora);
+
+    // accumAurora is already integrated (each auroraMarchSegment call scales by its own step
+    // length) — do not multiply by a step length again here.
+    return accumAurora * kAuroraScale * cloud.auroraGain * auroraVisSuppress * extinctionAurora;
+}
+
+// Airglow red band (630nm) supplemental march — moved here from sat_sky.frag this session (perf:
+// half-res instead of full-res, same rationale as aurora above, though the win is smaller — this
+// march only ever cost ~1ms full-res: fixed 16 steps, 1 noise call per sample, nowhere near
+// aurora's old worst case). Green/sodium bands still ride sat_sky.frag's main atmosphere loop "for
+// free" and stay there — moving just them would mean duplicating a chunk of that loop here for
+// near-zero marginal win, since they already cost almost nothing riding samples that loop takes
+// anyway for other reasons (see the "does the atmosphere need full-res" discussion this session).
+// No cloud-suppression term — the original never had one (unlike aurora), just a plain additive
+// term, so this folds straight into B_total below with no extra logic.
+const float kAirglowRedPeakM      = 275000.0;
+const float kAirglowRedHalfWidthM = 75000.0;
+const float kAirglowNoiseFreq     = 4.0;
+const float kAirglowDriftRate     = 0.015;
+const float kAirglowScale         = 0.0000005;
+
+// Coverage patchiness (cloud.airglowCoverageGain) — a lower-frequency companion to rPatch/
+// airPatch above, which only wobbles the band +-40% and reads as nearly flat on screen. This
+// remaps a warped noise field through a threshold, same idiom as auroraCoverage/cloud coverage
+// (see auroraOvalMaskLocal above), so there are real dim/dark gaps between brighter patches
+// rather than a gentle shimmer. gain=0 reproduces the old uniform-minus-shimmer look exactly;
+// gain=1 is full patchiness. Takes a seed offset so different callers (coverage vs. the polar
+// boost's own patch below) don't sample identical noise and end up perfectly correlated.
+float airglowCoverageMask(vec3 dirECEF, float t, vec3 seedOffset) {
+    float n = warpPerlin3(dirECEF * (kAirglowNoiseFreq * 0.5)
+                          + vec3(t * kAirglowDriftRate * 0.6, 0.0, 0.0) + seedOffset);
+    return smoothstep(-0.2, 0.5, n);
+}
+
+// Auroral-zone polar boost (cloud.airglowPolarGain, RED band only). Real 630nm redline
+// nightglow brightens toward the geomagnetic pole from diffuse particle precipitation, a much
+// broader effect than the discrete aurora curtain itself (kGeomagPoleECEF/auroraOvalMaskLocal
+// above), so this is a wide smooth colatitude ramp rather than the tight oval band, further
+// broken up by its own coverage patch so it doesn't read as a uniform bright ring.
+const float kAirglowPolarInnerDeg = 12.0; // full boost within this colatitude of the pole
+const float kAirglowPolarOuterDeg = 45.0; // boost fades to zero by this colatitude
+
+vec3 airglowRedMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
+                        vec3 sunDirECEF, float obsEffH, float tScene) {
+    const float kAirglowInnerM = 100000.0; // = R_ATMOS - R_EARTH
+    const float kAirglowFarM   = 500000.0;
+    vec2 tAtmos  = raySphere(obsPos, dir, R_ATMOS);
+    vec2 tAirFar = raySphere(obsPos, dir, R_EARTH + kAirglowFarM);
+
+    float rtEnter, rtExit;
+    if (obsEffH < kAirglowInnerM) {
+        rtEnter = tAtmos.y;
+        rtExit  = tAirFar.y;
+    } else if (obsEffH <= kAirglowFarM) {
+        rtEnter = 0.0;
+        rtExit  = tAirFar.y;
+        if (tAtmos.x > 0.0 && tAtmos.x < rtExit) rtExit = tAtmos.x;
+    } else {
+        rtEnter = tAirFar.x;
+        rtExit  = (tAtmos.x > 0.0) ? tAtmos.x : tAirFar.y;
+    }
+    // Terrain occlusion. NOTE this is a genuine BUG FIX, not just a refactor: the red band never
+    // contributed to the old shared tEnterCombined scalar at all, so until now it rendered
+    // straight through terrain unconditionally, at every observer altitude.
+    if (rtEnter >= tScene) return vec3(0.0);
+    rtExit = min(rtExit, tScene);
+    if (rtEnter >= rtExit || rtExit <= 0.0) return vec3(0.0);
+
+    const int N_AIRGLOW_RED = 16;
+    float rSegLen = (rtExit - rtEnter) / float(N_AIRGLOW_RED);
+    vec3  accumAirglowRed = vec3(0.0);
+    for (int i = 0; i < N_AIRGLOW_RED; ++i) {
+        vec3  rp       = obsPos + dir * (rtEnter + (float(i) + 0.5) * rSegLen);
+        float rh       = length(rp) - R_EARTH;
+        vec3  rDirECEF = normalize(rp.x * enuX + rp.y * enuY + rp.z * enuZ);
+        float rDayness = clamp((dot(rDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
+        float rNight   = 1.0 - rDayness;
+        if (rNight > 0.001) {
+            float rPatch = 0.6 + 0.4 * warpPerlin3(rDirECEF * kAirglowNoiseFreq
+                                + vec3(pc.waveTime * kAirglowDriftRate, 17.0, -5.0));
+
+            float coverage = airglowCoverageMask(rDirECEF, pc.waveTime, vec3(41.0, -7.0, 12.0));
+            float coverageFactor = mix(1.0, coverage, clamp(cloud.airglowCoverageGain, 0.0, 1.0));
+
+            vec3  polePos   = (dot(rDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
+            float colatDeg  = degrees(acos(clamp(dot(rDirECEF, polePos), -1.0, 1.0)));
+            float polarRamp = smoothstep(kAirglowPolarOuterDeg, kAirglowPolarInnerDeg, colatDeg);
+            float polarPatch = airglowCoverageMask(rDirECEF, pc.waveTime, vec3(-19.0, 53.0, 8.0));
+            float polarBoost = 1.0 + cloud.airglowPolarGain * polarRamp * polarPatch;
+
+            float dzR      = (rh - kAirglowRedPeakM) / kAirglowRedHalfWidthM;
+            float densAirR = exp(-dzR * dzR) * rSegLen;
+            accumAirglowRed += kAirglowRedColor * cloud.airglowRedGain * densAirR * rNight * rPatch
+                                * coverageFactor * polarBoost;
+        }
+    }
+    return accumAirglowRed * kAirglowScale * cloud.airglowGain;
+}
+
+// Perf (this session): was 3 live warpPerlin3 evaluations (24 gradient-hash lookups) per call —
+// the dominant live-procedural cost in the cloud march, since this runs once per in-cloud march
+// sample. Baked into cloud_warp_noise.comp's field (R/G/B = the same three offset channels this
+// used to compute live). kWarpBakeN MUST match the bake shader's own constant — see that file's
+// header for the tiling-period / repeat-distance trade-off this bake accepted (the live version
+// never repeated; the baked one tiles at a period chosen to stay unnoticeable in normal play).
+const float kWarpBakeN = 16.0;
+// kWarpBakeRes, wrapTexel/wrapTexel3 and cloudWarpNoiseSample now live in common.glsl —
+// see that file for why the 8-tap manual blend is load-bearing and must not be collapsed into a
+// single filtered fetch (tried 2026-08-04, reverted: the faceting came straight back).
+
+vec3 cloudWarpOffset(vec3 dirECEF) {
+    vec3 windOfs = vec3(cloud.cloudPhase * kWarpDriftRate + pc.waveTime * kWarpEvolveRate,
+                         pc.waveTime * kWarpEvolveRate * 0.6,
+                         cloud.cloudPhase * kWarpDriftRate * 0.7 + pc.waveTime * kWarpEvolveRate * 0.8);
+    vec3 uvw = (dirECEF * cloud.cloudWarpFreq + windOfs) / kWarpBakeN;
+    vec3 n   = cloudWarpNoiseSample(cloudWarpNoiseTex, uvw) * 2.0 - 1.0;
+    return n * cloud.cloudWarpStrength;
+}
+
+// Ratio by which the warp must be scaled down for the per-COLUMN lookup.
+//
+// The warp is one absolute offset, but it is added to two lookups whose base frequencies differ
+// by 6x: the detail/presence field at kCloudHorizFreq (480) and the per-column colH/baseH field
+// at kCloudColFreq (80). An offset tuned as a sensible FRACTION of the 480 domain is therefore
+// 6x too large as a fraction of the 80 domain.
+//
+// Measured, 2026-08-04: at the then-current strength/frequency the shear ratio (see
+// cloud_params.glsl for the folding threshold) was 0.8 for the detail lookup — already at the
+// edge — and 4.8 for the column lookup, i.e. folded over itself several times. Since colH sets
+// each column's cloud TOP height and baseH its base, a folded field there makes tops and bottoms
+// undulate with repeated, mirrored structure: the reported "wavy chips" and horizontal banding.
+//
+// Scaling by the frequency ratio makes the warp a constant fraction of whichever domain it is
+// applied to, which is what "advect both fields together" actually means — the two now land at
+// the same shear ratio instead of 6x apart.
+const float kWarpColScale = kCloudColFreq / kCloudHorizFreq;   // 80/480 = 1/6
+
+
+float cityBrightness(float lum) {
+    float raw = max(0.0, lum - kNightFloor);
+    return raw / (raw + kCityCompressK);
+}
+
+// One fetch serving BOTH per-column shape lookups (T2.2, CLOUD_PERF_PLAN.md).
+//
+// colH's own noise slice sits at Z + kCloudColNoiseZ (48 texels = 0.25, unchanged). The bake's A
+// channel is the presence field a further +108 texels up, so the SAME fetch's .a is the presence
+// field at Z + 0.8125 — which is what the per-column BASE height noise reads now. That used to be
+// a second fetch at a hand-written Z + 0.85.
+//
+// baseH's job is only to be a per-column value decorrelated from colH's; the exact slice is
+// arbitrary. 0.8125 vs 0.85 is a 7-texel shift within that arbitrary choice, and the 0.5625
+// separation from colH is still >2 cells at even the coarsest Perlin octave (N=4), so the two
+// stay as independent as before. The base-height undulation PATTERN changes; its character and
+// statistics do not. With cloud.cloudBaseVariance == 0 there is no visible change at all.
+vec2 cloudColumnNoise(vec3 uvwCol) {
+    return textureLod(cloudNoiseTex, uvwCol + vec3(0.0, 0.0, kCloudColNoiseZ), 0.0).ra;
+}
+
+// Mean of the baked erosion field (cloudNoiseTex.g). See `useMeanErosion` below.
+//
+// The field is (1-worleyF1) at three frequencies with weights summing to exactly 1. For Worley F1
+// at one feature point per unit cell in 3D, E[F1] = gamma(4/3) / (4*PI/3)^(1/3) ~= 0.554, so
+// E[1-F1] ~= 0.446; the clamp at 1.0 truncates a small tail and nudges it up slightly. Being
+// mean-preserving is the property that matters — it is what stops shadows darkening or lightening
+// when the sampled term is swapped for a constant.
+//
+// THIS IS THE KNOB if cone shadows come out too dark (raise it) or too light (lower it).
+const float kConeErosionMean = 0.45;
+
+// `useMeanErosion` — when true, the erosion FBM is replaced by kConeErosionMean instead of being
+// sampled, and `uvwDetail` goes unused. Only the sun self-shadow cone passes true.
+//
+// This is the fix for the "blob is a slice of the noise at the first layer of the raymarch"
+// artifact, and it is the SAME remedy this function already applies to vertical presence three
+// lines below — pin the altitude axis instead of sampling it.
+//
+// `uvwDetail`'s Z is `hNorm * kVertTiles + posZ * 2.0`, i.e. it varies CONTINUOUSLY with altitude.
+// That is exactly what the presence comment below warns about, and the view march only gets away
+// with it because it runs ~215 steps at <=250 m — above the documented 150-step minimum. The cone
+// evaluates the same lookup at ~13 steps across the same 9.4 km shell, 16x under that minimum, and
+// T3.1's geometric growth pushed its late steps to ~5 km. So the cone reads one thin Z-slab of the
+// erosion volume per step and holds it across kilometres of altitude: a slice of the noise.
+//
+// It is aliased horizontally too — the erosion octaves are Worley at 8/16/32 cells sampled at
+// kCloudHorizFreq scale, so a km-scale step samples them essentially at random. There is no
+// sampling rate the cone can afford at which this term carries real information, which is why the
+// mean is the honest answer rather than a cheaper lookup.
+//
+// If shadow erosion detail is wanted back, the middle option is to keep the fetch but drop only
+// the `hNorm * kVertTiles` term from cUVWD — that removes the vertical slicing while preserving
+// horizontal structure, at no perf saving.
+float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, float density,
+                   float heightProfile, bool useMeanErosion) {
+    // Vertical presence: THREE fixed Z-slices, not a continuous Z lookup — see
+    // project_cloud_march_steps memory: sampling Z continuously at this codebase's typical
+    // march-step counts reintroduces altitude-slab banding, which is why the original design
+    // pinned this to constant slices in the first place. The problem with only two slices is that
+    // a straight lerp between them makes every cloud's silhouette a geometric cone (wide at the
+    // base slice, monotonically narrowing to the top) — a third anchor at the midpoint breaks
+    // that monotonic taper into an actual bulge/waist shape without reintroducing per-march-step
+    // Z sensitivity (still just 3 discrete lookups, blended smoothly by hNorm).
+    //
+    // T2.1 (CLOUD_PERF_PLAN.md): all three now come from ONE fetch. cloud_noise.comp bakes the
+    // two offset slices into B and A at integer texel shifts (+54, +108), and a whole-texel shift
+    // commutes with trilinear filtering, so .rba here returns bit-identical values to what three
+    // separate .r reads at those Z offsets would. See common.glsl's channel-layout block.
+    vec3  ns    = textureLod(cloudNoiseTex, uvwXY, 0.0).rba;
+    float baseA = remap(ns.x, 1.0 - coverage, 1.0, 0.0, 1.0);
+    float midA  = remap(ns.y, 1.0 - coverage, 1.0, 0.0, 1.0);
+    float topA  = remap(ns.z, 1.0 - coverage, 1.0, 0.0, 1.0);
+    float hc    = clamp(hNorm, 0.0, 1.0);
+    float base  = (hc < 0.5) ? mix(baseA, midA, hc * 2.0)
+                             : mix(midA, topA, (hc - 0.5) * 2.0);
+    if (base <= 0.0) return 0.0;
+
+    // G is the erosion FBM with the three Worley octaves already summed at their fixed
+    // 0.625/0.25/0.125 weights — was a fourth fetch plus that sum done here per sample.
+    // The *1.5 coordinate scale is now cloud.cloudErosionFreq (default 1.5 = unchanged).
+    // Kept BELOW the `base <= 0.0` early-out on purpose: hoisting the sample into a thin wrapper
+    // would have cost the view march that rejection on every cleared-threshold sample.
+    float erosionRaw = useMeanErosion
+                     ? kConeErosionMean
+                     : textureLod(cloudNoiseTex,
+                                  uvwDetail * cloud.cloudErosionFreq + vec3(0.37, 0.53, 0.71),
+                                  0.0).g;
+
+    // ── Erosion POLARITY (cloud.cloudErosionBillow) ──────────────────────────────────────────
+    // erosionRaw is an INVERTED-Worley FBM: it peaks AT the Worley feature points. Since it is
+    // used below as the threshold `base` must exceed, density is removed in round blobs centred
+    // on those points and what SURVIVES is the connected Voronoi web between them. That is a
+    // sponge — round holes bored through a lattice — which is why the old erosion read as "pokey
+    // and speckled" rather than puffy, and why its holes all had the same blobby character.
+    //
+    // Cauliflower is the exact dual: survive in the lumps, remove the thin cracks between them.
+    // That is what (1.0 - erosionRaw) gives. The bake's three octave weights sum to exactly 1.0,
+    // so (1 - G) IS the non-inverted Worley FBM — the flip is algebraically exact and free.
+    //
+    // The blend is ramped by height (cloud.cloudErosionBillowH) rather than applied flat, which
+    // is Schneider/Nubis's height-varying erosion character: web-polarity near the base gives
+    // wispy, streaky, torn edges; lump-polarity toward the top gives billowy cauliflower. A
+    // single polarity everywhere is part of why bases and tops looked like the same material.
+    float billowAmt = cloud.cloudErosionBillow
+                    * smoothstep(0.0, max(cloud.cloudErosionBillowH, 1e-4), hc);
+    float erosion   = mix(erosionRaw, 1.0 - erosionRaw, billowAmt);
+
+    // Edge-biased erosion: `base` doubles as a proxy for how deep inside the cloud's own presence
+    // threshold this point sits (near 0 at the silhouette edge, toward 1 at the core). Biting
+    // harder near the edge than at the core carves cauliflower/wisp detail into the boundary while
+    // leaving dense cores comparatively solid — the previous single uniform erosion strength just
+    // scaled the whole shape down evenly, which reads as smooth/rounded rather than fluffy.
+    //
+    // Deliberately still keyed on `base` (the purely horizontal presence depth) and NOT on the
+    // height-profiled value below: keying it on the latter drives erosionAmt to full strength
+    // everywhere heightProfile is small, which does not carve the top and bottom bands, it
+    // DELETES them — the bases end up flat again, just higher up.
+    float erosionAmt = mix(cloud.cloudErosionEdge, cloud.cloudErosionCore, base);
+    float carve      = erosionAmt * erosion;
+    float denom      = max(1.0 - carve, 1e-3);
+
+    // ── How the vertical profile enters (cloud.cloudSurfaceCarve) ────────────────────────────
+    // heightProfile is a smooth analytic per-column window: smoothstep up from baseH, smoothstep
+    // down at colH, both with a fixed 0.05 normalised width. Multiplying the eroded field by it —
+    // the original form, reproduced exactly at cloudSurfaceCarve == 0 — scales the erosion noise
+    // toward ZERO precisely at the two surfaces the noise is supposed to be sculpting. So the
+    // silhouette is set by the smooth ramp and the noise survives only as interior speckle: flat
+    // tops, flat bases, and (with no shape detail at the base) nothing for low-sun self-shadowing
+    // to pick out.
+    //
+    // Subtracting instead DISPLACES the surface by the erosion field, which is the standard way
+    // to make an isosurface bumpy: the boundary moves to wherever base - carve - (1 - p) crosses
+    // zero, so a Worley lump pushes the surface outward and a crack pulls it in. Same erosion
+    // texture, same cost, structurally different silhouette.
+    //
+    // Containment is safe at any blend value: as heightProfile -> 0 the subtractive form's
+    // numerator goes to base - carve - 1 <= 0 (base is already clamped to [0,1]), so cloud cannot
+    // leak past colH/baseH no matter how the knob is set.
+    float erodedMul = clamp((base - carve) / denom, 0.0, 1.0) * heightProfile;
+    float erodedSub = clamp((base - carve - (1.0 - heightProfile)) / denom, 0.0, 1.0);
+    float eroded    = mix(erodedMul, erodedSub, cloud.cloudSurfaceCarve);
+
+    // NOT clamped to [0,1] any more — only to >= 0. The upper clamp was the direct cause of two
+    // separate reported problems:
+    //
+    // 1. Hard-edged flat-coloured blobs, worst looking straight UP at cloud bases and straight
+    //    DOWN at cloud tops, absent toward the horizon. A near-radial ray holds dirECEF (and so
+    //    uvwXY, localCov, colH, baseH) essentially CONSTANT along its whole length, so `eroded`
+    //    varies only through hNorm — a smooth, slowly-varying function. Wherever that pushed
+    //    `eroded * density` past 1.0 the clamp made `d` exactly 1.0 over a large contiguous
+    //    region, and with cloudOpacityScale's coreBoost a single d=1 step at 250 m is already
+    //    ~exp(-5) opaque, so the ray terminated on its first sample and every pixel in that region
+    //    resolved to the SAME inScatter value. Flat colour, and a hard edge exactly on the clamp
+    //    boundary. Toward the horizon the ray sweeps horizontally through the noise fast enough to
+    //    break the region up, which is why it did not show there. (Surface carve = 1 masked it by
+    //    subtracting (1 - heightProfile), pulling the boundary bands back under the ceiling —
+    //    which is precisely why that slider "fixed" it.)
+    //
+    // 2. "Even with the highest density setting, clouds pass a lot of light." Once a column
+    //    saturated at d = 1, RAISING `density` did nothing at all — the slider was a no-op above
+    //    its saturation point. That limitation is what cloudOpacityScale was added to work around;
+    //    with the ceiling gone, `density` is a real control again across its whole range.
+    //
+    // Nothing downstream needs d <= 1: extinction feeds exp(-extinction), which is monotone and
+    // already bounded, and the sun-cone accumulator is a plain weighted sum. Expect to re-tune
+    // `density` / `Opacity scale` DOWNWARD — clouds are genuinely more opaque now.
+    return max(eroded * density, 0.0);
+}
+
+// ── Moved (exclusive to cirrusMarch) ──────────────────────────────────────────
+
+float cirrusWindAngleAt(vec3 dirECEF) {
+    vec3 p = dirECEF * kCirrusWindWarpFreq
+           + vec3(pc.waveTime * kWarpEvolveRate * 1.7,
+                   cloud.cloudPhase * kCirrusWindDriftRate,
+                   91.0);
+    return warpPerlin3(p) * kCirrusWindWarpAmp;
+}
+
+vec3 cirrusDomainWarp(vec3 dirECEF) {
+    vec3 w1 = cloudWarpOffset(dirECEF);
+    vec3 p2 = dirECEF * (cloud.cloudWarpFreq * 0.35) + vec3(19.0, -7.0, 41.0)
+            + vec3(pc.waveTime * kWarpEvolveRate * 0.5);
+    vec3 w2 = vec3(warpPerlin3(p2),
+                    warpPerlin3(p2 + vec3(5.2, 1.1, 9.3)),
+                    warpPerlin3(p2 + vec3(3.3, 8.8, 2.2))) * (cloud.cloudWarpStrength * 1.5);
+    return w1 + w2;
+}
+
+// ── Reflect-Orbital beam->cloud light sources (2026-08-09, fourth design) ────────────────────
+// First was a per-target CPU aggregation anchored at the idealized targetENU — retired once
+// beam_self_march.comp started marching the beam's REAL path and made per-beam values genuinely
+// differ, which a horizontal-only Gaussian around an idealized target position could never read
+// as directional. Second was a true per-beam glow folded into main()'s per-pixel debug-ray loop,
+// using the CAMERA's own view-ray-to-beam-line distance for proximity — cheap, but geometrically
+// wrong: that distance's iso-contours are not soft blobs, they're hyperbola-like curves, and it
+// showed up in-app as large white rings intersecting the beams. Third restored the correct
+// architecture — evaluated PER CLOUD SAMPLE inside the march (`inScatter`, right alongside
+// `sunColorCloud`/`moonContrib`), exactly like sun/moon — with each list entry as one individual
+// real beam, no aggregation. That was affordable at a 16-slot cap but visually starved; getting
+// "appreciable" coverage needed raising the cap to 512, which tanked frame rate (this loop's cost
+// is linear in the cap, evaluated per IN-CLOUD SAMPLE, not per pixel).
+//
+// This fourth version keeps the third's per-sample architecture and geometric accuracy (`posENU`
+// is the beam's REAL ground intersection, satENU + reflectDirENU traced to R_EARTH; `dirToSource`
+// is its REAL direction, ground toward satellite) but clusters: a beam LOCKED onto its target
+// (small `aimErrorRad`, checked on the CPU) is folded into a shared per-target light via
+// intensity-weighted average — dozens of satellites converged on one site produce nearly
+// identical geometry, so representing them as one combined light recovers full visual coverage at
+// a fraction of the cost. A beam still SLEWING keeps its own individual slot, since its geometry
+// is genuinely unique right now. See `GpuBeamCloudLights`' own comment (SatelliteSim.h) for the
+// CPU-side clustering logic. Cap dropped back to 256 (from 512) — same real coverage, since the
+// effective distinct-light count is now bounded near the active-target count, not total
+// active-satellite count.
+// Struct must match GpuBeamCloudLight/GpuBeamCloudLights in SatelliteSim.h exactly — including
+// kMaxCloudBeamLights itself, hand-duplicated here (not shared via a header) same as this
+// project's other CPU/GPU struct-layout pairs; a mismatch silently truncates or wastes capacity,
+// not a crash, so it will NOT show up as a compile or validation error if missed.
+const uint kMaxCloudBeamLights = 512u;
+struct BeamCloudLight {
+    vec3  posENU;       // meters, observer-relative — REAL ground intersection of this ONE beam
+    float intensity;    // groundIrradiance * beamGain for this satellite
+    vec3  dirToSource;  // unit direction from posENU toward the satellite (real beam direction)
+    float footprintRadM;
+    float blockAltM;    // altitude (m) where THIS beam's own path drops below 50% transmittance
+    float blockOpacity; // 0 = clear column, 1 = fully opaque
+    float pad0, pad1;   // std430 array-of-vec4-pairs alignment
+};
+layout(std430, set = 0, binding = 14) readonly buffer BeamCloudLightBuf {
+    uint            beamLightCount;
+    uint            beamLightPad0, beamLightPad1, beamLightPad2;
+    BeamCloudLight  beamLights[kMaxCloudBeamLights];
+};
+
+// Perf: fixed-sigma cutoff BEFORE the exp() call — see the retired version's own comment for
+// why this bounds cost the same way regardless of a light's brightness. At file scope (2026-08-10)
+// because cullCloudLightsForTile below must use the identical value; if the two ever disagree the
+// cull stops being conservative and beam glow pops on a 16x16-texel grid.
+const float kBeamCutoffSigma = 4.0;
+
+// ── Per-tile cloud-light culling (2026-08-10) ────────────────────────────────────────────────────
+// beamCloudLighting() is called from cloudMarchCS's innermost loop — once per in-cloud SAMPLE, so
+// ~128 march steps x 484,800 texels — and walked all beamLightCount entries every time. That list
+// is capped at kMaxCloudBeamLights = 512 (not 16; CLAUDE.md said 16 and was stale), which is why
+// knockout bit 128 measured 3.48 ms inside the cloud_march bucket at Medium in the Anchorage sweep.
+//
+// Same fix, same workgroup, same reasoning as cullBeamsForTile above: one 16x16-texel tile per
+// workgroup, 256 threads cooperatively reduce 512 lights to the handful whose influence cylinder
+// can reach any ray in this tile, and the per-sample loop walks that shared list instead. The cost
+// of the test moves from (lights x samples x texels) to (lights / 256) per workgroup.
+//
+// CONSERVATISM. beamCloudLighting accepts a sample when its perpendicular distance to the light's
+// infinite line (posENU, dirToSource) is within footprintRadM * kBeamCutoffSigma. Every sample lies
+// on this tile's view rays somewhere inside the cloud shell, so the tile test is the minimum of
+// that same perpendicular distance over the tile-centre ray restricted to [0, tRangeMax], widened
+// by tRangeMax * tileHalfAngle to cover rays at the tile's edge. tRangeMax is the tile-centre ray's
+// own far crossing of the cloud-top sphere, which upper-bounds where cloudMarchCS can march
+// (tExit is min'd against exactly that shell exit), scaled by kTileRangeMargin so a tile-edge ray
+// whose own shell crossing runs slightly longer is still covered.
+//
+// Distances are formed observer-relative throughout (w0 = -posENU, never obsPos - lightWorldPos),
+// the same cancellation-avoidance every other beam computation in this file uses.
+const uint  kTileCloudLightMax = 128u;
+const float kTileRangeMargin   = 1.25;
+shared uint sTileLightCount;
+shared uint sTileLightOverflow;
+shared uint sTileLightIdx[kTileCloudLightMax];
+
+void cullCloudLightsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos) {
+    if (gl_LocalInvocationIndex == 0u) {
+        sTileLightCount = 0u;
+        // Bit 131072 turns this cull off alongside the pointing-ray one — same A/B, same
+        // requirement that the image be pixel-identical either way.
+        sTileLightOverflow = ((pc.debugDisableMask & 131072u) != 0u) ? 1u : 0u;
+    }
+    barrier();
+
+    if ((pc.debugDisableMask & 128u) == 0u && pc.beamSkyGlowGain > 0.0
+        && (pc.debugDisableMask & 131072u) == 0u) {
+        vec2  shellT    = raySphere(obsPos, cAxis, R_EARTH + cloud.layers[1].shellAltM);
+        float tRangeMax = max(shellT.y, 0.0) * kTileRangeMargin;
+        float slack     = tRangeMax * tileHalfAngle;
+        uint  n         = min(beamLightCount, kMaxCloudBeamLights);
+        for (uint bli = gl_LocalInvocationIndex; bli < n; bli += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+            if (beamLights[bli].intensity <= 0.0) continue;
+            vec3  lp   = beamLights[bli].posENU;   // observer-relative
+            vec3  dirS = beamLights[bli].dirToSource;
+            vec3  w0   = -lp;                      // observer - light origin
+            float b  = dot(cAxis, dirS);
+            float dd = dot(cAxis, w0);
+            float e  = dot(dirS, w0);
+            float den = 1.0 - b * b;
+            float t = (den > 1e-6) ? (b * e - dd) / den : 0.0;
+            t = clamp(t, 0.0, tRangeMax);
+            vec3  toP  = cAxis * t - lp;           // P(t) - lightWorldPos, small-magnitude by construction
+            vec3  perp = toP - dirS * dot(toP, dirS);
+            float cutoff = max(beamLights[bli].footprintRadM, 100.0) * kBeamCutoffSigma + slack;
+            if (dot(perp, perp) > cutoff * cutoff) continue;
+
+            uint slot = atomicAdd(sTileLightCount, 1u);
+            if (slot < kTileCloudLightMax) sTileLightIdx[slot] = bli;
+            else                            sTileLightOverflow = 1u;
+        }
+    }
+    barrier();
+}
+
+// Takes the evaluation point (`p`/`h`) and `sampleDayness` (caller's own per-sample geographic
+// day/night gate) — same signature shape the retired function used, still cloud-only (fog no
+// longer carries a beam term at all, removed with the second design).
+vec3 beamCloudLighting(vec3 p, float h, vec3 dir, vec3 obsPos, float sampleDayness) {
+    vec3 beamLit = vec3(0.0);
+    if ((pc.debugDisableMask & 128u) != 0u || pc.beamSkyGlowGain <= 0.0 || beamLightCount == 0u)
+        return beamLit;
+
+    const float kBeamCloudGlowScale = 1e-6;
+    const float kCloudFeatherM = 500.0; // soft edge width for the height cutoff below
+    // 2026-08-10: walk the workgroup's culled list, not all beamLightCount entries. Overflow past
+    // kTileCloudLightMax (or bit 131072) falls back to the full scan, which is exactly the old
+    // behaviour — slow on a pathological tile, never wrong.
+    bool lightOverflow = (sTileLightOverflow != 0u);
+    uint iterCount = lightOverflow ? min(beamLightCount, kMaxCloudBeamLights)
+                                   : min(sTileLightCount, kTileCloudLightMax);
+    vec3 mag = vec3(0.0);
+    for (uint li = 0u; li < iterCount; ++li) {
+        uint bli = lightOverflow ? li : sTileLightIdx[li];
+        // 2026-08-09 (in-app finding: cloud bottoms near a busy target read as uniformly lit,
+        // independent of illumination/density sliders): this used to be a HORIZONTAL-only
+        // distance from the sample to the light's ground point, with brightness gated purely
+        // on/off by the height cutoff below — i.e. no real falloff from a source position at
+        // all, just a flat disc. Replaced with true 3D perpendicular distance from the sample to
+        // the light's actual LINE (posENU + dirToSource) — the same point-to-line shape
+        // beam_self_march.comp/the debug ray already use elsewhere, just applied here for the
+        // first time. Samples near where the beam actually crosses the shell now read brighter
+        // than samples merely near the ground point at any height, which is what actually
+        // produces a top-bright/bottom-dark gradient instead of a wash.
+        vec3  lightWorldPos = obsPos + beamLights[bli].posENU;
+        vec3  toP  = p - lightWorldPos;
+        vec3  dirS = beamLights[bli].dirToSource;
+        vec3  perp = toP - dirS * dot(toP, dirS);
+        float distSq = dot(perp, perp);
+        float radius = max(beamLights[bli].footprintRadM, 100.0);
+        float cutoff = radius * kBeamCutoffSigma; // same sigma cullCloudLightsForTile bounds against
+        if (distSq > cutoff * cutoff) continue;
+        float g = beamLights[bli].intensity * exp(-distSq / (2.0 * radius * radius));
+        float hCut = smoothstep(beamLights[bli].blockAltM - kCloudFeatherM,
+                                  beamLights[bli].blockAltM, h);
+        float hFadeBeam = mix(1.0, hCut, beamLights[bli].blockOpacity);
+        // Directional shading using THIS beam's own real direction (2026-08-09) — not a shared
+        // local-zenith approximation, since an oblique beam's true source direction can differ
+        // substantially from straight up. Reuses the same phaseCloud() Henyey-Greenstein lobe the
+        // sun/moon terms already use, so looking up along a beam reads as a brighter forward-
+        // scattered shaft — now genuinely toward where the light is actually coming from.
+        float ph = phaseCloud(dot(dir, beamLights[bli].dirToSource));
+        mag += vec3(1.0, 0.97, 0.92) * (g * hFadeBeam * ph);
+    }
+
+    beamLit = mag * pc.beamSkyGlowGain * (1.0 - sampleDayness) * kBeamCloudGlowScale;
+    return beamLit;
+}
+
+// ── cloudMarchCS / cirrusMarchCS ───────────────────────────────────────────────
+// Restructured from sat_sky.frag's cloudMarch/cirrusMarch: instead of mutating an inout `color`,
+// each returns the (A, B) pair of its affine composite (`color_out = color_in*A + B`) directly,
+// so the caller can combine cirrus-then-cloud into one (A_total, B_total) pair algebraically —
+// see the plan's "Why two RGBA16F targets" section. No terrain clipping here (no tSurface param;
+// the `if (tSurface > 0.0) tExit = min(tExit, tSurface);` lines from the original are removed).
+// CLOUD_DEBUG diagnostic overlays from the original are not ported — always CLOUD_DEBUG==0 here.
+
+void cloudMarchCS(
+    vec3  obsPos,  vec3  dir,
+    vec3  enuX,    vec3  enuY,        vec3  enuZ,
+    vec3  sunDir,  vec3  sunDirECEF,  float obsEffH,
+    vec4  moonDirENU,
+    out   vec3  A_cloud, out vec3 B_cloud,
+    out   vec3  cloudTOut,
+    out   float tCloudOcclude,
+    out   float tCloudEnter,  // shell entry distance for THIS ray, kNoSurfaceT if none — lets a
+                              // caller (the debug beam overlay) tell "in front of the cloud" from
+                              // "behind it" instead of just how opaque the whole column reads
+    out   float tCloudMeanT,  // 2026-08-09: transmittance-weighted mean distance to where this
+                              // ray's REAL cloud material sits (same value odAtmCloud already
+                              // derives below as cloudMeanT) — kNoSurfaceT if the march never ran.
+                              // tCloudEnter is only the IDEALIZED shell-boundary sphere crossing,
+                              // true for any ray pointed into the shell's altitude band regardless
+                              // of whether real density is there; tCloudMeanT is anchored to where
+                              // the density actually accumulated. See the debug-ray cloudGate call
+                              // site for why the distinction matters.
+    float tScene)  // shared scene depth (metres to the first surface, or kNoSurfaceT)
+{
+    // Runtime-tunable scattering strength — see cloud_params.glsl's atmosRayleighGain/
+    // atmosMieGain comment and common.glsl's BETA_R_BASE/BETA_M_BASE.
+    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+    float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
+
+    A_cloud = vec3(1.0);
+    B_cloud = vec3(0.0);
+    cloudTOut = vec3(1.0);
+    tCloudOcclude = -1.0;
+    tCloudMeanT = kNoSurfaceT;
+    tCloudEnter = kNoSurfaceT;
+    // Knockout bit 32768 (2026-08-10): isolates the volumetric low/mid cloud march — the single
+    // biggest block inside this shader — from everything else sharing the "cloud march" timestamp
+    // bucket (cirrus, fog, aurora, airglow red, the beam pointing ray, the per-pixel cloud shadow).
+    // The out-params above are already the exact "no cloud on this ray" values every early-return
+    // below leaves them at, so skipping here is the same no-op fallback, not a new code path.
+    if ((pc.debugDisableMask & 32768u) != 0u) return;
+    if (cloud.layers[0].enabled < 0.5) return;
+
+    float cloudAltFade = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
+    if (cloudAltFade < 0.001) return;
+
+    float cloudBaseAlt = cloud.layers[0].shellAltM;
+    float cloudTopAlt  = cloud.layers[1].shellAltM;
+    float shellThick   = cloudTopAlt - cloudBaseAlt;
+    float cloudBase    = R_EARTH + cloudBaseAlt;
+    float cloudTop     = R_EARTH + cloudTopAlt;
+
+    vec2 shellB = raySphere(obsPos, dir, cloudBase);
+    vec2 shellT = raySphere(obsPos, dir, cloudTop);
+
+    float tEnter, tExit;
+    bool  obsInsideShell = (obsEffH >= cloudBaseAlt && obsEffH <= cloudTopAlt);
+
+    if (obsEffH < cloudBaseAlt) {
+        tEnter = shellB.y;
+        tExit  = shellT.y;
+    } else if (obsEffH <= cloudTopAlt) {
+        tEnter = 0.001;
+        tExit  = shellT.y;
+        if (shellB.x > 0.001 && shellB.x < tExit) tExit = shellB.x;
+    } else {
+        if (shellT.x < 0.0) return;
+        tEnter = shellT.x;
+        tExit  = (shellB.x > 0.0) ? shellB.x : shellT.y;
+    }
+
+    // Terrain occlusion, applied to THIS layer's own bounds. Terrain nearer than the shell entry
+    // means the ray never reaches cloud at all; terrain inside the shell truncates the march part
+    // way — a ridge poking into the deck now correctly cuts the cloud behind it, which the old
+    // shared post-hoc gate explicitly could not do (it could only suppress all layers or none).
+    if (tEnter >= tScene) return;
+    tExit = min(tExit, tScene);
+    tCloudEnter = tEnter; // real distance the ray reaches this shell — see param comment above
+
+    // Distance-based 3D->2D crossfade. This, not maxRenderDistM, is what actually bounds the
+    // march: maxRenderDistM caps the span from tEnter, which from orbit is only the ~9 km shell
+    // crossing and therefore never binds no matter how low it is set. Keying on tEnter — how far
+    // away the clouds on this ray are — makes the fade cheap where it matters, because a fully
+    // faded ray returns here before the coverage lookup, the step-count setup or the march.
+    // It also gives a horizon transition from the ground, which an altitude-only fade cannot.
+    //
+    // NOTE: tEnter is pinned to ~0 when the observer is inside the shell, so this fade never
+    // engages there (see [[project_cloud_inside_shell_rejection_bug]] for the full analysis). A
+    // fix keying this off tExit instead when inside the shell was tried and REVERTED — it produced
+    // a large gap/hole through the middle of the cloud layer and broke rendering outright. Root
+    // cause not yet understood; likely tExit's own behaviour is far less well-behaved near the
+    // shell's tangent/grazing angles than assumed. Do not retry the same approach without figuring
+    // out why first.
+    float cloudDistFade = 1.0 - smoothstep(cloud.cloudDistFadeStartM, cloud.cloudDistFadeEndM, tEnter);
+    cloudAltFade = min(cloudAltFade, cloudDistFade);
+    if (cloudAltFade < 0.001) return;
+
+    tExit = min(tExit, tEnter + cloud.maxRenderDistM);
+    if (tEnter >= tExit || tExit <= 0.0) return;
+
+    {
+        // The rejection point normally IS the shell entry (tEnter) — a real, direction-dependent
+        // position when the observer is below or above the shell. When the observer is INSIDE the
+        // shell, tEnter is pinned to ~0 (the march starts immediately, right where the camera is),
+        // so `obsPos + tEnter*dir` collapses to the observer's OWN geographic column regardless of
+        // `dir` — the coarse mip-4 sample then just re-reads whatever's directly overhead/underfoot
+        // and rejects the ENTIRE march for every ray on the screen whenever that one column happens
+        // to be clear, even while genuinely looking at cloud elsewhere. Reported as clouds cutting
+        // out and deforming near the horizon starting around the low shell altitude, and vanishing
+        // outright (every cloud on screen) while flying inside the shell away from directly-overhead
+        // cloud. Use a forward point along THIS ray instead when inside the shell — clamped so a
+        // near-horizontal ray doesn't sample absurdly far away, and a near-vertical ray (small
+        // tExit already) isn't pushed past its own real shell crossing.
+        float covT  = obsInsideShell ? clamp(tExit, 2000.0, 40000.0) : tEnter;
+        vec3  ePt   = obsPos + covT * dir;
+        vec3  eECEF = ePt.x * enuX + ePt.y * enuY + ePt.z * enuZ;
+        float eLen  = length(eECEF);
+        float eLon  = atan(eECEF.y, eECEF.x);
+        float eLat  = asin(clamp(eECEF.z / eLen, -1.0, 1.0));
+        vec2  eUV   = vec2(fract((eLon + PI) / (2.0*PI)
+                                 + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                           (0.5*PI - eLat) / PI);
+        // DELIBERATELY coarser than cloud.coverageMipLod, and deliberately not tunable.
+        // This is a whole-column rejection test taken from a SINGLE point (the shell entry, or the
+        // forward point above when inside the shell), used to skip the march entirely. A blurry
+        // read is what makes that single sample representative of the column's neighbourhood.
+        // Sampling it sharply would let a ray reject because its entry point happened to land in a
+        // gap between two cloud cells even though it passes through plenty of cloud further along —
+        // holes and popping, not detail. A rejection test wants to be conservative; only the
+        // per-sample lookups want to be sharp.
+        const float kCoverageRejectMipLod = 4.0;
+        float cMap  = textureLod(earthCloudsTex, eUV, kCoverageRejectMipLod).r;
+        if (cloud.coverage * cMap < 0.02) return;
+    }
+
+    vec3 sunColorCloud = vec3(0.0);
+    {
+        vec3 p0  = obsPos + tEnter * dir;
+        vec2 tSE = raySphere(p0, sunDir, R_EARTH);
+        if (!(tSE.x > 0.0 && tSE.y > 0.0)) {
+            vec2 tSA = raySphere(p0, sunDir, R_ATMOS);
+            if (tSA.y > 0.0) {
+                vec2 sOD = optDepth(p0, sunDir, tSA.y);
+                sunColorCloud = SUN_INTENSITY * exp(-(BETA_R * sOD.x + BETA_M * 1.1 * sOD.y));
+            }
+        }
+    }
+
+    vec3 skyAmbientBase = vec3(0.0);
+    {
+        // Anchored at the CLOUD, not at the observer: p0 is the march's shell entry point. This
+        // term is "how bright is the sky lighting this cloud", so it has to be sampled where the
+        // cloud is.
+        //
+        // It was previously anchored at obsPos, which is only equivalent when the observer is
+        // essentially co-located with the clouds — true from the surface, badly false from orbit.
+        // From LEO you can be over the night side looking at clouds on the terminator: the
+        // per-sample twilight bell (cloudSunDotRaw) correctly says "full twilight", while
+        // skyAmbientBase sampled at your own position says "night, ~0". Zero times any gain is
+        // still zero, which is why cranking the twilight gain did nothing from orbit while working
+        // fine from the ground.
+        //
+        // An earlier round tried to fix that by clamping the obsPos anchor into the atmosphere
+        // (above R_ATMOS the outward zenith ray never re-enters, so tSA.y <= 0 and the whole term
+        // was EXACTLY zero). That was a real bug and the clamp was necessary, but it was not
+        // sufficient — it fixed "the anchor is in vacuum" without fixing "the anchor is in the
+        // wrong place".
+        //
+        // Why the original obsPos switch is safe to undo: it was made because a distant entry
+        // point on a grazing ray could smear unrepresentative conditions across the horizon band.
+        // The twilight bell did not exist yet at that point. It does now, and it gates per-sample
+        // on the sample's OWN sun angle, so a daylit distant column can no longer leak onto night
+        // clouds regardless of what the anchor reads. If the horizon artifact returns, that gate
+        // is the thing to look at, not this anchor.
+        //
+        // The entry point is on the cloud shell by construction, so it is always at 2-11 km — well
+        // inside the atmosphere. The clamp is kept purely as a guard.
+        const float kAmbientAnchorMaxAltM = 60000.0;   // safely inside R_ATMOS (= R_EARTH + 100km)
+        vec3  pEntry     = obsPos + tEnter * dir;
+        float anchorAltM = min(length(pEntry) - R_EARTH, kAmbientAnchorMaxAltM);
+        vec3 p0     = normalize(pEntry) * (R_EARTH + max(anchorAltM, 0.0));
+        vec3 zenith = normalize(p0);
+        vec2 tSA    = raySphere(p0, zenith, R_ATMOS);
+        if (tSA.y > 0.0) {
+            const int N_Z = 6;
+            float zSeg    = tSA.y / float(N_Z);
+            float cosAUp  = dot(zenith, sunDir);
+            float pR_up   = 0.75 * (1.0 + cosAUp * cosAUp);
+            float odR_z = 0.0, odM_z = 0.0;
+            float skyAmbientBaseM = 0.0;
+            for (int zi = 0; zi < N_Z; ++zi) {
+                vec3  sp = p0 + zenith * ((float(zi) + 0.5) * zSeg);
+                float h  = max(0.0, length(sp) - R_EARTH);
+                float dR = exp(-h / H_R) * zSeg;
+                float dM = exp(-h / H_M) * zSeg;
+                odR_z += dR;  odM_z += dM;
+                vec2 tSE = raySphere(sp, sunDir, R_EARTH);
+                if (tSE.x > 0.0 && tSE.y > 0.0) continue;
+                vec2 tSun = raySphere(sp, sunDir, R_ATMOS);
+                vec2 sunOD = (tSun.y > 0.0) ? optDepth(sp, sunDir, tSun.y) : vec2(0.0);
+                vec3 tau      = BETA_R * (odR_z + sunOD.x) + BETA_M * 1.1 * (odM_z + sunOD.y);
+                vec3 attnStep = exp(-tau);
+                skyAmbientBase  += attnStep * dR;
+                skyAmbientBaseM += dot(attnStep, vec3(1.0 / 3.0)) * dM;
+            }
+            float pM_up = phaseM(cosAUp);
+            skyAmbientBase = SUN_INTENSITY * (pR_up * BETA_R * skyAmbientBase
+                                            + vec3(pM_up * BETA_M * skyAmbientBaseM));
+        }
+    }
+
+    vec3  cloudTransmittance = vec3(1.0);
+    vec3  cloudScatter       = vec3(0.0);
+    // Transmittance-weighted mean sample distance — see its use below at odAtmCloud/cloudAttn for
+    // why this exists instead of just using tEnter.
+    float cloudDistAccum   = 0.0;
+    float cloudWeightAccum = 0.0;
+    float groundSteps = max(2.0, cloud.marchSteps);
+    float stepAltT    = smoothstep(kMarchStepsAltStart, kMarchStepsAltEnd, obsEffH);
+    int   N           = max(8, int(mix(groundSteps, kMarchStepsFloor, stepAltT)));
+    float dh_dt       = max(abs(dir.z), 0.02);
+    const float kCloudMaxStepM = 250.0;
+    float stepLen = min((shellThick / float(N)) / dh_dt, kCloudMaxStepM);
+    bool  insideShell = (obsEffH >= cloudBaseAlt && obsEffH <= cloudTopAlt);
+    float bigStep = insideShell ? stepLen : stepLen * 2.0;
+    float t       = tEnter;
+    bool  inCloud = false;
+
+    // ── Sun optical-depth cache (T3.3, redesigned — see the call site for the full rationale) ──
+    // The cone integral is a function of WHERE the sample is, not of which march step found it,
+    // and consecutive in-cloud samples are <=250 m apart while the cone itself spans up to ~19 km.
+    // So the same result can serve several march steps. Held across the loop; -1e30 means "no
+    // valid entry yet", which the stride test below treats as an immediate miss.
+    float sunODCache     = 0.0;
+    float sunODCacheDist = -1e30;
+
+    float cosA    = dot(dir, sunDir);
+    float ph      = phaseCloud(cosA);
+    vec3  moonDir3 = normalize(moonDirENU.xyz);
+    float cosAMoon = dot(dir, moonDir3);
+    float phMoon   = phaseCloud(cosAMoon);
+
+    // Raised 2048->4096 (session 28 follow-up #10): with maxRenderDistM pushed out to actually
+    // reach the cloud shell's own horizon (see that field's comment), the old 2048 ceiling could
+    // itself become the binding cutoff before maxRenderDistM did. Margin raised again (follow-up
+    // #14): at the 400km default, covering the full distance at kCloudMaxStepM=250m needs exactly
+    // 1600 steps — the flat "+32" margin left only 32 steps of slack, uncomfortably close to the
+    // exact requirement for a ray that's "in cloud" (the finer stepLen, not the coarser bigStep)
+    // continuously the whole way, which is precisely the dense-horizon-cloud case this exists to
+    // handle. A 15% multiplicative margin plus a larger flat floor scales proportionally instead of
+    // staying fixed as maxRenderDistM grows.
+    int hardCap = min(8192, int(cloud.maxRenderDistM / kCloudMaxStepM * 1.15) + 64);
+    for (int i = 0; i < hardCap && t < tExit; ++i) {
+        float step = inCloud ? stepLen : bigStep;
+        step = min(step, tExit - t);
+        vec3  p = obsPos + (t + step * 0.5) * dir;
+        float h = length(p) - R_EARTH;
+        if (h < cloudBaseAlt || h > cloudTopAlt) { inCloud = false; t += step; continue; }
+
+        float hNorm = (h - cloudBaseAlt) / shellThick;
+        vec3  pECEF = p.x * enuX + p.y * enuY + p.z * enuZ;
+
+        // T1.3 (CLOUD_PERF_PLAN.md): this block used to take FOUR sqrt/rsqrt of the same vector
+        // per sample — length(p) for h, normalize(pECEF) for cloudSunDotRaw, length(pECEF) for
+        // pLen, pECEF/pLen for dirECEF, and normalize(pECEF) a third time down at moonElevGeog.
+        // enuX/enuY/enuZ are orthonormal, so |pECEF| == |p|, and `h` already carries length(p).
+        // Recovering pLen as h + R_EARTH is bit-identical, not merely close: length(p) (~6.38e6)
+        // and R_EARTH (6.371e6) are within a factor of 2, so by Sterbenz's lemma the subtraction
+        // that produced `h` is exact, and adding R_EARTH back returns exactly length(p).
+        float pLen    = h + R_EARTH;
+        vec3  dirECEF = pECEF / pLen;
+
+        // Hoisted up from its old spot further below (next to sunElev/selfShadow) so the self-
+        // shadow cone's grazing-angle compensation can use it too — same value, computed once.
+        float cloudSunDotRaw = dot(dirECEF, sunDirECEF);
+
+        float pLon  = atan(pECEF.y, pECEF.x);
+        float pLat  = asin(clamp(dirECEF.z, -1.0, 1.0));
+        vec2  pUV   = vec2(fract((pLon + PI) / (2.0*PI)
+                                 + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                           (0.5*PI - pLat) / PI);
+        vec2  pUVGeo = vec2(fract((pLon + PI) / (2.0*PI)), (0.5*PI - pLat) / PI);
+        // Per-sample coverage — this is the lookup that decides cloud SHAPE, so it takes the
+        // tunable mip. Aliasing risk from the march itself is low: even mip 0 is ~4.9 km/texel
+        // against a <=250 m step (kCloudMaxStepM), so the march oversamples it heavily.
+        float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, cloud.coverageMipLod).r;
+
+        // T1.1 (CLOUD_PERF_PLAN.md) — clear-column rejection, the single biggest perf lever in
+        // this shader. Without it every EMPTY step still paid the full warp (8 texture ops before
+        // T1.2, 1 after), colNoise and baseNoise before it could bail at the hFade test below:
+        // 11 texture ops for a sample that was always going to contribute nothing. Empty samples
+        // vastly outnumber in-cloud ones — a ground-level horizon ray crosses ~200 km of shell at
+        // bigStep, ~400 steps, most of them through clear air.
+        //
+        // The 0.02 threshold is not new: the sun self-shadow cone below, cloudGroundShadow, and
+        // cirrusMarchCS ALL already reject on exactly this value. The view march was the one site
+        // that didn't, so it could draw a wisp that cast no self-shadow, no ground shadow, and
+        // blocked no beam. This removes that inconsistency rather than introducing one.
+        //
+        // Not strictly bit-identical, and it is worth knowing why: below the threshold the
+        // downstream remap(colNoise, 1-localCov, 1, 0, 1) needs colNoise > ~0.981 AND the
+        // presence-slice blend to clear the same bar before any density survives. Rare, and
+        // sub-threshold when it happens.
+        if (localCov < 0.02) { inCloud = false; t += step; continue; }
+
+        vec3  dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[0].driftMult);
+        vec3  warpUVW      = cloudWarpOffset(dirECEFDrift);
+
+        // T2.2 — one fetch feeds both colH and baseH; see cloudColumnNoise().
+        vec2  colSample = cloudColumnNoise(dirECEFDrift * kCloudColFreq + warpUVW * kWarpColScale);
+        float colH = remap(colSample.x, 1.0 - localCov, 1.0, 0.0, 1.0);
+
+        // Variable base height: was a hardcoded 0.0 for every column, so every cloud in the shell
+        // shared exactly the same base altitude — a perfectly flat deck. baseNoise reuses the same
+        // warped horizontal coordinate as colH (so the undulation follows the same drifting cloud
+        // field) but a decorrelated fixed Z offset, scaled by cloud.cloudBaseVariance (settings
+        // "Base variance"; 0 reproduces the old flat-base behavior exactly).
+        float baseH = (colSample.y - 0.5) * cloud.cloudBaseVariance;
+
+        float topFade = 1.0 - smoothstep(colH - 0.05, colH + 0.05, hNorm);
+        float hFade = smoothstep(baseH, baseH + 0.05, hNorm) * topFade;
+        if (hFade < 0.001) { inCloud = false; t += step; continue; }
+
+        const float kVertTiles = 1.5;
+        float posZ    = sin(pUV.x * 21.3 + pUV.y * 17.7) * 0.5 + 0.5;
+        vec3  uvwXY   = dirECEFDrift * kCloudHorizFreq + warpUVW;
+        vec3  uvwDetail = uvwXY
+                               + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0);
+        float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade, false);
+
+        if (d > 0.001) {
+            inCloud = true;
+            // cloud.cloudOpacityScale (default 1.0, settings "Opacity scale"): d is clamped to
+            // [0,1] above, so `density` alone cannot push a saturated column past whatever
+            // opacity this fixed extinction-per-metre constant gives.
+            //
+            // A flat multiplier on extinction (the first attempt) scaled EVERY sample equally,
+            // including the thin erosion-carved wisps at a cloud's own silhouette — those need
+            // only a little accumulated depth to fully extinguish once boosted, so raising the
+            // scale to fix opaque cores also flattened soft edges into a hard silhouette,
+            // reported as clouds losing their fluffy look.
+            //
+            // Fix: ramp the boost in from 1.0 (no change) using how much transmittance THIS RAY
+            // has already lost before this sample, not a flat constant. A ray still near
+            // cloudTransmittance≈1 is, by definition, still in the thin entry/edge region — it
+            // gets none of the extra boost, so edges keep their original unscaled softness
+            // exactly. Only once a column has already proven itself genuinely thick (transmittance
+            // dropping) does the boost ramp toward the full scale, accelerating an
+            // already-committed thick core the rest of the way to true opacity. Self-reinforcing:
+            // the boost grows because the column is getting thicker, not because of raw density
+            // alone, so a moderately dense but genuine cloud deck (not just its silhouette wisps)
+            // reliably converges to opaque instead of only the mathematical d=1 extreme.
+            float coreBoost  = 1.0 + (cloud.cloudOpacityScale - 1.0) * (1.0 - cloudTransmittance.r);
+            float extinction = d * step * 3e-3 * coreBoost;
+            vec3  stepT      = exp(-vec3(extinction));
+            float powder     = 1.0 - exp(-extinction * 2.0);
+
+            float sampleDist = t + step * 0.5;
+            float shadowFade = 1.0 - smoothstep(cloud.shadowMaxDistM * 0.6, cloud.shadowMaxDistM, sampleDist);
+            float sunOptDepth = 0.0;
+            if (shadowFade > 0.01 && (pc.debugDisableMask & 64u) == 0u) {
+                vec2  tConeExit = raySphere(p, sunDir, cloudTop);
+                // The shellThick*2 cap is what bounds how much optical depth the cone can ever
+                // accumulate, and therefore how dark a back-lit cloud can get. At a grazing sun
+                // the true path to the shell top is far longer than this, so the cap — not the
+                // cloud — was setting the maximum shadow depth. cloudConeLenScale reopens it.
+                float coneLen   = min((tConeExit.y > 0.0) ? tConeExit.y : shellThick,
+                                      shellThick * 2.0 * max(cloud.cloudConeLenScale, 0.05));
+
+                // ── T3.3 REDESIGNED: reuse the cone RESULT, do not shrink the cone ────────────
+                // The first version of this scaled N_CONE down with cloudTransmittance. It hit its
+                // cost target (cone 11.43 ms -> 5.00 ms, measured) but it bought that by raising
+                // the ESTIMATOR VARIANCE of a Monte-Carlo integral, and coneJitter is per-PIXEL, so
+                // higher variance shows up directly as per-pixel shading noise. That is exactly
+                // what "major noise below 13 light steps, extreme at 6" is: fewer samples in the
+                // same integral, nothing else. Lowering the slider does the same thing by hand.
+                //
+                // The way out is to notice the cone integral is a function of WHERE the sample is,
+                // not of which march step found it. Consecutive in-cloud samples are <=250 m apart
+                // (often ~100 m — stepLen shrinks with |dir.z|) while the cone spans up to ~19 km,
+                // so the result genuinely varies slowly between them. Reusing one FULL-QUALITY
+                // estimate across several march steps cuts cost the same way while leaving the
+                // per-estimate variance untouched — and correlating neighbouring samples along the
+                // ray, if anything, reads calmer than jittering each one independently.
+                //
+                // N_CONE therefore goes back to the full slider value.
+                //
+                // The stride also grows with distance, which is the fix for the second half of the
+                // problem: cloud.shadowMaxDistM had to stay low (~22 km, so only near-zenith cloud
+                // was ever shaded) purely because cost scaled with how much of the screen was BOTH
+                // cloud and in range. With the stride absorbing distance, shadowMaxDistM becomes a
+                // LOOK control rather than a cost control, and can be pushed out far enough for
+                // the effect to actually read across the sky. At 200 km the stride is kilometres,
+                // but so is the depth interval it covers, and cloud detail there is sub-pixel.
+                const float kSunODStrideBaseM  = 500.0;       // reuse distance at the camera
+                const float kSunODStrideDistK  = 1.0 / 30000.0; // doubles by ~30 km out
+                const float kSunODStrideTFloor = 0.15;        // deep samples reuse for longer
+                const float kSunODStrideMaxM   = 20000.0;
+                float strideM = kSunODStrideBaseM * (1.0 + sampleDist * kSunODStrideDistK)
+                              / max(cloudTransmittance.r, kSunODStrideTFloor);
+                strideM = min(strideM, kSunODStrideMaxM);
+
+                if (sampleDist - sunODCacheDist > strideM) {
+                    int   N_CONE     = max(1, int(cloud.lightSteps));
+
+                    // ── T3.1: GEOMETRIC step lengths, not uniform ─────────────────────────────────
+                    // Self-shadowing is dominated by the cloud immediately sunward of this sample; the
+                    // far end of the cone contributes a slowly-varying bias. Uniform steps spend the
+                    // same budget on both. Growing each step by kConeStepRatio concentrates samples in
+                    // the near field where the detail actually is, at the same count — which is what
+                    // lets the "Light steps" setting come down without the shadow falling apart.
+                    //
+                    // The lengths are a geometric series summing to exactly coneLen, so the
+                    // optical-depth integral keeps the same total reach and shadow brightness stays
+                    // comparable to the uniform version. coneSeg is advanced inside the loop.
+                    const float kConeStepRatio = 1.35;
+                    float ratioPow = pow(kConeStepRatio, float(N_CONE));
+                    float coneSeg  = coneLen * (kConeStepRatio - 1.0) / max(ratioPow - 1.0, 1e-4);
+                    float coneSeg0 = coneSeg;   // first (smallest) step — bounds the jitter, see below
+                    float coneT    = 0.0;
+                    // Per-invocation jitter on the cone's sample phase: a FIXED (ci+0.5) offset means
+                    // every in-cloud sample's shadow cone is phase-locked to the same lattice through
+                    // structured (Worley) noise sampled along one constant global direction (sunDir) —
+                    // that's a textbook aliasing setup, and it read as coherent parallel-line banding
+                    // in cloud shadows. Same noiseTex dither pattern cirrusMarchCS already uses.
+                    float coneJitter = textureLod(noiseTex, vec2(gl_GlobalInvocationID.xy) * (1.0/128.0), 0.0).g;
+                    float od = 0.0;
+                    for (int ci = 0; ci < N_CONE; ++ci) {
+                        // Position and length for THIS step, then advance immediately — the two
+                        // `continue`s below would otherwise skip the advance and leave every
+                        // subsequent sample at the wrong distance (T3.1).
+                        float seg   = coneSeg;
+                        // Midpoint sample (unbiased) plus a jitter whose amplitude is the FIRST,
+                        // SMALLEST step — NOT this step's own length.
+                        //
+                        // Scaling the jitter by each step's own `seg` (the first version of T3.1) was a
+                        // real noise regression: after geometric growth the last step is ~5 km long AND
+                        // carries the largest density*seg weight in the sum, so randomising its position
+                        // over its full 5 km put the biggest variance contributor in the far field,
+                        // where the cone is only meant to supply a slowly-varying bias. A fixed, small
+                        // jitter amplitude still decorrelates neighbouring pixels in the near field —
+                        // which is what the dither is actually for — without that.
+                        vec3  cp    = p + sunDir * (coneT + seg * 0.5 + (coneJitter - 0.5) * coneSeg0);
+                        coneT      += seg;
+                        coneSeg    *= kConeStepRatio;
+
+                        float ch    = length(cp) - R_EARTH;
+                        if (ch < cloudBaseAlt || ch > cloudTopAlt) continue;
+                        float chN   = (ch - cloudBaseAlt) / shellThick;
+                        vec3  cpE   = cp.x * enuX + cp.y * enuY + cp.z * enuZ;
+                        // T1.3 — same length()-from-h identity the view march above uses, applied in
+                        // the cone, so it lands N_CONE times per in-cloud sample rather than once.
+                        float cpL   = ch + R_EARTH;
+                        vec3  cDir  = cpE / cpL;
+                        float cpLon = atan(cpE.y, cpE.x);
+                        float cpLat = asin(clamp(cDir.z, -1.0, 1.0));
+                        vec2  cpUV  = vec2(fract((cpLon + PI) / (2.0*PI)
+                                           + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                                          (0.5*PI - cpLat) / PI);
+                        // One mip coarser than the view march, preserving the previous relationship
+                        // (was a fixed 5.0 against the view march's 4.0). Self-shadowing does not need
+                        // the fine detail, and this is the hottest lookup in the shader — it runs per
+                        // cone step per in-cloud sample.
+                        float cLoc  = cloud.coverage * textureLod(earthCloudsTex, cpUV, cloud.coverageMipLod + 1.0).r;
+                        if (cLoc < 0.02) continue;
+                        vec3  cDirDrift  = rotateZ(cDir, cloud.cloudPhase * cloud.layers[0].driftMult);
+                        // Reuse the PARENT sample's already-computed warp offset instead of calling
+                        // cloudWarpOffset (3 warpPerlin3 evaluations) again per cone step — perf
+                        // (this session): cone samples sit within ~2*shellThick of p along sunDir,
+                        // a few km at most, which is a negligible angular displacement against
+                        // kWarpFreq=6's basis over the full unit sphere. This was the single biggest
+                        // new cost from making the shadow cone warp-consistent with the visible cloud.
+                        vec3  cWarpUVW   = warpUVW;
+                        vec3  cUVWXY = cDirDrift * kCloudHorizFreq + cWarpUVW;
+                        // (cUVWD / cPosZ removed with T3.2 — the cone no longer samples the
+                        //  erosion volume, so it needs no detail coordinate. That vec3 WAS the
+                        //  altitude-varying Z lookup responsible for the sliced-noise blobs.)
+
+                        // Match the cone's own vertical coverage limit and base variance to the SAME
+                        // per-column noise the visible march uses (colH/baseH above) — without this the
+                        // cone treated the whole 5%-95% of the shell as potential cloud regardless of
+                        // how little of that column the visible march actually filled in, so a nearly-
+                        // clear column (or one whose visible cloud is only a single-step sliver) could
+                        // still cast a full-height shadow with no corresponding visible cloud.
+                        vec2  cColSample = cloudColumnNoise(cDirDrift * kCloudColFreq + cWarpUVW * kWarpColScale); // T2.2
+                        float cColH      = remap(cColSample.x, 1.0 - cLoc, 1.0, 0.0, 1.0);
+                        float cBaseH     = (cColSample.y - 0.5) * cloud.cloudBaseVariance;
+                        float chFade = smoothstep(cBaseH, cBaseH + 0.05, chN) * (1.0 - smoothstep(cColH - 0.05, cColH + 0.05, chN));
+                        // T3.2 — mean erosion (see cloudDensity). cUVWD goes unused in this mode; passing
+                        // cUVWXY keeps the call honest rather than inventing a dummy value.
+                        od += cloudDensity(cUVWXY, cUVWXY, chN, cLoc, cloud.density, chFade,
+                                           true) * seg * 3.75e-4;
+                    }
+                    sunODCache     = od;
+                    sunODCacheDist = sampleDist;
+                } // end cache miss
+
+                // The CACHED value is the raw cone integral only. shadowFade and grazeAtten below
+                // are per-sample modulations of it (they depend on this sample's own distance and
+                // sun elevation, not on the cone geometry), so they are deliberately applied after
+                // the cache rather than baked into it — cheap, and more correct than reusing a
+                // stale distance fade across the stride.
+                sunOptDepth = sunODCache;
+                sunOptDepth *= shadowFade;
+
+                // Grazing-sun attenuation: at sunset the light-march cone above (only ~N_CONE
+                // samples, a handful by default) traverses the shell almost tangentially, so with
+                // this coverage map reading fairly uniform at the cone's short fixed reach, most
+                // samples land in cloud and sunOptDepth comes out uniformly high — reported as the
+                // whole visible cloud field going into flat shadow at sunset, well before the sun
+                // is actually at a shallow enough angle for that much mutual occlusion. (An earlier
+                // attempt fixed this by extending coneLen itself at grazing angles instead, but
+                // with a low, GPU-cost-bound N_CONE that just undersampled a longer path — visible
+                // as banding, and shadow no longer tied to actual cloud shape. Reverted above.)
+                // This instead directly damps the RESULT at low sun elevation, leaving the cone's
+                // sampling geometry untouched (so it stays fully correlated with cloud shape) —
+                // less physically rigorous, but matches the existing shadowFloor/selfShadow
+                // heuristic below, which already fudges the same sunset transition for the same
+                // reason.
+                float sunElevSin = clamp(abs(cloudSunDotRaw), 0.0, 1.0);
+                // kGrazeShadowFloor is now only the compiled-in default for cloud.cloudGrazeShadow.
+                // This term deliberately DAMPS self-shadowing at low sun elevation, i.e. exactly at
+                // sunset, which is when directional shading is most wanted — it was a workaround for
+                // the cone undersampling a near-tangential path at a low N_CONE, and the T3.3 sun-OD
+                // cache has since restored the cone to the full slider count, so the original
+                // justification is much weaker. Raise this toward 1.0 for real sunset shadowing.
+                float grazeAtten = mix(cloud.cloudGrazeShadow, 1.0, smoothstep(0.0, kGrazeShadowFullSin, sunElevSin));
+                sunOptDepth *= grazeAtten;
+            }
+
+            // Multi-scatter octaves: ms2/ms3 decay 2x and 4x more slowly than true single
+            // scattering, standing in for light that reaches this sample after bouncing. They are
+            // also, by construction, a CONTRAST KILLER — at sunOptDepth 2.4 (about the deepest a
+            // dense cloud reached at sunset before this change) the three-octave sum is 0.22 while
+            // pure single scatter is 0.09, so more than half the remaining "shadow" is octave tail
+            // rather than anything to do with cloud shape. That is the main reason a cloud reads as
+            // uniformly lit with no dark side.
+            //
+            // cloudMultiScatter blends between pure single scatter (0) and the original
+            // three-octave sum (1). Lower it for a harder, more directional look; raise it if
+            // shadowed sides go flat black. cloudShadowFloorT is the hard floor underneath (was a
+            // fixed 0.05) — it sets how dark the fully-shadowed side of a cloud is allowed to get,
+            // so it caps the achievable contrast independently of everything above.
+            float ms1 = exp(-sunOptDepth);
+            float ms2 = exp(-sunOptDepth * 0.5) * 0.5;
+            float ms3 = exp(-sunOptDepth * 0.25) * 0.25;
+            float msSum = (ms1 + ms2 + ms3) / 1.75;
+            float sunTransmittance = max(mix(ms1, msSum, clamp(cloud.cloudMultiScatter, 0.0, 1.0)),
+                                         cloud.cloudShadowFloorT);
+
+            float sunElev     = smoothstep(-0.04, 0.12, cloudSunDotRaw);
+            float sunElevSoft = sunElev;
+            float shadowFloor = mix(0.1, 0.5, clamp(1.0 - sunElev * 4.0, 0.0, 1.0));
+            // Column-relative, not shell-relative. This used to interpolate on hNorm, which is
+            // the sample's height within the whole 2-11 km SHELL — so a cloud sitting low in the
+            // shell was shaded as though its TOP were also its base, uniformly dark from top to
+            // bottom, and only a cloud that happened to reach the shell ceiling ever received
+            // full self-lighting. It is also a pure analytic function of altitude, i.e. it
+            // carries no cloud shape at all, which is the direct reason bases render as a flat
+            // gradient at sunset regardless of how much geometric detail erosion puts there.
+            // colH/baseH are this column's own warped top/bottom, so this term now varies
+            // horizontally with the cloud field.
+            float colSpan    = max(colH - baseH, 1e-3);
+            float colRel     = clamp((hNorm - baseH) / colSpan, 0.0, 1.0);
+
+            // ── Why clouds read as "lasagna" ────────────────────────────────────────────────
+            // Nearly every shading term here is a function of HEIGHT ALONE — this ramp, the
+            // twilight ambient's mix(0.3,0.9,hNorm), cityUp's heightFalloff, auroraUp's
+            // mix(0.2,1.0,hNorm). A function of height has, by construction, the same value
+            // everywhere on a horizontal plane, so it paints horizontal bands: dark bottoms,
+            // mid sides, mid tops. Changing erosion cannot fix that, because erosion changes
+            // GEOMETRY while the shading stays f(height) — the bands just move up or down, which
+            // is exactly the reported behaviour.
+            //
+            // Two changes, both aimed at putting horizontal variation back in:
+            //
+            // 1. The vertical ramp is now weighted by how overhead the sun is. It stands in for
+            //    "light arrives from above", which is true at midday and false at sunset — where
+            //    it actively fights the cone-derived shadow that does carry real shape.
+            //    cloudVertShadeGain scales what remains; 0 removes the analytic ramp entirely and
+            //    leaves all shading to the cone.
+            //
+            // 2. A density-driven occlusion term. `d` is this sample's own local density, which
+            //    varies with the erosion field — so unlike everything above it carries the cloud's
+            //    actual 3D shape. Dense interior darkens, wispy edges and protruding lumps stay
+            //    bright, which is what makes cauliflower read as cauliflower. It is an
+            //    approximation (local density stands in for local mean free path, not a real
+            //    gathered integral), but it is free: d is already computed.
+            //    1-exp(-d*power) maps the now-unbounded d into [0,1); cloudAOPower sets where that
+            //    curve bites, which needs tuning against whatever `density` ends up at.
+            float vertRamp   = mix(shadowFloor, 1.0, colRel);
+            float overhead   = smoothstep(0.0, kVertShadeSunBand, max(cloudSunDotRaw, 0.0));
+            float vertTerm   = mix(1.0, vertRamp, overhead * cloud.cloudVertShadeGain);
+            float aoTerm     = 1.0 - cloud.cloudDensityAO
+                                     * (1.0 - exp(-d * max(cloud.cloudAOPower, 1e-3)));
+            float selfShadow = vertTerm * aoTerm;
+            float sunLit      = sunElevSoft * sunTransmittance * selfShadow;
+
+            float sampleDayness = clamp((cloudSunDotRaw + 0.2) / 0.5, 0.0, 1.0);
+
+            // skyAmbientBase (the analytic single-scattering zenith Rayleigh/Mie integral, sampled
+            // once per frame at the observer) represents zenith-scattered SUNLIGHT and genuinely
+            // decays toward true night — but not fast enough on its own: it only zeroes out once
+            // the sun ray to every sample along the zenith column is Earth-blocked, which can
+            // still be a while (and depends on the OBSERVER's own position, not this cloud
+            // sample's) after this particular sample has visually gone dark. Originally this term
+            // was left completely ungated (read as a lit sky-colored haze even at true night); a
+            // first fix gated it by (1-sampleDayness), which only ramps IN toward night and never
+            // back out, so it stayed at full strength indefinitely once past the terminator —
+            // reported as overbright at night. twilightWeight is instead a proper bell: it rises
+            // approaching dusk and falls again deeper into night, so this term is twilight-only,
+            // as intended, and skyAmbientBase's own slow decay no longer has to do all the work.
+            //
+            // Both edges of the bell are tunable, because where it STARTS turned out to matter as
+            // much as its height. The original hardcoded rise band (-0.05..0.15) did not reach
+            // full strength until the sun was already ~3 degrees below the horizon, while the
+            // direct-sun term (sunElev, smoothstep(-0.04, 0.12, ...)) had died at ~2 degrees
+            // below. Between those two lay a band where clouds had lost the sun and not yet
+            // gained the sky — reported as white -> orange -> BLACK -> blue -> black through a
+            // single sunset. Raising twilightBandHi slides the whole rise earlier so the sky term
+            // is already contributing while the last direct light is fading, closing the gap.
+            //
+            // Widths are fixed; only the edges move. kTwilightRiseWidth matches the original band
+            // (0.15 - -0.05) and kTwilightFallWidth the original (-0.15 - -0.45), so setting
+            // Hi = 0.15 / Lo = -0.45 reproduces the previous behaviour exactly.
+            const float kTwilightRiseWidth = 0.2;
+            const float kTwilightFallWidth = 0.3;
+            float twiHi = cloud.twilightBandHi;
+            float twiLo = cloud.twilightBandLo;
+            float twilightRise = 1.0 - smoothstep(twiHi - kTwilightRiseWidth, twiHi, cloudSunDotRaw);
+            float twilightFall = smoothstep(twiLo, twiLo + kTwilightFallWidth, cloudSunDotRaw);
+            float twilightWeight = twilightRise * twilightFall;
+            // cloud.cloudTwilightAmbientGain is the manual control over this: sky-lit cloud at
+            // dusk/dawn, so clouds read consistently against the sky-lit TERRAIN beside them
+            // instead of dropping dark while the ground is still visibly blue. Twilight-only by
+            // construction — twilightWeight is a bell, not a step, so this contributes nothing in
+            // full daylight and nothing in full night.
+            vec3 twilightAmbient = skyAmbientBase * mix(0.3, 0.9, hNorm) * twilightWeight
+                                 * cloud.cloudTwilightAmbientGain;
+
+            // (a non-decaying nightFloorAmbient term lived here, gated by (1-sampleDayness) so it
+            //  ramped up through twilight and then HELD through the night. It was dead code —
+            //  computed and discarded — and briefly enabled before being removed outright: a floor
+            //  that persists into full night is the wrong effect. What was actually wanted is a
+            //  twilight-only term, which twilightAmbient above already is by construction, since
+            //  twilightWeight is a bell that falls back to zero deeper into night.)
+            vec3 skyAmbient = twilightAmbient;
+
+            vec3  moonECEF_c    = moonDir3.x * enuX + moonDir3.y * enuY + moonDir3.z * enuZ;
+            float moonElevGeog  = max(0.0, dot(dirECEF, moonECEF_c)); // T1.3: dirECEF == normalize(pECEF)
+            float moonLit       = moonElevGeog * moonDirENU.w * selfShadow * (1.0 + powder);
+            float nightFac      = 1.0 - min(sampleDayness * 3.0, 1.0);
+            vec3  moonContrib   = vec3(0.92, 0.95, 1.0) * moonLit * phMoon * cloud.moonGain * nightFac;
+
+            vec3 cityUp = vec3(0.0);
+            if (sampleDayness < 0.9 && hNorm < 0.45) {
+                vec3  cityRgb  = textureLod(earthNightTex, pUVGeo, 3.0).rgb;
+                float cityLum  = dot(cityRgb, vec3(0.2126, 0.7152, 0.0722));
+                vec3  cityTint = cityRgb / max(cityLum, 0.001);
+                float heightFalloff = smoothstep(0.45, 0.0, hNorm);
+                cityUp = cityTint * cityBrightness(cityLum) * heightFalloff * (1.0 - sampleDayness)
+                       * kCityUpwellStrength * cloud.ambientGain;
+            }
+
+            // Aurora ground-glow: the curtain sits far above the cloud shell (95-300km vs. 2-11km),
+            // so unlike cityUp (which washes the cloud BASE from below), this lights cloud TOPS
+            // more than bases — opposite height falloff. Evaluated LOCALLY at this sample's own
+            // dirECEF (auroraOvalMaskLocal above), not a CPU-computed observer-position proxy.
+            //
+            // T1.4 (CLOUD_PERF_PLAN.md): gated on the gain. auroraOvalMaskLocal is an acos, two
+            // cross products, a normalize and an atan per in-cloud sample — plus a full
+            // warpPerlin3 (8 gradient hashes) for any sample that lands inside the oval — and
+            // every bit of it was multiplied away by auroraCloudGain == 0.
+            vec3 auroraUp = vec3(0.0);
+            if (cloud.auroraCloudGain > 0.0) {
+                float auroraLocalMask = auroraOvalMaskLocal(dirECEF, pc.waveTime, cloud.stormStrength);
+                auroraUp = kAuroraGroundColor * auroraLocalMask * cloud.auroraCloudGain
+                         * (1.0 - sampleDayness) * mix(0.2, 1.0, hNorm);
+            }
+
+            // Reflect-Orbital beam->cloud illumination (2026-08-09, third design — see
+            // beamCloudLighting()'s own header comment above for the full history). Fed forward
+            // into this per-sample loop exactly like sunLit/moonContrib are, from a small
+            // geometrically-accurate per-beam light list. Naturally invisible in clear air (this
+            // whole branch only runs where d>0.001) and naturally respects terrain/cloud depth
+            // ordering (p/tExit are already clipped to tScene and composited through
+            // cloudTransmittance like every other term in this loop).
+            vec3 beamLit = beamCloudLighting(p, h, dir, obsPos, sampleDayness);
+
+            // Sun gain blended by sun elevation: cloud.sunGain (near-horizon/sunset) tuned high
+            // reads as an amazing sunset, but the SAME flat gain applied at midday (sun near
+            // zenith) overexposes the whole cloud deck — cloudSunDotRaw is already ~sin(sun
+            // elevation) at this point on Earth, so 0=horizon/sunset, 1=overhead/midday.
+            // Blend band is now cloud.sunGainElevBand rather than a hardcoded [0,1]. At [0,1]
+            // the sunset gain was still half-strength at 30 degrees of sun elevation, so it hung
+            // over most of the morning; the default 0.25 hands over to the zenith gain by ~14.5
+            // degrees. Same curve shape, just reaches the top far sooner.
+            float sunGainCurve = mix(cloud.sunGain, cloud.sunGainZenith,
+                                      smoothstep(0.0, max(cloud.sunGainElevBand, 0.02),
+                                                 clamp(cloudSunDotRaw, 0.0, 1.0)));
+            vec3  inScatter  = sunColorCloud * sunLit * ph * (1.0 + powder) * sunGainCurve
+                             + moonContrib
+                             + skyAmbient
+                             + cityUp
+                             + auroraUp
+                             + beamLit;
+
+            cloudScatter       += cloudTransmittance * (1.0 - stepT) * inScatter;
+            // Same weight cloudScatter itself uses (.r stands in for the scalar, per stepT's own
+            // exp(-vec3(extinction)) broadcast — all three channels are identical here), applied to
+            // this step's own distance instead of its inScatter color.
+            float wStep = cloudTransmittance.r * (1.0 - stepT.r);
+            cloudDistAccum   += wStep * (t + step * 0.5);
+            cloudWeightAccum += wStep;
+            cloudTransmittance *= stepT;
+
+            if (cloudTransmittance.r < 0.01) break;
+        } else {
+            inCloud = false;
+        }
+        t += step;
+    }
+
+    cloudTOut = mix(vec3(1.0), cloudTransmittance, cloudAltFade);
+    if (dot(cloudTOut, vec3(1.0/3.0)) < 0.1 && cloudAltFade > 0.1) tCloudOcclude = tEnter;
+
+    // Camera-to-cloud atmospheric extinction. Distance used here MUST be where the visible cloud
+    // material actually is, not tEnter — tEnter is only that when the observer is BELOW the shell
+    // (tEnter = the real distance light travels through atmosphere before reaching cloud). When
+    // the observer is INSIDE the shell (obsEffH between the base and top altitude), tEnter is
+    // pinned to 0.001 (the march starts immediately, since cloud may be right where you are) — but
+    // a horizon-ward ray from inside the shell can still travel tens of km through the shell before
+    // meeting real density. Using tEnter there collapses odAtmCloud to ~0, i.e. zero extinction
+    // regardless of how far away the visible cloud on that ray actually is — reported as clouds on
+    // the horizon suddenly rendering with no atmospheric fade at all only while the observer's own
+    // altitude sits inside the cloud layer, correct again both below and above it (where tEnter is
+    // meaningful again). cloudDistAccum/cloudWeightAccum give the transmittance-weighted mean
+    // sample distance instead — where the accumulated scattering in cloudScatter actually came
+    // from — which reduces to ~tEnter in the below/above cases (the march starts hitting density
+    // right at shell entry there) and correctly picks up the real horizon-ward travel distance in
+    // the inside-shell case, with no special-casing needed for any of the three observer positions.
+    float cloudMeanT = (cloudWeightAccum > 1e-4) ? (cloudDistAccum / cloudWeightAccum) : tEnter;
+    tCloudMeanT = cloudMeanT;
+    vec2 odAtmCloud = optDepth(obsPos, dir, max(cloudMeanT, 0.001));
+    vec3 cloudAttn  = exp(-(BETA_R * odAtmCloud.x + BETA_M * 1.1 * odAtmCloud.y));
+
+    // A_cloud is the multiplicative term applied to `color` in sat_sky.frag — and `color` at that
+    // point already carries FULL camera-to-surface atmospheric transmittance (odR_cam/odM_cam,
+    // truncated at tSurface — see sat_sky.frag's surfAttn comment). cloudAttn here is only the
+    // camera-to-cloud SUBSET of that same path, so folding it into A_cloud (as `1 - cloudAttn*(1-
+    // cloudTOut)` used to) double-counts that segment's extinction AND, worse, leaks a constant
+    // `1-cloudAttn` fraction of background through even a perfectly opaque cloud (cloudTOut=0) —
+    // it never converges to true occlusion. That read as "even the densest clouds are semi-
+    // transparent to city lights," worst from altitude/distance where cloudAttn is furthest below
+    // 1. A_cloud must depend on cloudTOut alone; cloudAttn still legitimately dims the cloud's OWN
+    // scattered light in B_cloud below, which has no other atmospheric attenuation applied to it.
+    A_cloud = cloudTOut;
+
+    // Aerial perspective / airlight. cloudAttn above only extinguishes the cloud's OWN scattered
+    // light (cloudScatter) — it has no compensating term for the sunlight the SAME stretch of
+    // atmosphere scatters INTO the camera-to-cloud path, which is what makes real distant clouds
+    // fade pale/blue-hazy rather than just dim. Missing that made a distant, fully-opaque cloud
+    // (cloudAttn well below 1) render as near-black and skewed red/orange — BETA_R/BETA_M
+    // extinguish blue harder than red over a long low-altitude path — instead of fading into the
+    // sky. Only visible once cloudDistFadeEndM/maxRenderDistM are pushed far enough (Ultra preset,
+    // or a manually-raised render distance) for a ray to stay substantially volumetric at a
+    // distance where this extinction is severe; short/default ranges crossfade to the flat 2D
+    // layer (evalCloudLayer in sat_sky.frag, which already has its own version of this fix) first.
+    //
+    // skyAmbientBase (a 6-step analytic single-scattering ZENITH Rayleigh/Mie integral anchored at
+    // the cloud) was the original stand-in for the in-scattered light along this path — reasoned
+    // as "the same general slab of atmosphere, not a second march." That reasoning missed that
+    // the GEOMETRY matters, not just the slab: skyAmbientBase integrates a short (~100km) VERTICAL
+    // path, while the real quantity needed here is inscatter along the camera-to-cloud path, which
+    // at the horizon is a much longer, near-HORIZONTAL path (150km+ for a 2-11km shell viewed from
+    // ground level — Earth's curvature alone puts the shell entry that far out). A horizontal path
+    // accumulates far more total inscattered sunlight than a vertical one of similar altitude
+    // range (the same reason a real sky is hazier/brighter near the horizon than at the zenith,
+    // even at local noon with the sun high). Reusing the dim zenith value under-lit this term, so
+    // as cloudAttn crushed toward 0 for a genuinely distant/grazing cloud, the airlight it faded
+    // into was dimmer than the real sky around it — reported as horizon clouds darkening to grey
+    // at any time of day, not just fading paler into the haze the way real aerial perspective does.
+    //
+    // camPathInscatter is a dedicated short march (kAirCamSteps, same step budget as
+    // skyAmbientBase) along the ACTUAL obsPos->dir segment out to cloudMeanT — the same physics as
+    // sat_sky.frag's own N_VIEW atmosphere loop (see main()'s `color` there), just truncated to
+    // this shorter camera-to-cloud distance instead of the full ray. skyAmbientBase itself is left
+    // untouched (still correct for twilightAmbient's "ambient sky light falling ON the cloud from
+    // above" purpose, a genuinely different, legitimately-vertical quantity).
+    vec3 camPathInscatter = vec3(0.0);
+    {
+        const int kAirCamSteps = 6;
+        float segAC  = max(cloudMeanT, 0.001) / float(kAirCamSteps);
+        float cosAAC = dot(dir, sunDir);
+        float pR_ac  = phaseR(cosAAC);
+        float pM_ac  = phaseM(cosAAC);
+        float odR_ac = 0.0, odM_ac = 0.0;
+        vec3  accumR_ac = vec3(0.0);
+        float accumM_ac = 0.0;
+        for (int ai = 0; ai < kAirCamSteps; ++ai) {
+            vec3  ap = obsPos + dir * ((float(ai) + 0.5) * segAC);
+            float ah = max(0.0, length(ap) - R_EARTH);
+            float dRA = exp(-ah / H_R) * segAC;
+            float dMA = exp(-ah / H_M) * segAC;
+            odR_ac += dRA;
+            odM_ac += dMA;
+            vec2 tSE_ac = raySphere(ap, sunDir, R_EARTH);
+            if (tSE_ac.x > 0.0 && tSE_ac.y > 0.0) continue;
+            vec2 tSun_ac  = raySphere(ap, sunDir, R_ATMOS);
+            vec2 sunOD_ac = (tSun_ac.y > 0.0) ? optDepth(ap, sunDir, tSun_ac.y) : vec2(0.0);
+            vec3 tauAC  = BETA_R * (odR_ac + sunOD_ac.x) + BETA_M * 1.1 * (odM_ac + sunOD_ac.y);
+            vec3 attnAC = exp(-tauAC);
+            accumR_ac += attnAC * dRA;
+            accumM_ac += dot(attnAC, vec3(1.0 / 3.0)) * dMA;
+        }
+        camPathInscatter = SUN_INTENSITY * (pR_ac * BETA_R * accumR_ac + vec3(pM_ac * BETA_M * accumM_ac));
+    }
+    // Weighted by (1-cloudAttn) (the fraction of light actually extinguished — negligible for near
+    // clouds, so this only engages at real distance) and by (1-cloudTOut.r) (the SAME continuous
+    // per-ray opacity that already softens the cloud's visual edge, so the fix fades in/out exactly
+    // where the cloud material itself does — no separate threshold, no seam, unlike an earlier
+    // attempt gated on the ≥90%-opacity tCloudOcclude flag, which produced a hard-edged brightening
+    // confined to fully opaque cores).
+    vec3 airlight = camPathInscatter * (1.0 - cloudAttn) * (1.0 - cloudTOut.r);
+
+    B_cloud = cloudAttn * cloudScatter * cloudAltFade + airlight * cloudAltFade;
+}
+
+// ── Per-pixel cloud shadow on terrain/ocean ───────────────────────────────────────────────────
+// Marches sunward from a point ON THE GROUND through the main cloud shell and returns the
+// transmittance — "how much direct sunlight reaches this spot".
+//
+// This replaces cloud_shadow.comp's 128x128 observer-centred tangent-plane grid outright. That
+// grid had three structural problems, all of which this form avoids by construction rather than
+// by mitigation:
+//   * Resolution. 128 texels over the default +/-80 km range is 1250 m per texel, EVERYWHERE.
+//     Here the sampling grid is screen space, so it is metres-per-texel near the camera and
+//     coarsens naturally with distance — the opposite of what you want to fix, and it fixes
+//     itself.
+//   * Altitude. The grid was centred on the observer at a fixed world extent, so climbing made it
+//     cover a steadily smaller fraction of the visible ground. Following the view ray has no such
+//     failure mode.
+//   * Swimming. Because the grid re-centred on a continuously moving observer every frame, it
+//     needed texel-snapping machinery (computeCloudShadowSnap + a residual subtracted by every
+//     consumer) to stop shadows drifting sub-texel. This value is a pure function of the world
+//     position being shaded, so there is nothing to snap and that whole subsystem is deleted.
+//
+// The march itself is deliberately the same 12 steps and the same density->optical-depth constant
+// the grid used, so brightness is comparable; only the sampling geometry changed.
+float cloudGroundShadow(vec3 groundECEF, vec3 sunDirECEF, float jitter) {
+    if (cloud.layers[0].enabled < 0.5) return 1.0;
+
+    float cloudBaseAlt = cloud.layers[0].shellAltM;
+    float cloudTopAlt  = cloud.layers[1].shellAltM;
+    float shellThick   = cloudTopAlt - cloudBaseAlt;
+
+    // The shaded point is always below the cloud base by construction (it is on the ground), so
+    // only the "below the shell, looking up" root is needed — no 3-way observer classification.
+    vec2 shellB = raySphere(groundECEF, sunDirECEF, R_EARTH + cloudBaseAlt);
+    vec2 shellT = raySphere(groundECEF, sunDirECEF, R_EARTH + cloudTopAlt);
+    if (!(shellT.y > 0.0 && shellB.y < shellT.y)) return 1.0;
+
+    float tEnter = max(shellB.y, 0.0);
+    float tExit  = shellT.y;
+    const int kShadowSteps = 12;
+    float segLen = (tExit - tEnter) / float(kShadowSteps);
+
+    float T = 1.0;
+    for (int i = 0; i < kShadowSteps; ++i) {
+        // Jittered sample phase. Neighbouring screen texels can map to ground points kilometres
+        // apart at grazing angles, so a fixed (i+0.5) phase through structured noise is an
+        // aliasing setup — the same one the sun self-shadow cone above already dithers away.
+        vec3  p = groundECEF + sunDirECEF * (tEnter + (float(i) + jitter) * segLen);
+        float h = length(p) - R_EARTH;
+        if (h < cloudBaseAlt || h > cloudTopAlt) continue;
+        float hNorm = (h - cloudBaseAlt) / shellThick;
+
+        float pLen = h + R_EARTH;   // T1.3 — see cloudMarchCS
+        vec3  dirECEF = p / pLen;
+        float pLon = atan(p.y, p.x);
+        float pLat = asin(clamp(dirECEF.z, -1.0, 1.0));
+        vec2  pUV  = vec2(fract((pLon + PI) / (2.0*PI)
+                                + cloud.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                          (0.5*PI - pLat) / PI);
+        // Matches the view march's mip so the shadow is cast by the same cloud shape that is
+        // actually drawn — a coarser read here would shadow blobs that are no longer visible.
+        float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, cloud.coverageMipLod).r;
+        if (localCov < 0.02) continue;
+
+        vec3 dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[0].driftMult);
+        vec3 warpUVW      = cloudWarpOffset(dirECEFDrift);
+
+        vec2  colSample = cloudColumnNoise(dirECEFDrift * kCloudColFreq + warpUVW * kWarpColScale); // T2.2
+        float colH  = remap(colSample.x, 1.0 - localCov, 1.0, 0.0, 1.0);
+        float baseH = (colSample.y - 0.5) * cloud.cloudBaseVariance;
+
+        float topFade = 1.0 - smoothstep(colH - 0.05, colH + 0.05, hNorm);
+        float hFade   = smoothstep(baseH, baseH + 0.05, hNorm) * topFade;
+        if (hFade < 0.001) continue;
+
+        const float kVertTiles = 1.5;
+        float posZ      = sin(pUV.x * 21.3 + pUV.y * 17.7) * 0.5 + 0.5;
+        vec3  uvwXY     = dirECEFDrift * kCloudHorizFreq + warpUVW;
+        vec3  uvwDetail = uvwXY + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0);
+        float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade, false);
+
+        if (d > 0.001) {
+            T *= exp(-d * segLen * 3e-3); // same density->optical-depth mapping as the view march
+            if (T < 0.02) break;
+        }
+    }
+
+    // Max 85% darkening — same cap the grid applied, so this drops in at matched brightness.
+    return mix(1.0, T, 0.85);
+}
+
+void cirrusMarchCS(
+    vec3  obsPos,  vec3  dir,
+    vec3  enuX,    vec3  enuY,        vec3  enuZ,
+    vec3  sunDir,  vec3  sunDirECEF,  float obsEffH,
+    out   vec3  A_cirrus, out vec3 B_cirrus,
+    out   float tCirrusEnter,  // shell entry distance for THIS ray, kNoSurfaceT if none — see
+                               // cloudMarchCS's tCloudEnter, same purpose
+    float tScene)  // shared scene depth — see cloudMarchCS
+{
+    // Runtime-tunable scattering strength — see cloudMarchCS's matching declaration.
+    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+    float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
+
+    A_cirrus = vec3(1.0);
+    B_cirrus = vec3(0.0);
+    tCirrusEnter = kNoSurfaceT;
+    // Knockout bit 16384 (2026-08-10) — see cloudMarchCS's bit-32768 comment; same no-op fallback,
+    // same reason. Cirrus had no knockout at all before this, so its cost was permanently invisible
+    // inside the cloud_march bucket AND unreachable by the preset system (no preset can turn it
+    // off — the tiers only scale cloudDistFadeStartM/EndM, which it happens to share with cloud).
+    if ((pc.debugDisableMask & 16384u) != 0u) return;
+    if (cloud.layers[1].enabled < 0.5) return;
+    float cirrusAltFade = 1.0 - smoothstep(kCloud3DFadeStart, kCloud3DFadeEnd, obsEffH);
+    if (cirrusAltFade < 0.001) return;
+
+    float cirrusAlt  = cloud.layers[1].shellAltM;
+    float shellBAlt  = cirrusAlt - kCirrusThicknessM * 0.5;
+    float shellTAlt  = cirrusAlt + kCirrusThicknessM * 0.5;
+    vec2  shellB     = raySphere(obsPos, dir, R_EARTH + shellBAlt);
+    vec2  shellT     = raySphere(obsPos, dir, R_EARTH + shellTAlt);
+
+    float tEnter, tExit;
+    if (obsEffH < shellBAlt) {
+        tEnter = shellB.y;
+        tExit  = shellT.y;
+    } else if (obsEffH <= shellTAlt) {
+        tEnter = 0.001;
+        tExit  = shellT.y;
+        if (shellB.x > 0.001 && shellB.x < tExit) tExit = shellB.x;
+    } else {
+        if (shellT.x < 0.0) return;
+        tEnter = shellT.x;
+        tExit  = (shellB.x > 0.0) ? shellB.x : shellT.y;
+    }
+    // Render-distance cap raised 200km->450km (session 28 follow-up #10): cirrus sits at ~15km
+    // altitude by default, whose own geometric horizon distance is ~sqrt(2*R_EARTH*15000)≈437km —
+    // the old 200km cap cut the march off well short of that, letting stars/aurora/Milky Way show
+    // straight through cirrus near the horizon instead of the cirrus layer thinning out naturally.
+    tExit = min(tExit, tEnter + 450000.0);
+    // Terrain occlusion on this layer's own bounds — see cloudMarchCS.
+    if (tEnter >= tScene) return;
+    tExit = min(tExit, tScene);
+    tCirrusEnter = tEnter; // see param comment above
+
+    // Distance-based crossfade, same as cloudMarchCS — see there for why this and not
+    // maxRenderDistM is what bounds the march.
+    float cirrusDistFade = 1.0 - smoothstep(cloud.cloudDistFadeStartM, cloud.cloudDistFadeEndM, tEnter);
+    cirrusAltFade = min(cirrusAltFade, cirrusDistFade);
+    if (cirrusAltFade < 0.001) return;
+    if (tEnter >= tExit || tExit <= 0.0) return;
+
+    // Adaptive step count (same fix as the aurora march, session 28 follow-up #9): a FIXED
+    // N_CIRRUS badly serves a path length that now legitimately ranges from ~10km (steep look-down)
+    // to 450km (grazing/horizon) — a fixed 14 steps across the extended cap would badly undersample
+    // exactly the far, grazing case the render-distance increase above was meant to fix.
+    // kCirrusStepsMax must cover the full 450km cap above at kCirrusMaxStepM resolution
+    // (450000/3000=150) — the original value here (128) was computed before the render-distance
+    // cap was raised in the same edit and never rechecked against it, so it silently forced
+    // grazing/horizon rays into a COARSER-than-intended step size (450000/128≈3516m) right where
+    // the render-distance fix mattered most. Margin added on top for the same reason the low-cloud
+    // hardCap below now has more headroom too.
+    const float kCirrusMaxStepM = 3000.0;
+    const int   kCirrusStepsMin = 14;
+    const int   kCirrusStepsMax = 200;
+    float cirrusPathLen = tExit - tEnter;
+    int   N_CIRRUS = clamp(int(cirrusPathLen / kCirrusMaxStepM), kCirrusStepsMin, kCirrusStepsMax);
+    float segLen = cirrusPathLen / float(N_CIRRUS);
+    float jitter  = textureLod(noiseTex, vec2(gl_GlobalInvocationID.xy) * (1.0/128.0), 0.0).r;
+
+    float invStretch   = 1.0 / max(cloud.cirrusStretch, 1.0);
+
+    vec3  cirrusTransmittance = vec3(1.0);
+    vec3  cirrusScatter       = vec3(0.0);
+    float cosA = dot(dir, sunDir);
+    float ph   = phaseCloud(cosA);
+
+    for (int i = 0; i < N_CIRRUS; ++i) {
+        float t = tEnter + (float(i) + jitter) * segLen;
+        vec3  p = obsPos + t * dir;
+        float h = length(p) - R_EARTH;
+        if (h < shellBAlt || h > shellTAlt) continue;
+        float hNorm = (h - shellBAlt) / kCirrusThicknessM;
+
+        vec3  pECEF = p.x * enuX + p.y * enuY + p.z * enuZ;
+        // T1.3 (CLOUD_PERF_PLAN.md): pLen from h, and dirECEF hoisted above pLat so the one
+        // divide serves both — bit-identical, see cloudMarchCS's copy for the Sterbenz argument.
+        float pLen  = h + R_EARTH;
+        vec3  dirECEF = pECEF / pLen;
+        float pLon  = atan(pECEF.y, pECEF.x);
+        float pLat  = asin(clamp(dirECEF.z, -1.0, 1.0));
+        vec2  pUV   = vec2(fract((pLon + PI) / (2.0*PI)
+                                 + cloud.cloudPhase * cloud.layers[1].driftMult / (2.0*PI)),
+                           (0.5*PI - pLat) / PI);
+        float localCov = cloud.coverage * cloud.layers[1].coverageMult
+                        * textureLod(earthCloudsTex, pUV, cloud.layers[1].mipLod).r;
+        if (localCov < 0.02) continue;
+
+        vec3 dirECEFDrift = rotateZ(dirECEF, cloud.cloudPhase * cloud.layers[1].driftMult);
+        float wa       = cloud.cirrusWindAngle + cirrusWindAngleAt(dirECEFDrift);
+        vec3  windAxis = vec3(cos(wa), sin(wa), 0.0);
+        vec3 dirStretched = dirECEFDrift
+                           + windAxis * dot(dirECEFDrift, windAxis) * (invStretch - 1.0);
+
+        float hFade = smoothstep(0.0, 0.15, hNorm) * (1.0 - smoothstep(0.85, 1.0, hNorm));
+        vec3  uvwXY     = dirStretched * kCloudHorizFreq * kCirrusFreqScale
+                        + cirrusDomainWarp(dirECEFDrift);
+        vec3  uvwDetail = uvwXY + vec3(0.0, 0.0, hNorm * 1.5);
+        float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov,
+                                cloud.density * cloud.layers[1].densityMult, hFade, false);
+        if (d < 0.001) continue;
+
+        float extinction = d * segLen * 8e-5;
+        vec3  stepT = exp(-vec3(extinction));
+
+        float cloudSunDot  = dot(dirECEF, sunDirECEF); // T1.3: dirECEF == normalize(pECEF)
+        float cloudDayFrac = smoothstep(-0.1, 0.15, cloudSunDot);
+        // See cloudMarchCS's sunGainCurve comment — same horizon/zenith blend, same rationale.
+        float sunGainCurveCirrus = mix(cloud.sunGain, cloud.sunGainZenith,
+                                        smoothstep(0.0, 1.0, clamp(cloudSunDot, 0.0, 1.0)));
+        vec3  inScatter     = vec3(max(0.0, cloudSunDot + 0.1) * sunGainCurveCirrus) * cloudDayFrac * ph * 2.0;
+
+        cirrusScatter       += cirrusTransmittance * (1.0 - stepT) * inScatter;
+        cirrusTransmittance *= stepT;
+        if (cirrusTransmittance.r < 0.02) break;
+    }
+
+    vec2 odAtmCirrus = optDepth(obsPos, dir, tEnter);
+    vec3 cirrusAttn  = exp(-(BETA_R * odAtmCirrus.x + BETA_M * 1.1 * odAtmCirrus.y));
+    vec3 cirrusT     = mix(vec3(1.0), cirrusTransmittance, cirrusAltFade);
+    // See cloudMarchCS's A_cloud comment — same fix, same reason: A_cirrus must be the layer's own
+    // transmittance alone, not blended with cirrusAttn (which belongs to B_cirrus only).
+    A_cirrus = cirrusT;
+    B_cirrus = cirrusAttn * cirrusScatter * cirrusAltFade;
+}
+
+// ── Ground fog/dust layer (C11 follow-up #47) — real per-sample volumetric march ──────────────
+// Sea level to cloud.fogTopAltM (a thin shell, typically a few hundred metres — unlike the
+// multi-km cloud shell, which is why the old analytic beam tube existed at all and a real march
+// through THIS layer is affordable). A fixed-altitude shell already gives the classic "fog fills
+// the valleys, peaks poke through" look for free via the same tScene terrain clipping every other
+// layer here uses — no terrain-relative height-above-ground tracking needed.
+//
+// Patchiness reuses the existing baked cloudNoiseTex (no new noise-bake pass) at a much lower
+// frequency than cloud cells — broad mist-bank features, not cumulus shapes. Deliberately does
+// NOT use earthCloudsTex (that's cloud geography, not appropriate for ground fog) or the cloud's
+// colH/baseH/topFade cumulus sculpting (fog doesn't need puffy tops, just a simple vertical
+// density falloff).
+//
+// Plain ambient sun/beam lighting (C11 follow-up #50) — a self-shadow cone through fog's own
+// density, plus a per-ray cloudGroundShadow lookup toward the sun, were both tried (follow-ups
+// #47/#48) and removed: neither produced a visible godray effect, and the cloudGroundShadow
+// lookup specifically introduced new visible noise (a second independently-jittered march
+// compounding with this one's own jitter). Sun godrays are being pursued separately, if at all, as
+// a screen-space technique instead of a real march through this layer.
+//
+// Beam godrays through fog (the old beamCloudLighting() reuse) were removed with that function
+// 2026-08-09 — fog no longer carries a beam-lighting term at all; the new directional glow lives
+// only in the per-pixel beam-ray loop in main(), which composites against cloud/cirrus, not fog.
+const float kFogHorizFreq  = kCloudHorizFreq * 0.12; // much broader features than cloud cells
+const float kFogMaxRangeM  = 12000.0; // real fog has short visibility; also bounds march cost
+
+void fogMarchCS(
+    vec3  obsPos,  vec3  dir,
+    vec3  enuX,    vec3  enuY,        vec3  enuZ,
+    vec3  sunDir,  vec3  sunDirECEF,  float obsEffH,
+    out   vec3  A_fog, out vec3 B_fog,
+    float tScene)
+{
+    // Runtime-tunable scattering strength — see cloudMarchCS's matching declaration.
+    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+    float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
+
+    A_fog = vec3(1.0);
+    B_fog = vec3(0.0);
+    if ((pc.debugDisableMask & 2048u) != 0u) return;
+    if (cloud.fogCoverage <= 0.0 || cloud.fogTopAltM <= 0.0) return;
+
+    float fogTopAlt = cloud.fogTopAltM;
+    float fogTop    = R_EARTH + fogTopAlt;
+
+    // Altitude fade — anchored to how far ABOVE THE FOG'S OWN CEILING the observer is (C11
+    // follow-up #49), not a fixed absolute altitude. The original fixed 3-12km range assumed a
+    // ~300m ground-mist shell and silently zeroed the ENTIRE fog contribution for any observer
+    // above ~12km regardless of fogTopAltM — so raising fogTopAltM to try a much taller haze
+    // column (for persistent beam visibility from a distance) did nothing once the observer was
+    // already above that fixed ceiling: this is the reported "the fog layer disappeared" at a
+    // 200km top altitude. Scaling the margin by fogTopAlt reproduces the original ground-mist
+    // behavior unchanged at the default (~300m) ceiling while letting a deliberately taller shell
+    // stay visible from proportionately higher up.
+    float fogFadeStartM = fogTopAlt + 3000.0;
+    float fogFadeEndM   = fogTopAlt + 12000.0;
+    float fogAltFade = 1.0 - smoothstep(fogFadeStartM, fogFadeEndM, obsEffH);
+    if (fogAltFade < 0.001) return;
+
+    vec2  shellT = raySphere(obsPos, dir, fogTop);
+    float tEnter, tExit;
+    if (obsEffH <= fogTopAlt) {
+        // Observer inside (or below — e.g. below sea level over ocean) the shell: the common case.
+        tEnter = 0.001;
+        tExit  = shellT.y;
+    } else {
+        if (shellT.x < 0.0) return; // ray never reaches the shell
+        tEnter = shellT.x;
+        tExit  = shellT.y;
+    }
+    if (tEnter < 0.0 || tExit <= tEnter) return;
+
+    // Terrain occlusion — same clipping every other layer in this file applies.
+    if (tEnter >= tScene) return;
+    tExit = min(tExit, tScene);
+    // Render-distance cap also scales with fogTopAlt (C11 follow-up #49) — kFogMaxRangeM alone
+    // (12km) was tuned for ground-mist visibility and would have truncated a deliberately taller
+    // haze column's own visible range to a fraction of its height.
+    tExit = min(tExit, tEnter + max(kFogMaxRangeM, fogTopAlt * 2.0));
+    if (tEnter >= tExit) return;
+
+    int   N      = clamp(int((tExit - tEnter) / 200.0), 8, 64);
+    float segLen = (tExit - tEnter) / float(N);
+    float jitter = textureLod(noiseTex, vec2(gl_GlobalInvocationID.xy) * (1.0/128.0), 0.0).b;
+
+    vec3  fogTransmittance = vec3(1.0);
+    vec3  fogScatter       = vec3(0.0);
+    float cosA = dot(dir, sunDir);
+    float ph   = phaseCloud(cosA);
+
+    for (int i = 0; i < N; ++i) {
+        float t = tEnter + (float(i) + jitter) * segLen;
+        vec3  p = obsPos + t * dir;
+        float h = length(p) - R_EARTH;
+        if (h < 0.0 || h > fogTopAlt) continue;
+        float hNorm = h / fogTopAlt;
+
+        vec3  pECEF = p.x * enuX + p.y * enuY + p.z * enuZ;
+        float pLen  = h + R_EARTH;  // T1.3 — see cloudMarchCS
+        vec3  dirECEF = pECEF / pLen;
+
+        // Patchiness: same baked 3D noise clouds use, sampled at a much coarser frequency — broad
+        // mist-bank features, no cumulus shape sculpting.
+        float patchNoise = textureLod(cloudNoiseTex, dirECEF * kFogHorizFreq, 0.0).r;
+        float localCov   = cloud.fogCoverage * patchNoise;
+        if (localCov < 0.05) continue;
+
+        // Vertical profile: denser near the ground, thinning toward the top.
+        float vFade = 1.0 - smoothstep(0.3, 1.0, hNorm);
+        float d = cloud.fogDensity * localCov * vFade;
+        if (d < 0.02) continue;
+
+        float extinction = d * segLen * 2e-4;
+        vec3  stepT      = exp(-vec3(extinction));
+
+        // Fog is now a plain ambient term (C11 follow-up #50) — the godray-chasing machinery
+        // (a self-shadow cone through fog's own density, plus a per-ray cloudGroundShadow lookup
+        // toward the sun) was removed outright, per explicit user decision: it never produced a
+        // visible godray effect worth the cost, and the cloudGroundShadow addition specifically
+        // introduced new visible noise in the fog itself (a second independently-jittered march
+        // compounding with this one). Fog still looks correct as ambient haze/mist; it just no
+        // longer tries to carry directional light-shaft detail. Sun (and beam, terrain, ocean)
+        // godrays are being pursued separately as a screen-space technique instead, if at all.
+        float cloudSunDotRaw = dot(dirECEF, sunDirECEF);
+        float sunElev        = smoothstep(-0.04, 0.12, cloudSunDotRaw);
+        vec3  sunInScatter    = vec3(1.0) * sunElev * ph * cloud.fogSunGain;
+
+        vec3 inScatter = sunInScatter;
+        fogScatter       += fogTransmittance * (1.0 - stepT) * inScatter;
+        fogTransmittance *= stepT;
+        if (fogTransmittance.r < 0.02) break;
+    }
+
+    vec2 odAtmFog = optDepth(obsPos, dir, tEnter);
+    vec3 fogAttn  = exp(-(BETA_R * odAtmFog.x + BETA_M * 1.1 * odAtmFog.y));
+    vec3 fogT     = mix(vec3(1.0), fogTransmittance, fogAltFade);
+    // See cloudMarchCS's A_cloud comment — same fix, same reason.
+    A_fog = fogT;
+    B_fog = fogAttn * fogScatter * fogAltFade;
+}
+
+// ── Per-tile beam culling (2026-08-10) ───────────────────────────────────────────────────────────
+// The beam pointing-ray loop in main() measured 7.54 ms at Medium in the Anchorage worst case —
+// 28% of the whole frame, and 43% of Planetarium's — because it ran min(beamCount, 2048) iterations
+// on EVERY half-res texel (571 beams x 484,800 texels = 277M iterations/frame) and only rejected on
+// distance at the very END, after ~7 SSBO loads, a raySphere with a sqrt and the full
+// closest-approach solve.
+//
+// This is the standard Forward+ light-culling answer, and it fits here for free because this shader
+// is already dispatched at local_size 16x16: one workgroup owns a 16x16-texel screen tile, so the
+// workgroup's 256 threads can cooperatively test every beam ONCE against the tile's bounding view
+// cone and leave a short shared-memory list that each thread then walks. Beams nowhere near this
+// tile are rejected 256x more cheaply than before, and the per-thread iteration count becomes "how
+// many beams actually cross this tile" instead of "how many beams exist anywhere" — which also
+// means cost stops scaling with the observer's location (Anchorage concentrating beams was the
+// whole problem).
+//
+// The cull ALSO hoists the loop's view-independent work. rayLen (a raySphere against R_EARTH),
+// targetDistM/rangeFade and aimFade are per-beam constants that the old loop recomputed once per
+// texel, 484,800 times each. They are computed here once per workgroup and passed through shared
+// memory. Doing the hoist this way needs no new ReflectBeam fields and no producer-side plumbing —
+// notably it does NOT depend on beam_self_march.comp, whose dispatch knockout (bit 512) would
+// otherwise have been left with an unsafe fallback.
+//
+// CONSERVATISM ARGUMENT — this must never reject a beam that any texel in the tile would have
+// drawn, or beams pop at tile boundaries. The per-texel test is
+// perpDist <= max(kDebugRayRadiusM, t*kDebugRayMinAngRad) * 4. Two rays sharing an origin and
+// diverging by at most the tile's half-angle are separated by at most tFar*tileHalfAngle anywhere
+// within range tFar; the closest point on the view ray to any point of the beam segment lies within
+// tFar of the origin (tFar bounds the segment's own distance), so the per-texel perpDist differs
+// from the tile-centre one by at most that. Using tFar rather than the centre ray's own t for the
+// radius term bounds the threshold the same way. Hence tile-centre perpDist <= radiusMax*4 + slack
+// is implied by the per-texel test passing — the cull is a strict superset.
+//
+// Overflow falls back to scanning the whole buffer rather than dropping beams, so a pathological
+// tile is slow, never wrong.
+const uint kTileBeamMax = 384u;
+shared uint  sTileBeamCount;
+shared uint  sTileOverflow;
+shared uint  sTileBeamIdx[kTileBeamMax];
+shared float sTileBeamRayLen[kTileBeamMax];
+shared float sTileBeamFade[kTileBeamMax];   // rangeFade * aimFade, both view-independent
+
+// Shared by the cull and by main()'s own per-texel loop — they must agree exactly on the accept
+// radius or the cull stops being conservative.
+const float kDebugRayRadiusM   = 700.0;
+const float kDebugRayMinAngRad = 0.0015; // ~1.2 half-res pixels at the default FOV
+const float kDebugRayMaxLenM   = 3000000.0;
+const float kDebugRayAimMaxRad = radians(10.0);
+const float kSkyBeamFadeM      = 200000.0;
+
+vec3 tileRayDir(vec2 texel, ivec2 size, float tanHalfFov, mat3 camToENU) {
+    vec2 ndc = (texel / vec2(size)) * 2.0 - 1.0;
+    return normalize(camToENU * vec3(ndc.x * tanHalfFov * pc.aspect, -ndc.y * tanHalfFov, -1.0));
+}
+
+// The workgroup's bounding view cone: axis plus half-angle covering every texel it owns. Shared by
+// both per-tile culls (beam pointing rays and cloud lights) so they cannot disagree about what
+// "this tile" means. Edge workgroups extend past the image, giving a slightly wider cone — the
+// conservative direction.
+void tileViewCone(ivec2 size, float tanHalfFov, mat3 camToENU, out vec3 cAxis, out float halfAngle) {
+    vec2 tileMin = vec2(gl_WorkGroupID.xy) * vec2(gl_WorkGroupSize.xy);
+    vec2 tileMax = tileMin + vec2(gl_WorkGroupSize.xy);
+    vec3 d00 = tileRayDir(vec2(tileMin.x, tileMin.y), size, tanHalfFov, camToENU);
+    vec3 d10 = tileRayDir(vec2(tileMax.x, tileMin.y), size, tanHalfFov, camToENU);
+    vec3 d01 = tileRayDir(vec2(tileMin.x, tileMax.y), size, tanHalfFov, camToENU);
+    vec3 d11 = tileRayDir(vec2(tileMax.x, tileMax.y), size, tanHalfFov, camToENU);
+    cAxis = normalize(d00 + d10 + d01 + d11);
+    float cosHalf = min(min(dot(cAxis, d00), dot(cAxis, d10)),
+                        min(dot(cAxis, d01), dot(cAxis, d11)));
+    halfAngle = acos(clamp(cosHalf, -1.0, 1.0));
+}
+
+void cullBeamsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos) {
+    if (gl_LocalInvocationIndex == 0u) {
+        sTileBeamCount = 0u;
+        // Knockout bit 131072 forces the overflow path, i.e. the exact pre-cull full-buffer scan.
+        // This is the cull's correctness A/B: toggle it and the rendered image must be pixel-
+        // identical, because the fallback recomputes precisely what the cull would have supplied.
+        // If beams instead appear/disappear on a 16x16-texel grid with the cull ON, the
+        // conservatism bound in this function's header is wrong and the slack term needs widening
+        // — that is the one failure mode this design can have, and it is unmistakable on screen.
+        sTileOverflow  = ((pc.debugDisableMask & 131072u) != 0u) ? 1u : 0u;
+    }
+    barrier();
+
+    // Uniform across the workgroup (push constants only), so the barriers above and below stay in
+    // uniform control flow while the scan itself is skipped when beams aren't drawn at all.
+    if (pc.showBeamDebugRays != 0u && (pc.debugDisableMask & 8192u) == 0u
+        && (pc.debugDisableMask & 131072u) == 0u) {
+        uint activeCount = min(beamCount, BEAM_MAX_ACTIVE);
+        for (uint bi = gl_LocalInvocationIndex; bi < activeCount; bi += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+            if (beams[bi].intensity <= 0.0) continue;
+
+            // View-independent fades, hoisted out of the per-texel loop.
+            float targetDistM = length(beams[bi].targetENU);
+            if (targetDistM > pc.beamMaxRangeM + kSkyBeamFadeM) continue;
+            float rangeX    = clamp((targetDistM - (pc.beamMaxRangeM - kSkyBeamFadeM)) / kSkyBeamFadeM, 0.0, 1.0);
+            float rangeFade = 1.0 - (rangeX * rangeX * (3.0 - 2.0 * rangeX));
+            float aimFade   = 1.0 - smoothstep(0.0, kDebugRayAimMaxRad, beams[bi].aimErrorRad);
+            float fade      = rangeFade * aimFade;
+            if (fade <= 0.0) continue;
+
+            vec3  satENU = beams[bi].satENU;
+            vec3  rayDir = beams[bi].reflectDirENU;
+            vec2  groundHit = raySphere(obsPos + satENU, rayDir, R_EARTH);
+            float rayLen = (groundHit.x > 0.0) ? min(groundHit.x, kDebugRayMaxLenM) : kDebugRayMaxLenM;
+
+            // Closest approach of the TILE CENTRE ray to this beam segment — the same solve main()
+            // does per texel, run once per workgroup here.
+            vec3  w0 = -satENU;
+            float b = dot(cAxis, rayDir);
+            float d = dot(cAxis, w0);
+            float e = dot(rayDir, w0);
+            float den = 1.0 - b * b;
+            float s = (den > 1e-6) ? (e - b * d) / den : e;
+            s = clamp(s, 0.0, rayLen);
+            float t = s * b - d;
+            if (t < 0.0) { t = 0.0; s = clamp(e, 0.0, rayLen); }
+            float perpDist = length(satENU + rayDir * s - cAxis * t);
+
+            float tFar      = max(length(satENU), length(satENU + rayDir * rayLen));
+            float radiusMax = max(kDebugRayRadiusM, tFar * kDebugRayMinAngRad);
+            if (perpDist > radiusMax * 4.0 + tFar * tileHalfAngle) continue;
+
+            uint slot = atomicAdd(sTileBeamCount, 1u);
+            if (slot < kTileBeamMax) {
+                sTileBeamIdx[slot]    = bi;
+                sTileBeamRayLen[slot] = rayLen;
+                sTileBeamFade[slot]   = fade;
+            } else {
+                sTileOverflow = 1u;
+            }
+        }
+    }
+    barrier();
+}
+
+void main() {
+    ivec2 size  = imageSize(targetA);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+
+    // Reconstruct the same view ray sat_sky.vert/sat_sky.frag build, evaluated directly at this
+    // half-res texel instead of via vertex interpolation — identical affine transform, just
+    // sampled at a coarser grid.
+    float tanHalfFov = tan(pc.fovYRad * 0.5);
+    mat3  camToENU   = mat3(transpose(pc.skyView));
+    vec3  dir        = tileRayDir(vec2(coord) + 0.5, size, tanHalfFov, camToENU);
+
+    vec3  sunDir = normalize(pc.sunDirENU.xyz);
+
+    vec3 enuZ = normalize(pc.obsECEFDir.xyz);
+    vec3 enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+    vec3 enuY = cross(enuZ, enuX);
+    vec3 sunDirECEF = sunDir.x * enuX + sunDir.y * enuY + sunDir.z * enuZ;
+
+    // Observer height resolved on the GPU via the SAME shared helper sat_sky.frag and
+    // scene_depth.comp use. This shader previously took a CPU-computed value straight off
+    // pc.obsEffH while sat_sky.frag did its own texture lookup, so the two disagreed about where
+    // the observer was. That was harmless while each only compared distances against itself, but
+    // it is not once one pass produces a depth buffer the other consumes — a few metres of
+    // disagreement at the observer becomes a visible occlusion mismatch along grazing rays.
+    // pc.obsEffH is still the CPU's value and is deliberately no longer read here.
+    //
+    // Resolved here, ABOVE the out-of-bounds return, because the beam cull below needs it. Safe for
+    // the out-of-range threads of an edge workgroup: it depends only on pc.obsECEFDir, not on
+    // coord, so it is workgroup-uniform and reads nothing out of range.
+    float obsEffH = observerEffHeight(earthElevTex, earthSpecTex, pc.obsECEFDir);
+    vec3  obsPos  = observerPos(obsEffH);
+
+    // Both per-tile culls run BEFORE the out-of-bounds return: they contain barriers, which every
+    // thread in the workgroup must reach.
+    vec3  tileAxis;
+    float tileHalfAngle;
+    tileViewCone(size, tanHalfFov, camToENU, tileAxis, tileHalfAngle);
+    cullBeamsForTile(tileAxis, tileHalfAngle, obsPos);
+    cullCloudLightsForTile(tileAxis, tileHalfAngle, obsPos);
+
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    // Shared scene depth for this exact texel. Read ONCE here, not per beam: the beam loop below
+    // runs up to 2048 iterations and every one of them needs the same value. texelFetch rather
+    // than texture() because this dispatch grid and sceneDepthTex are the same size — an exact
+    // 1:1 mapping with no filtering, so the value read is exactly the value written.
+    float tScene = texelFetch(sceneDepthTex, coord, 0).r;
+
+    vec3  A_cirrus, B_cirrus;
+    float tCirrusEnter;
+    cirrusMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, obsEffH,
+                  A_cirrus, B_cirrus, tCirrusEnter, tScene);
+
+    vec3  A_cloud, B_cloud, cloudTOut;
+    float tCloudOcclude, tCloudEnter, tCloudMeanT;
+    cloudMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, obsEffH, pc.moonDirENU,
+                 A_cloud, B_cloud, cloudTOut, tCloudOcclude, tCloudEnter, tCloudMeanT, tScene);
+
+    vec3  A_total = A_cirrus * A_cloud;
+    vec3  B_total = B_cirrus * A_cloud + B_cloud;
+
+    // Ground fog (C11 follow-up #47) — nearest volumetric layer to a ground-level observer, so it
+    // composites LAST against the already-combined cirrus+cloud result, one tier closer to the
+    // camera than cloud is to cirrus (same algebraic pattern as the line above, just applied
+    // again): stuff behind fog (cloud+cirrus) gets dimmed by A_fog, fog's own emission adds
+    // unattenuated. Placed before aurora/airglow below so a thick ground fog also dims those
+    // through the same (now fog-inclusive) A_total those already read — a reasonable, if
+    // approximate, side effect rather than a deliberate design point.
+    vec3 A_fog, B_fog;
+    fogMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF, obsEffH, A_fog, B_fog, tScene);
+    A_total = A_total * A_fog;
+    B_total = B_total * A_fog + B_fog;
+
+    // Aurora sky curtain (moved here this session — perf: half-res instead of full-res).
+    // Cloud suppression uses the LOCAL A_total already computed above — more accurate than
+    // sat_sky.frag's old "early" texture pre-sample, which only existed because that shader runs
+    // at full-res and needed a cheap same-frame proxy; this compute shader has the real value on
+    // hand already. Folding the result directly into B_total means it inherits the same terrain-
+    // occlusion handling sat_sky.frag already applies to the whole composite (a behavior change
+    // from before, when aurora ignored terrain occlusion entirely — this is more physically
+    // correct: terrain that blocks the view of the much-closer cloud layer necessarily blocks the
+    // far higher aurora shell along that same ray too).
+    vec3 auroraContrib = vec3(0.0);
+    if ((pc.debugDisableMask & 32u) == 0u) {
+        auroraContrib = auroraMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF,
+                                       obsEffH, pc.moonDirENU, tScene);
+    }
+    if (dot(auroraContrib, auroraContrib) > 0.0) {
+        bool  auroraBehindClouds = (obsEffH < kAuroraShellInnerM);
+        float cloudBlockLocal    = dot(A_total, vec3(1.0 / 3.0));
+        const float kAuroraCloudSuppressPower = 3.0;
+        float auroraCloudSuppress = auroraBehindClouds
+            ? pow(clamp(cloudBlockLocal, 0.0, 1.0), kAuroraCloudSuppressPower)
+            : 1.0;
+        B_total += auroraContrib * auroraCloudSuppress;
+    }
+
+    // Airglow red band (moved here this session — perf). No cloud-suppression term — the
+    // original never had one either, just a plain additive contribution.
+    if ((pc.debugDisableMask & 16u) == 0u) {
+        B_total += airglowRedMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, obsEffH, tScene);
+    }
+
+    // ── Reflect-Orbital beam pointing ray — NAME IS STALE, THIS IS THE REAL BEAM (C12 follow-up
+    // #12, reworked into production visual in a later session — see showBeamDebugRays' own comment
+    // in SatelliteSim.h, and BEAM_CLOUD_PLAN.md 2026-08-09) ───────────────────────────────────────
+    // Draws each active beam's mirror's ACTUAL current reflected-sunlight direction
+    // (reflectDirENU) as a line extending from the satellite to its ground intersection — this IS
+    // the beam a player sees, not a diagnostic overlay, on by default. Independent of the
+    // physically-shaped glow above (no phase function, no altitude restriction) and — this is the
+    // real, currently-open bug, not a design choice — **no cloud gating at all**, occluded by
+    // terrain only. Since this ray is what's actually visible, its lack of cloud awareness is why
+    // beams read as passing straight through cloud regardless of the ground-spot/glow fixes
+    // elsewhere in this file. Being replaced by the per-beam march project (BEAM_CLOUD_PLAN.md).
+    //
+    // Analytic closest approach, NOT point sampling. The original version walked 40 discrete
+    // points along each ray and splatted a Gaussian at each — which reads as a dotted line
+    // whenever the spacing exceeds the tube radius, and it always does: a ray traced from LEO to
+    // the ground is 500-2000 km long, so 40 samples sit 12-50 km apart against a tube a couple of
+    // km wide. Adding samples only pushes the threshold around; solving for the single nearest
+    // point on the beam SEGMENT makes the line exactly continuous at any length and any viewing
+    // angle, and costs one closed-form solve per beam instead of 40 splats.
+    //
+    // The cancellation hazard that motivated the old sampling approach is avoided the same way
+    // the rest of the beam code avoids it: the system is set up from beams[bi].satENU (the small
+    // observer-relative offset) rather than from an obsPos/satWorldPos difference, so no
+    // large-magnitude subtraction is ever formed. Both direction vectors are unit length, which
+    // is what collapses the usual 2x2 solve to the 1 - b*b denominator below.
+    // Knockout bit 8192 (2026-08-10). This loop is per-PIXEL over up to BEAM_MAX_ACTIVE (2048)
+    // beams and, until now, was gated ONLY by showBeamDebugRays — knockout bit 128
+    // ("Reflect-Orbital beams") gates sat_sky.frag's ground spot and the per-sample volumetric
+    // glow but has never reached this loop, a gap CLAUDE.md already flagged as "left as-is;
+    // flagged here so a future profiling session doesn't assume bit 128 isolates the full beam
+    // rendering cost." This IS that session. Its cost is therefore invisible in every capture
+    // taken so far AND unreachable by every graphics preset (Planetarium sets bit 128 and still
+    // pays for this in full), which makes it the prime suspect for the several-ms floor the
+    // cloud_march bucket keeps even at Planetarium with cloudCoverage=0.
+    if (pc.showBeamDebugRays != 0u && (pc.debugDisableMask & 8192u) == 0u) {
+        // Thin off-white/yellow line (2026-08-06 user request; previously a 2500 m green tube,
+        // itself already thinned from 15000 m in C12 follow-up #13). kDebugRayMinAngRad keeps a
+        // distant ray from thinning below roughly one half-res pixel and breaking up into an
+        // aliased dashed line — the exact artifact this rewrite exists to remove, just spatial
+        // rather than along-ray. Beyond ~470 km the angular floor is what sets the width.
+        // (kDebugRayRadiusM/kDebugRayMinAngRad/kDebugRayMaxLenM/kDebugRayAimMaxRad/kSkyBeamFadeM
+        // moved to file scope 2026-08-10 — cullBeamsForTile must use the identical values or its
+        // conservatism argument breaks.)
+        // One evaluation now, not a 40-sample accumulation. Kept low deliberately: rays are
+        // additive, so a site with dozens of satellites converging on it stacks them into a solid
+        // wash unless each individual line is faint enough to still read through its neighbours.
+        const float kDebugRayScale    = 0.05;
+        const vec3  kDebugRayColor    = vec3(1.0, 0.95, 0.72) * 0.004; // off-white leaning yellow
+        // "Beam gain" (pc.beamGain in sat_orbit.comp, folded into beams[bi].intensity =
+        // groundIrradiance * beamGain there) previously only gated this ray on/off (see the
+        // `intensity <= 0.0` rejects below) — the visible line itself was a flat kDebugRayColor *
+        // kDebugRayScale regardless of the slider, which is why turning "Beam gain" up or down had
+        // no visible effect on the ray players actually see. beamCloudLighting() and sat_sky.frag's
+        // ground spot already scale off this same `intensity` field (kBeamCloudGlowScale=1e-6,
+        // kBeamGroundScale=4e-8 respectively) — kDebugRayIntensityScale joins that precedent rather
+        // than plumbing a separate pc.beamGain field through, and is picked so a Reflect Mirror at
+        // the default beamGain (0.001711) and a representative ~0.7 sun-incidence angle reproduces
+        // roughly the old fixed brightness.
+        const float kDebugRayIntensityScale = 2.7e-4;
+        // Atmospheric extinction (2026-08-10 follow-up to the aurora/star fix — same bug, same
+        // fix, this consumer just hadn't been touched yet): a beam whose ground site sits far
+        // around the curve of the Earth is seen along a long, near-tangent atmospheric sightline,
+        // exactly the geometry Kasten & Young's airmass term exists for — but this ray previously
+        // had NO extinction applied at all, so it stayed at full off-white brightness right to the
+        // horizon regardless of how much real atmosphere the view path crossed. Same formula, same
+        // rayTangentAltM(obsPos, dir) gating as auroraMarchCS above (constant for this whole pixel,
+        // so hoisted out of the per-beam loop below rather than recomputed per iteration).
+        float atmFracBeamRay = clamp(exp(-max(rayTangentAltM(obsPos, dir), 0.0) / 20000.0), 0.0, 1.0);
+        float sinElBeamRay   = clamp(dir.z, 0.0, 1.0);
+        float elDegBeamRay   = degrees(asin(sinElBeamRay));
+        float airmassBeamRay = 1.0 / (sinElBeamRay + 0.50572 * pow(elDegBeamRay + 6.07995, -1.6364));
+        float extinctMagBeamRay = cloud.extinctionCoeff * (airmassBeamRay - 1.0) * atmFracBeamRay;
+        float beamRayExtinction = pow(10.0, -0.4 * extinctMagBeamRay);
+        // Altitude fade (2026-08-06 experiment): invisible in vacuum, brightening as the beam
+        // descends — the cheap stand-in for the deleted tube's scattering falloff, which really
+        // was an air-density effect. Free here: the closest-approach solve below already yields
+        // the exact point on the beam this pixel is looking at, so its altitude is the honest one
+        // to fade on (no extra sampling, no second march). kDebugRayFadeTopM is the top of the
+        // modelled atmosphere (R_ATMOS - R_EARTH); kDebugRayFadeBotM is where it reaches full
+        // strength. kDebugRayFadeExp > 1 keeps the brightening weighted toward the low end
+        // instead of ramping linearly across the whole 100 km.
+        const float kDebugRayFadeTopM = 50000.0;
+        const float kDebugRayFadeBotM = 8000.0;
+        const float kDebugRayFadeExp  = 2.0;
+        // Trace to the ACTUAL ground intersection instead of a fixed length (C12 follow-up #13 —
+        // user report: rays "terminate once they get enough into the atmosphere" instead of
+        // tracing back to the ground). A fixed 1000km length could stop well short of the
+        // surface for a satellite aimed even slightly off nadir at the higher end of this
+        // constellation's altitude range; raySphere() against R_EARTH finds the true distance
+        // whatever the satellite's altitude or aim. kDebugRayMaxLenM is just a safety fallback
+        // for the (should-be-rare) case where the ray points away from Earth entirely.
+        // 2026-08-10: that raySphere is view-independent, so it now runs once per workgroup in
+        // cullBeamsForTile and arrives here through sTileBeamRayLen.
+        // Aim fade (2026-08-06 user request): mirrors slew toward a NEW target at a fixed rate
+        // (kMirrorRotRateDegPerSec in SatelliteSim.h), but target ACQUISITION is a hard lock
+        // switch (see the reflector-target-selection doc in CLAUDE.md) — the instant a satellite's
+        // argmax/lock flips to a different site, its beam direction jumps immediately and only
+        // then eases toward the new target over the slew. That jump-then-ease is what read as
+        // "pop-in"/glitchy, not the slew itself. beams[bi].aimErrorRad (written in sat_orbit.comp,
+        // radians still remaining in THIS frame's rate-limited step) is 0 once converged and large
+        // right after a fresh acquisition, so it fades the WHOLE ray in as one unit rather than
+        // per-point along it — the satellite's convergence state, not a property of where along
+        // the beam this pixel happens to be looking. kDebugRayAimMaxRad is the error at which the
+        // ray is fully dark; ~30 deg covers a full antipodal-ish target swap without over-fading
+        // routine small slew corrections.
+        // 2026-08-10: iterate the workgroup's CULLED list, not the whole buffer — see
+        // cullBeamsForTile above for the design and the conservatism argument. sTileOverflow means
+        // more beams crossed this tile than kTileBeamMax could hold, in which case we fall back to
+        // scanning everything: pathological tiles get slow, never wrong. The per-beam view-
+        // independent work (rangeFade, aimFade, the rayLen raySphere) has already been done once
+        // per workgroup and arrives via shared memory, so the loop body below starts at the
+        // geometry that genuinely varies per texel.
+        bool tileOverflow = (sTileOverflow != 0u);
+        int  beamIterCount = tileOverflow ? int(min(beamCount, BEAM_MAX_ACTIVE))
+                                          : int(min(sTileBeamCount, kTileBeamMax));
+        for (int k = 0; k < beamIterCount; ++k) {
+            int   bi;
+            float rayLen;
+            float preFade; // rangeFade * aimFade
+            if (tileOverflow) {
+                // Full-scan fallback: recompute what the cull would have supplied.
+                bi = k;
+                if (beams[bi].intensity <= 0.0) continue;
+                // 2026-08-07 user report: the sky beam ray popped in at full brightness the instant
+                // a target crossed beamMaxRangeM (was a hard cutoff here, no fade). Widened cutoff
+                // by kSkyBeamFadeM so the fade band itself still renders, with rangeFade ramping
+                // the ray's contribution smoothly across it — same smoothstep shape as aimFade/fade
+                // below, just keyed on range instead of slew/altitude. Kept in sync with
+                // kGroundBeamFadeM in SatelliteSim.cpp/sat_sky.frag (same visual beam, same feel).
+                float targetDistM = length(beams[bi].targetENU);
+                if (targetDistM > pc.beamMaxRangeM + kSkyBeamFadeM) continue;
+                float rangeX = clamp((targetDistM - (pc.beamMaxRangeM - kSkyBeamFadeM)) / kSkyBeamFadeM, 0.0, 1.0);
+                float rangeFade = 1.0 - (rangeX * rangeX * (3.0 - 2.0 * rangeX));
+                float aimFade = 1.0 - smoothstep(0.0, kDebugRayAimMaxRad, beams[bi].aimErrorRad);
+                preFade = rangeFade * aimFade;
+                vec2 groundHit = raySphere(obsPos + beams[bi].satENU, beams[bi].reflectDirENU, R_EARTH);
+                rayLen = (groundHit.x > 0.0) ? min(groundHit.x, kDebugRayMaxLenM) : kDebugRayMaxLenM;
+            } else {
+                bi      = int(sTileBeamIdx[k]);
+                rayLen  = sTileBeamRayLen[k];
+                preFade = sTileBeamFade[k];
+            }
+            if (preFade <= 0.0) continue; // out of range, or still swinging onto a fresh target
+
+            vec3 satWorldPos = obsPos + beams[bi].satENU;
+            vec3 rayDir      = beams[bi].reflectDirENU;
+
+            // View ray P(t) = obsPos + t*dir, beam segment Q(s) = satWorldPos + s*rayDir,
+            // s in [0, rayLen]. w0 = obsPos - satWorldPos = -satENU, formed directly.
+            vec3  w0  = -beams[bi].satENU;
+            float b   = dot(dir, rayDir);
+            float d   = dot(dir, w0);
+            float e   = dot(rayDir, w0);
+            float den = 1.0 - b * b; // both unit length, so this is the full ac - b^2
+            // Near-parallel (den -> 0) has no unique solution; fall back to the point on the beam
+            // closest to the observer, which is the right answer for a ray seen end-on.
+            float s = (den > 1e-6) ? (e - b * d) / den : e;
+            s = clamp(s, 0.0, rayLen);
+            float t = s * b - d; // dot(Q(s) - obsPos, dir)
+            if (t < 0.0) {
+                // Nearest point is behind the camera. Re-clamp against t = 0 (the standard
+                // segment-segment clamp step) so a beam that crosses behind the viewer still
+                // draws the part of it that is in front.
+                t = 0.0;
+                s = clamp(e, 0.0, rayLen);
+            }
+            // Terrain occlusion (2026-08-06 fix): t is the distance along THIS pixel's view ray
+            // to the nearest point on the beam, in the same units/frame as tScene — the exact
+            // comparison every other layer in this shader uses to clamp to the shared depth
+            // buffer. Without it a beam whose sampled point sits behind a ridge or mountain, as
+            // seen from the camera (not from the beam's own path), drew straight through solid
+            // ground — the one occlusion form this debug overlay never actually got despite the
+            // "every beam is clamped to tScene" claim above, written when the whole composite
+            // still funneled through the now-deleted tEnterCombined and never updated when this
+            // ray-drawing block was added afterward.
+            if (tScene < kNoSurfaceT && t > tScene) continue;
+
+            // Kept in observer-relative terms — never (satWorldPos + rayDir*s) - (obsPos + t*dir).
+            float perpDist = length(beams[bi].satENU + rayDir * s - dir * t);
+
+            float radiusM = max(kDebugRayRadiusM, t * kDebugRayMinAngRad);
+            if (perpDist > radiusM * 4.0) continue;
+
+            // Altitude of the point on the beam this pixel is actually looking at. Same
+            // length()-R_EARTH idiom every other altitude in this shader uses.
+            float qAltM = length(satWorldPos + rayDir * s) - R_EARTH;
+            float fade  = 1.0 - smoothstep(kDebugRayFadeBotM, kDebugRayFadeTopM, qAltM);
+            if (fade <= 0.0) continue; // whole visible span is in vacuum — skip the exp
+            fade = pow(fade, kDebugRayFadeExp);
+
+            // Beam-physics occlusion (2026-08-09): does the beam's OWN sunlight actually reach
+            // this point before being absorbed by cloud somewhere above it along its real path?
+            // This ray previously had NO cloud awareness at all — only the cloudGate term below,
+            // which answers a DIFFERENT question (is the CAMERA's own line of sight to this point
+            // blocked by unrelated cloud). Both signals are needed, neither substitutes for the
+            // other — see beam_self_march.comp's header and BEAM_CLOUD_PLAN.md finding 1 for why.
+            // blockAltM/blockOpacity come from a real per-beam slant march along this exact
+            // satellite-to-ground segment, so qAltM (already computed above, same segment) is
+            // directly comparable — the directional glow block below reuses this same
+            // beamPhysicsFade value directly, so both terms agree on where the beam goes dark.
+            const float kRayCloudFeatherM = 500.0;
+            float rayHCut = smoothstep(beams[bi].blockAltM - kRayCloudFeatherM, beams[bi].blockAltM, qAltM);
+            float beamPhysicsFade = mix(1.0, rayHCut, beams[bi].blockOpacity);
+            if (beamPhysicsFade <= 0.001) continue; // beam's own light already absorbed above this point
+
+            // Cloud/cirrus occlusion: only dim the beam if the point it's actually looking at
+            // (distance t along the view ray) is FARTHER than the cloud/cirrus shell this same
+            // ray enters — tCloudEnter/tCirrusEnter are the real geometric entry distances
+            // cloudMarchCS/cirrusMarchCS already solved for above, in the same units as t. A
+            // first version of this used A_total (this ray's combined transmittance) unconditionally,
+            // which occluded beams no matter how close they were to the camera — anything in
+            // front of a distant cloud bank read as behind it, since A_total has no notion of
+            // WHERE along the ray the opacity sits. Comparing against the entry distance is what
+            // lets a beam segment nearer than the cloud render fully lit in front of it.
+            //
+            // 2026-08-09 fix: tCloudEnter/tCirrusEnter are GEOMETRIC — the distance where the ray
+            // crosses the idealized shell sphere, true for every ray that passes through the
+            // shell's altitude band at all, independent of whether there is any actual cloud
+            // density along that specific line of sight. Gating on it unconditionally meant any
+            // beam point below the shell's nominal ceiling got multiplied by A_total the instant
+            // it crossed that fixed sphere — a hard wall at the shell's geometric top, not at the
+            // real (noise-shaped, often lower/patchier) cloud surface. Symptom: beams appeared to
+            // terminate at a fixed altitude "on top of" the cloud layer rather than fading out at
+            // the actual cloud tops. Fixed by only engaging the gate where the ray's OWN march
+            // found real, substantially-opaque cloud (mirrors tCloudOcclude's own ≥90%-opacity
+            // threshold, computed the same way here for cirrus since cirrusMarchCS has no
+            // equivalent out-param) — an empty/thin column along this sightline now leaves the
+            // beam fully visible no matter how deep past the idealized shell sphere it sits.
+            //
+            // 2026-08-09 follow-up (in-app finding: still a hard edge, exactly at the shell's
+            // geometric ceiling, with a visible gap down to where the cloud actually renders): the
+            // fix above only changed WHETHER to gate, not WHERE the gate starts — that was still
+            // tCloudOcclude, which cloudMarchCS sets to tEnter, the SAME idealized shell-boundary
+            // sphere as before. For any ordinarily-cloudy sky (the normal case, not the edge case
+            // the previous fix targeted) the whole column easily reads ≥90% opaque, so the gate
+            // kept firing right at the shell's geometric top regardless. tCloudMeanT is the
+            // transmittance-weighted mean distance to where this ray's density actually
+            // accumulated (cloudMarchCS already derived it for its own atmospheric-extinction term
+            // as cloudMeanT) — anchored to the real, noise-shaped cloud surface instead of the
+            // abstract sphere, matching how the 2D fallback cloud layer (which samples real
+            // coverage directly) already occludes beams correctly.
+            float cirrusOccludeT = (dot(A_cirrus, vec3(1.0 / 3.0)) < 0.1) ? tCirrusEnter : kNoSurfaceT;
+            float cloudOccludeT  = (tCloudOcclude >= 0.0) ? tCloudMeanT : kNoSurfaceT;
+            float cloudEntryT = min(cloudOccludeT, cirrusOccludeT);
+            // Feathered, not a hard t<=cloudEntryT step: the step made a beam crossing into cloud
+            // read as a sharp bright/dark seam right at the crossing point (in-app finding — the
+            // WHERE was already fixed above via tCloudMeanT, but the transition itself was still a
+            // wall). Same kCloudFeatherM/kRayCloudFeatherM convention (500m) used elsewhere in this
+            // loop. cloudEntryT == kNoSurfaceT degrades to the same always-1.0 result as before.
+            const float kCloudGateFeatherM = 500.0;
+            float gateBlend = smoothstep(cloudEntryT - kCloudGateFeatherM, cloudEntryT + kCloudGateFeatherM, t);
+            float cloudGate = mix(1.0, dot(A_total, vec3(1.0 / 3.0)), gateBlend);
+            if (cloudGate <= 0.001) continue; // fully opaque along this ray — nothing to draw
+
+            float proximity = exp(-(perpDist * perpDist) / (2.0 * radiusM * radiusM));
+            float intensityScale = beams[bi].intensity * kDebugRayIntensityScale;
+            // preFade is aimFade * rangeFade, both computed once per workgroup in cullBeamsForTile
+            // (2026-08-10) — same product, same order of multiplication as before.
+            B_total += kDebugRayColor * (kDebugRayScale * intensityScale * proximity * fade * cloudGate
+                                        * beamPhysicsFade * preFade * beamRayExtinction);
+        }
+    }
+
+    // tEnterCombined is GONE. It fused cirrus + cloud + beam + aurora entry distances into one
+    // scalar that sat_sky.frag compared against its own terrain distance, suppressing the WHOLE
+    // composite when terrain won — so the four could never be occluded independently (a beam
+    // behind a hill still drew if some unrelated nearer cloud won the min()), partial truncation
+    // was impossible, and the half-res scalar was being compared against a full-res silhouette.
+    //
+    // It was also a latent correctness bug in its own right: this is an RGBA16F target, whose
+    // alpha saturates at 65504, and near-horizon cloud entry distances routinely exceed 100 km.
+    // Those overflowed to +inf, making `tSurface < tEnterCombined` unconditionally true and
+    // suppressing the entire composite on any ray that also hit the sea-level sphere.
+    //
+    // Every layer above now clamps to tScene at march time instead, which is strictly more
+    // correct — and it freed this alpha channel for the per-pixel cloud shadow below.
+    //
+    // Only ground pixels pay for it: sky rays have tScene == kNoSurfaceT and skip out entirely.
+    // The shadow is evaluated at the terrain hit point the depth pass already found, so this
+    // needs no new bindings, no new pass, and no spatial grid — the whole of cloud_shadow.comp
+    // and its texel-snapping subsystem is deleted in exchange.
+    //
+    // DISTANCE GATE — load-bearing for performance, not just a quality knob.
+    //
+    // The gate below is "does this ray hit ground, and is that ground near enough for its shadow
+    // to be resolvable". Without the distance half, this ran on every ground-hitting pixel: from
+    // orbit that is essentially the WHOLE screen, ~485k half-res pixels each doing a 12-step
+    // sunward march, for shadow detail far below one pixel at that range. Near the surface the
+    // same thing happened to every horizon-ward ray hitting ocean hundreds of km out.
+    //
+    // The 128x128 grid this replaced was accidentally immune: being observer-centred with a fixed
+    // ~80 km extent, it covered a vanishing patch of the visible ground from altitude and cost
+    // almost nothing there. Removing the grid removed that accidental gating along with it.
+    //
+    // Fading rather than hard-cutting matters — a hard edge is exactly the artifact the old grid
+    // had. Cost scales with how much of the screen is BOTH ground and within range, which from
+    // orbit is now approximately none.
+    float terrainSunT = 1.0;
+    if (tScene < kNoSurfaceT && (pc.debugDisableMask & 256u) == 0u) {
+        float shadowFade = 1.0 - smoothstep(pc.cloudShadowRangeM * 0.6, pc.cloudShadowRangeM, tScene);
+        if (shadowFade > 0.001) {
+            vec3  hitENU  = obsPos + tScene * dir;
+            vec3  hitECEF = hitENU.x * enuX + hitENU.y * enuY + hitENU.z * enuZ;
+            float jitter  = textureLod(noiseTex, vec2(gl_GlobalInvocationID.xy) * (1.0/128.0), 0.0).b;
+            terrainSunT = mix(1.0, cloudGroundShadow(hitECEF, sunDirECEF, jitter), shadowFade);
+        }
+    }
+
+    imageStore(targetA, coord, vec4(B_total, tCloudOcclude));
+    imageStore(targetB, coord, vec4(A_total, terrainSunT));
+}

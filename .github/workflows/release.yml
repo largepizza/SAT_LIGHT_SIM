@@ -1,0 +1,223 @@
+name: Release
+
+# Fires on any tag matching v1.2.3 — create one with:
+#   git tag v1.0.0 && git push origin v1.0.0
+# Can also be triggered manually from the Actions tab.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+jobs:
+  # ── Windows ────────────────────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: ver
+        run: |
+          $v = (Get-Content VERSION).Trim()
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+          echo "archive=SAT_LIGHT_SIM_v${v}_Windows" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Install Vulkan SDK
+        uses: humbletim/setup-vulkan-sdk@v1.2.1
+        with:
+          vulkan-query-version: latest
+          vulkan-components: Vulkan-Headers, Vulkan-Loader, SPIRV-Tools, Glslang
+          vulkan-use-cache: true
+
+      - name: Configure
+        run: cmake -B build-release -S . -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-release --config Release --parallel
+
+      - name: Package
+        run: |
+          $v   = "${{ steps.ver.outputs.version }}"
+          $vu  = $v -replace '\.','_'
+          $exe = "SAT_LIGHT_SIM_V_${vu}.exe"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "build-release/Release/$exe"                   dist/
+          Copy-Item build-release/Release/shaders                  dist/ -Recurse
+          Copy-Item build-release/Release/assets                   dist/ -Recurse
+          Copy-Item data/constellations.json        dist/
+          Copy-Item data/constellations.schema.json dist/
+          Copy-Item data/reflector_targets.json     dist/
+          Compress-Archive -Path dist/* -DestinationPath "${{ steps.ver.outputs.archive }}.zip" -Force
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.ver.outputs.archive }}
+          path: ${{ steps.ver.outputs.archive }}.zip
+
+  # ── Linux ──────────────────────────────────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: ver
+        run: |
+          v=$(cat VERSION | tr -d '[:space:]')
+          echo "version=$v"              >> $GITHUB_OUTPUT
+          echo "archive=SAT_LIGHT_SIM_v${v}_Linux" >> $GITHUB_OUTPUT
+
+      - name: Install Vulkan SDK
+        uses: humbletim/setup-vulkan-sdk@v1.2.1
+        with:
+          vulkan-query-version: latest
+          vulkan-components: Vulkan-Headers, Vulkan-Loader, SPIRV-Tools, Glslang
+          vulkan-use-cache: true
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libx11-dev libxkbcommon-dev libwayland-dev wayland-protocols \
+            ninja-build
+
+      - name: Configure
+        run: cmake -B build-release -S . -DCMAKE_BUILD_TYPE=Release -G Ninja
+
+      - name: Build
+        run: cmake --build build-release --parallel
+
+      - name: Package
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          vu="${v//./_}"
+          exe="SAT_LIGHT_SIM_V_${vu}"
+          mkdir dist
+          cp "build-release/$exe"                     dist/
+          cp -r build-release/shaders                 dist/
+          cp -r build-release/assets                  dist/
+          cp data/constellations.json        dist/
+          cp data/constellations.schema.json dist/
+          cp data/reflector_targets.json     dist/
+          tar -czf "${{ steps.ver.outputs.archive }}.tar.gz" -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.ver.outputs.archive }}
+          path: ${{ steps.ver.outputs.archive }}.tar.gz
+
+  # ── macOS ──────────────────────────────────────────────────────────────────
+  # Pinned to macos-14 (not macos-latest) so a GitHub runner-image bump can't
+  # silently change the Xcode/SDK toolchain under this job between releases.
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: ver
+        run: |
+          v=$(cat VERSION | tr -d '[:space:]')
+          echo "version=$v"              >> $GITHUB_OUTPUT
+          echo "archive=SAT_LIGHT_SIM_v${v}_macOS" >> $GITHUB_OUTPUT
+
+      - name: Install Vulkan SDK
+        uses: humbletim/setup-vulkan-sdk@v1.2.1
+        with:
+          vulkan-query-version: latest
+          vulkan-components: Vulkan-Headers, Vulkan-Loader, SPIRV-Tools, Glslang
+          vulkan-use-cache: true
+
+      - name: Configure
+        run: cmake -B build-release -S . -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-release --parallel
+
+      # Vulkan on macOS only exists via MoltenVK, loaded at runtime through the
+      # Vulkan loader (libvulkan.1.dylib) as an ICD, not linked in directly. The exe
+      # is built against $VULKAN_SDK, a path that only exists on this CI runner —
+      # on a player's Mac (no Vulkan SDK installed) it would fail to launch with a
+      # dyld "Library not loaded" error unless the loader + MoltenVK + an ICD
+      # manifest travel with the app and the process is pointed at them. There is
+      # no Mac available to verify this recipe end-to-end (only the game's own
+      # VulkanContext.cpp portability-extension fix was build-verified, on
+      # Windows) — treat this step as a documented best-known recipe, not a
+      # confirmed-working one, until someone runs the packaged .command on a
+      # real Mac without the Vulkan SDK installed.
+      - name: Bundle Vulkan runtime (MoltenVK)
+        run: |
+          mkdir -p vulkan-runtime/lib
+          cp -PL "$VULKAN_SDK"/lib/libvulkan.1*.dylib vulkan-runtime/lib/
+          cp -PL "$VULKAN_SDK"/lib/libMoltenVK.dylib   vulkan-runtime/lib/
+          echo "--- bundled dylibs ---"
+          ls -la vulkan-runtime/lib
+          echo "--- dependent-library paths baked into the exe (verify these look sane) ---"
+          v="${{ steps.ver.outputs.version }}"
+          vu="${v//./_}"
+          otool -L "build-release/SAT_LIGHT_SIM_V_${vu}"
+
+      - name: Package
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          vu="${v//./_}"
+          exe="SAT_LIGHT_SIM_V_${vu}"
+          mkdir dist
+          cp "build-release/$exe"            dist/
+          cp -r build-release/shaders        dist/
+          cp -r build-release/assets         dist/
+          cp -r vulkan-runtime/lib           dist/
+          cp data/constellations.json        dist/
+          cp data/constellations.schema.json dist/
+          cp data/reflector_targets.json     dist/
+          cp THIRD_PARTY_NOTICES.txt         dist/
+
+          # Wrapper is what players actually double-click. It regenerates the MoltenVK
+          # ICD manifest with an absolute path on every launch (so it's correct no
+          # matter where the archive is unzipped to) and sets DYLD_FALLBACK_LIBRARY_PATH
+          # so dyld recovers from the exe's baked-in (CI-runner-only) library path by
+          # falling back to the bundled lib/ next to it.
+          cat > "dist/${exe}.command" <<EOF
+          #!/bin/bash
+          DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+          mkdir -p "\$DIR/vulkan/icd.d"
+          cat > "\$DIR/vulkan/icd.d/MoltenVK_icd.json" <<ICD
+          {
+              "file_format_version" : "1.0.0",
+              "ICD": { "library_path": "\$DIR/lib/libMoltenVK.dylib", "api_version" : "1.2.0" }
+          }
+          ICD
+          export VK_ICD_FILENAMES="\$DIR/vulkan/icd.d/MoltenVK_icd.json"
+          export VK_DRIVER_FILES="\$DIR/vulkan/icd.d/MoltenVK_icd.json"
+          export DYLD_FALLBACK_LIBRARY_PATH="\$DIR/lib:\${DYLD_FALLBACK_LIBRARY_PATH:-}"
+          exec "\$DIR/${exe}" "\$@"
+          EOF
+          chmod +x "dist/${exe}.command"
+
+          tar -czf "${{ steps.ver.outputs.archive }}.tar.gz" -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.ver.outputs.archive }}
+          path: ${{ steps.ver.outputs.archive }}.tar.gz
+
+  # ── GitHub Release (attaches all three archives) ───────────────────────────
+  publish:
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

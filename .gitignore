@@ -2,7 +2,10 @@
 build/
 build-linux/
 out/
-ShaderFun-linux/
+dist/
+build-win-release/
+build-linux-release/
+
 
 # ── Compiled shaders (generated at build time from shaders/) ─────────────────
 *.spv
@@ -21,3 +24,13 @@ Thumbs.db
 *.exe
 *.lib
 *.dll
+
+# - Debug
+.renderDoc_captures/
+.claude
+.plans
+
+# ── Python tooling (tools/perf_analysis, etc.) ─────────────────────────────────
+.venv/
+__pycache__/
+*.pyc

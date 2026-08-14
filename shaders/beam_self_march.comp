@@ -1,0 +1,292 @@
+#version 450
+
+// ── beam_self_march.comp ──────────────────────────────────────────────────────
+// Per-BEAM cloud occlusion, replacing beam_cloud_block.comp's per-TARGET vertical-column
+// approximation (2026-08-09, per user direction — see BEAM_CLOUD_PLAN.md).
+//
+// beam_cloud_block.comp answered "is there cloud somewhere above this ground target" via a
+// straight-up march from the target — a reasonable proxy for a near-vertical beam, but wrong for
+// an oblique one: at a 10 deg elevation angle the beam's real path through a ~9km-thick shell is
+// laterally offset ~50km from a point directly above the target, so the vertical-column value
+// could easily disagree with what the beam's OWN path actually crosses. This shader marches the
+// beam's REAL 3D segment (ground intersection -> satellite) through the shell instead.
+//
+// Dispatched once per active beam (up to BEAM_MAX_ACTIVE=2048), right after sat_orbit.comp (which
+// writes each beam's satENU/targetENU this same frame) and before cloud_march.comp/sat_sky.frag
+// read blockAltM/blockOpacity from the same buffer. Fixed-size dispatch (BEAM_MAX_ACTIVE/64
+// workgroups, always) since beamCount is itself a GPU-computed atomic counter not known at
+// command-buffer record time — inactive slots (i >= beamCount) return immediately, matching how
+// cloud_march.comp's own beam loops already handle this same buffer.
+//
+// Deliberately NOT the same shape as the fully-reverted follow-ups #14-#16 (TERRAIN_PLAN.md) that
+// "per-satellite" was avoided for:
+//   - #14's cost blowup was a real cloudDensity() march evaluated per SCREEN PIXEL near each
+//     beam's line, once per satellite — cost scaled with (satellites x pixels). This is a single
+//     bounded march per beam, no screen-space multiplication at all — the same shape
+//     beam_cloud_block.comp already proved cheap (0.05ms for 201 targets at up to 64 steps); this
+//     is ~10x the thread count (2048 vs 201) along a segment instead of straight up, still
+//     trivial against cloud_march.comp's own ~16ms.
+//   - #16's flicker came from a LATER dedup fix that picked one "winning" satellite's geometry per
+//     target per frame, and the winner's identity flipped frame-to-frame among near-equal
+//     candidates. This shader has no arbitration at all: every beam computes its own value from
+//     its own stable geometry (satENU/targetENU, already stable per sat_orbit.comp's own design),
+//     so there is nothing to flicker between.
+//
+// blockAltM/blockOpacity KEEP THEIR EXISTING MEANING (altitude where column transmittance first
+// drops below 50%, and overall 0-1 opacity) — sat_sky.frag's ground-spot shadowAtten needed ZERO
+// changes and automatically reads more physically-accurate per-beam data. cloud_march.comp's
+// beam->cloud illumination went through two more designs the same day (a per-target CPU
+// aggregation, then a broken screen-space glow) before landing on its current one: a small
+// per-BEAM (not per-target) light list, geometrically anchored at each beam's real ground
+// intersection, fed forward into the per-sample volumetric march the same way sun/moon light it —
+// see that file's beamCloudLighting()/BeamCloudLightBuf for the current design. The visible ray
+// (main()'s per-pixel loop, separate from the volumetric march) needed a new consumer here for
+// the first time — see that file's own comments.
+layout(local_size_x = 64) in;
+
+#include "reflect_beam.glsl"   // ReflectBeam + BEAM_MAX_ACTIVE
+
+// Read+write: this shader overwrites blockAltM/blockOpacity on every active slot; every other
+// field was already written by sat_orbit.comp this same frame and is left untouched here.
+layout(set = 0, binding = 0) buffer ReflectBeamsBuf {
+    uint         beamCount;
+    uint         beamPad0, beamPad1, beamPad2;
+    ReflectBeam  beams[BEAM_MAX_ACTIVE];
+};
+
+layout(set = 0, binding = 1) uniform sampler2D earthCloudsTex;
+layout(set = 0, binding = 2) uniform sampler3D cloudNoiseTex;
+layout(set = 0, binding = 3) uniform sampler3D cloudWarpNoiseTex;
+
+// CloudParams UBO + CloudLayer come from the shared header — see cloud_params.glsl for why this
+// isn't hand-copied here.
+#define CLOUD_PARAMS_BINDING 4
+#include "cloud_params.glsl"
+
+// PI, R_EARTH, raySphere, rotateZ, remap, kCloudHorizFreq/kCloudColFreq and the baked cloud noise
+// channel layout all come from the shared header — same convention beam_cloud_block.comp uses.
+#include "common.glsl"
+
+// observerPos()/enuBasis() — pure functions of (obsEffH) / (obsECEFDir), no texture params, so
+// including this costs nothing extra here (see terrain.glsl's own comment: textures are passed as
+// parameters, not bound by name, so unused functions in this header need no matching bindings).
+#include "terrain.glsl"
+
+layout(push_constant) uniform PC {
+    vec4  obsECEFDir; // xyz = observer ECEF unit direction (w unused here)
+    float obsEffH;    // observer effective height above local terrain (m) — same value
+                       // cloud_march.comp's own CloudMarchPC carries
+    float waveTime;   // matches beam_cloud_block.comp/cloud_march.comp's own pc.waveTime use
+    float cloudPhase; // fmod(driftRate * simTime, 2pi) — same value CloudParams.cloudPhase carries
+    float pad0;
+} pc;
+
+// ── Baked cloud/cirrus domain-warp field sampling — ported verbatim from cloud_march.comp /
+// beam_cloud_block.comp; see either for the derivation. ─────────────────────────────────────────
+const float kWarpBakeN   = 16.0;
+const float kWarpDriftRate  = 0.08;
+const float kWarpEvolveRate = 0.00002;
+
+vec3 cloudWarpOffset(vec3 dirECEF) {
+    vec3 windOfs = vec3(pc.cloudPhase * kWarpDriftRate + pc.waveTime * kWarpEvolveRate,
+                         pc.waveTime * kWarpEvolveRate * 0.6,
+                         pc.cloudPhase * kWarpDriftRate * 0.7 + pc.waveTime * kWarpEvolveRate * 0.8);
+    vec3 uvw = (dirECEF * cloud.cloudWarpFreq + windOfs) / kWarpBakeN;
+    vec3 n   = cloudWarpNoiseSample(cloudWarpNoiseTex, uvw) * 2.0 - 1.0;
+    return n * cloud.cloudWarpStrength;
+}
+
+const float kWarpColScale = kCloudColFreq / kCloudHorizFreq;
+
+vec2 cloudColumnNoise(vec3 uvwCol) {
+    return textureLod(cloudNoiseTex, uvwCol + vec3(0.0, 0.0, kCloudColNoiseZ), 0.0).ra;
+}
+
+float cloudDensity(vec3 uvwXY, vec3 uvwDetail, float hNorm, float coverage, float density, float heightProfile) {
+    vec3  ns    = textureLod(cloudNoiseTex, uvwXY, 0.0).rba;
+    float baseA = remap(ns.x, 1.0 - coverage, 1.0, 0.0, 1.0);
+    float midA  = remap(ns.y, 1.0 - coverage, 1.0, 0.0, 1.0);
+    float topA  = remap(ns.z, 1.0 - coverage, 1.0, 0.0, 1.0);
+    float hc    = clamp(hNorm, 0.0, 1.0);
+    float base  = (hc < 0.5) ? mix(baseA, midA, hc * 2.0)
+                             : mix(midA, topA, (hc - 0.5) * 2.0);
+    if (base <= 0.0) return 0.0;
+
+    float erosionRaw = textureLod(cloudNoiseTex,
+                                  uvwDetail * cloud.cloudErosionFreq + vec3(0.37, 0.53, 0.71),
+                                  0.0).g;
+    float billowAmt = cloud.cloudErosionBillow
+                    * smoothstep(0.0, max(cloud.cloudErosionBillowH, 1e-4), hc);
+    float erosion   = mix(erosionRaw, 1.0 - erosionRaw, billowAmt);
+
+    float erosionAmt = mix(cloud.cloudErosionEdge, cloud.cloudErosionCore, base);
+    float carve      = erosionAmt * erosion;
+    float denom      = max(1.0 - carve, 1e-3);
+
+    float erodedMul = clamp((base - carve) / denom, 0.0, 1.0) * heightProfile;
+    float erodedSub = clamp((base - carve - (1.0 - heightProfile)) / denom, 0.0, 1.0);
+    float eroded    = mix(erodedMul, erodedSub, cloud.cloudSurfaceCarve);
+
+    return max(eroded * density, 0.0);
+}
+
+void main() {
+    uint bi = gl_GlobalInvocationID.x;
+    if (bi >= min(beamCount, BEAM_MAX_ACTIVE)) return;
+
+    // Reconstruct true ECEF endpoints from the observer-relative ENU offsets sat_orbit.comp wrote
+    // this frame — same "obsPos + offset" then "x*enuX + y*enuY + z*enuZ" convention
+    // cloud_march.comp's per-pixel ray loop already uses for this exact buffer, so this march sees
+    // the identical world position that consumer does.
+    vec3 enuX, enuY, enuZ;
+    enuBasis(pc.obsECEFDir.xyz, enuX, enuY, enuZ);
+    vec3 obsPos = observerPos(pc.obsEffH);
+
+    vec3 satLocal = obsPos + beams[bi].satENU;
+    vec3 satECEF  = satLocal.x * enuX + satLocal.y * enuY + satLocal.z * enuZ;
+
+    // 2026-08-09 (in-app finding: occlusion worked for beams locked on a target but not while
+    // slewing between targets): march along the mirror's ACTUAL current reflected direction
+    // (reflectDirENU), not the direction toward the chosen target (targetENU). Those two coincide
+    // once converged (aimErrorRad==0, which is the "locked on target" case that already worked),
+    // but genuinely diverge while slewing (see CLAUDE.md's TargetedReflector orientation section —
+    // reflectDirENU is deliberately NOT normalize(targetENU-satENU) during the rate-limited ease).
+    // The visible ray in cloud_march.comp is drawn along reflectDirENU too (its own rayDir), so
+    // marching the target direction instead was checking cloud along a path the beam wasn't
+    // actually following — the real ray got no occlusion signal while mid-slew. Using the ray's
+    // own ground intersection as the near endpoint keeps the rest of this march's geometry
+    // (endpoint inside both shell spheres) identical to before; only WHICH ground point is used
+    // changes.
+    vec3 rayDirLocal = beams[bi].reflectDirENU;
+    vec3 rayDirECEF  = rayDirLocal.x * enuX + rayDirLocal.y * enuY + rayDirLocal.z * enuZ;
+
+    vec2 groundHit = raySphere(satECEF, rayDirECEF, R_EARTH);
+    if (groundHit.x <= 0.0) {
+        // Ray doesn't reach the ground at all this frame (aimed away from Earth, e.g. easing
+        // between two targets on opposite sides of the sky) — nothing physical to occlude toward.
+        beams[bi].blockAltM    = 0.0;
+        beams[bi].blockOpacity = 0.0;
+        return;
+    }
+    vec3 groundECEF = satECEF + rayDirECEF * groundHit.x;
+
+    vec3  segVec = satECEF - groundECEF;
+    float segLenTotal = length(segVec);
+    if (segLenTotal < 1.0) {
+        beams[bi].blockAltM    = 0.0;
+        beams[bi].blockOpacity = 0.0;
+        return;
+    }
+    vec3 segDir = segVec / segLenTotal;
+
+    float cloudBaseAlt = cloud.layers[0].shellAltM;
+    float cloudTopAlt  = cloud.layers[1].shellAltM;
+    float shellThick   = cloudTopAlt - cloudBaseAlt;
+
+    float T = 1.0;
+    // Same fallback convention as beam_cloud_block.comp: weighted-mean absorption altitude when
+    // the segment never crosses 50% transmittance loss, so a thin/scattered cloud doesn't produce
+    // a fake edge pinned to the shell's nominal ceiling — see that file's own comment for the full
+    // reasoning (found in-app 2026-08-08, same fix applies here).
+    float blockAltM    = cloudTopAlt;
+    float altWeighted  = 0.0;
+    float absorbWeight = 0.0;
+    bool  foundBlock   = false;
+
+    if (cloud.layers[0].enabled > 0.5) {
+        // The ground endpoint (groundECEF, the actual ray/Earth intersection — see above) is
+        // always below cloud base by construction (raySphere against R_EARTH exactly); the
+        // satellite endpoint is always far above cloudTopAlt (LEO altitudes are tens of km+ above
+        // an ~11km shell). So the SEGMENT crosses both shell boundaries at most once each, same as
+        // beam_cloud_block.comp's vertical case — but bounded to [0, segLenTotal] here since this
+        // is a finite segment, not an infinite ray.
+        vec2 shellB = raySphere(groundECEF, segDir, R_EARTH + cloudBaseAlt);
+        vec2 shellT = raySphere(groundECEF, segDir, R_EARTH + cloudTopAlt);
+        if (shellT.y > 0.0 && shellB.y < shellT.y) {
+            float tEnter = clamp(max(shellB.y, 0.0), 0.0, segLenTotal);
+            float tExit  = clamp(shellT.y, 0.0, segLenTotal);
+            if (tExit > tEnter) {
+                // Step length capped to match cloudMarchCS's own kCloudMaxStepM — see
+                // beam_cloud_block.comp's identical fix (found 2026-08-09) for why an uncapped
+                // fixed step count undersamples badly. Raised to 96 max steps (vs that file's 64):
+                // an oblique beam's slant path through the shell can be several times longer than
+                // a vertical column (e.g. ~50km at 10 deg elevation vs ~9km straight up), so more
+                // headroom is needed to keep the per-step length from growing past the cap on the
+                // more common oblique cases. Still trivial cost: 2048 beams x up to 96 steps is
+                // ~10x beam_cloud_block.comp's own proven-cheap 201 x 64, i.e. still well under 1ms.
+                const float kMaxStepM = 250.0;
+                const int   kMaxSteps = 96;
+                int   kSteps = clamp(int(ceil((tExit - tEnter) / kMaxStepM)), 1, kMaxSteps);
+                float segLen = (tExit - tEnter) / float(kSteps);
+                // March direction (2026-08-09 fix, found in-app: reducing cloud.density did not
+                // move blockAltM down, beams kept cutting off at a fixed altitude near cloudTopAlt
+                // regardless). This walked tEnter->tExit, i.e. from the GROUND/cloud-base side of
+                // the segment up toward the satellite/cloud-top side — backwards from how the
+                // beam's own sunlight actually travels (satellite -> ground, decreasing altitude).
+                // T accumulated in that reversed order models "transmittance looking up from cloud
+                // base", not "transmittance of light coming down from the satellite": since hFade
+                // is near-zero right at cloud base (smoothstep(baseH, baseH+0.05, hNorm)), the first
+                // several samples near tEnter contribute almost no extinction no matter how high
+                // cloud.density is set, so accumulation only picks up once the march reaches the
+                // real cloud body higher up — pushing the 50%-transmittance crossing toward the
+                // TOP of the shell for any non-trivial density, and asymptoting to the hard
+                // cloudTopAlt ceiling (the loop's own fallback default) as density is lowered
+                // rather than tracking it down through the actual cloud. Walking tExit->tEnter
+                // instead starts at the satellite-facing (top) end, so the first crossing found is
+                // the true altitude — measured from where the beam's light first meets the shell —
+                // at which it goes dark, correctly following the real per-column cloud shape/density
+                // instead of converging on a fixed altitude.
+                for (int i = 0; i < kSteps; ++i) {
+                    vec3 p = groundECEF + segDir * (tExit - (float(i) + 0.5) * segLen);
+                    float h = length(p) - R_EARTH;
+                    if (h < cloudBaseAlt || h > cloudTopAlt) continue;
+                    float hNorm = (h - cloudBaseAlt) / shellThick;
+
+                    float pLen = h + R_EARTH;
+                    vec3  dirECEF = p / pLen;
+                    float pLon = atan(p.y, p.x);
+                    float pLat = asin(clamp(dirECEF.z, -1.0, 1.0));
+                    vec2  pUV  = vec2(fract((pLon + PI) / (2.0*PI)
+                                            + pc.cloudPhase * cloud.layers[0].driftMult / (2.0*PI)),
+                                       (0.5*PI - pLat) / PI);
+                    // Matches the view march's mip (cloud.coverageMipLod) — see
+                    // beam_cloud_block.comp's identical fix (found 2026-08-09) for why the coarse
+                    // whole-column REJECTION mip (4.0) is wrong for per-sample shape evaluation.
+                    float localCov = cloud.coverage * textureLod(earthCloudsTex, pUV, cloud.coverageMipLod).r;
+
+                    vec3 dirECEFDrift = rotateZ(dirECEF, pc.cloudPhase * cloud.layers[0].driftMult);
+                    vec3 warpUVW      = cloudWarpOffset(dirECEFDrift);
+
+                    vec2  colSample = cloudColumnNoise(dirECEFDrift * kCloudColFreq + warpUVW * kWarpColScale);
+                    float colH  = remap(colSample.x, 1.0 - localCov, 1.0, 0.0, 1.0);
+                    float baseH = (colSample.y - 0.5) * cloud.cloudBaseVariance;
+
+                    float topFade = 1.0 - smoothstep(colH - 0.05, colH + 0.05, hNorm);
+                    float hFade   = smoothstep(baseH, baseH + 0.05, hNorm) * topFade;
+                    if (hFade < 0.001) continue;
+
+                    const float kVertTiles = 1.5;
+                    float posZ      = sin(pUV.x * 21.3 + pUV.y * 17.7) * 0.5 + 0.5;
+                    vec3  uvwXY     = dirECEFDrift * kCloudHorizFreq + warpUVW;
+                    vec3  uvwDetail = uvwXY + vec3(0.0, 0.0, hNorm * kVertTiles + posZ * 2.0);
+                    float d = cloudDensity(uvwXY, uvwDetail, hNorm, localCov, cloud.density, hFade);
+
+                    if (d > 0.001) {
+                        float extinction = d * segLen * 3e-3; // same density->optical-depth mapping as cloudMarchCS
+                        float stepT = exp(-extinction);
+                        float absorbed = T * (1.0 - stepT);
+                        altWeighted  += h * absorbed;
+                        absorbWeight += absorbed;
+                        T *= stepT;
+                        if (!foundBlock && T < 0.5) { blockAltM = h; foundBlock = true; }
+                        if (T < 0.02) break;
+                    }
+                }
+                if (!foundBlock && absorbWeight > 0.0) blockAltM = altWeighted / absorbWeight;
+            }
+        }
+    }
+
+    beams[bi].blockAltM    = blockAltM;
+    beams[bi].blockOpacity = 1.0 - T;
+}

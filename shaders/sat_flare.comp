@@ -9,7 +9,8 @@
 //   1. Horizon cull       — skip satellite if elevation < HORIZON_EL (early out)
 //   2. ECI→ENU projection — 3 dot products to get skyDir
 //   3. Distance falloff   — inverse-square law normalised to REF_RANGE=500 km
-//   4. Earth shadow       — penumbra via smoothstep across ±1% R_Earth (~64 km)
+//   4. Earth shadow       — true umbra/penumbra cone geometry (tapers/widens with distance
+//                           behind Earth) + Rayleigh eclipse-reddening tint mid-transition
 //   5. Specular flare     — spec0 (primary) + spec1*w1 (secondary) + diffuse floor
 //   6. Daytime suppression— attenuate by sun elevation (satellites invisible
 //                           in daylight unless flare > ~0.25 effectiveIntensity)
@@ -69,23 +70,137 @@ layout(set = 0, binding = 1) writeonly buffer SatVisibleBuf {
     SatVisible visible[];
 };
 
+// ── Glow buffer — matches GpuGlowBuf ──────────────────────────────────────────
+//   bins[64] sky glow histogram: floatBitsToUint(max effectFlare) per bin. Unrelated to, and
+//   unaffected by, the flare architecture overhaul below.
+// Zeroed each frame by vkCmdFillBuffer(sizeof(GpuGlowBuf)).
+//
+// (flareCount/flareEntries[FLARE_MAX] lived here — a capped atomic-append list of "bright"
+// satellites that sat_sky.frag looped over PER SCREEN PIXEL to draw lens-flare coronas. Deleted:
+// raising the cap enough to stop flicker with "100s" of simultaneously-bright Reflect-Orbital
+// satellites made that per-pixel cost scale with it — measured to tank framerate to 24fps.
+// Replaced by actually rendering every visible satellite (plus the sun) as a point into a small
+// offscreen texture (flare_source.vert/.frag), blurred/streaked by flare_blur.comp — see
+// FlareSourcePC's comment in SatelliteSim.h for the full design. This shader's own per-satellite
+// work is otherwise unchanged; it still writes GpuSatVisible, which flare_source.vert now reads
+// the exact same way sat_point.vert always has.)
+const float GLOW_THRESH  = 1.0;
+layout(set = 0, binding = 2) buffer GlowBuf {
+    uint  bins[64];
+};
+
+// ── Ocean-glint list — matches GpuOceanGlintBuf (flare architecture overhaul) ────────────────
+// A small, INDEPENDENT capped atomic-append list — same pattern the old flareEntries used, just
+// decoupled from corona rendering and much smaller (128, not 256): ocean specular glint is a minor
+// highlight effect, not the primary visibility signal. Zeroed each frame by vkCmdFillBuffer.
+// Bumped 32->128 (session): with >32 bright satellites in view the list overflowed every frame,
+// and which 32 of the candidates won their atomicAdd race was unstable frame-to-frame (no sort by
+// brightness, pure first-come-first-served) — that instability is what read as ocean glint flicker.
+const float OCEAN_GLINT_THRESH = 1.0;
+const uint  OCEAN_GLINT_MAX    = 512; // must match kMaxOceanGlints in SatelliteSim.h and
+                                        // kOceanGlintMax in sat_sky.frag exactly.
+layout(set = 0, binding = 8) buffer OceanGlintBuf {
+    uint oceanGlintCount;
+    uint oceanGlintPad[3];
+    vec4 oceanGlintEntries[OCEAN_GLINT_MAX]; // xyz=ENU dir, w=effectFlare
+};
+
+// ── Light pollution dome — 16 azimuth sectors (22.5° each), interpolated between sector
+// centers below rather than hard-binned. CPU-written each frame in
+// SatelliteSim::updateLightPollutionDome() from earthNightCpu samples around the observer;
+// host-visible + coherent, no barrier needed (mirrors reflectorTargetsBuf's established pattern).
+// Values are intentionally NOT pre-clamped to [0,1] — see the clamp comment at the use site.
+layout(set = 0, binding = 3) readonly buffer LightDomeBuf {
+    float lightDome[16];
+};
+
+// C12 follow-up #31: beam-driven sky-glow suppression dome — parallel to LightDomeBuf above but
+// populated by ACTIVE Reflect-Orbital beams (sat_orbit.comp, atomicMax per sector) instead of a
+// static night-lights texture. Stored as raw atomicMax'd uint bit-patterns (floatBitsToUint on
+// the write side) — reinterpret via uintBitsToFloat here, NOT a direct float read. Deliberately a
+// SEPARATE buffer from LightDomeBuf, not merged — two independent phenomena, same consumption
+// shape.
+layout(set = 0, binding = 4) readonly buffer BeamGlowDomeBuf {
+    uint beamGlowDome[16];
+};
+
 // ── Push constants ────────────────────────────────────────────────────────────
 // GLSL std430 vec3 alignment = 16.  Offsets verified against C++ SatFlarePC.
 layout(push_constant) uniform PC {
-    vec4  enuX;       // East  basis in ECI (w unused) — offset 0
-    vec4  enuY;       // North basis in ECI (w unused) — offset 16
-    vec4  enuZ;       // Up    basis in ECI (w unused) — offset 32
-    vec3  sunDirECI;  // unit vector from Earth toward Sun — offset 48
-    uint  satCount;   // — offset 60
-    vec3  obsECI;     // observer ECI position (meters) — offset 64
-    float pad;        // — offset 76
+    vec4  enuX;            // East  basis in ECI (w unused) — offset 0
+    vec4  enuY;            // North basis in ECI (w unused) — offset 16
+    vec4  enuZ;            // Up    basis in ECI (w unused) — offset 32
+    vec3  sunDirECI;       // unit vector from Earth toward Sun — offset 48
+    uint  satCount;        // — offset 60
+    vec3  obsECI;          // observer ECI position (meters) — offset 64
+    float elevCutoff;      // sin(Earth-limb angle); horizon cull threshold (≤ -0.01) — offset 76
+    float brightnessScale; // global flux multiplier — offset 80
+    float daySuppression;  // sky background suppression ratio — offset 84
+    float mirrorBoost;     // mirror peak multiplier — offset 88
+    float visThresh;       // visibility cull threshold — offset 92
+    float highlightFlare;  // fixed flare for census highlight mode — offset 96
+    float extinctionCoeff; // atmospheric extinction, magnitudes per airmass — offset 100
+    float moonSuppression; // sky background suppression ratio from moonlight — offset 104
+    float pad0;            // reserved — offset 108
+    vec3  moonDirECI;      // unit vector from Earth toward Moon in ECI — offset 112
+    float sunRefIntensity; // was pad1 — S3: soft brightness ceiling relative to the sun — offset 124
 } pc;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const float R_EARTH      = 6371000.0;   // Earth radius (meters)
-const float HORIZON_EL   = -0.01;       // cull if elevation < ~0.6° below horizon
+
+// Altitude of THIS satellite's line of sight at its closest approach to Earth's center — see the
+// identical helper's comment in common.glsl (not included here; this file is deliberately
+// self-contained, so it gets its own copy, same convention as its local R_EARTH above). Used ONLY
+// for the extinction term below, not for dayBright/moonBright suppression (those legitimately key
+// off the OBSERVER's own altitude — "is there scattering atmosphere near me").
+float rayTangentAltM(vec3 ro, vec3 rd) {
+    float b     = dot(ro, rd);
+    float roLen = length(ro);
+    float dMin  = (b >= 0.0) ? roLen : sqrt(max((roLen - b) * (roLen + b), 0.0));
+    return dMin - R_EARTH;
+}
+
+// Bounded variant — clamps the closest-approach parameter to a finite target range (meters) along
+// the ray, instead of the unconstrained infinite forward ray. Fixes a real bug: a satellite
+// appearing in front of Earth as seen from a space-based observer got extincted as if its sightline
+// grazed the atmosphere, because the unbounded 2-arg version's tangent point sat far beyond the
+// satellite's actual (much closer) position — see the identical overload's full comment in
+// common.glsl (not included here; this file is deliberately self-contained, same convention as the
+// 2-arg copy above).
+float rayTangentAltM(vec3 ro, vec3 rd, float maxT) {
+    float t = clamp(-dot(ro, rd), 0.0, maxT);
+    vec3  p = ro + rd * t;
+    return length(p) - R_EARTH;
+}
+// Horizon cull threshold comes from pc.elevCutoff (dynamic: opens to Earth limb at altitude).
 const float REF_RANGE    = 500000.0;    // 500 km reference distance for 1/r² normalisation
-const float VIS_THRESH   = 0.008;       // flare intensity below this → invisible/clipped
+
+// ── Eclipse cone geometry ──────────────────────────────────────────────────────
+// The umbra/penumbra are cones, not a cylinder: their cross-sectional radius tapers/widens
+// with distance behind Earth along the shadow axis, driven by the Sun's real angular size
+// (~0.53°) as seen from Earth. tanUmbra/tanPenumbra are the two cones' half-angles (small-angle
+// tangent of Sun angular radius ∓ Earth angular radius, standard eclipse-cone derivation).
+// R_SUN/D_SUN only exist to derive these two ratios — eccentricity ignored (±1.7% on D_SUN,
+// negligible next to the effect being modeled), not needed anywhere else in this shader.
+// At LEO (~550 km alt) this reproduces the old fixed ±1% R_EARTH band almost exactly (~64 km
+// wide); at GEO the real penumbra is ~400 km wide — the old fixed band underestimated that by
+// 6×, making GEO eclipse entry/exit look far more abrupt than it really is.
+const float R_SUN         = 6.96e8;     // Sun radius (meters)
+const float D_SUN         = 1.496e11;   // Earth-Sun distance, 1 AU (meters)
+const float kTanUmbra     = (R_SUN - R_EARTH) / D_SUN;  // umbra cone narrows with distance
+const float kTanPenumbra  = (R_SUN + R_EARTH) / D_SUN;  // penumbra cone widens with distance
+// VIS_THRESH, HIGHLIGHT_FLARE, BRIGHTNESS_SCALE, MIRROR_BOOST, DAY_SUPPRESSION
+// are now runtime values in pc — see push_constant block above.
+
+// ── Highlight mode ────────────────────────────────────────────────────────────
+// When sat.diffuse > 1.0 the CPU has flagged this satellite for highlight mode
+// (constellation census view).  All above-horizon satellites in the constellation
+// are rendered at a fixed intensity, bypassing shadow, daytime suppression, and
+// attitude-dependent specular so the full orbital distribution is always visible.
+// HIGHLIGHT_FLARE ≈ magnitude 5.3 — clearly visible without being blinding.
+const float HIGHLIGHT_SENTINEL = 1.5;  // diffuse values above this trigger the mode
+// HIGHLIGHT_FLARE is now pc.highlightFlare
 
 // ── Brightness scale ──────────────────────────────────────────────────────────
 // Global linear multiplier applied to every satellite's computed flux before
@@ -101,7 +216,7 @@ const float VIS_THRESH   = 0.008;       // flare intensity below this → invisi
 //
 // IMPORTANT: kBrightnessScale in SatelliteSim.cpp must mirror this value
 // so the CPU-side magnitude readout stays consistent with the GPU render.
-const float BRIGHTNESS_SCALE = 4.0;
+// BRIGHTNESS_SCALE is now pc.brightnessScale
 
 // ── Magnitude calibration ─────────────────────────────────────────────────────
 // Apparent magnitude is derived from effectFlare via the photometric scale:
@@ -145,7 +260,7 @@ const float MAG_REF       = 12.0;
 //   Starlink (mirrorFrac=0.05): spec0 ≈ 11   → effectFlare ≈ 27  → mag ≈ -2.7
 //   ISS      (mirrorFrac=0.15): spec0 ≈ 32   → effectFlare ≈ 1260 → mag ≈ -7.5
 //   GEO      (mirrorFrac=0.10): spec0 ≈ 22   → GEO distFactor ≈ 2e-4 → mag ≈ +4.6
-const float MIRROR_BOOST = 300.0;
+// MIRROR_BOOST is now pc.mirrorBoost
 
 // ── Daytime sky suppression ───────────────────────────────────────────────────
 // Models sky background glare washing out dim satellites.
@@ -166,7 +281,7 @@ const float MIRROR_BOOST = 300.0;
 //   Starlink peak Phong      (flare ≈ 0.6  ): effectFlare ≈ 0.004  → invisible ✓
 //   Starlink mirror peak     (flare ≈ 30   ): effectFlare ≈ 0.20   → visible   ✓
 //   ISS mirror peak          (flare ≈ 480  ): effectFlare ≈ 3.2    → brilliant ✓
-const float DAY_SUPPRESSION = 50.0;
+// DAY_SUPPRESSION is now pc.daySuppression
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
@@ -175,7 +290,7 @@ void main() {
     SatInput sat = satellites[idx];
 
     // ── Horizon cull ─────────────────────────────────────────────────────────
-    if (sat.elevation < HORIZON_EL) {
+    if (sat.elevation < pc.elevCutoff) {
         visible[idx].flareIntensity = 0.0;
         visible[idx].skyDir         = vec3(0.0, 0.0, 1.0);
         visible[idx].baseColor      = vec3(0.0);
@@ -191,24 +306,57 @@ void main() {
     enu.z = dot(rel, pc.enuZ.xyz);  // Up
     vec3 skyDir = normalize(enu);
 
+    // ── Highlight mode: fixed-brightness census view ─────────────────────────
+    // CPU sets sat.diffuse = 2.0 when the constellation's highlight flag is on.
+    // Skip all lighting math and emit a uniform dot so every above-horizon
+    // satellite is equally visible regardless of shadow or daytime sky.
+    if (sat.diffuse > HIGHLIGHT_SENTINEL) {
+        float rangeMm  = sat.range / 1.0e6;
+        float baseSize = max(1.5, 2.5 - rangeMm * 0.4);
+        float angSize  = baseSize * 2.5 + 10.0 * log(pc.highlightFlare * 54.0);
+        visible[idx].skyDir         = skyDir;
+        visible[idx].flareIntensity = pc.highlightFlare;
+        visible[idx].baseColor      = sat.baseColor;
+        visible[idx].angularSize    = angSize;
+        return;
+    }
+
     // ── Distance falloff (inverse-square law, normalised to REF_RANGE) ──────────
     // Physically: reflected flux ∝ 1/r². Clamped at 1.0 so sats closer than
     // REF_RANGE don't over-brighten. GEO at 35 786 km ≈ 0.02% of LEO brightness.
     float distFactor = REF_RANGE / max(sat.range, REF_RANGE);
     distFactor *= distFactor;  // 1/r²
 
-    // ── Soft Earth shadow (penumbra) ──────────────────────────────────────────
-    // Project satellite into the shadow cylinder and measure how far its cross-
-    // sectional radius is from R_Earth. Smoothstep over ±1% R_Earth (~64 km)
-    // gives a realistic penumbra instead of a hard binary switch.
+    // ── Soft Earth shadow (umbra/penumbra cones) ──────────────────────────────
+    // Project satellite onto the shadow axis and measure how far its cross-sectional radius
+    // is from the umbra/penumbra cone radii AT THAT DISTANCE (see kTanUmbra/kTanPenumbra above)
+    // — not a fixed-width band. smoothstep between the two cone radii gives a realistic
+    // penumbra whose width scales correctly with satellite altitude instead of a hard switch.
     vec3  satAbs    = sat.eciRelPos + pc.obsECI;   // absolute ECI position
+    float R_sat     = length(satAbs);
+    vec3  satNadir  = -satAbs / R_sat;             // unit vector: satellite → Earth center
     vec3  shadowDir = -pc.sunDirECI;               // points away from sun
     float proj      = dot(satAbs, shadowDir);       // + = on the night side
     vec3  perpVec   = satAbs - proj * shadowDir;    // component ⊥ shadow axis
     float perpLen   = length(perpVec);
+    float dShadow   = max(proj, 0.0);                        // distance behind Earth center
+    float rUmbra    = max(0.0, R_EARTH - dShadow * kTanUmbra);
+    float rPenumbra = R_EARTH + dShadow * kTanPenumbra;
     float litFactor = (proj > 0.0)
-        ? smoothstep(-R_EARTH * 0.01, R_EARTH * 0.01, perpLen - R_EARTH)
+        ? smoothstep(rUmbra, rPenumbra, perpLen)
         : 1.0;
+
+    // ── Earthshine irradiance (analytical horizon correction) ─────────────────
+    // illumFrac: fraction of the visible Earth cap that lies on the lit side.
+    // Transitions in cosAlpha space over the angular width of the cap (2×sinEta),
+    // replacing the naive sinusoid that treats Earth as a point source.
+    const float EARTH_ALBEDO = 0.3;
+    float cosAlpha      = dot(-satNadir, pc.sunDirECI); // cos(sat-zenith / sun angle)
+    float cosEta        = R_EARTH / R_sat;              // cos of Earth's angular radius
+    float sinEta        = sqrt(max(0.0, 1.0 - cosEta * cosEta));
+    float illumFrac     = clamp((cosAlpha + sinEta) / (2.0 * sinEta), 0.0, 1.0);
+    float solidAngleFrac = (1.0 - cosEta) * 0.5;       // fraction of upward hemisphere
+    float earthIrr      = EARTH_ALBEDO * solidAngleFrac * illumFrac;
 
     // ── Multi-surface specular model ──────────────────────────────────────────
     // Three contributions are summed:
@@ -242,9 +390,17 @@ void main() {
     float irr0   = abs(dot(pc.sunDirECI, sat.surfN0));
     vec3  n0     = (dot(pc.sunDirECI, sat.surfN0) >= 0.0) ? sat.surfN0 : -sat.surfN0;
     vec3  refl0  = reflect(-pc.sunDirECI, n0);
+    // clamp (not just max(0,...)) is required here: refl0/satToObs are SUPPOSED to be unit
+    // vectors, so this dot should be mathematically bounded to [-1,1] — but float rounding can
+    // push it a hair above 1.0. That's invisible at low specExp0, but mirrorExp below can reach
+    // the tens of thousands (specExp0 * mirrorBoost, up to 200*1000=200000 for the Reflect Mirror
+    // type), where even a ~0.01% overshoot in the pow() base blows up to +Infinity in float32 —
+    // which then propagates through spec0/flare/effectFlare and renders as a black hole exactly
+    // at the flare's peak (Infinity/NaN can't be fixed by scaling brightness/mirror sliders,
+    // since any finite multiplier of Infinity is still Infinity).
     float spec0  = irr0 * ((sat.specExp0 < 0.01)
                     ? max(0.0, dot(pc.sunDirECI, satToObs))
-                    : pow(max(0.0, dot(refl0, satToObs)), sat.specExp0));
+                    : pow(clamp(dot(refl0, satToObs), 0.0, 1.0), sat.specExp0));
 
     // Secondary surface — irr1 = 0 for edge-on surfaces (e.g. Perpendicular radiators)
     float irr1   = abs(dot(pc.sunDirECI, sat.surfN1));
@@ -252,21 +408,39 @@ void main() {
     vec3  refl1  = reflect(-pc.sunDirECI, n1);
     float spec1  = irr1 * ((sat.specExp1 < 0.01)
                     ? max(0.0, dot(pc.sunDirECI, satToObs))
-                    : pow(max(0.0, dot(refl1, satToObs)), sat.specExp1));
+                    : pow(clamp(dot(refl1, satToObs), 0.0, 1.0), sat.specExp1));
 
     // ── Mirror peak: ultra-narrow specular spike ──────────────────────────────
     // Added on top of spec0 (primary Phong lobe).  Only fires when the
     // sun-satellite-observer triangle is almost perfectly aligned.
     // mirrorExp ≫ specExp0 → sub-degree angular width (vs. ~15° for Phong lobe).
-    float mirrorExp  = max(sat.specExp0 * 300.0, 8000.0);
-    float mirrorDot  = max(0.0, dot(refl0, satToObs));
-    float mirrorPeak = irr0 * pow(mirrorDot, mirrorExp) * MIRROR_BOOST;
+    float mirrorExp  = max(sat.specExp0 * pc.mirrorBoost, 8000.0);
+    float mirrorDot  = clamp(dot(refl0, satToObs), 0.0, 1.0);
+    float mirrorPeak = irr0 * pow(mirrorDot, mirrorExp) * pc.mirrorBoost;
     spec0 += mirrorPeak * sat.mirrorFrac;
+
+    // ── Earthshine BRDF — Earth illuminates from nadir direction ─────────────
+    // Not multiplied by litFactor: eclipsed satellites still receive earthshine
+    // from the illuminated hemisphere below (this is the dominant source of
+    // residual brightness for satellites crossing into shadow near the terminator).
+    float irrE0        = max(0.0, dot(satNadir, sat.surfN0));
+    vec3  nE0          = (dot(satNadir, sat.surfN0) >= 0.0) ? sat.surfN0 : -sat.surfN0;
+    vec3  reflE0       = reflect(-satNadir, nE0);
+    float specE0       = irrE0 * ((sat.specExp0 < 0.01)
+                         ? max(0.0, dot(satNadir, satToObs))
+                         : pow(max(0.0, dot(reflE0, satToObs)), sat.specExp0));
+    float irrE0b       = max(0.0, dot(satNadir, -sat.surfN0)); // back face: diffuse only
+    float specE0b      = irrE0b * sat.diffuse;
+    float irrE1        = max(0.0, dot(satNadir, sat.surfN1));
+    float specE1_earth = irrE1 * sat.w1 * sat.diffuse;
+    float earthSpecular = specE0 + specE0b + specE1_earth;
+    float earthFlare    = earthSpecular * earthIrr * distFactor * sat.crossSection * pc.brightnessScale;
 
     // crossSection = sqrt(area_m² / 10): larger structures reflect proportionally more flux.
     // A 10 m² satellite has crossSection≈1; a 50 000 m² space datacenter ≈70×.
-    float specular = spec0 + spec1 * sat.w1 + sat.diffuse;
-    float flare    = specular * litFactor * distFactor * sat.crossSection * BRIGHTNESS_SCALE;
+    float specular   = spec0 + spec1 * sat.w1 + sat.diffuse;
+    float solarFlare = specular * litFactor * distFactor * sat.crossSection * pc.brightnessScale;
+    float flare      = solarFlare + earthFlare;
 
     // ── Daytime sky suppression ───────────────────────────────────────────────
     // sunElev = sin(sun elevation angle above observer's horizon).
@@ -274,13 +448,108 @@ void main() {
     //   At the terminator (sunElev=0): t=0.13, dayBright≈0.017 → ~2.5% suppression.
     //   At +20° sun elevation:         t=1.0,  dayBright=1.0   → full suppression.
     // Squaring gives a slow start (gentle twilight glow) and faster mid-day ramp.
+    // atmFrac: atmosphere thins exponentially — suppression ≈ 0 above ~400 km.
     float sunElev     = dot(pc.sunDirECI, normalize(pc.obsECI));
     float t           = clamp((sunElev + 0.05) / 0.39, 0.0, 1.0);
     float dayBright   = t * t;
-    float effectFlare = flare / (1.0 + dayBright * DAY_SUPPRESSION);
+    float obsHeight   = max(0.0, length(pc.obsECI) - R_EARTH);
+    float atmFrac     = exp(-obsHeight / 80000.0); // 1 at sea level → ~0 at 400 km
+
+    // ── Moonlight sky suppression ───────────────────────────────────────────
+    // Same shape as dayBright above (elevation ramp × atmFrac), scaled by moon phase
+    // illumination since a crescent moon brightens the sky far less than a full moon.
+    // Uniform across the sky (not direction-dependent) — same simplification dayBright
+    // already makes; a real light-dome/near-moon-halo model is future scope.
+    // moonElev uses the same "dot with observer zenith" trick as sunElev above.
+    float moonElev    = dot(pc.moonDirECI, normalize(pc.obsECI));
+    float moonIllum   = (1.0 - dot(pc.sunDirECI, pc.moonDirECI)) * 0.5; // 0=new, 1=full
+    float tm          = clamp(moonElev / 0.5, 0.0, 1.0); // ramps horizon → ~30° elevation
+    float moonBright  = tm * tm * moonIllum;
+
+    float effectFlare = flare / (1.0 + (dayBright * pc.daySuppression
+                                       + moonBright * pc.moonSuppression) * atmFrac);
+
+    // ── Atmospheric extinction (airmass) ──────────────────────────────────────
+    // Real horizon dimming: airmass increases sharply at low elevation, scattering/absorbing
+    // light along the much longer low-elevation atmospheric path. Independent of light
+    // pollution/moon — this is the "always on" baseline the light-pollution dome's directional
+    // variation should read as modulation on top of, not the only source of horizon-vs-zenith
+    // brightness difference (that gap was the direct cause of the dome's sector transitions
+    // reading as unsubtle pops rather than a smooth gradient).
+    // Kasten & Young 1989 approximation — stays finite down to the true horizon (unlike the
+    // naive 1/sin(el), which diverges to infinity at el=0).
+    float sinElClamped = clamp(skyDir.z, 0.0, 1.0);
+    float elDeg      = degrees(asin(sinElClamped));
+    float airmass    = 1.0 / (sinElClamped + 0.50572 * pow(elDeg + 6.07995, -1.6364));
+    // Gated on THIS satellite's own line-of-sight tangent altitude (rayTangentAltM above), NOT the
+    // observer-height atmFrac used for day/moon suppression above — from orbit, a satellite sitting
+    // near the observer's local horizon can still have a line of sight that grazes deep into the
+    // atmosphere even though the OBSERVER itself is far above it. Using atmFrac here silently
+    // turned extinction off entirely near the horizon as soon as the observer left the atmosphere,
+    // regardless of the sightline's real atmospheric path.
+    // Bounded by sat.range (the 3-arg overload, not the 2-arg background/infinite-target one) — a
+    // real bug otherwise: a satellite silhouetted in front of Earth from a space-based observer has
+    // a ray direction pointing roughly toward the planet, so the UNBOUNDED tangent point sits at or
+    // near the surface far beyond the satellite's own much closer position, wrongly applying full
+    // extinction to a sightline that never actually goes anywhere near the atmosphere.
+    float atmFracExtinct = exp(-max(rayTangentAltM(pc.obsECI, normalize(rel), sat.range), 0.0) / 80000.0);
+    float extinctMag = pc.extinctionCoeff * (airmass - 1.0) * atmFracExtinct;
+    effectFlare *= pow(10.0, -0.4 * extinctMag);
+
+    // Light pollution: dims (scales down) rather than culls — matches the observation that
+    // scaling brightness reads as more convincing than pushing satellites past visThresh.
+    // Directional dome: lightDome[] holds unclamped city-brightness values sampled around the
+    // observer in 16 compass sectors (computed CPU-side in SatelliteSim::updateLightPollutionDome).
+    // Interpolated between the two nearest sector CENTERS (not hard-binned) — 16 discrete wedges
+    // still showed visible blocky transitions over wide, fairly uniform bright regions.
+    float azLP = mod(atan(skyDir.x, skyDir.y) + 6.283185307, 6.283185307);
+    float secF = azLP * (16.0 / 6.283185307) - 0.5;
+    int   sec0 = int(floor(secF));
+    float secFrac = secF - float(sec0);
+    int   sec0w = ((sec0 % 16) + 16) % 16;
+    int   sec1w = (sec0w + 1) % 16;
+    float domeAz = mix(lightDome[sec0w], lightDome[sec1w], secFrac);
+    // 0.35 (not 0.15): the steeper curve crushed the effect to near-zero above ~20° elevation —
+    // most satellites/stars a user actually looks at aren't sitting right on the horizon.
+    float elevFalloff = 0.35 / (max(skyDir.z, 0.0) + 0.35); // 1.0 at horizon, ~0.26 at zenith
+    // domeAz is intentionally unclamped upstream — the clamp only happens here, after elevFalloff,
+    // so high lightPollutionGain can compensate for elevFalloff's reduction at non-horizon angles
+    // instead of saturating uselessly before elevFalloff is even applied (session 26 bug).
+    // S2c (RELEASE_v1_1_PLAN.md): elevFalloff alone bottoms out at ~0.26 at zenith, so a satellite
+    // straight overhead could never be dimmed by more than ~26% no matter how bright the city —
+    // wrong, since real urban skyglow raises zenith brightness enormously (isotropic scattered
+    // component, not just the horizon-hugging direct-view glow elevFalloff models). kIsotropicFrac
+    // gives the dome a real floor at zenith while leaving horizon behaviour unchanged. Same
+    // constant/formula in sat_sky.frag (Milky Way + ground stars) and cloud_march.comp (aurora) —
+    // keep them coherent, this IS the "same array, coherent by construction" property.
+    const float kIsotropicFrac = 0.4;
+    float domeVal = clamp(domeAz * (kIsotropicFrac + (1.0 - kIsotropicFrac) * elevFalloff), 0.0, 1.0);
+    // kSatPollutionMaxDim caps how dark it can go so the brightest flares/mirrors still peek
+    // through even in a maximally lit city.
+    const float kSatPollutionMaxDim = 0.85;
+    effectFlare *= 1.0 - domeVal * kSatPollutionMaxDim;
+
+    // C12 follow-up #31: same suppression shape, second independent source — a nearby
+    // Reflect-Orbital beam should wash out this satellite the same way real light pollution does.
+    // beamGlowDome[] holds raw atomicMax'd uint bit-patterns (floatBitsToUint on the write side in
+    // sat_orbit.comp) — reinterpret via uintBitsToFloat before using, unlike lightDome[] which is
+    // a plain float buffer.
+    float beamDomeAz = mix(uintBitsToFloat(beamGlowDome[sec0w]), uintBitsToFloat(beamGlowDome[sec1w]), secFrac);
+    float beamDomeVal = clamp(beamDomeAz * elevFalloff, 0.0, 1.0);
+    const float kBeamPollutionMaxDim = 0.85;
+    effectFlare *= 1.0 - beamDomeVal * kBeamPollutionMaxDim;
+
+    // ── Soft brightness ceiling relative to the sun (S3, RELEASE_v1_1_PLAN.md) ───────────────
+    // Root cause of "reflector out-shines the sun": the flare-source pass (flare_source.vert)
+    // injects the sun as a virtual point at a FIXED pc.sunRefIntensity, while effectFlare above is
+    // otherwise unbounded — a favourably-angled mirror can exceed it outright. Reinhard-style
+    // rolloff: nothing can ever render brighter than the sun, ordering between satellites is fully
+    // preserved (monotonic in effectFlare), and the low end is untouched — at effectFlare ≪
+    // sunRefIntensity, effectFlare' ≈ effectFlare, so ordinary Starlink-class flares are unaffected.
+    effectFlare = pc.sunRefIntensity * effectFlare / (effectFlare + pc.sunRefIntensity);
 
     // ── Cull if below visibility threshold ────────────────────────────────────
-    if (effectFlare < VIS_THRESH) {
+    if (effectFlare < pc.visThresh) {
         visible[idx].flareIntensity = 0.0;
         visible[idx].skyDir         = vec3(0.0, 0.0, 1.0);
         visible[idx].baseColor      = vec3(0.0);
@@ -288,14 +557,58 @@ void main() {
         return;
     }
 
-    // ── Point size: grows with flare intensity; capped to avoid giant sprites ─
-    float rangeMm  = sat.range / 1.0e6;
-    float baseSize = max(1.5, 2.5 - rangeMm * 0.4);
-    float angSize  = baseSize * 2.5 + 10 * log(effectFlare * 54.0);
+    // ── Point size ───────────────────────────────────────────────────────────
+    // The outer glow in sat_point.frag uses a Lorentzian (1/(1+r²)) with the
+    // formula:  glowSigmaPx = log2(effectFlare) * 10   (half-max radius in pixels).
+    // This value MUST match the formula in sat_point.frag exactly.
+    //
+    // The sprite is sized to 7× glowSigmaPx so the smoothstep edge fade (applied
+    // over the full sprite diameter) has enough room to taper the Lorentzian tail
+    // to zero — no hard circular boundary is visible at any brightness.
+    // For dim sats (effectFlare ≤ 1) the base log formula governs.
+    float rangeMm     = sat.range / 1.0e6;
+    float baseSize    = max(1.5, 2.5 - rangeMm * 0.4);
+    float glowSigmaPx = max(0.0, log2(effectFlare) * 10.0); // 0 at ef=1, 30px at ef=8
+    float angSizeBase = baseSize * 2.5 + 10.0 * log(effectFlare * 54.0);
+    float angSizeGlow = baseSize * 2.0 + glowSigmaPx * 7.0;
+    // Hard cap: individual sprite cannot grow beyond 120px regardless of effectFlare.
+    // Aggregate cluster glow is handled by the sky glow bins, not per-sat sprites.
+    float angSize     = min(max(angSizeBase, angSizeGlow), 120.0);
+    angSize           = max(angSize, 0.05);  // floor: sub-pixel sprites alias badly as center drifts across pixel boundaries
+
+    // ── Sky glow: bin this satellite (stable, no flicker) ────────────────────
+    if (effectFlare >= GLOW_THRESH) {
+        const float TWO_PI = 6.28318530718;
+        float az   = mod(atan(skyDir.x, skyDir.y) + TWO_PI, TWO_PI);
+        uint azBin = uint(az * (8.0 / TWO_PI)) & 7u;
+        uint elBin = min(uint(max(skyDir.z, 0.0) * 8.0), 7u);
+        atomicMax(bins[azBin * 8u + elBin], floatBitsToUint(effectFlare));
+    }
+
+    // ── Ocean-glint list: capped atomic-append, no arbitration ──────────────
+    // Every satellite above OCEAN_GLINT_THRESH claims its OWN slot — same pattern the deleted
+    // flareEntries list used, just scoped to this one small, independent consumer now.
+    if (effectFlare >= OCEAN_GLINT_THRESH) {
+        uint slot = atomicAdd(oceanGlintCount, 1u);
+        if (slot < OCEAN_GLINT_MAX) {
+            oceanGlintEntries[slot] = vec4(skyDir, effectFlare);
+        }
+    }
+
+    // ── Eclipse reddening ──────────────────────────────────────────────────────
+    // Sunlight reaching a satellite deep in the penumbra grazes Earth's atmosphere along a very
+    // long slant path — the same Rayleigh scattering that reddens sunsets strips blue/green out
+    // of it before it reaches orbit. Tint strength peaks mid-transition (litFactor≈0.5) and
+    // vanishes at both ends: at litFactor=1 the sunlight path is clean (no grazing), and at
+    // litFactor=0 there's no direct sunlight left to tint (earthFlare, an unrelated light
+    // source, is deliberately left unaffected — see its own comment above).
+    const vec3 kEclipseTint = vec3(1.0, 0.45, 0.15);      // grazing-path Rayleigh reddening
+    float eclipseTintAmt    = 4.0 * litFactor * (1.0 - litFactor); // 0 at ends, 1 at litFactor=0.5
+    vec3  outBaseColor      = mix(sat.baseColor, sat.baseColor * kEclipseTint, eclipseTintAmt);
 
     // ── Output ───────────────────────────────────────────────────────────────
     visible[idx].skyDir         = skyDir;
     visible[idx].flareIntensity = effectFlare;
-    visible[idx].baseColor      = sat.baseColor;
+    visible[idx].baseColor      = outBaseColor;
     visible[idx].angularSize    = angSize;
 }

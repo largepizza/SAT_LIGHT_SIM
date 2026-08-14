@@ -1,5 +1,39 @@
 cmake_minimum_required(VERSION 3.20)
-project(ShaderFun VERSION 0.1 LANGUAGES CXX)
+
+# Single source of truth for the version — edit VERSION to cut a release.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" APP_VERSION)
+string(STRIP "${APP_VERSION}" APP_VERSION)           # remove trailing newline
+string(REPLACE "." "_" VERSION_UNDERSCORED "${APP_VERSION}")
+set(EXE_BASENAME "SAT_LIGHT_SIM_V_${VERSION_UNDERSCORED}")  # e.g. SAT_LIGHT_SIM_V_1_0_0
+
+project(SatLightSim VERSION ${APP_VERSION} LANGUAGES CXX)
+message(STATUS "Building ${EXE_BASENAME}")
+
+# Git commit + build date for diagnostics/bug reports (NEW-1). "unknown" for
+# source-zip builds with no .git directory so this never fails a from-scratch
+# build. Only updates when CMake re-configures, not on every incremental build.
+find_package(Git QUIET)
+set(GIT_COMMIT "unknown")
+if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_COMMIT_OUT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE GIT_RESULT
+    )
+    if(GIT_RESULT EQUAL 0 AND NOT GIT_COMMIT_OUT STREQUAL "")
+        set(GIT_COMMIT "${GIT_COMMIT_OUT}")
+    endif()
+endif()
+string(TIMESTAMP BUILD_DATE "%Y-%m-%d" UTC)
+
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/version.h"
+    @ONLY
+)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -79,9 +113,15 @@ set(JSON_Install    OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(nlohmann_json)
 
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
-add_executable(ShaderFun ${SOURCES})
-target_include_directories(ShaderFun PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR})
-target_link_libraries(ShaderFun PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json)
+add_executable(SatLightSim ${SOURCES})
+set_target_properties(SatLightSim PROPERTIES OUTPUT_NAME "${EXE_BASENAME}")
+target_include_directories(SatLightSim PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
+# UC6 (RELEASE_v1_1_PLAN.md): screenshot PNG encoding runs on a std::thread. A no-op on MSVC
+# (thread support is built into the runtime there), but GCC/Clang on Linux/macOS need an explicit
+# pthread link or std::thread silently fails to link.
+find_package(Threads REQUIRED)
+target_link_libraries(SatLightSim PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json Threads::Threads)
 
 # Shader compilation
 find_program(GLSLC glslc HINTS "$ENV{VULKAN_SDK}/bin")
@@ -90,14 +130,20 @@ if(NOT GLSLC)
 endif()
 
 set(SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+set(SHADER_INC_DIR "${SHADER_SRC_DIR}/include")
 set(SHADER_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 file(MAKE_DIRECTORY ${SHADER_OUT_DIR})
 
-file(GLOB SHADERS
+file(GLOB SHADERS CONFIGURE_DEPENDS
     "${SHADER_SRC_DIR}/*.vert"
     "${SHADER_SRC_DIR}/*.frag"
     "${SHADER_SRC_DIR}/*.comp"
 )
+
+# Shared shader headers live in shaders/include/ with a .glsl extension — a SEPARATE directory
+# AND a separate extension, so the glob above never tries to compile one as a standalone
+# translation unit. Naming a header .comp, or leaving it in shaders/, breaks the build.
+file(GLOB SHADER_HEADERS CONFIGURE_DEPENDS "${SHADER_INC_DIR}/*.glsl")
 
 set(SPV_FILES "")
 foreach(SHADER ${SHADERS})
@@ -105,8 +151,14 @@ foreach(SHADER ${SHADERS})
     set(SPV "${SHADER_OUT_DIR}/${SHADER_NAME}.spv")
     add_custom_command(
         OUTPUT ${SPV}
-        COMMAND ${GLSLC} ${SHADER} -o ${SPV}
-        DEPENDS ${SHADER}
+        COMMAND ${GLSLC} -I "${SHADER_INC_DIR}" ${SHADER} -o ${SPV}
+        # Every shader depends on ALL headers, not just the ones it includes. Coarse — touching
+        # one header recompiles all ~28 shaders — but glslc takes seconds even on the two big
+        # ones, and it is correct on every generator. The precise alternative (glslc -MD +
+        # add_custom_command DEPFILE) needs CMake 3.27 for Visual Studio generators; this project
+        # requires 3.20 and builds with MSVC, so DEPFILE is not available here. If the build ever
+        # moves to Ninja, switching is a small change.
+        DEPENDS ${SHADER} ${SHADER_HEADERS}
         COMMENT "Compiling shader: ${SHADER_NAME}"
         VERBATIM
     )
@@ -114,39 +166,52 @@ foreach(SHADER ${SHADERS})
 endforeach()
 
 add_custom_target(CompileShaders ALL DEPENDS ${SPV_FILES})
-add_dependencies(ShaderFun CompileShaders)
+add_dependencies(SatLightSim CompileShaders)
 
 # Copy compiled shaders next to the executable
-add_custom_command(TARGET ShaderFun POST_BUILD
+add_custom_command(TARGET SatLightSim POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${SHADER_OUT_DIR}
-        $<TARGET_FILE_DIR:ShaderFun>/shaders
+        $<TARGET_FILE_DIR:SatLightSim>/shaders
     COMMENT "Copying shaders to output directory"
 )
 
-# Copy moddable data files next to the executable.
-# constellations.schema.json: copied unconditionally (never user-edited).
-# constellations.json:        copied only if it does not already exist at the destination
-#                             so that user edits are preserved across rebuilds.
+# Copy data files next to the executable on every build when the source changes.
+# Both files are tracked in source control; copy_if_different keeps the output
+# in sync without unnecessary writes when nothing has changed.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data")
-    add_custom_command(TARGET ShaderFun POST_BUILD
+    add_custom_command(TARGET SatLightSim POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/data/constellations.schema.json"
-            "$<TARGET_FILE_DIR:ShaderFun>/constellations.schema.json"
-        COMMAND ${CMAKE_COMMAND}
-            -DFILE="${CMAKE_CURRENT_SOURCE_DIR}/data/constellations.json"
-            -DDEST="$<TARGET_FILE_DIR:ShaderFun>/constellations.json"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyIfMissing.cmake"
+            "$<TARGET_FILE_DIR:SatLightSim>/constellations.schema.json"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/constellations.json"
+            "$<TARGET_FILE_DIR:SatLightSim>/constellations.json"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/reflector_targets.json"
+            "$<TARGET_FILE_DIR:SatLightSim>/reflector_targets.json"
         COMMENT "Copying data files to output directory"
     )
 endif()
 
 # Copy assets (icons, textures, etc.) next to the executable
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
-    add_custom_command(TARGET ShaderFun POST_BUILD
+    add_custom_command(TARGET SatLightSim POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets"
-            "$<TARGET_FILE_DIR:ShaderFun>/assets"
+            "$<TARGET_FILE_DIR:SatLightSim>/assets"
         COMMENT "Copying assets to output directory"
+    )
+endif()
+
+# THIRD_PARTY_NOTICES.txt must ship next to the executable in every distributed
+# copy — MIT/zlib library licenses require the license text to travel with the
+# binary, not just live in an in-app tab (see UC2 in RELEASE_v1_1_PLAN.md).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt")
+    add_custom_command(TARGET SatLightSim POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.txt"
+            "$<TARGET_FILE_DIR:SatLightSim>/THIRD_PARTY_NOTICES.txt"
+        COMMENT "Copying THIRD_PARTY_NOTICES.txt to output directory"
     )
 endif()

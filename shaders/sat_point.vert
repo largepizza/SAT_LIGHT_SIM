@@ -12,19 +12,18 @@ layout(set = 0, binding = 1) readonly buffer SatVisibleBuf {
 };
 
 // ── Camera push constants ─────────────────────────────────────────────────────
-// skyView: transforms ENU direction vectors into camera space.
-//   Camera convention: +X=right, +Y=up, -Z=forward.
-// fovYRad: vertical field of view in radians.
-// aspect:  viewport width / height.
+// Declares only the fields this shader reads; total SatDrawPC is 128 bytes.
 layout(push_constant) uniform PC {
     mat4  skyView;
     float fovYRad;
     float aspect;
-    float pad[2];
+    float gmst;  // offset 72 — unused here, declared for layout consistency
+    float pad;   // offset 76
 } pc;
 
 layout(location = 0) out vec3  fragColor;
 layout(location = 1) out float fragIntensity;
+layout(location = 2) out float fragAngSize;  // sprite size in pixels, for abs-pixel glow
 
 void main() {
     SatVisible sat = satellites[gl_VertexIndex];
@@ -40,6 +39,7 @@ void main() {
         gl_PointSize = 0.001;
         fragColor     = vec3(0.0);
         fragIntensity = 0.0;
+        fragAngSize   = 0.001;
         return;
     }
 
@@ -49,6 +49,7 @@ void main() {
         gl_PointSize = 0.001;
         fragColor     = vec3(0.0);
         fragIntensity = 0.0;
+        fragAngSize   = 0.001;
         return;
     }
 
@@ -66,4 +67,5 @@ void main() {
 
     fragColor     = sat.baseColor;
     fragIntensity = sat.flareIntensity;
+    fragAngSize   = sat.angularSize;
 }

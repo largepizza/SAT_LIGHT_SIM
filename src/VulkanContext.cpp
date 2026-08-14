@@ -1,11 +1,15 @@
 #include "VulkanContext.h"
+#include "Log.h"
+#include "Paths.h"
 
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
@@ -34,11 +38,13 @@ void VulkanContext::init(GLFWwindow *window)
     createDevice();
     createSwapchain(window);
     createRenderPass();
+    createRenderPassLoad();
     createDepthResources();
     createFramebuffers();
     createCommandPool();
     createCommandBuffer();
     createSyncObjects();
+    createQueryPool();
 }
 
 void VulkanContext::recreateSwapchain(GLFWwindow *window)
@@ -64,6 +70,9 @@ void VulkanContext::recreateSwapchain(GLFWwindow *window)
 void VulkanContext::cleanup()
 {
     cleanupSwapchain();
+    if (queryPool != VK_NULL_HANDLE)
+        vkDestroyQueryPool(device, queryPool, nullptr);
+    vkDestroyRenderPass(device, renderPassLoad, nullptr);
     vkDestroyRenderPass(device, renderPass, nullptr);
     vkDestroySemaphore(device, semImageAvailable, nullptr);
     vkDestroyFence(device, fenceFrame, nullptr);
@@ -125,7 +134,7 @@ void VulkanContext::createInstance()
         throw std::runtime_error("Validation layers requested but not available.");
 
     VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    ai.pApplicationName = "ShaderFun";
+    ai.pApplicationName = "SAT LIGHT SIM";
     ai.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
     ai.apiVersion = VK_API_VERSION_1_2;
 
@@ -135,10 +144,29 @@ void VulkanContext::createInstance()
     if (VALIDATION)
         exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
+    // MoltenVK (macOS) is a non-conformant Vulkan ICD; the loader refuses to enumerate it
+    // during vkCreateInstance unless VK_KHR_portability_enumeration is requested and the
+    // matching instance flag is set. Checked at runtime rather than #ifdef __APPLE__ so this
+    // is a true no-op on Windows/Linux (the extension simply won't be in the supported list).
+    uint32_t availExtCount = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &availExtCount, nullptr);
+    std::vector<VkExtensionProperties> availExts(availExtCount);
+    vkEnumerateInstanceExtensionProperties(nullptr, &availExtCount, availExts.data());
+    bool portabilityEnumeration = false;
+    for (auto &e : availExts)
+        if (strcmp(e.extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0)
+        {
+            portabilityEnumeration = true;
+            break;
+        }
+    if (portabilityEnumeration)
+        exts.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &ai;
     ci.enabledExtensionCount = (uint32_t)exts.size();
     ci.ppEnabledExtensionNames = exts.data();
+    ci.flags = portabilityEnumeration ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0;
     if (VALIDATION)
     {
         ci.enabledLayerCount = (uint32_t)VALIDATION_LAYERS.size();
@@ -146,7 +174,9 @@ void VulkanContext::createInstance()
     }
 
     if (vkCreateInstance(&ci, nullptr, &instance) != VK_SUCCESS)
-        throw std::runtime_error("vkCreateInstance failed.");
+        throw std::runtime_error("vkCreateInstance failed. No Vulkan-capable driver found — "
+                                  "install/update your GPU driver from your GPU vendor's website.");
+    Log::line("Vulkan instance created.");
 }
 
 // ─── Debug messenger ──────────────────────────────────────────────────────────
@@ -296,7 +326,34 @@ void VulkanContext::pickPhysicalDevice()
         }
     }
     if (!physicalDevice)
-        throw std::runtime_error("Failed to find a suitable GPU.");
+        throw std::runtime_error("Failed to find a suitable GPU. Your graphics driver may be missing "
+                                  "Vulkan support — install/update it from your GPU vendor's website.");
+
+    VkPhysicalDeviceProperties chosen;
+    vkGetPhysicalDeviceProperties(physicalDevice, &chosen);
+    {
+        std::ostringstream oss;
+        oss << "GPU selected: " << chosen.deviceName
+            << " (driver " << VK_VERSION_MAJOR(chosen.driverVersion) << "."
+            << VK_VERSION_MINOR(chosen.driverVersion) << "." << VK_VERSION_PATCH(chosen.driverVersion)
+            << ", Vulkan API " << VK_VERSION_MAJOR(chosen.apiVersion) << "."
+            << VK_VERSION_MINOR(chosen.apiVersion) << "." << VK_VERSION_PATCH(chosen.apiVersion) << ")";
+        Log::line(oss.str());
+    }
+
+    // The Vulkan spec only guarantees 128 bytes of push-constant space; this project's largest
+    // struct (SatDrawPC) is 144. Near-universally supported in practice, but fail loudly with a
+    // clear message here rather than mysteriously corrupting push constants deep in a draw call
+    // on the rare driver that only offers the guaranteed minimum (see UC5/NEW-2 in RELEASE_v1_1_PLAN.md).
+    constexpr uint32_t kRequiredPushConstantsSize = 144;
+    if (chosen.limits.maxPushConstantsSize < kRequiredPushConstantsSize)
+    {
+        std::ostringstream oss;
+        oss << "GPU " << chosen.deviceName << " only supports " << chosen.limits.maxPushConstantsSize
+            << " bytes of push constants; this app requires " << kRequiredPushConstantsSize << ".";
+        Log::line("FATAL: " + oss.str());
+        throw std::runtime_error(oss.str());
+    }
 }
 
 // ─── Logical device ───────────────────────────────────────────────────────────
@@ -322,11 +379,29 @@ void VulkanContext::createDevice()
     features.shaderStorageImageExtendedFormats = VK_TRUE; // for rgba8 storage images
     features.largePoints = VK_TRUE;                       // for gl_PointSize in particles
 
+    // On MoltenVK, VK_KHR_portability_subset MUST be enabled if the device supports it (spec
+    // requirement, not optional). Its name macro lives behind vulkan_beta.h/VK_ENABLE_BETA_EXTENSIONS
+    // on most SDK versions, so it's matched by literal string here rather than pulling that header
+    // in project-wide. No-op on Windows/Linux: the device never reports this extension there.
+    std::vector<const char *> deviceExts = DEVICE_EXTENSIONS;
+    {
+        uint32_t extCount = 0;
+        vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extCount, nullptr);
+        std::vector<VkExtensionProperties> exts(extCount);
+        vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extCount, exts.data());
+        for (auto &e : exts)
+            if (strcmp(e.extensionName, "VK_KHR_portability_subset") == 0)
+            {
+                deviceExts.push_back("VK_KHR_portability_subset");
+                break;
+            }
+    }
+
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.queueCreateInfoCount = (uint32_t)qCIs.size();
     ci.pQueueCreateInfos = qCIs.data();
-    ci.enabledExtensionCount = (uint32_t)DEVICE_EXTENSIONS.size();
-    ci.ppEnabledExtensionNames = DEVICE_EXTENSIONS.data();
+    ci.enabledExtensionCount = (uint32_t)deviceExts.size();
+    ci.ppEnabledExtensionNames = deviceExts.data();
     ci.pEnabledFeatures = &features;
     if (VALIDATION)
     {
@@ -336,6 +411,7 @@ void VulkanContext::createDevice()
 
     if (vkCreateDevice(physicalDevice, &ci, nullptr, &device) != VK_SUCCESS)
         throw std::runtime_error("vkCreateDevice failed.");
+    Log::line("Logical device created.");
 
     vkGetDeviceQueue(device, graphicsFamily, 0, &graphicsQueue);
     vkGetDeviceQueue(device, computeFamily, 0, &computeQueue);
@@ -356,10 +432,12 @@ void VulkanContext::createSwapchain(GLFWwindow *window)
             break;
         }
 
-    // Pick present mode (prefer mailbox, fall back to FIFO)
+    // Pick present mode: honor presentModePreference (NEW-7 frame limiter) if the surface
+    // actually supports it, otherwise fall back to FIFO, which every Vulkan implementation
+    // guarantees.
     VkPresentModeKHR pm = VK_PRESENT_MODE_FIFO_KHR;
     for (auto &m : sc.modes)
-        if (m == VK_PRESENT_MODE_MAILBOX_KHR)
+        if (m == presentModePreference)
         {
             pm = m;
             break;
@@ -391,6 +469,13 @@ void VulkanContext::createSwapchain(GLFWwindow *window)
     ci.imageExtent = ext;
     ci.imageArrayLayers = 1;
     ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    // UC6: screenshots need to vkCmdCopyImageToBuffer straight off the swapchain image, which
+    // requires TRANSFER_SRC usage — only request it when the surface actually advertises support
+    // (near-universal, but not guaranteed by the spec); requesting an unsupported bit would fail
+    // swapchain creation outright, so this degrades to "no screenshots" instead.
+    screenshotSupported = (sc.caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    if (screenshotSupported)
+        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     uint32_t qfams[] = {graphicsFamily, computeFamily};
     if (graphicsFamily != computeFamily)
     {
@@ -412,6 +497,12 @@ void VulkanContext::createSwapchain(GLFWwindow *window)
 
     swapFormat = fmt.format;
     swapExtent = ext;
+    {
+        std::ostringstream oss;
+        oss << "Swapchain created: " << swapExtent.width << "x" << swapExtent.height
+            << ", present mode " << pm << ", " << imgCount << " images.";
+        Log::line(oss.str());
+    }
 
     uint32_t cnt;
     vkGetSwapchainImagesKHR(device, swapchain, &cnt, nullptr);
@@ -498,6 +589,77 @@ void VulkanContext::createRenderPass()
 
     if (vkCreateRenderPass(device, &ci, nullptr, &renderPass) != VK_SUCCESS)
         throw std::runtime_error("vkCreateRenderPass failed.");
+}
+
+// ─── Load-based render pass (resolution scaling support) ──────────────────────
+// Identical to createRenderPass() except: color attachment uses LOAD instead of CLEAR (the
+// simulation is expected to have pre-filled it via a blit in recordPrePass, see Simulation.h),
+// with initialLayout TRANSFER_DST_OPTIMAL to match the state a blit destination is left in
+// (rather than UNDEFINED, which LOAD would otherwise read as garbage). Depth still CLEARs
+// normally — this app does not blit depth (see SatelliteSim's resolution-scaling comments for
+// why: depth-format blit support isn't spec-guaranteed, a real portability concern specifically
+// on the lower-end hardware this feature targets), so depth keeps its normal UNDEFINED/CLEAR
+// behavior unchanged. Reuses the SAME ctx.framebuffers as renderPass — render pass compatibility
+// only requires matching attachment format/sample-count, not matching load/store ops or layouts.
+void VulkanContext::createRenderPassLoad()
+{
+    VkAttachmentDescription color{};
+    color.format = swapFormat;
+    color.samples = VK_SAMPLE_COUNT_1_BIT;
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    color.initialLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    color.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentDescription depth{};
+    depth.format = depthFormat;
+    depth.samples = VK_SAMPLE_COUNT_1_BIT;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+    VkSubpassDescription sub{};
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 1;
+    sub.pColorAttachments = &colorRef;
+    sub.pDepthStencilAttachment = &depthRef;
+
+    // Two dependencies: the usual compute->fragment one (unchanged from renderPass), plus a new
+    // TRANSFER->color-attachment one so the render pass's automatic initialLayout transition
+    // waits for recordPrePass's blit to actually finish writing before this pass reads/writes it.
+    VkSubpassDependency deps[2] = {};
+    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[0].dstSubpass = 0;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    deps[1].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[1].dstSubpass = 0;
+    deps[1].srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    deps[1].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    deps[1].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    VkAttachmentDescription attachments[] = {color, depth};
+    VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+    ci.attachmentCount = 2;
+    ci.pAttachments = attachments;
+    ci.subpassCount = 1;
+    ci.pSubpasses = &sub;
+    ci.dependencyCount = 2;
+    ci.pDependencies = deps;
+
+    if (vkCreateRenderPass(device, &ci, nullptr, &renderPassLoad) != VK_SUCCESS)
+        throw std::runtime_error("vkCreateRenderPass (load variant) failed.");
 }
 
 // ─── Depth resources ──────────────────────────────────────────────────────────
@@ -592,14 +754,67 @@ void VulkanContext::createSyncObjects()
             throw std::runtime_error("Failed to create render-done semaphore.");
 }
 
+// ─── GPU timestamp query pool ──────────────────────────────────────────────────
+void VulkanContext::createQueryPool()
+{
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physicalDevice, &props);
+    // A zero period means the device reports no usable timestamp resolution;
+    // resolveTimestamps() checks this and no-ops rather than dividing by zero.
+    timestampPeriodNs = (double)props.limits.timestampPeriod;
+    if (timestampPeriodNs <= 0.0)
+        return;
+
+    VkQueryPoolCreateInfo qpci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    qpci.queryCount = kTimestampCount;
+    if (vkCreateQueryPool(device, &qpci, nullptr, &queryPool) != VK_SUCCESS)
+        queryPool = VK_NULL_HANDLE; // profiling is best-effort; app must run without it
+}
+
+void VulkanContext::resetTimestamps(VkCommandBuffer cmd)
+{
+    if (queryPool != VK_NULL_HANDLE)
+        vkCmdResetQueryPool(cmd, queryPool, 0, kTimestampCount);
+}
+
+void VulkanContext::writeTimestamp(VkCommandBuffer cmd, VkPipelineStageFlagBits stage, uint32_t slot)
+{
+    if (queryPool != VK_NULL_HANDLE)
+        vkCmdWriteTimestamp(cmd, stage, queryPool, slot);
+}
+
+// Called once per frame in App::drawFrame, right after the fence wait — with a
+// single frame in flight, the fence signaling guarantees the previous frame's
+// queries have already completed, so VK_QUERY_RESULT_WAIT_BIT never actually
+// blocks here (it's there for correctness, not as a stall).
+void VulkanContext::resolveTimestamps()
+{
+    if (queryPool == VK_NULL_HANDLE)
+        return;
+    uint64_t raw[kTimestampCount];
+    VkResult r = vkGetQueryPoolResults(device, queryPool, 0, kTimestampCount,
+                                       sizeof(raw), raw, sizeof(uint64_t),
+                                       VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+    if (r != VK_SUCCESS)
+        return;
+    for (uint32_t i = 0; i < kTimestampCount; ++i)
+        timestampMs[i] = (double)(raw[i] - raw[0]) * timestampPeriodNs / 1.0e6;
+    timestampsReady = true;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═════════════════════════════════════════════════════════════════════════════
 VkShaderModule VulkanContext::loadShader(const std::string &path)
 {
-    std::ifstream f(path, std::ios::ate | std::ios::binary);
+    // Resolve relative paths against the exe directory so the app can be run from any CWD.
+    std::filesystem::path resolved = path;
+    if (resolved.is_relative())
+        resolved = std::filesystem::path(Paths::exeDir()) / resolved;
+    std::ifstream f(resolved, std::ios::ate | std::ios::binary);
     if (!f.is_open())
-        throw std::runtime_error("Cannot open shader: " + path);
+        throw std::runtime_error("Cannot open shader: " + resolved.string());
     size_t sz = f.tellg();
     std::vector<char> buf(sz);
     f.seekg(0);
@@ -625,13 +840,14 @@ uint32_t VulkanContext::findMemoryType(uint32_t filter, VkMemoryPropertyFlags pr
 }
 
 void VulkanContext::createImage(uint32_t w, uint32_t h, VkFormat fmt, VkImageUsageFlags usage,
-                                VkImage &img, VkDeviceMemory &mem)
+                                VkImage &img, VkDeviceMemory &mem, uint32_t mipLevels,
+                                uint32_t depth)
 {
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.imageType = (depth > 1) ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
     ci.format = fmt;
-    ci.extent = {w, h, 1};
-    ci.mipLevels = 1;
+    ci.extent = {w, h, depth};
+    ci.mipLevels = mipLevels;
     ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -649,6 +865,71 @@ void VulkanContext::createImage(uint32_t w, uint32_t h, VkFormat fmt, VkImageUsa
     if (vkAllocateMemory(device, &ai, nullptr, &mem) != VK_SUCCESS)
         throw std::runtime_error("vkAllocateMemory (image) failed.");
     vkBindImageMemory(device, img, mem, 0);
+}
+
+void VulkanContext::generateMipmaps(VkCommandBuffer cmd, VkImage img, VkFormat /*fmt*/,
+                                     uint32_t w, uint32_t h, uint32_t mipLevels)
+{
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.image = img;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.baseArrayLayer = 0;
+    b.subresourceRange.layerCount = 1;
+    b.subresourceRange.levelCount = 1;
+
+    int32_t mipW = (int32_t)w;
+    int32_t mipH = (int32_t)h;
+
+    for (uint32_t i = 1; i < mipLevels; ++i) {
+        // Transition previous mip TRANSFER_DST → TRANSFER_SRC
+        b.subresourceRange.baseMipLevel = i - 1;
+        b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &b);
+
+        // Blit mip i-1 → mip i
+        int32_t nextW = mipW > 1 ? mipW / 2 : 1;
+        int32_t nextH = mipH > 1 ? mipH / 2 : 1;
+        VkImageBlit blit{};
+        blit.srcOffsets[0] = {0, 0, 0};
+        blit.srcOffsets[1] = {mipW, mipH, 1};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1};
+        blit.dstOffsets[0] = {0, 0, 0};
+        blit.dstOffsets[1] = {nextW, nextH, 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+        vkCmdBlitImage(cmd,
+            img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, &blit, VK_FILTER_LINEAR);
+
+        // Transition previous mip TRANSFER_SRC → SHADER_READ_ONLY
+        b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &b);
+
+        mipW = nextW;
+        mipH = nextH;
+    }
+
+    // Transition the last mip TRANSFER_DST → SHADER_READ_ONLY
+    b.subresourceRange.baseMipLevel = mipLevels - 1;
+    b.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
 void VulkanContext::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,

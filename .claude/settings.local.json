@@ -8,7 +8,12 @@
       "Bash(cmake -B C:/Code/Shader_Fun/build -S C:/Code/Shader_Fun)",
       "Bash(ls -1 /c/Code/Shader_Fun/*.md)",
       "Bash(cmake --build build)",
-      "Bash(ls build/Debug/shaders/*.spv)"
+      "Bash(ls build/Debug/shaders/*.spv)",
+      "Bash(magick --version)",
+      "Bash(magick \"assets/textures/8k_earth_normal_map.tif\" \"assets/textures/8k_earth_normal_map.png\")",
+      "Bash(magick \"assets/textures/8k_earth_specular_map.tif\" \"assets/textures/8k_earth_specular_map.png\")",
+      "PowerShell(cmake --build c:\\\\Code\\\\Shader_Fun\\\\build 2>&1)",
+      "PowerShell(tail -20)"
     ]
   }
 }

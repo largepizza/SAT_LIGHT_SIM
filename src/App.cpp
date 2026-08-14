@@ -1,6 +1,8 @@
 #include "App.h"
 #include <stdexcept>
 #include <algorithm>
+#include <chrono>
+#include <thread>
 
 App::App(std::unique_ptr<Simulation> s) : sim(std::move(s)) {}
 
@@ -11,7 +13,7 @@ void App::run() {
     sim->setWindow(window);  // give sim access to window handle (e.g. fullscreen toggle)
     audio.init();
     sim->setAudio(&audio);  // let the simulation configure its playlist
-    ui.init(ctx);
+    ui.init(ctx, window);
     mainLoop();
     // Wait for GPU idle before tearing down
     vkDeviceWaitIdle(ctx.device);
@@ -26,6 +28,11 @@ void App::run() {
 void App::initWindow() {
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    // Boot maximized (windowed, not exclusive fullscreen) rather than at the fixed WIN_W x WIN_H
+    // default — a small window the player has to manually enlarge undercuts the intro cinematic's
+    // impact and invites fiddling with the window instead of watching it. WIN_W/WIN_H are still
+    // passed as the restore size for whenever the player un-maximizes later.
+    glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
     window = glfwCreateWindow(WIN_W, WIN_H, sim->name(), nullptr, nullptr);
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, cbResize);
@@ -37,13 +44,34 @@ void App::initWindow() {
 void App::mainLoop() {
     lastTime = glfwGetTime();
     while (!glfwWindowShouldClose(window)) {
+        double frameStart = glfwGetTime();
         glfwPollEvents();
         drawFrame();
+
+        // NEW-7: manual pacing for numeric FPS caps (see Simulation::targetFpsCap comment —
+        // FIFO/V-Sync already paces itself, this only fires for the 30/60/120 caps).
+        float capHz = sim->targetFpsCap();
+        if (capHz > 0.0f) {
+            double budget = 1.0 / (double)capHz;
+            double remaining = budget - (glfwGetTime() - frameStart);
+            if (remaining > 0.0)
+                std::this_thread::sleep_for(std::chrono::duration<double>(remaining));
+        }
     }
 }
 
 void App::drawFrame() {
     vkWaitForFences(ctx.device, 1, &ctx.fenceFrame, VK_TRUE, UINT64_MAX);
+
+    // Resolve last frame's GPU timestamp queries now that the fence proves the GPU
+    // is done with them. Skipped on the very first call: the fence starts pre-signaled
+    // so nothing has actually been submitted yet, and there'd be no query data to read.
+    if (submittedOnce) {
+        ctx.resolveTimestamps();
+        // UC6: same reasoning — a screenshot copy recorded last frame is only safe to read back
+        // once this fence wait proves the GPU has finished writing it.
+        sim->finalizeScreenshot();
+    }
 
     uint32_t imgIdx;
     VkResult res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain, UINT64_MAX,
@@ -70,6 +98,30 @@ void App::drawFrame() {
     int  ww, wh;
     glfwGetWindowSize(window, &ww, &wh);
 
+    // While the camera has the cursor captured (GLFW_CURSOR_DISABLED, used for
+    // RMB mouse-look), GLFW reports an unbounded "virtual" position that free-drifts
+    // far outside the window as the user pans. Feeding that raw value to the UI made
+    // Clay's hit-testing register phantom hovers/clicks (rollover blips, accidental
+    // keybind rebinds) on whatever always-visible panel the drifted coordinate landed
+    // on. Freeze the UI-facing cursor at its last known on-screen position instead.
+    if (glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_DISABLED) {
+        mx = uiMouseX;
+        my = uiMouseY;
+    } else {
+        uiMouseX = mx;
+        uiMouseY = my;
+    }
+
+    // UC4: gamepad virtual cursor — when active, overrides the real mouse position/click state
+    // for this frame's UI pass so every existing Clay_Hovered()/click handler works unmodified.
+    float vx, vy;
+    bool  vClick;
+    if (sim->virtualCursor(vx, vy, vClick)) {
+        mx  = vx;
+        my  = vy;
+        lmb = vClick;
+    }
+
     // Prepare Clay layout for this frame — simulation may call CLAY() in buildUI()
     ui.beginFrame((float)ww, (float)wh,
                   (float)mx, (float)my, lmb, rmb,
@@ -89,8 +141,21 @@ void App::drawFrame() {
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     vkBeginCommandBuffer(ctx.commandBuffer, &bi);
 
+    // GPU timestamp profiling: slot 0 marks frame start. Slots 1-5 are written inside
+    // sim->recordCompute() (compute-pass breakdown: scene depth, beam cloud block, orbit compute,
+    // cloud march, flare compute); slot 6 is written inside sim->recordPrePass() or
+    // sim->recordDraw() (end of the sky background pass, whichever path rendered it).
+    // Slots 7-8 mark the end of the satellite+star draw and the UI overlay respectively.
+    // See VulkanContext::kTimestampCount for the authoritative slot table.
+    ctx.resetTimestamps(ctx.commandBuffer);
+    ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
+
     // 1. Simulation compute work (before render pass)
     sim->recordCompute(ctx.commandBuffer, ctx, dt);
+
+    // 1b. Optional offscreen pre-pass (e.g. a low-res background blitted into the swapchain
+    // image ahead of time) — must run before the main render pass begins. Default: no-op.
+    sim->recordPrePass(ctx.commandBuffer, ctx, dt, imgIdx);
 
     // 2. Begin render pass — App now owns this
     VkClearValue clearValues[2];
@@ -98,7 +163,7 @@ void App::drawFrame() {
     clearValues[1].depthStencil = {1.0f, 0};   // far depth = 1.0
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rbi.renderPass      = ctx.renderPass;
+    rbi.renderPass      = sim->activeRenderPass(ctx);
     rbi.framebuffer     = ctx.framebuffers[imgIdx];
     rbi.renderArea      = {{0, 0}, ctx.swapExtent};
     rbi.clearValueCount = 2;
@@ -107,15 +172,30 @@ void App::drawFrame() {
 
     // 3. Simulation draw calls (render pass is already open)
     sim->recordDraw(ctx.commandBuffer, ctx, dt);
+    ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 7);
 
-    // 4. UI draws on top of the simulation
-    ui.record(ctx.commandBuffer, ctx);
+    // 4. UI draws on top of the simulation — UC6 clean-shot mode skips this for a captured frame
+    // (nobody shares a screenshot with a settings panel in it).
+    if (!sim->wantsCleanScreenshot())
+        ui.record(ctx.commandBuffer, ctx);
+    ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 8);
 
     vkCmdEndRenderPass(ctx.commandBuffer);
+
+    // UC6: record the screenshot copy (a no-op unless one is actually pending) now that the
+    // swapchain image holds the fully composited frame — must happen after the render pass ends
+    // (the image is back in a layout a transfer op can act on) and before the command buffer is
+    // ended, since this project has one command buffer / one frame in flight.
+    sim->recordScreenshotCopy(ctx.commandBuffer, ctx, ctx.swapImages[imgIdx]);
+
     vkEndCommandBuffer(ctx.commandBuffer);
 
     // Submit
-    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    // Includes TRANSFER now (not just COLOR_ATTACHMENT_OUTPUT): a simulation's recordPrePass may
+    // blit directly into the swapchain image before the main render pass opens (resolution
+    // scaling) — that write must also wait for the presentation engine to be done with this
+    // image, the same guarantee the render pass itself already got from this semaphore.
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.waitSemaphoreCount   = 1;
     si.pWaitSemaphores      = &ctx.semImageAvailable;
@@ -126,6 +206,7 @@ void App::drawFrame() {
     si.pSignalSemaphores    = &ctx.semRenderDone[imgIdx];
     if (vkQueueSubmit(ctx.graphicsQueue, 1, &si, ctx.fenceFrame) != VK_SUCCESS)
         throw std::runtime_error("vkQueueSubmit failed.");
+    submittedOnce = true;
 
     // Present
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
@@ -135,7 +216,8 @@ void App::drawFrame() {
     pi.pSwapchains        = &ctx.swapchain;
     pi.pImageIndices      = &imgIdx;
     res = vkQueuePresentKHR(ctx.graphicsQueue, &pi);
-    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || resized) {
+    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || resized ||
+        sim->consumeSwapchainRebuildRequest()) {
         resized = false;
         ctx.recreateSwapchain(window);
         sim->onResize(ctx);

@@ -1,0 +1,609 @@
+{
+  "$schema": "../constellations.schema.json",
+  "version": 1,
+  "satellite_types": [
+    {
+      "name": "Starlink",
+      "base_color": [
+        0.80,
+        0.87,
+        1.00
+      ],
+      "cross_section_m2": 10.0,
+      "primary": {
+        "attitude": "NadirPointing",
+        "spec_exp": 18.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "Perpendicular",
+        "spec_exp": 0.0,
+        "weight": 0.0
+      },
+      "diffuse": 0.02,
+      "mirror_frac": 0.05
+    },
+    {
+      "name": "LEO Broadband",
+      "base_color": [
+        1.00,
+        0.92,
+        0.75
+      ],
+      "cross_section_m2": 5.0,
+      "primary": {
+        "attitude": "SunTracking",
+        "spec_exp": 18.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "Perpendicular",
+        "spec_exp": 0.0,
+        "weight": 0.0
+      },
+      "diffuse": 0.02,
+      "mirror_frac": 0.02
+    },
+    {
+      "name": "GEO Comsat",
+      "base_color": [
+        0.95,
+        0.95,
+        1.00
+      ],
+      "cross_section_m2": 50.0,
+      "primary": {
+        "attitude": "SunTracking",
+        "spec_exp": 3.0,
+        "weight": 1.00
+      },
+      "secondary": {
+        "attitude": "AntiNadir",
+        "spec_exp": 2.0,
+        "weight": 0.10
+      },
+      "diffuse": 0.05,
+      "mirror_frac": 0.10
+    },
+    {
+      "name": "ISS",
+      "base_color": [
+        1.00,
+        0.85,
+        0.70
+      ],
+      "cross_section_m2": 250.0,
+      "primary": {
+        "attitude": "SunTracking",
+        "spec_exp": 12.0,
+        "weight": 1.00
+      },
+      "secondary": {
+        "attitude": "AntiNadir",
+        "spec_exp": 4.0,
+        "weight": 0.35
+      },
+      "diffuse": 0.04,
+      "mirror_frac": 0.05
+    },
+    {
+      "name": "SpaceX AI Sats",
+      "base_color": [
+        1.00,
+        1.00,
+        0.92
+      ],
+      "cross_section_m2": 600.0,
+      "primary": {
+        "attitude": "SunTracking",
+        "spec_exp": 25.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "SunPerp",
+        "spec_exp": 3.0,
+        "weight": 0.18
+      },
+      "diffuse": 0.06,
+      "mirror_frac": 0.01
+    },
+    {
+      "name": "Reflect Mirror",
+      "base_color": [
+        1.00,
+        0.97,
+        0.94
+      ],
+      "cross_section_m2": 324.0,
+      "primary": {
+        "attitude": "TargetedReflector",
+        "spec_exp": 20.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "Perpendicular",
+        "spec_exp": 0.0,
+        "weight": 0.0
+      },
+      "diffuse": 0.001,
+      "mirror_frac": 0.8
+    },
+    {
+      "name": "Infrared Laser",
+      "base_color": [
+        1.00,
+        0.1,
+        0.1
+      ],
+      "cross_section_m2": 10000.0,
+      "primary": {
+        "attitude": "TargetedReflector",
+        "spec_exp": 20.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "Perpendicular",
+        "spec_exp": 0.0,
+        "weight": 0.0
+      },
+      "diffuse": 0.00,
+      "mirror_frac": 0.9999
+    },
+    {
+      "name": "Debris",
+      "base_color": [
+        0.78,
+        0.74,
+        0.68
+      ],
+      "cross_section_m2": 0.05,
+      "primary": {
+        "attitude": "Tumbling",
+        "spec_exp": 10.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "Perpendicular",
+        "spec_exp": 6.0,
+        "weight": 0.0
+      },
+      "diffuse": 0.0,
+      "mirror_frac": 0.03
+    },
+    {
+      "name": "Ring Debris",
+      "base_color": [
+        0.93,
+        0.91,
+        0.87
+      ],
+      "cross_section_m2": 13000.0,
+      "primary": {
+        "attitude": "Tumbling",
+        "spec_exp": 10.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "Perpendicular",
+        "spec_exp": 0.0,
+        "weight": 0.0
+      },
+      "diffuse": 0.80,
+      "mirror_frac": 0.06
+    },
+    {
+      "name": "Starlink KE",
+      "base_color": [
+        0.80,
+        0.87,
+        1.00
+      ],
+      "cross_section_m2": 10.0,
+      "primary": {
+        "attitude": "KnifeEdge",
+        "spec_exp": 18.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "Perpendicular",
+        "spec_exp": 0.0,
+        "weight": 0.0
+      },
+      "diffuse": 0.01,
+      "mirror_frac": 0.05
+    },
+    {
+      "name": "Space Hotel",
+      "base_color": [
+        1.00,
+        0.90,
+        0.72
+      ],
+      "cross_section_m2": 1520.0,
+      "primary": {
+        "attitude": "SunTracking",
+        "spec_exp": 10.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "NadirPointing",
+        "spec_exp": 5.0,
+        "weight": 0.35
+      },
+      "diffuse": 0.08,
+      "mirror_frac": 0.04
+    },
+    {
+      "name": "Propellant Depot",
+      "base_color": [
+        0.88,
+        0.91,
+        0.97
+      ],
+      "cross_section_m2": 500.0,
+      "primary": {
+        "attitude": "SunTracking",
+        "spec_exp": 12.0,
+        "weight": 0.5
+      },
+      "secondary": {
+        "attitude": "NadirPointing",
+        "spec_exp": 2.0,
+        "weight": 0.50
+      },
+      "diffuse": 0.04,
+      "mirror_frac": 0.18
+    },
+    {
+      "name": "Solar Power Sat",
+      "base_color": [
+        1.00,
+        0.95,
+        0.50
+      ],
+      "cross_section_m2": 20000.0,
+      "primary": {
+        "attitude": "SunTracking",
+        "spec_exp": 30.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "NadirPointing",
+        "spec_exp": 20.0,
+        "weight": 0.40
+      },
+      "diffuse": 0.005,
+      "mirror_frac": 0.30
+    },
+    {
+      "name": "Debris Remover",
+      "base_color": [
+        0.65,
+        0.70,
+        0.60
+      ],
+      "cross_section_m2": 4.0,
+      "primary": {
+        "attitude": "Tumbling",
+        "spec_exp": 6.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "NadirPointing",
+        "spec_exp": 2.0,
+        "weight": 0.15
+      },
+      "diffuse": 0.15,
+      "mirror_frac": 0.02
+    },
+    {
+      "name": "SAR Satellite",
+      "base_color": [
+        0.72,
+        0.76,
+        0.82
+      ],
+      "cross_section_m2": 2.5,
+      "primary": {
+        "attitude": "NadirPointing",
+        "spec_exp": 8.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "SunTracking",
+        "spec_exp": 3.0,
+        "weight": 0.20
+      },
+      "diffuse": 0.03,
+      "mirror_frac": 0.01
+    },
+    {
+      "name": "Cislunar Ferry",
+      "base_color": [
+        0.92,
+        0.94,
+        0.97
+      ],
+      "cross_section_m2": 350.0,
+      "primary": {
+        "attitude": "SunTracking",
+        "spec_exp": 10.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "AntiNadir",
+        "spec_exp": 4.0,
+        "weight": 0.25
+      },
+      "diffuse": 0.05,
+      "mirror_frac": 0.06
+    },
+    {
+      "name": "IoT Nanosat",
+      "base_color": [
+        0.75,
+        0.75,
+        0.78
+      ],
+      "cross_section_m2": 0.02,
+      "primary": {
+        "attitude": "Tumbling",
+        "spec_exp": 4.0,
+        "weight": 1.0
+      },
+      "secondary": {
+        "attitude": "Perpendicular",
+        "spec_exp": 0.0,
+        "weight": 0.0
+      },
+      "diffuse": 0.08,
+      "mirror_frac": 0.01
+    }
+  ],
+  "constellations": [
+    {
+      "name": "Starlink Gen1",
+      "type": "Starlink",
+      "alt_km": 550.0,
+      "incl_deg": 53.0,
+      "num_planes": 72,
+      "per_plane": 61,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "Starlink Gen2",
+      "type": "Starlink KE",
+      "alt_km": 525.0,
+      "incl_deg": 53.2,
+      "num_planes": 120,
+      "per_plane": 250,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "Starlink VLEO",
+      "type": "Starlink KE",
+      "alt_km": 340.0,
+      "incl_deg": 53.0,
+      "num_planes": 700,
+      "per_plane": 60,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "OneWeb Gen2",
+      "type": "LEO Broadband",
+      "alt_km": 1200.0,
+      "incl_deg": 87.9,
+      "num_planes": 18,
+      "per_plane": 360,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "Amazon Kuiper Gen1",
+      "type": "LEO Broadband",
+      "alt_km": 630.0,
+      "incl_deg": 51.9,
+      "num_planes": 54,
+      "per_plane": 60,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "Amazon Kuiper Gen2",
+      "type": "LEO Broadband",
+      "alt_km": 590.0,
+      "incl_deg": 42.0,
+      "num_planes": 48,
+      "per_plane": 62,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "Guowang",
+      "type": "LEO Broadband",
+      "alt_km": 508.0,
+      "incl_deg": 85.0,
+      "num_planes": 80,
+      "per_plane": 174,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "China Honghu",
+      "type": "LEO Broadband",
+      "alt_km": 500.0,
+      "incl_deg": 87.9,
+      "num_planes": 100,
+      "per_plane": 100,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "IRIS² (EU)",
+      "type": "LEO Broadband",
+      "alt_km": 600.0,
+      "incl_deg": 53.0,
+      "num_planes": 16,
+      "per_plane": 50,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "Telesat Lightspeed",
+      "type": "LEO Broadband",
+      "alt_km": 1015.0,
+      "incl_deg": 98.98,
+      "num_planes": 27,
+      "per_plane": 62,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "SpaceX AI Sat",
+      "type": "SpaceX AI Sats",
+      "alt_km": 1500.0,
+      "incl_deg": 0.0,
+      "num_planes": 5,
+      "per_plane": 100000,
+      "enabled": true,
+      "distribution": "Disk",
+      "alt_jitter_km": 0.05,
+      "raan_deg": 0.0,
+      "align_terminator": true,
+      "num_rings": 2000,
+      "ring_spacing_km": 1
+    },
+    {
+      "name": "Commercial Space Stations",
+      "type": "Space Hotel",
+      "alt_km": 400.0,
+      "incl_deg": 51.6,
+      "num_planes": 4,
+      "per_plane": 12,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "Polar Research Habitats",
+      "type": "Space Hotel",
+      "alt_km": 430.0,
+      "incl_deg": 88.0,
+      "num_planes": 3,
+      "per_plane": 6,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "Orbital Fuel Network",
+      "type": "Propellant Depot",
+      "alt_km": 600.0,
+      "incl_deg": 180.0,
+      "num_planes": 20,
+      "per_plane": 10,
+      "enabled": true,
+      "distribution": "RandomShell",
+      "alt_jitter_km": 400.0
+    },
+    {
+      "name": "SPS Demo Array",
+      "type": "Solar Power Sat",
+      "alt_km": 700.0,
+      "incl_deg": 0.0,
+      "num_planes": 6,
+      "per_plane": 4,
+      "enabled": true,
+      "distribution": "Disk",
+      "alt_jitter_km": 0.0,
+      "raan_deg": 0.0,
+      "align_terminator": true,
+      "num_rings": 6,
+      "ring_spacing_km": 10.0
+    },
+    {
+      "name": "SPS Infrared",
+      "type": "Infrared Laser",
+      "alt_km": 700.0,
+      "incl_deg": 0.0,
+      "num_planes": 6,
+      "per_plane": 4,
+      "enabled": true,
+      "distribution": "Disk",
+      "alt_jitter_km": 0.0,
+      "raan_deg": 0.0,
+      "align_terminator": true,
+      "num_rings": 6,
+      "ring_spacing_km": 10.0
+    },
+    {
+      "name": "Active Debris Sweepers",
+      "type": "Debris Remover",
+      "alt_km": 800.0,
+      "incl_deg": 180.0,
+      "num_planes": 60,
+      "per_plane": 30,
+      "enabled": true,
+      "distribution": "RandomShell",
+      "alt_jitter_km": 800.0
+    },
+    {
+      "name": "Global SAR Array",
+      "type": "SAR Satellite",
+      "alt_km": 525.0,
+      "incl_deg": 97.6,
+      "num_planes": 90,
+      "per_plane": 80,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "Cislunar Ferry Fleet",
+      "type": "Cislunar Ferry",
+      "alt_km": 20000.0,
+      "incl_deg": 28.5,
+      "num_planes": 4,
+      "per_plane": 5,
+      "enabled": true,
+      "distribution": "Walker"
+    },
+    {
+      "name": "IoT Nano-Swarm",
+      "type": "IoT Nanosat",
+      "alt_km": 550.0,
+      "incl_deg": 180.0,
+      "num_planes": 2000,
+      "per_plane": 40,
+      "enabled": true,
+      "distribution": "RandomShell",
+      "alt_jitter_km": 400.0
+    },
+    {
+      "name": "Reflect Orbital",
+      "type": "Reflect Mirror",
+      "alt_km": 500.0,
+      "incl_deg": 0.0,
+      "num_planes": 10,
+      "per_plane": 500,
+      "enabled": false,
+      "distribution": "Disk",
+      "alt_jitter_km": 1.0,
+      "raan_deg": 0.0,
+      "align_terminator": true,
+      "num_rings": 10,
+      "ring_spacing_km": 10.0
+    },
+    {
+      "name": "Space Junk",
+      "type": "Debris",
+      "alt_km": 1000.0,
+      "incl_deg": 180.0,
+      "num_planes": 1000,
+      "per_plane": 300,
+      "enabled": true,
+      "distribution": "RandomShell",
+      "alt_jitter_km": 500.0
+    }
+  ]
+}
