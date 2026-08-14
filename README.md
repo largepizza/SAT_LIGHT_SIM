@@ -1,20 +1,13 @@
 # SAT LIGHT SIM
 
-A real-time GPU visualization of Earth's satellite megaconstellations, seen from any point on the
-surface — physically-based photometry, atmospheric scattering, volumetric clouds, terrain, ocean,
-aurora, and a real star catalog, all rendered through a Vulkan compute + graphics pipeline.
+A real-time GPU visualization of future satellite megaconstellations, seen from any point near Earth. Physically-based photometry, atmospheric scattering, volumetric clouds, terrain, ocean,
+aurora, all rendered through Vulkan.
 
 
 ---
 
-## Screenshots
 
-<!--
-  Drop images here, e.g.:
-  ![Twilight over the terminator](docs/screenshots/twilight.png)
-  ![Aurora oval from orbit](docs/screenshots/aurora.png)
-  ![Reflect Orbital mirrors over a solar farm](docs/screenshots/mirrors.png)
--->
+  ![SAT LIGHT SIM](docs/screenshots/title.png)
 
 
 

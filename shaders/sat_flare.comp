@@ -160,6 +160,19 @@ float rayTangentAltM(vec3 ro, vec3 rd) {
     float dMin  = (b >= 0.0) ? roLen : sqrt(max((roLen - b) * (roLen + b), 0.0));
     return dMin - R_EARTH;
 }
+
+// Bounded variant — clamps the closest-approach parameter to a finite target range (meters) along
+// the ray, instead of the unconstrained infinite forward ray. Fixes a real bug: a satellite
+// appearing in front of Earth as seen from a space-based observer got extincted as if its sightline
+// grazed the atmosphere, because the unbounded 2-arg version's tangent point sat far beyond the
+// satellite's actual (much closer) position — see the identical overload's full comment in
+// common.glsl (not included here; this file is deliberately self-contained, same convention as the
+// 2-arg copy above).
+float rayTangentAltM(vec3 ro, vec3 rd, float maxT) {
+    float t = clamp(-dot(ro, rd), 0.0, maxT);
+    vec3  p = ro + rd * t;
+    return length(p) - R_EARTH;
+}
 // Horizon cull threshold comes from pc.elevCutoff (dynamic: opens to Earth limb at altitude).
 const float REF_RANGE    = 500000.0;    // 500 km reference distance for 1/r² normalisation
 
@@ -474,7 +487,12 @@ void main() {
     // atmosphere even though the OBSERVER itself is far above it. Using atmFrac here silently
     // turned extinction off entirely near the horizon as soon as the observer left the atmosphere,
     // regardless of the sightline's real atmospheric path.
-    float atmFracExtinct = exp(-max(rayTangentAltM(pc.obsECI, normalize(rel)), 0.0) / 80000.0);
+    // Bounded by sat.range (the 3-arg overload, not the 2-arg background/infinite-target one) — a
+    // real bug otherwise: a satellite silhouetted in front of Earth from a space-based observer has
+    // a ray direction pointing roughly toward the planet, so the UNBOUNDED tangent point sits at or
+    // near the surface far beyond the satellite's own much closer position, wrongly applying full
+    // extinction to a sightline that never actually goes anywhere near the atmosphere.
+    float atmFracExtinct = exp(-max(rayTangentAltM(pc.obsECI, normalize(rel), sat.range), 0.0) / 80000.0);
     float extinctMag = pc.extinctionCoeff * (airmass - 1.0) * atmFracExtinct;
     effectFlare *= pow(10.0, -0.4 * extinctMag);
 

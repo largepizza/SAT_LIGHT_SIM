@@ -201,6 +201,25 @@ float rayTangentAltM(vec3 ro, vec3 rd) {
     return dMin - R_EARTH;
 }
 
+// Bounded variant — same closest-approach math, but clamped to a finite target range (meters)
+// along the ray instead of the unconstrained infinite forward ray. Needed for any target that
+// actually SITS somewhere finite (a satellite, a planet) rather than being effectively background/
+// infinite (stars, the Milky Way, aurora, a bare camera view ray): if the ray direction points
+// roughly toward Earth — the target appears silhouetted in front of the planet from the observer's
+// viewpoint — the unbounded 2-arg version's tangent point can sit far beyond where the target
+// actually is, well past it, even though the real observer-to-target segment never gets anywhere
+// near that low-altitude point. That shipped as a real bug: satellites appearing in front of Earth,
+// as seen from a space-based observer, were getting extincted as if their sightline grazed the
+// atmosphere, when the bounded segment to the satellite doesn't reach anywhere near it. Passing
+// maxT clamps the closest-approach parameter to the segment [observer, target] before evaluating
+// the altitude, so a target well short of the unbounded tangent point correctly reports its OWN
+// altitude (itself, not some point beyond it) instead.
+float rayTangentAltM(vec3 ro, vec3 rd, float maxT) {
+    float t = clamp(-dot(ro, rd), 0.0, maxT);
+    vec3  p = ro + rd * t;
+    return length(p) - R_EARTH;
+}
+
 // Rotates a direction vector around the Z (polar) axis by angle theta — used to advect the 3D
 // cloud noise's sampling position in lockstep with the 2D coverage map's own longitude drift
 // (cloudPhase * driftMult). Without this the coverage silhouette slides while the 3D structure

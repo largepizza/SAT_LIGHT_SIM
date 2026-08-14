@@ -69,6 +69,7 @@ if %DO_WIN%==1 (
     copy /Y "%PROJ%\data\constellations.json"                 "%DIST%\windows\" >nul
     copy /Y "%PROJ%\data\constellations.schema.json"          "%DIST%\windows\" >nul
     copy /Y "%PROJ%\data\reflector_targets.json"               "%DIST%\windows\" >nul
+    copy /Y "%PROJ%\THIRD_PARTY_NOTICES.txt"                    "%DIST%\windows\" >nul
 
     echo [Windows] Compressing to %ARCHIVE_BASE%_Windows.zip ...
     powershell -NoProfile -Command ^
@@ -109,6 +110,7 @@ if %DO_LIN%==1 (
     copy /Y "%PROJ%\data\constellations.json"                 "%DIST%\linux\" >nul
     copy /Y "%PROJ%\data\constellations.schema.json"          "%DIST%\linux\" >nul
     copy /Y "%PROJ%\data\reflector_targets.json"               "%DIST%\linux\" >nul
+    copy /Y "%PROJ%\THIRD_PARTY_NOTICES.txt"                    "%DIST%\linux\" >nul
 
     echo [Linux] Compressing to %ARCHIVE_BASE%_Linux.tar.gz ...
     tar -czf "%DIST%\%ARCHIVE_BASE%_Linux.tar.gz" -C "%DIST%\linux" .
