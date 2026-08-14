@@ -1511,8 +1511,35 @@ void main() {
     // 2D flat cloud-layer overlay and satellite glow so those get attenuated too; this early
     // sample only reads the alpha channels needed for occlusion tests.
     vec2  cloudUV        = gl_FragCoord.xy / pc.screenSizePx;
-    vec4  cloudA         = texture(cloudTargetA, cloudUV);
-    vec4  cloudB         = texture(cloudTargetB, cloudUV);
+    vec4  cloudACenter   = texture(cloudTargetA, cloudUV);
+    vec4  cloudBCenter   = texture(cloudTargetB, cloudUV);
+    // 3x3 box-blurred over cloudTargetA/B's own half-res texels — same idiom as the
+    // cloudGroundShadow 5x5 blur further down. A cloud edge is a single evaluation per half-res
+    // texel with no spatial supersampling, so its silhouette is genuinely stair-stepped at that
+    // resolution; ordinarily hidden by the natural softness of a sky-color-to-cloud-color
+    // transition, but a beam's glow riding inside cloudA.rgb (B_total, see cloud_march.comp's
+    // beam pointing-ray loop) turns that same stair-step into a hard, jagged edge wherever a
+    // cloud silhouette passes in front of a beam (reported in-app — the edge tracks the cloud's
+    // real shape and is fixed in world space, i.e. genuine spatial aliasing of the half-res
+    // alpha field, not a screen-space or depth-gate artifact). Only .rgb is blurred — .a
+    // (tCloudOcclude / the shadow channel, which gets its own separate 5x5 blur below) keeps its
+    // single-tap value, since occlusion tests want the exact per-pixel distance, not a blend of
+    // neighbors.
+    vec3  cloudARgb = vec3(0.0);
+    vec3  cloudBRgb = vec3(0.0);
+    {
+        vec2 cloudTexel = 1.0 / vec2(textureSize(cloudTargetA, 0));
+        for (int sy = -1; sy <= 1; ++sy)
+            for (int sx = -1; sx <= 1; ++sx) {
+                vec2 uv = cloudUV + vec2(sx, sy) * cloudTexel;
+                cloudARgb += texture(cloudTargetA, uv).rgb;
+                cloudBRgb += texture(cloudTargetB, uv).rgb;
+            }
+        cloudARgb *= (1.0 / 9.0);
+        cloudBRgb *= (1.0 / 9.0);
+    }
+    vec4  cloudA         = vec4(cloudARgb, cloudACenter.a);
+    vec4  cloudB         = vec4(cloudBRgb, cloudBCenter.a);
     float tCloudOcclude  = cloudA.a;
     // cloudB.a used to carry tEnterCombined, the fused entry distance this shader compared
     // against tSurface to suppress the whole composite. Every volumetric layer is now clamped to
