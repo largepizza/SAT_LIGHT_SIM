@@ -1,5 +1,12 @@
 #pragma once
 #define GLFW_INCLUDE_VULKAN
+// GLFW_INCLUDE_VULKAN only adds <vulkan/vulkan.h> — glfw3.h still pulls in the platform's
+// default OpenGL header (<GL/gl.h> on Linux, <OpenGL/gl.h> on macOS) unless told not to.
+// This project is Vulkan-only and never touches OpenGL; Windows/macOS SDKs happen to ship
+// that header so this was silently masked there, but it broke the Linux CI build (no
+// GL/gl.h without an extra Mesa dev package) — GLFW_INCLUDE_NONE is the real fix, not
+// papering over it with an apt-get install.
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <optional>
 #include <string>
