@@ -215,8 +215,14 @@ jobs:
           path: ${{ steps.ver.outputs.archive }}.tar.gz
 
   # ── GitHub Release (attaches all three archives) ───────────────────────────
+  # Only runs for an actual "git tag vX.Y.Z && git push" trigger. workflow_dispatch runs
+  # (used to test the build/package steps against main without cutting a release) have no
+  # tag — softprops/action-gh-release fails outright without one ("requires a tag"), so
+  # this job would otherwise turn every manual test run into a failed run once the three
+  # builds above succeed.
   publish:
     needs: [build-windows, build-linux, build-macos]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
