@@ -5,6 +5,7 @@ out/
 dist/
 build-win-release/
 build-linux-release/
+.logs/
 
 
 # ── Compiled shaders (generated at build time from shaders/) ─────────────────

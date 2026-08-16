@@ -23,12 +23,18 @@ jobs:
           echo "archive=SAT_LIGHT_SIM_v${v}_Windows" >> $env:GITHUB_OUTPUT
         shell: pwsh
 
+      # 2026-08-15: humbletim/setup-vulkan-sdk (previously used here) builds a handful of
+      # SDK repos from source, but its AVAILABLE_COMPONENTS list only covers
+      # Vulkan-Headers/Loader/SPIRV-*/Glslang — it has no path to glslc (that's the
+      # shaderc repo, not Glslang) at all, on any platform. That's why every job
+      # (Windows/Linux/macOS) failed identically with "glslc not found" the one time this
+      # workflow was actually run — not a config typo, the action structurally can't
+      # produce what CMakeLists.txt requires. Switched to jakoch/install-vulkan-sdk-action,
+      # which downloads LunarG's real prebuilt SDK installer (glslc included by default).
       - name: Install Vulkan SDK
-        uses: humbletim/setup-vulkan-sdk@v1.2.1
+        uses: jakoch/install-vulkan-sdk-action@v1
         with:
-          vulkan-query-version: latest
-          vulkan-components: Vulkan-Headers, Vulkan-Loader, SPIRV-Tools, Glslang
-          vulkan-use-cache: true
+          cache: true
 
       - name: Configure
         run: cmake -B build-release -S . -DCMAKE_BUILD_TYPE=Release
@@ -70,11 +76,9 @@ jobs:
           echo "archive=SAT_LIGHT_SIM_v${v}_Linux" >> $GITHUB_OUTPUT
 
       - name: Install Vulkan SDK
-        uses: humbletim/setup-vulkan-sdk@v1.2.1
+        uses: jakoch/install-vulkan-sdk-action@v1
         with:
-          vulkan-query-version: latest
-          vulkan-components: Vulkan-Headers, Vulkan-Loader, SPIRV-Tools, Glslang
-          vulkan-use-cache: true
+          cache: true
 
       - name: Install system deps
         run: |
@@ -124,12 +128,15 @@ jobs:
           echo "version=$v"              >> $GITHUB_OUTPUT
           echo "archive=SAT_LIGHT_SIM_v${v}_macOS" >> $GITHUB_OUTPUT
 
+      # See build-windows's comment: switched from humbletim/setup-vulkan-sdk, which
+      # cannot produce glslc OR MoltenVK on any platform (both outside its implemented
+      # component list). jakoch/install-vulkan-sdk-action installs LunarG's actual
+      # prebuilt macOS SDK bundle, which includes both by default — no optional
+      # components needed for either.
       - name: Install Vulkan SDK
-        uses: humbletim/setup-vulkan-sdk@v1.2.1
+        uses: jakoch/install-vulkan-sdk-action@v1
         with:
-          vulkan-query-version: latest
-          vulkan-components: Vulkan-Headers, Vulkan-Loader, SPIRV-Tools, Glslang
-          vulkan-use-cache: true
+          cache: true
 
       - name: Configure
         run: cmake -B build-release -S . -DCMAKE_BUILD_TYPE=Release
@@ -151,8 +158,11 @@ jobs:
       - name: Bundle Vulkan runtime (MoltenVK)
         run: |
           mkdir -p vulkan-runtime/lib
-          cp -PL "$VULKAN_SDK"/lib/libvulkan.1*.dylib vulkan-runtime/lib/
-          cp -PL "$VULKAN_SDK"/lib/libMoltenVK.dylib   vulkan-runtime/lib/
+          # -L dereferences symlinks (the SDK ships libvulkan.dylib as a symlink to a
+          # versioned file) so we bundle real file content, not a dangling link back to
+          # this CI runner's own $VULKAN_SDK path.
+          cp -L "$VULKAN_SDK"/lib/libvulkan*.dylib vulkan-runtime/lib/
+          cp -L "$VULKAN_SDK"/lib/libMoltenVK.dylib vulkan-runtime/lib/
           echo "--- bundled dylibs ---"
           ls -la vulkan-runtime/lib
           echo "--- dependent-library paths baked into the exe (verify these look sane) ---"
