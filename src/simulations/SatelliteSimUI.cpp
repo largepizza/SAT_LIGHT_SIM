@@ -3783,12 +3783,13 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         break;
     case GraphicsPreset::High:
         // The compiled-in class member defaults, verbatim — "today's tuned values." Re-synced
-        // 2026-08-06 with the cloud/atmosphere tuning close-out (viewSamplesMax 124->157,
-        // lightSamples 2->2.37, terrainFadeStart 300000->50000). If you change a default in
+        // 2026-08-15 with the 2-significant-figure default cleanup (every tuned default in
+        // SatelliteSim.h was rounded to 2 s.f. for legibility; the four sample counts and two
+        // cloud-fade distances below moved with them). If you change a default in
         // SatelliteSim.h that appears in PresetValues, change it here in the same edit.
         v = {0u,
-             1.0f, 1.0f, 215.034485f, 12.896552f, 6.482759f, 157.302979f, 2.374584f, 3.0f, 5.0f, 6.0f,
-             50000.0f, 900000.0f, 151902.171875f, 399347.8125f};
+             1.0f, 1.0f, 220.0f, 13.0f, 6.5f, 160.0f, 2.4f, 3.0f, 5.0f, 6.0f,
+             50000.0f, 900000.0f, 150000.0f, 400000.0f};
         break;
     case GraphicsPreset::Ultra:
         // Uncapped for showcase/screenshots — pushed to each slider's UI-exposed ceiling.
