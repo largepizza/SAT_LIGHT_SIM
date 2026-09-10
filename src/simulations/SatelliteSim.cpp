@@ -249,14 +249,14 @@ void SatelliteSim::init(VulkanContext &ctx)
         std::ofstream sentinelOut(crashSentinelPath, std::ios::trunc);
     }
 
-    // Fixed start time: 2036-06-21 00:00:00 UTC
+    // Fixed start time: 2036-11-21 20:51:21 UTC
     // J2000.0 = 2000-01-01 12:00:00 UTC = Unix 946728000
-    // 2036-06-21 00:00:00 UTC = Unix 2097619200
-    // Fixed start time: 1150891200 seconds from J2000 = 13320 days + 43200 s.
+    // 2036-06-21 00:00:00 UTC = Unix 2097619200 = 1150891200 s from J2000
+    // 2036-11-21 20:51:21 UTC = 2036-06-21 00:00:00 UTC + 153 days + 20:51:21
     // Stored split so float deltaT stays small regardless of time-warp distance.
-    constexpr int64_t kInitWholeSec = 1150891200LL + 6 * 30 * 24 * 60 * 60 + 20.9 * 60 * 60;
-    simDayJ2000 = kInitWholeSec / 86400LL;           // 13320
-    simSecInDay = (double)(kInitWholeSec % 86400LL); // 43200.0
+    constexpr int64_t kInitWholeSec = 1150891200LL + 153 * 24 * 60 * 60 + 20 * 60 * 60 + 51 * 60 + 21;
+    simDayJ2000 = kInitWholeSec / 86400LL;           // 13474
+    simSecInDay = (double)(kInitWholeSec % 86400LL); // 31881.0
     simInitDayJ2000 = simDayJ2000;
     simInitSecInDay = simSecInDay;
 

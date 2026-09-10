@@ -34,8 +34,9 @@
   when launched from Finder or another directory.
 
 ### Build / packaging
-- New `SatLightSimFresh` build target — same binary compiled with `SAT_FRESH_SETTINGS` so it
-  never reads or writes `settings.json`, for testing the out-of-box first-run experience.
+- New `SatLightSimFresh` build target (exe `SatLightSim_FRESH`) — same binary compiled with
+  `SAT_FRESH_SETTINGS` so it never reads or writes `settings.json`, for testing the out-of-box
+  first-run experience. Ships with its own VS Code build task and debug launch configs.
 - Cross-platform CMake presets (`CMakePresets.json`) and a single `package-release` target
   (`cmake/PackageRelease.cmake`) driving CI and `release.bat`.
 - macOS release is now a universal (arm64 + x86_64) binary with a fixed deployment target.

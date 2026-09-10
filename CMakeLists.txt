@@ -230,7 +230,10 @@ add_dependencies(SatLightSim CompileShaders)
 option(SAT_BUILD_FRESH_TARGET "Also expose the fresh-settings (no-persist) executable target" ON)
 if(SAT_BUILD_FRESH_TARGET)
     add_executable(SatLightSimFresh EXCLUDE_FROM_ALL ${SOURCES})
-    set_target_properties(SatLightSimFresh PROPERTIES OUTPUT_NAME "${EXE_BASENAME}_FRESH")
+    # Stable, version-less name (unlike SatLightSim's "${EXE_BASENAME}") — this is a dev/QA tool
+    # that is never shipped, and a fixed path lets .vscode/launch.json point at it directly
+    # without breaking every time VERSION is bumped.
+    set_target_properties(SatLightSimFresh PROPERTIES OUTPUT_NAME "SatLightSim_FRESH")
     target_compile_definitions(SatLightSimFresh PRIVATE SAT_FRESH_SETTINGS)
     target_include_directories(SatLightSimFresh PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_link_libraries(SatLightSimFresh PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json Threads::Threads)

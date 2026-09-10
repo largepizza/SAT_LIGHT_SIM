@@ -3258,12 +3258,13 @@ static constexpr IntroKeyframe kIntroKeyframes[] = {
     {songbeat * 5.0, 250000.0f, kIntroStartAzDeg - 45, 10.0, 70.0f, "We will come to miss the quiet sky"},
     // Beat 6 — arrival in LEO: pulled back and up enough to see the backlit AI sats against a
     // rising sun. Camera motion stops here; beats 7-8 hold this exact framing. Title reveal.
-    {songbeat * 6.0, 300000.0f, kIntroStartAzDeg - 50, 0.0, 80.0f, "SAT LIGHT SIM"},
+    // Azimuth nudged +5deg right (vs. the beat 5 pan target) to catch the sunset before FOV expands.
+    {songbeat * 6.0, 300000.0f, kIntroStartAzDeg - 45, 0.0, 80.0f, "SAT LIGHT SIM"},
     // Beat 7 — controls hint. "WASD to move" is a fixed line (buildIntroOverlay); the Q/E line is
     // generated at render time from live keybindings, not this literal (kIntroControlsIndex marks
     // which entry to override).
-    {songbeat * 7.0, 300000.0f, kIntroStartAzDeg - 50, 20.0, 120.0f, "Q / E to raise/lower height"},
-    {songbeat * 8.0, 0000.0f, kIntroStartAzDeg - 50, 20.0, 80.0f, nullptr}, // hold, then auto-handoff (finishIntro(false))
+    {songbeat * 7.0, 300000.0f, kIntroStartAzDeg - 45, 20.0, 120.0f, "Q / E to raise/lower height"},
+    {songbeat * 8.0, 0000.0f, kIntroStartAzDeg - 45, 20.0, 80.0f, nullptr}, // hold, then auto-handoff (finishIntro(false))
 };
 static constexpr int kIntroKeyframeCount = sizeof(kIntroKeyframes) / sizeof(kIntroKeyframes[0]);
 static constexpr int kIntroYearIndex = 0;       // "2036" title/date card

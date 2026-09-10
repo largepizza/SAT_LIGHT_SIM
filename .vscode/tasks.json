@@ -11,6 +11,16 @@
             "presentation": { "reveal": "always" }
         },
         {
+            // Fresh-settings variant: same binary compiled with SAT_FRESH_SETTINGS, so it never
+            // reads or writes settings.json. EXCLUDE_FROM_ALL, so it is only built by this task
+            // (or by launching the "FRESH" debug configs, which run it as their preLaunchTask).
+            "label": "CMake: Build Fresh (no settings.json)",
+            "type": "shell",
+            "command": "cmake --build build --target SatLightSimFresh",
+            "problemMatcher": ["$msCompile"],
+            "presentation": { "reveal": "always" }
+        },
+        {
             // Full release build + dist/ archive, via the presets in CMakePresets.json.
             // Same target CI runs, so a local archive matches a tagged one byte-for-byte
             // in layout. Windows preset shown; swap for linux-* / macos-* on those hosts.
