@@ -3,18 +3,65 @@
     "configurations": [
         {
             // Press F5 to build (if needed) and launch with the debugger attached.
-            // CMake Tools handles resolving the exe path and working directory.
-            "name": "Debug SAT LIGHT SIM",
-            "type": "cppvsdbg",          // Use cppdbg on Linux/macOS
+            // CMake Tools resolves the exe path and working directory.
+            "name": "Debug SAT LIGHT SIM (macOS/Linux)",
+            "type": "cppdbg",
             "request": "launch",
             "program": "${command:cmake.launchTargetPath}",
             "args": [],
             "stopAtEntry": false,
-            // Working directory = folder containing the exe (where shaders/ lives)
+            "cwd": "${command:cmake.launchTargetDirectory}",
+            "MIMode": "lldb",
+            // Inherited from the environment, never hardcoded here (this file is committed).
+            // Run `source ~/VulkanSDK/<version>/setup-env.sh` before launching VS Code — it
+            // sets VULKAN_SDK, VK_ICD_FILENAMES (MoltenVK), VK_LAYER_PATH and DYLD_LIBRARY_PATH.
+            // Launching VS Code from Finder does NOT inherit a shell profile; start it with
+            // `code .` from a configured terminal, or add the vars to VS Code user settings.
+            "environment": [],
+            "preLaunchTask": "CMake: build"
+        },
+        {
+            // Original Windows configuration (uses the MSVC debugger).
+            "name": "Debug SAT LIGHT SIM (Windows)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${command:cmake.launchTargetPath}",
+            "args": [],
+            "stopAtEntry": false,
             "cwd": "${command:cmake.launchTargetDirectory}",
             "environment": [],
-            "console": "integratedTerminal",
             "preLaunchTask": "CMake: build"
+        },
+        {
+            // FRESH build: runs SatLightSim_FRESH.exe, compiled with SAT_FRESH_SETTINGS so it
+            // never reads or writes settings.json — every launch is a clean out-of-box first
+            // run. Points at the target directly (not the CMake Tools "launch target") so it
+            // works regardless of which target is selected in the status bar. The name is
+            // version-less on purpose, so this path does not break on a VERSION bump.
+            "name": "Debug SAT LIGHT SIM — FRESH / no settings (Windows)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${command:cmake.buildDirectory}/${command:cmake.buildType}/SatLightSim_FRESH.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${command:cmake.buildDirectory}/${command:cmake.buildType}",
+            "environment": [],
+            "preLaunchTask": "CMake: Build Fresh (no settings.json)"
+        },
+        {
+            // FRESH build for single-config generators (Ninja/Makefiles, i.e. the CMake
+            // presets used on macOS/Linux) — the exe sits directly in the build directory,
+            // not under a per-config subfolder.
+            "name": "Debug SAT LIGHT SIM — FRESH / no settings (macOS/Linux)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${command:cmake.buildDirectory}/SatLightSim_FRESH",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${command:cmake.buildDirectory}",
+            "MIMode": "lldb",
+            "environment": [],
+            "preLaunchTask": "CMake: Build Fresh (no settings.json)"
         }
     ]
 }
