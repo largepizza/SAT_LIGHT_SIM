@@ -2607,8 +2607,10 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         // shaders/include/darksky.glsl.
         {"MW pollut. lo", &mwPollutionThresholdLo, 0.0f, 0.5f, 0.005f, "%.3f", 11},
         {"MW pollut. hi", &mwPollutionThresholdHi, 0.001f, 0.5f, 0.005f, "%.3f", 12},
-        // mag/arcsec^2, so LOWER = brighter city sky = harsher suppression. 16 is brighter than
-        // any real site, 22 is pristine (i.e. the gate does nothing at all).
+        // mag/arcsec^2, so LOWER = brighter city sky = harsher suppression. 22 is pristine (the gate
+        // does nothing); ~16 is already brighter than any real site. The floor goes to 1.0 anyway —
+        // below the real-world range on purpose — as an artistic knob for fully washing dark-sky
+        // features out under city glow. Default (SatelliteSim.h) is 13.0.
         {"City sky mag", &darkSkyCityMag, 1.0f, 22.0f, 0.1f, "%.1f", 13},
         // Twilight half of the same gate. "Twilight end" is the one to reach for first: it is the
         // solar depression at which the sky is considered fully dark, so it directly sets how long
@@ -2938,7 +2940,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Sun gain (horizon)", &cloudSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 5},
         {"Sun gain (zenith)", &cloudSunGainZenith, 0.0f, 8.0f, 0.1f, "%.2f", 37},
         {"Sun gain elev band", &sunGainElevBand, 0.02f, 1.0f, 0.01f, "%.2f", 47},
-        {"Ambient", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 1.0f},
+        {"Ambient", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
         {"Twilight ambient", &cloudTwilightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
         {"Twilight band hi", &twilightBandHi, -0.1f, 0.8f, 0.01f, "%.2f", 48},
         {"Twilight band lo", &twilightBandLo, -0.9f, 0.0f, 0.01f, "%.2f", 49},
