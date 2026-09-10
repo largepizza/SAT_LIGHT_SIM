@@ -3329,7 +3329,7 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
                                 .childGap = 4,
                                 .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
-        CLAY_TEXT(CLAY_STRING("Earth day/night/cloud/specular/normal/elevation maps, Milky Way skybox"),
+        CLAY_TEXT(CLAY_STRING("Earth day/night/cloud/specular/normal/elevation maps"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
         CLAY_TEXT(CLAY_STRING("Solar System Scope — solarsystemscope.com/textures (CC BY 4.0)"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
@@ -3338,6 +3338,24 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
     CLAY(CLAY_ID("AttrDiv2"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
                                           .padding = {0, 0, 2, 2}},
                                .backgroundColor = {30, 30, 32, 255}}) {}
+
+    CLAY(CLAY_ID("AttrMilkyWay"), {.layout = {
+                                       .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                       .padding = {6, 6, 5, 5},
+                                       .childGap = 4,
+                                       .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    {
+        CLAY_TEXT(CLAY_STRING("Milky Way skybox"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        CLAY_TEXT(CLAY_STRING("\"The Milky Way panorama\" (eso0932a) — ESO/S. Brunier"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+        CLAY_TEXT(CLAY_STRING("European Southern Observatory — eso.org (CC BY 4.0)"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
+    }
+
+    CLAY(CLAY_ID("AttrDivMilkyWay"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                                 .padding = {0, 0, 2, 2}},
+                                      .backgroundColor = {30, 30, 32, 255}}) {}
 
     CLAY(CLAY_ID("Attr3"), {.layout = {
                                 .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},

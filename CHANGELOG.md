@@ -24,7 +24,8 @@
   climbing back out take a normal amount of time instead of feeling stuck.
 - Holding sprint (Move Fast) now cancels fine/slow movement mode instead of being overridden
   by it.
-- New compressed Milky Way star texture (~60% smaller, ESA).
+- New Milky Way skybox: ESO's "The Milky Way panorama" (eso0932a, credit ESO/S. Brunier,
+  CC BY 4.0), replacing the previous Solar System Scope star texture.
 - Fine-movement key (stick-click / Ctrl) is now a latching toggle instead of a held modifier.
 - Milky Way sun-glare suppression only applies while the sun is above the horizon, so the
   band no longer dims toward an Earth-occluded sun.

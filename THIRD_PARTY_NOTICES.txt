@@ -171,13 +171,22 @@ PART 2 — CREATIVE ASSETS
 ====================================================================
 
 --------------------------------------------------------------------
-Earth day/night/cloud/specular/normal maps and Milky Way skybox
+Earth day/night/cloud/specular/normal maps
 --------------------------------------------------------------------
 Files:   8k_earth_daymap.jpg, 8k_earth_nightmap.jpg, 8k_earth_clouds.jpg,
-         8k_earth_specular.jpg, 8k_earth_normal.jpg, 8k_stars_milky_way.jpg
+         8k_earth_specular.jpg, 8k_earth_normal.jpg
 Source:  Solar System Scope (https://www.solarsystemscope.com/textures/)
 License: Creative Commons Attribution 4.0 International (CC BY 4.0)
 Terms:   Free for personal and commercial use with attribution.
+
+--------------------------------------------------------------------
+Milky Way skybox
+--------------------------------------------------------------------
+File:    8k_stars_milky_way.jpg
+Title:   "The Milky Way panorama" (eso0932a)
+Credit:  ESO/S. Brunier
+Source:  European Southern Observatory (https://www.eso.org/public/images/eso0932a/)
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
 
 --------------------------------------------------------------------
 Earth elevation map

@@ -269,24 +269,24 @@ void SatelliteSim::init(VulkanContext &ctx)
     //              in the settings window). KB_CINEMATIC is left unbound by default since
     //              it's a mouse-drag-flavored feature (see dispatchKeyAction).
     keybindings = {
-        {"Toggle UI", GLFW_KEY_TAB, GLFW_GAMEPAD_BUTTON_BACK, false, false},                // KB_TOGGLE_UI
-        {"Pause/Resume", GLFW_KEY_SPACE, GLFW_GAMEPAD_BUTTON_B, false, false},              // KB_PAUSE — moved off Start (session follow-up) to free it for KB_TOGGLE_CURSOR below
-        {"Slow Down", GLFW_KEY_COMMA, GLFW_GAMEPAD_BUTTON_DPAD_LEFT, false, false},         // KB_SLOWER
-        {"Speed Up", GLFW_KEY_PERIOD, GLFW_GAMEPAD_BUTTON_DPAD_RIGHT, false, false},        // KB_FASTER
-        {"Reverse Time", GLFW_KEY_R, GLFW_GAMEPAD_BUTTON_DPAD_UP, false, false},            // KB_REVERSE
-        {"Move Fast", GLFW_KEY_LEFT_SHIFT, GLFW_GAMEPAD_BUTTON_LEFT_THUMB, true, false},    // KB_MOVE_BOOST (held)
+        {"Toggle UI", GLFW_KEY_TAB, GLFW_GAMEPAD_BUTTON_BACK, false, false},                 // KB_TOGGLE_UI
+        {"Pause/Resume", GLFW_KEY_SPACE, GLFW_GAMEPAD_BUTTON_B, false, false},               // KB_PAUSE — moved off Start (session follow-up) to free it for KB_TOGGLE_CURSOR below
+        {"Slow Down", GLFW_KEY_COMMA, GLFW_GAMEPAD_BUTTON_DPAD_LEFT, false, false},          // KB_SLOWER
+        {"Speed Up", GLFW_KEY_PERIOD, GLFW_GAMEPAD_BUTTON_DPAD_RIGHT, false, false},         // KB_FASTER
+        {"Reverse Time", GLFW_KEY_R, GLFW_GAMEPAD_BUTTON_DPAD_UP, false, false},             // KB_REVERSE
+        {"Move Fast", GLFW_KEY_LEFT_SHIFT, GLFW_GAMEPAD_BUTTON_LEFT_THUMB, true, false},     // KB_MOVE_BOOST (held)
         {"Move Fine", GLFW_KEY_LEFT_CONTROL, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB, false, false}, // KB_MOVE_FINE  (event, toggle)
-        {"Cinematic Pan", GLFW_KEY_LEFT_ALT, -1, false, false},                             // KB_CINEMATIC  (event, toggle)
-        {"Raise Elevation", GLFW_KEY_Q, -1, true, false},                                   // KB_RAISE_ELEV (held) — gamepad is the analog right trigger, see gpElevRaise
-        {"Lower Elevation", GLFW_KEY_E, -1, true, false},                                   // KB_LOWER_ELEV (held) — gamepad is the analog left trigger, see gpElevLower
-        {"Reset Elevation", GLFW_KEY_Z, -1, false, false},                                  // KB_RESET_ELEV (event) — Y reassigned to Reset Zoom below
-        {"Zoom In", GLFW_KEY_EQUAL, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER, true, false},         // KB_ZOOM_IN    (held)
-        {"Zoom Out", GLFW_KEY_MINUS, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER, true, false},         // KB_ZOOM_OUT   (held)
-        {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_Y, false, false},                    // KB_ZOOM_RESET (event)
-        {"Select Satellite", GLFW_KEY_T, GLFW_GAMEPAD_BUTTON_A, false, false},              // KB_SELECT_SAT (event) — center-of-screen pick; moved off F (session follow-up) to free F for KB_TOGGLE_TRAILS below
-        {"Screenshot", GLFW_KEY_F12, -1, false, false},                                     // KB_SCREENSHOT (event) — no standard gamepad "capture" button to default to
-        {"Toggle Cursor", GLFW_KEY_C, GLFW_GAMEPAD_BUTTON_START, false, false},             // KB_TOGGLE_CURSOR (event) — UC5: gamepad virtual-cursor mode; no meaningful effect for KBM (mouse is always a free cursor), kept rebindable/listed for consistency
-        {"Star Trails", GLFW_KEY_F, GLFW_GAMEPAD_BUTTON_X, false, false},                   // KB_TOGGLE_TRAILS (event) — long-exposure trail on/off
+        {"Cinematic Pan", GLFW_KEY_LEFT_ALT, -1, false, false},                              // KB_CINEMATIC  (event, toggle)
+        {"Raise Elevation", GLFW_KEY_Q, -1, true, false},                                    // KB_RAISE_ELEV (held) — gamepad is the analog right trigger, see gpElevRaise
+        {"Lower Elevation", GLFW_KEY_E, -1, true, false},                                    // KB_LOWER_ELEV (held) — gamepad is the analog left trigger, see gpElevLower
+        {"Reset Elevation", GLFW_KEY_Z, -1, false, false},                                   // KB_RESET_ELEV (event) — Y reassigned to Reset Zoom below
+        {"Zoom In", GLFW_KEY_EQUAL, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER, true, false},          // KB_ZOOM_IN    (held)
+        {"Zoom Out", GLFW_KEY_MINUS, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER, true, false},          // KB_ZOOM_OUT   (held)
+        {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_Y, false, false},                     // KB_ZOOM_RESET (event)
+        {"Select Satellite", GLFW_KEY_T, GLFW_GAMEPAD_BUTTON_A, false, false},               // KB_SELECT_SAT (event) — center-of-screen pick; moved off F (session follow-up) to free F for KB_TOGGLE_TRAILS below
+        {"Screenshot", GLFW_KEY_F12, -1, false, false},                                      // KB_SCREENSHOT (event) — no standard gamepad "capture" button to default to
+        {"Toggle Cursor", GLFW_KEY_C, GLFW_GAMEPAD_BUTTON_START, false, false},              // KB_TOGGLE_CURSOR (event) — UC5: gamepad virtual-cursor mode; no meaningful effect for KBM (mouse is always a free cursor), kept rebindable/listed for consistency
+        {"Star Trails", GLFW_KEY_F, GLFW_GAMEPAD_BUTTON_X, false, false},                    // KB_TOGGLE_TRAILS (event) — long-exposure trail on/off
     };
     static_assert(KB_COUNT == 18, "KB enum and keybindings initializer are out of sync");
 
@@ -306,7 +306,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     createSceneDepthDescriptors(ctx); // needs earthElev/earthSpec from createGlowResources above
     createSceneDepthPipeline(ctx);
     createBeamSelfMarchDescriptors(ctx); // needs cloudParamsBuf/earthClouds/cloudNoise/cloudWarpNoise
-                                          // (createGlowResources above) and reflectBeamsBuf (createBuffers)
+                                         // (createGlowResources above) and reflectBeamsBuf (createBuffers)
     createBeamSelfMarchPipeline(ctx);
     createSkyBgPipeline(ctx);
     createSkyLowResResources(ctx); // resolution scaling — needs skyBgPipeLayout from just above
@@ -568,7 +568,11 @@ void SatelliteSim::onResize(VulkanContext &ctx)
 static bool dbgEnv(const char *name)
 {
     // A tiny cache keyed by pointer identity is enough — call sites pass string literals.
-    struct E { const char *k; bool v; };
+    struct E
+    {
+        const char *k;
+        bool v;
+    };
     static E cache[8];
     static int n = 0;
     for (int i = 0; i < n; ++i)
@@ -1128,8 +1132,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // observer correctly keeps "seeing" (and being glared by) the sun well past local sunset.
         float obsRForLimb = glm::length(obsECI);
         float limbZCpu = (obsRForLimb > kEarthRadius)
-                              ? -sqrtf(std::max(0.0f, 1.0f - (kEarthRadius / obsRForLimb) * (kEarthRadius / obsRForLimb)))
-                              : 0.0f;
+                             ? -sqrtf(std::max(0.0f, 1.0f - (kEarthRadius / obsRForLimb) * (kEarthRadius / obsRForLimb)))
+                             : 0.0f;
         bool sunOccludedByEarth = sunDirENU.w < limbZCpu;
 
         float glareTarget = (sunOnScreen && !sunOccludedByEarth) ? 0.0f : (sunlit ? sunlitBgVisibility : 1.0f);
@@ -1270,7 +1274,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // the observer moved. Rebase once here, before anything below uses these vectors — a
         // small CPU port of terrain.glsl's enuBasis() (normalize + 2 cross products), applied to
         // the OLD and NEW bases once per frame, not per beam.
-        auto enuBasisCPU = [](const glm::vec3 &dir, glm::vec3 &x, glm::vec3 &y, glm::vec3 &z) {
+        auto enuBasisCPU = [](const glm::vec3 &dir, glm::vec3 &x, glm::vec3 &y, glm::vec3 &z)
+        {
             z = glm::normalize(dir);
             x = glm::normalize(glm::cross(glm::vec3(0.0f, 0.0f, 1.0f), z));
             y = glm::cross(z, x);
@@ -1278,7 +1283,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         glm::vec3 oldEnuX, oldEnuY, oldEnuZ, newEnuX, newEnuY, newEnuZ;
         enuBasisCPU(lastBeamObsDir, oldEnuX, oldEnuY, oldEnuZ);
         enuBasisCPU(obsDir, newEnuX, newEnuY, newEnuZ);
-        auto rebase = [&](const glm::vec3 &v) {
+        auto rebase = [&](const glm::vec3 &v)
+        {
             glm::vec3 worldish = v.x * oldEnuX + v.y * oldEnuY + v.z * oldEnuZ;
             return glm::vec3(glm::dot(worldish, newEnuX), glm::dot(worldish, newEnuY), glm::dot(worldish, newEnuZ));
         };
@@ -1312,18 +1318,22 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // float would quantize a light's position to ~0.4 m and lose more to cancellation.
         const glm::dvec3 dEnuX(newEnuX), dEnuY(newEnuY), dEnuZ(newEnuZ);
         const glm::dvec3 dObsLocal(0.0, 0.0, (double)obsPosLocalForLights.z);
-        auto enuPosToEcef = [&](const glm::vec3 &e) -> glm::dvec3 {
+        auto enuPosToEcef = [&](const glm::vec3 &e) -> glm::dvec3
+        {
             glm::dvec3 l = dObsLocal + glm::dvec3(e);
             return dEnuX * l.x + dEnuY * l.y + dEnuZ * l.z;
         };
-        auto ecefPosToEnu = [&](const glm::dvec3 &p) -> glm::vec3 {
+        auto ecefPosToEnu = [&](const glm::dvec3 &p) -> glm::vec3
+        {
             glm::dvec3 l(glm::dot(p, dEnuX), glm::dot(p, dEnuY), glm::dot(p, dEnuZ));
             return glm::vec3(l - dObsLocal);
         };
-        auto enuDirToEcef = [&](const glm::vec3 &d) -> glm::dvec3 {
+        auto enuDirToEcef = [&](const glm::vec3 &d) -> glm::dvec3
+        {
             return dEnuX * (double)d.x + dEnuY * (double)d.y + dEnuZ * (double)d.z;
         };
-        auto ecefDirToEnu = [&](const glm::dvec3 &d) -> glm::vec3 {
+        auto ecefDirToEnu = [&](const glm::dvec3 &d) -> glm::vec3
+        {
             return glm::vec3(glm::dot(d, dEnuX), glm::dot(d, dEnuY), glm::dot(d, dEnuZ));
         };
 
@@ -1341,7 +1351,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // The 2 deg floor above already caps the real ring count at 45, well inside this.
         const int kMaxAzSectors = 512;
         const int kMaxElRings = 127;
-        auto dirBucketFor = [&](int ti, const glm::dvec3 &dirEcef) -> uint32_t {
+        auto dirBucketFor = [&](int ti, const glm::dvec3 &dirEcef) -> uint32_t
+        {
             // Project into the TARGET SITE's own local frame — observer-independent by
             // construction, which is what stops camera motion from repartitioning a cluster.
             glm::dvec3 sx(reflectorSiteEnuX[ti]), sy(reflectorSiteEnuY[ti]), sz(reflectorSiteEnuZ[ti]);
@@ -1355,18 +1366,22 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             int iEl = std::clamp((int)(el / bucketRad), 0, kMaxElRings - 1);
             float elCentre = std::min((iEl + 0.5f) * bucketRad, glm::half_pi<float>());
             int nAz = std::clamp((int)std::lround(glm::two_pi<float>() * std::cos(elCentre) / bucketRad),
-                                  1, kMaxAzSectors);
+                                 1, kMaxAzSectors);
             float az = std::atan2(dy, dx);
-            if (az < 0.0f) az += glm::two_pi<float>();
+            if (az < 0.0f)
+                az += glm::two_pi<float>();
             int iAz = std::clamp((int)(az / (glm::two_pi<float>() / (float)nAz)), 0, nAz - 1);
             return (uint32_t)(iEl * kMaxAzSectors + iAz);
         };
 
         // lowbias32 (Chris Wellons) — cheap, well-distributed integer mix for the open-addressed
         // index below. Keys are dense-ish (targetIdx<<16 | bucket), so a raw modulo would cluster.
-        auto hashKey32 = [](uint32_t k) -> uint32_t {
-            k ^= k >> 16; k *= 0x7feb352du;
-            k ^= k >> 15; k *= 0x846ca68bu;
+        auto hashKey32 = [](uint32_t k) -> uint32_t
+        {
+            k ^= k >> 16;
+            k *= 0x7feb352du;
+            k ^= k >> 15;
+            k *= 0x846ca68bu;
             k ^= k >> 16;
             return k;
         };
@@ -1375,7 +1390,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // accumulators. Rebuilding (rather than maintaining it incrementally) is O(live) <= 256 and
         // sidesteps tombstones entirely, which is the only genuinely error-prone part of open
         // addressing with deletion.
-        auto resetPool = [&](TrackedBeamLight *pool, uint32_t *hash, int cap) {
+        auto resetPool = [&](TrackedBeamLight *pool, uint32_t *hash, int cap)
+        {
             std::memset(hash, 0, sizeof(uint32_t) * kTrackedLightHashSize);
             for (int i = 0; i < cap; ++i)
             {
@@ -1386,9 +1402,11 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 L.tgtDirSum = glm::dvec3(0.0);
                 L.tgtAltSum = 0.0f;
                 L.tgtOpacitySum = 0.0f;
-                if (!L.key) continue;
+                if (!L.key)
+                    continue;
                 uint32_t h = hashKey32(L.key) & (uint32_t)(kTrackedLightHashSize - 1);
-                while (hash[h] != 0u) h = (h + 1u) & (uint32_t)(kTrackedLightHashSize - 1);
+                while (hash[h] != 0u)
+                    h = (h + 1u) & (uint32_t)(kTrackedLightHashSize - 1);
                 hash[h] = (uint32_t)i + 1u;
             }
         };
@@ -1403,27 +1421,38 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // below, then cleared by next frame's rebuild. Deleting from an open-addressed table
         // without tombstones would break the probe chains of unrelated keys.
         auto findOrAlloc = [&](TrackedBeamLight *pool, uint32_t *hash, int cap,
-                                uint32_t key, float candidate) -> int {
+                               uint32_t key, float candidate) -> int
+        {
             const uint32_t mask = (uint32_t)(kTrackedLightHashSize - 1);
             uint32_t h = hashKey32(key) & mask;
             uint32_t firstFreeH = 0xFFFFFFFFu;
             for (int probe = 0; probe < 128; ++probe)
             {
                 uint32_t e = hash[h];
-                if (e == 0u) { firstFreeH = h; break; }
+                if (e == 0u)
+                {
+                    firstFreeH = h;
+                    break;
+                }
                 int slot = (int)e - 1;
-                if (pool[slot].key == key) return slot;  // live match — the common case
-                h = (h + 1u) & mask;                     // occupied by another key (or a stale
-                                                          // post-eviction entry) — keep probing
+                if (pool[slot].key == key)
+                    return slot;     // live match — the common case
+                h = (h + 1u) & mask; // occupied by another key (or a stale
+                                     // post-eviction entry) — keep probing
             }
-            if (firstFreeH == 0xFFFFFFFFu) return -1; // pathological probe chain; skip this beam
+            if (firstFreeH == 0xFFFFFFFFu)
+                return -1; // pathological probe chain; skip this beam
 
             // Allocate: first free pool slot, else evict the weakest. Ranked on
             // max(easedIntensity, tgtIntensity) so a slot already accumulating THIS frame is
             // protected — evicting one would silently discard contributions already folded in.
             int slot = -1;
             for (int i = 0; i < cap; ++i)
-                if (!pool[i].key) { slot = i; break; }
+                if (!pool[i].key)
+                {
+                    slot = i;
+                    break;
+                }
             if (slot < 0)
             {
                 int weakest = 0;
@@ -1431,9 +1460,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 for (int i = 1; i < cap; ++i)
                 {
                     float v = std::max(pool[i].easedIntensity, pool[i].tgtIntensity);
-                    if (v < weakestVal) { weakestVal = v; weakest = i; }
+                    if (v < weakestVal)
+                    {
+                        weakestVal = v;
+                        weakest = i;
+                    }
                 }
-                if (candidate <= weakestVal) return -1; // not worth displacing anything
+                if (candidate <= weakestVal)
+                    return -1; // not worth displacing anything
                 slot = weakest;
             }
             pool[slot] = TrackedBeamLight{};
@@ -1502,7 +1536,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             {
                 uint32_t insertIdx = groundTopK.claim(
                     groundBeams.count, (uint32_t)kMaxGroundBeams, intensity,
-                    [&](uint32_t i) { return groundBeams.entries[i].intensity; });
+                    [&](uint32_t i)
+                    { return groundBeams.entries[i].intensity; });
                 if (insertIdx != ~0u)
                 {
                     // 2026-08-10: solve the whole view-independent half of sat_sky.frag's
@@ -1590,7 +1625,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                         // comparison — the old design needed it precisely because both sides
                         // snapped.
                         const float kConvergedAimErrorRad = glm::radians(10.0f); // matches
-                            // cloud_march.comp's kDebugRayAimMaxRad, same underlying question
+                                                                                 // cloud_march.comp's kDebugRayAimMaxRad, same underlying question
                         bool converged = beamsIn[s].aimErrorRad <= kConvergedAimErrorRad;
 
                         // Geometry into Earth-fixed ECEF once, here — everything downstream (the
@@ -1608,10 +1643,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                         if (asCluster)
                         {
                             uint32_t key = 0x80000000u | ((uint32_t)ti << 16) |
-                                            (dirBucketFor(ti, dEcef) & 0xFFFFu);
+                                           (dirBucketFor(ti, dEcef) & 0xFFFFu);
                             pool = trackedClusters;
                             slot = findOrAlloc(trackedClusters, trackedClusterHash,
-                                                kMaxClusterCloudLights, key, intensity);
+                                               kMaxClusterCloudLights, key, intensity);
                         }
                         else
                         {
@@ -1624,7 +1659,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                             uint32_t key = 0x40000000u | (satIdx & 0x3FFFFFFFu);
                             pool = trackedIndividuals;
                             slot = findOrAlloc(trackedIndividuals, trackedIndividualHash,
-                                                kMaxIndividualCloudLights, key, intensity);
+                                               kMaxIndividualCloudLights, key, intensity);
                         }
 
                         if (slot >= 0)
@@ -1650,19 +1685,22 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // intensity (fast in, slow out) so a light registers promptly but lingers on the way out;
         // geometry runs on its own much shorter constant so a light can't visibly lag real beam
         // motion. Clamped because dt can be 0 (paused presentation) or large after a hitch.
-        auto blendFactor = [&](float timeConstS) {
+        auto blendFactor = [&](float timeConstS)
+        {
             return glm::clamp(1.0f - std::exp(-dt / std::max(timeConstS, 1e-3f)), 0.0f, 1.0f);
         };
         const float kFadeIn = blendFactor(beamClusterFadeInS);
         const float kFadeOut = blendFactor(beamClusterFadeOutS);
         const float kGeom = blendFactor(kTrackedLightGeomEaseS);
 
-        auto easeAndEmit = [&](TrackedBeamLight *pool, int cap) {
+        auto easeAndEmit = [&](TrackedBeamLight *pool, int cap)
+        {
             int live = 0;
             for (int i = 0; i < cap; ++i)
             {
                 TrackedBeamLight &L = pool[i];
-                if (!L.key) continue;
+                if (!L.key)
+                    continue;
                 float w = L.tgtIntensity;
                 if (w > 0.0f)
                 {
@@ -2208,7 +2246,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         bmPc.obsEffH = std::max(obsTerrainH, obsHeightOffset);
         bmPc.waveTime = (float)(simSecInDay * 1.0);
         bmPc.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
-                                     glm::two_pi<double>());
+                                      glm::two_pi<double>());
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, beamSelfMarchPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -2957,8 +2995,8 @@ void SatelliteSim::recordPrePass(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
 void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*dt*/)
 {
-    SatDrawPC skyPc = buildSkyDrawPC(ctx);      // Pass 1 (sky background) — skyBgPipeLayout
-    PointDrawPC pc = buildPointDrawPC(ctx);     // Passes 2/3/3.5 (satellite/star/planet points)
+    SatDrawPC skyPc = buildSkyDrawPC(ctx);  // Pass 1 (sky background) — skyBgPipeLayout
+    PointDrawPC pc = buildPointDrawPC(ctx); // Passes 2/3/3.5 (satellite/star/planet points)
 
     // ── Pass 1: sky/ground background (fullscreen triangle, opaque) ──────────
     // Skipped when renderScale < 1.0 — already rendered (at low res) and blitted into this
@@ -2974,9 +3012,9 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
             // slider or knockout reduces it. Same layout / descriptor set / push constant.
             // Planetarium-tier (bit 524288): the -DSKY_LITE variant (heaviest subsystems cut).
             // 262144 wins if both are somehow set.
-            VkPipeline skyPipe = (debugDisableMask & 262144u) ? skyBgMinimalPipeline
-                               : (debugDisableMask & 524288u) ? skyBgLitePipeline
-                                                              : skyBgPipeline;
+            VkPipeline skyPipe = (debugDisableMask & 262144u)   ? skyBgMinimalPipeline
+                                 : (debugDisableMask & 524288u) ? skyBgLitePipeline
+                                                                : skyBgPipeline;
             {
                 // Always-on breadcrumb (into satlight_log.txt) for the intermittent Potato
                 // slow-start bug — see [[potato-mode-intermittent-slow-start]]. Logs only on a
@@ -2987,8 +3025,8 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
                 {
                     Log::line("sky pipeline: " +
                               std::string((skyPipe == skyBgMinimalPipeline) ? "MINIMAL"
-                                          : (skyPipe == skyBgLitePipeline)   ? "LITE (SKY_LITE)"
-                                                                             : "FULL sat_sky.frag") +
+                                          : (skyPipe == skyBgLitePipeline)  ? "LITE (SKY_LITE)"
+                                                                            : "FULL sat_sky.frag") +
                               " (mask " + std::to_string(debugDisableMask) +
                               ", renderScale " + std::to_string(renderScale) + ")");
                     lastSkyPipe = skyPipe;
@@ -8411,13 +8449,13 @@ void SatelliteSim::loadHardcoded()
          {1.00f, 1.00f, 0.92f},                          // cyan-teal (distinct from Starlink blue-white)
          600.0f,                                         // 600 m² solar array area (150 kW / 250 W/m²)
          {AttitudeMode::SunTrackingTilted, 25.0f, 1.0f}, // solar wings — sun-tracking with the global
-                                                          // flareMitigationTiltDeg pitch applied (see
-                                                          // that enum value's comment); tiltDeg=0
-                                                          // is bit-identical to plain SunTracking
+                                                         // flareMitigationTiltDeg pitch applied (see
+                                                         // that enum value's comment); tiltDeg=0
+                                                         // is bit-identical to plain SunTracking
          {AttitudeMode::SunPerp, 3.0f, 0.18f},           // radiators 110 m² — edge-on to sun, irr=0
          0.06f,                                          // bus body + radiator structure bulk scatter
          0.01f},                                         // mirrorFrac: polished solar panel glass
-        {                                          // 5 — Reflect Orbital mirror (speculative, 55 m diameter flat mirror).
+        {                                                // 5 — Reflect Orbital mirror (speculative, 55 m diameter flat mirror).
          // FlatMirror45: normal = normalize(sunDir + satNadir).
          // By construction reflect(-sunDir, n) = satNadir — reflected sunlight
          // hits the ground directly below the satellite.  In SSO the mirror spends
