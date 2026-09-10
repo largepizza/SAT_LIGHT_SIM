@@ -2192,9 +2192,12 @@ private:
                                          // is what stretches it over ~4.9 decades instead of ~1.2
     float mwPollutionThresholdHi = 0.075f;  // at/above this: sky has fully reached darkSkyCityMag
     // Sky background surface brightness at the Hi end, mag/arcsec^2 (LARGER = FAINTER — the
-    // astronomical convention). 18.0 is a real Bortle 8-9 inner-city zenith. Pushed to both
-    // shaders as GpuCloudParams::darkSkyCityMag.
-    float darkSkyCityMag = 16.0f;
+    // astronomical convention). ~18 is a real Bortle 8-9 inner-city zenith; the default and the
+    // slider floor (1.0, see SatelliteSimUI.cpp) both sit below any real site on purpose — this is
+    // an artistic suppression knob, and a value under the real-world floor is how you get dark-sky
+    // features to fully wash out under bright city glow. Pushed to both shaders as
+    // GpuCloudParams::darkSkyCityMag.
+    float darkSkyCityMag = 13.0f;
     // Twilight half of the same gate — the sun's own contribution to sky brightness. See
     // darkSkyTwilightMag() in shaders/include/darksky.glsl for the model and why the old
     // nightFactorEff ramp alone was not enough (it stops suppressing anything with the sun only
@@ -2351,7 +2354,7 @@ private:
     float cloudSunGain = 1.1f;       // near-horizon/sunset sun-gain endpoint — blended toward
                                      // cloudSunGainZenith by sun elevation (see cloud_march.comp)
     float cloudSunGainZenith = 1.0f; // sun-gain endpoint when the sun is near zenith (midday)
-    float cloudAmbientGain = 0.44f;
+    float cloudAmbientGain = 1.0f;
     float cloudTwilightAmbientGain = 0.40f; // manual gain on sky-lit cloud during twilight (was piggybacking
                                             // on cloudAmbientGain, which also drives city-light
                                             // upwelling — see kNightSkyAmbientColor in cloud_march.comp)

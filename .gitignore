@@ -4,6 +4,7 @@ build-linux/
 out/
 dist/
 build-win-release/
+build-win-ci/
 build-linux-release/
 build-macos-release/
 .logs/

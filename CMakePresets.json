@@ -26,6 +26,15 @@
             "inherits": "windows",
             "binaryDir": "${sourceDir}/build-win-release"
         },
+        {
+            "name": "windows-ci",
+            "displayName": "Windows CI release (Ninja + MSVC)",
+            "inherits": "base",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build-win-ci",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
+            "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+        },
 
         {
             "name": "linux",
@@ -68,6 +77,9 @@
         { "name": "windows",       "configurePreset": "windows",       "configuration": "Debug" },
         { "name": "windows-release","configurePreset": "windows-release","configuration": "Release" },
         { "name": "windows-package","configurePreset": "windows-release","configuration": "Release", "targets": ["package-release"] },
+
+        { "name": "windows-ci",        "configurePreset": "windows-ci" },
+        { "name": "windows-ci-package","configurePreset": "windows-ci", "targets": ["package-release"] },
 
         { "name": "linux",          "configurePreset": "linux" },
         { "name": "linux-release",  "configurePreset": "linux-release" },

@@ -32,6 +32,9 @@
   the "show on startup" toggle); intro captions restyled.
 - App now anchors its working directory to the executable location, fixing asset loading
   when launched from Finder or another directory.
+- Cloud *Ambient* gain default raised to 1.0.
+- *City sky mag* (Photometry) default lowered to 13.0 and its slider now goes down to 1.0,
+  below the real-world range, for stronger artistic washout of dark-sky features under city glow.
 
 ### Build / packaging
 - New `SatLightSimFresh` build target (exe `SatLightSim_FRESH`) — same binary compiled with
@@ -43,6 +46,11 @@
 - Machine-specific absolute paths scrubbed from committed config; `CMAKE_POLICY_VERSION_MINIMUM`
   set so the project configures under CMake 4.
 - Device limits and required features are logged and validated at startup.
+- CI Windows job builds with Ninja + MSVC (`windows-ci` preset) instead of a hardcoded
+  Visual Studio generator version, so a GitHub runner-image toolchain bump no longer breaks
+  the release build. Release workflow also runs on pushes/PRs to `main`, not only on tags.
+- Fixed a `float`→`int` narrowing conversion in a settings-slider table that MSVC accepted
+  but GCC/Clang reject, which broke the Linux and macOS release builds.
 
 ### Fixed
 - Satellite/star terrain occlusion at render scale < 100% (low-res sky prepass writes no

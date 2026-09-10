@@ -28,6 +28,23 @@ Shaders: auto-detected glob (`shaders/*.vert|.frag|.comp`), compiled by `glslc`,
 `CMakePresets.json` holds every per-platform configuration (`windows` / `linux` / `macos`, plus
 `*-release` variants and `macos-universal-release`). **It is committed and must stay free of
 absolute paths** — machine-specific values go in `CMakeUserPresets.json`, which is gitignored.
+
+**Windows has two release preset pairs.** `windows-release` / `windows-package` use the
+`Visual Studio 17 2022` generator — this is the local-dev / `release.bat` path. **CI uses
+`windows-ci` / `windows-ci-package` instead: Ninja + whatever MSVC toolset the runner ships**,
+set up by `ilammy/msvc-dev-cmd`. The hardcoded VS-version generator name broke the v1.1.1 tag
+build outright ("could not find any instance of Visual Studio") the day GitHub started migrating
+the `windows-2025` image from VS2022 to VS2026; Ninja + a dev environment is version-agnostic and
+matches how the Linux/macOS jobs already build. Keep both pairs — don't delete the VS one, IDE
+users depend on it. `build-win-ci/` is the Ninja binary dir (gitignored).
+
+`.github/workflows/release.yml` also runs on pushes to `main` and PRs targeting `main` (not just
+`v*.*.*` tags) — build + package all three platforms, so a compiler-portability break (MSVC
+accepts narrowing conversions in braced initializers that GCC/Clang reject — this is what the
+v1.1.1 Linux/macOS jobs died on) or a CI-environment break surfaces in the PR, not at tag time.
+The `publish` job stays tag-gated. `CMakeLists.txt` also promotes MSVC's C4838 (narrowing in an
+initializer list) to an error via `sat_strict_warnings()` so that specific class fails a local
+Windows build too.
 `.vscode/settings.json` and `launch.json` are committed too and are under the same rule; a
 hardcoded `cmake.cmakePath` and `VULKAN_SDK` under a developer's home directory shipped there once
 (2026-09, macOS-potato branch) and reached the public repo's history.

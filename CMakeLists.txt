@@ -147,6 +147,19 @@ add_executable(SatLightSim ${SOURCES})
 set_target_properties(SatLightSim PROPERTIES OUTPUT_NAME "${EXE_BASENAME}")
 target_include_directories(SatLightSim PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
+# MSVC accepts a narrowing conversion in a braced initializer (e.g. a float literal where the
+# aggregate member is an int) with only a warning, while GCC/Clang reject it outright — so this
+# class of typo passes a local Windows build and only fails in Linux/macOS CI. C4838 is exactly
+# that diagnostic; promote it to an error so `cmake --build` catches it on Windows too. Scoped to
+# our own sources — the FetchContent deps are separate targets and unaffected.
+# SatLightSimFresh compiles the same ${SOURCES}, so it inherits the guarantee transitively.
+function(sat_strict_warnings tgt)
+    if(MSVC)
+        target_compile_options(${tgt} PRIVATE /we4838)
+    endif()
+endfunction()
+sat_strict_warnings(SatLightSim)
+
 # UC6 (RELEASE_v1_1_PLAN.md): screenshot PNG encoding runs on a std::thread. A no-op on MSVC
 # (thread support is built into the runtime there), but GCC/Clang on Linux/macOS need an explicit
 # pthread link or std::thread silently fails to link.
@@ -235,6 +248,7 @@ if(SAT_BUILD_FRESH_TARGET)
     # without breaking every time VERSION is bumped.
     set_target_properties(SatLightSimFresh PROPERTIES OUTPUT_NAME "SatLightSim_FRESH")
     target_compile_definitions(SatLightSimFresh PRIVATE SAT_FRESH_SETTINGS)
+    sat_strict_warnings(SatLightSimFresh)
     target_include_directories(SatLightSimFresh PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_link_libraries(SatLightSimFresh PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json Threads::Threads)
     if(APPLE)

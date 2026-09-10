@@ -1,12 +1,32 @@
 name: Release
 
-# Fires on any tag matching v1.2.3 — create one with:
-#   git tag v1.0.0 && git push origin v1.0.0
-# Can also be triggered manually from the Actions tab.
+# Fires on:
+#   * any tag matching v1.2.3   — builds all three platforms AND publishes a GitHub Release
+#     (git tag v1.0.0 && git push origin v1.0.0)
+#   * a push to main / a PR targeting main — builds + packages all three platforms so a
+#     compiler-portability break (MSVC accepts things GCC/Clang reject, and vice versa) or a
+#     CI-environment break (runner image bumps, SDK changes) is caught in the PR, not at the
+#     moment a release tag is pushed. The `publish` job is tag-only, so these runs never cut
+#     a release — they just prove the build.
+#   * manual dispatch from the Actions tab.
+#
+# On pull requests, docs-only changes are skipped (paths-ignore) so a README tweak doesn't
+# spend three runners. paths-ignore is deliberately NOT set on `push`: GitHub does not
+# evaluate path filters for tag pushes, and a release tag must always build regardless of
+# what the tagged commit touched.
 on:
   push:
     tags: ["v*.*.*"]
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths-ignore: ["**/*.md", ".plans/**", "docs/**", ".logs/**"]
   workflow_dispatch:
+
+# One in-flight run per ref; a new push to the same PR/branch cancels the previous run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # All three jobs build with the presets in CMakePresets.json and package with the
 # `package-release` CMake target (cmake/PackageRelease.cmake). The staging file list lives
@@ -14,10 +34,26 @@ on:
 
 jobs:
   # ── Windows ────────────────────────────────────────────────────────────────
+  # Pinned to windows-2025 (not windows-latest) for the same reason build-macos pins
+  # macos-14: a runner-image bump must not silently swap the toolchain under a release.
+  #
+  # This job builds with Ninja + MSVC, NOT the "Visual Studio 17 2022" generator the
+  # windows-release preset (used by release.bat / local dev) hardcodes. On 2026-09-09 the
+  # v1.1.1 tag build died at configure with "could not find any instance of Visual Studio":
+  # GitHub had begun migrating the windows-2025 image from VS2022 to VS2026, so the hardcoded
+  # generator name no longer matched. Ninja + an MSVC dev environment (ilammy/msvc-dev-cmd)
+  # is version-agnostic — it picks up whatever MSVC toolset the image ships — and matches how
+  # the Linux/macOS jobs already build. The windows-ci / windows-ci-package presets are the
+  # Ninja pair; windows-release / windows-package stay VS-generator for local Windows dev.
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Read version
         id: ver
@@ -41,13 +77,13 @@ jobs:
           cache: true
 
       - name: Configure
-        run: cmake --preset windows-release
+        run: cmake --preset windows-ci
 
       - name: Build
-        run: cmake --build --preset windows-release --parallel
+        run: cmake --build --preset windows-ci --parallel
 
       - name: Package
-        run: cmake --build --preset windows-package
+        run: cmake --build --preset windows-ci-package
 
       - uses: actions/upload-artifact@v4
         with:
