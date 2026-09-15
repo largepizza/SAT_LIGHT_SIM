@@ -142,6 +142,9 @@ bool dbgSkipTerrain()    { return (cloud.dbgDisableMask & 1u) != 0u; }
 bool dbgSkipAtmosphere() { return (cloud.dbgDisableMask & 2u) != 0u; }
 bool dbgSkipSunOD()      { return (cloud.dbgDisableMask & 4u) != 0u; }
 bool dbgSkipOceanRefl()  { return (cloud.dbgDisableMask & 8u) != 0u; }
+#ifndef SKY_LITE
+bool dbgSkipTerrainErosion() { return (cloud.dbgDisableMask & 1048576u) != 0u; }
+#endif
 
 // Half-resolution cloud march output (written by cloud_march.comp, see the "velvet-rolling-
 // squirrel" plan / TERRAIN_PLAN.md session 23 log). Replaces the old inline cirrusMarch()/
@@ -406,6 +409,125 @@ float warpPerlin3(vec3 p) {
     return mix(mix(mix(v000, v100, u.x), mix(v010, v110, u.x), u.y),
                mix(mix(v001, v101, u.x), mix(v011, v111, u.x), u.y), u.z);
 }
+
+// ── Slope-scaled procedural erosion detail for the terrain raymarch ─────────────────────────────
+// SKY_LITE (Planetarium-tier): cut entirely, same rationale as the other per-pixel enhancements
+// stripped in this build — see CLAUDE.md's "Weak-Hardware Sky Tiers". Left uncompiled rather than
+// just unused, since SKY_LITE's whole point is reducing this shader's compiled SPIR-V size/register
+// pressure.
+#ifndef SKY_LITE
+// Adapted from clayjohn's 2018 "Eroded Terrain Noise" / Fewes' 2023 refinement
+// (https://www.shadertoy.com/view/7ljcRW), whose base directional cell noise is guil's
+// "Gavoronoise" (https://www.shadertoy.com/view/llsGWl). The original bakes this into a texture
+// because its own heightfield IS the noise, marched every step. We already have a real DEM that's
+// cheap to march, so this runs live instead: the coarse march stays smooth-DEM-only (untouched, so
+// scene_depth.comp's independent occlusion march is unaffected), and this noise only touches the
+// existing 12-step binary-search refinement and the post-hit shading normal — once per terrain-hit
+// pixel, not once per coarse step.
+//
+// Domain is the intrinsic hit-point geography (hitUV-derived world metres via terrainErosionDomain
+// below), NOT the observer-relative march frame (`p` in `p = obsPos + t*dir`) — the latter rotates
+// with the observer's own ENU basis every frame, which would make the noise pattern at a fixed
+// real-world point slowly drift as the observer moves. That's the same "swimming" failure class
+// this codebase already hit and fixed once for the old grid-based cloud shadow
+// (computeCloudShadowSnap()).
+//
+// Hash uses the same "hash without sine" construction as seaHash() above, not a fresh sin()-based
+// hash: this domain is real-world metres and can be large, and seaHash's own comment documents
+// fixing exactly this precision collapse (past ~1e4 in a sin(dot(...)) hash) once already for ocean
+// waves.
+vec2 terrainErosionHash2(vec2 p) {
+    vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973) * 0.1);
+    q += dot(q, q.yzx + 33.33);
+    return fract(vec2((q.x + q.y) * q.z, (q.y + q.z) * q.x));
+}
+
+// Maps a hit-point position (ECEF-ish, any consistent frame posToUV accepts) to a world-fixed 2D
+// metric coordinate (~East, ~North metres from the lon/lat grid), so the same real-world point
+// always gets the same noise value regardless of observer position/orientation. abs(cos(lat)) is
+// floor-clamped rather than letting it hit 0 at the poles, same pole-safety intent as the existing
+// gradient block's texLon clamp, just expressed against the cosine directly since this is a
+// per-whole-UV-unit (not per-texel) scale.
+vec2 terrainErosionDomain(vec3 pLike) {
+    // BUG FIX (2026-09-13, ninth pass): uv.y increases SOUTHWARD (posToUV's own convention), so the
+    // naive `uv.y * metersPerUnitLat` below is a south-positive coordinate — but the slope gradient
+    // this domain is dotted against (dN2 in main(), and slopeDirC built from it) is north-positive.
+    // The flow-direction vector was therefore being evaluated against a domain whose Y axis pointed
+    // the opposite way, a uniform north/south mismatch across the whole globe that systematically
+    // misaligned every stripe's orientation from the real slope direction — the likely dominant cause
+    // of the reported "erosion stretched in one consistent direction" (separate from, and in addition
+    // to, the float-precision fix above/below). Negating makes this axis north-positive, consistent
+    // with dN2/hNrE everywhere this domain's output is used.
+    vec2 uv = posToUV(pLike);
+    float lat = PI * 0.5 - uv.y * PI;
+    float metersPerUnitLon = 2.0 * PI * R_EARTH * max(abs(cos(lat)), 0.02);
+    float metersPerUnitLat = PI * R_EARTH;
+    return vec2(uv.x * metersPerUnitLon, -uv.y * metersPerUnitLat);
+}
+
+// One octave of directional cellular "flow" noise: a 4x4 neighborhood of jittered points, each
+// contributing a Gaussian-weighted cosine stripe oriented along `dir` (kept unit-length by callers
+// — using the real, unnormalized slope magnitude here would drive the stripe frequency itself
+// higher on steep terrain instead of just gating amplitude, which is not what "slope-scaled
+// amplitude" should mean). Returns (value, dValue/dx, dValue/dy) — the derivative comes
+// analytically from the paired cos/sin, no finite differencing needed.
+vec3 terrainErosionCell(vec2 p, vec2 dir) {
+    // BUG FIX (2026-09-12, sixth pass): terrainErosionDomain() returns an ABSOLUTE metres coordinate
+    // (distance from the antimeridian / from the pole) that can reach ~4e7 for longitude and ~2e7
+    // for latitude — and longitude's raw magnitude runs roughly 2x latitude's almost everywhere on
+    // the globe (a full longitude sweep is 2*PI*R*cos(lat), a full latitude sweep only PI*R). Float32
+    // ULP at those magnitudes is a real fraction of one noise cell, and it's worse on X than Y for
+    // exactly that reason — this was the actual cause of the reported "erosion stretched east/west":
+    // not a scale bug, a precision one, and it got worse the smaller the tuned feature size (larger
+    // terrainErosionFreq multiplies the already-large value further). Wrapping with an exact integer
+    // period before floor/fract keeps the value small regardless of where on Earth or how the
+    // frequency/octave is tuned; the noise repeats every 4096 cells (hundreds of km at any sane
+    // feature size), far beyond anything visible in one view.
+    p = mod(p, 4096.0);
+    vec2 ip = floor(p);
+    vec2 fp = fract(p);
+    const float f = 6.283185307; // 2*PI
+    vec3 va = vec3(0.0);
+    float wt = 0.0;
+    for (int i = -2; i <= 1; i++) {
+        for (int j = -2; j <= 1; j++) {
+            vec2 o = vec2(float(i), float(j));
+            vec2 h = terrainErosionHash2(ip - o) * 0.5;
+            vec2 pp = fp + o - h;
+            float d = dot(pp, pp);
+            float w = exp(-d * 2.0);
+            wt += w;
+            float mag = dot(pp, dir);
+            va += vec3(cos(mag * f), -sin(mag * f) * dir) * w;
+        }
+    }
+    return va / max(wt, 1e-4);
+}
+
+// Two-octave branching FBM: each octave's own derivative feeds back into the next octave's flow
+// direction (unnormalized sum, matching the source technique), producing the branching gully look.
+// Octave count is a compile-time constant on purpose, not a cloud.* UBO field — see cloud_march.comp
+// / sat_sky.frag's optDepth history (CLAUDE.md): turning a fixed loop trip count into a runtime
+// parameter has measurably defeated loop unrolling in this codebase before.
+vec3 terrainErosionDetail(vec2 p, vec2 slopeDir) {
+    const int kErosionOctaves = 2;
+    const float kErosionGain = 0.5;
+    const float kErosionLacunarity = 2.0;
+    vec3 h = vec3(0.0);
+    float a = 0.5;
+    float freq = 1.0;
+    vec2 dir = slopeDir;
+    for (int i = 0; i < kErosionOctaves; i++) {
+        vec3 e = terrainErosionCell(p * freq, dir);
+        h += e * a * vec3(1.0, freq, freq);
+        dir = slopeDir + e.zy * vec2(1.0, -1.0) * cloud.terrainErosionBranchStrength;
+        a *= kErosionGain;
+        freq *= kErosionLacunarity;
+    }
+    return h;
+}
+
+#endif // !SKY_LITE
 
 // Airglow coverage patchiness (cloud.airglowCoverageGain) for the green/sodium bands — a
 // lower-frequency companion to kAirglowNoiseFreq's mild +-40% shimmer above, remapped through a
@@ -1387,16 +1509,80 @@ void main() {
     vec2 tBase  = raySphere(obsPos, dir, R_EARTH);
     vec2 tShell = raySphere(obsPos, dir, R_EARTH + kMaxTerrain);
 
+    // tExit's own dedicated blend weight for the tBase.x<->tShell.y transition (2026-09-12 second
+    // fix pass). Deliberately NOT hClip: hClip's ~2.9deg window (smoothstep(limbZ-0.02,limbZ+0.03,
+    // dir.z)) is tuned for smoothing atmospheric/moon glow right at the horizon, a much narrower
+    // job — reusing it here was mathematically continuous but still visually banded in-app, since
+    // tBase.x/tShell.y can differ by hundreds of km across that narrow a window. This uses a much
+    // wider, independently-tunable half-width (cloud.terrainHorizonBlendWidth) instead.
+    float tExitBlend = smoothstep(limbZ - cloud.terrainHorizonBlendWidth,
+                                   limbZ + cloud.terrainHorizonBlendWidth, dir.z);
+
+    // ── Debug view: terrain tExit basis (knockout bit 4194304) ──────────────────────────────────
+    // Hypothesis test for the reported observer-horizon-locked bands: tExit below switches basis
+    // between tBase.x (sea-level sphere entry) and tShell.y (terrain-shell exit) depending on
+    // whether the ray hits the sea-level sphere at all — a switch that happens exactly at the
+    // ray's tangency angle to R_EARTH, i.e. the true geometric horizon, which is a fixed elevation
+    // angle relative to the OBSERVER (not tied to any real terrain content). tBase.x blows up
+    // approaching that tangent angle from below and goes negative just past it, so tExit can swing
+    // from a huge value to a very different tShell.y value in a near-discontinuous way right at
+    // the horizon — exactly "bands fixed at the observer's horizon level, drawn on top of terrain
+    // regardless of actual distance." The shell sphere (R_EARTH+kMaxTerrain) has a slightly
+    // different tangent angle than the sea-level sphere at the same observer position, so this
+    // predicts TWO close but distinct band angles, not one — matching what was reported.
+    // Green = tBase.x branch (sea-level hit), Red = tShell.y branch (fallback), brightness =
+    // magnitude normalized against the same tCap used below. A hard green/red seam exactly where
+    // the reported bands sit would confirm this mechanism.
+    if ((cloud.dbgDisableMask & 4194304u) != 0u) {
+        // Updated 2026-09-12 (second fix pass) to use tExitBlend (dedicated, wide, tunable) rather
+        // than hClip (narrow, wrong-purpose) — color encodes blend weight (green=tBase-dominant,
+        // red=tShell-dominant), continuous through tExitBlend. A real fix should show a gentle
+        // gradient spanning cloud.terrainHorizonBlendWidth here, not a seam narrower than a couple
+        // of screen rows.
+        float tExitDbgVal  = mix(max(tBase.x, 0.0), max(tShell.y, 0.0), tExitBlend);
+        float tCapDbg      = mix(250000.0, 3600000.0, clamp(obsEffH / 400000.0, 0.0, 1.0));
+        float tExitDbgNorm = clamp(tExitDbgVal / tCapDbg, 0.0, 1.0);
+        outColor = vec4(mix(vec3(0.0, tExitDbgNorm, 0.0), vec3(tExitDbgNorm, 0.0, 0.0), tExitBlend), 1.0);
+        return;
+    }
+
     // March for rays that could plausibly intersect terrain (up to ~44° above horizon).
     // Beyond that angle no terrain on Earth is geometrically reachable from any altitude.
     float tHit      = -1.0;
     float tSeaLvl   = (tBase.x > 0.0) ? tBase.x : -1.0;
     vec2  hitUV     = vec2(0.0);
     vec3  terrainNorm = vec3(0.0, 0.0, 1.0); // overwritten on terrain hit
+    // Debug-view instrumentation (knockout bit 2097152, "Terrain step count view"): which coarse
+    // march iteration registered the hit, -1 if none. Declared at this scope (not inside the
+    // march's own if-block below) so it survives to the visualization override after tSurface.
+    int   terrainStepsUsed = -1;
+    // Debug-view instrumentation (knockout bit 8388608, "Terrain step budget (kN) view"): the
+    // actual per-pixel step BUDGET (kN), independent of whether/where a hit was found — tests
+    // whether the schedule itself (clamp()/int() truncation as tExit crosses regimes) has a
+    // discontinuity, as opposed to terrainStepsUsed above which only reports where a hit landed.
+    // -1 means the march didn't even run for this pixel (gate failed).
+    int   terrainKNUsed = -1;
 
     if (!dbgSkipTerrain() && dir.z < 0.7 && tShell.y > 0.0) {
-        float tExit = (tBase.x > 0.0) ? tBase.x
-                    : (tShell.y > 0.0  ? tShell.y : 0.0);
+        // FIX (2026-09-12): tExit used to hard-switch between tBase.x and tShell.y at exactly
+        // dir.z==limbZ (the ray's tangent angle to the sea-level sphere). Confirmed via the
+        // "Terrain tExit basis view" debug toggle: this is a genuine discontinuity, not merely a
+        // downstream-fadeable artifact — retuning terrainDistFadeStartM/EndM (which only scale
+        // kN, itself downstream of tExit) reshaped the resulting step-budget pattern but could not
+        // move or remove the seam itself, confirming the jump lives in tExit's own definition.
+        // Neither tBase.x nor tShell.y individually diverges near tangency (a ray-sphere near-root
+        // is finite everywhere, maximized exactly at the tangent point) — the discontinuity is
+        // purely from switching to an unrelated formula (tShell.y, a different sphere) the instant
+        // tBase.x's sign flips, with no reason for the two to agree at the crossover. Fixed by
+        // blending smoothly across the transition. Second fix pass (2026-09-12): the first attempt
+        // reused hClip (already computed above from the same limbZ that defines tBase.x's zero-
+        // crossing) for this blend, but hClip's ~2.9deg window is tuned for a different, much
+        // narrower job (atmospheric/moon glow at the horizon) — tBase.x/tShell.y can differ by
+        // hundreds of km across that window, so the blend was mathematically continuous but still
+        // visually banded once fed through the linear kN formula below (confirmed in-app). Using
+        // the dedicated, independently wide/tunable tExitBlend weight instead — see its own
+        // comment near limbZ above.
+        float tExit = mix(max(tBase.x, 0.0), max(tShell.y, 0.0), tExitBlend);
         // Cap scales with observer altitude so terrain is visible from LEO.
         // At ground the old 250 km limit is preserved (horizon is close anyway).
         // At LEO (400 km) it extends to 900 km, covering ~65° off-nadir views.
@@ -1419,10 +1605,14 @@ void main() {
         // ~2.8km" comment this replaced). Min/max (64/164) are the user-validated range from the
         // preliminary altitude-only test — jittery-but-passable at 64, fine at 164 — kept as-is,
         // only the scaling variable changed from obsEffH to tExit.
-        const float kTerrainStepTargetM = 2800.0;
-        const int   kTerrainStepsMin = 64;
-        const int   kTerrainStepsMax = 164;
-        int kNFull = clamp(int(2.0 * (tExit - 2.0) / kTerrainStepTargetM), kTerrainStepsMin, kTerrainStepsMax);
+        // 2026-09-12: kTerrainStepTargetM/kTerrainStepsMin/Max moved into the CloudParams UBO
+        // (cloud.terrainStep*) as live debug/tuning sliders — see GpuCloudParams::terrainStep* —
+        // while diagnosing reported terrain banding/choppiness at grazing/horizon range. This loop's
+        // trip count was already runtime-derived (clamp() of a value computed from tExit, not a
+        // compile-time-unrolled constant), so there is no loop-unrolling regression risk moving its
+        // inputs into the UBO too, unlike the erosion octave count above.
+        int kNFull = clamp(int(cloud.terrainStepPow * (tExit - 2.0) / cloud.terrainStepTargetM),
+                            int(cloud.terrainStepsMin), int(cloud.terrainStepsMax));
 
         // S4 (RELEASE_v1_1_PLAN.md, session 31): tCap above grows the march REACH with altitude
         // faster than kNFull's budget grows, so kNFull pins at its 164 ceiling on essentially
@@ -1436,6 +1626,7 @@ void main() {
         // terrain debug knockout already produces, not a pop to nothing.
         float terrainReachFade = 1.0 - smoothstep(cloud.terrainDistFadeStartM, cloud.terrainDistFadeEndM, tExit);
         int kN = int(float(kNFull) * terrainReachFade);
+        terrainKNUsed = kN;
 
         float jitter  = textureLod(noiseTex, gl_FragCoord.xy * (1.0/128.0), 0.0).r;
         float tPrev   = 2.0;
@@ -1443,7 +1634,7 @@ void main() {
         for (int i = 0; i < kN; ++i) {
             if (tHit >= 0.0) break;
             float frac = (float(i) + jitter) / float(kN);
-            float t    = 2.0 + (tExit - 2.0) * frac * frac;
+            float t    = 2.0 + (tExit - 2.0) * pow(frac, cloud.terrainStepPow);
             if (t > tExit) break;
             vec3  p = obsPos + t * dir;
             float rayH = length(p) - R_EARTH;
@@ -1454,6 +1645,25 @@ void main() {
 
             if (rayH < terrainH) {
                 float tLo = tPrev, tHi = t;
+                // FIX (2026-09-12, third pass): this bisection is smooth-DEM-only. An earlier
+                // version injected the erosion noise into `mT` here so the search would converge on
+                // the noisy surface directly — but bisection is only valid for a MONOTONIC function
+                // in the bracket, and cellular/Voronoi noise has many local bumps and dips even
+                // within one bracket. Confirmed via the "Terrain distance zebra view": erosion OFF
+                // was described as "incredibly smooth" at these exact march settings, erosion ON
+                // showed severe blocky/discontinuous fracturing — proof the base march is precise
+                // and the instability was specifically the noise breaking the bisection's
+                // correctness assumption, not general raymarch imprecision. A later session
+                // (2026-09-13) tried replacing this with a genuine root-find against the real noisy
+                // surface (a fine linear scan + local bisection), which DID make the geometry
+                // genuinely 3D — but the local-refinement search fundamentally can't resolve erosion
+                // large enough to change which surface the ray hits (a canyon punching through a
+                // ridge needs a wide, dedicated march, not a local nudge), and every attempt to widen
+                // the search to compensate reintroduced instability (unrelated-crossing pickup,
+                // banding, perf regressions). Reverted back to this known-stable approach by explicit
+                // decision — erosion's real displacement is applied ONCE, after this converges, as a
+                // closed-form correction, below. Revisiting genuine large-amplitude displacement
+                // would need a real dedicated wide march, not a patch on this bisection.
                 for (int j = 0; j < 12; ++j) {
                     float tM  = (tLo + tHi) * 0.5;
                     vec3  pm  = obsPos + tM * dir;
@@ -1463,6 +1673,7 @@ void main() {
                     if (mH < mT) tHi = tM; else tLo = tM;
                 }
                 tHit = (tLo + tHi) * 0.5;
+                terrainStepsUsed = i;
                 vec3  ph  = obsPos + tHit * dir;
                 vec3  phE = ph.x * enuX + ph.y * enuY + ph.z * enuZ;
                 float phL = length(phE);
@@ -1487,6 +1698,76 @@ void main() {
                     vec3 hEsE     = normalize(vec3(-hUpE.y, hUpE.x, 0.0)); // East in ECEF
                     vec3 hNrE     = cross(hUpE, hEsE);                      // North in ECEF
                     vec3 nECEF    = normalize(-dE2 * hEsE + -dN2 * hNrE + hUpE);
+#ifndef SKY_LITE
+                    if (!dbgSkipTerrainErosion() && cloud.terrainErosionStrength > 0.0) {
+                        // Erosion is evaluated ONCE here, at the stable smooth hit point, and
+                        // applied as a single closed-form correction — not fed back into any
+                        // search. hitUV/phE above stay tied to the smooth crossing (so every
+                        // texture lookup, including city detail, keeps sampling the un-displaced
+                        // location — the earlier city-texture jumping was hitUV moving with the
+                        // erosion bump; it no longer can).
+                        float slopeMagF    = length(vec2(dE2, dN2));
+                        float slopeFactorF = smoothstep(cloud.terrainErosionSlopeLo, cloud.terrainErosionSlopeHi, slopeMagF);
+                        float fadeFactorF  = 1.0 - smoothstep(cloud.terrainErosionFadeStartM, cloud.terrainErosionFadeEndM, tHit);
+                        vec2  slopeDirF    = normalize(vec2(-dN2, dE2) + 1e-6);
+                        vec3  erosionF     = terrainErosionDetail(terrainErosionDomain(phE) * cloud.terrainErosionFreq, slopeDirF);
+                        float bumpAmp      = cloud.terrainErosionAmplitudeM * cloud.terrainErosionStrength * slopeFactorF * fadeFactorF;
+
+                        // Real depth displacement: a single linearized ("one Newton step")
+                        // correction, exact to first order for an offset small relative to
+                        // planetary curvature (true here — tens to hundreds of metres vs R_EARTH).
+                        // rayH(t) = length(obsPos+t*dir) - R_EARTH has d(rayH)/dt = dot(dir,hUpE)
+                        // (hUpE is the local radial unit vector at the hit point), so solving
+                        // rayH(tHit)+(tHitNew-tHit)*dot(dir,hUpE) = smoothHeight+erosionOffset,
+                        // and using rayH(tHit)==smoothHeight exactly (that's what the bisection
+                        // above just solved for), gives tHitNew = tHit + erosionOffset/dot(dir,
+                        // hUpE). No iteration, so nothing for the noise's non-monotonicity to
+                        // destabilize — unlike feeding erosion into the bisection itself (reverted;
+                        // see the fix note above the bisection loop).
+                        // BUG FIX (2026-09-12, fourth pass): the correction is only valid where
+                        // dot(dir,hUpE) is well away from 0 (the ray tangent to the local surface —
+                        // e.g. looking straight along a ridge line). A prior version clamped the
+                        // DENOMINATOR's magnitude but kept its sign-dependent branch
+                        // ((rayUpDot>=0.0) ? +floor : -floor), which flips sign discontinuously
+                        // exactly at the crossing — visible as a hard seam where the displacement
+                        // reverses direction, with a ~20x amplification right next to it from
+                        // dividing by the clamped-small denominator (the "shiny"/distorted band
+                        // reported). Fading the DISPLACEMENT itself to 0 as the ray approaches
+                        // tangency — rather than letting it blow up and clamping after — removes
+                        // the discontinuity instead of relocating it: both signs approach the same
+                        // limit (0) as rayUpDot -> 0, so there is nothing left to jump between.
+                        // NOTE (2026-09-13): dot(dir,hUpE) mixes `dir` (observer-local ENU-component
+                        // frame) with hUpE (true ECEF, converted via enuX/enuY/enuZ) — a real frame
+                        // mismatch found while investigating a later, since-reverted redesign. Left
+                        // as-is here since this whole block is a revert back to the known-working
+                        // state; worth a dedicated fix (use dot(dir, phE_local_up) instead, no ECEF
+                        // conversion needed) in a future pass, not bundled into this revert.
+                        float rayUpDot   = dot(dir, hUpE);
+                        float grazeFade  = smoothstep(0.0, 0.15, abs(rayUpDot));
+                        float rayUpSafe  = (rayUpDot >= 0.0) ? max(rayUpDot, 0.02) : min(rayUpDot, -0.02);
+                        float dtHit      = grazeFade * (erosionF.x * bumpAmp) / rayUpSafe;
+                        // BUG FIX (2026-09-12, fifth pass): grazeFade removes the hard discontinuity
+                        // at rayUpDot==0, but 1/rayUpSafe still has a real amplification HUMP inside
+                        // the fade transition itself — for this smoothstep shape it peaks around
+                        // x=0.75*(fade width), at roughly 1.12x the eventual settled (fade==1)
+                        // amplification, not just at the fade's edge. With erosion amplitude/strength
+                        // tuned well past the defaults, even that leftover ~12% is a large absolute
+                        // displacement — the residual "still very shiny next to the seam" report.
+                        // Stop relying on the fade curve's exact shape to bound this: cap the
+                        // applied displacement outright to a small multiple of the "intended"
+                        // perpendicular-view magnitude, so grazing angles can never look more
+                        // extreme than a head-on view regardless of curve shape or slider tuning.
+                        float maxDtHit   = 3.0 * abs(bumpAmp);
+                        tHit += clamp(dtHit, -maxDtHit, maxDtHit);
+
+                        // Shading normal: same erosion sample's analytic derivative. erosionF.yz is
+                        // d(value)/d(scaled domain); the chain rule needs an extra terrainErosionFreq
+                        // factor to turn it into d(bumpHeight)/d(real metres), directly comparable
+                        // to dE2/dN2 above.
+                        vec2  erosionSlope = erosionF.yz * (cloud.terrainErosionFreq * bumpAmp);
+                        nECEF = normalize(nECEF - erosionSlope.x * hEsE - erosionSlope.y * hNrE);
+                    }
+#endif
                     terrainNorm   = normalize(vec3(dot(nECEF, enuX), dot(nECEF, enuY), dot(nECEF, enuZ)));
                 }
             }
@@ -1496,6 +1777,83 @@ void main() {
 
     // Effective surface distance: terrain if found, else sea level
     float tSurface = (tHit > 0.0) ? tHit : tSeaLvl;
+
+    // ── Debug view: terrain step count (knockout bit 2097152) ──────────────────────────────────
+    // Replaces terrain-hit pixels with a heatmap of which coarse march iteration registered the
+    // hit (blue=early/near-camera, green=mid, red=late/near the step cap); non-hit pixels (sky,
+    // sea-level fallback) render black. Built to diagnose reported terrain banding/ring artifacts
+    // empirically: a band or ring that lines up with a sharp color transition here is a step-index
+    // artifact tied to the march's own schedule; one that doesn't line up is something else (real
+    // relief, DEM quantization, etc). Early-return like the CLOUD_DEBUG overlays above — costs
+    // nothing when off, and shows the raw march result with no atmosphere/cloud/satellite
+    // compositing on top to obscure it when on.
+    if ((cloud.dbgDisableMask & 2097152u) != 0u) {
+        vec3 stepColor = vec3(0.0);
+        if (terrainStepsUsed >= 0) {
+            float stepFrac = clamp(float(terrainStepsUsed) / max(cloud.terrainStepsMax, 1.0), 0.0, 1.0);
+            stepColor = (stepFrac < 0.5)
+                ? mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), stepFrac * 2.0)
+                : mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), (stepFrac - 0.5) * 2.0);
+        }
+        outColor = vec4(stepColor, 1.0);
+        return;
+    }
+
+    // ── Debug view: terrain step budget kN (knockout bit 8388608) ───────────────────────────────
+    // Distinct from the step-count view above: this shows the per-pixel step BUDGET itself
+    // (independent of whether/where a hit landed), to test whether the schedule's clamp()/int()
+    // truncation as tExit crosses from the tBase.x regime into the tShell.y regime (see the tExit
+    // basis view above) produces its own discontinuity — a second, separate source of an
+    // observer-locked band from the one already confirmed. Same color scale as the step-count
+    // view (blue=low budget, green=mid, red=near terrainStepsMax); black = march didn't run at all
+    // for this pixel (gate failed, e.g. dir.z >= 0.7).
+    if ((cloud.dbgDisableMask & 8388608u) != 0u) {
+        vec3 knColor = vec3(0.0);
+        if (terrainKNUsed >= 0) {
+            float knFrac = clamp(float(terrainKNUsed) / max(cloud.terrainStepsMax, 1.0), 0.0, 1.0);
+            knColor = (knFrac < 0.5)
+                ? mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), knFrac * 2.0)
+                : mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), (knFrac - 0.5) * 2.0);
+        }
+        outColor = vec4(knColor, 1.0);
+        return;
+    }
+
+    // ── Debug view: terrain elevation zebra (knockout bit 16777216) ─────────────────────────────
+    // Contour/zebra stripes at a fixed real-world ELEVATION interval (cloud.terrainDebugElevZebraM,
+    // "Elevation zebra spacing (m)" slider) — alternating light/dark bands wherever the resolved
+    // terrain height crosses a multiple of the spacing. Unlike the 0-1-normalized heatmaps above,
+    // a fixed-interval zebra is sensitive to SMALL jitter: real terrain produces smooth, unbroken
+    // stripes that track contour lines; any instability in how the raymarch/erosion resolves
+    // height shows up as broken, jagged, or misaligned stripes, independent of any texture. Only
+    // meaningful on an actual terrain hit (black elsewhere — sea-level/no-hit has no elevation).
+    if ((cloud.dbgDisableMask & 16777216u) != 0u) {
+        vec3 elevZebraColor = vec3(0.0);
+        if (tHit >= 0.0) {
+            vec3  phElev = obsPos + tHit * dir;
+            float hAtHit = length(phElev) - R_EARTH;
+            float stripe = mod(floor(hAtHit / max(cloud.terrainDebugElevZebraM, 0.01)), 2.0);
+            elevZebraColor = mix(vec3(0.05), vec3(0.95), stripe);
+        }
+        outColor = vec4(elevZebraColor, 1.0);
+        return;
+    }
+
+    // ── Debug view: terrain distance zebra (knockout bit 33554432) ──────────────────────────────
+    // Same idea as the elevation zebra above, but by CAMERA DISTANCE (tSurface, cloud.
+    // terrainDebugDistZebraM spacing) instead of elevation — reveals raymarch/tHit convergence
+    // jitter as seen from the observer, independent of terrain content. Applies to sea-level
+    // fallback too (tSurface covers both), so the whole visible ground plane gets stripes; only
+    // pure sky (no surface at all) renders black.
+    if ((cloud.dbgDisableMask & 33554432u) != 0u) {
+        vec3 distZebraColor = vec3(0.0);
+        if (tSurface > 0.0) {
+            float stripe = mod(floor(tSurface / max(cloud.terrainDebugDistZebraM, 0.01)), 2.0);
+            distZebraColor = mix(vec3(0.05), vec3(0.95), stripe);
+        }
+        outColor = vec4(distZebraColor, 1.0);
+        return;
+    }
 
     // ── Half-resolution cloud composite sample (hoisted early) ─────────────────
     // Sampled here — ahead of the moon disc below — so the moon can be occluded by opaque

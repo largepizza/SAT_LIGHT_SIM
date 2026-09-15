@@ -1178,8 +1178,38 @@ struct GpuCloudParams
                                  // (sat_sky.frag). Claimed the alignment pad this block was
                                  // appended with — a real float either way, so the 16-byte
                                  // rounding it exists for is unchanged.
+    // ── Terrain erosion detail (576 -> 608) ──────────────────────────────────────────────────
+    // Mirror of cloud_params.glsl's block of the same name — see there for what each field does.
+    // 8 plain floats, 32 bytes, 576+32=608 already a 16-byte multiple — no pad field needed.
+    float terrainErosionStrength;
+    float terrainErosionAmplitudeM;
+    float terrainErosionFreq;
+    float terrainErosionSlopeLo;
+    float terrainErosionSlopeHi;
+    float terrainErosionBranchStrength;
+    float terrainErosionFadeStartM;
+    float terrainErosionFadeEndM;
+    // ── Terrain coarse-march step distribution (608 -> 624) ──────────────────────────────────
+    // Mirror of cloud_params.glsl's block of the same name — see there for what each field does.
+    // 4 plain floats, 16 bytes, 608+16=624 already a 16-byte multiple — no pad field needed.
+    float terrainStepTargetM;
+    float terrainStepsMin;
+    float terrainStepsMax;
+    float terrainStepPow;
+    // ── Terrain horizon blend width (624 -> 640) ─────────────────────────────────────────────
+    // Mirror of cloud_params.glsl's block of the same name. 1 real field + 3 pad floats.
+    float terrainHorizonBlendWidth;
+    float pad27;
+    float pad28;
+    float pad29;
+    // ── Terrain precision zebra views (640 -> 656) ───────────────────────────────────────────
+    // Mirror of cloud_params.glsl's block of the same name. 2 real fields + 2 pad floats.
+    float terrainDebugElevZebraM;
+    float terrainDebugDistZebraM;
+    float pad30;
+    float pad31;
 };
-static_assert(sizeof(GpuCloudParams) == 576, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 656, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -1749,7 +1779,7 @@ private:
     //
     // kDebugToggleSlots sizes hovDebugToggle[] and the accumulators below; the static_assert in
     // startKnockoutSweep() keeps it honest.
-    static constexpr int kDebugToggleSlots = 18;
+    static constexpr int kDebugToggleSlots = 24;
     static constexpr int kSweepSettleFrames = 6;  // discard after a mask change — covers the
                                                   // one-frame-stale timestamp readback plus a
                                                   // little driver/clock hysteresis
@@ -2390,6 +2420,33 @@ private:
     // Low's start distances in applyGraphicsPreset; see the comment on that table.
     float terrainDistFadeStartM = 50000.0f;
     float terrainDistFadeEndM = 900000.0f;
+    // Slope-scaled procedural erosion detail (see GpuCloudParams::terrainErosion* and sat_sky.frag's
+    // terrain binary-search/normal block). Evaluated live, not baked — see the terrain-erosion
+    // design plan for why. Defaults are starting points for in-app visual tuning, not derived.
+    float terrainErosionStrength = 1.0f;
+    float terrainErosionAmplitudeM = 25.0f;
+    float terrainErosionFeatureSizeM = 220.0f; // user-facing metres/feature; uploaded as 1/this
+    float terrainErosionSlopeLo = 0.05f;
+    float terrainErosionSlopeHi = 0.5f;
+    float terrainErosionBranchStrength = 2.0f;
+    float terrainErosionFadeStartM = 4000.0f;
+    float terrainErosionFadeEndM = 20000.0f;
+    // Terrain coarse-march step distribution — debug exposure of what were sat_sky.frag's
+    // hardcoded kTerrainStepTargetM/kTerrainStepsMin/Max consts (session 29 tuning) plus a new
+    // step-schedule exponent, added to diagnose reported far-field/grazing-angle banding. Defaults
+    // exactly reproduce the prior hardcoded behavior (2800/64/164/quadratic).
+    float terrainStepTargetM = 2800.0f;
+    float terrainStepsMin = 64.0f;
+    float terrainStepsMax = 164.0f;
+    float terrainStepPow = 2.0f;
+    // Dedicated blend half-width (dir.z / sin(elevation) units) for tExit's tBase.x<->tShell.y
+    // transition, decoupled from hClip (which is tuned for a different, much narrower purpose —
+    // see GpuCloudParams::terrainHorizonBlendWidth). Wider = gentler, less visually banded
+    // transition near the horizon.
+    float terrainHorizonBlendWidth = 0.25f;
+    // Zebra-stripe precision debug views (knockout bits, see kDebugToggles) — spacing in metres.
+    float terrainDebugElevZebraM = 25.0f;
+    float terrainDebugDistZebraM = 200.0f;
     // Cloud opacity scale (see GpuCloudParams::cloudOpacityScale) — multiplies the volumetric
     // cloud march's extinction-per-metre constant directly (and, since this same value also
     // scales layer 0's flat-2D-crossfade alphaMax ceiling in recordCompute(), the flat layer used
@@ -2924,10 +2981,14 @@ private:
                                  // + 1 flare-mitigation tilt (idx 17)
     bool hovPhotoPlus[22] = {};
     bool draggingPhoto[22] = {};
-    bool hovCloudMinus[91] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
-                                 // idx 90 the ocean Milky Way reflection gain (2026-09-08)
-    bool hovCloudPlus[91] = {};
-    bool draggingCloud[91] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[106] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
+                                 // idx 90 the ocean Milky Way reflection gain (2026-09-08); idx
+                                 // 91-98 the terrain erosion detail sliders, idx 99-102 the terrain
+                                 // coarse-march step distribution debug sliders, idx 103 the terrain
+                                 // horizon blend width slider, idx 104-105 the terrain precision
+                                 // zebra-view spacing sliders (2026-09-12)
+    bool hovCloudPlus[106] = {};
+    bool draggingCloud[106] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.

@@ -84,6 +84,29 @@ static constexpr DebugToggleEntry kDebugToggles[] = {
     // it actually bought: sweep cost_ms here is the SAVING, reported with the opposite sign to
     // every other row.
     {131072u, "Beam tile cull OFF (A/B)", "beam_tile_cull_disabled"},
+    {1048576u, "Terrain erosion detail", "terrain_erosion_detail"},
+    // Not a feature knockout — a VISUALIZATION toggle. Replaces terrain-hit pixels with a heatmap
+    // of which coarse march iteration found the hit (see sat_sky.frag's "Debug view: terrain step
+    // count" block), to diagnose reported banding/concentric-ring artifacts empirically. Included
+    // in the sweep table for free UI wiring, though its "cost_ms" is not meaningful the way other
+    // rows' are (it changes what's drawn, not how much work is done).
+    {2097152u, "Terrain step count view", "terrain_step_count_view"},
+    // Visualization toggle, not a feature knockout. Tests the hypothesis that reported observer-
+    // horizon-locked bands come from tExit switching basis (tBase.x vs tShell.y) right at the
+    // ray's tangent angle to R_EARTH — see sat_sky.frag's "Debug view: terrain tExit basis" block.
+    {4194304u, "Terrain tExit basis view", "terrain_texit_basis_view"},
+    // Visualization toggle, not a feature knockout. Distinct from the step-count view: shows the
+    // per-pixel step BUDGET (kN) itself, independent of where a hit landed, to test whether the
+    // schedule's clamp()/int() truncation has its own observer-locked discontinuity separate from
+    // the confirmed tExit-basis one — see sat_sky.frag's "Debug view: terrain step budget kN".
+    {8388608u, "Terrain step budget (kN) view", "terrain_kn_budget_view"},
+    // Visualization toggles, not feature knockouts. Zebra/contour stripe views at a fixed
+    // real-world interval (spacing sliders in Settings -> Terrain) — reveal tHit/elevation jitter
+    // as broken or misaligned stripes, independent of any texture. Requested to check whether
+    // reported banding is a raymarch/tHit precision issue on ALL terrain (texture-independent)
+    // rather than something specific to city texture or the erosion detail.
+    {16777216u, "Terrain elevation zebra view", "terrain_elev_zebra_view"},
+    {33554432u, "Terrain distance zebra view", "terrain_dist_zebra_view"},
 };
 static constexpr int kDebugToggleCount = (int)(sizeof(kDebugToggles) / sizeof(kDebugToggles[0]));
 // The matching static_assert against SatelliteSim::kDebugToggleSlots lives inside
@@ -2736,7 +2759,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
     // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
     // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[91][16];
+    static char cloudBufs[106][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -3064,8 +3087,40 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
         {"Cloud shadow range (m)", &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
         // S4 (RELEASE_v1_1_PLAN.md): terrain-relief march distance fade — see cloud_params.glsl.
-        {"Terrain fade start (m)", &terrainDistFadeStartM, 50000.0f, 1000000.0f, 10000.0f, "%.0f", 59},
+        {"Terrain fade start (m)", &terrainDistFadeStartM, 1000.0f, 1000000.0f, 10000.0f, "%.0f", 59},
         {"Terrain fade end (m)", &terrainDistFadeEndM, 100000.0f, 4000000.0f, 25000.0f, "%.0f", 60},
+        // Slope-scaled procedural erosion detail (2026-09-12) — new slots 91-98, see
+        // [[feedback_cloud_slider_arrays]]: hovCloudMinus/Plus/draggingCloud/cloudBufs all resized
+        // 91 -> 99 for these eight. See GpuCloudParams::terrainErosion* / sat_sky.frag.
+        {"Erosion strength", &terrainErosionStrength, 0.0f, 8.0f, 0.05f, "%.2f", 91},
+        {"Erosion amplitude (m)", &terrainErosionAmplitudeM, 0.0f, 1000.0f, 1.0f, "%.0f", 92},
+        {"Erosion feature size (m)", &terrainErosionFeatureSizeM, 30.0f, 2000.0f, 10.0f, "%.0f", 93},
+        {"Erosion slope gate low", &terrainErosionSlopeLo, 0.0f, 1.0f, 0.01f, "%.2f", 94},
+        {"Erosion slope gate high", &terrainErosionSlopeHi, 0.0f, 2.0f, 0.01f, "%.2f", 95},
+        {"Erosion branch strength", &terrainErosionBranchStrength, 0.0f, 5.0f, 0.1f, "%.1f", 96},
+        {"Erosion fade start (m)", &terrainErosionFadeStartM, 500.0f, 50000.0f, 500.0f, "%.0f", 97},
+        {"Erosion fade end (m)", &terrainErosionFadeEndM, 1000.0f, 100000.0f, 500.0f, "%.0f", 98},
+        // Coarse-march step distribution debug sliders (2026-09-12) — new slots 99-102, see
+        // [[feedback_cloud_slider_arrays]]: hovCloudMinus/Plus/draggingCloud/cloudBufs all resized
+        // 99 -> 103 for these four. Exposes what were sat_sky.frag's hardcoded kTerrainStepTargetM/
+        // kTerrainStepsMin/Max plus a new step-schedule exponent, to diagnose reported terrain
+        // banding/choppiness at grazing/horizon range — see GpuCloudParams::terrainStep*.
+        {"Terrain step target (m)", &terrainStepTargetM, 200.0f, 5000.0f, 100.0f, "%.0f", 99},
+        {"Terrain steps (min)", &terrainStepsMin, 16.0f, 256.0f, 8.0f, "%.0f", 100},
+        {"Terrain steps (max)", &terrainStepsMax, 64.0f, 1024.0f, 16.0f, "%.0f", 101},
+        {"Terrain step curve pow", &terrainStepPow, 1.0f, 4.0f, 0.1f, "%.1f", 102},
+        // Terrain horizon blend width (2026-09-12 second fix pass) — new slot 103, see
+        // [[feedback_cloud_slider_arrays]]: hovCloudMinus/Plus/draggingCloud/cloudBufs all resized
+        // 103 -> 104 for this one. Decoupled from hClip (a different, narrower-purpose smoothstep)
+        // after confirming hClip's ~2.9deg window was too narrow to visually smooth tExit's blend
+        // — see GpuCloudParams::terrainHorizonBlendWidth.
+        {"Terrain horizon blend width", &terrainHorizonBlendWidth, 0.02f, 0.6f, 0.01f, "%.2f", 103},
+        // Terrain precision zebra views (2026-09-12) — new slots 104-105, see
+        // [[feedback_cloud_slider_arrays]]: hovCloudMinus/Plus/draggingCloud/cloudBufs all resized
+        // 104 -> 106 for these two. Spacing for the "Terrain elevation zebra" / "Terrain distance
+        // zebra" knockout-table debug views — see GpuCloudParams::terrainDebug*ZebraM.
+        {"Elevation zebra spacing (m)", &terrainDebugElevZebraM, 1.0f, 500.0f, 1.0f, "%.0f", 104},
+        {"Distance zebra spacing (m)", &terrainDebugDistZebraM, 5.0f, 5000.0f, 5.0f, "%.0f", 105},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -4252,6 +4307,21 @@ void SatelliteSim::loadSettings()
         cloudDistFadeEndM = c.value("cloud_dist_fade_end_m", cloudDistFadeEndM);
         terrainDistFadeStartM = c.value("terrain_dist_fade_start_m", terrainDistFadeStartM);
         terrainDistFadeEndM = c.value("terrain_dist_fade_end_m", terrainDistFadeEndM);
+        terrainErosionStrength = c.value("terrain_erosion_strength", terrainErosionStrength);
+        terrainErosionAmplitudeM = c.value("terrain_erosion_amplitude_m", terrainErosionAmplitudeM);
+        terrainErosionFeatureSizeM = c.value("terrain_erosion_feature_size_m", terrainErosionFeatureSizeM);
+        terrainErosionSlopeLo = c.value("terrain_erosion_slope_lo", terrainErosionSlopeLo);
+        terrainErosionSlopeHi = c.value("terrain_erosion_slope_hi", terrainErosionSlopeHi);
+        terrainErosionBranchStrength = c.value("terrain_erosion_branch_strength", terrainErosionBranchStrength);
+        terrainErosionFadeStartM = c.value("terrain_erosion_fade_start_m", terrainErosionFadeStartM);
+        terrainErosionFadeEndM = c.value("terrain_erosion_fade_end_m", terrainErosionFadeEndM);
+        terrainStepTargetM = c.value("terrain_step_target_m", terrainStepTargetM);
+        terrainStepsMin = c.value("terrain_steps_min", terrainStepsMin);
+        terrainStepsMax = c.value("terrain_steps_max", terrainStepsMax);
+        terrainStepPow = c.value("terrain_step_pow", terrainStepPow);
+        terrainHorizonBlendWidth = c.value("terrain_horizon_blend_width", terrainHorizonBlendWidth);
+        terrainDebugElevZebraM = c.value("terrain_debug_elev_zebra_m", terrainDebugElevZebraM);
+        terrainDebugDistZebraM = c.value("terrain_debug_dist_zebra_m", terrainDebugDistZebraM);
         cloudBaseVariance = c.value("cloud_base_variance", cloudBaseVariance);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
@@ -4442,6 +4512,21 @@ void SatelliteSim::saveSettings()
         {"cloud_dist_fade_end_m", cloudDistFadeEndM},
         {"terrain_dist_fade_start_m", terrainDistFadeStartM},
         {"terrain_dist_fade_end_m", terrainDistFadeEndM},
+        {"terrain_erosion_strength", terrainErosionStrength},
+        {"terrain_erosion_amplitude_m", terrainErosionAmplitudeM},
+        {"terrain_erosion_feature_size_m", terrainErosionFeatureSizeM},
+        {"terrain_erosion_slope_lo", terrainErosionSlopeLo},
+        {"terrain_erosion_slope_hi", terrainErosionSlopeHi},
+        {"terrain_erosion_branch_strength", terrainErosionBranchStrength},
+        {"terrain_erosion_fade_start_m", terrainErosionFadeStartM},
+        {"terrain_erosion_fade_end_m", terrainErosionFadeEndM},
+        {"terrain_step_target_m", terrainStepTargetM},
+        {"terrain_steps_min", terrainStepsMin},
+        {"terrain_steps_max", terrainStepsMax},
+        {"terrain_step_pow", terrainStepPow},
+        {"terrain_horizon_blend_width", terrainHorizonBlendWidth},
+        {"terrain_debug_elev_zebra_m", terrainDebugElevZebraM},
+        {"terrain_debug_dist_zebra_m", terrainDebugDistZebraM},
         {"cloud_base_variance", cloudBaseVariance},
         {"cloud_erosion_edge", cloudErosionEdge},
         {"cloud_erosion_core", cloudErosionCore},

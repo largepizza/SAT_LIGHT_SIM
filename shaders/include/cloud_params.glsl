@@ -364,4 +364,66 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
                                  // (sat_sky.frag). Claimed the alignment pad this block was
                                  // appended with — a real float either way, so the 16-byte
                                  // rounding it exists for is unchanged.
+    // ── Terrain erosion detail (576 -> 608) ──────────────────────────────────────────────────
+    // Slope-scaled procedural ruggedness added to the terrain raymarch's binary-search refinement
+    // and shading normal in sat_sky.frag (see terrain.glsl's header for the base DEM this rides on
+    // top of). 8 fields, exactly 32 bytes — 576+32=608 is already a 16-byte multiple, so no pad
+    // field was needed this time (unlike pad21/pad23 above).
+    float terrainErosionStrength;       // master gain, 0 disables
+    float terrainErosionAmplitudeM;     // max height displacement at full slope+strength (metres)
+    float terrainErosionFreq;           // spatial frequency of the erosion cells (cycles/metre)
+    float terrainErosionSlopeLo;        // slope-magnitude smoothstep low edge (rise/run, unitless)
+    float terrainErosionSlopeHi;        // slope-magnitude smoothstep high edge
+    float terrainErosionBranchStrength; // octave-to-octave direction feedback strength
+    float terrainErosionFadeStartM;     // ray distance where the detail begins fading out
+    float terrainErosionFadeEndM;       // ray distance where the detail is fully faded out
+    // ── Terrain coarse-march step distribution (608 -> 624) ──────────────────────────────────
+    // Debug/tuning exposure of what were sat_sky.frag's hardcoded kTerrainStepTargetM/
+    // kTerrainStepsMin/Max consts, plus a new exponent generalizing the quadratic frac*frac step
+    // schedule to frac^terrainStepPow. Added to diagnose reported terrain banding/choppiness at
+    // grazing/horizon range: the far-end sample spacing is ~terrainStepPow*(tExit-2)/kN, which at
+    // typical grazing tExit already exceeds the DEM's own ~1.85km/texel resolution and is far
+    // coarser than the ~200m erosion detail above — a real coarse-march undersampling gap, not an
+    // observer-coordinate bug. These 4 fields are exactly 16 bytes — 608+16=624, no pad needed.
+    // Safe to move into the UBO (unlike the erosion octave count): kN was ALREADY a runtime-derived
+    // loop bound (clamp() of a value computed from tExit), not a compile-time-unrolled trip count,
+    // so there is no loop-unrolling regression risk here — see the optDepth cautionary tale this
+    // header already documents for the actual hazard case.
+    float terrainStepTargetM; // target far-end sample spacing (m); was hardcoded 2800
+    float terrainStepsMin;    // was hardcoded 64
+    float terrainStepsMax;    // was hardcoded 164 — raising this is the direct fix if far-field
+                              // undersampling is confirmed as the cause, at a real perf cost
+    float terrainStepPow;     // step schedule exponent (t = 2 + (tExit-2)*frac^pow); was a fixed 2.0
+                              // (quadratic). Lower = more resolution shifted toward the far/grazing
+                              // end at the expense of near-camera resolution.
+    // ── Terrain horizon blend width (624 -> 640) ─────────────────────────────────────────────
+    // 2026-09-12 second fix pass: tExit's hard tBase.x/tShell.y branch was replaced with a
+    // mix() blend using hClip (smoothstep(limbZ-0.02, limbZ+0.03, dir.z)) — but hClip's ~2.9deg
+    // window was tuned for smoothing atmospheric/moon glow right at the horizon, a different job.
+    // tBase.x and tShell.y can differ by hundreds of km across that window, so the blend was
+    // mathematically continuous but still visually sharp once fed through the linear kN formula —
+    // confirmed still banding in-app after the hClip-based fix. This is tExit's OWN dedicated
+    // blend half-width (in dir.z / sin(elevation) units, i.e. the same units limbZ uses), decoupled
+    // from hClip so the two can be tuned independently. Wider = gentler transition, at the cost of
+    // the step budget near the horizon being less precisely tailored to each exact ray (acceptable:
+    // this only feeds a step COUNT, not the actual hit-test geometry, which is unaffected).
+    // 1 new field + 3 pad — 624+4=628, rounded to 640.
+    float terrainHorizonBlendWidth; // half-width of the tExit blend window; was fixed at 0.25
+    float pad27;
+    float pad28;
+    float pad29;
+    // ── Terrain precision zebra views (640 -> 656) ───────────────────────────────────────────
+    // Contour/zebra-stripe debug visualizations (alternating bands at a fixed real-world
+    // interval), requested to check tHit/elevation for jitter or discontinuity independent of any
+    // texture — a single 0-1 normalized heatmap (the earlier step-count/tExit/kN views) is too
+    // coarse to reveal small instabilities; a repeating zebra pattern shows them as broken/jagged/
+    // misaligned stripes instead. Two separate spacings since elevation (0-9000m) and
+    // camera-distance (metres to hundreds of km) are wildly different scales.
+    // 2 real fields + 2 pad — 640+8=648, rounded to 656.
+    float terrainDebugElevZebraM; // elevation zebra stripe spacing (m); reveals height-resolution
+                                  // jitter (DEM + erosion) independent of the raymarch itself
+    float terrainDebugDistZebraM; // camera-distance zebra stripe spacing (m); reveals raymarch/
+                                  // tHit convergence jitter independent of terrain content
+    float pad30;
+    float pad31;
 } cloud;
