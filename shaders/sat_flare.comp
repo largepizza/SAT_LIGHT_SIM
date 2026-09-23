@@ -48,14 +48,19 @@ layout(set = 0, binding = 1) buffer SatVisibleBuf {
 layout(set = 0, binding = 9) readonly buffer SatVisibleIdxBuf {
     uint visibleSatIdx[];
 };
-// GpuSatListHeader — see sat_orbit.comp. This pass reads listCount and writes `selected`: the
-// CPU copies the whole 64-byte header back every frame for selection tracking and the real
-// visible-satellite count (compact slots are no longer addressable by satellite index).
+// GpuSatListHeader — see sat_orbit.comp. This pass reads listCount and writes `selected` plus
+// the selected satellite's raw pre-photometry values: the CPU copies the whole 80-byte header back
+// every frame for selection tracking, the real visible-satellite count (compact slots are no
+// longer addressable by satellite index) and the GPU-parity readout (benchmarking M2).
 layout(set = 0, binding = 10) buffer SatListBuf {
     uint listCount;
     uint dispatchX, dispatchY, dispatchZ;
     uint drawVertexCount, drawInstanceCount, drawFirstVertex, drawFirstInstance;
     SatVisible selected;
+    float selectedRawFlux;    // pre-photometry flareIntensity (raw flux; < 0 = highlight mode)
+    float selectedRangeM;     // pre-photometry angularSize (range, m)
+    uint  selectedFound;      // 1 = the selection was in this frame's compact list
+    uint  selectedPad;
 };
 
 // ── Glow buffer — matches GpuGlowBuf ──────────────────────────────────────────
@@ -220,6 +225,14 @@ void main() {
     if (idx >= listCount) return;
 
     SatVisible sat = visible[idx];
+
+    // GPU parity (M2): the selection's values exactly as sat_orbit.comp produced them, before this
+    // pass rewrites the record in place.
+    if (visibleSatIdx[idx] == pc.selectedSatIdx) {
+        selectedRawFlux = sat.flareIntensity;
+        selectedRangeM  = sat.angularSize;
+        selectedFound   = 1u;
+    }
 
     vec3  skyDir = sat.skyDir;
     float range  = sat.angularSize; // pre-photometry encoding: range to the satellite (meters)

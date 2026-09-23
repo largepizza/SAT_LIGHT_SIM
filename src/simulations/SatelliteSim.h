@@ -274,9 +274,9 @@ static_assert(sizeof(GpuSatVisible) == 32, "GpuSatVisible layout mismatch");
 
 // satListBuf (Phase 1b): the compact visible list's header. Reset every frame with
 // vkCmdUpdateBuffer(kSatListHeaderReset); sat_orbit.comp appends and maintains the indirect args
-// via atomicMax; sat_flare.comp fills `selected`. The whole 64 bytes are copied back to the host
-// every frame (pickedVisibleBuf) for selection tracking and the real visible count. Must match
-// SatListBuf in sat_orbit.comp and sat_flare.comp.
+// via atomicMax; sat_flare.comp fills `selected` and the selected* raw fields. The whole header is
+// copied back to the host every frame (pickedVisibleBuf) for selection tracking, the real visible
+// count and the GPU-parity readout. Must match SatListBuf in sat_orbit.comp and sat_flare.comp.
 struct GpuSatListHeader
 {
     uint32_t count;                   // offset 0  — append counter == compact list length
@@ -284,11 +284,20 @@ struct GpuSatListHeader
     uint32_t drawVertexCount, drawInstanceCount;  // offset 16 — VkDrawIndirectCommand (point draws)
     uint32_t drawFirstVertex, drawFirstInstance;
     GpuSatVisible selected;           // offset 32 — the selected satellite's final record, or zeros
+    // offset 64 — the selected satellite's PRE-photometry values as sat_orbit.comp produced them
+    // (benchmarking M2, GPU parity): raw flux before sky/extinction/pollution (flare units incl.
+    // brightnessScale; < 0 in highlight mode) and range. selectedFound = 1 when the selection was
+    // in this frame's compact list at all (0 = culled below the horizon / constellation disabled).
+    float selectedRawFlux;
+    float selectedRangeM;
+    uint32_t selectedFound;
+    uint32_t selectedPad;
 };
-static_assert(sizeof(GpuSatListHeader) == 64, "GpuSatListHeader layout mismatch");
+static_assert(sizeof(GpuSatListHeader) == 80, "GpuSatListHeader layout mismatch");
 static_assert(offsetof(GpuSatListHeader, dispatchX) == 4, "dispatch args offset");
 static_assert(offsetof(GpuSatListHeader, drawVertexCount) == 16, "draw args offset");
 static_assert(offsetof(GpuSatListHeader, selected) == 32, "selected offset (std430 vec3 alignment)");
+static_assert(offsetof(GpuSatListHeader, selectedRawFlux) == 64, "selected raw offset");
 
 // Mercury..Uranus — the naked-eye-relevant classical planets plus Uranus (mag ~5.7-5.9, right at
 // the edge of the star catalog's own mag-6.5 floor). Neptune excluded: never naked-eye (~mag 7.8).
@@ -1452,7 +1461,7 @@ private:
     void *satLobeMapped = nullptr;
 
     // ── Satellite picking / selection tracking ────────────────────────────────
-    // pickedVisibleBuf mirrors the 64-byte GpuSatListHeader every frame (host-visible, mapped
+    // pickedVisibleBuf mirrors the 80-byte GpuSatListHeader every frame (host-visible, mapped
     // once like glowBuf): its `selected` record lets buildUI reproject the selected satellite
     // without reading back the full (device-local) satVisibleBuf, and its `count` is the real
     // visible-satellite count. Only a click (pickSatelliteAt) reads the list itself.
@@ -1473,6 +1482,31 @@ private:
     static constexpr int kSelInfoLines = 7;
     char selInfoLine[kSelInfoLines][40] = {};
     char planetInfoLine[kSelInfoLines][40] = {}; // same shape, filled by formatSelectedPlanetInfo
+
+    // ── Photometry readout + GPU parity (benchmarking M2) ─────────────────────
+    // The exact inputs the last sat_orbit.comp dispatch was given (captured where SatOrbitPC is
+    // built). Next frame, updateSelectedPhotometry() re-evaluates the selected satellite with the
+    // CPU evaluator (SatPhotometry) at THOSE inputs and compares its raw flux with the value
+    // sat_flare.comp mirrored into GpuSatListHeader::selectedRawFlux — so the gap measures only
+    // GPU-vs-CPU arithmetic (float orbit baking, float math), not a frame of motion.
+    struct ParityInputs
+    {
+        bool valid = false;
+        int satIdx = -1;
+        double tAbs = 0.0; // sim time of that dispatch, seconds since J2000
+        glm::vec3 sunDirECI{0.0f};
+        glm::vec3 obsECI{0.0f};
+        float flareTiltRad = 0.0f;
+        float brightnessScale = 1.0f;
+        float mirrorBoost = 300.0f;
+    };
+    ParityInputs parityPending;
+    static constexpr int kSelPhotLines = 3;
+    char selPhotLine[kSelPhotLines][48] = {}; // magnitude / geometry / parity — rebuilt every frame
+    bool selParityWarn = false;               // parity gap above kParityWarnMag (colours the line)
+    static constexpr double kParityWarnMag = 0.02;
+    int parityLogCooldown = 0;                // frames until the next mismatch may be logged
+    void updateSelectedPhotometry();
 
     // ── Orbit pipeline buffers ────────────────────────────────────────────────
     VkBuffer satOrbitBuf = VK_NULL_HANDLE; // device-local, uploaded once at init

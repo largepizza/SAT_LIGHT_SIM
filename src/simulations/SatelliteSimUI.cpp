@@ -1114,10 +1114,20 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
             Clay_String lineStr{false, (int32_t)strlen(infoLines[i]), infoLines[i]};
             CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
         }
+        // Per-frame photometry + GPU parity (benchmarking M2) — satellites only.
+        if (!isPlanet)
+            for (int i = 0; i < kSelPhotLines; ++i)
+            {
+                if (selPhotLine[i][0] == '\0')
+                    continue;
+                bool warn = (i == kSelPhotLines - 1) && selParityWarn;
+                Clay_String lineStr{false, (int32_t)strlen(selPhotLine[i]), selPhotLine[i]};
+                CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = warn ? Pal::listenKey : Pal::textDim, .fontSize = fs(12)}));
+            }
     }
     // Panel size isn't known until Clay lays it out this frame — this is a rough estimate for
     // capture purposes only, same approximation the corner HUD panels' capture rects already use.
-    ui.addMouseCaptureRect(sx + kOffsetX, sy + kOffsetY, 220.0f, 150.0f);
+    ui.addMouseCaptureRect(sx + kOffsetX, sy + kOffsetY, 240.0f, 200.0f);
 }
 
 // ─── buildResizableWindow ───────────────────────────────────────────────────

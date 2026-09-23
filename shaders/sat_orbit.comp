@@ -171,7 +171,7 @@ layout(set = 0, binding = 1) writeonly buffer SatVisibleBuf {
 layout(set = 0, binding = 6) writeonly buffer SatVisibleIdxBuf {
     uint visibleSatIdx[]; // satellite (dispatch) index of each compact slot
 };
-// GpuSatListHeader (64 bytes). Reset every frame by a vkCmdUpdateBuffer to {0, 0,1,1, 0,1,0,0,
+// GpuSatListHeader (80 bytes). Reset every frame by a vkCmdUpdateBuffer to {0, 0,1,1, 0,1,0,0,
 // zeros}. The dispatch/draw args are maintained with atomicMax on each workgroup's append END:
 // slots are handed out contiguously from 0, so the largest end IS the final count — no separate
 // args-building pass needed.
@@ -185,6 +185,10 @@ layout(set = 0, binding = 7) buffer SatListBuf {
     uint drawFirstVertex;
     uint drawFirstInstance;
     SatVisible selected;      // written by sat_flare.comp only
+    float selectedRawFlux;    // written by sat_flare.comp only (GPU parity, benchmarking M2)
+    float selectedRangeM;
+    uint  selectedFound;
+    uint  selectedPad;
 };
 
 // Workgroup-aggregated append: one global atomicAdd per 64 satellites instead of one per

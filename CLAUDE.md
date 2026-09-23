@@ -548,7 +548,7 @@ Invariants:
   `gl_VertexIndex` in those shaders — it is a list slot, not a satellite.
 - **`satVisibleBuf` is no longer indexed by satellite.** Selection tracking goes through
   `SatFlarePC::selectedSatIdx` → `sat_flare.comp` writes that satellite's final record into
-  `GpuSatListHeader::selected`; the whole 64-byte header is copied into `pickedVisibleBuf` every
+  `GpuSatListHeader::selected`; the whole 80-byte header is copied into `pickedVisibleBuf` every
   frame (it also carries the real `visibleCount` — the snapshot's `visible_count` was a placeholder
   equal to the roster size until this). Picking copies back only `count` entries + their indices.
 - **The sun's flare-source point is its own `vkCmdDraw(1 vertex, firstInstance 1)`**;
@@ -582,7 +582,7 @@ end of recordCompute      → copy satListBuf header → pickedVisibleBuf (host,
 | `satVisibleBuf` | device-local | per-frame | compact list: `sat_orbit.comp` appends, `sat_flare.comp` finishes in place |
 | `satVisibleIdxBuf` | device-local | per-frame | `sat_orbit.comp` (slot → satellite index) |
 | `satListBuf` | device-local, INDIRECT | per-frame | reset by `vkCmdUpdateBuffer`; `sat_orbit.comp` (count/args), `sat_flare.comp` (`selected`) |
-| `pickedVisibleBuf` | host-coherent, mapped | per-frame | copy of `satListBuf`'s 64-byte header |
+| `pickedVisibleBuf` | host-coherent, mapped | per-frame | copy of `satListBuf`'s 80-byte header |
 | `reflectorTargetsECEFBuf` | host-visible, mapped | uploaded once at target-generation time | `loadReflectorTargets()`/fallback |
 | `glowBuf` | host-coherent, mapped | per-frame | `sat_flare.comp` write; App reads back |
 
@@ -649,13 +649,23 @@ list at all): highlighted ones carry `flareIntensity < 0`; lit ones carry the ra
 `angularSize` holding the **range in metres** and `baseColor` already eclipse-tinted. After
 `sat_flare.comp`, a satellite below `visThresh` stays in the list as a zero record.
 
-### GpuSatListHeader layout (64 bytes) — `satListBuf`
+### GpuSatListHeader layout (80 bytes) — `satListBuf`
 ```
 [ 0] count                                        — append counter = list length
 [ 4] dispatchX, dispatchY, dispatchZ              — VkDispatchIndirectCommand (sat_flare)
 [16] vertexCount, instanceCount, firstVertex, firstInstance — VkDrawIndirectCommand (3 point draws)
 [32] selected (GpuSatVisible)                     — selected satellite's final record, or zeros
+[64] selectedRawFlux, selectedRangeM, selectedFound, pad — the selection's PRE-photometry values
+                                                    (sat_flare.comp copies them before rewriting)
 ```
+The `selected*` raw fields feed the **GPU-parity readout** (benchmarking M2): where `SatOrbitPC` is
+built, `parityPending` records that dispatch's exact inputs (sim time, Sun, observer, tilt,
+brightnessScale, mirrorBoost); next frame `updateSelectedPhotometry()` re-evaluates the selection with
+`evalSatPhotometry()` at those inputs and shows physical magnitude, range/phase and the GPU−CPU gap
+(Δmag, red above `kParityWarnMag` = 0.02, logged with a 120-frame cooldown) in the selection panel.
+Legacy types are compared through the evaluator's `legacyFlux()` mirror (`LegacyReflectance`), in
+their own display units. The gap is float-vs-double arithmetic, chiefly `u0 + meanMot·deltaT` in
+float (~200 m along-track by day 7 of a rebake) — so expect it to grow on the flanks of sharp glints.
 Mirrored as `SatListBuf` in both `sat_orbit.comp` and `sat_flare.comp`; `offsetof` static_asserts
 guard the C++ side.
 `static_assert(sizeof(GpuSatVisible) == 32)`

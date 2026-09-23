@@ -1981,6 +1981,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             lastPickedSkyDir = hdr->selected.skyDir;
             lastPickedFlare = hdr->selected.flareIntensity;
         }
+        updateSelectedPhotometry(); // reads the same header; uses parityPending from that dispatch
     }
 
     // ── Observer terrain height + cloud params UBO fill (relocated from recordDraw) ─────────
@@ -2235,6 +2236,17 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         double windowS = std::max(1.0f, reflectorLockWindowS);
         double windowRatio = simTimeAbs / windowS;
         orbitPc.windowFrac = (float)(windowRatio - floor(windowRatio));
+
+        // GPU parity (benchmarking M2): remember exactly what this dispatch sees, so next frame's
+        // readback can be compared against the CPU evaluator at the same instant and inputs.
+        parityPending.valid = selectedSatIndex >= 0;
+        parityPending.satIdx = selectedSatIndex;
+        parityPending.tAbs = simTimeAbs;
+        parityPending.sunDirECI = sunDirECI;
+        parityPending.obsECI = obsECI;
+        parityPending.flareTiltRad = orbitPc.flareMitigationTiltRad;
+        parityPending.brightnessScale = brightnessScale;
+        parityPending.mirrorBoost = mirrorBoost;
     }
 
     // ── Dispatch: scene_depth.comp — shared terrain/ocean depth (pipeline unification) ──────────
@@ -2864,7 +2876,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                  // this frame's composite sample (recordDraw), no extra barrier
     }
 
-    // Mirror the 64-byte list header into pickedVisibleBuf so next frame's recordCompute can read
+    // Mirror the 80-byte list header into pickedVisibleBuf so next frame's recordCompute can read
     // the selected satellite's record and the visible count (one-frame-stale, same idiom as
     // peakMagnitude). Every frame, not only while something is selected: the count feeds the HUD.
     {
@@ -3092,6 +3104,117 @@ void SatelliteSim::formatSelectedSatInfo()
     else
     {
         selInfoLine[6][0] = '\0';
+    }
+}
+
+// ─── updateSelectedPhotometry (benchmarking M2) ───────────────────────────────
+// Per-frame photometry readout + GPU parity for the selected satellite. Called right after the
+// list header copy is read back; that copy belongs to the PREVIOUS frame's dispatch, whose inputs
+// parityPending recorded — so the CPU evaluator runs at exactly the instant and inputs the GPU saw.
+void SatelliteSim::updateSelectedPhotometry()
+{
+    for (auto &line : selPhotLine)
+        line[0] = '\0';
+    selParityWarn = false;
+    if (parityLogCooldown > 0)
+        --parityLogCooldown;
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+        return;
+    const ParityInputs &pin = parityPending;
+    if (!pin.valid || pin.satIdx != selectedSatIndex)
+    {
+        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Photometry: measuring...");
+        return;
+    }
+    const SatOrbit &orb = satOrbits[selectedSatIndex];
+    if (orb.typeIdx >= satTypes.size())
+        return;
+    const SatelliteType &type = satTypes[orb.typeIdx];
+
+    // The satellite's orbit exactly as uploadSatOrbits() bakes it (floats promoted, SSO RAAN
+    // anchored at sim start).
+    SatOrbitElems e;
+    e.raan = orb.raan;
+    e.incl = orb.incl;
+    e.u0 = orb.u0;
+    e.rSatM = orb.R_sat;
+    e.meanMot = orb.meanMot;
+    e.sso = orb.alignTerminator;
+    e.raanAnchorT = (double)simInitDayJ2000 * 86400.0 + simInitSecInDay;
+    e.tumbleRate = orb.tumbleRate;
+    e.tumblePhase = orb.tumblePhase;
+    e.tumbleAxis = glm::dvec3(orb.tumbleAxis);
+
+    SatPhotInputs in;
+    in.sunDirEci = glm::dvec3(pin.sunDirECI);
+    in.obsEci = glm::dvec3(pin.obsECI);
+    in.flareTiltRad = pin.flareTiltRad;
+    in.mirrorBoost = pin.mirrorBoost;
+
+    LegacyReflectance legacy;
+    legacy.surfGroup0 = type.primary.group;
+    legacy.surfGroup1 = type.secondary.group;
+    legacy.surfNormal0 = glm::dvec3(type.primary.normal);
+    legacy.surfNormal1 = glm::dvec3(type.secondary.normal);
+    legacy.specExp0 = type.primary.specExp;
+    legacy.specExp1 = type.secondary.specExp;
+    legacy.w1 = type.secondary.weight;
+    legacy.diffuse = type.diffuse;
+    legacy.mirrorFrac = type.mirrorFrac;
+    legacy.crossSection = std::sqrt((double)type.crossSectionM2 / 10.0);
+
+    SatPhotResult r = evalSatPhotometry(type.groups, type.lobes, e, pin.tAbs, in, &legacy);
+
+    // ── Readout lines ─────────────────────────────────────────────────────────────────────
+    if (!r.supported)
+        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: n/a (ground-site aim)");
+    else if (r.legacy)
+        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: legacy type (not physical)");
+    else if (std::isfinite(r.magnitude))
+        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag %.2f  (1000 km %.2f)", r.magnitude, r.magnitude1000);
+    else
+        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: dark (Earth's shadow)");
+    snprintf(selPhotLine[1], sizeof(selPhotLine[1]), "Range %.0f km  Phase %.0f deg", r.rangeM / 1000.0,
+             glm::degrees(r.phaseAngleRad));
+
+    // ── GPU parity ───────────────────────────────────────────────────────────────────────
+    const GpuSatListHeader *hdr = static_cast<const GpuSatListHeader *>(pickedVisibleMapped);
+    if (!r.supported)
+        return;
+    if (!hdr->selectedFound)
+    {
+        snprintf(selPhotLine[2], sizeof(selPhotLine[2]), "GPU parity: not in view");
+        return;
+    }
+    if (hdr->selectedRawFlux < 0.0f)
+    {
+        snprintf(selPhotLine[2], sizeof(selPhotLine[2]), "GPU parity: n/a (highlight mode)");
+        return;
+    }
+    const double gpu = hdr->selectedRawFlux;
+    const double cpu = r.flareUnits * pin.brightnessScale;
+    // Below ~magnitude 20 in flare units (0.008 at mag 6) both are noise — see the M1 gate.
+    const double kDarkFlare = 0.008 * std::pow(10.0, -0.4 * 14.0) * pin.brightnessScale;
+    if (gpu < kDarkFlare && cpu < kDarkFlare)
+    {
+        snprintf(selPhotLine[2], sizeof(selPhotLine[2]), "GPU parity: both dark");
+        return;
+    }
+    double dmag = (gpu > 0.0 && cpu > 0.0) ? -2.5 * std::log10(gpu / cpu)
+                                           : (gpu > cpu ? -99.0 : 99.0); // one side dark: gross mismatch
+    selParityWarn = std::abs(dmag) > kParityWarnMag;
+    snprintf(selPhotLine[2], sizeof(selPhotLine[2]), "GPU parity: %+.3f mag%s", dmag,
+             selParityWarn ? "  MISMATCH" : "");
+    if (selParityWarn && parityLogCooldown == 0)
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "GPU parity mismatch: sat %d (%s) dmag %+.4f  gpu %.6g cpu %.6g  range gpu %.0f cpu %.0f m  "
+                 "lit %.3f phase %.1f deg",
+                 selectedSatIndex, type.name.c_str(), dmag, gpu, cpu, (double)hdr->selectedRangeM, r.rangeM,
+                 r.litFactor, glm::degrees(r.phaseAngleRad));
+        Log::line(buf);
+        parityLogCooldown = 120;
     }
 }
 
@@ -5767,7 +5890,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
                      oceanGlintBuf, oceanGlintMem);
 
     // ── Picked-satellite tracking buffer ───────────────────────────────────────
-    // 64-byte host-visible mirror of the compact visible list's GpuSatListHeader (selected
+    // 80-byte host-visible mirror of the compact visible list's GpuSatListHeader (selected
     // satellite's record + visible count), written by a tiny vkCmdCopyBuffer at the end of every
     // recordCompute and read back one-frame-stale at its top — same idiom as glowBuf/peakMagnitude
     // above. Never bound as an SSBO, so TRANSFER_DST is the only usage it needs.

@@ -87,6 +87,41 @@ bool usesGroundSite(const std::vector<AttitudeGroup> &groups)
     }
     return false;
 }
+
+// Mirror of sat_orbit.comp's legacyFlux(), verbatim in structure, before brightnessScale.
+double legacyFlareUnits(const LegacyReflectance &L, glm::dvec3 n0, glm::dvec3 n1, glm::dvec3 sun, glm::dvec3 nadir,
+                        glm::dvec3 o, double litFactor, double earthIrr, double distFactor, double mirrorBoost)
+{
+    auto lobe = [&](glm::dvec3 n, double specExp, double &irr, glm::dvec3 &refl) {
+        irr = std::abs(glm::dot(sun, n));
+        glm::dvec3 nf = glm::dot(sun, n) >= 0.0 ? n : -n;
+        refl = glm::reflect(-sun, nf);
+        return irr * (specExp < 0.01 ? std::max(0.0, glm::dot(sun, o))
+                                     : std::pow(std::clamp(glm::dot(refl, o), 0.0, 1.0), specExp));
+    };
+    double irr0, irr1;
+    glm::dvec3 refl0, refl1;
+    double spec0 = lobe(n0, L.specExp0, irr0, refl0);
+    double spec1 = lobe(n1, L.specExp1, irr1, refl1);
+
+    // Mirror spike on the primary surface.
+    double mirrorExp = std::max(L.specExp0 * mirrorBoost, 8000.0);
+    double mirrorDot = std::clamp(glm::dot(refl0, o), 0.0, 1.0);
+    spec0 += irr0 * std::pow(mirrorDot, mirrorExp) * mirrorBoost * L.mirrorFrac;
+
+    // Earthshine from nadir (not eclipse-gated).
+    double irrE0 = std::max(0.0, glm::dot(nadir, n0));
+    glm::dvec3 nE0 = glm::dot(nadir, n0) >= 0.0 ? n0 : -n0;
+    glm::dvec3 reflE0 = glm::reflect(-nadir, nE0);
+    double specE0 = irrE0 * (L.specExp0 < 0.01 ? std::max(0.0, glm::dot(nadir, o))
+                                                : std::pow(std::max(0.0, glm::dot(reflE0, o)), L.specExp0));
+    double specE0b = std::max(0.0, glm::dot(nadir, -n0)) * L.diffuse;
+    double specE1 = std::max(0.0, glm::dot(nadir, n1)) * L.w1 * L.diffuse;
+    double earthFlare = (specE0 + specE0b + specE1) * earthIrr * distFactor * L.crossSection;
+
+    double solarFlare = (spec0 + spec1 * L.w1 + L.diffuse) * litFactor * distFactor * L.crossSection;
+    return solarFlare + earthFlare;
+}
 } // namespace
 
 double satMagnitudeFromIntensity(double intensity, double rangeM)
@@ -102,7 +137,8 @@ double satMagnitudeTo1000km(double mag, double rangeM)
 }
 
 SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const std::vector<GpuSatLobe> &lobes,
-                                const SatOrbitElems &orbit, double tJ2000, const SatPhotInputs &in)
+                                const SatOrbitElems &orbit, double tJ2000, const SatPhotInputs &in,
+                                const LegacyReflectance *legacy)
 {
     SatPhotResult r;
     r.orbit = satOrbitStateAt(orbit, tJ2000);
@@ -151,6 +187,25 @@ SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const 
     geo.tumbleAxis = orbit.tumbleAxis;
     geo.flareTiltRad = in.flareTiltRad;
     std::vector<GroupPose> poses = evalGroupPoses(groups, geo, false);
+
+    // ── Legacy two-surface model (GPU parity only) ──────────────────────────────────────────
+    if (lobes.empty() && legacy)
+    {
+        auto surfaceNormal = [&](int g, glm::dvec3 n) {
+            g = std::clamp(g, 0, (int)poses.size() - 1);
+            return glm::normalize(poses[g].R * glm::normalize(n));
+        };
+        const double refRange = 500000.0; // REF_RANGE
+        double distFactor = refRange / std::max(r.rangeM, refRange);
+        distFactor *= distFactor;
+        // Legacy earthshine: albedo × Earth's share of the upward hemisphere × lit fraction.
+        double legacyEarthIrr = kEarthAlbedo * (1.0 - rOverD) * 0.5 * illumFrac;
+        r.legacy = true;
+        r.flareUnits = legacyFlareUnits(*legacy, surfaceNormal(legacy->surfGroup0, legacy->surfNormal0),
+                                        surfaceNormal(legacy->surfGroup1, legacy->surfNormal1), sun, nadir, o,
+                                        r.litFactor, legacyEarthIrr, distFactor, in.mirrorBoost);
+        return r;
+    }
 
     // ── Lobes ───────────────────────────────────────────────────────────────────────────────
     const double a2Sun = (double)kSunAlpha * kSunAlpha;

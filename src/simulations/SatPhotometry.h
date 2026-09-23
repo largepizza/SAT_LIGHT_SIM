@@ -10,9 +10,10 @@
 // processSatellite()'s orbit block, and evalSatPhotometry() with modelFlux() and the shadow /
 // earthshine terms above it.
 //
-// Scope: geometry-model types. Types whose attitude aims at a ground site (TargetedReflector) need
-// the lock-window search's siteIdeal, which the caller must supply; legacy two-surface types are
-// not modelled here (their output is in tuned display units, not a physical magnitude).
+// Scope: geometry-model types, plus — for the GPU-parity check (M2) only — a mirror of the legacy
+// two-surface model's raw flux (legacyFlux()), whose output is in tuned display units, not a
+// physical magnitude. Types whose attitude aims at a ground site (TargetedReflector) need the
+// lock-window search's siteIdeal, which the caller must supply.
 
 #include "SatModel.h"
 
@@ -86,6 +87,17 @@ struct SatPhotInputs
     double flareTiltRad = 0.0;          // global flare-mitigation tilt (FlareMitigationTilt joints)
     bool hasSiteIdeal = false;          // SunReflectGroundSite aim, if the caller computed it
     glm::dvec3 siteIdeal{0.0};
+    double mirrorBoost = 300.0;         // legacy model only (the Photometry slider)
+};
+
+// The legacy two-surface model's per-type parameters (SatelliteType's primary/secondary surfaces,
+// diffuse floor, mirror fraction and cross-section). Normals are in their group's body frame.
+struct LegacyReflectance
+{
+    int surfGroup0 = 0, surfGroup1 = 0;
+    glm::dvec3 surfNormal0{0.0, 0.0, 1.0}, surfNormal1{0.0, 0.0, 1.0};
+    double specExp0 = 0.0, specExp1 = 0.0, w1 = 0.0, diffuse = 0.0, mirrorFrac = 0.0;
+    double crossSection = 1.0; // sqrt(area_m² / 10)
 };
 
 struct SatPhotResult
@@ -106,13 +118,17 @@ struct SatPhotResult
     // Above-atmosphere apparent magnitude at the actual range, and reduced to 1000 km. +inf when dark.
     double magnitude = std::numeric_limits<double>::infinity();
     double magnitude1000 = std::numeric_limits<double>::infinity();
-    double flareUnits = 0.0;    // K_FLUX·I/r² — sat_orbit.comp's value before brightnessScale
+    // sat_orbit.comp's raw flux before brightnessScale: K_FLUX·I/r² for a model, or the legacy
+    // model's value in its own tuned units (magnitudes then stay +inf — they are not physical).
+    double flareUnits = 0.0;
+    bool legacy = false;
 };
 
-// Evaluates one geometry-model satellite. `groups`/`lobes` are the type's (SatelliteType::groups /
-// ::lobes, or a SatModel's groups + bakeSatLobes()).
+// Evaluates one satellite. Geometry model: `lobes` non-empty (SatelliteType::lobes, or a SatModel's
+// bakeSatLobes()). Otherwise `legacy` must be given and the legacy two-surface flux is mirrored.
 SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const std::vector<GpuSatLobe> &lobes,
-                                const SatOrbitElems &orbit, double tJ2000, const SatPhotInputs &in);
+                                const SatOrbitElems &orbit, double tJ2000, const SatPhotInputs &in,
+                                const LegacyReflectance *legacy = nullptr);
 
 // Magnitude conversions (design page, "Photometric conventions").
 double satMagnitudeFromIntensity(double intensity, double rangeM); // +inf when intensity <= 0
