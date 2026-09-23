@@ -303,18 +303,18 @@ static_assert(sizeof(SatFlarePC) == 128, "SatFlarePC layout mismatch");
 //   total: 128 bytes
 struct SatDrawPC
 {
-    glm::mat4 skyView;         // ENU → camera space
-    float fovYRad;             // vertical field of view (radians)
-    float aspect;              // viewport width / height
-    float gmst;                // Greenwich Mean Sidereal Time (radians)
-    float waveTime;            // sim seconds for wave animation
-    glm::vec4 sunDirENU;       // sun direction in ENU (xyz unit vec, w = sin(elevation))
-    glm::vec4 moonDirENU;      // moon direction in ENU (xyz unit vec, w = illuminated fraction)
-    glm::vec4 obsECEFDir;      // xyz = observer ECEF unit vector (lets sat_sky.frag convert ENU hit →
-                               // ECEF → geographic lat/lon for texture UV); w = obsHeightOffset (m,
-                               // user altitude offset above terrain — maxed with the GPU's own
-                               // ground-height lookup as obsEffH). Despite the field's original "w
-                               // unused" comment (stale — corrected here), it IS read.
+    glm::mat4 skyView;    // ENU → camera space
+    float fovYRad;        // vertical field of view (radians)
+    float aspect;         // viewport width / height
+    float gmst;           // Greenwich Mean Sidereal Time (radians)
+    float waveTime;       // sim seconds for wave animation
+    glm::vec4 sunDirENU;  // sun direction in ENU (xyz unit vec, w = sin(elevation))
+    glm::vec4 moonDirENU; // moon direction in ENU (xyz unit vec, w = illuminated fraction)
+    glm::vec4 obsECEFDir; // xyz = observer ECEF unit vector (lets sat_sky.frag convert ENU hit →
+                          // ECEF → geographic lat/lon for texture UV); w = obsHeightOffset (m,
+                          // user altitude offset above terrain — maxed with the GPU's own
+                          // ground-height lookup as obsEffH). Despite the field's original "w
+                          // unused" comment (stale — corrected here), it IS read.
 }; // total: 128 bytes
 static_assert(sizeof(SatDrawPC) == 128, "SatDrawPC layout mismatch");
 
@@ -1140,10 +1140,10 @@ struct GpuCloudParams
     // non-directional Milky Way suppression scalar that gate replaced: same offset, same size, so
     // this is a rename rather than a layout change. Mirror of cloud_params.glsl.
     float darkSkyCityMag;
-    float cloudShadowRangeM;    // per-pixel terrain cloud-shadow fade distance (cloud_march.comp)
-    float skyScreenW;           // sat_sky.frag render-target width  (skyLowResExtent at renderScale<1,
-    float skyScreenH;           // else ctx.swapExtent) — for gl_FragCoord->UV; the point shaders
-                                // carry their own screenSizePx (always full-res) in PointDrawPC
+    float cloudShadowRangeM; // per-pixel terrain cloud-shadow fade distance (cloud_march.comp)
+    float skyScreenW;        // sat_sky.frag render-target width  (skyLowResExtent at renderScale<1,
+    float skyScreenH;        // else ctx.swapExtent) — for gl_FragCoord->UV; the point shaders
+                             // carry their own screenSizePx (always full-res) in PointDrawPC
     // Zodiacal light, 532 -> 560. See cloud_params.glsl for the full design.
     float zodiacalWidthDeg;     // ecliptic-latitude Gaussian sigma near the sun (degrees)
     float zodiacalOuterFadeDeg; // elongation at which the cone has fully faded (degrees)
@@ -1155,7 +1155,7 @@ struct GpuCloudParams
     // size change (556 vs 560), but a future permutation at equal size would not — run
     // tools/check_cloud_params.py.
     float pad21;
-    glm::vec4 eclipticPoleENU;  // xyz = ENU unit vector to ecliptic north pole, w = zodiacalGain
+    glm::vec4 eclipticPoleENU; // xyz = ENU unit vector to ecliptic north pole, w = zodiacalGain
     // ── Dark-sky twilight term (560 -> 576) ──────────────────────────────────────────────────
     // Sun's own contribution to sky background brightness, for the dark-sky exposure gate in
     // darksky.glsl. Before this, the ONLY solar gate on the Milky Way was nightFactorEffSky's
@@ -1779,7 +1779,7 @@ private:
     //
     // kDebugToggleSlots sizes hovDebugToggle[] and the accumulators below; the static_assert in
     // startKnockoutSweep() keeps it honest.
-    static constexpr int kDebugToggleSlots = 24;
+    static constexpr int kDebugToggleSlots = 25;
     static constexpr int kSweepSettleFrames = 6;  // discard after a mask change — covers the
                                                   // one-frame-stale timestamp readback plus a
                                                   // little driver/clock hysteresis
@@ -2184,14 +2184,14 @@ private:
     float mirrorBoost = 1000.0f;
     float visThresh = 0.0001f;
     float highlightFlare = 0.014f;
-    float moonSuppression = 6.6f;    // sky background suppression from moonlight (mirrors daySuppression,
-                                     // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
+    float moonSuppression = 6.6f;     // sky background suppression from moonlight (mirrors daySuppression,
+                                      // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
     float lightPollutionGain = 25.0f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
-                                     // so satellites + stars stay coherently scaled by construction
-    float extinctionCoeff = 0.079f;  // atmospheric extinction, magnitudes per airmass (Kasten & Young
-                                     // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
-                                     // in both sat_flare.comp and updateStars() so a star and a
-                                     // satellite at the same elevation dim identically
+                                      // so satellites + stars stay coherently scaled by construction
+    float extinctionCoeff = 0.079f;   // atmospheric extinction, magnitudes per airmass (Kasten & Young
+                                      // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
+                                      // in both sat_flare.comp and updateStars() so a star and a
+                                      // satellite at the same elevation dim identically
     // Ground-directed flare mitigation attitude control for space datacenters (AttitudeMode::
     // SunTrackingTilted). A single global operator-policy knob rather than a per-satellite-type
     // JSON constant — real operators would tune one mitigation posture across a fleet, and it
@@ -2215,12 +2215,12 @@ private:
     // What changed is that the ramp is now evaluated PER DIRECTION and each feature is then gated
     // on its own per-sample surface brightness, so the transition sweeps across a feature (faint
     // arms first, galactic core last) instead of dimming all of it as a block.
-    float mwPollutionThresholdLo = 0.0f; // at/below this: sky reads as pristine (22.0 mag/arcsec^2).
-                                         // 0 is a legitimate tuned value, not "unset": easeDarkSkyDome
-                                         // guards with max(lo, 1e-6), so 0 means "the ramp starts at
-                                         // the faintest signal the night texture can express", which
-                                         // is what stretches it over ~4.9 decades instead of ~1.2
-    float mwPollutionThresholdHi = 0.075f;  // at/above this: sky has fully reached darkSkyCityMag
+    float mwPollutionThresholdLo = 0.0f;   // at/below this: sky reads as pristine (22.0 mag/arcsec^2).
+                                           // 0 is a legitimate tuned value, not "unset": easeDarkSkyDome
+                                           // guards with max(lo, 1e-6), so 0 means "the ramp starts at
+                                           // the faintest signal the night texture can express", which
+                                           // is what stretches it over ~4.9 decades instead of ~1.2
+    float mwPollutionThresholdHi = 0.075f; // at/above this: sky has fully reached darkSkyCityMag
     // Sky background surface brightness at the Hi end, mag/arcsec^2 (LARGER = FAINTER — the
     // astronomical convention). ~18 is a real Bortle 8-9 inner-city zenith; the default and the
     // slider floor (1.0, see SatelliteSimUI.cpp) both sit below any real site on purpose — this is
@@ -2240,14 +2240,14 @@ private:
     // Temporal easing, now applied to the DOME (the gate's input) rather than to a final
     // visibility scalar — so the hysteresis still smooths a flight over a city boundary without
     // flattening the per-direction/per-sample structure the gate exists to produce.
-    float mwFadeInTimeS = 2.1f;             // seconds to fade back IN once local pollution drops (bright
-                                            // area -> dark, or ascending into space)
-    float mwFadeOutTimeS = 0.26f;            // seconds to fade back OUT once local pollution rises
-    float sunlitBgVisibility = 0.15f;       // Stars/Milky Way visibility fraction in space when the sun is
-                                            // off-screen but the observer is still in direct sunlight — 0 =
-                                            // fully hidden (like being fully day-suppressed), 1 = as visible as
-                                            // true night. Sun-on-screen always forces 0 regardless of this
-                                            // slider. See recordCompute()'s sky-glare gate and updateStars().
+    float mwFadeInTimeS = 2.1f;       // seconds to fade back IN once local pollution drops (bright
+                                      // area -> dark, or ascending into space)
+    float mwFadeOutTimeS = 0.26f;     // seconds to fade back OUT once local pollution rises
+    float sunlitBgVisibility = 0.15f; // Stars/Milky Way visibility fraction in space when the sun is
+                                      // off-screen but the observer is still in direct sunlight — 0 =
+                                      // fully hidden (like being fully day-suppressed), 1 = as visible as
+                                      // true night. Sun-on-screen always forces 0 regardless of this
+                                      // slider. See recordCompute()'s sky-glare gate and updateStars().
     // ── Reflect-Orbital ground beams (C12) ────────────────────────────────────
     // groundIrradiance * beamGain is NOT the same quantity as mirrorBoost/mirrorPeak (that's the
     // view-dependent specular term the OBSERVER sees the mirror glint by; this is the physical
@@ -2257,8 +2257,8 @@ private:
     // C12 follow-up #34: beamFootprintRadM (a flat, tunable constant) removed — the ground
     // footprint is now physically derived in sat_orbit.comp from mirror area + range to target.
     float beamMaxRangeM = 1100000.0f; // C12 follow-up #6 — render-time "is the observer close
-                                        // enough to this site" cutoff (site-referenced beams have
-                                        // no observer-side write gate any more, see sat_orbit.comp)
+                                      // enough to this site" cutoff (site-referenced beams have
+                                      // no observer-side write gate any more, see sat_orbit.comp)
     // C12 follow-up #17: simple atmospheric-scattering beam sky glow (replaces the removed real
     // cloud-density march from follow-ups #14-#16, reverted per user request — no cloud lighting
     // yet). Own gain, separate from beamGain (that's the physical ground-irradiance term feeding
@@ -2525,11 +2525,11 @@ private:
     // in-app 2026-08-06: a much taller (1.4 km) but far thinner (density ~0.07)
     // layer than the first-pass 300 m / 1.0 guess — the thin tall version reads as real haze the
     // camera can fly up through, where the thick shallow one read as a hard ground-hugging slab.
-    float fogTopAltM = 1400.0f;       // shell top altitude (m above sea level); sea level is the base
-    float fogDensity = 0.068f;        // density scale, analogous to cloud.density
-    float fogCoverage = 0.6f;         // global coverage gate for the patchiness noise, [0,1]
-    float fogSunGain = 1.1f;          // sun-lit fog brightness gain, own slider (not cloud.sunGain)
-    float cloudErosionCore = 1.0f;    // cloudDensity() erosion strength at the dense core
+    float fogTopAltM = 1400.0f;    // shell top altitude (m above sea level); sea level is the base
+    float fogDensity = 0.068f;     // density scale, analogous to cloud.density
+    float fogCoverage = 0.6f;      // global coverage gate for the patchiness noise, [0,1]
+    float fogSunGain = 1.1f;       // sun-lit fog brightness gain, own slider (not cloud.sunGain)
+    float cloudErosionCore = 1.0f; // cloudDensity() erosion strength at the dense core
     float cloudHgG = 0.99f;
     float cloudMarchSteps = 220.0f;
     float cloudLightSteps = 13.0f;
@@ -2550,7 +2550,7 @@ private:
     // entirely. Was 1.6 through 2026-09-07 — dropped after the reflected band read far too bright
     // against the real sky it mirrors.
     float oceanMwReflGain = 0.4f;
-    float zodiacalWidthDeg = 10.0f;    // ecliptic-latitude Gaussian sigma near the sun (degrees)
+    float zodiacalWidthDeg = 10.0f;     // ecliptic-latitude Gaussian sigma near the sun (degrees)
     float zodiacalOuterFadeDeg = 80.0f; // elongation at which the cone has fully faded (degrees)
     // Sun self-shadow cone (N_CONE) fades out beyond this distance. Was 22 km, when the cone
     // marched a fixed stride and distance directly bought samples. The cone now absorbs distance
@@ -2942,7 +2942,7 @@ private:
     bool hovViewControlsClose = false;
     bool hovUnitMetric = false;
     bool hovUnitImperial = false;
-    bool hovOpenControlsWindow = false; // Controls tab's "Open Controls Reference" button
+    bool hovOpenControlsWindow = false;                    // Controls tab's "Open Controls Reference" button
     bool hovInvertMouseX = false, hovInvertMouseY = false; // Controls tab look-invert toggles
     bool hovInvertPadX = false, hovInvertPadY = false;
     bool hovTab[12] = {}; // one per settings-window tab (kSettingsTabNames)
@@ -2982,16 +2982,16 @@ private:
     bool hovPhotoPlus[22] = {};
     bool draggingPhoto[22] = {};
     bool hovCloudMinus[106] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
-                                 // idx 90 the ocean Milky Way reflection gain (2026-09-08); idx
-                                 // 91-98 the terrain erosion detail sliders, idx 99-102 the terrain
-                                 // coarse-march step distribution debug sliders, idx 103 the terrain
-                                 // horizon blend width slider, idx 104-105 the terrain precision
-                                 // zebra-view spacing sliders (2026-09-12)
+                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08); idx
+                                  // 91-98 the terrain erosion detail sliders, idx 99-102 the terrain
+                                  // coarse-march step distribution debug sliders, idx 103 the terrain
+                                  // horizon blend width slider, idx 104-105 the terrain precision
+                                  // zebra-view spacing sliders (2026-09-12)
     bool hovCloudPlus[106] = {};
     bool draggingCloud[106] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
-                                 // feedback_cloud_slider_arrays memory: this one was missed once
-                                 // already and the out-of-bounds write corrupted the window-chrome
-                                 // state declared right below, breaking the settings window.
+                                  // feedback_cloud_slider_arrays memory: this one was missed once
+                                  // already and the out-of-bounds write corrupted the window-chrome
+                                  // state declared right below, breaking the settings window.
     // Collapsible section state for the Clouds tab (see buildCloudSliderSections). Indexed by a
     // section's position in its tab's own section array, NOT by slider idx — sections are a pure
     // presentation grouping and own no slider state. Sized 24 (capacity) so adding a category
@@ -3312,10 +3312,10 @@ static constexpr IntroKeyframe kIntroKeyframes[] = {
     {songbeat * 1.0, 0.0f, kIntroStartAzDeg, kIntroStartElDeg, kIntroStartFovDeg,
      "Satellite megaconstellations dominate the night sky"},
     // Beat 3 — level out in preparation for launch. Still ground level.
-    {songbeat * 2.0, 00000.0f, kIntroStartAzDeg - 5, 25.0f, 64.0f, "From the ground, we watch sunlight glint off their solar arrays"},
+    {songbeat * 2.0, 00000.0f, kIntroStartAzDeg - 5, 25.0f, 64.0f, "A cascade of gigantic space datacenters and reflectors "},
     // Beat 4 — the pull to LEO begins (ascent happens across THIS beat's transition). Still
-    // facing horizontally west, per the storyboard, even as altitude climbs.
-    {songbeat * 3.0, 60000.0f, kIntroStartAzDeg - 25, 35.0f, 62.0f, "They power an orbital network of communications and AI compute."},
+    // facing horizontally west, per the storyboard, even as altitude climbs.*
+    {songbeat * 3.0, 60000.0f, kIntroStartAzDeg - 25, 35.0f, 62.0f, "These were built over the last decade of "},
     // Beat 5 — pull continues; camera starts rotating away from due-west as we climb high enough
     // to reveal the Earth's curve.
     {songbeat * 4.0, 140000.0f, kIntroStartAzDeg - 35, 20.0f, 62.0f, "A promise to the markets above all else"},

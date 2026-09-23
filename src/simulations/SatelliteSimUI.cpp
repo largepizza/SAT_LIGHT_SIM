@@ -107,6 +107,13 @@ static constexpr DebugToggleEntry kDebugToggles[] = {
     // rather than something specific to city texture or the erosion detail.
     {16777216u, "Terrain elevation zebra view", "terrain_elev_zebra_view"},
     {33554432u, "Terrain distance zebra view", "terrain_dist_zebra_view"},
+    // Visualization toggle, not a feature knockout. Colorizes the raw (East, North) elevation
+    // gradient that feeds terrain erosion's flow direction (R=East, G=North component of the unit
+    // flow direction, B=slope-gate strength) — see sat_sky.frag's "Debug view: terrain erosion
+    // slope-direction field" block. Built to check whether a reported "erosion degenerates into
+    // pure stripes at high latitude / in the Eastern Hemisphere" pattern traces to a genuinely
+    // degenerate gradient field (large uniform-color patches here) or is downstream of it.
+    {67108864u, "Terrain erosion slope-dir view", "terrain_erosion_slopedir_view"},
 };
 static constexpr int kDebugToggleCount = (int)(sizeof(kDebugToggles) / sizeof(kDebugToggles[0]));
 // The matching static_assert against SatelliteSim::kDebugToggleSlots lives inside

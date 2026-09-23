@@ -456,13 +456,38 @@ vec2 terrainErosionDomain(vec3 pLike) {
     // the opposite way, a uniform north/south mismatch across the whole globe that systematically
     // misaligned every stripe's orientation from the real slope direction — the likely dominant cause
     // of the reported "erosion stretched in one consistent direction" (separate from, and in addition
-    // to, the float-precision fix above/below). Negating makes this axis north-positive, consistent
+    // to, the float-precision fix below). Negating makes this axis north-positive, consistent
     // with dN2/hNrE everywhere this domain's output is used.
     vec2 uv = posToUV(pLike);
     float lat = PI * 0.5 - uv.y * PI;
     float metersPerUnitLon = 2.0 * PI * R_EARTH * max(abs(cos(lat)), 0.02);
     float metersPerUnitLat = PI * R_EARTH;
-    return vec2(uv.x * metersPerUnitLon, -uv.y * metersPerUnitLat);
+
+    // BUG FIX (2026-09-14, tenth pass): uv.x/uv.y (from atan2/asin) have UNIFORM float32 precision
+    // everywhere on Earth — but multiplying by metersPerUnitLon (up to ~4e7, since it's "meters from
+    // the antimeridian") reintroduces magnitude-dependent precision loss whose absolute size tracks
+    // the RESULT's own magnitude, not anything about the observer. uv.x=(lon+180)/360 puts the whole
+    // Western Hemisphere below 0.5 (small result, e.g. ~6.4e6 m / ULP~0.5m at lon=-105) and the whole
+    // Eastern Hemisphere above 0.5 (large result, e.g. ~26e6 m / ULP~2m at lon=+87) — a real, several-
+    // meter-scale precision difference that the OLD fix (mod(p,4096) in terrainErosionCell, sixth
+    // pass) came too late to recover: it wraps the value AFTER this multiply already spent the
+    // precision, only bounding further growth. At erosion's own noise-cell scale (~100s of m) that
+    // read as minor; at close viewing range, where a screen pixel can be centimeters of world space,
+    // it meant the domain coordinate silently held constant for meters before jumping — the actual
+    // mechanism behind "stretched to oblivion" being far worse in the Eastern Hemisphere (Himalaya)
+    // than the Western (Rockies, and this sim's own 67 deg W spawn point, coincidentally near the
+    // low-magnitude end of the same axis). uv.y has the same latent issue near the poles (uv.y -> 0
+    // or 1), fixed the same way here even though it wasn't the reported symptom.
+    // Fix: wrap BEFORE the large multiply, not after. Dividing the wrap period into the per-unit-UV
+    // scale first gives a small, exactly-representable ratio (uv * ratio stays under ~50 for any
+    // sane frequency), so fract() of THAT is exact; scaling back up by the wrap period is the only
+    // multiply that matters for precision, and it's bounded by the wrap period's own size (~1e6), not
+    // by the full ~4e7 globe-relative one — uniformly precise everywhere, matching the Western
+    // Hemisphere's precision in the Himalaya too.
+    const float kErosionWrapM = 1048576.0; // 2^20 m (~1000 km) — far beyond any real erosion feature
+    vec2 metersPerUnit = vec2(metersPerUnitLon, metersPerUnitLat);
+    vec2 wrapped = fract(uv * (metersPerUnit / kErosionWrapM)) * kErosionWrapM;
+    return vec2(wrapped.x, -wrapped.y);
 }
 
 // One octave of directional cellular "flow" noise: a 4x4 neighborhood of jittered points, each
@@ -474,15 +499,16 @@ vec2 terrainErosionDomain(vec3 pLike) {
 vec3 terrainErosionCell(vec2 p, vec2 dir) {
     // BUG FIX (2026-09-12, sixth pass): terrainErosionDomain() returns an ABSOLUTE metres coordinate
     // (distance from the antimeridian / from the pole) that can reach ~4e7 for longitude and ~2e7
-    // for latitude — and longitude's raw magnitude runs roughly 2x latitude's almost everywhere on
-    // the globe (a full longitude sweep is 2*PI*R*cos(lat), a full latitude sweep only PI*R). Float32
-    // ULP at those magnitudes is a real fraction of one noise cell, and it's worse on X than Y for
-    // exactly that reason — this was the actual cause of the reported "erosion stretched east/west":
-    // not a scale bug, a precision one, and it got worse the smaller the tuned feature size (larger
-    // terrainErosionFreq multiplies the already-large value further). Wrapping with an exact integer
-    // period before floor/fract keeps the value small regardless of where on Earth or how the
-    // frequency/octave is tuned; the noise repeats every 4096 cells (hundreds of km at any sane
-    // feature size), far beyond anything visible in one view.
+    // for latitude. Wrapping with an exact integer period before floor/fract keeps the value small
+    // regardless of where on Earth or how the frequency/octave is tuned; the noise repeats every 4096
+    // cells (hundreds of km at any sane feature size), far beyond anything visible in one view.
+    // NOTE (2026-09-14, tenth pass): this alone does NOT fix magnitude-dependent float32 precision
+    // loss — it wraps the value AFTER the large multiply that produced it has already spent that
+    // precision, only bounding further growth. That was the real cause of "stretched to oblivion" in
+    // the Eastern Hemisphere (large longitude magnitude) vs fine-looking results in the Western
+    // (small magnitude, coincidentally near this sim's own spawn point) — fixed upstream, in
+    // terrainErosionDomain() itself, by wrapping BEFORE its own large multiply. This mod stays as a
+    // cheap, harmless period-shortener on top of an already-precise input.
     p = mod(p, 4096.0);
     vec2 ip = floor(p);
     vec2 fp = fract(p);
@@ -1562,6 +1588,11 @@ void main() {
     // discontinuity, as opposed to terrainStepsUsed above which only reports where a hit landed.
     // -1 means the march didn't even run for this pixel (gate failed).
     int   terrainKNUsed = -1;
+    // Debug-view instrumentation (knockout bit 67108864, "Terrain erosion slope-dir view"): the
+    // raw (East, North) elevation gradient at the hit point, captured unconditionally (independent
+    // of whether erosion is even enabled/strength>0) so this view shows the true input the erosion
+    // code would use, not just its output. vec2(0.0) means no terrain hit this pixel.
+    vec2  dbgSlopeGrad = vec2(0.0);
 
     if (!dbgSkipTerrain() && dir.z < 0.7 && tShell.y > 0.0) {
         // FIX (2026-09-12): tExit used to hard-switch between tBase.x and tShell.y at exactly
@@ -1694,6 +1725,7 @@ void main() {
                     float texLat  = PI * R_EARTH / 10800.0; // ~1853 m/texel
                     float dE2     = (hE2 - hW2) / (2.0 * texLon);
                     float dN2     = (hN2 - hS2) / (2.0 * texLat);
+                    dbgSlopeGrad  = vec2(dE2, dN2); // see "Debug view: terrain erosion slope-dir" below
                     vec3 hUpE     = phE / phL;
                     vec3 hEsE     = normalize(vec3(-hUpE.y, hUpE.x, 0.0)); // East in ECEF
                     vec3 hNrE     = cross(hUpE, hEsE);                      // North in ECEF
@@ -1852,6 +1884,35 @@ void main() {
             distZebraColor = mix(vec3(0.05), vec3(0.95), stripe);
         }
         outColor = vec4(distZebraColor, 1.0);
+        return;
+    }
+
+    // ── Debug view: terrain erosion slope-direction field (knockout bit 67108864) ───────────────
+    // Visualization, not a feature knockout. Colorizes the RAW (East, North) elevation gradient
+    // that feeds terrainErosionDetail's flow direction — dbgSlopeGrad is captured unconditionally
+    // at the hit point (see the gradient block above), independent of whether erosion is enabled
+    // or cloud.terrainErosionStrength>0, so this shows the true input regardless of tuning.
+    // R = East-direction component, G = North-direction component of the unit flow direction
+    // (normalize(vec2(-dN2,dE2)), same formula the real erosion code uses) remapped [-1,1]->[0,1];
+    // a SMOOTHLY VARYING, colorful pattern across a peak means the gradient field itself is healthy
+    // (real directional diversity for the noise to pick up); a large, nearly-UNIFORM patch of one
+    // color means the gradient is genuinely degenerate/constant there — a real upstream bug, not a
+    // downstream noise-shape/tuning issue. B = slope magnitude gated through the same
+    // slopeLo/slopeHi smoothstep the real erosion strength uses, so it also shows WHERE erosion
+    // would actually be gated on (bright B) vs off (dark B) regardless of the East/North color.
+    // Built 2026-09-14 to diagnose a reported "erosion degenerates into pure unbranched stripes at
+    // high latitude / in the Eastern Hemisphere, but branches normally in the Rockies" pattern that
+    // survived a real, independently-confirmed float-precision fix in terrainErosionDomain() —
+    // ruling that fix out as the (sole) cause. Black = no terrain hit this pixel.
+    if ((cloud.dbgDisableMask & 67108864u) != 0u) {
+        vec3 slopeDirColor = vec3(0.0);
+        if (tHit >= 0.0) {
+            vec2  slopeDirDbg = normalize(vec2(-dbgSlopeGrad.y, dbgSlopeGrad.x) + 1e-6);
+            float slopeMagDbg = length(dbgSlopeGrad);
+            float slopeGateDbg = smoothstep(cloud.terrainErosionSlopeLo, cloud.terrainErosionSlopeHi, slopeMagDbg);
+            slopeDirColor = vec3(slopeDirDbg * 0.5 + 0.5, slopeGateDbg);
+        }
+        outColor = vec4(slopeDirColor, 1.0);
         return;
     }
 
