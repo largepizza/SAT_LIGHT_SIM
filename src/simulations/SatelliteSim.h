@@ -133,15 +133,94 @@ enum class OrbitDistribution
                  // Set alignTerminator=true to auto-derive the plane from sunDirECI
 };
 
+// ── Data-driven attitude (lighting overhaul Phase 2, .plans/SAT_LIGHTING_PLAN.md) ──────────
+// A satellite is one or more RIGID GROUPS. Each group's orientation is a two-vector law: a
+// primary body axis points exactly at a target direction, and a secondary body axis points as
+// close as it can to a second target (the TRIAD construction — the same align/constrain scheme
+// STK and GMAT use). An optional 1-DOF joint then rotates the whole group about one of its own
+// body axes (a solar-array gimbal, a roll-to-knife-edge, a fixed tilt). Surfaces are mounted on a
+// group by a body-frame normal. Everything is a closed-form function of the current sim time —
+// no integrated state — so sat_orbit.comp's forward/reverse reproducibility is unaffected.
+// The legacy AttitudeMode values above are all expressible this way; resolveAttitude() converts
+// them (see its table), and that conversion is what the GPU consumes for every type.
+
+// Directions an attitude law or joint can aim at. Must match the ATT_T_* constants in
+// sat_orbit.comp.
+enum class AttTarget : uint32_t
+{
+    Nadir = 0,            // toward Earth's centre
+    Zenith,               // away from Earth's centre
+    Sun,
+    AntiSun,
+    Velocity,             // along-track (circular orbits)
+    AntiVelocity,
+    OrbitNormal,          // r × v
+    AntiOrbitNormal,
+    SunReflectNadir,      // the normal that reflects sunlight straight down: normalize(sun + nadir)
+    SunReflectGroundSite, // the normal that reflects sunlight onto the satellite's chosen ground
+                          // site (TargetedReflector's lock-window + rate-limited-ease machinery)
+};
+
+enum class AttLaw : uint32_t
+{
+    TwoVector = 0, // primary/secondary targets (TRIAD)
+    Tumble,        // uncontrolled spin about the satellite's own random axis (GpuSatOrbit tumble*)
+};
+
+enum class JointMode : uint32_t
+{
+    None = 0,
+    Track,               // rotate about `axis` so body `vector` points as close to `target` as possible
+    EdgeOn,              // rotate about `axis` so body `vector` is perpendicular to `target`
+                         // (the smaller of the two solutions)
+    FixedAngle,          // constant rotation of `angleDeg` about `axis`
+    FlareMitigationTilt, // rotation about `axis` by the global flareMitigationTiltDeg slider
+};
+
+// Upper bound on groups per type that the GPU record carries. Two is exact for every legacy type
+// (at most one group per surface); raise together with GpuSatType::groups and SatType in
+// sat_orbit.comp when Phase 3 brings multi-component models.
+static constexpr int kMaxAttitudeGroups = 2;
+
+struct AttitudeGroup
+{
+    std::string name;
+    AttLaw law = AttLaw::TwoVector;
+    glm::vec3 primaryAxis{0.0f, 0.0f, 1.0f}; // body axis that points exactly at primaryTarget
+    AttTarget primaryTarget = AttTarget::Nadir;
+    glm::vec3 secondaryAxis{1.0f, 0.0f, 0.0f}; // body axis pointed as close as possible at secondaryTarget
+    AttTarget secondaryTarget = AttTarget::Velocity;
+    JointMode jointMode = JointMode::None;
+    glm::vec3 jointAxis{1.0f, 0.0f, 0.0f};   // body axis the joint rotates about
+    glm::vec3 jointVector{0.0f, 0.0f, 1.0f}; // body vector the Track/EdgeOn objective applies to
+    AttTarget jointTarget = AttTarget::Sun;
+    float jointLimitDeg = 180.0f; // |rotation| clamp for Track/EdgeOn
+    float jointAngleDeg = 0.0f;   // FixedAngle rotation
+
+    bool operator==(const AttitudeGroup &o) const
+    {
+        return law == o.law && primaryAxis == o.primaryAxis && primaryTarget == o.primaryTarget &&
+               secondaryAxis == o.secondaryAxis && secondaryTarget == o.secondaryTarget &&
+               jointMode == o.jointMode && jointAxis == o.jointAxis && jointVector == o.jointVector &&
+               jointTarget == o.jointTarget && jointLimitDeg == o.jointLimitDeg &&
+               jointAngleDeg == o.jointAngleDeg;
+    }
+};
+
 // ── One reflective surface of a satellite ─────────────────────────────────────
 // A SatelliteType is composed of a primary surface plus an optional secondary
 // surface (e.g. radiator panels perpendicular to solar panels) and an optional
 // isotropic diffuse floor (structural body scatter).
+// Orientation comes from EITHER the legacy `attitude` mode (group < 0) OR an explicit mount:
+// `group` indexes SatelliteType::groups and `normal` is the body-frame surface normal.
+// resolveAttitude() converts the legacy form into the explicit one.
 struct SurfaceSpec
 {
-    AttitudeMode attitude; // how the surface normal is oriented each frame
+    AttitudeMode attitude; // legacy orientation mode — used only while group < 0
     float specExp;         // specular exponent (0 = Lambertian diffuse)
     float weight;          // contribution weight relative to primary (0 = disabled)
+    int group = -1;        // index into SatelliteType::groups; -1 = not yet resolved (legacy)
+    glm::vec3 normal{0.0f, 0.0f, 1.0f}; // body-frame normal within that group
 };
 
 // ── Per-type satellite parameters (CPU-side, drives GpuSatType) ───────────────
@@ -157,6 +236,7 @@ struct SatelliteType
     float mirrorFrac;      // fraction of primary surface that is near-perfect mirror [0,1]
                            // adds ultra-narrow specular spike (MIRROR_BOOST×) on top of Phong lobe
                            // 0.0 = no mirror peak; 0.05 = Starlink; 0.15 = ISS solar panels
+    std::vector<AttitudeGroup> groups = {}; // rigid groups; filled from JSON and/or resolveAttitude()
 };
 
 // ── Constellation descriptor ───────────────────────────────────────────────────
@@ -190,10 +270,34 @@ struct ConstellationConfig
 // sat_flare.comp then finishes IN PLACE. That removed a 160-byte write+read round trip per
 // satellite per frame, plus the buffer itself (it was allocated at MAX_SATELLITES — 800 MB).
 
-// Per-SatelliteType reflectance parameters, indexed by GpuSatOrbit::typeIdx. These used to be
-// copied into every satellite's GpuSatOrbit record even though they only vary per type — at
-// millions of satellites that duplication was most of the orbit record's bandwidth. std430, all
-// scalars, 48 bytes. Must match SatType in sat_orbit.comp exactly.
+// One rigid attitude group, GPU form (64 bytes, std430). Every body-frame vector is stored in the
+// group's TRIAD coordinates — (t1b·v, t2b·v, t3b·v), with t1b = primaryAxis, t2b = normalize(
+// primaryAxis × secondaryAxis), t3b = t1b × t2b; identity for the Tumble law — so the shader only
+// builds the WORLD triad from the two target directions and multiplies. The body-frame half of
+// the TRIAD construction is per-type constant and is done once on the CPU, in double precision.
+// Must match AttGroup in sat_orbit.comp exactly.
+struct GpuAttGroup
+{
+    uint32_t law;             // AttLaw
+    uint32_t primaryTarget;   // AttTarget
+    uint32_t secondaryTarget; // AttTarget
+    uint32_t jointMode;       // JointMode
+
+    glm::vec3 jointAxisT;     // joint axis, triad coordinates
+    uint32_t jointTarget;     // AttTarget
+
+    glm::vec3 jointVectorT;   // joint objective vector, triad coordinates
+    float jointLimitRad;
+
+    float jointAngleRad;
+    float pad0, pad1, pad2;
+};
+static_assert(sizeof(GpuAttGroup) == 64, "GpuAttGroup layout mismatch");
+
+// Per-SatelliteType reflectance + attitude parameters, indexed by GpuSatOrbit::typeIdx. These used
+// to be copied into every satellite's GpuSatOrbit record even though they only vary per type — at
+// millions of satellites that duplication was most of the orbit record's bandwidth. std430,
+// 208 bytes. Must match SatType in sat_orbit.comp exactly.
 struct GpuSatType
 {
     float baseColorR;
@@ -207,11 +311,20 @@ struct GpuSatType
     float diffuse; // isotropic Lambertian floor
 
     float mirrorFrac;
-    uint32_t primaryAttitude; // AttitudeMode cast to uint
-    uint32_t secondaryAttitude;
+    uint32_t groupCount; // 1..kMaxAttitudeGroups
     uint32_t pad0;
+    uint32_t pad1;
+
+    glm::vec3 surfNormalT0; // primary surface normal, triad coordinates of its group
+    uint32_t surfGroup0;
+    glm::vec3 surfNormalT1; // secondary surface normal, triad coordinates of its group
+    uint32_t surfGroup1;
+
+    GpuAttGroup groups[kMaxAttitudeGroups];
 };
-static_assert(sizeof(GpuSatType) == 48, "GpuSatType layout mismatch");
+static_assert(sizeof(GpuSatType) == 208, "GpuSatType layout mismatch");
+static_assert(offsetof(GpuSatType, surfNormalT0) == 48, "GpuSatType std430 offset");
+static_assert(offsetof(GpuSatType, groups) == 80, "GpuSatType std430 offset");
 
 // Leading block of satTypeBuf (SatTypeBuf in sat_orbit.comp), followed by the GpuSatType array.
 // Holds the two photometry sliders the reflectance model needs. Both used to be read by
@@ -3107,6 +3220,7 @@ private:
     void updateGpuTimingStats(VulkanContext &ctx);                              // called at top of recordCompute(): EMA-smooths
                                                                                 // ctx.timestampMs into gpuMsSmoothed[]/gpuMsTotalSmoothed
     void initConstellation();                                                   // called once: loads definitions then builds orbits
+    void writeResolvedSatTypes() const; // dumps resolved types (new attitude format) to the user data dir
     void loadDefinitions();                                                     // reads constellations.json; falls back to hardcoded defaults
     void loadHardcoded();                                                       // hardcoded satTypes + constellations (used as fallback)
     void buildOrbits();                                                         // populates satOrbits from satTypes + constellations

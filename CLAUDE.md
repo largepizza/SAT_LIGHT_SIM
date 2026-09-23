@@ -339,9 +339,41 @@ Each `SatelliteType` composes two surfaces + a diffuse floor:
 - `diffuse` — constant Lambertian floor (always visible)
 - `mirrorFrac` — fraction of primary that is near-perfect mirror; adds ultra-narrow spike on top of Phong lobe (MIRROR_BOOST=300×)
 
-`SurfaceSpec`: `{AttitudeMode, specExp, weight}`
+`SurfaceSpec`: `{AttitudeMode, specExp, weight, group, normal}` — oriented EITHER by a legacy
+`AttitudeMode` (`group < 0`) OR mounted on a rigid attitude group (`group` + body-frame `normal`).
 
-### AttitudeMode values
+### Rigid attitude groups (lighting overhaul Phase 2, 2026-09-23)
+
+Orientation is **data**, not an enum switch. A type has 1-2 `AttitudeGroup`s
+(`kMaxAttitudeGroups`); each is a **two-vector law** — body `primaryAxis` points exactly at
+`primaryTarget`, body `secondaryAxis` as close as possible at `secondaryTarget` (TRIAD, the STK/GMAT
+align/constrain scheme) — plus an optional **1-DOF joint** about a body axis: `Track` (gimbal),
+`EdgeOn` (knife-edge roll), `FixedAngle`, `FlareMitigationTilt` (the global slider). Targets
+(`AttTarget`): nadir, zenith, sun, anti-sun, velocity, anti-velocity, orbit normal and its anti,
+`SunReflectNadir`, `SunReflectGroundSite` (the TargetedReflector lock-window machinery, unchanged —
+it now just produces `siteIdeal` for whichever group targets it). The `Tumble` law uses the
+per-satellite tumble axis/rate/phase. All closed-form in sim time, so reversibility is intact.
+
+- **Legacy modes are converted, not special-cased.** `resolveAttitude()` (`SatelliteSim.cpp`, top of
+  file) runs for every type in `initConstellation()` and maps each legacy mode through
+  `legacyAttitudeGroup()`'s table; the GPU only ever sees groups. The mapping reproduces every old
+  `computeNormal()` result — verified numerically over 20k random geometries per mode: exact for
+  all but the two joint modes (~1e-15). `Perpendicular` has no fixed-body equivalent in general
+  (it depended on the primary's normal), becomes +Y of the primary's group, and is exact where it
+  matters: every shipped/custom roster uses it only with weight 0, where it contributes nothing.
+- **GPU form** (`GpuAttGroup`, `sat_orbit.comp` `groupNormal()`): every body vector is stored in the
+  group's TRIAD coordinates (computed once per type on the CPU, in double —
+  `attTriadCoords()`), so the shader builds only the world triad from the two target directions.
+  Groups are read straight from the SSBO by index — never through a local copy of the array,
+  which a dynamic index would spill.
+- **Authoring**: `constellations.json` types may carry `"attitude_groups"` and surfaces
+  `{"group": name|index, "normal": [x,y,z]}` (schema updated). Every launch writes
+  `satellite_types_resolved.json` to the user data folder — each loaded type in explicit form,
+  pasteable back and rendering identically. `data/custom/constellations_attitude_example.json`
+  has a legacy Gen2, its explicit twin, and a gimbaled-wing V2 Mini the old enum could not express.
+- Only the two-surface photometric model reads these normals until Phase 3 (primitives/materials).
+
+### AttitudeMode values (legacy — converted to groups at load)
 | Mode | surfN | Use case |
 |------|-------|----------|
 | `NadirPointing` | satNadir | Antenna/array face toward Earth (Starlink) |
@@ -374,7 +406,9 @@ Each `SatelliteType` composes two surfaces + a diffuse floor:
 Types and constellations are loaded from `constellations.json` next to the exe. If the file is missing or malformed, `loadHardcoded()` provides the catalogue above as a fallback. The JSON schema is in `constellations.schema.json`.
 
 ### Adding a new satellite type
-1. Add to `satTypes` in `constellations.json` (or `loadHardcoded()` as fallback)
+1. Add to `satTypes` in `constellations.json` (or `loadHardcoded()` as fallback) — either a legacy
+   `attitude` per surface, or `attitude_groups` + surface `group`/`normal` for anything the legacy
+   modes can't express (see "Rigid attitude groups" above)
 2. No GPU struct changes needed; all fields map to existing `GpuSatType` members
 3. Reference the new typeIdx in a constellation entry
 
@@ -526,14 +560,21 @@ anything that is constant per type goes in `GpuSatType`.
 ```
 `static_assert(sizeof(GpuSatOrbit) == 64)` — do not change field order without updating both structs.
 
-### GpuSatType layout (48 bytes, std430) — `satTypeBuf`
+### GpuSatType layout (208 bytes, std430) — `satTypeBuf`
 One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, after a 16-byte `GpuSatTypeHeader`
 (`brightnessScale`, `mirrorBoost`, 2 pads — rewritten every frame; `SatOrbitPC` is full). Must match
-`SatType`/`SatTypeBuf` in `sat_orbit.comp`.
+`SatType`/`AttGroup`/`SatTypeBuf` in `sat_orbit.comp` (`offsetof` static_asserts guard the C++ side).
 ```
 [ 0] baseColorR, baseColorG, baseColorB, crossSection
 [16] specExp0, specExp1, w1, diffuse
-[32] mirrorFrac, primaryAttitude (uint), secondaryAttitude (uint), pad0
+[32] mirrorFrac, groupCount (uint), pad0, pad1
+[48] surfNormalT0 (vec3, triad coords), surfGroup0 (uint)
+[64] surfNormalT1 (vec3, triad coords), surfGroup1 (uint)
+[80] groups[2] — GpuAttGroup, 64 B each:
+     law, primaryTarget, secondaryTarget, jointMode (uint×4)
+     jointAxisT (vec3), jointTarget (uint)
+     jointVectorT (vec3), jointLimitRad
+     jointAngleRad, pad×3
 ```
 
 ### GpuSatVisible layout (32 bytes, std430)

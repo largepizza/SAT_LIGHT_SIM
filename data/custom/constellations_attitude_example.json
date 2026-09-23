@@ -1,0 +1,91 @@
+{
+    "$schema": "./constellations.schema.json",
+    "version": 1,
+    "satellite_types": [
+        {
+            "name": "Starlink Gen2 (legacy attitude)",
+            "base_color": [0.80, 0.87, 1.00],
+            "cross_section_m2": 10.0,
+            "primary": { "attitude": "KnifeEdge", "spec_exp": 18.0, "weight": 1.0 },
+            "secondary": { "attitude": "NadirPointing", "spec_exp": 5.0, "weight": 0.2 },
+            "diffuse": 0.0,
+            "mirror_frac": 0.05
+        },
+        {
+            "name": "Starlink Gen2 (explicit attitude)",
+            "base_color": [0.80, 0.87, 1.00],
+            "cross_section_m2": 10.0,
+            "attitude_groups": [
+                {
+                    "name": "panel",
+                    "primary": { "axis": [0, 0, 1], "target": "nadir" },
+                    "secondary": { "axis": [1, 0, 0], "target": "velocity" },
+                    "joint": { "mode": "edge_on", "axis": [1, 0, 0], "vector": [0, 0, 1], "target": "sun", "limit_deg": 10 }
+                },
+                {
+                    "name": "bus",
+                    "primary": { "axis": [0, 0, 1], "target": "nadir" },
+                    "secondary": { "axis": [1, 0, 0], "target": "velocity" }
+                }
+            ],
+            "primary": { "group": "panel", "normal": [0, 0, 1], "spec_exp": 18.0, "weight": 1.0 },
+            "secondary": { "group": "bus", "normal": [0, 0, 1], "spec_exp": 5.0, "weight": 0.2 },
+            "diffuse": 0.0,
+            "mirror_frac": 0.05
+        },
+        {
+            "name": "Starlink V2 Mini (gimbaled wings)",
+            "base_color": [0.80, 0.87, 1.00],
+            "cross_section_m2": 10.0,
+            "attitude_groups": [
+                {
+                    "name": "bus",
+                    "primary": { "axis": [0, 0, 1], "target": "nadir" },
+                    "secondary": { "axis": [1, 0, 0], "target": "velocity" }
+                },
+                {
+                    "name": "wings",
+                    "primary": { "axis": [0, 0, 1], "target": "nadir" },
+                    "secondary": { "axis": [1, 0, 0], "target": "velocity" },
+                    "joint": { "mode": "track", "axis": [0, 1, 0], "vector": [0, 0, -1], "target": "sun" }
+                }
+            ],
+            "primary": { "group": "wings", "normal": [0, 0, -1], "spec_exp": 18.0, "weight": 1.0 },
+            "secondary": { "group": "bus", "normal": [0, 0, 1], "spec_exp": 5.0, "weight": 0.2 },
+            "diffuse": 0.0,
+            "mirror_frac": 0.05
+        }
+    ],
+    "constellations": [
+        {
+            "name": "Gen2 shell - legacy attitude",
+            "type": "Starlink Gen2 (legacy attitude)",
+            "alt_km": 530.0,
+            "incl_deg": 53.0,
+            "num_planes": 72,
+            "per_plane": 22,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Gen2 shell - explicit attitude",
+            "type": "Starlink Gen2 (explicit attitude)",
+            "alt_km": 530.0,
+            "incl_deg": 53.0,
+            "num_planes": 72,
+            "per_plane": 22,
+            "enabled": false,
+            "distribution": "Walker"
+        },
+        {
+            "name": "V2 Mini shell - gimbaled wings",
+            "type": "Starlink V2 Mini (gimbaled wings)",
+            "alt_km": 530.0,
+            "incl_deg": 53.0,
+            "num_planes": 72,
+            "per_plane": 22,
+            "enabled": false,
+            "distribution": "Walker"
+        }
+    ]
+}

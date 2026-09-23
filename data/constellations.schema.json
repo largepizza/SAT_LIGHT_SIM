@@ -33,6 +33,13 @@
             "description": "Total reflective area in square metres. Brightness scales as sqrt(area / 10). Starlink ≈ 10, ISS ≈ 250, Reflect Mirror ≈ 2376.",
             "exclusiveMinimum": 0
           },
+          "attitude_groups": {
+            "type": "array",
+            "description": "Rigid attitude groups (1-2). Each group's orientation is a two-vector law: primary.axis (body frame) points exactly at primary.target, secondary.axis points as close as possible at secondary.target; an optional 1-DOF joint then rotates the group about one of its own body axes. Surfaces mount on a group with {group, normal}. Omit this and use a surface 'attitude' string for the legacy modes, which are converted to groups at load — the converted form of every loaded type is written to satellite_types_resolved.json in the user data folder.",
+            "items": { "$ref": "#/$defs/attitude_group" },
+            "minItems": 1,
+            "maxItems": 2
+          },
           "primary": { "$ref": "#/$defs/surface_spec" },
           "secondary": { "$ref": "#/$defs/surface_spec" },
           "diffuse": {
@@ -136,14 +143,79 @@
   },
   "additionalProperties": true,
   "$defs": {
+    "att_target": {
+      "type": "string",
+      "description": "A direction an attitude law or joint can aim at. sun_reflect_nadir: the normal that reflects sunlight straight down. sun_reflect_ground_site: the normal that reflects sunlight onto the satellite's chosen ground site (the TargetedReflector lock-window machinery).",
+      "enum": ["nadir", "zenith", "sun", "anti_sun", "velocity", "anti_velocity", "orbit_normal", "anti_orbit_normal", "sun_reflect_nadir", "sun_reflect_ground_site"]
+    },
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "attitude_group": {
+      "type": "object",
+      "description": "One rigid group. Body frame is arbitrary but conventionally +Z = primary axis.",
+      "properties": {
+        "name": { "type": "string", "description": "Referenced by a surface's 'group'." },
+        "law": {
+          "type": "string",
+          "enum": ["two_vector", "tumble"],
+          "default": "two_vector",
+          "description": "two_vector: primary/secondary targets. tumble: uncontrolled spin about the satellite's own random axis (per-satellite rate/phase); body +X sweeps the plane perpendicular to the spin axis, +Z is the axis."
+        },
+        "primary": {
+          "type": "object",
+          "properties": {
+            "axis": { "$ref": "#/$defs/vec3", "description": "Body axis, default [0,0,1]." },
+            "target": { "$ref": "#/$defs/att_target", "description": "Default nadir." }
+          },
+          "additionalProperties": false
+        },
+        "secondary": {
+          "type": "object",
+          "description": "Constraint that fixes the roll about the primary axis. Must not be parallel to the primary axis.",
+          "properties": {
+            "axis": { "$ref": "#/$defs/vec3", "description": "Body axis, default [1,0,0]." },
+            "target": { "$ref": "#/$defs/att_target", "description": "Default velocity." }
+          },
+          "additionalProperties": false
+        },
+        "joint": {
+          "type": "object",
+          "description": "Optional 1-DOF rotation of the whole group about its own body 'axis'. track: turn so body 'vector' points as close to 'target' as possible (a solar-array gimbal). edge_on: turn so 'vector' is perpendicular to 'target' (the smaller solution — Starlink's knife-edge roll). fixed: constant 'angle_deg'. flare_mitigation_tilt: the global 'Flare mitigate tilt' setting. 'vector' should be perpendicular to 'axis'.",
+          "properties": {
+            "mode": { "type": "string", "enum": ["none", "track", "edge_on", "fixed", "flare_mitigation_tilt"] },
+            "axis": { "$ref": "#/$defs/vec3" },
+            "vector": { "$ref": "#/$defs/vec3" },
+            "target": { "$ref": "#/$defs/att_target" },
+            "limit_deg": { "type": "number", "minimum": 0, "default": 180, "description": "Rotation clamp for track/edge_on." },
+            "angle_deg": { "type": "number", "default": 0, "description": "Rotation for mode 'fixed'." }
+          },
+          "required": ["mode"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "surface_spec": {
       "type": "object",
-      "description": "One reflective surface of a satellite.",
-      "required": ["attitude", "spec_exp", "weight"],
+      "description": "One reflective surface of a satellite. Orient it EITHER with a legacy 'attitude' mode OR by mounting it on an attitude group with 'group' + 'normal'.",
+      "required": ["spec_exp", "weight"],
+      "anyOf": [{ "required": ["attitude"] }, { "required": ["group"] }],
       "properties": {
+        "group": {
+          "type": ["string", "integer"],
+          "description": "Name (or index) of an entry in this type's attitude_groups."
+        },
+        "normal": {
+          "$ref": "#/$defs/vec3",
+          "description": "Surface normal in the group's body frame. Default [0,0,1]."
+        },
         "attitude": {
           "type": "string",
-          "description": "How the surface normal is oriented each frame. NadirPointing: face toward Earth. SunTracking: track the sun. Tumbling: random spin. Perpendicular: cross(primary, nadir). AntiNadir: face away from Earth. FlatMirror45: reflect sunlight straight down. TargetedReflector: aim reflected beam at nearest night-side ground target. KnifeEdge: roll around velocity axis to put sun edge-on; clamped to ±80° for solar-panel power. SunPerp: cross(sunDir, nadir) — thermal radiator always edge-on to sun; irr=0, contribution via diffuse. SunTrackingTilted: sun-tracking pitched away from nadir toward zenith by the global 'Flare mitigate tilt' setting, to steer reflected glare away from ground observers; power output drops by cos(tilt).",
+          "description": "Legacy orientation mode (converted to an attitude group at load). NadirPointing: face toward Earth. SunTracking: track the sun. Tumbling: random spin. Perpendicular: cross(primary, nadir). AntiNadir: face away from Earth. FlatMirror45: reflect sunlight straight down. TargetedReflector: aim reflected beam at nearest night-side ground target. KnifeEdge: roll around velocity axis to put sun edge-on; clamped to ±80° for solar-panel power. SunPerp: cross(sunDir, nadir) — thermal radiator always edge-on to sun; irr=0, contribution via diffuse. SunTrackingTilted: sun-tracking pitched away from nadir toward zenith by the global 'Flare mitigate tilt' setting, to steer reflected glare away from ground observers; power output drops by cos(tilt).",
           "enum": [
             "NadirPointing",
             "SunTracking",
