@@ -126,9 +126,11 @@ struct SatPhotResult
 
 // Evaluates one satellite. Geometry model: `lobes` non-empty (SatelliteType::lobes, or a SatModel's
 // bakeSatLobes()). Otherwise `legacy` must be given and the legacy two-surface flux is mirrored.
+// `occ` (Phase 3b, buildSatOcclusion) adds occlusion between parts: sunlight needs both rays clear,
+// earthshine only the observer ray (Earth is too broad a source for one shadow ray).
 SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const std::vector<GpuSatLobe> &lobes,
                                 const SatOrbitElems &orbit, double tJ2000, const SatPhotInputs &in,
-                                const LegacyReflectance *legacy = nullptr);
+                                const LegacyReflectance *legacy = nullptr, const SatOcclusion *occ = nullptr);
 
 // Magnitude conversions (design page, "Photometric conventions").
 double satMagnitudeFromIntensity(double intensity, double rangeM); // +inf when intensity <= 0

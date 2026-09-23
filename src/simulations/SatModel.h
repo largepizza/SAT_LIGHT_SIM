@@ -297,9 +297,65 @@ struct SatLobeBakeStats
 };
 
 // Merges triangles into ≤ budget lobes (exact merge first, then angular agglomeration within the
-// same group + material), expressed in root triad coordinates.
+// same group + material), expressed in root triad coordinates. `lobeTris`, when given, receives the
+// triangle indices each emitted lobe was built from (for the occlusion bake).
 std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri> &tris, int budget,
-                                     SatLobeBakeStats &stats);
+                                     SatLobeBakeStats &stats, std::vector<std::vector<int>> *lobeTris = nullptr);
+
+// ── Phase 3b: occlusion between parts (benchmarking M7) ───────────────────────────────────────
+// The shadowing study showed the shadowing that matters is BETWEEN parts that move relative to each
+// other (wings over a bus, a visor under antennas), so it is evaluated at runtime against the
+// model's own primitives posed at the live joint angles. Each lobe keeps a few area-weighted sample
+// points on its own surface; a sample counts only if its rays toward the light source and toward the
+// observer both leave the satellite unblocked. Primitives stand in for their tessellation exactly
+// (planes, boxes, spheres) or as a smooth surface (a capped cylinder for a cylinder's facets; a cone
+// is bounded by the cylinder of its larger radius — conservative).
+static constexpr int kMaxLobeSamples = 16; // storage bound; the count used is a bake parameter
+static constexpr int kDefaultLobeSamples = 16; // M7 self-test: p95 0.16 mag on VisorSat vs 0.28 at 8
+static constexpr int kMaxOccluders = 32; // per model (a bitmask per lobe selects the candidates)
+
+struct SatOccluder
+{
+    PrimitiveKind kind = PrimitiveKind::Plane;
+    int group = 0;
+    glm::dvec3 center{0.0};  // rest pose, root body frame
+    glm::dmat3 axes{1.0};    // columns: the component's local X, Y, Z in the rest frame
+    glm::dvec3 half{0.0};    // plane (w/2, h/2, 0); box half extents; cylinder/cone (r, r, h/2); sphere (r, r, r)
+};
+
+struct SatLobeSamples
+{
+    int count = 0;
+    glm::dvec3 p[kMaxLobeSamples];      // rest pose, root body frame, on the lobe's surface
+    glm::dvec3 n[kMaxLobeSamples];      // that surface's outward normal
+    double w[kMaxLobeSamples] = {};     // area fractions (sum 1)
+    int comp[kMaxLobeSamples] = {};     // component the sample lies on (never occludes itself)
+    uint32_t occluderMask = 0;          // occluders that can ever block this lobe
+};
+
+struct SatOcclusion
+{
+    std::vector<SatOccluder> occluders;
+    std::vector<SatLobeSamples> lobes; // parallel to the baked lobes
+    int droppedOccluders = 0;          // components beyond kMaxOccluders (reported, not modelled)
+};
+
+// Builds occluders from the model's components and up to `samplesPerLobe` (<= kMaxLobeSamples)
+// sample points for each baked lobe. A primitive never occludes its own surface: every primitive
+// here is convex or flat, so that is exact — and it keeps a faceted cylinder's samples, which sit
+// just inside the smooth cylinder standing in for it, from shadowing themselves.
+SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tris,
+                               const std::vector<GpuSatLobe> &lobes, const std::vector<std::vector<int>> &lobeTris,
+                               int samplesPerLobe = kDefaultLobeSamples);
+
+// Barycentric centroids of the m² equal sub-triangles of a triangle split m ways per edge — evenly
+// spread, equal-area sample points (the occlusion bake and its self-test reference use them).
+std::vector<glm::dvec3> satSubTriangleCentroids(int m);
+
+// Fraction of lobe `li` (weighted by its samples) whose rays toward `src` (if `testSource`) and
+// toward `obs` are both unblocked, with every group posed by `poses`. World directions, unit.
+double satLobeVisibility(const SatOcclusion &occ, int li, int lobeGroup, const std::vector<GroupPose> &poses,
+                         glm::dvec3 src, bool testSource, glm::dvec3 obs);
 
 // Brute-force check of the baked lobes against per-triangle evaluation over random (sun,
 // observer) body-frame direction pairs. Fills stats.maxErrMag / p95ErrMag.
@@ -318,7 +374,7 @@ double evalSatLobes(const std::vector<GpuSatLobe> &lobes, const std::vector<Atti
 // `dominant` is given it receives the index of the brightest lobe (-1 if none is lit).
 double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                          const std::vector<GroupPose> &poses, glm::dvec3 s, glm::dvec3 o, double sourceAlpha2,
-                         int *dominant = nullptr);
+                         int *dominant = nullptr, const SatOcclusion *occ = nullptr, bool occludeSource = true);
 
 // Intensity of one flat facet or lobe per unit irradiance — the formula every evaluator above (and
 // sat_orbit.comp's lobeIntensity()) uses. `a2` includes the source-size term.

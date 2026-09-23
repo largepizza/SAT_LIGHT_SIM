@@ -61,10 +61,12 @@ struct BenchRunResult
 // Seconds since J2000 (2000-01-01 12:00) of an ISO date's 00:00 UTC. False on a malformed date.
 bool benchIsoDateToJ2000(const std::string &iso, double &tJ2000);
 
-// Runs one distribution benchmark. `lobes` are the model's baked lobes. False with `err` when the
-// benchmark lacks what sampling needs (sites, shell) or no sample could be drawn.
+// Runs one distribution benchmark. `lobes` are the model's baked lobes; `occ` (optional) its
+// occlusion data (Phase 3b). False with `err` when the benchmark lacks what sampling needs (sites,
+// shell) or no sample could be drawn.
 bool runDistributionBenchmark(const Benchmark &b, const SatModel &m, const std::vector<GpuSatLobe> &lobes,
-                              const BenchRunConfig &cfg, BenchRunResult &out, std::string &err);
+                              const BenchRunConfig &cfg, BenchRunResult &out, std::string &err,
+                              const SatOcclusion *occ = nullptr);
 
 // Summary statistics of a plain list of 1000-km magnitudes.
 BenchStats benchStatsOfValues(const std::vector<double> &m1000, int notSeen);

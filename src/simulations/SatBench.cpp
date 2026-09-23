@@ -59,7 +59,8 @@ BenchStats benchStatsOfValues(const std::vector<double> &m1000, int notSeen)
 }
 
 bool runDistributionBenchmark(const Benchmark &b, const SatModel &m, const std::vector<GpuSatLobe> &lobes,
-                              const BenchRunConfig &cfg, BenchRunResult &out, std::string &err)
+                              const BenchRunConfig &cfg, BenchRunResult &out, std::string &err,
+                              const SatOcclusion *occ)
 {
     out = BenchRunResult{};
     out.config = cfg;
@@ -150,7 +151,7 @@ bool runDistributionBenchmark(const Benchmark &b, const SatModel &m, const std::
             SatPhotInputs in;
             in.sunDirEci = sun;
             in.obsEci = obs;
-            SatPhotResult r = evalSatPhotometry(m.groups, lobes, e, t, in);
+            SatPhotResult r = evalSatPhotometry(m.groups, lobes, e, t, in, nullptr, occ);
             if (!r.supported || r.litFactor < 0.999)
                 continue;
 

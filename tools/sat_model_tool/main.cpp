@@ -197,6 +197,163 @@ bool selfTestModel(const SatModel &m, const std::vector<SatTri> &tris, int budge
                 p(errBudget, 0.95), p(errBudget, 1.0));
     return ok;
 }
+// Möller–Trumbore: does origin + t·dir (t > 1e-6) hit the triangle?
+bool rayHitsTriangle(glm::dvec3 org, glm::dvec3 dir, const glm::dvec3 &a, const glm::dvec3 &b, const glm::dvec3 &c)
+{
+    glm::dvec3 e1 = b - a, e2 = c - a, pv = glm::cross(dir, e2);
+    double det = glm::dot(e1, pv);
+    if (std::abs(det) < 1e-14)
+        return false;
+    double inv = 1.0 / det;
+    glm::dvec3 tv = org - a;
+    double u = glm::dot(tv, pv) * inv;
+    if (u < 0.0 || u > 1.0)
+        return false;
+    glm::dvec3 qv = glm::cross(tv, e1);
+    double v = glm::dot(dir, qv) * inv;
+    if (v < 0.0 || u + v > 1.0)
+        return false;
+    return glm::dot(e2, qv) * inv > 1e-6;
+}
+
+// Occlusion check (M7, Phase 3b): the runtime occlusion — primitive ray tests from area-weighted
+// samples per lobe — against a fine brute force that casts rays from 25 evenly spread points on EVERY
+// triangle against every other triangle. The difference is sampling error (plus a cylinder's
+// facets vs the smooth cylinder standing in for it). Measured for 4, 8 and 16 samples per lobe; the
+// gate applies to kDefaultLobeSamples, over configurations brighter than magnitude 20.
+bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int samples)
+{
+    SatLobeBakeStats st;
+    std::vector<std::vector<int>> lobeTris;
+    std::vector<GpuSatLobe> lobes = bakeSatLobes(m, tris, 1 << 20, st, &lobeTris);
+    const int kCounts[3] = {4, 8, 16};
+    SatOcclusion occ[3];
+    for (int v = 0; v < 3; ++v)
+        occ[v] = buildSatOcclusion(m, tris, lobes, lobeTris, kCounts[v]);
+    int candidates = 0;
+    for (const SatLobeSamples &s : occ[0].lobes)
+        for (size_t i = 0; i < occ[0].occluders.size(); ++i)
+            candidates += (s.occluderMask >> i) & 1u;
+
+    std::mt19937 rng(9191);
+    std::uniform_real_distribution<double> ud(0.0, 1.0);
+    std::normal_distribution<double> nd;
+    auto randDir = [&]() { return glm::normalize(glm::dvec3(nd(rng), nd(rng), nd(rng))); };
+    const double a2Sun = (double)kSunAlpha * kSunAlpha;
+    const std::vector<glm::dvec3> bary = satSubTriangleCentroids(5);
+    const double wPt = 1.0 / bary.size();
+
+    std::vector<double> err[3], dimming;
+    std::vector<SatTri> posed(tris.size());
+    for (int iter = 0; iter < samples * 50 && (int)dimming.size() < samples; ++iter)
+    {
+        SatOrbitElems e;
+        e.raan = ud(rng) * 2.0 * satphot::kPi;
+        e.incl = ud(rng) * satphot::kPi;
+        e.u0 = ud(rng) * 2.0 * satphot::kPi;
+        e.rSatM = satphot::kEarthRadiusM + 350000.0 + ud(rng) * 900000.0;
+        const double t = 6.3e8 + ud(rng) * 5.0e8;
+        SatOrbitState so = satOrbitStateAt(e, t);
+        SatPhotInputs in;
+        in.sunDirEci = sunDirEciAt(t);
+        in.obsEci = satphot::kEarthRadiusM * glm::normalize(-so.nadir + 0.45 * randDir());
+        SatPhotResult open = evalSatPhotometry(m.groups, lobes, e, t, in);
+        if (!open.supported || open.sinElevation < 0.05)
+            continue;
+
+        // Reference: posed triangles, 25 points each, rays against all other triangles.
+        AttGeometry geo;
+        geo.nadir = so.nadir;
+        geo.velocity = so.velocity;
+        geo.sun = in.sunDirEci;
+        geo.siteIdeal = so.nadir;
+        std::vector<GroupPose> poses = evalGroupPoses(m.groups, geo, false);
+        for (size_t i = 0; i < tris.size(); ++i)
+        {
+            const GroupPose &P = poses[tris[i].group];
+            posed[i] = tris[i];
+            for (int k = 0; k < 3; ++k)
+                posed[i].p[k] = P.R * tris[i].p[k] + P.t;
+            posed[i].n = P.R * tris[i].n;
+        }
+        const glm::dvec3 o = glm::normalize(in.obsEci - so.posEci);
+        const double rOverD = satphot::kEarthRadiusM / e.rSatM;
+        const double alphaE = rOverD / (1.0 + std::sqrt(1.0 - rOverD * rOverD));
+        double Isun = 0.0, Iearth = 0.0;
+        for (size_t i = 0; i < posed.size(); ++i)
+        {
+            const SatTri &tr = posed[i];
+            const SatMaterial &mat = m.materials[tr.material];
+            const double a2 = (double)mat.roughness * mat.roughness + tr.spread2;
+            double is = satLobeIntensity(tr.n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + a2Sun,
+                                         in.sunDirEci, o);
+            double ie = satLobeIntensity(tr.n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0,
+                                         a2 + alphaE * alphaE, so.nadir, o);
+            if (is <= 0.0 && ie <= 0.0)
+                continue;
+            double visSun = 0.0, visObs = 0.0;
+            for (const glm::dvec3 &w : bary)
+            {
+                glm::dvec3 pt = w.x * tr.p[0] + w.y * tr.p[1] + w.z * tr.p[2] + tr.n * 1e-4;
+                bool blockObs = false, blockSun = false;
+                for (size_t j = 0; j < posed.size() && !(blockObs && blockSun); ++j)
+                {
+                    // A triangle of the same component never occludes it (convex/flat primitives) —
+                    // the rule the runtime uses too, and what keeps a faceted cylinder from
+                    // shadowing itself through its own chords.
+                    if (j == i || posed[j].component == tr.component)
+                        continue;
+                    if (!blockObs && rayHitsTriangle(pt, o, posed[j].p[0], posed[j].p[1], posed[j].p[2]))
+                        blockObs = true;
+                    if (!blockSun && rayHitsTriangle(pt, in.sunDirEci, posed[j].p[0], posed[j].p[1], posed[j].p[2]))
+                        blockSun = true;
+                }
+                visObs += blockObs ? 0.0 : wPt;
+                visSun += (blockObs || blockSun) ? 0.0 : wPt;
+            }
+            Isun += is * visSun;
+            Iearth += ie * visObs;
+        }
+        const double ref = Isun * open.litFactor + Iearth * open.earthIrradiance;
+        if (!(ref > 0.0) || satMagnitudeFromIntensity(ref, open.rangeM) > 20.0)
+            continue;
+        SatPhotResult rv[3];
+        bool dark = false;
+        for (int v = 0; v < 3; ++v)
+        {
+            rv[v] = evalSatPhotometry(m.groups, lobes, e, t, in, nullptr, &occ[v]);
+            dark |= !(rv[v].intensity > 0.0);
+        }
+        if (dark)
+            continue;
+        for (int v = 0; v < 3; ++v)
+            err[v].push_back(std::abs(2.5 * std::log10(rv[v].intensity / ref)));
+        dimming.push_back(2.5 * std::log10(open.intensity / ref));
+    }
+    auto pct = [](std::vector<double> v, double q) {
+        if (v.empty())
+            return 0.0;
+        std::sort(v.begin(), v.end());
+        return v[(size_t)(q * (v.size() - 1))];
+    };
+    std::printf("  occlusion self-test (%zu configurations; %zu occluders, %d lobe-occluder candidate pairs of %zu):\n",
+                dimming.size(), occ[0].occluders.size(), candidates, occ[0].lobes.size() * occ[0].occluders.size());
+    std::printf("    reference (25 points per triangle) dims these configurations by: median %.3f, p90 %.3f, max %.2f mag\n",
+                pct(dimming, 0.5), pct(dimming, 0.9), pct(dimming, 1.0));
+    bool ok = false;
+    for (int v = 0; v < 3; ++v)
+    {
+        const bool gated = kCounts[v] == kDefaultLobeSamples;
+        const double p95 = pct(err[v], 0.95);
+        if (gated)
+            ok = !err[v].empty() && p95 < 0.25;
+        std::printf("    %s %2d samples/lobe vs reference: |dmag| median %.3f, p95 %.3f, max %.2f%s\n",
+                    gated ? (ok ? "ok  " : "FAIL") : "info", kCounts[v], pct(err[v], 0.5), p95, pct(err[v], 1.0),
+                    gated ? "  (gate p95 < 0.25)" : "");
+    }
+    return ok;
+}
+
 // Benchmark file check (design page M3): a file's own observations must reproduce the statistics
 // the paper printed, which proves the transcription; a differential file's published difference
 // must follow from its two referenced files. Printed values are rounded, so a scalar may differ by
@@ -319,6 +476,8 @@ int main(int argc, char **argv)
             runOpt.modelsDir = argv[++i];
         else if (a == "--sensitivity")
             runOpt.sensitivity = true;
+        else if (a == "--no-occlusion")
+            runOpt.occlusion = false;
         else if (a == "--out" && i + 1 < argc)
             outDir = argv[++i];
         else if (a == "--budget" && i + 1 < argc)
@@ -338,7 +497,7 @@ int main(int argc, char **argv)
         std::printf("usage: SatModelTool <model.json> [...] [--out <dir>] [--budget <lobes>] [--shadow-study <N>]\n"
                     "                    [--selftest <N>] [--benchmark <file.json>]...\n"
                     "                    [--run-benchmark <file.json>]... [--samples <N>] [--seed <S>]\n"
-                    "                    [--sensitivity] [--report-dir <dir>] [--models-dir <dir>]\n");
+                    "                    [--sensitivity] [--no-occlusion] [--report-dir <dir>] [--models-dir <dir>]\n");
         return 2;
     }
     int selfTestFailures = 0;
@@ -443,7 +602,10 @@ int main(int argc, char **argv)
                         ss.brightP90Dmag, 100.0 * ss.brightFracOver01, 100.0 * ss.brightFracOver05);
         }
         if (selfTestSamples > 0)
+        {
             selfTestFailures += selfTestModel(m, tris, budget, selfTestSamples) ? 0 : 1;
+            selfTestFailures += selfTestOcclusion(m, tris, std::max(200, selfTestSamples / 4)) ? 0 : 1;
+        }
         std::printf("  OBJ: %s\n\n", objOk ? (std::filesystem::path(outDir) / (id + "_rest.obj / _sunlit.obj")).string().c_str()
                                            : "export FAILED");
     }

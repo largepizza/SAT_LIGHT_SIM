@@ -94,6 +94,7 @@ struct LoadedModel
 {
     SatModel model;
     std::vector<GpuSatLobe> lobes;
+    SatOcclusion occlusion;
     std::string path, hash;
     int exactLobes = 0;
 };
@@ -113,7 +114,9 @@ bool loadModelFor(const Benchmark &b, const BenchRunOptions &opt, LoadedModel &o
         return false;
     std::vector<SatTri> tris = tessellateSatModel(out.model);
     SatLobeBakeStats st;
-    out.lobes = bakeSatLobes(out.model, tris, opt.lobeBudget, st);
+    std::vector<std::vector<int>> lobeTris;
+    out.lobes = bakeSatLobes(out.model, tris, opt.lobeBudget, st, &lobeTris);
+    out.occlusion = buildSatOcclusion(out.model, tris, out.lobes, lobeTris);
     out.exactLobes = st.exactLobes;
     out.hash = fileHash(out.path);
     return true;
@@ -253,7 +256,12 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
     BenchRunConfig cfg;
     cfg.samples = opt.samples;
     cfg.seed = opt.seed;
-    if (!runDistributionBenchmark(b, lm.model, lm.lobes, cfg, base, err))
+    const SatOcclusion *occ = opt.occlusion ? &lm.occlusion : nullptr;
+    const std::string occDesc =
+        opt.occlusion ? "primitive ray tests, " + std::to_string(lm.occlusion.occluders.size()) + " occluders, <= " +
+                            std::to_string(kMaxLobeSamples) + " samples per lobe (Phase 3b)"
+                      : std::string("none (--no-occlusion)");
+    if (!runDistributionBenchmark(b, lm.model, lm.lobes, cfg, base, err, occ))
     {
         std::printf("  FAILED: %s\n", err.c_str());
         return false;
@@ -309,8 +317,8 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
     for (const json &r : cmp)
         pass &= r["verdict"] != "fail";
 
-    std::printf("  model %s (%zu lobes, budget %d; %d exact) — occlusion: none (Phase 3b not built)\n",
-                lm.model.name.c_str(), lm.lobes.size(), opt.lobeBudget, lm.exactLobes);
+    std::printf("  model %s (%zu lobes, budget %d; %d exact) — occlusion: %s\n", lm.model.name.c_str(),
+                lm.lobes.size(), opt.lobeBudget, lm.exactLobes, occDesc.c_str());
     std::printf("  %d simulated observations (%d censored), reference: %s\n", base.stats.n, base.stats.notSeen,
                 refSource.c_str());
     printCompare(cmp);
@@ -356,7 +364,7 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
         for (const BenchRunConfig &v : sensitivityVariants(cfg))
         {
             BenchRunResult r;
-            if (!runDistributionBenchmark(b, lm.model, lm.lobes, v, r, err))
+            if (!runDistributionBenchmark(b, lm.model, lm.lobes, v, r, err, occ))
                 continue;
             double d = r.stats.mean - base.stats.mean;
             std::printf("    %-18s mean %6.3f  median %6.3f  (%+.3f)\n", v.label.c_str(), r.stats.mean, r.stats.median, d);
@@ -383,7 +391,7 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
                 {"lobe_budget", opt.lobeBudget},
                 {"lobes", lm.lobes.size()},
                 {"exact_lobes", lm.exactLobes},
-                {"occlusion", "none (Phase 3b not built)"}}},
+                {"occlusion", occDesc}}},
               {"config", configJson(cfg)},
               {"reference", {{"source", refSource},
                              {"n", ref.n},

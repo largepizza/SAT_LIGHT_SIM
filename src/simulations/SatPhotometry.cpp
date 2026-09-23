@@ -138,7 +138,7 @@ double satMagnitudeTo1000km(double mag, double rangeM)
 
 SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const std::vector<GpuSatLobe> &lobes,
                                 const SatOrbitElems &orbit, double tJ2000, const SatPhotInputs &in,
-                                const LegacyReflectance *legacy)
+                                const LegacyReflectance *legacy, const SatOcclusion *occ)
 {
     SatPhotResult r;
     r.orbit = satOrbitStateAt(orbit, tJ2000);
@@ -209,9 +209,9 @@ SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const 
 
     // ── Lobes ───────────────────────────────────────────────────────────────────────────────
     const double a2Sun = (double)kSunAlpha * kSunAlpha;
-    r.intensitySun = evalSatLobesPosed(lobes, groups, poses, sun, o, a2Sun, &r.dominantLobe);
+    r.intensitySun = evalSatLobesPosed(lobes, groups, poses, sun, o, a2Sun, &r.dominantLobe, occ, true);
     r.intensityEarth = r.earthIrradiance > 0.0
-                           ? evalSatLobesPosed(lobes, groups, poses, nadir, o, alphaE * alphaE)
+                           ? evalSatLobesPosed(lobes, groups, poses, nadir, o, alphaE * alphaE, nullptr, occ, false)
                            : 0.0;
     r.intensity = r.intensitySun * r.litFactor + r.intensityEarth * r.earthIrradiance;
     if (r.litFactor <= 0.0)

@@ -771,6 +771,7 @@ struct LobeAcc
     int group = 0;
     int material = -1; // -1 once lobes of different materials have been merged
     bool alive = true;
+    std::vector<int> tris; // source triangles (occlusion sample points)
 
     glm::dvec3 dir() const
     {
@@ -786,6 +787,7 @@ struct LobeAcc
         sumA2 += o.sumA2;
         if (material != o.material)
             material = -1;
+        tris.insert(tris.end(), o.tris.begin(), o.tris.end());
     }
 };
 
@@ -823,14 +825,15 @@ double lobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, 
 } // namespace
 
 std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri> &tris, int budget,
-                                     SatLobeBakeStats &stats)
+                                     SatLobeBakeStats &stats, std::vector<std::vector<int>> *lobeTris)
 {
     stats.triangles = (int)tris.size();
 
     // 1) Exact merge: identical (group, material, normal to within ~0.5°) — every flat face.
     std::vector<LobeAcc> acc;
-    for (const SatTri &t : tris)
+    for (size_t ti = 0; ti < tris.size(); ++ti)
     {
+        const SatTri &t = tris[ti];
         const SatMaterial &mat = m.materials[t.material];
         LobeAcc *hit = nullptr;
         for (LobeAcc &a : acc)
@@ -847,6 +850,7 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
         one.sumA2 = ((double)mat.roughness * mat.roughness + t.spread2) * t.area;
         one.group = t.group;
         one.material = t.material;
+        one.tris.push_back((int)ti);
         if (hit)
             hit->absorb(one);
         else
@@ -895,6 +899,8 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
 
     // 3) Emit, in root triad coordinates.
     std::vector<GpuSatLobe> lobes;
+    if (lobeTris)
+        lobeTris->clear();
     for (const LobeAcc &a : acc)
     {
         if (!a.alive || a.sumA <= 0.0)
@@ -910,6 +916,8 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
         L.alpha2Mat = (float)(a.sumA2 / a.sumA + std::max(0.0, 2.0 * (1.0 - rbar)));
         L.visLayer = 0xFFFFFFFFu;
         lobes.push_back(L);
+        if (lobeTris)
+            lobeTris->push_back(a.tris);
     }
     stats.lobes = (int)lobes.size();
     return lobes;
@@ -930,7 +938,7 @@ double evalSatLobes(const std::vector<GpuSatLobe> &lobes, const std::vector<Atti
 
 double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                          const std::vector<GroupPose> &poses, glm::dvec3 s, glm::dvec3 o, double sourceAlpha2,
-                         int *dominant)
+                         int *dominant, const SatOcclusion *occ, bool occludeSource)
 {
     double sum = 0.0, best = 0.0;
     int bestIdx = -1;
@@ -940,6 +948,8 @@ double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector
         glm::dvec3 nBody = bodyTriad(groups[attRootOf(groups, (int)L.group)]) * glm::dvec3(L.normalT);
         glm::dvec3 n = glm::normalize(poses[L.group].R * nBody);
         double I = lobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat + sourceAlpha2, s, o);
+        if (I > 0.0 && occ && li < occ->lobes.size())
+            I *= satLobeVisibility(*occ, (int)li, (int)L.group, poses, s, occludeSource, o);
         sum += I;
         if (I > best)
         {
@@ -956,6 +966,318 @@ double satLobeIntensity(glm::dvec3 n, double area, double diffArea, double albed
                         glm::dvec3 s, glm::dvec3 o)
 {
     return lobeIntensity(n, area, diffArea, albedo, f0, a2, s, o);
+}
+
+// ── Phase 3b: occlusion between parts ─────────────────────────────────────────────────────────
+namespace
+{
+// Corner / bounding points of an occluder in the rest frame (for the bake-time candidate test).
+std::vector<glm::dvec3> occluderPoints(const SatOccluder &o)
+{
+    std::vector<glm::dvec3> pts;
+    const double hz = o.kind == PrimitiveKind::Plane ? 0.0 : o.half.z;
+    for (int sx = -1; sx <= 1; sx += 2)
+        for (int sy = -1; sy <= 1; sy += 2)
+            for (int sz = -1; sz <= 1; sz += 2)
+                pts.push_back(o.center + o.axes * glm::dvec3(sx * o.half.x, sy * o.half.y, sz * hz));
+    return pts;
+}
+
+// True if the ray org + t·dir (t > tMin) hits the occluder. Both in the occluder's LOCAL frame.
+bool rayHitsOccluder(const SatOccluder &o, glm::dvec3 org, glm::dvec3 dir)
+{
+    constexpr double tMin = 1e-6;
+    switch (o.kind)
+    {
+    case PrimitiveKind::Plane:
+    {
+        if (std::abs(dir.z) < 1e-12)
+            return false;
+        double t = -org.z / dir.z;
+        if (t <= tMin)
+            return false;
+        glm::dvec3 p = org + t * dir;
+        return std::abs(p.x) <= o.half.x && std::abs(p.y) <= o.half.y;
+    }
+    case PrimitiveKind::Box:
+    {
+        double tNear = -1e300, tFar = 1e300;
+        for (int a = 0; a < 3; ++a)
+        {
+            if (std::abs(dir[a]) < 1e-15)
+            {
+                if (std::abs(org[a]) > o.half[a])
+                    return false;
+                continue;
+            }
+            double t0 = (-o.half[a] - org[a]) / dir[a], t1 = (o.half[a] - org[a]) / dir[a];
+            if (t0 > t1)
+                std::swap(t0, t1);
+            tNear = std::max(tNear, t0);
+            tFar = std::min(tFar, t1);
+            if (tNear > tFar)
+                return false;
+        }
+        return tFar > tMin;
+    }
+    case PrimitiveKind::Cylinder:
+    case PrimitiveKind::Cone: // bounded by the cylinder of its larger radius (conservative)
+    {
+        const double r = o.half.x, hh = o.half.z;
+        // Side: |xy(org + t dir)| = r with |z| <= hh.
+        double a = dir.x * dir.x + dir.y * dir.y;
+        double b = 2.0 * (org.x * dir.x + org.y * dir.y);
+        double c = org.x * org.x + org.y * org.y - r * r;
+        if (a > 1e-15)
+        {
+            double disc = b * b - 4.0 * a * c;
+            if (disc >= 0.0)
+            {
+                double sq = std::sqrt(disc);
+                for (double t : {(-b - sq) / (2.0 * a), (-b + sq) / (2.0 * a)})
+                    if (t > tMin && std::abs(org.z + t * dir.z) <= hh)
+                        return true;
+            }
+        }
+        // Caps.
+        if (std::abs(dir.z) > 1e-15)
+            for (double zc : {-hh, hh})
+            {
+                double t = (zc - org.z) / dir.z;
+                if (t > tMin)
+                {
+                    glm::dvec3 p = org + t * dir;
+                    if (p.x * p.x + p.y * p.y <= r * r)
+                        return true;
+                }
+            }
+        return false;
+    }
+    case PrimitiveKind::Sphere:
+    {
+        const double r = o.half.x;
+        double b = glm::dot(org, dir), c = glm::dot(org, org) - r * r;
+        double disc = b * b - c;
+        if (disc < 0.0)
+            return false;
+        double sq = std::sqrt(disc);
+        return (-b - sq) > tMin || (-b + sq) > tMin;
+    }
+    }
+    return false;
+}
+} // namespace
+
+std::vector<glm::dvec3> satSubTriangleCentroids(int m)
+{
+    std::vector<glm::dvec3> out;
+    m = std::max(1, m);
+    for (int i = 0; i < m; ++i)
+        for (int j = 0; j < m - i; ++j)
+        {
+            // The "up" sub-triangle with corner (i, j), and the "down" one beside it when it exists.
+            double a = (i + 1.0 / 3.0) / m, b = (j + 1.0 / 3.0) / m;
+            out.push_back({a, b, 1.0 - a - b});
+            if (i + j < m - 1)
+            {
+                a = (i + 2.0 / 3.0) / m;
+                b = (j + 2.0 / 3.0) / m;
+                out.push_back({a, b, 1.0 - a - b});
+            }
+        }
+    return out;
+}
+
+SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tris,
+                               const std::vector<GpuSatLobe> &lobes, const std::vector<std::vector<int>> &lobeTris,
+                               int samplesPerLobe)
+{
+    samplesPerLobe = std::clamp(samplesPerLobe, 1, kMaxLobeSamples);
+    SatOcclusion occ;
+    // Occluders: one per component, in the rest frame (same transform the tessellator uses).
+    std::vector<glm::dvec3> origin(m.groups.size(), glm::dvec3(0.0));
+    for (size_t gi = 0; gi < m.groups.size(); ++gi)
+        if (m.groups[gi].parent >= 0)
+            origin[gi] = origin[m.groups[gi].parent] + glm::dvec3(m.groups[gi].hingePos);
+    for (const SatComponent &c : m.components)
+    {
+        if ((int)occ.occluders.size() >= kMaxOccluders)
+        {
+            ++occ.droppedOccluders;
+            continue;
+        }
+        SatOccluder o;
+        o.kind = c.prim;
+        o.group = c.group;
+        o.center = origin[c.group] + glm::dvec3(c.position);
+        o.axes = glm::dmat3(glm::mat3_cast(c.rotation));
+        switch (c.prim)
+        {
+        case PrimitiveKind::Plane: o.half = {0.5 * c.size.x, 0.5 * c.size.y, 0.0}; break;
+        case PrimitiveKind::Box: o.half = 0.5 * glm::dvec3(c.size); break;
+        case PrimitiveKind::Cylinder: o.half = {c.radius, c.radius, 0.5 * c.height}; break;
+        case PrimitiveKind::Cone:
+        {
+            double r = std::max(c.radius, c.radiusTop);
+            o.half = {r, r, 0.5 * c.height};
+            break;
+        }
+        case PrimitiveKind::Sphere: o.half = glm::dvec3(c.radius); break;
+        }
+        occ.occluders.push_back(o);
+    }
+
+    // Per lobe: candidate points (16 evenly spread sub-triangle centroids per source triangle, equal
+    // area shares — enough for up to kMaxLobeSamples representatives even on a lobe that is a single
+    // rectangle), clustered into area-weighted representatives by a few rounds of weighted k-means
+    // (seeded by farthest-point selection — deterministic). Each representative is an actual
+    // candidate, so it lies on the lobe's surface and keeps that triangle's normal.
+    const std::vector<glm::dvec3> bary = satSubTriangleCentroids(4);
+    occ.lobes.resize(lobes.size());
+    for (size_t li = 0; li < lobes.size() && li < lobeTris.size(); ++li)
+    {
+        struct Cand
+        {
+            glm::dvec3 p, n;
+            double w;
+            int comp;
+        };
+        std::vector<Cand> cand;
+        double wTot = 0.0;
+        for (int ti : lobeTris[li])
+        {
+            const SatTri &t = tris[ti];
+            for (const glm::dvec3 &w : bary)
+                cand.push_back({w.x * t.p[0] + w.y * t.p[1] + w.z * t.p[2], t.n, t.area / bary.size(), t.component});
+            wTot += t.area;
+        }
+        SatLobeSamples &S = occ.lobes[li];
+        if (cand.empty() || wTot <= 0.0)
+            continue;
+        const int k = std::min<int>(samplesPerLobe, (int)cand.size());
+        // Seeds: the candidate nearest the weighted centroid, then farthest-point.
+        glm::dvec3 cen(0.0);
+        for (const Cand &c : cand)
+            cen += c.w * c.p;
+        cen /= wTot;
+        std::vector<glm::dvec3> centers;
+        size_t first = 0;
+        for (size_t i = 1; i < cand.size(); ++i)
+            if (glm::length(cand[i].p - cen) < glm::length(cand[first].p - cen))
+                first = i;
+        centers.push_back(cand[first].p);
+        while ((int)centers.size() < k)
+        {
+            size_t far = 0;
+            double farD = -1.0;
+            for (size_t i = 0; i < cand.size(); ++i)
+            {
+                double d = 1e300;
+                for (const glm::dvec3 &c : centers)
+                    d = std::min(d, glm::length(cand[i].p - c));
+                if (d > farD)
+                {
+                    farD = d;
+                    far = i;
+                }
+            }
+            centers.push_back(cand[far].p);
+        }
+        std::vector<int> assign(cand.size(), 0);
+        for (int iter = 0; iter < 8; ++iter)
+        {
+            for (size_t i = 0; i < cand.size(); ++i)
+            {
+                int bestC = 0;
+                for (int c = 1; c < k; ++c)
+                    if (glm::length(cand[i].p - centers[c]) < glm::length(cand[i].p - centers[bestC]))
+                        bestC = c;
+                assign[i] = bestC;
+            }
+            for (int c = 0; c < k; ++c)
+            {
+                glm::dvec3 sum(0.0);
+                double ws = 0.0;
+                for (size_t i = 0; i < cand.size(); ++i)
+                    if (assign[i] == c)
+                    {
+                        sum += cand[i].w * cand[i].p;
+                        ws += cand[i].w;
+                    }
+                if (ws > 0.0)
+                    centers[c] = sum / ws;
+            }
+        }
+        for (int c = 0; c < k; ++c)
+        {
+            double ws = 0.0;
+            size_t rep = cand.size();
+            for (size_t i = 0; i < cand.size(); ++i)
+                if (assign[i] == c)
+                {
+                    ws += cand[i].w;
+                    if (rep == cand.size() || glm::length(cand[i].p - centers[c]) < glm::length(cand[rep].p - centers[c]))
+                        rep = i;
+                }
+            if (ws <= 0.0 || rep == cand.size())
+                continue;
+            S.p[S.count] = cand[rep].p;
+            S.n[S.count] = cand[rep].n;
+            S.w[S.count] = ws / wTot;
+            S.comp[S.count] = cand[rep].comp;
+            ++S.count;
+        }
+
+        // Candidate occluders: one in ANOTHER group may move in front at some joint angle, so it
+        // always counts; one in the SAME group is rigidly placed and counts only if some part of it
+        // lies in front of some sample's surface.
+        const int lobeGroup = (int)lobes[li].group;
+        for (size_t oi = 0; oi < occ.occluders.size(); ++oi)
+        {
+            const SatOccluder &o = occ.occluders[oi];
+            bool candidate = o.group != lobeGroup;
+            if (!candidate)
+                for (const glm::dvec3 &q : occluderPoints(o))
+                    for (int s = 0; s < S.count && !candidate; ++s)
+                        if (glm::dot(q - S.p[s], S.n[s]) > 1e-6)
+                            candidate = true;
+            if (candidate)
+                S.occluderMask |= 1u << oi;
+        }
+    }
+    return occ;
+}
+
+double satLobeVisibility(const SatOcclusion &occ, int li, int lobeGroup, const std::vector<GroupPose> &poses,
+                         glm::dvec3 src, bool testSource, glm::dvec3 obs)
+{
+    const SatLobeSamples &S = occ.lobes[li];
+    if (S.count == 0 || S.occluderMask == 0)
+        return 1.0;
+    const GroupPose &P = poses[lobeGroup];
+    double vis = 0.0;
+    for (int s = 0; s < S.count; ++s)
+    {
+        // World position of the sample, nudged off its own surface.
+        const glm::dvec3 nw = P.R * S.n[s];
+        const glm::dvec3 pw = P.R * S.p[s] + P.t + 1e-4 * nw;
+        bool blocked = false;
+        for (size_t oi = 0; oi < occ.occluders.size() && !blocked; ++oi)
+        {
+            if (!(S.occluderMask & (1u << oi)) || (int)oi == S.comp[s])
+                continue;
+            const SatOccluder &o = occ.occluders[oi];
+            const GroupPose &Q = poses[o.group];
+            // World → occluder group rest frame → occluder local frame.
+            const glm::dmat3 toLocal = glm::transpose(o.axes) * glm::transpose(Q.R);
+            const glm::dvec3 org = glm::transpose(o.axes) * (glm::transpose(Q.R) * (pw - Q.t) - o.center);
+            if (rayHitsOccluder(o, org, toLocal * obs) || (testSource && rayHitsOccluder(o, org, toLocal * src)))
+                blocked = true;
+        }
+        if (!blocked)
+            vis += S.w[s];
+    }
+    return vis;
 }
 
 void validateSatLobes(const SatModel &m, const std::vector<SatTri> &tris, const std::vector<GpuSatLobe> &lobes,

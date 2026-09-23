@@ -10,6 +10,7 @@ struct BenchRunOptions
     uint64_t seed = 1;
     int lobeBudget = 256;          // the app's budget for small rosters; benchmarks want the exact model
     bool sensitivity = false;      // also rerun under alternative assumptions and report the spread
+    bool occlusion = true;         // Phase 3b occlusion between parts (--no-occlusion: the M6 baseline)
     std::string reportDir = "benchmark_runs";
     std::string modelsDir;         // default: <benchmark dir>/../satellite_models
 };

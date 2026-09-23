@@ -464,8 +464,22 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   McDowell's size table; roster `data/custom/constellations_models_example.json`. The visor's
   real shape is unpublished (derived from Cole's 23 deg full-shade constraint), and the visor only
   dims anything through occlusion — so the VisorSat differential needs Phase 3b.
-- Not yet: self-shadowing (3b — `GpuSatLobe::visLayer` reserved), calibration + reference models
-  (3c), an inertial-pointing law (Hubble's attitude is an anti-sun stand-in).
+- **Occlusion between parts (Phase 3b / benchmarking M7) — CPU evaluator only so far.**
+  `buildSatOcclusion()` makes one occluder per component (plane, box, capped cylinder — a cone uses
+  its larger radius, conservative — sphere; `kMaxOccluders` 32) and up to `kDefaultLobeSamples` = 16
+  area-weighted sample points per lobe (weighted k-means over 16 sub-triangle centroids per source
+  triangle; `bakeSatLobes(..., &lobeTris)` supplies the triangles). A lobe's intensity is scaled by
+  the weighted fraction of samples whose rays toward the light AND the observer both leave the
+  satellite (earthshine: observer ray only), tested against every occluder posed at the live joint
+  angles. Two rules keep it exact and cheap: **a primitive never occludes its own surface** (all
+  are convex or flat — and without this a faceted cylinder's samples sit just inside the smooth
+  cylinder and shadow themselves: Hubble read 3 mag too dim), and a same-group occluder counts only
+  if part of it lies in front of the lobe (`occluderMask`, fixed at bake time). `--selftest` checks
+  it against a 25-points-per-triangle ray-cast reference: p95 0.16 mag on VisorSat at 16 samples
+  (0.28 at 8 — the visor's 8.5 cm gap makes it the hardest case), ≤ 0.04 elsewhere. SatBench uses
+  it by default (`--no-occlusion` = the M6 baseline). Not yet on the GPU (`GpuSatLobe::visLayer`
+  reserved) — the app still renders unoccluded. Still to do: calibration + reference models (3c),
+  an inertial-pointing law (Hubble's attitude is an anti-sun stand-in).
 
 ### AttitudeMode values (legacy — converted to groups at load)
 | Mode | surfN | Use case |
