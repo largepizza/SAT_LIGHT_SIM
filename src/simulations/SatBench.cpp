@@ -163,6 +163,7 @@ bool runDistributionBenchmark(const Benchmark &b, const SatModel &m, const std::
             s.phaseDeg = r.phaseAngleRad * 180.0 / kPi;
             s.offSpecularDeg = r.offSpecularRad * 180.0 / kPi;
             s.mag = r.magnitude;
+            s.dominantLobe = r.dominantLobe;
             // The paper's censoring rule: too faint to see -> an assigned apparent magnitude.
             if (canCensor && visualSite && !(r.magnitude <= b.censorThresholdMag))
             {

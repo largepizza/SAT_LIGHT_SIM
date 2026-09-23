@@ -44,6 +44,7 @@ struct BenchSample
     double mag = 0.0;     // above-atmosphere apparent magnitude
     double m1000 = 0.0;   // reduced to 1000 km (after censoring)
     bool censored = false;
+    int dominantLobe = -1; // brightest lobe under sunlight (which surface the observer mostly sees)
 };
 
 struct BenchRunResult

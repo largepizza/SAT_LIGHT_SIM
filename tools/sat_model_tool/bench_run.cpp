@@ -315,6 +315,40 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
                 refSource.c_str());
     printCompare(cmp);
 
+    // Which surface dominates: per lobe, the share of samples in which it is the brightest, labelled
+    // by group and its rest-pose body-frame normal (the lobe table SatModelTool prints).
+    json dominance = json::array();
+    {
+        std::vector<int> count(lm.lobes.size(), 0);
+        for (const BenchSample &s : base.samples)
+            if (s.dominantLobe >= 0 && s.dominantLobe < (int)count.size())
+                ++count[s.dominantLobe];
+        std::printf("  dominant surface (share of samples):\n");
+        for (size_t li = 0; li < lm.lobes.size(); ++li)
+        {
+            if (count[li] == 0)
+                continue;
+            const GpuSatLobe &L = lm.lobes[li];
+            const AttitudeGroup &root = lm.model.groups[attRootOf(lm.model.groups, (int)L.group)];
+            // Rest body normal = B_root · normalT (B = the root's body triad; see SatModel.h).
+            glm::dvec3 t1 = glm::normalize(glm::dvec3(root.primaryAxis));
+            glm::dvec3 t2 = glm::normalize(glm::cross(t1, glm::dvec3(root.secondaryAxis)));
+            glm::dvec3 t3 = glm::cross(t1, t2);
+            glm::dvec3 n = glm::dvec3(L.normalT.x) * t1 + glm::dvec3(L.normalT.y) * t2 + glm::dvec3(L.normalT.z) * t3;
+            if (root.law == AttLaw::Tumble)
+                n = glm::dvec3(L.normalT);
+            const double share = (double)count[li] / base.samples.size();
+            std::printf("    lobe %2zu  group %-10s normal (%5.2f %5.2f %5.2f)  albedo %.2f  area %5.2f m2  %5.1f%%\n", li,
+                        lm.model.groups[L.group].name.c_str(), n.x, n.y, n.z, L.albedoD, L.area, 100.0 * share);
+            dominance.push_back({{"lobe", li},
+                                 {"group", lm.model.groups[L.group].name},
+                                 {"body_normal", {round4(n.x), round4(n.y), round4(n.z)}},
+                                 {"area_m2", round4(L.area)},
+                                 {"albedo", round4(L.albedoD)},
+                                 {"share", round4(share)}});
+        }
+    }
+
     json sens = json::array();
     if (opt.sensitivity)
     {
@@ -361,6 +395,7 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
               {"comparison", cmp},
               {"verdict", pass ? "pass" : "fail"},
               {"sensitivity", sens},
+              {"dominant_surface", dominance},
               {"samples", {{"columns", {"t_j2000", "site", "sun_alt_deg", "elevation_deg", "range_m", "phase_deg",
                                         "off_specular_deg", "mag", "m1000", "censored"}},
                            {"rows", rows}}},
