@@ -294,6 +294,18 @@ void validateSatLobes(const SatModel &m, const std::vector<SatTri> &tris,
 double evalSatLobes(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                     glm::dvec3 s, glm::dvec3 o, double sourceAlpha2);
 
+// Same, with every group POSED (evalGroupPoses): `s` and `o` are in the poses' world frame. This is
+// the lobe loop of sat_orbit.comp's modelIntensity() — lobe normal = R_group · B_root · normalT. When
+// `dominant` is given it receives the index of the brightest lobe (-1 if none is lit).
+double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
+                         const std::vector<GroupPose> &poses, glm::dvec3 s, glm::dvec3 o, double sourceAlpha2,
+                         int *dominant = nullptr);
+
+// Intensity of one flat facet or lobe per unit irradiance — the formula every evaluator above (and
+// sat_orbit.comp's lobeIntensity()) uses. `a2` includes the source-size term.
+double satLobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2,
+                        glm::dvec3 s, glm::dvec3 o);
+
 // How much does self-shadowing (all groups, posed) change the model's brightness? Poses the model
 // at `samples` random geometries — sun anywhere that lights the satellite, observer within the
 // Earth-facing cap as seen from the ground — and compares the brute-force intensity with and

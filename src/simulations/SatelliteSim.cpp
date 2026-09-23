@@ -1,4 +1,5 @@
 #include "SatelliteSim.h"
+#include "SatPhotometry.h"
 #include "../UIRenderer.h"
 #include "../AudioSystem.h"
 #include "../Paths.h"
@@ -169,6 +170,10 @@ static constexpr double kYearSec = 365.25 * 86400.0; // seconds per tropical yea
 // J2 causes a retrograde circular orbit (i > 90°) to precess its RAAN eastward at
 // exactly this rate, keeping the nodal plane fixed relative to the sun.
 static constexpr double kSSOPrecRate = 2.0 * 3.14159265358979323846 / kYearSec; // rad/s
+// The CPU photometric evaluator (SatPhotometry.h) carries its own copies — they must agree.
+static_assert(kEarthRadius == (float)satphot::kEarthRadiusM && kOmegaEarth == satphot::kOmegaEarth &&
+                  kGM == satphot::kGM && kSSOPrecRate == satphot::kSSOPrecRate,
+              "SatPhotometry constants drifted from SatelliteSim's");
 
 // ── Photometry (must mirror sat_flare.comp constants) ────────────────────────
 // kBrightnessScale MUST stay in sync with BRIGHTNESS_SCALE in sat_flare.comp.
@@ -9531,9 +9536,8 @@ void SatelliteSim::updatePositions(double t, float dt)
     float cosLon = cosf(theta), sinLon = sinf(theta);
 
     float obsRadius = kEarthRadius + obsTerrainH + obsHeightOffset;
-    obsECI = glm::vec3{obsRadius * cosLat * cosLon,
-                       obsRadius * cosLat * sinLon,
-                       obsRadius * sinLat};
+    // Shared with the CPU photometric evaluator (SatPhotometry) so both place the observer alike.
+    obsECI = glm::vec3(observerEciAt(glm::dvec3(obsDir), (double)obsRadius, t));
 
     // ── ECI → ENU basis vectors ───────────────────────────────────────────────
     glm::vec3 east{-sinLon, cosLon, 0.0f};
@@ -9577,17 +9581,11 @@ void SatelliteSim::updatePositions(double t, float dt)
     }
 
     // ── Sun direction in ECI (low-accuracy Astronomical Almanac) ─────────────
+    // sunDirEciAt() (SatPhotometry) is the one copy of the formula — the CPU photometric evaluator
+    // uses it too. epsR (obliquity) is still needed below for the ecliptic pole and the Moon.
     double dJ2000 = t / 86400.0;
-    double L = fmod(280.46 + 0.9856474 * dJ2000, 360.0);
-    double g = fmod(357.528 + 0.9856003 * dJ2000, 360.0);
-    double gR = g * (glm::pi<double>() / 180.0);
-    double lambdaR = (L + 1.915 * sin(gR) + 0.020 * sin(2.0 * gR)) * (glm::pi<double>() / 180.0);
     double epsR = (23.439 - 0.0000004 * dJ2000) * (glm::pi<double>() / 180.0);
-
-    sunDirECI = glm::normalize(glm::vec3{
-        (float)cos(lambdaR),
-        (float)(sin(lambdaR) * cos(epsR)),
-        (float)(sin(lambdaR) * sin(epsR))});
+    sunDirECI = glm::vec3(sunDirEciAt(t));
 
     glm::vec3 sunENU{
         glm::dot(sunDirECI, east),

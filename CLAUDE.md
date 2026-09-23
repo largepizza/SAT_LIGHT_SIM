@@ -407,6 +407,24 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   (+ `.mtl`, OBJ Y-up, zenith up). **`SatModelTool`** (`tools/sat_model_tool/`, EXCLUDE_FROM_ALL:
   `cmake --build build --target SatModelTool`) runs the same pipeline from the command line and
   prints the lobe table — the authoring loop, no app launch needed.
+- **CPU photometric evaluator** (`SatPhotometry.h/.cpp`, benchmarking milestone M1 — plan and
+  results log live on the "Satellite Brightness Benchmarking" design page). `evalSatPhotometry()`
+  is the double-precision mirror of `processSatellite()` → `modelFlux()` for one satellite at one
+  instant: orbit (`satOrbitStateAt`, same closed form as `satEciAt`), attitude (`evalGroupPoses`),
+  posed lobes (`evalSatLobesPosed`), shadow cones, earthshine → physical magnitude, 1000-km
+  magnitude, phase and off-specular angles, dominant lobe. It is what SatBench, the photometry
+  readout and exports measure with — **keep it in step with `sat_orbit.comp`** like
+  `evalGroupPoses`. `sunDirEciAt()`/`observerEciAt()` are the ONE copy of those formulas —
+  `updatePositions()` calls them — and `SatelliteSim.cpp` static_asserts its orbital constants
+  against `satphot::`. Ground-site (TargetedReflector) types need the caller's `siteIdeal`; legacy
+  two-surface types aren't modelled (tuned display units, not a magnitude).
+  `SatModelTool --selftest N` is its gate: known-value checks (Sun declination at the 2020
+  solstice/equinox, orbit radius/velocity/inclination, zero off-specular/phase in constructed
+  geometry, magnitude conventions) + posed lobes vs posed per-triangle brute force (must agree to
+  < 1e-3 mag; configurations fainter than mag 20 are ignored as float noise).
+  **The sim's Earth rotation angle is `kOmegaEarth·t` with no GMST-at-J2000 term (≈280.46°)** —
+  self-consistent everywhere, but sim clock ≠ real UTC by a fixed rotation (Sun hour angle off
+  ≈5.3 h). Irrelevant to statistical benchmarks; a replay of real timestamped passes must correct it.
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`; roster `data/custom/constellations_models_example.json`.
 - Not yet: self-shadowing (3b — `GpuSatLobe::visLayer` reserved), calibration + reference models

@@ -885,6 +885,36 @@ double evalSatLobes(const std::vector<GpuSatLobe> &lobes, const std::vector<Atti
     return sum;
 }
 
+double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
+                         const std::vector<GroupPose> &poses, glm::dvec3 s, glm::dvec3 o, double sourceAlpha2,
+                         int *dominant)
+{
+    double sum = 0.0, best = 0.0;
+    int bestIdx = -1;
+    for (size_t li = 0; li < lobes.size(); ++li)
+    {
+        const GpuSatLobe &L = lobes[li];
+        glm::dvec3 nBody = bodyTriad(groups[attRootOf(groups, (int)L.group)]) * glm::dvec3(L.normalT);
+        glm::dvec3 n = glm::normalize(poses[L.group].R * nBody);
+        double I = lobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat + sourceAlpha2, s, o);
+        sum += I;
+        if (I > best)
+        {
+            best = I;
+            bestIdx = (int)li;
+        }
+    }
+    if (dominant)
+        *dominant = bestIdx;
+    return sum;
+}
+
+double satLobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2,
+                        glm::dvec3 s, glm::dvec3 o)
+{
+    return lobeIntensity(n, area, diffArea, albedo, f0, a2, s, o);
+}
+
 void validateSatLobes(const SatModel &m, const std::vector<SatTri> &tris, const std::vector<GpuSatLobe> &lobes,
                       SatLobeBakeStats &stats)
 {

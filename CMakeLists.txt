@@ -171,7 +171,8 @@ target_link_libraries(SatLightSim PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_
 # authoring loop for data/satellite_models/*.json. Not part of ALL:
 #   cmake --build build --target SatModelTool
 #   build/Debug/SatModelTool.exe data/satellite_models/hubble.json [--out <dir>]
-add_executable(SatModelTool EXCLUDE_FROM_ALL tools/sat_model_tool/main.cpp src/simulations/SatModel.cpp)
+add_executable(SatModelTool EXCLUDE_FROM_ALL tools/sat_model_tool/main.cpp src/simulations/SatModel.cpp
+               src/simulations/SatPhotometry.cpp)
 target_include_directories(SatModelTool PRIVATE src/simulations)
 target_link_libraries(SatModelTool PRIVATE glm::glm nlohmann_json::nlohmann_json)
 sat_strict_warnings(SatModelTool)
