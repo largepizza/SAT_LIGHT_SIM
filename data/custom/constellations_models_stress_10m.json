@@ -1,0 +1,60 @@
+{
+    "$schema": "./constellations.schema.json",
+    "version": 1,
+    "satellite_types": [
+        {
+            "name": "Starlink V2 Mini (geometry model)",
+            "model": "starlink_v2_mini"
+        },
+        {
+            "name": "Starlink V1.0 (geometry model)",
+            "model": "starlink_v1_0"
+        },
+        {
+            "name": "Starlink VisorSat (geometry model)",
+            "model": "starlink_visorsat"
+        }
+    ],
+    "constellations": [
+        {
+            "name": "Stress: V2 Mini 530 km",
+            "type": "Starlink V2 Mini (geometry model)",
+            "alt_km": 530.0,
+            "incl_deg": 53.0,
+            "num_planes": 2500,
+            "per_plane": 1000,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Stress: VisorSat 550 km",
+            "type": "Starlink VisorSat (geometry model)",
+            "alt_km": 550.0,
+            "incl_deg": 53.0,
+            "num_planes": 2500,
+            "per_plane": 1000,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Stress: V1.0 570 km",
+            "type": "Starlink V1.0 (geometry model)",
+            "alt_km": 570.0,
+            "incl_deg": 70.0,
+            "num_planes": 2500,
+            "per_plane": 1000,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Stress: VisorSat 600 km polar",
+            "type": "Starlink VisorSat (geometry model)",
+            "alt_km": 600.0,
+            "incl_deg": 97.6,
+            "num_planes": 2500,
+            "per_plane": 1000,
+            "enabled": true,
+            "distribution": "Walker"
+        }
+    ]
+}

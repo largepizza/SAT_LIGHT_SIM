@@ -275,8 +275,10 @@ struct GpuSatLobe
     float f0;       // Schlick F0
 
     float alpha2Mat; // α_material² + α_spread² (sun / Earth source size added in the shader)
-    uint32_t visLayer; // Phase 3b self-shadowing map layer; 0xFFFFFFFF = unoccluded
-    float pad0, pad1;
+    // Phase 3b occlusion (GPU form, filled by packSatOcclusionGpu; the CPU evaluators ignore them).
+    uint32_t sampleFirst;  // first GpuSatLobeSample — relative to the type until upload rebases it
+    uint32_t sampleCount;  // 0 = never occluded
+    uint32_t occluderMask; // bit i: the type's occluder i can block this lobe
 };
 static_assert(sizeof(GpuSatLobe) == 48, "GpuSatLobe layout mismatch");
 
@@ -356,6 +358,45 @@ std::vector<glm::dvec3> satSubTriangleCentroids(int m);
 // toward `obs` are both unblocked, with every group posed by `poses`. World directions, unit.
 double satLobeVisibility(const SatOcclusion &occ, int li, int lobeGroup, const std::vector<GroupPose> &poses,
                          glm::dvec3 src, bool testSource, glm::dvec3 obs);
+
+// GPU form of SatOcclusion (sat_orbit.comp's SatOccluder / SatLobeSample; std430). Every position
+// and axis is in the ROOT TRIAD coordinates of its group's tree — the same convention as
+// GpuSatLobe::normalT — so the shader maps it to world with the group frame it already builds:
+// world = F_group · pT + t_group.
+struct GpuSatOccluder
+{
+    glm::vec3 centerT;
+    uint32_t kind;  // PrimitiveKind
+    glm::vec3 half; // as SatOccluder::half
+    uint32_t group;
+    glm::vec3 axisXT; // the component's local axes
+    float pad0;
+    glm::vec3 axisYT;
+    float pad1;
+    glm::vec3 axisZT;
+    float pad2;
+};
+static_assert(sizeof(GpuSatOccluder) == 80, "GpuSatOccluder layout mismatch");
+
+struct GpuSatLobeSample
+{
+    glm::vec3 pT;  // sample point, already nudged 1e-4 m off its own surface
+    float weight;  // area fraction of the lobe
+    uint32_t comp; // occluder index of the component it lies on (skipped — never self-occludes)
+    uint32_t pad0, pad1, pad2;
+};
+static_assert(sizeof(GpuSatLobeSample) == 32, "GpuSatLobeSample layout mismatch");
+
+struct GpuSatOcclusionPack
+{
+    std::vector<GpuSatOccluder> occluders;
+    std::vector<GpuSatLobeSample> samples;
+    glm::vec4 originT[kMaxAttitudeGroups] = {}; // each group's rest hinge point (root: 0), triad coords
+};
+// Converts `occ` to GPU form and writes each lobe's sample range and occluder mask into `lobes`
+// (sampleFirst relative to pack.samples). With `occ` empty, every lobe is left unoccluded.
+GpuSatOcclusionPack packSatOcclusionGpu(const std::vector<AttitudeGroup> &groups, const SatOcclusion &occ,
+                                        std::vector<GpuSatLobe> &lobes);
 
 // Brute-force check of the baked lobes against per-triangle evaluation over random (sun,
 // observer) body-frame direction pairs. Fills stats.maxErrMag / p95ErrMag.

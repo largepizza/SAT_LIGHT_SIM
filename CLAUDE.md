@@ -95,7 +95,7 @@ has access to is answerable. Current margins:
 | `maxImageDimension3D` | 256 | **1024** | `aurora_noise.comp` bakes a 1024×16×256 volume |
 | `maxComputeWorkGroupInvocations` | 128 | **256** | `local_size 16×16` in cloud_march / scene_depth / flare_blur |
 | `maxComputeSharedMemorySize` | 16 KB | ~5.2 KB | tile-cull lists — comfortable |
-| `maxPerStageDescriptorStorageBuffers` | 4 | **6** | `sat_sky.frag`'s set; MoltenVK is the realistic place to hit it, since it maps SSBOs + UBOs + vertex buffers into Metal's 31 per-stage buffer slots |
+| `maxPerStageDescriptorStorageBuffers` | 4 | **11** | `sat_orbit.comp`'s set (the check said 6, for `sat_sky.frag`, long after this set passed it — corrected 2026-09-23 with the occlusion buffers); MoltenVK is the realistic place to hit it, since it maps SSBOs + UBOs + vertex buffers into Metal's 31 per-stage buffer slots |
 | `maxPerStageDescriptorSampledImages` | 16 | 15 | `sat_sky.frag` — one binding from the floor |
 
 **The push-constant gate in `pickPhysicalDevice()` read 144 until 2026-09-08** — the pre-trim
@@ -464,7 +464,7 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   McDowell's size table; roster `data/custom/constellations_models_example.json`. The visor's
   real shape is unpublished (derived from Cole's 23 deg full-shade constraint), and the visor only
   dims anything through occlusion — so the VisorSat differential needs Phase 3b.
-- **Occlusion between parts (Phase 3b / benchmarking M7) — CPU evaluator only so far.**
+- **Occlusion between parts (Phase 3b / benchmarking M7).**
   `buildSatOcclusion()` makes one occluder per component (plane, box, capped cylinder — a cone uses
   its larger radius, conservative — sphere; `kMaxOccluders` 32) and up to `kDefaultLobeSamples` = 16
   area-weighted sample points per lobe (weighted k-means over 16 sub-triangle centroids per source
@@ -477,8 +477,23 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   if part of it lies in front of the lobe (`occluderMask`, fixed at bake time). `--selftest` checks
   it against a 25-points-per-triangle ray-cast reference: p95 0.16 mag on VisorSat at 16 samples
   (0.28 at 8 — the visor's 8.5 cm gap makes it the hardest case), ≤ 0.04 elsewhere. SatBench uses
-  it by default (`--no-occlusion` = the M6 baseline). Not yet on the GPU (`GpuSatLobe::visLayer`
-  reserved) — the app still renders unoccluded. Still to do: calibration + reference models (3c),
+  it by default (`--no-occlusion` = the M6 baseline).
+  **GPU (2026-09-23):** `packSatOcclusionGpu()` converts it to `GpuSatOccluder` (80 B) +
+  `GpuSatLobeSample` (32 B, point pre-nudged 1e-4 m) in ROOT TRIAD coordinates, like lobe normals,
+  and writes each lobe's `sampleFirst`/`sampleCount`/`occluderMask`; `satOccluderBuf` /
+  `satLobeSampleBuf` are bindings 9/10 of the `sat_orbit` set. The shader's group frames were
+  rotation-only, so `typeOffsets()` rebuilds each child's translation from the frames and
+  `GpuSatType::originT` (the rest hinge point) — the mirror of `evalGroupPoses()`' `pose.t`.
+  `modelFlux()` computes the unoccluded total first, and only then — if `occlusionOn`, the type has
+  occluders, and that total clears `occlusionFluxFloor` (mag `kOcclusionMagFloor` = 10; occlusion
+  only dims) — subtracts each lobe's blocked share. Lobes facing away cost nothing; a lobe under
+  1e-4 of the total is left unoccluded (≤ 0.005 mag, the one deliberate CPU/GPU difference). A
+  sample whose observer ray is blocked stops its occluder loop. The parity readout applies the same
+  on/floor gate. `--selftest` re-evaluates the packed GPU form in float the way the shader does
+  (`selfTestOcclusionGpuForm`) against `satLobeVisibility`: 0 of 13,600 lobe evaluations differ
+  across the four models, offsets within 3e-7 m. Knockout bit 1048576 turns it off (it reaches the
+  shader via `GpuSatTypeHeader::occlusionOn`); `data/custom/constellations_models_stress_10m.json`
+  is the 10M all-model roster to profile it with. Still to do: calibration + reference models (3c),
   an inertial-pointing law (Hubble's attitude is an anti-sun stand-in).
 
 ### AttitudeMode values (legacy — converted to groups at load)
@@ -668,9 +683,10 @@ anything that is constant per type goes in `GpuSatType`.
 ```
 `static_assert(sizeof(GpuSatOrbit) == 64)` — do not change field order without updating both structs.
 
-### GpuSatType layout (336 bytes, std430) — `satTypeBuf`
+### GpuSatType layout (416 bytes, std430) — `satTypeBuf`
 One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, after a 16-byte `GpuSatTypeHeader`
-(`brightnessScale`, `mirrorBoost`, 2 pads — rewritten every frame; `SatOrbitPC` is full). Must match
+(`brightnessScale`, `mirrorBoost`, `occlusionFluxFloor`, `occlusionOn` — rewritten every frame;
+`SatOrbitPC` is full). Must match
 `SatType`/`AttGroup`/`SatTypeBuf` in `sat_orbit.comp` (`offsetof` static_asserts guard the C++ side).
 ```
 [ 0] baseColorR, baseColorG, baseColorB, crossSection
@@ -683,10 +699,13 @@ One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, after a 16-byte `
      jointAxisT (vec3), jointTarget (uint)
      jointVectorT (vec3), jointLimitRad
      jointAngleRad, parent (uint, 0xFFFFFFFF = root), pad×2
+[336] originT[4] (vec4 — each group's rest hinge point, triad coords; Phase 3b)
+[400] firstOccluder, occluderCount (uint), pad×2
 ```
 Geometry-model lobes live in `satLobeBuf` (binding 8 of the `sat_orbit` set, host-coherent,
-`GpuSatLobe` 48 B: normalT + group, area, diffArea, albedoD, f0, alpha2Mat, visLayer, pad×2),
-packed per type at `firstLobe`.
+`GpuSatLobe` 48 B: normalT + group, area, diffArea, albedoD, f0, alpha2Mat, sampleFirst,
+sampleCount, occluderMask), packed per type at `firstLobe`; their occluders and sample points in
+`satOccluderBuf`/`satLobeSampleBuf` (bindings 9/10), `sampleFirst` rebased at upload.
 
 ### GpuSatVisible layout (32 bytes, std430)
 A **compact list** entry: appended by `sat_orbit.comp`, finished in place by `sat_flare.comp`, read
@@ -1521,7 +1540,7 @@ sample a CPU frame and a GPU frame from the same moment instead of one lagging t
 CloudParams UBO as `cloud.dbgDisableMask` (read by `sat_sky.frag` and `cloud_march.comp`), plus a
 copy in `PointDrawPC` for `sat_point.frag`'s bit 4096 — all pushed from the single
 `SatelliteSim::debugDisableMask` member each frame. Checkboxes in Settings → Display →
-"KNOCKOUT PROFILING" (18 as of 2026-08-10, driven by the single `kDebugToggles` table at the top of
+"KNOCKOUT PROFILING" (19 as of 2026-09-23, driven by the single `kDebugToggles` table at the top of
 `SatelliteSimUI.cpp` — bit, display label, and stable JSON key per row; adding a row there adds a
 checkbox AND a sweep step for free) each disable one shader block or dispatch — each with a mathematically-safe
 zero/no-op fallback (e.g. terrain-skip leaves `tHit=-1`, the same value the "no hit" path already
@@ -1541,7 +1560,8 @@ cloud occlusion (`sat_point.frag` — added 2026-08-09 to isolate a reported per
 8192=Reflect-Orbital beam POINTING-RAY loop (`cloud_march.comp`'s per-pixel loop in `main()`),
 16384=`cirrusMarchCS`, 32768=`cloudMarchCS` (the volumetric low/mid march itself),
 65536=`sat_sky.frag`'s 64-bin satellite sky-glow loop, 131072=**beam tile cull OFF** (not a feature
-knockout — an optimization A/B; see "Beam pointing-ray tile culling" below),
+knockout — an optimization A/B; see "Beam pointing-ray tile culling" below), 1048576=satellite
+part occlusion (`sat_orbit.comp`, geometry-model types; via `GpuSatTypeHeader::occlusionOn`),
 262144=**Potato sky** (swap `skyBgPipeline` → `skyBgMinimalPipeline`), 524288=**SKY_LITE sky**
 (swap → `skyBgLitePipeline`) — see "Subsystem: Weak-Hardware Sky Tiers". These last two are
 pipeline swaps, not in-shader branches; they're set by the Potato / Planetarium presets and are

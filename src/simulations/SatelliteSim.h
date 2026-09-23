@@ -172,6 +172,10 @@ struct SatelliteType
     // fields above are unused (baseColor stays the sprite tint).
     std::string modelId = {};
     std::vector<GpuSatLobe> lobes = {};
+    // Phase 3b occlusion between parts: CPU form (the parity readout's evaluator) and GPU form
+    // (packSatOcclusionGpu — `lobes` above already carry their sample ranges into it).
+    SatOcclusion occlusion = {};
+    GpuSatOcclusionPack occlusionGpu = {};
     bool isModel() const { return !lobes.empty(); }
 };
 
@@ -236,10 +240,18 @@ struct GpuSatType
     uint32_t surfGroup1;
 
     GpuAttGroup groups[kMaxAttitudeGroups];
+
+    // Phase 3b occlusion between parts (model types only; occluderCount 0 = never occluded).
+    glm::vec4 originT[kMaxAttitudeGroups]; // each group's rest hinge point, root triad coords
+    uint32_t firstOccluder;                // first entry in satOccluderBuf
+    uint32_t occluderCount;
+    uint32_t occPad0, occPad1;
 };
-static_assert(sizeof(GpuSatType) == 336, "GpuSatType layout mismatch");
+static_assert(sizeof(GpuSatType) == 416, "GpuSatType layout mismatch");
 static_assert(offsetof(GpuSatType, surfNormalT0) == 48, "GpuSatType std430 offset");
 static_assert(offsetof(GpuSatType, groups) == 80, "GpuSatType std430 offset");
+static_assert(offsetof(GpuSatType, originT) == 336, "GpuSatType std430 offset");
+static_assert(offsetof(GpuSatType, firstOccluder) == 400, "GpuSatType std430 offset");
 
 // Leading block of satTypeBuf (SatTypeBuf in sat_orbit.comp), followed by the GpuSatType array.
 // Holds the two photometry sliders the reflectance model needs. Both used to be read by
@@ -250,8 +262,10 @@ struct GpuSatTypeHeader
 {
     float brightnessScale; // global flux multiplier
     float mirrorBoost;     // mirror peak multiplier
-    float pad0;
-    float pad1;
+    // Phase 3b: occlusion is skipped for a satellite whose UNOCCLUDED raw flux (effectFlare units,
+    // brightnessScale applied) is below this — occlusion only dims, so it cannot become visible.
+    float occlusionFluxFloor;
+    uint32_t occlusionOn;  // 0 = knockout bit kDebugBitSatOcclusion set
 };
 static_assert(sizeof(GpuSatTypeHeader) == 16, "GpuSatTypeHeader layout mismatch");
 
@@ -1459,6 +1473,13 @@ private:
     VkBuffer satLobeBuf = VK_NULL_HANDLE; // host-visible/coherent: every model type's GpuSatLobe[] (Phase 3)
     VkDeviceMemory satLobeMem = VK_NULL_HANDLE;
     void *satLobeMapped = nullptr;
+    // Phase 3b: every model type's occluders and lobe sample points, packed like satLobeBuf.
+    VkBuffer satOccluderBuf = VK_NULL_HANDLE;
+    VkDeviceMemory satOccluderMem = VK_NULL_HANDLE;
+    void *satOccluderMapped = nullptr;
+    VkBuffer satLobeSampleBuf = VK_NULL_HANDLE;
+    VkDeviceMemory satLobeSampleMem = VK_NULL_HANDLE;
+    void *satLobeSampleMapped = nullptr;
 
     // ── Satellite picking / selection tracking ────────────────────────────────
     // pickedVisibleBuf mirrors the 80-byte GpuSatListHeader every frame (host-visible, mapped
@@ -1499,6 +1520,7 @@ private:
         float flareTiltRad = 0.0f;
         float brightnessScale = 1.0f;
         float mirrorBoost = 300.0f;
+        bool occlusionOn = true;
     };
     ParityInputs parityPending;
     static constexpr int kSelPhotLines = 3;
@@ -1824,8 +1846,19 @@ private:
     // 65536 = sat_sky.frag's unconditional 64-bin satellite sky-glow loop. 8192 and 65536 are also
     // the two blocks no graphics preset could reach, so they were paid in full even at Planetarium.
     //
+    // Bit 1048576 (2026-09-23) is the Phase 3b occlusion between satellite parts in sat_orbit.comp;
+    // it reaches the shader through GpuSatTypeHeader::occlusionOn, not through any UBO.
+    //
     // The authoritative bit/label/json-key table is kDebugToggles at the top of SatelliteSimUI.cpp.
     uint32_t debugDisableMask = 0;
+    static constexpr uint32_t kDebugBitSatOcclusion = 1048576u;
+    // Occlusion is skipped for satellites fainter than this, unoccluded (see occlusionFluxFloor).
+    static constexpr double kOcclusionMagFloor = 10.0;
+    // That magnitude in raw effectFlare units (0.008 = mag 6, brightnessScale applied).
+    static double occlusionFluxFloor(float brightnessScale)
+    {
+        return 0.008 * std::pow(10.0, -0.4 * (kOcclusionMagFloor - 6.0)) * brightnessScale;
+    }
 
     // ── Automated knockout sweep (profiling-only) ──────────────────────────────
     // "Run knockout sweep" (Display tab) walks the kDebugToggles table on its own — baseline first,
@@ -1853,7 +1886,7 @@ private:
     //
     // kDebugToggleSlots sizes hovDebugToggle[] and the accumulators below; the static_assert in
     // startKnockoutSweep() keeps it honest.
-    static constexpr int kDebugToggleSlots = 18;
+    static constexpr int kDebugToggleSlots = 19;
     static constexpr int kSweepSettleFrames = 6;  // discard after a mask change — covers the
                                                   // one-frame-stale timestamp readback plus a
                                                   // little driver/clock hysteresis

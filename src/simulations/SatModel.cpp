@@ -914,7 +914,9 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
         L.albedoD = (float)(a.sumAlb / a.sumA);
         L.f0 = (float)(a.sumF0 / a.sumA);
         L.alpha2Mat = (float)(a.sumA2 / a.sumA + std::max(0.0, 2.0 * (1.0 - rbar)));
-        L.visLayer = 0xFFFFFFFFu;
+        L.sampleFirst = 0;
+        L.sampleCount = 0;
+        L.occluderMask = 0;
         lobes.push_back(L);
         if (lobeTris)
             lobeTris->push_back(a.tris);
@@ -1278,6 +1280,57 @@ double satLobeVisibility(const SatOcclusion &occ, int li, int lobeGroup, const s
             vis += S.w[s];
     }
     return vis;
+}
+
+GpuSatOcclusionPack packSatOcclusionGpu(const std::vector<AttitudeGroup> &groups, const SatOcclusion &occ,
+                                        std::vector<GpuSatLobe> &lobes)
+{
+    GpuSatOcclusionPack pack;
+    // Rest → root triad coordinates of a group's tree: c = Bᵀ v (as attTriadCoords, for points too).
+    auto toTriad = [&](int gi, glm::dvec3 v) {
+        return glm::vec3(glm::transpose(bodyTriad(groups[attRootOf(groups, gi)])) * v);
+    };
+    std::vector<glm::dvec3> origin(groups.size(), glm::dvec3(0.0));
+    for (size_t gi = 0; gi < groups.size() && gi < (size_t)kMaxAttitudeGroups; ++gi)
+    {
+        if (groups[gi].parent >= 0)
+            origin[gi] = origin[groups[gi].parent] + glm::dvec3(groups[gi].hingePos);
+        pack.originT[gi] = glm::vec4(toTriad((int)gi, origin[gi]), 0.0f);
+    }
+    for (const SatOccluder &o : occ.occluders)
+    {
+        GpuSatOccluder g{};
+        g.centerT = toTriad(o.group, o.center);
+        g.kind = (uint32_t)o.kind;
+        g.half = glm::vec3(o.half);
+        g.group = (uint32_t)o.group;
+        g.axisXT = toTriad(o.group, o.axes[0]);
+        g.axisYT = toTriad(o.group, o.axes[1]);
+        g.axisZT = toTriad(o.group, o.axes[2]);
+        pack.occluders.push_back(g);
+    }
+    for (size_t li = 0; li < lobes.size(); ++li)
+    {
+        GpuSatLobe &L = lobes[li];
+        L.sampleFirst = (uint32_t)pack.samples.size();
+        L.sampleCount = 0;
+        L.occluderMask = 0;
+        if (li >= occ.lobes.size() || occ.lobes[li].count == 0 || occ.lobes[li].occluderMask == 0)
+            continue;
+        const SatLobeSamples &S = occ.lobes[li];
+        for (int s = 0; s < S.count; ++s)
+        {
+            GpuSatLobeSample g{};
+            // The nudge satLobeVisibility applies after posing; rigid, so it can be baked in.
+            g.pT = toTriad((int)L.group, S.p[s] + 1e-4 * S.n[s]);
+            g.weight = (float)S.w[s];
+            g.comp = (uint32_t)S.comp[s];
+            pack.samples.push_back(g);
+        }
+        L.sampleCount = (uint32_t)S.count;
+        L.occluderMask = S.occluderMask;
+    }
+    return pack;
 }
 
 void validateSatLobes(const SatModel &m, const std::vector<SatTri> &tris, const std::vector<GpuSatLobe> &lobes,

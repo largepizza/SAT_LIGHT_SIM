@@ -84,6 +84,8 @@ static constexpr DebugToggleEntry kDebugToggles[] = {
     // it actually bought: sweep cost_ms here is the SAVING, reported with the opposite sign to
     // every other row.
     {131072u, "Beam tile cull OFF (A/B)", "beam_tile_cull_disabled"},
+    // Phase 3b occlusion between satellite parts (sat_orbit.comp, geometry-model types only).
+    {1048576u, "Satellite part occlusion", "sat_part_occlusion"},
 };
 static constexpr int kDebugToggleCount = (int)(sizeof(kDebugToggles) / sizeof(kDebugToggles[0]));
 // The matching static_assert against SatelliteSim::kDebugToggleSlots lives inside

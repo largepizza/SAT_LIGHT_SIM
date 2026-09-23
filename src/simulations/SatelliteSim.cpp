@@ -2247,6 +2247,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         parityPending.flareTiltRad = orbitPc.flareMitigationTiltRad;
         parityPending.brightnessScale = brightnessScale;
         parityPending.mirrorBoost = mirrorBoost;
+        parityPending.occlusionOn = (debugDisableMask & kDebugBitSatOcclusion) == 0;
     }
 
     // ── Dispatch: scene_depth.comp — shared terrain/ocean depth (pipeline unification) ──────────
@@ -2358,6 +2359,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         GpuSatTypeHeader hdr{};
         hdr.brightnessScale = brightnessScale;
         hdr.mirrorBoost = mirrorBoost;
+        hdr.occlusionFluxFloor = (float)occlusionFluxFloor(brightnessScale);
+        hdr.occlusionOn = (debugDisableMask & kDebugBitSatOcclusion) ? 0u : 1u;
         memcpy(satTypeMapped, &hdr, sizeof(hdr));
     }
 
@@ -3164,6 +3167,11 @@ void SatelliteSim::updateSelectedPhotometry()
     legacy.crossSection = std::sqrt((double)type.crossSectionM2 / 10.0);
 
     SatPhotResult r = evalSatPhotometry(type.groups, type.lobes, e, pin.tAbs, in, &legacy);
+    // Occlusion between parts, gated exactly as sat_orbit.comp gates it: on, the type has
+    // occluders, and the UNOCCLUDED flux clears the floor.
+    if (pin.occlusionOn && r.supported && !r.legacy && !type.occlusion.occluders.empty() &&
+        r.flareUnits * pin.brightnessScale >= occlusionFluxFloor(pin.brightnessScale))
+        r = evalSatPhotometry(type.groups, type.lobes, e, pin.tAbs, in, &legacy, &type.occlusion);
 
     // ── Readout lines ─────────────────────────────────────────────────────────────────────
     if (!r.supported)
@@ -3917,6 +3925,14 @@ void SatelliteSim::cleanup(VkDevice device)
         vkUnmapMemory(device, satLobeMem);
     vkDestroyBuffer(device, satLobeBuf, nullptr);
     vkFreeMemory(device, satLobeMem, nullptr);
+    if (satOccluderMapped)
+        vkUnmapMemory(device, satOccluderMem);
+    vkDestroyBuffer(device, satOccluderBuf, nullptr);
+    vkFreeMemory(device, satOccluderMem, nullptr);
+    if (satLobeSampleMapped)
+        vkUnmapMemory(device, satLobeSampleMem);
+    vkDestroyBuffer(device, satLobeSampleBuf, nullptr);
+    vkFreeMemory(device, satLobeSampleMem, nullptr);
     if (lightDomeMapped)
         vkUnmapMemory(device, lightDomeMem);
     vkDestroyBuffer(device, lightDomeBuf, nullptr);
@@ -4638,6 +4654,29 @@ void SatelliteSim::createSatBuffers(VulkanContext &ctx)
                      satLobeBuf, satLobeMem);
     vkMapMemory(ctx.device, satLobeMem, 0, lobeBytes, 0, &satLobeMapped);
     memset(satLobeMapped, 0, lobeBytes);
+
+    // Phase 3b occlusion: occluders (GpuSatType::firstOccluder/occluderCount) and lobe sample
+    // points (GpuSatLobe::sampleFirst/sampleCount), packed the same way. Written by uploadSatOrbits.
+    size_t totalOccluders = 0, totalSamples = 0;
+    for (const SatelliteType &t : satTypes)
+    {
+        totalOccluders += t.occlusionGpu.occluders.size();
+        totalSamples += t.occlusionGpu.samples.size();
+    }
+    const VkDeviceSize occBytes = sizeof(GpuSatOccluder) * std::max<size_t>(totalOccluders, 1);
+    ctx.createBuffer(occBytes,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     satOccluderBuf, satOccluderMem);
+    vkMapMemory(ctx.device, satOccluderMem, 0, occBytes, 0, &satOccluderMapped);
+    memset(satOccluderMapped, 0, occBytes);
+    const VkDeviceSize sampleBytes = sizeof(GpuSatLobeSample) * std::max<size_t>(totalSamples, 1);
+    ctx.createBuffer(sampleBytes,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     satLobeSampleBuf, satLobeSampleMem);
+    vkMapMemory(ctx.device, satLobeSampleMem, 0, sampleBytes, 0, &satLobeSampleMapped);
+    memset(satLobeSampleMapped, 0, sampleBytes);
 }
 
 // ─── createDescriptors ────────────────────────────────────────────────────────
@@ -4776,12 +4815,14 @@ void SatelliteSim::createComputePipeline(VulkanContext &ctx)
 //   binding 6  satVisibleIdxBuf  (write     SSBO — compact slot → satellite index, Phase 1b)
 //   binding 7  satListBuf        (readwrite SSBO — append counter + indirect args, Phase 1b)
 //   binding 8  satLobeBuf        (readonly  SSBO — baked geometry-model lobes, Phase 3)
+//   binding 9  satOccluderBuf    (readonly  SSBO — model occluders, Phase 3b)
+//   binding 10 satLobeSampleBuf  (readonly  SSBO — lobe occlusion sample points, Phase 3b)
 // Binding 5 was beamCloudBlockBuf (per-target cloud occlusion, C12 follow-up #33) until 2026-08-09
 // — beam_self_march.comp now writes blockAltM/blockOpacity directly, per beam, in its own later
 // dispatch; this shader no longer reads or writes those two fields at all.
 void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[9] = {};
+    VkDescriptorSetLayoutBinding bindings[11] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -4791,13 +4832,15 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
     bindings[6] = {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[7] = {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[8] = {8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[9] = {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[10] = {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 9;
+    li.bindingCount = 11;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &orbitDescLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 11};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &ps;
@@ -4819,8 +4862,10 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
     VkDescriptorBufferInfo visIdxInfo{satVisibleIdxBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo listInfo{satListBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo lobeInfo{satLobeBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo occluderInfo{satOccluderBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo sampleInfo{satLobeSampleBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[9] = {};
+    VkWriteDescriptorSet writes[11] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 0, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &orbitInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 1, 0, 1,
@@ -4839,7 +4884,11 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &listInfo, nullptr};
     writes[8] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 8, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &lobeInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 9, writes, 0, nullptr);
+    writes[9] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 9, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &occluderInfo, nullptr};
+    writes[10] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 10, 0, 1,
+                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &sampleInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 11, writes, 0, nullptr);
 }
 
 // ─── createOrbitPipeline ──────────────────────────────────────────────────────
@@ -4884,7 +4933,9 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
     // GpuSatTypeHeader (which recordCompute() rewrites every frame). Rewritten on every rebake
     // along with the orbits, the same cadence these fields had while they lived in GpuSatOrbit.
     {
-        uint32_t firstLobe = 0; // running offset into satLobeBuf
+        uint32_t firstLobe = 0;     // running offset into satLobeBuf
+        uint32_t firstOccluder = 0; // ... satOccluderBuf
+        uint32_t firstSample = 0;   // ... satLobeSampleBuf
         GpuSatType *types = reinterpret_cast<GpuSatType *>(
             static_cast<char *>(satTypeMapped) + sizeof(GpuSatTypeHeader));
         for (size_t ti = 0; ti < satTypes.size(); ++ti)
@@ -4912,10 +4963,28 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
             // Phase 3 geometry model: this type's baked lobes, packed contiguously in satLobeBuf.
             dst.firstLobe = firstLobe;
             dst.lobeCount = (uint32_t)type.lobes.size();
-            if (!type.lobes.empty())
-                memcpy(static_cast<GpuSatLobe *>(satLobeMapped) + firstLobe, type.lobes.data(),
-                       type.lobes.size() * sizeof(GpuSatLobe));
+            GpuSatLobe *lobeDst = static_cast<GpuSatLobe *>(satLobeMapped) + firstLobe;
+            for (size_t li = 0; li < type.lobes.size(); ++li)
+            {
+                GpuSatLobe L = type.lobes[li];
+                L.sampleFirst += firstSample; // type-relative -> buffer offset
+                lobeDst[li] = L;
+            }
             firstLobe += (uint32_t)type.lobes.size();
+            // Phase 3b occluders + lobe samples, packed the same way.
+            const GpuSatOcclusionPack &occ = type.occlusionGpu;
+            for (int gi = 0; gi < kMaxAttitudeGroups; ++gi)
+                dst.originT[gi] = occ.originT[gi];
+            dst.firstOccluder = firstOccluder;
+            dst.occluderCount = (uint32_t)occ.occluders.size();
+            if (!occ.occluders.empty())
+                memcpy(static_cast<GpuSatOccluder *>(satOccluderMapped) + firstOccluder, occ.occluders.data(),
+                       occ.occluders.size() * sizeof(GpuSatOccluder));
+            if (!occ.samples.empty())
+                memcpy(static_cast<GpuSatLobeSample *>(satLobeSampleMapped) + firstSample, occ.samples.data(),
+                       occ.samples.size() * sizeof(GpuSatLobeSample));
+            firstOccluder += (uint32_t)occ.occluders.size();
+            firstSample += (uint32_t)occ.samples.size();
         }
     }
 
@@ -8745,8 +8814,12 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
 {
     std::vector<SatTri> tris = tessellateSatModel(model);
     SatLobeBakeStats stats;
-    t.lobes = bakeSatLobes(model, tris, budget, stats);
+    std::vector<std::vector<int>> lobeTris;
+    t.lobes = bakeSatLobes(model, tris, budget, stats, &lobeTris);
     validateSatLobes(model, tris, t.lobes, stats);
+    // Phase 3b occlusion between parts; also writes each lobe's sample range into t.lobes.
+    t.occlusion = buildSatOcclusion(model, tris, t.lobes, lobeTris);
+    t.occlusionGpu = packSatOcclusionGpu(t.groups, t.occlusion, t.lobes);
 
     const std::string objDir = (std::filesystem::path(userDataDir_) / "satellite_models_debug").string();
     const bool objOk = writeSatModelObj(model, tris, objDir);

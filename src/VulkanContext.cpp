@@ -416,13 +416,15 @@ void VulkanContext::logDeviceLimits(const VkPhysicalDeviceLimits &lim)
          kNeededWorkgroupInvocations, lim.maxComputeWorkGroupInvocations},
         {"compute shared memory (cloud_march.comp tile culling)",
          kNeededSharedMemory, lim.maxComputeSharedMemorySize},
-        // sat_sky.frag's descriptor set binds 15 combined image samplers and 6 storage buffers
-        // in one stage. Guaranteed minimums are 16 and 4 respectively — the storage-buffer count
-        // is the one actually over the floor, and MoltenVK is the realistic place to hit it,
+        // sat_sky.frag's descriptor set binds 15 combined image samplers in one stage (guaranteed
+        // minimum 16). The storage-buffer peak is sat_orbit.comp's set: 11 (orbits, types, the
+        // compact list + its index and header, targets, beams, beam dome, and the geometry models'
+        // lobes, occluders and lobe samples) against a guaranteed 4 — this check said 6 (sat_sky.frag)
+        // after sat_orbit.comp had already passed it. MoltenVK is the realistic place to hit it,
         // since it maps SSBOs, UBOs and vertex buffers into Metal's 31 per-stage buffer slots.
         {"per-stage sampled images (sat_sky.frag binds 15)", 15,
          lim.maxPerStageDescriptorSampledImages},
-        {"per-stage storage buffers (sat_sky.frag binds 6)", 6,
+        {"per-stage storage buffers (sat_orbit.comp binds 11)", 11,
          lim.maxPerStageDescriptorStorageBuffers},
     };
 

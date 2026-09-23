@@ -354,6 +354,175 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
     return ok;
 }
 
+// GPU form of the occlusion (M7): packSatOcclusionGpu's data evaluated the way sat_orbit.comp
+// evaluates it — float, root-triad coordinates, group offsets rebuilt from the frames and hinge
+// points (childOffset/typeOffsets) — against the double-precision CPU satLobeVisibility. A
+// transliteration of the shader's lobeVisibility(), so it checks the packing, the frame/offset
+// algebra and the float ray tests; the shader text itself is checked only by compiling.
+bool gpuRayHitsOccluder(uint32_t kind, glm::vec3 hf, glm::vec3 org, glm::vec3 dir)
+{
+    const float tMin = 1e-5f;
+    if (kind == 0u)
+    {
+        if (std::abs(dir.z) < 1e-9f)
+            return false;
+        float t = -org.z / dir.z;
+        if (t <= tMin)
+            return false;
+        glm::vec2 p = glm::vec2(org) + t * glm::vec2(dir);
+        return std::abs(p.x) <= hf.x && std::abs(p.y) <= hf.y;
+    }
+    if (kind == 1u)
+    {
+        float tNear = -1e30f, tFar = 1e30f;
+        for (int a = 0; a < 3; ++a)
+        {
+            if (std::abs(dir[a]) < 1e-12f)
+            {
+                if (std::abs(org[a]) > hf[a])
+                    return false;
+                continue;
+            }
+            float t0 = (-hf[a] - org[a]) / dir[a], t1 = (hf[a] - org[a]) / dir[a];
+            tNear = std::max(tNear, std::min(t0, t1));
+            tFar = std::min(tFar, std::max(t0, t1));
+        }
+        return tNear <= tFar && tFar > tMin;
+    }
+    if (kind == 4u)
+    {
+        float b = glm::dot(org, dir), c = glm::dot(org, org) - hf.x * hf.x;
+        float disc = b * b - c;
+        return disc >= 0.0f && (-b + std::sqrt(disc)) > tMin;
+    }
+    float r = hf.x, hh = hf.z;
+    float a = dir.x * dir.x + dir.y * dir.y;
+    if (a > 1e-12f)
+    {
+        float b = 2.0f * (org.x * dir.x + org.y * dir.y);
+        float c = org.x * org.x + org.y * org.y - r * r;
+        float disc = b * b - 4.0f * a * c;
+        if (disc >= 0.0f)
+        {
+            float sq = std::sqrt(disc);
+            float t1 = (-b - sq) / (2.0f * a), t2 = (-b + sq) / (2.0f * a);
+            if (t1 > tMin && std::abs(org.z + t1 * dir.z) <= hh)
+                return true;
+            if (t2 > tMin && std::abs(org.z + t2 * dir.z) <= hh)
+                return true;
+        }
+    }
+    if (std::abs(dir.z) > 1e-12f)
+        for (int k = 0; k < 2; ++k)
+        {
+            float t = ((k == 0 ? -hh : hh) - org.z) / dir.z;
+            if (t > tMin)
+            {
+                glm::vec2 p = glm::vec2(org) + t * glm::vec2(dir);
+                if (glm::dot(p, p) <= r * r)
+                    return true;
+            }
+        }
+    return false;
+}
+
+bool selfTestOcclusionGpuForm(const SatModel &m, const std::vector<SatTri> &tris, int budget, int samples)
+{
+    SatLobeBakeStats st;
+    std::vector<std::vector<int>> lobeTris;
+    std::vector<GpuSatLobe> lobes = bakeSatLobes(m, tris, budget, st, &lobeTris);
+    SatOcclusion occ = buildSatOcclusion(m, tris, lobes, lobeTris);
+    GpuSatOcclusionPack pack = packSatOcclusionGpu(m.groups, occ, lobes);
+    const int nG = (int)m.groups.size();
+
+    // Triad → body per group: attTriadCoords gives Bᵀ, so the GPU frame is F = R·B.
+    std::vector<glm::mat3> Bt(nG);
+    for (int g = 0; g < nG; ++g)
+        Bt[g] = glm::mat3(attTriadCoords(m.groups, g, {1, 0, 0}), attTriadCoords(m.groups, g, {0, 1, 0}),
+                          attTriadCoords(m.groups, g, {0, 0, 1}));
+
+    std::mt19937 rng(4242);
+    std::normal_distribution<double> nd;
+    auto randDir = [&]() { return glm::normalize(glm::dvec3(nd(rng), nd(rng), nd(rng))); };
+    int evals = 0, mismatches = 0;
+    double maxDiff = 0.0, maxOffsetErr = 0.0;
+    for (int iter = 0; iter < samples; ++iter)
+    {
+        AttGeometry geo;
+        geo.nadir = randDir();
+        geo.velocity = glm::normalize(glm::cross(geo.nadir, randDir()));
+        geo.sun = randDir();
+        geo.siteIdeal = geo.nadir;
+        std::vector<GroupPose> poses = evalGroupPoses(m.groups, geo, false);
+        const glm::dvec3 obs = randDir();
+
+        // Frames the way the shader has them, offsets the way the shader rebuilds them.
+        glm::mat3 F[4];
+        glm::vec3 t[4] = {};
+        for (int g = 0; g < nG; ++g)
+            F[g] = glm::mat3(poses[g].R) * glm::transpose(Bt[g]);
+        for (int g = 1; g < nG; ++g)
+            if (m.groups[g].parent >= 0)
+            {
+                const int p = m.groups[g].parent;
+                glm::vec3 pivot = F[p] * glm::vec3(pack.originT[g]) + t[p];
+                t[g] = F[g] * (glm::transpose(F[p]) * (t[p] - pivot)) + pivot;
+            }
+        for (int g = 0; g < nG; ++g)
+            maxOffsetErr = std::max(maxOffsetErr, glm::length(glm::dvec3(t[g]) - poses[g].t));
+
+        for (size_t li = 0; li < lobes.size(); ++li)
+        {
+            const GpuSatLobe &L = lobes[li];
+            const double cpu = satLobeVisibility(occ, (int)li, (int)L.group, poses, geo.sun, true, obs);
+            double gpu = 1.0;
+            if (L.sampleCount > 0 && L.occluderMask != 0)
+            {
+                gpu = 0.0;
+                const glm::mat3 &FP = F[L.group];
+                for (uint32_t si = L.sampleFirst; si < L.sampleFirst + L.sampleCount; ++si)
+                {
+                    const GpuSatLobeSample &S = pack.samples[si];
+                    glm::vec3 pw = FP * S.pT + t[L.group];
+                    uint32_t mask = L.occluderMask & (S.comp < 32u ? ~(1u << S.comp) : 0xFFFFFFFFu);
+                    bool bObs = false, bSun = false;
+                    while (mask != 0u)
+                    {
+                        int oi = 0;
+                        while (!((mask >> oi) & 1u))
+                            ++oi;
+                        mask &= mask - 1u;
+                        const GpuSatOccluder &O = pack.occluders[oi];
+                        glm::mat3 At = glm::transpose(glm::mat3(O.axisXT, O.axisYT, O.axisZT));
+                        glm::mat3 toLocal = At * glm::transpose(F[O.group]);
+                        glm::vec3 org = toLocal * (pw - t[O.group]) - At * O.centerT;
+                        if (gpuRayHitsOccluder(O.kind, O.half, org, toLocal * glm::vec3(obs)))
+                        {
+                            bObs = true;
+                            break;
+                        }
+                        if (!bSun && gpuRayHitsOccluder(O.kind, O.half, org, toLocal * glm::vec3(geo.sun)))
+                            bSun = true;
+                    }
+                    if (!bObs && !bSun)
+                        gpu += S.weight;
+                }
+            }
+            const double d = std::abs(gpu - cpu);
+            ++evals;
+            mismatches += d > 1e-4 ? 1 : 0;
+            maxDiff = std::max(maxDiff, d);
+        }
+    }
+    const double rate = evals ? (double)mismatches / evals : 0.0;
+    const bool ok = rate < 0.005 && maxOffsetErr < 1e-4;
+    std::printf("  %s occlusion GPU form (%d lobes, %zu occluders, %zu samples): %d lobe evaluations, %.3f%% differ "
+                "from the CPU form (max %.3f of a lobe); group offsets max err %.2e m  (gate < 0.5%%, < 1e-4 m)\n",
+                ok ? "ok  " : "FAIL", (int)lobes.size(), pack.occluders.size(), pack.samples.size(), evals,
+                100.0 * rate, maxDiff, maxOffsetErr);
+    return ok;
+}
+
 // Benchmark file check (design page M3): a file's own observations must reproduce the statistics
 // the paper printed, which proves the transcription; a differential file's published difference
 // must follow from its two referenced files. Printed values are rounded, so a scalar may differ by
@@ -605,6 +774,7 @@ int main(int argc, char **argv)
         {
             selfTestFailures += selfTestModel(m, tris, budget, selfTestSamples) ? 0 : 1;
             selfTestFailures += selfTestOcclusion(m, tris, std::max(200, selfTestSamples / 4)) ? 0 : 1;
+            selfTestFailures += selfTestOcclusionGpuForm(m, tris, budget, std::max(200, selfTestSamples / 4)) ? 0 : 1;
         }
         std::printf("  OBJ: %s\n\n", objOk ? (std::filesystem::path(outDir) / (id + "_rest.obj / _sunlit.obj")).string().c_str()
                                            : "export FAILED");
