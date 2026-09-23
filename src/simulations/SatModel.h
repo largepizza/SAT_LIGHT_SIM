@@ -294,6 +294,23 @@ void validateSatLobes(const SatModel &m, const std::vector<SatTri> &tris,
 double evalSatLobes(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                     glm::dvec3 s, glm::dvec3 o, double sourceAlpha2);
 
+// How much does self-shadowing (all groups, posed) change the model's brightness? Poses the model
+// at `samples` random geometries — sun anywhere that lights the satellite, observer within the
+// Earth-facing cap as seen from the ground — and compares the brute-force intensity with and
+// without ray-cast occlusion toward the sun and the observer. Decision data for Phase 3b's scope.
+struct SatShadowStudy
+{
+    int samples = 0;
+    double medianDmag = 0.0, p90Dmag = 0.0, p99Dmag = 0.0, maxDmag = 0.0; // dimming from shadowing, mag
+    double fracOver01 = 0.0;  // fraction of lit configurations dimmed by > 0.1 mag
+    double fracOver05 = 0.0;  // ... by > 0.5 mag
+    // Same, restricted to the BRIGHTER half of configurations (unshadowed intensity above the
+    // median) — relative dimming of an already-faint configuration matters less than of a bright one.
+    double brightP90Dmag = 0.0;
+    double brightFracOver01 = 0.0, brightFracOver05 = 0.0;
+};
+SatShadowStudy studySatShadowing(const SatModel &m, const std::vector<SatTri> &tris, int samples);
+
 // Writes <dir>/<id>_rest.obj and <id>_sunlit.obj (+ one shared .mtl), components as OBJ groups,
 // coloured by material. The sunlit pose uses a fixed illustrative geometry (see the .cpp).
 bool writeSatModelObj(const SatModel &m, const std::vector<SatTri> &tris, const std::string &dir);

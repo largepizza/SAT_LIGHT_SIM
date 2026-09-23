@@ -19,7 +19,8 @@ int main(int argc, char **argv)
 {
     std::vector<std::string> paths;
     std::string outDir = "satellite_models_debug";
-    int budget = 48; // SatelliteSim::kSatLobeBudget
+    int budget = 48; // SatelliteSim::kSatLobeBudget (the app uses 256 for types flown by <= 10k satellites)
+    int shadowSamples = 0; // --shadow-study N
     for (int i = 1; i < argc; ++i)
     {
         std::string a = argv[i];
@@ -27,12 +28,14 @@ int main(int argc, char **argv)
             outDir = argv[++i];
         else if (a == "--budget" && i + 1 < argc)
             budget = std::atoi(argv[++i]);
+        else if (a == "--shadow-study" && i + 1 < argc)
+            shadowSamples = std::atoi(argv[++i]);
         else
             paths.push_back(a);
     }
     if (paths.empty())
     {
-        std::printf("usage: SatModelTool <model.json> [...] [--out <dir>] [--budget <lobes>]\n");
+        std::printf("usage: SatModelTool <model.json> [...] [--out <dir>] [--budget <lobes>] [--shadow-study <N>]\n");
         return 2;
     }
 
@@ -88,6 +91,16 @@ int main(int argc, char **argv)
                         L.normalT.y, L.normalT.z, L.area, L.diffArea, L.albedoD, L.f0, std::sqrt(L.alpha2Mat));
         }
         std::printf("  validator vs brute force: |dmag| p95 %.3f, max %.3f\n", stats.p95ErrMag, stats.maxErrMag);
+        if (shadowSamples > 0)
+        {
+            SatShadowStudy ss = studySatShadowing(m, tris, shadowSamples);
+            std::printf("  shadowing (all groups, posed, %d lit configs): dimming median %.3f, p90 %.3f, p99 %.3f, "
+                        "max %.2f mag; >0.1 mag in %.1f%%, >0.5 mag in %.1f%%\n",
+                        ss.samples, ss.medianDmag, ss.p90Dmag, ss.p99Dmag, ss.maxDmag, 100.0 * ss.fracOver01,
+                        100.0 * ss.fracOver05);
+            std::printf("    brighter half only: p90 %.3f mag; >0.1 mag in %.1f%%, >0.5 mag in %.1f%%\n",
+                        ss.brightP90Dmag, 100.0 * ss.brightFracOver01, 100.0 * ss.brightFracOver05);
+        }
         std::printf("  OBJ: %s\n\n", objOk ? (std::filesystem::path(outDir) / (id + "_rest.obj / _sunlit.obj")).string().c_str()
                                            : "export FAILED");
     }

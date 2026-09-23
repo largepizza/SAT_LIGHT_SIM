@@ -945,6 +945,134 @@ void validateSatLobes(const SatModel &m, const std::vector<SatTri> &tris, const 
     stats.p95ErrMag = err.empty() ? 0.0 : err[(size_t)(0.95 * (err.size() - 1))];
 }
 
+// ── Shadowing study ───────────────────────────────────────────────────────────────────────────
+namespace
+{
+// Möller–Trumbore; true if the ray origin + t·dir (t > tMin) hits the triangle.
+bool rayHitsTri(glm::dvec3 org, glm::dvec3 dir, const glm::dvec3 &a, const glm::dvec3 &b, const glm::dvec3 &c)
+{
+    glm::dvec3 e1 = b - a, e2 = c - a;
+    glm::dvec3 pv = glm::cross(dir, e2);
+    double det = glm::dot(e1, pv);
+    if (std::abs(det) < 1e-14)
+        return false;
+    double inv = 1.0 / det;
+    glm::dvec3 tv = org - a;
+    double u = glm::dot(tv, pv) * inv;
+    if (u < 0.0 || u > 1.0)
+        return false;
+    glm::dvec3 qv = glm::cross(tv, e1);
+    double v = glm::dot(dir, qv) * inv;
+    if (v < 0.0 || u + v > 1.0)
+        return false;
+    return glm::dot(e2, qv) * inv > 1e-6;
+}
+} // namespace
+
+SatShadowStudy studySatShadowing(const SatModel &m, const std::vector<SatTri> &tris, int samples)
+{
+    const double a2Sun = (double)kSunAlpha * kSunAlpha;
+    std::mt19937 rng(777);
+    std::normal_distribution<double> nd;
+    std::uniform_real_distribution<double> ud(0.0, 1.0);
+    auto randDir = [&]() { return glm::normalize(glm::dvec3(nd(rng), nd(rng), nd(rng))); };
+    // Stratified sample points (barycentric) per triangle for the visible-fraction estimate.
+    const glm::dvec3 bary[4] = {{1.0 / 3, 1.0 / 3, 1.0 / 3}, {2.0 / 3, 1.0 / 6, 1.0 / 6},
+                                {1.0 / 6, 2.0 / 3, 1.0 / 6}, {1.0 / 6, 1.0 / 6, 2.0 / 3}};
+
+    std::vector<double> dmag, openI; // per lit configuration: dimming (mag) and unshadowed intensity
+    int over01 = 0, over05 = 0;
+    std::vector<SatTri> posed(tris.size());
+    for (int iter = 0; iter < samples * 20 && (int)dmag.size() < samples; ++iter)
+    {
+        AttGeometry geo; // nadir -Z, velocity +X (zenith-up local frame)
+        geo.sun = randDir();
+        if (glm::dot(geo.sun, -geo.nadir) < -0.4)
+            continue; // deep behind Earth from this satellite — unlit, irrelevant
+        geo.siteIdeal = glm::normalize(geo.sun + geo.nadir);
+        geo.tumbleAngle = ud(rng) * 2.0 * kPi;
+        geo.tumbleAxis = randDir();
+        // Observer on the ground: within ~60° of nadir as seen from LEO.
+        glm::dvec3 o = randDir();
+        if (glm::dot(o, geo.nadir) < 0.5)
+            continue;
+
+        std::vector<GroupPose> gp = evalGroupPoses(m.groups, geo, false);
+        for (size_t i = 0; i < tris.size(); ++i)
+        {
+            const GroupPose &P = gp[tris[i].group];
+            posed[i] = tris[i];
+            for (int k = 0; k < 3; ++k)
+                posed[i].p[k] = P.R * tris[i].p[k] + P.t;
+            posed[i].n = P.R * tris[i].n;
+        }
+
+        double open = 0.0, shadowed = 0.0;
+        for (size_t i = 0; i < posed.size(); ++i)
+        {
+            const SatTri &t = posed[i];
+            const SatMaterial &mat = m.materials[t.material];
+            double a2 = (double)mat.roughness * mat.roughness + t.spread2 + a2Sun;
+            double I = lobeIntensity(t.n, t.area, t.area, mat.diffuseAlbedo, mat.specularF0, a2, geo.sun, o);
+            if (I <= 0.0)
+                continue;
+            // Visible fraction: sample points that see BOTH the sun and the observer.
+            int both = 0;
+            for (const glm::dvec3 &w : bary)
+            {
+                glm::dvec3 pt = w.x * t.p[0] + w.y * t.p[1] + w.z * t.p[2] + t.n * 1e-6;
+                bool blocked = false;
+                for (size_t j = 0; j < posed.size() && !blocked; ++j)
+                    if (j != i && (rayHitsTri(pt, geo.sun, posed[j].p[0], posed[j].p[1], posed[j].p[2]) ||
+                                   rayHitsTri(pt, o, posed[j].p[0], posed[j].p[1], posed[j].p[2])))
+                        blocked = true;
+                both += blocked ? 0 : 1;
+            }
+            open += I;
+            shadowed += I * both / 4.0;
+        }
+        if (open <= 0.0)
+            continue;
+        double d = shadowed > 0.0 ? 2.5 * std::log10(open / shadowed) : 10.0;
+        dmag.push_back(d);
+        openI.push_back(open);
+        over01 += d > 0.1;
+        over05 += d > 0.5;
+    }
+
+    SatShadowStudy s;
+    s.samples = (int)dmag.size();
+    if (dmag.empty())
+        return s;
+    {
+        std::vector<double> sortedI = openI;
+        std::sort(sortedI.begin(), sortedI.end());
+        const double medI = sortedI[sortedI.size() / 2];
+        std::vector<double> bright;
+        for (size_t i = 0; i < dmag.size(); ++i)
+            if (openI[i] >= medI)
+                bright.push_back(dmag[i]);
+        std::sort(bright.begin(), bright.end());
+        s.brightP90Dmag = bright[(size_t)(0.9 * (bright.size() - 1))];
+        for (double d : bright)
+        {
+            s.brightFracOver01 += d > 0.1;
+            s.brightFracOver05 += d > 0.5;
+        }
+        s.brightFracOver01 /= bright.size();
+        s.brightFracOver05 /= bright.size();
+    }
+    std::sort(dmag.begin(), dmag.end());
+    auto pct = [&](double q) { return dmag[(size_t)(q * (dmag.size() - 1))]; };
+    s.medianDmag = pct(0.5);
+    s.p90Dmag = pct(0.9);
+    s.p99Dmag = pct(0.99);
+    s.maxDmag = dmag.back();
+    s.fracOver01 = (double)over01 / dmag.size();
+    s.fracOver05 = (double)over05 / dmag.size();
+    return s;
+}
+
 // ── OBJ export ────────────────────────────────────────────────────────────────────────────────
 bool writeSatModelObj(const SatModel &m, const std::vector<SatTri> &tris, const std::string &dir)
 {
@@ -978,16 +1106,30 @@ bool writeSatModelObj(const SatModel &m, const std::vector<SatTri> &tris, const 
         const char *suffix;
         bool jointsAtZero;
     };
+    // _rest: the model's own BODY frame (OBJ axes = body axes, every joint at 0) — for checking
+    // dimensions and hinge placement independent of any attitude law.
+    // _sunlit: the real attitude and joint solutions under the illustrative geometry above, in a
+    // zenith-up local frame (converted to OBJ Y-up).
     for (const Pose &pose : {Pose{"_rest", true}, Pose{"_sunlit", false}})
     {
-        std::vector<GroupPose> gp = evalGroupPoses(m.groups, sunlit, pose.jointsAtZero);
+        const bool bodyFrame = pose.jointsAtZero;
+        std::vector<GroupPose> gp = bodyFrame ? std::vector<GroupPose>(m.groups.size())
+                                              : evalGroupPoses(m.groups, sunlit, false);
         std::ofstream obj(base.string() + pose.suffix + ".obj");
         if (!obj.is_open())
             return false;
-        obj << "# " << m.name << " (" << m.id << ") — " << (pose.jointsAtZero ? "rest pose, joints at 0" : "sunlit pose")
-            << "\n# Local frame: +Y up = zenith (Earth below), satellite flying +X (OBJ Y-up convention).\n"
-            << "# Sun direction (Y-up): " << sunlit.sun.x << " " << sunlit.sun.z << " " << -sunlit.sun.y << "\n"
-            << "mtllib " << m.id << ".mtl\n";
+        if (bodyFrame)
+            obj << "# " << m.name << " (" << m.id << ") — rest pose: BODY frame, joints at 0\n"
+                << "# OBJ axes = body axes (x, y, z) — no attitude applied.\n";
+        else
+            obj << "# " << m.name << " (" << m.id << ") — sunlit pose: real attitude + joint solutions\n"
+                << "# Local frame (OBJ Y-up): +Y = zenith (Earth below), satellite flying +X.\n"
+                << "# Sun direction (OBJ Y-up): " << sunlit.sun.x << " " << sunlit.sun.z << " " << -sunlit.sun.y << "\n";
+        obj << "mtllib " << m.id << ".mtl\n";
+        // Zenith-up local → OBJ Y-up is (x, y, z) → (x, z, −y); the body frame is written as-is.
+        auto out = [bodyFrame](glm::dvec3 w) {
+            return bodyFrame ? w : glm::dvec3(w.x, w.z, -w.y);
+        };
         int vcount = 0, lastComponent = -1, lastMaterial = -1;
         for (const SatTri &t : tris)
         {
@@ -1003,14 +1145,13 @@ bool writeSatModelObj(const SatModel &m, const std::vector<SatTri> &tris, const 
                 lastMaterial = t.material;
             }
             const GroupPose &P = gp[t.group];
-            // Z-up local → OBJ Y-up: (x, y, z) → (x, z, -y).
             for (int k = 0; k < 3; ++k)
             {
-                glm::dvec3 w = P.R * t.p[k] + P.t;
-                obj << "v " << w.x << " " << w.z << " " << -w.y << "\n";
+                glm::dvec3 w = out(P.R * t.p[k] + P.t);
+                obj << "v " << w.x << " " << w.y << " " << w.z << "\n";
             }
-            glm::dvec3 nw = P.R * t.n;
-            obj << "vn " << nw.x << " " << nw.z << " " << -nw.y << "\n";
+            glm::dvec3 nw = out(P.R * t.n);
+            obj << "vn " << nw.x << " " << nw.y << " " << nw.z << "\n";
             int ni = vcount / 3 + 1;
             obj << "f " << vcount + 1 << "//" << ni << " " << vcount + 2 << "//" << ni << " " << vcount + 3 << "//"
                 << ni << "\n";

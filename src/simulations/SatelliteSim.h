@@ -3139,8 +3139,14 @@ private:
                                                                                 // ctx.timestampMs into gpuMsSmoothed[]/gpuMsTotalSmoothed
     void initConstellation();                                                   // called once: loads definitions then builds orbits
     void writeResolvedSatTypes() const; // dumps resolved types (new attitude format) to the user data dir
-    bool loadModelType(SatelliteType &t); // Phase 3: load + bake + validate + OBJ-export a geometry model
-    static constexpr int kSatLobeBudget = 48; // max baked facet lobes per model type (GPU cost bound)
+    bool loadModelType(SatelliteType &t, SatModel &model); // Phase 3: read a geometry model file
+    void bakeModelType(SatelliteType &t, const SatModel &model, int budget, size_t rosterCount); // bake + validate + OBJ
+    // Max baked facet lobes per model type. GPU cost is (visible satellites of the type) × lobes,
+    // so the budget depends on how many satellites fly the type: mass constellations keep it
+    // tight, small rosters (stations, telescopes, depots) get enough to stay exact.
+    static constexpr int kSatLobeBudget = 48;
+    static constexpr int kSatLobeBudgetSmall = 256;
+    static constexpr size_t kSatLobeSmallRoster = 10000;
     void loadDefinitions();                                                     // reads constellations.json; falls back to hardcoded defaults
     void loadHardcoded();                                                       // hardcoded satTypes + constellations (used as fallback)
     void buildOrbits();                                                         // populates satOrbits from satTypes + constellations

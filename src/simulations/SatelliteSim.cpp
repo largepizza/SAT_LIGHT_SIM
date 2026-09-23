@@ -8588,16 +8588,16 @@ void SatelliteSim::updatePlanets()
 // Entry point called once from init().  Loads satellite type and constellation
 // definitions (from constellations.json or hardcoded fallback), then builds the
 // flat satOrbits array that drives per-frame position updates.
-// ─── loadModelType ────────────────────────────────────────────────────────────
-// Phase 3: loads <exe>/satellite_models/<t.modelId>.json, tessellates it, bakes the facet lobes,
-// checks them against a brute-force per-triangle evaluation, and writes the rest/sunlit OBJ shape
-// export to <user data>/satellite_models_debug/. Every step is logged. On failure the type keeps
-// its legacy fields and the caller treats it as a legacy type.
-bool SatelliteSim::loadModelType(SatelliteType &t)
+// ─── loadModelType / bakeModelType ───────────────────────────────────────────
+// Phase 3: loadModelType reads <exe>/satellite_models/<t.modelId>.json (on failure the type keeps
+// its legacy fields and the caller treats it as a legacy type). bakeModelType — run once the
+// roster is known — tessellates it, bakes the facet lobes within `budget`, checks them against a
+// brute-force per-triangle evaluation, and writes the OBJ shape export to
+// <user data>/satellite_models_debug/. Every step is logged.
+bool SatelliteSim::loadModelType(SatelliteType &t, SatModel &model)
 {
     const std::string path =
         (std::filesystem::path(exeDir_) / "satellite_models" / (t.modelId + ".json")).string();
-    SatModel model;
     std::string err;
     std::vector<std::string> warn;
     const bool ok = loadSatModel(path, t.modelId, model, err, warn);
@@ -8609,25 +8609,28 @@ bool SatelliteSim::loadModelType(SatelliteType &t)
                   " — falling back to the legacy type fields");
         return false;
     }
+    t.groups = model.groups;
+    return true;
+}
 
+void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int budget, size_t rosterCount)
+{
     std::vector<SatTri> tris = tessellateSatModel(model);
     SatLobeBakeStats stats;
-    t.lobes = bakeSatLobes(model, tris, kSatLobeBudget, stats);
+    t.lobes = bakeSatLobes(model, tris, budget, stats);
     validateSatLobes(model, tris, t.lobes, stats);
-    t.groups = model.groups;
 
     const std::string objDir = (std::filesystem::path(userDataDir_) / "satellite_models_debug").string();
     const bool objOk = writeSatModelObj(model, tris, objDir);
 
-    char msg[256];
+    char msg[320];
     snprintf(msg, sizeof(msg),
-             "model '%s' (type '%s'): %d groups, %d components, %d triangles -> %d exact lobes -> %d lobes; "
-             "validator |dmag| p95 %.3f, max %.3f%s",
-             t.modelId.c_str(), t.name.c_str(), (int)model.groups.size(), (int)model.components.size(),
-             stats.triangles, stats.exactLobes, stats.lobes, stats.p95ErrMag, stats.maxErrMag,
-             objOk ? "" : " (OBJ export failed)");
+             "model '%s' (type '%s', %zu satellites): %d groups, %d components, %d triangles -> %d exact lobes "
+             "-> %d lobes (budget %d); validator |dmag| p95 %.3f, max %.3f%s",
+             t.modelId.c_str(), t.name.c_str(), rosterCount, (int)model.groups.size(),
+             (int)model.components.size(), stats.triangles, stats.exactLobes, stats.lobes, budget,
+             stats.p95ErrMag, stats.maxErrMag, objOk ? "" : " (OBJ export failed)");
     Log::line(msg);
-    return !t.lobes.empty();
 }
 
 // ─── writeResolvedSatTypes ───────────────────────────────────────────────────
@@ -8783,6 +8786,9 @@ void SatelliteSim::loadDefinitions()
 
     // ── Satellite types ───────────────────────────────────────────────────────
     satTypes.clear();
+    // Geometry models are loaded here but BAKED after the constellations are read: the lobe
+    // budget depends on how many satellites use the type (see bakeModelType).
+    std::vector<std::pair<size_t, SatModel>> pendingModels;
     for (const auto &jt : j.value("satellite_types", nlohmann::json::array()))
     {
         SatelliteType t;
@@ -8804,8 +8810,10 @@ void SatelliteSim::loadDefinitions()
         if (jt.contains("model"))
         {
             t.modelId = jt["model"].get<std::string>();
-            if (loadModelType(t))
+            SatModel model;
+            if (loadModelType(t, model))
             {
+                pendingModels.emplace_back(satTypes.size(), std::move(model));
                 satTypes.push_back(std::move(t));
                 continue;
             }
@@ -8878,6 +8886,20 @@ void SatelliteSim::loadDefinitions()
         c.ringSpacingM = jc.value("ring_spacing_km", 0.0f) * 1000.0f;
 
         constellations.push_back(std::move(c));
+    }
+
+    // ── Bake geometry models, budget by roster size ────────────────────────────
+    // GPU cost is (visible satellites of the type) × (its lobes), so a type flown by few
+    // satellites (a station, a telescope, a depot) can afford far more lobes — enough to stay
+    // exact for multi-module stations — than a mass constellation can.
+    for (auto &[ti, model] : pendingModels)
+    {
+        size_t count = 0;
+        for (const ConstellationConfig &c : constellations)
+            if (c.typeIdx == ti)
+                count += (size_t)std::max(c.numPlanes, 0) * (size_t)std::max(c.perPlane, 0);
+        const int budget = count <= kSatLobeSmallRoster ? kSatLobeBudgetSmall : kSatLobeBudget;
+        bakeModelType(satTypes[ti], model, budget, count);
     }
 
     hovConst.assign(constellations.size(), false);
