@@ -436,8 +436,19 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   median, σ and both phase fits (curves within 0.005 mag). `mallama2020a_original.json` is
   summary-only (that paper publishes no per-pass data); `visorsat_vs_original.json` is the 1.29 mag
   occlusion test. Not copied next to the exe yet — only the tools read them.
+- **Provenance** (`sources` block in a model file, milestone M4): entries `{subject | subjects[],
+  status: sourced|derived|estimate, value, source}` — `SatModel::sources`, checked by
+  `unexplainedModelParts()`. Every group, component and model-local material must be covered;
+  `SatModelTool` prints the counts, every non-sourced entry, and any UNEXPLAINED part. A benchmark
+  reference model is only accepted with zero unexplained parts.
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
-  `starlink_v2_mini.json`, `hubble.json`; roster `data/custom/constellations_models_example.json`.
+  `starlink_v2_mini.json`, `hubble.json`, and the M4 benchmark references `starlink_v1_0.json`
+  (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`
+  (Mallama 2021 period: array fixed 24 deg from vertical away from the Sun, radio-transparent
+  visor sheet under the antennas) — both sourced from Cole 2021 (arXiv:2107.06026) and
+  McDowell's size table; roster `data/custom/constellations_models_example.json`. The visor's
+  real shape is unpublished (derived from Cole's 23 deg full-shade constraint), and the visor only
+  dims anything through occlusion — so the VisorSat differential needs Phase 3b.
 - Not yet: self-shadowing (3b — `GpuSatLobe::visLayer` reserved), calibration + reference models
   (3c), an inertial-pointing law (Hubble's attitude is an anti-sun stand-in).
 

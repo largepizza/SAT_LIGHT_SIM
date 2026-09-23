@@ -209,6 +209,19 @@ struct SatComponent
     int group = 0;              // index into SatModel::groups
 };
 
+// Provenance of one part of a model (benchmarking M4): every group, component and model-local
+// material should be covered by a `sources` entry naming where its numbers come from.
+//   status "sourced"  — taken from a cited publication
+//          "derived"  — computed from sourced values plus a stated constraint
+//          "estimate" — no source; the reason and the plausible range belong in `value`/`note`
+struct SatModelSource
+{
+    std::string subject; // group, component or material name ("attitude" for the pointing law)
+    std::string status;
+    std::string value;   // the number(s) as used
+    std::string source;  // citation / URL / derivation
+};
+
 struct SatModel
 {
     std::string id;   // file stem
@@ -216,7 +229,13 @@ struct SatModel
     std::vector<AttitudeGroup> groups;
     std::vector<SatMaterial> materials;
     std::vector<SatComponent> components;
+    std::vector<SatModelSource> sources;
+    std::vector<std::string> localMaterials; // materials defined in the model file (need sources)
 };
+
+// Subjects of a model that no `sources` entry covers (groups, components, model-local materials).
+// Empty = every part is explained, though some may be explained as estimates.
+std::vector<std::string> unexplainedModelParts(const SatModel &m);
 
 // Loads data/satellite_models/<id>.json. Returns false with `err` on any structural problem;
 // non-fatal issues go to `warn`.

@@ -430,6 +430,28 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
             m.roughness = jm.value("roughness", m.roughness);
             m.color = jsonVec3(jm, "color", m.color);
             matLib[m.name] = m;
+            out.localMaterials.push_back(m.name);
+        }
+        // Provenance (benchmarking M4) — informational; SatModelTool reports coverage.
+        // An entry names one `subject` or several `subjects` sharing the same provenance.
+        for (const auto &js : j.value("sources", nlohmann::json::array()))
+        {
+            SatModelSource s;
+            s.status = js.value("status", std::string());
+            s.value = js.value("value", std::string());
+            s.source = js.value("source", std::string());
+            std::vector<std::string> subjects;
+            if (js.contains("subjects"))
+                subjects = js["subjects"].get<std::vector<std::string>>();
+            else
+                subjects.push_back(js.value("subject", std::string()));
+            if (s.status != "sourced" && s.status != "derived" && s.status != "estimate")
+                warn.push_back("source for '" + subjects.front() + "': status must be sourced/derived/estimate");
+            for (const std::string &sub : subjects)
+            {
+                s.subject = sub;
+                out.sources.push_back(s);
+            }
         }
         std::map<std::string, int> matIndex;
         auto materialRef = [&](const std::string &name) -> int {
@@ -544,6 +566,27 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
         return false;
     }
     return true;
+}
+
+std::vector<std::string> unexplainedModelParts(const SatModel &m)
+{
+    auto covered = [&](const std::string &name) {
+        for (const SatModelSource &s : m.sources)
+            if (s.subject == name)
+                return true;
+        return false;
+    };
+    std::vector<std::string> missing;
+    for (const AttitudeGroup &g : m.groups)
+        if (!covered(g.name))
+            missing.push_back("group " + g.name);
+    for (const SatComponent &c : m.components)
+        if (!covered(c.name))
+            missing.push_back("component " + c.name);
+    for (const std::string &mat : m.localMaterials)
+        if (!covered(mat))
+            missing.push_back("material " + mat);
+    return missing;
 }
 
 // ── Tessellation ──────────────────────────────────────────────────────────────────────────────

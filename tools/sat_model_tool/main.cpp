@@ -386,6 +386,26 @@ int main(int argc, char **argv)
                         L.normalT.y, L.normalT.z, L.area, L.diffArea, L.albedoD, L.f0, std::sqrt(L.alpha2Mat));
         }
         std::printf("  validator vs brute force: |dmag| p95 %.3f, max %.3f\n", stats.p95ErrMag, stats.maxErrMag);
+
+        // Provenance (benchmarking M4): every part needs a `sources` entry; estimates are listed.
+        {
+            int nSourced = 0, nDerived = 0, nEstimate = 0;
+            for (const SatModelSource &s : m.sources)
+                (s.status == "sourced" ? nSourced : s.status == "derived" ? nDerived : nEstimate)++;
+            std::vector<std::string> missing = unexplainedModelParts(m);
+            std::printf("  provenance: %d sourced, %d derived, %d estimate; %zu part(s) unexplained\n", nSourced,
+                        nDerived, nEstimate, missing.size());
+            // One line per entry (an entry listing several subjects is expanded by the loader).
+            std::string lastValue;
+            for (const SatModelSource &s : m.sources)
+                if (s.status != "sourced" && s.value != lastValue)
+                {
+                    std::printf("    %-8s %-18s %s\n", s.status.c_str(), s.subject.c_str(), s.value.c_str());
+                    lastValue = s.value;
+                }
+            for (const std::string &p : missing)
+                std::printf("    UNEXPLAINED %s\n", p.c_str());
+        }
         if (shadowSamples > 0)
         {
             SatShadowStudy ss = studySatShadowing(m, tris, shadowSamples);

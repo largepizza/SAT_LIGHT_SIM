@@ -11,6 +11,14 @@
             "model": "hubble"
         },
         {
+            "name": "Starlink V1.0 (geometry model)",
+            "model": "starlink_v1_0"
+        },
+        {
+            "name": "Starlink VisorSat (geometry model)",
+            "model": "starlink_visorsat"
+        },
+        {
             "name": "Starlink Gen2 (legacy)",
             "base_color": [0.80, 0.87, 1.00],
             "cross_section_m2": 10.0,
@@ -38,6 +46,26 @@
             "incl_deg": 28.5,
             "num_planes": 1,
             "per_plane": 1,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "V1.0 shell (2020, benchmark reference) - geometry model",
+            "type": "Starlink V1.0 (geometry model)",
+            "alt_km": 550.0,
+            "incl_deg": 53.0,
+            "num_planes": 72,
+            "per_plane": 22,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "VisorSat shell (2020, benchmark reference) - geometry model",
+            "type": "Starlink VisorSat (geometry model)",
+            "alt_km": 550.0,
+            "incl_deg": 53.0,
+            "num_planes": 72,
+            "per_plane": 22,
             "enabled": true,
             "distribution": "Walker"
         },

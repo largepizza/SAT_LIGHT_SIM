@@ -1,0 +1,101 @@
+{
+    "name": "Starlink VisorSat",
+    "note": "Benchmarking M4 reference model for Mallama (2021). V1.x chassis in 'shark-fin' operational mode with the deployable visor. Body frame: +Z nadir, +X toward the Sun's azimuth (the bus yaws so the visor stays sunward), +Y = +Z x +X. Every number is covered by `sources`; materials remain Phase 3c calibration targets.",
+    "materials": [
+        { "name": "bus_metal", "preset": "aluminum", "roughness": 0.23 },
+        { "name": "antenna_white", "preset": "white_paint" },
+        { "name": "bus_edge_black", "preset": "black_paint" },
+        { "name": "visor_black", "preset": "black_paint" },
+        { "name": "array_back_dark", "preset": "black_paint" }
+    ],
+    "attitude_groups": [
+        {
+            "name": "bus",
+            "primary": { "axis": [0, 0, 1], "target": "nadir" },
+            "secondary": { "axis": [1, 0, 0], "target": "sun" }
+        },
+        {
+            "name": "array",
+            "parent": "bus",
+            "hinge": { "position": [0, 0, -0.1], "axis": [0, 1, 0] },
+            "joint": { "mode": "fixed", "angle_deg": 24 }
+        }
+    ],
+    "components": [
+        { "name": "base_metal_sun", "type": "plane", "group": "bus", "size": [0.2, 2.8], "position": [0.55, 0, 0.1], "single_sided": true, "material": "bus_metal" },
+        { "name": "base_metal_antisun", "type": "plane", "group": "bus", "size": [0.2, 2.8], "position": [-0.55, 0, 0.1], "single_sided": true, "material": "bus_metal" },
+        { "name": "base_metal_end_pos", "type": "plane", "group": "bus", "size": [0.9, 0.3], "position": [0, 1.25, 0.1], "single_sided": true, "material": "bus_metal" },
+        { "name": "base_metal_end_neg", "type": "plane", "group": "bus", "size": [0.9, 0.3], "position": [0, -1.25, 0.1], "single_sided": true, "material": "bus_metal" },
+        { "name": "antennas", "type": "plane", "group": "bus", "size": [0.9, 2.2], "position": [0, 0, 0.1], "single_sided": true, "material": "antenna_white" },
+        { "name": "bus_top", "type": "plane", "group": "bus", "size": [1.3, 2.8], "position": [0, 0, -0.1], "rotation_deg": [180, 0, 0], "single_sided": true, "material": "bus_metal" },
+        { "name": "bus_side_sun", "type": "plane", "group": "bus", "size": [0.2, 2.8], "position": [0.65, 0, 0], "rotation_deg": [0, 90, 0], "single_sided": true, "material": "bus_edge_black" },
+        { "name": "bus_side_antisun", "type": "plane", "group": "bus", "size": [0.2, 2.8], "position": [-0.65, 0, 0], "rotation_deg": [0, -90, 0], "single_sided": true, "material": "bus_edge_black" },
+        { "name": "bus_side_pos", "type": "plane", "group": "bus", "size": [1.3, 0.2], "position": [0, 1.4, 0], "rotation_deg": [-90, 0, 0], "single_sided": true, "material": "bus_edge_black" },
+        { "name": "bus_side_neg", "type": "plane", "group": "bus", "size": [1.3, 0.2], "position": [0, -1.4, 0], "rotation_deg": [90, 0, 0], "single_sided": true, "material": "bus_edge_black" },
+        { "name": "visor", "type": "plane", "group": "bus", "size": [1.1, 2.2], "position": [0.1, 0, 0.185], "material": "visor_black" },
+        { "name": "solar_array", "type": "plane", "group": "array", "size": [8.1, 2.8], "position": [0, 0, -4.05], "rotation_deg": [0, 90, 0], "material": "solar_cell", "back_material": "array_back_dark" }
+    ],
+    "sources": [
+        {
+            "subjects": ["base_metal_sun", "base_metal_antisun", "base_metal_end_pos", "base_metal_end_neg", "bus_top",
+                         "bus_side_sun", "bus_side_antisun", "bus_side_pos", "bus_side_neg"],
+            "status": "sourced",
+            "value": "bus 1.3 x 2.8 m footprint, 0.2 m thick",
+            "source": "Footprint: McDowell, planet4589.org/astro/starsim (V1.5 row: bus 2.8 x 1.3 m; V1.0 'about 3 m bus', same chassis family). Thickness: 60-satellite stack of 6.7 m in the Falcon 9 fairing (lilibots.blogspot.com, 2020-04, secondary estimate)."
+        },
+        {
+            "subject": "antennas",
+            "status": "estimate",
+            "value": "white antenna region 0.9 x 2.2 m centred on the nadir face (63% of the base); range 40-80%",
+            "source": "Cole 2021 (arXiv:2107.06026) section 2: 'white antenna panels on the base', base otherwise polished metal. Region size not published."
+        },
+        {
+            "subject": "visor",
+            "status": "derived",
+            "value": "black sheet 1.1 x 2.2 m, 0.085 m below the base, from the sunward edge across the antenna region",
+            "source": "Radio-transparent foam that blocks sunlight from the antennas (SpaceX via Tesmanian 2020, SpaceNews 2020) - so it may sit in front of them. Cole 2021 section 3.2: antennas fully shaded at 23 deg Sun depression, light leaks under at smaller angles. A sheet under the antennas with gap g reproduces that when g = 0.2 m inset x tan 23 deg = 0.085 m. The real shape is unpublished: the visorsat_vs_original benchmark partly calibrates this part."
+        },
+        {
+            "subject": "solar_array",
+            "status": "sourced",
+            "value": "one 2.8 x 8.1 m array, cells facing the Sun's azimuth",
+            "source": "McDowell, planet4589.org/astro/starsim (V1.5: solar array 2.8 x 8.1 m). Hinge at the centre of the bus top: estimate."
+        },
+        {
+            "subject": "bus",
+            "status": "sourced",
+            "value": "base to nadir, visor side yawed to the Sun's azimuth",
+            "source": "Cole 2021 section 2 ('base and its antennas face the Earth') and section 5 ('the visor must remain pointing to the Sun-azimuth for it to work'); SpaceX 'shark-fin' operational mode (Tesmanian 2020)."
+        },
+        {
+            "subject": "array",
+            "status": "sourced",
+            "value": "fixed 24 deg from local vertical, top leaning away from the Sun (95% range 14-34 deg)",
+            "source": "Cole 2021 Table 3 (late-2020 fit, the Mallama 2021 period): panel offset angle 24 deg away from Sun azimuth, fixed to the local vertical rather than Sun-tracking (section 4.2 item 3). June 2021 data fit -5 deg instead (section 6)."
+        },
+        {
+            "subject": "bus_metal",
+            "status": "derived",
+            "value": "aluminium preset, GGX roughness 0.23",
+            "source": "Cole 2021 section 2: base is 'polished metal'. Table 3 specular beam exponents 24 and 52 -> GGX alpha = sqrt(2/(n+2)) = 0.28 and 0.19, geometric mean 0.23. F0 and diffuse albedo: preset estimates (Phase 3c)."
+        },
+        {
+            "subject": "antenna_white",
+            "status": "estimate",
+            "value": "white paint preset (diffuse albedo 0.8)",
+            "source": "Cole 2021 section 2: 'white antenna panels'. Albedo not published (Phase 3c)."
+        },
+        {
+            "subjects": ["bus_edge_black", "visor_black"],
+            "status": "sourced",
+            "value": "black paint preset (diffuse albedo 0.05)",
+            "source": "Cole 2021 Figure 2 (black edges added on visorsats) and section 3.2 ('the visor is declared as being black')."
+        },
+        {
+            "subject": "array_back_dark",
+            "status": "derived",
+            "value": "black paint preset",
+            "source": "Cole 2021 Table 3: rear-face emission b = 0, section 4.2: rear face < 20% of the base."
+        }
+    ]
+}

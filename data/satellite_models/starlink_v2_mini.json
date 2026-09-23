@@ -48,5 +48,25 @@
             "material": "solar_cell",
             "back_material": "solar_array_back"
         }
+    ],
+    "sources": [
+        {
+            "subject": "bus",
+            "status": "sourced",
+            "value": "bus 4.1 x 2.7 m; nadir-pointing, +X along velocity (the attitude law is an estimate)",
+            "source": "Footprint: McDowell, planet4589.org/astro/starsim (V2 Mini: bus 4.1 x 2.7 m). Thickness 0.4 m and the velocity-aligned yaw: estimates."
+        },
+        {
+            "subjects": ["array_left", "array_right"],
+            "status": "sourced",
+            "value": "two 4.1 x 12.8 m arrays",
+            "source": "McDowell, planet4589.org/astro/starsim (V2 Mini: solar array 4.1 x 12.8 m, one per wing). Boom offset 6.9 m from the bus centre: estimate."
+        },
+        {
+            "subjects": ["wing_left", "wing_right"],
+            "status": "estimate",
+            "value": "wings hinged at the bus edges about the cross-track axis, tracking the Sun",
+            "source": "Not published; replace with the attitude Mallama et al. 2023 (arXiv:2306.06657) describe once their benchmark is built."
+        }
     ]
 }

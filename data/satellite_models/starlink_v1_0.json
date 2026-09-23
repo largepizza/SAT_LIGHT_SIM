@@ -1,0 +1,86 @@
+{
+    "name": "Starlink V1.0 (original design)",
+    "note": "Benchmarking M4 reference model for Mallama (2020a), the pre-visor design at 550 km through May 2020. Same chassis as starlink_visorsat.json without the visor or the black edges. Body frame: +Z nadir, +Y toward the Sun's azimuth (the bus yaws so the array is edge-on to the Sun), +X = +Y x +Z. Every number is covered by `sources`; materials remain Phase 3c calibration targets.",
+    "materials": [
+        { "name": "bus_metal", "preset": "aluminum", "roughness": 0.23 },
+        { "name": "antenna_white", "preset": "white_paint" },
+        { "name": "array_back_dark", "preset": "black_paint" }
+    ],
+    "attitude_groups": [
+        {
+            "name": "bus",
+            "primary": { "axis": [0, 0, 1], "target": "nadir" },
+            "secondary": { "axis": [0, 1, 0], "target": "sun" }
+        },
+        {
+            "name": "array",
+            "parent": "bus",
+            "hinge": { "position": [0, 0, -0.1], "axis": [0, 1, 0] },
+            "joint": { "mode": "fixed", "angle_deg": 0 }
+        }
+    ],
+    "components": [
+        { "name": "base_metal_side_a", "type": "plane", "group": "bus", "size": [0.2, 2.8], "position": [0.55, 0, 0.1], "single_sided": true, "material": "bus_metal" },
+        { "name": "base_metal_side_b", "type": "plane", "group": "bus", "size": [0.2, 2.8], "position": [-0.55, 0, 0.1], "single_sided": true, "material": "bus_metal" },
+        { "name": "base_metal_end_pos", "type": "plane", "group": "bus", "size": [0.9, 0.3], "position": [0, 1.25, 0.1], "single_sided": true, "material": "bus_metal" },
+        { "name": "base_metal_end_neg", "type": "plane", "group": "bus", "size": [0.9, 0.3], "position": [0, -1.25, 0.1], "single_sided": true, "material": "bus_metal" },
+        { "name": "antennas", "type": "plane", "group": "bus", "size": [0.9, 2.2], "position": [0, 0, 0.1], "single_sided": true, "material": "antenna_white" },
+        { "name": "bus_top", "type": "plane", "group": "bus", "size": [1.3, 2.8], "position": [0, 0, -0.1], "rotation_deg": [180, 0, 0], "single_sided": true, "material": "bus_metal" },
+        { "name": "bus_side_px", "type": "plane", "group": "bus", "size": [0.2, 2.8], "position": [0.65, 0, 0], "rotation_deg": [0, 90, 0], "single_sided": true, "material": "bus_metal" },
+        { "name": "bus_side_nx", "type": "plane", "group": "bus", "size": [0.2, 2.8], "position": [-0.65, 0, 0], "rotation_deg": [0, -90, 0], "single_sided": true, "material": "bus_metal" },
+        { "name": "bus_side_py", "type": "plane", "group": "bus", "size": [1.3, 0.2], "position": [0, 1.4, 0], "rotation_deg": [-90, 0, 0], "single_sided": true, "material": "bus_metal" },
+        { "name": "bus_side_ny", "type": "plane", "group": "bus", "size": [1.3, 0.2], "position": [0, -1.4, 0], "rotation_deg": [90, 0, 0], "single_sided": true, "material": "bus_metal" },
+        { "name": "solar_array", "type": "plane", "group": "array", "size": [8.1, 2.8], "position": [0, 0, -4.05], "rotation_deg": [0, 90, 0], "material": "solar_cell", "back_material": "array_back_dark" }
+    ],
+    "sources": [
+        {
+            "subjects": ["base_metal_side_a", "base_metal_side_b", "base_metal_end_pos", "base_metal_end_neg", "bus_top",
+                         "bus_side_px", "bus_side_nx", "bus_side_py", "bus_side_ny"],
+            "status": "sourced",
+            "value": "bus 1.3 x 2.8 m footprint, 0.2 m thick",
+            "source": "Footprint: McDowell, planet4589.org/astro/starsim (V1.5 row: bus 2.8 x 1.3 m; V1.0 'about 3 m bus', same chassis family). Thickness: 60-satellite stack of 6.7 m in the Falcon 9 fairing (lilibots.blogspot.com, 2020-04, secondary estimate)."
+        },
+        {
+            "subject": "antennas",
+            "status": "estimate",
+            "value": "white antenna region 0.9 x 2.2 m centred on the nadir face (63% of the base); range 40-80%",
+            "source": "Cole 2021 (arXiv:2107.06026) section 2 and Figure 1: 'pale/white antenna panels' on a polished-metal base. Region size not published."
+        },
+        {
+            "subject": "solar_array",
+            "status": "sourced",
+            "value": "one 2.8 x 8.1 m array standing vertical (shark-fin)",
+            "source": "McDowell, planet4589.org/astro/starsim (V1.5: solar array 2.8 x 8.1 m); SpaceX: in shark-fin mode 'the solar array goes vertical' (Tesmanian 2020). Hinge at the centre of the bus top: estimate."
+        },
+        {
+            "subject": "bus",
+            "status": "sourced",
+            "value": "base to nadir, array edge-on to the Sun's azimuth",
+            "source": "Cole 2021 section 5: pre-visor Starlinks at 550 km 'are rotated around the nadir-zenith axis ... so the panel is edge-on to the Sun' near the terminator - inferred from ONE image (Vandebergh 2020). Uncertain: the attitude difference from the VisorSat model confounds the visor-only differential."
+        },
+        {
+            "subject": "array",
+            "status": "sourced",
+            "value": "vertical (0 deg from local vertical)",
+            "source": "SpaceX shark-fin description: 'the solar array goes vertical' (Tesmanian 2020, SpaceX 2020-04-28 update). No fitted tilt is published for the pre-visor design."
+        },
+        {
+            "subject": "bus_metal",
+            "status": "derived",
+            "value": "aluminium preset, GGX roughness 0.23; also used for the edges",
+            "source": "Cole 2021 section 2: polished-metal base; section 5: pre-visorsats share it. Table 3 beam exponents 24/52 -> alpha 0.23 (see starlink_visorsat.json). Edges: black was ADDED on visorsats (Figure 2), so pre-visor edges are taken as bare metal."
+        },
+        {
+            "subject": "antenna_white",
+            "status": "estimate",
+            "value": "white paint preset (diffuse albedo 0.8)",
+            "source": "Cole 2021 section 2: 'white antenna panels'. Albedo not published (Phase 3c)."
+        },
+        {
+            "subject": "array_back_dark",
+            "status": "derived",
+            "value": "black paint preset",
+            "source": "Cole 2021 Table 3: rear-face emission b = 0 (visorsat fit; same array design assumed)."
+        }
+    ]
+}
