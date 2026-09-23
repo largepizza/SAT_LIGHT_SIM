@@ -25,26 +25,9 @@
 #include <filesystem>
 #include <string>
 
-// ── Data-driven attitude: names, legacy conversion, validation (lighting overhaul Phase 2) ──
-// Kept up here (not beside loadDefinitions) because initConstellation(), uploadSatOrbits() and
-// writeResolvedSatTypes() all precede the JSON loader in this file.
-// Names used in constellations.json's "attitude_groups" (and written back out by
-// writeResolvedSatTypes). Order must match AttTarget / JointMode.
-static const char *const kAttTargetNames[] = {
-    "nadir", "zenith", "sun", "anti_sun", "velocity", "anti_velocity",
-    "orbit_normal", "anti_orbit_normal", "sun_reflect_nadir", "sun_reflect_ground_site"};
-static const char *const kJointModeNames[] = {
-    "none", "track", "edge_on", "fixed", "flare_mitigation_tilt"};
-static const char *const kAttLawNames[] = {"two_vector", "tumble"};
-
-template <size_t N>
-static int lookupName(const char *const (&names)[N], const std::string &s)
-{
-    for (size_t i = 0; i < N; ++i)
-        if (s == names[i])
-            return (int)i;
-    return -1;
-}
+// ── Legacy attitude conversion (lighting overhaul Phase 2) ───────────────────────────────────
+// Kept up here (not beside loadDefinitions) because initConstellation() precedes the JSON loader
+// in this file. The attitude types, names, validation and triad maths live in SatModel.h/.cpp.
 
 // Legacy AttitudeMode → rigid group + body normal. Each row reproduces the old computeNormal()
 // result (to float rounding) through the generic evaluator in sat_orbit.comp:
@@ -115,6 +98,14 @@ static AttitudeGroup legacyAttitudeGroup(AttitudeMode m, glm::vec3 &normal, cons
 // `group`, and groups.size() <= kMaxAttitudeGroups.
 static void resolveAttitude(SatelliteType &t)
 {
+    if (!t.modelId.empty())
+    {
+        // Geometry model: groups came from (and were validated with) the model file; the legacy
+        // surfaces are unused, so park them on group 0.
+        t.primary.group = t.secondary.group = 0;
+        return;
+    }
+
     auto addGroup = [&](AttitudeGroup g) -> int {
         for (size_t i = 0; i < t.groups.size(); ++i)
             if (t.groups[i] == g)
@@ -151,24 +142,10 @@ static void resolveAttitude(SatelliteType &t)
     }
 
     // ── Validation — anything wrong falls back to a plain nadir-pointing group ──
-    std::string problem;
-    if (t.groups.empty() || (int)t.groups.size() > kMaxAttitudeGroups)
-        problem = std::to_string(t.groups.size()) + " attitude groups (1-" +
-                  std::to_string(kMaxAttitudeGroups) + " supported)";
+    std::string problem = validateAttitudeGroups(t.groups);
     for (const SurfaceSpec *s : {&t.primary, &t.secondary})
         if (problem.empty() && (s->group < 0 || s->group >= (int)t.groups.size()))
             problem = "surface references group " + std::to_string(s->group);
-    for (AttitudeGroup &g : t.groups)
-    {
-        if (!problem.empty())
-            break;
-        if (g.law == AttLaw::TwoVector &&
-            glm::length(glm::cross(glm::normalize(g.primaryAxis), glm::normalize(g.secondaryAxis))) < 1e-3f)
-            problem = "group '" + g.name + "' has parallel primary/secondary axes";
-        if ((g.jointMode == JointMode::Track || g.jointMode == JointMode::EdgeOn) &&
-            glm::length(glm::cross(glm::normalize(g.jointAxis), glm::normalize(g.jointVector))) < 1e-3f)
-            problem = "group '" + g.name + "' has its joint vector parallel to the joint axis";
-    }
     if (!problem.empty())
     {
         Log::line("satellite type '" + t.name + "': " + problem + " — using a nadir-pointing group");
@@ -178,40 +155,6 @@ static void resolveAttitude(SatelliteType &t)
     }
 }
 
-// Body vector → the group's TRIAD coordinates (t1b·v, t2b·v, t3b·v), in double precision. The
-// body half of the TRIAD construction is constant per type, so sat_orbit.comp only ever builds
-// the world half. Identity for the tumble law (its world triad is built directly from t1 = the
-// spinning axis-perpendicular, t3 = the spin axis — see groupNormal()).
-static glm::vec3 attTriadCoords(const AttitudeGroup &g, glm::vec3 v)
-{
-    glm::dvec3 dv = glm::dvec3(v);
-    if (g.law == AttLaw::Tumble)
-        return glm::vec3(dv);
-    glm::dvec3 t1 = glm::normalize(glm::dvec3(g.primaryAxis));
-    glm::dvec3 t2 = glm::normalize(glm::cross(t1, glm::dvec3(g.secondaryAxis)));
-    glm::dvec3 t3 = glm::cross(t1, t2);
-    return glm::vec3((float)glm::dot(t1, dv), (float)glm::dot(t2, dv), (float)glm::dot(t3, dv));
-}
-
-static GpuAttGroup toGpuAttGroup(const AttitudeGroup &g)
-{
-    GpuAttGroup o{};
-    o.law = (uint32_t)g.law;
-    o.primaryTarget = (uint32_t)g.primaryTarget;
-    o.secondaryTarget = (uint32_t)g.secondaryTarget;
-    o.jointMode = (uint32_t)g.jointMode;
-    glm::vec3 axis = glm::normalize(g.jointAxis);
-    // Track/EdgeOn's closed form assumes the objective vector is perpendicular to the joint axis
-    // (true for every legacy mapping) — project it so a slightly-off authored vector still works.
-    glm::vec3 vec = g.jointVector - glm::dot(g.jointVector, axis) * axis;
-    vec = glm::length(vec) > 1e-6f ? glm::normalize(vec) : glm::vec3(0.0f, 0.0f, 1.0f);
-    o.jointAxisT = attTriadCoords(g, axis);
-    o.jointTarget = (uint32_t)g.jointTarget;
-    o.jointVectorT = attTriadCoords(g, vec);
-    o.jointLimitRad = glm::radians(g.jointLimitDeg);
-    o.jointAngleRad = glm::radians(g.jointAngleDeg);
-    return o;
-}
 
 // ── Earth + observer constants ─────────────────────────────────────────────────
 static constexpr float kEarthRadius = 6'371'000.0f; // mean Earth radius (m)
@@ -3842,6 +3785,10 @@ void SatelliteSim::cleanup(VkDevice device)
     vkFreeMemory(device, satVisibleIdxMem, nullptr);
     vkDestroyBuffer(device, satListBuf, nullptr);
     vkFreeMemory(device, satListMem, nullptr);
+    if (satLobeMapped)
+        vkUnmapMemory(device, satLobeMem);
+    vkDestroyBuffer(device, satLobeBuf, nullptr);
+    vkFreeMemory(device, satLobeMem, nullptr);
     if (lightDomeMapped)
         vkUnmapMemory(device, lightDomeMem);
     vkDestroyBuffer(device, lightDomeBuf, nullptr);
@@ -4550,6 +4497,19 @@ void SatelliteSim::createSatBuffers(VulkanContext &ctx)
                      satTypeBuf, satTypeMem);
     vkMapMemory(ctx.device, satTypeMem, 0, typeBytes, 0, &satTypeMapped);
     memset(satTypeMapped, 0, typeBytes);
+
+    // satLobeBuf: host-visible + coherent. Every geometry-model type's baked facet lobes, packed
+    // back to back (GpuSatType::firstLobe/lobeCount index it). Written by uploadSatOrbits.
+    size_t totalLobes = 0;
+    for (const SatelliteType &t : satTypes)
+        totalLobes += t.lobes.size();
+    const VkDeviceSize lobeBytes = sizeof(GpuSatLobe) * std::max<size_t>(totalLobes, 1);
+    ctx.createBuffer(lobeBytes,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     satLobeBuf, satLobeMem);
+    vkMapMemory(ctx.device, satLobeMem, 0, lobeBytes, 0, &satLobeMapped);
+    memset(satLobeMapped, 0, lobeBytes);
 }
 
 // ─── createDescriptors ────────────────────────────────────────────────────────
@@ -4687,12 +4647,13 @@ void SatelliteSim::createComputePipeline(VulkanContext &ctx)
 //                                             overhaul Phase 1)
 //   binding 6  satVisibleIdxBuf  (write     SSBO — compact slot → satellite index, Phase 1b)
 //   binding 7  satListBuf        (readwrite SSBO — append counter + indirect args, Phase 1b)
+//   binding 8  satLobeBuf        (readonly  SSBO — baked geometry-model lobes, Phase 3)
 // Binding 5 was beamCloudBlockBuf (per-target cloud occlusion, C12 follow-up #33) until 2026-08-09
 // — beam_self_march.comp now writes blockAltM/blockOpacity directly, per beam, in its own later
 // dispatch; this shader no longer reads or writes those two fields at all.
 void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[8] = {};
+    VkDescriptorSetLayoutBinding bindings[9] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -4701,13 +4662,14 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
     bindings[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[6] = {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[7] = {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[8] = {8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 8;
+    li.bindingCount = 9;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &orbitDescLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &ps;
@@ -4728,8 +4690,9 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
     VkDescriptorBufferInfo typeInfo{satTypeBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo visIdxInfo{satVisibleIdxBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo listInfo{satListBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo lobeInfo{satLobeBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[8] = {};
+    VkWriteDescriptorSet writes[9] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 0, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &orbitInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 1, 0, 1,
@@ -4746,7 +4709,9 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &visIdxInfo, nullptr};
     writes[7] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 7, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &listInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 8, writes, 0, nullptr);
+    writes[8] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 8, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &lobeInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 9, writes, 0, nullptr);
 }
 
 // ─── createOrbitPipeline ──────────────────────────────────────────────────────
@@ -4791,6 +4756,7 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
     // GpuSatTypeHeader (which recordCompute() rewrites every frame). Rewritten on every rebake
     // along with the orbits, the same cadence these fields had while they lived in GpuSatOrbit.
     {
+        uint32_t firstLobe = 0; // running offset into satLobeBuf
         GpuSatType *types = reinterpret_cast<GpuSatType *>(
             static_cast<char *>(satTypeMapped) + sizeof(GpuSatTypeHeader));
         for (size_t ti = 0; ti < satTypes.size(); ++ti)
@@ -4809,13 +4775,19 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
             // Attitude — resolveAttitude() guarantees 1..kMaxAttitudeGroups groups and valid
             // surface group indices.
             dst.groupCount = (uint32_t)type.groups.size();
-            dst.pad0 = dst.pad1 = 0;
             dst.surfGroup0 = (uint32_t)type.primary.group;
-            dst.surfNormalT0 = attTriadCoords(type.groups[type.primary.group], glm::normalize(type.primary.normal));
+            dst.surfNormalT0 = attTriadCoords(type.groups, type.primary.group, glm::normalize(type.primary.normal));
             dst.surfGroup1 = (uint32_t)type.secondary.group;
-            dst.surfNormalT1 = attTriadCoords(type.groups[type.secondary.group], glm::normalize(type.secondary.normal));
+            dst.surfNormalT1 = attTriadCoords(type.groups, type.secondary.group, glm::normalize(type.secondary.normal));
             for (int gi = 0; gi < kMaxAttitudeGroups; ++gi)
-                dst.groups[gi] = gi < (int)type.groups.size() ? toGpuAttGroup(type.groups[gi]) : GpuAttGroup{};
+                dst.groups[gi] = gi < (int)type.groups.size() ? toGpuAttGroup(type.groups, gi) : GpuAttGroup{};
+            // Phase 3 geometry model: this type's baked lobes, packed contiguously in satLobeBuf.
+            dst.firstLobe = firstLobe;
+            dst.lobeCount = (uint32_t)type.lobes.size();
+            if (!type.lobes.empty())
+                memcpy(static_cast<GpuSatLobe *>(satLobeMapped) + firstLobe, type.lobes.data(),
+                       type.lobes.size() * sizeof(GpuSatLobe));
+            firstLobe += (uint32_t)type.lobes.size();
         }
     }
 
@@ -8616,6 +8588,48 @@ void SatelliteSim::updatePlanets()
 // Entry point called once from init().  Loads satellite type and constellation
 // definitions (from constellations.json or hardcoded fallback), then builds the
 // flat satOrbits array that drives per-frame position updates.
+// ─── loadModelType ────────────────────────────────────────────────────────────
+// Phase 3: loads <exe>/satellite_models/<t.modelId>.json, tessellates it, bakes the facet lobes,
+// checks them against a brute-force per-triangle evaluation, and writes the rest/sunlit OBJ shape
+// export to <user data>/satellite_models_debug/. Every step is logged. On failure the type keeps
+// its legacy fields and the caller treats it as a legacy type.
+bool SatelliteSim::loadModelType(SatelliteType &t)
+{
+    const std::string path =
+        (std::filesystem::path(exeDir_) / "satellite_models" / (t.modelId + ".json")).string();
+    SatModel model;
+    std::string err;
+    std::vector<std::string> warn;
+    const bool ok = loadSatModel(path, t.modelId, model, err, warn);
+    for (const std::string &w : warn)
+        Log::line("model '" + t.modelId + "': " + w);
+    if (!ok)
+    {
+        Log::line("model '" + t.modelId + "' (type '" + t.name + "') failed to load: " + err +
+                  " — falling back to the legacy type fields");
+        return false;
+    }
+
+    std::vector<SatTri> tris = tessellateSatModel(model);
+    SatLobeBakeStats stats;
+    t.lobes = bakeSatLobes(model, tris, kSatLobeBudget, stats);
+    validateSatLobes(model, tris, t.lobes, stats);
+    t.groups = model.groups;
+
+    const std::string objDir = (std::filesystem::path(userDataDir_) / "satellite_models_debug").string();
+    const bool objOk = writeSatModelObj(model, tris, objDir);
+
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "model '%s' (type '%s'): %d groups, %d components, %d triangles -> %d exact lobes -> %d lobes; "
+             "validator |dmag| p95 %.3f, max %.3f%s",
+             t.modelId.c_str(), t.name.c_str(), (int)model.groups.size(), (int)model.components.size(),
+             stats.triangles, stats.exactLobes, stats.lobes, stats.p95ErrMag, stats.maxErrMag,
+             objOk ? "" : " (OBJ export failed)");
+    Log::line(msg);
+    return !t.lobes.empty();
+}
+
 // ─── writeResolvedSatTypes ───────────────────────────────────────────────────
 // Writes every loaded satellite type, AFTER legacy conversion, in the explicit attitude-group
 // format to <user data dir>/satellite_types_resolved.json. It is the authoring reference for the
@@ -8627,30 +8641,15 @@ void SatelliteSim::writeResolvedSatTypes() const
     nlohmann::json types = nlohmann::json::array();
     for (const SatelliteType &t : satTypes)
     {
+        if (!t.modelId.empty())
+        {
+            // Geometry models are defined in their own file — reference it, don't inline it.
+            types.push_back({{"name", t.name}, {"model", t.modelId}, {"base_color", vec(t.baseColor)}});
+            continue;
+        }
         nlohmann::json groups = nlohmann::json::array();
         for (const AttitudeGroup &g : t.groups)
-        {
-            nlohmann::json jg = {{"name", g.name}, {"law", kAttLawNames[(int)g.law]}};
-            if (g.law == AttLaw::TwoVector)
-            {
-                jg["primary"] = {{"axis", vec(g.primaryAxis)}, {"target", kAttTargetNames[(int)g.primaryTarget]}};
-                jg["secondary"] = {{"axis", vec(g.secondaryAxis)}, {"target", kAttTargetNames[(int)g.secondaryTarget]}};
-            }
-            if (g.jointMode != JointMode::None)
-            {
-                nlohmann::json jj = {{"mode", kJointModeNames[(int)g.jointMode]}, {"axis", vec(g.jointAxis)}};
-                if (g.jointMode == JointMode::Track || g.jointMode == JointMode::EdgeOn)
-                {
-                    jj["vector"] = vec(g.jointVector);
-                    jj["target"] = kAttTargetNames[(int)g.jointTarget];
-                    jj["limit_deg"] = g.jointLimitDeg;
-                }
-                if (g.jointMode == JointMode::FixedAngle)
-                    jj["angle_deg"] = g.jointAngleDeg;
-                jg["joint"] = jj;
-            }
-            groups.push_back(jg);
-        }
+            groups.push_back(attitudeGroupToJson(g, t.groups));
         auto surface = [&](const SurfaceSpec &s) {
             return nlohmann::json{{"group", t.groups[s.group].name},
                                   {"normal", vec(s.normal)},
@@ -8721,58 +8720,6 @@ static glm::vec3 parseVec3(const nlohmann::json &j, const char *key, glm::vec3 d
     return {j[key][0].get<float>(), j[key][1].get<float>(), j[key][2].get<float>()};
 }
 
-static AttTarget parseAttTarget(const nlohmann::json &j, const char *key, AttTarget def,
-                                const std::string &where)
-{
-    if (!j.contains(key))
-        return def;
-    std::string s = j[key].get<std::string>();
-    int i = lookupName(kAttTargetNames, s);
-    if (i < 0)
-    {
-        Log::line("constellations.json: " + where + ": unknown target '" + s + "'");
-        return def;
-    }
-    return (AttTarget)i;
-}
-
-static AttitudeGroup parseAttitudeGroup(const nlohmann::json &jg, size_t idx, const std::string &typeName)
-{
-    AttitudeGroup g;
-    g.name = jg.value("name", "group" + std::to_string(idx));
-    const std::string where = "type '" + typeName + "' group '" + g.name + "'";
-    const std::string law = jg.value("law", std::string("two_vector"));
-    int li = lookupName(kAttLawNames, law);
-    if (li < 0)
-        Log::line("constellations.json: " + where + ": unknown law '" + law + "', using two_vector");
-    g.law = li < 0 ? AttLaw::TwoVector : (AttLaw)li;
-    if (jg.contains("primary"))
-    {
-        g.primaryAxis = parseVec3(jg["primary"], "axis", g.primaryAxis);
-        g.primaryTarget = parseAttTarget(jg["primary"], "target", g.primaryTarget, where);
-    }
-    if (jg.contains("secondary"))
-    {
-        g.secondaryAxis = parseVec3(jg["secondary"], "axis", g.secondaryAxis);
-        g.secondaryTarget = parseAttTarget(jg["secondary"], "target", g.secondaryTarget, where);
-    }
-    if (jg.contains("joint"))
-    {
-        const nlohmann::json &jj = jg["joint"];
-        const std::string mode = jj.value("mode", std::string("none"));
-        int mi = lookupName(kJointModeNames, mode);
-        if (mi < 0)
-            Log::line("constellations.json: " + where + ": unknown joint mode '" + mode + "'");
-        g.jointMode = mi < 0 ? JointMode::None : (JointMode)mi;
-        g.jointAxis = parseVec3(jj, "axis", g.jointAxis);
-        g.jointVector = parseVec3(jj, "vector", g.jointVector);
-        g.jointTarget = parseAttTarget(jj, "target", g.jointTarget, where);
-        g.jointLimitDeg = jj.value("limit_deg", g.jointLimitDeg);
-        g.jointAngleDeg = jj.value("angle_deg", g.jointAngleDeg);
-    }
-    return g;
-}
-
 // A surface is either legacy ({"attitude": "SunTracking", ...}) or mounted on a group
 // ({"group": "wings" | 0, "normal": [x,y,z], ...}); the group form wins when both are present.
 static SurfaceSpec parseSurfaceSpec(const nlohmann::json &j, const std::vector<AttitudeGroup> &groups,
@@ -8840,19 +8787,51 @@ void SatelliteSim::loadDefinitions()
     {
         SatelliteType t;
         t.name = jt["name"].get<std::string>();
-        auto col = jt["base_color"];
-        t.baseColor = {col[0].get<float>(), col[1].get<float>(), col[2].get<float>()};
-        t.crossSectionM2 = jt["cross_section_m2"].get<float>();
-        // Phase 2: optional explicit rigid groups; surfaces may mount on them by name/index.
-        if (jt.contains("attitude_groups"))
-            for (const auto &jg : jt["attitude_groups"])
-                t.groups.push_back(parseAttitudeGroup(jg, t.groups.size(), t.name));
-        t.primary = parseSurfaceSpec(jt["primary"], t.groups, t.name);
-        t.secondary = jt.contains("secondary")
-                          ? parseSurfaceSpec(jt["secondary"], t.groups, t.name)
-                          : SurfaceSpec{AttitudeMode::Perpendicular, 0.0f, 0.0f};
+        t.baseColor = glm::vec3(0.95f, 0.95f, 1.0f); // model types without base_color: near-white
+        if (jt.contains("base_color"))
+        {
+            auto col = jt["base_color"];
+            t.baseColor = {col[0].get<float>(), col[1].get<float>(), col[2].get<float>()};
+        }
+        t.crossSectionM2 = jt.value("cross_section_m2", 10.0f);
+        t.primary = SurfaceSpec{AttitudeMode::NadirPointing, 0.0f, 1.0f};
+        t.secondary = SurfaceSpec{AttitudeMode::Perpendicular, 0.0f, 0.0f};
         t.diffuse = jt.value("diffuse", 0.02f);
         t.mirrorFrac = jt.value("mirror_frac", 0.0f);
+
+        // Phase 3: a geometry model replaces everything below. A model that fails to load falls
+        // back to the legacy fields (or a plain nadir-pointing type) so startup never dies on it.
+        if (jt.contains("model"))
+        {
+            t.modelId = jt["model"].get<std::string>();
+            if (loadModelType(t))
+            {
+                satTypes.push_back(std::move(t));
+                continue;
+            }
+            t.modelId.clear();
+        }
+
+        // Phase 2: optional explicit rigid groups; surfaces may mount on them by name/index.
+        if (jt.contains("attitude_groups"))
+        {
+            std::vector<std::string> parentNames, warn;
+            for (const auto &jg : jt["attitude_groups"])
+            {
+                std::string pn;
+                t.groups.push_back(parseAttitudeGroupJson(jg, t.groups.size(), pn, warn));
+                parentNames.push_back(pn);
+            }
+            std::string problem;
+            if (!resolveGroupParents(t.groups, parentNames, problem))
+                warn.push_back(problem);
+            for (const std::string &w : warn)
+                Log::line("constellations.json: type '" + t.name + "': " + w);
+        }
+        if (jt.contains("primary"))
+            t.primary = parseSurfaceSpec(jt["primary"], t.groups, t.name);
+        if (jt.contains("secondary"))
+            t.secondary = parseSurfaceSpec(jt["secondary"], t.groups, t.name);
         satTypes.push_back(std::move(t));
     }
 

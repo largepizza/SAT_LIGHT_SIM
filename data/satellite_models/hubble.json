@@ -1,0 +1,56 @@
+{
+    "name": "Hubble Space Telescope (simple)",
+    "note": "Phase 3a example. Tube 13.2 m x 4.2 m; two ~2.45 x 7.1 m solar arrays hinged at mid-length, each rotating about its long axis to track the sun. Body frame: +Z = telescope axis (aperture end), arrays along +/-Y. ATTITUDE IS A STAND-IN: the real telescope points at inertial targets (no such law exists yet — Phase 3c); here the aperture points away from the sun, which respects Hubble's >50 deg sun-avoidance constraint and lets the arrays face the sun fully.",
+    "materials": [
+        { "name": "hubble_mli", "preset": "mli_foil", "color": [0.82, 0.83, 0.86] }
+    ],
+    "attitude_groups": [
+        {
+            "name": "tube",
+            "primary": { "axis": [0, 0, 1], "target": "anti_sun" },
+            "secondary": { "axis": [1, 0, 0], "target": "nadir" }
+        },
+        {
+            "name": "array_left",
+            "parent": "tube",
+            "hinge": { "position": [0, 2.1, 0], "axis": [0, 1, 0] },
+            "joint": { "mode": "track", "vector": [1, 0, 0], "target": "sun" }
+        },
+        {
+            "name": "array_right",
+            "parent": "tube",
+            "hinge": { "position": [0, -2.1, 0], "axis": [0, 1, 0] },
+            "joint": { "mode": "track", "vector": [1, 0, 0], "target": "sun" }
+        }
+    ],
+    "components": [
+        {
+            "name": "tube",
+            "type": "cylinder",
+            "group": "tube",
+            "radius": 2.1,
+            "height": 13.2,
+            "material": "hubble_mli"
+        },
+        {
+            "name": "array_left",
+            "type": "plane",
+            "group": "array_left",
+            "size": [2.45, 7.1],
+            "position": [0, 3.85, 0],
+            "rotation_deg": [0, 90, 0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        },
+        {
+            "name": "array_right",
+            "type": "plane",
+            "group": "array_right",
+            "size": [2.45, 7.1],
+            "position": [0, -3.85, 0],
+            "rotation_deg": [0, 90, 0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        }
+    ]
+}

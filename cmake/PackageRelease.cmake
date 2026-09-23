@@ -44,7 +44,7 @@ file(COPY "${EXE_FILE}" DESTINATION "${STAGE}"
      FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
                       GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 
-foreach(dir shaders assets)
+foreach(dir shaders assets satellite_models)
     if(NOT EXISTS "${RUNTIME_DIR}/${dir}")
         message(FATAL_ERROR "PackageRelease.cmake: ${RUNTIME_DIR}/${dir} is missing — "
                             "the build's POST_BUILD copy steps did not run.")

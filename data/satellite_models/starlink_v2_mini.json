@@ -1,0 +1,52 @@
+{
+    "name": "Starlink V2 Mini",
+    "note": "Phase 3a example. Approximate public dimensions: flat bus ~4.1 x 2.7 m, two ~52 m2 solar arrays on short booms, gimbaled about the cross-track axis to track the sun. Body frame: +Z nadir, +X velocity, +Y = +Z x +X. Materials are preset estimates, calibrated in Phase 3c.",
+    "attitude_groups": [
+        {
+            "name": "bus",
+            "primary": { "axis": [0, 0, 1], "target": "nadir" },
+            "secondary": { "axis": [1, 0, 0], "target": "velocity" }
+        },
+        {
+            "name": "wing_left",
+            "parent": "bus",
+            "hinge": { "position": [0, 1.35, -0.2], "axis": [0, 1, 0] },
+            "joint": { "mode": "track", "vector": [0, 0, -1], "target": "sun" }
+        },
+        {
+            "name": "wing_right",
+            "parent": "bus",
+            "hinge": { "position": [0, -1.35, -0.2], "axis": [0, 1, 0] },
+            "joint": { "mode": "track", "vector": [0, 0, -1], "target": "sun" }
+        }
+    ],
+    "components": [
+        {
+            "name": "bus",
+            "type": "box",
+            "group": "bus",
+            "size": [4.1, 2.7, 0.4],
+            "material": "antenna_panel"
+        },
+        {
+            "name": "array_left",
+            "type": "plane",
+            "group": "wing_left",
+            "size": [4.1, 12.8],
+            "position": [0, 6.9, 0],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        },
+        {
+            "name": "array_right",
+            "type": "plane",
+            "group": "wing_right",
+            "size": [4.1, 12.8],
+            "position": [0, -6.9, 0],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        }
+    ]
+}

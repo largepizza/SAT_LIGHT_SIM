@@ -99,7 +99,8 @@ struct AttGroup {
     vec3  jointVectorT;       // body vector the Track/EdgeOn objective applies to (triad coords)
     float jointLimitRad;      // |rotation| clamp for Track/EdgeOn
     float jointAngleRad;      // FixedAngle rotation
-    float grpPad0, grpPad1, grpPad2;
+    uint  parent;             // parent group index (always lower), ATT_NO_PARENT = root
+    float grpPad0, grpPad1;
 };
 struct SatType {
     float baseColorR;         // satellite tint (r)
@@ -113,16 +114,16 @@ struct SatType {
     float diffuse;            // isotropic Lambertian floor
 
     float mirrorFrac;         // near-perfect mirror fraction
-    uint  groupCount;         // 1..2
-    uint  typePad0;
-    uint  typePad1;
+    uint  groupCount;         // 1..4 (parents before children)
+    uint  firstLobe;          // Phase 3 geometry model: first entry in lobes[]
+    uint  lobeCount;          // 0 = legacy two-surface reflectance
 
     vec3  surfNormalT0;       // primary surface normal (triad coordinates of its group)
     uint  surfGroup0;
     vec3  surfNormalT1;       // secondary surface normal
     uint  surfGroup1;
 
-    AttGroup groups[2];       // kMaxAttitudeGroups — read straight from the buffer, never copied
+    AttGroup groups[4];       // kMaxAttitudeGroups — read straight from the buffer, never copied
                               // into a local (a dynamically indexed local array spills)
 };
 // Header block = GpuSatTypeHeader in SatelliteSim.h (rewritten by the CPU every frame).
@@ -132,6 +133,25 @@ layout(set = 0, binding = 5) readonly buffer SatTypeBuf {
     float   typeHdrPad0;
     float   typeHdrPad1;
     SatType types[];
+};
+
+// ── Phase 3 geometry models: baked facet lobes (GpuSatLobe, 48 bytes) ──────────
+// Each lobe is exact for a flat face (curved surfaces merge into a few lobes whose angular spread
+// is folded into alpha2Mat). normalT is in the ROOT triad coordinates of the lobe's group tree —
+// world normal = groupFrame * normalT. Must match GpuSatLobe in SatModel.h.
+struct SatLobe {
+    vec3  normalT;
+    uint  group;
+    float area;               // m², specular term
+    float diffArea;           // m², diffuse term
+    float albedoD;            // Lambertian albedo
+    float f0;                 // Schlick F0
+    float alpha2Mat;          // GGX α² of material + normal spread (source size added below)
+    uint  visLayer;           // Phase 3b self-shadowing; 0xFFFFFFFF = unoccluded
+    float lobePad0, lobePad1;
+};
+layout(set = 0, binding = 8) readonly buffer SatLobeBuf {
+    SatLobe lobes[];
 };
 
 // ── Output: compact pre-photometry GpuSatVisible list, finished in place by sat_flare.comp ──
@@ -298,6 +318,14 @@ const uint JOINT_EDGE_ON    = 2u;
 const uint JOINT_FIXED      = 3u;
 const uint JOINT_FLARE_TILT = 4u;
 
+const uint ATT_NO_PARENT = 0xFFFFFFFFu;
+
+// Phase 3 photometry. Radiant intensity I (m² per unit solar irradiance) at range r gives
+// m = −26.74 − 2.5·log10(I/r²); the display chain's anchor is effectFlare 0.008 ↔ mag 6, so
+// flare = 0.008·10^(0.4·(6 + 26.74))·I/r² = K_FLUX·I/r².
+const float K_FLUX    = 9.979e10;
+const float SUN_ALPHA = 0.0023;   // solar disk as a GGX half-vector α (kSunAlpha in SatModel.h)
+
 // ── Integer hash for TargetedReflector target scoring ──────────────────────────
 // 2026-08-06: replaces a float-magnitude-sensitive hash11(float) that silently collapsed to a
 // constant 0.0 for every candidate once the satellite's global dispatch index exceeded ~15,000
@@ -358,12 +386,16 @@ vec3 rotateAboutAxis(vec3 v, vec3 k, float theta)
     return v * c + cross(k, v) * s + k * (dot(k, v) * (1.0 - c));
 }
 
-// World-space direction of a body vector `vT` (triad coordinates) mounted on group `g`.
-vec3 groupNormal(AttGroup g, vec3 vT, SatOrbit orb, vec3 nadir, vec3 vel, vec3 siteIdeal)
+// World frame of group `g`: its columns are the world images of the ROOT's body-triad axes, so a
+// body vector in root triad coordinates vT maps to world as F * vT. A root builds the frame from
+// its attitude law; a child starts from its parent's frame (`parentF`). Either may then turn by its
+// 1-DOF joint. Hand-mirrored on the CPU by evalGroupPoses() (SatModel.cpp) — keep them in step.
+mat3 groupFrame(AttGroup g, mat3 parentF, SatOrbit orb, vec3 nadir, vec3 vel, vec3 siteIdeal)
 {
-    // ── World triad ─────────────────────────────────────────────────────────
-    vec3 t1, t2, t3;
-    if (g.law == ATT_LAW_TUMBLE) {
+    mat3 F;
+    if (g.parent != ATT_NO_PARENT) {
+        F = parentF;
+    } else if (g.law == ATT_LAW_TUMBLE) {
         // Uncontrolled spin about this satellite's own axis (GpuSatOrbit tumble*). t1 sweeps the
         // plane perpendicular to the axis — exactly the legacy Tumbling normal for body +X.
         float angle = orb.tumblePhase + orb.tumbleRate * pc.deltaT;
@@ -371,11 +403,10 @@ vec3 groupNormal(AttGroup g, vec3 vT, SatOrbit orb, vec3 nadir, vec3 vel, vec3 s
         vec3  ref   = (abs(ax.z) < 0.9) ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
         vec3  axA   = normalize(cross(ax, ref));
         vec3  axB   = cross(ax, axA); // already unit length
-        t1 = cos(angle) * axA + sin(angle) * axB;
-        t2 = cross(ax, t1);
-        t3 = ax;
+        vec3  t1    = cos(angle) * axA + sin(angle) * axB;
+        F = mat3(t1, cross(ax, t1), ax);
     } else {
-        t1 = attTargetDir(g.primaryTarget, nadir, vel, siteIdeal);
+        vec3  t1  = attTargetDir(g.primaryTarget, nadir, vel, siteIdeal);
         vec3  c   = cross(t1, attTargetDir(g.secondaryTarget, nadir, vel, siteIdeal));
         float len = length(c);
         if (len < 1e-5) {
@@ -384,14 +415,13 @@ vec3 groupNormal(AttGroup g, vec3 vT, SatOrbit orb, vec3 nadir, vec3 vel, vec3 s
             c   = cross(t1, (abs(t1.z) < 0.9) ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0));
             len = length(c);
         }
-        t2 = c / len;
-        t3 = cross(t1, t2);
+        vec3 t2 = c / len;
+        F = mat3(t1, t2, cross(t1, t2));
     }
-    vec3 v = t1 * vT.x + t2 * vT.y + t3 * vT.z;
-    if (g.jointMode == JOINT_NONE) return v;
+    if (g.jointMode == JOINT_NONE) return F;
 
-    // ── 1-DOF joint: rotate the group about its own body axis k ─────────────
-    vec3  k = normalize(t1 * g.jointAxisT.x + t2 * g.jointAxisT.y + t3 * g.jointAxisT.z);
+    // ── 1-DOF joint: rotate the whole frame about the joint/hinge axis k ────
+    vec3  k = normalize(F * g.jointAxisT);
     float theta;
     if (g.jointMode == JOINT_FIXED) {
         theta = g.jointAngleRad;
@@ -402,7 +432,7 @@ vec3 groupNormal(AttGroup g, vec3 vT, SatOrbit orb, vec3 nadir, vec3 vel, vec3 s
         theta = pc.flareMitigationTiltRad;
     } else {
         // Rotating body vector jv (⊥ k) by θ: jv(θ)·tgt = a·cosθ + b·sinθ.
-        vec3  jv  = t1 * g.jointVectorT.x + t2 * g.jointVectorT.y + t3 * g.jointVectorT.z;
+        vec3  jv  = F * g.jointVectorT;
         vec3  tgt = attTargetDir(g.jointTarget, nadir, vel, siteIdeal);
         float a   = dot(tgt, jv);
         float b   = dot(tgt, cross(k, jv));
@@ -417,7 +447,28 @@ vec3 groupNormal(AttGroup g, vec3 vT, SatOrbit orb, vec3 nadir, vec3 vel, vec3 s
         }
         theta = clamp(theta, -g.jointLimitRad, g.jointLimitRad);
     }
-    return rotateAboutAxis(v, k, theta);
+    return mat3(rotateAboutAxis(F[0], k, theta), rotateAboutAxis(F[1], k, theta),
+                rotateAboutAxis(F[2], k, theta));
+}
+
+// A child's parent is always a lower index, so frames are built in order into four fixed
+// registers — explicit selects instead of a dynamically indexed local array, which would spill.
+mat3 pickFrame(uint i, mat3 F0, mat3 F1, mat3 F2, mat3 F3)
+{
+    return (i == 0u) ? F0 : (i == 1u) ? F1 : (i == 2u) ? F2 : F3;
+}
+
+void typeFrames(uint ti, SatOrbit orb, vec3 nadir, vec3 vel, vec3 siteIdeal,
+                out mat3 F0, out mat3 F1, out mat3 F2, out mat3 F3)
+{
+    uint n = types[ti].groupCount;
+    F0 = groupFrame(types[ti].groups[0], mat3(1.0), orb, nadir, vel, siteIdeal);
+    F1 = F0; F2 = F0; F3 = F0;
+    if (n > 1u) F1 = groupFrame(types[ti].groups[1], F0, orb, nadir, vel, siteIdeal);
+    if (n > 2u) F2 = groupFrame(types[ti].groups[2], pickFrame(types[ti].groups[2].parent, F0, F1, F1, F1),
+                                orb, nadir, vel, siteIdeal);
+    if (n > 3u) F3 = groupFrame(types[ti].groups[3], pickFrame(types[ti].groups[3].parent, F0, F1, F2, F2),
+                                orb, nadir, vel, siteIdeal);
 }
 
 // True when any of this type's groups aims at a ground site — the only case that needs the
@@ -539,6 +590,126 @@ vec3 nearFallbackIdeal(vec3 satEciEval, float gmstEval)
     vec3  n   = pc.sunDirECI + nadirEval;
     float len = length(n);
     return (len > 1e-5) ? n / len : nadirEval;
+}
+
+// ── Legacy two-surface reflectance (types without a geometry model) ────────────
+// The pre-Phase-3 model, verbatim: two Phong-lobed surfaces + mirror spike + diffuse floor, in the
+// tuned effectFlare units anchored at "Starlink ≈ mag 6". Kept so legacy/modded types render
+// exactly as before; geometry-model types use modelFlux() instead.
+float legacyFlux(vec3 surfN0, vec3 surfN1, vec3 satNadir, vec3 satToObs, float litFactor,
+                 float earthIrr, float distFactor, float specExp0, float specExp1, float w1,
+                 float diffuse, float mirrorFrac, float crossSection)
+{
+    // ── Multi-surface specular model ──────────────────────────────────────────
+    // spec0 (primary surface) + spec1*w1 (secondary) + an isotropic diffuse floor. specExp == 0
+    // uses the Lambertian phase (cos of sun–observer angle) instead of the specular pow().
+    // Irradiance-weighted: a surface can only reflect what it receives, so each lobe is scaled by
+    // irr = |dot(sun, normal)| (two-sided panels — whichever face is lit). Perpendicular/SunPerp
+    // radiators are edge-on to the sun by construction, so irr ≈ 0 suppresses them automatically.
+
+    // Primary surface
+    float irr0   = abs(dot(pc.sunDirECI, surfN0));
+    vec3  n0     = (dot(pc.sunDirECI, surfN0) >= 0.0) ? surfN0 : -surfN0;
+    vec3  refl0  = reflect(-pc.sunDirECI, n0);
+    // clamp (not just max(0,...)) is required: float rounding can push this dot a hair above 1.0,
+    // and at mirrorExp's tens of thousands even a ~0.01% overshoot in the pow() base blows up to
+    // +Infinity — which renders as a black hole exactly at the flare's peak.
+    float spec0  = irr0 * ((specExp0 < 0.01)
+                    ? max(0.0, dot(pc.sunDirECI, satToObs))
+                    : pow(clamp(dot(refl0, satToObs), 0.0, 1.0), specExp0));
+
+    // Secondary surface — irr1 = 0 for edge-on surfaces (e.g. Perpendicular radiators)
+    float irr1   = abs(dot(pc.sunDirECI, surfN1));
+    vec3  n1     = (dot(pc.sunDirECI, surfN1) >= 0.0) ? surfN1 : -surfN1;
+    vec3  refl1  = reflect(-pc.sunDirECI, n1);
+    float spec1  = irr1 * ((specExp1 < 0.01)
+                    ? max(0.0, dot(pc.sunDirECI, satToObs))
+                    : pow(clamp(dot(refl1, satToObs), 0.0, 1.0), specExp1));
+
+    // ── Mirror peak: ultra-narrow specular spike ──────────────────────────────
+    // Added on top of spec0 (primary Phong lobe); fires only when the sun-satellite-observer
+    // triangle is almost perfectly aligned. mirrorExp ≫ specExp0 → sub-degree angular width.
+    float mirrorExp  = max(specExp0 * mirrorBoost, 8000.0);
+    float mirrorDot  = clamp(dot(refl0, satToObs), 0.0, 1.0);
+    float mirrorPeak = irr0 * pow(mirrorDot, mirrorExp) * mirrorBoost;
+    spec0 += mirrorPeak * mirrorFrac;
+
+    // ── Earthshine BRDF — Earth illuminates from nadir direction ─────────────
+    // Not multiplied by litFactor: eclipsed satellites still receive earthshine
+    // from the illuminated hemisphere below (the dominant source of residual
+    // brightness for satellites crossing into shadow near the terminator).
+    float irrE0        = max(0.0, dot(satNadir, surfN0));
+    vec3  nE0          = (dot(satNadir, surfN0) >= 0.0) ? surfN0 : -surfN0;
+    vec3  reflE0       = reflect(-satNadir, nE0);
+    float specE0       = irrE0 * ((specExp0 < 0.01)
+                         ? max(0.0, dot(satNadir, satToObs))
+                         : pow(max(0.0, dot(reflE0, satToObs)), specExp0));
+    float irrE0b       = max(0.0, dot(satNadir, -surfN0)); // back face: diffuse only
+    float specE0b      = irrE0b * diffuse;
+    float irrE1        = max(0.0, dot(satNadir, surfN1));
+    float specE1_earth = irrE1 * w1 * diffuse;
+    float earthSpecular = specE0 + specE0b + specE1_earth;
+    float earthFlare    = earthSpecular * earthIrr * distFactor * crossSection * brightnessScale;
+
+    // crossSection = sqrt(area_m² / 10): larger structures reflect proportionally more flux.
+    float specular   = spec0 + spec1 * w1 + diffuse;
+    float solarFlare = specular * litFactor * distFactor * crossSection * brightnessScale;
+    return solarFlare + earthFlare;
+}
+
+// ── Phase 3 geometry-model reflectance ────────────────────────────────────────
+// Intensity of one facet lobe per unit irradiance from direction s, seen from o — Lambertian
+// diffuse plus GGX/Schlick/Smith specular, the exact formula SatModel.cpp's validator uses.
+// `srcA2` widens the lobe by the light source's size (SUN_ALPHA² for the sun; far larger for the
+// Earth). sin²θh comes from the cross product, not 1−cos², so sub-degree mirror lobes stay precise
+// in float.
+float lobeIntensity(vec3 n, SatLobe L, vec3 s, vec3 o, float srcA2)
+{
+    float ns = dot(n, s), no = dot(n, o);
+    if (ns <= 0.0 || no <= 0.0) return 0.0;
+    float diffuseI = L.albedoD * (1.0 / PI) * L.diffArea * ns * no;
+    vec3  h    = normalize(s + o);
+    float nh   = dot(n, h);
+    vec3  nxh  = cross(n, h);
+    float a2   = L.alpha2Mat + srcA2;
+    float den  = nh * nh * a2 + dot(nxh, nxh);
+    float D    = a2 / (PI * den * den);
+    float F    = L.f0 + (1.0 - L.f0) * pow(1.0 - clamp(dot(s, h), 0.0, 1.0), 5.0);
+    float G1s  = 2.0 * ns / (ns + sqrt(a2 + (1.0 - a2) * ns * ns));
+    float G1o  = 2.0 * no / (no + sqrt(a2 + (1.0 - a2) * no * no));
+    return diffuseI + L.area * D * F * G1s * G1o * 0.25;
+}
+
+float modelIntensity(uint ti, mat3 F0, mat3 F1, mat3 F2, mat3 F3, vec3 s, vec3 o, float srcA2)
+{
+    float I = 0.0;
+    uint first = types[ti].firstLobe;
+    uint count = types[ti].lobeCount;
+    for (uint li = first; li < first + count; ++li) {
+        SatLobe L = lobes[li];
+        vec3 n = pickFrame(L.group, F0, F1, F2, F3) * L.normalT;
+        I += lobeIntensity(n, L, s, o, srcA2);
+    }
+    return I;
+}
+
+// Physical flux in effectFlare units: sunlight (× Earth-shadow factor) plus earthshine, where the
+// lit Earth is a Lambertian disc of albedo 0.3 seen from the satellite. Its irradiance on a plate
+// facing it is albedo · (R/d)² · (lit fraction) — the full view factor, ~0.25 of sunlight at LEO
+// under a lit Earth. (The legacy model's (1 − R/d)/2 term is ~20× smaller; it stays as-is in
+// legacyFlux so legacy types don't change.) Earth's angular radius ρ (sin ρ = R/d) widens every
+// lobe's response to it: α ≈ tan(ρ/2).
+float modelFlux(uint ti, mat3 F0, mat3 F1, mat3 F2, mat3 F3, vec3 satNadir, vec3 satToObs,
+                float litFactor, float range, float rOverD, float illumFrac)
+{
+    float Isun = (litFactor > 0.0)
+        ? modelIntensity(ti, F0, F1, F2, F3, pc.sunDirECI, satToObs, SUN_ALPHA * SUN_ALPHA) : 0.0;
+    float earthE  = 0.3 * rOverD * rOverD * illumFrac;
+    float cosRho  = sqrt(max(0.0, 1.0 - rOverD * rOverD));
+    float alphaE  = rOverD / (1.0 + cosRho);  // tan(ρ/2)
+    float Iearth = (earthE > 0.0)
+        ? modelIntensity(ti, F0, F1, F2, F3, satNadir, satToObs, alphaE * alphaE) : 0.0;
+    return K_FLUX * (Isun * litFactor + Iearth * earthE) / (range * range) * brightnessScale;
 }
 
 // Everything per-satellite. Returns false when the satellite is culled (nothing is appended);
@@ -704,13 +875,12 @@ bool processSatellite(uint i, out SatVisible rec)
         siteIdeal = ideal;
     }
 
-    // ── Surface normals from the type's rigid attitude groups (Phase 2) ───────
-    // Groups are read straight from the buffer by index — never through a local copy of the
-    // groups array, which a dynamic index would force into scratch memory.
-    vec3 surfN0 = groupNormal(types[orb.typeIdx].groups[ty.surfGroup0], ty.surfNormalT0,
-                              orb, satNadir, velHat, siteIdeal);
-    vec3 surfN1 = groupNormal(types[orb.typeIdx].groups[ty.surfGroup1], ty.surfNormalT1,
-                              orb, satNadir, velHat, siteIdeal);
+    // ── Attitude: every group's world frame, parents first (Phase 2/3) ─────────
+    mat3 F0, F1, F2, F3;
+    typeFrames(orb.typeIdx, orb, satNadir, velHat, siteIdeal, F0, F1, F2, F3);
+    // Legacy two-surface normals (also the mirror normal for ground-site beams).
+    vec3 surfN0 = pickFrame(ty.surfGroup0, F0, F1, F2, F3) * ty.surfNormalT0;
+    vec3 surfN1 = pickFrame(ty.surfGroup1, F0, F1, F2, F3) * ty.surfNormalT1;
 
     if (usesSite) {
         // The mirror is whichever surface is mounted on the site-aimed group (surface 0 for every
@@ -906,62 +1076,12 @@ bool processSatellite(uint i, out SatVisible rec)
     float solidAngleFrac = (1.0 - cosEta) * 0.5;       // fraction of upward hemisphere
     float earthIrr      = EARTH_ALBEDO * solidAngleFrac * illumFrac;
 
-    // ── Multi-surface specular model ──────────────────────────────────────────
-    // spec0 (primary surface) + spec1*w1 (secondary) + an isotropic diffuse floor. specExp == 0
-    // uses the Lambertian phase (cos of sun–observer angle) instead of the specular pow().
-    // Irradiance-weighted: a surface can only reflect what it receives, so each lobe is scaled by
-    // irr = |dot(sun, normal)| (two-sided panels — whichever face is lit). Perpendicular/SunPerp
-    // radiators are edge-on to the sun by construction, so irr ≈ 0 suppresses them automatically.
-    vec3  satToObs  = normalize(-relPos);
-
-    // Primary surface
-    float irr0   = abs(dot(pc.sunDirECI, surfN0));
-    vec3  n0     = (dot(pc.sunDirECI, surfN0) >= 0.0) ? surfN0 : -surfN0;
-    vec3  refl0  = reflect(-pc.sunDirECI, n0);
-    // clamp (not just max(0,...)) is required: float rounding can push this dot a hair above 1.0,
-    // and at mirrorExp's tens of thousands even a ~0.01% overshoot in the pow() base blows up to
-    // +Infinity — which renders as a black hole exactly at the flare's peak.
-    float spec0  = irr0 * ((ty.specExp0 < 0.01)
-                    ? max(0.0, dot(pc.sunDirECI, satToObs))
-                    : pow(clamp(dot(refl0, satToObs), 0.0, 1.0), ty.specExp0));
-
-    // Secondary surface — irr1 = 0 for edge-on surfaces (e.g. Perpendicular radiators)
-    float irr1   = abs(dot(pc.sunDirECI, surfN1));
-    vec3  n1     = (dot(pc.sunDirECI, surfN1) >= 0.0) ? surfN1 : -surfN1;
-    vec3  refl1  = reflect(-pc.sunDirECI, n1);
-    float spec1  = irr1 * ((ty.specExp1 < 0.01)
-                    ? max(0.0, dot(pc.sunDirECI, satToObs))
-                    : pow(clamp(dot(refl1, satToObs), 0.0, 1.0), ty.specExp1));
-
-    // ── Mirror peak: ultra-narrow specular spike ──────────────────────────────
-    // Added on top of spec0 (primary Phong lobe); fires only when the sun-satellite-observer
-    // triangle is almost perfectly aligned. mirrorExp ≫ specExp0 → sub-degree angular width.
-    float mirrorExp  = max(ty.specExp0 * mirrorBoost, 8000.0);
-    float mirrorDot  = clamp(dot(refl0, satToObs), 0.0, 1.0);
-    float mirrorPeak = irr0 * pow(mirrorDot, mirrorExp) * mirrorBoost;
-    spec0 += mirrorPeak * ty.mirrorFrac;
-
-    // ── Earthshine BRDF — Earth illuminates from nadir direction ─────────────
-    // Not multiplied by litFactor: eclipsed satellites still receive earthshine
-    // from the illuminated hemisphere below (the dominant source of residual
-    // brightness for satellites crossing into shadow near the terminator).
-    float irrE0        = max(0.0, dot(satNadir, surfN0));
-    vec3  nE0          = (dot(satNadir, surfN0) >= 0.0) ? surfN0 : -surfN0;
-    vec3  reflE0       = reflect(-satNadir, nE0);
-    float specE0       = irrE0 * ((ty.specExp0 < 0.01)
-                         ? max(0.0, dot(satNadir, satToObs))
-                         : pow(max(0.0, dot(reflE0, satToObs)), ty.specExp0));
-    float irrE0b       = max(0.0, dot(satNadir, -surfN0)); // back face: diffuse only
-    float specE0b      = irrE0b * ty.diffuse;
-    float irrE1        = max(0.0, dot(satNadir, surfN1));
-    float specE1_earth = irrE1 * ty.w1 * ty.diffuse;
-    float earthSpecular = specE0 + specE0b + specE1_earth;
-    float earthFlare    = earthSpecular * earthIrr * distFactor * ty.crossSection * brightnessScale;
-
-    // crossSection = sqrt(area_m² / 10): larger structures reflect proportionally more flux.
-    float specular   = spec0 + spec1 * ty.w1 + ty.diffuse;
-    float solarFlare = specular * litFactor * distFactor * ty.crossSection * brightnessScale;
-    float flare      = solarFlare + earthFlare;
+    // ── Reflectance ─────────────────────────────────────────────────────────────
+    vec3  satToObs = normalize(-relPos);
+    float flare = (ty.lobeCount > 0u)
+        ? modelFlux(orb.typeIdx, F0, F1, F2, F3, satNadir, satToObs, litFactor, range, cosEta, illumFrac)
+        : legacyFlux(surfN0, surfN1, satNadir, satToObs, litFactor, earthIrr, distFactor,
+                     ty.specExp0, ty.specExp1, ty.w1, ty.diffuse, ty.mirrorFrac, ty.crossSection);
 
     // ── Eclipse reddening ──────────────────────────────────────────────────────
     // Sunlight reaching a satellite deep in the penumbra grazes Earth's atmosphere along a long

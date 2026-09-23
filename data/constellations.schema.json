@@ -15,11 +15,19 @@
       "description": "Catalogue of satellite visual/photometric models. Each constellation references one by name.",
       "items": {
         "type": "object",
-        "required": ["name", "base_color", "cross_section_m2", "primary"],
+        "required": ["name"],
+        "anyOf": [
+          { "required": ["model"] },
+          { "required": ["base_color", "cross_section_m2", "primary"] }
+        ],
         "properties": {
           "name": {
             "type": "string",
             "description": "Unique identifier for this type. Constellations reference it via the 'type' field."
+          },
+          "model": {
+            "type": "string",
+            "description": "Geometry model id: loads satellite_models/<id>.json next to the executable (primitives + materials on a kinematic tree of attitude groups), baked at startup into physical reflectance lobes. When set, brightness is a physical apparent magnitude and the legacy fields (cross_section_m2, primary, secondary, diffuse, mirror_frac, attitude_groups) are ignored; base_color stays the sprite tint (default near-white). If the model fails to load, the legacy fields are used instead."
           },
           "base_color": {
             "type": "array",

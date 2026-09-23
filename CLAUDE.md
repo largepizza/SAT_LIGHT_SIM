@@ -373,6 +373,45 @@ per-satellite tumble axis/rate/phase. All closed-form in sim time, so reversibil
   has a legacy Gen2, its explicit twin, and a gimbaled-wing V2 Mini the old enum could not express.
 - Only the two-surface photometric model reads these normals until Phase 3 (primitives/materials).
 
+### Geometry models (lighting overhaul Phase 3a, 2026-09-23 — `.plans/SAT_LIGHTING_PHASE3.md`)
+
+A type may be `{"name", "model": "<id>"}` in `constellations.json`, loading
+`<exe>/satellite_models/<id>.json` (source: `data/satellite_models/`, copied by the build and
+packaged by `PackageRelease.cmake`). All model code is `src/simulations/SatModel.h/.cpp`, which
+also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGroup`/`GpuAttGroup`).
+
+- **Kinematic tree.** Groups are a tree: a ROOT has the two-vector law; a CHILD has
+  `"parent"` + `"hinge": {position, axis}` (in the parent's body frame) and is always the parent's
+  frame rotated about the hinge by its joint. Parents precede children; `kMaxAttitudeGroups` = 4.
+  All vectors in a tree use the ROOT's triad coordinates; on the GPU `typeFrames()` builds up to 4
+  world frames parents-first into fixed registers (`pickFrame` selects — no dynamically indexed
+  local array). `evalGroupPoses()` is the CPU mirror (hand-kept in step with `groupFrame()`).
+- **Geometry → lobes.** Components (`plane`/`box`/`cylinder`/`cone`/`sphere`, `position` relative
+  to the group's hinge, `rotation_quat` or `rotation_deg` intrinsic XYZ) with materials (presets in
+  `satMaterialPresets()` — estimates until 3c — or model-local, optionally extending a preset) are
+  tessellated once, then merged into facet lobes: identical (group, material, normal) faces merge
+  exactly; beyond `kSatLobeBudget` (48) same-group lobes merge agglomeratively with the lost normal
+  spread folded into α². Curved facets carry an intrinsic spread ((Δφ)²/12, Ω/2π) so a faceted
+  cylinder glints as a band, not N mirrors.
+- **Reflectance** (`modelFlux()` in `sat_orbit.comp`): per lobe Lambert + GGX/Schlick/Smith; the
+  sun's disk is folded into every lobe as `SUN_ALPHA` = 0.0023, which reproduces a flat mirror's
+  physical peak `F·A/Ω_sun` (verified: 1.50e4 vs 1.47e4 m² at normal incidence) — so model types
+  have no `mirrorBoost`/`crossSection`/`specExp` hacks. Earthshine uses the PHYSICAL view factor
+  `0.3·(R/d)²·litFraction` with Earth's angular size folded into α; legacy types keep the old
+  (~20× smaller) `(1−R/d)/2` term, deliberately, so they don't change. Output is a real apparent
+  magnitude mapped into effectFlare through the existing anchor: `flare = K_FLUX·I/r²·brightnessScale`,
+  `K_FLUX` = 9.979e10 (0.008 ↔ mag 6).
+- **Validation + shape check.** At load every model is compared against a brute-force per-triangle
+  evaluation (logged p95/max |Δmag| over configurations within 5 mag of its median brightness), and
+  its rest/sunlit poses are written to `<user data>/satellite_models_debug/<id>_{rest,sunlit}.obj`
+  (+ `.mtl`, OBJ Y-up, zenith up). **`SatModelTool`** (`tools/sat_model_tool/`, EXCLUDE_FROM_ALL:
+  `cmake --build build --target SatModelTool`) runs the same pipeline from the command line and
+  prints the lobe table — the authoring loop, no app launch needed.
+- A model that fails to load logs why and falls back to the type's legacy fields. Examples:
+  `starlink_v2_mini.json`, `hubble.json`; roster `data/custom/constellations_models_example.json`.
+- Not yet: self-shadowing (3b — `GpuSatLobe::visLayer` reserved), calibration + reference models
+  (3c), an inertial-pointing law (Hubble's attitude is an anti-sun stand-in).
+
 ### AttitudeMode values (legacy — converted to groups at load)
 | Mode | surfN | Use case |
 |------|-------|----------|
@@ -560,22 +599,25 @@ anything that is constant per type goes in `GpuSatType`.
 ```
 `static_assert(sizeof(GpuSatOrbit) == 64)` — do not change field order without updating both structs.
 
-### GpuSatType layout (208 bytes, std430) — `satTypeBuf`
+### GpuSatType layout (336 bytes, std430) — `satTypeBuf`
 One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, after a 16-byte `GpuSatTypeHeader`
 (`brightnessScale`, `mirrorBoost`, 2 pads — rewritten every frame; `SatOrbitPC` is full). Must match
 `SatType`/`AttGroup`/`SatTypeBuf` in `sat_orbit.comp` (`offsetof` static_asserts guard the C++ side).
 ```
 [ 0] baseColorR, baseColorG, baseColorB, crossSection
 [16] specExp0, specExp1, w1, diffuse
-[32] mirrorFrac, groupCount (uint), pad0, pad1
+[32] mirrorFrac, groupCount (uint), firstLobe (uint), lobeCount (uint — 0 = legacy path)
 [48] surfNormalT0 (vec3, triad coords), surfGroup0 (uint)
 [64] surfNormalT1 (vec3, triad coords), surfGroup1 (uint)
-[80] groups[2] — GpuAttGroup, 64 B each:
+[80] groups[4] — GpuAttGroup, 64 B each:
      law, primaryTarget, secondaryTarget, jointMode (uint×4)
      jointAxisT (vec3), jointTarget (uint)
      jointVectorT (vec3), jointLimitRad
-     jointAngleRad, pad×3
+     jointAngleRad, parent (uint, 0xFFFFFFFF = root), pad×2
 ```
+Geometry-model lobes live in `satLobeBuf` (binding 8 of the `sat_orbit` set, host-coherent,
+`GpuSatLobe` 48 B: normalT + group, area, diffArea, albedoD, f0, alpha2Mat, visLayer, pad×2),
+packed per type at `firstLobe`.
 
 ### GpuSatVisible layout (32 bytes, std430)
 A **compact list** entry: appended by `sat_orbit.comp`, finished in place by `sat_flare.comp`, read

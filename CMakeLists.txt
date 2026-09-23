@@ -166,6 +166,16 @@ sat_strict_warnings(SatLightSim)
 find_package(Threads REQUIRED)
 target_link_libraries(SatLightSim PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json Threads::Threads)
 
+# SatModelTool (lighting overhaul Phase 3): loads, bakes, validates and OBJ-exports satellite
+# models from the command line — the same SatModel.cpp the app uses, no Vulkan, no window. The
+# authoring loop for data/satellite_models/*.json. Not part of ALL:
+#   cmake --build build --target SatModelTool
+#   build/Debug/SatModelTool.exe data/satellite_models/hubble.json [--out <dir>]
+add_executable(SatModelTool EXCLUDE_FROM_ALL tools/sat_model_tool/main.cpp src/simulations/SatModel.cpp)
+target_include_directories(SatModelTool PRIVATE src/simulations)
+target_link_libraries(SatModelTool PRIVATE glm::glm nlohmann_json::nlohmann_json)
+sat_strict_warnings(SatModelTool)
+
 # miniaudio's CoreAudio backend needs these frameworks explicitly. GLFW's target already
 # brings Cocoa/IOKit/CoreFoundation transitively, but not CoreAudio/AudioToolbox — without
 # this the link fails with undefined _AudioObjectGetPropertyData etc.
@@ -281,6 +291,16 @@ function(sat_copy_runtime_files tgt)
                 "$<TARGET_FILE_DIR:${tgt}>/reflector_targets.json"
             COMMENT "Copying data files next to ${tgt}"
         )
+        # Satellite geometry models (lighting overhaul Phase 3), referenced from constellations.json
+        # by "model": "<id>" and loaded from <exe dir>/satellite_models/<id>.json.
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/satellite_models")
+            add_custom_command(TARGET ${tgt} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/data/satellite_models"
+                    "$<TARGET_FILE_DIR:${tgt}>/satellite_models"
+                COMMENT "Copying satellite models next to ${tgt}"
+            )
+        endif()
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
         add_custom_command(TARGET ${tgt} POST_BUILD
