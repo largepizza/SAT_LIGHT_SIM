@@ -1,0 +1,75 @@
+{
+  "format": "sat-light-sim-benchmark/1",
+  "id": "mallama2020a_original",
+  "title": "Brightness of original-design Starlink satellites at 550 km",
+  "kind": "distribution",
+  "citation": {
+    "authors": "A. Mallama",
+    "year": 2020,
+    "title": "Starlink Satellite Brightness Before VisorSat",
+    "url": "https://arxiv.org/abs/2006.08422"
+  },
+  "satellite": {
+    "name": "Starlink V1.0 (original design)",
+    "model": null,
+    "notes": "Flat nadir-facing bus plus one solar array, no visor. No model yet (design page M4)."
+  },
+  "magnitudes": {
+    "band": "visual (close to Johnson V)",
+    "atmosphere": "above (extinction-corrected)",
+    "reduction": "1000 km",
+    "locator": "sections 2-3"
+  },
+  "published": {
+    "n": { "value": 830, "locator": "abstract; Table 1" },
+    "mean_m1000": { "value": 5.93, "uncertainty": 0.02, "locator": "section 4.1" },
+    "sd_m1000": { "value": 0.67, "locator": "section 4.1 (0.672 in Table 2)" },
+    "phase_fit_linear": {
+      "coefficients": [5.946, -0.010],
+      "coefficient_uncertainties": [0.081, 0.059],
+      "variable": "phase_rad",
+      "locator": "Table 2, 'Phase angle' row (slope not significant; se 0.672)"
+    },
+    "flat_panel_fit": {
+      "form": "m1000 = b + mFP * (-2.5 log10(M N)); M, N = projections of the nadir-facing side toward the observer and toward the Sun (section 2, Figures 1-2)",
+      "coefficients": [5.046, 0.578],
+      "coefficient_uncertainties": [0.131, 0.084],
+      "locator": "section 4.3, equation 1; Table 2 'Flat-panel' row (7 sigma; se 0.654)"
+    }
+  },
+  "sampling": {
+    "shell": {
+      "alt_km": 550,
+      "incl_deg": 53.0,
+      "locator": "altitude: section 4; inclination not stated in the paper (Starlink shell 1 is 53.0 deg)"
+    },
+    "period": {
+      "start": null,
+      "end": "2020-05-31",
+      "locator": "section 1: 'through May 2020'; start not stated"
+    },
+    "sites": [
+      { "name": "A. Amorim", "lat_deg": -27.7, "lon_deg": -48.5, "count": 16, "locator": "Table 1" },
+      { "name": "R. Eberst", "lat_deg": 55.9, "lon_deg": 3.1, "count": 76, "locator": "Table 1 (printed as 3.1 E)" },
+      { "name": "A. Mallama", "lat_deg": 39.0, "lon_deg": -76.8, "count": 21, "locator": "Table 1" },
+      { "name": "J. Respler", "lat_deg": 40.3, "lon_deg": -74.4, "count": 65, "locator": "Table 1" },
+      { "name": "B. Young", "lat_deg": 36.1, "lon_deg": -96.0, "count": 98, "locator": "Table 1" },
+      { "name": "MMT-9", "lat_deg": 43.6, "lon_deg": 41.4, "count": 554, "locator": "Table 1" }
+    ],
+    "constraints": {
+      "operational_altitude_only": true,
+      "penumbra_excluded": null,
+      "sun_altitude_deg": null,
+      "min_elevation_deg": null,
+      "note": "Selection limits are not stated. Magnitudes were reduced to 1000 km and phase angles computed by T. Molczan (section 3)."
+    }
+  },
+  "transcription": {
+    "source": "arXiv:2006.08422, sections 3-4, Tables 1-2",
+    "method": "pdftotext -raw (Table 1 and Table 2 read in row order)",
+    "date": "2026-09-22",
+    "check": "summary only: the paper does not publish individual observations"
+  },
+  "columns": ["sat", "day_2020", "ops_days", "phase_deg", "m1000", "source", "not_seen"],
+  "observations": []
+}

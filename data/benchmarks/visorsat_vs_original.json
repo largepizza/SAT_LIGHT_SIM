@@ -1,0 +1,45 @@
+{
+  "format": "sat-light-sim-benchmark/1",
+  "id": "visorsat_vs_original",
+  "title": "VisorSat dimming relative to the original Starlink design",
+  "kind": "differential",
+  "citation": {
+    "authors": "A. Mallama",
+    "year": 2021,
+    "title": "The Brightness of VisorSat-Design Starlink Satellites",
+    "url": "https://arxiv.org/abs/2101.00374"
+  },
+  "satellite": {
+    "name": "Starlink VisorSat minus Starlink V1.0",
+    "model": null,
+    "notes": "Two models sharing materials, differing by the visor: isolates occlusion (Phase 3b) from material calibration."
+  },
+  "magnitudes": {
+    "band": "visual (close to Johnson V)",
+    "atmosphere": "above (extinction-corrected)",
+    "reduction": "1000 km",
+    "locator": "section 2"
+  },
+  "published": {
+    "delta_mean_m1000": {
+      "value": 1.29,
+      "uncertainty": 0.045,
+      "locator": "abstract; section 6; Table 2 (7.22 - 5.93; uncertainty = the two means' combined in quadrature)"
+    }
+  },
+  "references": {
+    "test": "mallama2021_visorsat",
+    "baseline": "mallama2020a_original"
+  },
+  "sampling": {
+    "note": "Each model is sampled exactly as its own reference dataset was; the two periods and site lists differ (2020-08..12 vs through 2020-05)."
+  },
+  "transcription": {
+    "source": "arXiv:2101.00374, Table 2",
+    "method": "manual",
+    "date": "2026-09-22",
+    "check": "7.22 - 5.93 = 1.29"
+  },
+  "columns": [],
+  "observations": []
+}

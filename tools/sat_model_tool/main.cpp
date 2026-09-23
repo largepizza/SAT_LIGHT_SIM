@@ -1,7 +1,11 @@
 // SatModelTool — offline bake / validate / OBJ export of satellite geometry models.
 //
 //   SatModelTool <model.json> [<model.json> ...] [--out <dir>] [--budget <lobes>]
-//                [--shadow-study <N>] [--selftest <N>]
+//                [--shadow-study <N>] [--selftest <N>] [--benchmark <file.json>]...
+//
+// --benchmark checks a data/benchmarks file (M3): its observations must reproduce the statistics
+// the paper printed (count, censored count, mean, median, sd, phase fits); a differential file's
+// delta must follow from its two referenced files.
 //
 // --selftest runs the CPU photometric evaluator's checks (SatPhotometry, benchmarking milestone M1):
 // known-value geometry checks, then per model N posed configurations comparing the lobe path with
@@ -11,6 +15,7 @@
 // facet lobes → check them against a brute-force per-triangle evaluation → write the rest and
 // sunlit OBJ poses. Prints the lobe table so a model's reflectance can be inspected without
 // launching the simulator. Exit code 1 if any model fails to load.
+#include "SatBenchmark.h"
 #include "SatModel.h"
 #include "SatPhotometry.h"
 
@@ -191,6 +196,98 @@ bool selfTestModel(const SatModel &m, const std::vector<SatTri> &tris, int budge
                 p(errBudget, 0.95), p(errBudget, 1.0));
     return ok;
 }
+// Benchmark file check (design page M3): a file's own observations must reproduce the statistics
+// the paper printed, which proves the transcription; a differential file's published difference
+// must follow from its two referenced files. Printed values are rounded, so a scalar may differ by
+// up to half a unit in its last printed digit (2 decimals → 0.005, plus float slack).
+bool checkBenchmark(const std::string &path)
+{
+    Benchmark b;
+    std::string err;
+    if (!loadBenchmark(path, b, err))
+    {
+        std::printf("[benchmark] %s: FAILED to load: %s\n", path.c_str(), err.c_str());
+        return false;
+    }
+    std::printf("[benchmark %s] %s (%s)\n  %s %d, \"%s\" — %s\n", b.id.c_str(), b.title.c_str(), b.kind.c_str(),
+                b.citationAuthors.c_str(), b.citationYear, b.citationTitle.c_str(), b.citationUrl.c_str());
+    std::printf("  satellite: %s; model: %s\n", b.satelliteName.c_str(), b.modelId.empty() ? "(none yet)" : b.modelId.c_str());
+    bool ok = true;
+    const double kRound = 0.006;
+    auto pub = [&](const char *key) -> const BenchPublished * {
+        auto it = b.published.find(key);
+        return it == b.published.end() ? nullptr : &it->second;
+    };
+
+    if (b.kind == "differential")
+    {
+        std::filesystem::path dir = std::filesystem::path(path).parent_path();
+        Benchmark t, base;
+        std::string e1, e2;
+        bool lt = loadBenchmark((dir / (b.refTest + ".json")).string(), t, e1);
+        bool lb = loadBenchmark((dir / (b.refBaseline + ".json")).string(), base, e2);
+        ok &= check(lt && lb, "both referenced files load", lt && lb, 1.0);
+        const BenchPublished *d = pub("delta_mean_m1000");
+        if (lt && lb && d && t.published.count("mean_m1000") && base.published.count("mean_m1000"))
+        {
+            double delta = t.published["mean_m1000"].value - base.published["mean_m1000"].value;
+            ok &= check(std::abs(delta - d->value) < kRound, "published delta = test mean - baseline mean", delta, d->value);
+        }
+        return ok;
+    }
+
+    if (b.observations.empty())
+    {
+        std::printf("  summary only (the paper publishes no individual observations):\n");
+        for (const auto &[key, p] : b.published)
+            if (!std::isnan(p.value))
+                std::printf("    %-22s %.4g  [%s]\n", key.c_str(), p.value, p.locator.c_str());
+        return true;
+    }
+
+    BenchStats s = benchStats(b.observations);
+    if (const BenchPublished *p = pub("n"))
+        ok &= check(s.n == (int)p->value, "observation count", s.n, p->value);
+    if (b.censoredCount >= 0)
+        ok &= check(s.notSeen == b.censoredCount, "censored ('not seen') count", s.notSeen, b.censoredCount);
+    if (const BenchPublished *p = pub("mean_m1000"))
+        ok &= check(std::abs(s.mean - p->value) < kRound, "mean m1000", s.mean, p->value);
+    if (const BenchPublished *p = pub("median_m1000"))
+        ok &= check(std::abs(s.median - p->value) < kRound, "median m1000", s.median, p->value);
+    if (const BenchPublished *p = pub("sd_m1000"))
+        ok &= check(std::abs(s.sd - p->value) < kRound, "standard deviation m1000", s.sd, p->value);
+
+    // Phase fits: refit with the same degree and variable, and compare the two CURVES over the
+    // observed phase range (coefficients of a polynomial fit are strongly correlated, so comparing
+    // them one by one would overstate small differences).
+    double pMin = 1e9, pMax = -1e9;
+    for (const BenchObservation &o : b.observations)
+    {
+        pMin = std::min(pMin, o.phaseDeg);
+        pMax = std::max(pMax, o.phaseDeg);
+    }
+    for (const char *key : {"phase_fit_linear", "phase_fit_quadratic"})
+    {
+        const BenchPublished *p = pub(key);
+        if (!p || p->coefficients.empty())
+            continue;
+        const double scale = p->variable == "phase_rad" ? kDeg : 1.0;
+        std::vector<double> x, y;
+        for (const BenchObservation &o : b.observations)
+        {
+            x.push_back(o.phaseDeg * scale);
+            y.push_back(o.m1000);
+        }
+        std::vector<double> c = benchPolyFit(x, y, (int)p->coefficients.size() - 1);
+        double worst = 0.0;
+        for (double ph = pMin; ph <= pMax; ph += 1.0)
+            worst = std::max(worst, std::abs(benchPolyEval(c, ph * scale) - benchPolyEval(p->coefficients, ph * scale)));
+        char what[96];
+        std::snprintf(what, sizeof(what), "%s: max |refit - published| over %.0f-%.0f deg", key, pMin, pMax);
+        ok &= check(!c.empty() && worst < 0.02, what, worst, 0.0);
+    }
+    return ok;
+}
 } // namespace
 
 int main(int argc, char **argv)
@@ -200,10 +297,13 @@ int main(int argc, char **argv)
     int budget = 48; // SatelliteSim::kSatLobeBudget (the app uses 256 for types flown by <= 10k satellites)
     int shadowSamples = 0; // --shadow-study N
     int selfTestSamples = 0; // --selftest N
+    std::vector<std::string> benchmarks; // --benchmark <file>, repeatable
     for (int i = 1; i < argc; ++i)
     {
         std::string a = argv[i];
-        if (a == "--out" && i + 1 < argc)
+        if (a == "--benchmark" && i + 1 < argc)
+            benchmarks.push_back(argv[++i]);
+        else if (a == "--out" && i + 1 < argc)
             outDir = argv[++i];
         else if (a == "--budget" && i + 1 < argc)
             budget = std::atoi(argv[++i]);
@@ -214,13 +314,19 @@ int main(int argc, char **argv)
         else
             paths.push_back(a);
     }
-    if (paths.empty() && selfTestSamples <= 0)
+    if (paths.empty() && selfTestSamples <= 0 && benchmarks.empty())
     {
         std::printf("usage: SatModelTool <model.json> [...] [--out <dir>] [--budget <lobes>] [--shadow-study <N>]"
-                    " [--selftest <N>]\n");
+                    " [--selftest <N>] [--benchmark <file.json>]...\n");
         return 2;
     }
     int selfTestFailures = 0;
+    int benchFailures = 0;
+    for (const std::string &bp : benchmarks)
+    {
+        benchFailures += checkBenchmark(bp) ? 0 : 1;
+        std::printf("\n");
+    }
     if (selfTestSamples > 0)
     {
         std::printf("[selftest] CPU photometric evaluator\n");
@@ -297,5 +403,7 @@ int main(int argc, char **argv)
     }
     if (selfTestSamples > 0)
         std::printf("[selftest] %s\n", selfTestFailures ? "FAILED" : "passed");
-    return (failures || selfTestFailures) ? 1 : 0;
+    if (!benchmarks.empty())
+        std::printf("[benchmark files] %s\n", benchFailures ? "FAILED" : "all reproduce their published values");
+    return (failures || selfTestFailures || benchFailures) ? 1 : 0;
 }

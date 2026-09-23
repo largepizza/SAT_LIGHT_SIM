@@ -39,7 +39,8 @@ Thumbs.db
 .plans
 
 # ── GPU capture / benchmark scratch (kept in-repo, never committed) ───────────
-benchmarks/
+# Anchored to the repo root: data/benchmarks/ (published photometry datasets) IS tracked.
+/benchmarks/
 
 # ── Python tooling (tools/perf_analysis, etc.) ─────────────────────────────────
 .venv/

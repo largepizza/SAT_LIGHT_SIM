@@ -425,6 +425,17 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   **The sim's Earth rotation angle is `kOmegaEarth·t` with no GMST-at-J2000 term (≈280.46°)** —
   self-consistent everywhere, but sim clock ≠ real UTC by a fixed rotation (Sun hour angle off
   ≈5.3 h). Irrelevant to statistical benchmarks; a replay of real timestamped passes must correct it.
+- **Benchmark data** (`data/benchmarks/*.json`, format `sat-light-sim-benchmark/1`, loader
+  `SatBenchmark.h/.cpp`, milestone M3): one published photometry dataset per file — citation,
+  the paper's printed statistics each with a section/table `locator`, the `sampling` spec (shell,
+  period, observer sites, stated and unstated constraints, censoring rule), individual
+  `observations` when published (rows are arrays named by `columns`), and a `transcription` note.
+  Kinds: `distribution`, `differential` (`references.test`/`baseline`). **A file is only trusted
+  once `SatModelTool --benchmark <file>` reproduces its published values from its own rows** —
+  `mallama2021_visorsat.json` (430 passes, App. A) reproduces n, the 7 censored rows, mean 7.218,
+  median, σ and both phase fits (curves within 0.005 mag). `mallama2020a_original.json` is
+  summary-only (that paper publishes no per-pass data); `visorsat_vs_original.json` is the 1.29 mag
+  occlusion test. Not copied next to the exe yet — only the tools read them.
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`; roster `data/custom/constellations_models_example.json`.
 - Not yet: self-shadowing (3b — `GpuSatLobe::visLayer` reserved), calibration + reference models
