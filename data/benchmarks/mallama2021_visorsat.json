@@ -11,8 +11,8 @@
   },
   "satellite": {
     "name": "Starlink VisorSat",
-    "model": null,
-    "notes": "V1.0 chassis with a deployable sunshade over the nadir face; all Starlinks from launch L9 (2020-08-07). No model yet (design page M4)."
+    "model": "starlink_visorsat",
+    "notes": "V1.0 chassis with a deployable sunshade over the nadir face; all Starlinks from launch L9 (2020-08-07). Model: data/satellite_models/starlink_visorsat.json (design page M4)."
   },
   "magnitudes": {
     "band": "visual (close to Johnson V)",

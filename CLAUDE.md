@@ -436,6 +436,21 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   median, σ and both phase fits (curves within 0.005 mag). `mallama2020a_original.json` is
   summary-only (that paper publishes no per-pass data); `visorsat_vs_original.json` is the 1.29 mag
   occlusion test. Not copied next to the exe yet — only the tools read them.
+- **SatBench runner** (`SatBench.h/.cpp` + `tools/sat_model_tool/bench_run.cpp`, milestone M5):
+  `SatModelTool --run-benchmark <file> [--samples N] [--seed S] [--sensitivity] [--report-dir D]`
+  simulates a paper's campaign with the benchmark's model (`satellite.model`): site weighted by its
+  share of the observations, a time in the period with the Sun in the twilight window, then a
+  random shell satellite above the elevation limit and fully sunlit, evaluated by
+  `evalSatPhotometry()`, censored by the paper's rule at visual sites. Unstated assumptions (Sun
+  window -18..-6 deg, min elevation 20 deg, period-start fallback) are `BenchRunConfig` fields
+  echoed into the report; `--sensitivity` reruns under alternatives. Deterministic: mt19937_64 +
+  bit-cast uniforms (never the implementation-defined std distributions) — same seed, identical
+  report bar `run_utc`, on any platform. Reports (`sat-light-sim-benchrun/1`, gitignored
+  `benchmark_runs/`) carry the git commit + dirty flag, FNV-1a hashes of the model and benchmark
+  files, every sample, and the comparison rows (mean/median pass within 0.3 mag; sd, phase slope,
+  and the **phase-matched mean** — samples reweighted to the observed phase histogram, since the
+  observers' geometry selection is unpublished — are informational). Plots:
+  `tools/benchmarks/plot_benchrun.py <report.json>`. Differential files run both references.
 - **Provenance** (`sources` block in a model file, milestone M4): entries `{subject | subjects[],
   status: sourced|derived|estimate, value, source}` — `SatModel::sources`, checked by
   `unexplainedModelParts()`. Every group, component and model-local material must be covered;

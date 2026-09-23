@@ -18,6 +18,7 @@
 #include "SatBenchmark.h"
 #include "SatModel.h"
 #include "SatPhotometry.h"
+#include "bench_run.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -298,15 +299,33 @@ int main(int argc, char **argv)
     int shadowSamples = 0; // --shadow-study N
     int selfTestSamples = 0; // --selftest N
     std::vector<std::string> benchmarks; // --benchmark <file>, repeatable
+    std::vector<std::string> runs;       // --run-benchmark <file>, repeatable
+    BenchRunOptions runOpt;
+    bool budgetGiven = false;
     for (int i = 1; i < argc; ++i)
     {
         std::string a = argv[i];
         if (a == "--benchmark" && i + 1 < argc)
             benchmarks.push_back(argv[++i]);
+        else if (a == "--run-benchmark" && i + 1 < argc)
+            runs.push_back(argv[++i]);
+        else if (a == "--samples" && i + 1 < argc)
+            runOpt.samples = std::atoi(argv[++i]);
+        else if (a == "--seed" && i + 1 < argc)
+            runOpt.seed = std::strtoull(argv[++i], nullptr, 10);
+        else if (a == "--report-dir" && i + 1 < argc)
+            runOpt.reportDir = argv[++i];
+        else if (a == "--models-dir" && i + 1 < argc)
+            runOpt.modelsDir = argv[++i];
+        else if (a == "--sensitivity")
+            runOpt.sensitivity = true;
         else if (a == "--out" && i + 1 < argc)
             outDir = argv[++i];
         else if (a == "--budget" && i + 1 < argc)
+        {
             budget = std::atoi(argv[++i]);
+            budgetGiven = true;
+        }
         else if (a == "--shadow-study" && i + 1 < argc)
             shadowSamples = std::atoi(argv[++i]);
         else if (a == "--selftest" && i + 1 < argc)
@@ -314,10 +333,12 @@ int main(int argc, char **argv)
         else
             paths.push_back(a);
     }
-    if (paths.empty() && selfTestSamples <= 0 && benchmarks.empty())
+    if (paths.empty() && selfTestSamples <= 0 && benchmarks.empty() && runs.empty())
     {
-        std::printf("usage: SatModelTool <model.json> [...] [--out <dir>] [--budget <lobes>] [--shadow-study <N>]"
-                    " [--selftest <N>] [--benchmark <file.json>]...\n");
+        std::printf("usage: SatModelTool <model.json> [...] [--out <dir>] [--budget <lobes>] [--shadow-study <N>]\n"
+                    "                    [--selftest <N>] [--benchmark <file.json>]...\n"
+                    "                    [--run-benchmark <file.json>]... [--samples <N>] [--seed <S>]\n"
+                    "                    [--sensitivity] [--report-dir <dir>] [--models-dir <dir>]\n");
         return 2;
     }
     int selfTestFailures = 0;
@@ -327,6 +348,11 @@ int main(int argc, char **argv)
         benchFailures += checkBenchmark(bp) ? 0 : 1;
         std::printf("\n");
     }
+    if (budgetGiven)
+        runOpt.lobeBudget = budget;
+    int runFailures = 0;
+    for (const std::string &rp : runs)
+        runFailures += runBenchmarkCommand(rp, runOpt) ? 0 : 1;
     if (selfTestSamples > 0)
     {
         std::printf("[selftest] CPU photometric evaluator\n");
@@ -425,5 +451,7 @@ int main(int argc, char **argv)
         std::printf("[selftest] %s\n", selfTestFailures ? "FAILED" : "passed");
     if (!benchmarks.empty())
         std::printf("[benchmark files] %s\n", benchFailures ? "FAILED" : "all reproduce their published values");
-    return (failures || selfTestFailures || benchFailures) ? 1 : 0;
+    if (!runs.empty())
+        std::printf("[benchmark runs] %d of %zu within tolerance\n", (int)runs.size() - runFailures, runs.size());
+    return (failures || selfTestFailures || benchFailures || runFailures) ? 1 : 0;
 }

@@ -11,8 +11,8 @@
   },
   "satellite": {
     "name": "Starlink V1.0 (original design)",
-    "model": null,
-    "notes": "Flat nadir-facing bus plus one solar array, no visor. No model yet (design page M4)."
+    "model": "starlink_v1_0",
+    "notes": "Flat nadir-facing bus plus one solar array, no visor. Model: data/satellite_models/starlink_v1_0.json (design page M4)."
   },
   "magnitudes": {
     "band": "visual (close to Johnson V)",

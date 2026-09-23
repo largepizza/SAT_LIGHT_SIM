@@ -41,6 +41,8 @@ Thumbs.db
 # ── GPU capture / benchmark scratch (kept in-repo, never committed) ───────────
 # Anchored to the repo root: data/benchmarks/ (published photometry datasets) IS tracked.
 /benchmarks/
+# SatModelTool --run-benchmark reports (default --report-dir); results worth keeping go in the design page log.
+/benchmark_runs/
 
 # ── Python tooling (tools/perf_analysis, etc.) ─────────────────────────────────
 .venv/

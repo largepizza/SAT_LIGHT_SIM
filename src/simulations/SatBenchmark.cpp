@@ -126,6 +126,7 @@ bool loadBenchmark(const std::string &path, Benchmark &out, std::string &err)
         {
             b.censoredCount = (int)numOr(s["censoring"], "count", -1.0);
             b.censorLimitMag = numOr(s["censoring"], "not_seen_assigned_apparent", b.censorLimitMag);
+            b.censorThresholdMag = numOr(s["censoring"], "limiting_mag_apparent", b.censorThresholdMag);
         }
     }
     if (j.contains("references"))

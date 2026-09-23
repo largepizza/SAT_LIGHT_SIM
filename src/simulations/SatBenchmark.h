@@ -60,7 +60,8 @@ struct Benchmark
     std::string periodStart, periodEnd; // ISO dates; empty = not stated
     std::vector<BenchSite> sites;
     int censoredCount = -1;             // published count of censored ("not seen") observations
-    double censorLimitMag = std::numeric_limits<double>::quiet_NaN();
+    double censorLimitMag = std::numeric_limits<double>::quiet_NaN();   // apparent mag ASSIGNED when not seen
+    double censorThresholdMag = std::numeric_limits<double>::quiet_NaN(); // limiting apparent mag of the observers
     // Differential
     std::string refTest, refBaseline;
     std::vector<BenchObservation> observations;
