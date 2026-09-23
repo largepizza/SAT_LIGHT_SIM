@@ -297,6 +297,41 @@ void SatelliteSim::init(VulkanContext &ctx)
     createCloudMarchResources(ctx);    // images must exist before createGlowResources' writes (bindings 10/11)
     createSceneDepthResources(ctx);    // image must exist before createGlowResources' writes (binding 19)
     createGlowResources(ctx);
+    // Constellations are built BEFORE the descriptor sets (lighting overhaul Phase 1): the
+    // per-satellite buffers are sized to the real satellite count rather than MAX_SATELLITES, so
+    // they can't exist until initConstellation() has run. initConstellation() needs earthElevCpu
+    // (createGlowResources, just above) for reflector target heights, and neither it nor
+    // updatePositions() touches any GPU resource.
+    updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay); // must run first — initConstellation reads sunDirECI
+    // Startup breadcrumbs around the per-satellite work: it is the only init step whose cost and
+    // memory scale with the roster (seconds and GBs at 10M), so if a large roster ever hangs a
+    // machine again the log should say which of these steps it reached.
+    Log::line("constellation: building...");
+    initConstellation();
+    Log::line("constellation: " + std::to_string(activeSatCount) + " satellites, " +
+              std::to_string(satTypes.size()) + " types, " + std::to_string(constellations.size()) +
+              " constellations");
+    // C12 follow-up #33: one-time upload of reflectorTargetsECEF[]/RadiusM[] (fixed for the
+    // simulation's lifetime once initConstellation() generates them) into their GPU-visible
+    // companion buffer — sat_orbit.comp reads this every frame (TargetedReflector target search),
+    // but it never needs refreshing since the CPU arrays themselves never change after this point.
+    {
+        std::vector<glm::vec4> targetsECEF(kNumReflectorTargets);
+        for (int ti = 0; ti < kNumReflectorTargets; ++ti)
+            targetsECEF[ti] = glm::vec4(reflectorTargetsECEF[ti], reflectorTargetsRadiusM[ti]);
+        memcpy(reflectorTargetsECEFMapped, targetsECEF.data(), sizeof(glm::vec4) * kNumReflectorTargets);
+    }
+    createSatBuffers(ctx);
+    {
+        const double satMB = (double)std::max<uint32_t>(activeSatCount, 1) *
+                             (sizeof(GpuSatOrbit) + sizeof(GpuSatVisible) + sizeof(uint32_t)) /
+                             (1024.0 * 1024.0);
+        char msg[96];
+        snprintf(msg, sizeof(msg), "satellite GPU buffers: %.0f MB device-local", satMB);
+        Log::line(msg);
+    }
+    uploadSatOrbits(ctx); // bake + upload GpuSatOrbit/GpuSatType data after orbits are built
+    Log::line("satellite orbits uploaded");
     createDescriptors(ctx);
     createComputePipeline(ctx);
     createOrbitDescriptors(ctx);
@@ -317,19 +352,6 @@ void SatelliteSim::init(VulkanContext &ctx)
     createFlareResources(ctx);
     createFlareDescriptors(ctx);
     createFlarePipelines(ctx);
-    updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay); // must run first — initConstellation reads sunDirECI
-    initConstellation();
-    // C12 follow-up #33: one-time upload of reflectorTargetsECEF[]/RadiusM[] (fixed for the
-    // simulation's lifetime once initConstellation() generates them) into their GPU-visible
-    // companion buffer — sat_orbit.comp reads this every frame (TargetedReflector target search),
-    // but it never needs refreshing since the CPU arrays themselves never change after this point.
-    {
-        std::vector<glm::vec4> targetsECEF(kNumReflectorTargets);
-        for (int ti = 0; ti < kNumReflectorTargets; ++ti)
-            targetsECEF[ti] = glm::vec4(reflectorTargetsECEF[ti], reflectorTargetsRadiusM[ti]);
-        memcpy(reflectorTargetsECEFMapped, targetsECEF.data(), sizeof(glm::vec4) * kNumReflectorTargets);
-    }
-    uploadSatOrbits(ctx); // bake + upload GpuSatOrbit data after orbits are built
     initStars(ctx);
     initPlanets(ctx); // must run after initStars() — reuses starDescLayout/starPipeline
     // Long-exposure trail pipeline — needs drawPipeLayout/descSet (createDrawPipeline/
@@ -1812,11 +1834,17 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // holds the prior (possibly default/zero) value — the copy in the dispatch section below
     // captures the freshly-selected satellite's real data for the FIRST time this frame, so the
     // panel settles onto the correct tracked position within ~2 frames of the click, not instantly.
-    if (selectedSatIndex >= 0)
+    // Phase 1b: the mirror is the whole GpuSatListHeader — `selected` is the tracked record
+    // (sat_flare.comp writes it; zeros when the selection is culled, which reads as off-screen)
+    // and `count` is the real visible-satellite count for the HUD/snapshots.
     {
-        const GpuSatVisible *pv = static_cast<const GpuSatVisible *>(pickedVisibleMapped);
-        lastPickedSkyDir = pv->skyDir;
-        lastPickedFlare = pv->flareIntensity;
+        const GpuSatListHeader *hdr = static_cast<const GpuSatListHeader *>(pickedVisibleMapped);
+        visibleCount = hdr->count;
+        if (selectedSatIndex >= 0)
+        {
+            lastPickedSkyDir = hdr->selected.skyDir;
+            lastPickedFlare = hdr->selected.flareIntensity;
+        }
     }
 
     // ── Observer terrain height + cloud params UBO fill (relocated from recordDraw) ─────────
@@ -2175,6 +2203,39 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // rewiring the timestamp pool for a bucket that no longer has a dispatch to measure.
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
 
+    // The two photometry sliders the reflectance model reads (it moved from sat_flare.comp into
+    // sat_orbit.comp in the lighting overhaul's Phase 1; SatOrbitPC has no room left). Host-
+    // coherent and single frame in flight, so no flush or barrier is needed.
+    {
+        GpuSatTypeHeader hdr{};
+        hdr.brightnessScale = brightnessScale;
+        hdr.mirrorBoost = mirrorBoost;
+        memcpy(satTypeMapped, &hdr, sizeof(hdr));
+    }
+
+    // Reset the compact visible list's header: count 0, dispatch {0,1,1}, draw {0,1,0,0}, no
+    // selected record. The previous frame's indirect reads and header copy are long done (single
+    // frame in flight), so only the forward transfer → compute dependency is needed.
+    {
+        GpuSatListHeader reset{};
+        reset.dispatchY = reset.dispatchZ = 1;
+        reset.drawInstanceCount = 1;
+        vkCmdUpdateBuffer(cmd, satListBuf, 0, sizeof(reset), &reset);
+
+        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        bmb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb.buffer = satListBuf;
+        bmb.offset = 0;
+        bmb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 1, &bmb, 0, nullptr);
+    }
+
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, orbitPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             orbitPipeLayout, 0, 1, &orbitDescSet, 0, nullptr);
@@ -2182,20 +2243,31 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                        0, sizeof(orbitPc), &orbitPc);
     vkCmdDispatch(cmd, (activeSatCount + 63) / 64, 1, 1);
 
-    // Barrier: sat_orbit.comp writes satInputBuf → sat_flare.comp reads it.
+    // Barrier: sat_orbit.comp appended the compact visible list (records + slot→satellite index +
+    // header/indirect args) → sat_flare.comp finishes the records in place (READ|WRITE), and the
+    // indirect dispatch/draws read the args (INDIRECT_COMMAND_READ at DRAW_INDIRECT, which covers
+    // vkCmdDispatchIndirect too). Making the args visible to DRAW_INDIRECT here also covers the
+    // three satellite draws later this frame — sat_flare.comp never touches the args.
     {
-        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bmb.buffer = satInputBuf;
-        bmb.offset = 0;
-        bmb.size = VK_WHOLE_SIZE;
+        VkBufferMemoryBarrier bmb[3] = {};
+        for (VkBufferMemoryBarrier &b : bmb)
+        {
+            b.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.offset = 0;
+            b.size = VK_WHOLE_SIZE;
+        }
+        bmb[0].buffer = satVisibleBuf;
+        bmb[1].buffer = satVisibleIdxBuf;
+        bmb[2].buffer = satListBuf;
+        bmb[2].dstAccessMask |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             0, 0, nullptr, 1, &bmb, 0, nullptr);
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                             0, 0, nullptr, 3, bmb, 0, nullptr);
     }
     // Barrier: sat_orbit.comp writes reflectBeamsBuf → beam_self_march.comp (below) reads
     // satENU/targetENU and overwrites blockAltM/blockOpacity for the same [0, beamCount) range.
@@ -2395,7 +2467,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              0, 0, nullptr, 2, bmb, 0, nullptr);
     }
 
-    // ── Dispatch: sat_flare.comp — lighting + visibility ──────────────────────
+    // ── Dispatch: sat_flare.comp — photometry + visibility (lighting is in sat_orbit.comp) ──
     SatFlarePC pc{};
     pc.enuX = eci2enuX;
     pc.enuY = eci2enuY;
@@ -2403,39 +2475,44 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pc.sunDirECI = sunDirECI;
     pc.satCount = activeSatCount;
     pc.obsECI = obsECI;
-    pc.elevCutoff = orbitPc.elevCutoff; // same threshold computed above
-    pc.brightnessScale = brightnessScale;
     pc.daySuppression = daySuppression;
-    pc.mirrorBoost = mirrorBoost;
     pc.visThresh = visThresh;
     pc.highlightFlare = highlightFlare;
     pc.moonSuppression = moonSuppression;
     pc.moonDirECI = moonDirECI; // computed in updatePositions(), called earlier this frame
     pc.extinctionCoeff = extinctionCoeff;
     pc.sunRefIntensity = sunFlareRefIntensity; // S3: soft ceiling reference, see struct comment
+    pc.selectedSatIdx = (selectedSatIndex >= 0) ? (uint32_t)selectedSatIndex : UINT32_MAX;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             compPipeLayout, 0, 1, &descSet, 0, nullptr);
     vkCmdPushConstants(cmd, compPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(pc), &pc);
-    vkCmdDispatch(cmd, (activeSatCount + 63) / 64, 1, 1);
+    // Phase 1b: one invocation per VISIBLE satellite — sat_orbit.comp wrote the group count.
+    vkCmdDispatchIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, dispatchX));
 
     // Barrier: sat_flare.comp writes satVisibleBuf → vertex shader reads it (and, when a satellite
     // is selected, the tiny per-frame pick-tracking copy just below also reads it via transfer).
+    // satListBuf too: sat_flare.comp wrote its `selected` record, which the per-frame header copy
+    // at the end of recordCompute reads.
     {
-        VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        bmb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        bmb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
-        bmb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bmb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        bmb.buffer = satVisibleBuf;
-        bmb.offset = 0;
-        bmb.size = VK_WHOLE_SIZE;
+        VkBufferMemoryBarrier bmb[2] = {};
+        bmb[0].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        bmb[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        bmb[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+        bmb[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bmb[0].buffer = satVisibleBuf;
+        bmb[0].offset = 0;
+        bmb[0].size = VK_WHOLE_SIZE;
+        bmb[1] = bmb[0];
+        bmb[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        bmb[1].buffer = satListBuf;
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             0, 0, nullptr, 1, &bmb, 0, nullptr);
+                             0, 0, nullptr, 2, bmb, 0, nullptr);
     }
 
     // ── Flare/corona render-to-texture pipeline (flare architecture overhaul) ────────────────
@@ -2455,7 +2532,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         fpc.skyView = camera.viewMatrix();
         fpc.fovYRad = glm::radians(camera.fovYDeg);
         fpc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
-        fpc.satCount = activeSatCount;
+        fpc.satCount = activeSatCount; // unused since Phase 1b (indirect draw) — see flare_source.vert
         fpc.sunRefIntensity = sunFlareRefIntensity;
         fpc.sunDirENU = sunDirENU;
         fpc.screenSizePx = glm::vec2((float)flareExtent.width, (float)flareExtent.height);
@@ -2477,7 +2554,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         vkCmdPushConstants(cmd, flareSourcePipeLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(fpc), &fpc);
-        vkCmdDraw(cmd, activeSatCount + 1, 1, 0, 0); // +1 = the sun's virtual point
+        // Visible satellites (indirect — the compact list's length is GPU-side), then the sun's
+        // virtual point as its own 1-vertex draw, told apart in the shader by firstInstance = 1.
+        vkCmdDrawIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, drawVertexCount), 1, 0);
+        vkCmdDraw(cmd, 1, 1, 0, 1);
         vkCmdEndRenderPass(cmd);                     // finalLayout=GENERAL — ready for the compute blur below, no
                                                      // extra barrier (same convention skyLowResRenderPass established)
 
@@ -2621,7 +2701,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                     drawPipeLayout, 0, 1, &descSet, 0, nullptr);
             vkCmdPushConstants(cmd, drawPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(tpc), &tpc);
-            vkCmdDraw(cmd, activeSatCount, 1, 0, 0);
+            vkCmdDrawIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, drawVertexCount), 1, 0);
         }
         if (starCount > 0 && trailStarPipeline != VK_NULL_HANDLE)
         {
@@ -2648,16 +2728,12 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                  // this frame's composite sample (recordDraw), no extra barrier
     }
 
-    // Selected-satellite tracking: mirror just that one 32-byte entry into pickedVisibleBuf so
-    // next frame's buildUI can reproject it (see the one-frame-stale read near peakMagnitude
-    // above). No-op — no command recorded at all — when nothing is selected.
-    if (selectedSatIndex >= 0 && selectedSatIndex < (int)activeSatCount)
+    // Mirror the 64-byte list header into pickedVisibleBuf so next frame's recordCompute can read
+    // the selected satellite's record and the visible count (one-frame-stale, same idiom as
+    // peakMagnitude). Every frame, not only while something is selected: the count feeds the HUD.
     {
-        VkBufferCopy pickRegion{};
-        pickRegion.srcOffset = (VkDeviceSize)selectedSatIndex * sizeof(GpuSatVisible);
-        pickRegion.dstOffset = 0;
-        pickRegion.size = sizeof(GpuSatVisible);
-        vkCmdCopyBuffer(cmd, satVisibleBuf, pickedVisibleBuf, 1, &pickRegion);
+        VkBufferCopy hdrRegion{0, 0, sizeof(GpuSatListHeader)};
+        vkCmdCopyBuffer(cmd, satListBuf, pickedVisibleBuf, 1, &hdrRegion);
     }
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
 }
@@ -2685,10 +2761,13 @@ bool SatelliteSim::projectSkyDirToScreen(const glm::vec3 &skyDir, float screenW,
 }
 
 // ─── pickSatelliteAt ───────────────────────────────────────────────────────────
-// One-shot click hit-test. Copies satVisibleBuf (device-local) back to a transient
-// host-visible staging buffer sized to activeSatCount (not MAX_SATELLITES, so cost scales
-// with what's actually simulated — a few MB at the current constellation roster), then scans
-// it on the CPU for the nearest currently-visible satellite within its own hit radius. The
+// One-shot click hit-test. Copies the compact visible list (satVisibleBuf + satVisibleIdxBuf,
+// device-local) back to a transient host-visible staging buffer — only the previous frame's
+// `count` entries, read from the header mirror, so the copy scales with what's above the horizon
+// rather than the whole roster — then scans it on the CPU for the nearest currently-visible
+// satellite within its own hit radius, and maps the winning slot back to its satellite index.
+// Both buffers still hold that previous frame's finished list: this runs in buildUI, before the
+// current frame's dispatches are submitted. The
 // synchronous stall from ctx.beginOneTimeCommands()/endOneTimeCommands() is fine here — this
 // only runs once per user click, never per frame (contrast the tiny per-frame tracking copy
 // in recordCompute above, which deliberately avoids any such stall).
@@ -2698,7 +2777,13 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
         return -1;
 
     VulkanContext &ctx = *ctx_;
-    VkDeviceSize copySize = (VkDeviceSize)activeSatCount * sizeof(GpuSatVisible);
+    const uint32_t listCount = std::min(
+        static_cast<const GpuSatListHeader *>(pickedVisibleMapped)->count, activeSatCount);
+    if (listCount == 0)
+        return -1;
+    const VkDeviceSize recBytes = (VkDeviceSize)listCount * sizeof(GpuSatVisible);
+    const VkDeviceSize idxBytes = (VkDeviceSize)listCount * sizeof(uint32_t);
+    VkDeviceSize copySize = recBytes + idxBytes;
 
     VkBuffer stagingBuf = VK_NULL_HANDLE;
     VkDeviceMemory stagingMem = VK_NULL_HANDLE;
@@ -2707,22 +2792,23 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
                      stagingBuf, stagingMem);
 
     VkCommandBuffer cmd = ctx.beginOneTimeCommands();
-    VkBufferCopy region{};
-    region.srcOffset = 0;
-    region.dstOffset = 0;
-    region.size = copySize;
-    vkCmdCopyBuffer(cmd, satVisibleBuf, stagingBuf, 1, &region);
+    VkBufferCopy recRegion{0, 0, recBytes};
+    vkCmdCopyBuffer(cmd, satVisibleBuf, stagingBuf, 1, &recRegion);
+    VkBufferCopy idxRegion{0, recBytes, idxBytes};
+    vkCmdCopyBuffer(cmd, satVisibleIdxBuf, stagingBuf, 1, &idxRegion);
     ctx.endOneTimeCommands(cmd);
 
     void *mapped = nullptr;
     vkMapMemory(ctx.device, stagingMem, 0, copySize, 0, &mapped);
     const GpuSatVisible *entries = static_cast<const GpuSatVisible *>(mapped);
+    const uint32_t *slotSatIdx = reinterpret_cast<const uint32_t *>(
+        static_cast<const char *>(mapped) + recBytes);
 
     constexpr float kMinHitRadiusPx = 8.0f; // dim/tiny points stay clickable
 
     int best = -1;
     float bestDist = 0.0f;
-    for (uint32_t i = 0; i < activeSatCount; ++i)
+    for (uint32_t i = 0; i < listCount; ++i)
     {
         const GpuSatVisible &v = entries[i];
         if (v.flareIntensity <= 0.0f)
@@ -2735,7 +2821,7 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
         float hitRadius = std::max(v.angularSize * 0.5f, kMinHitRadiusPx);
         if (dist <= hitRadius && (best < 0 || dist < bestDist))
         {
-            best = (int)i;
+            best = (int)slotSatIdx[i]; // compact slot → satellite index
             bestDist = dist;
         }
     }
@@ -3064,7 +3150,8 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         // occlusion) — must match drawPipeLayout's push constant range exactly.
         vkCmdPushConstants(cmd, drawPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(pc), &pc);
-        vkCmdDraw(cmd, activeSatCount, 1, 0, 0);
+        // Phase 1b: only the compact visible list (length written by sat_orbit.comp).
+        vkCmdDrawIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, drawVertexCount), 1, 0);
     }
 
     // ── Pass 3: background stars (additive blending) ──────────────────────────
@@ -3556,11 +3643,16 @@ void SatelliteSim::cleanup(VkDevice device)
         vkUnmapMemory(device, pickedVisibleMem);
     vkDestroyBuffer(device, pickedVisibleBuf, nullptr);
     vkFreeMemory(device, pickedVisibleMem, nullptr);
-    // satInputBuf is now device-local (no host mapping to release).
-    vkDestroyBuffer(device, satInputBuf, nullptr);
-    vkFreeMemory(device, satInputMem, nullptr);
     vkDestroyBuffer(device, satVisibleBuf, nullptr);
     vkFreeMemory(device, satVisibleMem, nullptr);
+    if (satTypeMapped)
+        vkUnmapMemory(device, satTypeMem);
+    vkDestroyBuffer(device, satTypeBuf, nullptr);
+    vkFreeMemory(device, satTypeMem, nullptr);
+    vkDestroyBuffer(device, satVisibleIdxBuf, nullptr);
+    vkFreeMemory(device, satVisibleIdxMem, nullptr);
+    vkDestroyBuffer(device, satListBuf, nullptr);
+    vkFreeMemory(device, satListMem, nullptr);
     if (lightDomeMapped)
         vkUnmapMemory(device, lightDomeMem);
     vkDestroyBuffer(device, lightDomeBuf, nullptr);
@@ -4138,17 +4230,8 @@ void SatelliteSim::onCursorPos(GLFWwindow *w, double x, double y)
 // ─── createBuffers ────────────────────────────────────────────────────────────
 void SatelliteSim::createBuffers(VulkanContext &ctx)
 {
-    // satInputBuf: device-local. sat_orbit.comp writes each frame; sat_flare.comp reads.
-    ctx.createBuffer(sizeof(GpuSatInput) * MAX_SATELLITES,
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                     satInputBuf, satInputMem);
-
-    // satVisibleBuf: device-local. sat_flare.comp writes, vertex reads.
-    ctx.createBuffer(sizeof(GpuSatVisible) * MAX_SATELLITES,
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                     satVisibleBuf, satVisibleMem);
+    // satVisibleBuf/satOrbitBuf (and the new satTypeBuf) moved to createSatBuffers() — they are
+    // sized to the loaded constellation, which doesn't exist yet at this point in init().
 
     // lightDomeBuf: host-visible, updated each frame by updateLightPollutionDome().
     // 2 * kNumLightSectors: [0,16) = lightDomeAz (gain-scaled linear, satellites/stars),
@@ -4160,12 +4243,6 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
                      lightDomeBuf, lightDomeMem);
     vkMapMemory(ctx.device, lightDomeMem, 0, sizeof(float) * kNumLightSectors * 2, 0, &lightDomeMapped);
     memset(lightDomeMapped, 0, sizeof(float) * kNumLightSectors * 2);
-
-    // satOrbitBuf: device-local, uploaded once. sat_orbit.comp reads every frame.
-    ctx.createBuffer(sizeof(GpuSatOrbit) * MAX_SATELLITES,
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                     satOrbitBuf, satOrbitMem);
 
     // mirrorNormalsBuf (persistent lock/slew state) and reflectorTargetsBuf (per-frame CPU-
     // compacted night-side buffer) were removed 2026-08-06 — sat_orbit.comp now derives
@@ -4233,44 +4310,103 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
     memset(beamGlowDomeMapped, 0, sizeof(float) * kNumBeamGlowSectors);
 }
 
+// ─── createSatBuffers ─────────────────────────────────────────────────────────
+// Per-satellite and per-type buffers, sized to what initConstellation() actually loaded. These
+// used to be allocated at MAX_SATELLITES (10M) regardless: 1.12 GB of GpuSatOrbit + 800 MB of the
+// now-deleted GpuSatInput + 320 MB of GpuSatVisible — ~2.2 GB of VRAM reserved for a default
+// roster of ~81k satellites, on hardware where 2 GB total is a real target. The constellation is
+// built once at init and never rebuilt, so sizing once here is sufficient. max(…,1) keeps every
+// buffer valid (Vulkan forbids size 0) for an empty roster.
+void SatelliteSim::createSatBuffers(VulkanContext &ctx)
+{
+    const VkDeviceSize satN = std::max<VkDeviceSize>(activeSatCount, 1);
+
+    // satVisibleBuf: device-local compact visible list. sat_orbit.comp appends pre-photometry
+    // records, sat_flare.comp finishes them in place, the point/flare/trail vertex shaders read
+    // them. Sized for the worst case (every satellite visible), though typically ~5-10% is used.
+    ctx.createBuffer(sizeof(GpuSatVisible) * satN,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                     satVisibleBuf, satVisibleMem);
+
+    // satVisibleIdxBuf: satellite index of each compact slot (picking + selection tracking).
+    ctx.createBuffer(sizeof(uint32_t) * satN,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                     satVisibleIdxBuf, satVisibleIdxMem);
+
+    // satListBuf: the list header — append counter, the indirect dispatch/draw args every
+    // downstream satellite pass runs from, and the selected satellite's record. Reset each frame
+    // by vkCmdUpdateBuffer, copied back to pickedVisibleBuf each frame.
+    ctx.createBuffer(sizeof(GpuSatListHeader),
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                     satListBuf, satListMem);
+
+    // satOrbitBuf: device-local, uploaded once (and on each rebake). sat_orbit.comp reads every frame.
+    ctx.createBuffer(sizeof(GpuSatOrbit) * satN,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                     satOrbitBuf, satOrbitMem);
+
+    // satTypeBuf: host-visible + coherent. GpuSatTypeHeader (rewritten every frame in
+    // recordCompute) followed by one GpuSatType per satTypes[] entry (written by uploadSatOrbits).
+    // A few hundred bytes — shared by every satellite of a type, so it stays cache-resident.
+    const VkDeviceSize typeBytes = sizeof(GpuSatTypeHeader) +
+                                   sizeof(GpuSatType) * std::max<size_t>(satTypes.size(), 1);
+    ctx.createBuffer(typeBytes,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     satTypeBuf, satTypeMem);
+    vkMapMemory(ctx.device, satTypeMem, 0, typeBytes, 0, &satTypeMapped);
+    memset(satTypeMapped, 0, typeBytes);
+}
+
 // ─── createDescriptors ────────────────────────────────────────────────────────
 void SatelliteSim::createDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[9] = {};
-    bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
-                   VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+    // Binding 0 (satInputBuf) was removed with GpuSatInput in the lighting overhaul's Phase 1 —
+    // binding numbers are left as-is (not compacted) so no consuming shader had to change.
+    VkDescriptorSetLayoutBinding bindings[10] = {};
+    bindings[0] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT, nullptr};
-    bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+    bindings[1] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // glowBuf: atomic writes from flare shader
-    bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+    bindings[2] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // lightDomeBuf: host-visible, CPU-written
-    bindings[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+    bindings[3] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // beamGlowDomeBuf: C12 follow-up #31
     // C12 follow-up #33: cloud occlusion for satellite/flare points — sat_point.frag reads these,
     // same underlying views/samplers already bound into skyDescSet (bindings 10/11 there). Also
     // read by flare_source.frag (flare architecture overhaul) — same layout, VERTEX not needed.
-    bindings[5] = {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+    bindings[4] = {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudTargetA
-    bindings[6] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+    bindings[5] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudTargetB
     // Flare architecture overhaul: flare_source.frag needs terrain occlusion too (this render pass
     // has no shared hardware depth buffer of its own to test against, unlike sat_point.frag).
-    bindings[7] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+    bindings[6] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                    VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // sceneDepthTex
     // Ocean-glint list (GpuOceanGlintBuf) — written here by sat_flare.comp, read by sat_sky.frag
     // via its OWN descriptor set (skyDescSet binding 20) pointed at the same underlying buffer,
     // same split as glowBuf's binding 2 here vs skyDescSet binding 0.
-    bindings[8] = {8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+    bindings[7] = {8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // oceanGlintBuf
+    // Phase 1b compact visible list: sat_flare.comp reads the slot→satellite index (selection
+    // mirror) and the list header (count; writes `selected`).
+    bindings[8] = {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                   VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // satVisibleIdxBuf
+    bindings[9] = {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                   VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // satListBuf
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 9;
+    li.bindingCount = 10;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
     VkDescriptorPoolSize ps[2] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 2;
@@ -4284,7 +4420,6 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
     ai.pSetLayouts = &descLayout;
     vkAllocateDescriptorSets(ctx.device, &ai, &descSet);
 
-    VkDescriptorBufferInfo inpInfo{satInputBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo visInfo{satVisibleBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo glowInfo{glowBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo domeInfo{lightDomeBuf, 0, VK_WHOLE_SIZE};
@@ -4293,27 +4428,31 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo cloudBInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo sceneDepthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo oceanGlintInfo{oceanGlintBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo visIdxInfo{satVisibleIdxBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo listInfo{satListBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[9] = {};
+    VkWriteDescriptorSet writes[10] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
-                 descSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &inpInfo, nullptr};
-    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &visInfo, nullptr};
-    writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &glowInfo, nullptr};
-    writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+    writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &domeInfo, nullptr};
-    writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+    writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamDomeInfo, nullptr};
-    writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+    writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 5, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudAInfo, nullptr, nullptr};
-    writes[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+    writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 6, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudBInfo, nullptr, nullptr};
-    writes[7] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+    writes[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 7, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &sceneDepthInfo, nullptr, nullptr};
-    writes[8] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+    writes[7] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 8, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &oceanGlintInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 9, writes, 0, nullptr);
+    writes[8] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                 descSet, 9, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &visIdxInfo, nullptr};
+    writes[9] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                 descSet, 10, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &listInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 10, writes, 0, nullptr);
 }
 
 // ─── createComputePipeline ────────────────────────────────────────────────────
@@ -4347,30 +4486,39 @@ void SatelliteSim::createComputePipeline(VulkanContext &ctx)
 // ─── createOrbitDescriptors ───────────────────────────────────────────────────
 // Descriptor set for sat_orbit.comp:
 //   binding 0  satOrbitBuf       (readonly  SSBO)
-//   binding 1  satInputBuf       (write     SSBO — same buffer that sat_flare.comp reads)
+//   binding 1  satVisibleBuf     (write     SSBO — pre-photometry record; sat_flare.comp finishes
+//                                             it in place. Was satInputBuf until the lighting
+//                                             overhaul's Phase 1 deleted GpuSatInput)
 //   binding 2  reflectorTargetsECEFBuf (readonly SSBO — static; replaces the old
 //                                       mirrorNormalsBuf/reflectorTargetsBuf pair as of the
 //                                       2026-08-06 reversibility rework)
 //   binding 3  reflectBeamsBuf   (readwrite SSBO — capped atomic-append beam list, C12)
 //   binding 4  beamGlowDomeBuf  (readwrite SSBO — 16-sector beam sky-glow dome, C12 follow-up #31)
-// Binding 5 (beamCloudBlockBuf, per-target cloud occlusion, C12 follow-up #33) removed 2026-08-09
+//   binding 5  satTypeBuf        (readonly  SSBO — GpuSatTypeHeader + GpuSatType[], lighting
+//                                             overhaul Phase 1)
+//   binding 6  satVisibleIdxBuf  (write     SSBO — compact slot → satellite index, Phase 1b)
+//   binding 7  satListBuf        (readwrite SSBO — append counter + indirect args, Phase 1b)
+// Binding 5 was beamCloudBlockBuf (per-target cloud occlusion, C12 follow-up #33) until 2026-08-09
 // — beam_self_march.comp now writes blockAltM/blockOpacity directly, per beam, in its own later
 // dispatch; this shader no longer reads or writes those two fields at all.
 void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[5] = {};
+    VkDescriptorSetLayoutBinding bindings[8] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[6] = {6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[7] = {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 5;
+    li.bindingCount = 8;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &orbitDescLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &ps;
@@ -4384,23 +4532,32 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
     vkAllocateDescriptorSets(ctx.device, &ai, &orbitDescSet);
 
     VkDescriptorBufferInfo orbitInfo{satOrbitBuf, 0, VK_WHOLE_SIZE};
-    VkDescriptorBufferInfo inputInfo{satInputBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo visibleInfo{satVisibleBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo targetEcefInfo{reflectorTargetsECEFBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo beamInfo{reflectBeamsBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo beamDomeInfo{beamGlowDomeBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo typeInfo{satTypeBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo visIdxInfo{satVisibleIdxBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo listInfo{satListBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[5] = {};
+    VkWriteDescriptorSet writes[8] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 0, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &orbitInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 1, 0, 1,
-                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &inputInfo, nullptr};
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &visibleInfo, nullptr};
     writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 2, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &targetEcefInfo, nullptr};
     writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 3, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamInfo, nullptr};
     writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 4, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamDomeInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 5, writes, 0, nullptr);
+    writes[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 5, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &typeInfo, nullptr};
+    writes[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 6, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &visIdxInfo, nullptr};
+    writes[7] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 7, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &listInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 8, writes, 0, nullptr);
 }
 
 // ─── createOrbitPipeline ──────────────────────────────────────────────────────
@@ -4432,13 +4589,39 @@ void SatelliteSim::createOrbitPipeline(VulkanContext &ctx)
 }
 
 // ─── uploadSatOrbits ─────────────────────────────────────────────────────────
-// Bakes GpuSatOrbit data from satOrbits+satTypes and uploads to satOrbitBuf.
+// Bakes GpuSatOrbit data from satOrbits and uploads to satOrbitBuf; also (re)writes the per-type
+// GpuSatType table in satTypeBuf, which the orbit records index via typeIdx.
 // Stores orbitEpochDay/Sec = current simTime so deltaT resets to 0.
 // Auto-called from recordCompute when |simDayJ2000-orbitEpochDay| >= kOrbitRebakeDays.
 void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
 {
     if (satOrbits.empty())
         return;
+
+    // Per-type reflectance table — written directly into the host-coherent satTypeBuf, after its
+    // GpuSatTypeHeader (which recordCompute() rewrites every frame). Rewritten on every rebake
+    // along with the orbits, the same cadence these fields had while they lived in GpuSatOrbit.
+    {
+        GpuSatType *types = reinterpret_cast<GpuSatType *>(
+            static_cast<char *>(satTypeMapped) + sizeof(GpuSatTypeHeader));
+        for (size_t ti = 0; ti < satTypes.size(); ++ti)
+        {
+            const SatelliteType &type = satTypes[ti];
+            GpuSatType &dst = types[ti];
+            dst.baseColorR = type.baseColor.r;
+            dst.baseColorG = type.baseColor.g;
+            dst.baseColorB = type.baseColor.b;
+            dst.crossSection = sqrtf(type.crossSectionM2 / 10.0f);
+            dst.specExp0 = type.primary.specExp;
+            dst.specExp1 = type.secondary.specExp;
+            dst.w1 = type.secondary.weight;
+            dst.diffuse = type.diffuse;
+            dst.mirrorFrac = type.mirrorFrac;
+            dst.primaryAttitude = (uint32_t)type.primary.attitude;
+            dst.secondaryAttitude = (uint32_t)type.secondary.attitude;
+            dst.pad0 = 0;
+        }
+    }
 
     // A rebake re-writes what every dispatch index means, but TargetedReflector selection and
     // orientation no longer persist any per-index GPU state (2026-08-06 reversibility rework) —
@@ -4451,17 +4634,32 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
     // SSO RAAN is anchored at sim-start, so bake only the precession since then.
     const double t_start = (double)simInitDayJ2000 * 86400.0 + simInitSecInDay;
 
-    std::vector<GpuSatOrbit> gpuOrbits(activeSatCount);
-    for (uint32_t ci = 0; ci < (uint32_t)constellations.size(); ++ci)
+    // Baked straight into a mapped staging buffer, CHUNK_SATS at a time, rather than into a full
+    // std::vector that is then memcpy'd into a full-size staging buffer. At 10M satellites the old
+    // path held two 632 MB copies at once (one of them pinned host memory) and walked both — the
+    // bulk of the multi-second startup. Now peak extra memory is one 64 MB chunk. Every index in
+    // [0, activeSatCount) belongs to exactly one constellation (orbitStart/orbitCount tile the
+    // array contiguously), so a flat loop covers the same entries the per-constellation one did.
+    constexpr uint32_t kChunkSats = 1u << 20; // 1M satellites × 64 B = 64 MB per chunk
+    const uint32_t chunkCap = std::min(activeSatCount, kChunkSats);
+    const VkDeviceSize stagingSize = (VkDeviceSize)chunkCap * sizeof(GpuSatOrbit);
+    VkBuffer staging;
+    VkDeviceMemory stagingMem;
+    ctx.createBuffer(stagingSize,
+                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     staging, stagingMem);
+    void *mapped;
+    vkMapMemory(ctx.device, stagingMem, 0, stagingSize, 0, &mapped);
+    GpuSatOrbit *chunk = static_cast<GpuSatOrbit *>(mapped);
+
+    for (uint32_t first = 0; first < activeSatCount; first += chunkCap)
     {
-        const ConstellationConfig &c = constellations[ci];
-        for (uint32_t i = c.orbitStart; i < c.orbitStart + c.orbitCount; ++i)
+        const uint32_t n = std::min(chunkCap, activeSatCount - first);
+        for (uint32_t k = 0; k < n; ++k)
         {
-            if (i >= activeSatCount)
-                break;
-            const SatOrbit &src = satOrbits[i];
-            const SatelliteType &type = satTypes[src.typeIdx];
-            GpuSatOrbit &dst = gpuOrbits[i];
+            const SatOrbit &src = satOrbits[first + k];
+            GpuSatOrbit dst{}; // built locally, then stored whole — the mapping is write-combined
             dst.raan = src.alignTerminator
                            ? (float)fmod((double)src.raan + kSSOPrecRate * (orbitEpochT0 - t_start),
                                          glm::two_pi<double>())
@@ -4479,45 +4677,25 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
             dst.tumblePhase = (float)fmod((double)src.tumblePhase +
                                               (double)src.tumbleRate * orbitEpochT0,
                                           glm::two_pi<double>());
-            dst.alignTerminator = src.alignTerminator ? 1.0f : 0.0f;
             dst.tumbleAxisX = src.tumbleAxis.x;
             dst.tumbleAxisY = src.tumbleAxis.y;
             dst.tumbleAxisZ = src.tumbleAxis.z;
-
-            dst.primaryAttitude = (uint32_t)type.primary.attitude;
-            dst.secondaryAttitude = (uint32_t)type.secondary.attitude;
-
-            dst.baseColorR = type.baseColor.r;
-            dst.baseColorG = type.baseColor.g;
-            dst.baseColorB = type.baseColor.b;
-            dst.crossSection = sqrtf(type.crossSectionM2 / 10.0f);
-            dst.specExp0 = type.primary.specExp;
-            dst.specExp1 = type.secondary.specExp;
-            dst.w1 = type.secondary.weight;
-            dst.diffuse = type.diffuse;
-            dst.mirrorFrac = type.mirrorFrac;
+            dst.alignTerminator = src.alignTerminator ? 1.0f : 0.0f;
+            dst.typeIdx = src.typeIdx;
             dst.constIdx = src.constIdx;
-            dst.pad0 = dst.pad1 = 0;
+            chunk[k] = dst;
         }
+
+        // endOneTimeCommands waits for the queue to idle, so the staging buffer is free to be
+        // refilled for the next chunk as soon as this returns.
+        VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+        VkBufferCopy region{0, (VkDeviceSize)first * sizeof(GpuSatOrbit),
+                            (VkDeviceSize)n * sizeof(GpuSatOrbit)};
+        vkCmdCopyBuffer(cmd, staging, satOrbitBuf, 1, &region);
+        ctx.endOneTimeCommands(cmd);
     }
 
-    VkDeviceSize bufSize = activeSatCount * sizeof(GpuSatOrbit);
-    VkBuffer staging;
-    VkDeviceMemory stagingMem;
-    ctx.createBuffer(bufSize,
-                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     staging, stagingMem);
-    void *mapped;
-    vkMapMemory(ctx.device, stagingMem, 0, bufSize, 0, &mapped);
-    memcpy(mapped, gpuOrbits.data(), bufSize);
     vkUnmapMemory(ctx.device, stagingMem);
-
-    VkCommandBuffer cmd = ctx.beginOneTimeCommands();
-    VkBufferCopy region{0, 0, bufSize};
-    vkCmdCopyBuffer(cmd, staging, satOrbitBuf, 1, &region);
-    ctx.endOneTimeCommands(cmd);
-
     vkDestroyBuffer(ctx.device, staging, nullptr);
     vkFreeMemory(ctx.device, stagingMem, nullptr);
 }
@@ -5416,16 +5594,16 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
                      oceanGlintBuf, oceanGlintMem);
 
     // ── Picked-satellite tracking buffer ───────────────────────────────────────
-    // 32-byte host-visible mirror of the selected satellite's GpuSatVisible entry, written by a
-    // tiny vkCmdCopyBuffer in recordCompute (only while a selection is active) and read back
-    // one-frame-stale at the top of recordCompute — same idiom as glowBuf/peakMagnitude above.
-    // Never bound as an SSBO, so TRANSFER_DST is the only usage it needs.
-    ctx.createBuffer(sizeof(GpuSatVisible),
+    // 64-byte host-visible mirror of the compact visible list's GpuSatListHeader (selected
+    // satellite's record + visible count), written by a tiny vkCmdCopyBuffer at the end of every
+    // recordCompute and read back one-frame-stale at its top — same idiom as glowBuf/peakMagnitude
+    // above. Never bound as an SSBO, so TRANSFER_DST is the only usage it needs.
+    ctx.createBuffer(sizeof(GpuSatListHeader),
                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      pickedVisibleBuf, pickedVisibleMem);
-    vkMapMemory(ctx.device, pickedVisibleMem, 0, sizeof(GpuSatVisible), 0, &pickedVisibleMapped);
-    memset(pickedVisibleMapped, 0, sizeof(GpuSatVisible));
+    vkMapMemory(ctx.device, pickedVisibleMem, 0, sizeof(GpuSatListHeader), 0, &pickedVisibleMapped);
+    memset(pickedVisibleMapped, 0, sizeof(GpuSatListHeader));
 
     // ── Noise texture: RGBA PNG for lens-flare angular corona variation ────────
     // Loaded from assets/noise/rgba_noise.png (tiled REPEAT sampler).
@@ -8651,6 +8829,15 @@ void SatelliteSim::buildOrbits()
 {
     // ── Populate satOrbits ────────────────────────────────────────────────────
     satOrbits.clear();
+    // Reserve the exact total up front (perPlane is never ignored — total = numPlanes × perPlane
+    // for every distribution). Growing by push_back alone at 10M satellites reallocates ~25 times
+    // and briefly holds old + new arrays together (~1.5× the final size) at each step.
+    {
+        size_t total = 0;
+        for (const ConstellationConfig &c : constellations)
+            total += (size_t)std::max(c.numPlanes, 0) * (size_t)std::max(c.perPlane, 0);
+        satOrbits.reserve(total);
+    }
     for (ConstellationConfig &c : constellations)
     {
         c.orbitStart = (uint32_t)satOrbits.size();
@@ -8752,16 +8939,8 @@ void SatelliteSim::buildOrbits()
     loadReflectorTargets();
 
     // ── Safety cap ────────────────────────────────────────────────────────────
-    // satInputBuf and satVisibleBuf are allocated for exactly MAX_SATELLITES
-    // entries.  Exceeding this causes a buffer overflow in recordCompute()'s
-    // memcpy, corrupting heap memory or triggering a GPU fault.  Satellites
-    // beyond the cap are silently dropped.
-    //
-    // Common overflow source: Starlink G1 at 7200 planes × 22 sats = 158,400 —
-    // already 58% over the 100,000 limit.  Raise MAX_SATELLITES and resize the
-    // GPU buffers (createBuffers) if more capacity is needed.  Alternatively,
-    // move orbit computation to a second compute shader so the CPU loop and
-    // the host-visible upload buffer are no longer the bottleneck.
+    // MAX_SATELLITES is a sanity cap, not a buffer size: createSatBuffers() sizes the GPU buffers
+    // to the final satOrbits.size() after this point. Satellites beyond the cap are dropped.
     if ((uint32_t)satOrbits.size() > MAX_SATELLITES)
     {
         fprintf(stderr, "[SatelliteSim] Warning: %zu total satellites exceeds "

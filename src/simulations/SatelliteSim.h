@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <cstddef> // offsetof — GpuSatListHeader's layout asserts
 #include <cmath>
 #include <algorithm>
 #include <functional>
@@ -143,7 +144,7 @@ struct SurfaceSpec
     float weight;          // contribution weight relative to primary (0 = disabled)
 };
 
-// ── Per-type satellite parameters (CPU-side, drives GpuSatInput fields) ───────
+// ── Per-type satellite parameters (CPU-side, drives GpuSatType) ───────────────
 struct SatelliteType
 {
     std::string name;
@@ -183,34 +184,57 @@ struct ConstellationConfig
 };
 
 // ── GPU data structures ───────────────────────────────────────────────────────
-// std430 packing: vec3 alignment=16 size=12, so vec3+float fills one 16-byte block.
-// Five vec3+float blocks (80 bytes) + one float4 tail = 80 bytes total.
-//
-// Byte map:
-//   [  0] eciRelPos (vec3) + range (float)         — position data
-//   [ 16] surfN0    (vec3) + elevation (float)      — primary surface normal
-//   [ 32] surfN1    (vec3) + specExp0 (float)       — secondary surface normal
-//   [ 48] baseColor (vec3) + specExp1 (float)       — colour + secondary specular
-//   [ 64] crossSection + w1 + diffuse + _pad (float4) — photometric scalars
-//   Total: 80 bytes
+// GpuSatInput (80 bytes/satellite, sat_orbit.comp → sat_flare.comp) was deleted in the lighting
+// overhaul's Phase 1 (.plans/SAT_LIGHTING_PLAN.md): sat_orbit.comp now evaluates the reflectance
+// model itself and writes a pre-photometry record straight into satVisibleBuf, which
+// sat_flare.comp then finishes IN PLACE. That removed a 160-byte write+read round trip per
+// satellite per frame, plus the buffer itself (it was allocated at MAX_SATELLITES — 800 MB).
 
-struct GpuSatInput
+// Per-SatelliteType reflectance parameters, indexed by GpuSatOrbit::typeIdx. These used to be
+// copied into every satellite's GpuSatOrbit record even though they only vary per type — at
+// millions of satellites that duplication was most of the orbit record's bandwidth. std430, all
+// scalars, 48 bytes. Must match SatType in sat_orbit.comp exactly.
+struct GpuSatType
 {
-    glm::vec3 eciRelPos; // observer-relative ECI position (meters)
-    float range;         // distance (meters)
-    glm::vec3 surfN0;    // primary surface normal in ECI (attitude-dependent unit vector)
-    float elevation;     // elevation above local horizon (radians), pre-computed on CPU
-    glm::vec3 surfN1;    // secondary surface normal in ECI (radiators, body, etc.)
-    float specExp0;      // primary surface specular exponent (0 = Lambertian)
-    glm::vec3 baseColor; // satellite tint from SatelliteType
-    float specExp1;      // secondary surface specular exponent (0 = Lambertian)
-    float crossSection;  // sqrt(crossSectionM2 / 10.0): area brightness scale (~1 = 10 m²)
-    float w1;            // secondary surface weight relative to primary (0 = disabled)
-    float diffuse;       // isotropic Lambertian floor — structural body scatter [0,1]
-    float mirrorFrac;    // fraction of primary surface that is near-perfect mirror [0,1]
-};
-static_assert(sizeof(GpuSatInput) == 80, "GpuSatInput layout mismatch");
+    float baseColorR;
+    float baseColorG;
+    float baseColorB;
+    float crossSection; // sqrt(crossSectionM2 / 10)
 
+    float specExp0;
+    float specExp1;
+    float w1;      // secondary surface weight
+    float diffuse; // isotropic Lambertian floor
+
+    float mirrorFrac;
+    uint32_t primaryAttitude; // AttitudeMode cast to uint
+    uint32_t secondaryAttitude;
+    uint32_t pad0;
+};
+static_assert(sizeof(GpuSatType) == 48, "GpuSatType layout mismatch");
+
+// Leading block of satTypeBuf (SatTypeBuf in sat_orbit.comp), followed by the GpuSatType array.
+// Holds the two photometry sliders the reflectance model needs. Both used to be read by
+// sat_flare.comp from SatFlarePC; they moved with the model, and SatOrbitPC is already at the
+// 128-byte push-constant floor. Rewritten every frame in recordCompute() (host-coherent, single
+// frame in flight — same pattern as lightDomeBuf).
+struct GpuSatTypeHeader
+{
+    float brightnessScale; // global flux multiplier
+    float mirrorBoost;     // mirror peak multiplier
+    float pad0;
+    float pad1;
+};
+static_assert(sizeof(GpuSatTypeHeader) == 16, "GpuSatTypeHeader layout mismatch");
+
+// Two-stage record in a COMPACT list (Phase 1b): sat_orbit.comp appends a PRE-photometry record
+// only for satellites that survive its horizon/enable cull, sat_flare.comp finishes each one in
+// place. Slot order is arbitrary (atomic append) — satVisibleIdxBuf maps slot → satellite index.
+// Between the two dispatches the fields mean:
+//   highlight (census mode): flareIntensity < 0, angularSize = range (m)
+//   lit:                     flareIntensity = raw flux, angularSize = range (m)
+// After sat_flare.comp every entry has the final meaning below (flareIntensity 0 = culled by
+// visThresh; still in the list, discarded by the vertex shaders).
 struct GpuSatVisible
 {
     glm::vec3 skyDir;     // unit vector in ENU (x=East, y=North, z=Up)
@@ -219,6 +243,24 @@ struct GpuSatVisible
     float angularSize;    // point sprite size hint (pixels)
 };
 static_assert(sizeof(GpuSatVisible) == 32, "GpuSatVisible layout mismatch");
+
+// satListBuf (Phase 1b): the compact visible list's header. Reset every frame with
+// vkCmdUpdateBuffer(kSatListHeaderReset); sat_orbit.comp appends and maintains the indirect args
+// via atomicMax; sat_flare.comp fills `selected`. The whole 64 bytes are copied back to the host
+// every frame (pickedVisibleBuf) for selection tracking and the real visible count. Must match
+// SatListBuf in sat_orbit.comp and sat_flare.comp.
+struct GpuSatListHeader
+{
+    uint32_t count;                   // offset 0  — append counter == compact list length
+    uint32_t dispatchX, dispatchY, dispatchZ;     // offset 4  — VkDispatchIndirectCommand (sat_flare)
+    uint32_t drawVertexCount, drawInstanceCount;  // offset 16 — VkDrawIndirectCommand (point draws)
+    uint32_t drawFirstVertex, drawFirstInstance;
+    GpuSatVisible selected;           // offset 32 — the selected satellite's final record, or zeros
+};
+static_assert(sizeof(GpuSatListHeader) == 64, "GpuSatListHeader layout mismatch");
+static_assert(offsetof(GpuSatListHeader, dispatchX) == 4, "dispatch args offset");
+static_assert(offsetof(GpuSatListHeader, drawVertexCount) == 16, "draw args offset");
+static_assert(offsetof(GpuSatListHeader, selected) == 32, "selected offset (std430 vec3 alignment)");
 
 // Mercury..Uranus — the naked-eye-relevant classical planets plus Uranus (mag ~5.7-5.9, right at
 // the edge of the star catalog's own mag-6.5 floor). Neptune excluded: never naked-eye (~mag 7.8).
@@ -263,11 +305,14 @@ struct SatFlarePC
     glm::vec3 sunDirECI; // unit vector toward sun in ECI
     uint32_t satCount;
     glm::vec3 obsECI; // observer ECI position (meters) for shadow test
-    float elevCutoff; // sin(Earth-limb angle) — horizon cull threshold (≤ -0.01)
+    // pad3/pad4 were brightnessScale and mirrorBoost, and selectedSatIdx was elevCutoff: the
+    // horizon cull and the reflectance model (their only readers) moved into sat_orbit.comp in the
+    // lighting overhaul's Phase 1; brightnessScale/mirrorBoost now ride in GpuSatTypeHeader.
+    uint32_t selectedSatIdx; // satellite to mirror into GpuSatListHeader::selected; UINT32_MAX = none
+    float pad3;
     // Photometry tuning — runtime-adjustable via the settings window.
-    float brightnessScale; // global flux multiplier (mirrors BRIGHTNESS_SCALE in shader)
     float daySuppression;  // sky background suppression ratio (mirrors DAY_SUPPRESSION)
-    float mirrorBoost;     // mirror peak multiplier (mirrors MIRROR_BOOST)
+    float pad4;
     float visThresh;       // visibility cull threshold (mirrors VIS_THRESH)
     float highlightFlare;  // fixed flare for constellation census (mirrors HIGHLIGHT_FLARE)
     float extinctionCoeff; // atmospheric extinction, magnitudes per airmass (reuses the slot that
@@ -692,9 +737,9 @@ struct TrailCompositePC
 static_assert(sizeof(TrailCompositePC) == 4, "TrailCompositePC layout mismatch");
 
 // ── GPU orbital parameters (uploaded once per buildOrbits, device-local) ─────
-// 28 × 4-byte fields = 112 bytes.  All plain floats/uints — no vec3 — so
-// C++ struct packing matches GLSL std430 without any alignment padding.
-// Must match the SatOrbit struct in sat_orbit.comp exactly.
+// 16 × 4-byte fields = 64 bytes (was 112 — the per-type reflectance fields moved to GpuSatType,
+// looked up via typeIdx). All plain floats/uints — no vec3 — so C++ struct packing matches GLSL
+// std430 without any alignment padding. Must match the SatOrbit struct in sat_orbit.comp exactly.
 struct GpuSatOrbit
 {
     float raan;    // right ascension of ascending node at epoch
@@ -707,33 +752,18 @@ struct GpuSatOrbit
     float cosRaan; // cos(raan); valid when !alignTerminator
     float sinRaan; // sin(raan); valid when !alignTerminator
 
-    float tumbleRate;      // rotation rate (rad/s); 0 if not tumbling
-    float tumblePhase;     // epoch-baked angle: fmod(phase + rate*epochT0, 2π)
-    float alignTerminator; // 1.0 = SSO (RAAN precesses); 0.0 = fixed RAAN
+    float tumbleRate;  // rotation rate (rad/s); 0 if not tumbling
+    float tumblePhase; // epoch-baked angle: fmod(phase + rate*epochT0, 2π)
     float tumbleAxisX;
-
     float tumbleAxisY;
+
     float tumbleAxisZ;
-    uint32_t primaryAttitude; // AttitudeMode cast to uint
-    uint32_t secondaryAttitude;
-
-    float baseColorR;
-    float baseColorG;
-    float baseColorB;
-    float crossSection; // sqrt(crossSectionM2 / 10)
-
-    float specExp0;
-    float specExp1;
-    float w1; // secondary surface weight
-    float diffuse;
-
-    float mirrorFrac;
-    uint32_t constIdx; // constellation index for enabled/highlight masks
-    uint32_t pad0;
-    uint32_t pad1;
-    // Total: 112 bytes
+    float alignTerminator; // 1.0 = SSO (RAAN precesses); 0.0 = fixed RAAN
+    uint32_t typeIdx;      // index into satTypeBuf's GpuSatType array
+    uint32_t constIdx;     // constellation index for enabled/highlight masks
+    // Total: 64 bytes
 };
-static_assert(sizeof(GpuSatOrbit) == 112, "GpuSatOrbit layout mismatch");
+static_assert(sizeof(GpuSatOrbit) == 64, "GpuSatOrbit layout mismatch");
 
 // GpuReflectorTarget / the per-frame CPU-compacted night-side buffer it described were removed
 // 2026-08-06: sat_orbit.comp now reads the static per-target ECEF buffer directly (the same one
@@ -1377,16 +1407,25 @@ public:
 
 private:
     // ── SSBOs ─────────────────────────────────────────────────────────────────
-    VkBuffer satInputBuf = VK_NULL_HANDLE; // device-local; sat_orbit.comp writes, sat_flare.comp reads
-    VkDeviceMemory satInputMem = VK_NULL_HANDLE;
-    VkBuffer satVisibleBuf = VK_NULL_HANDLE; // device-local, sat_flare.comp→vertex
+    // satVisibleBuf, satOrbitBuf and satTypeBuf are sized to the loaded satellite/type counts, not
+    // to MAX_SATELLITES — see createSatBuffers(), which runs once initConstellation() knows them.
+    VkBuffer satVisibleBuf = VK_NULL_HANDLE; // device-local; sat_orbit.comp → sat_flare.comp (in place) → vertex
     VkDeviceMemory satVisibleMem = VK_NULL_HANDLE;
+    VkBuffer satTypeBuf = VK_NULL_HANDLE; // host-visible/coherent: GpuSatTypeHeader + GpuSatType[]
+    VkDeviceMemory satTypeMem = VK_NULL_HANDLE;
+    void *satTypeMapped = nullptr;
+    // Phase 1b compact visible list: slot → satellite index, and the list header / indirect args.
+    VkBuffer satVisibleIdxBuf = VK_NULL_HANDLE; // device-local, uint per compact slot
+    VkDeviceMemory satVisibleIdxMem = VK_NULL_HANDLE;
+    VkBuffer satListBuf = VK_NULL_HANDLE; // device-local GpuSatListHeader (also INDIRECT_BUFFER)
+    VkDeviceMemory satListMem = VK_NULL_HANDLE;
 
     // ── Satellite picking / selection tracking ────────────────────────────────
-    // pickedVisibleBuf mirrors just the selected satellite's 32-byte GpuSatVisible entry
-    // each frame (host-visible, mapped once like glowBuf) so buildUI can reproject its
-    // screen position without ever reading back the full (device-local) satVisibleBuf
-    // except at the moment of an initial click. See pickSatelliteAt/projectSkyDirToScreen.
+    // pickedVisibleBuf mirrors the 64-byte GpuSatListHeader every frame (host-visible, mapped
+    // once like glowBuf): its `selected` record lets buildUI reproject the selected satellite
+    // without reading back the full (device-local) satVisibleBuf, and its `count` is the real
+    // visible-satellite count. Only a click (pickSatelliteAt) reads the list itself.
+    // See pickSatelliteAt/projectSkyDirToScreen.
     VkBuffer pickedVisibleBuf = VK_NULL_HANDLE;
     VkDeviceMemory pickedVisibleMem = VK_NULL_HANDLE;
     void *pickedVisibleMapped = nullptr;
@@ -1625,7 +1664,7 @@ private:
     int lastClusterLightCount = 0;
     int lastIndividualLightCount = 0;
     uint32_t activeSatCount = 0;
-    uint32_t visibleCount = 0;   // above-horizon sats this frame (UI display)
+    uint32_t visibleCount = 0;   // compact-list length (above-horizon, enabled), one frame stale
     uint32_t gpuSatCount = 0;    // in-frustum sats written to GPU buffer
     float loopMs = 0.0f;         // satellite loop time last frame (milliseconds)
     float peakMagnitude = 99.0f; // brightest steady-state sat magnitude this frame
@@ -3007,6 +3046,7 @@ private:
         fpsCapSwapchainRebuildPending = true;
     }
     void createBuffers(VulkanContext &ctx);
+    void createSatBuffers(VulkanContext &ctx); // per-satellite/per-type buffers; after initConstellation()
     void createDescriptors(VulkanContext &ctx);
     void createOrbitDescriptors(VulkanContext &ctx);
     void createOrbitPipeline(VulkanContext &ctx);

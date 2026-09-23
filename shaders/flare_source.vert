@@ -4,7 +4,7 @@
 // Stage 1 of the flare architecture overhaul (see FlareSourcePC's comment in SatelliteSim.h).
 // Renders every visible satellite (from satVisibleBuf, exactly like sat_point.vert — same
 // SatVisible layout, same projection math) plus one extra virtual point representing the sun
-// (gl_VertexIndex == pc.satCount) into a small offscreen target that a couple of cheap compute
+// (its own 1-vertex draw, gl_InstanceIndex == 1 — see below) into a small offscreen target that a couple of cheap compute
 // blur/streak passes then turn into a soft corona+godray texture, replacing the old per-pixel
 // flareEntries loop in sat_sky.frag. This is a SECOND, parallel draw of the same satellite data
 // into a different, smaller, blurred target — not a replacement for the crisp dot-sprite pass.
@@ -23,7 +23,7 @@ layout(push_constant) uniform PC {
     mat4  skyView;
     float fovYRad;
     float aspect;
-    uint  satCount;
+    uint  satCount;      // unused since Phase 1b — the satellite draw is indirect (GPU-side count)
     float sunRefIntensity;
     vec4  sunDirENU;     // xyz = dir, w = sin(elevation)
     vec2  screenSizePx;  // this pass's own target size — unused here, read by the fragment stage
@@ -43,7 +43,10 @@ void main() {
     vec3  baseColor;
     float angSize;
 
-    if (gl_VertexIndex >= int(pc.satCount)) {
+    // Phase 1b: the satellite draw is vkCmdDrawIndirect over the compact visible list, whose
+    // length only the GPU knows, so the sun can no longer be "vertex satCount". It is a separate
+    // vkCmdDraw(1 vertex, firstInstance = 1); the indirect satellite draw uses firstInstance 0.
+    if (gl_InstanceIndex > 0) {
         // Virtual "sun" point — not read from satVisibleBuf at all.
         skyDir = normalize(pc.sunDirENU.xyz);
         // Smooth fade instead of the old hard "< -0.05 => 0" step. That step was the real bug

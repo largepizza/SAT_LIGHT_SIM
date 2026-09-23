@@ -1,6 +1,9 @@
 #version 450
 
 // ── SSBO: written by sat_flare.comp, read here via gl_VertexIndex ─────────────
+// Since Phase 1b this is the COMPACT visible list (drawn with vkCmdDrawIndirect): gl_VertexIndex is
+// a list slot, not a satellite index, and slot order changes frame to frame — never key anything
+// per-satellite (hashes, twinkle seeds) off it.
 struct SatVisible {
     vec3  skyDir;         // unit vector in local ENU (x=East, y=North, z=Up)
     float flareIntensity; // [0, 1+]

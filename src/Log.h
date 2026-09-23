@@ -6,7 +6,8 @@
 // whatever init step failed — instead of just "it doesn't work."
 namespace Log
 {
-    // Truncates and opens satlight_log.txt in the user data directory, writes a header
+    // Renames any existing satlight_log.txt to satlight_log.prev.txt (so a crashed run's log
+    // survives the relaunch), then truncates and opens satlight_log.txt in the user data directory, writes a header
     // (app version/commit/build date). Call once, as early as possible in main() — before
     // Vulkan init — so an instance/device creation failure still lands in the file.
     void init();

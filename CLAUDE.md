@@ -112,7 +112,10 @@ exists *for* weak hardware, the least safe place to assume the optional feature.
 
 VRAM is the untested one: the shipped textures are roughly 500 MB of GPU memory before mips
 (8K day/night/clouds/specular/Milky Way + the 14999×7500 R8 DEM ≈ 112 MB on its own), against
-2 GB on a 2015 MacBook Pro R9 M370X. Nothing streams or downsamples them.
+2 GB on a 2015 MacBook Pro R9 M370X. Nothing streams or downsamples them. **Until 2026-09-22 the
+per-satellite buffers reserved another ~2.2 GB on their own** (orbit + the since-deleted
+GpuSatInput + visible, all allocated at `MAX_SATELLITES` = 10M); `createSatBuffers()` now sizes
+them to the loaded roster (~100 B/satellite, ~131 MB for the default ~1.38M, ~940 MB at 10M).
 
 ---
 
@@ -134,7 +137,10 @@ sim->recordCompute(cmd)  → WASD movement; simTime advance;
                            CPU updatePositions() — sun/moon/obsECI/eci2enu/reflector targets only;
                            orbit rebake check (every 7 sim-days);
                            dispatch 1: scene_depth.comp   (half-res shared terrain/ocean depth)
-                           dispatch 2: sat_orbit.comp     (orbital mechanics + attitude + beam list)
+                           dispatch 2: sat_orbit.comp     (orbital mechanics + attitude + beam list +
+                                                            reflectance model → APPENDS visible
+                                                            satellites to the compact satVisibleBuf
+                                                            list + indirect args in satListBuf)
                            dispatch 3: beam_self_march.comp (per-beam cloud occlusion, up to 2048
                                                             beams — replaced beam_cloud_block.comp's
                                                             201-target version 2026-08-09, see
@@ -143,7 +149,9 @@ sim->recordCompute(cmd)  → WASD movement; simTime advance;
                            dispatch 4: cloud_march.comp   (half-res clouds/cirrus/aurora/airglow-red/
                                                             beam pointing ray + volumetric glow +
                                                             per-pixel cloud shadow)
-                           dispatch 5: sat_flare.comp     (lighting + visibility culling)
+                           dispatch 5: sat_flare.comp     (INDIRECT; photometry in place on the
+                                                            compact list: sky/extinction/pollution +
+                                                            visibility culling + sprite size)
                            barriers between each (see recordCompute for exact stage/access pairs)
 sim->recordPrePass(cmd)  → renderScale < 1.0 only: low-res sky → vkCmdBlitImage into swapchain
 vkCmdBeginRenderPass     → owned by App
@@ -367,7 +375,7 @@ Types and constellations are loaded from `constellations.json` next to the exe. 
 
 ### Adding a new satellite type
 1. Add to `satTypes` in `constellations.json` (or `loadHardcoded()` as fallback)
-2. No GPU struct changes needed; all fields map to existing `GpuSatInput` members
+2. No GPU struct changes needed; all fields map to existing `GpuSatType` members
 3. Reference the new typeIdx in a constellation entry
 
 ---
@@ -419,26 +427,79 @@ RAAN anchored at **sim-start** using `sunDirECI` (set by `updatePositions()` bef
 
 ## Subsystem: GPU Orbital Pipeline
 
-All per-satellite orbital mechanics and attitude computation runs on the GPU. The CPU only manages the small reflector targets buffer and triggers a rebake when needed.
+All per-satellite orbital mechanics, attitude and reflectance computation runs on the GPU. The CPU only manages the small reflector targets buffer and triggers a rebake when needed.
+
+**Lighting overhaul Phase 1 (2026-09-22, `.plans/SAT_LIGHTING_PLAN.md`).** At millions of
+satellites the per-satellite cost was memory traffic, not math: ~304 B/satellite/frame (112 B orbit
+read + an 80 B `GpuSatInput` written by `sat_orbit.comp` only to be read straight back by
+`sat_flare.comp` + 32 B visible). Now 128 B (culled) to 160 B (lit: 64 B orbit + 32 B visible
+write + 32 B read + 32 B in-place rewrite): the per-type fields moved out of every orbit record
+into `satTypeBuf` (orbit 112 → 64 B), the reflectance model moved into `sat_orbit.comp`, and
+`GpuSatInput` was deleted. `sat_flare.comp` is still a separate dispatch **on purpose**: its
+photometry reads `beamGlowDome`, which `sat_orbit.comp` builds by `atomicMax` across every
+TargetedReflector satellite, so it isn't complete until that whole dispatch is. Merging the two
+would need a one-frame-stale (double-buffered) dome.
+
+**Phase 1b — compact visible list (2026-09-23).** Measured at 9.88M satellites on an RTX 3070 Ti
+after Phase 1: `sat_orbit` 1.7 ms (≈90% of the card's 608 GB/s — at the memory wall), but
+`sat_flare` 1.27 ms + the satellite draws 0.7 ms were spent almost entirely on the ~90% of
+satellites below the horizon. Now `sat_orbit.comp` **appends** only surviving satellites to a
+compact list (`satVisibleBuf` records + `satVisibleIdxBuf` slot→satellite index), aggregated per
+workgroup through shared memory (one global `atomicAdd` per 64 satellites — no subgroup ops, so
+nothing to check on MoltenVK). It also maintains the indirect args in `satListBuf`
+(`GpuSatListHeader`) by `atomicMax` on each workgroup's append end — slots are contiguous from 0,
+so the largest end *is* the count, no separate args pass. `sat_flare.comp` is
+`vkCmdDispatchIndirect`, and the satellite point, flare-source and trail draws are
+`vkCmdDrawIndirect`, all scaling with the visible count.
+Invariants:
+- **Slot order is nondeterministic** (atomic append). Fine only because every satellite point
+  pipeline blends additively (`ONE`/`ONE`, no depth write). Never key anything per-satellite off
+  `gl_VertexIndex` in those shaders — it is a list slot, not a satellite.
+- **`satVisibleBuf` is no longer indexed by satellite.** Selection tracking goes through
+  `SatFlarePC::selectedSatIdx` → `sat_flare.comp` writes that satellite's final record into
+  `GpuSatListHeader::selected`; the whole 64-byte header is copied into `pickedVisibleBuf` every
+  frame (it also carries the real `visibleCount` — the snapshot's `visible_count` was a placeholder
+  equal to the roster size until this). Picking copies back only `count` entries + their indices.
+- **The sun's flare-source point is its own `vkCmdDraw(1 vertex, firstInstance 1)`**;
+  `flare_source.vert` tells it apart by `gl_InstanceIndex`, since the satellite count is GPU-side.
+- The header is reset each frame with `vkCmdUpdateBuffer` before `sat_orbit`; the post-orbit
+  barrier includes `INDIRECT_COMMAND_READ` at `DRAW_INDIRECT`, which also covers the later draws.
 
 ### Two-dispatch pattern (recordCompute)
 ```
-sat_orbit.comp dispatch   → reads satOrbitBuf + reflectorTargetsECEFBuf; writes satInputBuf
-barrier satInputBuf       → SHADER_WRITE → SHADER_READ, compute→compute
+header → satTypeBuf       → CPU memcpy of GpuSatTypeHeader (brightnessScale, mirrorBoost)
+vkCmdUpdateBuffer(satListBuf) → reset list header {0, dispatch 0,1,1, draw 0,1,0,0}; barrier →compute
+sat_orbit.comp dispatch   → reads satOrbitBuf + satTypeBuf + reflectorTargetsECEFBuf; APPENDS
+                            visible satellites to satVisibleBuf/satVisibleIdxBuf, args to satListBuf
+                            (+ beams, beamGlowDome)
+barrier (3 buffers)       → SHADER_WRITE → SHADER_READ|WRITE (+INDIRECT_COMMAND_READ on satListBuf),
+                            compute → compute|DRAW_INDIRECT
 vkCmdFillBuffer(glowBuf)  → zeros the glow histogram for this frame
 barrier glowBuf           → TRANSFER_WRITE → SHADER_READ|SHADER_WRITE, transfer→compute
-sat_flare.comp dispatch   → reads satInputBuf; writes satVisibleBuf + glowBuf (atomicMax)
-barrier satVisibleBuf     → SHADER_WRITE → SHADER_READ, compute→vertex
+sat_flare.comp INDIRECT   → finishes the compact list IN PLACE; glowBuf (atomicMax) + ocean glints;
+                            selected satellite's record → satListBuf.selected
+barrier satVisibleBuf/satListBuf → SHADER_WRITE → SHADER_READ (vertex) / TRANSFER_READ
+point / flare-source / trail draws → vkCmdDrawIndirect(satListBuf.draw*)
+end of recordCompute      → copy satListBuf header → pickedVisibleBuf (host, read next frame)
 ```
 
 ### Buffers
 | Buffer | Memory | Lifetime | Updated by |
 |--------|--------|----------|------------|
 | `satOrbitBuf` | device-local | uploaded once; rebaked every 7 sim-days | `uploadSatOrbits()` |
-| `satInputBuf` | device-local | per-frame | `sat_orbit.comp` |
-| `satVisibleBuf` | device-local | per-frame | `sat_flare.comp` |
+| `satTypeBuf` | host-coherent, mapped | header per-frame; types on upload/rebake | `recordCompute()` / `uploadSatOrbits()` |
+| `satVisibleBuf` | device-local | per-frame | compact list: `sat_orbit.comp` appends, `sat_flare.comp` finishes in place |
+| `satVisibleIdxBuf` | device-local | per-frame | `sat_orbit.comp` (slot → satellite index) |
+| `satListBuf` | device-local, INDIRECT | per-frame | reset by `vkCmdUpdateBuffer`; `sat_orbit.comp` (count/args), `sat_flare.comp` (`selected`) |
+| `pickedVisibleBuf` | host-coherent, mapped | per-frame | copy of `satListBuf`'s 64-byte header |
 | `reflectorTargetsECEFBuf` | host-visible, mapped | uploaded once at target-generation time | `loadReflectorTargets()`/fallback |
 | `glowBuf` | host-coherent, mapped | per-frame | `sat_flare.comp` write; App reads back |
+
+`satOrbitBuf`/`satTypeBuf`/`satVisibleBuf`/`satVisibleIdxBuf`/`satListBuf` are created by
+`createSatBuffers()`, sized to the loaded roster — which is why `init()` builds the constellation
+**before** `createDescriptors()`. `uploadSatOrbits()` bakes straight into a reused 64 MB staging
+chunk (it used to hold two full-size copies — 1.3 GB at 10M) and `buildOrbits()` reserves the exact
+total, so a 10M roster's startup no longer spikes host memory.
 
 `mirrorNormalsBuf` (persistent per-satellite mirror lock/slew state) and the old per-frame
 CPU-compacted `reflectorTargetsBuf` were both removed 2026-08-06 — see "Subsystem: TargetedReflector
@@ -453,26 +514,49 @@ that frame's push constants.
 ### simTime representation
 Split into `simDayJ2000` (int64_t days) + `simSecInDay` (double, re-based to [0, 86400) each frame). Avoids accumulated float precision loss when a large J2000 base is added to a small per-frame delta. The shader receives `deltaT = float((dDays × 86400) + dSec)` where dDays < 7 (ensured by rebake).
 
-### GpuSatOrbit layout (112 bytes, std430)
+### GpuSatOrbit layout (64 bytes, std430)
 All plain floats/uints — no vec3 — so C++ struct packing matches GLSL std430 with no padding.
-Must match `SatOrbit` in `sat_orbit.comp` exactly.
+Must match `SatOrbit` in `sat_orbit.comp` exactly. Only genuinely per-satellite data belongs here —
+anything that is constant per type goes in `GpuSatType`.
 ```
 [ 0] raan, u0, R_sat, meanMot
 [16] cosI, sinI, cosRaan, sinRaan
-[32] tumbleRate, tumblePhase, alignTerminator, tumbleAxisX
-[48] tumbleAxisY, tumbleAxisZ, primaryAttitude (uint), secondaryAttitude (uint)
-[64] baseColorR, baseColorG, baseColorB, crossSection
-[80] specExp0, specExp1, w1, diffuse
-[96] mirrorFrac, constIdx (uint), pad0, pad1
+[32] tumbleRate, tumblePhase, tumbleAxisX, tumbleAxisY
+[48] tumbleAxisZ, alignTerminator, typeIdx (uint), constIdx (uint)
 ```
-`static_assert(sizeof(GpuSatOrbit) == 112)` — do not change field order without updating both structs.
+`static_assert(sizeof(GpuSatOrbit) == 64)` — do not change field order without updating both structs.
+
+### GpuSatType layout (48 bytes, std430) — `satTypeBuf`
+One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, after a 16-byte `GpuSatTypeHeader`
+(`brightnessScale`, `mirrorBoost`, 2 pads — rewritten every frame; `SatOrbitPC` is full). Must match
+`SatType`/`SatTypeBuf` in `sat_orbit.comp`.
+```
+[ 0] baseColorR, baseColorG, baseColorB, crossSection
+[16] specExp0, specExp1, w1, diffuse
+[32] mirrorFrac, primaryAttitude (uint), secondaryAttitude (uint), pad0
+```
 
 ### GpuSatVisible layout (32 bytes, std430)
-Output of `sat_flare.comp`; read by `sat_point.vert`.
+A **compact list** entry: appended by `sat_orbit.comp`, finished in place by `sat_flare.comp`, read
+by `sat_point.vert`, `flare_source.vert` and the trail splat pass via indirect draws.
 ```
 [ 0] skyDir (vec3) + flareIntensity (float)  — ENU unit vector + intensity [0,1+]
 [16] baseColor (vec3) + angularSize (float)  — tint + point sprite size hint (pixels)
 ```
+Between the two dispatches it is a **pre-photometry** record (culled satellites are not in the
+list at all): highlighted ones carry `flareIntensity < 0`; lit ones carry the raw flux, with
+`angularSize` holding the **range in metres** and `baseColor` already eclipse-tinted. After
+`sat_flare.comp`, a satellite below `visThresh` stays in the list as a zero record.
+
+### GpuSatListHeader layout (64 bytes) — `satListBuf`
+```
+[ 0] count                                        — append counter = list length
+[ 4] dispatchX, dispatchY, dispatchZ              — VkDispatchIndirectCommand (sat_flare)
+[16] vertexCount, instanceCount, firstVertex, firstInstance — VkDrawIndirectCommand (3 point draws)
+[32] selected (GpuSatVisible)                     — selected satellite's final record, or zeros
+```
+Mirrored as `SatListBuf` in both `sat_orbit.comp` and `sat_flare.comp`; `offsetof` static_asserts
+guard the C++ side.
 `static_assert(sizeof(GpuSatVisible) == 32)`
 
 ### Push constants
@@ -506,11 +590,14 @@ periodic reduction — so `sat_orbit.comp` can extrapolate exactly to a lock win
 ```
 enuX (vec4), enuY (vec4), enuZ (vec4)  — offsets 0/16/32
 sunDirECI (vec3), satCount (uint)      — offset 48/60
-obsECI (vec3), elevCutoff (float)      — offset 64/76
-brightnessScale, daySuppression, mirrorBoost, visThresh, highlightFlare,
-pad2, moonSuppression, pad0            — offsets 80–108
-moonDirECI (vec3), pad1 (float)        — offset 112/124
+obsECI (vec3), selectedSatIdx (uint)  — offset 64/76
+pad3, daySuppression, pad4, visThresh, highlightFlare,
+extinctionCoeff, moonSuppression, pad0 — offsets 80–108
+moonDirECI (vec3), sunRefIntensity     — offset 112/124
 ```
+`pad3`/`pad4` were `brightnessScale`/`mirrorBoost` until the lighting overhaul's Phase 1 moved the
+reflectance model into `sat_orbit.comp`; offset 76 was `elevCutoff`, then a pad, and since Phase 1b
+is `selectedSatIdx` (`UINT32_MAX` = none).
 `pad2` was `lightPollution` — superseded (session 26) by the directional `lightDomeBuf` SSBO
 (binding 3 in the sat_flare.comp descriptor set, 8 floats, host-visible/mapped), which doesn't
 need push-constant space. See "Subsystem: Light Pollution Dome" below.
@@ -940,7 +1027,9 @@ function of intensity alone and doesn't churn frame to frame.
 
 ## Subsystem: Photometry / Shader Constants
 
-Photometry values are **runtime members** on `SatelliteSim`, synced to `SatFlarePC` each frame. They are persisted in `settings.json` and adjustable in the settings window.
+Photometry values are **runtime members** on `SatelliteSim`, synced each frame to `SatFlarePC` —
+except `brightnessScale`/`mirrorBoost`, which the reflectance model in `sat_orbit.comp` reads from
+`GpuSatTypeHeader` at the front of `satTypeBuf`. They are persisted in `settings.json` and adjustable in the settings window.
 
 | Member | Default | Description |
 |--------|---------|-------------|
@@ -1067,21 +1156,13 @@ default 0.25), settings slider "Extinction". Reuses `SatFlarePC`'s `pad2` slot (
 
 ---
 
-## Subsystem: GpuSatInput Layout (80 bytes, std430)
+## Subsystem: GpuSatInput (deleted 2026-09-22)
 
-Written by `sat_orbit.comp`, read by `sat_flare.comp`.
-
-```
-[  0] eciRelPos (vec3) + range (float)
-[ 16] surfN0    (vec3) + elevation (float)   — primary surface normal; elevation = -π/2 for below-horizon/disabled
-[ 32] surfN1    (vec3) + specExp0 (float)    — secondary surface normal
-[ 48] baseColor (vec3) + specExp1 (float)
-[ 64] crossSection + w1 + diffuse + mirrorFrac (float×4)
-```
-
-`static_assert(sizeof(GpuSatInput) == 80)` — do not change field order without updating both the C++ struct and the GLSL `SatInput` struct in `sat_flare.comp`.
-
-Below-horizon and disabled satellites write `elevation = -π/2` and return early. `sat_flare.comp`'s horizon cull (`elevation < -0.01 rad`) discards them at zero cost.
+The 80-byte `sat_orbit.comp` → `sat_flare.comp` hand-off record no longer exists — see "Lighting
+overhaul Phase 1" under "Subsystem: GPU Orbital Pipeline". Its job is done by the pre-photometry
+`GpuSatVisible` encoding. Below-horizon and disabled satellites are simply never appended to the
+compact list (Phase 1b); `sat_orbit.comp` also dropped the per-satellite `asin` that existed only
+to feed `sat_flare.comp`'s duplicate horizon cull.
 
 ---
 
