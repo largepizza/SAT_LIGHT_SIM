@@ -192,6 +192,7 @@ layout(location = 0) out vec4 outColor;
 // the shared header now. terrain.glsl brings the DEM decode + observer-frame helpers.
 #include "common.glsl"
 #include "terrain.glsl"
+#include "atmosphere.glsl" // line-of-sight extinction (atmExtinctionMag)
 #include "darksky.glsl"   // dark-sky exposure gate (Milky Way / zodiacal)
 
 // ── Milky Way surface-brightness anchors ─────────────────────────────────────────────────────
@@ -2427,11 +2428,8 @@ void main() {
                     // bouncing off the water toward the camera. Ocean views skew toward low-angle
                     // reflections by construction (Fresnel favors grazing angles), so this matters
                     // here at least as much as it does for the direct view.
-                    float sinElAuroraRefl   = clamp(reflDir.z, 0.0, 1.0);
-                    float elDegAuroraRefl   = degrees(asin(sinElAuroraRefl));
-                    float airmassAuroraRefl = 1.0 / (sinElAuroraRefl + 0.50572 * pow(elDegAuroraRefl + 6.07995, -1.6364));
-                    float extinctMagAuroraRefl = cloud.extinctionCoeff * (airmassAuroraRefl - 1.0);
-                    float extinctionAuroraRefl = pow(10.0, -0.4 * extinctMagAuroraRefl);
+                    float extinctionAuroraRefl =
+                        pow(10.0, -0.4 * atmExtinctionMag(hitPt, reflDir, 0.0, cloud.extinctionCoeff));
 
                     // Cloud occlusion (reflCloudOccl, hoisted above): this march reused
                     // auroraSampleAt() (the raw curtain function) directly rather than going
@@ -2485,10 +2483,8 @@ void main() {
                     // reflection's reasoning: that is the path this light actually took through
                     // the atmosphere before bouncing off the water. Matters here more than for the
                     // direct view, since Fresnel biases ocean reflections toward grazing angles.
-                    float sinElMwRefl   = clamp(reflDir.z, 0.0, 1.0);
-                    float elDegMwRefl   = degrees(asin(sinElMwRefl));
-                    float airmassMwRefl = 1.0 / (sinElMwRefl + 0.50572 * pow(elDegMwRefl + 6.07995, -1.6364));
-                    float extinctionMwRefl = pow(10.0, -0.4 * cloud.extinctionCoeff * (airmassMwRefl - 1.0));
+                    float extinctionMwRefl =
+                        pow(10.0, -0.4 * atmExtinctionMag(hitPt, reflDir, 0.0, cloud.extinctionCoeff));
 
                     reflColor += rMwColor * darkSkyVis(rMwObjMag, rMwSkyBgMag)
                                * extinctionMwRefl * reflCloudOccl * reflTerrainOccl
@@ -2781,22 +2777,11 @@ void main() {
         float beamDomeVal = clamp(beamDomeAz * elevFalloffMW, 0.0, 1.0);
         const float kMWBeamPollutionMaxDim = 0.99;
 
-        // Atmospheric extinction — same Kasten & Young 1989 airmass approximation used by
-        // sat_flare.comp/updateStars(), reusing cloud.extinctionCoeff (was pad0 — see CloudParams).
-        // Deliberately NOT atmFracSky (that one is keyed on the OBSERVER's own altitude, correct
-        // for "is there scattering atmosphere near me to explain a bright sky" but wrong for "how
-        // much atmosphere does THIS RAY pass through" — a ray aimed near the horizon from orbit can
-        // still graze deep into the atmosphere even though the observer itself is far above it, see
-        // rayTangentAltM in common.glsl). Uses this ray's own tangent altitude instead, same shape
-        // (linear fade over kMWSpaceFadeStartM/EndM) as atmFracSky so near-zenith views (where the
-        // two coincide) are unchanged.
-        float atmFracExtinctMW = 1.0 - clamp((rayTangentAltM(obsPos, dir) - kMWSpaceFadeStartM)
-                                              / (kMWSpaceFadeEndM - kMWSpaceFadeStartM), 0.0, 1.0);
-        float sinElMW  = clamp(dir.z, 0.0, 1.0);
-        float elDegMW  = degrees(asin(sinElMW));
-        float airmassMW = 1.0 / (sinElMW + 0.50572 * pow(elDegMW + 6.07995, -1.6364));
-        float extinctMagMW = cloud.extinctionCoeff * (airmassMW - 1.0) * atmFracExtinctMW;
-        float extinctionMW = pow(10.0, -0.4 * extinctMagMW);
+        // Atmospheric extinction along THIS ray (atmosphere.glsl) — the same line-of-sight column
+        // sat_flare.comp and updateStars() use, so the Milky Way, stars and satellites in one
+        // direction dim alike. Deliberately NOT atmFracSky, which is about the bright sky AROUND
+        // the observer, not the air this ray crosses.
+        float extinctionMW = pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, 0.0, cloud.extinctionCoeff));
 
         // Sun glare: even in space (where nightFactorEffSky doesn't suppress anything — there's
         // no atmosphere to scatter sunlight into a uniform "day" sky), staring straight at the
@@ -2936,14 +2921,8 @@ void main() {
         float moonBrightZ = tmZ * tmZ * moonDirENU.w;
         const float kZodMoonMaxDim = 0.9;
 
-        // Ray's own tangent-altitude extinction (not the observer-altitude atmFracSkyZ above) —
-        // same rayTangentAltM correction documented for aurora/satellites/stars/planets/Milky Way.
-        float atmFracExtinctZ = 1.0 - clamp((rayTangentAltM(obsPos, dir) - 40000.0) / (100000.0 - 40000.0), 0.0, 1.0);
-        float sinElZ    = clamp(dir.z, 0.0, 1.0);
-        float elDegZ    = degrees(asin(sinElZ));
-        float airmassZ  = 1.0 / (sinElZ + 0.50572 * pow(elDegZ + 6.07995, -1.6364));
-        float extinctMagZ = cloud.extinctionCoeff * (airmassZ - 1.0) * atmFracExtinctZ;
-        float extinctionZ = pow(10.0, -0.4 * extinctMagZ);
+        // This ray's own line-of-sight extinction (atmosphere.glsl), as for the Milky Way above.
+        float extinctionZ = pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, 0.0, cloud.extinctionCoeff));
 
         // ── Dark-sky exposure gate ────────────────────────────────────────────────────────────
         // Same model as the Milky Way above (darksky.glsl), replacing the old

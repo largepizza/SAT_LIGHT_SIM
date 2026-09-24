@@ -63,6 +63,13 @@ void earthshineLookup(double rOverD, double cosSunZenith, double &irradiance, do
 // Effective source direction: nadir turned `tiltRad` toward the Sun (nadir if the Sun is on the axis).
 glm::dvec3 earthshineDirection(glm::dvec3 nadir, glm::dvec3 sun, double tiltRad);
 
+// ── Atmospheric extinction along a line of sight ──────────────────────────────────────────────
+// Mirror of shaders/include/atmosphere.glsl (see it for the model): molecular (8 km) + aerosol
+// (1.2 km) exponential columns via the Chapman function, sharing the sea-level zenith extinction k.
+// p: Earth-centred position (m), d: unit direction, L: distance to the target (<= 0: infinity).
+double atmColumn(glm::dvec3 p, glm::dvec3 d, double L, double scaleHeightM);
+double atmExtinctionMag(glm::dvec3 p, glm::dvec3 d, double L, double k);
+
 // ── Time and frame helpers (shared with SatelliteSim::updatePositions) ────────────────────────
 // Time is seconds since J2000 (the sim's simDayJ2000·86400 + simSecInDay).
 //

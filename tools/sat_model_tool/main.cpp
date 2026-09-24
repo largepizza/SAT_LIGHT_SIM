@@ -185,6 +185,62 @@ bool selfTestEarthshine()
     return ok;
 }
 
+// Atmospheric extinction (2026-09-23): atmColumn()'s Chapman-function form against a brute-force
+// integral along the ray, for observers from sea level to orbit, at elevations down through the
+// horizon (from altitude), to infinity and to a finite target.
+double atmColumnBrute(glm::dvec3 p, glm::dvec3 d, double L, double H)
+{
+    const double R = satphot::kEarthRadiusM;
+    const double tEnd = L > 0.0 ? L : 4.0e6;
+    double sum = 0.0, t = 0.0;
+    while (t < tEnd)
+    {
+        const double h = glm::length(p + t * d) - R;
+        if (h < 0.0)
+            return -1.0; // hits the ground
+        const double dt = std::min(std::max(2.0, 0.02 * H + 0.05 * h), tEnd - t);
+        sum += std::exp(-(glm::length(p + (t + 0.5 * dt) * d) - R) / H) * dt;
+        t += dt;
+    }
+    return sum / H;
+}
+
+bool selfTestAtmosphere()
+{
+    std::printf("  atmospheric extinction:\n");
+    const double R = satphot::kEarthRadiusM;
+    double worst = 0.0;
+    int n = 0;
+    for (double hObs : {0.0, 1000.0, 4000.0, 10000.0, 35000.0, 400000.0})
+        for (double elDeg : {90.0, 45.0, 20.0, 10.0, 5.0, 2.0, 0.0, -1.0, -3.0, -10.0, -19.0})
+            for (double L : {0.0, 800000.0})
+                for (double H : {8000.0, 1200.0})
+                {
+                    const glm::dvec3 p(0.0, 0.0, R + hObs);
+                    const glm::dvec3 d(std::cos(elDeg * kDeg), 0.0, std::sin(elDeg * kDeg));
+                    const double ref = atmColumnBrute(p, d, L, H);
+                    if (ref < 1e-3) // ground hit (-1) or negligible air
+                        continue;
+                    worst = std::max(worst, std::abs(atmColumn(p, d, L, H) / ref - 1.0));
+                    ++n;
+                }
+    const bool ok = n > 0 && worst < 0.02;
+    std::printf("    %s Chapman column vs brute-force ray integral (%d cases, sea level to 400 km, elevation "
+                "+90..-19 deg, to infinity and to 800 km): max rel err %.4f  (gate < 2%%)\n",
+                ok ? "ok  " : "FAIL", n, worst);
+    std::printf("    info extinction at k = 0.25 mag (zenith / 10 deg / horizon):");
+    for (double hObs : {0.0, 4000.0, 10000.0})
+    {
+        const glm::dvec3 p(0.0, 0.0, R + hObs);
+        auto ext = [&](double el) {
+            return atmExtinctionMag(p, glm::dvec3(std::cos(el * kDeg), 0.0, std::sin(el * kDeg)), 0.0, 0.25);
+        };
+        std::printf("  %.0f km %.2f/%.2f/%.1f", hObs / 1000.0, ext(90.0), ext(10.0), ext(0.0));
+    }
+    std::printf("\n");
+    return ok;
+}
+
 // Posed-model check (the M1 gate): the evaluator's lobe path — every group posed by the attitude
 // law, lobe normal = R·B·normalT — against the per-triangle brute force posed by the same poses.
 // With the exact bake (no budget merge) the two must agree to float rounding; the app's budget
@@ -781,6 +837,7 @@ int main(int argc, char **argv)
         std::printf("[selftest] CPU photometric evaluator\n");
         selfTestFailures += selfTestGeometry() ? 0 : 1;
         selfTestFailures += selfTestEarthshine() ? 0 : 1;
+        selfTestFailures += selfTestAtmosphere() ? 0 : 1;
         std::printf("\n");
     }
 

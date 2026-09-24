@@ -142,30 +142,7 @@ layout(push_constant) uniform PC {
 // ── Constants ─────────────────────────────────────────────────────────────────
 const float R_EARTH      = 6371000.0;   // Earth radius (meters)
 
-// Altitude of THIS satellite's line of sight at its closest approach to Earth's center — see the
-// identical helper's comment in common.glsl (not included here; this file is deliberately
-// self-contained, so it gets its own copy, same convention as its local R_EARTH above). Used ONLY
-// for the extinction term below, not for dayBright/moonBright suppression (those legitimately key
-// off the OBSERVER's own altitude — "is there scattering atmosphere near me").
-float rayTangentAltM(vec3 ro, vec3 rd) {
-    float b     = dot(ro, rd);
-    float roLen = length(ro);
-    float dMin  = (b >= 0.0) ? roLen : sqrt(max((roLen - b) * (roLen + b), 0.0));
-    return dMin - R_EARTH;
-}
-
-// Bounded variant — clamps the closest-approach parameter to a finite target range (meters) along
-// the ray, instead of the unconstrained infinite forward ray. Fixes a real bug: a satellite
-// appearing in front of Earth as seen from a space-based observer got extincted as if its sightline
-// grazed the atmosphere, because the unbounded 2-arg version's tangent point sat far beyond the
-// satellite's actual (much closer) position — see the identical overload's full comment in
-// common.glsl (not included here; this file is deliberately self-contained, same convention as the
-// 2-arg copy above).
-float rayTangentAltM(vec3 ro, vec3 rd, float maxT) {
-    float t = clamp(-dot(ro, rd), 0.0, maxT);
-    vec3  p = ro + rd * t;
-    return length(p) - R_EARTH;
-}
+#include "atmosphere.glsl"              // atmExtinctionMag — shared with stars, planets, Milky Way
 
 // ── Reflectance model / brightness scale / mirror peak ────────────────────────
 // All in sat_orbit.comp now (distance falloff, eclipse cones, earthshine, the two-surface
@@ -257,12 +234,15 @@ void main() {
     //   At the terminator (sunElev=0): t=0.13, dayBright≈0.017 → ~2.5% suppression.
     //   At +20° sun elevation:         t=1.0,  dayBright=1.0   → full suppression.
     // Squaring gives a slow start (gentle twilight glow) and faster mid-day ramp.
-    // atmFrac: atmosphere thins exponentially — suppression ≈ 0 above ~400 km.
+    // atmFrac: how much of the bright sky is still around the observer — the stars' and Milky
+    // Way's gate (updateStars(), sat_sky.frag): full through the flyable atmosphere, fading over
+    // 40-100 km. It was exp(-h / 80 km), which kept 29% of the daytime dimming at 100 km and
+    // treated satellites differently from the stars around them.
     float sunElev     = dot(pc.sunDirECI, normalize(pc.obsECI));
     float t           = clamp((sunElev + 0.05) / 0.39, 0.0, 1.0);
     float dayBright   = t * t;
     float obsHeight   = max(0.0, length(pc.obsECI) - R_EARTH);
-    float atmFrac     = exp(-obsHeight / 80000.0); // 1 at sea level → ~0 at 400 km
+    float atmFrac     = 1.0 - clamp((obsHeight - 40000.0) / 60000.0, 0.0, 1.0);
 
     // ── Moonlight sky suppression ───────────────────────────────────────────
     // Same shape as dayBright above (elevation ramp × atmFrac), scaled by moon phase
@@ -278,35 +258,16 @@ void main() {
     float effectFlare = flare / (1.0 + (dayBright * pc.daySuppression
                                        + moonBright * pc.moonSuppression) * atmFrac);
 
-    // ── Atmospheric extinction (airmass) ──────────────────────────────────────
-    // Real horizon dimming: airmass increases sharply at low elevation, scattering/absorbing
-    // light along the much longer low-elevation atmospheric path. Independent of light
-    // pollution/moon — this is the "always on" baseline the light-pollution dome's directional
-    // variation should read as modulation on top of, not the only source of horizon-vs-zenith
-    // brightness difference (that gap was the direct cause of the dome's sector transitions
-    // reading as unsubtle pops rather than a smooth gradient).
-    // Kasten & Young 1989 approximation — stays finite down to the true horizon (unlike the
-    // naive 1/sin(el), which diverges to infinity at el=0).
-    float sinElClamped = clamp(skyDir.z, 0.0, 1.0);
-    float elDeg      = degrees(asin(sinElClamped));
-    float airmass    = 1.0 / (sinElClamped + 0.50572 * pow(elDeg + 6.07995, -1.6364));
-    // Gated on THIS satellite's own line-of-sight tangent altitude (rayTangentAltM above), NOT the
-    // observer-height atmFrac used for day/moon suppression above — from orbit, a satellite sitting
-    // near the observer's local horizon can still have a line of sight that grazes deep into the
-    // atmosphere even though the OBSERVER itself is far above it. Using atmFrac here silently
-    // turned extinction off entirely near the horizon as soon as the observer left the atmosphere,
-    // regardless of the sightline's real atmospheric path.
-    // Bounded by the satellite's range (the 3-arg overload, not the 2-arg background/infinite-target
-    // one) — a real bug otherwise: a satellite silhouetted in front of Earth from a space-based
-    // observer has a ray direction pointing roughly toward the planet, so the UNBOUNDED tangent
-    // point sits at or near the surface far beyond the satellite's own much closer position,
-    // wrongly applying full extinction to a sightline that never actually goes anywhere near the
-    // atmosphere.
-    // The line of sight in ECI is rebuilt from the ENU sky direction (the ENU basis rows are an
-    // orthonormal ECI frame) — the ECI relative position no longer reaches this pass.
+    // ── Atmospheric extinction ────────────────────────────────────────────────
+    // The air on THIS sightline, observer to satellite (atmosphere.glsl): from sea level the full
+    // zenith extinction plus the long low-elevation path, from a mountain or an aircraft
+    // correspondingly less, from orbit only what a limb-grazing sightline crosses — and a
+    // satellite silhouetted in front of Earth from orbit gets only the segment that reaches it.
+    // Also the light-pollution dome's smooth baseline (without it the dome's sector transitions
+    // read as pops). The ECI line of sight is rebuilt from the ENU sky direction (the ENU basis
+    // rows are an orthonormal ECI frame) — the relative position no longer reaches this pass.
     vec3  losECI = skyDir.x * pc.enuX.xyz + skyDir.y * pc.enuY.xyz + skyDir.z * pc.enuZ.xyz;
-    float atmFracExtinct = exp(-max(rayTangentAltM(pc.obsECI, losECI, range), 0.0) / 80000.0);
-    float extinctMag = pc.extinctionCoeff * (airmass - 1.0) * atmFracExtinct;
+    float extinctMag = atmExtinctionMag(pc.obsECI, losECI, range, pc.extinctionCoeff);
     effectFlare *= pow(10.0, -0.4 * extinctMag);
 
     // Light pollution: dims (scales down) rather than culls — matches the observation that

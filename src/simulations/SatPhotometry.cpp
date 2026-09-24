@@ -154,6 +154,47 @@ glm::dvec3 earthshineDirection(glm::dvec3 nadir, glm::dvec3 sun, double tiltRad)
     return std::cos(tiltRad) * nadir + std::sin(tiltRad) * (perp / l);
 }
 
+// ── Atmospheric extinction (mirror of atmosphere.glsl) ────────────────────────────────────────
+namespace
+{
+constexpr double kAtmHRay = 8000.0, kAtmHAer = 1200.0, kAtmFRay = 0.6;
+
+double atmErfcx(double y)
+{
+    return 1.0 / (1.7724539 * (0.6564 * y + 0.3436 * std::sqrt(y * y + 2.6961)));
+}
+
+double atmColumnInf(double r, double cosChi, double H)
+{
+    const double x = r / H;
+    const double up = std::exp(-(r - kEarthRadiusM) / H) * std::sqrt(1.5707963 * x) *
+                      atmErfcx(std::sqrt(0.5 * x) * std::abs(cosChi));
+    if (cosChi >= 0.0)
+        return up;
+    const double rt = std::max(r * std::sqrt(std::max(0.0, 1.0 - cosChi * cosChi)), kEarthRadiusM);
+    return 2.0 * std::exp(-(rt - kEarthRadiusM) / H) * std::sqrt(1.5707963 * rt / H) - up;
+}
+} // namespace
+
+double atmColumn(glm::dvec3 p, glm::dvec3 d, double L, double H)
+{
+    const double r = glm::length(p);
+    const double cosP = glm::dot(p, d) / r;
+    if (L <= 0.0)
+        return atmColumnInf(r, cosP, H);
+    const glm::dvec3 q = p + d * L;
+    const double rq = glm::length(q);
+    const double cosQ = glm::dot(q, d) / rq;
+    const double c = (cosP >= 0.0 || cosQ > 0.0) ? atmColumnInf(r, cosP, H) - atmColumnInf(rq, cosQ, H)
+                                                 : atmColumnInf(rq, -cosQ, H) - atmColumnInf(r, -cosP, H);
+    return std::max(c, 0.0);
+}
+
+double atmExtinctionMag(glm::dvec3 p, glm::dvec3 d, double L, double k)
+{
+    return k * (kAtmFRay * atmColumn(p, d, L, kAtmHRay) + (1.0 - kAtmFRay) * atmColumn(p, d, L, kAtmHAer));
+}
+
 // ── Photometry ────────────────────────────────────────────────────────────────────────────────
 namespace
 {

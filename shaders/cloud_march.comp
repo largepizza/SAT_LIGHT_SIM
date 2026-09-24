@@ -106,6 +106,7 @@ layout(set = 0, binding = 13) uniform sampler2D sceneDepthTex;
 // kElevOffsetBeam were a local re-declaration of exactly kElevRange / kElevOffset.
 #include "common.glsl"
 #include "terrain.glsl"
+#include "atmosphere.glsl" // line-of-sight extinction (atmExtinctionMag)
 #include "darksky.glsl"   // dark-sky exposure gate (aurora)
 
 // Terrain height (m above sea level) at an ECEF-frame direction. Thin wrapper binding this
@@ -583,17 +584,11 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
     float auroraVisSuppress = darkSkyVis(auroraObjMag, auroraSkyBgMag)
                              * (1.0 - moonBrightAurora * kAuroraMoonMaxDim);
 
-    // Atmospheric extinction — same Kasten & Young 1989 approximation as sat_sky.frag's copy.
-    // Gated on THIS RAY's own tangent altitude (see rayTangentAltM in common.glsl), not obsEffH —
-    // an observer far above the atmosphere looking toward the horizon still sends this ray through
-    // a long real atmospheric column; gating on observer height alone silently turned extinction
-    // off entirely near the horizon as soon as the OBSERVER left the atmosphere.
-    float atmFracAurora = clamp(exp(-max(rayTangentAltM(obsPos, dir), 0.0) / 20000.0), 0.0, 1.0);
-    float sinElAurora    = clamp(dir.z, 0.0, 1.0);
-    float elDegAurora    = degrees(asin(sinElAurora));
-    float airmassAurora  = 1.0 / (sinElAurora + 0.50572 * pow(elDegAurora + 6.07995, -1.6364));
-    float extinctMagAurora = cloud.extinctionCoeff * (airmassAurora - 1.0) * atmFracAurora;
-    float extinctionAurora = pow(10.0, -0.4 * extinctMagAurora);
+    // Atmospheric extinction along THIS ray (atmosphere.glsl), to infinity — the aurora sits above
+    // the air. From orbit a horizon-grazing ray still crosses a long real column; from the ground
+    // or an aircraft the column above the observer is what counts. Same function as the stars,
+    // satellites and Milky Way.
+    float extinctionAurora = pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, 0.0, cloud.extinctionCoeff));
 
     // accumAurora is already integrated (each auroraMarchSegment call scales by its own step
     // length) — do not multiply by a step length again here. auroraScaled is that same
@@ -2602,20 +2597,11 @@ void main() {
         // the default beamGain (0.001711) and a representative ~0.7 sun-incidence angle reproduces
         // roughly the old fixed brightness.
         const float kDebugRayIntensityScale = 2.7e-4;
-        // Atmospheric extinction (2026-08-10 follow-up to the aurora/star fix — same bug, same
-        // fix, this consumer just hadn't been touched yet): a beam whose ground site sits far
-        // around the curve of the Earth is seen along a long, near-tangent atmospheric sightline,
-        // exactly the geometry Kasten & Young's airmass term exists for — but this ray previously
-        // had NO extinction applied at all, so it stayed at full off-white brightness right to the
-        // horizon regardless of how much real atmosphere the view path crossed. Same formula, same
-        // rayTangentAltM(obsPos, dir) gating as auroraMarchCS above (constant for this whole pixel,
-        // so hoisted out of the per-beam loop below rather than recomputed per iteration).
-        float atmFracBeamRay = clamp(exp(-max(rayTangentAltM(obsPos, dir), 0.0) / 20000.0), 0.0, 1.0);
-        float sinElBeamRay   = clamp(dir.z, 0.0, 1.0);
-        float elDegBeamRay   = degrees(asin(sinElBeamRay));
-        float airmassBeamRay = 1.0 / (sinElBeamRay + 0.50572 * pow(elDegBeamRay + 6.07995, -1.6364));
-        float extinctMagBeamRay = cloud.extinctionCoeff * (airmassBeamRay - 1.0) * atmFracBeamRay;
-        float beamRayExtinction = pow(10.0, -0.4 * extinctMagBeamRay);
+        // Atmospheric extinction (2026-08-10): a beam whose ground site sits far around the curve
+        // of the Earth is seen along a long, near-tangent sightline, and had no extinction at all
+        // before then. The line-of-sight column of atmosphere.glsl, as for the aurora above —
+        // constant for this whole pixel, so hoisted out of the per-beam loop.
+        float beamRayExtinction = pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, 0.0, cloud.extinctionCoeff));
         // Altitude fade (2026-08-06 experiment): invisible in vacuum, brightening as the beam
         // descends — the cheap stand-in for the deleted tube's scattering falloff, which really
         // was an air-density effect. Free here: the closest-approach solve below already yields

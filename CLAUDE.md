@@ -1345,20 +1345,35 @@ there was no real horizon-dimming baseline, which is part of why the dome's dire
 above) read as unsubtle: nothing else was smoothly dimming things toward the horizon for it to
 modulate on top of.
 
-**Formula** (identical in `sat_flare.comp` and `updateStars()` — a star and a satellite at the same
-elevation must dim by the same amount, since this represents real atmospheric transmission, not a
-stylized brightness knob): Kasten & Young 1989 airmass approximation,
-`airmass = 1 / (sin(el) + 0.50572 × (elDeg + 6.07995)^-1.6364)` — stays finite down to the true
-horizon (elDeg=0 → airmass≈38), unlike the naive `1/sin(el)` which diverges to infinity. Then
-`extinctMag = extinctionCoeff × (airmass - 1) × atmFrac` (magnitudes of dimming beyond the zenith
-baseline; `atmFrac`-gated since an orbiting observer has no atmospheric column along the line of
-sight regardless of apparent "elevation" in their local frame) and
-`extinction = 10^(-0.4 × extinctMag)`, multiplied directly into `effectFlare`/star `intensity`.
+**Formula (2026-09-23) — the air on the actual line of sight**, one function for every consumer:
+`shaders/include/atmosphere.glsl` (`atmExtinctionMag(p, d, L, k)`) and its C++ mirror in
+`SatPhotometry.cpp` (`updateStars()`/`updatePlanets()`). Two exponential components — molecular
+(8 km scale height, ozone folded in) and aerosol haze (1.2 km) — splitting the sea-level zenith
+extinction k 60/40. Each column is the Chapman function, `Ch ≈ sqrt(πx/2)·erfcx(sqrt(x/2)·cos χ)`
+(x = r/H; `erfcx` by a one-parameter fit, 0.33% max error), with the tangent-point form for rays
+that dip before climbing out and a segment form for finite targets (a satellite at its range, a
+planet at its distance; a satellite silhouetted against Earth from orbit gets only the segment that
+reaches it). `SatModelTool --selftest` checks it against a brute-force ray integral: 0.3% over
+observers from sea level to 400 km, elevations +90° to -19°. Consumers: `sat_flare.comp`
+(satellites), stars, planets, `sat_sky.frag` (Milky Way, zodiacal light, and the aurora/Milky Way
+ocean reflections — from the water along the reflected ray), `cloud_march.comp` (aurora, beam ray).
 
-**Tunable:** `extinctionCoeff` (magnitudes per airmass; ~0.2-0.3 is typical clear-sky sea-level;
-default 0.25), settings slider "Extinction". Reuses `SatFlarePC`'s `pad2` slot (the one freed by
-`lightPollution`'s move to `lightDomeBuf`) rather than growing the struct — stars read the same
-`extinctionCoeff` C++ member directly, no separate push-constant path needed for the CPU side.
+It is **absolute** — the zenith from sea level loses k magnitudes, orbit loses nothing — where the
+old one was relative to the zenith. It replaced Kasten & Young's sea-level airmass times
+`exp(-tangentAlt / 80 km)`: a 10× too slow thinning with height (a 4 km mountain kept 95% of
+sea-level extinction, really ~35%; an aircraft at 10 km 88%, really ~15%). `rayTangentAltM`, the
+gate it needed, is gone. At k = 0.25: sea level 0.25 / 1.41 / 14.4 mag (zenith / 10° / horizon —
+the horizon is above Kasten & Young's ~9.5 because low haze stacks up along grazing paths), 4 km
+0.09 / 0.53 / 3.5, 10 km 0.04 / 0.24 / 1.5.
+
+Satellites' day/moon sky dimming (`sat_flare.comp` `atmFrac`) now uses the stars' altitude gate —
+full through the flyable atmosphere, fading over 40-100 km — instead of `exp(-h / 80 km)`, so stars
+and satellites in the same sky are dimmed alike.
+
+**Tunable:** `extinctionCoeff` — the sea-level ZENITH extinction in magnitudes (V band, clear sky:
+~0.2-0.3; the user-tuned default is 0.079), settings slider "Extinction". Reuses `SatFlarePC`'s
+`pad2` slot (the one freed by `lightPollution`'s move to `lightDomeBuf`); stars read the same C++
+member directly.
 
 `MIRROR_BOOST = 300` — peak multiplier for near-perfect mirror alignment. `mirrorExp = max(specExp0 × 300, 8000)` gives sub-degree angular width (matches solar disc ~0.26°).
 

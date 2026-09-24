@@ -177,48 +177,8 @@ vec2 raySphere(vec3 ro, vec3 rd, float r) {
     return vec2(-b - sq, -b + sq);            // tNear = entry distance, tFar = exit distance
 }
 
-// Altitude of this ray's closest approach to Earth's CENTER, restricted to the forward ray
-// (t >= 0) — i.e. how deep this specific line of sight dips toward the ground, independent of
-// the observer's own altitude. This is the quantity atmospheric-extinction gating should read,
-// not observer height: an observer high in orbit still has a long real atmospheric path along any
-// ray aimed near the horizon (that ray's closest approach can be right down at the surface, even
-// though the observer itself is far above all air) — that's the physical reason astronaut photos
-// show a reddened, extinguished band right at Earth's limb. Using observer altitude alone made
-// every consumer of this formula (aurora, satellites, stars, planets, the Milky Way) go completely
-// unextincted near the horizon as soon as the OBSERVER left the atmosphere, regardless of how much
-// atmosphere that particular ray actually still crossed.
-//
-// b = dot(ro,rd) >= 0 means rd has a component pointing away from Earth, so the closest approach
-// on the forward ray is the observer's own position (distance only increases from t=0 onward) —
-// this reduces to the observer's own altitude, matching the old (correct-for-that-case) behaviour
-// exactly. b < 0 means rd points at least partly toward Earth; the closest approach is the usual
-// point-line perpendicular distance, sqrt(|ro|²-b²), factored as (roLen-b)(roLen+b) to avoid the
-// same near-tangent float32 cancellation raySphere's own c term avoids (see its comment above).
-float rayTangentAltM(vec3 ro, vec3 rd) {
-    float b     = dot(ro, rd);
-    float roLen = length(ro);
-    float dMin  = (b >= 0.0) ? roLen : sqrt(max((roLen - b) * (roLen + b), 0.0));
-    return dMin - R_EARTH;
-}
-
-// Bounded variant — same closest-approach math, but clamped to a finite target range (meters)
-// along the ray instead of the unconstrained infinite forward ray. Needed for any target that
-// actually SITS somewhere finite (a satellite, a planet) rather than being effectively background/
-// infinite (stars, the Milky Way, aurora, a bare camera view ray): if the ray direction points
-// roughly toward Earth — the target appears silhouetted in front of the planet from the observer's
-// viewpoint — the unbounded 2-arg version's tangent point can sit far beyond where the target
-// actually is, well past it, even though the real observer-to-target segment never gets anywhere
-// near that low-altitude point. That shipped as a real bug: satellites appearing in front of Earth,
-// as seen from a space-based observer, were getting extincted as if their sightline grazed the
-// atmosphere, when the bounded segment to the satellite doesn't reach anywhere near it. Passing
-// maxT clamps the closest-approach parameter to the segment [observer, target] before evaluating
-// the altitude, so a target well short of the unbounded tangent point correctly reports its OWN
-// altitude (itself, not some point beyond it) instead.
-float rayTangentAltM(vec3 ro, vec3 rd, float maxT) {
-    float t = clamp(-dot(ro, rd), 0.0, maxT);
-    vec3  p = ro + rd * t;
-    return length(p) - R_EARTH;
-}
+// (rayTangentAltM — the ray's closest-approach altitude, used to gate extinction — was removed
+// 2026-09-23: atmosphere.glsl integrates the actual column along the ray instead.)
 
 // Rotates a direction vector around the Z (polar) axis by angle theta — used to advect the 3D
 // cloud noise's sampling position in lockstep with the 2D coverage map's own longitude drift
