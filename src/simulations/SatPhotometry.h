@@ -37,7 +37,31 @@ constexpr double kEarthAlbedo = 0.3;
 constexpr double kSunMagV = -26.74;             // apparent V magnitude of the Sun at 1 AU
 // effectFlare per unit (I/r²): the display anchor effectFlare 0.008 ↔ mag 6 (K_FLUX in sat_orbit.comp).
 constexpr double kFluxToFlare = 9.979e10;
+
+// Earthshine table axes — must equal EARTH_LUT_* in sat_orbit.comp. Rows: the visible cap's
+// half-angle λ0 = acos(R/r) (10° ≈ 70 km … 85° ≈ 67,000 km; clamped outside); columns: cos of the
+// Sun's zenith angle at the sub-satellite point, -1..1.
+constexpr int kEarthLutLambda = 64;
+constexpr int kEarthLutCos = 128;
+constexpr double kEarthLutLambdaMinDeg = 10.0;
+constexpr double kEarthLutLambdaMaxDeg = 85.0;
+constexpr float kEarthLutLnFloor = -60.0f; // ln irradiance stored where no lit ground is visible
 } // namespace satphot
+
+// ── Earthshine ────────────────────────────────────────────────────────────────────────────────
+// Sunlight reflected by the visible cap of a Lambertian Earth (albedo kEarthAlbedo), as seen from a
+// satellite at r = R/rOverD: the vector irradiance Σ L·dΩ·(direction), per unit solar irradiance.
+// Each ground point's radiance carries its own Sun cosine, so near the terminator — where every
+// twilight observation is made — the lit crescent is dim and off to the Sun's side. `irradiance` is
+// what a plate facing `tiltRad` from nadir toward the Sun receives. The integral around each ring of
+// the cap is closed-form; the one over the cap's radius is numerical (n steps).
+void earthshineExact(double rOverD, double cosSunZenith, double &irradiance, double &tiltRad, int n = 512);
+// The table sat_orbit.comp reads (float, [λ row * kEarthLutCos + cos column] = (ln irradiance, tilt)),
+// and its bilinear lookup exactly as the shader does it.
+const std::vector<glm::vec2> &earthshineLut();
+void earthshineLookup(double rOverD, double cosSunZenith, double &irradiance, double &tiltRad);
+// Effective source direction: nadir turned `tiltRad` toward the Sun (nadir if the Sun is on the axis).
+glm::dvec3 earthshineDirection(glm::dvec3 nadir, glm::dvec3 sun, double tiltRad);
 
 // ── Time and frame helpers (shared with SatelliteSim::updatePositions) ────────────────────────
 // Time is seconds since J2000 (the sim's simDayJ2000·86400 + simSecInDay).
@@ -110,7 +134,8 @@ struct SatPhotResult
     double offSpecularRad = 0.0; // angle between the observer and the Sun's mirror image in a nadir-
                                  // facing plate — provisional flare-curve definition (design page)
     double litFactor = 0.0;     // Earth-shadow factor, 1 = full sunlight
-    double earthIrradiance = 0.0; // earthshine irradiance as a fraction of sunlight
+    double earthIrradiance = 0.0; // earthshine irradiance as a fraction of sunlight (earthshineLookup)
+    glm::dvec3 earthDir{0.0};     // its effective source direction (earthshineDirection)
     double intensitySun = 0.0;  // I from the Sun per unit irradiance, before litFactor (m² sr⁻¹)
     double intensityEarth = 0.0; // I from the lit Earth per unit Earth irradiance
     double intensity = 0.0;     // intensitySun·litFactor + intensityEarth·earthIrradiance

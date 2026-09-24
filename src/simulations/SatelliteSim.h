@@ -11,6 +11,7 @@
 #include "../Simulation.h"
 #include "../UIRenderer.h" // WindowChrome — used by member state below (needs complete type)
 #include "SatModel.h"      // attitude groups, satellite models, baked lobes (lighting overhaul)
+#include "SatPhotometry.h" // earthshine table axes (satTypeBuf layout)
 
 // Forward declaration only — savePerfSnapshot/buildPerfSnapshotJson are the sole users and both
 // live in SatelliteSimUI.cpp, which includes the real header. Pulling all of nlohmann/json.hpp in
@@ -268,6 +269,15 @@ struct GpuSatTypeHeader
     uint32_t occlusionOn;  // 0 = knockout bit kDebugBitSatOcclusion set
 };
 static_assert(sizeof(GpuSatTypeHeader) == 16, "GpuSatTypeHeader layout mismatch");
+
+// satTypeBuf's second block: the earthshine table (earthLut in sat_orbit.comp), written once by
+// createSatBuffers() from satphot::earthshineLut(). The GpuSatType array follows it.
+struct GpuEarthshineLut
+{
+    glm::vec2 v[satphot::kEarthLutLambda * satphot::kEarthLutCos]; // (ln irradiance, tilt rad)
+};
+static constexpr size_t kSatTypeArrayOffset = sizeof(GpuSatTypeHeader) + sizeof(GpuEarthshineLut);
+static_assert(kSatTypeArrayOffset % 16 == 0, "GpuSatType array must stay 16-byte aligned (std430)");
 
 // Two-stage record in a COMPACT list (Phase 1b): sat_orbit.comp appends a PRE-photometry record
 // only for satellites that survive its horizon/enable cull, sat_flare.comp finishes each one in

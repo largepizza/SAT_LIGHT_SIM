@@ -364,7 +364,10 @@ const std::vector<SatMaterial> &satMaterialPresets()
     // INITIAL ESTIMATES — calibrated against reference satellites in Phase 3c. Roughness is GGX α.
     static const std::vector<SatMaterial> presets = {
         // Solar cells under cover glass: dark cells, dielectric glass specular, panel-scale waviness.
-        {"solar_cell", 0.06f, 0.04f, 0.05f, {0.20f, 0.25f, 0.55f}},
+        // Diffuse albedo CALIBRATED 2026-09-23 (M8): 0.06 -> 0.02 from Mallama 2021's low-phase bins
+        // (40-60 deg, where the VisorSat array face dominates) — consistent with AR-coated cells,
+        // whose few-percent reflectance is mostly the cover glass's specular (F0 below).
+        {"solar_cell", 0.02f, 0.04f, 0.05f, {0.20f, 0.25f, 0.55f}},
         // Back of a solar array (white/Kapton substrate).
         {"solar_array_back", 0.50f, 0.04f, 0.30f, {0.85f, 0.82f, 0.70f}},
         // Multi-layer insulation: crinkled metallised film — high F0, very rough.
@@ -428,6 +431,14 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
             m.diffuseAlbedo = jm.value("diffuse_albedo", m.diffuseAlbedo);
             m.specularF0 = jm.value("specular_f0", m.specularF0);
             m.roughness = jm.value("roughness", m.roughness);
+            if (jm.contains("distribution"))
+            {
+                const std::string d = jm.value("distribution", std::string());
+                if (d == "beckmann" || d == "ggx")
+                    m.beckmann = d == "beckmann";
+                else
+                    warn.push_back("material '" + m.name + "': unknown distribution '" + d + "' (ggx|beckmann)");
+            }
             m.color = jsonVec3(jm, "color", m.color);
             matLib[m.name] = m;
             out.localMaterials.push_back(m.name);
@@ -445,8 +456,8 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
                 subjects = js["subjects"].get<std::vector<std::string>>();
             else
                 subjects.push_back(js.value("subject", std::string()));
-            if (s.status != "sourced" && s.status != "derived" && s.status != "estimate")
-                warn.push_back("source for '" + subjects.front() + "': status must be sourced/derived/estimate");
+            if (s.status != "sourced" && s.status != "derived" && s.status != "estimate" && s.status != "calibrated")
+                warn.push_back("source for '" + subjects.front() + "': status must be sourced/derived/estimate/calibrated");
             for (const std::string &sub : subjects)
             {
                 s.subject = sub;
@@ -768,6 +779,7 @@ struct LobeAcc
     glm::dvec3 sumAN{0.0}; // Σ area · normal
     double sumA = 0.0;
     double sumAlb = 0.0, sumF0 = 0.0, sumA2 = 0.0; // area-weighted material parameters
+    double sumBeck = 0.0;                          // area of Beckmann faces
     int group = 0;
     int material = -1; // -1 once lobes of different materials have been merged
     bool alive = true;
@@ -785,6 +797,7 @@ struct LobeAcc
         sumAlb += o.sumAlb;
         sumF0 += o.sumF0;
         sumA2 += o.sumA2;
+        sumBeck += o.sumBeck;
         if (material != o.material)
             material = -1;
         tris.insert(tris.end(), o.tris.begin(), o.tris.end());
@@ -802,7 +815,7 @@ double mergeScore(const LobeAcc &a, const LobeAcc &b)
 
 // Intensity of one lobe (per unit irradiance) — the exact formula sat_orbit.comp evaluates.
 double lobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2,
-                     glm::dvec3 s, glm::dvec3 o)
+                     glm::dvec3 s, glm::dvec3 o, bool beckmann)
 {
     double ns = glm::dot(n, s), no = glm::dot(n, o);
     if (ns <= 0.0 || no <= 0.0)
@@ -815,10 +828,24 @@ double lobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, 
     glm::dvec3 h = hv / hl;
     double nh = glm::dot(n, h);
     double sin2 = glm::dot(glm::cross(n, h), glm::cross(n, h));
-    double den = nh * nh * a2 + sin2;
-    double D = a2 / (kPi * den * den);
     double sh = std::max(0.0, glm::dot(s, h));
     double F = f0 + (1.0 - f0) * std::pow(1.0 - sh, 5.0);
+    if (beckmann)
+    {
+        // Beckmann D and Walter et al. 2007's rational fit to its Smith G1.
+        if (nh <= 0.0)
+            return diffuse;
+        double nh2 = nh * nh;
+        double D = std::exp(-sin2 / (nh2 * a2)) / (kPi * a2 * nh2 * nh2);
+        double alpha = std::sqrt(a2);
+        auto G1 = [alpha](double x) {
+            double c = x / (alpha * std::sqrt(std::max(1e-30, 1.0 - x * x)));
+            return c >= 1.6 ? 1.0 : (3.535 * c + 2.181 * c * c) / (1.0 + 2.276 * c + 2.577 * c * c);
+        };
+        return diffuse + area * D * F * G1(ns) * G1(no) / 4.0;
+    }
+    double den = nh * nh * a2 + sin2;
+    double D = a2 / (kPi * den * den);
     auto G1 = [a2](double x) { return 2.0 * x / (x + std::sqrt(a2 + (1.0 - a2) * x * x)); };
     return diffuse + area * D * F * G1(ns) * G1(no) / 4.0;
 }
@@ -848,6 +875,7 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
         one.sumAlb = mat.diffuseAlbedo * t.area;
         one.sumF0 = mat.specularF0 * t.area;
         one.sumA2 = ((double)mat.roughness * mat.roughness + t.spread2) * t.area;
+        one.sumBeck = mat.beckmann ? t.area : 0.0;
         one.group = t.group;
         one.material = t.material;
         one.tris.push_back((int)ti);
@@ -917,6 +945,7 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
         L.sampleFirst = 0;
         L.sampleCount = 0;
         L.occluderMask = 0;
+        L.distribution = 2.0 * a.sumBeck > a.sumA ? 1u : 0u;
         lobes.push_back(L);
         if (lobeTris)
             lobeTris->push_back(a.tris);
@@ -933,7 +962,8 @@ double evalSatLobes(const std::vector<GpuSatLobe> &lobes, const std::vector<Atti
     for (const GpuSatLobe &L : lobes)
     {
         glm::dvec3 n = bodyTriad(groups[attRootOf(groups, (int)L.group)]) * glm::dvec3(L.normalT);
-        sum += lobeIntensity(glm::normalize(n), L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat + sourceAlpha2, s, o);
+        sum += lobeIntensity(glm::normalize(n), L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat + sourceAlpha2, s, o,
+                             L.distribution != 0);
     }
     return sum;
 }
@@ -949,7 +979,8 @@ double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector
         const GpuSatLobe &L = lobes[li];
         glm::dvec3 nBody = bodyTriad(groups[attRootOf(groups, (int)L.group)]) * glm::dvec3(L.normalT);
         glm::dvec3 n = glm::normalize(poses[L.group].R * nBody);
-        double I = lobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat + sourceAlpha2, s, o);
+        double I = lobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat + sourceAlpha2, s, o,
+                                 L.distribution != 0);
         if (I > 0.0 && occ && li < occ->lobes.size())
             I *= satLobeVisibility(*occ, (int)li, (int)L.group, poses, s, occludeSource, o);
         sum += I;
@@ -964,10 +995,10 @@ double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector
     return sum;
 }
 
-double satLobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2,
+double satLobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2, bool beckmann,
                         glm::dvec3 s, glm::dvec3 o)
 {
-    return lobeIntensity(n, area, diffArea, albedo, f0, a2, s, o);
+    return lobeIntensity(n, area, diffArea, albedo, f0, a2, s, o, beckmann);
 }
 
 // ── Phase 3b: occlusion between parts ─────────────────────────────────────────────────────────
@@ -1347,7 +1378,7 @@ void validateSatLobes(const SatModel &m, const std::vector<SatTri> &tris, const 
         {
             const SatMaterial &mat = m.materials[t.material];
             double a2 = (double)mat.roughness * mat.roughness + t.spread2 + a2Sun;
-            sum += lobeIntensity(t.n, t.area, t.area, mat.diffuseAlbedo, mat.specularF0, a2, s, o);
+            sum += lobeIntensity(t.n, t.area, t.area, mat.diffuseAlbedo, mat.specularF0, a2, s, o, mat.beckmann);
         }
         return sum;
     };
@@ -1461,7 +1492,7 @@ SatShadowStudy studySatShadowing(const SatModel &m, const std::vector<SatTri> &t
             const SatTri &t = posed[i];
             const SatMaterial &mat = m.materials[t.material];
             double a2 = (double)mat.roughness * mat.roughness + t.spread2 + a2Sun;
-            double I = lobeIntensity(t.n, t.area, t.area, mat.diffuseAlbedo, mat.specularF0, a2, geo.sun, o);
+            double I = lobeIntensity(t.n, t.area, t.area, mat.diffuseAlbedo, mat.specularF0, a2, geo.sun, o, mat.beckmann);
             if (I <= 0.0)
                 continue;
             // Visible fraction: sample points that see BOTH the sun and the observer.

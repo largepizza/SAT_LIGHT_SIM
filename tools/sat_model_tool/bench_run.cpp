@@ -24,6 +24,10 @@ using nlohmann::json;
 constexpr double kTolMeanMag = 0.3;
 constexpr double kTolMedianMag = 0.3;
 constexpr double kTolDeltaMag = 0.3;
+// Phase-curve benchmark (M8): model vs observed mean m1000 per 10 deg phase bin, over bins holding
+// at least kCurveMinBinObs observations, weighted by their observation count.
+constexpr double kTolCurveRmsMag = 0.3;
+constexpr int kCurveMinBinObs = 10;
 
 // FNV-1a 64 of a file's bytes, hex — identifies exactly which model/benchmark a report used.
 std::string fileHash(const std::string &path)
@@ -97,6 +101,7 @@ struct LoadedModel
     SatOcclusion occlusion;
     std::string path, hash;
     int exactLobes = 0;
+    std::vector<std::string> appliedOverrides; // --set entries that matched this model
 };
 
 bool loadModelFor(const Benchmark &b, const BenchRunOptions &opt, LoadedModel &out, std::string &err)
@@ -112,6 +117,43 @@ bool loadModelFor(const Benchmark &b, const BenchRunOptions &opt, LoadedModel &o
     std::vector<std::string> warn;
     if (!loadSatModel(out.path, b.modelId, out.model, err, warn))
         return false;
+    for (const std::string &ov : opt.overrides)
+    {
+        // [<model id>/]<material>.<field>=<value>
+        const size_t eq = ov.find('='), slash = ov.find('/');
+        std::string key = ov.substr(0, eq), value = eq == std::string::npos ? "" : ov.substr(eq + 1);
+        if (slash != std::string::npos && slash < eq)
+        {
+            if (key.substr(0, slash) != b.modelId)
+                continue;
+            key = key.substr(slash + 1);
+        }
+        const size_t dot = key.rfind('.');
+        if (eq == std::string::npos || dot == std::string::npos)
+        {
+            err = "bad --set '" + ov + "' (want [model/]material.field=value)";
+            return false;
+        }
+        const std::string matName = key.substr(0, dot), field = key.substr(dot + 1);
+        auto it = std::find_if(out.model.materials.begin(), out.model.materials.end(),
+                               [&](const SatMaterial &m) { return m.name == matName; });
+        if (it == out.model.materials.end())
+            continue; // this model has no such material
+        if (field == "diffuse_albedo")
+            it->diffuseAlbedo = std::stof(value);
+        else if (field == "specular_f0")
+            it->specularF0 = std::stof(value);
+        else if (field == "roughness")
+            it->roughness = std::stof(value);
+        else if (field == "distribution" && (value == "ggx" || value == "beckmann"))
+            it->beckmann = value == "beckmann";
+        else
+        {
+            err = "bad --set '" + ov + "' (fields: diffuse_albedo, specular_f0, roughness, distribution=ggx|beckmann)";
+            return false;
+        }
+        out.appliedOverrides.push_back(ov);
+    }
     std::vector<SatTri> tris = tessellateSatModel(out.model);
     SatLobeBakeStats st;
     std::vector<std::vector<int>> lobeTris;
@@ -313,6 +355,55 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
         cmp.push_back(compareRow("phase_fit_at_90deg", benchPolyEval(base.phaseFitLinear, 90.0),
                                  benchPolyEval(refFit, 90.0), 0.0));
     }
+    // Phase curve (M8): the observations' own phase dependence, not just their mean — a model can
+    // match the mean while being too bright at one end of the curve and too faint at the other.
+    json curveBins = json::array();
+    if (!b.observations.empty())
+    {
+        constexpr int kBins = 18;
+        double oSum[kBins] = {}, mSum[kBins] = {};
+        int oN[kBins] = {}, mN[kBins] = {};
+        auto bin = [](double deg) { return std::clamp((int)(deg / 10.0), 0, kBins - 1); };
+        for (const BenchObservation &o : b.observations)
+        {
+            oSum[bin(o.phaseDeg)] += o.m1000;
+            ++oN[bin(o.phaseDeg)];
+        }
+        for (const BenchSample &s : base.samples)
+        {
+            mSum[bin(s.phaseDeg)] += s.m1000;
+            ++mN[bin(s.phaseDeg)];
+        }
+        double w = 0.0, ss = 0.0;
+        for (int k = 0; k < kBins; ++k)
+        {
+            if (oN[k] == 0 && mN[k] == 0)
+                continue;
+            json jb = {{"phase_lo_deg", 10 * k}, {"n_obs", oN[k]}, {"n_model", mN[k]}};
+            if (oN[k] > 0)
+                jb["obs_mean"] = round4(oSum[k] / oN[k]);
+            if (mN[k] > 0)
+                jb["model_mean"] = round4(mSum[k] / mN[k]);
+            if (oN[k] > 0 && mN[k] > 0)
+            {
+                const double d = mSum[k] / mN[k] - oSum[k] / oN[k];
+                jb["delta"] = round4(d);
+                jb["scored"] = oN[k] >= kCurveMinBinObs;
+                if (oN[k] >= kCurveMinBinObs)
+                {
+                    w += oN[k];
+                    ss += oN[k] * d * d;
+                }
+            }
+            curveBins.push_back(jb);
+        }
+        if (w > 0.0)
+        {
+            json row = compareRow("phase_curve_rms", std::sqrt(ss / w), 0.0, kTolCurveRmsMag);
+            row["min_bin_obs"] = kCurveMinBinObs;
+            cmp.push_back(row);
+        }
+    }
     bool pass = true;
     for (const json &r : cmp)
         pass &= r["verdict"] != "fail";
@@ -322,6 +413,26 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
     std::printf("  %d simulated observations (%d censored), reference: %s\n", base.stats.n, base.stats.notSeen,
                 refSource.c_str());
     printCompare(cmp);
+    if (!lm.appliedOverrides.empty())
+    {
+        std::printf("  overrides:");
+        for (const std::string &o : lm.appliedOverrides)
+            std::printf(" %s", o.c_str());
+        std::printf("\n");
+    }
+    if (!curveBins.empty())
+    {
+        std::printf("  phase curve (mean m1000 per 10 deg bin; * = scored, >= %d observations):\n", kCurveMinBinObs);
+        for (const json &jb : curveBins)
+        {
+            if (!jb.contains("delta"))
+                continue;
+            std::printf("    %3d-%3d deg %c  obs %5.2f (%3d)  model %5.2f  %+.2f\n", jb["phase_lo_deg"].get<int>(),
+                        jb["phase_lo_deg"].get<int>() + 10, jb.value("scored", false) ? '*' : ' ',
+                        jb["obs_mean"].get<double>(), jb["n_obs"].get<int>(), jb["model_mean"].get<double>(),
+                        jb["delta"].get<double>());
+        }
+    }
 
     // Which surface dominates: per lobe, the share of samples in which it is the brightest, labelled
     // by group and its rest-pose body-frame normal (the lobe table SatModelTool prints).
@@ -376,7 +487,7 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
     for (const BenchSample &s : base.samples)
         rows.push_back({round4(s.tJ2000), s.site, round4(s.sunAltDeg), round4(s.elevationDeg), round4(s.rangeM),
                         round4(s.phaseDeg), round4(s.offSpecularDeg),
-                        std::isfinite(s.mag) ? json(round4(s.mag)) : json(), round4(s.m1000), s.censored});
+                        std::isfinite(s.mag) ? json(round4(s.mag)) : json(), round4(s.m1000), s.censored, s.dominantLobe});
     json refRows = json::array();
     for (const BenchObservation &o : b.observations)
         refRows.push_back({o.phaseDeg, o.m1000, o.source, o.notSeen});
@@ -391,7 +502,9 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
                 {"lobe_budget", opt.lobeBudget},
                 {"lobes", lm.lobes.size()},
                 {"exact_lobes", lm.exactLobes},
-                {"occlusion", occDesc}}},
+                {"occlusion", occDesc},
+                {"overrides", lm.appliedOverrides}}},
+              {"phase_curve", curveBins},
               {"config", configJson(cfg)},
               {"reference", {{"source", refSource},
                              {"n", ref.n},
@@ -405,7 +518,7 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
               {"sensitivity", sens},
               {"dominant_surface", dominance},
               {"samples", {{"columns", {"t_j2000", "site", "sun_alt_deg", "elevation_deg", "range_m", "phase_deg",
-                                        "off_specular_deg", "mag", "m1000", "censored"}},
+                                        "off_specular_deg", "mag", "m1000", "censored", "dominant_lobe"}},
                            {"rows", rows}}},
               {"reference_observations", {{"columns", {"phase_deg", "m1000", "source", "not_seen"}}, {"rows", refRows}}}};
     return pass;

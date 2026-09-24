@@ -95,6 +95,96 @@ bool selfTestGeometry()
     return ok;
 }
 
+// Earthshine (M8 finding): earthshineExact()'s closed-form ring integral against an independent
+// brute-force double integral over the visible cap, then the GPU table's bilinear lookup against the
+// exact value over random altitudes and Sun angles.
+void earthshineBrute(double rOverD, double cosZ, double &e, double &tilt)
+{
+    const double R = 1.0, r = 1.0 / rOverD, lam0 = std::acos(rOverD);
+    const double sinZ = std::sqrt(std::max(0.0, 1.0 - cosZ * cosZ));
+    const glm::dvec3 sun(sinZ, 0.0, cosZ), sat(0.0, 0.0, r);
+    const int nl = 600, np = 600;
+    glm::dvec3 ev(0.0);
+    for (int i = 0; i < nl; ++i)
+    {
+        const double lam = (i + 0.5) / nl * lam0;
+        for (int j = 0; j < np; ++j)
+        {
+            const double phi = (j + 0.5) / np * 2.0 * satphot::kPi;
+            const glm::dvec3 n(std::sin(lam) * std::cos(phi), std::sin(lam) * std::sin(phi), std::cos(lam));
+            const double mu0 = glm::dot(n, sun);
+            if (mu0 <= 0.0)
+                continue;
+            const glm::dvec3 d = R * n - sat;
+            const double dl = glm::length(d);
+            const glm::dvec3 du = d / dl;
+            const double mu = -glm::dot(n, du);
+            if (mu <= 0.0)
+                continue;
+            const double dA = R * R * std::sin(lam) * (lam0 / nl) * (2.0 * satphot::kPi / np);
+            ev += satphot::kEarthAlbedo / satphot::kPi * mu0 * du * dA * mu / (dl * dl);
+        }
+    }
+    e = glm::length(ev);
+    tilt = e > 0.0 ? std::atan2(ev.x, -ev.z) : 0.0;
+}
+
+bool selfTestEarthshine()
+{
+    bool ok = true;
+    std::printf("  earthshine:\n");
+    double worstRel = 0.0, worstTilt = 0.0;
+    for (double hKm : {400.0, 550.0, 1200.0, 20000.0})
+        for (double zDeg : {30.0, 60.0, 85.0, 90.0, 95.0, 100.0})
+        {
+            const double rOverD = 6371.0 / (6371.0 + hKm), cz = std::cos(zDeg * kDeg);
+            double e, t, eb, tb;
+            earthshineExact(rOverD, cz, e, t);
+            earthshineBrute(rOverD, cz, eb, tb);
+            if (eb < 1e-6)
+                continue;
+            worstRel = std::max(worstRel, std::abs(e / eb - 1.0));
+            worstTilt = std::max(worstTilt, std::abs(t - tb));
+        }
+    const bool exactOk = worstRel < 0.01 && worstTilt < 0.01;
+    ok &= exactOk;
+    std::printf("    %s closed-form ring integral vs brute-force cap integral: max rel err %.2e, max tilt err %.2e rad"
+                "  (gate < 1%%, < 0.01)\n", exactOk ? "ok  " : "FAIL", worstRel, worstTilt);
+
+    // Twilight reference point, for the record: 550 km, Sun on the sub-satellite horizon.
+    double e90, t90;
+    earthshineExact(6371.0 / 6921.0, 0.0, e90, t90);
+    double oldModel = satphot::kEarthAlbedo * std::pow(6371.0 / 6921.0, 2) * 0.5;
+    std::printf("    info 550 km, Sun at the sub-satellite horizon: %.4f of sunlight, tilted %.1f deg sunward "
+                "(the pre-M8 formula gave %.4f)\n", e90, t90 / kDeg, oldModel);
+
+    std::mt19937 rng(777);
+    std::uniform_real_distribution<double> ud(0.0, 1.0);
+    std::vector<double> errMag;
+    double worstTiltLut = 0.0;
+    for (int k = 0; k < 4000; ++k)
+    {
+        const double hKm = 200.0 * std::pow(36000.0 / 200.0, ud(rng));
+        const double rOverD = 6371.0 / (6371.0 + hKm), cz = -1.0 + 2.0 * ud(rng);
+        double e, t, el, tl;
+        earthshineExact(rOverD, cz, e, t);
+        earthshineLookup(rOverD, cz, el, tl);
+        if (e < 1e-4) // 0.01% of sunlight: below anything sunlight doesn't already swamp
+            continue;
+        errMag.push_back(std::abs(2.5 * std::log10(std::max(el, 1e-30) / e)));
+        worstTiltLut = std::max(worstTiltLut, std::abs(tl - t));
+    }
+    std::sort(errMag.begin(), errMag.end());
+    const double p95 = errMag.empty() ? 0.0 : errMag[(size_t)(0.95 * (errMag.size() - 1))];
+    const double mx = errMag.empty() ? 0.0 : errMag.back();
+    const bool lutOk = !errMag.empty() && p95 < 0.02 && mx < 0.15;
+    ok &= lutOk;
+    std::printf("    %s table lookup vs exact (%zu points above 1e-4 of sunlight): |dmag| p95 %.4f, max %.3f; "
+                "tilt max err %.3f rad  (gate p95 < 0.02, max < 0.15)\n",
+                lutOk ? "ok  " : "FAIL", errMag.size(), p95, mx, worstTiltLut);
+    return ok;
+}
+
 // Posed-model check (the M1 gate): the evaluator's lobe path — every group posed by the attitude
 // law, lobe normal = R·B·normalT — against the per-triangle brute force posed by the same poses.
 // With the exact bake (no budget merge) the two must agree to float rounding; the app's budget
@@ -159,9 +249,11 @@ bool selfTestModel(const SatModel &m, const std::vector<SatTri> &tris, int budge
             const SatMaterial &mat = m.materials[tr.material];
             glm::dvec3 n = poses[tr.group].R * tr.n;
             double a2 = (double)mat.roughness * mat.roughness + tr.spread2;
-            Isun += satLobeIntensity(n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + a2Sun, in.sunDirEci, o);
+            Isun += satLobeIntensity(n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + a2Sun, mat.beckmann,
+                                     in.sunDirEci, o);
             Iearth += satLobeIntensity(n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + alphaE * alphaE,
-                                       st.nadir, o);
+                                       mat.beckmann,
+                                       r.earthDir, o); // the evaluator's earthshine direction (M8)
         }
         double ref = Isun * r.litFactor + Iearth * r.earthIrradiance;
         // Significance floor: fainter than magnitude 20 is beyond any instrument this project
@@ -285,10 +377,10 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
             const SatTri &tr = posed[i];
             const SatMaterial &mat = m.materials[tr.material];
             const double a2 = (double)mat.roughness * mat.roughness + tr.spread2;
-            double is = satLobeIntensity(tr.n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + a2Sun,
+            double is = satLobeIntensity(tr.n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + a2Sun, mat.beckmann,
                                          in.sunDirEci, o);
             double ie = satLobeIntensity(tr.n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0,
-                                         a2 + alphaE * alphaE, so.nadir, o);
+                                         a2 + alphaE * alphaE, mat.beckmann, open.earthDir, o);
             if (is <= 0.0 && ie <= 0.0)
                 continue;
             double visSun = 0.0, visObs = 0.0;
@@ -647,6 +739,8 @@ int main(int argc, char **argv)
             runOpt.sensitivity = true;
         else if (a == "--no-occlusion")
             runOpt.occlusion = false;
+        else if (a == "--set" && i + 1 < argc)
+            runOpt.overrides.push_back(argv[++i]);
         else if (a == "--out" && i + 1 < argc)
             outDir = argv[++i];
         else if (a == "--budget" && i + 1 < argc)
@@ -666,7 +760,8 @@ int main(int argc, char **argv)
         std::printf("usage: SatModelTool <model.json> [...] [--out <dir>] [--budget <lobes>] [--shadow-study <N>]\n"
                     "                    [--selftest <N>] [--benchmark <file.json>]...\n"
                     "                    [--run-benchmark <file.json>]... [--samples <N>] [--seed <S>]\n"
-                    "                    [--sensitivity] [--no-occlusion] [--report-dir <dir>] [--models-dir <dir>]\n");
+                    "                    [--sensitivity] [--no-occlusion] [--report-dir <dir>] [--models-dir <dir>]\n"
+                    "                    [--set [<model>/]<material>.<field>=<value>]...\n");
         return 2;
     }
     int selfTestFailures = 0;
@@ -685,6 +780,7 @@ int main(int argc, char **argv)
     {
         std::printf("[selftest] CPU photometric evaluator\n");
         selfTestFailures += selfTestGeometry() ? 0 : 1;
+        selfTestFailures += selfTestEarthshine() ? 0 : 1;
         std::printf("\n");
     }
 
@@ -743,18 +839,19 @@ int main(int argc, char **argv)
 
         // Provenance (benchmarking M4): every part needs a `sources` entry; estimates are listed.
         {
-            int nSourced = 0, nDerived = 0, nEstimate = 0;
+            int nSourced = 0, nDerived = 0, nEstimate = 0, nCalibrated = 0;
             for (const SatModelSource &s : m.sources)
-                (s.status == "sourced" ? nSourced : s.status == "derived" ? nDerived : nEstimate)++;
+                (s.status == "sourced" ? nSourced : s.status == "derived" ? nDerived
+                                                  : s.status == "calibrated" ? nCalibrated : nEstimate)++;
             std::vector<std::string> missing = unexplainedModelParts(m);
-            std::printf("  provenance: %d sourced, %d derived, %d estimate; %zu part(s) unexplained\n", nSourced,
-                        nDerived, nEstimate, missing.size());
+            std::printf("  provenance: %d sourced, %d derived, %d calibrated, %d estimate; %zu part(s) unexplained\n",
+                        nSourced, nDerived, nCalibrated, nEstimate, missing.size());
             // One line per entry (an entry listing several subjects is expanded by the loader).
             std::string lastValue;
             for (const SatModelSource &s : m.sources)
                 if (s.status != "sourced" && s.value != lastValue)
                 {
-                    std::printf("    %-8s %-18s %s\n", s.status.c_str(), s.subject.c_str(), s.value.c_str());
+                    std::printf("    %-10s %-18s %s\n", s.status.c_str(), s.subject.c_str(), s.value.c_str());
                     lastValue = s.value;
                 }
             for (const std::string &p : missing)

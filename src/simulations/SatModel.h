@@ -177,8 +177,13 @@ struct SatMaterial
     std::string name;
     float diffuseAlbedo = 0.1f; // Lambertian albedo ρd
     float specularF0 = 0.04f;   // Fresnel reflectance at normal incidence (Schlick)
-    float roughness = 0.2f;     // GGX α
+    float roughness = 0.2f;     // microfacet α
     glm::vec3 color{1.0f};      // visual tint (sprite colour, OBJ export)
+    // Microfacet distribution. GGX (default) has long power-law tails; Beckmann's are Gaussian —
+    // the one to use when α comes from a Phong cos^n fit (α = sqrt(2/(n+2)) is the Beckmann
+    // equivalence), since GGX at the same α is ~10x brighter 30 deg off the peak. After `color` so
+    // the presets' positional initializers still fit.
+    bool beckmann = false;
 };
 // Built-in presets — INITIAL ESTIMATES, calibrated against reference satellites in Phase 3c.
 const std::vector<SatMaterial> &satMaterialPresets();
@@ -214,6 +219,9 @@ struct SatComponent
 //   status "sourced"  — taken from a cited publication
 //          "derived"  — computed from sourced values plus a stated constraint
 //          "estimate" — no source; the reason and the plausible range belong in `value`/`note`
+//          "calibrated" — fitted to a benchmark (name it, the metric and the commit in `source`);
+//                         that benchmark then checks the fit, not the model — say which ones stay
+//                         held out
 struct SatModelSource
 {
     std::string subject; // group, component or material name ("attitude" for the pointing law)
@@ -279,8 +287,11 @@ struct GpuSatLobe
     uint32_t sampleFirst;  // first GpuSatLobeSample — relative to the type until upload rebases it
     uint32_t sampleCount;  // 0 = never occluded
     uint32_t occluderMask; // bit i: the type's occluder i can block this lobe
+
+    uint32_t distribution; // 0 = GGX, 1 = Beckmann (the majority by area of the merged faces)
+    uint32_t pad0, pad1, pad2;
 };
-static_assert(sizeof(GpuSatLobe) == 48, "GpuSatLobe layout mismatch");
+static_assert(sizeof(GpuSatLobe) == 64, "GpuSatLobe layout mismatch");
 
 // Sun's angular radius mapped to a GGX half-vector α (the solar disk convolved into every lobe —
 // this is what gives a flat mirror its physically correct peak, replacing mirrorBoost).
@@ -419,7 +430,7 @@ double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector
 
 // Intensity of one flat facet or lobe per unit irradiance — the formula every evaluator above (and
 // sat_orbit.comp's lobeIntensity()) uses. `a2` includes the source-size term.
-double satLobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2,
+double satLobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2, bool beckmann,
                         glm::dvec3 s, glm::dvec3 o);
 
 // How much does self-shadowing (all groups, posed) change the model's brightness? Poses the model

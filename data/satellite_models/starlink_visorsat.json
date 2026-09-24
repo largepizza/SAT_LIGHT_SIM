@@ -1,6 +1,6 @@
 {
     "name": "Starlink VisorSat",
-    "note": "Benchmarking M4 reference model for Mallama (2021). V1.x chassis in 'shark-fin' operational mode with the deployable visor. Body frame: +Z nadir, +X toward the Sun's azimuth (the bus yaws so the visor stays sunward), +Y = +Z x +X. Every number is covered by `sources`; materials remain Phase 3c calibration targets.",
+    "note": "Benchmarking M4 reference model for Mallama (2021). V1.x chassis in 'shark-fin' operational mode with the deployable visor. Body frame: +Z nadir, +X toward the Sun's azimuth (the bus yaws so the visor stays sunward), +Y = +Z x +X. Every number is covered by `sources`; the visor's scale is calibrated (see its source), the materials are presets.",
     "materials": [
         { "name": "bus_metal", "preset": "aluminum", "roughness": 0.23 },
         { "name": "antenna_white", "preset": "white_paint" },
@@ -32,7 +32,7 @@
         { "name": "bus_side_antisun", "type": "plane", "group": "bus", "size": [0.2, 2.8], "position": [-0.65, 0, 0], "rotation_deg": [0, -90, 0], "single_sided": true, "material": "bus_edge_black" },
         { "name": "bus_side_pos", "type": "plane", "group": "bus", "size": [1.3, 0.2], "position": [0, 1.4, 0], "rotation_deg": [-90, 0, 0], "single_sided": true, "material": "bus_edge_black" },
         { "name": "bus_side_neg", "type": "plane", "group": "bus", "size": [1.3, 0.2], "position": [0, -1.4, 0], "rotation_deg": [90, 0, 0], "single_sided": true, "material": "bus_edge_black" },
-        { "name": "visor", "type": "plane", "group": "bus", "size": [1.1, 2.2], "position": [0.1, 0, 0.185], "material": "visor_black" },
+        { "name": "visor", "type": "plane", "group": "bus", "size": [1.45, 2.2], "position": [0.275, 0, 0.3335], "material": "visor_black" },
         { "name": "solar_array", "type": "plane", "group": "array", "size": [8.1, 2.8], "position": [0, 0, -4.05], "rotation_deg": [0, 90, 0], "material": "solar_cell", "back_material": "array_back_dark" }
     ],
     "sources": [
@@ -51,9 +51,9 @@
         },
         {
             "subject": "visor",
-            "status": "derived",
-            "value": "black sheet 1.1 x 2.2 m, 0.085 m below the base, from the sunward edge across the antenna region",
-            "source": "Radio-transparent foam that blocks sunlight from the antennas (SpaceX via Tesmanian 2020, SpaceNews 2020) - so it may sit in front of them. Cole 2021 section 3.2: antennas fully shaded at 23 deg Sun depression, light leaks under at smaller angles. A sheet under the antennas with gap g reproduces that when g = 0.2 m inset x tan 23 deg = 0.085 m. The real shape is unpublished: the visorsat_vs_original benchmark partly calibrates this part."
+            "status": "calibrated",
+            "value": "black sheet 1.45 x 2.2 m under the antenna region, reaching 0.55 m sunward of the antennas' edge (0.35 m past the bus side), 0.233 m below the base",
+            "source": "Radio-transparent foam that blocks sunlight from the antennas (SpaceX via Tesmanian 2020, SpaceNews 2020). Cole 2021 section 3.2: antennas fully shaded at 23 deg Sun depression, light leaks under at smaller angles - so gap = inset x tan 23 deg (derived). The scale is unpublished and was FITTED (benchmarking M8, 2026-09-23): inset scanned 0.2-0.9 m against the mallama2021_visorsat phase curve (10-deg bins with >= 10 observations), minimum RMS 0.14 mag at 0.55 m (0.42 at the earlier 0.2 m guess). That curve is therefore a fit residual for this model; the held-out checks are the mallama2020a V1.0 mean and the visorsat_vs_original differential."
         },
         {
             "subject": "solar_array",
@@ -77,7 +77,7 @@
             "subject": "bus_metal",
             "status": "derived",
             "value": "aluminium preset, GGX roughness 0.23",
-            "source": "Cole 2021 section 2: base is 'polished metal'. Table 3 specular beam exponents 24 and 52 -> GGX alpha = sqrt(2/(n+2)) = 0.28 and 0.19, geometric mean 0.23. F0 and diffuse albedo: preset estimates (Phase 3c)."
+            "source": "Cole 2021 section 2: base is 'polished metal'. Table 3 specular beam exponents 24 and 52 -> GGX alpha = sqrt(2/(n+2)) = 0.28 and 0.19, geometric mean 0.23. That alpha is the Beckmann equivalence, but GGX is kept: with Beckmann tails the M8 phase curve came out 0.3-0.5 mag fainter at 70-110 deg (GGX's longer tail is the base light seen off the specular beam). F0 and diffuse albedo: preset estimates."
         },
         {
             "subject": "antenna_white",

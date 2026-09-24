@@ -135,16 +135,26 @@ struct SatType {
     uint  occluderCount;
     uint  occPad0, occPad1;
 };
+// Earthshine table axes — must equal satphot::kEarthLut* (SatPhotometry.h).
+const int   EARTH_LUT_L = 64;           // rows: visible cap half-angle, degrees
+const int   EARTH_LUT_C = 128;          // columns: cos(Sun zenith at the sub-satellite point), -1..1
+const float EARTH_LUT_LAM_MIN = 10.0;
+const float EARTH_LUT_LAM_MAX = 85.0;
+const float EARTH_LUT_LN_FLOOR = -60.0; // stored where no lit ground is visible
 // Header block = GpuSatTypeHeader in SatelliteSim.h (rewritten by the CPU every frame).
 layout(set = 0, binding = 5) readonly buffer SatTypeBuf {
     float   brightnessScale;  // global flux multiplier
     float   mirrorBoost;      // mirror peak multiplier
     float   occlusionFluxFloor; // skip part occlusion below this UNOCCLUDED flux (it only dims)
     uint    occlusionOn;      // 0 = knockout bit 1048576
+    // Earthshine table (satphot::earthshineLut(), written once by createSatBuffers): per (visible
+    // cap half-angle, cos of the Sun's zenith at the sub-satellite point) the ln irradiance and the
+    // tilt of its effective direction from nadir toward the Sun.
+    vec2    earthLut[EARTH_LUT_L * EARTH_LUT_C];
     SatType types[];
 };
 
-// ── Phase 3 geometry models: baked facet lobes (GpuSatLobe, 48 bytes) ──────────
+// ── Phase 3 geometry models: baked facet lobes (GpuSatLobe, 64 bytes) ──────────
 // Each lobe is exact for a flat face (curved surfaces merge into a few lobes whose angular spread
 // is folded into alpha2Mat). normalT is in the ROOT triad coordinates of the lobe's group tree —
 // world normal = groupFrame * normalT. Must match GpuSatLobe in SatModel.h.
@@ -159,6 +169,8 @@ struct SatLobe {
     uint  sampleFirst;        // Phase 3b: first entry in lobeSamples[]
     uint  sampleCount;        // 0 = never occluded
     uint  occluderMask;       // bit i: the type's occluder i can block this lobe
+    uint  distribution;       // 0 = GGX, 1 = Beckmann (materials whose α came from a Phong cos^n fit)
+    uint  lobePadA, lobePadB, lobePadC;
 };
 layout(set = 0, binding = 8) readonly buffer SatLobeBuf {
     SatLobe lobes[];
@@ -715,10 +727,24 @@ float lobeIntensity(vec3 n, SatLobe L, vec3 s, vec3 o, float srcA2)
     vec3  h    = normalize(s + o);
     float nh   = dot(n, h);
     vec3  nxh  = cross(n, h);
+    float sin2 = dot(nxh, nxh);
     float a2   = L.alpha2Mat + srcA2;
-    float den  = nh * nh * a2 + dot(nxh, nxh);
-    float D    = a2 / (PI * den * den);
     float F    = L.f0 + (1.0 - L.f0) * pow(1.0 - clamp(dot(s, h), 0.0, 1.0), 5.0);
+    if (L.distribution != 0u) {
+        // Beckmann D and Walter et al. 2007's rational fit to its Smith G1 — mirror of the CPU
+        // lobeIntensity() (SatModel.cpp).
+        if (nh <= 0.0) return diffuseI;
+        float nh2   = nh * nh;
+        float D     = exp(-sin2 / (nh2 * a2)) / (PI * a2 * nh2 * nh2);
+        float alpha = sqrt(a2);
+        float cs = ns / (alpha * sqrt(max(1e-12, 1.0 - ns * ns)));
+        float co = no / (alpha * sqrt(max(1e-12, 1.0 - no * no)));
+        float G1s = cs >= 1.6 ? 1.0 : (3.535 * cs + 2.181 * cs * cs) / (1.0 + 2.276 * cs + 2.577 * cs * cs);
+        float G1o = co >= 1.6 ? 1.0 : (3.535 * co + 2.181 * co * co) / (1.0 + 2.276 * co + 2.577 * co * co);
+        return diffuseI + L.area * D * F * G1s * G1o * 0.25;
+    }
+    float den  = nh * nh * a2 + sin2;
+    float D    = a2 / (PI * den * den);
     float G1s  = 2.0 * ns / (ns + sqrt(a2 + (1.0 - a2) * ns * ns));
     float G1o  = 2.0 * no / (no + sqrt(a2 + (1.0 - a2) * no * no));
     return diffuseI + L.area * D * F * G1s * G1o * 0.25;
@@ -853,7 +879,7 @@ vec2 lobeVisibility(uint ti, SatLobe L, mat3 F0, mat3 F1, mat3 F2, mat3 F3,
 // under kOccMinLobeFrac of the unoccluded total is left unoccluded (worst case 48 × 1e-4 ≈ 0.005
 // mag, below the parity readout's 0.02 warning — the CPU evaluator has no such gate).
 const float kOccMinLobeFrac = 1e-4;
-float occludedIntensity(uint ti, mat3 F0, mat3 F1, mat3 F2, mat3 F3, vec3 satNadir, vec3 satToObs,
+float occludedIntensity(uint ti, mat3 F0, mat3 F1, mat3 F2, mat3 F3, vec3 earthDir, vec3 satToObs,
                         float litFactor, float earthE, float earthA2, float total)
 {
     vec3 t0, t1, t2, t3;
@@ -866,7 +892,7 @@ float occludedIntensity(uint ti, mat3 F0, mat3 F1, mat3 F2, mat3 F3, vec3 satNad
         if (L.sampleCount == 0u || L.occluderMask == 0u) continue;
         vec3 n = pickFrame(L.group, F0, F1, F2, F3) * L.normalT;
         float cs = (litFactor > 0.0) ? lobeIntensity(n, L, pc.sunDirECI, satToObs, SUN_ALPHA * SUN_ALPHA) * litFactor : 0.0;
-        float ce = (earthE > 0.0) ? lobeIntensity(n, L, satNadir, satToObs, earthA2) * earthE : 0.0;
+        float ce = (earthE > 0.0) ? lobeIntensity(n, L, earthDir, satToObs, earthA2) * earthE : 0.0;
         if (cs + ce <= kOccMinLobeFrac * total) continue;
         vec2 vis = lobeVisibility(ti, L, F0, F1, F2, F3, t0, t1, t2, t3, pc.sunDirECI, satToObs, cs > 0.0);
         lost += cs * (1.0 - vis.x) + ce * (1.0 - vis.y);
@@ -887,28 +913,51 @@ float modelIntensity(uint ti, mat3 F0, mat3 F1, mat3 F2, mat3 F3, vec3 s, vec3 o
     return I;
 }
 
-// Physical flux in effectFlare units: sunlight (× Earth-shadow factor) plus earthshine, where the
-// lit Earth is a Lambertian disc of albedo 0.3 seen from the satellite. Its irradiance on a plate
-// facing it is albedo · (R/d)² · (lit fraction) — the full view factor, ~0.25 of sunlight at LEO
-// under a lit Earth. (The legacy model's (1 − R/d)/2 term is ~20× smaller; it stays as-is in
+// Earthshine at this satellite: bilinear lookup of earthLut — mirror of earthshineLookup() and
+// earthshineDirection() (SatPhotometry.cpp).
+void earthshineAt(float rOverD, vec3 satNadir, out float E, out vec3 dir)
+{
+    float cosZ = dot(-satNadir, pc.sunDirECI);
+    float lamDeg = degrees(acos(clamp(rOverD, 0.0, 1.0)));
+    float fl = clamp((lamDeg - EARTH_LUT_LAM_MIN) / (EARTH_LUT_LAM_MAX - EARTH_LUT_LAM_MIN) * float(EARTH_LUT_L - 1),
+                     0.0, float(EARTH_LUT_L - 1));
+    float fc = clamp((cosZ + 1.0) * 0.5 * float(EARTH_LUT_C - 1), 0.0, float(EARTH_LUT_C - 1));
+    int l0 = min(int(fl), EARTH_LUT_L - 2), c0 = min(int(fc), EARTH_LUT_C - 2);
+    float tl = fl - float(l0), tc = fc - float(c0);
+    int i00 = l0 * EARTH_LUT_C + c0;
+    vec2 v = mix(mix(earthLut[i00], earthLut[i00 + 1], tc),
+                 mix(earthLut[i00 + EARTH_LUT_C], earthLut[i00 + EARTH_LUT_C + 1], tc), tl);
+    E = (v.x <= EARTH_LUT_LN_FLOOR + 1.0) ? 0.0 : exp(v.x);
+    vec3 perp = pc.sunDirECI - dot(pc.sunDirECI, satNadir) * satNadir;
+    float pl = length(perp);
+    dir = (pl < 1e-6) ? satNadir : cos(v.y) * satNadir + sin(v.y) * (perp / pl);
+}
+
+// Physical flux in effectFlare units: sunlight (× Earth-shadow factor) plus earthshine from the lit
+// cap of a Lambertian Earth (albedo 0.3), whose ground points each carry their own Sun cosine — see
+// earthshineExact() (SatPhotometry.cpp). Until 2026-09-23 this was albedo·(R/d)²·(lit fraction),
+// which treated every lit point as if the Sun were overhead: 60-15,000x too bright at the twilight
+// geometry every ground observation is made in. (The legacy model's (1 − R/d)/2 term stays as-is in
 // legacyFlux so legacy types don't change.) Earth's angular radius ρ (sin ρ = R/d) widens every
 // lobe's response to it: α ≈ tan(ρ/2).
 float modelFlux(uint ti, mat3 F0, mat3 F1, mat3 F2, mat3 F3, vec3 satNadir, vec3 satToObs,
-                float litFactor, float range, float rOverD, float illumFrac)
+                float litFactor, float range, float rOverD)
 {
     float Isun = (litFactor > 0.0)
         ? modelIntensity(ti, F0, F1, F2, F3, pc.sunDirECI, satToObs, SUN_ALPHA * SUN_ALPHA) : 0.0;
-    float earthE  = 0.3 * rOverD * rOverD * illumFrac;
+    float earthE;
+    vec3  earthDir;
+    earthshineAt(rOverD, satNadir, earthE, earthDir);
     float cosRho  = sqrt(max(0.0, 1.0 - rOverD * rOverD));
     float alphaE  = rOverD / (1.0 + cosRho);  // tan(ρ/2)
     float Iearth = (earthE > 0.0)
-        ? modelIntensity(ti, F0, F1, F2, F3, satNadir, satToObs, alphaE * alphaE) : 0.0;
+        ? modelIntensity(ti, F0, F1, F2, F3, earthDir, satToObs, alphaE * alphaE) : 0.0;
     float total = Isun * litFactor + Iearth * earthE;
     float scale = K_FLUX / (range * range) * brightnessScale;
     // Phase 3b occlusion between parts. It only ever dims, so a satellite already below the floor
     // unoccluded skips it — at millions of satellites most of them.
     if (occlusionOn != 0u && types[ti].occluderCount > 0u && total * scale >= occlusionFluxFloor)
-        total = max(0.0, total - occludedIntensity(ti, F0, F1, F2, F3, satNadir, satToObs, litFactor,
+        total = max(0.0, total - occludedIntensity(ti, F0, F1, F2, F3, earthDir, satToObs, litFactor,
                                                    earthE, alphaE * alphaE, total));
     return total * scale;
 }
@@ -1280,7 +1329,7 @@ bool processSatellite(uint i, out SatVisible rec)
     // ── Reflectance ─────────────────────────────────────────────────────────────
     vec3  satToObs = normalize(-relPos);
     float flare = (ty.lobeCount > 0u)
-        ? modelFlux(orb.typeIdx, F0, F1, F2, F3, satNadir, satToObs, litFactor, range, cosEta, illumFrac)
+        ? modelFlux(orb.typeIdx, F0, F1, F2, F3, satNadir, satToObs, litFactor, range, cosEta)
         : legacyFlux(surfN0, surfN1, satNadir, satToObs, litFactor, earthIrr, distFactor,
                      ty.specExp0, ty.specExp1, ty.w1, ty.diffuse, ty.mirrorFrac, ty.crossSection);
 

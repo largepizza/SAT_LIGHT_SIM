@@ -4631,9 +4631,9 @@ void SatelliteSim::createSatBuffers(VulkanContext &ctx)
                      satOrbitBuf, satOrbitMem);
 
     // satTypeBuf: host-visible + coherent. GpuSatTypeHeader (rewritten every frame in
-    // recordCompute) followed by one GpuSatType per satTypes[] entry (written by uploadSatOrbits).
-    // A few hundred bytes — shared by every satellite of a type, so it stays cache-resident.
-    const VkDeviceSize typeBytes = sizeof(GpuSatTypeHeader) +
+    // recordCompute), the 64 KB earthshine table (written here, once), then one GpuSatType per
+    // satTypes[] entry (written by uploadSatOrbits). Shared by every satellite, so it stays cached.
+    const VkDeviceSize typeBytes = kSatTypeArrayOffset +
                                    sizeof(GpuSatType) * std::max<size_t>(satTypes.size(), 1);
     ctx.createBuffer(typeBytes,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -4641,6 +4641,11 @@ void SatelliteSim::createSatBuffers(VulkanContext &ctx)
                      satTypeBuf, satTypeMem);
     vkMapMemory(ctx.device, satTypeMem, 0, typeBytes, 0, &satTypeMapped);
     memset(satTypeMapped, 0, typeBytes);
+    {
+        const std::vector<glm::vec2> &lut = earthshineLut();
+        static_assert(sizeof(GpuEarthshineLut) == sizeof(glm::vec2) * satphot::kEarthLutLambda * satphot::kEarthLutCos);
+        memcpy(static_cast<char *>(satTypeMapped) + sizeof(GpuSatTypeHeader), lut.data(), sizeof(GpuEarthshineLut));
+    }
 
     // satLobeBuf: host-visible + coherent. Every geometry-model type's baked facet lobes, packed
     // back to back (GpuSatType::firstLobe/lobeCount index it). Written by uploadSatOrbits.
@@ -4937,7 +4942,7 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
         uint32_t firstOccluder = 0; // ... satOccluderBuf
         uint32_t firstSample = 0;   // ... satLobeSampleBuf
         GpuSatType *types = reinterpret_cast<GpuSatType *>(
-            static_cast<char *>(satTypeMapped) + sizeof(GpuSatTypeHeader));
+            static_cast<char *>(satTypeMapped) + kSatTypeArrayOffset);
         for (size_t ti = 0; ti < satTypes.size(); ++ti)
         {
             const SatelliteType &type = satTypes[ti];

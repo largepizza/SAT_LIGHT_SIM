@@ -393,12 +393,23 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   exactly; beyond `kSatLobeBudget` (48) same-group lobes merge agglomeratively with the lost normal
   spread folded into α². Curved facets carry an intrinsic spread ((Δφ)²/12, Ω/2π) so a faceted
   cylinder glints as a band, not N mirrors.
-- **Reflectance** (`modelFlux()` in `sat_orbit.comp`): per lobe Lambert + GGX/Schlick/Smith; the
+- **Reflectance** (`modelFlux()` in `sat_orbit.comp`): per lobe Lambert + GGX/Schlick/Smith (or
+  Beckmann, per material: `"distribution": "beckmann"`, `GpuSatLobe::distribution`); the
   sun's disk is folded into every lobe as `SUN_ALPHA` = 0.0023, which reproduces a flat mirror's
   physical peak `F·A/Ω_sun` (verified: 1.50e4 vs 1.47e4 m² at normal incidence) — so model types
-  have no `mirrorBoost`/`crossSection`/`specExp` hacks. Earthshine uses the PHYSICAL view factor
-  `0.3·(R/d)²·litFraction` with Earth's angular size folded into α; legacy types keep the old
-  (~20× smaller) `(1−R/d)/2` term, deliberately, so they don't change. Output is a real apparent
+  have no `mirrorBoost`/`crossSection`/`specExp` hacks.
+  **Earthshine** is the vector irradiance of the visible cap of a Lambertian Earth (albedo 0.3)
+  whose every ground point carries its OWN Sun cosine (`earthshineExact()`, `SatPhotometry.cpp`:
+  the ring integral is closed-form, one numerical integral over the cap radius), applied as a source
+  of that irradiance tilted from nadir toward the Sun (the lit crescent is off to that side), with
+  Earth's angular size folded into α. It is tabulated once — `earthshineLut()`, 64 cap half-angles ×
+  128 Sun-zenith cosines of (ln E, tilt) — and both `sat_orbit.comp` (`earthshineAt()`) and the CPU
+  evaluator (`earthshineLookup()`) read that same table, so parity holds (table vs exact: p95 0.004
+  mag). **Until 2026-09-23 it was `0.3·(R/d)²·litFraction`**, which treats every lit point as if the
+  Sun were overhead: 17× too bright with the Sun on the sub-satellite horizon and 60-15,000× at the
+  95-110° zenith angles every twilight observation is made at. That bug was carrying the benchmark:
+  nadir faces (a black visor underside, white antennas) were lit mostly by it. Legacy types keep
+  their own `(1−R/d)/2 · illumFrac` term, deliberately, so they don't change. Output is a real apparent
   magnitude mapped into effectFlare through the existing anchor: `flare = K_FLUX·I/r²·brightnessScale`,
   `K_FLUX` = 9.979e10 (0.008 ↔ mag 6).
 - **Validation + shape check.** At load every model is compared against a brute-force per-triangle
@@ -452,10 +463,25 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   observers' geometry selection is unpublished — are informational). Plots:
   `tools/benchmarks/plot_benchrun.py <report.json>`. Differential files run both references.
 - **Provenance** (`sources` block in a model file, milestone M4): entries `{subject | subjects[],
-  status: sourced|derived|estimate, value, source}` — `SatModel::sources`, checked by
+  status: sourced|derived|estimate|calibrated, value, source}` — `SatModel::sources`, checked by
   `unexplainedModelParts()`. Every group, component and model-local material must be covered;
   `SatModelTool` prints the counts, every non-sourced entry, and any UNEXPLAINED part. A benchmark
-  reference model is only accepted with zero unexplained parts.
+  reference model is only accepted with zero unexplained parts. `calibrated` (M8) = fitted to a
+  benchmark; its `source` names the benchmark, the metric and which checks stay held out.
+- **Phase-curve benchmark + calibration (milestone M8, 2026-09-23).** Distribution reports now carry
+  `phase_curve` (model vs observed mean m1000 per 10° phase bin) and the gated `phase_curve_rms`
+  (bins with ≥ 10 observations, weighted by count, tolerance 0.3 mag) — the per-pass data's shape,
+  not just its mean. `SatModelTool --set [<model>/]<material>.<field>=<value>` overrides a material
+  after loading (echoed into the report), and `tools/benchmarks/scan_overrides.py` runs the
+  VisorSat, V1.0 and differential benchmarks per override set and tabulates them. Findings, in
+  order: (1) the earthshine bug above; (2) with it fixed, GGX beats Beckmann for the polished base
+  (Beckmann made 70-110° 0.3-0.5 mag too faint, even though the base's α came from the
+  Beckmann↔Phong equivalence); (3) two fitted values — `solar_cell` diffuse albedo 0.06 → 0.02
+  (low-phase bins, where the array face dominates) and the VisorSat visor's size at Cole's fixed 23°
+  cutoff (inset 0.55 m, gap 0.233 m; curve RMS 0.42 → 0.13). Results (5000 samples, seed 1):
+  VisorSat phase-matched mean 7.220 vs 7.218, curve RMS 0.13, mean 6.97 vs 7.22; V1.0 (HELD OUT —
+  its antennas are an untouched estimate) 5.926 vs 5.93; differential 1.04 vs 1.29. Remaining: the
+  110-120° bin is 0.37 too bright (25 obs); model scatter 0.72 vs 0.85 observed (fixed attitude).
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, and the M4 benchmark references `starlink_v1_0.json`
   (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`
@@ -684,9 +710,10 @@ anything that is constant per type goes in `GpuSatType`.
 `static_assert(sizeof(GpuSatOrbit) == 64)` — do not change field order without updating both structs.
 
 ### GpuSatType layout (416 bytes, std430) — `satTypeBuf`
-One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, after a 16-byte `GpuSatTypeHeader`
-(`brightnessScale`, `mirrorBoost`, `occlusionFluxFloor`, `occlusionOn` — rewritten every frame;
-`SatOrbitPC` is full). Must match
+One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, at `kSatTypeArrayOffset`: after a
+16-byte `GpuSatTypeHeader` (`brightnessScale`, `mirrorBoost`, `occlusionFluxFloor`, `occlusionOn` —
+rewritten every frame; `SatOrbitPC` is full) and the 64 KB `GpuEarthshineLut` (`earthLut` in the
+shader, written once by `createSatBuffers()`). Must match
 `SatType`/`AttGroup`/`SatTypeBuf` in `sat_orbit.comp` (`offsetof` static_asserts guard the C++ side).
 ```
 [ 0] baseColorR, baseColorG, baseColorB, crossSection
@@ -703,8 +730,8 @@ One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, after a 16-byte `
 [400] firstOccluder, occluderCount (uint), pad×2
 ```
 Geometry-model lobes live in `satLobeBuf` (binding 8 of the `sat_orbit` set, host-coherent,
-`GpuSatLobe` 48 B: normalT + group, area, diffArea, albedoD, f0, alpha2Mat, sampleFirst,
-sampleCount, occluderMask), packed per type at `firstLobe`; their occluders and sample points in
+`GpuSatLobe` 64 B: normalT + group, area, diffArea, albedoD, f0, alpha2Mat, sampleFirst,
+sampleCount, occluderMask, distribution, pad×3), packed per type at `firstLobe`; their occluders and sample points in
 `satOccluderBuf`/`satLobeSampleBuf` (bindings 9/10), `sampleFirst` rebased at upload.
 
 ### GpuSatVisible layout (32 bytes, std430)

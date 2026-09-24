@@ -3,6 +3,7 @@
 // models with SatBench and writes a self-describing JSON report per run.
 #include <cstdint>
 #include <string>
+#include <vector>
 
 struct BenchRunOptions
 {
@@ -13,6 +14,10 @@ struct BenchRunOptions
     bool occlusion = true;         // Phase 3b occlusion between parts (--no-occlusion: the M6 baseline)
     std::string reportDir = "benchmark_runs";
     std::string modelsDir;         // default: <benchmark dir>/../satellite_models
+    // --set [<model id>/]<material>.<field>=<value>: material overrides applied after loading, for
+    // calibration scans. Fields: diffuse_albedo, specular_f0, roughness, distribution (ggx|beckmann).
+    // Without a model id it applies to every model that has the material. Echoed into the report.
+    std::vector<std::string> overrides;
 };
 
 // Returns true when every compared metric is within tolerance (informational metrics excluded).

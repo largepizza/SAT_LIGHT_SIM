@@ -58,6 +58,102 @@ SatOrbitState satOrbitStateAt(const SatOrbitElems &e, double tJ2000)
     return st;
 }
 
+// ── Earthshine ────────────────────────────────────────────────────────────────────────────────
+void earthshineExact(double rOverD, double cosSunZenith, double &irradiance, double &tiltRad, int n)
+{
+    // Units of Earth radii; satellite on +z at r, Sun in the x-z plane at zenith angle Z (as seen from
+    // the sub-satellite point). A ground point at colatitude λ (from the sub-satellite point) and
+    // azimuth φ: Sun cosine μ0 = a + b·cos φ with a = cos λ cos Z, b = sin λ sin Z; distance d and
+    // emission cosine μ depend on λ only. Integrating over φ where μ0 > 0 (|φ| < φ0):
+    //   ∫ μ0 dφ = 2(a φ0 + b sin φ0),  ∫ μ0 cos φ dφ = 2a sin φ0 + b(φ0 + sin φ0 cos φ0).
+    irradiance = 0.0;
+    tiltRad = 0.0;
+    rOverD = std::clamp(rOverD, 1e-6, 1.0 - 1e-9);
+    const double r = 1.0 / rOverD, lam0 = std::acos(rOverD);
+    const double cosZ = std::clamp(cosSunZenith, -1.0, 1.0), sinZ = std::sqrt(1.0 - cosZ * cosZ);
+    const double dl = lam0 / n;
+    double ez = 0.0, ex = 0.0; // toward Earth's centre; toward the Sun's side
+    for (int i = 0; i < n; ++i)
+    {
+        const double lam = (i + 0.5) * dl, cl = std::cos(lam), sl = std::sin(lam);
+        const double a = cl * cosZ, b = sl * sinZ;
+        double phi0;
+        if (b < 1e-15)
+        {
+            if (a <= 0.0)
+                continue;
+            phi0 = kPi;
+        }
+        else
+        {
+            const double c = -a / b;
+            if (c >= 1.0)
+                continue;
+            phi0 = c <= -1.0 ? kPi : std::acos(c);
+        }
+        const double i0 = 2.0 * (a * phi0 + b * std::sin(phi0));
+        const double i1 = 2.0 * a * std::sin(phi0) + b * (phi0 + std::sin(phi0) * std::cos(phi0));
+        const double d2 = 1.0 + r * r - 2.0 * r * cl, d = std::sqrt(d2);
+        const double mu = (r * cl - 1.0) / d; // emission cosine at the ground
+        if (mu <= 0.0)
+            continue;
+        // (albedo/π)·μ0 radiance × dΩ = sin λ dλ dφ · μ / d², times the unit direction to the point.
+        const double w = kEarthAlbedo / kPi * sl * mu / d2 * dl;
+        ez += w * i0 * (r - cl) / d;
+        ex += w * i1 * sl / d;
+    }
+    irradiance = std::hypot(ez, ex);
+    tiltRad = irradiance > 0.0 ? std::atan2(ex, ez) : 0.0;
+}
+
+const std::vector<glm::vec2> &earthshineLut()
+{
+    static const std::vector<glm::vec2> lut = [] {
+        std::vector<glm::vec2> t((size_t)kEarthLutLambda * kEarthLutCos);
+        for (int li = 0; li < kEarthLutLambda; ++li)
+        {
+            const double lamDeg =
+                kEarthLutLambdaMinDeg + (kEarthLutLambdaMaxDeg - kEarthLutLambdaMinDeg) * li / (kEarthLutLambda - 1);
+            const double rOverD = std::cos(lamDeg * kPi / 180.0);
+            for (int ci = 0; ci < kEarthLutCos; ++ci)
+            {
+                double e, tilt;
+                earthshineExact(rOverD, -1.0 + 2.0 * ci / (kEarthLutCos - 1), e, tilt);
+                const double ln = e > 0.0 ? std::log(e) : (double)kEarthLutLnFloor;
+                t[(size_t)li * kEarthLutCos + ci] = glm::vec2((float)std::max(ln, (double)kEarthLutLnFloor), (float)tilt);
+            }
+        }
+        return t;
+    }();
+    return lut;
+}
+
+void earthshineLookup(double rOverD, double cosSunZenith, double &irradiance, double &tiltRad)
+{
+    // Mirror of earthshineAt() in sat_orbit.comp.
+    const std::vector<glm::vec2> &t = earthshineLut();
+    const double lamDeg = std::acos(std::clamp(rOverD, 0.0, 1.0)) * 180.0 / kPi;
+    const double fl = std::clamp((lamDeg - kEarthLutLambdaMinDeg) / (kEarthLutLambdaMaxDeg - kEarthLutLambdaMinDeg) *
+                                     (kEarthLutLambda - 1),
+                                 0.0, (double)(kEarthLutLambda - 1));
+    const double fc = std::clamp((cosSunZenith + 1.0) * 0.5 * (kEarthLutCos - 1), 0.0, (double)(kEarthLutCos - 1));
+    const int l0 = std::min((int)fl, kEarthLutLambda - 2), c0 = std::min((int)fc, kEarthLutCos - 2);
+    const double tl = fl - l0, tc = fc - c0;
+    auto at = [&](int l, int c) { return glm::dvec2(t[(size_t)l * kEarthLutCos + c]); };
+    const glm::dvec2 v = glm::mix(glm::mix(at(l0, c0), at(l0, c0 + 1), tc), glm::mix(at(l0 + 1, c0), at(l0 + 1, c0 + 1), tc), tl);
+    irradiance = v.x <= kEarthLutLnFloor + 1.0 ? 0.0 : std::exp(v.x);
+    tiltRad = v.y;
+}
+
+glm::dvec3 earthshineDirection(glm::dvec3 nadir, glm::dvec3 sun, double tiltRad)
+{
+    glm::dvec3 perp = sun - glm::dot(sun, nadir) * nadir;
+    const double l = glm::length(perp);
+    if (l < 1e-9)
+        return nadir;
+    return std::cos(tiltRad) * nadir + std::sin(tiltRad) * (perp / l);
+}
+
 // ── Photometry ────────────────────────────────────────────────────────────────────────────────
 namespace
 {
@@ -165,11 +261,13 @@ SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const 
     double rPenumbra = kEarthRadiusM + dShadow * tanPenumbra;
     r.litFactor = proj > 0.0 ? smoothstep(rUmbra, rPenumbra, perpLen) : 1.0;
 
-    // ── Earthshine: lit Earth as a Lambertian disc — as modelFlux() ──────────────────────────
+    // ── Earthshine: the lit cap of a Lambertian Earth — as modelFlux() ───────────────────────
     double rOverD = kEarthRadiusM / orbit.rSatM; // sin of Earth's angular radius
     double sinEta = std::sqrt(std::max(0.0, 1.0 - rOverD * rOverD));
-    double illumFrac = std::clamp((glm::dot(-nadir, sun) + sinEta) / (2.0 * sinEta), 0.0, 1.0);
-    r.earthIrradiance = kEarthAlbedo * rOverD * rOverD * illumFrac;
+    double illumFrac = std::clamp((glm::dot(-nadir, sun) + sinEta) / (2.0 * sinEta), 0.0, 1.0); // legacy only
+    double earthTilt = 0.0;
+    earthshineLookup(rOverD, glm::dot(-nadir, sun), r.earthIrradiance, earthTilt);
+    r.earthDir = earthshineDirection(nadir, sun, earthTilt);
     double alphaE = rOverD / (1.0 + sinEta); // tan(ρ/2); sinEta = cos ρ
 
     // ── Attitude ────────────────────────────────────────────────────────────────────────────
@@ -211,7 +309,7 @@ SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const 
     const double a2Sun = (double)kSunAlpha * kSunAlpha;
     r.intensitySun = evalSatLobesPosed(lobes, groups, poses, sun, o, a2Sun, &r.dominantLobe, occ, true);
     r.intensityEarth = r.earthIrradiance > 0.0
-                           ? evalSatLobesPosed(lobes, groups, poses, nadir, o, alphaE * alphaE, nullptr, occ, false)
+                           ? evalSatLobesPosed(lobes, groups, poses, r.earthDir, o, alphaE * alphaE, nullptr, occ, false)
                            : 0.0;
     r.intensity = r.intensitySun * r.litFactor + r.intensityEarth * r.earthIrradiance;
     if (r.litFactor <= 0.0)
