@@ -100,6 +100,18 @@ struct UIPlot {
     int                 seriesCount = 0;
 };
 
+// ── External image (Clay custom element) ─────────────────────────────────────
+// Point a CLAY element's `.custom.customData` at a UIImage to draw a texture the caller owns (an
+// offscreen render — Phase 4's model viewer) stretched over the element's box. `imageId` comes from
+// UIRenderer::registerImage(). The image must be in SHADER_READ_ONLY_OPTIMAL whenever the UI pass
+// runs, and must hold display-ready values in the swapchain's own format family (the UI copies
+// texels straight through, as it does for icons).
+struct UIImage {
+    static constexpr uint32_t kMagic = 0x494D4745u; // 'IMGE'
+    uint32_t magic = kMagic;
+    uint32_t imageId = 0; // 0 = none
+};
+
 class UIRenderer {
 public:
     // Call after VulkanContext is initialized. `window` is used only to set OS resize
@@ -141,6 +153,15 @@ public:
 
     // Number of icons currently loaded.
     int iconCount() const { return (int)iconEntries.size(); }
+
+    // ── External images (UIImage) ─────────────────────────────────────────────
+    // Registers a sampled image for UIImage elements; returns its id (> 0), or 0 when all
+    // kMaxExternalImages slots are taken. updateImage() re-points an id (e.g. after the owner
+    // recreated the image on resize); the caller must not update an id while a recorded frame
+    // that samples it is still pending (single frame in flight: update before recording).
+    static constexpr int kMaxExternalImages = 4;
+    uint32_t registerImage(VkDevice device, VkImageView view, VkSampler sampler);
+    void     updateImage(VkDevice device, uint32_t id, VkImageView view, VkSampler sampler);
 
     // ── Window chrome (drag + resize) ────────────────────────────────────────────
     // Applies pending drag/resize deltas to `c` and clamps position/size — call once
@@ -248,6 +269,8 @@ private:
     VkDescriptorSetLayout descLayout = VK_NULL_HANDLE;
     VkDescriptorPool      descPool   = VK_NULL_HANDLE;
     VkDescriptorSet       descSet    = VK_NULL_HANDLE;
+    VkDescriptorSet       extSets[kMaxExternalImages] = {}; // binding 1 = the external image
+    int                   extCount = 0;
 
     // ── Pipeline ──────────────────────────────────────────────────────────
     VkPipelineLayout pipeLayout = VK_NULL_HANDLE;
@@ -272,7 +295,8 @@ private:
     void loadFont(VulkanContext& ctx);
     void createPipeline(VulkanContext& ctx);
     void destroyPipeline(VkDevice device);
-    void flushBatch(VkCommandBuffer cmd);
+    // Draws the pending geometry with `set` bound (descSet — font + icon atlases — by default).
+    void flushBatch(VkCommandBuffer cmd, VkDescriptorSet set = VK_NULL_HANDLE);
 
     // cornerRadius defaults to 0 (sharp corners) — safe for every existing caller
     // (text glyphs, icons, border strips) that doesn't care about rounding; only

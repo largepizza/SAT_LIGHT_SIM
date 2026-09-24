@@ -490,6 +490,24 @@ void SatelliteSim::init(VulkanContext &ctx)
     createFlareResources(ctx);
     createFlareDescriptors(ctx);
     createFlarePipelines(ctx);
+    // Phase 4 mesh renderer: needs the Earth textures (createGlowResources) and the loaded models
+    // (initConstellation, above).
+    {
+        SatMeshRenderer::EarthTextures et;
+        et.day = earthDayView;
+        et.daySampler = earthDaySampler;
+        et.night = earthNightView;
+        et.nightSampler = earthNightSampler;
+        et.clouds = earthCloudsView;
+        et.cloudsSampler = earthCloudsSampler;
+        meshRenderer.init(ctx, et);
+        std::vector<SatMeshRenderer::TypeModel> tms(satTypes.size());
+        for (size_t i = 0; i < satTypes.size(); ++i)
+            if (satTypes[i].model)
+                tms[i] = {satTypes[i].model.get(), &satTypes[i].occlusion};
+        meshRenderer.setTypeModels(ctx, tms);
+        meshRendererInit = true;
+    }
     initStars(ctx);
     initPlanets(ctx); // must run after initStars() — reuses starDescLayout/starPipeline
     // Long-exposure trail pipeline — needs drawPipeLayout/descSet (createDrawPipeline/
@@ -2891,7 +2909,133 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         VkBufferCopy hdrRegion{0, 0, sizeof(GpuSatListHeader)};
         vkCmdCopyBuffer(cmd, satListBuf, pickedVisibleBuf, 1, &hdrRegion);
     }
+    recordModelViewer(cmd); // Phase 4 model viewer (offscreen; its own render pass)
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
+}
+
+// ─── Model viewer (Phase 4b) ─────────────────────────────────────────────────
+void SatelliteSim::openModelViewer(int typeIdx, const char *label, float altM)
+{
+    if (typeIdx < 0 || typeIdx >= (int)satTypes.size() || !meshRenderer.typeMesh(typeIdx))
+        return;
+    if (viewerType != typeIdx)
+        viewerDist = 0.0f; // re-frame a different model
+    viewerType = typeIdx;
+    viewerAltM = altM > 0.0f ? altM : 550000.0f;
+    snprintf(viewerTitle, sizeof(viewerTitle), "Model: %s", label);
+    const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(typeIdx);
+    const SatelliteType &t = satTypes[typeIdx];
+    snprintf(viewerInfo, sizeof(viewerInfo), "%s  -  %d triangles, %zu parts, %zu materials, %.1f m across",
+             t.modelId.c_str(), tm->triangles, t.model ? t.model->components.size() : (size_t)0,
+             t.model ? t.model->materials.size() : (size_t)0, 2.0f * tm->boundsRadius);
+    viewerChrome.open = true;
+}
+
+// Places the model above the observer's ground point at viewerAltM (ECEF axes, origin = the body
+// origin), poses it, lights it and orbits the camera around it — then renders it offscreen.
+void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
+{
+    if (!meshRendererInit || !viewerChrome.open || viewerType < 0 || viewerType >= (int)satTypes.size() ||
+        !meshRenderer.viewerView())
+        return;
+    const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(viewerType);
+    if (!tm)
+        return;
+    const SatelliteType &type = satTypes[viewerType];
+
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double theta = earthRotationAngle(tNow);
+    auto eciToEcef = [&](glm::dvec3 v) {
+        const double c = std::cos(theta), s = std::sin(theta);
+        return glm::dvec3(c * v.x + s * v.y, -s * v.x + c * v.y, v.z);
+    };
+
+    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    glm::dvec3 east = glm::cross(glm::dvec3(0.0, 0.0, 1.0), up);
+    east = glm::length(east) > 1e-9 ? glm::normalize(east) : glm::dvec3(1.0, 0.0, 0.0);
+    const glm::dvec3 north = glm::cross(up, east);
+    const glm::dvec3 P = up * (satphot::kEarthRadiusM + (double)viewerAltM); // satellite, ECEF
+
+    glm::dvec3 sun;
+    if (viewerStudioLight)
+    {
+        const double el = glm::radians(35.0), az = glm::radians(140.0); // from north toward east
+        sun = glm::normalize(up * std::sin(el) + std::cos(el) * (north * std::cos(az) + east * std::sin(az)));
+    }
+    else
+        sun = glm::normalize(eciToEcef(glm::dvec3(sunDirECI)));
+
+    // Earth's shadow (cylinder with a soft ±20 km edge — the scene pass will use the evaluator's).
+    double lit = 1.0;
+    if (glm::dot(P, sun) < 0.0)
+    {
+        const double d = glm::length(P - glm::dot(P, sun) * sun);
+        lit = glm::smoothstep(satphot::kEarthRadiusM - 20000.0, satphot::kEarthRadiusM + 20000.0, d);
+    }
+
+    // Pose: nadir-down, flying east (the viewer has no orbit), tracking this sun.
+    AttGeometry geo;
+    geo.nadir = -up;
+    geo.velocity = east;
+    geo.sun = sun;
+    geo.siteIdeal = -up;
+    geo.flareTiltRad = glm::radians((double)flareMitigationTiltDeg);
+    const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, !viewerSunlitPose);
+
+    GpuMeshInstance inst{};
+    inst.origin = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+    for (int g = 0; g < 4; ++g)
+    {
+        const GroupPose gp = g < (int)poses.size() ? poses[g] : GroupPose{};
+        for (int c = 0; c < 3; ++c)
+            inst.rot[g * 3 + c] = glm::vec4(glm::vec3(gp.R[c]), 0.0f);
+        inst.trans[g] = glm::vec4(glm::vec3(gp.t), 0.0f);
+    }
+    const double rOverD = satphot::kEarthRadiusM / glm::length(P);
+    double earthE = 0.0, tilt = 0.0;
+    earthshineLookup(rOverD, glm::dot(up, sun), earthE, tilt);
+    glm::dvec3 perp = sun - glm::dot(sun, -up) * -up;
+    const double pl = glm::length(perp);
+    const glm::dvec3 earthDir = pl < 1e-9 ? -up : std::cos(tilt) * -up + std::sin(tilt) * (perp / pl);
+    const double alphaE = rOverD / (1.0 + std::sqrt(std::max(0.0, 1.0 - rOverD * rOverD)));
+    inst.sun = glm::vec4(glm::vec3(sun), (float)lit);
+    inst.sunColor = glm::vec4(1.0f, 1.0f, 1.0f, (float)(alphaE * alphaE));
+    inst.earthshine = glm::vec4(glm::vec3(earthDir), (float)earthE);
+    inst.firstMaterial = tm->firstMaterial;
+    inst.firstOccluder = tm->firstOccluder;
+    inst.occluderCount = tm->occluderCount;
+
+    // Camera: orbit the posed bounding sphere's centre (root group's pose).
+    const GroupPose root = poses.empty() ? GroupPose{} : poses[0];
+    const glm::dvec3 centre = root.R * glm::dvec3(tm->boundsCenter) + root.t;
+    const double radius = std::max(0.1, (double)tm->boundsRadius);
+    const double fovY = glm::radians(35.0);
+    if (viewerDist <= 0.0f)
+        viewerDist = (float)(radius / std::sin(0.5 * fovY) * 1.1);
+    viewerDist = (float)glm::clamp((double)viewerDist, radius * 0.3, radius * 400.0);
+    const double yaw = glm::radians((double)viewerYawDeg), pitch = glm::radians((double)viewerPitchDeg);
+    const glm::dvec3 camDir =
+        std::cos(pitch) * (std::cos(yaw) * east + std::sin(yaw) * north) + std::sin(pitch) * up;
+    const glm::dvec3 camPos = centre + camDir * (double)viewerDist;
+
+    GpuMeshFrame frame{};
+    const glm::mat4 view = glm::lookAt(glm::vec3(camPos), glm::vec3(centre), glm::vec3(up));
+    const float near = (float)std::max(0.01, std::max((double)viewerDist - radius * 1.5, (double)viewerDist * 0.002));
+    const float far = (float)((double)viewerDist + radius * 3.0 + 1.0);
+    glm::mat4 proj = glm::perspective((float)fovY, viewerAspect, near, far);
+    proj[1][1] *= -1.0f; // Vulkan clip space: Y down
+    frame.viewProj = proj * view;
+    frame.invViewProj = glm::inverse(frame.viewProj);
+    // Exposure: the sky's day value while lit, its night value in Earth's shadow.
+    frame.camPos = glm::vec4(glm::vec3(camPos), (float)glm::mix(10.0, 1.8, lit));
+    frame.sunDir = glm::vec4(glm::vec3(sun), 1.0f);
+    const glm::dvec3 moon = glm::normalize(eciToEcef(glm::dvec3(moonDirECI)));
+    // Moonlight at the sky's own terrain scale (moonGain × illuminated fraction), so a moonlit
+    // satellite reads like moonlit ground under the night exposure.
+    frame.moonDir = glm::vec4(glm::vec3(moon), moonGain * moonDirENU.w);
+    frame.earthCenter = glm::vec4(glm::vec3(-P), (float)std::fmod(theta, glm::two_pi<double>()));
+    frame.params = glm::vec4(viewerShadows ? 1.0f : 0.0f, viewerReflections ? 1.0f : 0.0f, 0.0f, 0.0f);
+    meshRenderer.recordViewer(cmd, frame, inst, viewerType);
 }
 
 // ─── projectSkyDirToScreen ────────────────────────────────────────────────────
@@ -3908,6 +4052,9 @@ void SatelliteSim::cleanup(VkDevice device)
         bulkThread.join();
 
     saveSettings();
+    if (meshRendererInit)
+        meshRenderer.cleanup(device);
+    meshRendererInit = false;
 
     // NEW-3: reaching this point IS the clean-exit signal — remove the sentinel so the NEXT
     // launch doesn't think this run crashed. Best-effort; a failed delete just means the next
@@ -9219,6 +9366,7 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
     // Phase 3b occlusion between parts; also writes each lobe's sample range into t.lobes.
     t.occlusion = buildSatOcclusion(model, tris, t.lobes, lobeTris);
     t.occlusionGpu = packSatOcclusionGpu(t.groups, t.occlusion, t.lobes);
+    t.model = std::make_shared<const SatModel>(model); // Phase 4: the mesh renderer draws it
 
     const std::string objDir = (std::filesystem::path(userDataDir_) / "satellite_models_debug").string();
     const bool objOk = writeSatModelObj(model, tris, objDir);

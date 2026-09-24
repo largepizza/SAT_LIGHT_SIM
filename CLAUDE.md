@@ -555,6 +555,31 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   `data/benchmarks/KNOWN_RESIDUALS.md` — update it when a change moves one. The gate is deliberately
   NOT tightened to chase VisorSat (this is not a model optimizer); M11 runs in CI only on PRs/pushes to
   main, which are reserved for major releases.
+- **Mesh renderer + model viewer (Phase 4b, 2026-09-23 — `.plans/SAT_RENDERER_PHASE4.md`).**
+  `SatMeshRenderer` (`SatMeshRenderer.h/.cpp`) owns every model's render mesh in one vertex/index
+  buffer, plus their materials and occluders. `buildSatRenderMesh()` (`SatMesh.h/.cpp`) is a
+  separate tessellation from the photometric one: finer, smooth normals on revolved/sphere
+  primitives, UVs in metres, and the same rest pose and body frame, so `evalGroupPoses()` poses it
+  and `buildSatOcclusion()`'s occluders line up. `SatelliteType::model` keeps the loaded `SatModel`
+  for it. Shaders: `sat_mesh.vert/.frag`, `sat_mesh_bg.*`, `include/sat_mesh_common.glsl`
+  (descriptor mirror of `GpuMeshFrame`/`GpuMeshInstance`/`GpuSatMeshMaterial`/`GpuSatMeshOccluder`),
+  and `include/earth_env.glsl`.
+  - **Units: "π × radiance per unit solar irradiance"**, terrain's convention (a sunlit white
+    Lambertian face = albedo × cos). The BRDF is the photometry's GGX/Beckmann · Schlick · Smith
+    with `SUN_ALPHA` folded in, so a render's pixel sum reproduces the lobe model.
+  - **Lighting:** the sun × litFactor, shadowed per pixel by the model's own primitives (the
+    photometry's rule: a primitive never shadows its own surface); earthshine diffuse from
+    `earthshineLookup()`, computed per instance on the CPU; moonlight at `moonGain` (terrain's
+    scale).
+  - **Reflections:** the reflected ray goes into `earthEnv()`, the Potato sky's analytic atmosphere,
+    textured ground and flat cloud deck, rewritten in ECEF from any origin and scaled by
+    `kEnvToScene` into pre-exposure units. The sun disc is not in it; the GGX sun lobe is the glint.
+  - **The viewer:** "VIEW" on a constellation row, or "View model" beside "Trace pass", opens it.
+    `recordModelViewer()` (end of `recordCompute`) places the model at its constellation's altitude
+    above the observer and renders it offscreen: MSAA 4x, resolved into a swapchain-format image.
+    That image is shown through **`UIImage`**, a Clay custom element (`UIRenderer::registerImage` /
+    `updateImage`; each image gets its own descriptor set, drawn as a mode-2 quad). Lighting is
+    Studio (sun at 35°) or Live (the sim's sun, including Earth's shadow); pose is Sunlit or Rest.
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, and the M4 benchmark references `starlink_v1_0.json`
   (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`

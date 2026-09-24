@@ -128,11 +128,12 @@ void UIRenderer::init(VulkanContext& ctx, GLFWwindow* window) {
 
     // ── Descriptor pool + set ─────────────────────────────────────────────────
     {
-        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 };
+        // + kMaxExternalImages sets for UIImage (registerImage), each with the same two bindings.
+        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * (1 + kMaxExternalImages) };
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.poolSizeCount = 1;
         pi.pPoolSizes    = &ps;
-        pi.maxSets       = 1;
+        pi.maxSets       = 1 + kMaxExternalImages;
         if (vkCreateDescriptorPool(ctx.device, &pi, nullptr, &descPool) != VK_SUCCESS)
             throw std::runtime_error("UIRenderer: vkCreateDescriptorPool failed.");
 
@@ -1135,8 +1136,41 @@ void UIRenderer::pushText(float x, float y, const char* text, int len,
 // ─────────────────────────────────────────────────────────────────────────────
 // flushBatch — upload geometry and issue the indexed draw call
 // ─────────────────────────────────────────────────────────────────────────────
-void UIRenderer::flushBatch(VkCommandBuffer cmd) {
+// ─────────────────────────────────────────────────────────────────────────────
+// External images (UIImage): each gets its own descriptor set — binding 0 the font atlas (unused
+// by mode 2, but the layout requires it), binding 1 the image — drawn as a mode-2 (icon) quad.
+// ─────────────────────────────────────────────────────────────────────────────
+uint32_t UIRenderer::registerImage(VkDevice device, VkImageView view, VkSampler sampler) {
+    if (extCount >= kMaxExternalImages) return 0;
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool     = descPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts        = &descLayout;
+    if (vkAllocateDescriptorSets(device, &ai, &extSets[extCount]) != VK_SUCCESS) return 0;
+    const uint32_t id = (uint32_t)(++extCount);
+    updateImage(device, id, view, sampler);
+    return id;
+}
+
+void UIRenderer::updateImage(VkDevice device, uint32_t id, VkImageView view, VkSampler sampler) {
+    if (id == 0 || (int)id > extCount) return;
+    VkDescriptorImageInfo fontInfo{ font.sampler, font.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkDescriptorImageInfo imgInfo{ sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkWriteDescriptorSet writes[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet          = extSets[id - 1];
+        writes[i].dstBinding      = (uint32_t)i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo      = i == 0 ? &fontInfo : &imgInfo;
+    }
+    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+}
+
+void UIRenderer::flushBatch(VkCommandBuffer cmd, VkDescriptorSet set) {
     if (vertices.empty()) return;
+    if (set == VK_NULL_HANDLE) set = descSet;
 
     // Write this batch into its reserved slice of the persistent buffers.
     memcpy((char*)vertMapped + batchVertOffset * sizeof(UIVertex),
@@ -1146,7 +1180,7 @@ void UIRenderer::flushBatch(VkCommandBuffer cmd) {
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                             pipeLayout, 0, 1, &descSet, 0, nullptr);
+                             pipeLayout, 0, 1, &set, 0, nullptr);
 
     UIPushConstants pc{ { frameW, frameH } };
     vkCmdPushConstants(cmd, pipeLayout, VK_SHADER_STAGE_VERTEX_BIT,
@@ -1298,9 +1332,19 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
         }
 
         case CLAY_RENDER_COMMAND_TYPE_CUSTOM: {
-            const UIPlot* plot = static_cast<const UIPlot*>(rc->renderData.custom.customData);
-            if (plot && plot->magic == UIPlot::kMagic)
-                pushPlot(bb.x, bb.y, bb.width, bb.height, *plot);
+            const void* data = rc->renderData.custom.customData;
+            const uint32_t magic = data ? *static_cast<const uint32_t*>(data) : 0u;
+            if (magic == UIPlot::kMagic) {
+                pushPlot(bb.x, bb.y, bb.width, bb.height, *static_cast<const UIPlot*>(data));
+            } else if (magic == UIImage::kMagic) {
+                const UIImage* img = static_cast<const UIImage*>(data);
+                if (img->imageId > 0 && (int)img->imageId <= extCount) {
+                    flushBatch(cmd); // everything before it, with the atlas set
+                    pushQuad(bb.x, bb.y, bb.width, bb.height, 0.0f, 0.0f, 1.0f, 1.0f,
+                             glm::vec4(1.0f), 2.0f);
+                    flushBatch(cmd, extSets[img->imageId - 1]);
+                }
+            }
             break;
         }
 

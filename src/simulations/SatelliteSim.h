@@ -14,6 +14,8 @@
 #include "SatPhotometry.h" // earthshine table axes (satTypeBuf layout)
 #include "SatTrace.h"      // magnitude trace + CSV export (benchmarking M9)
 #include "SatBench.h"      // shared sample schema + bulk export (benchmarking M10)
+#include "SatMeshRenderer.h" // Phase 4: satellite meshes (model viewer; scene pass in 4c)
+#include <memory>
 
 // Forward declaration only — savePerfSnapshot/buildPerfSnapshotJson are the sole users and both
 // live in SatelliteSimUI.cpp, which includes the real header. Pulling all of nlohmann/json.hpp in
@@ -180,6 +182,8 @@ struct SatelliteType
     // (packSatOcclusionGpu — `lobes` above already carry their sample ranges into it).
     SatOcclusion occlusion = {};
     GpuSatOcclusionPack occlusionGpu = {};
+    // The loaded model itself (components, materials) — the mesh renderer draws it (Phase 4).
+    std::shared_ptr<const SatModel> model = {};
     bool isModel() const { return !lobes.empty(); }
 };
 
@@ -1659,6 +1663,35 @@ private:
     void buildBulkExportRows(const UIInput &inp, UIRenderer &ui);
     void buildTraceWindow(const UIInput &inp, UIRenderer &ui);
     void buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx); // "Trace pass" in the selection UI
+
+    // ── Phase 4: satellite mesh renderer + model viewer (.plans/SAT_RENDERER_PHASE4.md) ──────────
+    // "VIEW" on a constellation row (or "View model" on the selection) opens a window showing that
+    // type's geometry model, rendered by SatMeshRenderer into an offscreen image the UI draws
+    // (UIImage). The model sits at its constellation's altitude above the observer's ground point,
+    // posed by its attitude law, lit by the sun (Studio: fixed 35 deg over its horizon; Live: the sim's
+    // real sun, including Earth's shadow), earthshine and moonlight, with the Earth below reflected in
+    // its surfaces. Drag to orbit, scroll to zoom.
+    SatMeshRenderer meshRenderer;
+    bool meshRendererInit = false;
+    WindowChrome viewerChrome;
+    int viewerType = -1;          // satTypes index shown
+    float viewerAltM = 550000.0f; // altitude it is placed at
+    char viewerTitle[96] = {};
+    char viewerInfo[160] = {};
+    float viewerYawDeg = 35.0f, viewerPitchDeg = 18.0f;
+    float viewerDist = 0.0f; // m from the model's centre; 0 = frame it on the next render
+    float viewerAspect = 1.2f; // the image element's laid-out width / height (set by the UI)
+    bool viewerSpin = true, viewerStudioLight = true, viewerSunlitPose = true;
+    bool viewerShadows = true, viewerReflections = true;
+    bool viewerDragging = false;
+    uint32_t viewerImageId = 0;
+    UIImage viewerImage;
+    bool hovViewerClose = false, hovViewerBtn[6] = {}, hovSelViewBtn = false;
+    std::vector<bool> hovViewConst;
+    void openModelViewer(int typeIdx, const char *label, float altM);
+    void buildModelViewerWindow(const UIInput &inp, UIRenderer &ui);
+    void buildViewButton(const UIInput &inp, UIRenderer &ui, int idx); // "View model" in the selection UI
+    void recordModelViewer(VkCommandBuffer cmd);
 
     // ── Orbit pipeline buffers ────────────────────────────────────────────────
     VkBuffer satOrbitBuf = VK_NULL_HANDLE; // device-local, uploaded once at init

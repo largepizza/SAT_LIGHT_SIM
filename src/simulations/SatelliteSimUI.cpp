@@ -591,6 +591,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildSettingsWindow(inp, ui);
     buildViewControlsWindow(inp, ui);
     buildTraceWindow(inp, ui);
+    buildModelViewerWindow(inp, ui);
     buildSelectedSatPanel(inp, ui);
 
     // ── Mouse capture rects ───────────────────────────────────────────────────
@@ -1086,7 +1087,10 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
         {
             CLAY_TEXT(chipStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
             if (!isPlanet)
+            {
                 buildTraceButton(inp, ui, 0);
+                buildViewButton(inp, ui, 0);
+            }
         }
         captureLaidOut(ui, CLAY_ID("SelSatChip"), kMargin, kMargin, 360.0f, 34.0f);
         return;
@@ -1148,7 +1152,13 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                 CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = warn ? Pal::listenKey : Pal::textDim, .fontSize = fs(12)}));
             }
         if (!isPlanet)
-            buildTraceButton(inp, ui, 1);
+            CLAY(CLAY_ID("SelSatButtons"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                                       .childGap = 6,
+                                                       .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+            {
+                buildTraceButton(inp, ui, 1);
+                buildViewButton(inp, ui, 1);
+            }
     }
     // Panel size isn't known until Clay lays it out this frame — this is a rough estimate for
     // capture purposes only, same approximation the corner HUD panels' capture rects already use.
@@ -1378,6 +1388,151 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                 }
             }
         });
+}
+
+// ─── Model viewer window (Phase 4b) ──────────────────────────────────────────
+// The selected type's geometry model, rendered offscreen by SatMeshRenderer (recordModelViewer, in
+// recordCompute) and shown here as a UIImage. Drag on the image to orbit, scroll to zoom. The
+// offscreen target follows the image element's laid-out size from the previous frame.
+void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
+{
+    if (!viewerChrome.open || !meshRendererInit)
+        return;
+    if (viewerChrome.w <= 0.0f)
+    {
+        viewerChrome.w = 560.0f;
+        viewerChrome.h = 560.0f;
+    }
+
+    // Size the offscreen target to the image element (one frame behind while resizing).
+    const Clay_ElementId imgId = CLAY_ID("ViewerImage");
+    const Clay_ElementData imgData = Clay_GetElementData(imgId);
+    const uint32_t tw = imgData.found ? (uint32_t)std::max(16.0f, imgData.boundingBox.width) : 480u;
+    const uint32_t th = imgData.found ? (uint32_t)std::max(16.0f, imgData.boundingBox.height) : 360u;
+    const bool recreated = meshRenderer.ensureViewerTarget(*ctx_, tw, th);
+    if (viewerImageId == 0)
+        viewerImageId = ui.registerImage(ctx_->device, meshRenderer.viewerView(), meshRenderer.viewerSampler());
+    else if (recreated)
+        ui.updateImage(ctx_->device, viewerImageId, meshRenderer.viewerView(), meshRenderer.viewerSampler());
+    viewerImage.imageId = viewerImageId;
+    viewerAspect = (float)tw / (float)th;
+
+    // Orbit / zoom on the image (its box from the previous layout).
+    const bool overImg = imgData.found && inp.mouseX >= imgData.boundingBox.x &&
+                         inp.mouseX < imgData.boundingBox.x + imgData.boundingBox.width &&
+                         inp.mouseY >= imgData.boundingBox.y &&
+                         inp.mouseY < imgData.boundingBox.y + imgData.boundingBox.height;
+    if (overImg && inp.lmbPressed && !viewerChrome.dragging && viewerChrome.resizeEdge == kResizeNone)
+        viewerDragging = true;
+    if (!inp.lmbDown)
+        viewerDragging = false;
+    if (viewerDragging)
+    {
+        viewerYawDeg -= inp.dMouseX * 0.4f;
+        viewerPitchDeg = glm::clamp(viewerPitchDeg + inp.dMouseY * 0.3f, -85.0f, 85.0f);
+    }
+    else if (viewerSpin)
+        viewerYawDeg += 8.0f * inp.dt;
+    if (overImg && inp.scrollY != 0.0f && viewerDist > 0.0f)
+        viewerDist *= powf(0.88f, inp.scrollY);
+
+    auto text = [&](const char *s, Clay_Color c, float size) {
+        Clay_String str{false, (int32_t)strlen(s), s};
+        CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
+    };
+    auto button = [&](int id, const char *label, const char *tip) {
+        bool clicked = false;
+        bool &hov = hovViewerBtn[id];
+        CLAY(CLAY_IDI("ViewerBtn", id), {.layout = {
+                                             .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(24)},
+                                             .padding = {10, 10, 0, 0},
+                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                         .backgroundColor = hov ? Pal::btnHover : Pal::btnIdle,
+                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hov);
+            sndClick(n, inp.lmbPressed);
+            hov = n;
+            clicked = n && inp.lmbPressed;
+            ui.tooltip(inp, n, tip, fs(11));
+            text(label, Pal::btnLabel, 11);
+        }
+        return clicked;
+    };
+
+    buildResizableWindow(
+        inp, ui, viewerChrome, 3, viewerTitle, true, hovViewerClose, inp.screenW - viewerChrome.w - 40.0f, 80.0f,
+        320.0f, 300.0f, 1800.0f, 1400.0f,
+        [&]()
+        {
+            CLAY(CLAY_ID("ViewerBody"), {.layout = {
+                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                             .padding = {10, 10, 6, 10},
+                                             .childGap = 6,
+                                             .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+            {
+                text(viewerInfo, Pal::textDim, 11);
+                CLAY(imgId, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
+                             .backgroundColor = {0, 0, 0, 255},
+                             .custom = {.customData = meshRenderer.viewerRendered() ? &viewerImage : nullptr}}) {}
+                CLAY(CLAY_ID("ViewerButtons"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                           .childGap = 6,
+                                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                {
+                    if (button(0, viewerSpin ? "Spin: ON" : "Spin: OFF", "Turn slowly around the model"))
+                        viewerSpin = !viewerSpin;
+                    if (button(1, viewerStudioLight ? "Light: Studio" : "Light: Live",
+                               "Studio: the sun 35 deg above the model's horizon. Live: the sim's real sun at "
+                               "the observer's location and time, including Earth's shadow"))
+                        viewerStudioLight = !viewerStudioLight;
+                    if (button(2, viewerSunlitPose ? "Pose: Sunlit" : "Pose: Rest",
+                               "Sunlit: joints follow the attitude law (arrays track the sun). Rest: every joint at 0"))
+                        viewerSunlitPose = !viewerSunlitPose;
+                    if (button(3, viewerShadows ? "Shadows: ON" : "Shadows: OFF",
+                               "Parts shadow each other (the model's own primitives, as the photometry's occlusion)"))
+                        viewerShadows = !viewerShadows;
+                    if (button(4, viewerReflections ? "Reflect: ON" : "Reflect: OFF",
+                               "Surfaces reflect the Earth, atmosphere and clouds below"))
+                        viewerReflections = !viewerReflections;
+                    if (button(5, "Reset", "Frame the model again"))
+                    {
+                        viewerDist = 0.0f;
+                        viewerYawDeg = 35.0f;
+                        viewerPitchDeg = 18.0f;
+                    }
+                }
+                text("Drag to orbit, scroll to zoom", Pal::textHint, 11);
+            }
+        });
+}
+
+// ─── buildViewButton ─────────────────────────────────────────────────────────
+// "View model" next to "Trace pass" for a selected satellite whose type has a geometry model.
+void SatelliteSim::buildViewButton(const UIInput &inp, UIRenderer &ui, int idx)
+{
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+        return;
+    const SatOrbit &orb = satOrbits[selectedSatIndex];
+    if (!meshRenderer.typeMesh((int)orb.typeIdx))
+        return;
+    CLAY(CLAY_IDI("SelViewBtn", idx), {.layout = {
+                                           .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(22)},
+                                           .padding = {8, 8, 0, 0},
+                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                       .backgroundColor = hovSelViewBtn ? Pal::btnHover : Pal::btnIdle,
+                                       .cornerRadius = CLAY_CORNER_RADIUS(3)})
+    {
+        bool n = Clay_Hovered();
+        sndRollover(n, hovSelViewBtn);
+        sndClick(n, inp.lmbPressed);
+        hovSelViewBtn = n;
+        if (n && inp.lmbPressed)
+            openModelViewer((int)orb.typeIdx, satTypes[orb.typeIdx].name.c_str(), orb.altM);
+        ui.tooltip(inp, n, "Open this satellite's 3D model", fs(11));
+        CLAY_TEXT(CLAY_STRING("View model"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
+    }
 }
 
 // ─── buildTraceButton ────────────────────────────────────────────────────────
@@ -1682,6 +1837,34 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                     c.highlight = !c.highlight;
                 CLAY_TEXT(CLAY_STRING("HLT"),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
+            }
+            // ── View the type's 3D model (Phase 4 model viewer) ──
+            {
+                if (hovViewConst.size() != constellations.size())
+                    hovViewConst.assign(constellations.size(), false);
+                const bool hasMesh = meshRenderer.typeMesh((int)c.typeIdx) != nullptr;
+                const bool hovView = hovViewConst[ci];
+                CLAY(CLAY_IDI("ConstViewBtn", ci), {.layout = {
+                                                        .sizing = {CLAY_SIZING_FIXED(38), CLAY_SIZING_FIXED(18)},
+                                                        .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                                    .backgroundColor = hasMesh ? (hovView ? Pal::btnHover : Pal::btnIdle)
+                                                                               : Pal::rowDisabled,
+                                                    .cornerRadius = CLAY_CORNER_RADIUS(3)})
+                {
+                    bool n = Clay_Hovered();
+                    if (hasMesh)
+                    {
+                        sndRollover(n, hovView);
+                        sndClick(n, inp.lmbPressed);
+                        if (n && inp.lmbPressed)
+                            openModelViewer((int)c.typeIdx, c.name.c_str(), c.altM);
+                    }
+                    hovViewConst[ci] = n;
+                    ui.tooltip(inp, n, hasMesh ? "View this constellation's satellite model in 3D"
+                                               : "No 3D model: this type uses the legacy two-surface model", fs(11));
+                    CLAY_TEXT(CLAY_STRING("VIEW"), CLAY_TEXT_CONFIG({.textColor = hasMesh ? Pal::textPrimary : Pal::textHint,
+                                                                   .fontSize = fs(10)}));
+                }
             }
             CLAY(CLAY_IDI("ConstName", ci), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
             {
