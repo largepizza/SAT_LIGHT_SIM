@@ -142,6 +142,8 @@ bool resolveGroupParents(std::vector<AttitudeGroup> &groups, const std::vector<s
 std::string validateAttitudeGroups(const std::vector<AttitudeGroup> &groups);
 nlohmann::json attitudeGroupToJson(const AttitudeGroup &g, const std::vector<AttitudeGroup> &all);
 
+// True when any group's law or joint aims at SunReflectGroundSite (needs a SatGroundSiteAim).
+bool attUsesGroundSite(const std::vector<AttitudeGroup> &groups);
 // Root group index of group `gi` (follows parents).
 int attRootOf(const std::vector<AttitudeGroup> &groups, int gi);
 // Body vector (of group gi's tree) → the root's TRIAD coordinates, double precision.

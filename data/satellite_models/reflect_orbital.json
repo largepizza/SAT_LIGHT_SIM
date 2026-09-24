@@ -1,0 +1,90 @@
+{
+    "name": "Reflect Orbital mirror (operational, estimate)",
+    "note": "Parity model for the v1.1 'Reflect Mirror' type. Body frame: +Z = mirror normal (sun_reflect_ground_site), +X toward velocity. One 48.7 m square membrane mirror (the legacy 2376 m2 in Earendil-1's shape) on a small bus. The CPU photometric evaluator cannot aim at a ground site yet, so traces, exports and benchmarks refuse this type; the GPU path (the app) works.",
+    "materials": [
+        {
+            "name": "mirror_film",
+            "preset": "mirror"
+        },
+        {
+            "name": "film_back",
+            "preset": "aluminum",
+            "diffuse_albedo": 0.1,
+            "roughness": 0.3
+        },
+        {
+            "name": "bus_dark",
+            "preset": "black_paint"
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "mirror",
+            "primary": {
+                "axis": [0, 0, 1],
+                "target": "sun_reflect_ground_site"
+            },
+            "secondary": {
+                "axis": [1, 0, 0],
+                "target": "velocity"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "mirror",
+            "type": "plane",
+            "group": "mirror",
+            "size": [48.7, 48.7],
+            "position": [0, 0, 0],
+            "material": "mirror_film",
+            "back_material": "film_back"
+        },
+        {
+            "name": "bus",
+            "type": "box",
+            "group": "mirror",
+            "size": [1.0, 1.0, 0.6],
+            "position": [0, 0, -0.5],
+            "material": "bus_dark"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "attitude",
+            "status": "sourced",
+            "value": "the mirror normal bisects the Sun and the chosen ground site",
+            "source": "Wikipedia, 'Reflect Orbital' (Earendil-1: an 18 m square of 'four triangular membrane panels' of 'plastic film coated in aluminum', sun-synchronous 600-650 km, a ~5 km spot, reoriented 'within seconds to keep its beam on a target'; up to 50,000 reflectors by 2035). The site choice, lock windows and slew are the app's TargetedReflector machinery (CLAUDE.md)."
+        },
+        {
+            "subject": "mirror",
+            "status": "derived",
+            "value": "48.7 m square membrane mirror (2376 m2)",
+            "source": "Wikipedia, 'Reflect Orbital' (Earendil-1: an 18 m square of 'four triangular membrane panels' of 'plastic film coated in aluminum', sun-synchronous 600-650 km, a ~5 km spot, reoriented 'within seconds to keep its beam on a target'; up to 50,000 reflectors by 2035). Operational mirror size unpublished: the v1.1 type's 2376 m2 in Earendil-1's square shape."
+        },
+        {
+            "subject": "bus",
+            "status": "estimate",
+            "value": "1 x 1 x 0.6 m black box behind the mirror centre",
+            "source": "Earendil-1 is a small satellite; its bus size is unpublished."
+        },
+        {
+            "subject": "mirror_film",
+            "status": "derived",
+            "value": "the mirror preset (F0 0.95, alpha 0.0005)",
+            "source": "Aluminised film. A ~5 km spot from ~625 km is ~8 mrad, about the Sun's own 9.3 mrad disk (Wikipedia, 'Reflect Orbital' (Earendil-1: an 18 m square of 'four triangular membrane panels' of 'plastic film coated in aluminum', sun-synchronous 600-650 km, a ~5 km spot, reoriented 'within seconds to keep its beam on a target'; up to 50,000 reflectors by 2035)), so the film adds almost no blur - near-perfect specular is consistent."
+        },
+        {
+            "subject": "film_back",
+            "status": "estimate",
+            "value": "dull aluminium (albedo 0.1, roughness 0.3)",
+            "source": "Back of the membrane unpublished."
+        },
+        {
+            "subject": "bus_dark",
+            "status": "estimate",
+            "value": "black paint",
+            "source": "Unpublished."
+        }
+    ]
+}

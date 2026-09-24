@@ -43,7 +43,8 @@ glm::dvec3 siteEcef(const BenchSite &s)
 
 bool benchEvalSample(const std::vector<AttitudeGroup> &groups, const std::vector<GpuSatLobe> &lobes,
                      const SatOcclusion *occ, const SatOrbitElems &orbit, double t, glm::dvec3 obs, glm::dvec3 sun,
-                     double minElevationDeg, double extinctionK, BenchSample &s)
+                     double minElevationDeg, double extinctionK, BenchSample &s, const SatGroundSiteAim *aim,
+                     uint32_t satIndex)
 {
     const glm::dvec3 up = glm::normalize(obs);
     // Cheap elevation pre-check before the full evaluation.
@@ -54,6 +55,11 @@ bool benchEvalSample(const std::vector<AttitudeGroup> &groups, const std::vector
     SatPhotInputs in;
     in.sunDirEci = sun;
     in.obsEci = obs;
+    if (aim)
+    {
+        in.hasSiteIdeal = true;
+        in.siteIdeal = satGroundSiteIdeal(*aim, orbit, satIndex, t, sun).ideal;
+    }
     const SatPhotResult r = evalSatPhotometry(groups, lobes, orbit, t, in, nullptr, occ);
     if (!r.supported || r.litFactor < 0.999)
         return false;
@@ -232,7 +238,8 @@ bool runBulkExport(const BulkExportSpec &spec, const std::vector<BulkExportSat> 
         {
             BenchSample x;
             if (!benchEvalSample(*spec.groups, *spec.lobes, spec.occlusion, sats[si].orbit, in.t, in.obs, in.sun,
-                                 spec.minElevationDeg, spec.extinctionK, x))
+                                 spec.minElevationDeg, spec.extinctionK, x, spec.groundAim,
+                                 (uint32_t)std::max(0, sats[si].index)))
                 continue;
             if (in.t - lastT > 1.5 * spec.cadenceS)
                 ++pass; // a gap: a new pass (or a new twilight)

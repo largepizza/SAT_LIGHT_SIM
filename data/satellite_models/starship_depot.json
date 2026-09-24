@@ -1,0 +1,108 @@
+{
+    "name": "Starship HLS propellant depot",
+    "note": "Parity model for the v1.1 'Starship HLS Depot' type. Body frame: +Z = long axis toward the nose, origin at the aft dome. A 9 m stainless body of revolution with a body-mounted solar band; no flaps, no heat shield. The stretch, the band and the attitude are estimates; the skin is bare steel until the depot's insulating tiles are described.",
+    "materials": [
+        {
+            "name": "depot_skin",
+            "preset": "stainless_steel",
+            "pattern": "panel_seams"
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "body",
+            "primary": {
+                "axis": [0, 0, 1],
+                "target": "velocity"
+            },
+            "secondary": {
+                "axis": [1, 0, 0],
+                "target": "nadir"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "barrel_aft",
+            "type": "cylinder",
+            "group": "body",
+            "radius": 4.5,
+            "height": 36.0,
+            "position": [0, 0, 18.0],
+            "caps": true,
+            "material": "depot_skin"
+        },
+        {
+            "name": "solar_band",
+            "type": "cylinder",
+            "group": "body",
+            "radius": 4.5,
+            "height": 4.0,
+            "position": [0, 0, 38.0],
+            "caps": false,
+            "material": "solar_cell"
+        },
+        {
+            "name": "barrel_forward",
+            "type": "cylinder",
+            "group": "body",
+            "radius": 4.5,
+            "height": 8.0,
+            "position": [0, 0, 44.0],
+            "caps": false,
+            "material": "depot_skin"
+        },
+        {
+            "name": "nose_cone",
+            "type": "cone",
+            "group": "body",
+            "radius_bottom": 4.5,
+            "radius_top": 0.6,
+            "height": 12.0,
+            "position": [0, 0, 54.0],
+            "caps": true,
+            "material": "depot_skin"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "attitude",
+            "status": "estimate",
+            "value": "nose along velocity (least drag at 281 km), +X toward nadir (roll is irrelevant to a body of revolution)",
+            "source": "No published depot attitude. The v1.1 legacy type was nadir-pointing. HLS points its nose at the Sun for its deployable arrays (Wikipedia, 'Starship HLS'), but a body-mounted band gains nothing from that. Estimate."
+        },
+        {
+            "subject": "body",
+            "status": "sourced",
+            "value": "one rigid group: no flaps, no heat shield, no deployables",
+            "source": "Wikipedia, 'Starship HLS': HLS and the depot 'do not re-enter Earth's atmosphere, which allows for the removal of the spacecraft's atmospheric heat shield and flight control surfaces (fins)'."
+        },
+        {
+            "subjects": [
+                "barrel_aft",
+                "barrel_forward"
+            ],
+            "status": "derived",
+            "value": "9 m diameter barrel, 48 m (a stretched Starship tank section)",
+            "source": "Starship's 9 m diameter (SpaceX). Length: the depot is 'a taller tanker' (Wikipedia, 'Orbital propellant depot' / Starship HLS) - the stretch is unpublished; 60 m overall here vs ~50 m for a Starship ship (estimate, range 50-70 m)."
+        },
+        {
+            "subject": "nose_cone",
+            "status": "estimate",
+            "value": "12 m cone from 4.5 m to a 0.6 m tip (the ogive as a cone)",
+            "source": "Starship's nose is an ogive ~12 m tall; the cone is the primitive nearest it (a cone over-states the flat facets' area slightly)."
+        },
+        {
+            "subject": "solar_band",
+            "status": "sourced",
+            "value": "4 m band of body-mounted cells around the barrel near the top",
+            "source": "Wikipedia, 'Starship HLS': 'Electrical power is supplied by a band of solar panels around the circumference of the vehicle' (HLS). That the depot shares it, the band height and its position are ESTIMATES."
+        },
+        {
+            "subject": "depot_skin",
+            "status": "estimate",
+            "value": "bare stainless (the new stainless_steel preset, ring-weld seams)",
+            "source": "The depot uses 'a special purpose insulating tile' for MMOD and cryogenic insulation (Wikipedia, 'Starship HLS'); its coverage and colour are unpublished, so the flight-proven bare 304L exterior stands in. Swap this one material when depot imagery exists."
+        }
+    ]
+}

@@ -268,6 +268,124 @@ double satMagnitudeFromIntensity(double intensity, double rangeM)
     return kSunMagV - 2.5 * std::log10(intensity / (rangeM * rangeM));
 }
 
+// ── Ground-site aim ───────────────────────────────────────────────────────────────────────────
+namespace
+{
+uint32_t groundHashU(uint32_t x) // sat_orbit.comp hashU()
+{
+    x ^= x >> 16u;
+    x *= 0x7feb352du;
+    x ^= x >> 15u;
+    x *= 0x846ca68bu;
+    x ^= x >> 16u;
+    return x;
+}
+float groundPairScore(uint32_t a, uint32_t b) // pairScore(): the GPU's float, so ties and order agree
+{
+    return float(groundHashU(a * 0x9E3779B9u ^ groundHashU(b))) * (1.0f / 4294967296.0f);
+}
+glm::dvec3 ecefToEci(const glm::dvec3 &d, double gmst)
+{
+    const double c = std::cos(gmst), s = std::sin(gmst);
+    return {c * d.x - s * d.y, s * d.x + c * d.y, d.z};
+}
+glm::dvec3 idealTowards(const glm::dvec3 &sat, const glm::dvec3 &target, const glm::dvec3 &sun,
+                        const glm::dvec3 &fallback)
+{
+    const glm::dvec3 n = sun + glm::normalize(target - sat);
+    const double len = glm::length(n);
+    return len > 1e-5 ? n / len : fallback;
+}
+int findWinner(const SatGroundSiteAim &aim, uint32_t satIndex, const glm::dvec3 &sat, double gmst,
+               const glm::dvec3 &sun)
+{
+    int best = -1;
+    float bestScore = -1.0f;
+    for (size_t k = 0; k < aim.targetsEcef.size(); ++k)
+    {
+        const glm::dvec3 dir = ecefToEci(glm::dvec3(aim.targetsEcef[k]), gmst);
+        if (glm::dot(dir, sun) >= 0.0)
+            continue; // day side at this instant
+        const glm::dvec3 pos = aim.targetsEcef[k].w * dir;
+        if (glm::dot(dir, glm::normalize(sat - pos)) < aim.minElevSin)
+            continue;
+        const float score = groundPairScore(satIndex, (uint32_t)k);
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = (int)k;
+        }
+    }
+    return best;
+}
+glm::dvec3 nearFallbackIdeal(const SatGroundSiteAim &aim, const glm::dvec3 &sat, double gmst, const glm::dvec3 &sun)
+{
+    const glm::dvec3 nadir = -glm::normalize(sat);
+    int nearIdx = -1;
+    double nearCos = -2.0;
+    for (size_t k = 0; k < aim.targetsEcef.size(); ++k)
+    {
+        const glm::dvec3 dir = ecefToEci(glm::dvec3(aim.targetsEcef[k]), gmst);
+        if (glm::dot(dir, sun) >= 0.0)
+            continue;
+        const double c = glm::dot(-nadir, dir);
+        if (c > nearCos)
+        {
+            nearCos = c;
+            nearIdx = (int)k;
+        }
+    }
+    if (nearIdx >= 0)
+        return idealTowards(sat, aim.targetsEcef[nearIdx].w * ecefToEci(glm::dvec3(aim.targetsEcef[nearIdx]), gmst),
+                            sun, nadir);
+    const glm::dvec3 n = sun + nadir;
+    const double len = glm::length(n);
+    return len > 1e-5 ? n / len : nadir;
+}
+} // namespace
+
+SatGroundSiteResult satGroundSiteIdeal(const SatGroundSiteAim &aim, const SatOrbitElems &orbit, uint32_t satIndex,
+                                       double tJ2000, const glm::dvec3 &sunDirEci)
+{
+    SatGroundSiteResult r;
+    const double W = aim.lockWindowS;
+    const double Wfrac = std::max(1.0, W); // the CPU's windowFrac uses max(1, W); the shader's offsets use W
+    const double ratio = tJ2000 / Wfrac;
+    const double windowFrac = ratio - std::floor(ratio);
+    const double offset = double(groundHashU(satIndex * 0x2545F491u)) * (1.0 / 4294967296.0);
+    double fracI = windowFrac + offset;
+    fracI -= std::floor(fracI);
+    const double toStart = -fracI * W, toPrevStart = toStart - W;
+    const glm::dvec3 satCur = satOrbitStateAt(orbit, tJ2000 + toStart).posEci;
+    const glm::dvec3 satPrev = satOrbitStateAt(orbit, tJ2000 + toPrevStart).posEci;
+    const double gmstCur = earthRotationAngle(tJ2000 + toStart);
+    const double gmstPrev = earthRotationAngle(tJ2000 + toPrevStart);
+    const glm::dvec3 satNow = satOrbitStateAt(orbit, tJ2000).posEci;
+    const double gmstNow = earthRotationAngle(tJ2000);
+    const glm::dvec3 &sun = sunDirEci;
+
+    const int best = findWinner(aim, satIndex, satCur, gmstCur, sun);
+    const int bestPrev = findWinner(aim, satIndex, satPrev, gmstPrev, sun);
+    auto site = [&](int k, double gmst) { return aim.targetsEcef[k].w * ecefToEci(glm::dvec3(aim.targetsEcef[k]), gmst); };
+    const glm::dvec3 nadirCur = -glm::normalize(satCur);
+    const glm::dvec3 startAim = bestPrev >= 0 ? idealTowards(satCur, site(bestPrev, gmstCur), sun, nadirCur)
+                                              : nearFallbackIdeal(aim, satCur, gmstCur, sun);
+    const glm::dvec3 destAtStart = best >= 0 ? idealTowards(satCur, site(best, gmstCur), sun, nadirCur)
+                                             : nearFallbackIdeal(aim, satCur, gmstCur, sun);
+    const glm::dvec3 live = best >= 0 ? idealTowards(satNow, site(best, gmstNow), sun, -glm::normalize(satNow))
+                                      : nearFallbackIdeal(aim, satNow, gmstNow, sun);
+    const double angle0 = std::acos(std::clamp(glm::dot(startAim, destAtStart), -1.0, 1.0));
+    const double rate = std::max(0.01, aim.maxRateDegPerSec) * kPi / 180.0;
+    const double slew = std::clamp(angle0 / rate, 0.001, W);
+    const double tIn = std::clamp(fracI * W / slew, 0.0, 1.0);
+    const double blend = tIn * tIn * (3.0 - 2.0 * tIn); // smoothstep(0, slew, fracI·W)
+    const glm::dvec3 mixed = startAim + (live - startAim) * blend;
+    const double len = glm::length(mixed);
+    r.ideal = len > 1e-5 ? mixed / len : live;
+    r.target = best;
+    return r;
+}
+
 double satMagnitudeTo1000km(double mag, double rangeM)
 {
     return mag - 5.0 * std::log10(rangeM / 1.0e6);

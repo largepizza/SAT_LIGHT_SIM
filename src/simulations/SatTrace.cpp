@@ -68,6 +68,13 @@ SatTraceRow evalSatTraceRow(const SatTraceSetup &setup, const std::vector<Attitu
     in.sunDirEci = sunDirEciAt(t);
     in.obsEci = observerEciAt(setup.obsDirEcef, setup.obsRadiusM, t);
     in.flareTiltRad = setup.flareTiltRad;
+    if (setup.groundSite)
+    {
+        in.hasSiteIdeal = true;
+        in.siteIdeal =
+            satGroundSiteIdeal(setup.groundAim, setup.orbit, (uint32_t)std::max(0, setup.satelliteIndex), t, in.sunDirEci)
+                .ideal;
+    }
     const SatPhotResult r =
         evalSatPhotometry(groups, lobes, setup.orbit, t, in, nullptr, setup.occlusion ? occ : nullptr);
 
@@ -195,8 +202,16 @@ bool writeSatTraceCsv(const std::string &path, const SatTraceSetup &s, const std
       << "# observer_dir_ecef: " << fmtVec(s.obsDirEcef) << "\n"
       << "# observer_radius_m: " << fmtG(s.obsRadiusM) << "\n"
       << "# flare_tilt_rad: " << fmtG(s.flareTiltRad) << "\n"
-      << "# extinction_k: " << fmtG(s.extinctionK) << "\n"
-      << "# note: t_j2000 is sim time (s since J2000); the sim's Earth rotation omits GMST at J2000, so it is "
+      << "# extinction_k: " << fmtG(s.extinctionK) << "\n";
+    if (s.groundSite)
+    {
+        f << "# ground_lock_window_s: " << fmtG(s.groundAim.lockWindowS) << "\n"
+          << "# ground_max_rate_deg_s: " << fmtG(s.groundAim.maxRateDegPerSec) << "\n"
+          << "# ground_min_elev_sin: " << fmtG(s.groundAim.minElevSin) << "\n";
+        for (const glm::dvec4 &tg : s.groundAim.targetsEcef)
+            f << "# ground_target: " << fmtG(tg.x) << " " << fmtG(tg.y) << " " << fmtG(tg.z) << " " << fmtG(tg.w) << "\n";
+    }
+    f << "# note: t_j2000 is sim time (s since J2000); the sim's Earth rotation omits GMST at J2000, so it is "
          "not real UTC. Empty magnitude fields = dark (Earth's shadow) or below the horizon.\n"
       << kTraceColumns << "\n";
     for (const SatTraceRow &r : rows)
@@ -260,6 +275,17 @@ bool readSatTraceCsv(const std::string &path, SatTraceSetup &s, std::vector<SatT
             else if (key == "observer_radius_m") s.obsRadiusM = d;
             else if (key == "flare_tilt_rad") s.flareTiltRad = d;
             else if (key == "extinction_k") s.extinctionK = d;
+            else if (key == "ground_lock_window_s") { s.groundSite = true; s.groundAim.lockWindowS = d; }
+            else if (key == "ground_max_rate_deg_s") s.groundAim.maxRateDegPerSec = d;
+            else if (key == "ground_min_elev_sin") s.groundAim.minElevSin = d;
+            else if (key == "ground_target")
+            {
+                std::istringstream is(v);
+                glm::dvec4 tg;
+                ok = (bool)(is >> tg.x >> tg.y >> tg.z >> tg.w);
+                if (ok)
+                    s.groundAim.targetsEcef.push_back(tg);
+            }
             if (!ok)
             {
                 err = path + ":" + std::to_string(lineNo) + ": bad value for " + key;

@@ -206,7 +206,7 @@ struct ConstellationConfig
     bool alignTerminator = false; // Disk: derive incl+raan from sunDirECI at init time
     int numRings = 1;             // Disk: number of concentric rings (1 = single ring)
     float ringSpacingM = 0.0f;    // Disk: altitude step between consecutive rings (meters)
-    bool highlight = false;       // highlight mode: show all sats at fixed brightness, ignoring lighting
+    bool highlight = false;       // highlight mode: every above-horizon sat at least the census dot
     // Populated by initConstellation():
     uint32_t orbitStart = 0; // first index into satOrbits[]
     uint32_t orbitCount = 0; // number of orbits belonging to this constellation
@@ -314,8 +314,8 @@ static_assert(kSatTypeArrayOffset % 16 == 0, "GpuSatType array must stay 16-byte
 // only for satellites that survive its horizon/enable cull, sat_flare.comp finishes each one in
 // place. Slot order is arbitrary (atomic append) — satVisibleIdxBuf maps slot → satellite index.
 // Between the two dispatches the fields mean:
-//   highlight (census mode): flareIntensity < 0, rangeM = range (m)
-//   lit:                     flareIntensity = raw flux, rangeM = range (m)
+//   flareIntensity = raw flux, rangeM = range (m); angularSize -1 = highlighted constellation
+//   (census mode: sat_flare.comp raises it to at least highlightFlare), else 0
 // After sat_flare.comp every entry has the final meaning below (flareIntensity 0 = culled by
 // visThresh; still in the list, discarded by the vertex shaders). Also the star and planet record.
 // Phase 4: the tint is packed to RGBA8 (packUnorm4x8) so the record carries the range, which the
@@ -353,7 +353,7 @@ struct GpuSatListHeader
     GpuSatVisible selected;           // offset 32 — the selected satellite's final record, or zeros
     // offset 64 — the selected satellite's PRE-photometry values as sat_orbit.comp produced them
     // (benchmarking M2, GPU parity): raw flux before sky/extinction/pollution (flare units incl.
-    // brightnessScale; < 0 in highlight mode) and range. selectedFound = 1 when the selection was
+    // brightnessScale) and range. selectedFound = 1 when the selection was
     // in this frame's compact list at all (0 = culled below the horizon / constellation disabled).
     float selectedRawFlux;
     float selectedRangeM;
@@ -1624,6 +1624,9 @@ private:
     // The selected satellite's orbit exactly as uploadSatOrbits() bakes it (floats promoted, SSO
     // RAAN anchored at sim start) — what the parity readout and the trace evaluate.
     SatOrbitElems orbitElemsOf(const SatOrbit &orb) const;
+    // The ground-site mirror aim as sat_orbit.comp sees it (the loaded reflector targets + the lock
+    // window / slew / elevation settings), for the CPU evaluator: satGroundSiteIdeal().
+    SatGroundSiteAim groundSiteAim() const;
 
     // ── Magnitude trace (benchmarking M9) ─────────────────────────────────────
     // "Trace pass" in the selected-satellite panel: the CPU evaluator over the selection's current
@@ -1671,7 +1674,7 @@ private:
     void exportTrace();
     // Why a type's magnitude can't be measured by the CPU evaluator (legacy type, ground-site aim),
     // or nullptr when it can. Shared by the trace and the bulk export.
-    static const char *photometryUnsupportedReason(const SatelliteType &type);
+    const char *photometryUnsupportedReason(const SatelliteType &type) const;
 
     // ── Bulk export (benchmarking M10) ────────────────────────────────────────
     // Settings → Photometry: every instant, at a fixed cadence, when a satellite of the chosen

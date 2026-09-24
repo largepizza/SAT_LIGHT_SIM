@@ -16,7 +16,7 @@
 //
 // Per-invocation work (roughly in pipeline order):
 //   1. Bounds         — the indirect dispatch rounds up to 64; entries past listCount exit
-//   2. Highlight mode — fixed census dot for highlighted constellations
+//   2. Highlight flag — a highlighted constellation's satellites get at least the census dot (after 4)
 //   3. Daytime/moonlight suppression, atmospheric extinction, light-pollution + beam-glow domes
 //   4. Soft brightness ceiling relative to the sun
 //   5. Visibility cull — zero output if effectFlare < visThresh (saves vertex work)
@@ -31,8 +31,8 @@ layout(local_size_x = 64) in;
 
 // ── In/out: compact GpuSatVisible list (32 bytes each, std430), rewritten in place ─────
 // Matches GpuSatVisible in SatelliteSim.h. On entry (appended by sat_orbit.comp):
-//   highlight: flareIntensity < 0, rangeM = range (m)
-//   lit:       flareIntensity = raw flux, rangeM = range (m), color already eclipse-tinted
+//   flareIntensity = raw flux, rangeM = range (m), color already eclipse-tinted,
+//   angularSize = -1 for a highlighted constellation (census view), else 0
 // On exit every record holds its final meaning (ENU direction, effectFlare, tint, sprite px,
 // range — the point draws write their depth from it, include/depth.glsl).
 struct SatVisible {
@@ -70,7 +70,7 @@ layout(set = 0, binding = 10) buffer SatListBuf {
     uint dispatchX, dispatchY, dispatchZ;
     uint drawVertexCount, drawInstanceCount, drawFirstVertex, drawFirstInstance;
     SatVisible selected;
-    float selectedRawFlux;    // pre-photometry flareIntensity (raw flux; < 0 = highlight mode)
+    float selectedRawFlux;    // pre-photometry flareIntensity (raw flux)
     float selectedRangeM;     // pre-photometry rangeM (m)
     uint  selectedFound;      // 1 = the selection was in this frame's compact list
     uint  selectedPad;
@@ -234,15 +234,10 @@ void main() {
     vec3  skyDir = sat.skyDir;
     float range  = sat.rangeM;      // range to the satellite (meters)
 
-    // ── Highlight mode: fixed-brightness census view ─────────────────────────
-    // sat_orbit.comp flags highlighted constellations with a negative flareIntensity. Skip all
-    // lighting math and emit a uniform dot so every above-horizon satellite is equally visible
-    // regardless of shadow or daytime sky.
-    if (sat.flareIntensity < 0.0) {
-        float angSize = pointSpriteSizePx(pointPsf(satFlareToMag(pc.highlightFlare)).y);
-        emit(idx, SatVisible(skyDir, pc.highlightFlare, sat.color, angSize, range, 0.0));
-        return;
-    }
+    // Highlight mode (census view): sat_orbit.comp flags a highlighted constellation's satellites with
+    // a negative angularSize. They get the full photometry below, then at least pc.highlightFlare, so
+    // every above-horizon one is visible (in shadow, in daylight) and a bright one stays bright.
+    const bool highlighted = sat.angularSize < 0.0;
 
     float flare = sat.flareIntensity;
 
@@ -339,6 +334,8 @@ void main() {
     // preserved (monotonic in effectFlare), and the low end is untouched — at effectFlare ≪
     // sunRefIntensity, effectFlare' ≈ effectFlare, so ordinary Starlink-class flares are unaffected.
     effectFlare = pc.sunRefIntensity * effectFlare / (effectFlare + pc.sunRefIntensity);
+    if (highlighted)
+        effectFlare = max(effectFlare, pc.highlightFlare);
 
     // ── Cull if below visibility threshold ────────────────────────────────────
     // The entry stays in the list as an invisible record — sat_point.vert discards it.

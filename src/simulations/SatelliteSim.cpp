@@ -3029,7 +3029,13 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     // ── Pose ─────────────────────────────────────────────────────────────────
     geo.nadir = -up;
     geo.sun = sun;
-    geo.siteIdeal = -up; // ground-site aim is not evaluated here: face straight down
+    // Ground-site mirrors: tracking a satellite under Live light, its real aim (as the GPU and the scene
+    // pass have it); otherwise the Sun/nadir bisector, so the mirror at least throws its light down.
+    geo.siteIdeal = glm::length(sun - up) > 1e-9 ? glm::normalize(sun - up) : -up;
+    if (tracked && !viewerStudioLight && attUsesGroundSite(type.groups))
+        geo.siteIdeal = eciToEcef(satGroundSiteIdeal(groundSiteAim(), orbitElemsOf(satOrbits[viewerSatIndex]),
+                                                     (uint32_t)viewerSatIndex, tNow, glm::dvec3(sunDirECI))
+                                      .ideal);
     geo.flareTiltRad = glm::radians((double)flareMitigationTiltDeg);
     const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, !viewerSunlitPose);
 
@@ -3246,6 +3252,11 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
         in.sunDirEci = glm::dvec3(sunDirECI);
         in.obsEci = obsEci;
         in.flareTiltRad = glm::radians((double)flareMitigationTiltDeg);
+        if (attUsesGroundSite(type.groups)) // a mirror aimed at its ground site, as the GPU aims it
+        {
+            in.hasSiteIdeal = true;
+            in.siteIdeal = satGroundSiteIdeal(groundSiteAim(), e, (uint32_t)sat, tNow, in.sunDirEci).ideal;
+        }
         const SatPhotResult r = evalSatPhotometry(type.groups, type.lobes, e, tNow, in);
         const glm::dvec3 satEcef = eciToEcef(r.orbit.posEci);
         const glm::dvec3 rel = satEcef - obsEcef;
@@ -3259,7 +3270,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
         geo.nadir = eciToEcef(r.orbit.nadir);
         geo.velocity = eciToEcef(r.orbit.velocity);
         geo.sun = eciToEcef(glm::dvec3(sunDirECI));
-        geo.siteIdeal = geo.nadir;
+        geo.siteIdeal = in.hasSiteIdeal ? eciToEcef(in.siteIdeal) : geo.nadir;
         geo.tumbleAngle = r.orbit.tumbleAngle;
         geo.tumbleAxis = eciToEcef(e.tumbleAxis);
         geo.flareTiltRad = in.flareTiltRad;
@@ -3754,16 +3765,25 @@ static void formatSimClock(double tJ2000, char *buf, size_t n, bool withDate)
         snprintf(buf, n, "%02d:%02d:%02d", utc->tm_hour, utc->tm_min, utc->tm_sec);
 }
 
-const char *SatelliteSim::photometryUnsupportedReason(const SatelliteType &type)
+const char *SatelliteSim::photometryUnsupportedReason(const SatelliteType &type) const
 {
     if (!type.isModel())
         return "a legacy type's brightness is in display units, not a magnitude. This needs a geometry-model type.";
-    for (const AttitudeGroup &g : type.groups)
-        if (g.primaryTarget == AttTarget::SunReflectGroundSite || g.secondaryTarget == AttTarget::SunReflectGroundSite ||
-            g.jointTarget == AttTarget::SunReflectGroundSite)
-            return "this type aims at a ground site, and the CPU evaluator does not model the lock-window target "
-                   "choice yet.";
+    if (attUsesGroundSite(type.groups) && reflectorTargetCount <= 0)
+        return "this type aims at a ground site, and no reflector targets are loaded.";
     return nullptr;
+}
+
+SatGroundSiteAim SatelliteSim::groundSiteAim() const
+{
+    SatGroundSiteAim a;
+    a.targetsEcef.reserve((size_t)std::max(0, reflectorTargetCount));
+    for (int k = 0; k < reflectorTargetCount; ++k) // the same floats reflectorTargetsECEFBuf holds
+        a.targetsEcef.emplace_back(glm::dvec3(reflectorTargetsECEF[k]), (double)reflectorTargetsRadiusM[k]);
+    a.lockWindowS = reflectorLockWindowS;
+    a.maxRateDegPerSec = mirrorMaxRateDegPerSec;
+    a.minElevSin = sinf(glm::radians(reflectorMinElevDeg)); // as SatOrbitPC::minBeamElevSin
+    return a;
 }
 
 bool SatelliteSim::traceStale() const
@@ -3836,6 +3856,9 @@ void SatelliteSim::computeSelectedTrace()
     s.obsRadiusM = (double)(float)(kEarthRadius + obsTerrainH + obsHeightOffset); // as updatePositions()
     s.flareTiltRad = (double)glm::radians(flareMitigationTiltDeg);
     s.extinctionK = extinctionCoeff;
+    s.groundSite = attUsesGroundSite(type.groups);
+    if (s.groundSite)
+        s.groundAim = groundSiteAim();
     s.appVersion = APP_VERSION;
     s.gitCommit = APP_GIT_COMMIT;
 
@@ -3976,6 +3999,7 @@ void SatelliteSim::startBulkExport()
         std::vector<GpuSatLobe> lobes;
         SatOcclusion occlusion;
         bool occlusionOn = false;
+        SatGroundSiteAim groundAim;
         std::vector<BulkExportSat> sats;
         BulkExportSpec spec;
         BenchCsvHeader header;
@@ -4030,6 +4054,11 @@ void SatelliteSim::startBulkExport()
     sp.t1 = sp.t0 + kBulkWindowDays[bulkWindowIdx] * 86400.0;
     sp.cadenceS = kBulkCadenceS[bulkCadenceIdx];
     sp.extinctionK = extinctionCoeff; // minElevationDeg / Sun window: SatBench's defaults (BulkExportSpec)
+    if (attUsesGroundSite(type.groups))
+    {
+        job->groundAim = groundSiteAim();
+        sp.groundAim = &job->groundAim; // the job outlives the worker's use of it
+    }
 
     char stamp[32], num[64];
     formatSimClock(sp.t0, stamp, sizeof(stamp), true);
@@ -4143,6 +4172,13 @@ void SatelliteSim::updateSelectedPhotometry()
     in.obsEci = glm::dvec3(pin.obsECI);
     in.flareTiltRad = pin.flareTiltRad;
     in.mirrorBoost = pin.mirrorBoost;
+    if (type.isModel() && attUsesGroundSite(type.groups))
+    {
+        in.hasSiteIdeal = true;
+        in.siteIdeal = satGroundSiteIdeal(groundSiteAim(), orbitElemsOf(satOrbits[pin.satIdx]), (uint32_t)pin.satIdx,
+                                          pin.tAbs, in.sunDirEci)
+                           .ideal;
+    }
 
     LegacyReflectance legacy;
     legacy.surfGroup0 = type.primary.group;
@@ -4182,11 +4218,6 @@ void SatelliteSim::updateSelectedPhotometry()
     if (!hdr->selectedFound)
     {
         snprintf(selPhotLine[2], sizeof(selPhotLine[2]), "GPU parity: not in view");
-        return;
-    }
-    if (hdr->selectedRawFlux < 0.0f)
-    {
-        snprintf(selPhotLine[2], sizeof(selPhotLine[2]), "GPU parity: n/a (highlight mode)");
         return;
     }
     const double gpu = hdr->selectedRawFlux;

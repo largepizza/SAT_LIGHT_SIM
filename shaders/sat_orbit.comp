@@ -214,9 +214,8 @@ layout(set = 0, binding = 10) readonly buffer SatLobeSampleBuf {
 
 // ── Output: compact pre-photometry GpuSatVisible list, finished in place by sat_flare.comp ──
 // Must match GpuSatVisible (32 bytes) in SatelliteSim.h. Appended here as:
-//   highlight: flareIntensity < 0, rangeM = range (m)
-//   lit:       flareIntensity = raw flux (before sky/extinction/pollution), rangeM = range (m),
-//              color already eclipse-tinted; angularSize unset (sat_flare.comp sizes the sprite)
+//   flareIntensity = raw flux (before sky/extinction/pollution), rangeM = range (m), color already
+//   eclipse-tinted; angularSize -1 = highlighted constellation, else 0 (sat_flare.comp sizes the sprite)
 struct SatVisible {
     vec3  skyDir;
     float flareIntensity;
@@ -1336,16 +1335,6 @@ bool processSatellite(uint i, out SatVisible rec)
     vec3 skyDir    = normalize(enu);
     vec3 baseColor = vec3(ty.baseColorR, ty.baseColorG, ty.baseColorB);
 
-    // ── Highlight mode: fixed-brightness census view ──────────────────────────
-    // Every above-horizon satellite of a highlighted constellation is drawn at a fixed intensity,
-    // bypassing all lighting — sat_flare.comp sees the negative flareIntensity and emits the fixed
-    // dot. (Was signalled by a diffuse=2.0 sentinel through GpuSatInput.) The beam bookkeeping
-    // above still ran: highlight is a display mode and must not change what the mirrors do.
-    if (bool((pc.highlightMask >> orb.constIdx) & 1u)) {
-        rec = SatVisible(skyDir, -1.0, packUnorm4x8(vec4(baseColor, 1.0)), 0.0, range, 0.0);
-        return true;
-    }
-
     // ── Distance falloff (inverse-square law, normalised to REF_RANGE) ──────────
     // Physically: reflected flux ∝ 1/r². Clamped at 1.0 so sats closer than
     // REF_RANGE don't over-brighten. GEO at 35 786 km ≈ 0.02% of LEO brightness.
@@ -1398,7 +1387,12 @@ bool processSatellite(uint i, out SatVisible rec)
     // visibility cull and the sprite size.
     // Phase 4d: the model's on-screen diameter (px), for sat_flare.comp's mesh candidates.
     float meshPx = (ty.meshRadius > 0.0 && meshPixelAngle > 0.0) ? 2.0 * ty.meshRadius / (range * meshPixelAngle) : 0.0;
-    rec = SatVisible(skyDir, flare, packUnorm4x8(vec4(outBaseColor, 1.0)), 0.0, range, meshPx);
+    // Highlight mode (a census view of a constellation): lit normally, flagged by a negative sprite
+    // size (unset until sat_flare.comp), which raises it to at least the fixed census dot. It used to
+    // skip the lighting and draw EVERY highlighted satellite at that dot (~mag 5.4), so highlighting
+    // a sunlit ISS at mag -2 made it far fainter and harder to find.
+    const float highlightFlag = bool((pc.highlightMask >> orb.constIdx) & 1u) ? -1.0 : 0.0;
+    rec = SatVisible(skyDir, flare, packUnorm4x8(vec4(outBaseColor, 1.0)), highlightFlag, range, meshPx);
     return true;
 }
 

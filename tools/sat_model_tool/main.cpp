@@ -256,8 +256,30 @@ bool selfTestAtmosphere()
 // law, lobe normal = R·B·normalT — against the per-triangle brute force posed by the same poses.
 // With the exact bake (no budget merge) the two must agree to float rounding; the app's budget
 // bake is reported alongside for information.
+// Ground-site mirror types in the self-tests: 60 fixed pseudo-random sites on the sea-level sphere and
+// the app's default lock window / slew / elevation, so the tests don't depend on reflector_targets.json.
+const SatGroundSiteAim &selfTestGroundAim()
+{
+    static const SatGroundSiteAim aim = [] {
+        SatGroundSiteAim a;
+        std::mt19937_64 rng(11);
+        auto u = [&]() { return (double)(rng() >> 11) * (1.0 / 9007199254740992.0); };
+        for (int k = 0; k < 60; ++k)
+        {
+            const double z = 2.0 * u() - 1.0, ph = 2.0 * satphot::kPi * u(), r = std::sqrt(1.0 - z * z);
+            a.targetsEcef.emplace_back(r * std::cos(ph), r * std::sin(ph), z, satphot::kEarthRadiusM);
+        }
+        a.lockWindowS = 90.0;
+        a.maxRateDegPerSec = 0.11;
+        a.minElevSin = std::sin(10.0 * satphot::kPi / 180.0);
+        return a;
+    }();
+    return aim;
+}
+
 bool selfTestModel(const SatModel &m, const std::vector<SatTri> &tris, int budget, int samples)
 {
+    const bool groundSite = attUsesGroundSite(m.groups);
     SatLobeBakeStats exactStats, budgetStats;
     std::vector<GpuSatLobe> exact = bakeSatLobes(m, tris, 1 << 20, exactStats);
     std::vector<GpuSatLobe> budgeted = bakeSatLobes(m, tris, budget, budgetStats);
@@ -284,6 +306,11 @@ bool selfTestModel(const SatModel &m, const std::vector<SatTri> &tris, int budge
         in.sunDirEci = sunDirEciAt(t);
         // Observer on the ground, within ~25° of the sub-satellite point.
         in.obsEci = satphot::kEarthRadiusM * glm::normalize(-st.nadir + 0.45 * randDir());
+        if (groundSite)
+        {
+            in.hasSiteIdeal = true;
+            in.siteIdeal = satGroundSiteIdeal(selfTestGroundAim(), e, (uint32_t)iter, t, in.sunDirEci).ideal;
+        }
         SatPhotResult r = evalSatPhotometry(m.groups, exact, e, t, in);
         if (!r.supported)
         {
@@ -303,7 +330,7 @@ bool selfTestModel(const SatModel &m, const std::vector<SatTri> &tris, int budge
         geo.nadir = st.nadir;
         geo.velocity = st.velocity;
         geo.sun = in.sunDirEci;
-        geo.siteIdeal = st.nadir;
+        geo.siteIdeal = in.hasSiteIdeal ? in.siteIdeal : st.nadir;
         geo.tumbleAngle = st.tumbleAngle;
         geo.tumbleAxis = e.tumbleAxis;
         std::vector<GroupPose> poses = evalGroupPoses(m.groups, geo, false);
@@ -337,8 +364,50 @@ bool selfTestModel(const SatModel &m, const std::vector<SatTri> &tris, int budge
     }
     if (unsupported > 0)
     {
-        std::printf("  photometry self-test: SKIPPED — attitude aims at a ground site (needs the lock-window aim)\n");
-        return true;
+        std::printf("  photometry self-test: FAIL — %d configurations unsupported by the evaluator\n", unsupported);
+        return false;
+    }
+    if (groundSite)
+    {
+        // The aim itself: where the reflected sunbeam lands relative to the chosen site. Mid-slew
+        // (a new window's target) it lags by design; settled, it must hit the site.
+        const SatGroundSiteAim &aim = selfTestGroundAim();
+        std::vector<double> missDeg;
+        int withTarget = 0, tried = 0;
+        for (int iter = 0; iter < 4000; ++iter)
+        {
+            SatOrbitElems e;
+            e.raan = ud(rng) * 2.0 * satphot::kPi;
+            e.incl = ud(rng) * satphot::kPi;
+            e.u0 = ud(rng) * 2.0 * satphot::kPi;
+            e.rSatM = satphot::kEarthRadiusM + 350000.0 + ud(rng) * 900000.0;
+            const double t = 6.3e8 + ud(rng) * 5.0e8;
+            const glm::dvec3 sun = sunDirEciAt(t);
+            const SatGroundSiteResult g = satGroundSiteIdeal(aim, e, (uint32_t)iter, t, sun);
+            ++tried;
+            if (g.target < 0)
+                continue;
+            ++withTarget;
+            const glm::dvec3 sat = satOrbitStateAt(e, t).posEci;
+            const double th = earthRotationAngle(t), c = std::cos(th), sn = std::sin(th);
+            const glm::dvec4 &tg = aim.targetsEcef[g.target];
+            const glm::dvec3 site = tg.w * glm::dvec3(c * tg.x - sn * tg.y, sn * tg.x + c * tg.y, tg.z);
+            const glm::dvec3 beam = -sun + 2.0 * glm::dot(g.ideal, sun) * g.ideal;
+            missDeg.push_back(std::acos(std::clamp(glm::dot(beam, glm::normalize(site - sat)), -1.0, 1.0)) * 180.0 /
+                              satphot::kPi);
+        }
+        std::sort(missDeg.begin(), missDeg.end());
+        const double med = missDeg.empty() ? 0.0 : missDeg[missDeg.size() / 2];
+        const double onSite =
+            missDeg.empty()
+                ? 0.0
+                : (double)(std::lower_bound(missDeg.begin(), missDeg.end(), 0.01) - missDeg.begin()) / missDeg.size();
+        const bool aimOk = !missDeg.empty() && med < 0.01;
+        std::printf("    %s ground-site aim: %d of %d configurations had a site; beam on the site (< 0.01 deg) in %.0f%%, "
+                    "median miss %.2g deg (the rest are mid-slew)\n",
+                    aimOk ? "ok  " : "FAIL", withTarget, tried, 100.0 * onSite, med);
+        if (!aimOk)
+            return false;
     }
     auto p = [](std::vector<double> v, double q) {
         if (v.empty())
@@ -424,6 +493,11 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
         SatPhotInputs in;
         in.sunDirEci = sunDirEciAt(t);
         in.obsEci = satphot::kEarthRadiusM * glm::normalize(-so.nadir + 0.45 * randDir());
+        if (attUsesGroundSite(m.groups))
+        {
+            in.hasSiteIdeal = true;
+            in.siteIdeal = satGroundSiteIdeal(selfTestGroundAim(), e, (uint32_t)iter, t, in.sunDirEci).ideal;
+        }
         SatPhotResult open = evalSatPhotometry(m.groups, lobes, e, t, in);
         if (!open.supported || open.sinElevation < 0.05)
             continue;
@@ -433,7 +507,7 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
         geo.nadir = so.nadir;
         geo.velocity = so.velocity;
         geo.sun = in.sunDirEci;
-        geo.siteIdeal = so.nadir;
+        geo.siteIdeal = in.hasSiteIdeal ? in.siteIdeal : so.nadir;
         std::vector<GroupPose> poses = evalGroupPoses(m.groups, geo, false);
         for (size_t i = 0; i < tris.size(); ++i)
         {
@@ -933,6 +1007,12 @@ bool selfTestTrace(const SatModel &m, const std::string &id, int budget)
     s.obsDirEcef = {std::cos(th) * sub.x - std::sin(th) * sub.y, std::sin(th) * sub.x + std::cos(th) * sub.y, sub.z};
     s.obsRadiusM = satphot::kEarthRadiusM + 1600.0;
     s.extinctionK = 0.25;
+    s.groundSite = attUsesGroundSite(m.groups);
+    if (s.groundSite)
+    {
+        s.groundAim = selfTestGroundAim(); // written into the header and read back for the replay
+        s.satelliteIndex = 7;
+    }
     double tA = 0.0, tB = 0.0;
     const bool passOk = satTracePassWindow(s, t0, tA, tB) && sinElevationOk(s, 0.5 * (tA + tB));
 
@@ -1047,6 +1127,8 @@ bool selfTestBulkExport(const SatModel &m, int budget)
     spec.t1 = spec.t0 + 2.0 * 86400.0;
     spec.cadenceS = 60.0;
     spec.extinctionK = 0.25;
+    if (attUsesGroundSite(m.groups))
+        spec.groundAim = &selfTestGroundAim();
     std::vector<BulkExportSat> sats;
     std::mt19937_64 rng(7);
     const double rSat = satphot::kEarthRadiusM + 550000.0;

@@ -461,8 +461,18 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   readout and exports measure with — **keep it in step with `sat_orbit.comp`** like
   `evalGroupPoses`. `sunDirEciAt()`/`observerEciAt()` are the ONE copy of those formulas —
   `updatePositions()` calls them — and `SatelliteSim.cpp` static_asserts its orbital constants
-  against `satphot::`. Ground-site (TargetedReflector) types need the caller's `siteIdeal`; legacy
-  two-surface types aren't modelled (tuned display units, not a magnitude).
+  against `satphot::`. Ground-site (TargetedReflector) types take their `siteIdeal` from
+  **`satGroundSiteIdeal()`** (SatPhotometry, 2026-09-24): the double-precision mirror of
+  `sat_orbit.comp`'s ground-site block - lock window with the per-satellite hash offset, `pairScore`
+  in the shader's integer hash and float, night-side + elevation eligibility, the nearest-site
+  fallback, the rate-limited ease. It needs the targets and settings (`SatGroundSiteAim`, built by
+  `SatelliteSim::groundSiteAim()` from the same floats as `reflectorTargetsECEFBuf`) and the
+  satellite's roster index, which seeds its site preference. Traces carry all of it in their header
+  (`ground_*` keys), so a replay needs no target file; the tool's self-tests use 60 fixed synthetic
+  sites and check the settled beam lands on its site (< 0.01 deg). Every CPU consumer uses it: parity
+  readout, traces, bulk export, the scene meshes and the tracked viewer - until then a mirror mesh
+  was posed facing straight down. Legacy two-surface types aren't modelled (tuned display units, not
+  a magnitude).
   `SatModelTool --selftest N` is its gate: known-value checks (Sun declination at the 2020
   solstice/equinox, orbit radius/velocity/inclination, zero off-specular/phase in constructed
   geometry, magnitude conventions) + posed lobes vs posed per-triangle brute force (must agree to
@@ -556,7 +566,8 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   `SatModelTool --summarize-samples <csv>` reads either and, for a SatBench file, checks it
   reproduces the run's n/mean/median/sd (the M10 gate). `pass` numbers consecutive runs of visible
   instants per satellite; `satellite` is the roster index (-1 for SatBench's random draws).
-  `photometryUnsupportedReason()` is the shared "why not" (legacy type, ground-site aim).
+  `photometryUnsupportedReason()` is the shared "why not" (legacy type; ground-site aim with no
+  targets loaded).
 - **Accuracy gate (milestone M11, 2026-09-23).** `cmake --build <dir> [--config Release] --target
   accuracy-gate` builds SatModelTool and runs `cmake/AccuracyGate.cmake` — **the only list** of
   checks: every `data/satellite_models/*.json` through `--selftest 400`, every `data/benchmarks/*.json`
@@ -679,7 +690,13 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, `iss.json` (the first parity model: 50 components; station
   root, TRRJ radiators edge-on, SARJ alpha, one beta group with four mast pivots; 8 legacy Kapton
-  wings of two blankets each plus the six iROSAs installed by 2023; 514 exact lobes), and the M4 benchmark references `starlink_v1_0.json`
+  wings of two blankets each plus the six iROSAs installed by 2023; 514 exact lobes), `tiangong.json`
+  (T of three modules; the labs' two-axis wings as alpha about the labs' axis + beta with two
+  pivots), `starship_depot.json` (9 x 60 m body of revolution in the `stainless_steel` preset with a
+  body-mounted solar band), `spacex_ai_sat.json` (sun-pointing bus, flare-mitigation-tilted wings,
+  radiators in the Sun-nadir plane; 10 lobes, flown by a million) and `reflect_orbital.json` (a 48.7 m
+  square membrane mirror on `sun_reflect_ground_site`) - the parity models; sources and estimates in
+  each file, magnitudes in `KNOWN_RESIDUALS.md` - and the M4 benchmark references `starlink_v1_0.json`
   (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`
   (Mallama 2021 period: array fixed 24 deg from vertical away from the Sun, radio-transparent
   visor sheet under the antennas) — both sourced from Cole 2021 (arXiv:2107.06026) and
@@ -972,8 +989,10 @@ by `sat_point.vert`, `flare_source.vert` and the trail splat pass via indirect d
 [16] color (uint, packUnorm4x8), angularSize (float, sprite px), rangeM (float), pad
 ```
 Between the two dispatches it is a **pre-photometry** record (culled satellites are not in the
-list at all): highlighted ones carry `flareIntensity < 0`; lit ones carry the raw flux, with
-`color` already eclipse-tinted and `angularSize` unset. After `sat_flare.comp`, a satellite below
+list at all): each carries the raw flux, with `color` already eclipse-tinted and `angularSize` = -1
+for a highlighted constellation (else 0). Highlight mode lights satellites normally and raises them to
+at least `highlightFlare`; until 2026-09-24 it skipped the lighting and drew every one at that
+~mag 5.4 dot, so highlighting a sunlit ISS made it FAINTER. After `sat_flare.comp`, a satellite below
 `visThresh` stays in the list as a zero record. Stars and planets use the same record
 (`rangeM` = 0, at infinity; `packVisibleColor()` on the CPU). **Phase 4 (2026-09-23):** the tint
 was a `vec3`; packing it freed the slot for `rangeM`, which the point draws write as their depth

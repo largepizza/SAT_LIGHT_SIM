@@ -59,9 +59,12 @@ struct BenchSample
 // The evaluation both share: one satellite at one instant for one observer. Fills `out` and returns
 // true when the satellite is at or above minElevationDeg, fully sunlit (penumbra excluded, as in
 // the papers) and its type is supported; censoring is the caller's business.
+// `aim` (ground-site mirror types only): the targets and settings to aim with; `satIndex` seeds the
+// site choice like the app's roster index.
 bool benchEvalSample(const std::vector<AttitudeGroup> &groups, const std::vector<GpuSatLobe> &lobes,
                      const SatOcclusion *occ, const SatOrbitElems &orbit, double tJ2000, glm::dvec3 obsEci,
-                     glm::dvec3 sunDirEci, double minElevationDeg, double extinctionK, BenchSample &out);
+                     glm::dvec3 sunDirEci, double minElevationDeg, double extinctionK, BenchSample &out,
+                     const SatGroundSiteAim *aim = nullptr, uint32_t satIndex = 0);
 
 // CSV format "sat-light-sim-samples/1": '#'-prefixed "key: value" header lines (the caller's
 // provenance, in order), the column header, one row per sample. Magnitude fields are empty when
@@ -89,6 +92,7 @@ struct BulkExportSpec
     double minElevationDeg = 20.0;
     double sunAltMinDeg = -18.0, sunAltMaxDeg = -6.0;
     double extinctionK = 0.0;
+    const SatGroundSiteAim *groundAim = nullptr; // ground-site mirror types: the app's targets + settings
 };
 struct BulkExportSat
 {

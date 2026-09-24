@@ -30,6 +30,11 @@ struct SatTraceSetup
     double obsRadiusM = satphot::kEarthRadiusM;
     double flareTiltRad = 0.0;
     double extinctionK = 0.0;     // sea-level zenith extinction, mag (the "Extinction" slider)
+    // Ground-site mirror aim (TargetedReflector types): the targets and lock-window settings the app
+    // aimed with, so a replay reproduces the site choice. satelliteIndex then matters (it seeds the
+    // site preference and the window offset).
+    bool groundSite = false;
+    SatGroundSiteAim groundAim;
     std::string appVersion, gitCommit; // informational
 };
 

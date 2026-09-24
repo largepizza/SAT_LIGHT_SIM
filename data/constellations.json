@@ -15,6 +15,22 @@
             "model": "iss"
         },
         {
+            "name": "Tiangong (geometry model)",
+            "model": "tiangong"
+        },
+        {
+            "name": "Starship HLS Depot (geometry model)",
+            "model": "starship_depot"
+        },
+        {
+            "name": "SpaceX AI Satellite (geometry model)",
+            "model": "spacex_ai_sat"
+        },
+        {
+            "name": "Reflect Orbital mirror (geometry model)",
+            "model": "reflect_orbital"
+        },
+        {
             "name": "Starlink V1.0 (geometry model)",
             "model": "starlink_v1_0"
         },
@@ -62,6 +78,56 @@
             "per_plane": 1,
             "enabled": true,
             "distribution": "Walker"
+        },
+        {
+            "name": "Tiangong - geometry model",
+            "type": "Tiangong (geometry model)",
+            "alt_km": 386.0,
+            "incl_deg": 41.47,
+            "num_planes": 1,
+            "per_plane": 1,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Starship HLS depots - geometry model",
+            "type": "Starship HLS Depot (geometry model)",
+            "alt_km": 281.0,
+            "incl_deg": 31.0,
+            "num_planes": 1,
+            "per_plane": 3,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "SpaceX AI satellites (1M, dawn-dusk disk) - geometry model",
+            "type": "SpaceX AI Satellite (geometry model)",
+            "alt_km": 1250.0,
+            "incl_deg": 0.0,
+            "num_planes": 1000,
+            "per_plane": 1000,
+            "enabled": false,
+            "distribution": "Disk",
+            "alt_jitter_km": 0.05,
+            "raan_deg": 0.0,
+            "align_terminator": true,
+            "num_rings": 2000,
+            "ring_spacing_km": 0.7
+        },
+        {
+            "name": "Reflect Orbital mirrors - geometry model",
+            "type": "Reflect Orbital mirror (geometry model)",
+            "alt_km": 500.0,
+            "incl_deg": 0.0,
+            "num_planes": 10,
+            "per_plane": 500,
+            "enabled": false,
+            "distribution": "Disk",
+            "alt_jitter_km": 0.05,
+            "raan_deg": 0.0,
+            "align_terminator": true,
+            "num_rings": 3,
+            "ring_spacing_km": 10.0
         },
         {
             "name": "V1.0 shell (2020, benchmark reference) - geometry model",

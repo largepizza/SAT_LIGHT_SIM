@@ -223,6 +223,15 @@ nlohmann::json attitudeGroupToJson(const AttitudeGroup &g, const std::vector<Att
 }
 
 // ── Triad coordinates / GPU form ──────────────────────────────────────────────────────────────
+bool attUsesGroundSite(const std::vector<AttitudeGroup> &groups)
+{
+    for (const AttitudeGroup &g : groups)
+        if (g.primaryTarget == AttTarget::SunReflectGroundSite || g.secondaryTarget == AttTarget::SunReflectGroundSite ||
+            (g.jointMode != JointMode::None && g.jointTarget == AttTarget::SunReflectGroundSite))
+            return true;
+    return false;
+}
+
 int attRootOf(const std::vector<AttitudeGroup> &groups, int gi)
 {
     int r = gi;
@@ -418,6 +427,10 @@ const std::vector<SatMaterial> &satMaterialPresetsBase()
         {"osr_radiator", 0.05f, 0.90f, 0.01f, {0.85f, 0.88f, 0.92f}},
         // Large flat mirror (Reflect Orbital-class): near-perfect specular.
         {"mirror", 0.00f, 0.95f, 0.0005f, {0.90f, 0.92f, 0.95f}},
+        // Bare 304L stainless (Starship-class tanks): a metal - the specular is steel-tinted, F0 ~0.55
+        // across V - with a broad lobe from the ring welds and the wavy, dented tank walls, and a little
+        // diffuse from the brushed/oxidised finish. INITIAL ESTIMATE.
+        {"stainless_steel", 0.05f, 0.55f, 0.12f, {0.76f, 0.76f, 0.75f}},
         // Phase 4f — flexible arrays on a translucent Kapton blanket (ISS-style): the cell face and the
         // blanket's back. Light on either side leaks through the gaps between the cells as an amber
         // glow on the other side (transmission). INITIAL ESTIMATES: ~9% open area x ~0.6 Kapton

@@ -110,6 +110,28 @@ struct SatOrbitState
 };
 SatOrbitState satOrbitStateAt(const SatOrbitElems &e, double tJ2000);
 
+// ── Ground-site mirror aim (TargetedReflector / SunReflectGroundSite) ─────────────────────────
+// The CPU mirror of sat_orbit.comp's ground-site block, in double: each satellite picks a target
+// per fixed sim-time lock window (offset per satellite by a hash of its index), the argmax of an
+// integer hash over the night-side sites it sees above minElevSin at that window's START; the mirror
+// eases from the previous window's aim to the live ideal at maxRateDegPerSec. A pure function of
+// (sim time, satellite index), like the GPU. Keep it in step with that block, findWinner(),
+// nearFallbackIdeal() and idealTowards().
+struct SatGroundSiteAim
+{
+    std::vector<glm::dvec4> targetsEcef; // xyz = unit ECEF direction, w = ground radius (m)
+    double lockWindowS = 90.0;           // reflectorLockWindowS
+    double maxRateDegPerSec = 1.0;       // mirrorMaxRateDegPerSec
+    double minElevSin = 0.0;             // sin(reflectorMinElevDeg)
+};
+struct SatGroundSiteResult
+{
+    glm::dvec3 ideal{0.0, 0.0, -1.0}; // mirror normal, ECI (unit)
+    int target = -1;                  // this window's site, -1 = none beam-worthy (fallback aim)
+};
+SatGroundSiteResult satGroundSiteIdeal(const SatGroundSiteAim &aim, const SatOrbitElems &orbit, uint32_t satIndex,
+                                       double tJ2000, const glm::dvec3 &sunDirEci);
+
 // ── Photometry ────────────────────────────────────────────────────────────────────────────────
 struct SatPhotInputs
 {

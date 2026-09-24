@@ -1,0 +1,254 @@
+{
+    "name": "Tiangong space station (2022- three-module configuration)",
+    "note": "Parity model for the v1.1 'Tiangong' type. Body frame: +X along velocity (Tianhe's axis, forward node), +Y starboard (Wentian), +Z nadir; origin at the centre of Tianhe's docking node. Three groups: the station, alpha (the labs' rear booms about the labs' axis) and beta (each wing about its long axis - two pivots). Visiting Shenzhou/Tianzhou, Tianhe's small wings, the robotic arms and radiators are omitted. Attitude and every material are estimates.",
+    "materials": [
+        {
+            "name": "cn_module_blanket",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.6,
+            "roughness": 0.6,
+            "color": [0.9, 0.9, 0.88],
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "boom_metal",
+            "preset": "aluminum",
+            "diffuse_albedo": 0.3,
+            "specular_f0": 0.3,
+            "roughness": 0.45,
+            "color": [0.78, 0.78, 0.76]
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "station",
+            "primary": {
+                "axis": [0, 0, 1],
+                "target": "nadir"
+            },
+            "secondary": {
+                "axis": [1, 0, 0],
+                "target": "velocity"
+            }
+        },
+        {
+            "name": "alpha",
+            "parent": "station",
+            "hinge": {
+                "position": [0, 0, 0],
+                "axis": [0, 1, 0]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [1, 0, 0],
+                "target": "sun"
+            }
+        },
+        {
+            "name": "beta",
+            "parent": "alpha",
+            "hinge": {
+                "position": [0, 0, 0],
+                "axis": [0, 0, 1]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [1, 0, 0],
+                "target": "sun"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "tianhe_node",
+            "type": "sphere",
+            "group": "station",
+            "radius": 1.4,
+            "position": [0, 0, 0],
+            "material": "cn_module_blanket"
+        },
+        {
+            "name": "tianhe_small_section",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 1.4,
+            "height": 4.0,
+            "position": [-3.4, 0, 0],
+            "rotation_deg": [0, 90, 0],
+            "caps": false,
+            "material": "cn_module_blanket"
+        },
+        {
+            "name": "tianhe_large_section",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.1,
+            "height": 9.8,
+            "position": [-10.3, 0, 0],
+            "rotation_deg": [0, 90, 0],
+            "material": "cn_module_blanket"
+        },
+        {
+            "name": "wentian",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.1,
+            "height": 17.9,
+            "position": [0, 10.75, 0],
+            "rotation_deg": [-90, 0, 0],
+            "material": "cn_module_blanket"
+        },
+        {
+            "name": "mengtian",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.1,
+            "height": 17.9,
+            "position": [0, -10.75, 0],
+            "rotation_deg": [-90, 0, 0],
+            "material": "cn_module_blanket"
+        },
+        {
+            "name": "wentian_array_boom",
+            "type": "box",
+            "group": "alpha",
+            "size": [1.0, 1.0, 3.0],
+            "position": [0, 20.5, 0],
+            "material": "boom_metal"
+        },
+        {
+            "name": "mengtian_array_boom",
+            "type": "box",
+            "group": "alpha",
+            "size": [1.0, 1.0, 3.0],
+            "position": [0, -20.5, 0],
+            "material": "boom_metal"
+        },
+        {
+            "name": "wentian_wing_nadir",
+            "type": "plane",
+            "group": "beta",
+            "size": [27.0, 4.1],
+            "position": [0, 20.5, 15.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, 20.5, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "wentian_wing_zenith",
+            "type": "plane",
+            "group": "beta",
+            "size": [27.0, 4.1],
+            "position": [0, 20.5, -15.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, 20.5, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "mengtian_wing_nadir",
+            "type": "plane",
+            "group": "beta",
+            "size": [27.0, 4.1],
+            "position": [0, -20.5, 15.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, -20.5, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "mengtian_wing_zenith",
+            "type": "plane",
+            "group": "beta",
+            "size": [27.0, 4.1],
+            "position": [0, -20.5, -15.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, -20.5, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "attitude",
+            "status": "estimate",
+            "value": "flown like the ISS: +X (Tianhe's axis, node forward) along velocity, +Z nadir, labs along the orbit normal",
+            "source": "No published flight attitude found. With the labs' arrays turning about the labs' common axis (below), that axis must lie across the orbit plane to track the Sun once per orbit; Tianhe's forward/nadir/aft ports serve visiting vehicles (Wikipedia, Tianhe). Estimate."
+        },
+        {
+            "subject": "station",
+            "status": "sourced",
+            "value": "root group: Tianhe + the two laboratory modules in a T",
+            "source": "Wikipedia, 'Tiangong space station' / 'Tianhe core module' / 'Wentian module' (accessed 2026-09-24): 'T-shaped', Wentian starboard and Mengtian port of Tianhe's forward docking hub."
+        },
+        {
+            "subject": "alpha",
+            "status": "derived",
+            "value": "each lab's rear boom turns about the labs' common axis, tracking the Sun (first of the arrays' two axes)",
+            "source": "China Space Report, 'Tiangong' (chinaspacereport.wordpress.com): the lab modules' wings are 'two-axis steerable to track the Sun', 'mounted on a large boom with its centre attached to the rear end of the module'. Assigning the first axis to the module axis (as the ISS SARJ) is DERIVED from that layout."
+        },
+        {
+            "subject": "beta",
+            "status": "derived",
+            "value": "each wing turns about its own long axis (second axis); the two wings of a lab share one line (2 pivots)",
+            "source": "China Space Report, 'Tiangong' (chinaspacereport.wordpress.com) (two-axis steerable). Axis assignment derived, as for alpha."
+        },
+        {
+            "subject": "tianhe_node",
+            "status": "estimate",
+            "value": "2.8 m sphere at Tianhe's forward end; range 2.5-3.0 m",
+            "source": "eoPortal, 'Tiangong Space Station': Tianhe = 'the node cabin, the life control cabin, which is divided into the large and small column segments, and the resource cabin'. Section sizes are not published; node and small column taken at ~2.8 m."
+        },
+        {
+            "subjects": [
+                "tianhe_small_section",
+                "tianhe_large_section"
+            ],
+            "status": "derived",
+            "value": "4.0 m x 2.8 m small column + 9.8 m x 4.2 m large column/resource cabin: 16.6 m overall with the node",
+            "source": "Wikipedia, 'Tiangong space station' / 'Tianhe core module' / 'Wentian module' (accessed 2026-09-24) and eoPortal, 'Tiangong Space Station': total length 16.6 m, maximum diameter 4.2 m. The split between sections is an estimate (range +-1.5 m)."
+        },
+        {
+            "subjects": [
+                "wentian",
+                "mengtian"
+            ],
+            "status": "sourced",
+            "value": "17.9 m x 4.2 m each, docked 0.4 m off the node",
+            "source": "Wikipedia, 'Tiangong space station' / 'Tianhe core module' / 'Wentian module' (accessed 2026-09-24): both 17.9 m long, 4.2 m diameter. Station 'diameter ~39 m' = the two labs end to end (39.4 m here)."
+        },
+        {
+            "subjects": [
+                "wentian_array_boom",
+                "mengtian_array_boom"
+            ],
+            "status": "estimate",
+            "value": "1 x 1 x 3 m box at each lab's rear end",
+            "source": "China Space Report, 'Tiangong' (chinaspacereport.wordpress.com): 'a large boom with its centre attached to the rear end of the module'. Size not published."
+        },
+        {
+            "subjects": [
+                "wentian_wing_nadir",
+                "wentian_wing_zenith",
+                "mengtian_wing_nadir",
+                "mengtian_wing_zenith"
+            ],
+            "status": "derived",
+            "value": "four 27 x 4.1 m flexible wings (110 m2 each), two per lab, 57.6 m tip to tip",
+            "source": "Wikipedia, 'Tiangong space station' / 'Tianhe core module' / 'Wentian module' (accessed 2026-09-24) (Wentian) and eoPortal, 'Tiangong Space Station': each lab's pair has a 'wingspan of over 55 m and an energy collection area of 110 m2' per array; Space.com: each array 'nearly 30 m long'. Width = area / length (derived). Flexible GaAs arrays: solar_cell_flex / solar_array_flex_back (backlit transmission) - estimate for the substrate. Tianhe's own two small one-axis wings are OMITTED: CMSE's design moves them to the labs' short trusses once the labs arrive; where they are now is unverified."
+        },
+        {
+            "subject": "cn_module_blanket",
+            "status": "estimate",
+            "value": "diffuse albedo 0.6, white thermal blankets; range 0.45-0.8",
+            "source": "Tiangong's modules appear white in CMSE imagery; no published reflectance."
+        },
+        {
+            "subject": "boom_metal",
+            "status": "estimate",
+            "value": "albedo 0.3, F0 0.3, roughness 0.45 (the ISS truss material)",
+            "source": "No published reflectance."
+        }
+    ]
+}

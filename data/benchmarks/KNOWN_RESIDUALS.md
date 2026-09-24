@@ -24,7 +24,11 @@ Benchmarking" design page (Results log).
 | VisorSat − V1.0 differential | +1.067 | +1.29 | −0.223 (tol 0.3) | The visor's real shape is unpublished (derived from Cole's 23° full-shade constraint). |
 | V1.0 mean m1000 (Mallama 2020a) | 5.926 | 5.93 | −0.004 | Held out of all fitting. sd 0.769 vs 0.67 published (informational). |
 | V1.0 app bulk export (32.7°S, sim 2036-11-21) | 5.934 | 5.93 | +0.004 | Out-of-sample site and season; not a paper's sampling. |
-| ISS (2023-2026 configuration) | — | −2 to −4 on favourable passes (satobs.org) | — | **No benchmark yet.** Dimensions sourced, layout derived, every surface material an estimate (`iss.json` sources). |
+| ISS (2023-2026 configuration) | mean m1000 −0.59 (≈ −2.5 overhead at 415 km) | −2 to −4 on favourable passes (satobs.org) | — | **No benchmark yet.** Dimensions sourced, layout derived, every surface material an estimate (`iss.json` sources). The m1000 values in this and the next rows are a V1.0-campaign copy (twilight, ≥ 20°, fully sunlit, 3000 samples, seed 1) on the model's own shell - a sanity check, not a comparison. |
+| Tiangong | mean m1000 0.73 (≈ −1.3 overhead at 386 km) | — | — | No benchmark. Attitude and materials estimates. |
+| Starship HLS depot | mean m1000 2.20, sd 1.3 | — | — | No benchmark and no published depot hardware: length, solar band, attitude and the bare-steel skin (the real depot has in-space insulating tiles, unpublished) are estimates. |
+| SpaceX AI satellite | mean m1000 5.51, sd 3.6 (glints) | — | — | Only orbits are published (FCC, 2026-01): every dimension is an estimate sized to the v1.1 legacy type. |
+| Reflect Orbital mirror | — | — | — | No benchmark; the operational mirror size is the legacy type's 2376 m² in Earendil-1's square shape. |
 | V2 Mini app bulk export | 5.81 (median 5.31, sd 1.57) | 7.87 mitigated; ~5.2 unmitigated (Mallama et al. 2023) | — | **Uncalibrated model**, flown without SpaceX's brightness-mitigation attitude. Next benchmark candidate. |
 
 ## Fitted, estimated or stood-in values
