@@ -57,6 +57,12 @@ layout(set = 0, binding = 9) readonly buffer SatVisibleIdxBuf {
 // every frame for selection tracking, the real visible-satellite count (compact slots are no
 // longer addressable by satellite index) and the GPU-parity readout (benchmarking M2).
 const uint  MESH_CAND_MAX = 64u;  // = kMaxMeshCandidates (SatelliteSim.h)
+// Phase 4d: satellites the CPU draws as meshes this frame, with their sprite's remaining weight.
+layout(set = 0, binding = 12) readonly buffer MeshKeepBuf {
+    uint  keepCount;
+    uint  keepPad0, keepPad1, keepPad2;
+    uvec4 keepEntries[MESH_CAND_MAX + 1u]; // x = satellite, y = keep (float bits)
+};
 const float MESH_FADE_IN_PX = 1.5; // = SatelliteSim::kMeshFadeInPx / kMeshFullPx
 const float MESH_FULL_PX    = 3.0;
 layout(set = 0, binding = 10) buffer SatListBuf {
@@ -352,22 +358,27 @@ void main() {
     // sprite size are recorded first: the mesh's glints seed exactly the bloom this sprite would have
     // (SatMeshRenderer::recordBloom), so a flare keeps its punch across the hand-off. The followed
     // satellite is the CPU's own (always drawn, even in Earth's shadow): SatFlarePC carries its fade.
-    {
+    // Nominated (sat.meshPx over the threshold, with a margin) → listed for NEXT frame's draw; the
+    // sprite's weight THIS frame is whatever the CPU drew it with this frame (MeshKeepBuf), so the two
+    // always agree. The followed satellite comes through the same list.
+    if (sat.meshPx > MESH_FADE_IN_PX * 0.8) {
         uint satI = visibleSatIdx[idx];
-        float keep = 1.0;
-        if (float(satI) == pc.meshSatIdx) {
-            keep = pc.meshSpriteKeep;
-        } else if (sat.meshPx > MESH_FADE_IN_PX) {
-            float fade = smoothstep(MESH_FADE_IN_PX, MESH_FULL_PX, sat.meshPx);
-            uint slot = atomicAdd(meshCandCount, 1u);
-            if (slot < MESH_CAND_MAX) {
-                float fullSize = pointSpriteSizePx(pointPsf(satFlareToMag(effectFlare)).y);
-                meshCand[slot] = uvec4(satI, floatBitsToUint(fade), floatBitsToUint(effectFlare),
-                                       floatBitsToUint(fullSize));
-                keep = 1.0 - fade;
-            }
+        uint slot = atomicAdd(meshCandCount, 1u);
+        if (slot < MESH_CAND_MAX) {
+            float fullSize = pointSpriteSizePx(pointPsf(satFlareToMag(effectFlare)).y);
+            meshCand[slot] = uvec4(satI, floatBitsToUint(sat.meshPx), floatBitsToUint(effectFlare),
+                                   floatBitsToUint(fullSize));
         }
-        effectFlare *= keep;
+        uint n = min(keepCount, MESH_CAND_MAX + 1u);
+        for (uint k = 0u; k < n; ++k)
+            if (keepEntries[k].x == satI) {
+                effectFlare *= uintBitsToFloat(keepEntries[k].y);
+                // Its remaining sprite overlaps its own mesh, whose surface is nearer than the centre by
+                // up to the model's radius (< 1% of the range while any sprite is left at 10 px) — draw
+                // it at 98% of the range so the depth test keeps it in front of its own model.
+                range *= 0.98;
+                break;
+            }
     }
 
     vec2  psf     = pointPsf(satFlareToMag(effectFlare));

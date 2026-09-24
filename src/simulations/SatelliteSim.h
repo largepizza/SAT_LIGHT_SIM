@@ -367,12 +367,23 @@ struct GpuSatListHeader
     struct MeshCandidate
     {
         uint32_t sat;      // satellite index
-        float fade;        // mesh weight (sprite keeps 1 - fade)
+        float meshPx;      // its mesh diameter on screen (GPU float; the CPU recomputes in double)
         float effectFlare; // its sprite's final flux before the fade (bloom seed matching)
         float angSize;     // its sprite's size (px) before the fade
     } meshCand[64];
 };
 static constexpr int kMaxMeshCandidates = 64;
+
+// Phase 4d: the satellites the CPU draws as meshes THIS frame and how much of each one's sprite
+// remains (host-coherent, descSet binding 12, written in recordMeshScene before sat_flare runs), so
+// the sprite fade and the mesh fade come from the same frame's geometry — no gap frame at the
+// hand-off. sat_flare.comp only searches it for satellites already big enough to be meshes.
+struct GpuMeshKeepList
+{
+    uint32_t count;
+    uint32_t pad[3];
+    glm::uvec4 entries[kMaxMeshCandidates + 1]; // x = satellite, y = sprite keep (float bits)
+};
 static_assert(sizeof(GpuSatListHeader) == 96 + 16 * kMaxMeshCandidates, "GpuSatListHeader layout mismatch");
 static_assert(offsetof(GpuSatListHeader, meshCandCount) == 80, "mesh candidate offset");
 static_assert(offsetof(GpuSatListHeader, dispatchX) == 4, "dispatch args offset");
@@ -1730,6 +1741,21 @@ private:
     // satOrbitStateAt, the observer from obsDir/radius (or followObsEcef), camera-relative floats.
     // (4d generalises this from one satellite to every satellite big enough on screen.)
     static constexpr float kMeshFadeInPx = 1.5f, kMeshFullPx = 3.0f;
+    // The sprite (the apparent-magnitude flare: point, glare and bloom) fades out over a WIDER range
+    // than the mesh fades in, so the magnitude-based flare stays with the satellite while its model
+    // resolves; the bloom is split between the two so its total stays the sprite's.
+    static constexpr float kSpriteGoneFullPx = 10.0f;
+    VkBuffer meshKeepBuf = VK_NULL_HANDLE;
+    VkDeviceMemory meshKeepMem = VK_NULL_HANDLE;
+    void *meshKeepMapped = nullptr;
+    // Drawn this frame, for picking (a meshed satellite has no sprite to click).
+    struct MeshDrawn
+    {
+        int sat;
+        glm::vec3 enuDir;
+        float radiusPx;
+    };
+    std::vector<MeshDrawn> meshDrawn;
     int meshSceneSatIdx = -1;     // the FOLLOWED satellite drawn this frame (-1 none) — its sprite fade
                                   // goes through SatFlarePC; GPU candidates fade their own
     std::vector<GpuSatListHeader::MeshCandidate> meshCandidates; // last frame's (read with the header)

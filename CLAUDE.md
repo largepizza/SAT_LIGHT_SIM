@@ -610,16 +610,25 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   - **Choice (4d):** `sat_orbit.comp` writes each model satellite's on-screen diameter into the
     pre-photometry record (`GpuSatVisible::meshPx`, from `GpuSatType::meshRadius` and
     `GpuSatTypeHeader::meshPixelAngle`; the latter is 0 when meshes are off). `sat_flare.comp`
-    appends the big ones to `GpuSatListHeader::meshCand[64]` (satellite, fade, final effectFlare,
-    sprite size) and fades their sprite. The CPU draws last frame's list in double: one frame of lag
-    in *which* satellites, none in *where*. Past 64, the rest stay sprites.
+    nominates the big ones into `GpuSatListHeader::meshCand[64]` (satellite, meshPx, final
+    effectFlare, sprite size). The CPU draws last frame's nominations: one frame of lag in *which*
+    satellites, none in *where*. Past 64, the rest stay sprites.
+  - **Fades are decided on the CPU, this frame, in double** (mesh fades in over 1.5-3 px; the sprite
+    fades out over 1.5-10 px, so the magnitude flare stays with the satellite while it resolves).
+    The CPU hands the sprite weights to `sat_flare.comp` through `MeshKeepBuf` (descSet binding 12,
+    `GpuMeshKeepList`). The first cut let the GPU fade a sprite the frame it nominated it, while the
+    mesh came a frame later: a visible "flare, nothing, flare" gap. A kept sprite is drawn at 98% of
+    its range so its own mesh doesn't depth-hide it.
+  - **Picking:** meshed satellites are hit on their model's bounding circle (`meshDrawn`), ahead of
+    sprites, since they have no sprite left to click.
   - **Followed satellite:** always drawn by the CPU, even in Earth's shadow where the GPU never lists
-    it; its fade goes through `SatFlarePC::meshSatIdx/meshSpriteKeep`.
+    it.
   - **Reverse-Z:** the scene projection is infinite reverse-Z (depth = 2 cm / distance, GREATER,
     clear 0), so meshes from 1 cm to 1000 km keep precision.
   - **Energy-matched bloom:** each instance's `bloomScale` is the bloom seed its sprite would have
     put down (flare_source: b(effectFlare) × 0.3926·s² over its point disc) per unit of rendered
-    flux (Σ L·Ω·r²/π = I). `mesh_bloom.frag` sums L·bloomScale per flare texel, reading the instance
+    flux (Σ L·Ω·r²/π = I), times the share the sprite has given up (`spriteGone`), so sprite
+    bloom plus mesh bloom stays constant. `mesh_bloom.frag` sums L·bloomScale per flare texel, reading the instance
     from the colour target's alpha (slot + 1). A flare keeps its full glow across the hand-off, and
     on a large model the glow sits on the glint. The first cut (1 texel per block over 2× white) was
     far too weak.

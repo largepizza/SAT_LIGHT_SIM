@@ -2680,8 +2680,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pc.extinctionCoeff = extinctionCoeff;
     pc.sunRefIntensity = sunFlareRefIntensity; // S3: soft ceiling reference, see struct comment
     pc.selectedSatIdx = (selectedSatIndex >= 0) ? (uint32_t)selectedSatIndex : UINT32_MAX;
-    pc.meshSatIdx = (float)meshSceneSatIdx; // Phase 4c sprite → mesh hand-off
-    pc.meshSpriteKeep = 1.0f - meshSceneFade;
+    pc.meshSatIdx = -1.0f; // Phase 4d: sprite weights come through MeshKeepBuf (binding 12) now
+    pc.meshSpriteKeep = 1.0f;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -3220,11 +3220,19 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
 
     std::vector<GpuMeshInstance> insts;
     std::vector<int> types;
+    struct KeepEntry
+    {
+        uint32_t sat;
+        float keep;
+    };
+    std::vector<KeepEntry> keepEntries;
+    meshDrawn.clear();
     const bool skip = (debugDisableMask & (kDebugBitMeshes | 262144u)) != 0u; // knockout / Potato sky
 
-    // One instance. `fade` < 0 = decide from the on-screen size here (the followed satellite);
-    // effectFlare/angSize < 0 = the sprite's values are unknown, estimate them from the evaluator.
-    auto addInstance = [&](int sat, float fade, float effectFlare, float angSize) {
+    // One instance, faded by its on-screen size computed HERE, this frame, in double — the same
+    // numbers go to sat_flare.comp for its sprite (MeshKeepBuf). effectFlare/angSize < 0 = the
+    // sprite's values are unknown (the followed satellite), estimate them from the evaluator.
+    auto addInstance = [&](int sat, float effectFlare, float angSize) {
         if (sat < 0 || sat >= (int)satOrbits.size())
             return;
         const int ti = (int)satOrbits[sat].typeIdx;
@@ -3241,11 +3249,9 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
         const glm::dvec3 satEcef = eciToEcef(r.orbit.posEci);
         const glm::dvec3 rel = satEcef - obsEcef;
         const double range = std::max(glm::length(rel), 1e-3);
-        if (fade < 0.0f)
-        {
-            const double px = 2.0 * std::max(0.1, (double)tm->boundsRadius) / range / pixAngle;
-            fade = (float)glm::smoothstep((double)kMeshFadeInPx, (double)kMeshFullPx, px);
-        }
+        const double px = 2.0 * std::max(0.1, (double)tm->boundsRadius) / range / pixAngle;
+        const float fade = (float)glm::smoothstep((double)kMeshFadeInPx, (double)kMeshFullPx, px);
+        const float spriteGone = (float)glm::smoothstep((double)kMeshFadeInPx, (double)kSpriteGoneFullPx, px);
         if (fade <= 0.0f)
             return;
         AttGeometry geo;
@@ -3288,27 +3294,47 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
         const double bResp = glm::clamp(std::log2(std::max((double)effectFlare, 1.0)) * 0.5, 0.0, 4.0);
         const double sPx = std::max((double)angSize * flareResScale, 1.0);
         const double seed = bResp * 0.3926 * sPx * sPx;
-        inst.bloomScale = r.intensity > 0.0 ? (float)(seed * pixSolidAngle * range * range / (glm::pi<double>() * r.intensity)) : 0.0f;
+        // The mesh carries the part of the sprite's bloom the sprite no longer does (spriteGone), and
+        // its radiance is already × fade — so divide that back out.
+        inst.bloomScale = r.intensity > 0.0
+                              ? (float)(seed * pixSolidAngle * range * range / (glm::pi<double>() * r.intensity) *
+                                        spriteGone / fade)
+                              : 0.0f;
         insts.push_back(inst);
         types.push_back(ti);
+        keepEntries.push_back({(uint32_t)sat, 1.0f - spriteGone});
+        meshDrawn.push_back({sat,
+                             glm::normalize(glm::vec3(ecefToEnu * glm::vec3(rel))),
+                             (float)(std::max(0.1, (double)tm->boundsRadius) / range / pixAngle)});
+        if (sat == followSatIndex && followActive)
+        {
+            meshSceneSatIdx = sat;
+            meshSceneFade = fade;
+        }
     };
 
     if (!skip)
     {
         if (followActive)
-        {
-            addInstance(followSatIndex, -1.0f, -1.0f, -1.0f);
-            if (!insts.empty())
-            {
-                meshSceneSatIdx = followSatIndex;
-                meshSceneFade = insts.back().origin.w;
-            }
-        }
+            addInstance(followSatIndex, -1.0f, -1.0f); // always — even in Earth's shadow, never listed
         for (const GpuSatListHeader::MeshCandidate &c : meshCandidates)
-            if ((int)c.sat != meshSceneSatIdx && (int)insts.size() < kMaxMeshCandidates + 1)
-                addInstance((int)c.sat, c.fade, c.effectFlare, c.angSize);
+            if (!(followActive && (int)c.sat == followSatIndex) && (int)insts.size() < kMaxMeshCandidates + 1)
+                addInstance((int)c.sat, c.effectFlare, c.angSize);
     }
     meshesDrawnThisFrame = !insts.empty();
+    // This frame's sprite weights for sat_flare.comp (host-coherent; read by this frame's dispatch).
+    if (meshKeepMapped)
+    {
+        GpuMeshKeepList *kl = static_cast<GpuMeshKeepList *>(meshKeepMapped);
+        kl->count = (uint32_t)std::min<size_t>(keepEntries.size(), kMaxMeshCandidates + 1);
+        for (uint32_t i = 0; i < kl->count; ++i)
+        {
+            float k = keepEntries[i].keep;
+            uint32_t bits;
+            memcpy(&bits, &k, sizeof(bits));
+            kl->entries[i] = glm::uvec4(keepEntries[i].sat, bits, 0u, 0u);
+        }
+    }
 
     // Infinite reverse-Z (depth = near / distance): full float precision from 2 cm to any range.
     const float nearM = 0.02f;
@@ -3488,6 +3514,28 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
 {
     if (activeSatCount == 0 || !ctx_)
         return -1;
+
+    // Phase 4d: satellites drawn as meshes have (almost) no sprite left to click — hit their model's
+    // bounding circle instead, and prefer them (they are the ones big on screen).
+    {
+        int bestMesh = -1;
+        float bestMeshDist = 0.0f;
+        for (const MeshDrawn &m : meshDrawn)
+        {
+            float sx, sy;
+            if (!projectSkyDirToScreen(m.enuDir, screenW, screenH, sx, sy))
+                continue;
+            const float dx = sx - clickX, dy = sy - clickY;
+            const float dist = sqrtf(dx * dx + dy * dy);
+            if (dist <= std::max(m.radiusPx, 8.0f) && (bestMesh < 0 || dist < bestMeshDist))
+            {
+                bestMesh = m.sat;
+                bestMeshDist = dist;
+            }
+        }
+        if (bestMesh >= 0)
+            return bestMesh;
+    }
 
     VulkanContext &ctx = *ctx_;
     const uint32_t listCount = std::min(
@@ -4470,6 +4518,13 @@ void SatelliteSim::cleanup(VkDevice device)
     if (meshRendererInit)
         meshRenderer.cleanup(device);
     meshRendererInit = false;
+    if (meshKeepBuf)
+    {
+        vkDestroyBuffer(device, meshKeepBuf, nullptr);
+        vkFreeMemory(device, meshKeepMem, nullptr);
+        meshKeepBuf = VK_NULL_HANDLE;
+        meshKeepMapped = nullptr;
+    }
 
     // NEW-3: reaching this point IS the clean-exit signal — remove the sentinel so the NEXT
     // launch doesn't think this run crashed. Best-effort; a failed delete just means the next
@@ -5652,7 +5707,7 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
 {
     // Binding 0 (satInputBuf) was removed with GpuSatInput in the lighting overhaul's Phase 1 —
     // binding numbers are left as-is (not compacted) so no consuming shader had to change.
-    VkDescriptorSetLayoutBinding bindings[11] = {};
+    VkDescriptorSetLayoutBinding bindings[12] = {};
     bindings[0] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     bindings[1] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
@@ -5687,14 +5742,16 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
     // sat_point.frag draws them with it.
     bindings[10] = {11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                     VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // pointStyleBuf
+    // Phase 4d: the CPU's this-frame mesh list with sprite weights (GpuMeshKeepList).
+    bindings[11] = {12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 11;
+    li.bindingCount = 12;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
     VkDescriptorPoolSize ps[3] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -5720,8 +5777,17 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
     VkDescriptorBufferInfo visIdxInfo{satVisibleIdxBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo listInfo{satListBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo pointStyleInfo{pointStyleBuf, 0, VK_WHOLE_SIZE};
+    if (!meshKeepBuf)
+    {
+        ctx.createBuffer(sizeof(GpuMeshKeepList), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, meshKeepBuf,
+                         meshKeepMem);
+        vkMapMemory(ctx.device, meshKeepMem, 0, sizeof(GpuMeshKeepList), 0, &meshKeepMapped);
+        memset(meshKeepMapped, 0, sizeof(GpuMeshKeepList));
+    }
+    VkDescriptorBufferInfo keepInfo{meshKeepBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[11] = {};
+    VkWriteDescriptorSet writes[12] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &visInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
@@ -5744,7 +5810,9 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
                  descSet, 10, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &listInfo, nullptr};
     writes[10] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                   descSet, 11, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &pointStyleInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 11, writes, 0, nullptr);
+    writes[11] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                  descSet, 12, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &keepInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 12, writes, 0, nullptr);
 }
 
 // The shared point-source model's parameters (the "Point ..." sliders) → pointStyleBuf. Host-
