@@ -269,6 +269,10 @@ cloud occlusion march — see "Subsystem: Reflect-Orbital Beam Cloud Occlusion" 
 - `ui.mouseOverUI()` → **previous frame's** capture result. Read in `buildUI` to gate scene interaction.
 - `ui.addMouseCaptureRect(x, y, w, h)` — call for every visible panel in `buildUI`.
 - `Clay_Hovered()` only valid **inside** a `CLAY()` element body, not in the config struct.
+- **Window titles** (`buildResizableWindow`): the title bar height follows `fs(16)`, and the title
+  is `CLAY_TEXT_WRAP_NONE` in a horizontally clipped GROW box. A wrapped title used to spill below
+  the fixed 36 px bar into the window body at large UI scales. Button labels that must stay on one
+  line need the same `wrapMode`.
 - **One-frame hover lag**: store `Clay_Hovered()` in member bools; use those bools for colors the next frame.
 - `CLAY_STRING(x)` requires a **string literal**. For runtime strings: `Clay_String{ false, (int32_t)strlen(buf), buf }` with a **member variable** buffer (Clay stores raw pointers read after `buildUI` returns).
 - **Clip rule**: never put `.clip` on a floating container that also has `backgroundColor` — SCISSOR_START fires before RECTANGLE, hiding the background.
@@ -581,7 +585,11 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   - **Procedural surface detail** (`SatMaterial::pattern`, JSON `"pattern"`: none / solar_cells / mli
     / panel_seams; -1 = from the preset — `solar_cell` → cells, `mli_foil` → crinkle). Visual only and
     **photometrically neutral**: each pattern scales albedo by a factor with area mean 1, leaves the
-    specular alone, and fades to the plain material below a pixel.
+    specular alone, and is an exact box filter (`lineCover`/`gridCover`) so it keeps
+    its mean at any distance. Each pattern has structure you can see with the whole model in frame:
+    0.4 m array modules with gaps and a 0.25° tilt per module; MLI quilting seams and 12 cm crinkle.
+    The first cut drew only cm-scale detail that faded out below a pixel, so it was invisible at
+    normal framing. The viewer's "Detail" button toggles it.
   - **Photometric check** ("Check" in the viewer): a sun-only, single-sampled R32F render from the
     current direction at 60 model radii (`sat_mesh.frag` check mode writes L·d²), read back next frame
     and integrated as Σ L·d²·Ω/π, which is radiant intensity per unit irradiance. It is compared with
