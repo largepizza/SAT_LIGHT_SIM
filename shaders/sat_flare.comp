@@ -31,14 +31,17 @@ layout(local_size_x = 64) in;
 
 // ── In/out: compact GpuSatVisible list (32 bytes each, std430), rewritten in place ─────
 // Matches GpuSatVisible in SatelliteSim.h. On entry (appended by sat_orbit.comp):
-//   highlight: flareIntensity < 0, angularSize = range (m)
-//   lit:       flareIntensity = raw flux, angularSize = range (m), baseColor already eclipse-tinted
-// On exit every record holds its final meaning (ENU direction, effectFlare, tint, sprite px).
+//   highlight: flareIntensity < 0, rangeM = range (m)
+//   lit:       flareIntensity = raw flux, rangeM = range (m), color already eclipse-tinted
+// On exit every record holds its final meaning (ENU direction, effectFlare, tint, sprite px,
+// range — the point draws write their depth from it, include/depth.glsl).
 struct SatVisible {
     vec3  skyDir;         // unit vector in local ENU (x=East, y=North, z=Up)
     float flareIntensity; // [0, 1+] — 0 = invisible/clipped, >1 = bright flare
-    vec3  baseColor;      // tint
+    uint  color;          // tint, packUnorm4x8 (alpha unused)
     float angularSize;    // point sprite size (pixels)
+    float rangeM;         // distance to the object, m; 0 = at infinity (stars, planets)
+    float visPad;
 };
 layout(set = 0, binding = 1) buffer SatVisibleBuf {
     SatVisible visible[];
@@ -59,7 +62,7 @@ layout(set = 0, binding = 10) buffer SatListBuf {
     uint drawVertexCount, drawInstanceCount, drawFirstVertex, drawFirstInstance;
     SatVisible selected;
     float selectedRawFlux;    // pre-photometry flareIntensity (raw flux; < 0 = highlight mode)
-    float selectedRangeM;     // pre-photometry angularSize (range, m)
+    float selectedRangeM;     // pre-photometry rangeM (m)
     uint  selectedFound;      // 1 = the selection was in this frame's compact list
     uint  selectedPad;
 };
@@ -210,12 +213,12 @@ void main() {
     // pass rewrites the record in place.
     if (visibleSatIdx[idx] == pc.selectedSatIdx) {
         selectedRawFlux = sat.flareIntensity;
-        selectedRangeM  = sat.angularSize;
+        selectedRangeM  = sat.rangeM;
         selectedFound   = 1u;
     }
 
     vec3  skyDir = sat.skyDir;
-    float range  = sat.angularSize; // pre-photometry encoding: range to the satellite (meters)
+    float range  = sat.rangeM;      // range to the satellite (meters)
 
     // ── Highlight mode: fixed-brightness census view ─────────────────────────
     // sat_orbit.comp flags highlighted constellations with a negative flareIntensity. Skip all
@@ -223,7 +226,7 @@ void main() {
     // regardless of shadow or daytime sky.
     if (sat.flareIntensity < 0.0) {
         float angSize = pointSpriteSizePx(pointPsf(satFlareToMag(pc.highlightFlare)).y);
-        emit(idx, SatVisible(skyDir, pc.highlightFlare, sat.baseColor, angSize));
+        emit(idx, SatVisible(skyDir, pc.highlightFlare, sat.color, angSize, range, 0.0));
         return;
     }
 
@@ -326,7 +329,7 @@ void main() {
     // ── Cull if below visibility threshold ────────────────────────────────────
     // The entry stays in the list as an invisible record — sat_point.vert discards it.
     if (effectFlare < pc.visThresh) {
-        emit(idx, SatVisible(vec3(0.0, 0.0, 1.0), 0.0, vec3(0.0), 0.0));
+        emit(idx, SatVisible(vec3(0.0, 0.0, 1.0), 0.0, 0u, 0.0, 0.0, 0.0));
         return;
     }
 
@@ -360,9 +363,9 @@ void main() {
     // Fainter than the point model's limiting magnitude: nothing to draw (the sky glow and ocean
     // glint above have their own, brighter thresholds). An invisible record costs no fill.
     if (psf.x <= 0.0) {
-        emit(idx, SatVisible(vec3(0.0, 0.0, 1.0), 0.0, vec3(0.0), 0.0));
+        emit(idx, SatVisible(vec3(0.0, 0.0, 1.0), 0.0, 0u, 0.0, 0.0, 0.0));
         return;
     }
     // baseColor was already eclipse-tinted by sat_orbit.comp.
-    emit(idx, SatVisible(skyDir, effectFlare, sat.baseColor, angSize));
+    emit(idx, SatVisible(skyDir, effectFlare, sat.color, angSize, range, 0.0));
 }

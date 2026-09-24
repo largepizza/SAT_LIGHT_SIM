@@ -270,8 +270,12 @@ struct GpuSatTypeHeader
     // brightnessScale applied) is below this — occlusion only dims, so it cannot become visible.
     float occlusionFluxFloor;
     uint32_t occlusionOn;  // 0 = knockout bit kDebugBitSatOcclusion set
+    // Phase 4: deltaT's low half — (simTime − epochT0) − (float)(simTime − epochT0) — so
+    // sat_orbit.comp's orbitPhase() gets the orbit phase to ~1 m (SatOrbitPC is full).
+    float deltaTLo;
+    float pad[3];
 };
-static_assert(sizeof(GpuSatTypeHeader) == 16, "GpuSatTypeHeader layout mismatch");
+static_assert(sizeof(GpuSatTypeHeader) == 32, "GpuSatTypeHeader layout mismatch");
 
 // The shared point-source model (shaders/include/point_style.glsl): apparent magnitude → point
 // spread, for satellites, stars and planets alike. std140, rewritten every frame from the
@@ -300,18 +304,29 @@ static_assert(kSatTypeArrayOffset % 16 == 0, "GpuSatType array must stay 16-byte
 // only for satellites that survive its horizon/enable cull, sat_flare.comp finishes each one in
 // place. Slot order is arbitrary (atomic append) — satVisibleIdxBuf maps slot → satellite index.
 // Between the two dispatches the fields mean:
-//   highlight (census mode): flareIntensity < 0, angularSize = range (m)
-//   lit:                     flareIntensity = raw flux, angularSize = range (m)
+//   highlight (census mode): flareIntensity < 0, rangeM = range (m)
+//   lit:                     flareIntensity = raw flux, rangeM = range (m)
 // After sat_flare.comp every entry has the final meaning below (flareIntensity 0 = culled by
-// visThresh; still in the list, discarded by the vertex shaders).
+// visThresh; still in the list, discarded by the vertex shaders). Also the star and planet record.
+// Phase 4: the tint is packed to RGBA8 (packUnorm4x8) so the record carries the range, which the
+// point draws write as their depth in the unified encoding (shaders/include/depth.glsl).
 struct GpuSatVisible
 {
     glm::vec3 skyDir;     // unit vector in ENU (x=East, y=North, z=Up)
     float flareIntensity; // [0, 1+]
-    glm::vec3 baseColor;  // satellite tint
+    uint32_t color;       // tint, packUnorm4x8 — packVisibleColor()
     float angularSize;    // point sprite size hint (pixels)
+    float rangeM;         // distance, m; 0 = at infinity (stars, planets)
+    float pad;
 };
 static_assert(sizeof(GpuSatVisible) == 32, "GpuSatVisible layout mismatch");
+
+// GLSL packUnorm4x8(vec4(c, 1)): the tint as the point shaders unpack it.
+inline uint32_t packVisibleColor(const glm::vec3 &c)
+{
+    auto q = [](float v) { return (uint32_t)std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f); };
+    return q(c.r) | (q(c.g) << 8) | (q(c.b) << 16) | (255u << 24);
+}
 
 // satListBuf (Phase 1b): the compact visible list's header. Reset every frame with
 // vkCmdUpdateBuffer(kSatListHeaderReset); sat_orbit.comp appends and maintains the indirect args
@@ -1365,6 +1380,16 @@ struct SkyCamera
     float sens = 0.12f;    // mouse sensitivity (degrees per pixel)
     bool captured = false;
 
+    // Phase 4: zoom reaches telescope FOVs so a resolvable satellite (the ISS is ~0.014 deg from the
+    // ground) can cover enough pixels to draw as a mesh. Zoom is multiplicative so each scroll notch
+    // or second of held zoom changes the FOV by the same RATIO at any magnification.
+    static constexpr float kMinFovDeg = 0.5f;
+    static constexpr float kMaxFovDeg = 120.0f;
+    void zoomBy(float factor) { fovYDeg = glm::clamp(fovYDeg * factor, kMinFovDeg, kMaxFovDeg); }
+    // Look sensitivity scaled with the FOV below 60 deg, so a pixel of mouse motion moves the view
+    // by about the same number of screen pixels when zoomed in (unchanged at 60 deg and wider).
+    float lookSens() const { return sens * std::min(1.0f, fovYDeg / 60.0f); }
+
     // Returns a view matrix that transforms ENU directions into camera space.
     // Camera convention: +X=right, +Y=up, -Z=forward (standard OpenGL).
     glm::mat4 viewMatrix() const
@@ -1397,8 +1422,8 @@ struct SkyCamera
             glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
             return;
         }
-        azDeg += dmx * sens;
-        elDeg -= dmy * sens; // screen Y down → mouse up = negative dmy = increase el
+        azDeg += dmx * lookSens();
+        elDeg -= dmy * lookSens(); // screen Y down → mouse up = negative dmy = increase el
         elDeg = glm::clamp(elDeg, -89.0f, 89.0f);
     }
 };
@@ -1962,6 +1987,7 @@ private:
     // 10M satellites for a subtle effect, so no preset or first run turns it on. The knockout bit
     // above can still force it off while this is on (profiling A/B).
     bool satPartOcclusion = false;
+    float orbitDeltaTLo = 0.0f; // low half of this frame's orbit deltaT (GpuSatTypeHeader::deltaTLo)
     bool satOcclusionActive() const
     {
         return satPartOcclusion && (debugDisableMask & kDebugBitSatOcclusion) == 0;

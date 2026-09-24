@@ -441,11 +441,11 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             // Apply velocity this frame (identical math to the direct-control path).
             if (fabsf(cinematicYawVel) > 0.0001f)
             {
-                float angle = glm::radians(-cinematicYawVel * camera.sens);
+                float angle = glm::radians(-cinematicYawVel * camera.lookSens());
                 glm::vec3 leftDir = glm::cross(obsDir, obsFacing);
                 obsFacing = glm::normalize(cosf(angle) * obsFacing + sinf(angle) * leftDir);
             }
-            camera.elDeg -= cinematicPitchVel * camera.sens;
+            camera.elDeg -= cinematicPitchVel * camera.lookSens();
             camera.elDeg = glm::clamp(camera.elDeg, -89.0f, 89.0f);
 
             cinematicActive = true;
@@ -458,7 +458,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             if (camera.captured && dmx != 0.0f)
             {
                 // cross(obsDir, obsFacing) is the LEFT tangent, so negate angle for look-right.
-                float angle = glm::radians(-dmx * camera.sens);
+                float angle = glm::radians(-dmx * camera.lookSens());
                 glm::vec3 leftDir = glm::cross(obsDir, obsFacing);
                 obsFacing = glm::normalize(cosf(angle) * obsFacing + sinf(angle) * leftDir);
             }
@@ -477,10 +477,11 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         // the camera when deflected. Filled by pollGamepad() in the previous recordCompute.
         if (gpLookYawDeg != 0.0f || gpLookPitchDeg != 0.0f)
         {
-            float angle = glm::radians(-gpLookYawDeg);
+            const float gpScale = camera.lookSens() / camera.sens; // FOV scaling, as for the mouse
+            float angle = glm::radians(-gpLookYawDeg * gpScale);
             glm::vec3 leftDir = glm::cross(obsDir, obsFacing);
             obsFacing = glm::normalize(cosf(angle) * obsFacing + sinf(angle) * leftDir);
-            camera.elDeg = glm::clamp(camera.elDeg - gpLookPitchDeg, -89.0f, 89.0f);
+            camera.elDeg = glm::clamp(camera.elDeg - gpLookPitchDeg * gpScale, -89.0f, 89.0f);
         }
 
         // Derive camera.azDeg from obsFacing projected into the local Earth-fixed ENU.
@@ -545,7 +546,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // ── Scroll wheel → FOV zoom (when not hovering over UI panels) ───────────
     if (inp.scrollY != 0.0f && !ui.mouseOverUI())
     {
-        camera.fovYDeg = glm::clamp(camera.fovYDeg - inp.scrollY * 3.0f, 10.0f, 120.0f);
+        camera.zoomBy(powf(0.93f, inp.scrollY)); // ~5 deg per notch at 70 deg, ~0.04 deg at 0.5 deg
     }
 
     // ── Left-click → satellite/planet pick/select ─────────────────────────────

@@ -9,11 +9,13 @@
 // flareEntries loop in sat_sky.frag. This is a SECOND, parallel draw of the same satellite data
 // into a different, smaller, blurred target — not a replacement for the crisp dot-sprite pass.
 
-struct SatVisible {
+struct SatVisible { // GpuSatVisible (SatelliteSim.h)
     vec3  skyDir;
     float flareIntensity;
-    vec3  baseColor;
-    float angularSize;
+    uint  color;          // tint, packUnorm4x8 (alpha unused)
+    float angularSize;    // point sprite size (pixels)
+    float rangeM;         // distance to the object, m; 0 = at infinity (stars, planets)
+    float visPad;
 };
 layout(set = 0, binding = 1) readonly buffer SatVisibleBuf {
     SatVisible satellites[];
@@ -36,12 +38,14 @@ layout(push_constant) uniform PC {
 
 layout(location = 0) out vec3  fragColor;
 layout(location = 1) out float fragIntensity;
+layout(location = 2) out float fragRangeM; // distance, m (5e29 = at infinity: the sun)
 
 void main() {
     vec3  skyDir;
     float intensity;
     vec3  baseColor;
     float angSize;
+    float rangeM = 5.0e29;
 
     // Phase 1b: the satellite draw is vkCmdDrawIndirect over the compact visible list, whose
     // length only the GPU knows, so the sun can no longer be "vertex satCount". It is a separate
@@ -72,8 +76,9 @@ void main() {
         SatVisible sat = satellites[gl_VertexIndex];
         skyDir    = sat.skyDir;
         intensity = sat.flareIntensity;
-        baseColor = sat.baseColor;
+        baseColor = unpackUnorm4x8(sat.color).rgb;
         angSize   = sat.angularSize;
+        rangeM    = sat.rangeM > 0.0 ? sat.rangeM : 5.0e29;
     }
 
     vec3 cam = (pc.skyView * vec4(skyDir, 0.0)).xyz;
@@ -83,6 +88,7 @@ void main() {
         gl_PointSize = 0.001;
         fragColor     = vec3(0.0);
         fragIntensity = 0.0;
+        fragRangeM    = 0.0;
         return;
     }
 
@@ -98,4 +104,5 @@ void main() {
 
     fragColor     = baseColor;
     fragIntensity = intensity;
+    fragRangeM    = rangeM;
 }

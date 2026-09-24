@@ -1219,9 +1219,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         bool zoomOut = (glfwGetKey(win, keybindings[KB_ZOOM_OUT].key) == GLFW_PRESS) || gpHeld(KB_ZOOM_OUT);
         if (zoomIn || zoomOut)
         {
-            constexpr float kZoomRateDegPerSec = 40.0f;
-            camera.fovYDeg += (zoomOut ? 1.0f : -1.0f) * kZoomRateDegPerSec * dt;
-            camera.fovYDeg = glm::clamp(camera.fovYDeg, 10.0f, 120.0f);
+            constexpr float kZoomRatePerSec = 0.6f; // e-folds/s: ~40 deg/s at 70 deg, as before
+            camera.zoomBy(expf((zoomOut ? 1.0f : -1.0f) * kZoomRatePerSec * dt));
         }
     }
 
@@ -2207,7 +2206,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         --dDays;
         dSec += 86400.0;
     } // borrow from day if frac is negative
-    orbitPc.deltaT = (float)((double)dDays * 86400.0 + dSec);
+    const double deltaTD = (double)dDays * 86400.0 + dSec;
+    orbitPc.deltaT = (float)deltaTD;
+    orbitDeltaTLo = (float)(deltaTD - (double)orbitPc.deltaT); // → GpuSatTypeHeader::deltaTLo
     orbitPc.obsECI = obsECI;
     orbitPc.satCount = activeSatCount;
     orbitPc.highlightMask = highlightMask;
@@ -2363,6 +2364,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         hdr.mirrorBoost = mirrorBoost;
         hdr.occlusionFluxFloor = (float)occlusionFluxFloor(brightnessScale);
         hdr.occlusionOn = satOcclusionActive() ? 1u : 0u;
+        hdr.deltaTLo = orbitDeltaTLo;
         memcpy(satTypeMapped, &hdr, sizeof(hdr));
         uploadPointStyle(); // sat_flare.comp and the point draws read it this frame
     }
@@ -7631,8 +7633,8 @@ void SatelliteSim::createDrawPipeline(VulkanContext &ctx)
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    // Depth test against terrain written by the sky background pass (gl_FragDepth).
-    // Satellites at fixed depth 0.5 fail LESS where terrain depth < 0.5 (close terrain hits).
+    // Depth test against the sky background pass's gl_FragDepth, in the unified encoding
+    // (shaders/include/depth.glsl): each satellite writes its own range, so any nearer surface hides it.
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     ds.depthTestEnable = VK_TRUE;
     ds.depthWriteEnable = VK_FALSE;
@@ -8689,7 +8691,7 @@ void SatelliteSim::createStarPipeline(VulkanContext &ctx)
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    // Same depth test as satellites: stars at fixed depth 0.5 are culled by close terrain.
+    // Same depth test as satellites; stars draw at kDepthFar (infinity), so any surface hides them.
     VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     ds.depthTestEnable = VK_TRUE;
     ds.depthWriteEnable = VK_FALSE;
@@ -9069,7 +9071,8 @@ void SatelliteSim::updateStars()
 
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;
-        dst[i].baseColor = rec.color;
+        dst[i].color = packVisibleColor(rec.color);
+        dst[i].rangeM = 0.0f; // at infinity
         // Sized every frame from the magnitude it is drawn at, by the shared point-source model
         // star_point.frag draws it with (point_style.glsl) — the same as satellites and planets.
         dst[i].angularSize =
@@ -9170,7 +9173,8 @@ void SatelliteSim::updatePlanets()
 
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;
-        dst[i].baseColor = kPlanetColor[i]; // hand-picked approximate true color — see its own comment
+        dst[i].color = packVisibleColor(kPlanetColor[i]); // hand-picked approximate true color — see its own comment
+        dst[i].rangeM = 0.0f;                              // at infinity
         dst[i].angularSize = angSize;
     }
 }

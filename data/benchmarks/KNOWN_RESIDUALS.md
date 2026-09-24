@@ -55,7 +55,9 @@ Benchmarking" design page (Results log).
 
 - **Sim Earth rotation omits GMST at J2000** (≈ 280.46°): the Sun's hour angle is off real UTC by
   ≈ +5.25 h. Self-consistent everywhere; replaying real timestamped observations must correct it.
-- **GPU orbit math is float32:** the GPU–CPU parity gap exceeds 0.02 mag (and motion is choppy)
+- **GPU orbit math is float32:** fixed for the orbital phase on 2026-09-23 (Phase 4, `orbitPhase()`:
+  median 60 m / max ~770 m along-track → 1 m / 9 m). The remaining float32 floor (final angle and
+  position, a few metres) still makes the GPU–CPU parity gap exceed 0.02 mag (and motion choppy)
   only with the observer very close to a satellite. Phase 4 follow mode needs the double-precision,
   camera-relative path.
 - **Benchmarks exclude penumbra** (fully sunlit only, as the papers do); the app draws penumbra.

@@ -98,15 +98,12 @@ void main() {
     // writes the frame's depth buffer (see buildPointDrawPC). At renderScale 1.0 the live draw
     // instead gets this for free from the hardware depth test against sat_sky.frag's gl_FragDepth.
     //
-    // kOcclusionCap MUST match sat_sky.frag's constant of the same name — that shader only writes a
-    // point-occluding depth for terrain/ocean within this distance, so this test reproduces its
-    // exact behaviour (including the same limitation: a surface farther than the cap does not
-    // occlude, which for a point source at infinity is visible only in orbital views).
+    // Same rule as the hardware test (include/depth.glsl): a star is at infinity, so any surface
+    // hit occludes it (sceneDepthTex holds kNoSurfaceT = 1e30 for sky).
     float terrainVis = 1.0;
     if (pc.manualTerrainTest >= 0.5) {
         vec2 depthUV = gl_FragCoord.xy / pc.screenSizePx;
-        const float kOcclusionCap = 150000.0;
-        terrainVis = (texture(sceneDepthTex, depthUV).r < kOcclusionCap) ? 0.0 : 1.0;
+        terrainVis = (texture(sceneDepthTex, depthUV).r < 5.0e29) ? 0.0 : 1.0;
     }
 
     float brightness = gaussian * coreScale * fragTwinkle * cloudVis * terrainVis;

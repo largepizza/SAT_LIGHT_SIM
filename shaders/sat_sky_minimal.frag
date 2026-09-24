@@ -24,6 +24,7 @@
 #include "common.glsl"   // R_EARTH, R_ATMOS, PI, raySphere, BETA_R_BASE, BETA_M_BASE, H_R, H_M,
                          // SUN_INTENSITY, phaseR, phaseM
 #include "terrain.glsl"  // observerEffHeight, observerPos, enuBasis, posToUV
+#include "depth.glsl"    // unified scene depth (gl_FragDepth)
 
 // NOTE: the Milky Way was tried here (Sept 2026) and dropped for good. Textured panorama → 2 FPS
 // (atan/asin equirect projection + a texture fetch are the occupancy killers on this GCN1/MoltenVK
@@ -443,10 +444,6 @@ void main() {
 
     outColor = vec4(color, 1.0);
 
-    // Match sat_sky.frag: surface hits within 150 km write [0, 0.5) so the point passes are
-    // occluded; everything else writes 1.0 so they pass.
-    const float kOcclusionCap = 150000.0;
-    gl_FragDepth = (tOcclude >= 0.0 && tOcclude < kOcclusionCap)
-                   ? tOcclude / (kOcclusionCap * 2.0)
-                   : 1.0;
+    // Match sat_sky.frag: the unified depth of the first surface hit (include/depth.glsl), 1.0 for sky.
+    gl_FragDepth = (tOcclude >= 0.0) ? sceneDepthFromDistance(tOcclude) : 1.0;
 }

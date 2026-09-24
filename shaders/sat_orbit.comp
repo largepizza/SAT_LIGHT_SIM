@@ -147,6 +147,8 @@ layout(set = 0, binding = 5) readonly buffer SatTypeBuf {
     float   mirrorBoost;      // mirror peak multiplier
     float   occlusionFluxFloor; // skip part occlusion below this UNOCCLUDED flux (it only dims)
     uint    occlusionOn;      // 0 = knockout bit 1048576
+    float   deltaTLo;         // (simTime - epochT0) - pc.deltaT: the low half of deltaT (orbitPhase)
+    float   hdrPad0, hdrPad1, hdrPad2;
     // Earthshine table (satphot::earthshineLut(), written once by createSatBuffers): per (visible
     // cap half-angle, cos of the Sun's zenith at the sub-satellite point) the ln irradiance and the
     // tilt of its effective direction from nadir toward the Sun.
@@ -208,14 +210,16 @@ layout(set = 0, binding = 10) readonly buffer SatLobeSampleBuf {
 
 // ── Output: compact pre-photometry GpuSatVisible list, finished in place by sat_flare.comp ──
 // Must match GpuSatVisible (32 bytes) in SatelliteSim.h. Appended here as:
-//   highlight: flareIntensity < 0, angularSize = range (m)
-//   lit:       flareIntensity = raw flux (before sky/extinction/pollution), angularSize = range (m),
-//              baseColor already eclipse-tinted
+//   highlight: flareIntensity < 0, rangeM = range (m)
+//   lit:       flareIntensity = raw flux (before sky/extinction/pollution), rangeM = range (m),
+//              color already eclipse-tinted; angularSize unset (sat_flare.comp sizes the sprite)
 struct SatVisible {
     vec3  skyDir;
     float flareIntensity;
-    vec3  baseColor;
-    float angularSize;
+    uint  color;          // tint, packUnorm4x8 (alpha unused)
+    float angularSize;    // point sprite size (pixels)
+    float rangeM;         // distance to the object, m; 0 = at infinity (stars, planets)
+    float visPad;
 };
 layout(set = 0, binding = 1) writeonly buffer SatVisibleBuf {
     SatVisible visible[];
@@ -962,6 +966,32 @@ float modelFlux(uint ti, mat3 F0, mat3 F1, mat3 F2, mat3 F3, vec3 satNadir, vec3
     return total * scale;
 }
 
+// Orbital phase u = u0 + meanMot·deltaT, mod 2π, to ~1e-7 rad (≈ 1 m along-track) instead of the
+// ~3e-5 rad (≈ 200 m) a plain float product gives by day 7 of a rebake, where meanMot·deltaT is
+// ~700 rad. deltaT arrives as pc.deltaT + deltaTLo (hi + lo from the CPU's double); the big product
+// meanMot·dtHi is formed EXACTLY as p + e (Dekker's two-product over a Veltkamp split — not fma(),
+// which Vulkan does not guarantee is fused), and 2π is subtracted as A + B with A holding only 14
+// significant bits, so k·A is exact for k < 1024 and p − k·A is exact (Sterbenz). `precise` stops
+// the compiler contracting or reassociating any of it. Phase 4: a satellite's point and its mesh
+// (placed by the CPU in double) must agree to well under a pixel close in.
+const float TWO_PI_A = 6.28271484375;           // 2π truncated to 14 significant bits
+const float TWO_PI_B = 0.0004704634193331003;   // 2π − TWO_PI_A
+float orbitPhase(float u0, float n, float dtHi, float dtLo)
+{
+    precise float p = n * dtHi;
+    precise float cn = 4097.0 * n;
+    precise float nh = cn - (cn - n);
+    precise float nl = n - nh;
+    precise float ct = 4097.0 * dtHi;
+    precise float th = ct - (ct - dtHi);
+    precise float tl = dtHi - th;
+    precise float e = ((nh * th - p) + nh * tl + nl * th) + nl * tl; // p + e == n·dtHi exactly
+    float k = floor(p * 0.15915494);
+    precise float r = (p - k * TWO_PI_A) - k * TWO_PI_B;
+    precise float u = r + (e + n * dtLo + u0);
+    return mod(u, TWO_PI);
+}
+
 // Everything per-satellite. Returns false when the satellite is culled (nothing is appended);
 // otherwise fills `rec` with its pre-photometry record. A function rather than main()'s body so
 // main() can reach its workgroup barriers in uniform control flow — the early exits live here.
@@ -974,10 +1004,9 @@ bool processSatellite(uint i, out SatVisible rec)
     if (((pc.enabledMask >> orb.constIdx) & 1u) == 0u)
         return false;
 
-    // ── Orbital phase (epoch-delta trick for float precision) ─────────────────
+    // ── Orbital phase (epoch-delta trick + a two-float product, see orbitPhase) ─
     // orb.u0 = fmod(original_u0 + meanMot*epochT0, 2π), so phase = u0 + meanMot*deltaT.
-    // Float precision of deltaT limits accuracy; re-upload GpuSatOrbit to reset when needed.
-    float u    = mod(orb.u0 + orb.meanMot * pc.deltaT, TWO_PI);
+    float u    = orbitPhase(orb.u0, orb.meanMot, pc.deltaT, deltaTLo);
     float cosU = cos(u);
     float sinU = sin(u);
 
@@ -1289,7 +1318,7 @@ bool processSatellite(uint i, out SatVisible rec)
     // dot. (Was signalled by a diffuse=2.0 sentinel through GpuSatInput.) The beam bookkeeping
     // above still ran: highlight is a display mode and must not change what the mirrors do.
     if (bool((pc.highlightMask >> orb.constIdx) & 1u)) {
-        rec = SatVisible(skyDir, -1.0, baseColor, range);
+        rec = SatVisible(skyDir, -1.0, packUnorm4x8(vec4(baseColor, 1.0)), 0.0, range, 0.0);
         return true;
     }
 
@@ -1343,7 +1372,7 @@ bool processSatellite(uint i, out SatVisible rec)
 
     // Raw flux + range; sat_flare.comp applies sky/extinction/pollution, the ceiling, the
     // visibility cull and the sprite size.
-    rec = SatVisible(skyDir, flare, outBaseColor, range);
+    rec = SatVisible(skyDir, flare, packUnorm4x8(vec4(outBaseColor, 1.0)), 0.0, range, 0.0);
     return true;
 }
 

@@ -1,11 +1,15 @@
 #version 450
 
+#include "depth.glsl"
+
 // ── SSBO: star records written by CPU (updateStars) each frame ────────────────
 struct SatVisible {
     vec3  skyDir;         // ENU unit vector
     float flareIntensity; // raw magnitude-based intensity × night factor
-    vec3  baseColor;      // B-V derived RGB
+    uint  color;          // B-V derived RGB, packUnorm4x8
     float angularSize;    // point sprite size (pixels)
+    float rangeM;         // distance to the object, m; 0 = at infinity (stars, planets)
+    float visPad;
 };
 layout(set = 0, binding = 1) readonly buffer SatVisibleBuf {
     SatVisible satellites[];
@@ -28,11 +32,9 @@ layout(push_constant) uniform PC {
 
 // Matches kMoonAngR in sat_sky.frag's moon disc (0.004578 * 3.0) — the Moon is a real opaque
 // body much closer than any star, so stars angularly behind its disc must not draw over it.
-// The sky pass itself can't express this in the depth buffer: satellites and stars share a
-// single fixed clip depth (0.5) with no relative ordering, and giving the moon its own nearer
-// depth would incorrectly occlude satellites too (which really are nearer than the Moon and
-// should keep drawing over it). Culling here, per-star, sidesteps the shared-depth limitation
-// without touching that broader scheme.
+// Culled here per star rather than through the depth buffer: sat_sky.frag does not write the
+// Moon's distance as depth. (Since Phase 4's unified depth it could — satellites are nearer than
+// the Moon, stars draw at kDepthFar — but this cull predates that and works.)
 const float kMoonAngR = 0.004578 * 3.0;
 
 layout(location = 0) out vec3  fragColor;
@@ -61,10 +63,10 @@ void main() {
     float tanHalfFov = tan(pc.fovYRad * 0.5);
     gl_Position  = vec4( cam.x / (-cam.z) / (tanHalfFov * pc.aspect),
                         -cam.y / (-cam.z) /  tanHalfFov,
-                         0.5, 1.0);
+                         kDepthFar, 1.0); // at infinity: behind every surface (include/depth.glsl)
     gl_PointSize = sat.angularSize;
 
-    fragColor     = sat.baseColor;
+    fragColor     = unpackUnorm4x8(sat.color).rgb;
     fragIntensity = sat.flareIntensity;
     fragAngSize   = sat.angularSize;
 

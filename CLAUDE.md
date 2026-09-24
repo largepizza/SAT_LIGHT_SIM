@@ -160,6 +160,25 @@ ui.record(cmd)           → Clay → Vulkan quads/text/icons on top
 vkCmdEndRenderPass       → owned by App
 ```
 
+### Unified scene depth (Phase 4, 2026-09-23)
+
+The main render pass's depth attachment holds ONE encoding, written by everyone:
+`log2(t / 1 cm) / log2(1e9 m / 1 cm)` of the **true distance** along the view ray
+(`shaders/include/depth.glsl`, `sceneDepthFromDistance()`), compare LESS, cleared to 1.0. The sky
+passes (`sat_sky.frag`, `_lite`, `_minimal`) write it for the first opaque surface — terrain, else
+ocean, else ≥90%-opaque cloud — at any range, 1.0 for sky; satellite points write their own range
+(`GpuSatVisible::rangeM`); stars and planets draw at `kDepthFar` (infinity, behind every surface).
+Phase 4's meshes join the same encoding. The manual tests (trails, `renderScale < 1`) and
+`flare_source.frag` apply the same rule against `sceneDepthImg`: a surface occludes only if nearer
+than the object.
+
+**It replaced a 150 km cap** (`kOcclusionCap`): terrain wrote `t / 300 km` only within 150 km and
+points sat at a fixed 0.5 — so that from orbit the distant Earth didn't swallow the satellites in
+front of it. Consequences of the cap that are now fixed: a mountain or opaque cloud more than 150 km
+away never hid a star or satellite, and `flare_source.frag` (which used "any surface occludes")
+killed the bloom of every satellite seen in front of the Earth from orbit. Resolution: D32 float
+over 36.5 octaves ≈ 1.5e-6 of the distance, anywhere.
+
 ### Occlusion: one shared depth buffer
 
 `scene_depth.comp` writes `sceneDepthImg` — half `ctx.swapExtent`, **`R32_SFLOAT`**, linear metres
@@ -757,7 +776,19 @@ state of its own: every frame's TargetedReflector selection and orientation is a
 that frame's push constants.
 
 ### Orbit rebake
-`kOrbitRebakeDays = 7`. Each `GpuSatOrbit` bakes `u0 = fmod(orig_u0 + meanMot × epochT0, 2π)` so the shader only adds `meanMot × deltaT` where deltaT < 7×86400 s. Float ULP at that scale ≈ 0.07 s, well within tolerable orbital error. `uploadSatOrbits()` auto-triggers in `recordCompute()` when `|simDayJ2000 - orbitEpochDay| >= 7`.
+`kOrbitRebakeDays = 7`. Each `GpuSatOrbit` bakes `u0 = fmod(orig_u0 + meanMot × epochT0, 2π)` so the shader only adds `meanMot × deltaT` where deltaT < 7×86400 s. `uploadSatOrbits()` auto-triggers in `recordCompute()` when `|simDayJ2000 - orbitEpochDay| >= 7`.
+
+**That product is ~700 rad by day 7, and in plain float it was off by a median 60 m and up to
+~770 m along-track** — invisible as a point from the ground, fatal for a mesh next to its own
+sprite (Phase 4). `orbitPhase()` (`sat_orbit.comp`) now computes it as an exact two-float product:
+`deltaT` arrives as `pc.deltaT` + `GpuSatTypeHeader::deltaTLo` (the low half of the CPU's double),
+Dekker's two-product over a Veltkamp split gives `meanMot·dtHi` exactly, and 2π is subtracted as a
+14-significant-bit `TWO_PI_A` + remainder so every step is exact. **It must stay `precise`** (SPIR-V
+`NoContraction`, 26 decorations): a compiler that contracts or reassociates it silently loses
+everything — and it deliberately does not use `fma()`, which Vulkan does not guarantee is fused.
+Verified by float32 emulation over 200k satellites × random deltaT in 0-7 days: median 1.1 m, p99
+6 m, max 9 m (the float32 floor of the final angle). The header grew 16 → 32 B for `deltaTLo`;
+`kSatTypeArrayOffset` follows it automatically.
 
 ### simTime representation
 Split into `simDayJ2000` (int64_t days) + `simSecInDay` (double, re-based to [0, 86400) each frame). Avoids accumulated float precision loss when a large J2000 base is added to a small per-frame delta. The shader receives `deltaT = float((dDays × 86400) + dSec)` where dDays < 7 (ensured by rebake).
@@ -776,7 +807,8 @@ anything that is constant per type goes in `GpuSatType`.
 
 ### GpuSatType layout (416 bytes, std430) — `satTypeBuf`
 One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, at `kSatTypeArrayOffset`: after a
-16-byte `GpuSatTypeHeader` (`brightnessScale`, `mirrorBoost`, `occlusionFluxFloor`, `occlusionOn` —
+32-byte `GpuSatTypeHeader` (`brightnessScale`, `mirrorBoost`, `occlusionFluxFloor`, `occlusionOn`,
+`deltaTLo` —
 rewritten every frame; `SatOrbitPC` is full) and the 64 KB `GpuEarthshineLut` (`earthLut` in the
 shader, written once by `createSatBuffers()`). Must match
 `SatType`/`AttGroup`/`SatTypeBuf` in `sat_orbit.comp` (`offsetof` static_asserts guard the C++ side).
@@ -804,12 +836,15 @@ A **compact list** entry: appended by `sat_orbit.comp`, finished in place by `sa
 by `sat_point.vert`, `flare_source.vert` and the trail splat pass via indirect draws.
 ```
 [ 0] skyDir (vec3) + flareIntensity (float)  — ENU unit vector + intensity [0,1+]
-[16] baseColor (vec3) + angularSize (float)  — tint + point sprite size hint (pixels)
+[16] color (uint, packUnorm4x8), angularSize (float, sprite px), rangeM (float), pad
 ```
 Between the two dispatches it is a **pre-photometry** record (culled satellites are not in the
 list at all): highlighted ones carry `flareIntensity < 0`; lit ones carry the raw flux, with
-`angularSize` holding the **range in metres** and `baseColor` already eclipse-tinted. After
-`sat_flare.comp`, a satellite below `visThresh` stays in the list as a zero record.
+`color` already eclipse-tinted and `angularSize` unset. After `sat_flare.comp`, a satellite below
+`visThresh` stays in the list as a zero record. Stars and planets use the same record
+(`rangeM` = 0, at infinity; `packVisibleColor()` on the CPU). **Phase 4 (2026-09-23):** the tint
+was a `vec3`; packing it freed the slot for `rangeM`, which the point draws write as their depth
+(see "Unified scene depth").
 
 ### GpuSatListHeader layout (80 bytes) — `satListBuf`
 ```
@@ -826,8 +861,10 @@ brightnessScale, mirrorBoost); next frame `updateSelectedPhotometry()` re-evalua
 `evalSatPhotometry()` at those inputs and shows physical magnitude, range/phase and the GPU−CPU gap
 (Δmag, red above `kParityWarnMag` = 0.02, logged with a 120-frame cooldown) in the selection panel.
 Legacy types are compared through the evaluator's `legacyFlux()` mirror (`LegacyReflectance`), in
-their own display units. The gap is float-vs-double arithmetic, chiefly `u0 + meanMot·deltaT` in
-float (~200 m along-track by day 7 of a rebake) — so expect it to grow on the flanks of sharp glints.
+their own display units. The gap is float-vs-double arithmetic. Until Phase 4 it was chiefly
+`u0 + meanMot·deltaT` in float (median 60 m, up to ~770 m along-track by day 7 of a rebake); since
+2026-09-23 `orbitPhase()` forms that product exactly (see "Orbit rebake"), leaving ~1 m median /
+~9 m max from float32 rounding of the final angle and position.
 Mirrored as `SatListBuf` in both `sat_orbit.comp` and `sat_flare.comp`; `offsetof` static_asserts
 guard the C++ side.
 `static_assert(sizeof(GpuSatVisible) == 32)`
@@ -2114,7 +2151,8 @@ Read it at the start of any terrain-related session before making changes.
   identical step budgets regardless of how much further the grazing ray actually travels, a real
   bug contributing to reported terrain jitter, not just under-tuned; see `TERRAIN_PLAN.md` session
   29 log) + 12-step binary search; terrain hits use gradient-computed normals; sea-level sphere
-  fallback; satellites/stars depth-tested against terrain (gl_FragDepth: close terrain → [0, 0.5),
+  fallback; satellites/stars depth-tested against terrain (gl_FragDepth — since Phase 4 the unified log-distance
+  encoding, see "Unified scene depth"; originally close terrain → [0, 0.5),
   sky → 1.0)
 - Ocean wave material: specular map (binding 6) gates UBO-tunable-octave noise wave normals +
   Blinn-Phong sun glint (exp=300) + Schlick Fresnel on sea-level sphere hits

@@ -13,6 +13,7 @@
 
 layout(location = 0) in vec3  fragColor;
 layout(location = 1) in float fragIntensity;
+layout(location = 2) in float fragRangeM;
 
 layout(location = 0) out vec4 outColor;
 
@@ -32,8 +33,6 @@ layout(push_constant) uniform PC {
     float pad0;
 } pc;
 
-const float kNoSurfaceT = 1e30; // mirrors common.glsl's constant — this tiny shader skips the
-                                 // #include machinery for a single value
 
 void main() {
     vec2  c = gl_PointCoord - 0.5;
@@ -45,10 +44,12 @@ void main() {
     vec4 cloudB = texture(cloudTargetB, uv);
     float tCloudOcclude = cloudA.a;
     float cloudBlockV   = dot(cloudB.rgb, vec3(1.0 / 3.0));
-    float cloudHardOcclude = (tCloudOcclude >= 0.0) ? 0.0 : 1.0;
+    // Opaque cloud / terrain hide the source only when NEARER than it (the unified-depth rule,
+    // include/depth.glsl) — from orbit, a satellite in front of the Earth keeps its glow.
+    float cloudHardOcclude = (tCloudOcclude >= 0.0 && tCloudOcclude < fragRangeM) ? 0.0 : 1.0;
     float cloudVis = cloudHardOcclude * clamp(cloudBlockV, 0.0, 1.0);
 
-    float terrainVis = (texture(sceneDepthTex, uv).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
+    float terrainVis = (texture(sceneDepthTex, uv).r < fragRangeM) ? 0.0 : 1.0;
 
     // Single soft Gaussian — deliberately wider than sat_point.frag's inner core (this IS the
     // corona seed the blur passes spread further, not the crisp point itself).

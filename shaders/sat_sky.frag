@@ -194,6 +194,7 @@ layout(location = 0) out vec4 outColor;
 #include "terrain.glsl"
 #include "atmosphere.glsl" // line-of-sight extinction (atmExtinctionMag)
 #include "darksky.glsl"   // dark-sky exposure gate (Milky Way / zodiacal)
+#include "depth.glsl"     // unified scene depth (gl_FragDepth)
 
 // ── Milky Way surface-brightness anchors ─────────────────────────────────────────────────────
 // File scope, not block-local, because TWO places gate this panorama on them: the direct sky view
@@ -3090,17 +3091,12 @@ void main() {
 
     outColor = vec4(color, 1.0);
 
-    // Terrain/ocean occlusion depth for subsequent satellite/star passes.
-    // Satellites and stars are drawn with gl_Position.z = 0.5 (fixed) and tested with LESS.
-    // Close surface hits write [0, 0.5) so they block those overlays; sky writes 1.0 so they pass.
-    // The 150 km cap prevents space-view terrain from incorrectly culling near satellites.
-    // tSeaLvl covers ocean pixels that have no terrain hit but still block satellites.
-    const float kOcclusionCap = 150000.0;
+    // Unified scene depth (include/depth.glsl) for the passes that follow: the TRUE distance to the
+    // first opaque surface — terrain, else ocean (tSeaLvl covers ocean pixels with no terrain
+    // hit), else opaque cloud (cloud is above terrain, so tCloudOcclude only applies when nothing
+    // nearer was hit) — at any range; 1.0 for sky. Points write their own range, so a satellite in
+    // front of the distant Earth seen from orbit passes and one behind a mountain does not.
     float tOcclude = (tHit >= 0.0) ? tHit : tSeaLvl;
-    // Opaque cloud also occludes satellites/stars behind it (cloud is above terrain so
-    // tCloudOcclude is only used when no terrain/ocean is closer).
     if (tOcclude < 0.0 && tCloudOcclude >= 0.0) tOcclude = tCloudOcclude;
-    gl_FragDepth = (tOcclude >= 0.0 && tOcclude < kOcclusionCap)
-                   ? tOcclude / (kOcclusionCap * 2.0)
-                   : 1.0;
+    gl_FragDepth = (tOcclude >= 0.0) ? sceneDepthFromDistance(tOcclude) : 1.0;
 }

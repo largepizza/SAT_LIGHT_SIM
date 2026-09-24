@@ -16,6 +16,7 @@
 layout(location = 0) in vec3  fragColor;
 layout(location = 1) in float fragIntensity;
 layout(location = 2) in float fragAngSize;
+layout(location = 3) in float fragRangeM;
 
 layout(location = 0) out vec4 outColor;
 
@@ -82,7 +83,7 @@ void main() {
         // a hard gate for genuinely opaque cloud (same tCloudOcclude convention that hides the moon
         // disc), and a smooth power-curve dim otherwise (same shape the Milky Way/sun disc use), so
         // satellites join the same existing visual language instead of a new one.
-        float cloudHardOcclude = (tCloudOcclude >= 0.0) ? 0.0 : 1.0;
+        float cloudHardOcclude = (tCloudOcclude >= 0.0 && tCloudOcclude < fragRangeM) ? 0.0 : 1.0;
         const float kSatCloudSuppressPower = 2.0;
         cloudVis = cloudHardOcclude * pow(clamp(cloudBlock, 0.0, 1.0), kSatCloudSuppressPower);
     }
@@ -93,16 +94,13 @@ void main() {
     // writes the frame's depth buffer (see buildPointDrawPC). At renderScale 1.0 the live draw
     // instead gets this for free from the hardware depth test against sat_sky.frag's gl_FragDepth.
     //
-    // kOcclusionCap MUST match sat_sky.frag's constant of the same name: that shader only writes a
-    // depth < 1.0 (i.e. only occludes points) for terrain/ocean closer than this along the view
-    // ray, so from orbit — where the Earth's surface is hundreds of km away — satellites between the
-    // camera and the planet still render in front of it. Reproducing the hard "any hit occludes"
-    // test here instead made the Earth's disc swallow every satellite in orbital views.
+    // Same rule as the hardware test (include/depth.glsl): a surface occludes the satellite only if
+    // it is nearer than the satellite's own range. (Until Phase 4 both used a 150 km cap instead,
+    // so that from orbit the distant Earth did not swallow the satellites in front of it.)
     float terrainVis = 1.0;
     if (pc.manualTerrainTest >= 0.5) {
         vec2 depthUV = gl_FragCoord.xy / pc.screenSizePx;
-        const float kOcclusionCap = 150000.0;
-        terrainVis = (texture(sceneDepthTex, depthUV).r < kOcclusionCap) ? 0.0 : 1.0;
+        terrainVis = (texture(sceneDepthTex, depthUV).r < fragRangeM) ? 0.0 : 1.0;
     }
 
     // ── Point spread from the apparent magnitude (point_style.glsl) ──────────────
