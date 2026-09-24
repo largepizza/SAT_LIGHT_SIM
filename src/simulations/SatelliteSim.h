@@ -1683,7 +1683,7 @@ private:
     float viewerYawDeg = 35.0f, viewerPitchDeg = 18.0f;
     float viewerDist = 0.0f; // m from the model's centre; 0 = frame it on the next render
     float viewerAspect = 1.2f; // the image element's laid-out width / height (set by the UI)
-    bool viewerSpin = true, viewerStudioLight = true, viewerSunlitPose = true;
+    bool viewerSpin = true, viewerStudioLight = false, viewerSunlitPose = true, viewerDetail = true;
     bool viewerShadows = true, viewerReflections = true;
     bool viewerDragging = false;
     uint32_t viewerImageId = 0;

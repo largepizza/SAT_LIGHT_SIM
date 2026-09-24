@@ -2,7 +2,7 @@
     "name": "Starlink V1.0 (original design)",
     "note": "Benchmarking M4 reference model for Mallama (2020a), the pre-visor design at 550 km through May 2020. Same chassis as starlink_visorsat.json without the visor or the black edges. Body frame: +Z nadir, +Y toward the Sun's azimuth (the bus yaws so the array is edge-on to the Sun), +X = +Y x +Z. Every number is covered by `sources`; materials remain Phase 3c calibration targets.",
     "materials": [
-        { "name": "bus_metal", "preset": "aluminum", "roughness": 0.23 },
+        { "name": "bus_metal", "preset": "aluminum", "roughness": 0.23, "pattern": "panel_seams" },
         { "name": "antenna_white", "preset": "white_paint" },
         { "name": "array_back_dark", "preset": "black_paint" }
     ],

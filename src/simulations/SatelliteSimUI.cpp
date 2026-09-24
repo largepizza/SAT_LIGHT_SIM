@@ -1398,6 +1398,14 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
 {
     if (!viewerChrome.open || !meshRendererInit)
         return;
+    // A viewer tracking a satellite follows the selection (as the magnitude trace does), when the
+    // newly selected satellite has a model.
+    if (viewerSatIndex >= 0 && selectedSatIndex >= 0 && selectedSatIndex != viewerSatIndex &&
+        selectedSatIndex < (int)satOrbits.size() && meshRenderer.typeMesh((int)satOrbits[selectedSatIndex].typeIdx))
+    {
+        const SatOrbit &orb = satOrbits[selectedSatIndex];
+        openModelViewer((int)orb.typeIdx, satTypes[orb.typeIdx].name.c_str(), orb.altM, selectedSatIndex);
+    }
     if (viewerChrome.w <= 0.0f)
     {
         viewerChrome.w = 560.0f;
@@ -1475,8 +1483,8 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
         bool clicked = false;
         bool &hov = hovViewerBtn[id];
         CLAY(CLAY_IDI("ViewerBtn", id), {.layout = {
-                                             .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(24)},
-                                             .padding = {10, 10, 0, 0},
+                                             .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(11) + 12.0f)},
+                                             .padding = {8, 8, 0, 0},
                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                          .backgroundColor = hov ? Pal::btnHover : Pal::btnIdle,
                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
@@ -1487,14 +1495,28 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
             hov = n;
             clicked = n && inp.lmbPressed;
             ui.tooltip(inp, n, tip, fs(11));
-            text(label, Pal::btnLabel, 11);
+            Clay_String ls{false, (int32_t)strlen(label), label};
+            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11),
+                                            .wrapMode = CLAY_TEXT_WRAP_NONE}));
         }
         return clicked;
     };
+    auto buttonRow = [&](int id, const std::function<void()> &body) {
+        CLAY(CLAY_IDI("ViewerButtonRow", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                          .childGap = 6,
+                                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                          .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                               .clip = {.horizontal = true}})
+        {
+            body();
+        }
+    };
+    // Narrowest width the two button rows fit in at this UI scale (~26 label characters + padding).
+    const float minViewerW = std::max(320.0f, (float)fs(11) * 30.0f);
 
     buildResizableWindow(
         inp, ui, viewerChrome, 3, viewerTitle, true, hovViewerClose, inp.screenW - viewerChrome.w - 40.0f, 80.0f,
-        320.0f, 300.0f, 1800.0f, 1400.0f,
+        minViewerW, 300.0f, 1800.0f, 1400.0f,
         [&]()
         {
             CLAY(CLAY_ID("ViewerBody"), {.layout = {
@@ -1513,10 +1535,7 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                     CLAY(imgId, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
                                  .custom = {.customData = meshRenderer.viewerRendered() ? &viewerImage : nullptr}}) {}
                 }
-                CLAY(CLAY_ID("ViewerButtons"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                           .childGap = 6,
-                                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                buttonRow(0, [&]()
                 {
                     if (button(0, viewerSpin ? "Spin: ON" : "Spin: OFF", "Turn slowly around the model"))
                         viewerSpin = !viewerSpin;
@@ -1527,23 +1546,30 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                     if (button(2, viewerSunlitPose ? "Pose: Sunlit" : "Pose: Rest",
                                "Sunlit: joints follow the attitude law (arrays track the sun). Rest: every joint at 0"))
                         viewerSunlitPose = !viewerSunlitPose;
-                    if (button(3, viewerShadows ? "Shadows: ON" : "Shadows: OFF",
-                               "Parts shadow each other (the model's own primitives, as the photometry's occlusion)"))
-                        viewerShadows = !viewerShadows;
-                    if (button(4, viewerReflections ? "Reflect: ON" : "Reflect: OFF",
-                               "Surfaces reflect the Earth, atmosphere and clouds below"))
-                        viewerReflections = !viewerReflections;
                     if (button(5, "Reset", "Frame the model again"))
                     {
                         viewerDist = 0.0f;
                         viewerYawDeg = 35.0f;
                         viewerPitchDeg = 18.0f;
                     }
+                });
+                buttonRow(1, [&]()
+                {
+                    if (button(3, viewerShadows ? "Shadows: ON" : "Shadows: OFF",
+                               "Parts shadow each other (the model's own primitives, as the photometry's occlusion)"))
+                        viewerShadows = !viewerShadows;
+                    if (button(4, viewerReflections ? "Reflect: ON" : "Reflect: OFF",
+                               "Surfaces reflect the Earth, atmosphere and clouds below"))
+                        viewerReflections = !viewerReflections;
+                    if (button(7, viewerDetail ? "Detail: ON" : "Detail: OFF",
+                               "Procedural surface detail: solar-cell and module gaps, foil crinkle and quilting, "
+                               "panel seams (visual only - the brightness model is unchanged)"))
+                        viewerDetail = !viewerDetail;
                     if (button(6, "Check",
                                "Photometric check: render the model sun-only from this direction, integrate its "
                                "pixels, and compare with the brightness model (magnitude at 1000 km)"))
                         viewerCheckRequested = true;
-                }
+                });
                 if (viewerCheckLine[0])
                     text(viewerCheckLine, Pal::textDim, 11);
                 text("Drag to orbit, scroll to zoom", Pal::textHint, 11);
@@ -1639,8 +1665,11 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
                                      .floating = {.offset = {chrome.x, chrome.y}, .zIndex = 10, .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_CAPTURE, .attachTo = CLAY_ATTACH_TO_ROOT},
                                      .border = {.color = Style::borderColor, .width = CLAY_BORDER_ALL(Style::borderWidthPx)}})
     {
+        // Title bar height follows the UI scale; the title never wraps (a wrapped title spilled below
+        // the bar into the body) and is clipped short of the close button instead.
+        const float titleBarH = std::max(36.0f, (float)fs(16) + 16.0f);
         CLAY(CLAY_IDI("GenWinTitleBar", winId), {.layout = {
-                                                     .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(36)},
+                                                     .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(titleBarH)},
                                                      .padding = {14, 14, 0, 0},
                                                      .childGap = 0,
                                                      .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
@@ -1654,16 +1683,19 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
                     chrome.dragging = true;
             }
 
-            CLAY_TEXT(titleStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(16)}));
-
-            CLAY(CLAY_IDI("GenWinTitleSpacer", winId), {.layout = {
-                                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+            CLAY(CLAY_IDI("GenWinTitleText", winId), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}},
+                                                      .clip = {.horizontal = true}})
+            {
+                CLAY_TEXT(titleStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(16),
+                                                      .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            }
 
             if (closable)
             {
                 Clay_Color closeBg = hovCloseFlag ? Pal::closeBgHov : Pal::closeBgIdle;
+                const float closeSz = std::max(24.0f, (float)fs(12) + 12.0f);
                 CLAY(CLAY_IDI("GenWinCloseBtn", winId), {.layout = {
-                                                             .sizing = {CLAY_SIZING_FIXED(24), CLAY_SIZING_FIXED(24)},
+                                                             .sizing = {CLAY_SIZING_FIXED(closeSz), CLAY_SIZING_FIXED(closeSz)},
                                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                                          .backgroundColor = closeBg,
                                                          .cornerRadius = CLAY_CORNER_RADIUS(4)})

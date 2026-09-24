@@ -27,7 +27,7 @@ struct GpuMeshFrame
     glm::vec4 sunDir;      // xyz, w = draw the sun disc (background)
     glm::vec4 moonDir;     // xyz, w = moonlight irradiance (fraction of sunlight)
     glm::vec4 earthCenter; // xyz, w = Earth rotation angle (cloud drift)
-    glm::vec4 params;      // x = self-shadows, y = reflections, z = env lod bias
+    glm::vec4 params;      // x = self-shadows, y = reflections, z = procedural detail, w = check mode
 };
 static_assert(sizeof(GpuMeshFrame) == 208, "GpuMeshFrame layout (sat_mesh_common.glsl)");
 

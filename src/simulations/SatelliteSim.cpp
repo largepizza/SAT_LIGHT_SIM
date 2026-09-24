@@ -3057,7 +3057,8 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     // satellite reads like moonlit ground under the night exposure.
     frame.moonDir = glm::vec4(glm::vec3(moon), moonGain * moonDirENU.w);
     frame.earthCenter = glm::vec4(glm::vec3(-P), (float)std::fmod(theta, glm::two_pi<double>()));
-    frame.params = glm::vec4(viewerShadows ? 1.0f : 0.0f, viewerReflections ? 1.0f : 0.0f, 0.0f, 0.0f);
+    frame.params = glm::vec4(viewerShadows ? 1.0f : 0.0f, viewerReflections ? 1.0f : 0.0f,
+                             viewerDetail ? 1.0f : 0.0f, 0.0f);
     meshRenderer.recordViewer(cmd, frame, inst, viewerType);
 
     // ── Photometric check ───────────────────────────────────────────────────

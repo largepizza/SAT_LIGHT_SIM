@@ -2,7 +2,7 @@
     "name": "Starlink VisorSat",
     "note": "Benchmarking M4 reference model for Mallama (2021). V1.x chassis in 'shark-fin' operational mode with the deployable visor. Body frame: +Z nadir, +X toward the Sun's azimuth (the bus yaws so the visor stays sunward), +Y = +Z x +X. Every number is covered by `sources`; the visor's scale is calibrated (see its source), the materials are presets.",
     "materials": [
-        { "name": "bus_metal", "preset": "aluminum", "roughness": 0.23 },
+        { "name": "bus_metal", "preset": "aluminum", "roughness": 0.23, "pattern": "panel_seams" },
         { "name": "antenna_white", "preset": "white_paint" },
         { "name": "bus_edge_black", "preset": "black_paint" },
         { "name": "visor_black", "preset": "black_paint" },

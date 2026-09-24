@@ -168,50 +168,82 @@ struct Surface {
     float rough;    // roughness actually used
 };
 
+// Fraction of a pixel footprint covered by periodic lines: each period (length 1, in period units)
+// starts with a line of width w (0..1); x is the position, f the footprint width, both in periods.
+// The exact box filter of the pattern (after Inigo Quilez's filtered grid): its average over any
+// area is the true line fraction, so the pattern keeps its mean at every distance and never aliases.
+float lineCover(float x, float w, float f)
+{
+    f = max(f, 1e-4);
+    float a = x + 0.5 * f, b = x - 0.5 * f;
+    float ia = floor(a) * w + min(fract(a), w);
+    float ib = floor(b) * w + min(fract(b), w);
+    return clamp((ia - ib) / f, 0.0, 1.0);
+}
+// Grid of lines in both directions: p and fw (= fwidth(p)) in period units, w the line fraction.
+float gridCover(vec2 p, vec2 w, vec2 fw)
+{
+    vec2 c = vec2(lineCover(p.x, w.x, fw.x), lineCover(p.y, w.y, fw.y));
+    return 1.0 - (1.0 - c.x) * (1.0 - c.y);
+}
+// Tilts N by a small random rotation seeded by `cell` (rest-frame jitter, posed with the group).
+vec3 jitterNormal(vec3 N, mat3 R, ivec2 cell, float amount)
+{
+    vec3 j = hash3(uvec3(ivec3(cell + ivec2(8192), int(vMaterial)))) - 0.5;
+    vec3 t = R * j;
+    return normalize(N + amount * (t - dot(t, N) * N));
+}
+
 Surface applyPattern(MeshMaterial mat, MeshInstance inst, vec3 N)
 {
     Surface s = Surface(N, mat.color, 1.0, mat.roughness);
-    const float pxUv   = max(max(fwidth(vUv.x), fwidth(vUv.y)), 1e-6);  // metres per pixel
+    if (frame.params.z < 0.5)
+        return s;
+    const vec2  fwUv   = max(fwidth(vUv), vec2(1e-6));       // metres per pixel along u, v
     const float pxRest = max(length(fwidth(vRest)), 1e-6);
     const mat3  R      = instGroupRot(inst, vGroup);
     if (mat.pattern == 1u) {
-        // Solar cells ~8 x 4 cm (space triple-junction), 2.5 mm gaps of lighter substrate between them.
-        const vec2  pitch = vec2(0.080, 0.040);
-        const float gap   = 0.0025;
-        const float gFrac = 1.0 - (1.0 - gap / pitch.x) * (1.0 - gap / pitch.y);
-        const float mGap  = 4.0;
-        const float mCell = (1.0 - gFrac * mGap) / (1.0 - gFrac);
-        float resolve = clamp((0.25 * pitch.y - pxUv) / (0.2 * pitch.y), 0.0, 1.0);
-        vec2  f    = fract(vUv / pitch) * pitch;
-        vec2  d    = min(f, pitch - f);
-        float edge = min(d.x, d.y);
-        float gapMask = 1.0 - smoothstep(0.5 * gap - pxUv, 0.5 * gap + pxUv, edge);
-        s.albedoM = mix(1.0, mix(mCell, mGap, gapMask), resolve);
-        s.tint    = mix(mat.color, vec3(0.85, 0.82, 0.70), gapMask * resolve);
-        // Each cell sits a fraction of a degree off the panel plane: close up, a glint breaks into
-        // individual cells instead of one uniform sheet.
-        vec3 j = hash3(uvec3(ivec3(ivec2(floor(vUv / pitch)) + ivec2(8192), int(vMaterial)))) - 0.5;
-        vec3 t = R * j;
-        s.N = normalize(N + resolve * 0.012 * (t - dot(t, N) * N));
+        // Solar array: 8 x 4 cm cells with 2.5 mm gaps, grouped into 0.4 m modules with 1 cm gaps;
+        // both gaps show the lighter substrate. Each module sits ~0.25 deg off the panel plane (each
+        // cell ~0.5 deg once resolved), so a glint breaks up module by module, then cell by cell.
+        const vec2 cellP = vec2(0.080, 0.040), modP = vec2(0.40, 0.40);
+        const vec2 cellW = vec2(0.0025) / cellP, modW = vec2(0.010) / modP;
+        float gapCells = gridCover(vUv / cellP, cellW, fwUv / cellP);
+        float gapMods  = gridCover(vUv / modP, modW, fwUv / modP);
+        float gap = 1.0 - (1.0 - gapCells) * (1.0 - gapMods);
+        // Mean-preserving: the area mean of the multiplier is exactly 1.
+        vec2  fc = 1.0 - cellW, fm = 1.0 - modW;
+        float gFrac = 1.0 - fc.x * fc.y * fm.x * fm.y;
+        const float mGap = 4.0;
+        float mCell = (1.0 - gFrac * mGap) / (1.0 - gFrac);
+        s.albedoM = mix(mCell, mGap, gap);
+        s.tint    = mix(mat.color, vec3(0.85, 0.82, 0.70), gap);
+        s.N = jitterNormal(N, R, ivec2(floor(vUv / modP)), 0.009);
+        float cellRes = clamp((0.5 * cellP.y - max(fwUv.x, fwUv.y)) / (0.3 * cellP.y), 0.0, 1.0);
+        s.N = jitterNormal(s.N, R, ivec2(floor(vUv / cellP)) + ivec2(3000, 0), 0.017 * cellRes);
     } else if (mat.pattern == 2u) {
-        // MLI crinkle: explicit micro-facets (~3 cm) with a smaller residual roughness instead of one
-        // blurred lobe, so it sparkles close up; statistically about the same spread.
-        const float scale = 0.03;
-        float resolve = clamp((0.5 * scale - pxRest) / (0.4 * scale), 0.0, 1.0);
-        vec3 n3 = (valueNoise3(vRest / scale) - 0.5) + 0.5 * (valueNoise3(vRest / (0.4 * scale) + 17.0) - 0.5);
+        // MLI blanket: quilting seams every ~0.35 m (darker stitch lines) and crinkled film as explicit
+        // micro-facets (12 cm + 4 cm) with a smaller residual roughness, so it breaks into glints
+        // instead of one blurred lobe; statistically about the same spread.
+        const float quiltP = 0.35, quiltW = 0.006 / 0.35;
+        vec2  q  = vUv / quiltP;
+        float st = gridCover(q, vec2(quiltW), fwUv / quiltP);
+        const float mSt = 0.45;
+        float qFrac = 1.0 - (1.0 - quiltW) * (1.0 - quiltW);
+        s.albedoM = mix((1.0 - qFrac * mSt) / (1.0 - qFrac), mSt, st);
+        const float scale = 0.12;
+        float resolve = clamp((scale - 3.0 * pxRest) / (0.5 * scale), 0.0, 1.0);
+        vec3 n3 = (valueNoise3(vRest / scale) - 0.5) + 0.5 * (valueNoise3(vRest / (scale / 3.0) + 17.0) - 0.5);
         vec3 t  = R * n3;
-        s.N = normalize(N + resolve * 0.9 * (t - dot(t, N) * N));
-        s.rough = mix(mat.roughness, mat.roughness * 0.35, resolve);
+        s.N = normalize(N + resolve * 0.7 * (t - dot(t, N) * N));
+        s.rough = mix(mat.roughness, mat.roughness * 0.4, resolve);
     } else if (mat.pattern == 3u) {
         // Panel seams every 0.5 m, 4 mm wide, darker.
-        const float pitch = 0.5, seam = 0.004;
-        const float sFrac = 2.0 * seam / pitch, mSeam = 0.4;
-        const float mPanel = (1.0 - sFrac * mSeam) / (1.0 - sFrac);
-        float resolve = clamp((0.5 * seam * 4.0 - pxUv) / (seam * 2.0), 0.0, 1.0);
-        vec2  f = fract(vUv / pitch) * pitch;
-        vec2  d = min(f, pitch - f);
-        float seamMask = 1.0 - smoothstep(0.5 * seam - pxUv, 0.5 * seam + pxUv, min(d.x, d.y));
-        s.albedoM = mix(1.0, mix(mPanel, mSeam, seamMask), resolve);
+        const float pitch = 0.5, w = 0.004 / 0.5;
+        float seam = gridCover(vUv / pitch, vec2(w), fwUv / pitch);
+        const float mSeam = 0.4;
+        float sFrac = 1.0 - (1.0 - w) * (1.0 - w);
+        s.albedoM = mix((1.0 - sFrac * mSeam) / (1.0 - sFrac), mSeam, seam);
     }
     return s;
 }
@@ -275,9 +307,9 @@ void main()
             // Texture lod from the reflected footprint on the ground: a lobe ~2α wide seen from the
             // satellite's altitude, against a ~4.9 km texel at the base level (8K equirect).
             float h   = max(length(ro) - R_EARTH, 1000.0);
-            float lod = log2(max(2.0 * mat.roughness * h / 4900.0, 1.0)) + frame.params.z;
+            float lod = log2(max(2.0 * sf.rough * h / 4900.0, 1.0));
             vec3  env = earthEnv(ro, Rd, frame.sunDir.xyz, lod, frame.earthCenter.w);
-            float Fr  = mat.f0 + (max(1.0 - mat.roughness, mat.f0) - mat.f0) * pow(1.0 - nv, 5.0);
+            float Fr  = mat.f0 + (max(1.0 - sf.rough, mat.f0) - mat.f0) * pow(1.0 - nv, 5.0);
             L += env * specC * Fr;
         }
     }
