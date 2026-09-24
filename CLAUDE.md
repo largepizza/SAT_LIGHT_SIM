@@ -531,7 +531,11 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   build preset) between Build and Package, so a PR to main that moves a benchmark out of tolerance
   fails. ~30 s. Verified identical on MSVC (Windows) and GCC 13 (Linux): the sampling is bit-for-bit
   deterministic and every reported metric matches to the printed precision. Adding a benchmark file
-  or a model adds it to the gate automatically.
+  or a model adds it to the gate automatically. **Accepted inaccuracies** (narrow margins, residual
+  phase bins, fitted/estimated values, approximation errors) are logged in
+  `data/benchmarks/KNOWN_RESIDUALS.md` — update it when a change moves one. The gate is deliberately
+  NOT tightened to chase VisorSat (this is not a model optimizer); M11 runs in CI only on PRs/pushes to
+  main, which are reserved for major releases.
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, and the M4 benchmark references `starlink_v1_0.json`
   (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`
