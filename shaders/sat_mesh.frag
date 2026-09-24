@@ -264,7 +264,10 @@ void main()
 
     // Photometric check (frame.params.w): sun only, scalar (the photometry has no colour), no
     // patterns; output L·d² so the CPU's Σ L·d²·Ω/π is the model's radiant intensity toward the camera.
-    const bool check = frame.params.w > 0.5;
+    // params.w is a MODE (0 viewer, 1 check, 2 scene), not a flag: the first scene-pass cut tested
+    // `> 0.5` here, so the scene rendered check output (red L·d², distance 0) — a glowing red
+    // silhouette in the bloom and no mesh in the sky.
+    const bool check = abs(frame.params.w - 1.0) < 0.5;
     Surface sf = check ? Surface(N, vec3(1.0), 1.0, mat.roughness) : applyPattern(mat, inst, N);
     N  = sf.N;
     nv = max(dot(N, V), 1e-3);

@@ -1710,6 +1710,12 @@ private:
     // (4d generalises this from one satellite to every satellite big enough on screen.)
     static constexpr float kMeshFadeInPx = 1.5f, kMeshFullPx = 3.0f;
     int meshSceneSatIdx = -1;     // drawn this frame (-1 none)
+    // The selected satellite's direction from the CPU orbit (double), refreshed after
+    // updatePositions(): the selection panel places itself with it, so a satellite stays "in view"
+    // in Earth's shadow and while its sprite has handed over to a mesh (both have no sprite).
+    glm::vec3 selSkyDirCpu{0.0f, 0.0f, 1.0f};
+    bool selAboveEarth = false; // not hidden behind the Earth
+    void updateSelectedSkyDir();
     float meshSceneFade = 0.0f;   // its fade
     void recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx);
     void writeMeshSceneDescriptors(VulkanContext &ctx); // sky 22/23, scene_depth 3 (init + resize)

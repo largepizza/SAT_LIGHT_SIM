@@ -1281,6 +1281,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         CpuTimer _t(cpuAccumMs[CPU_UPDATE_POSITIONS]);
         updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, simDt);
     }
+    updateSelectedSkyDir();
 
     // ── Sky-background sun-glare gate (stars / Milky Way, space only) ──────────
     // updateStars()'s atmFrac fade (see that function) lets the day/night sky-brightness gate
@@ -2751,7 +2752,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         vkCmdDraw(cmd, 1, 1, 0, 1);
         // Phase 4c: satellite mesh glints seed the same bloom (only while a mesh is drawn).
         if (meshRendererInit && meshSceneSatIdx >= 0)
-            meshRenderer.recordBloom(cmd, flareExtent.width, flareExtent.height, skyExposure(), 1.0f);
+            meshRenderer.recordBloom(cmd, flareExtent.width, flareExtent.height, skyExposure(), 0.6f);
         vkCmdEndRenderPass(cmd);                     // finalLayout=GENERAL — ready for the compute blur below, no
                                                      // extra barrier (same convention skyLowResRenderPass established)
 
@@ -3111,6 +3112,38 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
         viewerCheckPhaseDeg = glm::degrees(std::acos(glm::clamp(glm::dot(sun, o), -1.0, 1.0)));
         viewerCheckAwaiting = true;
     }
+}
+
+// The selected satellite's ENU direction and whether the Earth hides it, from its orbit in double
+// (geometry only — lit or not). Uses this frame's observer (obsECI's inputs) and ENU basis.
+void SatelliteSim::updateSelectedSkyDir()
+{
+    selAboveEarth = false;
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+        return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const glm::dvec3 sat = satOrbitStateAt(orbitElemsOf(satOrbits[selectedSatIndex]), t).posEci;
+    const double theta = earthRotationAngle(t);
+    const double ct = std::cos(theta), st = std::sin(theta);
+    glm::dvec3 obs;
+    if (followActive)
+        obs = glm::dvec3(ct * followObsEcef.x - st * followObsEcef.y, st * followObsEcef.x + ct * followObsEcef.y,
+                         followObsEcef.z);
+    else
+        obs = observerEciAt(glm::dvec3(obsDir), (double)kEarthRadius + obsTerrainH + obsHeightOffset, t);
+    const glm::dvec3 rel = sat - obs;
+    const double range = glm::length(rel);
+    if (range < 1e-6)
+        return;
+    const glm::dvec3 d = rel / range;
+    selSkyDirCpu = glm::normalize(glm::vec3((float)glm::dot(d, glm::dvec3(eci2enuX)), (float)glm::dot(d, glm::dvec3(eci2enuY)),
+                                            (float)glm::dot(d, glm::dvec3(eci2enuZ))));
+    // Behind the Earth: the sightline meets the sphere before reaching the satellite.
+    const double b = glm::dot(obs, d);
+    const double c = glm::dot(obs, obs) - (double)kEarthRadius * kEarthRadius;
+    const double disc = b * b - c;
+    const double tHit = disc > 0.0 ? -b - std::sqrt(disc) : -1.0;
+    selAboveEarth = !(tHit > 0.0 && tHit < range);
 }
 
 // ─── Phase 4c: satellite meshes in the main view ─────────────────────────────

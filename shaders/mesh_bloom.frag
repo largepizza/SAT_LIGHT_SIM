@@ -28,7 +28,10 @@ void main()
             float l = dot(L, vec3(0.2126, 0.7152, 0.0722)) * pc.exposure;
             if (l > best) { best = l; tint = L / max(dot(L, vec3(0.2126, 0.7152, 0.0722)), 1e-6); }
         }
-    // Same response flare_source.frag applies to a sprite's effectFlare: nothing below white.
-    float b = clamp(log2(max(best, 1.0)) * 0.5, 0.0, 4.0) * pc.gain;
+    // flare_source.frag's log response, but only for what is more than two stops over white: at the
+    // night exposure every sunlit panel of a satellite filling the view is "over white", and seeding
+    // all of it hazes the whole screen. Glints (the sun's reflection) are orders of magnitude above.
+    const float kBloomThreshold = 4.0;
+    float b = clamp(log2(max(best / kBloomThreshold, 1.0)) * 0.5, 0.0, 4.0) * pc.gain;
     outColor = vec4(tint * b, b);
 }

@@ -1063,8 +1063,10 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     }
     else
     {
-        pickSkyDir = lastPickedSkyDir;
-        pickFlare = lastPickedFlare;
+        // Phase 4c: from the CPU orbit (updateSelectedSkyDir), not the GPU sprite record, which is
+        // empty whenever the satellite draws no sprite — in Earth's shadow, or handed over to its mesh.
+        pickSkyDir = selSkyDirCpu;
+        pickFlare = selAboveEarth ? 1.0f : 0.0f;
         infoLines = selInfoLine;
     }
 
