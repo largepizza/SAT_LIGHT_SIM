@@ -482,6 +482,19 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   VisorSat phase-matched mean 7.220 vs 7.218, curve RMS 0.13, mean 6.97 vs 7.22; V1.0 (HELD OUT —
   its antennas are an untouched estimate) 5.926 vs 5.93; differential 1.04 vs 1.29. Remaining: the
   110-120° bin is 0.37 too bright (25 obs); model scatter 0.72 vs 0.85 observed (fixed attitude).
+- **Magnitude trace + CSV (milestone M9, 2026-09-23).** "Trace pass" in the selected-satellite panel
+  (or its out-of-view corner chip) runs the CPU evaluator over the selection's current pass — or its
+  next one, within two orbits — at `kTraceSamples` = 400 points (`computeSelectedTrace()`), and
+  plots it in its own window: apparent magnitude after extinction, above-atmosphere magnitude,
+  phase angle on a second axis, and a moving "now" marker. The plot is `UIPlot`, a Clay custom
+  element that `UIRenderer::pushPlot()` draws as thickness-wide axis-aligned quads (no line
+  pipeline). "Export CSV" writes `<user data>/traces/trace_<model>_<sat>_<sim time>.csv`, format
+  `sat-light-sim-trace/1` (`SatTrace.h/.cpp`, shared with the tool): a header carrying every input
+  (model id + file hash, lobe budget — `SatelliteType::lobeBudget`, roster-size dependent — occlusion,
+  the orbit elements as `orbitElemsOf()` bakes them, observer, flare tilt, extinction k) and rows in
+  the design page's export convention. `SatModelTool --replay-trace <csv> [--models-dir D]`
+  re-evaluates every row and compares the written fields as strings (the M9 gate); `--selftest`
+  runs a write/read/replay round trip per model. Occlusion in a trace is exact (no flux floor).
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, and the M4 benchmark references `starlink_v1_0.json`
   (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`
@@ -517,8 +530,13 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   sample whose observer ray is blocked stops its occluder loop. The parity readout applies the same
   on/floor gate. `--selftest` re-evaluates the packed GPU form in float the way the shader does
   (`selfTestOcclusionGpuForm`) against `satLobeVisibility`: 0 of 13,600 lobe evaluations differ
-  across the four models, offsets within 3e-7 m. Knockout bit 1048576 turns it off (it reaches the
-  shader via `GpuSatTypeHeader::occlusionOn`); `data/custom/constellations_models_stress_10m.json`
+  across the four models, offsets within 3e-7 m. **In the app it is OPT-IN and off by default**
+  (`satPartOcclusion`, Photometry tab "Satellite part occlusion", settings key
+  `photometry.sat_part_occlusion`): measured 30.1 ms vs 2.8 ms orbit compute at 955k visible on the
+  10M stress roster, for a subtle effect — no preset or first run may turn it on. Knockout bit
+  1048576 can still force it off while it is on; both reach the shader as
+  `GpuSatTypeHeader::occlusionOn` (`satOcclusionActive()`). SatBench keeps it on by default (physics
+  validation, not an app setting). `data/custom/constellations_models_stress_10m.json`
   is the 10M all-model roster to profile it with. Still to do: calibration + reference models (3c),
   an inertial-pointing law (Hubble's attitude is an anti-sun stand-in).
 

@@ -19,6 +19,8 @@
 #include "VulkanContext.h"
 
 #include <stdexcept>
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -1022,6 +1024,37 @@ void UIRenderer::scrollbar(Clay_ElementId containerId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// pushPlot — line series as axis-aligned quads. Each segment is cut into pieces no wider than the
+// line thickness, each covering its own x span and the y span it crosses, so a steep or shallow
+// segment both draw as a line of that thickness (a staircase at worst, invisible at plot density).
+void UIRenderer::pushPlot(float bx, float by, float bw, float bh, const UIPlot& plot)
+{
+    for (int si = 0; si < plot.seriesCount; ++si)
+    {
+        const UIPlotSeries& ser = plot.series[si];
+        const float t = std::max(ser.thickness, 1.0f);
+        for (int i = 0; i + 1 < ser.count; ++i)
+        {
+            const float y0n = ser.y[i], y1n = ser.y[i + 1];
+            if (std::isnan(y0n) || std::isnan(y1n))
+                continue;
+            const float x0 = bx + std::clamp(ser.x[i], 0.0f, 1.0f) * bw;
+            const float x1 = bx + std::clamp(ser.x[i + 1], 0.0f, 1.0f) * bw;
+            const float y0 = by + (1.0f - std::clamp(y0n, 0.0f, 1.0f)) * bh;
+            const float y1 = by + (1.0f - std::clamp(y1n, 0.0f, 1.0f)) * bh;
+            const int pieces = std::max(1, (int)std::ceil(std::abs(x1 - x0) / t));
+            for (int k = 0; k < pieces; ++k)
+            {
+                const float a = (float)k / pieces, b = (float)(k + 1) / pieces;
+                const float xa = x0 + (x1 - x0) * a, xb = x0 + (x1 - x0) * b;
+                const float ya = y0 + (y1 - y0) * a, yb = y0 + (y1 - y0) * b;
+                const float left = std::min(xa, xb) - 0.5f * t, top = std::min(ya, yb) - 0.5f * t;
+                pushQuad(left, top, std::abs(xb - xa) + t, std::abs(yb - ya) + t, 0, 0, 1, 1, ser.color, 0.0f);
+            }
+        }
+    }
+}
+
 // pushQuad — add two triangles for a rectangle
 // ─────────────────────────────────────────────────────────────────────────────
 void UIRenderer::pushQuad(float x, float y, float w, float h,
@@ -1264,8 +1297,15 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
             break;
         }
 
+        case CLAY_RENDER_COMMAND_TYPE_CUSTOM: {
+            const UIPlot* plot = static_cast<const UIPlot*>(rc->renderData.custom.customData);
+            if (plot && plot->magic == UIPlot::kMagic)
+                pushPlot(bb.x, bb.y, bb.width, bb.height, *plot);
+            break;
+        }
+
         default:
-            // NONE, CUSTOM — not handled by this renderer
+            // NONE — nothing to draw
             break;
         }
     }

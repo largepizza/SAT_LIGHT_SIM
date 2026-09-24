@@ -81,6 +81,25 @@ struct WindowChrome {
     float resizeStartX_ = 0, resizeStartY_ = 0, resizeStartW_ = 0, resizeStartH_ = 0;
 };
 
+// ── Line plot (Clay custom element) ──────────────────────────────────────────
+// Point a CLAY element's `.custom.customData` at a UIPlot to draw line series inside its box.
+// Coordinates are normalized to the box: x 0..1 left to right, y 0..1 bottom to top (outside is
+// clipped to the box); a NaN y breaks the line. The UIPlot and its arrays must stay alive until
+// record() — keep them in members, like runtime Clay strings.
+struct UIPlotSeries {
+    const float* x = nullptr;
+    const float* y = nullptr;
+    int          count = 0;
+    glm::vec4    color{1.0f};
+    float        thickness = 1.5f; // pixels
+};
+struct UIPlot {
+    static constexpr uint32_t kMagic = 0x504C4F54u; // 'PLOT' — guards against foreign custom data
+    uint32_t            magic = kMagic;
+    const UIPlotSeries* series = nullptr;
+    int                 seriesCount = 0;
+};
+
 class UIRenderer {
 public:
     // Call after VulkanContext is initialized. `window` is used only to set OS resize
@@ -264,4 +283,5 @@ private:
                   glm::vec4 cornerRadius = glm::vec4(0.0f));
     void pushText(float x, float y, const char* text, int len,
                   float fontSize, glm::vec4 color);
+    void pushPlot(float bx, float by, float bw, float bh, const UIPlot& plot);
 };

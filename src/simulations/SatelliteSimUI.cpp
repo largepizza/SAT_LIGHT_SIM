@@ -589,6 +589,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildRightHudPanel(inp, ui);
     buildSettingsWindow(inp, ui);
     buildViewControlsWindow(inp, ui);
+    buildTraceWindow(inp, ui);
     buildSelectedSatPanel(inp, ui);
 
     // ── Mouse capture rects ───────────────────────────────────────────────────
@@ -601,6 +602,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         ui.addMouseCaptureRect(settingsChrome.x, settingsChrome.y, settingsChrome.w, settingsChrome.h);
     if (viewControlsChrome.open)
         ui.addMouseCaptureRect(viewControlsChrome.x, viewControlsChrome.y, viewControlsChrome.w, viewControlsChrome.h);
+    if (traceChrome.open)
+        ui.addMouseCaptureRect(traceChrome.x, traceChrome.y, traceChrome.w, traceChrome.h);
 
     buildCrashRecoveryNotice(dt, inp, ui);
     buildGraphicsAutoNotice(dt, inp, ui);
@@ -1060,14 +1063,19 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
         Clay_String chipStr{false, (int32_t)strlen(chipBuf), chipBuf};
         CLAY(CLAY_ID("SelSatChip"), {.layout = {
                                          .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
-                                         .padding = {10, 10, 6, 6}},
+                                         .padding = {10, 10, 6, 6},
+                                         .childGap = 10,
+                                         .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                         .layoutDirection = CLAY_LEFT_TO_RIGHT},
                                      .backgroundColor = Pal::panelBgFade,
                                      .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
                                      .floating = {.offset = {kMargin, kMargin}, .zIndex = 6, .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
         {
             CLAY_TEXT(chipStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
+            if (!isPlanet)
+                buildTraceButton(inp, ui, 0);
         }
-        ui.addMouseCaptureRect(kMargin, kMargin, 260.0f, 30.0f);
+        ui.addMouseCaptureRect(kMargin, kMargin, 360.0f, 34.0f);
         return;
     }
 
@@ -1126,10 +1134,174 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                 Clay_String lineStr{false, (int32_t)strlen(selPhotLine[i]), selPhotLine[i]};
                 CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = warn ? Pal::listenKey : Pal::textDim, .fontSize = fs(12)}));
             }
+        if (!isPlanet)
+            buildTraceButton(inp, ui, 1);
     }
     // Panel size isn't known until Clay lays it out this frame — this is a rough estimate for
     // capture purposes only, same approximation the corner HUD panels' capture rects already use.
     ui.addMouseCaptureRect(sx + kOffsetX, sy + kOffsetY, 240.0f, 200.0f);
+}
+
+// ─── buildTraceWindow (benchmarking M9) ──────────────────────────────────────
+// The selected satellite's magnitude over its pass (computeSelectedTrace): apparent magnitude after
+// extinction (solid), above the atmosphere (faint), phase angle on the second axis (orange), and a
+// marker at the current sim time. Retrace re-runs it for the current selection and time; Export
+// writes the CSV that SatModelTool --replay-trace checks.
+void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
+{
+    if (!traceChrome.open)
+        return;
+    if (traceChrome.w <= 0.0f)
+    {
+        traceChrome.w = 640.0f;
+        traceChrome.h = 400.0f;
+    }
+    // "Now" marker: a vertical line at the current sim time when it falls inside the window.
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const bool nowIn = traceValid && tNow >= traceT0 && tNow <= traceT1 && traceT1 > traceT0;
+    traceNowX[0] = traceNowX[1] = nowIn ? (float)((tNow - traceT0) / (traceT1 - traceT0)) : 0.0f;
+    traceNowY[0] = nowIn ? 0.0f : NAN;
+    traceNowY[1] = nowIn ? 1.0f : NAN;
+
+    static char titleBuf[128];
+    snprintf(titleBuf, sizeof(titleBuf), "Magnitude trace: %s", traceTitle);
+    auto text = [&](const char *s, Clay_Color c, float size) {
+        Clay_String str{false, (int32_t)strlen(s), s};
+        CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
+    };
+    auto button = [&](int id, const char *label, bool &hov, const char *tip) {
+        bool clicked = false;
+        CLAY(CLAY_IDI("TraceBtn", id), {.layout = {
+                                            .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(24)},
+                                            .padding = {10, 10, 0, 0},
+                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                        .backgroundColor = hov ? Pal::btnHover : Pal::btnIdle,
+                                        .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hov);
+            sndClick(n, inp.lmbPressed);
+            hov = n;
+            clicked = n && inp.lmbPressed;
+            ui.tooltip(inp, n, tip, fs(11));
+            text(label, Pal::btnLabel, 11);
+        }
+        return clicked;
+    };
+    auto legend = [&](int id, Clay_Color c, const char *label) {
+        CLAY(CLAY_IDI("TraceLegendSwatch", id), {.layout = {.sizing = {CLAY_SIZING_FIXED(14), CLAY_SIZING_FIXED(3)}},
+                                                 .backgroundColor = c}) {}
+        text(label, Pal::textDim, 11);
+    };
+
+    buildResizableWindow(
+        inp, ui, traceChrome, 2, titleBuf, true, hovTraceClose, (inp.screenW - traceChrome.w) * 0.5f,
+        inp.screenH - traceChrome.h - 70.0f, 420.0f, 280.0f, 1600.0f, 1000.0f,
+        [&]()
+        {
+            CLAY(CLAY_ID("TraceBody"), {.layout = {
+                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                            .padding = {12, 12, 8, 10},
+                                            .childGap = 6,
+                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+            {
+                if (traceSummary[0])
+                    text(traceSummary, Pal::textPrimary, 12);
+                if (traceValid)
+                {
+                    CLAY(CLAY_ID("TraceLegend"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                             .childGap = 6,
+                                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                    {
+                        legend(0, {140, 204, 255, 255}, "apparent (after extinction)");
+                        legend(1, {140, 204, 255, 90}, "above atmosphere");
+                        legend(2, {255, 173, 77, 190}, "phase angle");
+                        legend(3, {255, 255, 255, 128}, "now");
+                    }
+                    // Plot with its axis labels: magnitude on the left, phase on the right.
+                    CLAY(CLAY_ID("TracePlotRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                                              .childGap = 6,
+                                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                    {
+                        CLAY(CLAY_ID("TraceAxisL"), {.layout = {.sizing = {CLAY_SIZING_FIXED(52), CLAY_SIZING_GROW(0)},
+                                                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+                        {
+                            text(traceAxisBuf[0], Pal::textDim, 11);
+                            CLAY(CLAY_ID("TraceAxisLGap"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_GROW(0)}}}) {}
+                            text(traceAxisBuf[1], Pal::textDim, 11);
+                        }
+                        CLAY(CLAY_ID("TracePlotFrame"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                                                    .padding = {1, 1, 1, 1}},
+                                                         .backgroundColor = {12, 14, 18, 255},
+                                                         .border = {.color = Style::borderColor, .width = CLAY_BORDER_ALL(1)}})
+                        {
+                            CLAY(CLAY_ID("TracePlot"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
+                                                        .custom = {.customData = &tracePlot}}) {}
+                        }
+                        CLAY(CLAY_ID("TraceAxisR"), {.layout = {.sizing = {CLAY_SIZING_FIXED(52), CLAY_SIZING_GROW(0)},
+                                                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+                        {
+                            text(traceAxisBuf[2], {255, 173, 77, 220}, 11);
+                            CLAY(CLAY_ID("TraceAxisRGap"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_GROW(0)}}}) {}
+                            text(traceAxisBuf[3], {255, 173, 77, 220}, 11);
+                        }
+                    }
+                    CLAY(CLAY_ID("TraceTimeRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                              .padding = {58, 58, 0, 0},
+                                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                    {
+                        text(traceAxisBuf[4], Pal::textDim, 11);
+                        CLAY(CLAY_ID("TraceTimeGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+                        text("sim clock", Pal::textHint, 11);
+                        CLAY(CLAY_ID("TraceTimeGap2"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+                        text(traceAxisBuf[5], Pal::textDim, 11);
+                    }
+                }
+                CLAY(CLAY_ID("TraceButtons"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                          .childGap = 8,
+                                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                {
+                    if (button(0, "Retrace", hovTraceRetrace, "Trace the current selection's pass from the current time"))
+                        computeSelectedTrace();
+                    if (traceValid &&
+                        button(1, "Export CSV", hovTraceExport, "Write this trace as CSV (replay: SatModelTool --replay-trace)"))
+                        exportTrace();
+                    if (traceStatus[0])
+                        text(traceStatus, Pal::textDim, 11);
+                }
+            }
+        });
+}
+
+// ─── buildTraceButton ────────────────────────────────────────────────────────
+// "Trace pass" for the selected satellite — in its floating panel, and in the corner chip when it
+// is out of view (the trace then finds its next pass). Geometry-model types only: legacy types have
+// no physical magnitude.
+void SatelliteSim::buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx)
+{
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+        return;
+    const uint32_t ti = satOrbits[selectedSatIndex].typeIdx;
+    if (ti >= satTypes.size() || !satTypes[ti].isModel())
+        return;
+    CLAY(CLAY_IDI("SelTraceBtn", idx), {.layout = {
+                                            .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(22)},
+                                            .padding = {8, 8, 0, 0},
+                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                        .backgroundColor = hovSelTraceBtn ? Pal::btnHover : Pal::btnIdle,
+                                        .cornerRadius = CLAY_CORNER_RADIUS(3)})
+    {
+        bool n = Clay_Hovered();
+        sndRollover(n, hovSelTraceBtn);
+        sndClick(n, inp.lmbPressed);
+        hovSelTraceBtn = n;
+        if (n && inp.lmbPressed)
+            computeSelectedTrace();
+        ui.tooltip(inp, n, "Plot this satellite's magnitude over its current or next pass", fs(11));
+        CLAY_TEXT(CLAY_STRING("Trace pass"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
+    }
 }
 
 // ─── buildResizableWindow ───────────────────────────────────────────────────
@@ -2737,6 +2909,38 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
             }
         }
     }
+
+    // Occlusion between satellite parts (geometry-model types) — off by default, see
+    // satPartOcclusion (SatelliteSim.h). Same labeled-row + toggle pattern as "Play intro on startup".
+    CLAY(CLAY_ID("SatOcclusionRow"), {.layout = {
+                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                          .padding = {4, 4, 4, 4},
+                                          .childGap = 8,
+                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Satellite part occlusion"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+        CLAY(CLAY_ID("SatOcclusionSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+
+        Clay_Color chkBg = satPartOcclusion ? Pal::btnAccent : (hovSatOcclusionChk ? Pal::btnHover : Pal::btnIdle);
+        CLAY(CLAY_ID("SatOcclusionChk"), {.layout = {
+                                              .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                          .backgroundColor = chkBg,
+                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovSatOcclusionChk);
+            sndClick(n, inp.lmbPressed);
+            hovSatOcclusionChk = n;
+            if (n && inp.lmbPressed)
+                satPartOcclusion = !satPartOcclusion;
+            ui.tooltip(inp, n, "Parts of a modelled satellite shadow and hide each other (costly at millions of satellites)", fs(11));
+            CLAY_TEXT(satPartOcclusion ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+        }
+    }
 }
 
 // ─── buildCloudSliderRows ────────────────────────────────────────────────────
@@ -4096,6 +4300,7 @@ void SatelliteSim::loadSettings()
         trailDecaySeconds = p.value("trail_decay_seconds", trailDecaySeconds);
         trailCompositeGain = p.value("trail_composite_gain", trailCompositeGain);
         flareMitigationTiltDeg = p.value("flare_mitigation_tilt_deg", flareMitigationTiltDeg);
+        satPartOcclusion = p.value("sat_part_occlusion", satPartOcclusion);
     }
 
     if (j.contains("display"))
@@ -4412,7 +4617,8 @@ void SatelliteSim::saveSettings()
         {"mw_fade_out_time_s", mwFadeOutTimeS},
         {"trail_decay_seconds", trailDecaySeconds},
         {"trail_composite_gain", trailCompositeGain},
-        {"flare_mitigation_tilt_deg", flareMitigationTiltDeg}};
+        {"flare_mitigation_tilt_deg", flareMitigationTiltDeg},
+        {"sat_part_occlusion", satPartOcclusion}};
 
     j["display"] = {
         {"ui_scale", uiScale},

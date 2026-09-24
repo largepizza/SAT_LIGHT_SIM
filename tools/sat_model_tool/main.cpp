@@ -7,6 +7,9 @@
 // the paper printed (count, censored count, mean, median, sd, phase fits); a differential file's
 // delta must follow from its two referenced files.
 //
+// --replay-trace re-runs a magnitude trace CSV exported by the app (benchmarking M9) from the inputs
+// in its header and checks every row comes out the same at the precision it was written with.
+//
 // --selftest runs the CPU photometric evaluator's checks (SatPhotometry, benchmarking milestone M1):
 // known-value geometry checks, then per model N posed configurations comparing the lobe path with
 // a posed per-triangle brute force. Exit code 1 if any check fails.
@@ -18,6 +21,7 @@
 #include "SatBenchmark.h"
 #include "SatModel.h"
 #include "SatPhotometry.h"
+#include "SatTrace.h"
 #include "bench_run.h"
 
 #include <algorithm>
@@ -763,6 +767,132 @@ bool checkBenchmark(const std::string &path)
     }
     return ok;
 }
+
+bool sinElevationOk(const SatTraceSetup &s, double t)
+{
+    const glm::dvec3 sat = satOrbitStateAt(s.orbit, t).posEci;
+    const glm::dvec3 obs = observerEciAt(s.obsDirEcef, s.obsRadiusM, t);
+    return glm::dot(glm::normalize(sat - obs), glm::normalize(obs)) > 0.0;
+}
+
+// ── Trace replay (benchmarking M9) ────────────────────────────────────────────────────────────
+// Rebuilds the model exactly as the app baked it (model file, lobe budget, occlusion) from the
+// trace header, re-evaluates every row at its time, and compares the written output fields as
+// strings. A model file that changed since the export is reported (the hash differs) but still
+// replayed, so the report says how much the change moved the trace.
+struct ReplayStats
+{
+    int rows = 0, mismatched = 0;
+    double maxDmag = 0.0; // largest |difference| over the magnitude fields, where both are finite
+};
+
+bool replayRows(const SatTraceSetup &setup, const SatModel &m, const std::vector<SatTraceRow> &rows, ReplayStats &st,
+                bool verbose)
+{
+    std::vector<SatTri> tris = tessellateSatModel(m);
+    SatLobeBakeStats bs;
+    std::vector<std::vector<int>> lobeTris;
+    std::vector<GpuSatLobe> lobes = bakeSatLobes(m, tris, setup.lobeBudget, bs, &lobeTris);
+    SatOcclusion occ = buildSatOcclusion(m, tris, lobes, lobeTris);
+    for (const SatTraceRow &want : rows)
+    {
+        const SatTraceRow got = evalSatTraceRow(setup, m.groups, lobes, &occ, want.tJ2000);
+        ++st.rows;
+        for (double a : {want.mag - got.mag, want.m1000 - got.m1000, want.magApparent - got.magApparent})
+            if (std::isfinite(a))
+                st.maxDmag = std::max(st.maxDmag, std::abs(a));
+        const std::string sw = formatSatTraceRow(want), sg = formatSatTraceRow(got);
+        if (sw != sg)
+        {
+            if (verbose && st.mismatched < 5)
+                std::printf("    t %.3f\n      file:   %s\n      replay: %s\n", want.tJ2000, sw.c_str(), sg.c_str());
+            ++st.mismatched;
+        }
+    }
+    return st.mismatched == 0;
+}
+
+bool replayTrace(const std::string &path, const std::string &modelsDir)
+{
+    SatTraceSetup setup;
+    std::vector<SatTraceRow> rows;
+    std::string err;
+    std::printf("[replay] %s\n", path.c_str());
+    if (!readSatTraceCsv(path, setup, rows, err))
+    {
+        std::printf("  FAILED: %s\n", err.c_str());
+        return false;
+    }
+    const std::string modelPath =
+        (std::filesystem::path(modelsDir.empty() ? "data/satellite_models" : modelsDir) / (setup.modelId + ".json"))
+            .string();
+    SatModel m;
+    std::vector<std::string> warn;
+    if (!loadSatModel(modelPath, setup.modelId, m, err, warn))
+    {
+        std::printf("  FAILED: %s\n", err.c_str());
+        return false;
+    }
+    const std::string hash = satTraceFileHash(modelPath);
+    std::printf("  model %s (%s), lobe budget %d, occlusion %s; app %s @ %s; %zu rows\n", setup.modelId.c_str(),
+                setup.typeName.c_str(), setup.lobeBudget, setup.occlusion ? "on" : "off", setup.appVersion.c_str(),
+                setup.gitCommit.c_str(), rows.size());
+    if (hash != setup.modelHash)
+        std::printf("  note: model file hash %s differs from the export's %s (the model changed since)\n", hash.c_str(),
+                    setup.modelHash.c_str());
+    ReplayStats st;
+    const bool ok = replayRows(setup, m, rows, st, true);
+    std::printf("  %s %d of %d rows identical at the written precision; max |dmag| %.2e\n", ok ? "ok  " : "FAIL",
+                st.rows - st.mismatched, st.rows, st.maxDmag);
+    return ok;
+}
+
+// Round trip for the selftest: a trace over a real pass, written, read back and replayed.
+bool selfTestTrace(const SatModel &m, const std::string &id, int budget)
+{
+    SatTraceSetup s;
+    s.modelId = id;
+    s.lobeBudget = budget;
+    s.occlusion = true;
+    s.orbit.rSatM = satphot::kEarthRadiusM + 550000.0;
+    s.orbit.incl = 53.0 * kDeg;
+    s.orbit.raan = 0.3;
+    s.orbit.u0 = 1.1;
+    // Observer directly under the satellite at t0 (ECI rotated back to Earth-fixed), so the pass
+    // search has a pass to find.
+    const double t0 = 7.0e8;
+    const glm::dvec3 sub = glm::normalize(satOrbitStateAt(s.orbit, t0).posEci);
+    const double th = -earthRotationAngle(t0);
+    s.obsDirEcef = {std::cos(th) * sub.x - std::sin(th) * sub.y, std::sin(th) * sub.x + std::cos(th) * sub.y, sub.z};
+    s.obsRadiusM = satphot::kEarthRadiusM + 1600.0;
+    s.extinctionK = 0.25;
+    double tA = 0.0, tB = 0.0;
+    satTracePassWindow(s, t0, tA, tB);
+    const bool passOk = tB > tA && sinElevationOk(s, 0.5 * (tA + tB));
+
+    std::vector<SatTri> tris = tessellateSatModel(m);
+    SatLobeBakeStats bs;
+    std::vector<std::vector<int>> lobeTris;
+    std::vector<GpuSatLobe> lobes = bakeSatLobes(m, tris, budget, bs, &lobeTris);
+    SatOcclusion occ = buildSatOcclusion(m, tris, lobes, lobeTris);
+    std::vector<SatTraceRow> rows;
+    for (int i = 0; i < 200; ++i)
+        rows.push_back(evalSatTraceRow(s, m.groups, lobes, &occ, tA + (tB - tA) * i / 199.0));
+
+    const std::string tmp = (std::filesystem::temp_directory_path() / "satmodeltool_trace_selftest.csv").string();
+    std::string err;
+    SatTraceSetup s2;
+    std::vector<SatTraceRow> rows2;
+    const bool ioOk = writeSatTraceCsv(tmp, s, rows, err) && readSatTraceCsv(tmp, s2, rows2, err);
+    std::filesystem::remove(tmp);
+    ReplayStats st;
+    const bool replayOk = ioOk && rows2.size() == rows.size() && replayRows(s2, m, rows2, st, true);
+    const bool ok = passOk && replayOk;
+    std::printf("    %s trace round trip: pass %.0f s long, %d rows written, read and replayed, %d differ%s%s\n",
+                ok ? "ok  " : "FAIL", tB - tA, (int)rows.size(), st.mismatched, ioOk ? "" : "; ",
+                ioOk ? "" : err.c_str());
+    return ok;
+}
 } // namespace
 
 int main(int argc, char **argv)
@@ -774,6 +904,7 @@ int main(int argc, char **argv)
     int selfTestSamples = 0; // --selftest N
     std::vector<std::string> benchmarks; // --benchmark <file>, repeatable
     std::vector<std::string> runs;       // --run-benchmark <file>, repeatable
+    std::vector<std::string> replays;    // --replay-trace <file.csv>, repeatable
     BenchRunOptions runOpt;
     bool budgetGiven = false;
     for (int i = 1; i < argc; ++i)
@@ -783,6 +914,8 @@ int main(int argc, char **argv)
             benchmarks.push_back(argv[++i]);
         else if (a == "--run-benchmark" && i + 1 < argc)
             runs.push_back(argv[++i]);
+        else if (a == "--replay-trace" && i + 1 < argc)
+            replays.push_back(argv[++i]);
         else if (a == "--samples" && i + 1 < argc)
             runOpt.samples = std::atoi(argv[++i]);
         else if (a == "--seed" && i + 1 < argc)
@@ -811,13 +944,14 @@ int main(int argc, char **argv)
         else
             paths.push_back(a);
     }
-    if (paths.empty() && selfTestSamples <= 0 && benchmarks.empty() && runs.empty())
+    if (paths.empty() && selfTestSamples <= 0 && benchmarks.empty() && runs.empty() && replays.empty())
     {
         std::printf("usage: SatModelTool <model.json> [...] [--out <dir>] [--budget <lobes>] [--shadow-study <N>]\n"
                     "                    [--selftest <N>] [--benchmark <file.json>]...\n"
                     "                    [--run-benchmark <file.json>]... [--samples <N>] [--seed <S>]\n"
                     "                    [--sensitivity] [--no-occlusion] [--report-dir <dir>] [--models-dir <dir>]\n"
-                    "                    [--set [<model>/]<material>.<field>=<value>]...\n");
+                    "                    [--set [<model>/]<material>.<field>=<value>]...\n"
+                    "                    [--replay-trace <trace.csv>]...\n");
         return 2;
     }
     int selfTestFailures = 0;
@@ -832,6 +966,9 @@ int main(int argc, char **argv)
     int runFailures = 0;
     for (const std::string &rp : runs)
         runFailures += runBenchmarkCommand(rp, runOpt) ? 0 : 1;
+    int replayFailures = 0;
+    for (const std::string &tp : replays)
+        replayFailures += replayTrace(tp, runOpt.modelsDir) ? 0 : 1;
     if (selfTestSamples > 0)
     {
         std::printf("[selftest] CPU photometric evaluator\n");
@@ -929,6 +1066,7 @@ int main(int argc, char **argv)
             selfTestFailures += selfTestModel(m, tris, budget, selfTestSamples) ? 0 : 1;
             selfTestFailures += selfTestOcclusion(m, tris, std::max(200, selfTestSamples / 4)) ? 0 : 1;
             selfTestFailures += selfTestOcclusionGpuForm(m, tris, budget, std::max(200, selfTestSamples / 4)) ? 0 : 1;
+            selfTestFailures += selfTestTrace(m, id, budget) ? 0 : 1;
         }
         std::printf("  OBJ: %s\n\n", objOk ? (std::filesystem::path(outDir) / (id + "_rest.obj / _sunlit.obj")).string().c_str()
                                            : "export FAILED");
@@ -939,5 +1077,7 @@ int main(int argc, char **argv)
         std::printf("[benchmark files] %s\n", benchFailures ? "FAILED" : "all reproduce their published values");
     if (!runs.empty())
         std::printf("[benchmark runs] %d of %zu within tolerance\n", (int)runs.size() - runFailures, runs.size());
-    return (failures || selfTestFailures || benchFailures || runFailures) ? 1 : 0;
+    if (!replays.empty())
+        std::printf("[trace replays] %d of %zu identical\n", (int)replays.size() - replayFailures, replays.size());
+    return (failures || selfTestFailures || benchFailures || runFailures || replayFailures) ? 1 : 0;
 }

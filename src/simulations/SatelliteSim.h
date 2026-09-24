@@ -12,6 +12,7 @@
 #include "../UIRenderer.h" // WindowChrome — used by member state below (needs complete type)
 #include "SatModel.h"      // attitude groups, satellite models, baked lobes (lighting overhaul)
 #include "SatPhotometry.h" // earthshine table axes (satTypeBuf layout)
+#include "SatTrace.h"      // magnitude trace + CSV export (benchmarking M9)
 
 // Forward declaration only — savePerfSnapshot/buildPerfSnapshotJson are the sole users and both
 // live in SatelliteSimUI.cpp, which includes the real header. Pulling all of nlohmann/json.hpp in
@@ -173,6 +174,7 @@ struct SatelliteType
     // fields above are unused (baseColor stays the sprite tint).
     std::string modelId = {};
     std::vector<GpuSatLobe> lobes = {};
+    int lobeBudget = 0; // the budget `lobes` was baked with (roster-size dependent; traces record it)
     // Phase 3b occlusion between parts: CPU form (the parity readout's evaluator) and GPU form
     // (packSatOcclusionGpu — `lobes` above already carry their sample ranges into it).
     SatOcclusion occlusion = {};
@@ -1556,6 +1558,38 @@ private:
     static constexpr double kParityWarnMag = 0.02;
     int parityLogCooldown = 0;                // frames until the next mismatch may be logged
     void updateSelectedPhotometry();
+    // The selected satellite's orbit exactly as uploadSatOrbits() bakes it (floats promoted, SSO
+    // RAAN anchored at sim start) — what the parity readout and the trace evaluate.
+    SatOrbitElems orbitElemsOf(const SatOrbit &orb) const;
+
+    // ── Magnitude trace (benchmarking M9) ─────────────────────────────────────
+    // "Trace pass" in the selected-satellite panel: the CPU evaluator over the selection's current
+    // (or next) pass, plotted in its own window and exportable as a self-describing CSV that
+    // SatModelTool --replay-trace re-runs row for row (SatTrace.h). Computed once per click, not per
+    // frame; only the "now" marker moves.
+    static constexpr int kTraceSamples = 400;
+    WindowChrome traceChrome;
+    bool hovTraceClose = false, hovTraceExport = false, hovTraceRetrace = false, hovSelTraceBtn = false;
+    SatTraceSetup traceSetup;
+    std::vector<SatTraceRow> traceRows;
+    bool traceValid = false;
+    double traceT0 = 0.0, traceT1 = 0.0;
+    float traceMagBright = 0.0f, traceMagFaint = 0.0f; // plot y range (top / bottom), magnitudes
+    std::vector<float> tracePlotX, tracePlotMag, tracePlotMagAbove, tracePlotPhase;
+    float traceNowX[2] = {}, traceNowY[2] = {0.0f, 1.0f};
+    static constexpr int kTraceGridLines = 12; // whole-magnitude grid lines
+    float traceGridX[2] = {0.0f, 1.0f};
+    float traceGridY[kTraceGridLines][2] = {};
+    UIPlotSeries traceSeries[4 + kTraceGridLines];
+    UIPlot tracePlot;
+    char traceTitle[96] = {};
+    char traceAxisBuf[6][40] = {};  // mag top / bottom, phase top / bottom, time start / end
+    char traceStatus[200] = {};     // export result or why there is no trace
+    char traceSummary[96] = {};     // peak brightness, pass length
+    void computeSelectedTrace();
+    void exportTrace();
+    void buildTraceWindow(const UIInput &inp, UIRenderer &ui);
+    void buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx); // "Trace pass" in the selection UI
 
     // ── Orbit pipeline buffers ────────────────────────────────────────────────
     VkBuffer satOrbitBuf = VK_NULL_HANDLE; // device-local, uploaded once at init
@@ -1879,6 +1913,15 @@ private:
     // The authoritative bit/label/json-key table is kDebugToggles at the top of SatelliteSimUI.cpp.
     uint32_t debugDisableMask = 0;
     static constexpr uint32_t kDebugBitSatOcclusion = 1048576u;
+    // Occlusion between satellite parts is OFF by default (Photometry tab "Satellite part
+    // occlusion", persisted as photometry.sat_part_occlusion): it costs ~10x the orbit dispatch at
+    // 10M satellites for a subtle effect, so no preset or first run turns it on. The knockout bit
+    // above can still force it off while this is on (profiling A/B).
+    bool satPartOcclusion = false;
+    bool satOcclusionActive() const
+    {
+        return satPartOcclusion && (debugDisableMask & kDebugBitSatOcclusion) == 0;
+    }
     // Occlusion is skipped for satellites fainter than this, unoccluded (see occlusionFluxFloor).
     static constexpr double kOcclusionMagFloor = 10.0;
     // That magnitude in raw effectFlare units (0.008 = mag 6, brightnessScale applied).
@@ -3168,6 +3211,7 @@ private:
     // a cinematic that didn't exist in their version — see loadSettings().
     bool playIntroOnStartup = true;
     bool hovPlayIntroStartup = false;
+    bool hovSatOcclusionChk = false;
 
     // ── Private helpers ───────────────────────────────────────────────────────
     // NEW-7: pushes fpsCapMode's present-mode requirement into VulkanContext and flags App to

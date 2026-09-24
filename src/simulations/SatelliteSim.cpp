@@ -1,5 +1,6 @@
 #include "SatelliteSim.h"
 #include "SatPhotometry.h"
+#include "SatTrace.h"
 #include "../UIRenderer.h"
 #include "../AudioSystem.h"
 #include "../Paths.h"
@@ -2247,7 +2248,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         parityPending.flareTiltRad = orbitPc.flareMitigationTiltRad;
         parityPending.brightnessScale = brightnessScale;
         parityPending.mirrorBoost = mirrorBoost;
-        parityPending.occlusionOn = (debugDisableMask & kDebugBitSatOcclusion) == 0;
+        parityPending.occlusionOn = satOcclusionActive();
     }
 
     // ── Dispatch: scene_depth.comp — shared terrain/ocean depth (pipeline unification) ──────────
@@ -2360,7 +2361,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         hdr.brightnessScale = brightnessScale;
         hdr.mirrorBoost = mirrorBoost;
         hdr.occlusionFluxFloor = (float)occlusionFluxFloor(brightnessScale);
-        hdr.occlusionOn = (debugDisableMask & kDebugBitSatOcclusion) ? 0u : 1u;
+        hdr.occlusionOn = satOcclusionActive() ? 1u : 0u;
         memcpy(satTypeMapped, &hdr, sizeof(hdr));
         uploadPointStyle(); // sat_flare.comp and the point draws read it this frame
     }
@@ -3111,6 +3112,187 @@ void SatelliteSim::formatSelectedSatInfo()
     }
 }
 
+SatOrbitElems SatelliteSim::orbitElemsOf(const SatOrbit &orb) const
+{
+    SatOrbitElems e;
+    e.raan = orb.raan;
+    e.incl = orb.incl;
+    e.u0 = orb.u0;
+    e.rSatM = orb.R_sat;
+    e.meanMot = orb.meanMot;
+    e.sso = orb.alignTerminator;
+    e.raanAnchorT = (double)simInitDayJ2000 * 86400.0 + simInitSecInDay;
+    e.tumbleRate = orb.tumbleRate;
+    e.tumblePhase = orb.tumblePhase;
+    e.tumbleAxis = glm::dvec3(orb.tumbleAxis);
+    return e;
+}
+
+// ─── Magnitude trace (benchmarking M9) ───────────────────────────────────────
+// Sim clock → "HH:MM:SS" (the same UTC-style clock the time panel shows; see SatTrace.h on why it
+// is not real UTC).
+static void formatSimClock(double tJ2000, char *buf, size_t n, bool withDate)
+{
+    time_t unixSim = (time_t)std::floor(tJ2000) + 946728000;
+    struct tm *utc = gmtime(&unixSim);
+    if (!utc)
+        snprintf(buf, n, "--");
+    else if (withDate)
+        snprintf(buf, n, "%04d%02d%02d-%02d%02d%02d", utc->tm_year + 1900, utc->tm_mon + 1, utc->tm_mday,
+                 utc->tm_hour, utc->tm_min, utc->tm_sec);
+    else
+        snprintf(buf, n, "%02d:%02d:%02d", utc->tm_hour, utc->tm_min, utc->tm_sec);
+}
+
+void SatelliteSim::computeSelectedTrace()
+{
+    traceValid = false;
+    traceRows.clear();
+    traceStatus[0] = traceSummary[0] = '\0';
+    for (auto &b : traceAxisBuf)
+        b[0] = '\0';
+    tracePlot.seriesCount = 0;
+    traceChrome.open = true;
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+    {
+        snprintf(traceTitle, sizeof(traceTitle), "No satellite selected");
+        return;
+    }
+    const SatOrbit &orb = satOrbits[selectedSatIndex];
+    if (orb.typeIdx >= satTypes.size())
+        return;
+    const SatelliteType &type = satTypes[orb.typeIdx];
+    snprintf(traceTitle, sizeof(traceTitle), "%s  #%d", type.name.c_str(), selectedSatIndex);
+    if (!type.isModel())
+    {
+        snprintf(traceStatus, sizeof(traceStatus),
+                 "Legacy type: its brightness is in display units, not a magnitude. Traces need a geometry model.");
+        return;
+    }
+
+    SatTraceSetup &s = traceSetup;
+    s = SatTraceSetup{};
+    s.modelId = type.modelId;
+    s.modelHash =
+        satTraceFileHash((std::filesystem::path(exeDir_) / "satellite_models" / (type.modelId + ".json")).string());
+    s.typeName = type.name;
+    s.satelliteIndex = selectedSatIndex;
+    s.lobeBudget = type.lobeBudget;
+    s.occlusion = satOcclusionActive() && !type.occlusion.occluders.empty();
+    s.orbit = orbitElemsOf(orb);
+    s.obsDirEcef = glm::dvec3(obsDir);
+    s.obsRadiusM = (double)(float)(kEarthRadius + obsTerrainH + obsHeightOffset); // as updatePositions()
+    s.flareTiltRad = (double)glm::radians(flareMitigationTiltDeg);
+    s.extinctionK = extinctionCoeff;
+    s.appVersion = APP_VERSION;
+    s.gitCommit = APP_GIT_COMMIT;
+
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    satTracePassWindow(s, tNow, traceT0, traceT1);
+    traceRows.reserve(kTraceSamples);
+    for (int i = 0; i < kTraceSamples; ++i)
+    {
+        const double t = traceT0 + (traceT1 - traceT0) * i / (kTraceSamples - 1);
+        traceRows.push_back(evalSatTraceRow(s, type.groups, type.lobes, &type.occlusion, t));
+    }
+
+    // ── Plot arrays: magnitude axis bright-up, phase 0-180 deg on the second axis ─────────────
+    double bright = INFINITY, faint = -INFINITY, peakT = 0.0, peakPhase = 0.0, maxEl = -90.0;
+    for (const SatTraceRow &r : traceRows)
+    {
+        maxEl = std::max(maxEl, r.elevationDeg);
+        for (double m : {r.mag, r.magApparent})
+            if (std::isfinite(m))
+            {
+                faint = std::max(faint, m);
+                if (m < bright && m == r.magApparent)
+                {
+                    peakT = r.tJ2000;
+                    peakPhase = r.phaseDeg;
+                }
+                bright = std::min(bright, m);
+            }
+    }
+    char t0Buf[16], t1Buf[16], peakBuf[16];
+    formatSimClock(traceT0, t0Buf, sizeof(t0Buf), false);
+    formatSimClock(traceT1, t1Buf, sizeof(t1Buf), false);
+    snprintf(traceAxisBuf[4], sizeof(traceAxisBuf[4]), "%s", t0Buf);
+    snprintf(traceAxisBuf[5], sizeof(traceAxisBuf[5]), "%s", t1Buf);
+    const int passS = (int)std::lround(traceT1 - traceT0);
+    if (!std::isfinite(bright))
+    {
+        snprintf(traceSummary, sizeof(traceSummary), "Dark for the whole window (%dm %02ds, max el %.0f deg)",
+                 passS / 60, passS % 60, maxEl);
+        bright = 0.0;
+        faint = 10.0;
+    }
+    else
+    {
+        formatSimClock(peakT, peakBuf, sizeof(peakBuf), false);
+        snprintf(traceSummary, sizeof(traceSummary), "Peak mag %.2f at %s, phase %.0f deg; pass %dm %02ds, max el %.0f deg",
+                 bright, peakBuf, peakPhase, passS / 60, passS % 60, maxEl);
+    }
+    traceMagBright = (float)std::floor(bright);
+    traceMagFaint = std::max((float)std::ceil(faint), traceMagBright + 2.0f);
+    snprintf(traceAxisBuf[0], sizeof(traceAxisBuf[0]), "mag %.0f", traceMagBright);
+    snprintf(traceAxisBuf[1], sizeof(traceAxisBuf[1]), "mag %.0f", traceMagFaint);
+    snprintf(traceAxisBuf[2], sizeof(traceAxisBuf[2]), "180 deg");
+    snprintf(traceAxisBuf[3], sizeof(traceAxisBuf[3]), "0 deg");
+
+    const float span = traceMagFaint - traceMagBright;
+    auto magY = [&](double m) { return std::isfinite(m) ? (float)((traceMagFaint - m) / span) : NAN; };
+    tracePlotX.resize(traceRows.size());
+    tracePlotMag.resize(traceRows.size());
+    tracePlotMagAbove.resize(traceRows.size());
+    tracePlotPhase.resize(traceRows.size());
+    for (size_t i = 0; i < traceRows.size(); ++i)
+    {
+        tracePlotX[i] = (float)i / (float)(traceRows.size() - 1);
+        tracePlotMag[i] = magY(traceRows[i].magApparent);
+        tracePlotMagAbove[i] = magY(traceRows[i].mag);
+        tracePlotPhase[i] = (float)(traceRows[i].phaseDeg / 180.0);
+    }
+    int n = 0;
+    const int lines = std::min((int)span - 1, kTraceGridLines);
+    for (int g = 0; g < lines; ++g)
+    {
+        traceGridY[g][0] = traceGridY[g][1] = (float)(g + 1) / span;
+        traceSeries[n++] = {traceGridX, traceGridY[g], 2, {1.0f, 1.0f, 1.0f, 0.08f}, 1.0f};
+    }
+    traceSeries[n++] = {tracePlotX.data(), tracePlotPhase.data(), (int)tracePlotX.size(), {1.0f, 0.68f, 0.3f, 0.75f}, 1.5f};
+    traceSeries[n++] = {tracePlotX.data(), tracePlotMagAbove.data(), (int)tracePlotX.size(), {0.55f, 0.8f, 1.0f, 0.35f}, 1.5f};
+    traceSeries[n++] = {tracePlotX.data(), tracePlotMag.data(), (int)tracePlotX.size(), {0.55f, 0.8f, 1.0f, 1.0f}, 2.0f};
+    traceSeries[n++] = {traceNowX, traceNowY, 2, {1.0f, 1.0f, 1.0f, 0.5f}, 1.0f}; // "now" — placed per frame
+    tracePlot.series = traceSeries;
+    tracePlot.seriesCount = n;
+    traceValid = true;
+}
+
+void SatelliteSim::exportTrace()
+{
+    if (!traceValid)
+        return;
+    const std::filesystem::path dir = std::filesystem::path(userDataDir_) / "traces";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    char stamp[32];
+    formatSimClock(traceT0, stamp, sizeof(stamp), true);
+    const std::string name =
+        "trace_" + traceSetup.modelId + "_" + std::to_string(traceSetup.satelliteIndex) + "_" + stamp + ".csv";
+    const std::string path = (dir / name).string();
+    std::string err;
+    if (writeSatTraceCsv(path, traceSetup, traceRows, err))
+    {
+        snprintf(traceStatus, sizeof(traceStatus), "Wrote %s", path.c_str());
+        Log::line("trace exported: " + path);
+    }
+    else
+    {
+        snprintf(traceStatus, sizeof(traceStatus), "Export failed: %s", err.c_str());
+        Log::line("trace export failed: " + err);
+    }
+}
+
 // ─── updateSelectedPhotometry (benchmarking M2) ───────────────────────────────
 // Per-frame photometry readout + GPU parity for the selected satellite. Called right after the
 // list header copy is read back; that copy belongs to the PREVIOUS frame's dispatch, whose inputs
@@ -3135,19 +3317,7 @@ void SatelliteSim::updateSelectedPhotometry()
         return;
     const SatelliteType &type = satTypes[orb.typeIdx];
 
-    // The satellite's orbit exactly as uploadSatOrbits() bakes it (floats promoted, SSO RAAN
-    // anchored at sim start).
-    SatOrbitElems e;
-    e.raan = orb.raan;
-    e.incl = orb.incl;
-    e.u0 = orb.u0;
-    e.rSatM = orb.R_sat;
-    e.meanMot = orb.meanMot;
-    e.sso = orb.alignTerminator;
-    e.raanAnchorT = (double)simInitDayJ2000 * 86400.0 + simInitSecInDay;
-    e.tumbleRate = orb.tumbleRate;
-    e.tumblePhase = orb.tumblePhase;
-    e.tumbleAxis = glm::dvec3(orb.tumbleAxis);
+    const SatOrbitElems e = orbitElemsOf(orb);
 
     SatPhotInputs in;
     in.sunDirEci = glm::dvec3(pin.sunDirECI);
@@ -8826,6 +8996,7 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
     SatLobeBakeStats stats;
     std::vector<std::vector<int>> lobeTris;
     t.lobes = bakeSatLobes(model, tris, budget, stats, &lobeTris);
+    t.lobeBudget = budget;
     validateSatLobes(model, tris, t.lobes, stats);
     // Phase 3b occlusion between parts; also writes each lobe's sample range into t.lobes.
     t.occlusion = buildSatOcclusion(model, tris, t.lobes, lobeTris);
