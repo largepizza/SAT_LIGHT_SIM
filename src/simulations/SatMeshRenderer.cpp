@@ -86,6 +86,8 @@ void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth)
                    &frameMapped);
     makeHostBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, nullptr, checkFrameBuf,
                    checkFrameMem, &checkFrameMapped);
+    makeHostBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, nullptr, sceneFrameBuf,
+                   sceneFrameMem, &sceneFrameMapped);
     makeHostBuffer(ctx, sizeof(GpuMeshInstance) * kMaxInstances, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr,
                    instanceBuf, instanceMem, &instanceMapped);
     // Placeholders until setTypeModels() so the descriptor set is always complete.
@@ -104,6 +106,7 @@ void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth)
     createDescriptors(ctx);
     createViewerPass(ctx);
     createCheckPass(ctx);
+    createScenePass(ctx);
     createPipelines(ctx);
     Log::line(std::string("mesh renderer: viewer MSAA ") + (samples == VK_SAMPLE_COUNT_4_BIT ? "4x" : "off"));
 }
@@ -127,6 +130,16 @@ void SatMeshRenderer::cleanup(VkDevice d)
     destroy(d, checkFrameBuf, vkDestroyBuffer);
     destroy(d, checkFrameMem, vkFreeMemory);
     checkMapped = checkFrameMapped = nullptr;
+    destroySceneTarget();
+    destroy(d, sceneMeshPipe, vkDestroyPipeline);
+    destroy(d, scenePass, vkDestroyRenderPass);
+    destroy(d, sceneFrameBuf, vkDestroyBuffer);
+    destroy(d, sceneFrameMem, vkFreeMemory);
+    sceneFrameMapped = nullptr;
+    destroy(d, bloomPipe, vkDestroyPipeline);
+    destroy(d, bloomPipeLayout, vkDestroyPipelineLayout);
+    destroy(d, bloomDescPool, vkDestroyDescriptorPool);
+    destroy(d, bloomDescLayout, vkDestroyDescriptorSetLayout);
     destroy(d, viewerBgPipe, vkDestroyPipeline);
     destroy(d, pipeLayout, vkDestroyPipelineLayout);
     destroy(d, viewerPass, vkDestroyRenderPass);
@@ -173,28 +186,32 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
 
     // Two sets of the same layout: the viewer's and the photometric check's (own frame UBO — both
     // can be recorded in one frame, and a shared host-written UBO would hold only the last write).
-    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
-                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6},
-                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6}};
+    // Three sets of the same layout — viewer, photometric check, scene — each with its own frame UBO
+    // (all can be recorded in one frame, and a shared host-written UBO would hold only the last write).
+    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3},
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9},
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 3;
     pi.pPoolSizes = ps;
-    pi.maxSets = 2;
+    pi.maxSets = 3;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &descPool);
 
-    VkDescriptorSetLayout layouts[2] = {descLayout, descLayout};
-    VkDescriptorSet sets[2] = {};
+    VkDescriptorSetLayout layouts[3] = {descLayout, descLayout, descLayout};
+    VkDescriptorSet sets[3] = {};
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ai.descriptorPool = descPool;
-    ai.descriptorSetCount = 2;
+    ai.descriptorSetCount = 3;
     ai.pSetLayouts = layouts;
     vkAllocateDescriptorSets(ctx.device, &ai, sets);
     descSet = sets[0];
     descSetCheck = sets[1];
-    for (int si = 0; si < 2; ++si)
+    descSetScene = sets[2];
+    const VkBuffer frameBufs[3] = {frameBuf, checkFrameBuf, sceneFrameBuf};
+    for (int si = 0; si < 3; ++si)
     {
     const VkDescriptorSet set = sets[si];
-    VkDescriptorBufferInfo frameInfo{si == 0 ? frameBuf : checkFrameBuf, 0, sizeof(GpuMeshFrame)};
+    VkDescriptorBufferInfo frameInfo{frameBufs[si], 0, sizeof(GpuMeshFrame)};
     VkDescriptorBufferInfo instInfo{instanceBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo img[3] = {
         {earth_.daySampler, earth_.day, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
@@ -218,7 +235,7 @@ void SatMeshRenderer::writeGeometryDescriptors()
 {
     VkDescriptorBufferInfo matInfo{materialBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo occInfo{occluderBuf, 0, VK_WHOLE_SIZE};
-    for (VkDescriptorSet set : {descSet, descSetCheck})
+    for (VkDescriptorSet set : {descSet, descSetCheck, descSetScene})
     {
         VkWriteDescriptorSet w[2] = {};
         w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -368,17 +385,19 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
     VkPipelineDynamicStateCreateInfo dys{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     dys.dynamicStateCount = 2;
     dys.pDynamicStates = dyn;
-    VkPipelineColorBlendAttachmentState cba{};
-    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
-                         VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendAttachmentState cba[2] = {};
+    for (auto &a : cba)
+        a.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                           VK_COLOR_COMPONENT_A_BIT;
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     cb.attachmentCount = 1;
-    cb.pAttachments = &cba;
+    cb.pAttachments = cba;
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     auto build = [&](const char *vs, const char *fs, bool mesh, VkRenderPass pass, VkSampleCountFlagBits ns,
-                     VkPipeline &out) {
+                     VkPipeline &out, uint32_t colorCount = 1) {
+        cb.attachmentCount = colorCount;
         VkPipelineMultisampleStateCreateInfo msci{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         msci.rasterizationSamples = ns;
         VkShaderModule v = ctx.loadShader(vs), f = ctx.loadShader(fs);
@@ -440,6 +459,8 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
     build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh.frag.spv", true, viewerPass, samples, viewerMeshPipe);
     build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh.frag.spv", true, checkPass, VK_SAMPLE_COUNT_1_BIT,
           checkMeshPipe);
+    build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh.frag.spv", true, scenePass, VK_SAMPLE_COUNT_1_BIT,
+          sceneMeshPipe, 2);
 }
 
 // ─── Viewer target ────────────────────────────────────────────────────────────────────────────────
@@ -652,4 +673,275 @@ void SatMeshRenderer::recordCheck(VkCommandBuffer cmd, const GpuMeshFrame &frame
     bb.size = VK_WHOLE_SIZE;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &bb, 0,
                          nullptr);
+}
+
+// ─── Scene pass (4c) ──────────────────────────────────────────────────────────────────────────────
+void SatMeshRenderer::createScenePass(VulkanContext &ctx)
+{
+    VkAttachmentDescription att[3] = {};
+    const VkFormat fmts[2] = {VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R32_SFLOAT};
+    for (int i = 0; i < 2; ++i)
+    {
+        att[i].format = fmts[i];
+        att[i].samples = VK_SAMPLE_COUNT_1_BIT;
+        att[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        att[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        att[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        att[i].finalLayout = VK_IMAGE_LAYOUT_GENERAL; // read with imageLoad by compute and fragment passes
+    }
+    att[2].format = ctx.depthFormat;
+    att[2].samples = VK_SAMPLE_COUNT_1_BIT;
+    att[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    att[2].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    att[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    att[2].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference colorRefs[2] = {{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+                                          {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}};
+    VkAttachmentReference depthRef{2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription sub{};
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 2;
+    sub.pColorAttachments = colorRefs;
+    sub.pDepthStencilAttachment = &depthRef;
+    // In: last frame's compute/fragment reads before we overwrite. Out: this frame's scene_depth.comp,
+    // sat_sky.frag and the bloom draw read the results.
+    VkSubpassDependency dep[2] = {};
+    dep[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dep[0].dstSubpass = 0;
+    dep[0].srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dep[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dep[0].srcAccessMask = 0;
+    dep[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dep[1].srcSubpass = 0;
+    dep[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dep[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep[1].dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    dep[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dep[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+    rpci.attachmentCount = 3;
+    rpci.pAttachments = att;
+    rpci.subpassCount = 1;
+    rpci.pSubpasses = &sub;
+    rpci.dependencyCount = 2;
+    rpci.pDependencies = dep;
+    if (vkCreateRenderPass(ctx.device, &rpci, nullptr, &scenePass) != VK_SUCCESS)
+        throw std::runtime_error("SatMeshRenderer: scene render pass");
+}
+
+void SatMeshRenderer::destroySceneTarget()
+{
+    destroy(device_, sceneFb, vkDestroyFramebuffer);
+    destroy(device_, sceneColorViewH, vkDestroyImageView);
+    destroy(device_, sceneDistViewH, vkDestroyImageView);
+    destroy(device_, sceneDepthView, vkDestroyImageView);
+    destroy(device_, sceneColor, vkDestroyImage);
+    destroy(device_, sceneDist, vkDestroyImage);
+    destroy(device_, sceneDepth, vkDestroyImage);
+    destroy(device_, sceneColorMem, vkFreeMemory);
+    destroy(device_, sceneDistMem, vkFreeMemory);
+    destroy(device_, sceneDepthMem, vkFreeMemory);
+    sceneW = sceneH = 0;
+}
+
+bool SatMeshRenderer::ensureSceneTarget(VulkanContext &ctx, uint32_t w, uint32_t h)
+{
+    w = std::max(w, 1u);
+    h = std::max(h, 1u);
+    if (w == sceneW && h == sceneH)
+        return false;
+    vkDeviceWaitIdle(ctx.device);
+    destroySceneTarget();
+    makeImage(ctx, w, h, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+              VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT, sceneColor, sceneColorMem, sceneColorViewH);
+    makeImage(ctx, w, h, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+              VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT, sceneDist, sceneDistMem, sceneDistViewH);
+    makeImage(ctx, w, h, ctx.depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_SAMPLE_COUNT_1_BIT,
+              VK_IMAGE_ASPECT_DEPTH_BIT, sceneDepth, sceneDepthMem, sceneDepthView);
+    VkImageView views[3] = {sceneColorViewH, sceneDistViewH, sceneDepthView};
+    VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fci.renderPass = scenePass;
+    fci.attachmentCount = 3;
+    fci.pAttachments = views;
+    fci.width = w;
+    fci.height = h;
+    fci.layers = 1;
+    if (vkCreateFramebuffer(ctx.device, &fci, nullptr, &sceneFb) != VK_SUCCESS)
+        throw std::runtime_error("SatMeshRenderer: scene framebuffer");
+    sceneW = w;
+    sceneH = h;
+    // Defined contents + GENERAL layout before the first frame's readers (the pass also clears).
+    VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+    for (VkImage img : {sceneColor, sceneDist})
+    {
+        ctx.imageBarrier(cmd, img, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                         VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkClearColorValue zero{};
+        VkImageSubresourceRange rng{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cmd, img, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rng);
+    }
+    ctx.endOneTimeCommands(cmd);
+    if (bloomDescSet)
+    {
+        VkDescriptorImageInfo ii{VK_NULL_HANDLE, sceneColorViewH, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet w0{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, bloomDescSet, 0, 0, 1,
+                                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ii, nullptr, nullptr};
+        vkUpdateDescriptorSets(device_, 1, &w0, 0, nullptr);
+    }
+    return true;
+}
+
+void SatMeshRenderer::recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame,
+                                  const std::vector<GpuMeshInstance> &insts, const std::vector<int> &types)
+{
+    if (!sceneFb)
+        return;
+    memcpy(sceneFrameMapped, &frame, sizeof(frame));
+    const size_t n = std::min(insts.size(), (size_t)kMaxInstances - 2);
+    if (n)
+        memcpy(static_cast<char *>(instanceMapped) + 2 * sizeof(GpuMeshInstance), insts.data(),
+               n * sizeof(GpuMeshInstance)); // slots 2.. (0 = viewer, 1 = check)
+
+    VkClearValue clears[3] = {};
+    clears[2].depthStencil = {1.0f, 0};
+    VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    rbi.renderPass = scenePass;
+    rbi.framebuffer = sceneFb;
+    rbi.renderArea = {{0, 0}, {sceneW, sceneH}};
+    rbi.clearValueCount = 3;
+    rbi.pClearValues = clears;
+    vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+    if (n && vertexBuf)
+    {
+        VkViewport vp{0.0f, 0.0f, (float)sceneW, (float)sceneH, 0.0f, 1.0f};
+        VkRect2D sc{{0, 0}, {sceneW, sceneH}};
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 0, 1, &descSetScene, 0, nullptr);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sceneMeshPipe);
+        VkDeviceSize off = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuf, &off);
+        vkCmdBindIndexBuffer(cmd, indexBuf, 0, VK_INDEX_TYPE_UINT32);
+        for (size_t i = 0; i < n; ++i)
+            if (const TypeMesh *tm = typeMesh(types[i]))
+                vkCmdDrawIndexed(cmd, tm->indexCount, 1, tm->firstIndex, tm->vertexOffset, (uint32_t)(2 + i));
+    }
+    vkCmdEndRenderPass(cmd);
+}
+
+// ─── Bloom source (4c) ────────────────────────────────────────────────────────────────────────────
+struct MeshBloomPC
+{
+    float exposure, gain, scale, pad;
+};
+
+void SatMeshRenderer::createBloomPipeline(VulkanContext &ctx, VkRenderPass flareSourcePass)
+{
+    VkDescriptorSetLayoutBinding b{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = 1;
+    li.pBindings = &b;
+    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &bloomDescLayout);
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.poolSizeCount = 1;
+    pi.pPoolSizes = &ps;
+    pi.maxSets = 1;
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &bloomDescPool);
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = bloomDescPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &bloomDescLayout;
+    vkAllocateDescriptorSets(ctx.device, &ai, &bloomDescSet);
+    if (sceneColorViewH)
+    {
+        VkDescriptorImageInfo ii{VK_NULL_HANDLE, sceneColorViewH, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet w0{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, bloomDescSet, 0, 0, 1,
+                                VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ii, nullptr, nullptr};
+        vkUpdateDescriptorSets(ctx.device, 1, &w0, 0, nullptr);
+    }
+
+    VkPushConstantRange pcr{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshBloomPC)};
+    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &bloomDescLayout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
+    vkCreatePipelineLayout(ctx.device, &pli, nullptr, &bloomPipeLayout);
+
+    VkShaderModule v = ctx.loadShader("shaders/sat_mesh_bg.vert.spv"), f = ctx.loadShader("shaders/mesh_bloom.frag.spv");
+    VkPipelineShaderStageCreateInfo st[2] = {};
+    st[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, v, "main",
+             nullptr};
+    st[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, f, "main",
+             nullptr};
+    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    vps.viewportCount = 1;
+    vps.scissorCount = 1;
+    VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dys{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dys.dynamicStateCount = 2;
+    dys.pDynamicStates = dyn;
+    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    // Additive, like flareSourcePipeline (the target is summed, then blurred).
+    VkPipelineColorBlendAttachmentState cba{};
+    cba.blendEnable = VK_TRUE;
+    cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    cba.colorBlendOp = VK_BLEND_OP_ADD;
+    cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    cba.alphaBlendOp = VK_BLEND_OP_ADD;
+    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                         VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    cb.attachmentCount = 1;
+    cb.pAttachments = &cba;
+    VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    ci.stageCount = 2;
+    ci.pStages = st;
+    ci.pVertexInputState = &vi;
+    ci.pInputAssemblyState = &ia;
+    ci.pViewportState = &vps;
+    ci.pRasterizationState = &rs;
+    ci.pMultisampleState = &ms;
+    ci.pDepthStencilState = &ds;
+    ci.pColorBlendState = &cb;
+    ci.pDynamicState = &dys;
+    ci.layout = bloomPipeLayout;
+    ci.renderPass = flareSourcePass; // later recreations of that pass stay compatible (same format)
+    if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &bloomPipe) != VK_SUCCESS)
+        throw std::runtime_error("SatMeshRenderer: bloom pipeline");
+    vkDestroyShaderModule(ctx.device, v, nullptr);
+    vkDestroyShaderModule(ctx.device, f, nullptr);
+}
+
+void SatMeshRenderer::recordBloom(VkCommandBuffer cmd, uint32_t targetW, uint32_t targetH, float exposure, float gain)
+{
+    if (!bloomPipe || !sceneColorViewH || targetW == 0 || targetH == 0)
+        return;
+    VkViewport vp{0.0f, 0.0f, (float)targetW, (float)targetH, 0.0f, 1.0f};
+    VkRect2D sc{{0, 0}, {targetW, targetH}};
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipe);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipeLayout, 0, 1, &bloomDescSet, 0, nullptr);
+    MeshBloomPC pc{exposure, gain, (float)sceneW / (float)targetW, 0.0f};
+    vkCmdPushConstants(cmd, bloomPipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
 }

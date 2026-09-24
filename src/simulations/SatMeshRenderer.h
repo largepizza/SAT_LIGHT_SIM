@@ -27,7 +27,8 @@ struct GpuMeshFrame
     glm::vec4 sunDir;      // xyz, w = draw the sun disc (background)
     glm::vec4 moonDir;     // xyz, w = moonlight irradiance (fraction of sunlight)
     glm::vec4 earthCenter; // xyz, w = Earth rotation angle (cloud drift)
-    glm::vec4 params;      // x = self-shadows, y = reflections, z = procedural detail, w = check mode
+    glm::vec4 params;      // x = self-shadows, y = reflections, z = procedural detail,
+                           // w = output mode: 0 viewer (tonemapped), 1 photometric check, 2 scene (HDR + distance)
 };
 static_assert(sizeof(GpuMeshFrame) == 208, "GpuMeshFrame layout (sat_mesh_common.glsl)");
 
@@ -100,6 +101,24 @@ public:
     void recordCheck(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst, int typeIdx);
     const float *checkPixels() const { return static_cast<const float *>(checkMapped); }
 
+    // ── Scene pass (4c) ─────────────────────────────────────────────────────────────
+    // Satellite meshes in the main view, rendered BEFORE scene_depth.comp into two full-swap-extent
+    // storage-capable targets that the rest of the frame reads with imageLoad: RGBA32F pre-exposure
+    // radiance (sat_sky.frag composites it as a surface, with the atmosphere in front of it) and R32F
+    // TRUE distance from the camera (0 = no mesh; scene_depth.comp mins it into the shared depth).
+    // Always recorded — with no instances it only clears, so every consumer can read it blind.
+    bool ensureSceneTarget(VulkanContext &ctx, uint32_t w, uint32_t h); // true if (re)created
+    VkImageView sceneColorView() const { return sceneColorViewH; }
+    VkImageView sceneDistView() const { return sceneDistViewH; }
+    // `insts[i]` is drawn with the mesh of `types[i]` (at most kMaxInstances - 2 of them).
+    void recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame, const std::vector<GpuMeshInstance> &insts,
+                     const std::vector<int> &types);
+    // Mesh glints into the flare/bloom source (4c): a fullscreen additive draw, recorded INSIDE the
+    // caller's flare-source render pass, turning the over-white part of the scene radiance (times
+    // `exposure`, the sky's) into the same log-compressed glow the satellite sprites seed there.
+    void createBloomPipeline(VulkanContext &ctx, VkRenderPass flareSourcePass);
+    void recordBloom(VkCommandBuffer cmd, uint32_t targetW, uint32_t targetH, float exposure, float gain);
+
 private:
     VkDevice device_ = VK_NULL_HANDLE;
     VkFormat colorFormat = VK_FORMAT_B8G8R8A8_SRGB;
@@ -152,6 +171,28 @@ private:
     VkDeviceMemory checkReadMem = VK_NULL_HANDLE;
     void *checkMapped = nullptr;
     void createCheckPass(VulkanContext &ctx);
+
+    // Scene pass.
+    VkRenderPass scenePass = VK_NULL_HANDLE;
+    VkPipeline sceneMeshPipe = VK_NULL_HANDLE;
+    uint32_t sceneW = 0, sceneH = 0;
+    VkImage sceneColor = VK_NULL_HANDLE, sceneDist = VK_NULL_HANDLE, sceneDepth = VK_NULL_HANDLE;
+    VkDeviceMemory sceneColorMem = VK_NULL_HANDLE, sceneDistMem = VK_NULL_HANDLE, sceneDepthMem = VK_NULL_HANDLE;
+    VkImageView sceneColorViewH = VK_NULL_HANDLE, sceneDistViewH = VK_NULL_HANDLE, sceneDepthView = VK_NULL_HANDLE;
+    VkFramebuffer sceneFb = VK_NULL_HANDLE;
+    VkBuffer sceneFrameBuf = VK_NULL_HANDLE;
+    VkDeviceMemory sceneFrameMem = VK_NULL_HANDLE;
+    void *sceneFrameMapped = nullptr;
+    VkDescriptorSet descSetScene = VK_NULL_HANDLE;
+    void createScenePass(VulkanContext &ctx);
+    void destroySceneTarget();
+
+    // Bloom source.
+    VkDescriptorSetLayout bloomDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool bloomDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet bloomDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout bloomPipeLayout = VK_NULL_HANDLE;
+    VkPipeline bloomPipe = VK_NULL_HANDLE;
 
     void createDescriptors(VulkanContext &ctx);
     void writeGeometryDescriptors();

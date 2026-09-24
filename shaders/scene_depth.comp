@@ -44,6 +44,11 @@ layout(push_constant) uniform PC {
 layout(set = 0, binding = 0) uniform sampler2D earthElevTex;
 layout(set = 0, binding = 1) uniform sampler2D earthSpecTex;
 layout(set = 0, binding = 2, r32f) uniform writeonly image2D sceneDepth;
+// Phase 4c: satellite meshes (SatMeshRenderer's scene pass, full swap extent, 0 = no mesh). They are
+// surfaces like terrain, so the shared depth is the nearest of the two — every volumetric march
+// then stops at a satellite exactly as it stops at a mountain.
+layout(set = 0, binding = 3, r32f) uniform readonly image2D meshDistImg;
+
 
 #include "common.glsl"
 #include "terrain.glsl"
@@ -57,6 +62,22 @@ const float kDepthStepTargetM = 5600.0;
 const int   kDepthStepsMin    = 48;
 const int   kDepthStepsMax    = 96;
 
+// Nearest mesh distance over the full-resolution texels this half-resolution texel covers.
+float meshDistAt(ivec2 halfCoord, ivec2 halfSize)
+{
+    ivec2 full = imageSize(meshDistImg);
+    vec2  k    = vec2(full) / vec2(halfSize);
+    ivec2 a    = ivec2(vec2(halfCoord) * k);
+    ivec2 b    = min(ivec2(vec2(halfCoord + 1) * k), full) - 1;
+    float t    = kNoSurfaceT;
+    for (int y = a.y; y <= max(b.y, a.y); ++y)
+        for (int x = a.x; x <= max(b.x, a.x); ++x) {
+            float d = imageLoad(meshDistImg, min(ivec2(x, y), full - 1)).r;
+            if (d > 0.0) t = min(t, d);
+        }
+    return t;
+}
+
 void main() {
     ivec2 size  = imageSize(sceneDepth);
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
@@ -66,7 +87,7 @@ void main() {
     // so a uniform kNoSurfaceT reproduces the pre-unification behaviour (volumetrics and beams
     // unoccluded by terrain) — making the whole architecture a single A/B checkbox.
     if ((pc.debugDisableMask & 1024u) != 0u) {
-        imageStore(sceneDepth, coord, vec4(kNoSurfaceT));
+        imageStore(sceneDepth, coord, vec4(meshDistAt(coord, size)));
         return;
     }
 
@@ -144,5 +165,5 @@ void main() {
     // march found any, else the sea-level sphere. Converted to the large-finite sentinel so every
     // consumer can use a branch-free min()/>= without its own "did we hit anything" guard.
     float tSurface = (tHit > 0.0) ? tHit : tSeaLvl;
-    imageStore(sceneDepth, coord, vec4(tSurface > 0.0 ? tSurface : kNoSurfaceT));
+    imageStore(sceneDepth, coord, vec4(min(tSurface > 0.0 ? tSurface : kNoSurfaceT, meshDistAt(coord, size))));
 }

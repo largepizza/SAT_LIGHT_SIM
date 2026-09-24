@@ -26,6 +26,8 @@ layout(location = 6) in vec3 vRest;
 layout(location = 7) flat in uint vGroup;
 
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out float outDist; // scene mode: TRUE distance from the camera (m); other modes
+                                        // have no attachment at location 1 and the write is dropped
 
 const float SUN_ALPHA2 = 0.0023 * 0.0023; // the sun's disc as a roughness (sat_orbit.comp SUN_ALPHA)
 
@@ -289,6 +291,7 @@ void main()
     if (check) {
         vec3 d = vWorld - frame.camPos.xyz;
         outColor = vec4(L.r * dot(d, d), 0.0, 0.0, 1.0);
+        outDist  = 0.0;
         return;
     }
 
@@ -314,7 +317,17 @@ void main()
         }
     }
 
+    // Scene output (4c): pre-exposure radiance (sat_sky.frag applies the atmosphere in front of it
+    // and the frame's exposure) scaled by the sprite→mesh hand-off fade, and the distance for the
+    // shared scene depth.
+    if (frame.params.w > 1.5) {
+        outColor = vec4(L * inst.origin.w, 1.0);
+        outDist  = length(vWorld - frame.camPos.xyz);
+        return;
+    }
+
     // Viewer output: the sky's own exposure curve, straight into the display-format target.
     vec3 col = vec3(1.0) - exp(-frame.camPos.w * L);
     outColor = vec4(col, 1.0);
+    outDist  = 0.0;
 }

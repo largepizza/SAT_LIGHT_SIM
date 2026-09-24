@@ -603,6 +603,34 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     That image is shown through **`UIImage`**, a Clay custom element (`UIRenderer::registerImage` /
     `updateImage`; each image gets its own descriptor set, drawn as a mode-2 quad). Lighting is
     Studio (sun at 35°) or Live (the sim's sun, including Earth's shadow); pose is Sunlit or Rest.
+- **Meshes in the main view (Phase 4c, first cut) + follow mode (4e).** The followed satellite,
+  else the selected one, is drawn by `SatMeshRenderer`'s **scene pass**. It is recorded in
+  `recordMeshScene()` just before `scene_depth.comp` and fades in once its bounding diameter spans
+  1.5-3 px.
+  - **Targets:** RGBA32F pre-exposure radiance plus R32F *true distance* (0 = none), full swap
+    extent, GENERAL layout, always cleared.
+  - **Consumers**, all through `imageLoad`, because `sat_sky.frag` is one below the 16
+    sampled-image floor:
+    - `scene_depth.comp` (binding 3) mins the mesh distance into the shared depth, so clouds and
+      beams stop at it.
+    - `sat_sky.frag` (bindings 22/23): a mesh nearer than terrain *is* the pixel's surface
+      (`meshHit` → `tSurface = tMesh`). The atmosphere march stops there and attenuates it, every
+      `tSurface` gate (sun/moon disc, Milky Way) hides behind it, and `gl_FragDepth` carries it.
+    - `mesh_bloom.frag`, drawn inside the flare-source pass: over-white radiance × the sky's
+      exposure seeds the bloom.
+  - **Hand-off:** `SatFlarePC::meshSatIdx/meshSpriteKeep` (the old pad3/pad4) fade that satellite
+    out of every sprite-side effect (point, bloom, sky-glow bins, ocean glint) as the mesh fades in.
+  - **Positions** are CPU double (`evalSatPhotometry` for litFactor/earthshine, `evalGroupPoses`),
+    camera-relative. The camera rotation is ENU(obsDir) × `SkyCamera`, the same basis the sky uses.
+    Not drawn under Potato (`sat_sky_minimal.frag` has no composite) or knockout bit 2097152.
+  - **Follow mode:** "Follow" beside "Trace pass". `followObsEcef` (double) =
+    satellite + `followOffset` in its along/cross/radial frame. `obsDir`/`obsHeightOffset` are
+    derived from it (the sky shaders read `max(ground, obsHeightOffset)` as altitude, so it is set
+    to the altitude above sea level), and `updatePositions()` uses `followRadiusM`. WASD/Q-E move
+    the offset (speed ∝ distance); RMB look unlocks the aim lock. Settings persist the ground
+    observer, not the orbit.
+  - **Reflections in the scene** still use `earth_env.glsl`. The user requires the full renderer's
+    (airglow, aurora, Moon, Milky Way); that is 4c part 2.
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, and the M4 benchmark references `starlink_v1_0.json`
   (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`

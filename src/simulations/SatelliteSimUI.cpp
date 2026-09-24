@@ -86,6 +86,8 @@ static constexpr DebugToggleEntry kDebugToggles[] = {
     {131072u, "Beam tile cull OFF (A/B)", "beam_tile_cull_disabled"},
     // Phase 3b occlusion between satellite parts (sat_orbit.comp, geometry-model types only).
     {1048576u, "Satellite part occlusion", "sat_part_occlusion"},
+    // Phase 4c satellite meshes in the main view (SatMeshRenderer scene pass + composite).
+    {2097152u, "Satellite meshes", "sat_meshes"},
 };
 static constexpr int kDebugToggleCount = (int)(sizeof(kDebugToggles) / sizeof(kDebugToggles[0]));
 // The matching static_assert against SatelliteSim::kDebugToggleSlots lives inside
@@ -592,6 +594,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildViewControlsWindow(inp, ui);
     buildTraceWindow(inp, ui);
     buildModelViewerWindow(inp, ui);
+    buildFollowHud(inp, ui);
     buildSelectedSatPanel(inp, ui);
 
     // ── Mouse capture rects ───────────────────────────────────────────────────
@@ -1090,6 +1093,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
             {
                 buildTraceButton(inp, ui, 0);
                 buildViewButton(inp, ui, 0);
+                buildFollowButton(inp, ui, 0);
             }
         }
         captureLaidOut(ui, CLAY_ID("SelSatChip"), kMargin, kMargin, 360.0f, 34.0f);
@@ -1158,6 +1162,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
             {
                 buildTraceButton(inp, ui, 1);
                 buildViewButton(inp, ui, 1);
+                buildFollowButton(inp, ui, 1);
             }
     }
     // Panel size isn't known until Clay lays it out this frame — this is a rough estimate for
@@ -1603,6 +1608,96 @@ void SatelliteSim::buildViewButton(const UIInput &inp, UIRenderer &ui, int idx)
         ui.tooltip(inp, n, "Open this satellite's 3D model where it is now, with the Earth beneath it", fs(11));
         CLAY_TEXT(CLAY_STRING("View model"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
     }
+}
+
+// ─── Follow mode UI (Phase 4e) ───────────────────────────────────────────────
+// "Follow" next to "Trace pass" / "View model" for a selected satellite with a geometry model.
+void SatelliteSim::buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx)
+{
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size() ||
+        !meshRenderer.typeMesh((int)satOrbits[selectedSatIndex].typeIdx))
+        return;
+    const bool on = followActive && followSatIndex == selectedSatIndex;
+    CLAY(CLAY_IDI("SelFollowBtn", idx), {.layout = {
+                                             .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(11) + 11.0f)},
+                                             .padding = {8, 8, 0, 0},
+                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                         .backgroundColor = on ? Pal::btnAccent : (hovSelFollowBtn ? Pal::btnHover : Pal::btnIdle),
+                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
+    {
+        bool n = Clay_Hovered();
+        sndRollover(n, hovSelFollowBtn);
+        sndClick(n, inp.lmbPressed);
+        hovSelFollowBtn = n;
+        if (n && inp.lmbPressed)
+        {
+            if (on)
+                stopFollow();
+            else
+                startFollow(selectedSatIndex);
+        }
+        ui.tooltip(inp, n, on ? "Stop following and return to the ground"
+                              : "Fly to this satellite and ride along with it (WASD / Q-E move around it, RMB looks)",
+                   fs(11));
+        CLAY_TEXT(on ? CLAY_STRING("Following") : CLAY_STRING("Follow"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+    }
+}
+
+// Top-centre chip while following: what, how far, the aim lock and the way back.
+void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
+{
+    if (!followActive)
+        return;
+    static char distBuf[64];
+    const double d = glm::length(followOffset);
+    if (d < 1000.0)
+        snprintf(distBuf, sizeof(distBuf), "%.1f m away", d);
+    else
+        snprintf(distBuf, sizeof(distBuf), "%.2f km away", d / 1000.0);
+    auto chipButton = [&](const char *id, const char *label, bool &hov, const char *tip) {
+        bool clicked = false;
+        Clay_String ids{false, (int32_t)strlen(id), id};
+        CLAY(CLAY_SID(ids), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(11) + 11.0f)},
+                                        .padding = {8, 8, 0, 0},
+                                        .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                             .backgroundColor = hov ? Pal::btnHover : Pal::btnIdle,
+                             .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hov);
+            sndClick(n, inp.lmbPressed);
+            hov = n;
+            clicked = n && inp.lmbPressed;
+            ui.tooltip(inp, n, tip, fs(11));
+            Clay_String ls{false, (int32_t)strlen(label), label};
+            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+        return clicked;
+    };
+    CLAY(CLAY_ID("FollowHud"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                           .padding = {12, 12, 6, 6},
+                                           .childGap = 10,
+                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                           .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                .backgroundColor = Pal::panelBgFade,
+                                .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
+                                .floating = {.offset = {0.0f, 12.0f}, .zIndex = 6,
+                                             .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP},
+                                             .attachTo = CLAY_ATTACH_TO_ROOT}})
+    {
+        Clay_String ls{false, (int32_t)strlen(followLabel), followLabel};
+        CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        Clay_String ds{false, (int32_t)strlen(distBuf), distBuf};
+        CLAY_TEXT(ds, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        if (chipButton("FollowAimBtn", followAimLock ? "Aim: locked" : "Aim: free", hovFollowAim,
+                       "Locked: the camera keeps the satellite centred while you move. Free: look around with RMB "
+                       "(looking unlocks it)"))
+            followAimLock = !followAimLock;
+        if (chipButton("FollowExitBtn", "Exit", hovFollowExit, "Return to the ground where you were"))
+            stopFollow();
+    }
+    captureLaidOut(ui, CLAY_ID("FollowHud"), inp.screenW * 0.5f - 200.0f, 12.0f, 400.0f, 34.0f);
 }
 
 // ─── buildTraceButton ────────────────────────────────────────────────────────
@@ -5101,12 +5196,15 @@ void SatelliteSim::saveSettings()
         {"music_vol", audio_ ? audio_->getMusicVolume() : musicVol_},
         {"sfx_vol", audio_ ? audio_->getSfxVolume() : sfxVol_}};
 
+    // Follow mode (Phase 4e) persists the ground observer it will return to, not the orbit.
+    const glm::vec3 saveObsDir = followActive ? followSavedObsDir : obsDir;
     j["camera"] = {
         {"az_deg", camera.azDeg},
-        {"el_deg", camera.elDeg},
-        {"fov_y_deg", camera.fovYDeg}};
+        {"el_deg", followActive ? followSavedEl : camera.elDeg},
+        {"fov_y_deg", followActive ? followSavedFov : camera.fovYDeg}};
 
-    j["observer"] = {{"lat_deg", obsLatDeg}, {"lon_deg", obsLonDeg}};
+    j["observer"] = {{"lat_deg", glm::degrees(asinf(glm::clamp(saveObsDir.z, -1.0f, 1.0f)))},
+                     {"lon_deg", glm::degrees(atan2f(saveObsDir.y, saveObsDir.x))}};
 
     j["time"] = {{"scale_idx", timeScaleIdx}};
 

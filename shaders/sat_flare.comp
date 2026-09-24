@@ -131,9 +131,9 @@ layout(push_constant) uniform PC {
     vec3  obsECI;          // observer ECI position (meters) — offset 64
     uint  selectedSatIdx;  // satellite index to mirror into SatListBuf.selected, 0xFFFFFFFF =
                            // none (was elevCutoff, then pad2) — offset 76
-    float pad3;            // was brightnessScale (now SatTypeBuf, sat_orbit.comp) — offset 80
+    float meshSatIdx;      // Phase 4c: satellite drawn as a mesh (-1 none) — offset 80
     float daySuppression;  // sky background suppression ratio — offset 84
-    float pad4;            // was mirrorBoost (now SatTypeBuf, sat_orbit.comp) — offset 88
+    float meshSpriteKeep;  // Phase 4c: that satellite's sprite weight (1 - mesh fade) — offset 88
     float visThresh;       // visibility cull threshold — offset 92
     float highlightFlare;  // fixed flare for census highlight mode — offset 96
     float extinctionCoeff; // atmospheric extinction, magnitudes per airmass — offset 100
@@ -261,6 +261,12 @@ void main() {
 
     float effectFlare = flare / (1.0 + (dayBright * pc.daySuppression
                                        + moonBright * pc.moonSuppression) * atmFrac);
+    // Phase 4c hand-off: a satellite drawn as a mesh this frame fades out of every sprite-side
+    // effect — its point, its sprite bloom, the sky-glow bins and the ocean-glint list — as the
+    // mesh fades in (a satellite followed from 30 m away would otherwise flood its sky sector). The
+    // mesh's own glints seed the bloom instead (mesh_bloom.frag).
+    if (float(visibleSatIdx[idx]) == pc.meshSatIdx)
+        effectFlare *= pc.meshSpriteKeep;
 
     // ── Atmospheric extinction ────────────────────────────────────────────────
     // The air on THIS sightline, observer to satellite (atmosphere.glsl): from sea level the full

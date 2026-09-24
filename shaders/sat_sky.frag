@@ -184,6 +184,10 @@ layout(std430, set = 0, binding = 18) readonly buffer BeamGlowDomeBuf {
 // never actually declared/sampled here until now (2026-07-29) — used below to test whether
 // terrain blocks a lens-flare source's own direction, not this fragment's view ray.
 layout(set = 0, binding = 19) uniform sampler2D sceneDepthTex;
+// Phase 4c — satellite meshes (SatMeshRenderer's scene pass, full swap extent). Storage images, not
+// samplers: this shader is one binding from the 16 sampled-image floor (CLAUDE.md, hardware table).
+layout(set = 0, binding = 22, rgba32f) uniform readonly image2D meshColorImg; // pre-exposure radiance
+layout(set = 0, binding = 23, r32f)    uniform readonly image2D meshDistImg;  // true distance, 0 = none
 
 layout(location = 0) out vec4 outColor;
 
@@ -1499,6 +1503,20 @@ void main() {
     // Effective surface distance: terrain if found, else sea level
     float tSurface = (tHit > 0.0) ? tHit : tSeaLvl;
 
+    // ── Phase 4c: a satellite mesh nearer than terrain/ocean is this pixel's surface ──────────
+    // The atmosphere march below then stops at it (so a daytime satellite is washed out by the blue
+    // sky in front of it, and one in orbit above the observer gets the full-column extinction), and
+    // every term gated on tSurface — sun and moon discs, Milky Way, stars via depth — is hidden
+    // behind it, exactly as behind terrain. Indexed through normalized screen UV so the renderScale
+    // prepass (a smaller target) reads the same texel.
+    ivec2 meshTexSize = imageSize(meshDistImg);
+    ivec2 meshPx  = min(ivec2(gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH) * vec2(meshTexSize)),
+                        meshTexSize - 1);
+    float tMesh   = imageLoad(meshDistImg, meshPx).r;
+    bool  meshHit = tMesh > 0.0 && (tSurface <= 0.0 || tMesh < tSurface);
+    if (meshHit)
+        tSurface = tMesh;
+
     // ── Half-resolution cloud composite sample (hoisted early) ─────────────────
     // Sampled here — ahead of the moon disc below — so the moon can be occluded by opaque
     // cloud the same way it's occluded by terrain. The actual multiplicative/additive
@@ -1924,7 +1942,11 @@ void main() {
     // The atmosphere was truncated at tSurface, so odR_cam/odM_cam represent
     // optical depth from the observer to the surface. Transmittance = e^(-tau).
     // We ADD attenuated surface colour to the atmosphere scatter already in `color`.
-    if (tSurface > 0.0) {
+    if (meshHit) {
+        // Phase 4c: the mesh's own radiance, lit in sat_mesh.frag, through the air in front of it.
+        vec3 meshAttn = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
+        color += imageLoad(meshColorImg, meshPx).rgb * meshAttn;
+    } else if (tSurface > 0.0) {
         vec3 surfAttn = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
 
         vec2 uvSurf;
@@ -3098,5 +3120,6 @@ void main() {
     // front of the distant Earth seen from orbit passes and one behind a mountain does not.
     float tOcclude = (tHit >= 0.0) ? tHit : tSeaLvl;
     if (tOcclude < 0.0 && tCloudOcclude >= 0.0) tOcclude = tCloudOcclude;
+    if (meshHit) tOcclude = (tOcclude >= 0.0) ? min(tOcclude, tMesh) : tMesh;
     gl_FragDepth = (tOcclude >= 0.0) ? sceneDepthFromDistance(tOcclude) : 1.0;
 }

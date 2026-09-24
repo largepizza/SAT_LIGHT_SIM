@@ -406,10 +406,11 @@ struct SatFlarePC
     // horizon cull and the reflectance model (their only readers) moved into sat_orbit.comp in the
     // lighting overhaul's Phase 1; brightnessScale/mirrorBoost now ride in GpuSatTypeHeader.
     uint32_t selectedSatIdx; // satellite to mirror into GpuSatListHeader::selected; UINT32_MAX = none
-    float pad3;
+    float meshSatIdx;        // Phase 4c: satellite drawn as a mesh this frame (-1 = none; exact as float
+                             // below 2^24) — its sprite is scaled by meshSpriteKeep (the hand-off)
     // Photometry tuning — runtime-adjustable via the settings window.
     float daySuppression;  // sky background suppression ratio (mirrors DAY_SUPPRESSION)
-    float pad4;
+    float meshSpriteKeep;  // Phase 4c: 1 - mesh fade for meshSatIdx's sprite
     float visThresh;       // visibility cull threshold (mirrors VIS_THRESH)
     float highlightFlare;  // fixed flare for constellation census (mirrors HIGHLIGHT_FLARE)
     float extinctionCoeff; // atmospheric extinction, magnitudes per airmass (reuses the slot that
@@ -1700,6 +1701,43 @@ private:
     void buildModelViewerWindow(const UIInput &inp, UIRenderer &ui);
     void recordModelViewer(VkCommandBuffer cmd);
 
+    // ── Phase 4c: satellite meshes in the main view ──────────────────────────────────────────────
+    // The followed satellite (else the selected one) is drawn as a mesh by SatMeshRenderer's scene
+    // pass once it is big enough on screen: it fades in from kMeshFadeInPx to kMeshFullPx across its
+    // bounding diameter while its sprite fades out (SatFlarePC::meshSatIdx/meshSpriteKeep), and its
+    // over-white glints seed the bloom (recordBloom). Positions are CPU double: the satellite from
+    // satOrbitStateAt, the observer from obsDir/radius (or followObsEcef), camera-relative floats.
+    // (4d generalises this from one satellite to every satellite big enough on screen.)
+    static constexpr float kMeshFadeInPx = 1.5f, kMeshFullPx = 3.0f;
+    int meshSceneSatIdx = -1;     // drawn this frame (-1 none)
+    float meshSceneFade = 0.0f;   // its fade
+    void recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx);
+    void writeMeshSceneDescriptors(VulkanContext &ctx); // sky 22/23, scene_depth 3 (init + resize)
+    float skyExposure() const; // sat_sky.frag's exposure for this frame (bloom threshold)
+
+    // ── Phase 4e: follow mode ─────────────────────────────────────────────────────────────────────
+    // The observer is MOVED to the satellite: it rides at `followOffset` in the satellite's local
+    // orbital frame (x along-track, y cross-track, z radial), so the satellite stays put while the
+    // Earth and sky turn beneath — and the mesh is drawn because it is close (recordMeshScene). WASD /
+    // Q-E move the offset (speed scales with the distance to it), RMB looks around (and turns the aim
+    // lock off). Position is double end to end: followObsEcef is authoritative; obsDir / obsHeightOffset
+    // are derived from it (sky shaders), and updatePositions() takes followRadiusM as the radius.
+    bool followActive = false;
+    int followSatIndex = -1;
+    bool followAimLock = true;
+    glm::dvec3 followOffset{0.0};
+    glm::dvec3 followObsEcef{0.0};
+    double followRadiusM = 0.0;
+    glm::vec3 followSavedObsDir{0.0f}, followSavedFacing{0.0f};
+    float followSavedHeight = 0.0f, followSavedEl = 0.0f, followSavedFov = 70.0f;
+    bool hovSelFollowBtn = false, hovFollowAim = false, hovFollowExit = false;
+    char followLabel[128] = {};
+    void startFollow(int satIndex);
+    void stopFollow();
+    void updateFollow(float dt);
+    void buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx);
+    void buildFollowHud(const UIInput &inp, UIRenderer &ui);
+
     // ── Orbit pipeline buffers ────────────────────────────────────────────────
     VkBuffer satOrbitBuf = VK_NULL_HANDLE; // device-local, uploaded once at init
     VkDeviceMemory satOrbitMem = VK_NULL_HANDLE;
@@ -2022,6 +2060,7 @@ private:
     // The authoritative bit/label/json-key table is kDebugToggles at the top of SatelliteSimUI.cpp.
     uint32_t debugDisableMask = 0;
     static constexpr uint32_t kDebugBitSatOcclusion = 1048576u;
+    static constexpr uint32_t kDebugBitMeshes = 2097152u; // Phase 4c: no satellite meshes in the scene
     // Occlusion between satellite parts is OFF by default (Photometry tab "Satellite part
     // occlusion", persisted as photometry.sat_part_occlusion): it costs ~10x the orbit dispatch at
     // 10M satellites for a subtle effect, so no preset or first run turns it on. The knockout bit
@@ -2066,7 +2105,7 @@ private:
     //
     // kDebugToggleSlots sizes hovDebugToggle[] and the accumulators below; the static_assert in
     // startKnockoutSweep() keeps it honest.
-    static constexpr int kDebugToggleSlots = 19;
+    static constexpr int kDebugToggleSlots = 20;
     static constexpr int kSweepSettleFrames = 6;  // discard after a mask change — covers the
                                                   // one-frame-stale timestamp readback plus a
                                                   // little driver/clock hysteresis

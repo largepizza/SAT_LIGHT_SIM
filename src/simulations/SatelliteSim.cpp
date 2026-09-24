@@ -506,7 +506,10 @@ void SatelliteSim::init(VulkanContext &ctx)
             if (satTypes[i].model)
                 tms[i] = {satTypes[i].model.get(), &satTypes[i].occlusion};
         meshRenderer.setTypeModels(ctx, tms);
+        meshRenderer.ensureSceneTarget(ctx, ctx.swapExtent.width, ctx.swapExtent.height);
+        meshRenderer.createBloomPipeline(ctx, flareSourceRenderPass);
         meshRendererInit = true;
+        writeMeshSceneDescriptors(ctx);
     }
     initStars(ctx);
     initPlanets(ctx); // must run after initStars() — reuses starDescLayout/starPipeline
@@ -732,6 +735,13 @@ void SatelliteSim::onResize(VulkanContext &ctx)
                                         trailCompositeDescSet, 0, 0, 1,
                                         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &trailCompImgInfo, nullptr, nullptr};
     vkUpdateDescriptorSets(ctx.device, 1, &trailCompWrite, 0, nullptr);
+
+    // Phase 4c: the satellite mesh scene targets follow the swap extent.
+    if (meshRendererInit)
+    {
+        meshRenderer.ensureSceneTarget(ctx, ctx.swapExtent.width, ctx.swapExtent.height);
+        writeMeshSceneDescriptors(ctx);
+    }
 }
 
 // ─── recordCompute ────────────────────────────────────────────────────────────
@@ -1191,7 +1201,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         fwd = glm::clamp(fwd + gpMoveFwd, -1.0f, 1.0f);
         right = glm::clamp(right + gpMoveRight, -1.0f, 1.0f);
 
-        if (fwd != 0.0f || right != 0.0f)
+        if (!followActive && (fwd != 0.0f || right != 0.0f)) // follow mode moves in updateFollow()
         {
             // right tangent = cross(obsFacing, obsDir)  (right-hand rule: forward × up = right)
             glm::vec3 rightDir = glm::normalize(glm::cross(obsFacing, obsDir));
@@ -1214,7 +1224,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // max() so pressure directly scales vertical speed without needing its own rate curve.
         float raiseAmt = std::max((glfwGetKey(win, keybindings[KB_RAISE_ELEV].key) == GLFW_PRESS || gpHeld(KB_RAISE_ELEV)) ? 1.0f : 0.0f, gpElevRaise);
         float lowerAmt = std::max((glfwGetKey(win, keybindings[KB_LOWER_ELEV].key) == GLFW_PRESS || gpHeld(KB_LOWER_ELEV)) ? 1.0f : 0.0f, gpElevLower);
-        if (raiseAmt > 0.0f || lowerAmt > 0.0f)
+        if (!followActive && (raiseAmt > 0.0f || lowerAmt > 0.0f))
         {
             // Additive, NOT max(): a purely proportional rate makes descent an exponential
             // approach to the surface — and the climb back out an equally slow exponential crawl,
@@ -1265,6 +1275,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     if (std::abs(simDayJ2000 - orbitEpochDay) >= kOrbitRebakeDays)
         uploadSatOrbits(ctx);
 
+    if (followActive)
+        updateFollow(dt); // Phase 4e: ride along with the followed satellite at this sim time
     {
         CpuTimer _t(cpuAccumMs[CPU_UPDATE_POSITIONS]);
         updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, simDt);
@@ -2271,6 +2283,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         parityPending.occlusionOn = satOcclusionActive();
     }
 
+    // ── Phase 4c: satellite meshes (before scene_depth, which folds their distance in) ────────────
+    recordMeshScene(cmd, ctx);
+
     // ── Dispatch: scene_depth.comp — shared terrain/ocean depth (pipeline unification) ──────────
     // Runs FIRST. Everything downstream that needs to know "is this pixel's view blocked by the
     // ground" reads the result instead of re-deriving it: cloud_march.comp's beam occlusion (which
@@ -2657,6 +2672,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pc.extinctionCoeff = extinctionCoeff;
     pc.sunRefIntensity = sunFlareRefIntensity; // S3: soft ceiling reference, see struct comment
     pc.selectedSatIdx = (selectedSatIndex >= 0) ? (uint32_t)selectedSatIndex : UINT32_MAX;
+    pc.meshSatIdx = (float)meshSceneSatIdx; // Phase 4c sprite → mesh hand-off
+    pc.meshSpriteKeep = 1.0f - meshSceneFade;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, compPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -2732,6 +2749,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // virtual point as its own 1-vertex draw, told apart in the shader by firstInstance = 1.
         vkCmdDrawIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, drawVertexCount), 1, 0);
         vkCmdDraw(cmd, 1, 1, 0, 1);
+        // Phase 4c: satellite mesh glints seed the same bloom (only while a mesh is drawn).
+        if (meshRendererInit && meshSceneSatIdx >= 0)
+            meshRenderer.recordBloom(cmd, flareExtent.width, flareExtent.height, skyExposure(), 1.0f);
         vkCmdEndRenderPass(cmd);                     // finalLayout=GENERAL — ready for the compute blur below, no
                                                      // extra barrier (same convention skyLowResRenderPass established)
 
@@ -3090,6 +3110,261 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
         viewerCheckTanHalf = tanHalf;
         viewerCheckPhaseDeg = glm::degrees(std::acos(glm::clamp(glm::dot(sun, o), -1.0, 1.0)));
         viewerCheckAwaiting = true;
+    }
+}
+
+// ─── Phase 4c: satellite meshes in the main view ─────────────────────────────
+// sat_sky.frag's exposure for this frame (its "Auto-exposure tone mapping" block) — the bloom
+// threshold for mesh glints.
+float SatelliteSim::skyExposure() const
+{
+    const float dayness = glm::clamp((sunDirENU.w + 0.2f) / 1.2f, 0.0f, 1.0f);
+    return glm::mix(10.0f, 1.8f, powf(dayness, 0.4f));
+}
+
+void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)
+{
+    if (!meshRendererInit)
+        return;
+    VkDescriptorImageInfo colorInfo{VK_NULL_HANDLE, meshRenderer.sceneColorView(), VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo distInfo{VK_NULL_HANDLE, meshRenderer.sceneDistView(), VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w[3] = {};
+    w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, skyDescSet, 22, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            &colorInfo, nullptr, nullptr};
+    w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, skyDescSet, 23, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            &distInfo, nullptr, nullptr};
+    w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 3, 0, 1,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &distInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 3, w, 0, nullptr);
+}
+
+// The followed (else selected) satellite as a mesh, when its bounding diameter spans at least
+// kMeshFadeInPx. World frame: ECEF axes, origin at the observer — every position is small. The sky
+// camera's rotation is ENU (from the same obsDir the sky shaders use) × SkyCamera::viewMatrix().
+// Always records the pass (it clears the targets the rest of the frame reads).
+void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
+{
+    meshSceneSatIdx = -1;
+    meshSceneFade = 0.0f;
+    if (!meshRendererInit)
+        return;
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double theta = earthRotationAngle(tNow);
+    const double ct = std::cos(theta), st = std::sin(theta);
+    auto eciToEcef = [&](glm::dvec3 v) { return glm::dvec3(ct * v.x + st * v.y, -st * v.x + ct * v.y, v.z); };
+
+    // Observer (double). In follow mode followObsEcef is authoritative; otherwise obsDir + radius.
+    const double obsRadius = followActive ? followRadiusM
+                                          : (double)kEarthRadius + (double)obsTerrainH + (double)obsHeightOffset;
+    const glm::dvec3 obsEcef = followActive ? followObsEcef : glm::normalize(glm::dvec3(obsDir)) * obsRadius;
+
+    // Camera: ECEF → ENU (the sky shaders' enuBasis of obsDir) → SkyCamera.
+    const glm::vec3 enuZ = glm::normalize(obsDir);
+    const glm::vec3 enuX = glm::normalize(glm::cross(glm::vec3(0.0f, 0.0f, 1.0f), enuZ));
+    const glm::vec3 enuY = glm::cross(enuZ, enuX);
+    const glm::mat3 ecefToEnu = glm::transpose(glm::mat3(enuX, enuY, enuZ));
+    const glm::mat4 view = camera.viewMatrix() * glm::mat4(ecefToEnu);
+    const float fovY = glm::radians(camera.fovYDeg);
+    const float aspect = (float)ctx.swapExtent.width / (float)std::max(1u, ctx.swapExtent.height);
+
+    std::vector<GpuMeshInstance> insts;
+    std::vector<int> types;
+    float nearM = 1.0f, farM = 10.0f;
+    const int sat = followActive ? followSatIndex : selectedSatIndex;
+    const bool skip = (debugDisableMask & (kDebugBitMeshes | 262144u)) != 0u; // knockout / Potato sky
+    if (!skip && sat >= 0 && sat < (int)satOrbits.size())
+    {
+        const int ti = (int)satOrbits[sat].typeIdx;
+        const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(ti);
+        if (tm)
+        {
+            const SatelliteType &type = satTypes[ti];
+            const SatOrbitElems e = orbitElemsOf(satOrbits[sat]);
+            SatPhotInputs in;
+            in.sunDirEci = glm::dvec3(sunDirECI);
+            in.obsEci = glm::dvec3(ct * obsEcef.x - st * obsEcef.y, st * obsEcef.x + ct * obsEcef.y, obsEcef.z);
+            in.flareTiltRad = glm::radians((double)flareMitigationTiltDeg);
+            const SatPhotResult r = evalSatPhotometry(type.groups, type.lobes, e, tNow, in);
+            const glm::dvec3 satEcef = eciToEcef(r.orbit.posEci);
+            const glm::dvec3 rel = satEcef - obsEcef;
+            const double range = glm::length(rel);
+            const double radius = std::max(0.1, (double)tm->boundsRadius);
+            const double px = 2.0 * radius / std::max(range, 1e-3) /
+                              (2.0 * std::tan(0.5 * fovY) / (double)ctx.swapExtent.height);
+            const float fade = (float)glm::smoothstep((double)kMeshFadeInPx, (double)kMeshFullPx, px);
+            if (fade > 0.0f)
+            {
+                AttGeometry geo;
+                geo.nadir = eciToEcef(r.orbit.nadir);
+                geo.velocity = eciToEcef(r.orbit.velocity);
+                geo.sun = eciToEcef(glm::dvec3(sunDirECI));
+                geo.siteIdeal = geo.nadir;
+                geo.tumbleAngle = r.orbit.tumbleAngle;
+                geo.tumbleAxis = eciToEcef(e.tumbleAxis);
+                geo.flareTiltRad = in.flareTiltRad;
+                const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, false);
+                GpuMeshInstance inst{};
+                inst.origin = glm::vec4(glm::vec3(rel), fade);
+                for (int g = 0; g < 4; ++g)
+                {
+                    const GroupPose gp = g < (int)poses.size() ? poses[g] : GroupPose{};
+                    for (int c = 0; c < 3; ++c)
+                        inst.rot[g * 3 + c] = glm::vec4(glm::vec3(gp.R[c]), 0.0f);
+                    inst.trans[g] = glm::vec4(glm::vec3(gp.t), 0.0f);
+                }
+                const double rOverD = satphot::kEarthRadiusM / glm::length(satEcef);
+                const double alphaE = rOverD / (1.0 + std::sqrt(std::max(0.0, 1.0 - rOverD * rOverD)));
+                // Penumbral reddening, as sat_orbit.comp tints the sprite.
+                const double lit = r.litFactor;
+                const glm::dvec3 tint = glm::mix(glm::dvec3(1.0), glm::dvec3(1.0, 0.45, 0.15), 4.0 * lit * (1.0 - lit));
+                inst.sun = glm::vec4(glm::vec3(geo.sun), (float)lit);
+                inst.sunColor = glm::vec4(glm::vec3(tint), (float)(alphaE * alphaE));
+                inst.earthshine = glm::vec4(glm::vec3(eciToEcef(r.earthDir)), (float)r.earthIrradiance);
+                inst.firstMaterial = tm->firstMaterial;
+                inst.firstOccluder = tm->firstOccluder;
+                inst.occluderCount = tm->occluderCount;
+                insts.push_back(inst);
+                types.push_back(ti);
+                nearM = (float)std::max(0.02, range - 1.5 * radius);
+                farM = (float)(range + 1.5 * radius);
+                meshSceneSatIdx = sat;
+                meshSceneFade = fade;
+            }
+        }
+    }
+
+    GpuMeshFrame frame{};
+    glm::mat4 proj = glm::perspectiveRH_ZO(fovY, aspect, nearM, std::max(farM, nearM * 1.01f));
+    proj[1][1] *= -1.0f; // Vulkan clip space: Y down (sat_point.vert's projection)
+    frame.viewProj = proj * view;
+    frame.invViewProj = glm::inverse(frame.viewProj);
+    frame.camPos = glm::vec4(0.0f, 0.0f, 0.0f, skyExposure());
+    frame.sunDir = glm::vec4(glm::vec3(eciToEcef(glm::dvec3(sunDirECI))), 0.0f);
+    frame.moonDir = glm::vec4(glm::vec3(eciToEcef(glm::dvec3(moonDirECI))), moonGain * moonDirENU.w);
+    frame.earthCenter = glm::vec4(glm::vec3(-obsEcef), (float)std::fmod(theta, glm::two_pi<double>()));
+    frame.params = glm::vec4(1.0f, 1.0f, 1.0f, 2.0f); // shadows, reflections, detail, SCENE output
+    meshRenderer.recordScene(cmd, frame, insts, types);
+}
+
+// ─── Phase 4e: follow mode ───────────────────────────────────────────────────
+void SatelliteSim::startFollow(int satIndex)
+{
+    if (satIndex < 0 || satIndex >= (int)satOrbits.size())
+        return;
+    const int ti = (int)satOrbits[satIndex].typeIdx;
+    const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(ti);
+    if (!tm)
+        return;
+    if (!followActive)
+    {
+        followSavedObsDir = obsDir;
+        followSavedFacing = obsFacing;
+        followSavedHeight = obsHeightOffset;
+        followSavedEl = camera.elDeg;
+        followSavedFov = camera.fovYDeg;
+    }
+    followActive = true;
+    followSatIndex = satIndex;
+    followAimLock = true;
+    // Start behind and a little above it, ~4 model radii out.
+    const double r = std::max(1.0, (double)tm->boundsRadius);
+    followOffset = glm::dvec3(-4.0 * r, 0.0, 1.5 * r);
+    camera.fovYDeg = 50.0f;
+    snprintf(followLabel, sizeof(followLabel), "Following %s #%d", satTypes[ti].name.c_str(), satIndex);
+    updateFollow(0.0f);
+}
+
+void SatelliteSim::stopFollow()
+{
+    if (!followActive)
+        return;
+    followActive = false;
+    obsDir = followSavedObsDir;
+    obsFacing = followSavedFacing;
+    obsHeightOffset = followSavedHeight;
+    camera.elDeg = followSavedEl;
+    camera.fovYDeg = followSavedFov;
+}
+
+// Moves the observer with the followed satellite (this frame's sim time), applies WASD / Q-E to
+// the offset, and aims the camera at it while the aim lock is on. Everything in double.
+void SatelliteSim::updateFollow(float dt)
+{
+    if (followSatIndex < 0 || followSatIndex >= (int)satOrbits.size())
+    {
+        stopFollow();
+        return;
+    }
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double theta = earthRotationAngle(tNow);
+    const double ct = std::cos(theta), st = std::sin(theta);
+    auto eciToEcef = [&](glm::dvec3 v) { return glm::dvec3(ct * v.x + st * v.y, -st * v.x + ct * v.y, v.z); };
+    const SatOrbitState s = satOrbitStateAt(orbitElemsOf(satOrbits[followSatIndex]), tNow);
+    const glm::dvec3 P = eciToEcef(s.posEci);
+    const glm::dvec3 Rh = glm::normalize(P);
+    glm::dvec3 Th = eciToEcef(s.velocity);
+    const glm::dvec3 Nh = glm::normalize(glm::cross(Rh, Th));
+    Th = glm::cross(Nh, Rh);
+
+    // WASD / Q-E, in the observer's own horizontal frame (as on the ground), converted to the
+    // satellite's frame. Speed scales with the distance, so 10 km → 10 m is a few seconds' travel.
+    if (win && dt > 0.0f)
+    {
+        const bool boost = glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS || gpHeld(KB_MOVE_BOOST);
+        const bool fine = fineMoveToggled && !boost;
+        float fwd = (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS ? 1.0f : 0.0f) - (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS ? 1.0f : 0.0f);
+        float right = (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS ? 1.0f : 0.0f) - (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS ? 1.0f : 0.0f);
+        fwd = glm::clamp(fwd + gpMoveFwd, -1.0f, 1.0f);
+        right = glm::clamp(right + gpMoveRight, -1.0f, 1.0f);
+        const float raise = std::max((glfwGetKey(win, keybindings[KB_RAISE_ELEV].key) == GLFW_PRESS || gpHeld(KB_RAISE_ELEV)) ? 1.0f : 0.0f, gpElevRaise);
+        const float lower = std::max((glfwGetKey(win, keybindings[KB_LOWER_ELEV].key) == GLFW_PRESS || gpHeld(KB_LOWER_ELEV)) ? 1.0f : 0.0f, gpElevLower);
+        const float up = raise - lower;
+        if (fwd != 0.0f || right != 0.0f || up != 0.0f)
+        {
+            double speed = glm::clamp(0.6 * glm::length(followOffset), 0.5, 20000.0);
+            if (boost)
+                speed *= 10.0;
+            if (fine)
+                speed *= 0.1;
+            const glm::dvec3 f = glm::dvec3(obsFacing), u = glm::dvec3(obsDir);
+            const glm::dvec3 rt = glm::normalize(glm::cross(f, u));
+            const glm::dvec3 d = speed * (double)dt * ((double)fwd * f + (double)right * rt + (double)up * u);
+            followOffset += glm::dvec3(glm::dot(d, Th), glm::dot(d, Nh), glm::dot(d, Rh));
+        }
+    }
+
+    followObsEcef = P + followOffset.x * Th + followOffset.y * Nh + followOffset.z * Rh;
+    followRadiusM = glm::length(followObsEcef);
+    obsDir = glm::vec3(followObsEcef / followRadiusM);
+    // The sky shaders take max(ground, obsHeightOffset) as the observer's height above sea level,
+    // so this puts their observer where followObsEcef is (+ their 2 m eye height).
+    obsHeightOffset = (float)(followRadiusM - (double)kEarthRadius);
+    obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
+    obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+
+    // Keep the heading tangent at the new position; aim at the satellite while locked (RMB look
+    // unlocks — the player took the camera).
+    if (camera.captured)
+        followAimLock = false;
+    const glm::vec3 upF = obsDir;
+    if (followAimLock)
+    {
+        const glm::dvec3 toSat = glm::normalize(P - followObsEcef);
+        const glm::vec3 d = glm::vec3(toSat);
+        glm::vec3 h = d - glm::dot(d, upF) * upF;
+        if (glm::length(h) > 1e-6f)
+            obsFacing = glm::normalize(h);
+        camera.elDeg = glm::clamp(glm::degrees(asinf(glm::clamp(glm::dot(d, upF), -1.0f, 1.0f))), -89.0f, 89.0f);
+    }
+    obsFacing = glm::normalize(obsFacing - glm::dot(obsFacing, upF) * upF);
+    // camera.azDeg from obsFacing, as buildUI derives it (it runs before this, one frame behind).
+    {
+        const float sL = obsDir.z, cLH = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);
+        const float inv = cLH > 1e-7f ? 1.0f / cLH : 0.0f;
+        const float cLn = obsDir.x * inv, sLn = obsDir.y * inv;
+        const glm::vec3 eastEF = {-sLn, cLn, 0.0f};
+        const glm::vec3 northEF = {-sL * cLn, -sL * sLn, cLH};
+        camera.azDeg = glm::degrees(atan2f(glm::dot(obsFacing, eastEF), glm::dot(obsFacing, northEF)));
     }
 }
 
@@ -4106,6 +4381,8 @@ void SatelliteSim::cleanup(VkDevice device)
     if (bulkThread.joinable())
         bulkThread.join();
 
+    if (followActive)
+        stopFollow(); // persist the ground observer, not a position in orbit
     saveSettings();
     if (meshRendererInit)
         meshRenderer.cleanup(device);
@@ -6395,19 +6672,21 @@ void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
 //   binding 2  sceneDepth   (storage image, r32f)
 void SatelliteSim::createSceneDepthDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[3] = {};
+    VkDescriptorSetLayoutBinding bindings[4] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    // Phase 4c: satellite mesh distance (full res) — written by writeMeshSceneDescriptors().
+    bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 3;
+    li.bindingCount = 4;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &sceneDepthDescLayout);
 
     VkDescriptorPoolSize ps[2] = {
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}};
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 2;
     pi.pPoolSizes = ps;
@@ -7326,7 +7605,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     }
 
     // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=beamGlowDomeBuf, 19=sceneDepthTex, 20=oceanGlintBuf, 21=groundBeamsBuf
-    VkDescriptorSetLayoutBinding bindings[22] = {};
+    VkDescriptorSetLayoutBinding bindings[24] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -7362,18 +7641,24 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // groundBeamsBuf (perf follow-up): CPU-compacted, observer-range-culled beam list — see
     // GpuGroundBeams comment in SatelliteSim.h and the GroundBeamsBuf declaration in sat_sky.frag.
     bindings[21] = {21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // Phase 4c satellite mesh scene targets (SatMeshRenderer), read with imageLoad — storage images
+    // because this set already sits one below the 16 sampled-image floor. Written by
+    // writeMeshSceneDescriptors() once the mesh renderer exists (and again on resize).
+    bindings[22] = {22, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    bindings[23] = {23, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 22;
+    li.bindingCount = 24;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
-    VkDescriptorPoolSize ps[3] = {
+    VkDescriptorPoolSize ps[4] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 15},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
     };
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.poolSizeCount = 3;
+    pi.poolSizeCount = 4;
     pi.pPoolSizes = ps;
     pi.maxSets = 1;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &skyDescPool);
@@ -10333,7 +10618,8 @@ void SatelliteSim::updatePositions(double t, float dt)
     obsLonDeg = glm::degrees(obsLonRad);
     float cosLon = cosf(theta), sinLon = sinf(theta);
 
-    float obsRadius = kEarthRadius + obsTerrainH + obsHeightOffset;
+    // Follow mode (Phase 4e) sets the radius directly (followObsEcef is authoritative there).
+    float obsRadius = followActive ? (float)followRadiusM : kEarthRadius + obsTerrainH + obsHeightOffset;
     // Shared with the CPU photometric evaluator (SatPhotometry) so both place the observer alike.
     obsECI = glm::vec3(observerEciAt(glm::dvec3(obsDir), (double)obsRadius, t));
 
