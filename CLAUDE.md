@@ -1248,11 +1248,30 @@ except `brightnessScale`/`mirrorBoost`, which the reflectance model in `sat_orbi
 | `highlightFlare` | 0.05 | fixed flare for highlight/census mode |
 | `moonSuppression` | 4.0 | sky background suppression ratio (moon) |
 | `lightPollutionGain` | 1.0 | multiplies the light-pollution dome at its source — see "Subsystem: Light Pollution Dome" |
-| `extinctionCoeff` | 0.25 | atmospheric extinction, magnitudes per airmass — see "Subsystem: Atmospheric Extinction" |
+| `extinctionCoeff` | 0.079 | sea-level zenith extinction, magnitudes — see "Subsystem: Atmospheric Extinction" |
 
 `effectFlare = flare / (1 + (dayBright × daySuppression + moonBright × moonSuppression) × atmFrac)`,
-then `×= extinction` (airmass), then `×= (1 − domeVal × 0.85)` (light pollution)
+then `×= extinction` (line of sight), then `×= (1 − domeVal × 0.85)` (light pollution)
 `magnitude = kMagRef - 2.5 × log10(effectFlare / kMagRefFlare)` where `kMagRef=6.0`, `kMagRefFlare=0.008`
+
+**Point-source appearance (2026-09-23) — one model for satellites, stars and planets.**
+`shaders/include/point_style.glsl` (`pointPsf(mag)`, CPU mirror `SatelliteSim::pointPsf`) maps an
+apparent magnitude — AFTER every suppression and extinction term, i.e. as drawn — to a Gaussian
+PSF: displayed flux `D = 10^(-0.4·γ·(m − refMag))` minus its value at `limitMag` (so a point fades
+to exactly nothing there), drawn with sigma `sigmaPx` and peak D while D ≤ 1; brighter points keep
+peak 1 and widen (`σ = sigmaPx·√D`, flux-conserving) up to `sigmaMaxPx`. Sprite edge =
+`2·(3σ + 1)` px (≥ ~5 px, which also keeps the S2a sub-pixel flicker fix). Each shader converts its
+own record units to a magnitude first — satellites keep `effectFlare` (`satFlareToMag`: the
+flare_source bloom, picking and the UI read it), stars/planets `10^(-0.4 m)` (`relFluxToMag`).
+Users: `sat_point.frag` + `sat_flare.comp` (sprite size, and a zero record past `limitMag` so faint
+satellites cost no fill; highlight mode too), `star_point.frag` + `updateStars()`/`updatePlanets()`
+(size every frame). Parameters: the five "Point ..." Photometry sliders (`pointRefMag` 1.5,
+`pointGamma` 0.8, `pointLimitMag` 8.0, `pointSigmaPx` 0.45, `pointSigmaMaxPx` 6.0, persisted under
+`photometry.point_*`) → `GpuPointStyle` → `pointStyleBuf`, a host-coherent UBO rewritten every frame,
+bound as `descSet` binding 11 and `starDescLayout` binding 5. Until this, satellites (sigmoid core,
+log-sized sprite with a range term) and stars (sqrt core, sqrt-sized sprite) had separately tuned
+curves: a mag-3 satellite drew about as bright as a mag −2 star (Jupiter), a mag-5 satellite ~13× a
+mag-5 star. Not unified yet: the bloom/corona (`flare_source`) exists for satellites and the Sun only.
 
 `dayBright`/`moonBright` are elevation-ramp scalars (squared linear, sun/moon dot observer-zenith)
 computed once per frame — **uniform across the sky, not per-satellite-direction**. This is an
@@ -1456,15 +1475,14 @@ accepted simplification, dims slightly near ring-plane-open oppositions). Conver
 `rawIntensity = 10^(-V/2.5)` — **the same convention `initStars()` uses** — so a planet's brightness
 runs through the exact same suppression chain stars already have (day/moon/pollution-dome/
 extinction), hand-duplicated into `updatePlanets()` per this codebase's established per-consumer-
-duplication convention for that formula (see "Subsystem: Light Pollution Dome" above). Point-sprite
-size reuses `initStars()`'s `0.25 + 2.5*sqrt(rawIntensity)` curve so a planet reads at the same
-visual weight as an equally-bright star. Color (`kPlanetColor[kPlanetCount]`, same-day follow-up):
+duplication convention for that formula (see "Subsystem: Light Pollution Dome" above). Its point
+is drawn by the shared point-source model (see "Point-source appearance" under Photometry), so a
+planet reads at the same visual weight as an equally bright star or satellite. Color (`kPlanetColor[kPlanetCount]`, same-day follow-up):
 hand-picked approximate true colors, not computed — planets have no B-V spectral index to derive
 one from the way stars do. Mars is the one that actually reads as visibly colored at naked-eye
 scale (rust/salmon); the others stay close to near-white/pale by design, matching their real subtle
-cloud-top/regolith colors. No shader change needed — `star_point.frag`'s existing intensity-driven
-desaturation (bright = full tint, faint = fades toward white) was already written generically
-against `fragColor`/`fragIntensity` and applies correctly to planets for free.
+cloud-top/regolith colors. `star_point.frag`'s desaturation (bright = full tint, faint = fades
+toward white, keyed on the drawn peak) applies to planets unchanged.
 
 **Rendering**: a second tiny host-mapped `planetBuf` (`GpuSatVisible`-shaped, 6 entries) + a second
 descriptor set (`planetDescSet`, reusing `starDescLayout`/`starDescPool`'s shape via its own tiny

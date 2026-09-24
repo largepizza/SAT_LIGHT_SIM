@@ -270,6 +270,20 @@ struct GpuSatTypeHeader
 };
 static_assert(sizeof(GpuSatTypeHeader) == 16, "GpuSatTypeHeader layout mismatch");
 
+// The shared point-source model (shaders/include/point_style.glsl): apparent magnitude → point
+// spread, for satellites, stars and planets alike. std140, rewritten every frame from the
+// "Point ..." photometry sliders; bound as descSet binding 11 and starDescLayout binding 5.
+struct GpuPointStyle
+{
+    float refMag;     // magnitude whose peak reaches 1 at the base PSF
+    float gamma;      // display response: drawn flux ∝ flux^gamma
+    float limitMag;   // faintest magnitude drawn
+    float sigmaPx;    // base PSF sigma, pixels
+    float sigmaMaxPx; // widest PSF sigma, pixels
+    float pad0, pad1, pad2;
+};
+static_assert(sizeof(GpuPointStyle) == 32, "GpuPointStyle layout mismatch");
+
 // satTypeBuf's second block: the earthshine table (earthLut in sat_orbit.comp), written once by
 // createSatBuffers() from satphot::earthshineLut(). The GpuSatType array follows it.
 struct GpuEarthshineLut
@@ -1480,6 +1494,9 @@ private:
     VkDeviceMemory satVisibleIdxMem = VK_NULL_HANDLE;
     VkBuffer satListBuf = VK_NULL_HANDLE; // device-local GpuSatListHeader (also INDIRECT_BUFFER)
     VkDeviceMemory satListMem = VK_NULL_HANDLE;
+    VkBuffer pointStyleBuf = VK_NULL_HANDLE; // host-coherent UBO: GpuPointStyle, rewritten every frame
+    VkDeviceMemory pointStyleMem = VK_NULL_HANDLE;
+    void *pointStyleMapped = nullptr;
     VkBuffer satLobeBuf = VK_NULL_HANDLE; // host-visible/coherent: every model type's GpuSatLobe[] (Phase 3)
     VkDeviceMemory satLobeMem = VK_NULL_HANDLE;
     void *satLobeMapped = nullptr;
@@ -2305,10 +2322,31 @@ private:
                                      // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
     float lightPollutionGain = 25.0f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
                                      // so satellites + stars stay coherently scaled by construction
-    float extinctionCoeff = 0.079f;  // atmospheric extinction, magnitudes per airmass (Kasten & Young
-                                     // 1989); ~0.2-0.3 is typical clear-sky sea-level; shared formula
-                                     // in both sat_flare.comp and updateStars() so a star and a
-                                     // satellite at the same elevation dim identically
+    float extinctionCoeff = 0.079f;  // sea-level ZENITH extinction, magnitudes (atmosphere.glsl);
+                                     // ~0.2-0.3 is typical clear-sky V band. One line-of-sight
+                                     // formula for satellites, stars, planets and the Milky Way.
+    // Shared point-source model (point_style.glsl, GpuPointStyle): one magnitude → appearance
+    // mapping for satellites, stars and planets, so equal magnitudes look equal. Defaults
+    // approximate the stars' previous look at magnitudes 0 and 6.
+    float pointRefMag = 1.5f;        // "Point peak mag": magnitude whose core peaks at 1
+    float pointGamma = 0.8f;         // "Point contrast": drawn flux ∝ flux^gamma (1 = linear)
+    float pointLimitMag = 8.0f;      // "Point limit mag": faintest drawn
+    float pointSigmaPx = 0.45f;      // "Point size (px)": base PSF sigma
+    float pointSigmaMaxPx = 6.0f;    // "Point max size (px)": PSF growth cap
+    // CPU mirror of point_style.glsl's pointPsf(): x = peak, y = sigma (px).
+    glm::vec2 pointPsf(float mag) const
+    {
+        const float k = 1.3287712f; // 0.4 * log2(10)
+        float d = exp2f(-k * pointGamma * (mag - pointRefMag));
+        float dl = exp2f(-k * pointGamma * (pointLimitMag - pointRefMag));
+        d = std::max(d - dl, 0.0f);
+        if (d <= 1.0f)
+            return {d, pointSigmaPx};
+        float s = std::min(pointSigmaPx * sqrtf(d), pointSigmaMaxPx);
+        return {d * pointSigmaPx * pointSigmaPx / (s * s), s};
+    }
+    static float pointSpriteSizePx(float sigma) { return 2.0f * (3.0f * sigma + 1.0f); }
+    void uploadPointStyle(); // → pointStyleBuf (every frame, and once at creation)
     // Ground-directed flare mitigation attitude control for space datacenters (AttitudeMode::
     // SunTrackingTilted). A single global operator-policy knob rather than a per-satellite-type
     // JSON constant — real operators would tune one mitigation posture across a fleet, and it
@@ -3066,11 +3104,12 @@ private:
     // Sized 11, not 9 — flare_glow_gain/flare_streak_gain (flare architecture overhaul) added two
     // more PhotoParam rows; per [[feedback_cloud_slider_arrays]], all three hover/dragging arrays
     // must grow together with any new slider id.
-    bool hovPhotoMinus[22] = {}; // 15 existing photometry params + 2 trail sliders (Trail decay/gain)
+    bool hovPhotoMinus[27] = {}; // 15 existing photometry params + 2 trail sliders (Trail decay/gain)
                                  // + flare-mitigation tilt + the four dark-sky mags (2026-09-08)
-                                 // + 1 flare-mitigation tilt (idx 17)
-    bool hovPhotoPlus[22] = {};
-    bool draggingPhoto[22] = {};
+                                 // + 1 flare-mitigation tilt (idx 17) + the five point-model
+                                 // sliders (idx 22-26, 2026-09-23)
+    bool hovPhotoPlus[27] = {};
+    bool draggingPhoto[27] = {};
     bool hovCloudMinus[91] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08)
     bool hovCloudPlus[91] = {};

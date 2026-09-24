@@ -2596,7 +2596,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[22][12];
+    static char photoBufs[27][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -2643,6 +2643,13 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         // the cos(tilt) power cost keeps climbing — not a hard physical limit, just past the
         // useful range for a gimbal-limited real panel.
         {"Flare mitigate tilt (deg)", &flareMitigationTiltDeg, 0.0f, 45.0f, 1.0f, "%.0f", 21},
+        // Shared point-source model (point_style.glsl): satellites, stars and planets are all drawn
+        // from their apparent magnitude through these, so equal magnitudes look equal.
+        {"Point peak mag", &pointRefMag, -4.0f, 6.0f, 0.1f, "%.1f", 22},
+        {"Point contrast", &pointGamma, 0.2f, 1.5f, 0.05f, "%.2f", 23},
+        {"Point limit mag", &pointLimitMag, 3.0f, 12.0f, 0.1f, "%.1f", 24},
+        {"Point size (px)", &pointSigmaPx, 0.2f, 2.0f, 0.05f, "%.2f", 25},
+        {"Point max size (px)", &pointSigmaMaxPx, 1.0f, 20.0f, 0.5f, "%.1f", 26},
     };
     for (auto &pp : photoParams)
     {
@@ -4070,6 +4077,11 @@ void SatelliteSim::loadSettings()
         moonSuppression = p.value("moon_suppression", moonSuppression);
         lightPollutionGain = p.value("light_pollution_gain", lightPollutionGain);
         extinctionCoeff = p.value("extinction_coeff", extinctionCoeff);
+        pointRefMag = p.value("point_ref_mag", pointRefMag);
+        pointGamma = p.value("point_gamma", pointGamma);
+        pointLimitMag = p.value("point_limit_mag", pointLimitMag);
+        pointSigmaPx = p.value("point_sigma_px", pointSigmaPx);
+        pointSigmaMaxPx = p.value("point_sigma_max_px", pointSigmaMaxPx);
         sunlitBgVisibility = p.value("sunlit_bg_visibility", sunlitBgVisibility);
         flareGlowGain = p.value("flare_glow_gain", flareGlowGain);
         flareStreakGain = p.value("flare_streak_gain", flareStreakGain);
@@ -4382,6 +4394,11 @@ void SatelliteSim::saveSettings()
         {"moon_suppression", moonSuppression},
         {"light_pollution_gain", lightPollutionGain},
         {"extinction_coeff", extinctionCoeff},
+        {"point_ref_mag", pointRefMag},
+        {"point_gamma", pointGamma},
+        {"point_limit_mag", pointLimitMag},
+        {"point_sigma_px", pointSigmaPx},
+        {"point_sigma_max_px", pointSigmaMaxPx},
         {"sunlit_bg_visibility", sunlitBgVisibility},
         {"flare_glow_gain", flareGlowGain},
         {"flare_streak_gain", flareStreakGain},

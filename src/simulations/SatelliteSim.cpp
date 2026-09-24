@@ -2362,6 +2362,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         hdr.occlusionFluxFloor = (float)occlusionFluxFloor(brightnessScale);
         hdr.occlusionOn = (debugDisableMask & kDebugBitSatOcclusion) ? 0u : 1u;
         memcpy(satTypeMapped, &hdr, sizeof(hdr));
+        uploadPointStyle(); // sat_flare.comp and the point draws read it this frame
     }
 
     // Reset the compact visible list's header: count 0, dispatch {0,1,1}, draw {0,1,0,0}, no
@@ -3921,6 +3922,10 @@ void SatelliteSim::cleanup(VkDevice device)
     vkFreeMemory(device, satVisibleIdxMem, nullptr);
     vkDestroyBuffer(device, satListBuf, nullptr);
     vkFreeMemory(device, satListMem, nullptr);
+    if (pointStyleMapped)
+        vkUnmapMemory(device, pointStyleMem);
+    vkDestroyBuffer(device, pointStyleBuf, nullptr);
+    vkFreeMemory(device, pointStyleMem, nullptr);
     if (satLobeMapped)
         vkUnmapMemory(device, satLobeMem);
     vkDestroyBuffer(device, satLobeBuf, nullptr);
@@ -4647,6 +4652,16 @@ void SatelliteSim::createSatBuffers(VulkanContext &ctx)
         memcpy(static_cast<char *>(satTypeMapped) + sizeof(GpuSatTypeHeader), lut.data(), sizeof(GpuEarthshineLut));
     }
 
+    // pointStyleBuf: the shared point-source model's parameters (GpuPointStyle), a host-coherent
+    // UBO rewritten every frame in recordCompute(). Created here so both createDescriptors() and
+    // initStars()/initPlanets() can bind it.
+    ctx.createBuffer(sizeof(GpuPointStyle),
+                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     pointStyleBuf, pointStyleMem);
+    vkMapMemory(ctx.device, pointStyleMem, 0, sizeof(GpuPointStyle), 0, &pointStyleMapped);
+    uploadPointStyle();
+
     // satLobeBuf: host-visible + coherent. Every geometry-model type's baked facet lobes, packed
     // back to back (GpuSatType::firstLobe/lobeCount index it). Written by uploadSatOrbits.
     size_t totalLobes = 0;
@@ -4689,7 +4704,7 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
 {
     // Binding 0 (satInputBuf) was removed with GpuSatInput in the lighting overhaul's Phase 1 —
     // binding numbers are left as-is (not compacted) so no consuming shader had to change.
-    VkDescriptorSetLayoutBinding bindings[10] = {};
+    VkDescriptorSetLayoutBinding bindings[11] = {};
     bindings[0] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     bindings[1] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
@@ -4720,17 +4735,22 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // satVisibleIdxBuf
     bindings[9] = {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                    VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // satListBuf
+    // Shared point-source model (point_style.glsl): sat_flare.comp sizes the sprites with it and
+    // sat_point.frag draws them with it.
+    bindings[10] = {11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+                    VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // pointStyleBuf
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 10;
+    li.bindingCount = 11;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
-    VkDescriptorPoolSize ps[2] = {
+    VkDescriptorPoolSize ps[3] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.poolSizeCount = 2;
+    pi.poolSizeCount = 3;
     pi.pPoolSizes = ps;
     pi.maxSets = 1;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &descPool);
@@ -4751,8 +4771,9 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
     VkDescriptorBufferInfo oceanGlintInfo{oceanGlintBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo visIdxInfo{satVisibleIdxBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo listInfo{satListBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo pointStyleInfo{pointStyleBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[10] = {};
+    VkWriteDescriptorSet writes[11] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &visInfo, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
@@ -4773,7 +4794,24 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
                  descSet, 9, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &visIdxInfo, nullptr};
     writes[9] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                  descSet, 10, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &listInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 10, writes, 0, nullptr);
+    writes[10] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+                  descSet, 11, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &pointStyleInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 11, writes, 0, nullptr);
+}
+
+// The shared point-source model's parameters (the "Point ..." sliders) → pointStyleBuf. Host-
+// coherent and single frame in flight, so the next dispatch/draw sees them without a barrier.
+void SatelliteSim::uploadPointStyle()
+{
+    if (!pointStyleMapped)
+        return;
+    GpuPointStyle ps{};
+    ps.refMag = pointRefMag;
+    ps.gamma = pointGamma;
+    ps.limitMag = pointLimitMag;
+    ps.sigmaPx = pointSigmaPx;
+    ps.sigmaMaxPx = std::max(pointSigmaMaxPx, pointSigmaPx);
+    memcpy(pointStyleMapped, &ps, sizeof(ps));
 }
 
 // ─── createComputePipeline ────────────────────────────────────────────────────
@@ -8084,20 +8122,11 @@ void SatelliteSim::initStars(VulkanContext &ctx)
                       glm::clamp(1.00f - 0.15f * bv, 0.50f, 1.0f),  // G
                       glm::clamp(1.00f - 0.90f * bv, 0.10f, 1.0f)}; // B
 
-        // Point sprite size: magnitude-driven, floored near 2 px (S2a, RELEASE_v1_1_PLAN.md;
-        // floor raised 1px->2px in a later pass to fight movement flicker — a 1px sprite covers
-        // so few pixels that the rasterizer's covered-pixel SET changes in discrete jumps as the
-        // sprite's sub-pixel center drifts frame-to-frame under camera motion, with no MSAA
-        // anywhere in this project to smooth that transition; 2px gives more pixels to spread
-        // that quantization error across).
-        // The old formula `1.5 + min(rawInt, 4.0)` let its additive 1.5 floor dominate for every
-        // faint star (rawInt is tiny once vmag > ~2), so a mag 6 and a mag 3 star both landed at
-        // ~6 px post-scale — invisible at 287 stars, but with the catalog expanded to 8404 (down
-        // to mag 6.5) that turned the sky to porridge. sqrt(rawInt) keeps faint stars close to the
-        // floor (fine dust) while still giving Sirius roughly its old ~21 px size.
-        float starScale = 4.0f; // tweak this to make stars bigger/smaller overall
-        float angSize = 0.5f + 2.5f * sqrtf(rawInt);
-        angSize *= starScale;
+        // Sprite size is set every frame in updateStars() from the magnitude the star is drawn at,
+        // by the shared point-source model (point_style.glsl); this is only its catalogue-magnitude
+        // starting value. Sprites stay >= 2(3 sigma + 1) px: a ~1 px sprite's covered-pixel set jumps
+        // as its sub-pixel centre drifts under camera motion (no MSAA) — the S2a flicker fix.
+        float angSize = pointSpriteSizePx(pointPsf(s.vmag).y);
 
         starRecords.push_back({eciDir, rawInt, col, angSize});
     }
@@ -8118,11 +8147,16 @@ void SatelliteSim::initStars(VulkanContext &ctx)
     // cloudMarchTargetAView/BView/sceneDepthSampler/sceneDepthView already exist by this point in
     // init() (createCloudMarchResources/createSceneDepthResources run well before initStars — see
     // init()'s call order), so it's safe to bind them here.
-    VkDescriptorSetLayoutBinding bindings[4] = {};
+    VkDescriptorSetLayoutBinding bindings[5] = {};
     bindings[0].binding = 1;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    // Shared point-source model (point_style.glsl) — the same buffer the satellite set binds.
+    bindings[4].binding = 5;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[1].binding = 2;
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[1].descriptorCount = 1;
@@ -8137,15 +8171,16 @@ void SatelliteSim::initStars(VulkanContext &ctx)
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 4;
+    li.bindingCount = 5;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &starDescLayout);
 
-    VkDescriptorPoolSize ps[2] = {
+    VkDescriptorPoolSize ps[3] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.poolSizeCount = 2;
+    pi.poolSizeCount = 3;
     pi.pPoolSizes = ps;
     pi.maxSets = 1;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &starDescPool);
@@ -8160,7 +8195,10 @@ void SatelliteSim::initStars(VulkanContext &ctx)
     VkDescriptorImageInfo cloudAInfo{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cloudBInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo sceneDepthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet wr[4] = {};
+    VkDescriptorBufferInfo pointStyleInfo{pointStyleBuf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet wr[5] = {};
+    wr[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+             starDescSet, 5, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &pointStyleInfo, nullptr};
     wr[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
              starDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufInfo, nullptr};
     wr[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
@@ -8169,7 +8207,7 @@ void SatelliteSim::initStars(VulkanContext &ctx)
              starDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudBInfo, nullptr, nullptr};
     wr[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
              starDescSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &sceneDepthInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 4, wr, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device, 5, wr, 0, nullptr);
 
     createStarPipeline(ctx);
 
@@ -8193,11 +8231,12 @@ void SatelliteSim::initPlanets(VulkanContext &ctx)
     // binding=4 shared terrain/ocean depth) unchanged — same shape, different buffer. starDescPool
     // is sized maxSets=1 (already holds starDescSet), so this gets its own tiny pool rather than
     // resizing that one.
-    VkDescriptorPoolSize ps[2] = {
+    VkDescriptorPoolSize ps[3] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.poolSizeCount = 2;
+    pi.poolSizeCount = 3;
     pi.pPoolSizes = ps;
     pi.maxSets = 1;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &planetDescPool);
@@ -8212,7 +8251,10 @@ void SatelliteSim::initPlanets(VulkanContext &ctx)
     VkDescriptorImageInfo cloudAInfo{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cloudBInfo{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo sceneDepthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet wr[4] = {};
+    VkDescriptorBufferInfo pointStyleInfo{pointStyleBuf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet wr[5] = {};
+    wr[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
+             planetDescSet, 5, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &pointStyleInfo, nullptr};
     wr[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
              planetDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufInfo, nullptr};
     wr[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
@@ -8221,7 +8263,7 @@ void SatelliteSim::initPlanets(VulkanContext &ctx)
              planetDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudBInfo, nullptr, nullptr};
     wr[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
              planetDescSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &sceneDepthInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 4, wr, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device, 5, wr, 0, nullptr);
 
     // Do an initial upload so planets are visible from frame 1 (mirrors initStars() above).
     // Requires updatePositions() to have already run at least once — see init()'s call order.
@@ -8644,7 +8686,10 @@ void SatelliteSim::updateStars()
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;
         dst[i].baseColor = rec.color;
-        dst[i].angularSize = rec.angSize;
+        // Sized every frame from the magnitude it is drawn at, by the shared point-source model
+        // star_point.frag draws it with (point_style.glsl) — the same as satellites and planets.
+        dst[i].angularSize =
+            intensity > 0.0f ? pointSpriteSizePx(pointPsf(-2.5f * log10f(intensity)).y) : rec.angSize;
     }
 }
 
@@ -8688,8 +8733,6 @@ void SatelliteSim::updatePlanets()
     float moonBrightP = tmP * tmP * moonDirENU.w;
     const float kPlanetMoonMaxDim = 0.9f; // matches updateStars()'s kStarMoonMaxDim
 
-    const float starScale = 4.0f; // must match initStars()'s starScale — same size convention so
-                                  // a planet reads at the same visual weight as an equally-bright star
 
     auto *dst = static_cast<GpuSatVisible *>(planetMapped);
     for (int i = 0; i < kPlanetCount; ++i)
@@ -8737,9 +8780,9 @@ void SatelliteSim::updatePlanets()
                               ? rawIntensity * nightFactorEff * extinction * (1.0f - domeVal * kPlanetPollutionMaxDim) * (1.0f - beamDomeVal * kPlanetBeamPollutionMaxDim) * (1.0f - moonBrightP * kPlanetMoonMaxDim)
                               : 0.0f;
 
-        // Same size curve as initStars() (S2a, RELEASE_v1_1_PLAN.md) — floors near 1px for a
-        // faint/distant planet, grows for a bright one like Venus.
-        float angSize = (1.0f + 1.0f * sqrtf(std::max(rawIntensity, 0.0f))) * starScale;
+        // The shared point-source model (point_style.glsl), as for stars and satellites — a planet
+        // reads at the same visual weight as an equally bright star.
+        float angSize = pointSpriteSizePx(pointPsf(intensity > 0.0f ? -2.5f * log10f(intensity) : 99.0f).y);
 
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;
