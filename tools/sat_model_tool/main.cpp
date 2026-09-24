@@ -867,8 +867,7 @@ bool selfTestTrace(const SatModel &m, const std::string &id, int budget)
     s.obsRadiusM = satphot::kEarthRadiusM + 1600.0;
     s.extinctionK = 0.25;
     double tA = 0.0, tB = 0.0;
-    satTracePassWindow(s, t0, tA, tB);
-    const bool passOk = tB > tA && sinElevationOk(s, 0.5 * (tA + tB));
+    const bool passOk = satTracePassWindow(s, t0, tA, tB) && sinElevationOk(s, 0.5 * (tA + tB));
 
     std::vector<SatTri> tris = tessellateSatModel(m);
     SatLobeBakeStats bs;

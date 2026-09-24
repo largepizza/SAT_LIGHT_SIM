@@ -57,8 +57,8 @@ SatTraceRow evalSatTraceRow(const SatTraceSetup &setup, const std::vector<Attitu
 
 // The pass around t0: if the satellite is above the horizon at t0, from its rise to its set;
 // otherwise the next pass within two orbital periods; failing both, t0 ± 10 minutes. Edges are
-// refined to 0.1 s.
-void satTracePassWindow(const SatTraceSetup &setup, double t0, double &tStart, double &tEnd);
+// refined to 0.1 s. Returns false for the fallback (no pass found).
+bool satTracePassWindow(const SatTraceSetup &setup, double t0, double &tStart, double &tEnd);
 
 // FNV-1a 64 of a file's bytes as 16 hex digits ("unreadable" if it cannot be opened) — the same
 // hash SatBench reports carry for model files.

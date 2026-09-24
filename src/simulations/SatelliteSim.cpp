@@ -3148,14 +3148,14 @@ void SatelliteSim::computeSelectedTrace()
 {
     traceValid = false;
     traceRows.clear();
-    traceStatus[0] = traceSummary[0] = '\0';
-    for (auto &b : traceAxisBuf)
-        b[0] = '\0';
+    traceStatus[0] = traceSummary[0] = traceNowLine[0] = '\0';
+    traceMagTickCount = 0;
     tracePlot.seriesCount = 0;
     traceChrome.open = true;
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
     {
-        snprintf(traceTitle, sizeof(traceTitle), "No satellite selected");
+        snprintf(traceTitle, sizeof(traceTitle), "no satellite selected");
+        snprintf(traceStatus, sizeof(traceStatus), "Select a satellite, then press Retrace.");
         return;
     }
     const SatOrbit &orb = satOrbits[selectedSatIndex];
@@ -3166,9 +3166,19 @@ void SatelliteSim::computeSelectedTrace()
     if (!type.isModel())
     {
         snprintf(traceStatus, sizeof(traceStatus),
-                 "Legacy type: its brightness is in display units, not a magnitude. Traces need a geometry model.");
+                 "Can't trace: a legacy type's brightness is in display units, not a magnitude. Traces need a "
+                 "geometry-model type.");
         return;
     }
+    for (const AttitudeGroup &g : type.groups)
+        if (g.primaryTarget == AttTarget::SunReflectGroundSite || g.secondaryTarget == AttTarget::SunReflectGroundSite ||
+            g.jointTarget == AttTarget::SunReflectGroundSite)
+        {
+            snprintf(traceStatus, sizeof(traceStatus),
+                     "Can't trace: this type aims at a ground site, and the CPU evaluator does not model the "
+                     "lock-window target choice yet.");
+            return;
+        }
 
     SatTraceSetup &s = traceSetup;
     s = SatTraceSetup{};
@@ -3188,7 +3198,7 @@ void SatelliteSim::computeSelectedTrace()
     s.gitCommit = APP_GIT_COMMIT;
 
     const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    satTracePassWindow(s, tNow, traceT0, traceT1);
+    tracePassFound = satTracePassWindow(s, tNow, traceT0, traceT1);
     traceRows.reserve(kTraceSamples);
     for (int i = 0; i < kTraceSamples; ++i)
     {
@@ -3197,7 +3207,8 @@ void SatelliteSim::computeSelectedTrace()
     }
 
     // ── Plot arrays: magnitude axis bright-up, phase 0-180 deg on the second axis ─────────────
-    double bright = INFINITY, faint = -INFINITY, peakT = 0.0, peakPhase = 0.0, maxEl = -90.0;
+    // Axis range over both curves; the peak is the apparent (after extinction) magnitude.
+    double bright = INFINITY, faint = -INFINITY, peak = INFINITY, peakT = 0.0, peakPhase = 0.0, maxEl = -90.0;
     for (const SatTraceRow &r : traceRows)
     {
         maxEl = std::max(maxEl, r.elevationDeg);
@@ -3205,39 +3216,40 @@ void SatelliteSim::computeSelectedTrace()
             if (std::isfinite(m))
             {
                 faint = std::max(faint, m);
-                if (m < bright && m == r.magApparent)
-                {
-                    peakT = r.tJ2000;
-                    peakPhase = r.phaseDeg;
-                }
                 bright = std::min(bright, m);
             }
+        if (r.magApparent < peak)
+        {
+            peak = r.magApparent;
+            peakT = r.tJ2000;
+            peakPhase = r.phaseDeg;
+        }
     }
-    char t0Buf[16], t1Buf[16], peakBuf[16];
-    formatSimClock(traceT0, t0Buf, sizeof(t0Buf), false);
-    formatSimClock(traceT1, t1Buf, sizeof(t1Buf), false);
-    snprintf(traceAxisBuf[4], sizeof(traceAxisBuf[4]), "%s", t0Buf);
-    snprintf(traceAxisBuf[5], sizeof(traceAxisBuf[5]), "%s", t1Buf);
+    for (int i = 0; i < kTraceTimeTicks; ++i)
+        formatSimClock(traceT0 + (traceT1 - traceT0) * i / (kTraceTimeTicks - 1), traceTimeTickBuf[i],
+                       sizeof(traceTimeTickBuf[i]), false);
     const int passS = (int)std::lround(traceT1 - traceT0);
+    if (!tracePassFound)
+        snprintf(traceStatus, sizeof(traceStatus),
+                 "No pass above your horizon within two orbits; showing 10 minutes either side of now.");
     if (!std::isfinite(bright))
     {
-        snprintf(traceSummary, sizeof(traceSummary), "Dark for the whole window (%dm %02ds, max el %.0f deg)",
+        snprintf(traceSummary, sizeof(traceSummary),
+                 tracePassFound ? "In Earth's shadow for the whole pass (%dm %02ds, max el %.0f deg)"
+                                : "Nothing to plot (%dm %02ds window, max el %.0f deg)",
                  passS / 60, passS % 60, maxEl);
         bright = 0.0;
         faint = 10.0;
     }
     else
     {
+        char peakBuf[16];
         formatSimClock(peakT, peakBuf, sizeof(peakBuf), false);
         snprintf(traceSummary, sizeof(traceSummary), "Peak mag %.2f at %s, phase %.0f deg; pass %dm %02ds, max el %.0f deg",
-                 bright, peakBuf, peakPhase, passS / 60, passS % 60, maxEl);
+                 peak, peakBuf, peakPhase, passS / 60, passS % 60, maxEl);
     }
     traceMagBright = (float)std::floor(bright);
     traceMagFaint = std::max((float)std::ceil(faint), traceMagBright + 2.0f);
-    snprintf(traceAxisBuf[0], sizeof(traceAxisBuf[0]), "mag %.0f", traceMagBright);
-    snprintf(traceAxisBuf[1], sizeof(traceAxisBuf[1]), "mag %.0f", traceMagFaint);
-    snprintf(traceAxisBuf[2], sizeof(traceAxisBuf[2]), "180 deg");
-    snprintf(traceAxisBuf[3], sizeof(traceAxisBuf[3]), "0 deg");
 
     const float span = traceMagFaint - traceMagBright;
     auto magY = [&](double m) { return std::isfinite(m) ? (float)((traceMagFaint - m) / span) : NAN; };
@@ -3252,17 +3264,27 @@ void SatelliteSim::computeSelectedTrace()
         tracePlotMagAbove[i] = magY(traceRows[i].mag);
         tracePlotPhase[i] = (float)(traceRows[i].phaseDeg / 180.0);
     }
+    // Whole-magnitude ticks (every other one past 12), each with a grid line.
+    const int step = span > (float)(kTraceMagTicks - 2) ? 2 : 1;
     int n = 0;
-    const int lines = std::min((int)span - 1, kTraceGridLines);
-    for (int g = 0; g < lines; ++g)
+    for (int m = (int)traceMagBright; m <= (int)traceMagFaint && traceMagTickCount < kTraceMagTicks; m += step)
     {
-        traceGridY[g][0] = traceGridY[g][1] = (float)(g + 1) / span;
-        traceSeries[n++] = {traceGridX, traceGridY[g], 2, {1.0f, 1.0f, 1.0f, 0.08f}, 1.0f};
+        const float frac = (traceMagFaint - (float)m) / span;
+        traceMagTickFrac[traceMagTickCount] = frac;
+        snprintf(traceMagTickBuf[traceMagTickCount], sizeof(traceMagTickBuf[0]), "%d", m);
+        ++traceMagTickCount;
+        if (frac > 0.0f && frac < 1.0f && n < kTraceGridLines)
+        {
+            traceGridY[n][0] = traceGridY[n][1] = frac;
+            traceSeries[n] = {traceGridX, traceGridY[n], 2, {1.0f, 1.0f, 1.0f, 0.08f}, 1.0f};
+            ++n;
+        }
     }
     traceSeries[n++] = {tracePlotX.data(), tracePlotPhase.data(), (int)tracePlotX.size(), {1.0f, 0.68f, 0.3f, 0.75f}, 1.5f};
     traceSeries[n++] = {tracePlotX.data(), tracePlotMagAbove.data(), (int)tracePlotX.size(), {0.55f, 0.8f, 1.0f, 0.35f}, 1.5f};
     traceSeries[n++] = {tracePlotX.data(), tracePlotMag.data(), (int)tracePlotX.size(), {0.55f, 0.8f, 1.0f, 1.0f}, 2.0f};
-    traceSeries[n++] = {traceNowX, traceNowY, 2, {1.0f, 1.0f, 1.0f, 0.5f}, 1.0f}; // "now" — placed per frame
+    traceSeries[n++] = {traceNowX, traceNowY, 2, {1.0f, 1.0f, 1.0f, 0.5f}, 1.0f};              // "now" — placed per frame
+    traceSeries[n++] = {traceNowTickX, traceNowTickY, 2, {1.0f, 1.0f, 1.0f, 1.0f}, 3.0f};     // current magnitude
     tracePlot.series = traceSeries;
     tracePlot.seriesCount = n;
     traceValid = true;

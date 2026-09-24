@@ -1580,12 +1580,20 @@ private:
     static constexpr int kTraceGridLines = 12; // whole-magnitude grid lines
     float traceGridX[2] = {0.0f, 1.0f};
     float traceGridY[kTraceGridLines][2] = {};
-    UIPlotSeries traceSeries[4 + kTraceGridLines];
+    float traceNowTickX[2] = {}, traceNowTickY[2] = {}; // short tick at the current magnitude
+    UIPlotSeries traceSeries[5 + kTraceGridLines];
     UIPlot tracePlot;
+    bool tracePassFound = false;
     char traceTitle[96] = {};
-    char traceAxisBuf[6][40] = {};  // mag top / bottom, phase top / bottom, time start / end
-    char traceStatus[200] = {};     // export result or why there is no trace
-    char traceSummary[96] = {};     // peak brightness, pass length
+    // Axis tick labels, positioned over the plot each frame from its last laid-out size.
+    static constexpr int kTraceMagTicks = kTraceGridLines + 2, kTracePhaseTicks = 5, kTraceTimeTicks = 5;
+    int traceMagTickCount = 0;
+    float traceMagTickFrac[kTraceMagTicks] = {};
+    char traceMagTickBuf[kTraceMagTicks][8] = {};
+    char traceTimeTickBuf[kTraceTimeTicks][12] = {};
+    char traceStatus[200] = {};     // export result, or why there is no trace
+    char traceSummary[112] = {};    // peak brightness, pass length
+    char traceNowLine[128] = {};    // current magnitude, rebuilt every frame the window is open
     void computeSelectedTrace();
     void exportTrace();
     void buildTraceWindow(const UIInput &inp, UIRenderer &ui);

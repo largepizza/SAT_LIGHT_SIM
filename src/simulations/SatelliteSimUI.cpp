@@ -1028,6 +1028,18 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
 // of planetBuf's own host-mapped memory (no GPU round-trip needed — see pickPlanetAt's comment),
 // so it's never stale. When the selection is currently off-screen or below the horizon, the
 // floating panel is skipped in favor of a small fixed corner chip, so it isn't silently lost.
+// Registers an element's mouse-capture rect from its bounds in the last layout, falling back to
+// the given estimate on its first frame. Estimates alone let clicks on a panel's lower rows (the
+// Trace button) fall through to satellite picking, which deselected before the button could run.
+static void captureLaidOut(UIRenderer &ui, Clay_ElementId id, float x, float y, float w, float h)
+{
+    const Clay_ElementData d = Clay_GetElementData(id);
+    if (d.found)
+        ui.addMouseCaptureRect(d.boundingBox.x, d.boundingBox.y, d.boundingBox.width, d.boundingBox.height);
+    else
+        ui.addMouseCaptureRect(x, y, w, h);
+}
+
 void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
 {
     if (selectedSatIndex < 0 && selectedPlanetIndex < 0)
@@ -1075,7 +1087,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
             if (!isPlanet)
                 buildTraceButton(inp, ui, 0);
         }
-        ui.addMouseCaptureRect(kMargin, kMargin, 360.0f, 34.0f);
+        captureLaidOut(ui, CLAY_ID("SelSatChip"), kMargin, kMargin, 360.0f, 34.0f);
         return;
     }
 
@@ -1139,7 +1151,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     }
     // Panel size isn't known until Clay lays it out this frame — this is a rough estimate for
     // capture purposes only, same approximation the corner HUD panels' capture rects already use.
-    ui.addMouseCaptureRect(sx + kOffsetX, sy + kOffsetY, 240.0f, 200.0f);
+    captureLaidOut(ui, CLAY_ID("SelSatPanel"), sx + kOffsetX, sy + kOffsetY, 240.0f, 200.0f);
 }
 
 // ─── buildTraceWindow (benchmarking M9) ──────────────────────────────────────
@@ -1153,15 +1165,50 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
         return;
     if (traceChrome.w <= 0.0f)
     {
-        traceChrome.w = 640.0f;
-        traceChrome.h = 400.0f;
+        traceChrome.w = 680.0f;
+        traceChrome.h = 440.0f;
     }
-    // "Now" marker: a vertical line at the current sim time when it falls inside the window.
+    // ── Per frame: the "now" marker, and the traced satellite's magnitude at the current time,
+    // evaluated with the trace's own inputs so it sits exactly on the curve.
     const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const bool nowIn = traceValid && tNow >= traceT0 && tNow <= traceT1 && traceT1 > traceT0;
-    traceNowX[0] = traceNowX[1] = nowIn ? (float)((tNow - traceT0) / (traceT1 - traceT0)) : 0.0f;
+    const float nowX = nowIn ? (float)((tNow - traceT0) / (traceT1 - traceT0)) : 0.0f;
+    traceNowX[0] = traceNowX[1] = nowX;
     traceNowY[0] = nowIn ? 0.0f : NAN;
     traceNowY[1] = nowIn ? 1.0f : NAN;
+    traceNowTickY[0] = traceNowTickY[1] = NAN;
+    bool observerMoved = false;
+    if (traceValid && traceSetup.satelliteIndex >= 0 && traceSetup.satelliteIndex < (int)satOrbits.size())
+    {
+        const uint32_t ti = satOrbits[traceSetup.satelliteIndex].typeIdx;
+        const SatelliteType &type = satTypes[ti];
+        const SatTraceRow r = evalSatTraceRow(traceSetup, type.groups, type.lobes, &type.occlusion, tNow);
+        char clock[16];
+        time_t unixSim = (time_t)std::floor(tNow) + 946728000;
+        struct tm *utc = gmtime(&unixSim);
+        snprintf(clock, sizeof(clock), "%02d:%02d:%02d", utc ? utc->tm_hour : 0, utc ? utc->tm_min : 0,
+                 utc ? utc->tm_sec : 0);
+        if (r.elevationDeg <= 0.0)
+            snprintf(traceNowLine, sizeof(traceNowLine), "Now %s: below the horizon (el %.0f deg)", clock, r.elevationDeg);
+        else if (!std::isfinite(r.magApparent))
+            snprintf(traceNowLine, sizeof(traceNowLine), "Now %s: in Earth's shadow (el %.0f deg)", clock, r.elevationDeg);
+        else
+        {
+            snprintf(traceNowLine, sizeof(traceNowLine),
+                     "Now %s: mag %.2f  (%.2f above atmosphere)  el %.0f deg  phase %.0f deg", clock, r.magApparent,
+                     r.mag, r.elevationDeg, r.phaseDeg);
+            if (nowIn)
+            {
+                const float y = (traceMagFaint - (float)r.magApparent) / (traceMagFaint - traceMagBright);
+                traceNowTickX[0] = nowX - 0.012f;
+                traceNowTickX[1] = nowX + 0.012f;
+                traceNowTickY[0] = traceNowTickY[1] = y;
+            }
+        }
+        const float obsRadius = (float)satphot::kEarthRadiusM + obsTerrainH + obsHeightOffset;
+        observerMoved = glm::length(glm::dvec3(obsDir) - traceSetup.obsDirEcef) > 1e-7 ||
+                        std::abs((double)obsRadius - traceSetup.obsRadiusM) > 1.0;
+    }
 
     static char titleBuf[128];
     snprintf(titleBuf, sizeof(titleBuf), "Magnitude trace: %s", traceTitle);
@@ -1193,10 +1240,33 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                                                  .backgroundColor = c}) {}
         text(label, Pal::textDim, 11);
     };
+    // Tick labels float over the plot's edges, placed from its size in the last layout (one frame
+    // behind while the window is resized, which is invisible).
+    const Clay_ElementId plotId = CLAY_ID("TracePlot");
+    const Clay_ElementData plotData = Clay_GetElementData(plotId);
+    const float plotW = plotData.found ? plotData.boundingBox.width : 0.0f;
+    const float plotH = plotData.found ? plotData.boundingBox.height : 0.0f;
+    const Clay_Color kPhaseCol = {255, 173, 77, 220};
+    auto tick = [&](Clay_String prefix, int i, const char *label, Clay_Color c, Clay_FloatingAttachPointType elemPt,
+                    Clay_FloatingAttachPointType parentPt, float ox, float oy) {
+        Clay_String str{false, (int32_t)strlen(label), label};
+        CLAY(CLAY_SIDI(prefix, (uint32_t)i),
+             {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}},
+              .floating = {.offset = {ox, oy},
+                           .parentId = plotId.id,
+                           .zIndex = 11,
+                           .attachPoints = {.element = elemPt, .parent = parentPt},
+                           .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+                           .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID}})
+        {
+            CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(11)}));
+        }
+    };
+    static const char *kPhaseTicks[kTracePhaseTicks] = {"180", "135", "90", "45", "0"};
 
     buildResizableWindow(
         inp, ui, traceChrome, 2, titleBuf, true, hovTraceClose, (inp.screenW - traceChrome.w) * 0.5f,
-        inp.screenH - traceChrome.h - 70.0f, 420.0f, 280.0f, 1600.0f, 1000.0f,
+        inp.screenH - traceChrome.h - 70.0f, 440.0f, 300.0f, 1600.0f, 1000.0f,
         [&]()
         {
             CLAY(CLAY_ID("TraceBody"), {.layout = {
@@ -1207,6 +1277,8 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
             {
                 if (traceSummary[0])
                     text(traceSummary, Pal::textPrimary, 12);
+                if (traceValid && traceNowLine[0])
+                    text(traceNowLine, {255, 255, 255, 230}, 12);
                 if (traceValid)
                 {
                     CLAY(CLAY_ID("TraceLegend"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
@@ -1219,45 +1291,50 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                         legend(2, {255, 173, 77, 190}, "phase angle");
                         legend(3, {255, 255, 255, 128}, "now");
                     }
-                    // Plot with its axis labels: magnitude on the left, phase on the right.
+                    // Axis titles over the two label gutters.
+                    CLAY(CLAY_ID("TraceAxisTitles"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                    {
+                        text("mag", Pal::textDim, 11);
+                        CLAY(CLAY_ID("TraceAxisTitleGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+                        text("phase (deg)", kPhaseCol, 11);
+                    }
+                    // Plot between two label gutters; the labels themselves float (tick() below).
                     CLAY(CLAY_ID("TracePlotRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
-                                                              .childGap = 6,
+                                                              .childGap = 0,
                                                               .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                     {
-                        CLAY(CLAY_ID("TraceAxisL"), {.layout = {.sizing = {CLAY_SIZING_FIXED(52), CLAY_SIZING_GROW(0)},
-                                                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-                        {
-                            text(traceAxisBuf[0], Pal::textDim, 11);
-                            CLAY(CLAY_ID("TraceAxisLGap"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_GROW(0)}}}) {}
-                            text(traceAxisBuf[1], Pal::textDim, 11);
-                        }
+                        CLAY(CLAY_ID("TraceGutterL"), {.layout = {.sizing = {CLAY_SIZING_FIXED(34), CLAY_SIZING_GROW(0)}}}) {}
                         CLAY(CLAY_ID("TracePlotFrame"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
                                                                     .padding = {1, 1, 1, 1}},
                                                          .backgroundColor = {12, 14, 18, 255},
                                                          .border = {.color = Style::borderColor, .width = CLAY_BORDER_ALL(1)}})
                         {
-                            CLAY(CLAY_ID("TracePlot"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
-                                                        .custom = {.customData = &tracePlot}}) {}
+                            CLAY(plotId, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
+                                          .custom = {.customData = &tracePlot}}) {}
                         }
-                        CLAY(CLAY_ID("TraceAxisR"), {.layout = {.sizing = {CLAY_SIZING_FIXED(52), CLAY_SIZING_GROW(0)},
-                                                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-                        {
-                            text(traceAxisBuf[2], {255, 173, 77, 220}, 11);
-                            CLAY(CLAY_ID("TraceAxisRGap"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_GROW(0)}}}) {}
-                            text(traceAxisBuf[3], {255, 173, 77, 220}, 11);
-                        }
+                        CLAY(CLAY_ID("TraceGutterR"), {.layout = {.sizing = {CLAY_SIZING_FIXED(34), CLAY_SIZING_GROW(0)}}}) {}
                     }
-                    CLAY(CLAY_ID("TraceTimeRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                              .padding = {58, 58, 0, 0},
-                                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                    CLAY(CLAY_ID("TraceGutterB"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(16)}}}) {}
+                    if (plotData.found)
                     {
-                        text(traceAxisBuf[4], Pal::textDim, 11);
-                        CLAY(CLAY_ID("TraceTimeGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-                        text("sim clock", Pal::textHint, 11);
-                        CLAY(CLAY_ID("TraceTimeGap2"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-                        text(traceAxisBuf[5], Pal::textDim, 11);
+                        for (int i = 0; i < traceMagTickCount; ++i)
+                            tick(CLAY_STRING("TraceMagTick"), i, traceMagTickBuf[i], Pal::textDim, CLAY_ATTACH_POINT_RIGHT_CENTER,
+                                 CLAY_ATTACH_POINT_LEFT_TOP, -6.0f, (1.0f - traceMagTickFrac[i]) * plotH);
+                        for (int i = 0; i < kTracePhaseTicks; ++i)
+                            tick(CLAY_STRING("TracePhaseTick"), i, kPhaseTicks[i], kPhaseCol, CLAY_ATTACH_POINT_LEFT_CENTER,
+                                 CLAY_ATTACH_POINT_RIGHT_TOP, 6.0f, plotH * i / (kTracePhaseTicks - 1));
+                        for (int i = 0; i < kTraceTimeTicks; ++i)
+                            tick(CLAY_STRING("TraceTimeTick"), i, traceTimeTickBuf[i], Pal::textDim,
+                                 i == 0 ? CLAY_ATTACH_POINT_LEFT_TOP
+                                        : (i == kTraceTimeTicks - 1 ? CLAY_ATTACH_POINT_RIGHT_TOP : CLAY_ATTACH_POINT_CENTER_TOP),
+                                 CLAY_ATTACH_POINT_LEFT_BOTTOM, plotW * i / (kTraceTimeTicks - 1), 4.0f);
                     }
                 }
+                if (traceStatus[0])
+                    text(traceStatus, traceValid ? Pal::textDim : Pal::listenKey, 11);
+                if (observerMoved)
+                    text("You have moved since this trace was taken; Retrace to trace from here.", Pal::textHint, 11);
                 CLAY(CLAY_ID("TraceButtons"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                           .childGap = 8,
                                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
@@ -1268,8 +1345,6 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                     if (traceValid &&
                         button(1, "Export CSV", hovTraceExport, "Write this trace as CSV (replay: SatModelTool --replay-trace)"))
                         exportTrace();
-                    if (traceStatus[0])
-                        text(traceStatus, Pal::textDim, 11);
                 }
             }
         });
@@ -1277,14 +1352,11 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
 
 // ─── buildTraceButton ────────────────────────────────────────────────────────
 // "Trace pass" for the selected satellite — in its floating panel, and in the corner chip when it
-// is out of view (the trace then finds its next pass). Geometry-model types only: legacy types have
-// no physical magnitude.
+// is out of view or too faint to draw (the trace then finds its pass or its next one). Shown for
+// every satellite: when one can't be traced (legacy type, ground-site aim) the window says why.
 void SatelliteSim::buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx)
 {
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
-        return;
-    const uint32_t ti = satOrbits[selectedSatIndex].typeIdx;
-    if (ti >= satTypes.size() || !satTypes[ti].isModel())
         return;
     CLAY(CLAY_IDI("SelTraceBtn", idx), {.layout = {
                                             .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(22)},

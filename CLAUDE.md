@@ -486,7 +486,11 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   (or its out-of-view corner chip) runs the CPU evaluator over the selection's current pass — or its
   next one, within two orbits — at `kTraceSamples` = 400 points (`computeSelectedTrace()`), and
   plots it in its own window: apparent magnitude after extinction, above-atmosphere magnitude,
-  phase angle on a second axis, and a moving "now" marker. The plot is `UIPlot`, a Clay custom
+  phase angle on a second axis, whole-magnitude / phase / sim-clock tick labels (floating Clay text
+  placed from the plot's last laid-out size), a moving "now" marker, and a per-frame "Now: mag …"
+  readout evaluated with the trace's own inputs (so it sits on the curve; the window says when the
+  observer has moved since). When a satellite can't be traced (legacy type, ground-site aim, no pass
+  within two orbits) the window says why instead of plotting. The plot is `UIPlot`, a Clay custom
   element that `UIRenderer::pushPlot()` draws as thickness-wide axis-aligned quads (no line
   pipeline). "Export CSV" writes `<user data>/traces/trace_<model>_<sat>_<sim time>.csv`, format
   `sat-light-sim-trace/1` (`SatTrace.h/.cpp`, shared with the tool): a header carrying every input
@@ -495,6 +499,12 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   the design page's export convention. `SatModelTool --replay-trace <csv> [--models-dir D]`
   re-evaluates every row and compares the written fields as strings (the M9 gate); `--selftest`
   runs a write/read/replay round trip per model. Occlusion in a trace is exact (no flux floor).
+  **The selection panel's and corner chip's mouse-capture rects come from their real laid-out bounds**
+  (`captureLaidOut()`, `Clay_GetElementData`), not size estimates: a click on the Trace button outside
+  the estimate fell through to satellite picking, which deselected before the button ran — which is
+  why low, faint satellites (shown as the wider out-of-view chip) could not be traced at first.
+  **`APP_GIT_COMMIT` is stamped at CMake configure time** — reconfigure before a hand-off build, or
+  traces and settings titles carry an old commit.
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, and the M4 benchmark references `starlink_v1_0.json`
   (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`

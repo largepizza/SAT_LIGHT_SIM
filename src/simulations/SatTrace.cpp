@@ -96,7 +96,7 @@ SatTraceRow evalSatTraceRow(const SatTraceSetup &setup, const std::vector<Attitu
     return row;
 }
 
-void satTracePassWindow(const SatTraceSetup &s, double t0, double &tStart, double &tEnd)
+bool satTracePassWindow(const SatTraceSetup &s, double t0, double &tStart, double &tEnd)
 {
     constexpr double kStep = 10.0;
     const double period = 2.0 * satphot::kPi *
@@ -117,7 +117,7 @@ void satTracePassWindow(const SatTraceSetup &s, double t0, double &tStart, doubl
         {
             tStart = t0 - 600.0;
             tEnd = t0 + 600.0;
-            return;
+            return false;
         }
         tUp += 0.1; // just inside the pass
     }
@@ -135,6 +135,7 @@ void satTracePassWindow(const SatTraceSetup &s, double t0, double &tStart, doubl
             tEnd = refineCrossing(s, t - kStep, t);
             break;
         }
+    return true;
 }
 
 std::string satTraceFileHash(const std::string &path)
