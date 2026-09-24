@@ -1665,7 +1665,7 @@ private:
     void buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx); // "Trace pass" in the selection UI
 
     // ── Phase 4: satellite mesh renderer + model viewer (.plans/SAT_RENDERER_PHASE4.md) ──────────
-    // "VIEW" on a constellation row (or "View model" on the selection) opens a window showing that
+    // "VIEW" on a constellation row opens a window showing that
     // type's geometry model, rendered by SatMeshRenderer into an offscreen image the UI draws
     // (UIImage). The model sits at its constellation's altitude above the observer's ground point,
     // posed by its attitude law, lit by the sun (Studio: fixed 35 deg over its horizon; Live: the sim's
@@ -1686,11 +1686,10 @@ private:
     bool viewerDragging = false;
     uint32_t viewerImageId = 0;
     UIImage viewerImage;
-    bool hovViewerClose = false, hovViewerBtn[6] = {}, hovSelViewBtn = false;
+    bool hovViewerClose = false, hovViewerBtn[6] = {};
     std::vector<bool> hovViewConst;
     void openModelViewer(int typeIdx, const char *label, float altM);
     void buildModelViewerWindow(const UIInput &inp, UIRenderer &ui);
-    void buildViewButton(const UIInput &inp, UIRenderer &ui, int idx); // "View model" in the selection UI
     void recordModelViewer(VkCommandBuffer cmd);
 
     // ── Orbit pipeline buffers ────────────────────────────────────────────────

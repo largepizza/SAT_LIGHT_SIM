@@ -574,7 +574,10 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   - **Reflections:** the reflected ray goes into `earthEnv()`, the Potato sky's analytic atmosphere,
     textured ground and flat cloud deck, rewritten in ECEF from any origin and scaled by
     `kEnvToScene` into pre-exposure units. The sun disc is not in it; the GGX sun lobe is the glint.
-  - **The viewer:** "VIEW" on a constellation row, or "View model" beside "Trace pass", opens it.
+  - **The viewer:** "VIEW" on a constellation row opens it. (A selected satellite gets follow mode
+    instead, 4e.) **Never give a `UIImage` element its own `backgroundColor`:** Clay emits CUSTOM
+    before the element's own RECTANGLE, so the background covers the image. That was the first
+    cut's all-black viewer. Put the backing colour on a parent.
     `recordModelViewer()` (end of `recordCompute`) places the model at its constellation's altitude
     above the observer and renders it offscreen: MSAA 4x, resolved into a swapchain-format image.
     That image is shown through **`UIImage`**, a Clay custom element (`UIRenderer::registerImage` /

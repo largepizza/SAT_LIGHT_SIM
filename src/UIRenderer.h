@@ -105,7 +105,9 @@ struct UIPlot {
 // offscreen render — Phase 4's model viewer) stretched over the element's box. `imageId` comes from
 // UIRenderer::registerImage(). The image must be in SHADER_READ_ONLY_OPTIMAL whenever the UI pass
 // runs, and must hold display-ready values in the swapchain's own format family (the UI copies
-// texels straight through, as it does for icons).
+// texels straight through, as it does for icons). Do NOT give the UIImage element its own
+// backgroundColor: Clay emits CUSTOM before that element's RECTANGLE, which then covers the image —
+// put a backing colour on a parent instead.
 struct UIImage {
     static constexpr uint32_t kMagic = 0x494D4745u; // 'IMGE'
     uint32_t magic = kMagic;

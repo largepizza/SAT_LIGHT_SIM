@@ -1087,10 +1087,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
         {
             CLAY_TEXT(chipStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
             if (!isPlanet)
-            {
                 buildTraceButton(inp, ui, 0);
-                buildViewButton(inp, ui, 0);
-            }
         }
         captureLaidOut(ui, CLAY_ID("SelSatChip"), kMargin, kMargin, 360.0f, 34.0f);
         return;
@@ -1152,13 +1149,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                 CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = warn ? Pal::listenKey : Pal::textDim, .fontSize = fs(12)}));
             }
         if (!isPlanet)
-            CLAY(CLAY_ID("SelSatButtons"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
-                                                       .childGap = 6,
-                                                       .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-            {
-                buildTraceButton(inp, ui, 1);
-                buildViewButton(inp, ui, 1);
-            }
+            buildTraceButton(inp, ui, 1);
     }
     // Panel size isn't known until Clay lays it out this frame — this is a rough estimate for
     // capture purposes only, same approximation the corner HUD panels' capture rects already use.
@@ -1473,9 +1464,15 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                                              .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
                 text(viewerInfo, Pal::textDim, 11);
-                CLAY(imgId, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
-                             .backgroundColor = {0, 0, 0, 255},
-                             .custom = {.customData = meshRenderer.viewerRendered() ? &viewerImage : nullptr}}) {}
+                // The black backing is on a PARENT: Clay emits an element's CUSTOM command before the
+                // RECTANGLE for its own backgroundColor, so a background on the image element itself
+                // is drawn over the render (the first cut showed only the rectangle's AA edges).
+                CLAY(CLAY_ID("ViewerImageFrame"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
+                                                   .backgroundColor = {0, 0, 0, 255}})
+                {
+                    CLAY(imgId, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
+                                 .custom = {.customData = meshRenderer.viewerRendered() ? &viewerImage : nullptr}}) {}
+                }
                 CLAY(CLAY_ID("ViewerButtons"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                            .childGap = 6,
                                                            .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
@@ -1506,33 +1503,6 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                 text("Drag to orbit, scroll to zoom", Pal::textHint, 11);
             }
         });
-}
-
-// ─── buildViewButton ─────────────────────────────────────────────────────────
-// "View model" next to "Trace pass" for a selected satellite whose type has a geometry model.
-void SatelliteSim::buildViewButton(const UIInput &inp, UIRenderer &ui, int idx)
-{
-    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
-        return;
-    const SatOrbit &orb = satOrbits[selectedSatIndex];
-    if (!meshRenderer.typeMesh((int)orb.typeIdx))
-        return;
-    CLAY(CLAY_IDI("SelViewBtn", idx), {.layout = {
-                                           .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(22)},
-                                           .padding = {8, 8, 0, 0},
-                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                       .backgroundColor = hovSelViewBtn ? Pal::btnHover : Pal::btnIdle,
-                                       .cornerRadius = CLAY_CORNER_RADIUS(3)})
-    {
-        bool n = Clay_Hovered();
-        sndRollover(n, hovSelViewBtn);
-        sndClick(n, inp.lmbPressed);
-        hovSelViewBtn = n;
-        if (n && inp.lmbPressed)
-            openModelViewer((int)orb.typeIdx, satTypes[orb.typeIdx].name.c_str(), orb.altM);
-        ui.tooltip(inp, n, "Open this satellite's 3D model", fs(11));
-        CLAY_TEXT(CLAY_STRING("View model"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
-    }
 }
 
 // ─── buildTraceButton ────────────────────────────────────────────────────────

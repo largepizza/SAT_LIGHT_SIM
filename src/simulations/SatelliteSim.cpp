@@ -3022,7 +3022,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     const glm::mat4 view = glm::lookAt(glm::vec3(camPos), glm::vec3(centre), glm::vec3(up));
     const float near = (float)std::max(0.01, std::max((double)viewerDist - radius * 1.5, (double)viewerDist * 0.002));
     const float far = (float)((double)viewerDist + radius * 3.0 + 1.0);
-    glm::mat4 proj = glm::perspective((float)fovY, viewerAspect, near, far);
+    glm::mat4 proj = glm::perspectiveRH_ZO((float)fovY, viewerAspect, near, far); // Vulkan 0..1 depth
     proj[1][1] *= -1.0f; // Vulkan clip space: Y down
     frame.viewProj = proj * view;
     frame.invViewProj = glm::inverse(frame.viewProj);
