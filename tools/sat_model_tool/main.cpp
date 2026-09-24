@@ -431,8 +431,10 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
         {
             const GroupPose &P = poses[tris[i].group];
             posed[i] = tris[i];
+            const glm::dvec3 dp = satPivotOffset(m.groups, poses, tris[i].group,
+                                                 glm::dvec3(m.components[tris[i].component].pivot));
             for (int k = 0; k < 3; ++k)
-                posed[i].p[k] = P.R * tris[i].p[k] + P.t;
+                posed[i].p[k] = P.R * tris[i].p[k] + P.t + dp;
             posed[i].n = P.R * tris[i].n;
         }
         const glm::dvec3 o = glm::normalize(in.obsEci - so.posEci);
@@ -642,7 +644,15 @@ bool selfTestOcclusionGpuForm(const SatModel &m, const std::vector<SatTri> &tris
                 for (uint32_t si = L.sampleFirst; si < L.sampleFirst + L.sampleCount; ++si)
                 {
                     const GpuSatLobeSample &S = pack.samples[si];
-                    glm::vec3 pw = FP * S.pT + t[L.group];
+                    // The shader's pivot offset: (F_parent − F_group)·pivotT, pivot read from the
+                    // occluder of the sample's own component.
+                    auto pivOff = [&](int g, uint32_t comp) {
+                        if (comp >= pack.occluders.size() || m.groups[g].parent < 0)
+                            return glm::vec3(0.0f);
+                        const GpuSatOccluder &Oc = pack.occluders[comp];
+                        return (F[m.groups[g].parent] - F[g]) * glm::vec3(Oc.pivotXT, Oc.pivotYT, Oc.pivotZT);
+                    };
+                    glm::vec3 pw = FP * S.pT + t[L.group] + pivOff((int)L.group, S.comp);
                     uint32_t mask = L.occluderMask & (S.comp < 32u ? ~(1u << S.comp) : 0xFFFFFFFFu);
                     bool bObs = false, bSun = false;
                     while (mask != 0u)
@@ -654,7 +664,7 @@ bool selfTestOcclusionGpuForm(const SatModel &m, const std::vector<SatTri> &tris
                         const GpuSatOccluder &O = pack.occluders[oi];
                         glm::mat3 At = glm::transpose(glm::mat3(O.axisXT, O.axisYT, O.axisZT));
                         glm::mat3 toLocal = At * glm::transpose(F[O.group]);
-                        glm::vec3 org = toLocal * (pw - t[O.group]) - At * O.centerT;
+                        glm::vec3 org = toLocal * (pw - t[O.group] - pivOff((int)O.group, (uint32_t)oi)) - At * O.centerT;
                         if (gpuRayHitsOccluder(O.kind, O.half, org, toLocal * glm::vec3(obs)))
                         {
                             bObs = true;

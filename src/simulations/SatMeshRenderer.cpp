@@ -95,6 +95,7 @@ void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth)
                    materialMem);
     makeHostBuffer(ctx, sizeof(GpuSatMeshOccluder), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr, occluderBuf,
                    occluderMem);
+    makeHostBuffer(ctx, sizeof(glm::vec4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr, componentBuf, componentMem);
 
     VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sci.magFilter = VK_FILTER_LINEAR;
@@ -154,6 +155,8 @@ void SatMeshRenderer::cleanup(VkDevice d)
     destroy(d, materialMem, vkFreeMemory);
     destroy(d, occluderBuf, vkDestroyBuffer);
     destroy(d, occluderMem, vkFreeMemory);
+    destroy(d, componentBuf, vkDestroyBuffer);
+    destroy(d, componentMem, vkFreeMemory);
     frameMapped = instanceMapped = nullptr;
 }
 
@@ -170,7 +173,7 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
 {
     const VkShaderStageFlags vf = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     const VkShaderStageFlags f = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutBinding b[7] = {
+    VkDescriptorSetLayoutBinding b[8] = {
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, vf, nullptr},
         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, vf, nullptr},
         {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, f, nullptr},
@@ -178,9 +181,10 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
         {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, f, nullptr},
         {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, f, nullptr},
         {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, f, nullptr},
+        {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, vf, nullptr}, // per-component pivots (Phase 4f)
     };
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 7;
+    li.bindingCount = 8;
     li.pBindings = b;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
@@ -189,7 +193,7 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
     // Three sets of the same layout — viewer, photometric check, scene — each with its own frame UBO
     // (all can be recorded in one frame, and a shared host-written UBO would hold only the last write).
     VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3},
-                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9},
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 12},
                                   {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 3;
@@ -235,14 +239,17 @@ void SatMeshRenderer::writeGeometryDescriptors()
 {
     VkDescriptorBufferInfo matInfo{materialBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo occInfo{occluderBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo compInfo{componentBuf, 0, VK_WHOLE_SIZE};
     for (VkDescriptorSet set : {descSet, descSetCheck, descSetScene})
     {
-        VkWriteDescriptorSet w[2] = {};
+        VkWriteDescriptorSet w[3] = {};
         w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 nullptr, &matInfo, nullptr};
         w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 nullptr, &occInfo, nullptr};
-        vkUpdateDescriptorSets(device_, 2, w, 0, nullptr);
+        w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 7, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                nullptr, &compInfo, nullptr};
+        vkUpdateDescriptorSets(device_, 3, w, 0, nullptr);
     }
 }
 
@@ -255,8 +262,11 @@ void SatMeshRenderer::setTypeModels(VulkanContext &ctx, const std::vector<TypeMo
     destroy(ctx.device, materialMem, vkFreeMemory);
     destroy(ctx.device, occluderBuf, vkDestroyBuffer);
     destroy(ctx.device, occluderMem, vkFreeMemory);
+    destroy(ctx.device, componentBuf, vkDestroyBuffer);
+    destroy(ctx.device, componentMem, vkFreeMemory);
 
     std::vector<SatMeshVertex> verts;
+    std::vector<glm::vec4> comps;
     std::vector<uint32_t> idx;
     std::vector<GpuSatMeshMaterial> mats;
     std::vector<GpuSatMeshOccluder> occs;
@@ -280,6 +290,9 @@ void SatMeshRenderer::setTypeModels(VulkanContext &ctx, const std::vector<TypeMo
         idx.insert(idx.end(), mesh.indices.begin(), mesh.indices.end());
         for (const SatMaterial &m : tm.model->materials)
             mats.push_back(packSatMeshMaterial(m));
+        out.firstComponent = (uint32_t)comps.size();
+        for (const SatComponent &c : tm.model->components)
+            comps.push_back(glm::vec4(c.pivot, (float)tm.model->groups[c.group].parent));
         out.firstOccluder = (uint32_t)occs.size();
         if (tm.occlusion)
         {
@@ -298,6 +311,8 @@ void SatMeshRenderer::setTypeModels(VulkanContext &ctx, const std::vector<TypeMo
                    mats.empty() ? nullptr : mats.data(), materialBuf, materialMem);
     makeHostBuffer(ctx, occs.size() * sizeof(GpuSatMeshOccluder), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                    occs.empty() ? nullptr : occs.data(), occluderBuf, occluderMem);
+    makeHostBuffer(ctx, comps.size() * sizeof(glm::vec4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                   comps.empty() ? nullptr : comps.data(), componentBuf, componentMem);
     writeGeometryDescriptors();
 }
 

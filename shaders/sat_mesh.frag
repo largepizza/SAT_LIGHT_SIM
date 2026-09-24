@@ -123,7 +123,8 @@ bool rayBlocked(MeshInstance inst, vec3 p, vec3 dir)
         if (i == vComponent) continue;
         MeshOccluder O = occluders[inst.firstOccluder + i];
         mat3 R = instGroupRot(inst, O.group);
-        vec3 pr = transpose(R) * (p - inst.origin.xyz - inst.trans[O.group].xyz) - O.center;
+        vec3 pr = transpose(R) * (p - inst.origin.xyz - inst.trans[O.group].xyz -
+                                  instPivotOffset(inst, O.group, i)) - O.center; // occluder i = component i
         vec3 dr = transpose(R) * dir;
         vec3 org = vec3(dot(pr, O.axisX.xyz), dot(pr, O.axisY.xyz), dot(pr, O.axisZ.xyz));
         vec3 dl  = vec3(dot(dr, O.axisX.xyz), dot(dr, O.axisY.xyz), dot(dr, O.axisZ.xyz));

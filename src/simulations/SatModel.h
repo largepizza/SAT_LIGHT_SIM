@@ -170,6 +170,12 @@ struct GroupPose
 };
 std::vector<GroupPose> evalGroupPoses(const std::vector<AttitudeGroup> &groups, const AttGeometry &geo,
                                       bool jointsAtZero);
+// Extra translation of a component of `group` whose joint turns it about its own pivot (rest offset
+// from the group hinge — SatComponent::pivot): (R_parent − R_group)·pivot. Zero for a root group, a
+// zero pivot, or joints at rest. Every consumer that poses a POSITION adds it (occlusion samples and
+// occluders, the reference ray-casts, OBJ export, the mesh renderer; sat_orbit.comp mirrors it).
+glm::dvec3 satPivotOffset(const std::vector<AttitudeGroup> &groups, const std::vector<GroupPose> &poses, int group,
+                          const glm::dvec3 &pivot);
 
 // ── Geometry + materials ──────────────────────────────────────────────────────────────────────
 struct SatMaterial
@@ -233,6 +239,12 @@ struct SatComponent
     int material = 0;           // index into SatModel::materials
     int backMaterial = -1;      // plane back face; -1 = same as `material`
     int group = 0;              // index into SatModel::groups
+    // Per-component joint pivot (JSON "pivot", same frame as `position`: relative to the group's
+    // hinge). The group's joint then turns this component about the joint axis through hinge+pivot
+    // instead of through the hinge: one joint, several parallel axes — the ISS's four beta gimbals
+    // in one group, all at the same angle. Normals (every lobe, every magnitude) are unaffected; a
+    // posed POSITION gains satPivotOffset(). Child groups only, and only groups with no children.
+    glm::vec3 pivot{0.0f};
 };
 
 // Provenance of one part of a model (benchmarking M4): every group, component and model-local
@@ -353,6 +365,7 @@ struct SatOccluder
 {
     PrimitiveKind kind = PrimitiveKind::Plane;
     int group = 0;
+    glm::dvec3 pivot{0.0}; // the component's joint pivot (SatComponent::pivot)
     glm::dvec3 center{0.0};  // rest pose, root body frame
     glm::dmat3 axes{1.0};    // columns: the component's local X, Y, Z in the rest frame
     glm::dvec3 half{0.0};    // plane (w/2, h/2, 0); box half extents; cylinder/cone (r, r, h/2); sphere (r, r, r)
@@ -371,6 +384,8 @@ struct SatLobeSamples
 struct SatOcclusion
 {
     std::vector<SatOccluder> occluders;
+    std::vector<AttitudeGroup> groups;    // the model's groups (parents, for satPivotOffset)
+    std::vector<glm::dvec3> compPivot;    // SatComponent::pivot per component (sample points)
     std::vector<SatLobeSamples> lobes; // parallel to the baked lobes
     int droppedOccluders = 0;          // components beyond kMaxOccluders (reported, not modelled)
 };
@@ -403,11 +418,11 @@ struct GpuSatOccluder
     glm::vec3 half; // as SatOccluder::half
     uint32_t group;
     glm::vec3 axisXT; // the component's local axes
-    float pad0;
-    glm::vec3 axisYT;
-    float pad1;
+    float pivotXT;    // the component's joint pivot (SatComponent::pivot), root triad coordinates —
+    glm::vec3 axisYT; // spread over the three pad slots; 0 = turns about the group hinge
+    float pivotYT;
     glm::vec3 axisZT;
-    float pad2;
+    float pivotZT;
 };
 static_assert(sizeof(GpuSatOccluder) == 80, "GpuSatOccluder layout mismatch");
 

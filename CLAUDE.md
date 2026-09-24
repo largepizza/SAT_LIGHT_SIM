@@ -407,6 +407,14 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
 - **Kinematic tree.** Groups are a tree: a ROOT has the two-vector law; a CHILD has
   `"parent"` + `"hinge": {position, axis}` (in the parent's body frame) and is always the parent's
   frame rotated about the hinge by its joint. Parents precede children; `kMaxAttitudeGroups` = 4.
+  **Per-component pivots (Phase 4f):** a component of a CHILD group may set `"pivot"` (relative
+  to the group hinge, like `position`); the joint then turns it about the parallel axis through
+  hinge + pivot. That is one joint at one angle on several axes, like the ISS's four beta gimbals
+  in a single group. Normals, and so every lobe and magnitude, are unchanged. A posed *position*
+  gains `satPivotOffset()` = (R_parent − R_group)·pivot, and every position consumer adds it:
+  occlusion samples/occluders on the CPU and in `sat_orbit.comp` (`pivotOffset`; the pivot rides in
+  `GpuSatOccluder`'s pad slots), the reference ray-casts, OBJ export, and the mesh renderer
+  (`MeshComponents` binding 7, `instPivotOffset`). Only for groups with no child groups.
   All vectors in a tree use the ROOT's triad coordinates; on the GPU `typeFrames()` builds up to 4
   world frames parents-first into fixed registers (`pickFrame` selects — no dynamically indexed
   local array). `evalGroupPoses()` is the CPU mirror (hand-kept in step with `groupFrame()`).

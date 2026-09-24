@@ -3055,6 +3055,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     inst.firstMaterial = tm->firstMaterial;
     inst.firstOccluder = tm->firstOccluder;
     inst.occluderCount = tm->occluderCount;
+    inst.firstComponent = tm->firstComponent;
 
     // ── Camera: orbit the posed bounding sphere's centre (root group's pose) ─
     const GroupPose root = poses.empty() ? GroupPose{} : poses[0];
@@ -3283,6 +3284,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
         inst.firstMaterial = tm->firstMaterial;
         inst.firstOccluder = tm->firstOccluder;
         inst.occluderCount = tm->occluderCount;
+    inst.firstComponent = tm->firstComponent;
         // Bloom scale: the sprite's seed S = b·(disc integral)·s² (flare_source.vert/.frag: b the log
         // response of effectFlare, s its point size in the 1/4-res flare target, a Gaussian of σ 0.28
         // of the disc → 0.3926·s²) per unit of rendered flux, Σ L·Ω·r²/π = I (per unit irradiance).

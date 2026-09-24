@@ -28,6 +28,8 @@ struct MeshInstance {
     uint firstOccluder;
     uint occluderCount;
     float bloomScale;   // scene: bloom seed per unit of rendered luminance (mesh_bloom.frag)
+    uint firstComponent; // into components[] (per-component joint pivots)
+    uint cpad0, cpad1, cpad2;
 };
 layout(set = 0, binding = 1, std430) readonly buffer MeshInstances { MeshInstance instances[]; };
 
@@ -53,6 +55,10 @@ struct MeshOccluder {
 };
 layout(set = 0, binding = 3, std430) readonly buffer MeshOccluders { MeshOccluder occluders[]; };
 
+// Per component: xyz = joint pivot (rest frame, relative to its group's hinge; 0 = the hinge),
+// w = its group's parent (−1: root — never pivoted). SatComponent::pivot, satPivotOffset().
+layout(set = 0, binding = 7, std430) readonly buffer MeshComponents { vec4 components[]; };
+
 layout(set = 0, binding = 4) uniform sampler2D earthDayTex;
 layout(set = 0, binding = 5) uniform sampler2D earthNightTex;
 layout(set = 0, binding = 6) uniform sampler2D earthCloudsTex;
@@ -60,6 +66,15 @@ layout(set = 0, binding = 6) uniform sampler2D earthCloudsTex;
 mat3 instGroupRot(MeshInstance inst, uint g)
 {
     return mat3(inst.rot[g * 3u].xyz, inst.rot[g * 3u + 1u].xyz, inst.rot[g * 3u + 2u].xyz);
+}
+
+// A component turned about its own pivot by its group's joint: its posed position gains
+// (R_parent − R_group)·pivot (satPivotOffset, SatModel.cpp).
+vec3 instPivotOffset(MeshInstance inst, uint g, uint comp)
+{
+    vec4 c = components[inst.firstComponent + comp];
+    if (c.w < 0.0 || c.xyz == vec3(0.0)) return vec3(0.0);
+    return (instGroupRot(inst, uint(c.w)) - instGroupRot(inst, g)) * c.xyz;
 }
 
 #endif // SATLIGHTSIM_SAT_MESH_COMMON_GLSL

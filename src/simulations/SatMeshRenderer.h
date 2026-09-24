@@ -45,8 +45,10 @@ struct GpuMeshInstance
     uint32_t firstOccluder;
     uint32_t occluderCount;
     float bloomScale; // scene: bloom seed per unit of rendered luminance (energy-matched to the sprite)
+    uint32_t firstComponent; // Phase 4f: into the per-component pivot buffer (binding 7)
+    uint32_t cpad0, cpad1, cpad2;
 };
-static_assert(sizeof(GpuMeshInstance) == 336, "GpuMeshInstance layout (sat_mesh_common.glsl)");
+static_assert(sizeof(GpuMeshInstance) == 352, "GpuMeshInstance layout (sat_mesh_common.glsl)");
 
 class SatMeshRenderer
 {
@@ -67,7 +69,7 @@ public:
         bool valid = false;
         uint32_t firstIndex = 0, indexCount = 0;
         int32_t vertexOffset = 0;
-        uint32_t firstMaterial = 0, firstOccluder = 0, occluderCount = 0;
+        uint32_t firstMaterial = 0, firstOccluder = 0, occluderCount = 0, firstComponent = 0;
         glm::vec3 boundsCenter{0.0f}; // rest pose
         float boundsRadius = 0.0f;
         int triangles = 0;
@@ -130,6 +132,9 @@ private:
     VkDeviceMemory vertexMem = VK_NULL_HANDLE, indexMem = VK_NULL_HANDLE;
     VkBuffer materialBuf = VK_NULL_HANDLE, occluderBuf = VK_NULL_HANDLE;
     VkDeviceMemory materialMem = VK_NULL_HANDLE, occluderMem = VK_NULL_HANDLE;
+    // Per component: xyz = joint pivot (rest frame, from its group hinge), w = parent group (−1 none).
+    VkBuffer componentBuf = VK_NULL_HANDLE;
+    VkDeviceMemory componentMem = VK_NULL_HANDLE;
     std::vector<TypeMesh> typeMeshes;
 
     // Per-frame data (host-coherent, mapped).

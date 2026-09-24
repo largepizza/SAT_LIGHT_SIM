@@ -192,11 +192,11 @@ struct SatOccluder {
     vec3  halfExt;            // plane (w/2, h/2, 0); box half extents; cylinder/cone (r, r, h/2); sphere r
     uint  group;
     vec3  axisXT;             // the component's local axes
-    float occPadA;
-    vec3  axisYT;
-    float occPadB;
+    float pivotXT;            // the component's joint pivot (root triad coords; 0 = the group hinge) —
+    vec3  axisYT;             //   Phase 4f per-component pivots (SatComponent::pivot)
+    float pivotYT;
     vec3  axisZT;
-    float occPadC;
+    float pivotZT;
 };
 layout(set = 0, binding = 9) readonly buffer SatOccluderBuf {
     SatOccluder occluders[];
@@ -851,6 +851,15 @@ void typeOffsets(uint ti, mat3 F0, mat3 F1, mat3 F2, mat3 F3,
 // x: share of lobe L that sees both the sun and the observer; y: share that sees the observer
 // (earthshine tests the observer ray only, as the CPU evaluator does). A sample whose observer ray
 // is blocked counts for neither, so its occluder loop stops there.
+// A component turning about its own pivot (one joint on several parallel axes — the ISS's beta
+// gimbals): its pose is its group's plus (F_parent − F_group)·pivotT. Mirror of satPivotOffset().
+vec3 pivotOffset(uint ti, uint g, vec3 pivotT, mat3 F0, mat3 F1, mat3 F2, mat3 F3)
+{
+    uint p = types[ti].groups[g].parent;
+    if (p == ATT_NO_PARENT || pivotT == vec3(0.0)) return vec3(0.0);
+    return (pickFrame(p, F0, F1, F2, F3) - pickFrame(g, F0, F1, F2, F3)) * pivotT;
+}
+
 vec2 lobeVisibility(uint ti, SatLobe L, mat3 F0, mat3 F1, mat3 F2, mat3 F3,
                     vec3 t0, vec3 t1, vec3 t2, vec3 t3, vec3 sunDir, vec3 obsDir, bool testSun)
 {
@@ -861,6 +870,10 @@ vec2 lobeVisibility(uint ti, SatLobe L, mat3 F0, mat3 F1, mat3 F2, mat3 F3,
     for (uint si = L.sampleFirst; si < L.sampleFirst + L.sampleCount; ++si) {
         SatLobeSample S = lobeSamples[si];
         vec3 pw = FP * S.pT + tP;
+        if (S.comp < types[ti].occluderCount) {
+            SatOccluder Oc = occluders[firstOcc + S.comp];
+            pw += pivotOffset(ti, L.group, vec3(Oc.pivotXT, Oc.pivotYT, Oc.pivotZT), F0, F1, F2, F3);
+        }
         uint m = L.occluderMask & ((S.comp < 32u) ? ~(1u << S.comp) : 0xFFFFFFFFu);
         bool bObs = false, bSun = false;
         while (m != 0u) {
@@ -870,8 +883,9 @@ vec2 lobeVisibility(uint ti, SatLobe L, mat3 F0, mat3 F1, mat3 F2, mat3 F3,
             mat3 FQ = pickFrame(O.group, F0, F1, F2, F3);
             // World → the occluder's group (triad coords) → the occluder's local frame.
             mat3 toLocal = transpose(mat3(O.axisXT, O.axisYT, O.axisZT)) * transpose(FQ);
-            vec3 org = toLocal * (pw - pickOffset(O.group, t0, t1, t2, t3)) -
-                       transpose(mat3(O.axisXT, O.axisYT, O.axisZT)) * O.centerT;
+            vec3 tQ  = pickOffset(O.group, t0, t1, t2, t3) +
+                       pivotOffset(ti, O.group, vec3(O.pivotXT, O.pivotYT, O.pivotZT), F0, F1, F2, F3);
+            vec3 org = toLocal * (pw - tQ) - transpose(mat3(O.axisXT, O.axisYT, O.axisZT)) * O.centerT;
             if (rayHitsOccluder(O.kind, O.halfExt, org, toLocal * obsDir)) { bObs = true; break; }
             if (testSun && !bSun && rayHitsOccluder(O.kind, O.halfExt, org, toLocal * sunDir)) bSun = true;
         }

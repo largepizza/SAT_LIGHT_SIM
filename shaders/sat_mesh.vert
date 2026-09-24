@@ -23,7 +23,8 @@ void main()
     MeshInstance inst = instances[gl_InstanceIndex];
     uint g = inPacked & 0xFFu;
     mat3 R = instGroupRot(inst, g);
-    vWorld  = inst.origin.xyz + R * inPos + inst.trans[g].xyz;
+    uint comp = (inPacked >> 20) & 0xFFFu;
+    vWorld  = inst.origin.xyz + R * inPos + inst.trans[g].xyz + instPivotOffset(inst, g, comp);
     vNormal = R * inNormal;
     vUv     = inUv;
     vMaterial  = inst.firstMaterial + ((inPacked >> 8) & 0xFFFu);

@@ -358,6 +358,17 @@ std::vector<GroupPose> evalGroupPoses(const std::vector<AttitudeGroup> &groups, 
     return poses;
 }
 
+glm::dvec3 satPivotOffset(const std::vector<AttitudeGroup> &groups, const std::vector<GroupPose> &poses, int group,
+                          const glm::dvec3 &pivot)
+{
+    if (group < 0 || group >= (int)groups.size() || groups[group].parent < 0 ||
+        (pivot.x == 0.0 && pivot.y == 0.0 && pivot.z == 0.0))
+        return glm::dvec3(0.0);
+    // The group's pose turns about its hinge; turning about hinge + pivot instead differs by
+    // (I − Rj)·R_parent·pivot = (R_parent − R_group)·pivot (see evalGroupPoses' child branch).
+    return (poses[groups[group].parent].R - poses[group].R) * pivot;
+}
+
 // ── Materials ─────────────────────────────────────────────────────────────────────────────────
 const std::vector<SatMaterial> &satMaterialPresetsBase();
 
@@ -599,6 +610,7 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
                 throw std::runtime_error("component '" + c.name + "': unknown type '" + type + "'");
 
             c.position = jsonVec3(jc, "position", c.position);
+            c.pivot = jsonVec3(jc, "pivot", c.pivot);
             if (jc.contains("rotation_quat"))
             {
                 const auto &q = jc["rotation_quat"];
@@ -627,6 +639,23 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
     {
         err = "model has no components";
         return false;
+    }
+    for (const SatComponent &c : out.components)
+    {
+        if (c.pivot == glm::vec3(0.0f))
+            continue;
+        if (out.groups[c.group].parent < 0)
+        {
+            err = "component '" + c.name + "': a pivot needs a child group (a root has no joint to turn it)";
+            return false;
+        }
+        for (const AttitudeGroup &g : out.groups)
+            if (g.parent == c.group)
+            {
+                err = "component '" + c.name + "': group '" + out.groups[c.group].name +
+                      "' has child groups, so its components can't have their own pivots";
+                return false;
+            }
     }
     return true;
 }
@@ -1186,6 +1215,9 @@ SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tri
 {
     samplesPerLobe = std::clamp(samplesPerLobe, 1, kMaxLobeSamples);
     SatOcclusion occ;
+    occ.groups = m.groups;
+    for (const SatComponent &c : m.components)
+        occ.compPivot.push_back(glm::dvec3(c.pivot));
     // Occluders: one per component, in the rest frame (same transform the tessellator uses).
     std::vector<glm::dvec3> origin(m.groups.size(), glm::dvec3(0.0));
     for (size_t gi = 0; gi < m.groups.size(); ++gi)
@@ -1201,6 +1233,7 @@ SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tri
         SatOccluder o;
         o.kind = c.prim;
         o.group = c.group;
+        o.pivot = glm::dvec3(c.pivot);
         o.center = origin[c.group] + glm::dvec3(c.position);
         o.axes = glm::dmat3(glm::mat3_cast(c.rotation));
         switch (c.prim)
@@ -1352,7 +1385,11 @@ double satLobeVisibility(const SatOcclusion &occ, int li, int lobeGroup, const s
     {
         // World position of the sample, nudged off its own surface.
         const glm::dvec3 nw = P.R * S.n[s];
-        const glm::dvec3 pw = P.R * S.p[s] + P.t + 1e-4 * nw;
+        const int sc = S.comp[s];
+        const glm::dvec3 pw = P.R * S.p[s] + P.t + 1e-4 * nw +
+                              (sc >= 0 && sc < (int)occ.compPivot.size()
+                                   ? satPivotOffset(occ.groups, poses, lobeGroup, occ.compPivot[sc])
+                                   : glm::dvec3(0.0));
         bool blocked = false;
         for (size_t oi = 0; oi < occ.occluders.size() && !blocked; ++oi)
         {
@@ -1360,9 +1397,10 @@ double satLobeVisibility(const SatOcclusion &occ, int li, int lobeGroup, const s
                 continue;
             const SatOccluder &o = occ.occluders[oi];
             const GroupPose &Q = poses[o.group];
+            const glm::dvec3 Qt = Q.t + satPivotOffset(occ.groups, poses, o.group, o.pivot);
             // World → occluder group rest frame → occluder local frame.
             const glm::dmat3 toLocal = glm::transpose(o.axes) * glm::transpose(Q.R);
-            const glm::dvec3 org = glm::transpose(o.axes) * (glm::transpose(Q.R) * (pw - Q.t) - o.center);
+            const glm::dvec3 org = glm::transpose(o.axes) * (glm::transpose(Q.R) * (pw - Qt) - o.center);
             if (rayHitsOccluder(o, org, toLocal * obs) || (testSource && rayHitsOccluder(o, org, toLocal * src)))
                 blocked = true;
         }
@@ -1397,6 +1435,10 @@ GpuSatOcclusionPack packSatOcclusionGpu(const std::vector<AttitudeGroup> &groups
         g.axisXT = toTriad(o.group, o.axes[0]);
         g.axisYT = toTriad(o.group, o.axes[1]);
         g.axisZT = toTriad(o.group, o.axes[2]);
+        const glm::vec3 pv = toTriad(o.group, o.pivot); // a vector: toTriad is linear
+        g.pivotXT = pv.x;
+        g.pivotYT = pv.y;
+        g.pivotZT = pv.z;
         pack.occluders.push_back(g);
     }
     for (size_t li = 0; li < lobes.size(); ++li)
@@ -1541,8 +1583,10 @@ SatShadowStudy studySatShadowing(const SatModel &m, const std::vector<SatTri> &t
         {
             const GroupPose &P = gp[tris[i].group];
             posed[i] = tris[i];
+            const glm::dvec3 dp = satPivotOffset(m.groups, gp, tris[i].group,
+                                                 glm::dvec3(m.components[tris[i].component].pivot));
             for (int k = 0; k < 3; ++k)
-                posed[i].p[k] = P.R * tris[i].p[k] + P.t;
+                posed[i].p[k] = P.R * tris[i].p[k] + P.t + dp;
             posed[i].n = P.R * tris[i].n;
         }
 
@@ -1685,9 +1729,10 @@ bool writeSatModelObj(const SatModel &m, const std::vector<SatTri> &tris, const 
                 lastMaterial = t.material;
             }
             const GroupPose &P = gp[t.group];
+            const glm::dvec3 dp = satPivotOffset(m.groups, gp, t.group, glm::dvec3(m.components[t.component].pivot));
             for (int k = 0; k < 3; ++k)
             {
-                glm::dvec3 w = out(P.R * t.p[k] + P.t);
+                glm::dvec3 w = out(P.R * t.p[k] + P.t + dp);
                 obj << "v " << w.x << " " << w.y << " " << w.z << "\n";
             }
             glm::dvec3 nw = out(P.R * t.n);
