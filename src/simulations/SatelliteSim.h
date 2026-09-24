@@ -1595,6 +1595,16 @@ private:
     char traceStatus[200] = {};     // export result, or why there is no trace
     char traceSummary[112] = {};    // peak brightness, pass length
     char traceNowLine[128] = {};    // current magnitude, rebuilt every frame the window is open
+    char traceExportStatus[160] = {}; // last export result (kept across live retraces)
+    // Live mode: retrace at up to kTraceLiveHz while the window is open, whenever the result would
+    // differ — the observer moved, the selection changed, the pass ended, or a photometry input
+    // (extinction, flare tilt, occlusion) changed. traceRetraceMs shows what one retrace costs.
+    static constexpr double kTraceLiveHz = 10.0;
+    bool traceLive = true;
+    bool hovTraceLive = false;
+    std::chrono::steady_clock::time_point traceLastRetrace{};
+    double traceRetraceMs = 0.0;
+    bool traceStale() const; // would a retrace now give a different trace?
     void computeSelectedTrace();
     void exportTrace();
     // Why a type's magnitude can't be measured by the CPU evaluator (legacy type, ground-site aim),

@@ -489,7 +489,11 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   phase angle on a second axis, whole-magnitude / phase / sim-clock tick labels (floating Clay text
   placed from the plot's last laid-out size), a moving "now" marker, and a per-frame "Now: mag …"
   readout evaluated with the trace's own inputs (so it sits on the curve; the window says when the
-  observer has moved since). When a satellite can't be traced (legacy type, ground-site aim, no pass
+  observer has moved since). **Live** (default on) retraces at up to `kTraceLiveHz` = 10 while the
+  window is open, only when `traceStale()` says the result would change (observer moved, selection
+  changed, pass over, extinction/tilt/occlusion changed); the window shows one retrace's cost. Tick
+  labels are thinned to what fits the plot's pixel size (grid lines stay at every whole magnitude).
+  When a satellite can't be traced (legacy type, ground-site aim, no pass
   within two orbits) the window says why instead of plotting. The plot is `UIPlot`, a Clay custom
   element that `UIRenderer::pushPlot()` draws as thickness-wide axis-aligned quads (no line
   pipeline). "Export CSV" writes `<user data>/traces/trace_<model>_<sat>_<sim time>.csv`, format
@@ -524,7 +528,7 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`
   (Mallama 2021 period: array fixed 24 deg from vertical away from the Sun, radio-transparent
   visor sheet under the antennas) — both sourced from Cole 2021 (arXiv:2107.06026) and
-  McDowell's size table; roster `data/custom/constellations_models_example.json`. The visor's
+  McDowell's size table; roster: the primary `data/constellations.json` (the working set). The visor's
   real shape is unpublished (derived from Cole's 23 deg full-shade constraint), and the visor only
   dims anything through occlusion — so the VisorSat differential needs Phase 3b.
 - **Occlusion between parts (Phase 3b / benchmarking M7).**
@@ -594,6 +598,12 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
 `crossSection = sqrt(crossSectionM2 / 10.0)` — so 10 m² → 1.0, 2376 m² → ~15.4.
 
 ### Satellite type data source
+**On the lighting-overhaul branch (2026-09-23) `data/constellations.json` is the geometry-model
+working set** (V2 Mini, Hubble, V1.0 and VisorSat shells + a disabled legacy Gen2 comparison); the
+v1.1 shipped roster is preserved as `data/custom/constellations_v1_1_default.json` until it is ported
+to the model schema. The build copies `data/constellations.json` over the exe-dir copy whenever the
+exe relinks — which is why hand-pasted rosters there kept "reverting": edit the file in `data/`.
+
 Types and constellations are loaded from `constellations.json` next to the exe. If the file is missing or malformed, `loadHardcoded()` provides the catalogue above as a fallback. The JSON schema is in `constellations.schema.json`.
 
 ### Adding a new satellite type

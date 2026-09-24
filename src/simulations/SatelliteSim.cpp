@@ -3157,8 +3157,39 @@ const char *SatelliteSim::photometryUnsupportedReason(const SatelliteType &type)
     return nullptr;
 }
 
+bool SatelliteSim::traceStale() const
+{
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+        return false; // nothing to retrace; keep the last trace on screen
+    if (!traceValid || selectedSatIndex != traceSetup.satelliteIndex)
+        return true;
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    if (tNow > traceT1 || tNow < traceT0)
+        return true; // the pass is over (or time ran backwards past it)
+    const float obsRadius = kEarthRadius + obsTerrainH + obsHeightOffset;
+    const SatelliteType &type = satTypes[satOrbits[selectedSatIndex].typeIdx];
+    return glm::length(glm::dvec3(obsDir) - traceSetup.obsDirEcef) > 1e-7 ||
+           std::abs((double)obsRadius - traceSetup.obsRadiusM) > 1.0 ||
+           (double)extinctionCoeff != traceSetup.extinctionK ||
+           (double)glm::radians(flareMitigationTiltDeg) != traceSetup.flareTiltRad ||
+           (satOcclusionActive() && !type.occlusion.occluders.empty()) != traceSetup.occlusion;
+}
+
 void SatelliteSim::computeSelectedTrace()
 {
+    const auto clockStart = std::chrono::steady_clock::now();
+    struct RetraceTimer // records the cost of this call however it returns
+    {
+        SatelliteSim *self;
+        std::chrono::steady_clock::time_point start;
+        ~RetraceTimer()
+        {
+            self->traceLastRetrace = std::chrono::steady_clock::now();
+            self->traceRetraceMs = std::chrono::duration<double, std::milli>(self->traceLastRetrace - start).count();
+        }
+    } retraceTimer{this, clockStart};
+    if (selectedSatIndex != traceSetup.satelliteIndex)
+        traceExportStatus[0] = '\0'; // a different satellite: the last export message no longer applies
     traceValid = false;
     traceRows.clear();
     traceStatus[0] = traceSummary[0] = traceNowLine[0] = '\0';
@@ -3307,12 +3338,12 @@ void SatelliteSim::exportTrace()
     std::string err;
     if (writeSatTraceCsv(path, traceSetup, traceRows, err))
     {
-        snprintf(traceStatus, sizeof(traceStatus), "Wrote %s", path.c_str());
+        snprintf(traceExportStatus, sizeof(traceExportStatus), "Wrote traces/%s", name.c_str());
         Log::line("trace exported: " + path);
     }
     else
     {
-        snprintf(traceStatus, sizeof(traceStatus), "Export failed: %s", err.c_str());
+        snprintf(traceExportStatus, sizeof(traceExportStatus), "Export failed: %s", err.c_str());
         Log::line("trace export failed: " + err);
     }
 }
@@ -3423,7 +3454,15 @@ void SatelliteSim::startBulkExport()
                             "elevation limit and fully sunlit; `pass` numbers consecutive runs of such instants."}};
     std::string safe;
     for (char c : sourceName)
-        safe += std::isalnum((unsigned char)c) ? c : '_';
+    {
+        const char o = std::isalnum((unsigned char)c) ? c : '_';
+        if (o != '_' || (!safe.empty() && safe.back() != '_'))
+            safe += o;
+    }
+    while (!safe.empty() && safe.back() == '_')
+        safe.pop_back();
+    if (safe.size() > 40)
+        safe.resize(40);
     const std::filesystem::path dir = std::filesystem::path(userDataDir_) / "exports";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
@@ -3450,9 +3489,9 @@ void SatelliteSim::startBulkExport()
             int passes = 0;
             for (const BenchSample &x : samples)
                 passes = std::max(passes, x.pass + 1);
-            msg = "Wrote " + std::to_string(samples.size()) + " samples (" + std::to_string(passes) + " passes) to " +
-                  job->path;
-            Log::line("bulk export: " + msg);
+            msg = "Wrote " + std::to_string(samples.size()) + " samples (" + std::to_string(passes) +
+                  " passes) to exports/ " + std::filesystem::path(job->path).filename().string();
+            Log::line("bulk export: wrote " + std::to_string(samples.size()) + " samples to " + job->path);
         }
         else
             msg = "Export failed: " + err;

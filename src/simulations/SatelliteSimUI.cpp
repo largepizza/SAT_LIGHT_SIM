@@ -1168,6 +1168,11 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
         traceChrome.w = 680.0f;
         traceChrome.h = 440.0f;
     }
+    // Live mode: retrace at up to kTraceLiveHz, only when the result would change.
+    if (traceLive && std::chrono::steady_clock::now() - traceLastRetrace >=
+                         std::chrono::duration<double>(1.0 / kTraceLiveHz) &&
+        traceStale())
+        computeSelectedTrace();
     // ── Per frame: the "now" marker, and the traced satellite's magnitude at the current time,
     // evaluated with the trace's own inputs so it sits exactly on the curve.
     const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -1318,14 +1323,29 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                     CLAY(CLAY_ID("TraceGutterB"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(16)}}}) {}
                     if (plotData.found)
                     {
+                        // Label only as many ticks as fit: at least ~1.4 text heights apart
+                        // vertically, and a clock label's width plus a gap horizontally. Grid
+                        // lines stay at every whole magnitude.
+                        const float minGapY = fs(11) * 1.4f, clockW = fs(11) * 5.5f;
+                        const float magPitch = traceMagTickCount > 1
+                                                   ? plotH * (traceMagTickFrac[0] - traceMagTickFrac[1])
+                                                   : plotH;
+                        const int magEvery = std::max(1, (int)std::ceil(minGapY / std::max(magPitch, 1.0f)));
+                        const int phaseEvery = plotH / (kTracePhaseTicks - 1) >= minGapY ? 1 : 2;
+                        const int timeEvery = plotW / (kTraceTimeTicks - 1) >= clockW * 1.3f
+                                                  ? 1
+                                                  : (plotW / 2.0f >= clockW * 1.3f ? 2 : kTraceTimeTicks - 1);
                         for (int i = 0; i < traceMagTickCount; ++i)
-                            tick(CLAY_STRING("TraceMagTick"), i, traceMagTickBuf[i], Pal::textDim, CLAY_ATTACH_POINT_RIGHT_CENTER,
+                            if (i % magEvery == 0)
+                                tick(CLAY_STRING("TraceMagTick"), i, traceMagTickBuf[i], Pal::textDim, CLAY_ATTACH_POINT_RIGHT_CENTER,
                                  CLAY_ATTACH_POINT_LEFT_TOP, -6.0f, (1.0f - traceMagTickFrac[i]) * plotH);
                         for (int i = 0; i < kTracePhaseTicks; ++i)
-                            tick(CLAY_STRING("TracePhaseTick"), i, kPhaseTicks[i], kPhaseCol, CLAY_ATTACH_POINT_LEFT_CENTER,
+                            if (i % phaseEvery == 0)
+                                tick(CLAY_STRING("TracePhaseTick"), i, kPhaseTicks[i], kPhaseCol, CLAY_ATTACH_POINT_LEFT_CENTER,
                                  CLAY_ATTACH_POINT_RIGHT_TOP, 6.0f, plotH * i / (kTracePhaseTicks - 1));
                         for (int i = 0; i < kTraceTimeTicks; ++i)
-                            tick(CLAY_STRING("TraceTimeTick"), i, traceTimeTickBuf[i], Pal::textDim,
+                            if (i % timeEvery == 0)
+                                tick(CLAY_STRING("TraceTimeTick"), i, traceTimeTickBuf[i], Pal::textDim,
                                  i == 0 ? CLAY_ATTACH_POINT_LEFT_TOP
                                         : (i == kTraceTimeTicks - 1 ? CLAY_ATTACH_POINT_RIGHT_TOP : CLAY_ATTACH_POINT_CENTER_TOP),
                                  CLAY_ATTACH_POINT_LEFT_BOTTOM, plotW * i / (kTraceTimeTicks - 1), 4.0f);
@@ -1333,7 +1353,9 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                 }
                 if (traceStatus[0])
                     text(traceStatus, traceValid ? Pal::textDim : Pal::listenKey, 11);
-                if (observerMoved)
+                if (traceExportStatus[0])
+                    text(traceExportStatus, Pal::textDim, 11);
+                if (observerMoved && !traceLive)
                     text("You have moved since this trace was taken; Retrace to trace from here.", Pal::textHint, 11);
                 CLAY(CLAY_ID("TraceButtons"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                           .childGap = 8,
@@ -1342,9 +1364,16 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                 {
                     if (button(0, "Retrace", hovTraceRetrace, "Trace the current selection's pass from the current time"))
                         computeSelectedTrace();
+                    if (button(2, traceLive ? "Live: ON" : "Live: OFF", hovTraceLive,
+                               "Retrace up to 10 times a second when you move, the selection changes, the pass ends "
+                               "or a photometry setting changes"))
+                        traceLive = !traceLive;
                     if (traceValid &&
                         button(1, "Export CSV", hovTraceExport, "Write this trace as CSV (replay: SatModelTool --replay-trace)"))
                         exportTrace();
+                    static char costBuf[48];
+                    snprintf(costBuf, sizeof(costBuf), "retrace %.1f ms", traceRetraceMs);
+                    text(costBuf, Pal::textHint, 11);
                 }
             }
         });
