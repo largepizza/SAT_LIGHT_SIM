@@ -649,13 +649,6 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
             err = "component '" + c.name + "': a pivot needs a child group (a root has no joint to turn it)";
             return false;
         }
-        for (const AttitudeGroup &g : out.groups)
-            if (g.parent == c.group)
-            {
-                err = "component '" + c.name + "': group '" + out.groups[c.group].name +
-                      "' has child groups, so its components can't have their own pivots";
-                return false;
-            }
     }
     return true;
 }
@@ -1253,11 +1246,18 @@ SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tri
     }
 
     // Per lobe: candidate points (16 evenly spread sub-triangle centroids per source triangle, equal
-    // area shares — enough for up to kMaxLobeSamples representatives even on a lobe that is a single
-    // rectangle), clustered into area-weighted representatives by a few rounds of weighted k-means
+    // area shares — enough for 16 representatives per component even on one that is a single
+    // rectangle; more on a triangle over 32 m², ~one per 2 m², so the representatives of a large
+    // array blanket are not picked from a coarse grid), clustered into area-weighted representatives by a few rounds of weighted k-means
     // (seeded by farthest-point selection — deterministic). Each representative is an actual
     // candidate, so it lies on the lobe's surface and keeps that triangle's normal.
-    const std::vector<glm::dvec3> bary = satSubTriangleCentroids(4);
+    std::vector<std::vector<glm::dvec3>> barySets(13);
+    auto baryFor = [&](double area) -> const std::vector<glm::dvec3> & {
+        const int k = std::clamp((int)std::ceil(std::sqrt(area / 2.0)), 4, 12);
+        if (barySets[k].empty())
+            barySets[k] = satSubTriangleCentroids(k);
+        return barySets[k];
+    };
     occ.lobes.resize(lobes.size());
     for (size_t li = 0; li < lobes.size() && li < lobeTris.size(); ++li)
     {
@@ -1272,6 +1272,7 @@ SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tri
         for (int ti : lobeTris[li])
         {
             const SatTri &t = tris[ti];
+            const std::vector<glm::dvec3> &bary = baryFor(t.area);
             for (const glm::dvec3 &w : bary)
                 cand.push_back({w.x * t.p[0] + w.y * t.p[1] + w.z * t.p[2], t.n, t.area / bary.size(), t.component});
             wTot += t.area;
@@ -1279,84 +1280,157 @@ SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tri
         SatLobeSamples &S = occ.lobes[li];
         if (cand.empty() || wTot <= 0.0)
             continue;
-        const int k = std::min<int>(samplesPerLobe, (int)cand.size());
-        // Seeds: the candidate nearest the weighted centroid, then farthest-point.
-        glm::dvec3 cen(0.0);
-        for (const Cand &c : cand)
-            cen += c.w * c.p;
-        cen /= wTot;
-        std::vector<glm::dvec3> centers;
-        size_t first = 0;
-        for (size_t i = 1; i < cand.size(); ++i)
-            if (glm::length(cand[i].p - cen) < glm::length(cand[first].p - cen))
-                first = i;
-        centers.push_back(cand[first].p);
-        while ((int)centers.size() < k)
-        {
-            size_t far = 0;
-            double farD = -1.0;
-            for (size_t i = 0; i < cand.size(); ++i)
+        // Weighted k-means over a subset of the candidates, appending k representatives to S.
+        auto cluster = [&](const std::vector<int> &idx, int k) {
+            k = std::min<int>(k, (int)idx.size());
+            if (k <= 0)
+                return;
+            double wSub = 0.0;
+            glm::dvec3 cen(0.0);
+            for (int i : idx)
             {
-                double d = 1e300;
-                for (const glm::dvec3 &c : centers)
-                    d = std::min(d, glm::length(cand[i].p - c));
-                if (d > farD)
+                cen += cand[i].w * cand[i].p;
+                wSub += cand[i].w;
+            }
+            cen /= wSub;
+            // Seeds: the candidate nearest the weighted centroid, then farthest-point.
+            std::vector<glm::dvec3> centers;
+            size_t first = 0;
+            for (size_t i = 1; i < idx.size(); ++i)
+                if (glm::length(cand[idx[i]].p - cen) < glm::length(cand[idx[first]].p - cen))
+                    first = i;
+            centers.push_back(cand[idx[first]].p);
+            while ((int)centers.size() < k)
+            {
+                size_t far = 0;
+                double farD = -1.0;
+                for (size_t i = 0; i < idx.size(); ++i)
                 {
-                    farD = d;
-                    far = i;
+                    double d = 1e300;
+                    for (const glm::dvec3 &c : centers)
+                        d = std::min(d, glm::length(cand[idx[i]].p - c));
+                    if (d > farD)
+                    {
+                        farD = d;
+                        far = i;
+                    }
+                }
+                centers.push_back(cand[idx[far]].p);
+            }
+            std::vector<int> assign(idx.size(), 0);
+            for (int iter = 0; iter < 8; ++iter)
+            {
+                for (size_t i = 0; i < idx.size(); ++i)
+                {
+                    int bestC = 0;
+                    for (int c = 1; c < k; ++c)
+                        if (glm::length(cand[idx[i]].p - centers[c]) < glm::length(cand[idx[i]].p - centers[bestC]))
+                            bestC = c;
+                    assign[i] = bestC;
+                }
+                for (int c = 0; c < k; ++c)
+                {
+                    glm::dvec3 sum(0.0);
+                    double ws = 0.0;
+                    for (size_t i = 0; i < idx.size(); ++i)
+                        if (assign[i] == c)
+                        {
+                            sum += cand[idx[i]].w * cand[idx[i]].p;
+                            ws += cand[idx[i]].w;
+                        }
+                    if (ws > 0.0)
+                        centers[c] = sum / ws;
                 }
             }
-            centers.push_back(cand[far].p);
-        }
-        std::vector<int> assign(cand.size(), 0);
-        for (int iter = 0; iter < 8; ++iter)
-        {
-            for (size_t i = 0; i < cand.size(); ++i)
+            for (int c = 0; c < k && S.count < kMaxLobeSamples; ++c)
             {
-                int bestC = 0;
-                for (int c = 1; c < k; ++c)
-                    if (glm::length(cand[i].p - centers[c]) < glm::length(cand[i].p - centers[bestC]))
-                        bestC = c;
-                assign[i] = bestC;
-            }
-            for (int c = 0; c < k; ++c)
-            {
-                glm::dvec3 sum(0.0);
                 double ws = 0.0;
-                for (size_t i = 0; i < cand.size(); ++i)
+                size_t rep = idx.size();
+                for (size_t i = 0; i < idx.size(); ++i)
                     if (assign[i] == c)
                     {
-                        sum += cand[i].w * cand[i].p;
-                        ws += cand[i].w;
+                        ws += cand[idx[i]].w;
+                        if (rep == idx.size() ||
+                            glm::length(cand[idx[i]].p - centers[c]) < glm::length(cand[idx[rep]].p - centers[c]))
+                            rep = i;
                     }
-                if (ws > 0.0)
-                    centers[c] = sum / ws;
+                if (ws <= 0.0 || rep == idx.size())
+                    continue;
+                const Cand &r = cand[idx[rep]];
+                S.p[S.count] = r.p;
+                S.n[S.count] = r.n;
+                S.w[S.count] = ws / wTot;
+                S.comp[S.count] = r.comp;
+                ++S.count;
             }
-        }
-        for (int c = 0; c < k; ++c)
+        };
+        // A lobe that merges several components (the ISS's 16 array blankets share one normal and
+        // material) gets `samplesPerLobe` per component, up to kMaxLobeSamples, shared out by area and
+        // clustered within each component: one pooled k-means left ~1 sample per blanket, so a shadow
+        // across part of a blanket (an iROSA's, the truss's) was all or nothing. A single-component
+        // lobe takes exactly the path it always did.
+        std::vector<int> compOrder;
+        std::vector<std::vector<int>> compIdx;
+        std::vector<double> compW;
+        for (int i = 0; i < (int)cand.size(); ++i)
         {
-            double ws = 0.0;
-            size_t rep = cand.size();
-            for (size_t i = 0; i < cand.size(); ++i)
-                if (assign[i] == c)
-                {
-                    ws += cand[i].w;
-                    if (rep == cand.size() || glm::length(cand[i].p - centers[c]) < glm::length(cand[rep].p - centers[c]))
-                        rep = i;
-                }
-            if (ws <= 0.0 || rep == cand.size())
-                continue;
-            S.p[S.count] = cand[rep].p;
-            S.n[S.count] = cand[rep].n;
-            S.w[S.count] = ws / wTot;
-            S.comp[S.count] = cand[rep].comp;
-            ++S.count;
+            size_t ci = 0;
+            while (ci < compOrder.size() && compOrder[ci] != cand[i].comp)
+                ++ci;
+            if (ci == compOrder.size())
+            {
+                compOrder.push_back(cand[i].comp);
+                compIdx.emplace_back();
+                compW.push_back(0.0);
+            }
+            compIdx[ci].push_back(i);
+            compW[ci] += cand[i].w;
+        }
+        const int nComp = (int)compOrder.size();
+        const int kTot = std::min(kMaxLobeSamples, samplesPerLobe * nComp);
+        std::vector<int> all(cand.size());
+        for (int i = 0; i < (int)cand.size(); ++i)
+            all[i] = i;
+        if (nComp == 1 || nComp > kTot)
+            cluster(all, nComp == 1 ? samplesPerLobe : kTot);
+        else
+        {
+            // Largest-remainder share of kTot by area, at least one sample per component.
+            std::vector<int> kc(nComp, 1);
+            int left = kTot - nComp;
+            std::vector<double> want(nComp);
+            for (int c = 0; c < nComp; ++c)
+                want[c] = std::max(0.0, kTot * compW[c] / wTot - 1.0);
+            for (int c = 0; c < nComp && left > 0; ++c)
+            {
+                const int add = std::min(left, (int)std::floor(want[c]));
+                kc[c] += add;
+                want[c] -= add;
+                left -= add;
+            }
+            while (left > 0)
+            {
+                int best = 0;
+                for (int c = 1; c < nComp; ++c)
+                    if (want[c] > want[best])
+                        best = c;
+                ++kc[best];
+                want[best] -= 1.0;
+                --left;
+            }
+            for (int c = 0; c < nComp; ++c)
+                cluster(compIdx[c], kc[c]);
         }
 
         // Candidate occluders: one in ANOTHER group may move in front at some joint angle, so it
         // always counts; one in the SAME group is rigidly placed and counts only if some part of it
         // lies in front of some sample's surface.
+        // A translucent lobe (Phase 4f transmission) is lit from BEHIND as well, so a same-group
+        // occluder on either side of it can shade it: the ISS's iROSAs sit in front of the legacy
+        // blankets and shadow the light those blankets pass to their backs. Front-only masks made
+        // that the model's largest occlusion error (self-test p95 0.26 mag; 0.10 with opaque arrays).
         const int lobeGroup = (int)lobes[li].group;
+        const bool bothSides = lobes[li].transmission > 0.0f;
         for (size_t oi = 0; oi < occ.occluders.size(); ++oi)
         {
             const SatOccluder &o = occ.occluders[oi];
@@ -1364,10 +1438,13 @@ SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tri
             if (!candidate)
                 for (const glm::dvec3 &q : occluderPoints(o))
                     for (int s = 0; s < S.count && !candidate; ++s)
-                        if (glm::dot(q - S.p[s], S.n[s]) > 1e-6)
+                    {
+                        const double h = glm::dot(q - S.p[s], S.n[s]);
+                        if (h > 1e-6 || (bothSides && h < -1e-6))
                             candidate = true;
+                    }
             if (candidate)
-                S.occluderMask |= 1u << oi;
+                S.occluderMask |= uint64_t(1) << oi;
         }
     }
     return occ;
@@ -1393,7 +1470,7 @@ double satLobeVisibility(const SatOcclusion &occ, int li, int lobeGroup, const s
         bool blocked = false;
         for (size_t oi = 0; oi < occ.occluders.size() && !blocked; ++oi)
         {
-            if (!(S.occluderMask & (1u << oi)) || (int)oi == S.comp[s])
+            if (!(S.occluderMask & (uint64_t(1) << oi)) || (int)oi == S.comp[s])
                 continue;
             const SatOccluder &o = occ.occluders[oi];
             const GroupPose &Q = poses[o.group];
@@ -1447,6 +1524,7 @@ GpuSatOcclusionPack packSatOcclusionGpu(const std::vector<AttitudeGroup> &groups
         L.sampleFirst = (uint32_t)pack.samples.size();
         L.sampleCount = 0;
         L.occluderMask = 0;
+        L.occluderMaskHi = 0;
         if (li >= occ.lobes.size() || occ.lobes[li].count == 0 || occ.lobes[li].occluderMask == 0)
             continue;
         const SatLobeSamples &S = occ.lobes[li];
@@ -1460,7 +1538,8 @@ GpuSatOcclusionPack packSatOcclusionGpu(const std::vector<AttitudeGroup> &groups
             pack.samples.push_back(g);
         }
         L.sampleCount = (uint32_t)S.count;
-        L.occluderMask = S.occluderMask;
+        L.occluderMask = (uint32_t)(S.occluderMask & 0xFFFFFFFFu);
+        L.occluderMaskHi = (uint32_t)(S.occluderMask >> 32);
     }
     return pack;
 }

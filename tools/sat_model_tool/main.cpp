@@ -392,15 +392,23 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
     int candidates = 0;
     for (const SatLobeSamples &s : occ[0].lobes)
         for (size_t i = 0; i < occ[0].occluders.size(); ++i)
-            candidates += (s.occluderMask >> i) & 1u;
+            candidates += (int)((s.occluderMask >> i) & 1u);
 
     std::mt19937 rng(9191);
     std::uniform_real_distribution<double> ud(0.0, 1.0);
     std::normal_distribution<double> nd;
     auto randDir = [&]() { return glm::normalize(glm::dvec3(nd(rng), nd(rng), nd(rng))); };
     const double a2Sun = (double)kSunAlpha * kSunAlpha;
-    const std::vector<glm::dvec3> bary = satSubTriangleCentroids(5);
-    const double wPt = 1.0 / bary.size();
+    // Reference points per triangle: 25, or one per ~0.5 m^2 on large flat triangles (up to 576) - a
+    // 150 m^2 array blanket is two triangles, and 50 points left a partial shadow across it coarser
+    // than the runtime sampling it is meant to judge.
+    std::vector<std::vector<glm::dvec3>> barySets(25);
+    auto baryFor = [&](double area) -> const std::vector<glm::dvec3> & {
+        const int k = std::clamp((int)std::ceil(std::sqrt(area / 0.5)), 5, 24);
+        if (barySets[k].empty())
+            barySets[k] = satSubTriangleCentroids(k);
+        return barySets[k];
+    };
 
     std::vector<double> err[3], dimming;
     std::vector<SatTri> posed(tris.size());
@@ -420,7 +428,7 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
         if (!open.supported || open.sinElevation < 0.05)
             continue;
 
-        // Reference: posed triangles, 25 points each, rays against all other triangles.
+        // Reference: posed triangles, 25+ points each (baryFor), rays against all other triangles.
         AttGeometry geo;
         geo.nadir = so.nadir;
         geo.velocity = so.velocity;
@@ -437,6 +445,35 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
                 posed[i].p[k] = P.R * tris[i].p[k] + P.t + dp;
             posed[i].n = P.R * tris[i].n;
         }
+        // Per component: its triangles and a bounding sphere, so a ray is tested against a
+        // component's triangles only when it passes the sphere (exact - a pure speed-up: the ISS's
+        // 2400 triangles made the all-pairs test minutes long).
+        std::vector<std::vector<int>> compTris(m.components.size());
+        std::vector<glm::dvec3> compC(m.components.size(), glm::dvec3(0.0));
+        std::vector<double> compR(m.components.size(), 0.0);
+        for (size_t i = 0; i < posed.size(); ++i)
+            compTris[posed[i].component].push_back((int)i);
+        for (size_t c = 0; c < compTris.size(); ++c)
+        {
+            if (compTris[c].empty())
+                continue;
+            glm::dvec3 lo(1e300), hi(-1e300);
+            for (int ti : compTris[c])
+                for (int k = 0; k < 3; ++k)
+                {
+                    lo = glm::min(lo, posed[ti].p[k]);
+                    hi = glm::max(hi, posed[ti].p[k]);
+                }
+            compC[c] = 0.5 * (lo + hi);
+            compR[c] = 0.5 * glm::length(hi - lo) + 1e-6;
+        }
+        auto rayNearSphere = [&](const glm::dvec3 &p0, const glm::dvec3 &d, size_t c) {
+            const glm::dvec3 q = compC[c] - p0;
+            const double tc = glm::dot(q, d);
+            if (tc < -compR[c])
+                return false;
+            return glm::dot(q, q) - tc * tc <= compR[c] * compR[c] || glm::dot(q, q) <= compR[c] * compR[c];
+        };
         const glm::dvec3 o = glm::normalize(in.obsEci - so.posEci);
         const double rOverD = satphot::kEarthRadiusM / e.rSatM;
         const double alphaE = rOverD / (1.0 + std::sqrt(1.0 - rOverD * rOverD));
@@ -453,21 +490,33 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
             if (is <= 0.0 && ie <= 0.0)
                 continue;
             double visSun = 0.0, visObs = 0.0;
+            const std::vector<glm::dvec3> &bary = baryFor(tris[i].area);
+            const double wPt = 1.0 / bary.size();
             for (const glm::dvec3 &w : bary)
             {
                 glm::dvec3 pt = w.x * tr.p[0] + w.y * tr.p[1] + w.z * tr.p[2] + tr.n * 1e-4;
                 bool blockObs = false, blockSun = false;
-                for (size_t j = 0; j < posed.size() && !(blockObs && blockSun); ++j)
+                for (size_t c = 0; c < compTris.size() && !(blockObs && blockSun); ++c)
                 {
                     // A triangle of the same component never occludes it (convex/flat primitives) —
                     // the rule the runtime uses too, and what keeps a faceted cylinder from
                     // shadowing itself through its own chords.
-                    if (j == i || posed[j].component == tr.component)
+                    if ((int)c == tr.component || compTris[c].empty())
                         continue;
-                    if (!blockObs && rayHitsTriangle(pt, o, posed[j].p[0], posed[j].p[1], posed[j].p[2]))
-                        blockObs = true;
-                    if (!blockSun && rayHitsTriangle(pt, in.sunDirEci, posed[j].p[0], posed[j].p[1], posed[j].p[2]))
-                        blockSun = true;
+                    const bool testObs = !blockObs && rayNearSphere(pt, o, c);
+                    const bool testSun = !blockSun && rayNearSphere(pt, in.sunDirEci, c);
+                    if (!testObs && !testSun)
+                        continue;
+                    for (int j : compTris[c])
+                    {
+                        if (testObs && !blockObs && rayHitsTriangle(pt, o, posed[j].p[0], posed[j].p[1], posed[j].p[2]))
+                            blockObs = true;
+                        if (testSun && !blockSun &&
+                            rayHitsTriangle(pt, in.sunDirEci, posed[j].p[0], posed[j].p[1], posed[j].p[2]))
+                            blockSun = true;
+                        if ((blockObs || !testObs) && (blockSun || !testSun))
+                            break;
+                    }
                 }
                 visObs += blockObs ? 0.0 : wPt;
                 visSun += (blockObs || blockSun) ? 0.0 : wPt;
@@ -499,7 +548,7 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
     };
     std::printf("  occlusion self-test (%zu configurations; %zu occluders, %d lobe-occluder candidate pairs of %zu):\n",
                 dimming.size(), occ[0].occluders.size(), candidates, occ[0].lobes.size() * occ[0].occluders.size());
-    std::printf("    reference (25 points per triangle) dims these configurations by: median %.3f, p90 %.3f, max %.2f mag\n",
+    std::printf("    reference (25+ points per triangle, ~0.5 m^2 each on large ones) dims these configurations by: median %.3f, p90 %.3f, max %.2f mag\n",
                 pct(dimming, 0.5), pct(dimming, 0.9), pct(dimming, 1.0));
     bool ok = false;
     for (int v = 0; v < 3; ++v)
@@ -637,7 +686,7 @@ bool selfTestOcclusionGpuForm(const SatModel &m, const std::vector<SatTri> &tris
             const GpuSatLobe &L = lobes[li];
             const double cpu = satLobeVisibility(occ, (int)li, (int)L.group, poses, geo.sun, true, obs);
             double gpu = 1.0;
-            if (L.sampleCount > 0 && L.occluderMask != 0)
+            if (L.sampleCount > 0 && (L.occluderMask | L.occluderMaskHi) != 0)
             {
                 gpu = 0.0;
                 const glm::mat3 &FP = F[L.group];
@@ -653,7 +702,8 @@ bool selfTestOcclusionGpuForm(const SatModel &m, const std::vector<SatTri> &tris
                         return (F[m.groups[g].parent] - F[g]) * glm::vec3(Oc.pivotXT, Oc.pivotYT, Oc.pivotZT);
                     };
                     glm::vec3 pw = FP * S.pT + t[L.group] + pivOff((int)L.group, S.comp);
-                    uint32_t mask = L.occluderMask & (S.comp < 32u ? ~(1u << S.comp) : 0xFFFFFFFFu);
+                    uint64_t mask = ((uint64_t)L.occluderMaskHi << 32 | L.occluderMask) &
+                                    (S.comp < 64u ? ~(uint64_t(1) << S.comp) : ~uint64_t(0));
                     bool bObs = false, bSun = false;
                     while (mask != 0u)
                     {

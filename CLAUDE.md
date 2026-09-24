@@ -414,7 +414,9 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   gains `satPivotOffset()` = (R_parent − R_group)·pivot, and every position consumer adds it:
   occlusion samples/occluders on the CPU and in `sat_orbit.comp` (`pivotOffset`; the pivot rides in
   `GpuSatOccluder`'s pad slots), the reference ray-casts, OBJ export, and the mesh renderer
-  (`MeshComponents` binding 7, `instPivotOffset`). Only for groups with no child groups.
+  (`MeshComponents` binding 7, `instPivotOffset`). Any child group, including one with children of its
+  own: the offset involves only the component's group and its parent (the ISS's Zvezda arrays pivot
+  on the SARJ group, which carries the beta group).
   All vectors in a tree use the ROOT's triad coordinates; on the GPU `typeFrames()` builds up to 4
   world frames parents-first into fixed registers (`pickFrame` selects — no dynamically indexed
   local array). `evalGroupPoses()` is the CPU mirror (hand-kept in step with `groupFrame()`).
@@ -597,8 +599,10 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     term is in every lobe evaluator (CPU `lobeIntensity`, GPU `lobeIntensity`,
     `GpuSatLobe::transmission`, the brute-force references) and in `sat_mesh.frag`, for the sun and
     earthshine. The renderer tints it amber and, with the cell pattern, sends it only through the
-    gaps between cells (`Surface::transM`, mean 1). Known approximation: a lobe's occluder mask was
-    built for front lighting, so an occluder BEHIND a translucent panel doesn't shadow its glow.
+    gaps between cells (`Surface::transM`, mean 1). A translucent lobe's occluder mask takes
+    same-group occluders on BOTH sides (it is lit from behind). The first cut used the front-only
+    mask, which was the ISS's largest occlusion error: its iROSAs shade the light the legacy
+    blankets pass through (self-test p95 0.26 → 0.17).
   - **Procedural surface detail** (`SatMaterial::pattern`, JSON `"pattern"`: none / solar_cells / mli
     / panel_seams; -1 = from the preset — `solar_cell` → cells, `mli_foil` → crinkle). Visual only and
     **photometrically neutral**: each pattern scales albedo by a factor with area mean 1, leaves the
@@ -673,7 +677,9 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   - **Reflections in the scene** still use `earth_env.glsl`. The user requires the full renderer's
     (airglow, aurora, Moon, Milky Way); that is 4c part 2.
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
-  `starlink_v2_mini.json`, `hubble.json`, and the M4 benchmark references `starlink_v1_0.json`
+  `starlink_v2_mini.json`, `hubble.json`, `iss.json` (the first parity model: 50 components; station
+  root, TRRJ radiators edge-on, SARJ alpha, one beta group with four mast pivots; 8 legacy Kapton
+  wings of two blankets each plus the six iROSAs installed by 2023; 514 exact lobes), and the M4 benchmark references `starlink_v1_0.json`
   (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`
   (Mallama 2021 period: array fixed 24 deg from vertical away from the Sun, radio-transparent
   visor sheet under the antennas) — both sourced from Cole 2021 (arXiv:2107.06026) and
@@ -682,17 +688,27 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   dims anything through occlusion — so the VisorSat differential needs Phase 3b.
 - **Occlusion between parts (Phase 3b / benchmarking M7).**
   `buildSatOcclusion()` makes one occluder per component (plane, box, capped cylinder — a cone uses
-  its larger radius, conservative — sphere; `kMaxOccluders` 32) and up to `kDefaultLobeSamples` = 16
-  area-weighted sample points per lobe (weighted k-means over 16 sub-triangle centroids per source
-  triangle; `bakeSatLobes(..., &lobeTris)` supplies the triangles). A lobe's intensity is scaled by
+  its larger radius, conservative — sphere; `kMaxOccluders` 64, a 64-bit mask per lobe) and
+  `kDefaultLobeSamples` = 16 area-weighted sample points per COMPONENT of each lobe, up to
+  `kMaxLobeSamples` = 64 per lobe (weighted k-means within each component over 16 sub-triangle
+  centroids per source triangle, more on triangles over 32 m²; `bakeSatLobes(..., &lobeTris)`
+  supplies the triangles). Until the ISS a lobe got 16 in all: its 16 array blankets share one lobe
+  and got ~1 sample each, so any partial shadow on a blanket was all or nothing. A lobe's intensity is scaled by
   the weighted fraction of samples whose rays toward the light AND the observer both leave the
   satellite (earthshine: observer ray only), tested against every occluder posed at the live joint
   angles. Two rules keep it exact and cheap: **a primitive never occludes its own surface** (all
   are convex or flat — and without this a faceted cylinder's samples sit just inside the smooth
   cylinder and shadow themselves: Hubble read 3 mag too dim), and a same-group occluder counts only
-  if part of it lies in front of the lobe (`occluderMask`, fixed at bake time). `--selftest` checks
-  it against a 25-points-per-triangle ray-cast reference: p95 0.16 mag on VisorSat at 16 samples
-  (0.28 at 8 — the visor's 8.5 cm gap makes it the hardest case), ≤ 0.04 elsewhere. SatBench uses
+  if part of it lies in front of the lobe (either side, for a translucent one; `occluderMask`, fixed
+  at bake time). `--selftest` checks it against a ray-cast reference (25 points per triangle, one per
+  ~0.5 m² on large ones, each component culled by its bounding sphere): p95 at 16 samples 0.14 on
+  VisorSat (the visor's 8.5 cm gap), 0.17 on the ISS, 0.07 on V2 Mini, ≤ 0.02 elsewhere.
+  **Coincident surfaces break the float GPU form:** two modules whose end caps touch, or a panel
+  flush against a box, put samples exactly on a shadow edge, and float and double disagree there
+  (the ISS read 0.54% of lobe evaluations different until its parts got 0.3-0.4 m berthing gaps).
+  **GPU cost scales with lobes × samples on ONE thread per satellite**, so with occlusion on a
+  station is far more expensive than a Starlink (the ISS: ~2300 samples at 48 lobes, more at the
+  app's 256). Not measured yet. SatBench uses
   it by default (`--no-occlusion` = the M6 baseline).
   **GPU (2026-09-23):** `packSatOcclusionGpu()` converts it to `GpuSatOccluder` (80 B) +
   `GpuSatLobeSample` (32 B, point pre-nudged 1e-4 m) in ROOT TRIAD coordinates, like lobe normals,
@@ -706,8 +722,8 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   1e-4 of the total is left unoccluded (≤ 0.005 mag, the one deliberate CPU/GPU difference). A
   sample whose observer ray is blocked stops its occluder loop. The parity readout applies the same
   on/floor gate. `--selftest` re-evaluates the packed GPU form in float the way the shader does
-  (`selfTestOcclusionGpuForm`) against `satLobeVisibility`: 0 of 13,600 lobe evaluations differ
-  across the four models, offsets within 3e-7 m. **In the app it is OPT-IN and off by default**
+  (`selfTestOcclusionGpuForm`) against `satLobeVisibility`: 0 of 23,200 lobe evaluations differ
+  across the five models, offsets within 3e-7 m. **In the app it is OPT-IN and off by default**
   (`satPartOcclusion`, Photometry tab "Satellite part occlusion", settings key
   `photometry.sat_part_occlusion`): measured 30.1 ms vs 2.8 ms orbit compute at 955k visible on the
   10M stress roster, for a subtle effect — no preset or first run may turn it on. Knockout bit
@@ -945,7 +961,7 @@ shader, written once by `createSatBuffers()`). Must match
 ```
 Geometry-model lobes live in `satLobeBuf` (binding 8 of the `sat_orbit` set, host-coherent,
 `GpuSatLobe` 64 B: normalT + group, area, diffArea, albedoD, f0, alpha2Mat, sampleFirst,
-sampleCount, occluderMask, distribution, pad×3), packed per type at `firstLobe`; their occluders and sample points in
+sampleCount, occluderMask, distribution, transmission, occluderMaskHi, pad), packed per type at `firstLobe`; their occluders and sample points in
 `satOccluderBuf`/`satLobeSampleBuf` (bindings 9/10), `sampleFirst` rebased at upload.
 
 ### GpuSatVisible layout (32 bytes, std430)

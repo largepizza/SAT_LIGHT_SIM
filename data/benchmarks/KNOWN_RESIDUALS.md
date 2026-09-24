@@ -15,15 +15,16 @@ Benchmarking" design page (Results log).
 
 | Item | Model | Published | Gap | Why / notes |
 |---|---|---|---|---|
-| VisorSat mean m1000 (Mallama 2021) | 6.967 | 7.218 | −0.250 (tol 0.3) | Plain mean samples our random geometry; the observers' geometry selection is unpublished. Phase-matched mean 7.220 (+0.002) is the like-for-like comparison. |
-| VisorSat median m1000 | 7.069 | 7.365 | −0.296 (tol 0.3) | **Narrowest gated margin (0.004).** Same cause as the mean. Accepted 2026-09-23: not worth re-gating. |
-| VisorSat 110–120° phase bin | 7.059 | 7.433 (25 obs) | −0.374 | Model too bright at high phase. The only scored bin outside 0.3; curve RMS 0.134 passes. Bins 120°+ have ≤ 5 observations (unscored). |
-| VisorSat 50–60° / 70–100° bins | — | — | −0.13 / +0.11..0.12 | Mild S-shaped residual around the observed curve. |
-| VisorSat scatter (sd m1000) | 0.723 | 0.854 | −0.13 | Attitude is fixed; real satellites jitter and fly varying roll. No attitude-noise model yet. |
-| VisorSat phase slope | 0.0036 mag/deg | 0.0049 | −0.0013 | Informational. |
-| VisorSat − V1.0 differential | +1.042 | +1.29 | −0.248 (tol 0.3) | The visor's real shape is unpublished (derived from Cole's 23° full-shade constraint). |
+| VisorSat mean m1000 (Mallama 2021) | 6.993 | 7.218 | −0.224 (tol 0.3) | Plain mean samples our random geometry; the observers' geometry selection is unpublished. Phase-matched mean 7.263 (+0.045) is the like-for-like comparison. Was 6.967 / 7.220 until 2026-09-24, when occlusion started sampling each component of a merged lobe (the visor was fitted under the old sampling). |
+| VisorSat median m1000 | 7.095 | 7.365 | −0.270 (tol 0.3) | Narrowest gated margin (0.030; 0.004 before 2026-09-24). Same cause as the mean. |
+| VisorSat 110–120° phase bin | 7.084 | 7.433 (25 obs) | −0.349 | Model too bright at high phase. The only scored bin outside 0.3; curve RMS 0.159 passes (0.134 before 2026-09-24). Bins 120°+ have ≤ 5 observations (unscored). |
+| VisorSat 40–60° / 60–100° bins | — | — | −0.11 / +0.10..0.21 | Mild S-shaped residual around the observed curve. |
+| VisorSat scatter (sd m1000) | 0.740 | 0.854 | −0.11 | Attitude is fixed; real satellites jitter and fly varying roll. No attitude-noise model yet. |
+| VisorSat phase slope | 0.004 mag/deg | 0.005 | −0.001 | Informational. |
+| VisorSat − V1.0 differential | +1.067 | +1.29 | −0.223 (tol 0.3) | The visor's real shape is unpublished (derived from Cole's 23° full-shade constraint). |
 | V1.0 mean m1000 (Mallama 2020a) | 5.926 | 5.93 | −0.004 | Held out of all fitting. sd 0.769 vs 0.67 published (informational). |
 | V1.0 app bulk export (32.7°S, sim 2036-11-21) | 5.934 | 5.93 | +0.004 | Out-of-sample site and season; not a paper's sampling. |
+| ISS (2023-2026 configuration) | — | −2 to −4 on favourable passes (satobs.org) | — | **No benchmark yet.** Dimensions sourced, layout derived, every surface material an estimate (`iss.json` sources). |
 | V2 Mini app bulk export | 5.81 (median 5.31, sd 1.57) | 7.87 mitigated; ~5.2 unmitigated (Mallama et al. 2023) | — | **Uncalibrated model**, flown without SpaceX's brightness-mitigation attitude. Next benchmark candidate. |
 
 ## Fitted, estimated or stood-in values
@@ -41,7 +42,7 @@ Benchmarking" design page (Results log).
 
 | Item | Error | Where checked |
 |---|---|---|
-| Occlusion sampling (16 samples/lobe) vs 25-point ray-cast reference | VisorSat p95 0.16–0.19, max 0.3; V2 Mini p95 0.06–0.07, max 0.25–0.36; others ≤ 0.02 | `--selftest` (gate p95 < 0.25; exact value varies per platform with the selftest's configurations) |
+| Occlusion sampling (16 samples per component of a lobe) vs ray-cast reference (25 points per triangle, ~0.5 m² each on large ones) | VisorSat p95 0.14, max 0.23; ISS p95 0.17, max 0.33; V2 Mini p95 0.07, max 0.36; others ≤ 0.02 | `--selftest` (gate p95 < 0.25; exact value varies per platform with the selftest's configurations) |
 | GPU occlusion: lobes under 1e-4 of the total left unoccluded; skipped below mag 10 | ≤ 0.005 mag | design choice (`kOccMinLobeFrac`, `kOcclusionMagFloor`) |
 | Cone occluder uses its larger radius | conservative (over-shadows) | `buildSatOcclusion` |
 | Earthshine table vs exact integral | p95 0.004, max 0.014 mag | `--selftest` |
@@ -49,7 +50,7 @@ Benchmarking" design page (Results log).
 | Extinction: Chapman column (erfcx fit) vs brute-force ray integral | max 0.32% of the column | `--selftest` |
 | Extinction constants: 8 km / 1.2 km scale heights, 60/40 split | fixed, no weather or site haze | model limit |
 | Sun disk folded into every lobe as α = 0.0023 | flat-mirror peak +2% (1.50e4 vs 1.47e4 m²) | M0 |
-| Merged lobes beyond the budget (48, or 256 for rosters ≤ 10k) | exact for the shipped models within budget; Hubble at a forced 24: p95 0.20 | lobe validator |
+| Merged lobes beyond the budget (48, or 256 for rosters ≤ 10k) | exact for the shipped models within budget except the ISS (514 exact lobes): p95 0.08, max 5.6 at the app's 256 (merged module-cylinder facets in rare geometries); Hubble at a forced 24: p95 0.20 | lobe validator |
 
 ## Simulation frame and precision
 

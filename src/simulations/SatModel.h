@@ -319,11 +319,12 @@ struct GpuSatLobe
     // Phase 3b occlusion (GPU form, filled by packSatOcclusionGpu; the CPU evaluators ignore them).
     uint32_t sampleFirst;  // first GpuSatLobeSample — relative to the type until upload rebases it
     uint32_t sampleCount;  // 0 = never occluded
-    uint32_t occluderMask; // bit i: the type's occluder i can block this lobe
+    uint32_t occluderMask; // bit i: the type's occluder i can block this lobe (occluders 0-31)
 
     uint32_t distribution; // 0 = GGX, 1 = Beckmann (the majority by area of the merged faces)
     float transmission;    // Phase 4f: diffuse transmission, V band (SatMaterial::transmission), 0 = opaque
-    uint32_t pad1, pad2;
+    uint32_t occluderMaskHi; // occluders 32-63 (kMaxOccluders = 64 since the ISS model)
+    uint32_t pad2;
 };
 static_assert(sizeof(GpuSatLobe) == 64, "GpuSatLobe layout mismatch");
 
@@ -357,9 +358,11 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
 // observer both leave the satellite unblocked. Primitives stand in for their tessellation exactly
 // (planes, boxes, spheres) or as a smooth surface (a capped cylinder for a cylinder's facets; a cone
 // is bounded by the cylinder of its larger radius — conservative).
-static constexpr int kMaxLobeSamples = 16; // storage bound; the count used is a bake parameter
-static constexpr int kDefaultLobeSamples = 16; // M7 self-test: p95 0.16 mag on VisorSat vs 0.28 at 8
-static constexpr int kMaxOccluders = 32; // per model (a bitmask per lobe selects the candidates)
+// Storage bound. The count used is a bake parameter PER COMPONENT: a lobe merging several components
+// gets that many for each of them, up to this bound (buildSatOcclusion).
+static constexpr int kMaxLobeSamples = 64;
+static constexpr int kDefaultLobeSamples = 16; // per component. Self-test p95: VisorSat 0.14, ISS 0.17
+static constexpr int kMaxOccluders = 64; // per model (a 64-bit mask per lobe selects the candidates)
 
 struct SatOccluder
 {
@@ -378,7 +381,7 @@ struct SatLobeSamples
     glm::dvec3 n[kMaxLobeSamples];      // that surface's outward normal
     double w[kMaxLobeSamples] = {};     // area fractions (sum 1)
     int comp[kMaxLobeSamples] = {};     // component the sample lies on (never occludes itself)
-    uint32_t occluderMask = 0;          // occluders that can ever block this lobe
+    uint64_t occluderMask = 0;          // occluders that can ever block this lobe
 };
 
 struct SatOcclusion
@@ -390,8 +393,10 @@ struct SatOcclusion
     int droppedOccluders = 0;          // components beyond kMaxOccluders (reported, not modelled)
 };
 
-// Builds occluders from the model's components and up to `samplesPerLobe` (<= kMaxLobeSamples)
-// sample points for each baked lobe. A primitive never occludes its own surface: every primitive
+// Builds occluders from the model's components and `samplesPerLobe` sample points per component of
+// each baked lobe (a lobe merging several components gets that many for each, up to
+// kMaxLobeSamples in all, clustered within each component). A translucent lobe's candidate
+// occluders include same-group ones on BOTH sides of it (it is lit from behind). A primitive never occludes its own surface: every primitive
 // here is convex or flat, so that is exact — and it keeps a faceted cylinder's samples, which sit
 // just inside the smooth cylinder standing in for it, from shadowing themselves.
 SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tris,

@@ -1,0 +1,775 @@
+{
+    "name": "International Space Station (2023-2026 configuration)",
+    "note": "Parity model for the v1.1 'ISS' type. Body frame (NASA): +X along velocity, +Y starboard (the truss), +Z nadir; origin on the truss centreline above Destiny. Four groups: the station (XVV), the radiators (TRRJ, edge-on to the Sun), alpha (SARJ, tracking the Sun about the truss) and beta (the wings' gimbals, tracking the Sun about each mast - per-component pivots put 4 parallel axes in one group; Zvezda's arrays pivot on alpha). Visiting vehicles, PMAs, BEAM, masts and small external payloads are omitted. Dimensions are sourced; placement along the stack is derived; every surface material is an estimate.",
+    "materials": [
+        {
+            "name": "us_module_blanket",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.65,
+            "roughness": 0.6,
+            "color": [0.9, 0.9, 0.87],
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "ru_module_blanket",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.5,
+            "roughness": 0.6,
+            "color": [0.8, 0.81, 0.76],
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "truss_lattice",
+            "preset": "aluminum",
+            "diffuse_albedo": 0.3,
+            "specular_f0": 0.3,
+            "roughness": 0.45,
+            "color": [0.78, 0.78, 0.76]
+        },
+        {
+            "name": "radiator_z93",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.85,
+            "roughness": 0.6,
+            "color": [0.96, 0.96, 0.95]
+        },
+        {
+            "name": "irosa_cell",
+            "preset": "solar_cell_flex",
+            "color": [0.12, 0.14, 0.3]
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "station",
+            "primary": {
+                "axis": [0, 0, 1],
+                "target": "nadir"
+            },
+            "secondary": {
+                "axis": [1, 0, 0],
+                "target": "velocity"
+            }
+        },
+        {
+            "name": "radiators",
+            "parent": "station",
+            "hinge": {
+                "position": [0, 0, 0],
+                "axis": [0, 1, 0]
+            },
+            "joint": {
+                "mode": "edge_on",
+                "vector": [0, 0, 1],
+                "target": "sun"
+            }
+        },
+        {
+            "name": "alpha",
+            "parent": "station",
+            "hinge": {
+                "position": [0, 0, 0],
+                "axis": [0, 1, 0]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [1, 0, 0],
+                "target": "sun"
+            }
+        },
+        {
+            "name": "beta",
+            "parent": "alpha",
+            "hinge": {
+                "position": [0, 0, 0],
+                "axis": [0, 0, 1]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [1, 0, 0],
+                "target": "sun"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "truss_inboard",
+            "type": "box",
+            "group": "station",
+            "size": [3.0, 54.6, 4.6],
+            "position": [0, 0, 0],
+            "material": "truss_lattice"
+        },
+        {
+            "name": "destiny",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.15,
+            "height": 9.2,
+            "position": [0, 0, 5.0],
+            "rotation_deg": [0, 90, 0],
+            "material": "us_module_blanket"
+        },
+        {
+            "name": "harmony",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.2,
+            "height": 7.2,
+            "position": [8.6, 0, 5.0],
+            "rotation_deg": [0, 90, 0],
+            "material": "us_module_blanket"
+        },
+        {
+            "name": "columbus",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.25,
+            "height": 7.0,
+            "position": [8.6, 6.1, 5.0],
+            "rotation_deg": [-90, 0, 0],
+            "material": "us_module_blanket"
+        },
+        {
+            "name": "kibo_pm",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.195,
+            "height": 11.19,
+            "position": [8.6, -8.195, 5.0],
+            "rotation_deg": [-90, 0, 0],
+            "material": "us_module_blanket"
+        },
+        {
+            "name": "kibo_elm",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.195,
+            "height": 4.21,
+            "position": [8.6, -5.6, 0.3],
+            "material": "us_module_blanket"
+        },
+        {
+            "name": "kibo_ef",
+            "type": "box",
+            "group": "station",
+            "size": [5.0, 5.6, 3.8],
+            "position": [8.6, -16.99, 5.0],
+            "material": "truss_lattice"
+        },
+        {
+            "name": "unity",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.15,
+            "height": 5.5,
+            "position": [-7.75, 0, 5.0],
+            "rotation_deg": [0, 90, 0],
+            "material": "us_module_blanket"
+        },
+        {
+            "name": "tranquility",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.24,
+            "height": 6.706,
+            "position": [-7.75, -5.903, 5.0],
+            "rotation_deg": [-90, 0, 0],
+            "material": "us_module_blanket"
+        },
+        {
+            "name": "cupola",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 1.475,
+            "height": 1.5,
+            "position": [-7.75, -5.903, 8.39],
+            "material": "us_module_blanket"
+        },
+        {
+            "name": "leonardo_pmm",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.285,
+            "height": 6.6,
+            "position": [-1.81, -7.7, 5.0],
+            "rotation_deg": [0, 90, 0],
+            "material": "us_module_blanket"
+        },
+        {
+            "name": "quest",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.0,
+            "height": 5.5,
+            "position": [-7.75, 5.3, 5.0],
+            "rotation_deg": [-90, 0, 0],
+            "material": "us_module_blanket"
+        },
+        {
+            "name": "zarya",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.05,
+            "height": 12.56,
+            "position": [-18.68, 0, 5.0],
+            "rotation_deg": [0, 90, 0],
+            "material": "ru_module_blanket"
+        },
+        {
+            "name": "rassvet",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 1.175,
+            "height": 6.0,
+            "position": [-16.18, 0, 10.45],
+            "material": "ru_module_blanket"
+        },
+        {
+            "name": "zvezda",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.1,
+            "height": 13.1,
+            "position": [-31.91, 0, 5.0],
+            "rotation_deg": [0, 90, 0],
+            "material": "ru_module_blanket"
+        },
+        {
+            "name": "poisk",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 1.275,
+            "height": 4.05,
+            "position": [-26.91, 0, 0.475],
+            "material": "ru_module_blanket"
+        },
+        {
+            "name": "nauka",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.125,
+            "height": 13.0,
+            "position": [-26.91, 0, 14.0],
+            "material": "ru_module_blanket"
+        },
+        {
+            "name": "prichal",
+            "type": "sphere",
+            "group": "station",
+            "radius": 1.65,
+            "position": [-26.91, 0, 22.55],
+            "material": "ru_module_blanket"
+        },
+        {
+            "name": "hrs_radiator_stbd",
+            "type": "plane",
+            "group": "radiators",
+            "size": [23.3, 10.2],
+            "position": [-13.45, 13.6, 0],
+            "material": "radiator_z93"
+        },
+        {
+            "name": "hrs_radiator_port",
+            "type": "plane",
+            "group": "radiators",
+            "size": [23.3, 10.2],
+            "position": [-13.45, -13.6, 0],
+            "material": "radiator_z93"
+        },
+        {
+            "name": "truss_outboard_stbd",
+            "type": "box",
+            "group": "alpha",
+            "size": [3.0, 23.7, 4.6],
+            "position": [0, 39.45, 0],
+            "material": "truss_lattice"
+        },
+        {
+            "name": "truss_outboard_port",
+            "type": "box",
+            "group": "alpha",
+            "size": [3.0, 23.7, 4.6],
+            "position": [0, -39.45, 0],
+            "material": "truss_lattice"
+        },
+        {
+            "name": "pvr_s4",
+            "type": "plane",
+            "group": "alpha",
+            "size": [13.6, 3.12],
+            "position": [-8.6, 37.3, 0],
+            "rotation_deg": [-90, 0, 0],
+            "material": "radiator_z93"
+        },
+        {
+            "name": "pvr_p4",
+            "type": "plane",
+            "group": "alpha",
+            "size": [13.6, 3.12],
+            "position": [-8.6, -37.3, 0],
+            "rotation_deg": [-90, 0, 0],
+            "material": "radiator_z93"
+        },
+        {
+            "name": "pvr_s6",
+            "type": "plane",
+            "group": "alpha",
+            "size": [13.6, 3.12],
+            "position": [8.6, 40.3, 0],
+            "rotation_deg": [-90, 0, 0],
+            "material": "radiator_z93"
+        },
+        {
+            "name": "pvr_p6",
+            "type": "plane",
+            "group": "alpha",
+            "size": [13.6, 3.12],
+            "position": [8.6, -40.3, 0],
+            "rotation_deg": [-90, 0, 0],
+            "material": "radiator_z93"
+        },
+        {
+            "name": "zvezda_array_stbd",
+            "type": "plane",
+            "group": "alpha",
+            "size": [3.3, 12.8],
+            "position": [-33.41, 8.9, 5.0],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [-33.41, 0, 5.0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        },
+        {
+            "name": "zvezda_array_port",
+            "type": "plane",
+            "group": "alpha",
+            "size": [3.3, 12.8],
+            "position": [-33.41, -8.9, 5.0],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [-33.41, 0, 5.0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        },
+        {
+            "name": "saw_1A_a",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, 27.785, 19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, 31.5, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_1A_b",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, 35.215, 19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, 31.5, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "irosa_1A",
+            "type": "plane",
+            "group": "beta",
+            "size": [18.2, 6.0],
+            "position": [2.38, 31.5, 11.962],
+            "rotation_deg": [0, 100, 0],
+            "pivot": [0, 31.5, 0],
+            "material": "irosa_cell",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_3A_a",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, 27.785, -19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, 31.5, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_3A_b",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, 35.215, -19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, 31.5, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "irosa_3A",
+            "type": "plane",
+            "group": "beta",
+            "size": [18.2, 6.0],
+            "position": [2.38, 31.5, -11.962],
+            "rotation_deg": [0, 80, 0],
+            "pivot": [0, 31.5, 0],
+            "material": "irosa_cell",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_1B_a",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, 42.285, 19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, 46.0, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_1B_b",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, 49.715, 19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, 46.0, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "irosa_1B",
+            "type": "plane",
+            "group": "beta",
+            "size": [18.2, 6.0],
+            "position": [2.38, 46.0, 11.962],
+            "rotation_deg": [0, 100, 0],
+            "pivot": [0, 46.0, 0],
+            "material": "irosa_cell",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_3B_a",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, 42.285, -19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, 46.0, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_3B_b",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, 49.715, -19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, 46.0, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_2A_a",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, -35.215, 19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, -31.5, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_2A_b",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, -27.785, 19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, -31.5, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_4A_a",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, -35.215, -19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, -31.5, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_4A_b",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, -27.785, -19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, -31.5, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "irosa_4A",
+            "type": "plane",
+            "group": "beta",
+            "size": [18.2, 6.0],
+            "position": [2.38, -31.5, -11.962],
+            "rotation_deg": [0, 80, 0],
+            "pivot": [0, -31.5, 0],
+            "material": "irosa_cell",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_2B_a",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, -49.715, 19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, -46.0, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_2B_b",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, -42.285, 19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, -46.0, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "irosa_2B",
+            "type": "plane",
+            "group": "beta",
+            "size": [18.2, 6.0],
+            "position": [2.38, -46.0, 11.962],
+            "rotation_deg": [0, 100, 0],
+            "pivot": [0, -46.0, 0],
+            "material": "irosa_cell",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_4B_a",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, -49.715, -19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, -46.0, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "saw_4B_b",
+            "type": "plane",
+            "group": "beta",
+            "size": [32.6, 4.57],
+            "position": [0, -42.285, -19.3],
+            "rotation_deg": [0, 90, 0],
+            "pivot": [0, -46.0, 0],
+            "material": "solar_cell_flex",
+            "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "irosa_4B",
+            "type": "plane",
+            "group": "beta",
+            "size": [18.2, 6.0],
+            "position": [2.38, -46.0, -11.962],
+            "rotation_deg": [0, 80, 0],
+            "pivot": [0, -46.0, 0],
+            "material": "irosa_cell",
+            "back_material": "solar_array_flex_back"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "attitude",
+            "status": "sourced",
+            "value": "XVV: body +X along velocity, +Z to nadir, truss along +Y (starboard)",
+            "source": "NASA ISS body frame convention; XVV torque-equilibrium attitude is the usual flight attitude (TEA offsets of a few degrees ignored - estimate)."
+        },
+        {
+            "subject": "station",
+            "status": "sourced",
+            "value": "root group: modules + inboard truss (inboard of the SARJs)",
+            "source": "XVV attitude as 'attitude'. Origin on the truss centreline above Destiny (S0 sits on Destiny)."
+        },
+        {
+            "subject": "radiators",
+            "status": "sourced",
+            "value": "TRRJ about the truss axis, radiators edge-on to the Sun (smaller solution from the aft-pointing neutral)",
+            "source": "NASA, 'ISS Active Thermal Control System (ATCS) Overview' (STS-116 era, nasa.gov 473486main_iss_atcs_overview.pdf): the Radiator Goal Angle Calculation puts the radiators 'edge to the sun' in insolation ('face to the Earth' in eclipse, which does not affect brightness). Rotation +-115 deg; the smaller edge-on solution never exceeds 90 deg. Rotation axis on the truss centreline: estimate."
+        },
+        {
+            "subject": "alpha",
+            "status": "sourced",
+            "value": "SARJ about the truss axis, tracking the Sun (array normals +X at zero)",
+            "source": "Wikipedia, 'Electrical system of the International Space Station': the alpha gimbal is 'the primary rotation to follow the Sun as the space station moves around the Earth'. Both SARJs on one axis, driven alike."
+        },
+        {
+            "subject": "beta",
+            "status": "sourced",
+            "value": "beta gimbals about each wing's mast (4 parallel axes, one per PV module), tracking the Sun",
+            "source": "Same page: the beta gimbal adjusts 'for the angle of the space station's orbit to the ecliptic'. The two wings of a PV module share one IEA; their masts are taken as collinear (estimate)."
+        },
+        {
+            "subject": "truss_inboard",
+            "status": "derived",
+            "value": "3.0 x 54.6 x 4.6 m box: S0 (13.4) + S1/P1 (13.8 each) + the inboard halves of S3/P3 to the SARJs",
+            "source": "ISS Integrated Truss Structure segment table (rdataspace.github.io/station_iss/tech/its.html, quoting NASA truss fact sheets): S0 13.4 m, S1/P1 13.8 m, S3/S4 13.6 m, height 4.6 m. Depth 3.0 m is an estimate between the 1.8 m (S0/S1) and 4.9 m (S3/S4) widths. The lattice is open, so the box's albedo is lowered (truss_lattice)."
+        },
+        {
+            "subjects": [
+                "truss_outboard_stbd",
+                "truss_outboard_port"
+            ],
+            "status": "derived",
+            "value": "3.0 x 23.7 x 4.6 m (0.3 m clear of the inboard box at the SARJ): outboard half of S4/P4 + S5/P5 (3.4) + S6/P6 (13.8)",
+            "source": "ISS Integrated Truss Structure segment table (rdataspace.github.io/station_iss/tech/its.html, quoting NASA truss fact sheets). The sum (102.6 m end to end) is 6 m under NASA's 109 m and over the table's own '91 m main truss' span; segment lengths are used as given."
+        },
+        {
+            "subjects": [
+                "destiny",
+                "harmony",
+                "columbus",
+                "kibo_pm",
+                "kibo_elm",
+                "unity",
+                "tranquility",
+                "cupola",
+                "leonardo_pmm",
+                "quest"
+            ],
+            "status": "sourced",
+            "value": "US/ESA/JAXA module lengths and diameters (e.g. Destiny 9.2 x 4.3 m, Kibo PM 11.19 x 4.39 m)",
+            "source": "Wikipedia, 'Assembly of the International Space Station' (module tables; accessed 2026-09-24). Placement along the stack from the published lengths, berthing gaps 0.4 m (PMA-1 1.9 m), module axes a common 5.0 m below (nadir of) the truss centreline. Range: +-1 m per module: Harmony forward of Destiny, Columbus starboard and Kibo port of Harmony, ELM on Kibo's zenith, Unity aft with Quest starboard and Tranquility port, Cupola on Tranquility's nadir, Leonardo on Tranquility's forward port. BEAM (4.0 x 3.2 m) and the PMAs are omitted (small)."
+        },
+        {
+            "subjects": [
+                "zarya",
+                "rassvet",
+                "zvezda",
+                "poisk",
+                "nauka",
+                "prichal"
+            ],
+            "status": "sourced",
+            "value": "Russian segment lengths and diameters (Zarya 12.56 x 4.1, Zvezda 13.1 x 4.2, Nauka 13 x 4.25 m; Prichal as a 3.3 m sphere)",
+            "source": "Wikipedia, 'Assembly of the International Space Station' (module tables; accessed 2026-09-24). Placement along the stack from the published lengths, berthing gaps 0.4 m (PMA-1 1.9 m), module axes a common 5.0 m below (nadir of) the truss centreline. Range: +-1 m per module: Zarya aft of Unity (PMA-1), Rassvet on Zarya's nadir, Zvezda aft, Poisk on Zvezda's zenith and Nauka + Prichal on its nadir. Zarya's arrays are omitted: 'partially retracted to allow deployment of the P1/S1 radiators' (Wikipedia, Zarya)."
+        },
+        {
+            "subject": "kibo_ef",
+            "status": "estimate",
+            "value": "5.0 x 5.6 x 3.8 m box at Kibo PM's port end; range +-1 m",
+            "source": "JAXA JEM Exposed Facility; dimensions not verified against a published sheet, payloads averaged into the box."
+        },
+        {
+            "subjects": [
+                "hrs_radiator_stbd",
+                "hrs_radiator_port"
+            ],
+            "status": "sourced",
+            "value": "3 radiator ORUs of 23.3 x 3.4 m side by side on each of S1/P1 = one 23.3 x 10.2 m plane, extending aft",
+            "source": "NASA, 'ISS Active Thermal Control System (ATCS) Overview' (STS-116 era, nasa.gov 473486main_iss_atcs_overview.pdf): 'two sets of rotating radiator wings - each composed of three separate radiator ORUs ... Each Radiator ORU measures 76.4 feet (23.3 meters) by 11.2 feet (3.4 meters)'. Aft neutral: Zarya's arrays were retracted to clear them (Wikipedia, Zarya). Gaps between the ORUs ignored."
+        },
+        {
+            "subjects": [
+                "pvr_s4",
+                "pvr_p4",
+                "pvr_s6",
+                "pvr_p6"
+            ],
+            "status": "sourced",
+            "value": "one 3.12 x 13.6 m photovoltaic radiator per PV module",
+            "source": "NASA, 'ISS Active Thermal Control System (ATCS) Overview' (STS-116 era, nasa.gov 473486main_iss_atcs_overview.pdf): the PVR 'when deployed measures 10.24 feet (3.12 meters) by 44.62 feet (13.6 meters) ... a total of four PVRs, one for each PV module (S4, P4, P6, S6)'. Placement (fins in the truss-normal plane, S4/P4 aft and S6/P6 forward, near the S5/P5 spacers) is an ESTIMATE; each plane contains the array normal, so it is edge-on to the Sun as intended."
+        },
+        {
+            "subjects": [
+                "zvezda_array_stbd",
+                "zvezda_array_port"
+            ],
+            "status": "sourced",
+            "value": "two 3.3 m wide arrays spanning 29.7 m tip to tip, sun-tracking about the station's Y axis (pivot at Zvezda)",
+            "source": "NASA, 'Zvezda Service Module' (29.7 m span); Wikipedia, 'Zvezda (ISS module)' (3.3 m width). One-axis tracking about the module's lateral axis shares the SARJ's angle (same law, parallel axis) - estimate. Rigid panels: solar_cell / solar_array_back presets."
+        },
+        {
+            "subjects": [
+                "saw_1A_a",
+                "saw_1A_b",
+                "saw_3A_a",
+                "saw_3A_b",
+                "saw_1B_a",
+                "saw_1B_b",
+                "saw_3B_a",
+                "saw_3B_b",
+                "saw_2A_a",
+                "saw_2A_b",
+                "saw_4A_a",
+                "saw_4A_b",
+                "saw_2B_a",
+                "saw_2B_b",
+                "saw_4B_a",
+                "saw_4B_b"
+            ],
+            "status": "sourced",
+            "value": "8 wings, each two 4.57 x 32.6 m blankets either side of a mast (12 m overall, 2.86 m mast gap), from 3.0 m off the truss axis",
+            "source": "Wikipedia, 'Electrical system of the International Space Station': each wing '35 metres (115 ft) in length and 12 metres (39 ft) wide', 'two retractable blankets of solar cells with a mast between them', blanket box '4.57 metres' long (= blanket width). NASA space station blog 2021-06-25: legacy array '112 feet long by 39 feet wide'. Wing axes at +-31.5 m (S4/P4) and +-46.0 m (S6/P6) and the 3.0 m root offset are DERIVED from the truss segment lengths and the 12 m wing width (clearance). Kapton blankets: solar_cell_flex / solar_array_flex_back (backlit transmission)."
+        },
+        {
+            "subjects": [
+                "irosa_1A",
+                "irosa_3A",
+                "irosa_1B",
+                "irosa_4A",
+                "irosa_2B",
+                "irosa_4B"
+            ],
+            "status": "sourced",
+            "value": "six 18.2 x 6.0 m iROSAs over the central part of wings 1A, 3A (S4), 1B (S6), 4A (P4), 2B, 4B (P6), canted 10 deg, from 0.8 m above the legacy blanket",
+            "source": "NASA space station blog 2021-06-25 ('60 feet long by 20 feet wide'; 'will shade a little more than half of the original array'); Wikipedia, 'Roll Out Solar Array': 'canted at a 10 deg angle above the plane of the existing solar array wings', 'along the central part of the wings between half and two-thirds of their length', installed June 2021 (2B, 4B), Dec 2022 (3A, 4A), June 2023 (1A, 1B); 2A and 3B planned (CRS-35). Which wing of a PV module (nadir or zenith side) carries which channel is an ESTIMATE, as is the 0.8 m mount lift."
+        },
+        {
+            "subject": "us_module_blanket",
+            "status": "estimate",
+            "value": "diffuse albedo 0.65, rough white (beta cloth over MLI / debris shields); range 0.5-0.8",
+            "source": "US/ESA/JAXA modules appear white in imagery; no published reflectance. Phase 3c calibration target."
+        },
+        {
+            "subject": "ru_module_blanket",
+            "status": "estimate",
+            "value": "diffuse albedo 0.5, grey-white thermal blankets; range 0.35-0.7",
+            "source": "Russian modules appear greyer than the US ones in imagery; no published reflectance."
+        },
+        {
+            "subject": "truss_lattice",
+            "status": "estimate",
+            "value": "albedo 0.3, F0 0.3, roughness 0.45: an open aluminium lattice with ORUs, as a solid box with ~half the fill",
+            "source": "No published reflectance; the lowered albedo stands in for the truss's open area (it also over-shadows as a solid occluder)."
+        },
+        {
+            "subject": "radiator_z93",
+            "status": "derived",
+            "value": "diffuse albedo 0.85 (Z-93 white, solar absorptance ~0.15)",
+            "source": "NASA, 'ISS Active Thermal Control System (ATCS) Overview' (STS-116 era, nasa.gov 473486main_iss_atcs_overview.pdf): 'Each panel has a white (Z-93) coating'. Z-93 zinc-oxide paint solar absorptance ~0.15 (NASA thermal-control coating data); albedo = 1 - absorptance."
+        },
+        {
+            "subject": "irosa_cell",
+            "status": "estimate",
+            "value": "the solar_cell_flex preset, darker blue tint",
+            "source": "iROSA cells are multi-junction cells on a flexible blanket; no published reflectance. Visual tint only."
+        }
+    ]
+}

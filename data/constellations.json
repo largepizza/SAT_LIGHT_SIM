@@ -11,6 +11,10 @@
             "model": "hubble"
         },
         {
+            "name": "ISS (geometry model)",
+            "model": "iss"
+        },
+        {
             "name": "Starlink V1.0 (geometry model)",
             "model": "starlink_v1_0"
         },
@@ -44,6 +48,16 @@
             "type": "Hubble (geometry model)",
             "alt_km": 535.0,
             "incl_deg": 28.5,
+            "num_planes": 1,
+            "per_plane": 1,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "International Space Station - geometry model",
+            "type": "ISS (geometry model)",
+            "alt_km": 415.0,
+            "incl_deg": 51.64,
             "num_planes": 1,
             "per_plane": 1,
             "enabled": true,

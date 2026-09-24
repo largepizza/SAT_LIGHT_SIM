@@ -172,10 +172,11 @@ struct SatLobe {
     float alpha2Mat;          // GGX α² of material + normal spread (source size added below)
     uint  sampleFirst;        // Phase 3b: first entry in lobeSamples[]
     uint  sampleCount;        // 0 = never occluded
-    uint  occluderMask;       // bit i: the type's occluder i can block this lobe
+    uint  occluderMask;       // bit i: the type's occluder i can block this lobe (0-31)
     uint  distribution;       // 0 = GGX, 1 = Beckmann (materials whose α came from a Phong cos^n fit)
     float transmission;       // Phase 4f: diffuse transmission (light from behind the face), V band
-    uint  lobePadB, lobePadC;
+    uint  occluderMaskHi;     // occluders 32-63
+    uint  lobePadC;
 };
 layout(set = 0, binding = 8) readonly buffer SatLobeBuf {
     SatLobe lobes[];
@@ -874,11 +875,15 @@ vec2 lobeVisibility(uint ti, SatLobe L, mat3 F0, mat3 F1, mat3 F2, mat3 F3,
             SatOccluder Oc = occluders[firstOcc + S.comp];
             pw += pivotOffset(ti, L.group, vec3(Oc.pivotXT, Oc.pivotYT, Oc.pivotZT), F0, F1, F2, F3);
         }
-        uint m = L.occluderMask & ((S.comp < 32u) ? ~(1u << S.comp) : 0xFFFFFFFFu);
+        // 64-bit candidate mask as two words; a sample's own component never occludes it.
+        uvec2 mw = uvec2(L.occluderMask, L.occluderMaskHi);
+        if (S.comp < 32u) mw.x &= ~(1u << S.comp);
+        else if (S.comp < 64u) mw.y &= ~(1u << (S.comp - 32u));
         bool bObs = false, bSun = false;
-        while (m != 0u) {
-            uint oi = uint(findLSB(m));
-            m &= m - 1u;
+        while (mw.x != 0u || mw.y != 0u) {
+            uint oi;
+            if (mw.x != 0u) { oi = uint(findLSB(mw.x)); mw.x &= mw.x - 1u; }
+            else            { oi = 32u + uint(findLSB(mw.y)); mw.y &= mw.y - 1u; }
             SatOccluder O = occluders[firstOcc + oi];
             mat3 FQ = pickFrame(O.group, F0, F1, F2, F3);
             // World → the occluder's group (triad coords) → the occluder's local frame.
@@ -912,7 +917,7 @@ float occludedIntensity(uint ti, mat3 F0, mat3 F1, mat3 F2, mat3 F3, vec3 earthD
     uint count = types[ti].lobeCount;
     for (uint li = first; li < first + count; ++li) {
         SatLobe L = lobes[li];
-        if (L.sampleCount == 0u || L.occluderMask == 0u) continue;
+        if (L.sampleCount == 0u || (L.occluderMask | L.occluderMaskHi) == 0u) continue;
         vec3 n = pickFrame(L.group, F0, F1, F2, F3) * L.normalT;
         float cs = (litFactor > 0.0) ? lobeIntensity(n, L, pc.sunDirECI, satToObs, SUN_ALPHA * SUN_ALPHA) * litFactor : 0.0;
         float ce = (earthE > 0.0) ? lobeIntensity(n, L, earthDir, satToObs, earthA2) * earthE : 0.0;
