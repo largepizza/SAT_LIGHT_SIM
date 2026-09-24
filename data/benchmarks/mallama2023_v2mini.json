@@ -1,0 +1,75 @@
+{
+  "format": "sat-light-sim-benchmark/1",
+  "id": "mallama2023_v2mini",
+  "title": "Brightness of Starlink V2 Mini satellites in on-station brightness-mitigation mode",
+  "kind": "distribution",
+  "citation": {
+    "authors": "A. Mallama, R.E. Cole, S. Harrington, P.D. Maley",
+    "year": 2023,
+    "title": "Starlink Generation 2 Mini Satellites: Photometric Characterization",
+    "url": "https://arxiv.org/abs/2306.06657"
+  },
+  "satellite": {
+    "name": "Starlink V2 Mini (mitigated)",
+    "model": "starlink_v2_mini",
+    "notes": "On-station V2 Minis in SpaceX's brightness-mitigation conops: arrays edge-on to the Earth's limb (section 5, SpaceX private communication), second-generation dielectric mirror film on the nadir face. Early-mission (unmitigated) observations are a separate population the model does not fly."
+  },
+  "magnitudes": {
+    "band": "visual and video (close to Johnson V; section 3, Figure 2)",
+    "atmosphere": "above (differential against nearby catalogue stars, which cancels extinction; section 3)",
+    "reduction": "1000 km",
+    "locator": "section 3"
+  },
+  "published": {
+    "n": { "value": 77, "locator": "DERIVED: (StDev / SD_Mean)^2 = (0.79 / 0.09)^2 from Table 2; the paper does not print the mitigated count" },
+    "mean_m1000": { "value": 7.87, "uncertainty": 0.09, "locator": "abstract; Table 2 (Mitigated, 1000-km)" },
+    "sd_m1000": { "value": 0.79, "locator": "Table 2 (Mitigated, 1000-km StDev)" },
+    "phase_fit_quadratic": {
+      "coefficients": [2.630, 0.1065, -0.0005167],
+      "variable": "phase_deg",
+      "locator": "Figure 5 caption (mitigated satellites)"
+    }
+  },
+  "sampling": {
+    "shell": {
+      "alt_km": 480,
+      "incl_deg": 43.0,
+      "locator": "section 2: on-station satellites at 480 km (some later 520 km); inclination not stated (Starlink Group 6 shells are 43 deg)"
+    },
+    "period": {
+      "start": "2023-02-27",
+      "end": "2023-06-03",
+      "locator": "section 1 (observations through 2023 June 3); section 2 (launch 6-1 on 2023 February 27). Mitigated satellites were observed mostly from mid-May."
+    },
+    "sites": [
+      { "name": "R. Cole", "lat_deg": 50.552, "lon_deg": -4.735, "instrument": "visual", "count": 66, "locator": "Table 1; count: 397 visual magnitudes split evenly (per-observer counts unpublished)" },
+      { "name": "S. Harrington", "lat_deg": 36.062, "lon_deg": -91.688, "instrument": "visual", "count": 66, "locator": "Table 1" },
+      { "name": "S. Hornig", "lat_deg": 41.878, "lon_deg": 22.501, "instrument": "video camera", "count": 109, "locator": "Table 1; 109 video magnitudes (section 3)" },
+      { "name": "Lee", "lat_deg": 38.948, "lon_deg": -104.561, "instrument": "visual", "count": 66, "locator": "Table 1" },
+      { "name": "A. Mallama", "lat_deg": 38.982, "lon_deg": -76.763, "instrument": "visual", "count": 66, "locator": "Table 1" },
+      { "name": "J. Respler", "lat_deg": 40.330, "lon_deg": -74.445, "instrument": "visual", "count": 66, "locator": "Table 1" },
+      { "name": "Worley", "lat_deg": 41.474, "lon_deg": -81.519, "instrument": "visual", "count": 67, "locator": "Table 1" }
+    ],
+    "constraints": {
+      "operational_altitude_only": true,
+      "penumbra_excluded": null,
+      "sun_altitude_deg": null,
+      "min_elevation_deg": null,
+      "note": "Selection limits are not stated. Site weights: the per-observer split of the MITIGATED observations is unpublished; the counts above split all observations. Observations beyond 1000 km are included (section 5)."
+    },
+    "censoring": {
+      "limiting_mag_apparent": 8.0,
+      "not_seen_assigned_apparent": 8.5,
+      "count": 18,
+      "locator": "section 5: 18 of 506 attempts not seen; 0.5 added to the limiting magnitude (generally about 8). The count covers both populations."
+    }
+  },
+  "transcription": {
+    "source": "arXiv:2306.06657, Tables 1-2, Figure 5 caption, sections 2-5",
+    "method": "pdftotext -layout",
+    "date": "2026-09-24",
+    "check": "summary only: the paper does not publish individual observations"
+  },
+  "columns": ["sat", "phase_deg", "m1000"],
+  "observations": []
+}

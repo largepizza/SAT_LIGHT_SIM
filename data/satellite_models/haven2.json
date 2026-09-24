@@ -1,0 +1,137 @@
+{
+    "name": "Vast Haven-2 (core + two modules)",
+    "note": "Parity model for the v1.1 'Haven-2' type (155 m2 cross-section). Body frame: +X along velocity (the module stack), +Z nadir. A 7 m core between two 15 m modules. Two array wings on a cross-track mast above the stack turn about it to face the Sun. LOW CONFIDENCE: a future station known from renders and press dimensions.",
+    "materials": [
+        {
+            "name": "module_skin",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.6,
+            "roughness": 0.6,
+            "color": [0.9, 0.9, 0.88],
+            "pattern": "panel_seams"
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "station",
+            "primary": {
+                "axis": [0, 0, 1],
+                "target": "nadir"
+            },
+            "secondary": {
+                "axis": [1, 0, 0],
+                "target": "velocity"
+            }
+        },
+        {
+            "name": "arrays",
+            "parent": "station",
+            "hinge": {
+                "position": [0, 0, -4.1],
+                "axis": [0, 1, 0]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [0, 0, -1],
+                "target": "sun"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "haven2_module_1",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.2,
+            "height": 15.1,
+            "position": [13.95, 0, 0],
+            "rotation_deg": [0, 90, 0],
+            "material": "module_skin"
+        },
+        {
+            "name": "haven2_core",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 3.5,
+            "height": 12.0,
+            "position": [0.0, 0, 0],
+            "rotation_deg": [0, 90, 0],
+            "material": "module_skin"
+        },
+        {
+            "name": "haven2_module_2",
+            "type": "cylinder",
+            "group": "station",
+            "radius": 2.2,
+            "height": 15.1,
+            "position": [-13.95, 0, 0],
+            "rotation_deg": [0, 90, 0],
+            "material": "module_skin"
+        },
+        {
+            "name": "array_port",
+            "type": "plane",
+            "group": "arrays",
+            "size": [4.47213595499958, 13.416407864998737],
+            "position": [0, -10.608, -4.1],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        },
+        {
+            "name": "array_starboard",
+            "type": "plane",
+            "group": "arrays",
+            "size": [4.47213595499958, 13.416407864998737],
+            "position": [0, 10.608, -4.1],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "attitude",
+            "status": "estimate",
+            "value": "flown like the ISS (XVV)",
+            "source": "Unpublished."
+        },
+        {
+            "subject": "station",
+            "status": "estimate",
+            "value": "modules stacked along velocity",
+            "source": "estimate: Space.com / Vast (2024): first module 'about 5 meters longer than Haven-1' (15.1 m, 4.4 m wide); a 7 m central core and four more modules planned 2030-32 (two drawn here; lengths estimates)"
+        },
+        {
+            "subject": "arrays",
+            "status": "estimate",
+            "value": "both wings on one cross-track axis, tracking the Sun",
+            "source": "Unpublished; the ISS scheme."
+        },
+        {
+            "subjects": [
+                "haven2_module_1",
+                "haven2_core",
+                "haven2_module_2"
+            ],
+            "status": "estimate",
+            "value": "haven2_module_1 15.1 x 4.4 m, haven2_core 12.0 x 7.0 m, haven2_module_2 15.1 x 4.4 m",
+            "source": "estimate: Space.com / Vast (2024): first module 'about 5 meters longer than Haven-1' (15.1 m, 4.4 m wide); a 7 m central core and four more modules planned 2030-32 (two drawn here; lengths estimates)"
+        },
+        {
+            "subjects": [
+                "array_port",
+                "array_starboard"
+            ],
+            "status": "estimate",
+            "value": "two 4.5 x 13.4 m wings, 120 m2",
+            "source": "Unpublished; sized to the v1.1 type's 155 m2."
+        },
+        {
+            "subject": "module_skin",
+            "status": "estimate",
+            "value": "white exterior (albedo 0.6)",
+            "source": "Unpublished reflectance."
+        }
+    ]
+}

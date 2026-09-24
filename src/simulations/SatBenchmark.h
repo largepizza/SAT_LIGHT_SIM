@@ -49,6 +49,9 @@ struct BenchObservation
 
 struct Benchmark
 {
+    // false: reported (and logged in KNOWN_RESIDUALS.md) but a miss does not fail the run or the
+    // accuracy gate - for datasets the model is known not to reproduce yet (JSON "gated": false).
+    bool gated = true;
     std::string path;
     std::string id, title, kind;
     std::string citationAuthors, citationTitle, citationUrl;

@@ -1,6 +1,6 @@
 {
-    "name": "Reflect Orbital mirror (operational, estimate)",
-    "note": "Parity model for the v1.1 'Reflect Mirror' type. Body frame: +Z = mirror normal (sun_reflect_ground_site), +X toward velocity. One 48.7 m square membrane mirror (the legacy 2376 m2 in Earendil-1's shape) on a small bus. The CPU photometric evaluator cannot aim at a ground site yet, so traces, exports and benchmarks refuse this type; the GPU path (the app) works.",
+    "name": "Reflect Orbital mirror (full scale)",
+    "note": "Parity model for the v1.1 'Reflect Mirror' type. Body frame: +Z = mirror normal (sun_reflect_ground_site), +X toward velocity. One 55 x 55 m square membrane mirror (the quoted full-scale size) on a small bus. The CPU evaluator aims it with satGroundSiteIdeal(), the mirror of the GPU's lock-window aim.",
     "materials": [
         {
             "name": "mirror_film",
@@ -35,7 +35,7 @@
             "name": "mirror",
             "type": "plane",
             "group": "mirror",
-            "size": [48.7, 48.7],
+            "size": [55.0, 55.0],
             "position": [0, 0, 0],
             "material": "mirror_film",
             "back_material": "film_back"
@@ -59,8 +59,8 @@
         {
             "subject": "mirror",
             "status": "derived",
-            "value": "48.7 m square membrane mirror (2376 m2)",
-            "source": "Wikipedia, 'Reflect Orbital' (Earendil-1: an 18 m square of 'four triangular membrane panels' of 'plastic film coated in aluminum', sun-synchronous 600-650 km, a ~5 km spot, reoriented 'within seconds to keep its beam on a target'; up to 50,000 reflectors by 2035). Operational mirror size unpublished: the v1.1 type's 2376 m2 in Earendil-1's square shape."
+            "value": "55 x 55 m square membrane mirror (3025 m2)",
+            "source": "Reflect Orbital's quoted full-scale mirror, 55 x 55 m (as specified by the project owner, 2026-09-24); the square shape of Earendil-1's 18 m demonstrator (Wikipedia, 'Reflect Orbital' (Earendil-1: an 18 m square of 'four triangular membrane panels' of 'plastic film coated in aluminum', sun-synchronous 600-650 km, a ~5 km spot, reoriented 'within seconds to keep its beam on a target'; up to 50,000 reflectors by 2035))."
         },
         {
             "subject": "bus",

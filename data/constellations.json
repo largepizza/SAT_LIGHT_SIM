@@ -3,32 +3,88 @@
     "version": 1,
     "satellite_types": [
         {
-            "name": "Starlink V2 Mini (geometry model)",
+            "name": "Starlink V1.5 (Gen1)",
+            "model": "starlink_v1_5"
+        },
+        {
+            "name": "Starlink V2 Mini (Gen2)",
             "model": "starlink_v2_mini"
+        },
+        {
+            "name": "Starlink V3 (Gen3)",
+            "model": "starlink_v3"
+        },
+        {
+            "name": "Starlink V2 Mini Direct-to-Cell",
+            "model": "starlink_v2_mini_dtc"
+        },
+        {
+            "name": "OneWeb Gen1",
+            "model": "oneweb"
+        },
+        {
+            "name": "Amazon Leo",
+            "model": "amazon_leo"
+        },
+        {
+            "name": "Guowang",
+            "model": "guowang"
+        },
+        {
+            "name": "ISS",
+            "model": "iss"
+        },
+        {
+            "name": "Tiangong",
+            "model": "tiangong"
+        },
+        {
+            "name": "Haven-1",
+            "model": "haven1"
+        },
+        {
+            "name": "Haven-2",
+            "model": "haven2"
+        },
+        {
+            "name": "Axiom Station",
+            "model": "axiom_station"
+        },
+        {
+            "name": "Orbital Reef",
+            "model": "orbital_reef"
+        },
+        {
+            "name": "Russian Orbital Service Station",
+            "model": "ross"
+        },
+        {
+            "name": "Bharatiya Antariksh Station",
+            "model": "bharatiya_station"
+        },
+        {
+            "name": "Starlab",
+            "model": "starlab"
+        },
+        {
+            "name": "Starship HLS Depot",
+            "model": "starship_depot"
+        },
+        {
+            "name": "SpaceX Starmind AI1",
+            "model": "spacex_ai_sat"
+        },
+        {
+            "name": "Reflect Orbital mirror",
+            "model": "reflect_orbital"
+        },
+        {
+            "name": "Debris fragment",
+            "model": "debris_fragment"
         },
         {
             "name": "Hubble (geometry model)",
             "model": "hubble"
-        },
-        {
-            "name": "ISS (geometry model)",
-            "model": "iss"
-        },
-        {
-            "name": "Tiangong (geometry model)",
-            "model": "tiangong"
-        },
-        {
-            "name": "Starship HLS Depot (geometry model)",
-            "model": "starship_depot"
-        },
-        {
-            "name": "SpaceX AI Satellite (geometry model)",
-            "model": "spacex_ai_sat"
-        },
-        {
-            "name": "Reflect Orbital mirror (geometry model)",
-            "model": "reflect_orbital"
         },
         {
             "name": "Starlink V1.0 (geometry model)",
@@ -40,24 +96,273 @@
         },
         {
             "name": "Starlink Gen2 (legacy)",
-            "base_color": [0.80, 0.87, 1.00],
+            "base_color": [0.8, 0.87, 1.0],
             "cross_section_m2": 10.0,
-            "primary": { "attitude": "KnifeEdge", "spec_exp": 18.0, "weight": 1.0 },
-            "secondary": { "attitude": "NadirPointing", "spec_exp": 5.0, "weight": 0.2 },
+            "primary": {
+                "attitude": "KnifeEdge",
+                "spec_exp": 18.0,
+                "weight": 1.0
+            },
+            "secondary": {
+                "attitude": "NadirPointing",
+                "spec_exp": 5.0,
+                "weight": 0.2
+            },
             "diffuse": 0.0,
             "mirror_frac": 0.05
         }
     ],
     "constellations": [
         {
-            "name": "V2 Mini shell - geometry model",
-            "type": "Starlink V2 Mini (geometry model)",
-            "alt_km": 530.0,
+            "name": "Starlink Gen1",
+            "type": "Starlink V1.5 (Gen1)",
+            "alt_km": 550.0,
             "incl_deg": 53.0,
             "num_planes": 72,
-            "per_plane": 22,
+            "per_plane": 61,
             "enabled": true,
             "distribution": "Walker"
+        },
+        {
+            "name": "Starlink Gen2",
+            "type": "Starlink V2 Mini (Gen2)",
+            "alt_km": 525.0,
+            "incl_deg": 53.2,
+            "num_planes": 120,
+            "per_plane": 254,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Starlink Gen3 Broadband",
+            "type": "Starlink V3 (Gen3)",
+            "alt_km": 525.0,
+            "incl_deg": 53.0,
+            "num_planes": 100,
+            "per_plane": 50,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Starlink Gen3 Direct-to-Cell",
+            "type": "Starlink V2 Mini Direct-to-Cell",
+            "alt_km": 326.0,
+            "incl_deg": 53.0,
+            "num_planes": 100,
+            "per_plane": 150,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "OneWeb",
+            "type": "OneWeb Gen1",
+            "alt_km": 1200.0,
+            "incl_deg": 87.9,
+            "num_planes": 18,
+            "per_plane": 36,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Amazon Leo Shell 1",
+            "type": "Amazon Leo",
+            "alt_km": 590.0,
+            "incl_deg": 51.9,
+            "num_planes": 21,
+            "per_plane": 30,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Amazon Leo Shell 2",
+            "type": "Amazon Leo",
+            "alt_km": 610.0,
+            "incl_deg": 33.0,
+            "num_planes": 36,
+            "per_plane": 36,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Amazon Leo Shell 3",
+            "type": "Amazon Leo",
+            "alt_km": 630.0,
+            "incl_deg": 26.0,
+            "num_planes": 34,
+            "per_plane": 34,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Guowang-2 Polar",
+            "type": "Guowang",
+            "alt_km": 1145.0,
+            "incl_deg": 86.5,
+            "num_planes": 48,
+            "per_plane": 72,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Guowang-2 Mid-Inclination",
+            "type": "Guowang",
+            "alt_km": 1145.0,
+            "incl_deg": 50.0,
+            "num_planes": 48,
+            "per_plane": 72,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Guowang GW-A59",
+            "type": "Guowang",
+            "alt_km": 572.0,
+            "incl_deg": 55.0,
+            "num_planes": 80,
+            "per_plane": 76,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "International Space Station",
+            "type": "ISS",
+            "alt_km": 415.0,
+            "incl_deg": 51.64,
+            "num_planes": 1,
+            "per_plane": 1,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Tiangong",
+            "type": "Tiangong",
+            "alt_km": 386.0,
+            "incl_deg": 41.47,
+            "num_planes": 1,
+            "per_plane": 1,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Haven-1",
+            "type": "Haven-1",
+            "alt_km": 425.0,
+            "incl_deg": 51.6,
+            "num_planes": 1,
+            "per_plane": 1,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Haven-2",
+            "type": "Haven-2",
+            "alt_km": 420.0,
+            "incl_deg": 51.6,
+            "num_planes": 1,
+            "per_plane": 1,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Axiom Station",
+            "type": "Axiom Station",
+            "alt_km": 408.0,
+            "incl_deg": 51.6,
+            "num_planes": 1,
+            "per_plane": 1,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Orbital Reef",
+            "type": "Orbital Reef",
+            "alt_km": 500.0,
+            "incl_deg": 51.6,
+            "num_planes": 1,
+            "per_plane": 1,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Russian Orbital Service Station",
+            "type": "Russian Orbital Service Station",
+            "alt_km": 400.0,
+            "incl_deg": 51.6,
+            "num_planes": 1,
+            "per_plane": 1,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Bharatiya Antariksha Station",
+            "type": "Bharatiya Antariksh Station",
+            "alt_km": 420.0,
+            "incl_deg": 51.6,
+            "num_planes": 1,
+            "per_plane": 1,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Starlab",
+            "type": "Starlab",
+            "alt_km": 400.0,
+            "incl_deg": 51.6,
+            "num_planes": 1,
+            "per_plane": 1,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "Starship HLS Fuel Depots",
+            "type": "Starship HLS Depot",
+            "alt_km": 281.0,
+            "incl_deg": 31.0,
+            "num_planes": 1,
+            "per_plane": 3,
+            "enabled": true,
+            "distribution": "Walker"
+        },
+        {
+            "name": "SpaceX AI Satellites",
+            "type": "SpaceX Starmind AI1",
+            "alt_km": 1250.0,
+            "incl_deg": 0.0,
+            "num_planes": 1000,
+            "per_plane": 1000,
+            "enabled": true,
+            "distribution": "Disk",
+            "alt_jitter_km": 0.05,
+            "raan_deg": 0.0,
+            "align_terminator": true,
+            "num_rings": 2000,
+            "ring_spacing_km": 0.7
+        },
+        {
+            "name": "Reflect Orbital",
+            "type": "Reflect Orbital mirror",
+            "alt_km": 500.0,
+            "incl_deg": 0.0,
+            "num_planes": 10,
+            "per_plane": 500,
+            "enabled": true,
+            "distribution": "Disk",
+            "alt_jitter_km": 0.05,
+            "raan_deg": 0.0,
+            "align_terminator": true,
+            "num_rings": 3,
+            "ring_spacing_km": 10.0
+        },
+        {
+            "name": "Space Junk",
+            "type": "Debris fragment",
+            "alt_km": 1000.0,
+            "incl_deg": 180.0,
+            "num_planes": 1000,
+            "per_plane": 300,
+            "enabled": true,
+            "distribution": "RandomShell",
+            "alt_jitter_km": 500.0
         },
         {
             "name": "Hubble - geometry model",
@@ -68,66 +373,6 @@
             "per_plane": 1,
             "enabled": true,
             "distribution": "Walker"
-        },
-        {
-            "name": "International Space Station - geometry model",
-            "type": "ISS (geometry model)",
-            "alt_km": 415.0,
-            "incl_deg": 51.64,
-            "num_planes": 1,
-            "per_plane": 1,
-            "enabled": true,
-            "distribution": "Walker"
-        },
-        {
-            "name": "Tiangong - geometry model",
-            "type": "Tiangong (geometry model)",
-            "alt_km": 386.0,
-            "incl_deg": 41.47,
-            "num_planes": 1,
-            "per_plane": 1,
-            "enabled": true,
-            "distribution": "Walker"
-        },
-        {
-            "name": "Starship HLS depots - geometry model",
-            "type": "Starship HLS Depot (geometry model)",
-            "alt_km": 281.0,
-            "incl_deg": 31.0,
-            "num_planes": 1,
-            "per_plane": 3,
-            "enabled": true,
-            "distribution": "Walker"
-        },
-        {
-            "name": "SpaceX AI satellites (1M, dawn-dusk disk) - geometry model",
-            "type": "SpaceX AI Satellite (geometry model)",
-            "alt_km": 1250.0,
-            "incl_deg": 0.0,
-            "num_planes": 1000,
-            "per_plane": 1000,
-            "enabled": false,
-            "distribution": "Disk",
-            "alt_jitter_km": 0.05,
-            "raan_deg": 0.0,
-            "align_terminator": true,
-            "num_rings": 2000,
-            "ring_spacing_km": 0.7
-        },
-        {
-            "name": "Reflect Orbital mirrors - geometry model",
-            "type": "Reflect Orbital mirror (geometry model)",
-            "alt_km": 500.0,
-            "incl_deg": 0.0,
-            "num_planes": 10,
-            "per_plane": 500,
-            "enabled": false,
-            "distribution": "Disk",
-            "alt_jitter_km": 0.05,
-            "raan_deg": 0.0,
-            "align_terminator": true,
-            "num_rings": 3,
-            "ring_spacing_km": 10.0
         },
         {
             "name": "V1.0 shell (2020, benchmark reference) - geometry model",

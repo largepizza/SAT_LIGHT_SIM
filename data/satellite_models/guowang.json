@@ -1,0 +1,94 @@
+{
+    "name": "Guowang (China SatNet) broadband satellite",
+    "note": "Parity model for the v1.1 'Guowang Sat' type. Body frame: +Z nadir, +X velocity. A 3 x 1 x 1 m box with two arrays spanning 10 m, tracking the Sun about the cross-track axis; no brightness mitigation (none reported). Everything beyond the box size and span is an estimate. Benchmark: mallama2025_constellations Guowang row (4.21 at 1000 km, orbit-raising near 1053 km).",
+    "materials": [
+        {
+            "name": "gw_body",
+            "preset": "mli_foil"
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "bus",
+            "primary": {
+                "axis": [0, 0, 1],
+                "target": "nadir"
+            },
+            "secondary": {
+                "axis": [1, 0, 0],
+                "target": "velocity"
+            }
+        },
+        {
+            "name": "wings",
+            "parent": "bus",
+            "hinge": {
+                "position": [0, 0, -0.5],
+                "axis": [0, 1, 0]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [0, 0, -1],
+                "target": "sun"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "bus",
+            "type": "box",
+            "group": "bus",
+            "size": [3.0, 1.0, 1.0],
+            "material": "gw_body"
+        },
+        {
+            "name": "array_left",
+            "type": "plane",
+            "group": "wings",
+            "size": [2.8, 4.2],
+            "position": [0, 2.9, 0],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        },
+        {
+            "name": "array_right",
+            "type": "plane",
+            "group": "wings",
+            "size": [2.8, 4.2],
+            "position": [0, -2.9, 0],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "bus",
+            "status": "sourced",
+            "value": "3 x 1 x 1 m box, nadir-pointing along velocity",
+            "source": "China in Space, 'How Large Are GuoWang's Mega-Constellation Satellites?' and KeepTrack, 'Guowang's First Ten': a box body 'roughly 3 meters long by 1 meter wide with a 10-meter wingspan', two deployable solar panels, ~700-800 kg (height and yaw: estimates)."
+        },
+        {
+            "subjects": [
+                "array_left",
+                "array_right"
+            ],
+            "status": "derived",
+            "value": "two 2.8 x 4.2 m arrays, 10 m tip to tip",
+            "source": "China in Space, 'How Large Are GuoWang's Mega-Constellation Satellites?' and KeepTrack, 'Guowang's First Ten': a box body 'roughly 3 meters long by 1 meter wide with a 10-meter wingspan', two deployable solar panels, ~700-800 kg. Length DERIVED from the span; width ~ the 3 m body (estimate)."
+        },
+        {
+            "subject": "wings",
+            "status": "estimate",
+            "value": "arrays track the Sun about the cross-track axis",
+            "source": "Not published."
+        },
+        {
+            "subject": "gw_body",
+            "status": "estimate",
+            "value": "the mli_foil preset",
+            "source": "Unpublished."
+        }
+    ]
+}

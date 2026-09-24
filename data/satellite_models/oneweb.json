@@ -1,0 +1,124 @@
+{
+    "name": "OneWeb Gen1 (Airbus Arrow)",
+    "note": "Parity model for the v1.1 'LEO Broadband' type as flown by OneWeb (1200 km, 87.9 deg). Body frame: +Z nadir, +X velocity. A 1 x 1.3 x 1 m bus in MLI, two dish antennas below it, two arrays on yokes (5 m span) tracking the Sun about the cross-track axis. Benchmark: mallama2020b_oneweb (7.18 at 1000 km).",
+    "materials": [
+        {
+            "name": "oneweb_mli",
+            "preset": "mli_foil",
+            "diffuse_albedo": 0.1,
+            "specular_f0": 0.25,
+            "color": [0.35, 0.33, 0.3]
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "bus",
+            "primary": {
+                "axis": [0, 0, 1],
+                "target": "nadir"
+            },
+            "secondary": {
+                "axis": [1, 0, 0],
+                "target": "velocity"
+            }
+        },
+        {
+            "name": "wings",
+            "parent": "bus",
+            "hinge": {
+                "position": [0, 0, -0.5],
+                "axis": [0, 1, 0]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [0, 0, -1],
+                "target": "sun"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "bus",
+            "type": "box",
+            "group": "bus",
+            "size": [1.0, 1.3, 1.0],
+            "material": "oneweb_mli"
+        },
+        {
+            "name": "array_left",
+            "type": "plane",
+            "group": "wings",
+            "size": [1.3, 1.6],
+            "position": [0, 1.85, 0],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        },
+        {
+            "name": "dish_left",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.25,
+            "height": 0.08,
+            "position": [0.35, 0, 0.85],
+            "material": "white_paint"
+        },
+        {
+            "name": "array_right",
+            "type": "plane",
+            "group": "wings",
+            "size": [1.3, 1.6],
+            "position": [0, -1.85, 0],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        },
+        {
+            "name": "dish_right",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.25,
+            "height": 0.08,
+            "position": [-0.35, 0, 0.85],
+            "material": "white_paint"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "bus",
+            "status": "sourced",
+            "value": "1 x 1.3 x 1 m box, nadir-pointing (yaw along velocity: estimate)",
+            "source": "eoPortal, 'OneWeb Minisatellite Constellation': 'box shaped structure measuring approximately 1 m x 1 m x 1.3 m', 'a mass of around 150 kg', 'two solar panels that unfold once in orbit'; span 5 m (Gunter's Space Page / KeepTrack); Mallama 2020 (arXiv:2012.05100): 'large solar arrays on long support arms and dish-like antennas on shorter arms'"
+        },
+        {
+            "subjects": [
+                "array_left",
+                "array_right"
+            ],
+            "status": "derived",
+            "value": "two 1.3 x 1.6 m arrays on 0.4 m yokes: 5.0 m tip to tip (4.2 m2)",
+            "source": "eoPortal, 'OneWeb Minisatellite Constellation': 'box shaped structure measuring approximately 1 m x 1 m x 1.3 m', 'a mass of around 150 kg', 'two solar panels that unfold once in orbit'; span 5 m (Gunter's Space Page / KeepTrack); Mallama 2020 (arXiv:2012.05100): 'large solar arrays on long support arms and dish-like antennas on shorter arms'. Panel size DERIVED from the 5 m span and the 1.3 m bus edge; the v1.1 type's 5 m2 agrees."
+        },
+        {
+            "subjects": [
+                "dish_left",
+                "dish_right"
+            ],
+            "status": "estimate",
+            "value": "two 0.5 m white dishes on short arms below the bus",
+            "source": "eoPortal, 'OneWeb Minisatellite Constellation': 'box shaped structure measuring approximately 1 m x 1 m x 1.3 m', 'a mass of around 150 kg', 'two solar panels that unfold once in orbit'; span 5 m (Gunter's Space Page / KeepTrack); Mallama 2020 (arXiv:2012.05100): 'large solar arrays on long support arms and dish-like antennas on shorter arms' ('dish-like antennas on shorter arms'). Size and placement estimates."
+        },
+        {
+            "subject": "wings",
+            "status": "estimate",
+            "value": "arrays track the Sun about the cross-track axis",
+            "source": "Not published; the usual one-axis tracking for a nadir-pointing LEO bus."
+        },
+        {
+            "subject": "oneweb_mli",
+            "status": "calibrated",
+            "value": "dark MLI: albedo 0.1, F0 0.25, roughness 0.35",
+            "source": "FITTED to mallama2020b_oneweb (mean m1000, 5000 samples seed 1, 2026-09-24): the gold-foil mli_foil preset (albedo 0.2, F0 0.6) read 6.49 vs 7.18; dark MLI reads 6.99. Reflectance unpublished; no other OneWeb data is held out."
+        }
+    ]
+}

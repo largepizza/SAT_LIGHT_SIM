@@ -1,0 +1,111 @@
+{
+  "format": "sat-light-sim-benchmark/1",
+  "id": "mallama2026_amazon_leo",
+  "title": "Brightness of Amazon Leo satellites in operational attitude at 630 km",
+  "kind": "distribution",
+  "citation": {
+    "authors": "A. Mallama, R.E. Cole, J. Respler, S. Harrington",
+    "year": 2026,
+    "title": "Brightness Characterization and Modeling for Amazon Leo Satellites",
+    "url": "https://arxiv.org/abs/2601.07708"
+  },
+  "satellite": {
+    "name": "Amazon Leo (operational mode)",
+    "model": "amazon_leo",
+    "notes": "Satellites holding 630 km in the 'operational' attitude (section 5, Table 3)."
+  },
+  "magnitudes": {
+    "band": "V (MMT9) and visual",
+    "atmosphere": "above (differential against nearby catalogue stars; MMT9 V-band photometry)",
+    "reduction": "1000 km",
+    "locator": "observations section"
+  },
+  "published": {
+    "n": {
+      "value": 758,
+      "locator": "Table 3 (Operational, # Obs)"
+    },
+    "mean_m1000": {
+      "value": 6.81,
+      "uncertainty": 0.02,
+      "locator": "Table 3 (Operational, 1000-km)"
+    },
+    "sd_m1000": {
+      "value": 0.64,
+      "locator": "Table 3"
+    }
+  },
+  "sampling": {
+    "shell": {
+      "alt_km": 630,
+      "incl_deg": 51.9,
+      "locator": "section 2: 51.9 deg orbits raised to 630 km"
+    },
+    "period": {
+      "start": "2025-04-28",
+      "end": "2025-11-30",
+      "locator": "section 2 (first launch 2025 April 28); images 'as of November 2025' (section 4)"
+    },
+    "sites": [
+      {
+        "name": "MMT9",
+        "lat_deg": 43.65,
+        "lon_deg": 41.43,
+        "instrument": "camera (MMT9 robotic observatory)",
+        "count": 1,
+        "locator": "section 3"
+      },
+      {
+        "name": "UK visual",
+        "lat_deg": 50.55,
+        "lon_deg": -4.73,
+        "instrument": "visual",
+        "count": 1,
+        "locator": "section 3"
+      },
+      {
+        "name": "US visual 1",
+        "lat_deg": 38.98,
+        "lon_deg": -76.76,
+        "instrument": "visual",
+        "count": 1,
+        "locator": "section 3"
+      },
+      {
+        "name": "US visual 2",
+        "lat_deg": 36.13,
+        "lon_deg": -95.99,
+        "instrument": "visual",
+        "count": 1,
+        "locator": "section 3"
+      },
+      {
+        "name": "US visual 3",
+        "lat_deg": 40.33,
+        "lon_deg": -74.44,
+        "instrument": "visual",
+        "count": 1,
+        "locator": "section 3"
+      }
+    ],
+    "constraints": {
+      "operational_altitude_only": true,
+      "penumbra_excluded": null,
+      "sun_altitude_deg": null,
+      "min_elevation_deg": null,
+      "note": "Site split unpublished: equal weights (assumption). The NAOC 50 cm telescope observed only orbit-raising satellites (excluded)."
+    }
+  },
+  "transcription": {
+    "source": "arXiv:2601.07708, sections 2-5, Tables 2-3",
+    "method": "pdftotext -layout",
+    "date": "2026-09-24",
+    "check": "summary only: the observations are in the SCORE database, not the paper"
+  },
+  "columns": [
+    "sat",
+    "phase_deg",
+    "m1000"
+  ],
+  "observations": []
+}

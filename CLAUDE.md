@@ -490,7 +490,15 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   `mallama2021_visorsat.json` (430 passes, App. A) reproduces n, the 7 censored rows, mean 7.218,
   median, σ and both phase fits (curves within 0.005 mag). `mallama2020a_original.json` is
   summary-only (that paper publishes no per-pass data); `visorsat_vs_original.json` is the 1.29 mag
-  occlusion test. Not copied next to the exe yet — only the tools read them.
+  occlusion test. Summary-only files added 2026-09-24 for the parity models (Mallama et al.):
+  `mallama2023_v2mini` (7.87, mitigated), `mallama2025_dtc` (6.47, held out - passes untuned),
+  `mallama2020b_oneweb` (7.18), `mallama2026_amazon_leo` (6.81, operational mode at 630 km),
+  `mallama2025_starlink_v15` and `mallama2025_guowang` (Table 1 of arXiv:2507.00107, whose text export
+  shifts the count column one row - realigned by hand). Where a paper omits observers, split or
+  period the file says so and assumes them. **`"gated": false`** (Guowang: orbit-raising satellites of
+  unpublished hardware, model 1.6 mag faint) reports a miss without failing the run or the gate - a
+  known residual, logged in `KNOWN_RESIDUALS.md`, not a way to hide a regression.
+  Not copied next to the exe yet — only the tools read them.
 - **SatBench runner** (`SatBench.h/.cpp` + `tools/sat_model_tool/bench_run.cpp`, milestone M5):
   `SatModelTool --run-benchmark <file> [--samples N] [--seed S] [--sensitivity] [--report-dir D]`
   simulates a paper's campaign with the benchmark's model (`satellite.model`): site weighted by its
@@ -574,7 +582,7 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   through `--benchmark` (transcription) and `--run-benchmark --samples 5000 --seed 1` (the logged
   configuration). Any non-zero exit fails the target. CI's Linux job runs it (`linux-accuracy-gate`
   build preset) between Build and Package, so a PR to main that moves a benchmark out of tolerance
-  fails. ~30 s. Verified identical on MSVC (Windows) and GCC 13 (Linux): the sampling is bit-for-bit
+  fails. ~40 s (23 models, 9 benchmarks, 2026-09-24). Verified identical on MSVC (Windows) and GCC 13 (Linux): the sampling is bit-for-bit
   deterministic and every reported metric matches to the printed precision. Adding a benchmark file
   or a model adds it to the gate automatically. **Accepted inaccuracies** (narrow margins, residual
   phase bins, fitted/estimated values, approximation errors) are logged in
@@ -694,9 +702,19 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   (T of three modules; the labs' two-axis wings as alpha about the labs' axis + beta with two
   pivots), `starship_depot.json` (9 x 60 m body of revolution in the `stainless_steel` preset with a
   body-mounted solar band), `spacex_ai_sat.json` (sun-pointing bus, flare-mitigation-tilted wings,
-  radiators in the Sun-nadir plane; 10 lobes, flown by a million) and `reflect_orbital.json` (a 48.7 m
-  square membrane mirror on `sun_reflect_ground_site`) - the parity models; sources and estimates in
-  each file, magnitudes in `KNOWN_RESIDUALS.md` - and the M4 benchmark references `starlink_v1_0.json`
+  radiators in the Sun-nadir plane; 10 lobes, flown by a million - Starmind AI1: 70 m span, 20 m of
+  radiators), `reflect_orbital.json` (a 55 m square membrane mirror on `sun_reflect_ground_site`),
+  the Starlinks `starlink_v1_5` (gen-1 dielectric mirror film, a translucent 'lampshade' backsheet
+  whose transmission is fitted to the Post-VisorSat phase function), `starlink_v2_mini` (rebuilt
+  2026-09-24 to SpaceX's published mitigations: gen-2 film on the nadir face, black paint, opaque
+  backsheet, arrays tracking the Sun but held within 90 - rho of zenith so their plane never dips
+  below the Earth's limb), `starlink_v2_mini_dtc` (+ a 25 m2 nadir phased array) and `starlink_v3`,
+  then `oneweb`, `amazon_leo`, `guowang`, seven commercial stations (`haven1`, `haven2`,
+  `axiom_station`, `orbital_reef`, `ross`, `bharatiya_station`, `starlab` - low confidence, render-level
+  sizes) and `debris_fragment` (tumbling) - the parity models; sources and estimates in each file,
+  magnitudes in `KNOWN_RESIDUALS.md`. Presets added for them: `stainless_steel`,
+  `dielectric_mirror_gen1/_gen2` (Beckmann: GGX's tail made the film forward-scatter grazing sunlight),
+  `array_backsheet_dark` - and the M4 benchmark references `starlink_v1_0.json`
   (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`
   (Mallama 2021 period: array fixed 24 deg from vertical away from the Sun, radio-transparent
   visor sheet under the antennas) — both sourced from Cole 2021 (arXiv:2107.06026) and
@@ -780,10 +798,12 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
 `crossSection = sqrt(crossSectionM2 / 10.0)` — so 10 m² → 1.0, 2376 m² → ~15.4.
 
 ### Satellite type data source
-**On the lighting-overhaul branch (2026-09-23) `data/constellations.json` is the geometry-model
-working set** (V2 Mini, Hubble, V1.0 and VisorSat shells + a disabled legacy Gen2 comparison); the
-v1.1 shipped roster is preserved as `data/custom/constellations_v1_1_default.json` until it is ported
-to the model schema. The build copies `data/constellations.json` over the exe-dir copy whenever the
+**`data/constellations.json` is the v1.1 roster ported to geometry models (2026-09-24)**: every v1.1
+constellation with its v1.1 orbit and count (ISS and Tiangong at their current orbits) flying a model
+type, ~1.38M satellites, plus Hubble, the 2020 V1.0 / VisorSat benchmark shells and a disabled
+legacy Gen2 comparison. **Constellations ship enabled** - the user wants to see them (even the 1M AI
+disk); the legacy comparison is the only disabled entry. The v1.1 legacy roster is preserved as
+`data/custom/constellations_v1_1_default.json`. The build copies `data/constellations.json` over the exe-dir copy whenever the
 exe relinks — which is why hand-pasted rosters there kept "reverting": edit the file in `data/`.
 
 Types and constellations are loaded from `constellations.json` next to the exe. If the file is missing or malformed, `loadHardcoded()` provides the catalogue above as a fallback. The JSON schema is in `constellations.schema.json`.

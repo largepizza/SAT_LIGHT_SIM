@@ -1,0 +1,67 @@
+{
+  "format": "sat-light-sim-benchmark/1",
+  "id": "mallama2025_dtc",
+  "title": "Brightness of Starlink Mini Direct-to-Cell satellites in brightness-mitigation mode",
+  "kind": "distribution",
+  "citation": {
+    "authors": "A. Mallama, R.E. Cole, J. Respler, S. Harrington",
+    "year": 2025,
+    "title": "Characterization of Starlink Direct-to-Cell Satellites In Brightness Mitigation Mode",
+    "url": "https://arxiv.org/abs/2502.03651"
+  },
+  "satellite": {
+    "name": "Starlink V2 Mini Direct-to-Cell (mitigated)",
+    "model": "starlink_v2_mini_dtc",
+    "notes": "'Late' DTC observations (2024 July - December), after SpaceX adjusted the attitudes to dim them (abstract)."
+  },
+  "magnitudes": {
+    "band": "V (MMT9, within 0.1 mag) and visual (section 2)",
+    "atmosphere": "above (differential against nearby catalogue stars; MMT9 V-band photometry)",
+    "reduction": "1000 km",
+    "locator": "section 2"
+  },
+  "published": {
+    "n": { "value": 484, "locator": "DERIVED: (SD / SDM)^2 = (1.32 / 0.06)^2 from section 3; the paper gives 551 DTC observations in all (early and late)" },
+    "mean_m1000": { "value": 6.47, "uncertainty": 0.06, "locator": "abstract; section 3" },
+    "sd_m1000": { "value": 1.32, "locator": "section 3" },
+    "phase_fit_cubic": {
+      "coefficients": [3.365, 0.06376, -1.716e-4, -1.139e-6],
+      "variable": "phase_deg",
+      "locator": "Table 1 (DTC Late)"
+    }
+  },
+  "sampling": {
+    "shell": {
+      "alt_km": 360,
+      "incl_deg": 53.0,
+      "locator": "section 3: 'the DTCs are around 200 km lower' than the internet satellites at about 550 km; inclination not stated (DTC shells are 53 deg)"
+    },
+    "period": {
+      "start": "2024-07-01",
+      "end": "2024-12-31",
+      "locator": "section 1: 'from July through December 2024'"
+    },
+    "sites": [
+      { "name": "MMT9", "lat_deg": 43.65, "lon_deg": 41.43, "instrument": "camera (MMT9 robotic observatory)", "count": 1, "locator": "section 2; coordinates: the Special Astrophysical Observatory, as in mallama2020a" },
+      { "name": "A. Mallama", "lat_deg": 38.982, "lon_deg": -76.763, "instrument": "visual", "count": 1, "locator": "author; coordinates from mallama2023_v2mini" },
+      { "name": "J. Respler", "lat_deg": 40.330, "lon_deg": -74.445, "instrument": "visual", "count": 1, "locator": "author" },
+      { "name": "S. Harrington", "lat_deg": 36.062, "lon_deg": -91.688, "instrument": "visual", "count": 1, "locator": "author" },
+      { "name": "R. Cole", "lat_deg": 50.552, "lon_deg": -4.735, "instrument": "visual", "count": 1, "locator": "author" }
+    ],
+    "constraints": {
+      "operational_altitude_only": true,
+      "penumbra_excluded": null,
+      "sun_altitude_deg": null,
+      "min_elevation_deg": null,
+      "note": "Observer list and split are not published: MMT9 plus the four authors, equally weighted (an assumption). MMT9 does not observe close to the Sun (high phase)."
+    }
+  },
+  "transcription": {
+    "source": "arXiv:2502.03651, sections 1-4, Table 1",
+    "method": "pdftotext -layout",
+    "date": "2026-09-24",
+    "check": "summary only: the observations are in the SCORE database, not the paper"
+  },
+  "columns": ["sat", "phase_deg", "m1000"],
+  "observations": []
+}

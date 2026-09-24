@@ -1,0 +1,108 @@
+{
+    "name": "Amazon Leo (Project Kuiper production satellite)",
+    "note": "Parity model for the v1.1 'Amazon Leo' type. Body frame: +Z nadir, +X velocity. A 2 m bus, a partly mirrored nadir antenna panel, and one solar panel standing up from the bus (long axis near local vertical) that turns about that axis to face the Sun. Benchmark: mallama2026_amazon_leo (6.81 at 1000 km, operational mode, 630 km). The layout follows the authors' interpretation of Amazon's images (their Figure 4).",
+    "materials": [
+        {
+            "name": "leo_body",
+            "preset": "black_paint",
+            "diffuse_albedo": 0.1
+        },
+        {
+            "name": "leo_nadir_panel",
+            "preset": "dielectric_mirror_gen1",
+            "diffuse_albedo": 0.1
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "bus",
+            "primary": {
+                "axis": [0, 0, 1],
+                "target": "nadir"
+            },
+            "secondary": {
+                "axis": [1, 0, 0],
+                "target": "velocity"
+            }
+        },
+        {
+            "name": "array",
+            "parent": "bus",
+            "hinge": {
+                "position": [0, 0, -0.6],
+                "axis": [0, 0, 1]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [1, 0, 0],
+                "target": "sun"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "bus",
+            "type": "box",
+            "group": "bus",
+            "size": [2.0, 2.0, 1.2],
+            "material": "leo_body"
+        },
+        {
+            "name": "nadir_antenna_panel",
+            "type": "plane",
+            "group": "bus",
+            "size": [3.0, 2.0],
+            "position": [0, 0, 0.7],
+            "single_sided": true,
+            "material": "leo_nadir_panel"
+        },
+        {
+            "name": "solar_panel",
+            "type": "plane",
+            "group": "array",
+            "size": [8.0, 2.0],
+            "position": [0, 0, -4.3],
+            "rotation_deg": [0, 90, 0],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "bus",
+            "status": "sourced",
+            "value": "2 x 2 x 1.2 m bus, nadir-pointing along velocity",
+            "source": "Gunter's Space Page, 'Kuiper / Amazon LEO': about 2 m long and in diameter, 10 m span; ~550-600 kg (height 1.2 m: estimate)."
+        },
+        {
+            "subject": "nadir_antenna_panel",
+            "status": "derived",
+            "value": "3 x 2 m nadir panel (three deployed antenna panels)",
+            "source": "Mallama, Cole, Respler & Harrington 2026 (arXiv:2601.07708) section 4 and Figure 4: 'three antenna panels are folded at launch and deploy to form a large, nadir-facing panel, at least part of which is mirror-faced', 'the solar panel can rotate around its long axis to track the Sun', seen 'oriented close to the local vertical'. Size estimated from the 2 m bus (three 1 x 2 m panels)."
+        },
+        {
+            "subject": "solar_panel",
+            "status": "derived",
+            "value": "one 8 x 2 m panel, long axis to zenith (10 m span with the bus)",
+            "source": "Mallama, Cole, Respler & Harrington 2026 (arXiv:2601.07708) section 4 and Figure 4: 'three antenna panels are folded at launch and deploy to form a large, nadir-facing panel, at least part of which is mirror-faced', 'the solar panel can rotate around its long axis to track the Sun', seen 'oriented close to the local vertical'; Gunter's Space Page, 'Kuiper / Amazon LEO': about 2 m long and in diameter, 10 m span; ~550-600 kg. Length DERIVED from the span; width estimate."
+        },
+        {
+            "subject": "array",
+            "status": "sourced",
+            "value": "the panel turns about its (vertical) long axis toward the Sun",
+            "source": "Mallama, Cole, Respler & Harrington 2026 (arXiv:2601.07708) section 4 and Figure 4: 'three antenna panels are folded at launch and deploy to form a large, nadir-facing panel, at least part of which is mirror-faced', 'the solar panel can rotate around its long axis to track the Sun', seen 'oriented close to the local vertical'."
+        },
+        {
+            "subject": "leo_body",
+            "status": "estimate",
+            "value": "dark paint, albedo 0.1",
+            "source": "Unpublished."
+        },
+        {
+            "subject": "leo_nadir_panel",
+            "status": "estimate",
+            "value": "a gen-1-like mirror with a larger diffuse part (0.1): 'partly mirror-faced'",
+            "source": "Mallama, Cole, Respler & Harrington 2026 (arXiv:2601.07708) section 4 and Figure 4: 'three antenna panels are folded at launch and deploy to form a large, nadir-facing panel, at least part of which is mirror-faced', 'the solar panel can rotate around its long axis to track the Sun', seen 'oriented close to the local vertical'. Reflectance unpublished."
+        }
+    ]
+}

@@ -1,0 +1,113 @@
+{
+  "format": "sat-light-sim-benchmark/1",
+  "id": "mallama2025_guowang",
+  "title": "Brightness of Guowang satellites during orbit raising (mean height 1053 km)",
+  "kind": "distribution",
+  "citation": {
+    "authors": "A. Mallama, R.E. Cole, J. Respler, S. Harrington, and others",
+    "year": 2025,
+    "title": "Satellite Constellations Exceed the Limits of Acceptable Brightness Established by the IAU",
+    "url": "https://arxiv.org/abs/2507.00107"
+  },
+  "satellite": {
+    "name": "Guowang",
+    "model": "guowang",
+    "notes": "Satellites 'rising from 900 km and higher to about 1,170, with a mean of 1,053' (section 3)."
+  },
+  "magnitudes": {
+    "band": "V (MMT9) and visual",
+    "atmosphere": "above (differential against nearby catalogue stars; MMT9 V-band photometry)",
+    "reduction": "1000 km",
+    "locator": "observations section"
+  },
+  "published": {
+    "n": {
+      "value": 455,
+      "locator": "Table 1 (Guowang row; the Mags column is offset one row in the text export)"
+    },
+    "mean_m1000": {
+      "value": 4.21,
+      "uncertainty": 0.04,
+      "locator": "Table 1 (Guowang, 1000-km)"
+    },
+    "sd_m1000": {
+      "value": 0.85,
+      "locator": "Table 1"
+    }
+  },
+  "sampling": {
+    "shell": {
+      "alt_km": 1053,
+      "incl_deg": 86.5,
+      "locator": "section 3 (mean observed height 1053 km); inclination: the polar Guowang shells (~86.5 deg; not in the paper)"
+    },
+    "period": {
+      "start": "2025-01-01",
+      "end": "2025-06-30",
+      "locator": "not stated; the paper was submitted 2025 July 1 (estimate)"
+    },
+    "sites": [
+      {
+        "name": "MMT9",
+        "lat_deg": 43.65,
+        "lon_deg": 41.43,
+        "instrument": "camera (MMT9 robotic observatory)",
+        "count": 1,
+        "locator": "as the authors' other studies (assumption)"
+      },
+      {
+        "name": "R. Cole",
+        "lat_deg": 50.552,
+        "lon_deg": -4.735,
+        "instrument": "visual",
+        "count": 1,
+        "locator": "section 3"
+      },
+      {
+        "name": "A. Mallama",
+        "lat_deg": 38.982,
+        "lon_deg": -76.763,
+        "instrument": "visual",
+        "count": 1,
+        "locator": "section 3"
+      },
+      {
+        "name": "J. Respler",
+        "lat_deg": 40.33,
+        "lon_deg": -74.445,
+        "instrument": "visual",
+        "count": 1,
+        "locator": "section 3"
+      },
+      {
+        "name": "S. Harrington",
+        "lat_deg": 36.062,
+        "lon_deg": -91.688,
+        "instrument": "visual",
+        "count": 1,
+        "locator": "section 3"
+      }
+    ],
+    "constraints": {
+      "operational_altitude_only": true,
+      "penumbra_excluded": null,
+      "sun_altitude_deg": null,
+      "min_elevation_deg": null,
+      "note": "Observers, split and period are not in the paper (assumptions). Orbit-raising satellites: attitude and mitigation unknown."
+    }
+  },
+  "transcription": {
+    "source": "arXiv:2507.00107, Table 1 and section 3",
+    "method": "pdftotext -layout (Table 1's Mags column realigned by one row)",
+    "date": "2026-09-24",
+    "check": "summary only"
+  },
+  "columns": [
+    "sat",
+    "phase_deg",
+    "m1000"
+  ],
+  "observations": [],
+  "gated": false,
+  "gated_note": "Not gated: orbit-raising satellites of unpublished hardware and attitude; the estimated model reads 5.82 vs 4.21 (KNOWN_RESIDUALS.md)."
+}

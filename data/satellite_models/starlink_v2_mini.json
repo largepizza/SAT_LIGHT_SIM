@@ -1,23 +1,31 @@
 {
-    "name": "Starlink V2 Mini",
-    "note": "Phase 3a example. Approximate public dimensions: flat bus ~4.1 x 2.7 m, two ~52 m2 solar arrays on short booms, gimbaled about the cross-track axis to track the sun. Body frame: +Z nadir, +X velocity, +Y = +Z x +X. Materials are preset estimates, calibrated in Phase 3c.",
+    "name": "Starlink V2 Mini (on-station, brightness-mitigated)",
+    "note": "Benchmark model for Mallama et al. 2023 (mallama2023_v2mini): V2 Minis in SpaceX's on-station mitigation conops. Body frame: +Z nadir, +X velocity, +Y = +Z x +X. Nadir face under the gen-2 dielectric mirror film, the rest of the bus black; arrays track the Sun but never tip their plane below the Earth's limb. Orbit raising, station-keeping burns and deorbit (unmitigated, ~5 at 1000 km) are not modelled.",
     "attitude_groups": [
         {
             "name": "bus",
-            "primary": { "axis": [0, 0, 1], "target": "nadir" },
-            "secondary": { "axis": [1, 0, 0], "target": "velocity" }
+            "primary": {
+                "axis": [0, 0, 1],
+                "target": "nadir"
+            },
+            "secondary": {
+                "axis": [1, 0, 0],
+                "target": "velocity"
+            }
         },
         {
-            "name": "wing_left",
+            "name": "wings",
             "parent": "bus",
-            "hinge": { "position": [0, 1.35, -0.2], "axis": [0, 1, 0] },
-            "joint": { "mode": "track", "vector": [0, 0, -1], "target": "sun" }
-        },
-        {
-            "name": "wing_right",
-            "parent": "bus",
-            "hinge": { "position": [0, -1.35, -0.2], "axis": [0, 1, 0] },
-            "joint": { "mode": "track", "vector": [0, 0, -1], "target": "sun" }
+            "hinge": {
+                "position": [0, 0, -0.2],
+                "axis": [0, 1, 0]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [0, 0, -1],
+                "target": "sun",
+                "limit_deg": 22.0
+            }
         }
     ],
     "components": [
@@ -26,47 +34,65 @@
             "type": "box",
             "group": "bus",
             "size": [4.1, 2.7, 0.4],
-            "material": "antenna_panel"
+            "material": "black_paint"
+        },
+        {
+            "name": "nadir_mirror_film",
+            "type": "plane",
+            "group": "bus",
+            "size": [4.1, 2.7],
+            "position": [0, 0, 0.25],
+            "single_sided": true,
+            "material": "dielectric_mirror_gen2"
         },
         {
             "name": "array_left",
             "type": "plane",
-            "group": "wing_left",
+            "group": "wings",
             "size": [4.1, 12.8],
-            "position": [0, 6.9, 0],
+            "position": [0, 8.25, 0],
             "rotation_deg": [180, 0, 0],
             "material": "solar_cell",
-            "back_material": "solar_array_back"
+            "back_material": "array_backsheet_dark"
         },
         {
             "name": "array_right",
             "type": "plane",
-            "group": "wing_right",
+            "group": "wings",
             "size": [4.1, 12.8],
-            "position": [0, -6.9, 0],
+            "position": [0, -8.25, 0],
             "rotation_deg": [180, 0, 0],
             "material": "solar_cell",
-            "back_material": "solar_array_back"
+            "back_material": "array_backsheet_dark"
         }
     ],
     "sources": [
         {
             "subject": "bus",
             "status": "sourced",
-            "value": "bus 4.1 x 2.7 m; nadir-pointing, +X along velocity (the attitude law is an estimate)",
-            "source": "Footprint: McDowell, planet4589.org/astro/starsim (V2 Mini: bus 4.1 x 2.7 m). Thickness 0.4 m and the velocity-aligned yaw: estimates."
+            "value": "4.1 x 2.7 x 0.4 m flat bus, nadir-pointing, +X along velocity; black paint",
+            "source": "McDowell, planet4589.org/astro/starsim (V2 Mini: bus 4.1 x 2.7 m, solar array 4.1 x 12.8 m per wing); thickness and the velocity-aligned yaw are estimates. SpaceX, 'Brightness Mitigation Best Practices for Satellite Operators' (2022, starlink.com/public-files/BrightnessMitigationBestPracticesSatelliteOperators.pdf): 'black paint for components with complex geometries' ('Low Reflectivity Black'); the whole non-nadir bus uses it here."
         },
         {
-            "subjects": ["array_left", "array_right"],
+            "subject": "nadir_mirror_film",
             "status": "sourced",
-            "value": "two 4.1 x 12.8 m arrays",
-            "source": "McDowell, planet4589.org/astro/starsim (V2 Mini: solar array 4.1 x 12.8 m, one per wing). Boom offset 6.9 m from the bus centre: estimate."
+            "value": "second-generation dielectric mirror film over the nadir face",
+            "source": "SpaceX, 'Brightness Mitigation Best Practices for Satellite Operators' (2022, starlink.com/public-files/BrightnessMitigationBestPracticesSatelliteOperators.pdf): 'SpaceX covers the bottom of its satellites with a second-generation dielectric mirror film' and 'will orient the flat satellite nadir surface so that the specular peak never intersects Earth'. Film reflectance: the dielectric_mirror_gen2 preset (estimate)."
         },
         {
-            "subjects": ["wing_left", "wing_right"],
-            "status": "estimate",
-            "value": "wings hinged at the bus edges about the cross-track axis, tracking the Sun",
-            "source": "Not published; replace with the attitude Mallama et al. 2023 (arXiv:2306.06657) describe once their benchmark is built."
+            "subject": "wings",
+            "status": "derived",
+            "value": "both arrays on one cross-track hinge, tracking the Sun but held within 22 deg of zenith",
+            "source": "Mallama, Cole, Harrington & Maley 2023 (arXiv:2306.06657) section 5 (SpaceX private communication): 'Gen 2 Starlinks place the solar arrays edge-on to the Earth's limb so observers on the ground will not usually see portions of the solar array that are illuminated by the Sun'; SpaceX, 'Brightness Mitigation Best Practices for Satellite Operators' (2022, starlink.com/public-files/BrightnessMitigationBestPracticesSatelliteOperators.pdf): 'terminator tracking ... will point the knife edge of the solar array at the earth limb' with a 25% power cost. DERIVED: an array plane tilted at most 90 - rho from zenith (rho = Earth's angular radius, 66.7-68.4 deg at 480-560 km) keeps the whole Earth behind it. SpaceX does this only near the terminator; away from it the arrays track fully, but a satellite is only seen from the night side near the terminator, so the clamp is applied always."
+        },
+        {
+            "subjects": [
+                "array_left",
+                "array_right"
+            ],
+            "status": "sourced",
+            "value": "two 4.1 x 12.8 m arrays; dark inter-cell cells, opaque dark backsheet",
+            "source": "McDowell, planet4589.org/astro/starsim (V2 Mini: bus 4.1 x 2.7 m, solar array 4.1 x 12.8 m per wing). SpaceX, 'Brightness Mitigation Best Practices for Satellite Operators' (2022, starlink.com/public-files/BrightnessMitigationBestPracticesSatelliteOperators.pdf): 'an opaque pigment for the solar backsheet'. Backsheet reflectance: the array_backsheet_dark preset (estimate). 0.5 m boom gap: estimate."
         }
     ]
 }

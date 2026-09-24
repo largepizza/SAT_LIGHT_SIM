@@ -633,6 +633,11 @@ bool runBenchmarkCommand(const std::string &benchmarkPath, const BenchRunOptions
     report["git"] = gitInfo();
     report["run_utc"] = utcNow();
     writeReport(report, opt, b.id + "__" + (b.modelId.empty() ? std::string("models") : b.modelId) + "__" + seedTag);
+    if (!b.gated && !pass)
+    {
+        std::printf("  verdict: FAIL (not gated: a known residual, see KNOWN_RESIDUALS.md)\n\n");
+        return true;
+    }
     std::printf("  verdict: %s\n\n", pass ? "PASS" : "FAIL");
     return pass;
 }

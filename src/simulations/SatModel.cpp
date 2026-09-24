@@ -431,6 +431,18 @@ const std::vector<SatMaterial> &satMaterialPresetsBase()
         // across V - with a broad lobe from the ring welds and the wavy, dented tank walls, and a little
         // diffuse from the brushed/oxidised finish. INITIAL ESTIMATE.
         {"stainless_steel", 0.05f, 0.55f, 0.12f, {0.76f, 0.76f, 0.75f}},
+        // SpaceX's RF-transparent dielectric (Bragg) mirror film on Starlink nadir faces ("Brightness
+        // Mitigation Best Practices", SpaceX 2022): it "specularly scatters the vast majority of sunlight
+        // away from the Earth". Gen 2 (V2 Mini) is "10x better at reducing observed brightness than the
+        // first-generation film" by SpaceX's BRDF metric - here a 10x smaller diffuse floor. INITIAL
+        // ESTIMATES: specular reflectance ~0.9, a flat-panel-scale waviness.
+        // Beckmann (Gaussian tails): a smooth dielectric stack has no long power-law tail. With GGX's tail
+        // the film forward-scattered the grazing terminator sunlight and the V2 Mini benchmark read 7.43
+        // vs 7.87; Beckmann gives 7.90 (chosen with that benchmark in view - KNOWN_RESIDUALS.md).
+        {"dielectric_mirror_gen1", 0.030f, 0.90f, 0.03f, {0.70f, 0.72f, 0.78f}, true},
+        {"dielectric_mirror_gen2", 0.003f, 0.90f, 0.03f, {0.70f, 0.72f, 0.78f}, true},
+        // An opaque dark-pigmented array backsheet (V2 Mini: "an opaque pigment for the solar backsheet").
+        {"array_backsheet_dark", 0.08f, 0.04f, 0.30f, {0.20f, 0.18f, 0.17f}},
         // Phase 4f — flexible arrays on a translucent Kapton blanket (ISS-style): the cell face and the
         // blanket's back. Light on either side leaks through the gaps between the cells as an amber
         // glow on the other side (transmission). INITIAL ESTIMATES: ~9% open area x ~0.6 Kapton

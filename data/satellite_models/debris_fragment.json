@@ -1,0 +1,87 @@
+{
+    "name": "Debris fragment (tumbling)",
+    "note": "Parity model for the v1.1 'Debris' type (0.05 m2 cross-section, the 'Space Junk' random shell). A folded torn panel and a stub of structure, ~0.3 m across, tumbling about the satellite's own random axis. A representative fragment, not a catalogued object.",
+    "materials": [
+        {
+            "name": "debris_metal",
+            "preset": "aluminum",
+            "roughness": 0.3
+        },
+        {
+            "name": "debris_mli",
+            "preset": "mli_foil"
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "fragment",
+            "law": "tumble"
+        }
+    ],
+    "components": [
+        {
+            "name": "panel_a",
+            "type": "plane",
+            "group": "fragment",
+            "size": [0.25, 0.18],
+            "position": [0.1, 0, 0],
+            "rotation_deg": [0, 20, 0],
+            "material": "debris_metal",
+            "back_material": "debris_mli"
+        },
+        {
+            "name": "panel_b",
+            "type": "plane",
+            "group": "fragment",
+            "size": [0.18, 0.18],
+            "position": [-0.11, 0, 0.05],
+            "rotation_deg": [0, -45, 10],
+            "material": "debris_mli",
+            "back_material": "debris_metal"
+        },
+        {
+            "name": "stub",
+            "type": "box",
+            "group": "fragment",
+            "size": [0.08, 0.08, 0.12],
+            "position": [0, 0.13, 0.02],
+            "material": "debris_metal"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "attitude",
+            "status": "sourced",
+            "value": "uncontrolled tumble",
+            "source": "Fragments are uncontrolled; the tumble law uses the per-satellite random axis, rate and phase (GpuSatOrbit)."
+        },
+        {
+            "subject": "fragment",
+            "status": "estimate",
+            "value": "one rigid tumbling body",
+            "source": "As 'attitude'."
+        },
+        {
+            "subjects": [
+                "panel_a",
+                "panel_b",
+                "stub"
+            ],
+            "status": "estimate",
+            "value": "a folded 0.25 + 0.18 m panel and a 0.12 m stub (~0.05 m2 mean cross-section)",
+            "source": "Sized to the v1.1 'Debris' type's 0.05 m2; shape representative of breakup fragments (panels, MLI)."
+        },
+        {
+            "subject": "debris_metal",
+            "status": "estimate",
+            "value": "aluminium, roughness 0.3",
+            "source": "Representative."
+        },
+        {
+            "subject": "debris_mli",
+            "status": "estimate",
+            "value": "the mli_foil preset",
+            "source": "Representative."
+        }
+    ]
+}

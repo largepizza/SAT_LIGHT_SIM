@@ -1,0 +1,79 @@
+{
+  "format": "sat-light-sim-benchmark/1",
+  "id": "mallama2020b_oneweb",
+  "title": "Brightness of OneWeb satellites (MMT, through 2020 November)",
+  "kind": "distribution",
+  "citation": {
+    "authors": "A. Mallama",
+    "year": 2020,
+    "title": "The Brightness of OneWeb Satellites",
+    "url": "https://arxiv.org/abs/2012.05100"
+  },
+  "satellite": {
+    "name": "OneWeb Gen1",
+    "model": "oneweb",
+    "notes": "Airbus Arrow bus, 1200 km polar shells."
+  },
+  "magnitudes": {
+    "band": "V (MMT9) and visual",
+    "atmosphere": "above (differential against nearby catalogue stars; MMT9 V-band photometry)",
+    "reduction": "1000 km",
+    "locator": "observations section"
+  },
+  "published": {
+    "n": {
+      "value": 639,
+      "locator": "section 3 (639 standard magnitudes)"
+    },
+    "mean_m1000": {
+      "value": 7.18,
+      "uncertainty": 0.03,
+      "locator": "abstract; section 4"
+    },
+    "sd_m1000": {
+      "value": 0.68,
+      "locator": "section 4"
+    }
+  },
+  "sampling": {
+    "shell": {
+      "alt_km": 1200,
+      "incl_deg": 87.9,
+      "locator": "section 1 (1,200 km); inclination: OneWeb shells 87.9 deg (not in the paper)"
+    },
+    "period": {
+      "start": null,
+      "end": "2020-11-29",
+      "locator": "section 3: the MMT database as of 2020 November 29"
+    },
+    "sites": [
+      {
+        "name": "MMT9",
+        "lat_deg": 43.65,
+        "lon_deg": 41.43,
+        "instrument": "camera (MMT9 robotic observatory)",
+        "count": 639,
+        "locator": "section 3 (MMT at 44 N, 41 E)"
+      }
+    ],
+    "constraints": {
+      "operational_altitude_only": true,
+      "penumbra_excluded": null,
+      "sun_altitude_deg": null,
+      "min_elevation_deg": null,
+      "note": "MMT only. Phase functions explain almost none of the scatter (section 3)."
+    }
+  },
+  "transcription": {
+    "source": "arXiv:2012.05100, sections 3-4",
+    "method": "pdftotext -layout",
+    "date": "2026-09-24",
+    "check": "summary only: the paper does not publish individual observations"
+  },
+  "columns": [
+    "sat",
+    "phase_deg",
+    "m1000"
+  ],
+  "observations": []
+}

@@ -1,0 +1,125 @@
+{
+    "name": "Starlink V2 Mini Direct-to-Cell (mitigated)",
+    "note": "Parity model for the v1.1 'Starlink Gen3 Direct-to-Cell' shell (today's DTCs are V2 Minis). The mitigated V2 Mini plus a ~25 m2 nadir phased array ahead of the bus along the velocity axis, at ~360 km. Benchmark: mallama2025_dtc (6.47 at 1000 km, mitigated).",
+    "attitude_groups": [
+        {
+            "name": "bus",
+            "primary": {
+                "axis": [0, 0, 1],
+                "target": "nadir"
+            },
+            "secondary": {
+                "axis": [1, 0, 0],
+                "target": "velocity"
+            }
+        },
+        {
+            "name": "wings",
+            "parent": "bus",
+            "hinge": {
+                "position": [0, 0, -0.2],
+                "axis": [0, 1, 0]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [0, 0, -1],
+                "target": "sun",
+                "limit_deg": 18.8
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "bus",
+            "type": "box",
+            "group": "bus",
+            "size": [4.1, 2.7, 0.4],
+            "material": "black_paint"
+        },
+        {
+            "name": "nadir_mirror_film",
+            "type": "plane",
+            "group": "bus",
+            "size": [4.1, 2.7],
+            "position": [0, 0, 0.25],
+            "single_sided": true,
+            "material": "dielectric_mirror_gen2"
+        },
+        {
+            "name": "dtc_antenna",
+            "type": "plane",
+            "group": "bus",
+            "size": [5.0, 5.0],
+            "position": [4.85, 0, 0.25],
+            "single_sided": false,
+            "material": "dtc_antenna_face"
+        },
+        {
+            "name": "array_left",
+            "type": "plane",
+            "group": "wings",
+            "size": [4.1, 12.8],
+            "position": [0, 8.25, 0],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "array_backsheet_dark"
+        },
+        {
+            "name": "array_right",
+            "type": "plane",
+            "group": "wings",
+            "size": [4.1, 12.8],
+            "position": [0, -8.25, 0],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "array_backsheet_dark"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "bus",
+            "status": "estimate",
+            "value": "4.1 x 2.7 x 0.4 m flat bus, nadir-pointing, +X along velocity; black paint",
+            "source": "As starlink_v2_mini.json: McDowell, planet4589.org/astro/starsim (bus 4.1 x 2.7 m); 0.4 m thickness estimate."
+        },
+        {
+            "subject": "nadir_mirror_film",
+            "status": "sourced",
+            "value": "gen-2 dielectric mirror film over the nadir face",
+            "source": "SpaceX, 'Brightness Mitigation Best Practices for Satellite Operators' (2022): gen-2 dielectric mirror film over the nadir face, black paint elsewhere, an opaque array backsheet, arrays pointed with their knife edge at the Earth's limb near the terminator. Film reflectance: the dielectric_mirror_gen2 preset (estimate)."
+        },
+        {
+            "subject": "wings",
+            "status": "derived",
+            "value": "both arrays on one cross-track hinge, within 18.8 deg of zenith",
+            "source": "SpaceX, 'Brightness Mitigation Best Practices for Satellite Operators' (2022): gen-2 dielectric mirror film over the nadir face, black paint elsewhere, an opaque array backsheet, arrays pointed with their knife edge at the Earth's limb near the terminator. Arrays track the Sun but never tilt their plane more than 90 - rho from zenith (rho = Earth's angular radius), which keeps the Earth behind it: the V2 Mini's derivation (starlink_v2_mini.json)."
+        },
+        {
+            "subjects": [
+                "array_left",
+                "array_right"
+            ],
+            "status": "sourced",
+            "value": "two 4.1 x 12.8 m arrays, opaque dark backsheet",
+            "source": "As starlink_v2_mini.json: McDowell (4.1 x 12.8 m per wing)."
+        },
+        {
+            "subject": "dtc_antenna",
+            "status": "derived",
+            "value": "5 x 5 m nadir-facing phased array ahead of the bus",
+            "source": "Mallama, Cole, Respler & Harrington 2025 (arXiv:2502.03651) section 4.1: 'the unfolded DTC antenna ... is expected to be maintained parallel to the surface of the Earth, as is the chassis'; 'the long axis of the spacecraft, through the DTC antenna, remains oriented parallel to the orbit velocity vector' (assumed); the antenna surface 'is reflective, but not as perfectly reflective as the chassis base'. Area: 'roughly 25 square meters' (KeepTrack, 'Starlink Direct to Cell', secondary). 5 x 5 m = the 25 m2 as a square (shape unpublished)."
+        },
+        {
+            "subject": "dtc_antenna_face",
+            "status": "estimate",
+            "value": "dielectric_mirror_gen1 values (a mirror worse than the gen-2 chassis film)",
+            "source": "Mallama, Cole, Respler & Harrington 2025 (arXiv:2502.03651) section 4.1: 'the unfolded DTC antenna ... is expected to be maintained parallel to the surface of the Earth, as is the chassis'; 'the long axis of the spacecraft, through the DTC antenna, remains oriented parallel to the orbit velocity vector' (assumed); the antenna surface 'is reflective, but not as perfectly reflective as the chassis base'. Area: 'roughly 25 square meters' (KeepTrack, 'Starlink Direct to Cell', secondary). Reflectance unpublished."
+        }
+    ],
+    "materials": [
+        {
+            "name": "dtc_antenna_face",
+            "preset": "dielectric_mirror_gen1"
+        }
+    ]
+}

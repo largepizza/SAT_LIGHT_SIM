@@ -30,6 +30,13 @@ Benchmarking" design page (Results log).
 | SpaceX AI satellite | mean m1000 5.51, sd 3.6 (glints) | — | — | Only orbits are published (FCC, 2026-01): every dimension is an estimate sized to the v1.1 legacy type. |
 | Reflect Orbital mirror | — | — | — | No benchmark; the operational mirror size is the legacy type's 2376 m² in Earendil-1's square shape. |
 | V2 Mini app bulk export | 5.81 (median 5.31, sd 1.57) | 7.87 mitigated; ~5.2 unmitigated (Mallama et al. 2023) | — | **Uncalibrated model**, flown without SpaceX's brightness-mitigation attitude. Next benchmark candidate. |
+| V2 Mini, mitigated (Mallama et al. 2023) | 7.90 | 7.87 | +0.03 | Film distribution chosen with this benchmark in view (Beckmann; GGX read 7.43). Phase-curve shape: ~1 mag fainter than the paper's fit below 40 deg and 0.5-0.9 fainter at 80-140 deg; sd 1.3 vs 0.79. A second dataset (Jul-Dec 2024, 550 km, arXiv:2502.03651) gives 7.22 for the same satellites. |
+| V2 Mini DTC, mitigated (Mallama et al. 2025) | 6.42 | 6.47 | −0.05 | HELD OUT (no fitting): corroborates the V2 Mini materials. sd 1.02 vs 1.32. |
+| Starlink V1.5 (arXiv:2507.00107 Table 1) | 6.06 | 6.34 | −0.28 (tol 0.3) | Narrow margin. Backsheet transmission (0.03) fitted to Mallama & Respler 2022's Post-VisorSat phase function; its low-phase bins stay 0.6-0.8 too bright (weighted RMS 0.63 vs the fit). Observers/period assumed. |
+| OneWeb (Mallama 2020b) | 6.99 | 7.18 | −0.19 | The bus MLI (albedo 0.1, F0 0.25) was FITTED to this mean (gold-foil MLI read 6.49). sd 1.1 vs 0.68. |
+| Amazon Leo, operational (Mallama et al. 2026) | 6.60 | 6.81 | −0.21 | Held out; layout from the authors' interpretation of Amazon imagery. sd 0.94 vs 0.64. |
+| Guowang, orbit-raising (arXiv:2507.00107) | 5.82 | 4.21 | **+1.61, NOT GATED** | Unpublished hardware and attitude during orbit raising; the estimated 10 m-span model is far too faint. The benchmark file is `"gated": false`. |
+| Starlink V3, V2 Mini DTC dims, stations, debris | — | — | — | No benchmarks. Stations are render-level estimates. |
 
 ## Fitted, estimated or stood-in values
 

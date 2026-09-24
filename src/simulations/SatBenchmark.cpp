@@ -57,6 +57,7 @@ bool loadBenchmark(const std::string &path, Benchmark &out, std::string &err)
     b.path = path;
     b.id = strOr(j, "id");
     b.title = strOr(j, "title");
+    b.gated = j.value("gated", true);
     b.kind = strOr(j, "kind");
     if (b.id.empty() || (b.kind != "distribution" && b.kind != "differential"))
     {

@@ -1,6 +1,6 @@
 {
-    "name": "SpaceX orbital data center satellite (AI sat, estimate)",
-    "note": "Parity model for the v1.1 'SpaceX AI Satellites' type (a million-satellite dawn-dusk disk). Body frame: +Z to the Sun, +X toward nadir. SpaceX has published orbits, not hardware: every dimension and material is an estimate sized to the legacy type. Kept small (a handful of lobes) because a million satellites fly it.",
+    "name": "SpaceX Starmind AI1 orbital data center satellite",
+    "note": "Parity model for the v1.1 'SpaceX AI Satellites' type (Starmind AI1, a million-satellite dawn-dusk disk). Body frame: +Z to the Sun, +X toward nadir. Two sun-pointing wings spanning 70 m; edge-on radiators zenith and nadir of the bus, 20 m top to bottom. Widths derived from the 250 kW design power. Kept small (10 lobes) because a million satellites fly it.",
     "materials": [
         {
             "name": "bus_metal",
@@ -55,8 +55,8 @@
             "name": "wing_pos",
             "type": "plane",
             "group": "array",
-            "size": [8.0, 30.0],
-            "position": [0, 17.5, 0],
+            "size": [9.2, 32.5],
+            "position": [0, 18.75, 0],
             "material": "solar_cell",
             "back_material": "array_back"
         },
@@ -64,8 +64,8 @@
             "name": "wing_neg",
             "type": "plane",
             "group": "array",
-            "size": [8.0, 30.0],
-            "position": [0, -17.5, 0],
+            "size": [9.2, 32.5],
+            "position": [0, -18.75, 0],
             "material": "solar_cell",
             "back_material": "array_back"
         },
@@ -73,8 +73,8 @@
             "name": "radiator_nadir",
             "type": "plane",
             "group": "bus",
-            "size": [12.0, 3.0],
-            "position": [7.9, 0, 0],
+            "size": [8.1, 18.0],
+            "position": [5.95, 0, 0],
             "rotation_deg": [-90, 0, 0],
             "material": "radiator_white"
         },
@@ -82,8 +82,8 @@
             "name": "radiator_zenith",
             "type": "plane",
             "group": "bus",
-            "size": [12.0, 3.0],
-            "position": [-7.9, 0, 0],
+            "size": [8.1, 18.0],
+            "position": [-5.95, 0, 0],
             "rotation_deg": [-90, 0, 0],
             "material": "radiator_white"
         }
@@ -91,39 +91,39 @@
     "sources": [
         {
             "subject": "attitude",
-            "status": "estimate",
-            "value": "arrays face the Sun (+Z), +X toward nadir; arrays tilted off the Sun by the global flare-mitigation slider",
-            "source": "SpaceX 'Orbital Data Center System' application to the FCC, filed 2026-01-30 (accepted for filing, FCC DA 26-113; SpaceNews 2026-01-31): up to one million solar-powered satellites, 500-2000 km, 30 deg and sun-synchronous inclinations, optical inter-satellite links. No attitude is published; this is the v1.1 legacy type's SunTrackingTilted law (SatelliteSim.cpp legacyAttitudeGroup), which a dawn-dusk, near-constant-sunlight orbit favours."
+            "status": "sourced",
+            "value": "Sun-pointing panels (+Z to the Sun), +X toward nadir; panels tilted off the Sun by the flare-mitigation slider",
+            "source": "Starmind AI1 as specified by the project owner (2026-09-24): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'. Press (The Robotics Media / Winzheng, 2026-08): 'about 30 meters tall when deployed, with a wingspan of roughly 75 meters', '75-meter solar panels, 30-meter radiative cooling panels, and peak computing power of 250 kilowatts'; SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node. The tilt joint is the v1.1 legacy type's (SunTrackingTilted), kept for the slider."
         },
         {
             "subject": "bus",
             "status": "estimate",
-            "value": "3 x 4 x 1.5 m aluminium box, sun-pointing (a Starlink V3-class bus)",
-            "source": "SpaceX 'Orbital Data Center System' application to the FCC, filed 2026-01-30 (accepted for filing, FCC DA 26-113; SpaceNews 2026-01-31): up to one million solar-powered satellites, 500-2000 km, 30 deg and sun-synchronous inclinations, optical inter-satellite links - no hardware dimensions. Estimate; range +-50%."
+            "value": "3 x 4 x 1.5 m aluminium box (a 4 t node)",
+            "source": "Starmind AI1 as specified by the project owner (2026-09-24): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'. Press (The Robotics Media / Winzheng, 2026-08): 'about 30 meters tall when deployed, with a wingspan of roughly 75 meters', '75-meter solar panels, 30-meter radiative cooling panels, and peak computing power of 250 kilowatts'; SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node. Bus dimensions unpublished; range +-50%."
         },
         {
             "subject": "array",
-            "status": "estimate",
+            "status": "sourced",
             "value": "both wings on one group, tilted about -Y by the flare-mitigation slider",
-            "source": "The legacy type's joint (FlareMitigationTilt about -Y)."
+            "source": "Starmind AI1 as specified by the project owner (2026-09-24): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'. Press (The Robotics Media / Winzheng, 2026-08): 'about 30 meters tall when deployed, with a wingspan of roughly 75 meters', '75-meter solar panels, 30-meter radiative cooling panels, and peak computing power of 250 kilowatts'; SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node (sun-pointing panels); the tilt is the legacy type's joint."
         },
         {
             "subjects": [
                 "wing_pos",
                 "wing_neg"
             ],
-            "status": "estimate",
-            "value": "two 8 x 30 m rigid glass-covered wings (480 m2, near the legacy type's 600 m2 cross-section)",
-            "source": "Sized to the v1.1 legacy type (cross_section_m2 600, mirror_frac 0.5 = glassy arrays). No published size."
+            "status": "derived",
+            "value": "two 32.5 x 9.2 m rigid glass-covered wings, 70 m tip to tip (598 m2)",
+            "source": "Starmind AI1 as specified by the project owner (2026-09-24): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'. Press (The Robotics Media / Winzheng, 2026-08): 'about 30 meters tall when deployed, with a wingspan of roughly 75 meters', '75-meter solar panels, 30-meter radiative cooling panels, and peak computing power of 250 kilowatts'; SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node. Span sourced; width DERIVED: 250 kW at ~30% cell efficiency and 1361 W/m2 needs ~610 m2, which also matches the legacy type's 600 m2."
         },
         {
             "subjects": [
                 "radiator_nadir",
                 "radiator_zenith"
             ],
-            "status": "estimate",
-            "value": "two 12 x 3 m white radiators in the Sun-nadir plane (edge-on to both), 72 m2",
-            "source": "The legacy type's SunPerp secondary (radiators edge-on to the Sun, weight 0.18 of the arrays). Area and coating are estimates; compute satellites need large radiators, so this may be low."
+            "status": "derived",
+            "value": "two 8.1 x 18 m white radiators, zenith and nadir of the bus, 20 m top to bottom, in the Sun-nadir plane",
+            "source": "Starmind AI1 as specified by the project owner (2026-09-24): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'. Press (The Robotics Media / Winzheng, 2026-08): 'about 30 meters tall when deployed, with a wingspan of roughly 75 meters', '75-meter solar panels, 30-meter radiative cooling panels, and peak computing power of 250 kilowatts'; SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node. Height sourced; width DERIVED: 250 kW from both faces at ~300 K (2 x 0.9 x sigma T^4 = 830 W/m2) needs ~300 m2 (291 here). Edge-on to the Sun as specified."
         },
         {
             "subject": "bus_metal",

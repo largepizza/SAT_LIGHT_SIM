@@ -1,0 +1,166 @@
+{
+    "name": "Starlink V1.5 (Gen1, post-VisorSat)",
+    "note": "Parity model for the v1.1 'Starlink' (Gen1) type. The V1.0 chassis without a visor (it blocked the laser links), the nadir face under SpaceX's gen-1 dielectric mirror film, dark-red inter-cell material; the array tracks the Sun about its hinge (normal on-station operation). Body frame: +Z nadir, +X toward the Sun's azimuth. Sanity check: Mallama & Respler 2022's Post-VisorSat phase function (no published mean).",
+    "materials": [
+        {
+            "name": "bus_metal",
+            "preset": "aluminum",
+            "roughness": 0.23,
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "array_backsheet_gen1",
+            "preset": "solar_array_back",
+            "diffuse_albedo": 0.5,
+            "transmission": 0.03,
+            "transmission_color": [1.0, 0.95, 0.85]
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "bus",
+            "primary": {
+                "axis": [0, 0, 1],
+                "target": "nadir"
+            },
+            "secondary": {
+                "axis": [1, 0, 0],
+                "target": "sun"
+            }
+        },
+        {
+            "name": "array",
+            "parent": "bus",
+            "hinge": {
+                "position": [0, 0, -0.1],
+                "axis": [0, 1, 0]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [1, 0, 0],
+                "target": "sun"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "nadir_mirror_film",
+            "type": "plane",
+            "group": "bus",
+            "size": [1.3, 2.8],
+            "position": [0, 0, 0.1],
+            "single_sided": true,
+            "material": "dielectric_mirror_gen1"
+        },
+        {
+            "name": "bus_top",
+            "type": "plane",
+            "group": "bus",
+            "size": [1.3, 2.8],
+            "position": [0, 0, -0.1],
+            "rotation_deg": [180, 0, 0],
+            "single_sided": true,
+            "material": "bus_metal"
+        },
+        {
+            "name": "bus_side_px",
+            "type": "plane",
+            "group": "bus",
+            "size": [0.2, 2.8],
+            "position": [0.65, 0, 0],
+            "rotation_deg": [0, 90, 0],
+            "single_sided": true,
+            "material": "bus_metal"
+        },
+        {
+            "name": "bus_side_nx",
+            "type": "plane",
+            "group": "bus",
+            "size": [0.2, 2.8],
+            "position": [-0.65, 0, 0],
+            "rotation_deg": [0, -90, 0],
+            "single_sided": true,
+            "material": "bus_metal"
+        },
+        {
+            "name": "bus_side_py",
+            "type": "plane",
+            "group": "bus",
+            "size": [1.3, 0.2],
+            "position": [0, 1.4, 0],
+            "rotation_deg": [-90, 0, 0],
+            "single_sided": true,
+            "material": "bus_metal"
+        },
+        {
+            "name": "bus_side_ny",
+            "type": "plane",
+            "group": "bus",
+            "size": [1.3, 0.2],
+            "position": [0, -1.4, 0],
+            "rotation_deg": [90, 0, 0],
+            "single_sided": true,
+            "material": "bus_metal"
+        },
+        {
+            "name": "solar_array",
+            "type": "plane",
+            "group": "array",
+            "size": [8.1, 2.8],
+            "position": [0, 0, -4.05],
+            "rotation_deg": [0, 90, 0],
+            "material": "solar_cell",
+            "back_material": "array_backsheet_gen1"
+        }
+    ],
+    "sources": [
+        {
+            "subjects": [
+                "bus_top",
+                "bus_side_px",
+                "bus_side_nx",
+                "bus_side_py",
+                "bus_side_ny"
+            ],
+            "status": "sourced",
+            "value": "the V1.0 bus: 1.3 x 2.8 m, 0.2 m thick, polished aluminium",
+            "source": "Same chassis as starlink_v1_0.json (its sources: McDowell, planet4589.org/astro/starsim; Cole 2021 arXiv:2107.06026)."
+        },
+        {
+            "subject": "nadir_mirror_film",
+            "status": "sourced",
+            "value": "gen-1 dielectric mirror film over the whole nadir face",
+            "source": "SpaceX, 'Brightness Mitigation Best Practices for Satellite Operators' (2022): no visor ('the material did block the laser links'), 'RF-transparent mirror films' instead - 'Current Starlink v1.5 satellites use the Gen1 dielectric mirrors' - and 'a darker material between the solar cells', 'now pigmented dark red'. Coverage of the entire base (antennas included - the film is RF-transparent) and the film's reflectance (dielectric_mirror_gen1 preset) are estimates."
+        },
+        {
+            "subject": "solar_array",
+            "status": "sourced",
+            "value": "one 2.8 x 8.1 m array, dark-red inter-cell material",
+            "source": "Same chassis as starlink_v1_0.json (its sources: McDowell, planet4589.org/astro/starsim; Cole 2021 arXiv:2107.06026); SpaceX, 'Brightness Mitigation Best Practices for Satellite Operators' (2022): no visor ('the material did block the laser links'), 'RF-transparent mirror films' instead - 'Current Starlink v1.5 satellites use the Gen1 dielectric mirrors' - and 'a darker material between the solar cells', 'now pigmented dark red'. The solar_cell preset's albedo (0.02) was calibrated on VisorSat (M8)."
+        },
+        {
+            "subject": "bus",
+            "status": "estimate",
+            "value": "base to nadir, yawed so the array's hinge axis lies across the Sun",
+            "source": "Normal on-station operation (array facing the Sun) - the Post-VisorSat era before the knife-edge roll mitigation (Mallama & Respler 2023, 'Roll angle adjustment dims Starlink satellites'). Not published by SpaceX; checked against Mallama & Respler 2022 (arXiv:2210.17268): Post-VisorSat phase function m1000 = 3.944 + 0.06893 phi - 0.0004089 phi^2 (Table 1), characteristic magnitude 5.5 at 72 deg and 550 km."
+        },
+        {
+            "subject": "array",
+            "status": "estimate",
+            "value": "the array turns about its hinge to face the Sun",
+            "source": "As 'bus'."
+        },
+        {
+            "subject": "bus_metal",
+            "status": "derived",
+            "value": "the V1.0 bus material",
+            "source": "Same chassis as starlink_v1_0.json (its sources: McDowell, planet4589.org/astro/starsim; Cole 2021 arXiv:2107.06026)."
+        },
+        {
+            "subject": "array_backsheet_gen1",
+            "status": "calibrated",
+            "value": "white translucent backsheet: albedo 0.5 (estimate), diffuse transmission 0.03 (fitted)",
+            "source": "SpaceX (2022): the back of a solar array 'can be lit up by the sun like a lampshade' - fixed on the V2 with 'an opaque pigment for the solar backsheet', i.e. Gen1 backsheets were translucent. Transmission FITTED to Mallama & Respler 2022 (arXiv:2210.17268): Post-VisorSat phase function m1000 = 3.944 + 0.06893 phi - 0.0004089 phi^2 (Table 1), characteristic magnitude 5.5 at 72 deg and 550 km: the 100-160 deg bins (an opaque back left them 2.7-3.9 mag too faint; T = 0.03 puts them within 0.6); metric = the paper's phase function, 5000 samples seed 1 of a Mallama/Respler-sited 550 km campaign (2026-09-24). Held out: nothing (no published mean or per-pass data)."
+        }
+    ]
+}

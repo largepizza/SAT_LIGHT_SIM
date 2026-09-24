@@ -1,0 +1,98 @@
+{
+    "name": "Starlink V3 (Gen3 broadband, mitigated)",
+    "note": "Parity model for the v1.1 'Starlink Gen3' type (broadband shell). The V2 Mini's mitigations at V3 scale: a 7.5 m flat bus under the gen-2 mirror film, black elsewhere, two arrays 60 m tip to tip held edge-on to the Earth's limb. Body frame: +Z nadir, +X velocity. Only the span, the base length and the mass are published.",
+    "attitude_groups": [
+        {
+            "name": "bus",
+            "primary": {
+                "axis": [0, 0, 1],
+                "target": "nadir"
+            },
+            "secondary": {
+                "axis": [1, 0, 0],
+                "target": "velocity"
+            }
+        },
+        {
+            "name": "wings",
+            "parent": "bus",
+            "hinge": {
+                "position": [0, 0, -0.25],
+                "axis": [0, 1, 0]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [0, 0, -1],
+                "target": "sun",
+                "limit_deg": 22.5
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "bus",
+            "type": "box",
+            "group": "bus",
+            "size": [7.5, 3.0, 0.5],
+            "material": "black_paint"
+        },
+        {
+            "name": "nadir_mirror_film",
+            "type": "plane",
+            "group": "bus",
+            "size": [7.5, 3.0],
+            "position": [0, 0, 0.3],
+            "single_sided": true,
+            "material": "dielectric_mirror_gen2"
+        },
+        {
+            "name": "array_left",
+            "type": "plane",
+            "group": "wings",
+            "size": [4.2, 28.0],
+            "position": [0, 16.0, 0],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "array_backsheet_dark"
+        },
+        {
+            "name": "array_right",
+            "type": "plane",
+            "group": "wings",
+            "size": [4.2, 28.0],
+            "position": [0, -16.0, 0],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "array_backsheet_dark"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "bus",
+            "status": "estimate",
+            "value": "7.5 x 3.0 x 0.5 m flat bus, nadir-pointing, +X along velocity; black paint",
+            "source": "SpaceX 'Starlink Version 3 Satellites' update (2025) and reporting (NextBigFuture 2025-02): ~1900 kg, 'a wingspan of about 60 meters, unfolded from a base of 7-8 meters', arrays of '19-meter-long segments', about twice the V2's power; no array area published. Base 7.5 m (sourced range 7-8); width 3.0 m and thickness 0.5 m are estimates (the V2 Mini's 2.7 x 0.4 scaled)."
+        },
+        {
+            "subject": "nadir_mirror_film",
+            "status": "sourced",
+            "value": "gen-2 dielectric mirror film over the nadir face",
+            "source": "SpaceX, 'Brightness Mitigation Best Practices for Satellite Operators' (2022): gen-2 dielectric mirror film over the nadir face, black paint elsewhere, an opaque array backsheet, arrays pointed with their knife edge at the Earth's limb near the terminator. Film reflectance: the dielectric_mirror_gen2 preset (estimate)."
+        },
+        {
+            "subject": "wings",
+            "status": "derived",
+            "value": "both arrays on one cross-track hinge, within 22.5 deg of zenith",
+            "source": "SpaceX, 'Brightness Mitigation Best Practices for Satellite Operators' (2022): gen-2 dielectric mirror film over the nadir face, black paint elsewhere, an opaque array backsheet, arrays pointed with their knife edge at the Earth's limb near the terminator. Arrays track the Sun but never tilt their plane more than 90 - rho from zenith (rho = Earth's angular radius), which keeps the Earth behind it: the V2 Mini's derivation (starlink_v2_mini.json)."
+        },
+        {
+            "subjects": [
+                "array_left",
+                "array_right"
+            ],
+            "status": "estimate",
+            "value": "two 4.2 x 28.0 m arrays, opaque dark backsheet",
+            "source": "SpaceX 'Starlink Version 3 Satellites' update (2025) and reporting (NextBigFuture 2025-02): ~1900 kg, 'a wingspan of about 60 meters, unfolded from a base of 7-8 meters', arrays of '19-meter-long segments', about twice the V2's power; no array area published. Length DERIVED from the 60 m span; width 4.2 m is an estimate: about twice the V2 Mini's 105 m2 of array (2 x 4.2 x 28 = 235 m2)."
+        }
+    ]
+}
