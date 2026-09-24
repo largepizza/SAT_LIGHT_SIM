@@ -28,10 +28,13 @@ void main()
         for (int x = 0; x < s; ++x) {
             vec4 m = imageLoad(meshColorImg, min(base + ivec2(x, y), size - 1));
             if (m.a < 0.5) continue;
-            float l = dot(m.rgb, vec3(0.2126, 0.7152, 0.0722));
-            float k = l * instances[int(m.a) - 1].bloomScale;
+            // a = instance slot + 1 + the photometric share of the pixel's light (sat_mesh.frag):
+            // only sunlight and earthshine seed the bloom, not reflections of the Earth or moonlight,
+            // matching the model intensity bloomScale is normalised by.
+            float l = dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)) * fract(m.a);
+            float k = l * instances[int(floor(m.a)) - 1].bloomScale;
             seed += k;
-            col  += m.rgb * (k / max(l, 1e-6));
+            col  += m.rgb * (k / max(dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)), 1e-6));
         }
     if (seed <= 0.0) discard;
     outColor = vec4(col * pc.gain, seed * pc.gain); // rgb carries the tint, like fragColor × brightness

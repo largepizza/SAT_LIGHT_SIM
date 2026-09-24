@@ -316,6 +316,11 @@ void main()
     L += inst.earthshine.w * diffC * max(dot(N, inst.earthshine.xyz), 0.0);
     if (Tm > 0.0) // and through a translucent blanket from its far side (the lit Earth behind it)
         L += inst.earthshine.w * tC * max(-dot(Ngeo, inst.earthshine.xyz), 0.0);
+    // Everything so far is what the photometric model counts (sunlight + earthshine through its
+    // lobes); moonlight and the reflected Earth below are not in it. The bloom seed is normalised by
+    // the model's intensity, so it must only be fed this part — feeding it the reflections made a
+    // satellite edge-on to the Sun (model intensity ~0, reflections bright) explode into bloom.
+    const vec3 Lphot = L;
 
     // ── Moonlight ────────────────────────────────────────────────────────────
     L += frame.moonDir.w * diffC * max(dot(N, frame.moonDir.xyz), 0.0);
@@ -340,7 +345,11 @@ void main()
     // and the frame's exposure) scaled by the sprite→mesh hand-off fade, and the distance for the
     // shared scene depth.
     if (frame.params.w > 1.5) {
-        outColor = vec4(L * inst.origin.w, float(vInstance + 1u)); // a = instance slot + 1 (bloom)
+        // a = instance slot + 1, plus (fraction) the share of this pixel's light that is photometric
+        // (Lphot) — mesh_bloom.frag seeds only that share.
+        const vec3 kLum = vec3(0.2126, 0.7152, 0.0722);
+        float photFrac = clamp(dot(Lphot, kLum) / max(dot(L, kLum), 1e-12), 0.0, 0.999);
+        outColor = vec4(L * inst.origin.w, float(vInstance + 1u) + photFrac);
         outDist  = length(vWorld - frame.camPos.xyz);
         return;
     }
