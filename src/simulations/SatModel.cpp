@@ -359,12 +359,14 @@ std::vector<GroupPose> evalGroupPoses(const std::vector<AttitudeGroup> &groups, 
 }
 
 // ── Materials ─────────────────────────────────────────────────────────────────────────────────
+const std::vector<SatMaterial> &satMaterialPresetsBase();
+
 int satMaterialPattern(const SatMaterial &m)
 {
     if (m.pattern >= 0)
         return m.pattern;
     const std::string &p = m.preset.empty() ? m.name : m.preset;
-    if (p == "solar_cell")
+    if (p == "solar_cell" || p == "solar_cell_flex" || p == "solar_array_flex_back")
         return kPatternSolarCells;
     if (p == "mli_foil")
         return kPatternMli;
@@ -372,6 +374,18 @@ int satMaterialPattern(const SatMaterial &m)
 }
 
 const std::vector<SatMaterial> &satMaterialPresets()
+{
+    static const std::vector<SatMaterial> withTransmission = [] {
+        std::vector<SatMaterial> v = satMaterialPresetsBase();
+        for (SatMaterial &m : v)
+            if (m.name == "solar_cell_flex" || m.name == "solar_array_flex_back")
+                m.transmission = 0.05f;
+        return v;
+    }();
+    return withTransmission;
+}
+
+const std::vector<SatMaterial> &satMaterialPresetsBase()
 {
     // INITIAL ESTIMATES — calibrated against reference satellites in Phase 3c. Roughness is GGX α.
     static const std::vector<SatMaterial> presets = {
@@ -393,6 +407,12 @@ const std::vector<SatMaterial> &satMaterialPresets()
         {"osr_radiator", 0.05f, 0.90f, 0.01f, {0.85f, 0.88f, 0.92f}},
         // Large flat mirror (Reflect Orbital-class): near-perfect specular.
         {"mirror", 0.00f, 0.95f, 0.0005f, {0.90f, 0.92f, 0.95f}},
+        // Phase 4f — flexible arrays on a translucent Kapton blanket (ISS-style): the cell face and the
+        // blanket's back. Light on either side leaks through the gaps between the cells as an amber
+        // glow on the other side (transmission). INITIAL ESTIMATES: ~9% open area x ~0.6 Kapton
+        // transmittance in V.
+        {"solar_cell_flex", 0.02f, 0.04f, 0.05f, {0.20f, 0.25f, 0.55f}},
+        {"solar_array_flex_back", 0.30f, 0.04f, 0.35f, {0.80f, 0.62f, 0.32f}},
     };
     return presets;
 }
@@ -455,6 +475,8 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
                     warn.push_back("material '" + m.name + "': unknown distribution '" + d + "' (ggx|beckmann)");
             }
             m.color = jsonVec3(jm, "color", m.color);
+            m.transmission = jm.value("transmission", m.transmission);
+            m.transmissionColor = jsonVec3(jm, "transmission_color", m.transmissionColor);
             if (jm.contains("pattern"))
             {
                 const std::string pat = jm.value("pattern", std::string());
@@ -809,6 +831,7 @@ struct LobeAcc
     glm::dvec3 sumAN{0.0}; // Σ area · normal
     double sumA = 0.0;
     double sumAlb = 0.0, sumF0 = 0.0, sumA2 = 0.0; // area-weighted material parameters
+    double sumT = 0.0;                              // area-weighted transmission (Phase 4f)
     double sumBeck = 0.0;                          // area of Beckmann faces
     int group = 0;
     int material = -1; // -1 once lobes of different materials have been merged
@@ -825,6 +848,7 @@ struct LobeAcc
         sumAN += o.sumAN;
         sumA += o.sumA;
         sumAlb += o.sumAlb;
+        sumT += o.sumT;
         sumF0 += o.sumF0;
         sumA2 += o.sumA2;
         sumBeck += o.sumBeck;
@@ -845,11 +869,14 @@ double mergeScore(const LobeAcc &a, const LobeAcc &b)
 
 // Intensity of one lobe (per unit irradiance) — the exact formula sat_orbit.comp evaluates.
 double lobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2,
-                     glm::dvec3 s, glm::dvec3 o, bool beckmann)
+                     glm::dvec3 s, glm::dvec3 o, bool beckmann, double transmission = 0.0)
 {
     double ns = glm::dot(n, s), no = glm::dot(n, o);
-    if (ns <= 0.0 || no <= 0.0)
+    if (no <= 0.0)
         return 0.0;
+    // Phase 4f: light from BEHIND the face, transmitted diffusely through it.
+    if (ns <= 0.0)
+        return transmission > 0.0 ? transmission / kPi * diffArea * (-ns) * no : 0.0;
     double diffuse = albedo / kPi * diffArea * ns * no;
     glm::dvec3 hv = s + o;
     double hl = glm::length(hv);
@@ -903,6 +930,7 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
         one.sumAN = t.n * t.area;
         one.sumA = t.area;
         one.sumAlb = mat.diffuseAlbedo * t.area;
+        one.sumT = mat.transmission * t.area;
         one.sumF0 = mat.specularF0 * t.area;
         one.sumA2 = ((double)mat.roughness * mat.roughness + t.spread2) * t.area;
         one.sumBeck = mat.beckmann ? t.area : 0.0;
@@ -976,6 +1004,7 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
         L.sampleCount = 0;
         L.occluderMask = 0;
         L.distribution = 2.0 * a.sumBeck > a.sumA ? 1u : 0u;
+        L.transmission = (float)(a.sumT / a.sumA);
         lobes.push_back(L);
         if (lobeTris)
             lobeTris->push_back(a.tris);
@@ -993,7 +1022,7 @@ double evalSatLobes(const std::vector<GpuSatLobe> &lobes, const std::vector<Atti
     {
         glm::dvec3 n = bodyTriad(groups[attRootOf(groups, (int)L.group)]) * glm::dvec3(L.normalT);
         sum += lobeIntensity(glm::normalize(n), L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat + sourceAlpha2, s, o,
-                             L.distribution != 0);
+                              L.distribution != 0, L.transmission);
     }
     return sum;
 }
@@ -1010,7 +1039,7 @@ double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector
         glm::dvec3 nBody = bodyTriad(groups[attRootOf(groups, (int)L.group)]) * glm::dvec3(L.normalT);
         glm::dvec3 n = glm::normalize(poses[L.group].R * nBody);
         double I = lobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat + sourceAlpha2, s, o,
-                                 L.distribution != 0);
+                              L.distribution != 0, L.transmission);
         if (I > 0.0 && occ && li < occ->lobes.size())
             I *= satLobeVisibility(*occ, (int)li, (int)L.group, poses, s, occludeSource, o);
         sum += I;
@@ -1026,9 +1055,9 @@ double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector
 }
 
 double satLobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2, bool beckmann,
-                        glm::dvec3 s, glm::dvec3 o)
+                        glm::dvec3 s, glm::dvec3 o, double transmission)
 {
-    return lobeIntensity(n, area, diffArea, albedo, f0, a2, s, o, beckmann);
+    return lobeIntensity(n, area, diffArea, albedo, f0, a2, s, o, beckmann, transmission);
 }
 
 // ── Phase 3b: occlusion between parts ─────────────────────────────────────────────────────────
@@ -1408,7 +1437,8 @@ void validateSatLobes(const SatModel &m, const std::vector<SatTri> &tris, const 
         {
             const SatMaterial &mat = m.materials[t.material];
             double a2 = (double)mat.roughness * mat.roughness + t.spread2 + a2Sun;
-            sum += lobeIntensity(t.n, t.area, t.area, mat.diffuseAlbedo, mat.specularF0, a2, s, o, mat.beckmann);
+            sum += lobeIntensity(t.n, t.area, t.area, mat.diffuseAlbedo, mat.specularF0, a2, s, o, mat.beckmann,
+                                 mat.transmission);
         }
         return sum;
     };
@@ -1522,7 +1552,8 @@ SatShadowStudy studySatShadowing(const SatModel &m, const std::vector<SatTri> &t
             const SatTri &t = posed[i];
             const SatMaterial &mat = m.materials[t.material];
             double a2 = (double)mat.roughness * mat.roughness + t.spread2 + a2Sun;
-            double I = lobeIntensity(t.n, t.area, t.area, mat.diffuseAlbedo, mat.specularF0, a2, geo.sun, o, mat.beckmann);
+            double I = lobeIntensity(t.n, t.area, t.area, mat.diffuseAlbedo, mat.specularF0, a2, geo.sun, o, mat.beckmann,
+                                    mat.transmission);
             if (I <= 0.0)
                 continue;
             // Visible fraction: sample points that see BOTH the sun and the observer.

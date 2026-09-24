@@ -317,10 +317,10 @@ bool selfTestModel(const SatModel &m, const std::vector<SatTri> &tris, int budge
             glm::dvec3 n = poses[tr.group].R * tr.n;
             double a2 = (double)mat.roughness * mat.roughness + tr.spread2;
             Isun += satLobeIntensity(n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + a2Sun, mat.beckmann,
-                                     in.sunDirEci, o);
+                                     in.sunDirEci, o, mat.transmission);
             Iearth += satLobeIntensity(n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + alphaE * alphaE,
                                        mat.beckmann,
-                                       r.earthDir, o); // the evaluator's earthshine direction (M8)
+                                       r.earthDir, o, mat.transmission); // the evaluator's earthshine direction (M8)
         }
         double ref = Isun * r.litFactor + Iearth * r.earthIrradiance;
         // Significance floor: fainter than magnitude 20 is beyond any instrument this project
@@ -445,9 +445,9 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
             const SatMaterial &mat = m.materials[tr.material];
             const double a2 = (double)mat.roughness * mat.roughness + tr.spread2;
             double is = satLobeIntensity(tr.n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + a2Sun, mat.beckmann,
-                                         in.sunDirEci, o);
+                                         in.sunDirEci, o, mat.transmission);
             double ie = satLobeIntensity(tr.n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0,
-                                         a2 + alphaE * alphaE, mat.beckmann, open.earthDir, o);
+                                         a2 + alphaE * alphaE, mat.beckmann, open.earthDir, o, mat.transmission);
             if (is <= 0.0 && ie <= 0.0)
                 continue;
             double visSun = 0.0, visObs = 0.0;

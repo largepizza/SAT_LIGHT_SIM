@@ -189,6 +189,13 @@ struct SatMaterial
     // right. -1 = automatic (from the preset the material came from), else a SatSurfacePattern.
     int pattern = -1;
     std::string preset; // the preset it was built from ("" = none); drives the automatic pattern
+    // Diffuse TRANSMISSION (Phase 4f — flexible arrays on a Kapton blanket, as on the ISS): the
+    // area-mean fraction of the light falling on the OTHER side of this face that leaves this side
+    // diffusely, V band. Photometry: T/π · diffArea · (−n·s)₊(n·o)₊ in every lobe evaluator; the
+    // renderer tints it with transmissionColor (luminance-normalised on packing) and, with the solar
+    // cell pattern, sends it through the gaps between cells (the cells themselves are opaque).
+    float transmission = 0.0f;
+    glm::vec3 transmissionColor{1.0f, 0.55f, 0.15f}; // Kapton: amber (blue absorbed)
 };
 enum SatSurfacePattern : int
 {
@@ -303,7 +310,8 @@ struct GpuSatLobe
     uint32_t occluderMask; // bit i: the type's occluder i can block this lobe
 
     uint32_t distribution; // 0 = GGX, 1 = Beckmann (the majority by area of the merged faces)
-    uint32_t pad0, pad1, pad2;
+    float transmission;    // Phase 4f: diffuse transmission, V band (SatMaterial::transmission), 0 = opaque
+    uint32_t pad1, pad2;
 };
 static_assert(sizeof(GpuSatLobe) == 64, "GpuSatLobe layout mismatch");
 
@@ -445,7 +453,7 @@ double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector
 // Intensity of one flat facet or lobe per unit irradiance — the formula every evaluator above (and
 // sat_orbit.comp's lobeIntensity()) uses. `a2` includes the source-size term.
 double satLobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2, bool beckmann,
-                        glm::dvec3 s, glm::dvec3 o);
+                        glm::dvec3 s, glm::dvec3 o, double transmission = 0.0);
 
 // How much does self-shadowing (all groups, posed) change the model's brightness? Poses the model
 // at `samples` random geometries — sun anywhere that lights the satellite, observer within the

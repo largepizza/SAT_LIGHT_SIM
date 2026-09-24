@@ -583,6 +583,14 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     above the observer; "View model" beside "Trace pass" opens it TRACKING that satellite — its real
     position, velocity and attitude at the sim time (`satOrbitStateAt` + `evalGroupPoses`, in ECEF),
     so Live lighting and the Earth below are what that satellite has now.
+  - **Diffuse transmission (Phase 4f)**, `SatMaterial::transmission` / `transmission_color`
+    (presets `solar_cell_flex`, `solar_array_flex_back`: ISS-style arrays on a Kapton blanket).
+    Light on the far side of a face leaves this side diffusely: `T/π·diffArea·(−n·s)₊(n·o)₊`. That
+    term is in every lobe evaluator (CPU `lobeIntensity`, GPU `lobeIntensity`,
+    `GpuSatLobe::transmission`, the brute-force references) and in `sat_mesh.frag`, for the sun and
+    earthshine. The renderer tints it amber and, with the cell pattern, sends it only through the
+    gaps between cells (`Surface::transM`, mean 1). Known approximation: a lobe's occluder mask was
+    built for front lighting, so an occluder BEHIND a translucent panel doesn't shadow its glow.
   - **Procedural surface detail** (`SatMaterial::pattern`, JSON `"pattern"`: none / solar_cells / mli
     / panel_seams; -1 = from the preset — `solar_cell` → cells, `mli_foil` → crinkle). Visual only and
     **photometrically neutral**: each pattern scales albedo by a factor with area mean 1, leaves the

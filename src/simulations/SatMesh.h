@@ -47,7 +47,7 @@ struct GpuSatMeshMaterial
     float roughness;      // microfacet α
     uint32_t beckmann;    // 1 = Beckmann distribution, else GGX (as the photometry)
     uint32_t pattern;     // procedural surface pattern (0 = none) — 4b procedural detail
-    glm::vec4 extra;      // reserved: thin film / transmission (4f)
+    glm::vec4 extra;      // rgb = transmission tint (luminance 1), a = transmission (Phase 4f)
 };
 static_assert(sizeof(GpuSatMeshMaterial) == 48, "GpuSatMeshMaterial layout");
 GpuSatMeshMaterial packSatMeshMaterial(const SatMaterial &m);

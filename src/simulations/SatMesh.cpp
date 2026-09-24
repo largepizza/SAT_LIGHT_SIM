@@ -206,7 +206,11 @@ GpuSatMeshMaterial packSatMeshMaterial(const SatMaterial &m)
     g.roughness = m.roughness;
     g.beckmann = m.beckmann ? 1u : 0u;
     g.pattern = (uint32_t)satMaterialPattern(m);
-    g.extra = glm::vec4(0.0f);
+    // Phase 4f: rgb = transmission tint normalised to luminance 1 (so `a` is the V-band value the
+    // photometry uses), a = transmission.
+    const float lum = std::max(0.2126f * m.transmissionColor.r + 0.7152f * m.transmissionColor.g +
+                                   0.0722f * m.transmissionColor.b, 1e-4f);
+    g.extra = glm::vec4(m.transmissionColor / lum, m.transmission);
     return g;
 }
 

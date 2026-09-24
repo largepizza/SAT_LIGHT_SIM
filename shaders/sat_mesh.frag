@@ -168,6 +168,7 @@ struct Surface {
     vec3  tint;     // diffuse colour
     float albedoM;  // albedo multiplier (area mean 1)
     float rough;    // roughness actually used
+    float transM;   // transmission multiplier (area mean 1): the gaps between cells carry it all
 };
 
 // Fraction of a pixel footprint covered by periodic lines: each period (length 1, in period units)
@@ -198,7 +199,7 @@ vec3 jitterNormal(vec3 N, mat3 R, ivec2 cell, float amount)
 
 Surface applyPattern(MeshMaterial mat, MeshInstance inst, vec3 N)
 {
-    Surface s = Surface(N, mat.color, 1.0, mat.roughness);
+    Surface s = Surface(N, mat.color, 1.0, mat.roughness, 1.0);
     if (frame.params.z < 0.5)
         return s;
     const vec2  fwUv   = max(fwidth(vUv), vec2(1e-6));       // metres per pixel along u, v
@@ -220,6 +221,7 @@ Surface applyPattern(MeshMaterial mat, MeshInstance inst, vec3 N)
         float mCell = (1.0 - gFrac * mGap) / (1.0 - gFrac);
         s.albedoM = mix(mCell, mGap, gap);
         s.tint    = mix(mat.color, vec3(0.85, 0.82, 0.70), gap);
+        s.transM  = gap / gFrac; // only the open substrate between cells lets light through
         s.N = jitterNormal(N, R, ivec2(floor(vUv / modP)), 0.009);
         float cellRes = clamp((0.5 * cellP.y - max(fwUv.x, fwUv.y)) / (0.3 * cellP.y), 0.0, 1.0);
         s.N = jitterNormal(s.N, R, ivec2(floor(vUv / cellP)) + ivec2(3000, 0), 0.017 * cellRes);
@@ -268,7 +270,8 @@ void main()
     // `> 0.5` here, so the scene rendered check output (red L·d², distance 0) — a glowing red
     // silhouette in the bloom and no mesh in the sky.
     const bool check = abs(frame.params.w - 1.0) < 0.5;
-    Surface sf = check ? Surface(N, vec3(1.0), 1.0, mat.roughness) : applyPattern(mat, inst, N);
+    const vec3 Ngeo = N; // before the pattern's micro-normals: which SIDE the light is on
+    Surface sf = check ? Surface(N, vec3(1.0), 1.0, mat.roughness, 1.0) : applyPattern(mat, inst, N);
     N  = sf.N;
     nv = max(dot(N, V), 1e-3);
 
@@ -291,6 +294,17 @@ void main()
         }
     }
 
+    // ── Transmission (Phase 4f): light on the far side of a translucent blanket leaks through ──
+    // Lambertian out of this side: π·L = T·E·(−n·s), the photometry's T/π·A·(−n·s)(n·o) per pixel.
+    // Tinted amber (Kapton) and, with the cell pattern, only through the gaps between cells.
+    const float Tm = mat.extra.a;
+    const vec3  tC = Tm * sf.transM * (check ? vec3(1.0) : mat.extra.rgb);
+    if (Tm > 0.0) {
+        float nsB = -dot(Ngeo, S);
+        if (inst.sun.w > 0.0 && nsB > 0.0 && !(shadows && inst.occluderCount > 0u && rayBlocked(inst, vWorld, S)))
+            L += inst.sunColor.rgb * inst.sun.w * tC * nsB;
+    }
+
     if (check) {
         vec3 d = vWorld - frame.camPos.xyz;
         outColor = vec4(L.r * dot(d, d), 0.0, 0.0, 1.0);
@@ -300,6 +314,8 @@ void main()
 
     // ── Earthshine (diffuse; its specular part is the reflection below) ─────
     L += inst.earthshine.w * diffC * max(dot(N, inst.earthshine.xyz), 0.0);
+    if (Tm > 0.0) // and through a translucent blanket from its far side (the lit Earth behind it)
+        L += inst.earthshine.w * tC * max(-dot(Ngeo, inst.earthshine.xyz), 0.0);
 
     // ── Moonlight ────────────────────────────────────────────────────────────
     L += frame.moonDir.w * diffC * max(dot(N, frame.moonDir.xyz), 0.0);
