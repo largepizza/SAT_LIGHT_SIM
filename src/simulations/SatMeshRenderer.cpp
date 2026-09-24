@@ -84,6 +84,8 @@ void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth)
 
     makeHostBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, nullptr, frameBuf, frameMem,
                    &frameMapped);
+    makeHostBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, nullptr, checkFrameBuf,
+                   checkFrameMem, &checkFrameMapped);
     makeHostBuffer(ctx, sizeof(GpuMeshInstance) * kMaxInstances, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr,
                    instanceBuf, instanceMem, &instanceMapped);
     // Placeholders until setTypeModels() so the descriptor set is always complete.
@@ -101,6 +103,7 @@ void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth)
 
     createDescriptors(ctx);
     createViewerPass(ctx);
+    createCheckPass(ctx);
     createPipelines(ctx);
     Log::line(std::string("mesh renderer: viewer MSAA ") + (samples == VK_SAMPLE_COUNT_4_BIT ? "4x" : "off"));
 }
@@ -110,6 +113,20 @@ void SatMeshRenderer::cleanup(VkDevice d)
     destroyViewerTarget();
     destroyGeometry();
     destroy(d, viewerMeshPipe, vkDestroyPipeline);
+    destroy(d, checkMeshPipe, vkDestroyPipeline);
+    destroy(d, checkFb, vkDestroyFramebuffer);
+    destroy(d, checkColorView, vkDestroyImageView);
+    destroy(d, checkDepthView, vkDestroyImageView);
+    destroy(d, checkColor, vkDestroyImage);
+    destroy(d, checkDepth, vkDestroyImage);
+    destroy(d, checkColorMem, vkFreeMemory);
+    destroy(d, checkDepthMem, vkFreeMemory);
+    destroy(d, checkReadBuf, vkDestroyBuffer);
+    destroy(d, checkReadMem, vkFreeMemory);
+    destroy(d, checkPass, vkDestroyRenderPass);
+    destroy(d, checkFrameBuf, vkDestroyBuffer);
+    destroy(d, checkFrameMem, vkFreeMemory);
+    checkMapped = checkFrameMapped = nullptr;
     destroy(d, viewerBgPipe, vkDestroyPipeline);
     destroy(d, pipeLayout, vkDestroyPipelineLayout);
     destroy(d, viewerPass, vkDestroyRenderPass);
@@ -154,22 +171,30 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
     li.pBindings = b;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
-    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
-                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
+    // Two sets of the same layout: the viewer's and the photometric check's (own frame UBO — both
+    // can be recorded in one frame, and a shared host-written UBO would hold only the last write).
+    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6},
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 3;
     pi.pPoolSizes = ps;
-    pi.maxSets = 1;
+    pi.maxSets = 2;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &descPool);
 
+    VkDescriptorSetLayout layouts[2] = {descLayout, descLayout};
+    VkDescriptorSet sets[2] = {};
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ai.descriptorPool = descPool;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &descLayout;
-    vkAllocateDescriptorSets(ctx.device, &ai, &descSet);
-
-    VkDescriptorBufferInfo frameInfo{frameBuf, 0, sizeof(GpuMeshFrame)};
+    ai.descriptorSetCount = 2;
+    ai.pSetLayouts = layouts;
+    vkAllocateDescriptorSets(ctx.device, &ai, sets);
+    descSet = sets[0];
+    descSetCheck = sets[1];
+    for (int si = 0; si < 2; ++si)
+    {
+    const VkDescriptorSet set = sets[si];
+    VkDescriptorBufferInfo frameInfo{si == 0 ? frameBuf : checkFrameBuf, 0, sizeof(GpuMeshFrame)};
     VkDescriptorBufferInfo instInfo{instanceBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo img[3] = {
         {earth_.daySampler, earth_.day, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
@@ -177,14 +202,15 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
         {earth_.cloudsSampler, earth_.clouds, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
     };
     VkWriteDescriptorSet w[5] = {};
-    w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+    w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             nullptr, &frameInfo, nullptr};
-    w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+    w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             nullptr, &instInfo, nullptr};
     for (int i = 0; i < 3; ++i)
-        w[2 + i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descSet, (uint32_t)(4 + i), 0, 1,
+        w[2 + i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, (uint32_t)(4 + i), 0, 1,
                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &img[i], nullptr, nullptr};
     vkUpdateDescriptorSets(ctx.device, 5, w, 0, nullptr);
+    }
     writeGeometryDescriptors();
 }
 
@@ -192,12 +218,15 @@ void SatMeshRenderer::writeGeometryDescriptors()
 {
     VkDescriptorBufferInfo matInfo{materialBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo occInfo{occluderBuf, 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet w[2] = {};
-    w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            nullptr, &matInfo, nullptr};
-    w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            nullptr, &occInfo, nullptr};
-    vkUpdateDescriptorSets(device_, 2, w, 0, nullptr);
+    for (VkDescriptorSet set : {descSet, descSetCheck})
+    {
+        VkWriteDescriptorSet w[2] = {};
+        w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                nullptr, &matInfo, nullptr};
+        w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                nullptr, &occInfo, nullptr};
+        vkUpdateDescriptorSets(device_, 2, w, 0, nullptr);
+    }
 }
 
 // ─── Geometry ─────────────────────────────────────────────────────────────────────────────────────
@@ -339,8 +368,6 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
     VkPipelineDynamicStateCreateInfo dys{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     dys.dynamicStateCount = 2;
     dys.pDynamicStates = dyn;
-    VkPipelineMultisampleStateCreateInfo msci{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    msci.rasterizationSamples = samples;
     VkPipelineColorBlendAttachmentState cba{};
     cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
                          VK_COLOR_COMPONENT_A_BIT;
@@ -350,7 +377,10 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-    auto build = [&](const char *vs, const char *fs, bool mesh, VkPipeline &out) {
+    auto build = [&](const char *vs, const char *fs, bool mesh, VkRenderPass pass, VkSampleCountFlagBits ns,
+                     VkPipeline &out) {
+        VkPipelineMultisampleStateCreateInfo msci{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        msci.rasterizationSamples = ns;
         VkShaderModule v = ctx.loadShader(vs), f = ctx.loadShader(fs);
         VkPipelineShaderStageCreateInfo st[2] = {};
         st[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, v,
@@ -400,14 +430,16 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
         ci.pColorBlendState = &cb;
         ci.pDynamicState = &dys;
         ci.layout = pipeLayout;
-        ci.renderPass = viewerPass;
+        ci.renderPass = pass;
         if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &out) != VK_SUCCESS)
             throw std::runtime_error(std::string("SatMeshRenderer: pipeline ") + fs);
         vkDestroyShaderModule(ctx.device, v, nullptr);
         vkDestroyShaderModule(ctx.device, f, nullptr);
     };
-    build("shaders/sat_mesh_bg.vert.spv", "shaders/sat_mesh_bg.frag.spv", false, viewerBgPipe);
-    build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh.frag.spv", true, viewerMeshPipe);
+    build("shaders/sat_mesh_bg.vert.spv", "shaders/sat_mesh_bg.frag.spv", false, viewerPass, samples, viewerBgPipe);
+    build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh.frag.spv", true, viewerPass, samples, viewerMeshPipe);
+    build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh.frag.spv", true, checkPass, VK_SAMPLE_COUNT_1_BIT,
+          checkMeshPipe);
 }
 
 // ─── Viewer target ────────────────────────────────────────────────────────────────────────────────
@@ -505,4 +537,119 @@ void SatMeshRenderer::recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &fram
     }
     vkCmdEndRenderPass(cmd);
     viewerHasContent = true;
+}
+
+// ─── Photometric check ────────────────────────────────────────────────────────────────────────────
+// A sun-only, single-sampled R32F render (sat_mesh.frag's check mode writes L·d² per pixel) copied to
+// host memory, so the CPU can integrate the rendered radiant intensity and compare it with the lobe
+// model (SatelliteSim::recordModelViewer / buildModelViewerWindow).
+void SatMeshRenderer::createCheckPass(VulkanContext &ctx)
+{
+    VkAttachmentDescription att[2] = {};
+    att[0].format = VK_FORMAT_R32_SFLOAT;
+    att[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    att[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    att[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    att[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    att[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    att[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    att[1].format = ctx.depthFormat;
+    att[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    att[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    att[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    att[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    att[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    att[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription sub{};
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 1;
+    sub.pColorAttachments = &colorRef;
+    sub.pDepthStencilAttachment = &depthRef;
+    VkSubpassDependency dep[2] = {};
+    dep[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dep[0].dstSubpass = 0;
+    dep[0].srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    dep[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dep[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dep[1].srcSubpass = 0;
+    dep[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dep[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep[1].dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    dep[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dep[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+    rpci.attachmentCount = 2;
+    rpci.pAttachments = att;
+    rpci.subpassCount = 1;
+    rpci.pSubpasses = &sub;
+    rpci.dependencyCount = 2;
+    rpci.pDependencies = dep;
+    if (vkCreateRenderPass(ctx.device, &rpci, nullptr, &checkPass) != VK_SUCCESS)
+        throw std::runtime_error("SatMeshRenderer: check render pass");
+
+    makeImage(ctx, kCheckSize, kCheckSize, VK_FORMAT_R32_SFLOAT,
+              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_SAMPLE_COUNT_1_BIT,
+              VK_IMAGE_ASPECT_COLOR_BIT, checkColor, checkColorMem, checkColorView);
+    makeImage(ctx, kCheckSize, kCheckSize, ctx.depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+              VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, checkDepth, checkDepthMem, checkDepthView);
+    VkImageView views[2] = {checkColorView, checkDepthView};
+    VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fci.renderPass = checkPass;
+    fci.attachmentCount = 2;
+    fci.pAttachments = views;
+    fci.width = kCheckSize;
+    fci.height = kCheckSize;
+    fci.layers = 1;
+    if (vkCreateFramebuffer(ctx.device, &fci, nullptr, &checkFb) != VK_SUCCESS)
+        throw std::runtime_error("SatMeshRenderer: check framebuffer");
+    makeHostBuffer(ctx, (VkDeviceSize)kCheckSize * kCheckSize * sizeof(float), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                   nullptr, checkReadBuf, checkReadMem, &checkMapped);
+}
+
+void SatMeshRenderer::recordCheck(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst,
+                                  int typeIdx)
+{
+    const TypeMesh *tm = typeMesh(typeIdx);
+    if (!checkFb || !tm || !vertexBuf)
+        return;
+    memcpy(checkFrameMapped, &frame, sizeof(frame));
+    memcpy(static_cast<char *>(instanceMapped) + sizeof(GpuMeshInstance), &inst, sizeof(inst)); // slot 1
+
+    VkClearValue clears[2] = {};
+    clears[1].depthStencil = {1.0f, 0};
+    VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    rbi.renderPass = checkPass;
+    rbi.framebuffer = checkFb;
+    rbi.renderArea = {{0, 0}, {kCheckSize, kCheckSize}};
+    rbi.clearValueCount = 2;
+    rbi.pClearValues = clears;
+    vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+    VkViewport vp{0.0f, 0.0f, (float)kCheckSize, (float)kCheckSize, 0.0f, 1.0f};
+    VkRect2D sc{{0, 0}, {kCheckSize, kCheckSize}};
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 0, 1, &descSetCheck, 0, nullptr);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, checkMeshPipe);
+    VkDeviceSize off = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuf, &off);
+    vkCmdBindIndexBuffer(cmd, indexBuf, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, tm->indexCount, 1, tm->firstIndex, tm->vertexOffset, 1); // instance slot 1
+    vkCmdEndRenderPass(cmd);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {kCheckSize, kCheckSize, 1};
+    vkCmdCopyImageToBuffer(cmd, checkColor, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, checkReadBuf, 1, &region);
+    VkBufferMemoryBarrier bb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    bb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    bb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    bb.srcQueueFamilyIndex = bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bb.buffer = checkReadBuf;
+    bb.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &bb, 0,
+                         nullptr);
 }

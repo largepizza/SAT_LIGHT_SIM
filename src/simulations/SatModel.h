@@ -184,7 +184,21 @@ struct SatMaterial
     // equivalence), since GGX at the same α is ~10x brighter 30 deg off the peak. After `color` so
     // the presets' positional initializers still fit.
     bool beckmann = false;
+    // Procedural surface detail for the mesh renderer (Phase 4b; sat_mesh.frag). Visual only: every
+    // pattern modulates albedo with an area-weighted MEAN of 1, so the photometry's scalar values stay
+    // right. -1 = automatic (from the preset the material came from), else a SatSurfacePattern.
+    int pattern = -1;
+    std::string preset; // the preset it was built from ("" = none); drives the automatic pattern
 };
+enum SatSurfacePattern : int
+{
+    kPatternNone = 0,
+    kPatternSolarCells = 1, // cell grid with lighter substrate gaps, per-cell facet jitter
+    kPatternMli = 2,        // crinkled film: micro-facet normals instead of a blurred lobe
+    kPatternPanelSeams = 3, // panel joints every 0.5 m
+};
+// The pattern a material draws with (resolving -1).
+int satMaterialPattern(const SatMaterial &m);
 // Built-in presets — INITIAL ESTIMATES, calibrated against reference satellites in Phase 3c.
 const std::vector<SatMaterial> &satMaterialPresets();
 

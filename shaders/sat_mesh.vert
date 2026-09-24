@@ -15,6 +15,8 @@ layout(location = 2) out vec2 vUv;
 layout(location = 3) flat out uint vMaterial;  // global material index
 layout(location = 4) flat out uint vComponent;
 layout(location = 5) flat out uint vInstance;
+layout(location = 6) out vec3 vRest;         // rest-pose body position (procedural patterns)
+layout(location = 7) flat out uint vGroup;
 
 void main()
 {
@@ -27,5 +29,7 @@ void main()
     vMaterial  = inst.firstMaterial + ((inPacked >> 8) & 0xFFFu);
     vComponent = (inPacked >> 20) & 0xFFFu;
     vInstance  = uint(gl_InstanceIndex);
+    vRest      = inPos;
+    vGroup     = g;
     gl_Position = frame.viewProj * vec4(vWorld, 1.0);
 }

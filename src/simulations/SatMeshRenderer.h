@@ -92,6 +92,14 @@ public:
     // Records the viewer pass (outside any render pass): background, then `inst` of type `typeIdx`.
     void recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst, int typeIdx);
 
+    // ── Photometric check ─────────────────────────────────────────────────────────
+    // Renders `inst` (frame.params.w = 1: sun only, scalar, L·d² per pixel) into a kCheckSize² R32F
+    // target and copies it to host memory. After the frame that recorded it has completed (the next
+    // buildUI), checkPixels() holds the image, row-major, top row first.
+    static constexpr uint32_t kCheckSize = 512;
+    void recordCheck(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst, int typeIdx);
+    const float *checkPixels() const { return static_cast<const float *>(checkMapped); }
+
 private:
     VkDevice device_ = VK_NULL_HANDLE;
     VkFormat colorFormat = VK_FORMAT_B8G8R8A8_SRGB;
@@ -110,10 +118,14 @@ private:
     VkBuffer frameBuf = VK_NULL_HANDLE, instanceBuf = VK_NULL_HANDLE;
     VkDeviceMemory frameMem = VK_NULL_HANDLE, instanceMem = VK_NULL_HANDLE;
     void *frameMapped = nullptr, *instanceMapped = nullptr;
+    VkBuffer checkFrameBuf = VK_NULL_HANDLE;
+    VkDeviceMemory checkFrameMem = VK_NULL_HANDLE;
+    void *checkFrameMapped = nullptr;
 
     VkDescriptorSetLayout descLayout = VK_NULL_HANDLE;
     VkDescriptorPool descPool = VK_NULL_HANDLE;
     VkDescriptorSet descSet = VK_NULL_HANDLE;
+    VkDescriptorSet descSetCheck = VK_NULL_HANDLE; // same layout, its own frame UBO (checkFrameBuf)
     VkPipelineLayout pipeLayout = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
 
@@ -128,6 +140,18 @@ private:
                 viewerResolveView = VK_NULL_HANDLE;
     VkFramebuffer viewerFb = VK_NULL_HANDLE;
     bool viewerHasContent = false;
+
+    // Photometric check pass (single-sampled, R32F → host).
+    VkRenderPass checkPass = VK_NULL_HANDLE;
+    VkPipeline checkMeshPipe = VK_NULL_HANDLE;
+    VkImage checkColor = VK_NULL_HANDLE, checkDepth = VK_NULL_HANDLE;
+    VkDeviceMemory checkColorMem = VK_NULL_HANDLE, checkDepthMem = VK_NULL_HANDLE;
+    VkImageView checkColorView = VK_NULL_HANDLE, checkDepthView = VK_NULL_HANDLE;
+    VkFramebuffer checkFb = VK_NULL_HANDLE;
+    VkBuffer checkReadBuf = VK_NULL_HANDLE;
+    VkDeviceMemory checkReadMem = VK_NULL_HANDLE;
+    void *checkMapped = nullptr;
+    void createCheckPass(VulkanContext &ctx);
 
     void createDescriptors(VulkanContext &ctx);
     void writeGeometryDescriptors();

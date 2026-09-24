@@ -574,8 +574,20 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   - **Reflections:** the reflected ray goes into `earthEnv()`, the Potato sky's analytic atmosphere,
     textured ground and flat cloud deck, rewritten in ECEF from any origin and scaled by
     `kEnvToScene` into pre-exposure units. The sun disc is not in it; the GGX sun lobe is the glint.
-  - **The viewer:** "VIEW" on a constellation row opens it. (A selected satellite gets follow mode
-    instead, 4e.) **Never give a `UIImage` element its own `backgroundColor`:** Clay emits CUSTOM
+  - **The viewer:** "VIEW" on a constellation row opens it with the model placed at its altitude
+    above the observer; "View model" beside "Trace pass" opens it TRACKING that satellite — its real
+    position, velocity and attitude at the sim time (`satOrbitStateAt` + `evalGroupPoses`, in ECEF),
+    so Live lighting and the Earth below are what that satellite has now.
+  - **Procedural surface detail** (`SatMaterial::pattern`, JSON `"pattern"`: none / solar_cells / mli
+    / panel_seams; -1 = from the preset — `solar_cell` → cells, `mli_foil` → crinkle). Visual only and
+    **photometrically neutral**: each pattern scales albedo by a factor with area mean 1, leaves the
+    specular alone, and fades to the plain material below a pixel.
+  - **Photometric check** ("Check" in the viewer): a sun-only, single-sampled R32F render from the
+    current direction at 60 model radii (`sat_mesh.frag` check mode writes L·d²), read back next frame
+    and integrated as Σ L·d²·Ω/π, which is radiant intensity per unit irradiance. It is compared with
+    `evalSatLobesPosed()` for the same pose, sun and direction, both as magnitude at 1000 km. With
+    shadows on, the two differ by the occlusion sampling error (KNOWN_RESIDUALS); off, the difference
+    is render tessellation plus smooth normals versus baked lobes. **Never give a `UIImage` element its own `backgroundColor`:** Clay emits CUSTOM
     before the element's own RECTANGLE, so the background covers the image. That was the first
     cut's all-black viewer. Put the backing colour on a parent.
     `recordModelViewer()` (end of `recordCompute`) places the model at its constellation's altitude

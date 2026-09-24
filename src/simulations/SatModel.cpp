@@ -359,6 +359,18 @@ std::vector<GroupPose> evalGroupPoses(const std::vector<AttitudeGroup> &groups, 
 }
 
 // ── Materials ─────────────────────────────────────────────────────────────────────────────────
+int satMaterialPattern(const SatMaterial &m)
+{
+    if (m.pattern >= 0)
+        return m.pattern;
+    const std::string &p = m.preset.empty() ? m.name : m.preset;
+    if (p == "solar_cell")
+        return kPatternSolarCells;
+    if (p == "mli_foil")
+        return kPatternMli;
+    return kPatternNone;
+}
+
 const std::vector<SatMaterial> &satMaterialPresets()
 {
     // INITIAL ESTIMATES — calibrated against reference satellites in Phase 3c. Roughness is GGX α.
@@ -423,7 +435,10 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
             if (!base.empty())
             {
                 if (matLib.count(base))
+                {
                     m = matLib[base];
+                    m.preset = m.preset.empty() ? base : m.preset;
+                }
                 else
                     warn.push_back("material preset '" + base + "' not found");
             }
@@ -440,6 +455,21 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
                     warn.push_back("material '" + m.name + "': unknown distribution '" + d + "' (ggx|beckmann)");
             }
             m.color = jsonVec3(jm, "color", m.color);
+            if (jm.contains("pattern"))
+            {
+                const std::string pat = jm.value("pattern", std::string());
+                if (pat == "none")
+                    m.pattern = kPatternNone;
+                else if (pat == "solar_cells")
+                    m.pattern = kPatternSolarCells;
+                else if (pat == "mli")
+                    m.pattern = kPatternMli;
+                else if (pat == "panel_seams")
+                    m.pattern = kPatternPanelSeams;
+                else
+                    warn.push_back("material '" + m.name + "': unknown pattern '" + pat +
+                                   "' (none|solar_cells|mli|panel_seams)");
+            }
             matLib[m.name] = m;
             out.localMaterials.push_back(m.name);
         }

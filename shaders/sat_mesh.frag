@@ -22,6 +22,8 @@ layout(location = 2) in vec2 vUv;
 layout(location = 3) flat in uint vMaterial;
 layout(location = 4) flat in uint vComponent;
 layout(location = 5) flat in uint vInstance;
+layout(location = 6) in vec3 vRest;
+layout(location = 7) flat in uint vGroup;
 
 layout(location = 0) out vec4 outColor;
 
@@ -128,6 +130,92 @@ bool rayBlocked(MeshInstance inst, vec3 p, vec3 dir)
     return false;
 }
 
+// ── Procedural surface detail (SatSurfacePattern, SatModel.h) ────────────────────────────────
+// Visual only, and photometrically neutral: each pattern scales the diffuse albedo by a factor whose
+// AREA-WEIGHTED MEAN is 1, so the lobe model's scalar albedo stays the average of what is drawn. The
+// specular part is left alone (the cover glass over solar cells is continuous). Every pattern fades
+// to the plain material once its features shrink below a pixel (`resolve`), so a distant model
+// shades exactly like the photometry.
+uint hashU(uvec3 v)
+{
+    uint h = v.x * 0x8da6b343u ^ v.y * 0xd8163841u ^ v.z * 0xcb1ab31fu;
+    h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+    return h;
+}
+vec3 hash3(uvec3 v)
+{
+    uint h = hashU(v);
+    return vec3(h & 0x3FFu, (h >> 10) & 0x3FFu, (h >> 20) & 0x3FFu) / 1023.0;
+}
+vec3 valueNoise3(vec3 p) // three decorrelated channels of trilinear value noise, 0..1
+{
+    vec3 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    ivec3 b = ivec3(i);
+    vec3 r = vec3(0.0);
+    for (int k = 0; k < 8; ++k) {
+        ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        vec3 w = mix(1.0 - f, f, vec3(o));
+        r += w.x * w.y * w.z * hash3(uvec3(b + o + ivec3(4096)));
+    }
+    return r;
+}
+
+struct Surface {
+    vec3  N;        // shading normal (world)
+    vec3  tint;     // diffuse colour
+    float albedoM;  // albedo multiplier (area mean 1)
+    float rough;    // roughness actually used
+};
+
+Surface applyPattern(MeshMaterial mat, MeshInstance inst, vec3 N)
+{
+    Surface s = Surface(N, mat.color, 1.0, mat.roughness);
+    const float pxUv   = max(max(fwidth(vUv.x), fwidth(vUv.y)), 1e-6);  // metres per pixel
+    const float pxRest = max(length(fwidth(vRest)), 1e-6);
+    const mat3  R      = instGroupRot(inst, vGroup);
+    if (mat.pattern == 1u) {
+        // Solar cells ~8 x 4 cm (space triple-junction), 2.5 mm gaps of lighter substrate between them.
+        const vec2  pitch = vec2(0.080, 0.040);
+        const float gap   = 0.0025;
+        const float gFrac = 1.0 - (1.0 - gap / pitch.x) * (1.0 - gap / pitch.y);
+        const float mGap  = 4.0;
+        const float mCell = (1.0 - gFrac * mGap) / (1.0 - gFrac);
+        float resolve = clamp((0.25 * pitch.y - pxUv) / (0.2 * pitch.y), 0.0, 1.0);
+        vec2  f    = fract(vUv / pitch) * pitch;
+        vec2  d    = min(f, pitch - f);
+        float edge = min(d.x, d.y);
+        float gapMask = 1.0 - smoothstep(0.5 * gap - pxUv, 0.5 * gap + pxUv, edge);
+        s.albedoM = mix(1.0, mix(mCell, mGap, gapMask), resolve);
+        s.tint    = mix(mat.color, vec3(0.85, 0.82, 0.70), gapMask * resolve);
+        // Each cell sits a fraction of a degree off the panel plane: close up, a glint breaks into
+        // individual cells instead of one uniform sheet.
+        vec3 j = hash3(uvec3(ivec3(ivec2(floor(vUv / pitch)) + ivec2(8192), int(vMaterial)))) - 0.5;
+        vec3 t = R * j;
+        s.N = normalize(N + resolve * 0.012 * (t - dot(t, N) * N));
+    } else if (mat.pattern == 2u) {
+        // MLI crinkle: explicit micro-facets (~3 cm) with a smaller residual roughness instead of one
+        // blurred lobe, so it sparkles close up; statistically about the same spread.
+        const float scale = 0.03;
+        float resolve = clamp((0.5 * scale - pxRest) / (0.4 * scale), 0.0, 1.0);
+        vec3 n3 = (valueNoise3(vRest / scale) - 0.5) + 0.5 * (valueNoise3(vRest / (0.4 * scale) + 17.0) - 0.5);
+        vec3 t  = R * n3;
+        s.N = normalize(N + resolve * 0.9 * (t - dot(t, N) * N));
+        s.rough = mix(mat.roughness, mat.roughness * 0.35, resolve);
+    } else if (mat.pattern == 3u) {
+        // Panel seams every 0.5 m, 4 mm wide, darker.
+        const float pitch = 0.5, seam = 0.004;
+        const float sFrac = 2.0 * seam / pitch, mSeam = 0.4;
+        const float mPanel = (1.0 - sFrac * mSeam) / (1.0 - sFrac);
+        float resolve = clamp((0.5 * seam * 4.0 - pxUv) / (seam * 2.0), 0.0, 1.0);
+        vec2  f = fract(vUv / pitch) * pitch;
+        vec2  d = min(f, pitch - f);
+        float seamMask = 1.0 - smoothstep(0.5 * seam - pxUv, 0.5 * seam + pxUv, min(d.x, d.y));
+        s.albedoM = mix(1.0, mix(mPanel, mSeam, seamMask), resolve);
+    }
+    return s;
+}
+
 void main()
 {
     MeshInstance inst = instances[vInstance];
@@ -140,10 +228,17 @@ void main()
         nv = 1e-3;
     }
 
-    const float a2    = max(mat.roughness * mat.roughness, 1e-8);
+    // Photometric check (frame.params.w): sun only, scalar (the photometry has no colour), no
+    // patterns; output L·d² so the CPU's Σ L·d²·Ω/π is the model's radiant intensity toward the camera.
+    const bool check = frame.params.w > 0.5;
+    Surface sf = check ? Surface(N, vec3(1.0), 1.0, mat.roughness) : applyPattern(mat, inst, N);
+    N  = sf.N;
+    nv = max(dot(N, V), 1e-3);
+
+    const float a2    = max(sf.rough * sf.rough, 1e-8);
     const bool  beck  = mat.beckmann != 0u;
-    const vec3  diffC = mat.color * mat.albedo;
-    const vec3  specC = (mat.f0 >= 0.5) ? mat.color : vec3(1.0); // metals tint their reflection
+    const vec3  diffC = sf.tint * (mat.albedo * sf.albedoM);
+    const vec3  specC = (mat.f0 >= 0.5 && !check) ? mat.color : vec3(1.0); // metals tint their reflection
     const bool  shadows = frame.params.x > 0.5;
 
     vec3 L = vec3(0.0);
@@ -157,6 +252,12 @@ void main()
             vec3 E = inst.sunColor.rgb * inst.sun.w;
             L += E * (diffC * ns + specC * specCos(N, V, S, a2 + SUN_ALPHA2, mat.f0, beck));
         }
+    }
+
+    if (check) {
+        vec3 d = vWorld - frame.camPos.xyz;
+        outColor = vec4(L.r * dot(d, d), 0.0, 0.0, 1.0);
+        return;
     }
 
     // ── Earthshine (diffuse; its specular part is the reflection below) ─────

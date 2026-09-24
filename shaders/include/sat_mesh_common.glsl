@@ -13,7 +13,8 @@ layout(set = 0, binding = 0, std140) uniform MeshFrame {
     vec4 sunDir;      // xyz unit (ECEF axes), w = 1 if the sun disc is drawn in the background
     vec4 moonDir;     // xyz unit, w = moonlight irradiance (fraction of sunlight)
     vec4 earthCenter; // xyz world position of Earth's centre, w = Earth rotation angle (cloud drift)
-    vec4 params;      // x = self-shadows on, y = env reflections on, z = env lod bias, w = unused
+    vec4 params;      // x = self-shadows on, y = env reflections on, z = env lod bias,
+                      // w = 1: photometric-check output (sun only, scalar, L·d² — see sat_mesh.frag)
 } frame;
 
 struct MeshInstance {

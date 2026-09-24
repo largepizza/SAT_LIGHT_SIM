@@ -1665,7 +1665,7 @@ private:
     void buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx); // "Trace pass" in the selection UI
 
     // ── Phase 4: satellite mesh renderer + model viewer (.plans/SAT_RENDERER_PHASE4.md) ──────────
-    // "VIEW" on a constellation row opens a window showing that
+    // "VIEW" on a constellation row (or "View model" on a selected satellite) opens a window showing that
     // type's geometry model, rendered by SatMeshRenderer into an offscreen image the UI draws
     // (UIImage). The model sits at its constellation's altitude above the observer's ground point,
     // posed by its attitude law, lit by the sun (Studio: fixed 35 deg over its horizon; Live: the sim's
@@ -1675,6 +1675,8 @@ private:
     bool meshRendererInit = false;
     WindowChrome viewerChrome;
     int viewerType = -1;          // satTypes index shown
+    int viewerSatIndex = -1;      // >= 0: track this satellite (its real position/attitude), else placed
+                                  // at viewerAltM above the observer
     float viewerAltM = 550000.0f; // altitude it is placed at
     char viewerTitle[96] = {};
     char viewerInfo[160] = {};
@@ -1686,9 +1688,15 @@ private:
     bool viewerDragging = false;
     uint32_t viewerImageId = 0;
     UIImage viewerImage;
-    bool hovViewerClose = false, hovViewerBtn[6] = {};
+    bool hovViewerClose = false, hovViewerBtn[8] = {}, hovSelViewBtn = false;
+    // Photometric check: sun-only render integrated on the CPU vs evalSatLobesPosed() (see
+    // recordModelViewer). Requested by the button, recorded in recordCompute, read the next buildUI.
+    bool viewerCheckRequested = false, viewerCheckAwaiting = false;
+    double viewerCheckModelI = 0.0, viewerCheckTanHalf = 0.0, viewerCheckPhaseDeg = 0.0;
+    char viewerCheckLine[200] = {};
     std::vector<bool> hovViewConst;
-    void openModelViewer(int typeIdx, const char *label, float altM);
+    void openModelViewer(int typeIdx, const char *label, float altM, int satIndex = -1);
+    void buildViewButton(const UIInput &inp, UIRenderer &ui, int idx); // "View model" in the selection UI
     void buildModelViewerWindow(const UIInput &inp, UIRenderer &ui);
     void recordModelViewer(VkCommandBuffer cmd);
 

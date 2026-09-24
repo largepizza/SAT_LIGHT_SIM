@@ -205,7 +205,7 @@ GpuSatMeshMaterial packSatMeshMaterial(const SatMaterial &m)
     g.f0 = m.specularF0;
     g.roughness = m.roughness;
     g.beckmann = m.beckmann ? 1u : 0u;
-    g.pattern = 0u;
+    g.pattern = (uint32_t)satMaterialPattern(m);
     g.extra = glm::vec4(0.0f);
     return g;
 }

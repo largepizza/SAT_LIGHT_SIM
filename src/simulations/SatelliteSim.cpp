@@ -2914,25 +2914,33 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 }
 
 // ─── Model viewer (Phase 4b) ─────────────────────────────────────────────────
-void SatelliteSim::openModelViewer(int typeIdx, const char *label, float altM)
+void SatelliteSim::openModelViewer(int typeIdx, const char *label, float altM, int satIndex)
 {
     if (typeIdx < 0 || typeIdx >= (int)satTypes.size() || !meshRenderer.typeMesh(typeIdx))
         return;
     if (viewerType != typeIdx)
         viewerDist = 0.0f; // re-frame a different model
     viewerType = typeIdx;
+    viewerSatIndex = satIndex;
     viewerAltM = altM > 0.0f ? altM : 550000.0f;
-    snprintf(viewerTitle, sizeof(viewerTitle), "Model: %s", label);
+    if (satIndex >= 0)
+        snprintf(viewerTitle, sizeof(viewerTitle), "Model: %s (satellite #%d)", label, satIndex);
+    else
+        snprintf(viewerTitle, sizeof(viewerTitle), "Model: %s", label);
     const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(typeIdx);
     const SatelliteType &t = satTypes[typeIdx];
     snprintf(viewerInfo, sizeof(viewerInfo), "%s  -  %d triangles, %zu parts, %zu materials, %.1f m across",
              t.modelId.c_str(), tm->triangles, t.model ? t.model->components.size() : (size_t)0,
              t.model ? t.model->materials.size() : (size_t)0, 2.0f * tm->boundsRadius);
+    viewerCheckLine[0] = '\0';
+    viewerCheckAwaiting = viewerCheckRequested = false;
     viewerChrome.open = true;
 }
 
-// Places the model above the observer's ground point at viewerAltM (ECEF axes, origin = the body
-// origin), poses it, lights it and orbits the camera around it — then renders it offscreen.
+// Renders the model viewer (and, when requested, the photometric check) offscreen. Frame: ECEF axes,
+// origin at the model's body origin. The model is either a tracked satellite — its real position,
+// velocity and attitude at the sim time, so the Earth below is what is really under it — or, from a
+// constellation row, placed at viewerAltM above the observer's ground point, flying east.
 void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
 {
     if (!meshRendererInit || !viewerChrome.open || viewerType < 0 || viewerType >= (int)satTypes.size() ||
@@ -2950,12 +2958,30 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
         return glm::dvec3(c * v.x + s * v.y, -s * v.x + c * v.y, v.z);
     };
 
-    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    // ── Where it is ──────────────────────────────────────────────────────────
+    AttGeometry geo;
+    glm::dvec3 P;
+    const bool tracked = viewerSatIndex >= 0 && viewerSatIndex < (int)satOrbits.size() &&
+                         (int)satOrbits[viewerSatIndex].typeIdx == viewerType;
+    if (tracked)
+    {
+        const SatOrbitElems e = orbitElemsOf(satOrbits[viewerSatIndex]);
+        const SatOrbitState st = satOrbitStateAt(e, tNow);
+        P = eciToEcef(st.posEci);
+        geo.velocity = glm::normalize(eciToEcef(st.velocity));
+        geo.tumbleAngle = st.tumbleAngle;
+        geo.tumbleAxis = eciToEcef(e.tumbleAxis);
+    }
+    else
+        P = glm::normalize(glm::dvec3(obsDir)) * (satphot::kEarthRadiusM + (double)viewerAltM);
+    const glm::dvec3 up = glm::normalize(P);
     glm::dvec3 east = glm::cross(glm::dvec3(0.0, 0.0, 1.0), up);
     east = glm::length(east) > 1e-9 ? glm::normalize(east) : glm::dvec3(1.0, 0.0, 0.0);
     const glm::dvec3 north = glm::cross(up, east);
-    const glm::dvec3 P = up * (satphot::kEarthRadiusM + (double)viewerAltM); // satellite, ECEF
+    if (!tracked)
+        geo.velocity = east;
 
+    // ── How it is lit ────────────────────────────────────────────────────────
     glm::dvec3 sun;
     if (viewerStudioLight)
     {
@@ -2964,7 +2990,6 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     }
     else
         sun = glm::normalize(eciToEcef(glm::dvec3(sunDirECI)));
-
     // Earth's shadow (cylinder with a soft ±20 km edge — the scene pass will use the evaluator's).
     double lit = 1.0;
     if (glm::dot(P, sun) < 0.0)
@@ -2973,12 +2998,10 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
         lit = glm::smoothstep(satphot::kEarthRadiusM - 20000.0, satphot::kEarthRadiusM + 20000.0, d);
     }
 
-    // Pose: nadir-down, flying east (the viewer has no orbit), tracking this sun.
-    AttGeometry geo;
+    // ── Pose ─────────────────────────────────────────────────────────────────
     geo.nadir = -up;
-    geo.velocity = east;
     geo.sun = sun;
-    geo.siteIdeal = -up;
+    geo.siteIdeal = -up; // ground-site aim is not evaluated here: face straight down
     geo.flareTiltRad = glm::radians((double)flareMitigationTiltDeg);
     const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, !viewerSunlitPose);
 
@@ -2994,7 +3017,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     const double rOverD = satphot::kEarthRadiusM / glm::length(P);
     double earthE = 0.0, tilt = 0.0;
     earthshineLookup(rOverD, glm::dot(up, sun), earthE, tilt);
-    glm::dvec3 perp = sun - glm::dot(sun, -up) * -up;
+    const glm::dvec3 perp = sun - glm::dot(sun, -up) * -up;
     const double pl = glm::length(perp);
     const glm::dvec3 earthDir = pl < 1e-9 ? -up : std::cos(tilt) * -up + std::sin(tilt) * (perp / pl);
     const double alphaE = rOverD / (1.0 + std::sqrt(std::max(0.0, 1.0 - rOverD * rOverD)));
@@ -3005,7 +3028,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     inst.firstOccluder = tm->firstOccluder;
     inst.occluderCount = tm->occluderCount;
 
-    // Camera: orbit the posed bounding sphere's centre (root group's pose).
+    // ── Camera: orbit the posed bounding sphere's centre (root group's pose) ─
     const GroupPose root = poses.empty() ? GroupPose{} : poses[0];
     const glm::dvec3 centre = root.R * glm::dvec3(tm->boundsCenter) + root.t;
     const double radius = std::max(0.1, (double)tm->boundsRadius);
@@ -3036,6 +3059,37 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     frame.earthCenter = glm::vec4(glm::vec3(-P), (float)std::fmod(theta, glm::two_pi<double>()));
     frame.params = glm::vec4(viewerShadows ? 1.0f : 0.0f, viewerReflections ? 1.0f : 0.0f, 0.0f, 0.0f);
     meshRenderer.recordViewer(cmd, frame, inst, viewerType);
+
+    // ── Photometric check ───────────────────────────────────────────────────
+    // From the viewer's current direction, 60 model radii out (parallax across the model ~1 deg), sun
+    // only at full sunlight: the render's Σ L·d²·Ω/π (buildModelViewerWindow) against the lobe model's
+    // intensity for the same pose, sun and observer direction.
+    if (viewerCheckRequested)
+    {
+        viewerCheckRequested = false;
+        const glm::dvec3 o = glm::normalize(camDir);
+        const double dist = radius * 60.0;
+        const double tanHalf = 1.2 * radius / dist;
+        const glm::dvec3 camC = centre + o * dist;
+        const glm::dvec3 upC = std::abs(glm::dot(o, up)) > 0.99 ? east : up;
+        GpuMeshFrame cf = frame;
+        glm::mat4 cproj = glm::perspectiveRH_ZO((float)(2.0 * std::atan(tanHalf)), 1.0f,
+                                                (float)(dist - 2.0 * radius), (float)(dist + 2.0 * radius));
+        cproj[1][1] *= -1.0f;
+        cf.viewProj = cproj * glm::lookAt(glm::vec3(camC), glm::vec3(centre), glm::vec3(upC));
+        cf.invViewProj = glm::inverse(cf.viewProj);
+        cf.camPos = glm::vec4(glm::vec3(camC), 1.0f);
+        cf.params = glm::vec4(viewerShadows ? 1.0f : 0.0f, 0.0f, 0.0f, 1.0f);
+        GpuMeshInstance ci = inst;
+        ci.sun.w = 1.0f;
+        meshRenderer.recordCheck(cmd, cf, ci, viewerType);
+        viewerCheckModelI = evalSatLobesPosed(type.lobes, type.groups, poses, sun, o,
+                                              (double)kSunAlpha * kSunAlpha, nullptr,
+                                              viewerShadows ? &type.occlusion : nullptr, true);
+        viewerCheckTanHalf = tanHalf;
+        viewerCheckPhaseDeg = glm::degrees(std::acos(glm::clamp(glm::dot(sun, o), -1.0, 1.0)));
+        viewerCheckAwaiting = true;
+    }
 }
 
 // ─── projectSkyDirToScreen ────────────────────────────────────────────────────

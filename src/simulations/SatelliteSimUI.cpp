@@ -1087,7 +1087,10 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
         {
             CLAY_TEXT(chipStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
             if (!isPlanet)
+            {
                 buildTraceButton(inp, ui, 0);
+                buildViewButton(inp, ui, 0);
+            }
         }
         captureLaidOut(ui, CLAY_ID("SelSatChip"), kMargin, kMargin, 360.0f, 34.0f);
         return;
@@ -1149,7 +1152,13 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                 CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = warn ? Pal::listenKey : Pal::textDim, .fontSize = fs(12)}));
             }
         if (!isPlanet)
-            buildTraceButton(inp, ui, 1);
+            CLAY(CLAY_ID("SelSatButtons"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                                       .childGap = 6,
+                                                       .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+            {
+                buildTraceButton(inp, ui, 1);
+                buildViewButton(inp, ui, 1);
+            }
     }
     // Panel size isn't known until Clay lays it out this frame — this is a rough estimate for
     // capture purposes only, same approximation the corner HUD panels' capture rects already use.
@@ -1427,6 +1436,37 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
     if (overImg && inp.scrollY != 0.0f && viewerDist > 0.0f)
         viewerDist *= powf(0.88f, inp.scrollY);
 
+    // Photometric check result (recorded last frame, which has completed by now): integrate the
+    // render's L·d² over each pixel's solid angle → radiant intensity toward the camera, per unit solar
+    // irradiance, and compare with the lobe model's (both reduced to 1000 km).
+    if (viewerCheckAwaiting && meshRenderer.checkPixels())
+    {
+        viewerCheckAwaiting = false;
+        const int n = (int)SatMeshRenderer::kCheckSize;
+        const double t = viewerCheckTanHalf, pix = 2.0 * t / n;
+        const float *px = meshRenderer.checkPixels();
+        double sum = 0.0;
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x)
+            {
+                const float v = px[(size_t)y * n + x];
+                if (v <= 0.0f)
+                    continue;
+                const double sx = ((x + 0.5) / n * 2.0 - 1.0) * t, sy = ((y + 0.5) / n * 2.0 - 1.0) * t;
+                sum += v * pix * pix / std::pow(1.0 + sx * sx + sy * sy, 1.5);
+            }
+        const double iRender = sum / glm::pi<double>();
+        const double mR = satMagnitudeFromIntensity(iRender, 1.0e6), mM = satMagnitudeFromIntensity(viewerCheckModelI, 1.0e6);
+        if (std::isfinite(mR) && std::isfinite(mM))
+            snprintf(viewerCheckLine, sizeof(viewerCheckLine),
+                     "Check (sun only, phase %.0f deg%s): render %.2f, model %.2f mag at 1000 km  (render - model %+.3f)",
+                     viewerCheckPhaseDeg, viewerShadows ? ", shadows" : "", mR, mM, mR - mM);
+        else
+            snprintf(viewerCheckLine, sizeof(viewerCheckLine),
+                     "Check (phase %.0f deg): not sunlit from this side (render %s, model %s)", viewerCheckPhaseDeg,
+                     std::isfinite(mR) ? "lit" : "dark", std::isfinite(mM) ? "lit" : "dark");
+    }
+
     auto text = [&](const char *s, Clay_Color c, float size) {
         Clay_String str{false, (int32_t)strlen(s), s};
         CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
@@ -1499,10 +1539,44 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                         viewerYawDeg = 35.0f;
                         viewerPitchDeg = 18.0f;
                     }
+                    if (button(6, "Check",
+                               "Photometric check: render the model sun-only from this direction, integrate its "
+                               "pixels, and compare with the brightness model (magnitude at 1000 km)"))
+                        viewerCheckRequested = true;
                 }
+                if (viewerCheckLine[0])
+                    text(viewerCheckLine, Pal::textDim, 11);
                 text("Drag to orbit, scroll to zoom", Pal::textHint, 11);
             }
         });
+}
+
+// ─── buildViewButton ─────────────────────────────────────────────────────────
+// "View model" next to "Trace pass" for a selected satellite whose type has a geometry model: the
+// viewer then tracks that satellite (its real position, attitude and the Earth beneath it).
+void SatelliteSim::buildViewButton(const UIInput &inp, UIRenderer &ui, int idx)
+{
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+        return;
+    const SatOrbit &orb = satOrbits[selectedSatIndex];
+    if (!meshRenderer.typeMesh((int)orb.typeIdx))
+        return;
+    CLAY(CLAY_IDI("SelViewBtn", idx), {.layout = {
+                                           .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(22)},
+                                           .padding = {8, 8, 0, 0},
+                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                       .backgroundColor = hovSelViewBtn ? Pal::btnHover : Pal::btnIdle,
+                                       .cornerRadius = CLAY_CORNER_RADIUS(3)})
+    {
+        bool n = Clay_Hovered();
+        sndRollover(n, hovSelViewBtn);
+        sndClick(n, inp.lmbPressed);
+        hovSelViewBtn = n;
+        if (n && inp.lmbPressed)
+            openModelViewer((int)orb.typeIdx, satTypes[orb.typeIdx].name.c_str(), orb.altM, selectedSatIndex);
+        ui.tooltip(inp, n, "Open this satellite's 3D model where it is now, with the Earth beneath it", fs(11));
+        CLAY_TEXT(CLAY_STRING("View model"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
+    }
 }
 
 // ─── buildTraceButton ────────────────────────────────────────────────────────
