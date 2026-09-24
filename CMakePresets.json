@@ -84,6 +84,7 @@
         { "name": "linux",          "configurePreset": "linux" },
         { "name": "linux-release",  "configurePreset": "linux-release" },
         { "name": "linux-package",  "configurePreset": "linux-release",  "targets": ["package-release"] },
+        { "name": "linux-accuracy-gate", "configurePreset": "linux-release", "targets": ["accuracy-gate"] },
 
         { "name": "macos",          "configurePreset": "macos" },
         { "name": "macos-release",  "configurePreset": "macos-universal-release" },

@@ -523,6 +523,15 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   reproduces the run's n/mean/median/sd (the M10 gate). `pass` numbers consecutive runs of visible
   instants per satellite; `satellite` is the roster index (-1 for SatBench's random draws).
   `photometryUnsupportedReason()` is the shared "why not" (legacy type, ground-site aim).
+- **Accuracy gate (milestone M11, 2026-09-23).** `cmake --build <dir> [--config Release] --target
+  accuracy-gate` builds SatModelTool and runs `cmake/AccuracyGate.cmake` — **the only list** of
+  checks: every `data/satellite_models/*.json` through `--selftest 400`, every `data/benchmarks/*.json`
+  through `--benchmark` (transcription) and `--run-benchmark --samples 5000 --seed 1` (the logged
+  configuration). Any non-zero exit fails the target. CI's Linux job runs it (`linux-accuracy-gate`
+  build preset) between Build and Package, so a PR to main that moves a benchmark out of tolerance
+  fails. ~30 s. Verified identical on MSVC (Windows) and GCC 13 (Linux): the sampling is bit-for-bit
+  deterministic and every reported metric matches to the printed precision. Adding a benchmark file
+  or a model adds it to the gate automatically.
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, and the M4 benchmark references `starlink_v1_0.json`
   (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`

@@ -178,6 +178,22 @@ target_include_directories(SatModelTool PRIVATE src/simulations)
 target_link_libraries(SatModelTool PRIVATE glm::glm nlohmann_json::nlohmann_json)
 sat_strict_warnings(SatModelTool)
 
+# Photometric accuracy gate (benchmarking milestone M11):
+#   cmake --build <build-dir> [--config Release] --target accuracy-gate
+# Builds SatModelTool and runs cmake/AccuracyGate.cmake — the one list of model selftests and
+# benchmark runs, each within its tolerance or the target fails. CI's Linux job runs it on every
+# PR to main (release.yml), so a change that moves a benchmark out of tolerance fails the PR.
+add_custom_target(accuracy-gate
+    COMMAND ${CMAKE_COMMAND}
+        -DTOOL=$<TARGET_FILE:SatModelTool>
+        -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/accuracy_gate
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/AccuracyGate.cmake
+    COMMENT "Running the photometric accuracy gate (SatModelTool selftests + benchmarks)"
+    VERBATIM
+    USES_TERMINAL)
+add_dependencies(accuracy-gate SatModelTool)
+
 # miniaudio's CoreAudio backend needs these frameworks explicitly. GLFW's target already
 # brings Cocoa/IOKit/CoreFoundation transitively, but not CoreAudio/AudioToolbox — without
 # this the link fails with undefined _AudioObjectGetPropertyData etc.

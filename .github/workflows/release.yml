@@ -122,6 +122,14 @@ jobs:
       - name: Build
         run: cmake --build --preset linux-release --parallel
 
+      # Photometric accuracy gate (benchmarking milestone M11): SatModelTool's selftests and every
+      # data/benchmarks run, each within its tolerance — a change that moves a satellite's
+      # brightness out of agreement with the published measurements fails the PR here. The list
+      # of checks lives in cmake/AccuracyGate.cmake only. Linux alone: the tool is platform-
+      # independent C++ with deterministic sampling, and this is the fastest runner.
+      - name: Accuracy gate
+        run: cmake --build --preset linux-accuracy-gate
+
       - name: Package
         run: cmake --build --preset linux-package
 
