@@ -97,6 +97,7 @@ has access to is answerable. Current margins:
 | `maxComputeSharedMemorySize` | 16 KB | ~5.2 KB | tile-cull lists — comfortable |
 | `maxPerStageDescriptorStorageBuffers` | 4 | **11** | `sat_orbit.comp`'s set (the check said 6, for `sat_sky.frag`, long after this set passed it — corrected 2026-09-23 with the occlusion buffers); MoltenVK is the realistic place to hit it, since it maps SSBOs + UBOs + vertex buffers into Metal's 31 per-stage buffer slots |
 | `maxPerStageDescriptorSampledImages` | 16 | 15 | `sat_sky.frag` — one binding from the floor |
+| `maxPerStageDescriptorStorageImages` | 4 | 2 | `sat_sky.frag`'s Phase 4c mesh targets (imageLoad) — added as storage images precisely because the sampled-image budget above had one slot left |
 
 **The push-constant gate in `pickPhysicalDevice()` read 144 until 2026-09-08** — the pre-trim
 `SatDrawPC` size — so it rejected precisely the hardware the trim was performed for. Keep that
