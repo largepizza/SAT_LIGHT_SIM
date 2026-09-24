@@ -604,10 +604,25 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     That image is shown through **`UIImage`**, a Clay custom element (`UIRenderer::registerImage` /
     `updateImage`; each image gets its own descriptor set, drawn as a mode-2 quad). Lighting is
     Studio (sun at 35°) or Live (the sim's sun, including Earth's shadow); pose is Sunlit or Rest.
-- **Meshes in the main view (Phase 4c, first cut) + follow mode (4e).** The followed satellite,
-  else the selected one, is drawn by `SatMeshRenderer`'s **scene pass**. It is recorded in
-  `recordMeshScene()` just before `scene_depth.comp` and fades in once its bounding diameter spans
-  1.5-3 px.
+- **Meshes in the main view (Phase 4c/4d) + follow mode (4e).** Any model satellite whose mesh
+  spans 1.5-3 px or more on screen is drawn by `SatMeshRenderer`'s **scene pass**, with no selection
+  needed. It is recorded in `recordMeshScene()` just before `scene_depth.comp`.
+  - **Choice (4d):** `sat_orbit.comp` writes each model satellite's on-screen diameter into the
+    pre-photometry record (`GpuSatVisible::meshPx`, from `GpuSatType::meshRadius` and
+    `GpuSatTypeHeader::meshPixelAngle`; the latter is 0 when meshes are off). `sat_flare.comp`
+    appends the big ones to `GpuSatListHeader::meshCand[64]` (satellite, fade, final effectFlare,
+    sprite size) and fades their sprite. The CPU draws last frame's list in double: one frame of lag
+    in *which* satellites, none in *where*. Past 64, the rest stay sprites.
+  - **Followed satellite:** always drawn by the CPU, even in Earth's shadow where the GPU never lists
+    it; its fade goes through `SatFlarePC::meshSatIdx/meshSpriteKeep`.
+  - **Reverse-Z:** the scene projection is infinite reverse-Z (depth = 2 cm / distance, GREATER,
+    clear 0), so meshes from 1 cm to 1000 km keep precision.
+  - **Energy-matched bloom:** each instance's `bloomScale` is the bloom seed its sprite would have
+    put down (flare_source: b(effectFlare) × 0.3926·s² over its point disc) per unit of rendered
+    flux (Σ L·Ω·r²/π = I). `mesh_bloom.frag` sums L·bloomScale per flare texel, reading the instance
+    from the colour target's alpha (slot + 1). A flare keeps its full glow across the hand-off, and
+    on a large model the glow sits on the glint. The first cut (1 texel per block over 2× white) was
+    far too weak.
   - **Targets:** RGBA32F pre-exposure radiance plus R32F *true distance* (0 = none), full swap
     extent, GENERAL layout, always cleared.
   - **Consumers**, all through `imageLoad`, because `sat_sky.frag` is one below the 16

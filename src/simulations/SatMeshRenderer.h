@@ -44,7 +44,7 @@ struct GpuMeshInstance
     uint32_t firstMaterial;
     uint32_t firstOccluder;
     uint32_t occluderCount;
-    uint32_t pad;
+    float bloomScale; // scene: bloom seed per unit of rendered luminance (energy-matched to the sprite)
 };
 static_assert(sizeof(GpuMeshInstance) == 336, "GpuMeshInstance layout (sat_mesh_common.glsl)");
 

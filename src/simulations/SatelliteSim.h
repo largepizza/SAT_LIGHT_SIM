@@ -184,6 +184,7 @@ struct SatelliteType
     GpuSatOcclusionPack occlusionGpu = {};
     // The loaded model itself (components, materials) — the mesh renderer draws it (Phase 4).
     std::shared_ptr<const SatModel> model = {};
+    float meshRadiusM = 0.0f; // bounding radius of its triangles about their AABB centre (Phase 4d)
     bool isModel() const { return !lobes.empty(); }
 };
 
@@ -253,7 +254,8 @@ struct GpuSatType
     glm::vec4 originT[kMaxAttitudeGroups]; // each group's rest hinge point, root triad coords
     uint32_t firstOccluder;                // first entry in satOccluderBuf
     uint32_t occluderCount;
-    uint32_t occPad0, occPad1;
+    float meshRadius; // Phase 4d: bounding radius of the model's mesh (m); 0 = no model
+    uint32_t occPad1;
 };
 static_assert(sizeof(GpuSatType) == 416, "GpuSatType layout mismatch");
 static_assert(offsetof(GpuSatType, surfNormalT0) == 48, "GpuSatType std430 offset");
@@ -277,7 +279,11 @@ struct GpuSatTypeHeader
     // Phase 4: deltaT's low half — (simTime − epochT0) − (float)(simTime − epochT0) — so
     // sat_orbit.comp's orbitPhase() gets the orbit phase to ~1 m (SatOrbitPC is full).
     float deltaTLo;
-    float pad[3];
+    // Phase 4d: radians per screen pixel (vertical) — sat_orbit.comp turns each model satellite's
+    // bounding radius into its on-screen size (GpuSatVisible::meshPx). 0 = meshes off (knockout /
+    // Potato), so no satellite becomes a mesh candidate and no sprite fades.
+    float meshPixelAngle;
+    float pad[2];
 };
 static_assert(sizeof(GpuSatTypeHeader) == 32, "GpuSatTypeHeader layout mismatch");
 
@@ -321,7 +327,8 @@ struct GpuSatVisible
     uint32_t color;       // tint, packUnorm4x8 — packVisibleColor()
     float angularSize;    // point sprite size hint (pixels)
     float rangeM;         // distance, m; 0 = at infinity (stars, planets)
-    float pad;
+    float meshPx;         // pre-photometry only (sat_orbit → sat_flare): the model's on-screen
+                          // diameter in pixels, 0 = no model (Phase 4d mesh candidates)
 };
 static_assert(sizeof(GpuSatVisible) == 32, "GpuSatVisible layout mismatch");
 
@@ -352,8 +359,22 @@ struct GpuSatListHeader
     float selectedRangeM;
     uint32_t selectedFound;
     uint32_t selectedPad;
+    // offset 80 — Phase 4d: satellites big enough on screen to draw as meshes (sat_flare.comp
+    // appends; the CPU draws them next frame in double precision). A satellite that got a slot has
+    // already had its sprite faded by `fade`; past kMaxMeshCandidates the rest stay sprites.
+    uint32_t meshCandCount;
+    uint32_t meshCandPad[3];
+    struct MeshCandidate
+    {
+        uint32_t sat;      // satellite index
+        float fade;        // mesh weight (sprite keeps 1 - fade)
+        float effectFlare; // its sprite's final flux before the fade (bloom seed matching)
+        float angSize;     // its sprite's size (px) before the fade
+    } meshCand[64];
 };
-static_assert(sizeof(GpuSatListHeader) == 80, "GpuSatListHeader layout mismatch");
+static constexpr int kMaxMeshCandidates = 64;
+static_assert(sizeof(GpuSatListHeader) == 96 + 16 * kMaxMeshCandidates, "GpuSatListHeader layout mismatch");
+static_assert(offsetof(GpuSatListHeader, meshCandCount) == 80, "mesh candidate offset");
 static_assert(offsetof(GpuSatListHeader, dispatchX) == 4, "dispatch args offset");
 static_assert(offsetof(GpuSatListHeader, drawVertexCount) == 16, "draw args offset");
 static_assert(offsetof(GpuSatListHeader, selected) == 32, "selected offset (std430 vec3 alignment)");
@@ -1709,7 +1730,10 @@ private:
     // satOrbitStateAt, the observer from obsDir/radius (or followObsEcef), camera-relative floats.
     // (4d generalises this from one satellite to every satellite big enough on screen.)
     static constexpr float kMeshFadeInPx = 1.5f, kMeshFullPx = 3.0f;
-    int meshSceneSatIdx = -1;     // drawn this frame (-1 none)
+    int meshSceneSatIdx = -1;     // the FOLLOWED satellite drawn this frame (-1 none) — its sprite fade
+                                  // goes through SatFlarePC; GPU candidates fade their own
+    std::vector<GpuSatListHeader::MeshCandidate> meshCandidates; // last frame's (read with the header)
+    bool meshesDrawnThisFrame = false;
     // The selected satellite's direction from the CPU orbit (double), refreshed after
     // updatePositions(): the selection panel places itself with it, so a satellite stays "in view"
     // in Earth's shadow and while its sprite has handed over to a mesh (both have no sprite).

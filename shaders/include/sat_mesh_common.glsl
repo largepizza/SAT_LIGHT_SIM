@@ -27,7 +27,7 @@ struct MeshInstance {
     uint firstMaterial;
     uint firstOccluder;
     uint occluderCount;
-    uint instPad;
+    float bloomScale;   // scene: bloom seed per unit of rendered luminance (mesh_bloom.frag)
 };
 layout(set = 0, binding = 1, std430) readonly buffer MeshInstances { MeshInstance instances[]; };
 

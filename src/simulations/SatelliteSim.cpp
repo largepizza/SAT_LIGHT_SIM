@@ -2008,6 +2008,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
         const GpuSatListHeader *hdr = static_cast<const GpuSatListHeader *>(pickedVisibleMapped);
         visibleCount = hdr->count;
+        // Phase 4d: the satellites sat_flare.comp handed to the mesh renderer last frame.
+        meshCandidates.assign(hdr->meshCand, hdr->meshCand + std::min<uint32_t>(hdr->meshCandCount, kMaxMeshCandidates));
         if (selectedSatIndex >= 0)
         {
             lastPickedSkyDir = hdr->selected.skyDir;
@@ -2399,6 +2401,11 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         hdr.occlusionFluxFloor = (float)occlusionFluxFloor(brightnessScale);
         hdr.occlusionOn = satOcclusionActive() ? 1u : 0u;
         hdr.deltaTLo = orbitDeltaTLo;
+        // Phase 4d mesh candidates: pixel angle, or 0 when meshes are off (knockout / Potato sky).
+        hdr.meshPixelAngle = (debugDisableMask & (kDebugBitMeshes | 262144u)) != 0u || !meshRendererInit
+                                 ? 0.0f
+                                 : 2.0f * tanf(glm::radians(camera.fovYDeg) * 0.5f) /
+                                       (float)std::max(1u, ctx.swapExtent.height);
         memcpy(satTypeMapped, &hdr, sizeof(hdr));
         uploadPointStyle(); // sat_flare.comp and the point draws read it this frame
     }
@@ -2751,8 +2758,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         vkCmdDrawIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, drawVertexCount), 1, 0);
         vkCmdDraw(cmd, 1, 1, 0, 1);
         // Phase 4c: satellite mesh glints seed the same bloom (only while a mesh is drawn).
-        if (meshRendererInit && meshSceneSatIdx >= 0)
-            meshRenderer.recordBloom(cmd, flareExtent.width, flareExtent.height, skyExposure(), 0.6f);
+        if (meshRendererInit && meshesDrawnThisFrame)
+            meshRenderer.recordBloom(cmd, flareExtent.width, flareExtent.height, skyExposure(), 1.0f);
         vkCmdEndRenderPass(cmd);                     // finalLayout=GENERAL — ready for the compute blur below, no
                                                      // extra barrier (same convention skyLowResRenderPass established)
 
@@ -3171,14 +3178,21 @@ void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)
     vkUpdateDescriptorSets(ctx.device, 3, w, 0, nullptr);
 }
 
-// The followed (else selected) satellite as a mesh, when its bounding diameter spans at least
-// kMeshFadeInPx. World frame: ECEF axes, origin at the observer — every position is small. The sky
-// camera's rotation is ENU (from the same obsDir the sky shaders use) × SkyCamera::viewMatrix().
+// Satellites drawn as meshes this frame: the FOLLOWED one (always, CPU-decided — even in Earth's
+// shadow, where the GPU never lists it) and every candidate sat_flare.comp listed last frame
+// (Phase 4d: any model satellite whose mesh spans MESH_FADE_IN_PX or more — no selection needed).
+// Positions, attitude and lighting come from the CPU evaluator in double; the GPU only chose them
+// (a one-frame lag in WHICH satellites, never in where they are). World frame: ECEF axes, origin at
+// the observer. The camera rotation is ENU (from the obsDir the sky shaders use) × SkyCamera; the
+// projection is infinite reverse-Z so meshes from 1 cm to 1000 km all resolve. Every instance carries
+// its bloom scale: the bloom seed its sprite would have put down (flare_source.frag's b × disc area),
+// per unit of the mesh's rendered flux — so the glints bloom exactly as much as the sprite did.
 // Always records the pass (it clears the targets the rest of the frame reads).
 void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
 {
     meshSceneSatIdx = -1;
     meshSceneFade = 0.0f;
+    meshesDrawnThisFrame = false;
     if (!meshRendererInit)
         return;
     const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -3190,6 +3204,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
     const double obsRadius = followActive ? followRadiusM
                                           : (double)kEarthRadius + (double)obsTerrainH + (double)obsHeightOffset;
     const glm::dvec3 obsEcef = followActive ? followObsEcef : glm::normalize(glm::dvec3(obsDir)) * obsRadius;
+    const glm::dvec3 obsEci(ct * obsEcef.x - st * obsEcef.y, st * obsEcef.x + ct * obsEcef.y, obsEcef.z);
 
     // Camera: ECEF → ENU (the sky shaders' enuBasis of obsDir) → SkyCamera.
     const glm::vec3 enuZ = glm::normalize(obsDir);
@@ -3199,78 +3214,113 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
     const glm::mat4 view = camera.viewMatrix() * glm::mat4(ecefToEnu);
     const float fovY = glm::radians(camera.fovYDeg);
     const float aspect = (float)ctx.swapExtent.width / (float)std::max(1u, ctx.swapExtent.height);
+    const double pixAngle = 2.0 * std::tan(0.5 * fovY) / (double)std::max(1u, ctx.swapExtent.height);
+    const double pixSolidAngle = pixAngle * pixAngle;
+    const double flareResScale = (double)flareExtent.width / (double)std::max(1u, ctx.swapExtent.width);
 
     std::vector<GpuMeshInstance> insts;
     std::vector<int> types;
-    float nearM = 1.0f, farM = 10.0f;
-    const int sat = followActive ? followSatIndex : selectedSatIndex;
     const bool skip = (debugDisableMask & (kDebugBitMeshes | 262144u)) != 0u; // knockout / Potato sky
-    if (!skip && sat >= 0 && sat < (int)satOrbits.size())
-    {
+
+    // One instance. `fade` < 0 = decide from the on-screen size here (the followed satellite);
+    // effectFlare/angSize < 0 = the sprite's values are unknown, estimate them from the evaluator.
+    auto addInstance = [&](int sat, float fade, float effectFlare, float angSize) {
+        if (sat < 0 || sat >= (int)satOrbits.size())
+            return;
         const int ti = (int)satOrbits[sat].typeIdx;
         const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(ti);
-        if (tm)
+        if (!tm)
+            return;
+        const SatelliteType &type = satTypes[ti];
+        const SatOrbitElems e = orbitElemsOf(satOrbits[sat]);
+        SatPhotInputs in;
+        in.sunDirEci = glm::dvec3(sunDirECI);
+        in.obsEci = obsEci;
+        in.flareTiltRad = glm::radians((double)flareMitigationTiltDeg);
+        const SatPhotResult r = evalSatPhotometry(type.groups, type.lobes, e, tNow, in);
+        const glm::dvec3 satEcef = eciToEcef(r.orbit.posEci);
+        const glm::dvec3 rel = satEcef - obsEcef;
+        const double range = std::max(glm::length(rel), 1e-3);
+        if (fade < 0.0f)
         {
-            const SatelliteType &type = satTypes[ti];
-            const SatOrbitElems e = orbitElemsOf(satOrbits[sat]);
-            SatPhotInputs in;
-            in.sunDirEci = glm::dvec3(sunDirECI);
-            in.obsEci = glm::dvec3(ct * obsEcef.x - st * obsEcef.y, st * obsEcef.x + ct * obsEcef.y, obsEcef.z);
-            in.flareTiltRad = glm::radians((double)flareMitigationTiltDeg);
-            const SatPhotResult r = evalSatPhotometry(type.groups, type.lobes, e, tNow, in);
-            const glm::dvec3 satEcef = eciToEcef(r.orbit.posEci);
-            const glm::dvec3 rel = satEcef - obsEcef;
-            const double range = glm::length(rel);
-            const double radius = std::max(0.1, (double)tm->boundsRadius);
-            const double px = 2.0 * radius / std::max(range, 1e-3) /
-                              (2.0 * std::tan(0.5 * fovY) / (double)ctx.swapExtent.height);
-            const float fade = (float)glm::smoothstep((double)kMeshFadeInPx, (double)kMeshFullPx, px);
-            if (fade > 0.0f)
+            const double px = 2.0 * std::max(0.1, (double)tm->boundsRadius) / range / pixAngle;
+            fade = (float)glm::smoothstep((double)kMeshFadeInPx, (double)kMeshFullPx, px);
+        }
+        if (fade <= 0.0f)
+            return;
+        AttGeometry geo;
+        geo.nadir = eciToEcef(r.orbit.nadir);
+        geo.velocity = eciToEcef(r.orbit.velocity);
+        geo.sun = eciToEcef(glm::dvec3(sunDirECI));
+        geo.siteIdeal = geo.nadir;
+        geo.tumbleAngle = r.orbit.tumbleAngle;
+        geo.tumbleAxis = eciToEcef(e.tumbleAxis);
+        geo.flareTiltRad = in.flareTiltRad;
+        const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, false);
+        GpuMeshInstance inst{};
+        inst.origin = glm::vec4(glm::vec3(rel), fade);
+        for (int g = 0; g < 4; ++g)
+        {
+            const GroupPose gp = g < (int)poses.size() ? poses[g] : GroupPose{};
+            for (int c = 0; c < 3; ++c)
+                inst.rot[g * 3 + c] = glm::vec4(glm::vec3(gp.R[c]), 0.0f);
+            inst.trans[g] = glm::vec4(glm::vec3(gp.t), 0.0f);
+        }
+        const double rOverD = satphot::kEarthRadiusM / glm::length(satEcef);
+        const double alphaE = rOverD / (1.0 + std::sqrt(std::max(0.0, 1.0 - rOverD * rOverD)));
+        // Penumbral reddening, as sat_orbit.comp tints the sprite.
+        const double lit = r.litFactor;
+        const glm::dvec3 tint = glm::mix(glm::dvec3(1.0), glm::dvec3(1.0, 0.45, 0.15), 4.0 * lit * (1.0 - lit));
+        inst.sun = glm::vec4(glm::vec3(geo.sun), (float)lit);
+        inst.sunColor = glm::vec4(glm::vec3(tint), (float)(alphaE * alphaE));
+        inst.earthshine = glm::vec4(glm::vec3(eciToEcef(r.earthDir)), (float)r.earthIrradiance);
+        inst.firstMaterial = tm->firstMaterial;
+        inst.firstOccluder = tm->firstOccluder;
+        inst.occluderCount = tm->occluderCount;
+        // Bloom scale: the sprite's seed S = b·(disc integral)·s² (flare_source.vert/.frag: b the log
+        // response of effectFlare, s its point size in the 1/4-res flare target, a Gaussian of σ 0.28
+        // of the disc → 0.3926·s²) per unit of rendered flux, Σ L·Ω·r²/π = I (per unit irradiance).
+        if (effectFlare < 0.0f)
+        {
+            effectFlare = (float)(r.flareUnits * brightnessScale); // above the air: no sky dimming
+            angSize = pointSpriteSizePx(pointPsf(6.0f - 2.5f * log10f(std::max(effectFlare, 1e-30f) / 0.008f)).y);
+        }
+        const double bResp = glm::clamp(std::log2(std::max((double)effectFlare, 1.0)) * 0.5, 0.0, 4.0);
+        const double sPx = std::max((double)angSize * flareResScale, 1.0);
+        const double seed = bResp * 0.3926 * sPx * sPx;
+        inst.bloomScale = r.intensity > 0.0 ? (float)(seed * pixSolidAngle * range * range / (glm::pi<double>() * r.intensity)) : 0.0f;
+        insts.push_back(inst);
+        types.push_back(ti);
+    };
+
+    if (!skip)
+    {
+        if (followActive)
+        {
+            addInstance(followSatIndex, -1.0f, -1.0f, -1.0f);
+            if (!insts.empty())
             {
-                AttGeometry geo;
-                geo.nadir = eciToEcef(r.orbit.nadir);
-                geo.velocity = eciToEcef(r.orbit.velocity);
-                geo.sun = eciToEcef(glm::dvec3(sunDirECI));
-                geo.siteIdeal = geo.nadir;
-                geo.tumbleAngle = r.orbit.tumbleAngle;
-                geo.tumbleAxis = eciToEcef(e.tumbleAxis);
-                geo.flareTiltRad = in.flareTiltRad;
-                const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, false);
-                GpuMeshInstance inst{};
-                inst.origin = glm::vec4(glm::vec3(rel), fade);
-                for (int g = 0; g < 4; ++g)
-                {
-                    const GroupPose gp = g < (int)poses.size() ? poses[g] : GroupPose{};
-                    for (int c = 0; c < 3; ++c)
-                        inst.rot[g * 3 + c] = glm::vec4(glm::vec3(gp.R[c]), 0.0f);
-                    inst.trans[g] = glm::vec4(glm::vec3(gp.t), 0.0f);
-                }
-                const double rOverD = satphot::kEarthRadiusM / glm::length(satEcef);
-                const double alphaE = rOverD / (1.0 + std::sqrt(std::max(0.0, 1.0 - rOverD * rOverD)));
-                // Penumbral reddening, as sat_orbit.comp tints the sprite.
-                const double lit = r.litFactor;
-                const glm::dvec3 tint = glm::mix(glm::dvec3(1.0), glm::dvec3(1.0, 0.45, 0.15), 4.0 * lit * (1.0 - lit));
-                inst.sun = glm::vec4(glm::vec3(geo.sun), (float)lit);
-                inst.sunColor = glm::vec4(glm::vec3(tint), (float)(alphaE * alphaE));
-                inst.earthshine = glm::vec4(glm::vec3(eciToEcef(r.earthDir)), (float)r.earthIrradiance);
-                inst.firstMaterial = tm->firstMaterial;
-                inst.firstOccluder = tm->firstOccluder;
-                inst.occluderCount = tm->occluderCount;
-                insts.push_back(inst);
-                types.push_back(ti);
-                nearM = (float)std::max(0.02, range - 1.5 * radius);
-                farM = (float)(range + 1.5 * radius);
-                meshSceneSatIdx = sat;
-                meshSceneFade = fade;
+                meshSceneSatIdx = followSatIndex;
+                meshSceneFade = insts.back().origin.w;
             }
         }
+        for (const GpuSatListHeader::MeshCandidate &c : meshCandidates)
+            if ((int)c.sat != meshSceneSatIdx && (int)insts.size() < kMaxMeshCandidates + 1)
+                addInstance((int)c.sat, c.fade, c.effectFlare, c.angSize);
     }
+    meshesDrawnThisFrame = !insts.empty();
 
+    // Infinite reverse-Z (depth = near / distance): full float precision from 2 cm to any range.
+    const float nearM = 0.02f;
+    const float f = 1.0f / std::tan(0.5f * fovY);
+    glm::mat4 proj(0.0f);
+    proj[0][0] = f / aspect;
+    proj[1][1] = -f; // Vulkan clip space: Y down (sat_point.vert's projection)
+    proj[2][3] = -1.0f;
+    proj[3][2] = nearM;
     GpuMeshFrame frame{};
-    glm::mat4 proj = glm::perspectiveRH_ZO(fovY, aspect, nearM, std::max(farM, nearM * 1.01f));
-    proj[1][1] *= -1.0f; // Vulkan clip space: Y down (sat_point.vert's projection)
     frame.viewProj = proj * view;
-    frame.invViewProj = glm::inverse(frame.viewProj);
+    frame.invViewProj = glm::mat4(1.0f); // no background in the scene pass
     frame.camPos = glm::vec4(0.0f, 0.0f, 0.0f, skyExposure());
     frame.sunDir = glm::vec4(glm::vec3(eciToEcef(glm::dvec3(sunDirECI))), 0.0f);
     frame.moonDir = glm::vec4(glm::vec3(eciToEcef(glm::dvec3(moonDirECI))), moonGain * moonDirENU.w);
@@ -5918,6 +5968,7 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
                 dst.originT[gi] = occ.originT[gi];
             dst.firstOccluder = firstOccluder;
             dst.occluderCount = (uint32_t)occ.occluders.size();
+            dst.meshRadius = type.meshRadiusM; // Phase 4d (0 for legacy types)
             if (!occ.occluders.empty())
                 memcpy(static_cast<GpuSatOccluder *>(satOccluderMapped) + firstOccluder, occ.occluders.data(),
                        occ.occluders.size() * sizeof(GpuSatOccluder));
@@ -9740,6 +9791,21 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
     t.occlusion = buildSatOcclusion(model, tris, t.lobes, lobeTris);
     t.occlusionGpu = packSatOcclusionGpu(t.groups, t.occlusion, t.lobes);
     t.model = std::make_shared<const SatModel>(model); // Phase 4: the mesh renderer draws it
+    {
+        glm::dvec3 lo(1e30), hi(-1e30);
+        for (const SatTri &tr : tris)
+            for (const glm::dvec3 &p : tr.p)
+            {
+                lo = glm::min(lo, p);
+                hi = glm::max(hi, p);
+            }
+        const glm::dvec3 c = 0.5 * (lo + hi);
+        double r = 0.0;
+        for (const SatTri &tr : tris)
+            for (const glm::dvec3 &p : tr.p)
+                r = std::max(r, glm::length(p - c));
+        t.meshRadiusM = (float)r;
+    }
 
     const std::string objDir = (std::filesystem::path(userDataDir_) / "satellite_models_debug").string();
     const bool objOk = writeSatModelObj(model, tris, objDir);

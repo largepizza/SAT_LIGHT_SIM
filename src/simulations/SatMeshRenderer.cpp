@@ -396,7 +396,7 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     auto build = [&](const char *vs, const char *fs, bool mesh, VkRenderPass pass, VkSampleCountFlagBits ns,
-                     VkPipeline &out, uint32_t colorCount = 1) {
+                     VkPipeline &out, uint32_t colorCount = 1, VkCompareOp depthOp = VK_COMPARE_OP_LESS) {
         cb.attachmentCount = colorCount;
         VkPipelineMultisampleStateCreateInfo msci{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         msci.rasterizationSamples = ns;
@@ -435,7 +435,7 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
         VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         ds.depthTestEnable = mesh ? VK_TRUE : VK_FALSE;
         ds.depthWriteEnable = mesh ? VK_TRUE : VK_FALSE;
-        ds.depthCompareOp = VK_COMPARE_OP_LESS;
+        ds.depthCompareOp = depthOp;
 
         VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         ci.stageCount = 2;
@@ -459,8 +459,10 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
     build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh.frag.spv", true, viewerPass, samples, viewerMeshPipe);
     build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh.frag.spv", true, checkPass, VK_SAMPLE_COUNT_1_BIT,
           checkMeshPipe);
+    // Scene: infinite reverse-Z (SatelliteSim::recordMeshScene builds depth = near / distance), so
+    // GREATER and a clear to 0 — meshes from centimetres to a thousand km apart all keep precision.
     build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh.frag.spv", true, scenePass, VK_SAMPLE_COUNT_1_BIT,
-          sceneMeshPipe, 2);
+          sceneMeshPipe, 2, VK_COMPARE_OP_GREATER);
 }
 
 // ─── Viewer target ────────────────────────────────────────────────────────────────────────────────
@@ -809,7 +811,7 @@ void SatMeshRenderer::recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame
                n * sizeof(GpuMeshInstance)); // slots 2.. (0 = viewer, 1 = check)
 
     VkClearValue clears[3] = {};
-    clears[2].depthStencil = {1.0f, 0};
+    clears[2].depthStencil = {0.0f, 0}; // reverse-Z
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass = scenePass;
     rbi.framebuffer = sceneFb;
@@ -843,15 +845,17 @@ struct MeshBloomPC
 
 void SatMeshRenderer::createBloomPipeline(VulkanContext &ctx, VkRenderPass flareSourcePass)
 {
-    VkDescriptorSetLayoutBinding b{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    VkDescriptorSetLayoutBinding b[2] = {
+        {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 1;
-    li.pBindings = &b;
+    li.bindingCount = 2;
+    li.pBindings = b;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &bloomDescLayout);
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
+    VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.poolSizeCount = 1;
-    pi.pPoolSizes = &ps;
+    pi.poolSizeCount = 2;
+    pi.pPoolSizes = ps;
     pi.maxSets = 1;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &bloomDescPool);
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -859,6 +863,12 @@ void SatMeshRenderer::createBloomPipeline(VulkanContext &ctx, VkRenderPass flare
     ai.descriptorSetCount = 1;
     ai.pSetLayouts = &bloomDescLayout;
     vkAllocateDescriptorSets(ctx.device, &ai, &bloomDescSet);
+    {
+        VkDescriptorBufferInfo bi{instanceBuf, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet w1{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, bloomDescSet, 1, 0, 1,
+                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bi, nullptr};
+        vkUpdateDescriptorSets(ctx.device, 1, &w1, 0, nullptr);
+    }
     if (sceneColorViewH)
     {
         VkDescriptorImageInfo ii{VK_NULL_HANDLE, sceneColorViewH, VK_IMAGE_LAYOUT_GENERAL};

@@ -41,7 +41,7 @@ struct SatVisible {
     uint  color;          // tint, packUnorm4x8 (alpha unused)
     float angularSize;    // point sprite size (pixels)
     float rangeM;         // distance to the object, m; 0 = at infinity (stars, planets)
-    float visPad;
+    float meshPx;         // pre-photometry: model mesh diameter on screen (px), 0 = none (Phase 4d)
 };
 layout(set = 0, binding = 1) buffer SatVisibleBuf {
     SatVisible visible[];
@@ -56,6 +56,9 @@ layout(set = 0, binding = 9) readonly buffer SatVisibleIdxBuf {
 // the selected satellite's raw pre-photometry values: the CPU copies the whole 80-byte header back
 // every frame for selection tracking, the real visible-satellite count (compact slots are no
 // longer addressable by satellite index) and the GPU-parity readout (benchmarking M2).
+const uint  MESH_CAND_MAX = 64u;  // = kMaxMeshCandidates (SatelliteSim.h)
+const float MESH_FADE_IN_PX = 1.5; // = SatelliteSim::kMeshFadeInPx / kMeshFullPx
+const float MESH_FULL_PX    = 3.0;
 layout(set = 0, binding = 10) buffer SatListBuf {
     uint listCount;
     uint dispatchX, dispatchY, dispatchZ;
@@ -65,6 +68,11 @@ layout(set = 0, binding = 10) buffer SatListBuf {
     float selectedRangeM;     // pre-photometry rangeM (m)
     uint  selectedFound;      // 1 = the selection was in this frame's compact list
     uint  selectedPad;
+    // Phase 4d mesh candidates (GpuSatListHeader::meshCand): x = satellite, y = fade bits,
+    // z = effectFlare bits, w = sprite size bits.
+    uint  meshCandCount;
+    uint  meshCandPad0, meshCandPad1, meshCandPad2;
+    uvec4 meshCand[MESH_CAND_MAX];
 };
 
 // ── Glow buffer — matches GpuGlowBuf ──────────────────────────────────────────
@@ -261,12 +269,6 @@ void main() {
 
     float effectFlare = flare / (1.0 + (dayBright * pc.daySuppression
                                        + moonBright * pc.moonSuppression) * atmFrac);
-    // Phase 4c hand-off: a satellite drawn as a mesh this frame fades out of every sprite-side
-    // effect — its point, its sprite bloom, the sky-glow bins and the ocean-glint list — as the
-    // mesh fades in (a satellite followed from 30 m away would otherwise flood its sky sector). The
-    // mesh's own glints seed the bloom instead (mesh_bloom.frag).
-    if (float(visibleSatIdx[idx]) == pc.meshSatIdx)
-        effectFlare *= pc.meshSpriteKeep;
 
     // ── Atmospheric extinction ────────────────────────────────────────────────
     // The air on THIS sightline, observer to satellite (atmosphere.glsl): from sea level the full
@@ -343,6 +345,31 @@ void main() {
     // From the apparent magnitude, through the point-source model the fragment shader draws with
     // (point_style.glsl) — the same one stars and planets use, so equal magnitudes look equal.
     // (Until 2026-09-23 this was its own log-of-effectFlare curve with a range-dependent base.)
+    // ── Phase 4c/4d: sprite → mesh hand-off ─────────────────────────────────
+    // A model satellite whose mesh spans MESH_FADE_IN_PX..MESH_FULL_PX fades out of every
+    // sprite-side effect — its point, its sprite bloom, the sky-glow bins, the ocean-glint list — as
+    // its mesh fades in, and is listed for the CPU to draw (next frame, in double). Its final flux and
+    // sprite size are recorded first: the mesh's glints seed exactly the bloom this sprite would have
+    // (SatMeshRenderer::recordBloom), so a flare keeps its punch across the hand-off. The followed
+    // satellite is the CPU's own (always drawn, even in Earth's shadow): SatFlarePC carries its fade.
+    {
+        uint satI = visibleSatIdx[idx];
+        float keep = 1.0;
+        if (float(satI) == pc.meshSatIdx) {
+            keep = pc.meshSpriteKeep;
+        } else if (sat.meshPx > MESH_FADE_IN_PX) {
+            float fade = smoothstep(MESH_FADE_IN_PX, MESH_FULL_PX, sat.meshPx);
+            uint slot = atomicAdd(meshCandCount, 1u);
+            if (slot < MESH_CAND_MAX) {
+                float fullSize = pointSpriteSizePx(pointPsf(satFlareToMag(effectFlare)).y);
+                meshCand[slot] = uvec4(satI, floatBitsToUint(fade), floatBitsToUint(effectFlare),
+                                       floatBitsToUint(fullSize));
+                keep = 1.0 - fade;
+            }
+        }
+        effectFlare *= keep;
+    }
+
     vec2  psf     = pointPsf(satFlareToMag(effectFlare));
     float angSize = pointSpriteSizePx(psf.y);
 

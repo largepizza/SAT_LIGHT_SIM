@@ -9,7 +9,7 @@ struct SatVisible {
     uint  color;          // B-V derived RGB, packUnorm4x8
     float angularSize;    // point sprite size (pixels)
     float rangeM;         // distance to the object, m; 0 = at infinity (stars, planets)
-    float visPad;
+    float meshPx;         // pre-photometry: model mesh diameter on screen (px), 0 = none (Phase 4d)
 };
 layout(set = 0, binding = 1) readonly buffer SatVisibleBuf {
     SatVisible satellites[];

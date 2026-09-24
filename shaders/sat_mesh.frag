@@ -324,7 +324,7 @@ void main()
     // and the frame's exposure) scaled by the sprite→mesh hand-off fade, and the distance for the
     // shared scene depth.
     if (frame.params.w > 1.5) {
-        outColor = vec4(L * inst.origin.w, 1.0);
+        outColor = vec4(L * inst.origin.w, float(vInstance + 1u)); // a = instance slot + 1 (bloom)
         outDist  = length(vWorld - frame.camPos.xyz);
         return;
     }

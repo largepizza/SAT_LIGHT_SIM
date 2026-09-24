@@ -1,13 +1,16 @@
 #version 450
-// Satellite mesh glints → the flare/bloom source (lighting overhaul Phase 4c). Drawn as a fullscreen
-// triangle inside flareSourceRenderPass (1/4 resolution, additive). Each texel takes the brightest
-// scene-mesh pixel of the block it covers and seeds the same log-compressed glow flare_source.frag
-// gives a satellite sprite — so a glint keeps its bloom/streaks once the sprite has handed over to
-// the mesh. Only the part of the radiance that the sky's exposure would push past white glows.
+// Satellite mesh glints → the flare/bloom source (lighting overhaul Phase 4c/4d). A fullscreen
+// triangle inside flareSourceRenderPass (1/4 resolution, additive). Each texel sums the scene-mesh
+// pixels it covers, each weighted by its instance's bloomScale — the bloom seed that satellite's
+// sprite would have put down (flare_source: b(effectFlare) over its point disc), per unit of the
+// mesh's rendered flux. So a mesh seeds exactly its sprite's glow, placed wherever its light actually
+// is: across the hand-off a flare keeps its punch, and on a large model the glow sits on the glint.
 
-layout(set = 0, binding = 0, rgba32f) uniform readonly image2D meshColorImg;
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D meshColorImg; // rgb radiance, a = slot + 1
+struct MeshInstanceBloom { vec4 pad[20]; uint firstMaterial, firstOccluder, occluderCount; float bloomScale; };
+layout(set = 0, binding = 1, std430) readonly buffer MeshInstances { MeshInstanceBloom instances[]; };
 layout(push_constant) uniform PC {
-    float exposure; // the sky's exposure this frame (sat_sky.frag's day/night mix)
+    float exposure; // unused (kept for the layout)
     float gain;
     float scale;    // scene pixels per target pixel
     float pad;
@@ -19,19 +22,17 @@ void main()
     ivec2 size = imageSize(meshColorImg);
     int   s    = max(1, int(pc.scale + 0.5));
     ivec2 base = ivec2(gl_FragCoord.xy) * s;
-    float best = 0.0;
-    vec3  tint = vec3(1.0);
+    float seed = 0.0;
+    vec3  col  = vec3(0.0);
     for (int y = 0; y < s; ++y)
         for (int x = 0; x < s; ++x) {
-            ivec2 p = min(base + ivec2(x, y), size - 1);
-            vec3  L = imageLoad(meshColorImg, p).rgb;
-            float l = dot(L, vec3(0.2126, 0.7152, 0.0722)) * pc.exposure;
-            if (l > best) { best = l; tint = L / max(dot(L, vec3(0.2126, 0.7152, 0.0722)), 1e-6); }
+            vec4 m = imageLoad(meshColorImg, min(base + ivec2(x, y), size - 1));
+            if (m.a < 0.5) continue;
+            float l = dot(m.rgb, vec3(0.2126, 0.7152, 0.0722));
+            float k = l * instances[int(m.a) - 1].bloomScale;
+            seed += k;
+            col  += m.rgb * (k / max(l, 1e-6));
         }
-    // flare_source.frag's log response, but only for what is more than two stops over white: at the
-    // night exposure every sunlit panel of a satellite filling the view is "over white", and seeding
-    // all of it hazes the whole screen. Glints (the sun's reflection) are orders of magnitude above.
-    const float kBloomThreshold = 4.0;
-    float b = clamp(log2(max(best / kBloomThreshold, 1.0)) * 0.5, 0.0, 4.0) * pc.gain;
-    outColor = vec4(tint * b, b);
+    if (seed <= 0.0) discard;
+    outColor = vec4(col * pc.gain, seed * pc.gain); // rgb carries the tint, like fragColor × brightness
 }
