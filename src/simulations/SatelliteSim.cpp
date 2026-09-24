@@ -5192,9 +5192,9 @@ void SatelliteSim::uploadPointStyle()
     if (!pointStyleMapped)
         return;
     GpuPointStyle ps{};
-    ps.refMag = pointRefMag;
+    ps.refMag = pointEffRefMag(); // + the zoom optics gain (opticsGainMag)
     ps.gamma = pointGamma;
-    ps.limitMag = pointLimitMag;
+    ps.limitMag = pointEffLimitMag();
     ps.sigmaPx = pointSigmaPx;
     ps.sigmaMaxPx = std::max(pointSigmaMaxPx, pointSigmaPx);
     memcpy(pointStyleMapped, &ps, sizeof(ps));

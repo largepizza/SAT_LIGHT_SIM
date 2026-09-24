@@ -2446,12 +2446,36 @@ private:
     float pointLimitMag = 8.0f;      // "Point limit mag": faintest drawn
     float pointSigmaPx = 0.45f;      // "Point size (px)": base PSF sigma
     float pointSigmaMaxPx = 6.0f;    // "Point max size (px)": PSF growth cap
+    // Zoom optics (Phase 4): zooming is magnification M = tan(35°)/tan(fov/2) (1 at the default 70°
+    // FOV and wider), and the view is modelled as an instrument whose aperture grows with it at the
+    // eye's 7 mm exit pupil — D = min(7 mm · M, zoomApertureMaxMm) — like binoculars/telescopes.
+    // A point source collects D² more light, so it draws 5·log10(D / 7 mm) magnitudes brighter; the
+    // sky background's surface brightness does not change (fixed exit pupil), so zoomed-in points
+    // stand out against a daytime or light-polluted sky as they do through a real telescope. Applied
+    // by shifting the point model's reference and limit magnitudes (pointEff*), so every consumer —
+    // satellites, stars, planets, GPU and CPU — gets it with no shader change. Magnitude READOUTS
+    // stay physical (naked-eye). 7 mm = off. Resolved meshes (Phase 4c) must use the same D: their
+    // per-pixel brightness stays constant while D grows with M and dims once D is capped.
+    float zoomApertureMaxMm = 200.0f; // "Zoom aperture max (mm)" — 7 = zoom does not gather light
+    static constexpr float kEyePupilMm = 7.0f;
+    float zoomMagnification() const
+    {
+        return std::max(1.0f, tanf(glm::radians(35.0f)) / tanf(glm::radians(camera.fovYDeg) * 0.5f));
+    }
+    float opticsGainMag() const
+    {
+        float d = std::min(kEyePupilMm * zoomMagnification(), std::max(zoomApertureMaxMm, kEyePupilMm));
+        return 5.0f * log10f(d / kEyePupilMm);
+    }
+    float pointEffRefMag() const { return pointRefMag + opticsGainMag(); }
+    float pointEffLimitMag() const { return pointLimitMag + opticsGainMag(); }
     // CPU mirror of point_style.glsl's pointPsf(): x = peak, y = sigma (px).
     glm::vec2 pointPsf(float mag) const
     {
         const float k = 1.3287712f; // 0.4 * log2(10)
-        float d = exp2f(-k * pointGamma * (mag - pointRefMag));
-        float dl = exp2f(-k * pointGamma * (pointLimitMag - pointRefMag));
+        const float refMag = pointEffRefMag(), limitMag = pointEffLimitMag();
+        float d = exp2f(-k * pointGamma * (mag - refMag));
+        float dl = exp2f(-k * pointGamma * (limitMag - refMag));
         d = std::max(d - dl, 0.0f);
         if (d <= 1.0f)
             return {d, pointSigmaPx};
@@ -3217,12 +3241,12 @@ private:
     // Sized 11, not 9 — flare_glow_gain/flare_streak_gain (flare architecture overhaul) added two
     // more PhotoParam rows; per [[feedback_cloud_slider_arrays]], all three hover/dragging arrays
     // must grow together with any new slider id.
-    bool hovPhotoMinus[27] = {}; // 15 existing photometry params + 2 trail sliders (Trail decay/gain)
+    bool hovPhotoMinus[28] = {}; // 15 existing photometry params + 2 trail sliders (Trail decay/gain)
                                  // + flare-mitigation tilt + the four dark-sky mags (2026-09-08)
                                  // + 1 flare-mitigation tilt (idx 17) + the five point-model
                                  // sliders (idx 22-26, 2026-09-23)
-    bool hovPhotoPlus[27] = {};
-    bool draggingPhoto[27] = {};
+    bool hovPhotoPlus[28] = {};
+    bool draggingPhoto[28] = {};
     bool hovCloudMinus[91] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08)
     bool hovCloudPlus[91] = {};

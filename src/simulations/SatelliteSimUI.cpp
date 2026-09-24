@@ -2870,7 +2870,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[27][12];
+    static char photoBufs[28][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -2924,6 +2924,9 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"Point limit mag", &pointLimitMag, 3.0f, 12.0f, 0.1f, "%.1f", 24},
         {"Point size (px)", &pointSigmaPx, 0.2f, 2.0f, 0.05f, "%.2f", 25},
         {"Point max size (px)", &pointSigmaMaxPx, 1.0f, 20.0f, 0.5f, "%.1f", 26},
+        // Zoom optics (SatelliteSim.h, opticsGainMag): zooming in gathers light like a telescope
+        // whose aperture grows with magnification up to this; 7 mm = naked eye (no gain).
+        {"Zoom aperture max (mm)", &zoomApertureMaxMm, 7.0f, 1000.0f, 1.0f, "%.0f", 27},
     };
     for (auto &pp : photoParams)
     {
@@ -4473,6 +4476,7 @@ void SatelliteSim::loadSettings()
         pointRefMag = p.value("point_ref_mag", pointRefMag);
         pointGamma = p.value("point_gamma", pointGamma);
         pointLimitMag = p.value("point_limit_mag", pointLimitMag);
+        zoomApertureMaxMm = p.value("zoom_aperture_max_mm", zoomApertureMaxMm);
         pointSigmaPx = p.value("point_sigma_px", pointSigmaPx);
         pointSigmaMaxPx = p.value("point_sigma_max_px", pointSigmaMaxPx);
         sunlitBgVisibility = p.value("sunlit_bg_visibility", sunlitBgVisibility);
@@ -4791,6 +4795,7 @@ void SatelliteSim::saveSettings()
         {"point_ref_mag", pointRefMag},
         {"point_gamma", pointGamma},
         {"point_limit_mag", pointLimitMag},
+        {"zoom_aperture_max_mm", zoomApertureMaxMm},
         {"point_sigma_px", pointSigmaPx},
         {"point_sigma_max_px", pointSigmaMaxPx},
         {"sunlit_bg_visibility", sunlitBgVisibility},
