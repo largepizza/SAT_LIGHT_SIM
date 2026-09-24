@@ -505,6 +505,20 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   why low, faint satellites (shown as the wider out-of-view chip) could not be traced at first.
   **`APP_GIT_COMMIT` is stamped at CMake configure time** — reconfigure before a hand-off build, or
   traces and settings titles carry an old commit.
+- **Bulk export (milestone M10, 2026-09-23).** Settings → Photometry → "BULK EXPORT": source (the
+  selected satellite or a whole constellation), window (next 24 h / 7 days from the sim time),
+  cadence (10/30/60 s). A worker thread (`startBulkExport()`, over snapshots of the type's lobes /
+  occlusion and every source satellite's `orbitElemsOf()`) runs `runBulkExport()` (SatBench.cpp):
+  every instant at the cadence with the Sun in SatBench's twilight window and the satellite ≥ 20°
+  and fully sunlit — time-uniform sampling of visible satellites, which is what SatBench's random
+  draws sample — evaluated by `benchEvalSample()`, **the same function SatBench's own draws now use**.
+  Written to `<user data>/exports/samples_<source>_<sim time>.csv` by `writeBenchSamplesCsv()`, format
+  `sat-light-sim-samples/1` — the one schema: every `--run-benchmark` distribution run also writes its
+  samples there (`<report>.samples.csv`, header carrying the run's statistics).
+  `SatModelTool --summarize-samples <csv>` reads either and, for a SatBench file, checks it
+  reproduces the run's n/mean/median/sd (the M10 gate). `pass` numbers consecutive runs of visible
+  instants per satellite; `satellite` is the roster index (-1 for SatBench's random draws).
+  `photometryUnsupportedReason()` is the shared "why not" (legacy type, ground-site aim).
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, and the M4 benchmark references `starlink_v1_0.json`
   (Mallama 2020a period: shark-fin, array edge-on to the Sun) and `starlink_visorsat.json`

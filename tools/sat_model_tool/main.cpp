@@ -7,6 +7,10 @@
 // the paper printed (count, censored count, mean, median, sd, phase fits); a differential file's
 // delta must follow from its two referenced files.
 //
+// --summarize-samples reads a samples CSV (a SatBench run's, or the app's bulk export — one schema,
+// milestone M10) and prints its statistics; when the header carries the run's own statistics it
+// checks they are reproduced.
+//
 // --replay-trace re-runs a magnitude trace CSV exported by the app (benchmarking M9) from the inputs
 // in its header and checks every row comes out the same at the precision it was written with.
 //
@@ -18,6 +22,7 @@
 // facet lobes → check them against a brute-force per-triangle evaluation → write the rest and
 // sunlit OBJ poses. Prints the lobe table so a model's reflectance can be inspected without
 // launching the simulator. Exit code 1 if any model fails to load.
+#include "SatBench.h"
 #include "SatBenchmark.h"
 #include "SatModel.h"
 #include "SatPhotometry.h"
@@ -29,6 +34,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <random>
 #include <string>
 #include <vector>
@@ -892,6 +899,132 @@ bool selfTestTrace(const SatModel &m, const std::string &id, int budget)
                 ioOk ? "" : err.c_str());
     return ok;
 }
+
+// ── Samples CSV summary (benchmarking M10) ─────────────────────────────────────────────────────
+bool summarizeSamples(const std::string &path)
+{
+    BenchCsvHeader hdr;
+    std::vector<BenchSample> samples;
+    std::string err;
+    std::printf("[samples] %s\n", path.c_str());
+    if (!readBenchSamplesCsv(path, hdr, samples, err))
+    {
+        std::printf("  FAILED: %s\n", err.c_str());
+        return false;
+    }
+    auto get = [&](const char *k) -> std::string {
+        for (const auto &kv : hdr)
+            if (kv.first == k)
+                return kv.second;
+        return "";
+    };
+    std::vector<double> m1000, phase, magApp;
+    int notSeen = 0, passes = 0, lastPass = -2;
+    for (const BenchSample &x : samples)
+    {
+        if (!std::isfinite(x.m1000))
+            continue;
+        m1000.push_back(x.m1000);
+        phase.push_back(x.phaseDeg);
+        if (std::isfinite(x.magApparent))
+            magApp.push_back(x.magApparent);
+        notSeen += x.censored ? 1 : 0;
+        if (x.pass >= 0 && x.pass != lastPass)
+        {
+            ++passes;
+            lastPass = x.pass;
+        }
+    }
+    if (m1000.empty())
+    {
+        std::printf("  FAILED: no finite m1000 values\n");
+        return false;
+    }
+    const BenchStats st = benchStatsOfValues(m1000, notSeen);
+    const std::vector<double> fit = benchPolyFit(phase, m1000, 1);
+    double appMean = 0.0;
+    for (double v : magApp)
+        appMean += v / magApp.size();
+    std::printf("  source %s, model %s; %zu samples%s\n", get("source").c_str(), get("model").c_str(), samples.size(),
+                passes ? (", " + std::to_string(passes) + " passes").c_str() : "");
+    std::printf("  m1000: n %d (not seen %d), mean %.4f, median %.4f, sd %.4f; phase fit %.4f + %.6f/deg\n", st.n,
+                st.notSeen, st.mean, st.median, st.sd, fit.size() == 2 ? fit[0] : NAN, fit.size() == 2 ? fit[1] : NAN);
+    if (!magApp.empty())
+        std::printf("  apparent magnitude (after extinction): mean %.4f\n", appMean);
+    bool ok = true;
+    const std::string rMean = get("result_mean_m1000");
+    if (!rMean.empty())
+    {
+        auto near = [](double a, const std::string &b) { return std::abs(a - std::strtod(b.c_str(), nullptr)) < 5e-6; };
+        const bool same = st.n == std::atoi(get("result_n").c_str()) && st.notSeen == std::atoi(get("result_not_seen").c_str()) &&
+                          near(st.mean, rMean) && near(st.median, get("result_median_m1000")) &&
+                          near(st.sd, get("result_sd_m1000"));
+        std::printf("  %s reproduces the run's own statistics (n %s, mean %s, median %s, sd %s)\n", same ? "ok  " : "FAIL",
+                    get("result_n").c_str(), rMean.c_str(), get("result_median_m1000").c_str(),
+                    get("result_sd_m1000").c_str());
+        ok = same;
+    }
+    return ok;
+}
+
+// Round trip for the selftest: a small roster through runBulkExport over two days, written in the
+// samples schema, read back and written again — the two files must be byte-identical.
+bool selfTestBulkExport(const SatModel &m, int budget)
+{
+    std::vector<SatTri> tris = tessellateSatModel(m);
+    SatLobeBakeStats bs;
+    std::vector<std::vector<int>> lobeTris;
+    std::vector<GpuSatLobe> lobes = bakeSatLobes(m, tris, budget, bs, &lobeTris);
+    SatOcclusion occ = buildSatOcclusion(m, tris, lobes, lobeTris);
+    BulkExportSpec spec;
+    spec.groups = &m.groups;
+    spec.lobes = &lobes;
+    spec.occlusion = &occ;
+    const double lat = 40.0 * kDeg, lon = -105.0 * kDeg;
+    spec.obsDirEcef = {std::cos(lat) * std::cos(lon), std::cos(lat) * std::sin(lon), std::sin(lat)};
+    spec.obsRadiusM = satphot::kEarthRadiusM + 1600.0;
+    spec.t0 = 7.0e8;
+    spec.t1 = spec.t0 + 2.0 * 86400.0;
+    spec.cadenceS = 60.0;
+    spec.extinctionK = 0.25;
+    std::vector<BulkExportSat> sats;
+    std::mt19937_64 rng(7);
+    const double rSat = satphot::kEarthRadiusM + 550000.0;
+    for (int i = 0; i < 400; ++i)
+    {
+        BulkExportSat b;
+        b.index = i;
+        b.orbit.rSatM = rSat;
+        b.orbit.incl = 53.0 * kDeg;
+        b.orbit.raan = (double)(rng() >> 11) * (2.0 * satphot::kPi / 9007199254740992.0);
+        b.orbit.u0 = (double)(rng() >> 11) * (2.0 * satphot::kPi / 9007199254740992.0);
+        sats.push_back(b);
+    }
+    std::vector<BenchSample> out;
+    const bool ran = runBulkExport(spec, sats, out);
+    const auto dir = std::filesystem::temp_directory_path();
+    const std::string a = (dir / "satmodeltool_bulk_a.csv").string(), b = (dir / "satmodeltool_bulk_b.csv").string();
+    std::string err;
+    BenchCsvHeader hdr = {{"source", "selftest"}}, hdr2;
+    std::vector<BenchSample> back;
+    bool ok = ran && !out.empty() && writeBenchSamplesCsv(a, hdr, out, err) && readBenchSamplesCsv(a, hdr2, back, err) &&
+              writeBenchSamplesCsv(b, hdr2, back, err);
+    int passes = 0;
+    for (size_t i = 0; i < out.size(); ++i)
+        passes = std::max(passes, out[i].pass + 1);
+    if (ok)
+    {
+        std::ifstream fa(a, std::ios::binary), fb(b, std::ios::binary);
+        const std::string ca((std::istreambuf_iterator<char>(fa)), {}), cb((std::istreambuf_iterator<char>(fb)), {});
+        ok = ca == cb && back.size() == out.size();
+    }
+    std::filesystem::remove(a);
+    std::filesystem::remove(b);
+    std::printf("    %s bulk export round trip: 400 satellites x 2 days at 60 s -> %zu samples in %d passes, "
+                "written, read and rewritten byte-identical%s%s\n",
+                ok ? "ok  " : "FAIL", out.size(), passes, err.empty() ? "" : "; ", err.c_str());
+    return ok;
+}
 } // namespace
 
 int main(int argc, char **argv)
@@ -904,6 +1037,7 @@ int main(int argc, char **argv)
     std::vector<std::string> benchmarks; // --benchmark <file>, repeatable
     std::vector<std::string> runs;       // --run-benchmark <file>, repeatable
     std::vector<std::string> replays;    // --replay-trace <file.csv>, repeatable
+    std::vector<std::string> summaries;  // --summarize-samples <file.csv>, repeatable
     BenchRunOptions runOpt;
     bool budgetGiven = false;
     for (int i = 1; i < argc; ++i)
@@ -915,6 +1049,8 @@ int main(int argc, char **argv)
             runs.push_back(argv[++i]);
         else if (a == "--replay-trace" && i + 1 < argc)
             replays.push_back(argv[++i]);
+        else if (a == "--summarize-samples" && i + 1 < argc)
+            summaries.push_back(argv[++i]);
         else if (a == "--samples" && i + 1 < argc)
             runOpt.samples = std::atoi(argv[++i]);
         else if (a == "--seed" && i + 1 < argc)
@@ -943,14 +1079,14 @@ int main(int argc, char **argv)
         else
             paths.push_back(a);
     }
-    if (paths.empty() && selfTestSamples <= 0 && benchmarks.empty() && runs.empty() && replays.empty())
+    if (paths.empty() && selfTestSamples <= 0 && benchmarks.empty() && runs.empty() && replays.empty() && summaries.empty())
     {
         std::printf("usage: SatModelTool <model.json> [...] [--out <dir>] [--budget <lobes>] [--shadow-study <N>]\n"
                     "                    [--selftest <N>] [--benchmark <file.json>]...\n"
                     "                    [--run-benchmark <file.json>]... [--samples <N>] [--seed <S>]\n"
                     "                    [--sensitivity] [--no-occlusion] [--report-dir <dir>] [--models-dir <dir>]\n"
                     "                    [--set [<model>/]<material>.<field>=<value>]...\n"
-                    "                    [--replay-trace <trace.csv>]...\n");
+                    "                    [--replay-trace <trace.csv>]... [--summarize-samples <samples.csv>]...\n");
         return 2;
     }
     int selfTestFailures = 0;
@@ -968,6 +1104,8 @@ int main(int argc, char **argv)
     int replayFailures = 0;
     for (const std::string &tp : replays)
         replayFailures += replayTrace(tp, runOpt.modelsDir) ? 0 : 1;
+    for (const std::string &sp : summaries)
+        replayFailures += summarizeSamples(sp) ? 0 : 1;
     if (selfTestSamples > 0)
     {
         std::printf("[selftest] CPU photometric evaluator\n");
@@ -1066,6 +1204,7 @@ int main(int argc, char **argv)
             selfTestFailures += selfTestOcclusion(m, tris, std::max(200, selfTestSamples / 4)) ? 0 : 1;
             selfTestFailures += selfTestOcclusionGpuForm(m, tris, budget, std::max(200, selfTestSamples / 4)) ? 0 : 1;
             selfTestFailures += selfTestTrace(m, id, budget) ? 0 : 1;
+            selfTestFailures += selfTestBulkExport(m, budget) ? 0 : 1;
         }
         std::printf("  OBJ: %s\n\n", objOk ? (std::filesystem::path(outDir) / (id + "_rest.obj / _sunlit.obj")).string().c_str()
                                            : "export FAILED");

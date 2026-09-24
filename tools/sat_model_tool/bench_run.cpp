@@ -521,6 +521,41 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
                                         "off_specular_deg", "mag", "m1000", "censored", "dominant_lobe"}},
                            {"rows", rows}}},
               {"reference_observations", {{"columns", {"phase_deg", "m1000", "source", "not_seen"}}, {"rows", refRows}}}};
+
+    // The same samples in the shared CSV schema (milestone M10) — the format the app's bulk export
+    // writes, so `--summarize-samples` reads either. The header carries this run's statistics so
+    // the summary can be checked against them.
+    {
+        char seedTag[32], num[64];
+        std::snprintf(seedTag, sizeof(seedTag), "seed%llu", (unsigned long long)opt.seed);
+        auto fmt = [&](double v) {
+            std::snprintf(num, sizeof(num), "%.6f", v);
+            return std::string(num);
+        };
+        BenchCsvHeader hdr = {{"source", "SatBench"},
+                              {"benchmark", b.id},
+                              {"model", b.modelId},
+                              {"model_hash", lm.hash},
+                              {"lobe_budget", std::to_string(opt.lobeBudget)},
+                              {"occlusion", occDesc},
+                              {"seed", std::to_string(opt.seed)},
+                              {"min_elevation_deg", fmt(cfg.minElevationDeg)},
+                              {"sun_alt_window_deg", fmt(cfg.sunAltMinDeg) + " " + fmt(cfg.sunAltMaxDeg)},
+                              {"result_n", std::to_string(base.stats.n)},
+                              {"result_not_seen", std::to_string(base.stats.notSeen)},
+                              {"result_mean_m1000", fmt(base.stats.mean)},
+                              {"result_median_m1000", fmt(base.stats.median)},
+                              {"result_sd_m1000", fmt(base.stats.sd)}};
+        std::error_code ec;
+        fs::create_directories(opt.reportDir, ec);
+        const std::string csv =
+            (fs::path(opt.reportDir) / (b.id + "__" + b.modelId + "__" + seedTag + ".samples.csv")).string();
+        std::string werr;
+        if (writeBenchSamplesCsv(csv, hdr, base.samples, werr))
+            std::printf("  samples: %s\n", csv.c_str());
+        else
+            std::printf("  could not write samples: %s\n", werr.c_str());
+    }
     return pass;
 }
 } // namespace

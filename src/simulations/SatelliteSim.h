@@ -13,6 +13,7 @@
 #include "SatModel.h"      // attitude groups, satellite models, baked lobes (lighting overhaul)
 #include "SatPhotometry.h" // earthshine table axes (satTypeBuf layout)
 #include "SatTrace.h"      // magnitude trace + CSV export (benchmarking M9)
+#include "SatBench.h"      // shared sample schema + bulk export (benchmarking M10)
 
 // Forward declaration only — savePerfSnapshot/buildPerfSnapshotJson are the sole users and both
 // live in SatelliteSimUI.cpp, which includes the real header. Pulling all of nlohmann/json.hpp in
@@ -1596,6 +1597,31 @@ private:
     char traceNowLine[128] = {};    // current magnitude, rebuilt every frame the window is open
     void computeSelectedTrace();
     void exportTrace();
+    // Why a type's magnitude can't be measured by the CPU evaluator (legacy type, ground-site aim),
+    // or nullptr when it can. Shared by the trace and the bulk export.
+    static const char *photometryUnsupportedReason(const SatelliteType &type);
+
+    // ── Bulk export (benchmarking M10) ────────────────────────────────────────
+    // Settings → Photometry: every instant, at a fixed cadence, when a satellite of the chosen
+    // source satisfies SatBench's sampling constraints for the current observer, written in SatBench's
+    // own samples CSV schema (runBulkExport / writeBenchSamplesCsv, SatBench.h) on a worker thread
+    // over copies of everything it reads. `SatModelTool --summarize-samples` reads the result.
+    int bulkSource = -1;     // -1 = the selected satellite, else a constellation index
+    int bulkWindowIdx = 0;   // kBulkWindowDays[]
+    int bulkCadenceIdx = 1;  // kBulkCadenceS[]
+    static constexpr double kBulkWindowDays[2] = {1.0, 7.0};
+    static constexpr double kBulkCadenceS[3] = {10.0, 30.0, 60.0};
+    std::thread bulkThread;
+    std::atomic<float> bulkProgress{0.0f};
+    std::atomic<bool> bulkCancel{false};
+    std::atomic<bool> bulkRunning{false};
+    std::mutex bulkMutex;
+    std::string bulkResult;  // the worker's final message (guarded by bulkMutex)
+    char bulkStatus[320] = {};
+    char bulkSourceBuf[96] = {}, bulkWindowBuf[32] = {}, bulkCadenceBuf[32] = {}, bulkProgressBuf[64] = {};
+    bool hovBulkSource = false, hovBulkWindow = false, hovBulkCadence = false, hovBulkGo = false;
+    void startBulkExport();
+    void buildBulkExportRows(const UIInput &inp, UIRenderer &ui);
     void buildTraceWindow(const UIInput &inp, UIRenderer &ui);
     void buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx); // "Trace pass" in the selection UI
 

@@ -12,6 +12,7 @@
 #include "stb_image_write.h" // UC6 — implementation lives in UIRenderer.cpp (one TU only)
 
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -3144,6 +3145,18 @@ static void formatSimClock(double tJ2000, char *buf, size_t n, bool withDate)
         snprintf(buf, n, "%02d:%02d:%02d", utc->tm_hour, utc->tm_min, utc->tm_sec);
 }
 
+const char *SatelliteSim::photometryUnsupportedReason(const SatelliteType &type)
+{
+    if (!type.isModel())
+        return "a legacy type's brightness is in display units, not a magnitude. This needs a geometry-model type.";
+    for (const AttitudeGroup &g : type.groups)
+        if (g.primaryTarget == AttTarget::SunReflectGroundSite || g.secondaryTarget == AttTarget::SunReflectGroundSite ||
+            g.jointTarget == AttTarget::SunReflectGroundSite)
+            return "this type aims at a ground site, and the CPU evaluator does not model the lock-window target "
+                   "choice yet.";
+    return nullptr;
+}
+
 void SatelliteSim::computeSelectedTrace()
 {
     traceValid = false;
@@ -3163,22 +3176,11 @@ void SatelliteSim::computeSelectedTrace()
         return;
     const SatelliteType &type = satTypes[orb.typeIdx];
     snprintf(traceTitle, sizeof(traceTitle), "%s  #%d", type.name.c_str(), selectedSatIndex);
-    if (!type.isModel())
+    if (const char *why = photometryUnsupportedReason(type))
     {
-        snprintf(traceStatus, sizeof(traceStatus),
-                 "Can't trace: a legacy type's brightness is in display units, not a magnitude. Traces need a "
-                 "geometry-model type.");
+        snprintf(traceStatus, sizeof(traceStatus), "Can't trace: %s", why);
         return;
     }
-    for (const AttitudeGroup &g : type.groups)
-        if (g.primaryTarget == AttTarget::SunReflectGroundSite || g.secondaryTarget == AttTarget::SunReflectGroundSite ||
-            g.jointTarget == AttTarget::SunReflectGroundSite)
-        {
-            snprintf(traceStatus, sizeof(traceStatus),
-                     "Can't trace: this type aims at a ground site, and the CPU evaluator does not model the "
-                     "lock-window target choice yet.");
-            return;
-        }
 
     SatTraceSetup &s = traceSetup;
     s = SatTraceSetup{};
@@ -3313,6 +3315,153 @@ void SatelliteSim::exportTrace()
         snprintf(traceStatus, sizeof(traceStatus), "Export failed: %s", err.c_str());
         Log::line("trace export failed: " + err);
     }
+}
+
+// ─── startBulkExport (benchmarking M10) ──────────────────────────────────────
+// Snapshots everything the worker reads (the type's groups, lobes and occlusion, every source
+// satellite's orbit elements, the observer) so the render thread can keep changing them.
+void SatelliteSim::startBulkExport()
+{
+    if (bulkRunning.load())
+    {
+        bulkCancel.store(true);
+        return;
+    }
+    if (bulkThread.joinable())
+        bulkThread.join();
+
+    struct Job
+    {
+        std::vector<AttitudeGroup> groups;
+        std::vector<GpuSatLobe> lobes;
+        SatOcclusion occlusion;
+        bool occlusionOn = false;
+        std::vector<BulkExportSat> sats;
+        BulkExportSpec spec;
+        BenchCsvHeader header;
+        std::string path;
+    };
+    auto job = std::make_shared<Job>();
+    int typeIdx = -1;
+    std::string sourceName;
+    if (bulkSource < 0)
+    {
+        if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+        {
+            snprintf(bulkStatus, sizeof(bulkStatus), "Select a satellite first, or pick a constellation as the source.");
+            return;
+        }
+        typeIdx = (int)satOrbits[selectedSatIndex].typeIdx;
+        job->sats.push_back({orbitElemsOf(satOrbits[selectedSatIndex]), selectedSatIndex});
+        sourceName = "satellite " + std::to_string(selectedSatIndex);
+    }
+    else
+    {
+        if (bulkSource >= (int)constellations.size())
+            return;
+        typeIdx = (int)constellations[bulkSource].typeIdx;
+        for (size_t i = 0; i < satOrbits.size(); ++i)
+            if ((int)satOrbits[i].constIdx == bulkSource)
+                job->sats.push_back({orbitElemsOf(satOrbits[i]), (int)i});
+        sourceName = constellations[bulkSource].name;
+    }
+    if (typeIdx < 0 || typeIdx >= (int)satTypes.size())
+        return;
+    const SatelliteType &type = satTypes[typeIdx];
+    if (const char *why = photometryUnsupportedReason(type))
+    {
+        snprintf(bulkStatus, sizeof(bulkStatus), "Can't export %s: %s", sourceName.c_str(), why);
+        return;
+    }
+    if (job->sats.empty())
+    {
+        snprintf(bulkStatus, sizeof(bulkStatus), "%s has no satellites in the loaded roster.", sourceName.c_str());
+        return;
+    }
+    job->groups = type.groups;
+    job->lobes = type.lobes;
+    job->occlusion = type.occlusion;
+    job->occlusionOn = satOcclusionActive() && !type.occlusion.occluders.empty();
+
+    BulkExportSpec &sp = job->spec;
+    sp.obsDirEcef = glm::dvec3(obsDir);
+    sp.obsRadiusM = (double)(float)(kEarthRadius + obsTerrainH + obsHeightOffset); // as updatePositions()
+    sp.t0 = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    sp.t1 = sp.t0 + kBulkWindowDays[bulkWindowIdx] * 86400.0;
+    sp.cadenceS = kBulkCadenceS[bulkCadenceIdx];
+    sp.extinctionK = extinctionCoeff; // minElevationDeg / Sun window: SatBench's defaults (BulkExportSpec)
+
+    char stamp[32], num[64];
+    formatSimClock(sp.t0, stamp, sizeof(stamp), true);
+    auto fmt = [&](double v) {
+        snprintf(num, sizeof(num), "%.17g", v);
+        return std::string(num);
+    };
+    job->header = {{"source", "SatLightSim bulk export"},
+                   {"roster_source", sourceName},
+                   {"model", type.modelId},
+                   {"model_hash", satTraceFileHash((std::filesystem::path(exeDir_) / "satellite_models" /
+                                                    (type.modelId + ".json")).string())},
+                   {"type", type.name},
+                   {"lobe_budget", std::to_string(type.lobeBudget)},
+                   {"occlusion", job->occlusionOn ? "1" : "0"},
+                   {"satellites", std::to_string(job->sats.size())},
+                   {"observer_lat_deg", fmt(obsLatDeg)},
+                   {"observer_lon_deg", fmt(obsLonDeg)},
+                   {"observer_dir_ecef", fmt(sp.obsDirEcef.x) + " " + fmt(sp.obsDirEcef.y) + " " + fmt(sp.obsDirEcef.z)},
+                   {"observer_radius_m", fmt(sp.obsRadiusM)},
+                   {"window_t_j2000", fmt(sp.t0) + " " + fmt(sp.t1)},
+                   {"window_start_sim_clock", stamp},
+                   {"cadence_s", fmt(sp.cadenceS)},
+                   {"min_elevation_deg", fmt(sp.minElevationDeg)},
+                   {"sun_alt_window_deg", fmt(sp.sunAltMinDeg) + " " + fmt(sp.sunAltMaxDeg)},
+                   {"extinction_k", fmt(sp.extinctionK)},
+                   {"app_version", APP_VERSION},
+                   {"git_commit", APP_GIT_COMMIT},
+                   {"note", "t_j2000 is sim time; the sim's Earth rotation omits GMST at J2000, so it is not real UTC. "
+                            "Rows: every instant at the cadence with the Sun in the window and the satellite above the "
+                            "elevation limit and fully sunlit; `pass` numbers consecutive runs of such instants."}};
+    std::string safe;
+    for (char c : sourceName)
+        safe += std::isalnum((unsigned char)c) ? c : '_';
+    const std::filesystem::path dir = std::filesystem::path(userDataDir_) / "exports";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    job->path = (dir / ("samples_" + safe + "_" + stamp + ".csv")).string();
+
+    bulkProgress.store(0.0f);
+    bulkCancel.store(false);
+    bulkRunning.store(true);
+    snprintf(bulkStatus, sizeof(bulkStatus), "Exporting %zu satellites of %s...", job->sats.size(), sourceName.c_str());
+    bulkThread = std::thread([this, job]() {
+        job->spec.groups = &job->groups;
+        job->spec.lobes = &job->lobes;
+        job->spec.occlusion = job->occlusionOn ? &job->occlusion : nullptr;
+        std::vector<BenchSample> samples;
+        const bool finished = runBulkExport(job->spec, job->sats, samples, &bulkProgress, &bulkCancel);
+        std::string msg, err;
+        if (!finished)
+            msg = "Cancelled.";
+        else if (samples.empty())
+            msg = "No samples: nothing passed the constraints in the window (Sun -18..-6 deg, elevation >= 20 deg, "
+                  "fully sunlit).";
+        else if (writeBenchSamplesCsv(job->path, job->header, samples, err))
+        {
+            int passes = 0;
+            for (const BenchSample &x : samples)
+                passes = std::max(passes, x.pass + 1);
+            msg = "Wrote " + std::to_string(samples.size()) + " samples (" + std::to_string(passes) + " passes) to " +
+                  job->path;
+            Log::line("bulk export: " + msg);
+        }
+        else
+            msg = "Export failed: " + err;
+        {
+            std::lock_guard<std::mutex> lk(bulkMutex);
+            bulkResult = msg;
+        }
+        bulkRunning.store(false);
+    });
 }
 
 // ─── updateSelectedPhotometry (benchmarking M2) ───────────────────────────────
@@ -3712,6 +3861,10 @@ void SatelliteSim::cleanup(VkDevice device)
     // members, so letting it outlive the object would be a use-after-free.
     if (screenshotThread.joinable())
         screenshotThread.join();
+    // M10 bulk export: it reads only its own snapshot, but captures `this` for its result.
+    bulkCancel.store(true);
+    if (bulkThread.joinable())
+        bulkThread.join();
 
     saveSettings();
 

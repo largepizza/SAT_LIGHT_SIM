@@ -3013,6 +3013,93 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
                       CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
         }
     }
+    buildBulkExportRows(inp, ui);
+}
+
+// ─── buildBulkExportRows (benchmarking M10) ──────────────────────────────────
+// Photometry tab: source (the selected satellite or a constellation), window, cadence, and an
+// Export / Cancel button with progress. The constraints are SatBench's defaults, stated in the UI.
+void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
+{
+    // Pick up a finished worker's result (and join it) on the UI thread.
+    if (!bulkRunning.load() && bulkThread.joinable())
+    {
+        bulkThread.join();
+        std::lock_guard<std::mutex> lk(bulkMutex);
+        snprintf(bulkStatus, sizeof(bulkStatus), "%s", bulkResult.c_str());
+    }
+    if (bulkSource >= (int)constellations.size())
+        bulkSource = -1;
+    if (bulkSource < 0)
+        snprintf(bulkSourceBuf, sizeof(bulkSourceBuf), "Selected satellite");
+    else
+        snprintf(bulkSourceBuf, sizeof(bulkSourceBuf), "%s", constellations[bulkSource].name.c_str());
+    snprintf(bulkWindowBuf, sizeof(bulkWindowBuf), bulkWindowIdx == 0 ? "Next 24 h" : "Next 7 days");
+    snprintf(bulkCadenceBuf, sizeof(bulkCadenceBuf), "Every %.0f s", kBulkCadenceS[bulkCadenceIdx]);
+    const bool running = bulkRunning.load();
+    if (running)
+        snprintf(bulkProgressBuf, sizeof(bulkProgressBuf), "Cancel (%.0f%%)", 100.0f * bulkProgress.load());
+
+    auto label = [&](const char *s, Clay_Color c, float size) {
+        Clay_String str{false, (int32_t)strlen(s), s};
+        CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
+    };
+    // One labelled row with a button; returns true when the button was clicked.
+    auto row = [&](int id, const char *name, const char *value, bool &hov, const char *tip) {
+        bool clicked = false;
+        CLAY(CLAY_IDI("BulkRow", id), {.layout = {
+                                           .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                           .padding = {4, 4, 4, 4},
+                                           .childGap = 8,
+                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY(CLAY_IDI("BulkRowLbl", id), {.layout = {.sizing = {CLAY_SIZING_FIXED(kSliderLabelW), CLAY_SIZING_FIT(0)}}})
+            {
+                label(name, Pal::volLabel, 12);
+            }
+            CLAY(CLAY_IDI("BulkRowBtn", id), {.layout = {
+                                                  .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(22)},
+                                                  .padding = {10, 10, 0, 0},
+                                                  .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                              .backgroundColor = hov ? Pal::btnHover : Pal::btnIdle,
+                                              .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hov);
+                sndClick(n, inp.lmbPressed);
+                hov = n;
+                clicked = n && inp.lmbPressed;
+                ui.tooltip(inp, n, tip, fs(11));
+                label(value, Pal::btnLabel, 11);
+            }
+        }
+        return clicked;
+    };
+
+    CLAY(CLAY_ID("BulkHeader"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}, .padding = {4, 4, 12, 2}}})
+    {
+        label("BULK EXPORT  (samples CSV, SatBench schema)", Pal::textDim, 11);
+    }
+    if (row(0, "Source", bulkSourceBuf, hovBulkSource, "Click to cycle: the selected satellite, or a whole constellation") &&
+        !running)
+        bulkSource = bulkSource + 1 >= (int)constellations.size() ? -1 : bulkSource + 1;
+    if (row(1, "Window", bulkWindowBuf, hovBulkWindow, "From the current sim time") && !running)
+        bulkWindowIdx = (bulkWindowIdx + 1) % 2;
+    if (row(2, "Cadence", bulkCadenceBuf, hovBulkCadence, "Time between samples within a pass") && !running)
+        bulkCadenceIdx = (bulkCadenceIdx + 1) % 3;
+    if (row(3, "Export", running ? bulkProgressBuf : "Export CSV", hovBulkGo,
+            running ? "Stop the export" : "Sample every visible pass for the current observer"))
+        startBulkExport();
+    CLAY(CLAY_ID("BulkNotes"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                           .padding = {4, 4, 2, 2},
+                                           .childGap = 2,
+                                           .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    {
+        label("Constraints (SatBench defaults): Sun -18..-6 deg, elevation >= 20 deg, fully sunlit.", Pal::textHint, 11);
+        if (bulkStatus[0])
+            label(bulkStatus, Pal::textDim, 11);
+    }
 }
 
 // ─── buildCloudSliderRows ────────────────────────────────────────────────────
