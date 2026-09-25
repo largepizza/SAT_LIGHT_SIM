@@ -189,7 +189,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; debugview <off|normals|detail|steps|albedo|shadow|rough>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
     "window <W>x<H>; log <text>; quit";
 } // namespace
 
@@ -1148,17 +1148,18 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     if (n == "debugview")
     {
         // Terrain debug views (sat_sky.frag, cloud.terrainDebugView). Not persisted.
-        static const char *kViews[] = {"off", "normals", "detail", "steps", "albedo", "shadow", "rough"};
+        static const char *kViews[] = {"off", "normals", "detail", "steps", "albedo", "shadow", "rough", "elevzebra", "distzebra"};
         const std::string v = lower(pos(0) == "terrain" ? pos(1) : pos(0));
         int idx = -1;
-        for (int i = 0; i < 7; ++i)
+        for (int i = 0; i < 9; ++i)
             if (v == kViews[i])
                 idx = i;
         if (idx < 0 && !v.empty() && isdigit((unsigned char)v[0]))
             idx = (int)parseNum(v, "debugview");
-        if (idx < 0 || idx > 6)
-            fail("debugview: off | normals | detail | steps | albedo | shadow | rough "
-                 "(steps: blue = few march steps .. red = the budget; rough: R roughness, G rock, B snow)");
+        if (idx < 0 || idx > 8)
+            fail("debugview: off | normals | detail | steps | albedo | shadow | rough | elevzebra | distzebra "
+                 "(steps: blue = few march steps .. red = the budget; rough: R roughness, G rock, B snow; "
+                 "zebras: stripes every 25 m of elevation / 100 m of distance)");
         terrainDebugView = idx;
         r["message"] = std::string("terrain debug view ") + kViews[idx];
         return Status::Done;

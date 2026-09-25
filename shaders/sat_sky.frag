@@ -2503,6 +2503,11 @@ void main() {
             else if (dv == 4) dbg = dayColor;
             else if (dv == 5) dbg = vec3(terrainShadow * max(sunDot, 0.0));
             else if (dv == 6) dbg = vec3(terrainDet.rough, terrainMatSteep, terrainMatSnow);
+            // Zebra views, from the `erosion` branch: stripes at a fixed real-world interval show small
+            // jitter a normalized heatmap cannot — broken or jagged stripes are height (7: every 25 m of
+            // elevation) or hit-distance (8: every 100 m along the ray) instability, not texture.
+            else if (dv == 7) dbg = vec3(mix(0.05, 0.95, mod(floor(tdAltitude(terrainQ) / 25.0), 2.0)));
+            else if (dv == 8) dbg = vec3(mix(0.05, 0.95, mod(floor(tHit / 100.0), 2.0)));
             terrainDebugColor = dbg;
         }
 
