@@ -6,6 +6,68 @@ All other simulations (GameOfLife, Particles, Scene3DDemo) are legacy and rarely
 
 ---
 
+## Index — start here
+
+This is the internal architecture reference. It is written to be read **before** editing code: the
+load-bearing invariants are stated where they apply, and many sections carry a "the first cut did X
+and that was wrong" note — usually the fastest way to understand why the code is shaped as it is.
+Design decisions and their dates live next to the code they constrain, not in a separate chronology.
+
+| Document | What it is |
+|---|---|
+| `README.md` | User-facing: what this is, prerequisites, build, packaging |
+| `docs/CONSTELLATION_MODDING.md` | User-facing modding guide (`constellations.json`, `satellite_models/*.json`) |
+| `CHANGELOG.md` | What changed per release |
+| `data/benchmarks/KNOWN_RESIDUALS.md` | Accepted photometric error, with the measurement behind it |
+| `.plans/*.md` | **Untracked local design logs** (phase plans, terrain, cloud perf). Sections below link to them; a fresh clone has none |
+
+**Read in this order (~10 minutes) if you are new:** Build Commands → Architecture → Frame Loop Order
+→ Unified scene depth → Satellite Types (Rigid attitude groups, Geometry models) → Photometry /
+Shader Constants → VulkanContext Helpers. Then jump to the section you actually need.
+
+**Build & release** — *Build Commands* (configure/build/run, exe name, and the rule about never
+launching the app yourself) · *Presets and release packaging* (the two Windows release paths,
+`package-release`) · *macOS release architecture* · *Old / low-end hardware floor* (the
+guaranteed-minimum table and the push-constant gate).
+
+**Architecture** — *Frame Loop Order* (the canonical pass order) · *Unified scene depth* (one
+log-distance encoding, written by every surface) · *Occlusion: one shared depth buffer* (why
+`sceneDepthImg` is half-res R32F, and what it replaced) · *Shader `#include`* (the header table, the
+`CloudParams` mirror and `check_cloud_params.py`).
+
+**Satellites: data, geometry, orbits** — *Satellite Types* (catalogue, **Rigid attitude groups**,
+**Geometry models** — SatModel, materials, lobes, earthshine, transmission, render-only parts,
+lattices, patterns — legacy attitude modes, `typeIdx`, adding a type) · *Orbital Mechanics /
+Constellations* · *GPU Orbital Pipeline* (two-dispatch pattern, buffers, `Gpu*` layouts, push
+constants) · *TargetedReflector / Mirror Ground Targets* · *Reflect-Orbital Beam Cloud Occlusion* ·
+*GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22).
+
+**Rendering** — *UIRenderer / Clay* (icon atlas, the fixed-bitmap font, manual hit-testing) ·
+*Photometry / Shader Constants* (lobe model, bloom and glare) · *Light Pollution Dome* · *Atmospheric
+Extinction* · *Sky Glow SSBO* · *Planets* · *Cloud Shadows* · *Resolution Scaling* · *Weak-Hardware
+Sky Tiers (Potato / SKY_LITE)*. The mesh renderer, model viewer and environment probes are
+subsections of *Satellite Types* (Phases 4b–4f).
+
+**State, profiling, cinematics, terrain** — *Persistent Settings* · *Fixed Simulation State* · *GPU
+Performance Profiling* · *Intro Cinematic (UC3)* · *Controls / Keybinding Pipeline* · *Active
+Development: Earth / Terrain Rendering* (read **Elevation texture encoding** before touching terrain
+code).
+
+**Tools and gates** — `tools/sat_model_tool/` (SatModelTool: bake, validate, benchmark, trace
+replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/benchmarks/` ·
+`cmake/AccuracyGate.cmake` (`cmake --build build --target accuracy-gate`) ·
+`cmake/PackageRelease.cmake` (the single "what ships" list).
+
+**Rules that bite (each one has a section behind it)** — do not launch the app to verify a change
+(build, then let the user run it); `GpuCloudParams` is a hand-maintained mirror of
+`cloud_params.glsl` (run the checker after touching either); never store a distance in a half-float;
+every push-constant struct `static_assert`s to exactly 128 bytes; `CMakePresets.json` and `.vscode/`
+are committed and must stay free of absolute paths; `.plans/`, `.claude/`, `build*/`, `dist/` and
+`benchmark_runs/` are gitignored.
+
+---
+
+
 ## Build Commands
 
 ```bash
@@ -138,7 +200,12 @@ sim->buildUI(dt, ui)     → Clay layout; camera look; mouse capture rects
 sim->recordCompute(cmd)  → WASD movement; simTime advance;
                            CPU updatePositions() — sun/moon/obsECI/eci2enu/reflector targets only;
                            orbit rebake check (every 7 sim-days);
-                           dispatch 1: scene_depth.comp   (half-res shared terrain/ocean depth)
+                           recordMeshScene() — Phase 4c mesh instances (CPU double poses, camera-
+                                               relative) + env-probe cube faces. Runs BEFORE
+                                               scene_depth.comp, so clouds and beams clamp to a
+                                               mesh (two mesh draws: the depth pre-pass, then the
+                                               scene pass with depth EQUAL)
+                           dispatch 1: scene_depth.comp   (half-res shared terrain/ocean/MESH depth)
                            dispatch 2: sat_orbit.comp     (orbital mechanics + attitude + beam list +
                                                             reflectance model → APPENDS visible
                                                             satellites to the compact satVisibleBuf
@@ -154,12 +221,24 @@ sim->recordCompute(cmd)  → WASD movement; simTime advance;
                            dispatch 5: sat_flare.comp     (INDIRECT; photometry in place on the
                                                             compact list: sky/extinction/pollution +
                                                             visibility culling + sprite size)
+                           flare-source pass (graphics, its own render pass): satellite sprites +
+                           the sun's virtual point, then mesh_bloom.frag's mesh over-white energy
+                           dispatch 6: glare_find.comp     (only when meshes drew this frame: 5×5
+                                                           local maxima past the threshold into
+                                                           glintBuf, drawn as glare_mesh.* later)
+                           dispatch 7: flare_blur.comp     (ping-pong gaussian/streak: source ↔ scratch)
+                           trail pass (when enabled): trail_fade.comp, then the satellite/star/planet
+                           splat draws into trailAccumImg
+                           recordModelViewer() — Phase 4b model-viewer window (offscreen, own pass)
                            barriers between each (see recordCompute for exact stage/access pairs)
 sim->recordPrePass(cmd)  → renderScale < 1.0 only: low-res sky → vkCmdBlitImage into swapchain
 vkCmdBeginRenderPass     → owned by App
-sim->recordDraw(cmd)     → sky/ground background → satellite points → stars
+sim->recordDraw(cmd)     → sky/ground background (the mesh is a surface in it, Phase 4c) →
+                           satellite points → stars → planets → flare composite → glare
+                           (satellite sprites + mesh glints) → trail composite
 ui.record(cmd)           → Clay → Vulkan quads/text/icons on top
 vkCmdEndRenderPass       → owned by App
+sim->recordScreenshotCopy() → UC6 screenshot blit after the pass — no-op unless a shot is pending
 ```
 
 ### Unified scene depth (Phase 4, 2026-09-23)

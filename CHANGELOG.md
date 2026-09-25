@@ -1,5 +1,63 @@
 # Changelog
 
+## Unreleased
+
+> DRAFT, summarised from `git log v1.1.1..HEAD` (43 commits, 2026-09-10 .. 2026-09-24). Trim, split or
+> re-word before tagging — in particular decide whether the lighting overhaul makes this v1.2.0.
+> Per-subsystem detail lives in `CLAUDE.md`; accepted photometric error lives in
+> `data/benchmarks/KNOWN_RESIDUALS.md`.
+
+### Added
+- **Satellite lighting overhaul (Phases 1-3).** Data-driven rigid attitude groups (`attitude_groups`
+  in `constellations.json`) replace the `AttitudeMode` enum — legacy modes are converted at load and
+  verified against the old surface normals. Geometry models (`"model": "<id>"` →
+  `satellite_models/<id>.json`) describe a type as primitives, materials and a kinematic tree with
+  hinges and per-component pivots. Photometry is now physical: GGX/Beckmann · Schlick · Smith lobes,
+  earthshine from the whole lit Earth cap, diffuse transmission for backlit arrays, and occlusion
+  between a satellite's own parts on both CPU and GPU.
+- **SatModelTool** (`tools/sat_model_tool/`, `cmake --build build --target SatModelTool`) — load,
+  bake, validate and OBJ-export models; `--selftest`, `--benchmark`, `--run-benchmark`,
+  `--sensitivity`, `--replay-trace`, `--set` material overrides, bulk export.
+- **Benchmarking.** 9 published photometry datasets with provenance in `data/benchmarks/`, the
+  `SatBench` campaign runner, `sat-light-sim-trace/1` CSV export/replay, a GPU parity readout for the
+  selected satellite, and the photometric accuracy gate (`cmake/AccuracyGate.cmake`, M11) which runs
+  those selftests and benchmarks in CI.
+- **In-app satellite renderer + model viewer (Phases 4a-4f).** Any satellite that is big enough on
+  screen is drawn as a 3D mesh, composited as a surface of the scene (clouds in front occlude it,
+  the atmosphere scatters over it, points and stars behind it are hidden); energy-matched bloom and
+  mesh-glint glare across the sprite → mesh hand-off; environment probes give meshes reflections of
+  the Earth and an ambient term; procedural surface detail (solar cells, MLI, panel seams);
+  model-viewer window with Studio/Live lighting, sunlit/rest pose, a photometric check and camera
+  presets; follow mode; telescope zoom whose aperture grows with magnification.
+- **Real-satellite geometry roster** — ISS, Tiangong, Starlab, Axiom, Haven-1/2, Hubble, Ross,
+  Orbital Reef, the Starship HLS depot, Starlink v1.0 / v1.5 / v2 Mini / v3 / VisorSat, OneWeb,
+  Guowang, Amazon LEO, the SpaceX AI satellite, Reflect Orbital mirrors, Starmind AI1 and debris
+  fragments — plus render-only parts (free greebles) and open lattice trusses.
+- **UI**: trace window with axis ticks, live magnitude and reasons; model viewer; UI scaling.
+
+### Changed
+- Unified scene depth: one encoding (log2 of the true ray distance, 1 cm to 1e9 m) written by
+  terrain, ocean, opaque cloud, meshes, points and stars, replacing the 150 km cap and its manual
+  occlusion tests. Satellites in front of the distant Earth (or a mountain, or a cloud) now occult
+  correctly, and bloom survives at every range.
+- One magnitude-to-sprite model shared by satellites, stars and planets.
+- Line-of-sight atmospheric extinction now computed for every observer altitude, not just the
+  surface.
+- The satellite roster is model-first: `data/constellations.json` ships the modelled types, and lobe
+  budgets scale with roster size.
+
+### Fixed
+- Scene meshes could render as a red bloom-only ghost; the model viewer's first cut came up all-black
+  (Clay draws an element's own background over its custom content); a satellite that went dark while
+  selected could drop out of view; and a click on the trace window fell through to the camera.
+- Bloom: seeding it from a mesh's own over-white pixels exploded when looking edge-on to the Sun —
+  it now seeds from photometric light only. Per-texel overflow in the flare source also made a
+  mirror's glint position NaN, so the Sun in a Reflect Orbital mirror never glared.
+
+### Build / packaging
+- `SatModelTool` target, the `linux-accuracy-gate` preset and the M11 CI gate; `PackageRelease.cmake`
+  now also ships `satellite_models/`.
+
 ## v1.1.1 — 2026-09-08
 
 ### Added
