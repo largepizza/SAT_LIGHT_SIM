@@ -9928,7 +9928,8 @@ void SatelliteSim::createTrailResources(VulkanContext &ctx)
 
     // ── Image + view ──────────────────────────────────────────────────────────────────────────
     ctx.createImage(trailAccumExtent.width, trailAccumExtent.height, VK_FORMAT_R16G16B16A16_SFLOAT,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT, // vkCmdClearColorImage (trailClearPending)
                     trailAccumImg, trailAccumMem);
 
     VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
