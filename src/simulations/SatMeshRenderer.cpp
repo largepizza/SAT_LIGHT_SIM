@@ -80,10 +80,11 @@ void setMeshInstanceEarth(GpuMeshInstance &inst, const SatEarthLight &L, const g
 }
 
 // ─── init / cleanup ───────────────────────────────────────────────────────────────────────────────
-void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth)
+void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth, const ProbeBindings &probes)
 {
     device_ = ctx.device;
     earth_ = earth;
+    probes_ = probes;
     colorFormat = ctx.swapFormat; // the viewer's output goes through the UI unchanged (UIImage)
 
     VkPhysicalDeviceProperties props;
@@ -183,7 +184,7 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
 {
     const VkShaderStageFlags vf = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     const VkShaderStageFlags f = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutBinding b[8] = {
+    VkDescriptorSetLayoutBinding b[10] = {
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, vf, nullptr},
         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, vf, nullptr},
         {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, f, nullptr},
@@ -192,9 +193,11 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
         {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, f, nullptr},
         {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, f, nullptr},
         {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, vf, nullptr}, // per-component pivots (Phase 4f)
+        {8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, f, nullptr},  // every env probe's SH irradiance
+        {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, f, nullptr}, // viewer background (HDR)
     };
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 8;
+    li.bindingCount = 10;
     li.pBindings = b;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
@@ -203,8 +206,8 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
     // Three sets of the same layout — viewer, photometric check, scene — each with its own frame UBO
     // (all can be recorded in one frame, and a shared host-written UBO would hold only the last write).
     VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3},
-                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 12},
-                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9}};
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 15},
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 3;
     pi.pPoolSizes = ps;
@@ -232,7 +235,8 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
         {earth_.nightSampler, earth_.night, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {earth_.cloudsSampler, earth_.clouds, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
     };
-    VkWriteDescriptorSet w[5] = {};
+    VkDescriptorBufferInfo shInfo{probes_.shBuffer, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet w[6] = {};
     w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             nullptr, &frameInfo, nullptr};
     w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -240,9 +244,22 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
     for (int i = 0; i < 3; ++i)
         w[2 + i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, (uint32_t)(4 + i), 0, 1,
                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &img[i], nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 5, w, 0, nullptr);
+    w[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 8, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            nullptr, &shInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 6, w, 0, nullptr);
     }
     writeGeometryDescriptors();
+}
+
+// Binding 9 of the viewer's set only: the pipelines of the other two never read it.
+void SatMeshRenderer::setViewerBackground(VkImageView view, VkSampler smp)
+{
+    if (!descSet || !view)
+        return;
+    VkDescriptorImageInfo ii{smp, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descSet, 9, 0, 1,
+                           VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ii, nullptr, nullptr};
+    vkUpdateDescriptorSets(device_, 1, &w, 0, nullptr);
 }
 
 void SatMeshRenderer::writeGeometryDescriptors()
@@ -398,9 +415,11 @@ void SatMeshRenderer::createViewerPass(VulkanContext &ctx)
 
 void SatMeshRenderer::createPipelines(VulkanContext &ctx)
 {
+    // Set 0: the renderer's; set 1: one environment probe's cube (SatEnvProbes), bound per draw.
+    const VkDescriptorSetLayout setLayouts[2] = {descLayout, probes_.setLayout};
     VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    li.setLayoutCount = 1;
-    li.pSetLayouts = &descLayout;
+    li.setLayoutCount = 2;
+    li.pSetLayouts = setLayouts;
     vkCreatePipelineLayout(ctx.device, &li, nullptr, &pipeLayout);
 
     VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -549,7 +568,7 @@ bool SatMeshRenderer::ensureViewerTarget(VulkanContext &ctx, uint32_t w, uint32_
 }
 
 void SatMeshRenderer::recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst,
-                                   int typeIdx)
+                                   int typeIdx, VkDescriptorSet probeSet)
 {
     if (!viewerFb)
         return;
@@ -569,7 +588,8 @@ void SatMeshRenderer::recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &fram
     VkRect2D sc{{0, 0}, {viewerW, viewerH}};
     vkCmdSetViewport(cmd, 0, 1, &vp);
     vkCmdSetScissor(cmd, 0, 1, &sc);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 0, 1, &descSet, 0, nullptr);
+    const VkDescriptorSet sets[2] = {descSet, probeSet};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 0, 2, sets, 0, nullptr);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewerBgPipe);
     vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -659,7 +679,7 @@ void SatMeshRenderer::createCheckPass(VulkanContext &ctx)
 }
 
 void SatMeshRenderer::recordCheck(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst,
-                                  int typeIdx)
+                                  int typeIdx, VkDescriptorSet probeSet)
 {
     const TypeMesh *tm = typeMesh(typeIdx);
     if (!checkFb || !tm || !vertexBuf)
@@ -680,7 +700,8 @@ void SatMeshRenderer::recordCheck(VkCommandBuffer cmd, const GpuMeshFrame &frame
     VkRect2D sc{{0, 0}, {kCheckSize, kCheckSize}};
     vkCmdSetViewport(cmd, 0, 1, &vp);
     vkCmdSetScissor(cmd, 0, 1, &sc);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 0, 1, &descSetCheck, 0, nullptr);
+    const VkDescriptorSet sets[2] = {descSetCheck, probeSet};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 0, 2, sets, 0, nullptr);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, checkMeshPipe);
     VkDeviceSize off = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuf, &off);
@@ -825,7 +846,8 @@ bool SatMeshRenderer::ensureSceneTarget(VulkanContext &ctx, uint32_t w, uint32_t
 }
 
 void SatMeshRenderer::recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame,
-                                  const std::vector<GpuMeshInstance> &insts, const std::vector<int> &types)
+                                  const std::vector<GpuMeshInstance> &insts, const std::vector<int> &types,
+                                  const std::vector<VkDescriptorSet> &probeSets)
 {
     if (!sceneFb)
         return;
@@ -855,9 +877,17 @@ void SatMeshRenderer::recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame
         VkDeviceSize off = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuf, &off);
         vkCmdBindIndexBuffer(cmd, indexBuf, 0, VK_INDEX_TYPE_UINT32);
+        VkDescriptorSet bound = VK_NULL_HANDLE;
         for (size_t i = 0; i < n; ++i)
             if (const TypeMesh *tm = typeMesh(types[i]))
+            {
+                if (i < probeSets.size() && probeSets[i] != bound) // each instance's own probe (set 1)
+                {
+                    bound = probeSets[i];
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 1, 1, &bound, 0, nullptr);
+                }
                 vkCmdDrawIndexed(cmd, tm->indexCount, 1, tm->firstIndex, tm->vertexOffset, (uint32_t)(2 + i));
+            }
     }
     vkCmdEndRenderPass(cmd);
 }

@@ -1,0 +1,52 @@
+#version 450
+// Irradiance of an environment probe (SatEnvProbes, 2026-09-24) as an order-2 SH fit, for the
+// satellite mesh shader's diffuse light: E(n)/π = Σ c_k·P_k(n) with P = 1, y, z, x, xy, yz, 3z²−1,
+// xz, x²−y² (world = ECEF axes). One workgroup per probe, 1024 Fibonacci-sphere directions (equal
+// solid angle 4π/N) read from a blurred mip, so no cube-face geometry is needed here. The probe holds
+// sat_sky.frag's pre-exposure radiance (π·L per unit solar irradiance), so a white Lambertian face
+// under E(n)/π shades exactly like sat_mesh.frag's sun term.
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) uniform samplerCube probeTex;
+layout(std430, set = 0, binding = 1) buffer ProbeSh { vec4 sh[]; };
+
+layout(push_constant) uniform PC {
+    uint  slot;  // output: sh[slot * 9 .. + 8]
+    float lod;   // mip to read (a 16² face is plenty for an order-2 fit)
+} pc;
+
+shared vec3 part[64][9];
+
+void main()
+{
+    const uint N = 1024u;
+    const uint t = gl_LocalInvocationID.x;
+    vec3 acc[9];
+    for (int k = 0; k < 9; ++k) acc[k] = vec3(0.0);
+    for (uint i = t; i < N; i += 64u) {
+        float z   = 1.0 - (2.0 * float(i) + 1.0) / float(N);
+        float r   = sqrt(max(0.0, 1.0 - z * z));
+        float phi = float(i) * 2.399963229728653; // golden angle
+        vec3  d   = vec3(r * cos(phi), r * sin(phi), z);
+        vec3  P   = textureLod(probeTex, d, pc.lod).rgb;
+        acc[0] += P;
+        acc[1] += P * d.y;
+        acc[2] += P * d.z;
+        acc[3] += P * d.x;
+        acc[4] += P * d.x * d.y;
+        acc[5] += P * d.y * d.z;
+        acc[6] += P * (3.0 * d.z * d.z - 1.0);
+        acc[7] += P * d.x * d.z;
+        acc[8] += P * (d.x * d.x - d.y * d.y);
+    }
+    for (int k = 0; k < 9; ++k) part[t][k] = acc[k];
+    barrier();
+    if (t < 9u) {
+        vec3 s = vec3(0.0);
+        for (uint j = 0u; j < 64u; ++j) s += part[j][t];
+        // (A_l/π)·(SH normalisation)² per term, times the per-sample solid angle 4π/N.
+        const float kCoef[9] = float[9](0.0795775, 0.1591549, 0.1591549, 0.1591549,
+                                        0.2984155, 0.2984155, 0.0248680, 0.2984155, 0.0746039);
+        sh[pc.slot * 9u + t] = vec4(s * (kCoef[t] * 12.566370614 / float(N)), 0.0);
+    }
+}

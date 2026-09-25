@@ -258,6 +258,18 @@ add_custom_command(
 )
 list(APPEND SPV_FILES ${SKY_LITE_SPV})
 
+# Third compile with -DSKY_ENV: the same renderer seen from a satellite, in HDR — the mesh
+# reflection probes and the model viewer's background (SatEnvProbes). See the header of sat_sky.frag.
+set(SKY_ENV_SPV "${SHADER_OUT_DIR}/sat_sky_env.frag.spv")
+add_custom_command(
+    OUTPUT ${SKY_ENV_SPV}
+    COMMAND ${GLSLC} -I "${SHADER_INC_DIR}" -DSKY_ENV "${SHADER_SRC_DIR}/sat_sky.frag" -o ${SKY_ENV_SPV}
+    DEPENDS "${SHADER_SRC_DIR}/sat_sky.frag" ${SHADER_HEADERS}
+    COMMENT "Compiling shader: sat_sky.frag (SKY_ENV variant)"
+    VERBATIM
+)
+list(APPEND SPV_FILES ${SKY_ENV_SPV})
+
 add_custom_target(CompileShaders ALL DEPENDS ${SPV_FILES})
 add_dependencies(SatLightSim CompileShaders)
 

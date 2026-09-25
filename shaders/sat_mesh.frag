@@ -6,9 +6,12 @@
 // (modelFlux / lobeIntensity): Lambert + GGX (or Beckmann) · Schlick · Smith, with the sun's disc
 // folded into α (SUN_ALPHA), so summing a render's pixels reproduces the lobe model's intensity.
 //   sun          direct, × litFactor (Earth shadow) × tint, shadowed by the model's own primitives
-//   earthshine   diffuse from the effective earthshine source (same table as the photometry)
-//   reflections  the specular lobe of the reflected ray into earth_env.glsl (Earth, atmosphere,
-//                clouds, city lights) — replaces the earthshine specular lobe, which it contains
+//   earthshine   diffuse from the whole lit Earth cap (SatEarthLight, the photometry's table) — or,
+//                with an environment probe, the probe's SH irradiance: the full renderer's Earth
+//                (clouds, oceans, terminator, city lights, aurora) as seen from this satellite
+//   reflections  the reflected ray into the probe (SatEnvProbes: sat_sky.frag -DSKY_ENV cube faces,
+//                a mip per roughness), else into earth_env.glsl (the analytic Potato-derived
+//                fallback) — replaces the earthshine specular lobe, which it contains
 //   moonlight    diffuse, directional
 
 #include "common.glsl"
@@ -28,6 +31,24 @@ layout(location = 7) flat in uint vGroup;
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out float outDist; // scene mode: TRUE distance from the camera (m); other modes
                                         // have no attachment at location 1 and the write is dropped
+
+// Environment probes (SatEnvProbes, 2026-09-24): set 1 is this instance's probe, bound per draw;
+// binding 8 holds every probe's order-2 SH irradiance (env_probe_sh.comp): E(n)/π = Σ c_k·P_k(n).
+layout(set = 1, binding = 0) uniform samplerCube probeTex;
+layout(set = 0, binding = 8, std430) readonly buffer ProbeSh { vec4 probeSh[]; };
+const uint  kProbeCount     = 8u;          // SatEnvProbes::kProbes
+const float kProbeTexelRad  = 1.5707963 / 128.0; // a mip-0 texel (kFaceSize)
+const float kProbeMaxLod    = 7.0;
+
+vec3 probeIrradiance(uint slot, vec3 n)
+{
+    uint b = slot * 9u;
+    vec3 e = probeSh[b].rgb + probeSh[b + 1u].rgb * n.y + probeSh[b + 2u].rgb * n.z + probeSh[b + 3u].rgb * n.x
+           + probeSh[b + 4u].rgb * (n.x * n.y) + probeSh[b + 5u].rgb * (n.y * n.z)
+           + probeSh[b + 6u].rgb * (3.0 * n.z * n.z - 1.0) + probeSh[b + 7u].rgb * (n.x * n.z)
+           + probeSh[b + 8u].rgb * (n.x * n.x - n.y * n.y);
+    return max(e, vec3(0.0));
+}
 
 const float SUN_ALPHA2 = 0.0023 * 0.0023; // the sun's disc as a roughness (sat_orbit.comp SUN_ALPHA)
 
@@ -346,15 +367,25 @@ void main()
 
     // ── Earthshine (diffuse; its specular part is the reflection below) ─────
     // The whole lit cap, not one direction (instEarthDiffuse): a face edge-on to the Earth light still
-    // sees a large part of the disk — the photometry's SatEarthLight.
-    L += diffC * instEarthDiffuse(inst, N);
+    // sees a large part of the disk — the photometry's SatEarthLight. With a probe, what is drawn is
+    // the probe's irradiance instead (the real Earth below, lit and coloured as the sky draws it);
+    // the photometric value still feeds the bloom normalisation below.
+    const bool hasProbe = inst.probeSlot < kProbeCount;
+    vec3 earthPhot = diffC * instEarthDiffuse(inst, N);
     if (Tm > 0.0) // and through a translucent blanket from its far side (the lit Earth behind it)
-        L += tC * instEarthDiffuse(inst, -Ngeo);
+        earthPhot += tC * instEarthDiffuse(inst, -Ngeo);
+    vec3 earthDrawn = earthPhot;
+    if (hasProbe && !check) {
+        earthDrawn = diffC * probeIrradiance(inst.probeSlot, N);
+        if (Tm > 0.0)
+            earthDrawn += tC * probeIrradiance(inst.probeSlot, -Ngeo);
+    }
     // Everything so far is what the photometric model counts (sunlight + earthshine through its
     // lobes); moonlight and the reflected Earth below are not in it. The bloom seed is normalised by
     // the model's intensity, so it must only be fed this part — feeding it the reflections made a
     // satellite edge-on to the Sun (model intensity ~0, reflections bright) explode into bloom.
-    const vec3 Lphot = L;
+    const vec3 Lphot = L + earthPhot;
+    L += earthDrawn;
 
     // ── Moonlight ────────────────────────────────────────────────────────────
     L += frame.moonDir.w * diffC * max(dot(N, frame.moonDir.xyz), 0.0);
@@ -364,12 +395,19 @@ void main()
         vec3 Rd = reflect(-V, N);
         bool blocked = shadows && inst.occluderCount > 0u && rayBlocked(inst, vWorld, Rd);
         if (!blocked && dot(Rd, N) > 0.0) {
-            vec3  ro = vWorld - frame.earthCenter.xyz;
-            // Texture lod from the reflected footprint on the ground: a lobe ~2α wide seen from the
-            // satellite's altitude, against a ~4.9 km texel at the base level (8K equirect).
-            float h   = max(length(ro) - R_EARTH, 1000.0);
-            float lod = log2(max(2.0 * sf.rough * h / 4900.0, 1.0));
-            vec3  env = earthEnv(ro, Rd, frame.sunDir.xyz, lod, frame.earthCenter.w);
+            vec3 env;
+            if (hasProbe) {
+                // The full renderer's view from this satellite: a mip whose texel spans the lobe (~2α).
+                float lod = clamp(log2(max(2.0 * sf.rough / kProbeTexelRad, 1.0)), 0.0, kProbeMaxLod);
+                env = textureLod(probeTex, Rd, lod).rgb;
+            } else {
+                vec3  ro = vWorld - frame.earthCenter.xyz;
+                // Texture lod from the reflected footprint on the ground: a lobe ~2α wide seen from the
+                // satellite's altitude, against a ~4.9 km texel at the base level (8K equirect).
+                float h   = max(length(ro) - R_EARTH, 1000.0);
+                float lod = log2(max(2.0 * sf.rough * h / 4900.0, 1.0));
+                env = earthEnv(ro, Rd, frame.sunDir.xyz, lod, frame.earthCenter.w);
+            }
             float Fr  = mat.f0 + (max(1.0 - sf.rough, mat.f0) - mat.f0) * pow(1.0 - nv, 5.0);
             L += env * specC * Fr;
         }

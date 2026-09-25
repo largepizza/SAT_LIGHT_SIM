@@ -29,9 +29,13 @@ layout(push_constant) uniform PC {
 
 const float kGaussWeights[9] = float[9](0.028, 0.066, 0.123, 0.180, 0.206, 0.180, 0.123, 0.066, 0.028);
 
-const int   kStreakDirs  = 6;
+// Mode 2 was a six-spoke streak until 2026-09-24: right for a crowd, but it turned a single bright
+// glint into a soft six-pointed blob. It is now a broad, ROUND halo (16 directions, Gaussian falloff
+// out to ~30 texels of this quarter-res buffer); the sharp spikes of a bright glint are drawn at full
+// resolution by glare.vert/.frag instead.
+const int   kStreakDirs  = 16;
 const int   kStreakTaps  = 10;
-const float kStreakDecay = 0.82;
+const float kHaloSigma   = 5.0; // taps
 
 void main() {
     ivec2 size  = imageSize(flareA);
@@ -58,13 +62,14 @@ void main() {
     vec4 center = readA ? imageLoad(flareA, coord) : imageLoad(flareB, coord);
     vec4 accum = center;
     const float TWO_PI = 6.28318530718;
+    // Each ring of taps carries the area it stands for (∝ radius), so the halo's profile is the
+    // Gaussian itself rather than one peaked at the centre; 6/16 keeps the old total energy.
     for (int d = 0; d < kStreakDirs; ++d) {
-        float ang = (TWO_PI / float(kStreakDirs)) * float(d);
+        float ang = (TWO_PI / float(kStreakDirs)) * (float(d) + 0.5 * float(d & 1));
         vec2  dir = vec2(cos(ang), sin(ang));
-        float w = 1.0;
         for (int t = 1; t <= kStreakTaps; ++t) {
-            w *= kStreakDecay;
-            ivec2 sc = coord + ivec2(dir * float(t * 2));
+            float w = exp(-float(t * t) / (2.0 * kHaloSigma * kHaloSigma)) * float(t) * (0.9 / float(kStreakDirs));
+            ivec2 sc = coord + ivec2(dir * float(t * 3));
             if (sc.x < 0 || sc.y < 0 || sc.x >= size.x || sc.y >= size.y) break;
             vec4 v = readA ? imageLoad(flareA, sc) : imageLoad(flareB, sc);
             accum += v * (w * pc.streakGain);

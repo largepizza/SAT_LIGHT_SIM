@@ -500,7 +500,14 @@ void SatelliteSim::init(VulkanContext &ctx)
         et.nightSampler = earthNightSampler;
         et.clouds = earthCloudsView;
         et.cloudsSampler = earthCloudsSampler;
-        meshRenderer.init(ctx, et);
+        // Environment probes: the full sky renderer (SKY_ENV) from a satellite — needs the sky's
+        // pipeline layout (createSkyBgPipeline above); the mesh pipelines bind its sets.
+        envProbes.init(ctx, skyBgPipeLayout);
+        SatMeshRenderer::ProbeBindings pb;
+        pb.setLayout = envProbes.probeSetLayout();
+        pb.shBuffer = envProbes.shBuffer();
+        pb.shBytes = envProbes.shBufferSize();
+        meshRenderer.init(ctx, et, pb);
         std::vector<SatMeshRenderer::TypeModel> tms(satTypes.size());
         for (size_t i = 0; i < satTypes.size(); ++i)
             if (satTypes[i].model)
@@ -686,6 +693,8 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     flareSourcePipeline = VK_NULL_HANDLE;
     vkDestroyPipeline(ctx.device, flareCompositePipeline, nullptr);
     flareCompositePipeline = VK_NULL_HANDLE;
+    vkDestroyPipeline(ctx.device, glarePipeline, nullptr);
+    glarePipeline = VK_NULL_HANDLE;
     destroyFlareResources(ctx.device);
     createFlareResources(ctx);
     createFlarePipelines(ctx);
@@ -2122,6 +2131,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.zodiacalWidthDeg = zodiacalWidthDeg;
         cp.zodiacalOuterFadeDeg = zodiacalOuterFadeDeg;
         cp.eclipticPoleENU = glm::vec4(eclipticPoleENU, zodiacalGain); // .w = zodiacalGain
+        cp.envMainObsDir = glm::vec4(glm::normalize(obsDir), 0.0f); // SKY_ENV: the frame of the two bases
         cp.shadowMaxDistM = cloudShadowMaxDistM;
         cp.maxRenderDistM = cloudMaxRenderDistM;
         cp.viewSamplesMin = viewSamplesMin;
@@ -2950,6 +2960,7 @@ void SatelliteSim::openModelViewer(int typeIdx, const char *label, float altM, i
         viewerDist = 0.0f; // re-frame a different model
     viewerType = typeIdx;
     viewerSatIndex = satIndex;
+    viewerLastSelected = selectedSatIndex;
     viewerAltM = altM > 0.0f ? altM : 550000.0f;
     if (satIndex >= 0)
         snprintf(viewerTitle, sizeof(viewerTitle), "Model: %s (satellite #%d)", label, satIndex);
@@ -2963,6 +2974,40 @@ void SatelliteSim::openModelViewer(int typeIdx, const char *label, float altM, i
     viewerCheckLine[0] = '\0';
     viewerCheckAwaiting = viewerCheckRequested = false;
     viewerChrome.open = true;
+}
+
+int SatelliteSim::pickViewerSatellite(int constIdx) const
+{
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double theta = earthRotationAngle(t);
+    const double ct = std::cos(theta), st = std::sin(theta);
+    const glm::dvec3 obs =
+        followActive ? glm::dvec3(ct * followObsEcef.x - st * followObsEcef.y, st * followObsEcef.x + ct * followObsEcef.y,
+                                  followObsEcef.z)
+                     : observerEciAt(glm::dvec3(obsDir), (double)kEarthRadius + obsTerrainH + obsHeightOffset, t);
+    const glm::dvec3 upObs = glm::normalize(obs);
+    // Members of the constellation (stride through the big ones: a million-satellite disk needs no
+    // more than ~40k candidates to find one high in the sky).
+    std::vector<int> members;
+    for (int i = 0; i < (int)satOrbits.size(); ++i)
+        if ((int)satOrbits[i].constIdx == constIdx)
+            members.push_back(i);
+    if (members.empty())
+        return -1;
+    const size_t stride = std::max<size_t>(1, members.size() / 40000);
+    int best = members[0];
+    double bestEl = -2.0;
+    for (size_t k = 0; k < members.size(); k += stride)
+    {
+        const glm::dvec3 p = satOrbitStateAt(orbitElemsOf(satOrbits[members[k]]), t).posEci;
+        const double el = glm::dot(glm::normalize(p - obs), upObs); // sin(elevation): the highest wins
+        if (el > bestEl)
+        {
+            bestEl = el;
+            best = members[k];
+        }
+    }
+    return best;
 }
 
 // Renders the model viewer (and, when requested, the photometric check) offscreen. Frame: ECEF axes,
@@ -3057,6 +3102,13 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     inst.firstOccluder = tm->firstOccluder;
     inst.occluderCount = tm->occluderCount;
     inst.firstComponent = tm->firstComponent;
+    inst.probeSlot = kNoProbe;
+
+    // ── Where the observer is (the marker, and the camera presets) ───────────
+    const double obsRadius = followActive ? followRadiusM
+                                          : (double)kEarthRadius + (double)obsTerrainH + (double)obsHeightOffset;
+    const glm::dvec3 obsEcef = followActive ? followObsEcef : glm::normalize(glm::dvec3(obsDir)) * obsRadius;
+    const glm::dvec3 toObs = glm::normalize(obsEcef - P);
 
     // ── Camera: orbit the posed bounding sphere's centre (root group's pose) ─
     const GroupPose root = poses.empty() ? GroupPose{} : poses[0];
@@ -3066,6 +3118,22 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     if (viewerDist <= 0.0f)
         viewerDist = (float)(radius / std::sin(0.5 * fovY) * 1.1);
     viewerDist = (float)glm::clamp((double)viewerDist, radius * 0.3, radius * 400.0);
+    // Presets steer yaw / pitch every frame, so dragging (which returns to Free) continues from here.
+    //   From you: on the line toward the observer — the satellite as you see it.
+    //   Toward you: behind it, 12 deg above the line — your marker just below the satellite.
+    if (viewerAim != 0)
+    {
+        glm::dvec3 d = viewerAim == 1 ? toObs : -toObs;
+        if (viewerAim == 2)
+        {
+            glm::dvec3 side = glm::cross(d, up);
+            side = glm::length(side) > 1e-6 ? glm::normalize(side) : east;
+            const glm::dvec3 lift = glm::normalize(glm::cross(side, d)); // up, perpendicular to d
+            d = glm::normalize(std::cos(glm::radians(12.0)) * d + std::sin(glm::radians(12.0)) * lift);
+        }
+        viewerPitchDeg = (float)glm::degrees(std::asin(glm::clamp(glm::dot(d, up), -1.0, 1.0)));
+        viewerYawDeg = (float)glm::degrees(std::atan2(glm::dot(d, north), glm::dot(d, east)));
+    }
     const double yaw = glm::radians((double)viewerYawDeg), pitch = glm::radians((double)viewerPitchDeg);
     const glm::dvec3 camDir =
         std::cos(pitch) * (std::cos(yaw) * east + std::sin(yaw) * north) + std::sin(pitch) * up;
@@ -3089,7 +3157,43 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     frame.earthCenter = glm::vec4(glm::vec3(-P), (float)std::fmod(theta, glm::two_pi<double>()));
     frame.params = glm::vec4(viewerShadows ? 1.0f : 0.0f, viewerReflections ? 1.0f : 0.0f,
                              viewerDetail ? 1.0f : 0.0f, 0.0f);
-    meshRenderer.recordViewer(cmd, frame, inst, viewerType);
+
+    // ── Full-renderer environment (Live light): probe slot 0 + the background ─
+    // Studio light keeps the analytic Earth (its sun is not the sky's).
+    const bool envOn = envActive() && !viewerStudioLight;
+    if (envOn)
+    {
+        if (!envSlots[0].rendered || (viewerProbeFrame++ % 2u) == 0u ||
+            glm::length(envSlots[0].posEcef - P) > 50.0)
+            renderEnvProbe(cmd, 0, P);
+        inst.probeSlot = 0;
+        if (viewerBgW > 0)
+        {
+            const glm::dmat3 camToEcef = glm::transpose(glm::dmat3(glm::lookAt(camPos, centre, up)));
+            const SatDrawPC bgPc = envSkyPC(P + camPos, camToEcef, (float)fovY, viewerAspect);
+            envProbes.recordViewerBg(cmd, skyDescSet, &bgPc, sizeof(bgPc));
+            frame.bgParams = glm::vec4(1.0f, 0.0f, (float)viewerBgW, (float)viewerBgH);
+        }
+    }
+    else
+        envSlots[0].rendered = false;
+    // Markers: you (always), and a ground-site mirror's current target.
+    frame.bgParams.y = std::max(4.0f, 5.0f * uiScale);
+    frame.bgParams.z = (float)std::max(1u, viewerBgW);
+    frame.bgParams.w = (float)std::max(1u, viewerBgH);
+    frame.marker0 = glm::vec4(glm::vec3(obsEcef - P), 1.0f);
+    if (tracked && !viewerStudioLight && attUsesGroundSite(type.groups))
+    {
+        const SatGroundSiteAim aim = groundSiteAim();
+        const SatGroundSiteResult gs = satGroundSiteIdeal(aim, orbitElemsOf(satOrbits[viewerSatIndex]),
+                                                          (uint32_t)viewerSatIndex, tNow, glm::dvec3(sunDirECI));
+        if (gs.target >= 0 && gs.target < (int)aim.targetsEcef.size())
+        {
+            const glm::dvec4 &t = aim.targetsEcef[gs.target];
+            frame.marker1 = glm::vec4(glm::vec3(glm::dvec3(t) * t.w - P), 1.0f);
+        }
+    }
+    meshRenderer.recordViewer(cmd, frame, inst, viewerType, envProbes.probeSet(0));
 
     // ── Photometric check ───────────────────────────────────────────────────
     // From the viewer's current direction, 60 model radii out (parallax across the model ~1 deg), sun
@@ -3113,7 +3217,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
         cf.params = glm::vec4(viewerShadows ? 1.0f : 0.0f, 0.0f, 0.0f, 1.0f);
         GpuMeshInstance ci = inst;
         ci.sun.w = 1.0f;
-        meshRenderer.recordCheck(cmd, cf, ci, viewerType);
+        meshRenderer.recordCheck(cmd, cf, ci, viewerType, envProbes.probeSet(0));
         viewerCheckModelI = evalSatLobesPosed(type.lobes, type.groups, poses, sun, o,
                                               (double)kSunAlpha * kSunAlpha, nullptr,
                                               viewerShadows ? &type.occlusion : nullptr, true);
@@ -3180,6 +3284,126 @@ void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)
     vkUpdateDescriptorSets(ctx.device, 3, w, 0, nullptr);
 }
 
+// ─── Environment probes (2026-09-24) ─────────────────────────────────────────
+// SatEnvProbes renders sat_sky.frag -DSKY_ENV around a satellite; see the member comment in
+// SatelliteSim.h for how probes are shared out and scheduled.
+bool SatelliteSim::envActive() const
+{
+    // Not under Potato (the weak-hardware tier) or with the mesh pass knocked out.
+    return envReflections && meshRendererInit && envProbes.ready() &&
+           (debugDisableMask & (262144u | kDebugBitMeshes)) == 0u;
+}
+
+SatDrawPC SatelliteSim::envSkyPC(const glm::dvec3 &posEcef, const glm::dmat3 &camToEcef, float fovYRad,
+                                 float aspect) const
+{
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double theta = earthRotationAngle(tNow);
+    const double ct = std::cos(theta), st = std::sin(theta);
+    auto eciToEcef = [&](glm::dvec3 v) { return glm::dvec3(ct * v.x + st * v.y, -st * v.x + ct * v.y, v.z); };
+    // The ENU frame sat_sky.frag builds from obsECEFDir (terrain.glsl enuBasis).
+    const glm::dvec3 up = glm::normalize(posEcef);
+    glm::dvec3 east = glm::cross(glm::dvec3(0.0, 0.0, 1.0), up);
+    east = glm::length(east) > 1e-12 ? glm::normalize(east) : glm::dvec3(1.0, 0.0, 0.0);
+    const glm::dvec3 north = glm::cross(up, east);
+    const glm::dmat3 enuToEcef(east, north, up);
+    auto toEnu = [&](glm::dvec3 v) { return glm::dvec3(glm::dot(v, east), glm::dot(v, north), glm::dot(v, up)); };
+
+    SatDrawPC pc{};
+    pc.skyView = glm::mat4(glm::mat3(glm::transpose(camToEcef) * enuToEcef)); // ENU → camera
+    pc.fovYRad = fovYRad;
+    pc.aspect = aspect;
+    pc.gmst = (float)std::fmod(kOmegaEarth * tNow, glm::two_pi<double>());
+    pc.waveTime = (float)simSecInDay;
+    const glm::dvec3 sun = toEnu(glm::normalize(eciToEcef(glm::dvec3(sunDirECI))));
+    pc.sunDirENU = glm::vec4(glm::vec3(sun), (float)sun.z);
+    const glm::dvec3 moon = toEnu(glm::normalize(eciToEcef(glm::dvec3(moonDirECI))));
+    pc.moonDirENU = glm::vec4(glm::vec3(moon), moonDirENU.w);
+    // w: height above sea level (sat_sky.frag adds its 2 m eye height).
+    pc.obsECEFDir = glm::vec4(glm::vec3(up), (float)(glm::length(posEcef) - (double)kEarthRadius - 2.0));
+    return pc;
+}
+
+void SatelliteSim::renderEnvProbe(VkCommandBuffer cmd, int slot, const glm::dvec3 &posEcef)
+{
+    SatDrawPC pcs[6];
+    for (int f = 0; f < 6; ++f)
+        pcs[f] = envSkyPC(posEcef, SatEnvProbes::faceCamToWorld(f), glm::half_pi<float>(), 1.0f);
+    envProbes.recordProbe(cmd, slot, skyDescSet, pcs, sizeof(SatDrawPC));
+    envSlots[slot].rendered = true;
+    envSlots[slot].posEcef = posEcef;
+    envSlots[slot].renderedWall = glfwGetTime();
+}
+
+uint32_t SatelliteSim::assignEnvProbe(const glm::dvec3 &posEcef)
+{
+    const double alt = glm::length(posEcef) - (double)kEarthRadius;
+    const double reuse = std::max(20000.0, 0.02 * alt);
+    int best = -1;
+    double bestD = reuse;
+    for (int s = 1; s < SatEnvProbes::kProbes; ++s)
+    {
+        const EnvProbeSlot &e = envSlots[s];
+        if (!e.rendered && !e.wanted)
+            continue;
+        const double d = glm::length((e.wanted ? e.wantEcef : e.posEcef) - posEcef);
+        if (d < bestD)
+        {
+            bestD = d;
+            best = s;
+        }
+    }
+    if (best < 0) // the least recently used slot nobody wants this frame
+    {
+        uint64_t oldest = UINT64_MAX;
+        for (int s = 1; s < SatEnvProbes::kProbes; ++s)
+            if (!envSlots[s].wanted && envSlots[s].lastUsed < oldest)
+            {
+                oldest = envSlots[s].lastUsed;
+                best = s;
+            }
+        if (best < 0)
+            return kNoProbe; // every slot is in use this frame
+        envSlots[best].rendered = false;
+    }
+    EnvProbeSlot &e = envSlots[best];
+    e.wanted = true;
+    e.wantEcef = posEcef;
+    e.lastUsed = envFrame;
+    return (uint32_t)best;
+}
+
+void SatelliteSim::renderScheduledEnvProbes(VkCommandBuffer cmd)
+{
+    const double now = glfwGetTime();
+    for (int n = 0; n < kEnvRendersPerFrame; ++n)
+    {
+        int best = -1;
+        double bestScore = 0.0;
+        for (int s = 1; s < SatEnvProbes::kProbes; ++s)
+        {
+            const EnvProbeSlot &e = envSlots[s];
+            if (!e.wanted)
+                continue;
+            // New probes first; then the one furthest from its instance, past ~1/10 of the reuse
+            // radius; then any older than 3 s (clouds drift, the Earth turns, settings change).
+            const double alt = glm::length(e.wantEcef) - (double)kEarthRadius;
+            const double drift = glm::length(e.wantEcef - e.posEcef);
+            double score = !e.rendered ? 1e30 : drift / std::max(2000.0, 0.002 * alt);
+            if (e.rendered && score < 1.0)
+                score = (now - e.renderedWall > 3.0) ? 0.5 : 0.0;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = s;
+            }
+        }
+        if (best < 0)
+            break;
+        renderEnvProbe(cmd, best, envSlots[best].wantEcef);
+    }
+}
+
 // Satellites drawn as meshes this frame: the FOLLOWED one (always, CPU-decided — even in Earth's
 // shadow, where the GPU never lists it) and every candidate sat_flare.comp listed last frame
 // (Phase 4d: any model satellite whose mesh spans MESH_FADE_IN_PX or more — no selection needed).
@@ -3222,6 +3446,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
 
     std::vector<GpuMeshInstance> insts;
     std::vector<int> types;
+    std::vector<glm::dvec3> instEcef; // each instance's position, for its environment probe
     struct KeepEntry
     {
         uint32_t sat;
@@ -3309,8 +3534,10 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
                               ? (float)(seed * pixSolidAngle * range * range / (glm::pi<double>() * r.intensity) *
                                         spriteGone / fade)
                               : 0.0f;
+        inst.probeSlot = kNoProbe; // assigned below, once every instance is known
         insts.push_back(inst);
         types.push_back(ti);
+        instEcef.push_back(satEcef);
         keepEntries.push_back({(uint32_t)sat, 1.0f - spriteGone});
         meshDrawn.push_back({sat,
                              glm::normalize(glm::vec3(ecefToEnu * glm::vec3(rel))),
@@ -3331,6 +3558,26 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
                 addInstance((int)c.sat, c.effectFlare, c.angSize);
     }
     meshesDrawnThisFrame = !insts.empty();
+
+    // Environment probes: each instance takes (or shares) one; the scheduled ones are rendered now,
+    // before the mesh pass reads them. Instances whose probe is not rendered yet use the fallback.
+    ++envFrame;
+    for (EnvProbeSlot &e : envSlots)
+        e.wanted = false;
+    std::vector<VkDescriptorSet> probeSets(insts.size(), envProbes.ready() ? envProbes.probeSet(0) : VK_NULL_HANDLE);
+    if (envActive() && !insts.empty())
+    {
+        std::vector<uint32_t> slots(insts.size());
+        for (size_t i = 0; i < insts.size(); ++i)
+            slots[i] = assignEnvProbe(instEcef[i]);
+        renderScheduledEnvProbes(cmd);
+        for (size_t i = 0; i < insts.size(); ++i)
+            if (slots[i] != kNoProbe && envSlots[slots[i]].rendered)
+            {
+                insts[i].probeSlot = slots[i];
+                probeSets[i] = envProbes.probeSet((int)slots[i]);
+            }
+    }
     // This frame's sprite weights for sat_flare.comp (host-coherent; read by this frame's dispatch).
     if (meshKeepMapped)
     {
@@ -3361,7 +3608,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
     frame.moonDir = glm::vec4(glm::vec3(eciToEcef(glm::dvec3(moonDirECI))), moonGain * moonDirENU.w);
     frame.earthCenter = glm::vec4(glm::vec3(-obsEcef), (float)std::fmod(theta, glm::two_pi<double>()));
     frame.params = glm::vec4(1.0f, 1.0f, 1.0f, 2.0f); // shadows, reflections, detail, SCENE output
-    meshRenderer.recordScene(cmd, frame, insts, types);
+    meshRenderer.recordScene(cmd, frame, insts, types, probeSets);
 }
 
 // ─── Phase 4e: follow mode ───────────────────────────────────────────────────
@@ -4491,6 +4738,29 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         vkCmdPushConstants(cmd, flareCompositePipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(cpc), &cpc);
         vkCmdDraw(cmd, 3, 1, 0, 0);
+
+        // Glare sprites for the bright ones (glare.vert/.frag): the sharp rays the broad bloom
+        // above cannot draw at quarter resolution.
+        if (activeSatCount > 0 && glareGain > 0.0f && glarePipeline != VK_NULL_HANDLE)
+        {
+            VkPhysicalDeviceProperties props;
+            vkGetPhysicalDeviceProperties(ctx.physicalDevice, &props);
+            GlarePC gpc{};
+            gpc.skyView = camera.viewMatrix();
+            gpc.fovYRad = glm::radians(camera.fovYDeg);
+            gpc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
+            gpc.gain = glareGain * flareEyeAdaptGain;
+            gpc.sizePx = glareSizePx * (float)ctx.swapExtent.height / 1080.0f; // resolution-independent
+            gpc.screenSizePx = glm::vec2((float)ctx.swapExtent.width, (float)ctx.swapExtent.height);
+            gpc.maxPointSize = std::min(props.limits.pointSizeRange[1], 1024.0f);
+            gpc.threshold = glareThreshold;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glarePipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flareSourcePipeLayout, 0, 1, &descSet, 0,
+                                    nullptr);
+            vkCmdPushConstants(cmd, flareSourcePipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                               sizeof(gpc), &gpc);
+            vkCmdDrawIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, drawVertexCount), 1, 0);
+        }
     }
 
     // ── Pass 5: long-exposure trail composite ──────────────────────────────────
@@ -4547,6 +4817,7 @@ void SatelliteSim::cleanup(VkDevice device)
     if (meshRendererInit)
         meshRenderer.cleanup(device);
     meshRendererInit = false;
+    envProbes.cleanup(device);
     if (meshKeepBuf)
     {
         vkDestroyBuffer(device, meshKeepBuf, nullptr);
@@ -4609,6 +4880,7 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyDescriptorPool(device, flareBlurDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, flareBlurDescLayout, nullptr);
     vkDestroyPipeline(device, flareCompositePipeline, nullptr);
+    vkDestroyPipeline(device, glarePipeline, nullptr);
     vkDestroyPipelineLayout(device, flareCompositePipeLayout, nullptr);
     vkDestroyDescriptorPool(device, flareCompositeDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, flareCompositeDescLayout, nullptr);
@@ -8747,6 +9019,27 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
 
         vkDestroyShaderModule(ctx.device, vert, nullptr);
         vkDestroyShaderModule(ctx.device, frag, nullptr);
+
+        // ── Stage 4: glarePipeline — per-satellite glare sprites (glare.vert/.frag), full
+        // resolution, additive, over the composite. Same compact list and descriptor set as the flare
+        // source (flareSourcePipeLayout); point sprites up to the device's maxPointSize.
+        VkShaderModule gv = ctx.loadShader("shaders/glare.vert.spv");
+        VkShaderModule gf = ctx.loadShader("shaders/glare.frag.spv");
+        VkPipelineShaderStageCreateInfo gst[2] = {};
+        gst[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, gv,
+                  "main", nullptr};
+        gst[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, gf,
+                  "main", nullptr};
+        VkPipelineInputAssemblyStateCreateInfo gia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        gia.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+        VkGraphicsPipelineCreateInfo gci = ci;
+        gci.pStages = gst;
+        gci.pInputAssemblyState = &gia;
+        gci.layout = flareSourcePipeLayout;
+        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &gci, nullptr, &glarePipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create glare pipeline");
+        vkDestroyShaderModule(ctx.device, gv, nullptr);
+        vkDestroyShaderModule(ctx.device, gf, nullptr);
     }
 }
 

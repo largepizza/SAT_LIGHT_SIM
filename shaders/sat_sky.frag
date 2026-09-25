@@ -1,4 +1,13 @@
 #version 450
+// SKY_ENV (-DSKY_ENV -> sat_sky_env.frag.spv, 2026-09-24): the same renderer seen from a SATELLITE —
+// the mesh reflection probes (SatEnvProbes: six cube faces per probe) and the model viewer's
+// background. The observer (pc.obsECEFDir, w = altitude) is the satellite; everything the frame
+// shares with the main view in SCREEN space is cut (the half-res cloud / depth / mesh targets, the
+// satellite sky-glow bins, ocean glints, beam ground spots), the flat cloud layers stand in for the
+// volumetric ones at full weight (what the main renderer draws from orbit anyway), the aurora gets
+// its own short march along the ray, the sun disc and lens flare are left out (a mesh's GGX sun lobe
+// is the glint), and the output is PRE-exposure HDR radiance: the post-tonemap terms (Milky Way,
+// zodiacal light, moon glow) are divided back by the exposure they were tuned against.
 
 // ── Camera + sun push constants (same layout as C++ SatDrawPC, 128 bytes) ─────
 // The pipeline layout declares VK_SHADER_STAGE_VERTEX_BIT|FRAGMENT_BIT so both
@@ -1341,6 +1350,47 @@ void evalCloudLayer(
 // C15-perf). main() below now samples cloudTargetA/cloudTargetB (bindings 10/11) instead
 // of calling these directly. See TERRAIN_PLAN.md session 23 log for the design.
 
+#ifdef SKY_ENV
+// The aurora along this ray: the main renderer marches it in cloud_march.comp (screen space), so the
+// env variant runs its own short march through the curtain shell with the same auroraSampleAt(),
+// the ocean reflection's recipe with more steps. Handles an observer above, inside or below the shell.
+vec3 envAurora(vec3 obsPos, vec3 dir, float tSurface, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirECEF)
+{
+    if (cloud.auroraGain <= 0.0) return vec3(0.0);
+    vec2 tOut = raySphere(obsPos, dir, R_EARTH + kAuroraShellOuterM);
+    if (tOut.y <= 0.0) return vec3(0.0);
+    vec2 tIn = raySphere(obsPos, dir, R_EARTH + kAuroraShellInnerM);
+    float obsR = length(obsPos);
+    float t0 = max(tOut.x, 0.0), t1 = tOut.y;
+    if (obsR > R_EARTH + kAuroraShellInnerM) {
+        if (tIn.x > 0.0) t1 = tIn.x;              // from above or inside: stop at the curtain base
+    } else if (tIn.y > 0.0) {
+        t0 = max(t0, tIn.y);                       // from below: start where the ray leaves the base
+    }
+    if (tSurface > 0.0) t1 = min(t1, tSurface);
+    if (t1 <= t0) return vec3(0.0);
+    const int N = 16;
+    float seg = (t1 - t0) / float(N);
+    vec3 acc = vec3(0.0);
+    for (int i = 0; i < N; ++i) {
+        vec3 rp = obsPos + dir * (t0 + (float(i) + 0.5) * seg);
+        acc += auroraSampleAt(rp, enuX, enuY, enuZ, sunDirECEF, pc.waveTime, cloud.stormStrength);
+    }
+    float ext = pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, 0.0, cloud.extinctionCoeff));
+    return acc * seg * kAuroraScale * cloud.auroraGain * ext;
+}
+
+// A direction in this (satellite's) ENU frame, in the MAIN observer's ENU frame — the frame of the
+// Milky Way and zodiacal bases (cloud.envMainObsDir).
+vec3 envMainEnuDir(vec3 d, vec3 enuX, vec3 enuY, vec3 enuZ)
+{
+    vec3 e = d.x * enuX + d.y * enuY + d.z * enuZ;
+    vec3 mX, mY, mZ;
+    enuBasis(cloud.envMainObsDir.xyz, mX, mY, mZ);
+    return vec3(dot(e, mX), dot(e, mY), dot(e, mZ));
+}
+#endif
+
 void main() {
     // Runtime-tunable scattering strength — shadows the physical base constants (common.glsl)
     // with the user-facing "Rayleigh gain"/"Mie/haze gain" sliders, visible to every use of
@@ -1509,6 +1559,11 @@ void main() {
     // every term gated on tSurface — sun and moon discs, Milky Way, stars via depth — is hidden
     // behind it, exactly as behind terrain. Indexed through normalized screen UV so the renderScale
     // prepass (a smaller target) reads the same texel.
+#ifdef SKY_ENV
+    const bool meshHit = false; // the mesh targets are the main view's; a probe sees no meshes
+    const float tMesh  = 0.0;
+    const ivec2 meshPx = ivec2(0);
+#else
     ivec2 meshTexSize = imageSize(meshDistImg);
     ivec2 meshPx  = min(ivec2(gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH) * vec2(meshTexSize)),
                         meshTexSize - 1);
@@ -1516,6 +1571,7 @@ void main() {
     bool  meshHit = tMesh > 0.0 && (tSurface <= 0.0 || tMesh < tSurface);
     if (meshHit)
         tSurface = tMesh;
+#endif
 
     // ── Half-resolution cloud composite sample (hoisted early) ─────────────────
     // Sampled here — ahead of the moon disc below — so the moon can be occluded by opaque
@@ -1523,6 +1579,15 @@ void main() {
     // composite (`color = color * cloudB.rgb + cloudA.rgb`) still applies later, after the
     // 2D flat cloud-layer overlay and satellite glow so those get attenuated too; this early
     // sample only reads the alpha channels needed for occlusion tests.
+#ifdef SKY_ENV
+    // No half-res cloud targets for another viewpoint: neutral composite (A adds nothing, B passes
+    // everything, no opaque-cloud distance, no ground shadow). The flat layers carry the clouds.
+    vec2  cloudUV        = vec2(0.0);
+    vec4  cloudACenter   = vec4(0.0, 0.0, 0.0, -1.0);
+    vec4  cloudBCenter   = vec4(1.0);
+    vec4  cloudA         = cloudACenter;
+    vec4  cloudB         = cloudBCenter;
+#else
     vec2  cloudUV        = gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH);
     vec4  cloudACenter   = texture(cloudTargetA, cloudUV);
     vec4  cloudBCenter   = texture(cloudTargetB, cloudUV);
@@ -1562,6 +1627,7 @@ void main() {
 #endif
     vec4  cloudA         = vec4(cloudARgb, cloudACenter.a);
     vec4  cloudB         = vec4(cloudBRgb, cloudBCenter.a);
+#endif
     float tCloudOcclude  = cloudA.a;
     // cloudB.a used to carry tEnterCombined, the fused entry distance this shader compared
     // against tSurface to suppress the whole composite. Every volumetric layer is now clamped to
@@ -1802,8 +1868,10 @@ void main() {
     // Reuses the SAME nightFactor just computed for city glow above — an accepted first-pass
     // simplification (an active beam's target is always night-side by construction, but this
     // doesn't separately check the OBSERVER's own day/night).
+#ifndef SKY_ENV
     color += vec3(1.0, 0.95, 0.9) * cloud.beamProximityGlow * cloud.beamGlowBleedGain * kBeamSkyGlowScale
            * nightFactor;
+#endif
 
     // ── Airglow (C15) ─────────────────────────────────────────────────────────
     // Green + sodium bands (accumAirglow) rode the N_VIEW loop above for free.
@@ -1912,7 +1980,7 @@ void main() {
     // slider behind it, so its share of the "sky background draw" bucket was previously
     // unmeasurable. Skipping just leaves `color` without the glow term, which is exactly what an
     // all-empty glowBuf already produces.
-#ifndef SKY_LITE   // Planetarium-tier variant: drop the 64-iteration satellite sky-glow loop
+#if !defined(SKY_LITE) && !defined(SKY_ENV)   // Planetarium-tier / env: drop the 64-iteration satellite sky-glow loop
     if ((cloud.dbgDisableMask & 65536u) == 0u) {
         const float TWO_PI = 6.28318530718;
         vec3  flareAttn = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
@@ -2000,6 +2068,7 @@ void main() {
         // widening this back out.
         const float kShadowBlurSpread = 1.7;
         float cloudShadowT = cloudBCenter.a;   // centre tap — already sampled above, don't re-fetch
+#ifndef SKY_ENV
         {
             vec2 shadowTexel = kShadowBlurSpread / vec2(textureSize(cloudTargetB, 0));
             for (int sy = -1; sy <= 1; ++sy)
@@ -2008,6 +2077,7 @@ void main() {
                         cloudShadowT += texture(cloudTargetB, cloudUV + vec2(sx, sy) * shadowTexel).a;
             cloudShadowT *= (1.0 / 9.0);
         }
+#endif
         directSun *= cloudShadowT;
         // Antimeridian seam fix: longitude wraps at ±PI so dFdx(uvSurf.x) jumps by ~1.0
         // across that boundary. The GPU would pick the highest mip level, blurring a
@@ -2418,6 +2488,7 @@ void main() {
                 // of this technique here, not introduced by the hoist.
                 float reflCloudOccl   = 1.0;
                 float reflTerrainOccl = 1.0;
+#ifndef SKY_ENV
                 vec3  reflCam = mat3(pc.skyView) * reflDir;
                 if (reflCam.z < -0.01) {
                     float tanHFRefl    = tan(pc.fovYRad * 0.5);
@@ -2426,6 +2497,7 @@ void main() {
                     reflCloudOccl   = dot(texture(cloudTargetB, reflScreenUV).rgb, vec3(1.0 / 3.0));
                     reflTerrainOccl = (texture(sceneDepthTex, reflScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
                 }
+#endif
 
                 // Aurora reflection: literally march the curtain shell along the REFLECTED ray
                 // instead of the camera ray — reuses the exact same auroraSampleAt() the primary
@@ -2563,6 +2635,7 @@ void main() {
             // (flare architecture overhaul), decoupled from the deleted per-pixel corona system.
             // Now also occlusion-aware (previously had NONE at all): sampled at each entry's own
             // screen position, the same technique already proven this session for the corona loop.
+#ifndef SKY_ENV
             {
                 uint fCount = min(oceanGlintBuf.oceanGlintCount, kOceanGlintMax);
                 float tanHFg = tan(pc.fovYRad * 0.5);
@@ -2585,6 +2658,7 @@ void main() {
                                * feCloudOccl * feTerrainOccl;
                 }
             }
+#endif
         }
 
         // ── Reflect-Orbital beam ground-spot (C12) ──────────────────────────────────────────
@@ -2597,6 +2671,7 @@ void main() {
         // see, just a lit patch of ground).
         // (Kept in SKY_LITE — the ground-spot loop is bounded by groundBeamCount and measured
         // cheap; beams are a wanted feature and run fine at the Planetarium tier.)
+#ifndef SKY_ENV   // the ground-beam list is in the MAIN observer's ENU frame
         if ((cloud.dbgDisableMask & 128u) == 0u) {
             const float kBeamGroundScale = 4e-8;
             // Normalized against the slider's default (0.05, see SatelliteSim.h) so existing
@@ -2644,6 +2719,7 @@ void main() {
                 surfColor += vec3(kBeamGroundScale * w * (footprint + core * 2.0) * skyGlowNorm);
             }
         }
+#endif
 
         color += surfColor * surfAttn;
     }
@@ -2676,7 +2752,11 @@ void main() {
         // The 3D->2D weight used to be computed here from observer altitude alone — one value for
         // the entire screen. It now lives inside evalCloudLayer, which knows this ray's own
         // distance to the shell; see the note there.
+#ifdef SKY_ENV
+        float volumetricPair = 0.0; // no volumetric pass for this viewpoint: every layer flat, full weight
+#else
         float volumetricPair = (li < 2) ? 1.0 : 0.0;
+#endif
         evalCloudLayer(
             obsPos, dir, tSurface, enuX, enuY, enuZ, sunDirECEF,
             odR_cam, odM_cam,
@@ -2735,15 +2815,27 @@ void main() {
     // opacity. No separate aurora term needed here; it is terrain-occluded at march time along
     // with everything else in the composite.
     color = color * cloudB.rgb + cloudA.rgb;
+#ifdef SKY_ENV
+    // From orbit the curtains are in front of every cloud deck: added on top.
+    color += envAurora(obsPos, dir, tSurface, enuX, enuY, enuZ, sunDirECEF);
+#endif
 
     // ── Auto-exposure tone mapping ─────────────────────────────────────────────
     float dayness  = clamp((sunDirENU.w + 0.2) / 1.2, 0.0, 1.0);
     float exposure = mix(EXPOSURE_NIGHT, EXPOSURE_DAY, pow(dayness, 0.4));
+#ifdef SKY_ENV
+    // HDR out: keep the radiance; the display-space terms below accumulate separately and are
+    // divided back by the exposure they were tuned against (linear at their small values).
+    vec3 envHdr = color;
+    color = vec3(0.0);
+    float nightAmt = 1.0 - clamp(dayness * 5.0, 0.0, 1.0);
+#else
     color = vec3(1.0) - exp(-exposure * color);
 
     // ── Night ambient floor ────────────────────────────────────────────────────
     float nightAmt = 1.0 - clamp(dayness * 5.0, 0.0, 1.0);
     color += vec3(0.0008, 0.001, 0.002) * nightAmt;
+#endif
 
     // ── Milky Way skybox ───────────────────────────────────────────────────────
     // Diffuse galactic-plane glow behind the discrete star catalog (star_point.vert/frag).
@@ -2768,7 +2860,11 @@ void main() {
         float nightFactorSky = clamp(-sunDirENU.w * 5.0, 0.0, 1.0);
         // cloud.skyGlareVisibility (CPU-eased sun-glare gate) replaces
         // the old flat 1.0 space target — matches the same replacement in CPU's updateStars().
+#ifdef SKY_ENV
+        float nightFactorEffSky = mix(1.0, nightFactorSky, atmFracSky); // no eye to dazzle
+#else
         float nightFactorEffSky = mix(cloud.skyGlareVisibility, nightFactorSky, atmFracSky);
+#endif
 
         // Moonlight suppression — same shape as CPU's moonBrightStar.
         float tm = clamp(moonDirENU.z / 0.5, 0.0, 1.0);
@@ -2790,14 +2886,22 @@ void main() {
         // cloud.mwSuppressEased, a single non-directional scalar derived from a MAX over all 16
         // sectors — so a city on one horizon suppressed the Milky Way everywhere, including the
         // darkest part of the sky opposite it. See darksky.glsl for the model.
+#ifdef SKY_ENV
+        float mwSkyBgMag = kSkyMagPristine; // the pollution dome is the main observer's
+#else
         float mwSkyBgMag = darkSkySkyMag(dir, sunDirENU);
+#endif
 
         // C12 follow-up #31: same suppression shape, second independent source — a nearby
         // Reflect-Orbital beam should wash out the Milky Way the same way real light pollution
         // does. beamGlowDome[] holds raw atomicMax'd uint bit-patterns (floatBitsToUint on the
         // write side in sat_orbit.comp) — reinterpret via uintBitsToFloat, unlike lightDome[].
         float beamDomeAz = mix(uintBitsToFloat(beamGlowDome[sec0w]), uintBitsToFloat(beamGlowDome[sec1w]), secFrac);
+#ifdef SKY_ENV
+        float beamDomeVal = 0.0 * beamDomeAz * elevFalloffMW;
+#else
         float beamDomeVal = clamp(beamDomeAz * elevFalloffMW, 0.0, 1.0);
+#endif
         const float kMWBeamPollutionMaxDim = 0.99;
 
         // Atmospheric extinction along THIS ray (atmosphere.glsl) — the same line-of-sight column
@@ -2819,12 +2923,21 @@ void main() {
         // sunset point (or, from orbit, toward wherever the Earth hides the sun) long after the
         // sun itself was fully Earth-occluded and no real glare could exist.
         float sunAngleMW = acos(clamp(dot(dir, sunDir), -1.0, 1.0));
+#ifdef SKY_ENV
+        float sunGlareSuppress = 1.0 + 0.0 * sunAngleMW;
+#else
         float sunGlareSuppress = (sunDirENU.w > limbZ) ? smoothstep(0.12, 0.5, sunAngleMW) : 1.0; // 0 within ~7deg, 1 beyond ~29deg or sun occluded
+#endif
 
         // Project the view ray into the galactic frame and sample the panorama.
-        vec3 dirGal = vec3(dot(dir, cloud.mwBasisRow0.xyz),
-                            dot(dir, cloud.mwBasisRow1.xyz),
-                            dot(dir, cloud.mwBasisRow2.xyz));
+#ifdef SKY_ENV
+        vec3 dirMw = envMainEnuDir(dir, enuX, enuY, enuZ);
+#else
+        vec3 dirMw = dir;
+#endif
+        vec3 dirGal = vec3(dot(dirMw, cloud.mwBasisRow0.xyz),
+                            dot(dirMw, cloud.mwBasisRow1.xyz),
+                            dot(dirMw, cloud.mwBasisRow2.xyz));
         float lonGal = atan(dirGal.y, dirGal.x);
         float latGal = asin(clamp(dirGal.z, -1.0, 1.0));
         vec2  mwUV   = vec2(0.5 + lonGal / (2.0 * PI), 0.5 + latGal / PI);
@@ -2893,7 +3006,11 @@ void main() {
     // convention this file already uses everywhere else.
     {
         float theta = acos(clamp(dot(dir, sunDir), -1.0, 1.0));
+#ifdef SKY_ENV
+        float beta  = asin(clamp(dot(envMainEnuDir(dir, enuX, enuY, enuZ), cloud.eclipticPoleENU.xyz), -1.0, 1.0));
+#else
         float beta  = asin(clamp(dot(dir, cloud.eclipticPoleENU.xyz), -1.0, 1.0));
+#endif
 
         // Main cone: innerFade clears the sun corona's own falloff (coronaSig maxes at ~0.08 rad
         // above), outerFade closes it out by cloud.zodiacalOuterFadeDeg. The ecliptic-latitude
@@ -2938,7 +3055,11 @@ void main() {
         // cloud.skyGlareVisibility, not pc.: this field moved into the CloudParams UBO when
         // SatDrawPC was trimmed to the 128-byte maxPushConstantsSize floor. The Milky Way
         // block above reads it the same way.
+#ifdef SKY_ENV
+        float nightFactorEffZ = mix(1.0, nightFactorSkyZ, atmFracSkyZ);
+#else
         float nightFactorEffZ = mix(cloud.skyGlareVisibility, nightFactorSkyZ, atmFracSkyZ);
+#endif
 
         float tmZ = clamp(moonDirENU.z / 0.5, 0.0, 1.0);
         float moonBrightZ = tmZ * tmZ * moonDirENU.w;
@@ -2961,7 +3082,11 @@ void main() {
         // correspondingly drops out one step earlier on the Bortle ladder here. Same 0.85 spread
         // as the Milky Way, for the same reason (a tuned artistic falloff, not a radiometric one,
         // and half of the contrast-stretch control — see darksky.glsl).
+#ifdef SKY_ENV
+        float zodSkyBgMag = kSkyMagPristine;
+#else
         float zodSkyBgMag = darkSkySkyMag(dir, sunDirENU);
+#endif
 
         const float kZodRefLum    = 0.01;
         const float kZodRefMag    = 21.6;
@@ -3005,6 +3130,10 @@ void main() {
         color += hClip * moonFade * halo * vec3(0.88, 0.90, 1.00) * moonIllum * 0.012 * atmosWeight;
     }
 
+#ifdef SKY_ENV
+    // No sun disc or lens flare (the mesh's GGX sun lobe is the glint) and no depth attachment.
+    outColor = vec4(max(envHdr + color / exposure, vec3(0.0)), 1.0);
+#else
     // ── Sun disc + atmospheric corona ─────────────────────────────────────────
     if (sunDirENU.w > limbZ - 0.1) {
         float angle      = acos(clamp(cosA, -1.0, 1.0));
@@ -3122,4 +3251,5 @@ void main() {
     if (tOcclude < 0.0 && tCloudOcclude >= 0.0) tOcclude = tCloudOcclude;
     if (meshHit) tOcclude = (tOcclude >= 0.0) ? min(tOcclude, tMesh) : tMesh;
     gl_FragDepth = (tOcclude >= 0.0) ? sceneDepthFromDistance(tOcclude) : 1.0;
+#endif
 }

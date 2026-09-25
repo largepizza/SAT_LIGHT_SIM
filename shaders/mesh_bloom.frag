@@ -7,7 +7,9 @@
 // is: across the hand-off a flare keeps its punch, and on a large model the glow sits on the glint.
 
 layout(set = 0, binding = 0, rgba32f) uniform readonly image2D meshColorImg; // rgb radiance, a = slot + 1
-struct MeshInstanceBloom { vec4 pad[20]; uint firstMaterial, firstOccluder, occluderCount; float bloomScale; uvec4 tail; };
+// Stride must equal GpuMeshInstance (432 B, SatMeshRenderer.h): the earthshine SH block was appended
+// 2026-09-24 — this struct must grow with it or every instance past the first reads the wrong one.
+struct MeshInstanceBloom { vec4 pad[20]; uint firstMaterial, firstOccluder, occluderCount; float bloomScale; uvec4 tail; vec4 earthSh[5]; };
 layout(set = 0, binding = 1, std430) readonly buffer MeshInstances { MeshInstanceBloom instances[]; };
 layout(push_constant) uniform PC {
     float exposure; // unused (kept for the layout)

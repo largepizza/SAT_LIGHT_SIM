@@ -14,7 +14,8 @@
 #include "SatPhotometry.h" // earthshine table axes (satTypeBuf layout)
 #include "SatTrace.h"      // magnitude trace + CSV export (benchmarking M9)
 #include "SatBench.h"      // shared sample schema + bulk export (benchmarking M10)
-#include "SatMeshRenderer.h" // Phase 4: satellite meshes (model viewer; scene pass in 4c)
+#include "SatMeshRenderer.h"
+#include "SatEnvProbes.h" // Phase 4: satellite meshes (model viewer; scene pass in 4c)
 #include <memory>
 
 // Forward declaration only — savePerfSnapshot/buildPerfSnapshotJson are the sole users and both
@@ -809,6 +810,19 @@ static_assert(sizeof(GpuOceanGlintBuf) == 16 + kMaxOceanGlints * 16, "GpuOceanGl
 // in sat_sky.frag UNCHANGED — "lens elements" (ghosts, chromatic streaks) stay sun-only, per
 // explicit user decision; it ALSO becomes one bright point in this new pipeline, so it gains real
 // godray shafts through cloud/terrain gaps on top of its existing hand-authored treatment.
+// glare.vert/.frag push constants (drawn with flareSourcePipeLayout, whose range is FlareSourcePC's).
+struct GlarePC
+{
+    glm::mat4 skyView;
+    float fovYRad, aspect;
+    float gain;       // glareGain × the night eye-adaptation
+    float sizePx;     // glareSizePx
+    glm::vec2 screenSizePx;
+    float maxPointSize;
+    float threshold;
+};
+static_assert(sizeof(GlarePC) == 96, "GlarePC layout (glare.vert)");
+
 struct FlareSourcePC
 {
     glm::mat4 skyView;        // offset 0
@@ -1342,8 +1356,11 @@ struct GpuCloudParams
                                  // (sat_sky.frag). Claimed the alignment pad this block was
                                  // appended with — a real float either way, so the 16-byte
                                  // rounding it exists for is unchanged.
+    // ── Environment probes (576 -> 592) — see cloud_params.glsl ─────────────────────────────
+    glm::vec4 envMainObsDir; // xyz = the main observer's ECEF up (obsDir): the ENU frame the Milky
+                             // Way / zodiacal bases are in, for sat_sky.frag's SKY_ENV variant
 };
-static_assert(sizeof(GpuCloudParams) == 576, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 592, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -1728,13 +1745,23 @@ private:
     bool viewerDragging = false;
     uint32_t viewerImageId = 0;
     UIImage viewerImage;
-    bool hovViewerClose = false, hovViewerBtn[8] = {}, hovSelViewBtn = false;
+    bool hovViewerClose = false, hovViewerBtn[10] = {}, hovSelViewBtn = false;
     // Photometric check: sun-only render integrated on the CPU vs evalSatLobesPosed() (see
     // recordModelViewer). Requested by the button, recorded in recordCompute, read the next buildUI.
     bool viewerCheckRequested = false, viewerCheckAwaiting = false;
     double viewerCheckModelI = 0.0, viewerCheckTanHalf = 0.0, viewerCheckPhaseDeg = 0.0;
     char viewerCheckLine[200] = {};
     std::vector<bool> hovViewConst;
+    // Viewer camera presets: 0 free orbit; 1 "from you" — on the line from the satellite toward the
+    // observer, so the view is the satellite as you see it; 2 "toward you" — behind the satellite,
+    // looking past it at your marker on the Earth.
+    int viewerAim = 0;
+    int viewerLastSelected = -1; // the selection when the viewer last took it (it follows CHANGES only)
+    uint32_t viewerBgW = 0, viewerBgH = 0; // the HDR background's size (SatEnvProbes::ensureViewerBg)
+    uint64_t viewerProbeFrame = 0;
+    // A real satellite of constellation `constIdx` to show: the one highest in the observer's sky
+    // (or, if none is up, the nearest) — so the constellation row's VIEW shows a satellite where it is.
+    int pickViewerSatellite(int constIdx) const;
     void openModelViewer(int typeIdx, const char *label, float altM, int satIndex = -1);
     void buildViewButton(const UIInput &inp, UIRenderer &ui, int idx); // "View model" in the selection UI
     void buildModelViewerWindow(const UIInput &inp, UIRenderer &ui);
@@ -1775,6 +1802,38 @@ private:
     void updateSelectedSkyDir();
     float meshSceneFade = 0.0f;   // its fade
     void recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx);
+
+    // ── Environment probes: full-renderer reflections + ambient on meshes (2026-09-24) ───────────
+    // SatEnvProbes renders sat_sky.frag (-DSKY_ENV) as six cube faces around a satellite: the mesh
+    // shader reflects that and takes its SH irradiance as diffuse light, so a mirror shows the real
+    // Earth, clouds, aurora and Milky Way, and an edge-on face is lit by the Earth it sees. Slot 0 is
+    // the model viewer's (refreshed every other frame while it is open, Live light); scene instances
+    // share the rest: an instance uses the nearest probe within max(20 km, 2% of its altitude), else
+    // takes the least recently used slot; kEnvRendersPerFrame probes are (re)rendered per frame, new
+    // ones first, then the one that has drifted furthest from its instance. Until its probe exists an
+    // instance falls back to earth_env.glsl + the photometric earthshine.
+    SatEnvProbes envProbes;
+    bool envReflections = true; // Settings → Display "Full-renderer reflections" (off = the analytic fallback)
+    static constexpr int kEnvRendersPerFrame = 1;
+    struct EnvProbeSlot
+    {
+        bool rendered = false;
+        glm::dvec3 posEcef{0.0};  // where it was rendered
+        glm::dvec3 wantEcef{0.0}; // where its instances are now
+        uint64_t lastUsed = 0;    // envFrame it was last assigned
+        bool wanted = false;      // assigned this frame
+        double renderedWall = 0.0; // glfwGetTime() of the last render
+    };
+    EnvProbeSlot envSlots[SatEnvProbes::kProbes];
+    uint64_t envFrame = 0;
+    bool envActive() const;
+    // The sky's push constants for the env renderer at posEcef, camera rotation camToEcef (sky camera
+    // space → ECEF axes).
+    SatDrawPC envSkyPC(const glm::dvec3 &posEcef, const glm::dmat3 &camToEcef, float fovYRad, float aspect) const;
+    void renderEnvProbe(VkCommandBuffer cmd, int slot, const glm::dvec3 &posEcef);
+    // Picks (and schedules) a scene probe for an instance at posEcef; kNoProbe until rendered.
+    uint32_t assignEnvProbe(const glm::dvec3 &posEcef);
+    void renderScheduledEnvProbes(VkCommandBuffer cmd);
     void writeMeshSceneDescriptors(VulkanContext &ctx); // sky 22/23, scene_depth 3 (init + resize)
     float skyExposure() const; // sat_sky.frag's exposure for this frame (bloom threshold)
 
@@ -2433,6 +2492,7 @@ private:
     VkDescriptorSet flareCompositeDescSet = VK_NULL_HANDLE;
     VkPipelineLayout flareCompositePipeLayout = VK_NULL_HANDLE;
     VkPipeline flareCompositePipeline = VK_NULL_HANDLE;
+    VkPipeline glarePipeline = VK_NULL_HANDLE; // per-satellite glare sprites (main pass)
     // Ocean-glint list (see GpuOceanGlintBuf) — device-local, zeroed every frame like glowBuf.
     VkBuffer oceanGlintBuf = VK_NULL_HANDLE;
     VkDeviceMemory oceanGlintMem = VK_NULL_HANDLE;
@@ -2442,6 +2502,12 @@ private:
                                         // UI slider's actual [0, 0.01] range (SatelliteSimUI.cpp),
                                         // so a fresh settings.json (or any older save predating
                                         // this key) booted the flare glow fully maxed out
+    // Per-satellite glare sprites (glare.vert/.frag, 2026-09-24): a sharp core, the sun's corona-style
+    // rays and, for the brightest, an anamorphic streak, at full resolution over the broad bloom.
+    // Threshold is in the bloom's log response (0 at effectFlare 1 ~ mag 0.8, 4 at its cap).
+    float glareGain = 1.0f;
+    float glareSizePx = 48.0f;   // sprite radius per unit of response past the threshold
+    float glareThreshold = 0.3f;
     float flareStreakGain = 0.35f;      // per-tap streak/godray strength (flare_blur.comp mode=2)
     float sunFlareRefIntensity = 40.0f; // fixed reference brightness for the sun's virtual point
                                         // in the flare-source buffer — NOT a slider (kept small in
@@ -3383,12 +3449,12 @@ private:
     // Sized 11, not 9 — flare_glow_gain/flare_streak_gain (flare architecture overhaul) added two
     // more PhotoParam rows; per [[feedback_cloud_slider_arrays]], all three hover/dragging arrays
     // must grow together with any new slider id.
-    bool hovPhotoMinus[28] = {}; // 15 existing photometry params + 2 trail sliders (Trail decay/gain)
+    bool hovPhotoMinus[31] = {}; // 15 existing photometry params + 2 trail sliders (Trail decay/gain)
                                  // + flare-mitigation tilt + the four dark-sky mags (2026-09-08)
                                  // + 1 flare-mitigation tilt (idx 17) + the five point-model
                                  // sliders (idx 22-26, 2026-09-23)
-    bool hovPhotoPlus[28] = {};
-    bool draggingPhoto[28] = {};
+    bool hovPhotoPlus[31] = {};
+    bool draggingPhoto[31] = {};
     bool hovCloudMinus[91] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08)
     bool hovCloudPlus[91] = {};
@@ -3447,7 +3513,7 @@ private:
     // a cinematic that didn't exist in their version — see loadSettings().
     bool playIntroOnStartup = true;
     bool hovPlayIntroStartup = false;
-    bool hovSatOcclusionChk = false;
+    bool hovSatOcclusionChk = false, hovEnvReflChk = false;
 
     // ── Private helpers ───────────────────────────────────────────────────────
     // NEW-7: pushes fpsCapMode's present-mode requirement into VulkanContext and flags App to

@@ -15,6 +15,9 @@ layout(set = 0, binding = 0, std140) uniform MeshFrame {
     vec4 earthCenter; // xyz world position of Earth's centre, w = Earth rotation angle (cloud drift)
     vec4 params;      // x = self-shadows on, y = env reflections on, z = procedural detail on,
                       // w = 1: photometric-check output (sun only, scalar, L·d² — see sat_mesh.frag)
+    vec4 marker0;     // model viewer background: the observer's world position, w = 1 to draw
+    vec4 marker1;     // a ground-site mirror's current target, w = 1 to draw
+    vec4 bgParams;    // x = 1: the HDR background (SatEnvProbes) is valid, y = marker radius px, z = viewport px
 } frame;
 
 struct MeshInstance {
@@ -29,7 +32,8 @@ struct MeshInstance {
     uint occluderCount;
     float bloomScale;   // scene: bloom seed per unit of rendered luminance (mesh_bloom.frag)
     uint firstComponent; // into components[] (per-component joint pivots)
-    uint cpad0, cpad1, cpad2;
+    uint probeSlot;      // environment probe lighting it (set 1 is that probe), 0xFFFFFFFF = none
+    uint cpad1, cpad2;
     vec4 earthX;   // earthshine SH frame: xyz = the Sun's side perpendicular to nadir, w = sh0
     vec4 earthZ;   // xyz = nadir, w = sh1
     vec4 earthShA; // sh2..sh5 (SatEarthLight — diffuse = max(SH(n), vector irradiance))

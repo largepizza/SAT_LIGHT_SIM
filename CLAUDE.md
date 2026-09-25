@@ -94,6 +94,7 @@ has access to is answerable. Current margins:
 | `maxImageDimension2D` | 4096 | **14999** | `earth_elevation.png` is 14999×7500 (GCN1/Metal cap is 16384 — little headroom) |
 | `maxImageDimension3D` | 256 | **1024** | `aurora_noise.comp` bakes a 1024×16×256 volume |
 | `maxComputeWorkGroupInvocations` | 128 | **256** | `local_size 16×16` in cloud_march / scene_depth / flare_blur |
+| `pointSizeRange[1]` | 64 (with `largePoints`) | up to 1024 | glare sprites (`glare.vert`) clamp to it — smaller on weak parts |
 | `maxComputeSharedMemorySize` | 16 KB | ~5.2 KB | tile-cull lists — comfortable |
 | `maxPerStageDescriptorStorageBuffers` | 4 | **11** | `sat_orbit.comp`'s set (the check said 6, for `sat_sky.frag`, long after this set passed it — corrected 2026-09-23 with the occlusion buffers); MoltenVK is the realistic place to hit it, since it maps SSBOs + UBOs + vertex buffers into Metal's 31 per-stage buffer slots |
 | `maxPerStageDescriptorSampledImages` | 16 | 15 | `sat_sky.frag` — one binding from the floor |
@@ -616,16 +617,41 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     Lambertian face = albedo × cos). The BRDF is the photometry's GGX/Beckmann · Schlick · Smith
     with `SUN_ALPHA` folded in, so a render's pixel sum reproduces the lobe model.
   - **Lighting:** the sun × litFactor, shadowed per pixel by the model's own primitives (the
-    photometry's rule: a primitive never shadows its own surface); earthshine diffuse from
-    `earthshineLookup()`, computed per instance on the CPU; moonlight at `moonGain` (terrain's
-    scale).
-  - **Reflections:** the reflected ray goes into `earthEnv()`, the Potato sky's analytic atmosphere,
-    textured ground and flat cloud deck, rewritten in ECEF from any origin and scaled by
+    photometry's rule: a primitive never shadows its own surface); earthshine diffuse from the whole
+    lit cap (`SatEarthLight`, per instance on the CPU) — or, with an environment probe, the probe's
+    SH irradiance; moonlight at `moonGain` (terrain's scale).
+  - **Environment probes = the full renderer's reflections and ambient (2026-09-24,
+    `SatEnvProbes.h/.cpp`).** `sat_sky.frag` compiled with `-DSKY_ENV` (`sat_sky_env.frag.spv`)
+    renders the sky from a SATELLITE's position (`pc.obsECEFDir` = its direction, w = its altitude):
+    everything screen-space is cut (half-res cloud / depth / mesh targets, the sky-glow bins, ocean
+    glints, beam ground spots), the flat cloud layers draw at full weight, the aurora gets a 16-step
+    march of its own (`envAurora`), the sun disc and lens flare are left out, the Milky Way and
+    zodiacal bases are turned from the main observer's ENU frame (`CloudParams::envMainObsDir`), and
+    the output is pre-exposure HDR (post-tonemap terms divided back by their exposure). A probe is
+    six 128² faces of that around one position (`faceCamToWorld`, checked against Vulkan's cube-face
+    rule at init), a box mip chain, and an order-2 SH irradiance (`env_probe_sh.comp`, 1024
+    Fibonacci directions). `sat_mesh.frag` reflects the probe (a mip whose texel spans ~2α) and
+    takes its SH as diffuse light; the photometric earthshine still feeds the bloom normalisation.
+    Each probe is its own cube image and descriptor set (pipeline set 1, bound per draw — no
+    cube-array feature). Slot 0 is the model viewer's; scene instances share slots 1-7: the nearest
+    probe within max(20 km, 2% of altitude), else the least recently used slot;
+    `kEnvRendersPerFrame` (1) re-renders per frame, new probes first, then the most drifted (> max(2
+    km, 0.2% alt)), then any older than 3 s. Until its probe exists an instance falls back to
+    `earth_env.glsl` + the photometric earthshine. Off under Potato, the mesh knockout, or Settings →
+    Photometry "Full-renderer reflections" (`envReflections`, `photometry.full_renderer_reflections`).
+  - **Fallback reflections:** the reflected ray goes into `earthEnv()`, the Potato sky's analytic
+    atmosphere, textured ground and flat cloud deck, rewritten in ECEF from any origin and scaled by
     `kEnvToScene` into pre-exposure units. The sun disc is not in it; the GGX sun lobe is the glint.
-  - **The viewer:** "VIEW" on a constellation row opens it with the model placed at its altitude
-    above the observer; "View model" beside "Trace pass" opens it TRACKING that satellite — its real
-    position, velocity and attitude at the sim time (`satOrbitStateAt` + `evalGroupPoses`, in ECEF),
-    so Live lighting and the Earth below are what that satellite has now.
+  - **The viewer:** always a REAL satellite where it is now: "View model" beside "Trace pass" tracks
+    the selection; "VIEW" on a constellation row picks that constellation's satellite highest in the
+    observer's sky (`pickViewerSatellite`). Position, velocity and attitude come from
+    `satOrbitStateAt` + `evalGroupPoses` in ECEF. With Live light its background is the SKY_ENV
+    renderer at the viewer's own camera (`SatEnvProbes::recordViewerBg`, an HDR target
+    `sat_mesh_bg.frag` samples and tonemaps) and its reflections come from probe slot 0; Studio light
+    keeps `earth_env`. Markers: the observer (cyan dot + a dashed line from the satellite) and, for a
+    ground-site mirror, its current site (orange). Camera presets: Free / From you (on the line to
+    the observer: the side it shows you) / Toward you (behind it, 12° above the line, your marker
+    beneath it). It follows the selection only when the selection CHANGES (`viewerLastSelected`).
   - **Diffuse transmission (Phase 4f)**, `SatMaterial::transmission` / `transmission_color`
     (presets `solar_cell_flex`, `solar_array_flex_back`: ISS-style arrays on a Kapton blanket).
     Light on the far side of a face leaves this side diffusely: `T/π·diffArea·(−n·s)₊(n·o)₊`. That
@@ -718,8 +744,7 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     to the altitude above sea level), and `updatePositions()` uses `followRadiusM`. WASD/Q-E move
     the offset (speed ∝ distance); RMB look unlocks the aim lock. Settings persist the ground
     observer, not the orbit.
-  - **Reflections in the scene** still use `earth_env.glsl`. The user requires the full renderer's
-    (airglow, aurora, Moon, Milky Way); that is 4c part 2.
+  - **Reflections in the scene** come from the environment probes above (4c part 2, 2026-09-24).
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, `iss.json` (the first parity model: 50 components; station
   root, TRRJ radiators edge-on, SARJ alpha, one beta group with four mast pivots; 8 legacy Kapton
@@ -1573,6 +1598,17 @@ bound as `descSet` binding 11 and `starDescLayout` binding 5. Until this, satell
 log-sized sprite with a range term) and stars (sqrt core, sqrt-sized sprite) had separately tuned
 curves: a mag-3 satellite drew about as bright as a mag −2 star (Jupiter), a mag-5 satellite ~13× a
 mag-5 star. Not unified yet: the bloom/corona (`flare_source`) exists for satellites and the Sun only.
+
+**Bloom and glare (2026-09-24).** The bloom (`flare_source` → `flare_blur` → `flare_composite`) is a
+quarter-resolution BROAD glow; its last pass was a six-spoke streak, which turned a single bright
+glint into a soft six-pointed blob, and is now a round Gaussian halo (16 directions, "Flare
+streak" still scales it). The sharp part is `glare.vert/.frag`: a full-resolution point sprite per
+satellite past `glareThreshold` in the bloom's log response, drawn after the composite with the
+flare source's descriptor set — the sun's corona built the way `lensFlare()`'s f0 is (a Lorentzian
+1/(1 + 1.1·r) whose angular profile a smooth noise of the angle modulates ~20x: thin rays with dark
+gaps), one ray pattern for every source (an aperture's), a thin horizontal anamorphic streak past a
+brighter threshold, occlusion tested at the source's screen position. Photometry sliders "Glare
+gain / size (px) / threshold" (`photometry.glare_*`).
 
 `dayBright`/`moonBright` are elevation-ramp scalars (squared linear, sun/moon dot observer-zenith)
 computed once per frame — **uniform across the sky, not per-satellite-direction**. This is an

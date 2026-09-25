@@ -1407,7 +1407,7 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
         return;
     // A viewer tracking a satellite follows the selection (as the magnitude trace does), when the
     // newly selected satellite has a model.
-    if (viewerSatIndex >= 0 && selectedSatIndex >= 0 && selectedSatIndex != viewerSatIndex &&
+    if (selectedSatIndex >= 0 && selectedSatIndex != viewerLastSelected && selectedSatIndex != viewerSatIndex &&
         selectedSatIndex < (int)satOrbits.size() && meshRenderer.typeMesh((int)satOrbits[selectedSatIndex].typeIdx))
     {
         const SatOrbit &orb = satOrbits[selectedSatIndex];
@@ -1425,6 +1425,13 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
     const uint32_t tw = imgData.found ? (uint32_t)std::max(16.0f, imgData.boundingBox.width) : 480u;
     const uint32_t th = imgData.found ? (uint32_t)std::max(16.0f, imgData.boundingBox.height) : 360u;
     const bool recreated = meshRenderer.ensureViewerTarget(*ctx_, tw, th);
+    if (envProbes.ready())
+    {
+        if (envProbes.ensureViewerBg(*ctx_, tw, th))
+            meshRenderer.setViewerBackground(envProbes.viewerBgView(), envProbes.sampler());
+        viewerBgW = tw;
+        viewerBgH = th;
+    }
     if (viewerImageId == 0)
         viewerImageId = ui.registerImage(ctx_->device, meshRenderer.viewerView(), meshRenderer.viewerSampler());
     else if (recreated)
@@ -1438,7 +1445,10 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                          inp.mouseY >= imgData.boundingBox.y &&
                          inp.mouseY < imgData.boundingBox.y + imgData.boundingBox.height;
     if (overImg && inp.lmbPressed && !viewerChrome.dragging && viewerChrome.resizeEdge == kResizeNone)
+    {
         viewerDragging = true;
+        viewerAim = 0; // taking the camera ends a preset (it continues from where the preset left it)
+    }
     if (!inp.lmbDown)
         viewerDragging = false;
     if (viewerDragging)
@@ -1446,7 +1456,7 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
         viewerYawDeg -= inp.dMouseX * 0.4f;
         viewerPitchDeg = glm::clamp(viewerPitchDeg + inp.dMouseY * 0.3f, -85.0f, 85.0f);
     }
-    else if (viewerSpin)
+    else if (viewerSpin && viewerAim == 0)
         viewerYawDeg += 8.0f * inp.dt;
     if (overImg && inp.scrollY != 0.0f && viewerDist > 0.0f)
         viewerDist *= powf(0.88f, inp.scrollY);
@@ -1558,7 +1568,14 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                         viewerDist = 0.0f;
                         viewerYawDeg = 35.0f;
                         viewerPitchDeg = 18.0f;
+                        viewerAim = 0;
                     }
+                    static const char *kAimLabels[3] = {"Camera: Free", "Camera: From you", "Camera: Toward you"};
+                    if (button(8, kAimLabels[viewerAim],
+                               "Free: drag to orbit. From you: on the line from the satellite to you, so you see "
+                               "the side of it that faces you. Toward you: behind it, looking past it at your "
+                               "marker (cyan) on the Earth. Dragging returns to Free"))
+                        viewerAim = (viewerAim + 1) % 3;
                 });
                 buttonRow(1, [&]()
                 {
@@ -1566,7 +1583,8 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                                "Parts shadow each other (the model's own primitives, as the photometry's occlusion)"))
                         viewerShadows = !viewerShadows;
                     if (button(4, viewerReflections ? "Reflect: ON" : "Reflect: OFF",
-                               "Surfaces reflect the Earth, atmosphere and clouds below"))
+                               "Surfaces reflect what the sky renderer draws around the satellite (Live light): "
+                               "the Earth, clouds, city lights, aurora and the Milky Way"))
                         viewerReflections = !viewerReflections;
                     if (button(7, viewerDetail ? "Detail: ON" : "Detail: OFF",
                                "Procedural surface detail: solar-cell and module gaps, foil crinkle and quilting, "
@@ -1579,7 +1597,7 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                 });
                 if (viewerCheckLine[0])
                     text(viewerCheckLine, Pal::textDim, 11);
-                text("Drag to orbit, scroll to zoom", Pal::textHint, 11);
+                text("Drag to orbit, scroll to zoom. Cyan: you; orange: a mirror's ground site", Pal::textHint, 11);
             }
         });
 }
@@ -2029,11 +2047,12 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                     {
                         sndRollover(n, hovView);
                         sndClick(n, inp.lmbPressed);
-                        if (n && inp.lmbPressed)
-                            openModelViewer((int)c.typeIdx, c.name.c_str(), c.altM);
+                        if (n && inp.lmbPressed) // a real satellite of it, where it is now
+                            openModelViewer((int)c.typeIdx, c.name.c_str(), c.altM, pickViewerSatellite((int)ci));
                     }
                     hovViewConst[ci] = n;
-                    ui.tooltip(inp, n, hasMesh ? "View this constellation's satellite model in 3D"
+                    ui.tooltip(inp, n, hasMesh ? "View one of this constellation's satellites in 3D where it is now (the one "
+                                                 "highest in your sky), with the Earth beneath it and you marked on it"
                                                : "No 3D model: this type uses the legacy two-surface model", fs(11));
                     CLAY_TEXT(CLAY_STRING("VIEW"), CLAY_TEXT_CONFIG({.textColor = hasMesh ? Pal::textPrimary : Pal::textHint,
                                                                    .fontSize = fs(10)}));
@@ -3226,7 +3245,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[28][12];
+    static char photoBufs[31][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -3283,6 +3302,11 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         // Zoom optics (SatelliteSim.h, opticsGainMag): zooming in gathers light like a telescope
         // whose aperture grows with magnification up to this; 7 mm = naked eye (no gain).
         {"Zoom aperture max (mm)", &zoomApertureMaxMm, 7.0f, 1000.0f, 1.0f, "%.0f", 27},
+        // Per-satellite glare sprites (glare.vert/.frag): sharp rays + an anamorphic streak on the
+        // brightest glints, over the broad "Flare" bloom above.
+        {"Glare gain", &glareGain, 0.0f, 4.0f, 0.05f, "%.2f", 28},
+        {"Glare size (px)", &glareSizePx, 4.0f, 200.0f, 2.0f, "%.0f", 29},
+        {"Glare threshold", &glareThreshold, 0.0f, 3.5f, 0.05f, "%.2f", 30},
     };
     for (auto &pp : photoParams)
     {
@@ -3399,6 +3423,40 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
                 satPartOcclusion = !satPartOcclusion;
             ui.tooltip(inp, n, "Parts of a modelled satellite shadow and hide each other (costly at millions of satellites)", fs(11));
             CLAY_TEXT(satPartOcclusion ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+        }
+    }
+    // Environment probes for satellite meshes (SatEnvProbes): the full sky renderer around each
+    // satellite drawn as a model, for its reflections and the Earth light on its sides.
+    CLAY(CLAY_ID("EnvReflRow"), {.layout = {
+                                     .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                     .padding = {4, 4, 4, 4},
+                                     .childGap = 8,
+                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Full-renderer reflections"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+        CLAY(CLAY_ID("EnvReflSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+        Clay_Color chkBg = envReflections ? Pal::btnAccent : (hovEnvReflChk ? Pal::btnHover : Pal::btnIdle);
+        CLAY(CLAY_ID("EnvReflChk"), {.layout = {
+                                         .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                     .backgroundColor = chkBg,
+                                     .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovEnvReflChk);
+            sndClick(n, inp.lmbPressed);
+            hovEnvReflChk = n;
+            if (n && inp.lmbPressed)
+                envReflections = !envReflections;
+            ui.tooltip(inp, n,
+                       "Satellite models reflect, and are lit by, what the full sky renderer draws around them - "
+                       "the Earth with its clouds, oceans and city lights, the aurora, the Moon and the Milky Way. "
+                       "Off: a simpler analytic Earth (cheaper). The model viewer uses it for its background too",
+                       fs(11));
+            CLAY_TEXT(envReflections ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
                       CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
         }
     }
@@ -4838,6 +4896,9 @@ void SatelliteSim::loadSettings()
         sunlitBgVisibility = p.value("sunlit_bg_visibility", sunlitBgVisibility);
         flareGlowGain = p.value("flare_glow_gain", flareGlowGain);
         flareStreakGain = p.value("flare_streak_gain", flareStreakGain);
+        glareGain = p.value("glare_gain", glareGain);
+        glareSizePx = p.value("glare_size_px", glareSizePx);
+        glareThreshold = p.value("glare_threshold", glareThreshold);
         mwPollutionThresholdLo = p.value("mw_pollution_threshold_lo", mwPollutionThresholdLo);
         mwPollutionThresholdHi = p.value("mw_pollution_threshold_hi", mwPollutionThresholdHi);
         darkSkyCityMag = p.value("dark_sky_city_mag", darkSkyCityMag);
@@ -4850,6 +4911,7 @@ void SatelliteSim::loadSettings()
         trailCompositeGain = p.value("trail_composite_gain", trailCompositeGain);
         flareMitigationTiltDeg = p.value("flare_mitigation_tilt_deg", flareMitigationTiltDeg);
         satPartOcclusion = p.value("sat_part_occlusion", satPartOcclusion);
+        envReflections = p.value("full_renderer_reflections", envReflections);
     }
 
     if (j.contains("display"))
@@ -5157,6 +5219,9 @@ void SatelliteSim::saveSettings()
         {"sunlit_bg_visibility", sunlitBgVisibility},
         {"flare_glow_gain", flareGlowGain},
         {"flare_streak_gain", flareStreakGain},
+        {"glare_gain", glareGain},
+        {"glare_size_px", glareSizePx},
+        {"glare_threshold", glareThreshold},
         {"mw_pollution_threshold_lo", mwPollutionThresholdLo},
         {"mw_pollution_threshold_hi", mwPollutionThresholdHi},
         {"dark_sky_city_mag", darkSkyCityMag},
@@ -5168,7 +5233,8 @@ void SatelliteSim::saveSettings()
         {"trail_decay_seconds", trailDecaySeconds},
         {"trail_composite_gain", trailCompositeGain},
         {"flare_mitigation_tilt_deg", flareMitigationTiltDeg},
-        {"sat_part_occlusion", satPartOcclusion}};
+        {"sat_part_occlusion", satPartOcclusion},
+        {"full_renderer_reflections", envReflections}};
 
     j["display"] = {
         {"ui_scale", uiScale},

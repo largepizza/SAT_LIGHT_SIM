@@ -364,4 +364,11 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
                                  // (sat_sky.frag). Claimed the alignment pad this block was
                                  // appended with — a real float either way, so the 16-byte
                                  // rounding it exists for is unchanged.
+    // -- Environment probes (576 -> 592) ------------------------------------------------------------
+    // sat_sky.frag built with -DSKY_ENV renders the sky from a SATELLITE's position (the reflection
+    // probes and the model viewer's background), whose ENU frame is not the observer's. The Milky
+    // Way and zodiacal bases above are in the MAIN observer's ENU frame, so the env variant needs
+    // that frame to turn its own directions into it: xyz = the main observer's ECEF up (obsDir),
+    // w unused.
+    vec4  envMainObsDir;
 } cloud;

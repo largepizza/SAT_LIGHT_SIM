@@ -29,8 +29,14 @@ struct GpuMeshFrame
     glm::vec4 earthCenter; // xyz, w = Earth rotation angle (cloud drift)
     glm::vec4 params;      // x = self-shadows, y = reflections, z = procedural detail,
                            // w = output mode: 0 viewer (tonemapped), 1 photometric check, 2 scene (HDR + distance)
+    // Model viewer background only (sat_mesh_bg.frag): markers on the Earth, world positions
+    // relative to the frame origin; w = 1 to draw. 0 = the observer, 1 = a mirror's ground site.
+    glm::vec4 marker0;
+    glm::vec4 marker1;
+    glm::vec4 bgParams; // x = 1: the HDR background (SatEnvProbes) is valid, y = marker radius (px),
+                        // z = viewport height (px)
 };
-static_assert(sizeof(GpuMeshFrame) == 208, "GpuMeshFrame layout (sat_mesh_common.glsl)");
+static_assert(sizeof(GpuMeshFrame) == 256, "GpuMeshFrame layout (sat_mesh_common.glsl)");
 
 // std430 mirror of sat_mesh_common.glsl's MeshInstance.
 struct GpuMeshInstance
@@ -46,7 +52,9 @@ struct GpuMeshInstance
     uint32_t occluderCount;
     float bloomScale; // scene: bloom seed per unit of rendered luminance (energy-matched to the sprite)
     uint32_t firstComponent; // Phase 4f: into the per-component pivot buffer (binding 7)
-    uint32_t cpad0, cpad1, cpad2;
+    uint32_t probeSlot;      // environment probe (SatEnvProbes) lighting it, kNoProbe = none (the
+                             // analytic earth_env.glsl reflection and the photometric earthshine)
+    uint32_t cpad1, cpad2;
     // Earthshine as a broad source (SatEarthLight, 2026-09-24): the SH plane-irradiance fit and its
     // frame, world axes. Diffuse light = max(SH(n), earthshine.w·(n·earthshine.xyz)₊).
     glm::vec4 earthX;   // xyz = the Sun's side ⟂ nadir, w = sh0
@@ -55,11 +63,13 @@ struct GpuMeshInstance
     glm::vec4 earthShB; // sh6..sh9
     glm::vec4 earthShC; // x = sh10
 };
-static_assert(sizeof(GpuMeshInstance) == 432, "GpuMeshInstance layout (sat_mesh_common.glsl)");
+static_assert(sizeof(GpuMeshInstance) == 432, "GpuMeshInstance layout (sat_mesh_common.glsl; mesh_bloom.frag mirrors the stride)");
 struct SatEarthLight;
 // Fills the instance's earthshine fields (earthshine, earthX/Z/Sh) from `L`, turning its world
 // vectors with `rot` (e.g. ECI → the renderer's ECEF axes).
 void setMeshInstanceEarth(GpuMeshInstance &inst, const SatEarthLight &L, const glm::dmat3 &rot);
+
+static constexpr uint32_t kNoProbe = 0xFFFFFFFFu;
 
 class SatMeshRenderer
 {
@@ -86,7 +96,17 @@ public:
         int triangles = 0;
     };
 
-    void init(VulkanContext &ctx, const EarthTextures &earth);
+    // Environment probes (SatEnvProbes): the layout of pipeline set 1 (one probe's cube, bound per
+    // draw) and the buffer of every probe's SH irradiance (set 0, binding 8).
+    struct ProbeBindings
+    {
+        VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+        VkBuffer shBuffer = VK_NULL_HANDLE;
+        VkDeviceSize shBytes = 0;
+    };
+    void init(VulkanContext &ctx, const EarthTextures &earth, const ProbeBindings &probes);
+    // The model viewer's HDR background (SatEnvProbes::viewerBgView), sampled by sat_mesh_bg.frag.
+    void setViewerBackground(VkImageView view, VkSampler sampler);
     void cleanup(VkDevice device);
     // Builds every type's render mesh and uploads the shared buffers. Call once the roster is loaded.
     void setTypeModels(VulkanContext &ctx, const std::vector<TypeModel> &types);
@@ -104,14 +124,16 @@ public:
     VkSampler viewerSampler() const { return sampler; }
     bool viewerRendered() const { return viewerHasContent; }
     // Records the viewer pass (outside any render pass): background, then `inst` of type `typeIdx`.
-    void recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst, int typeIdx);
+    void recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst, int typeIdx,
+                      VkDescriptorSet probeSet);
 
     // ── Photometric check ─────────────────────────────────────────────────────────
     // Renders `inst` (frame.params.w = 1: sun only, scalar, L·d² per pixel) into a kCheckSize² R32F
     // target and copies it to host memory. After the frame that recorded it has completed (the next
     // buildUI), checkPixels() holds the image, row-major, top row first.
     static constexpr uint32_t kCheckSize = 512;
-    void recordCheck(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst, int typeIdx);
+    void recordCheck(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst, int typeIdx,
+                     VkDescriptorSet probeSet);
     const float *checkPixels() const { return static_cast<const float *>(checkMapped); }
 
     // ── Scene pass (4c) ─────────────────────────────────────────────────────────────
@@ -123,9 +145,10 @@ public:
     bool ensureSceneTarget(VulkanContext &ctx, uint32_t w, uint32_t h); // true if (re)created
     VkImageView sceneColorView() const { return sceneColorViewH; }
     VkImageView sceneDistView() const { return sceneDistViewH; }
-    // `insts[i]` is drawn with the mesh of `types[i]` (at most kMaxInstances - 2 of them).
+    // `insts[i]` is drawn with the mesh of `types[i]` and probe set `probeSets[i]` (at most
+    // kMaxInstances - 2 of them).
     void recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame, const std::vector<GpuMeshInstance> &insts,
-                     const std::vector<int> &types);
+                     const std::vector<int> &types, const std::vector<VkDescriptorSet> &probeSets);
     // Mesh glints into the flare/bloom source (4c): a fullscreen additive draw, recorded INSIDE the
     // caller's flare-source render pass, turning the over-white part of the scene radiance (times
     // `exposure`, the sky's) into the same log-compressed glow the satellite sprites seed there.
@@ -137,6 +160,7 @@ private:
     VkFormat colorFormat = VK_FORMAT_B8G8R8A8_SRGB;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     EarthTextures earth_;
+    ProbeBindings probes_;
 
     // Shared geometry + per-type data (host-visible; small).
     VkBuffer vertexBuf = VK_NULL_HANDLE, indexBuf = VK_NULL_HANDLE;
