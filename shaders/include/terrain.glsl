@@ -56,9 +56,16 @@ vec2 posToUV(vec3 pECEF) {
 // beam occlusion test sampling at mip 2.0 while the terrain actually being drawn sampled mip 0.0
 // — an undocumented mismatch that let beams clip through hills the test could not see. If you
 // pass anything other than 0.0 here, be explicit about why.
+//
+// The mask only applies where the DEM itself is near sea level (kWaterMaskMaxM): it also marks
+// INLAND lakes, and forcing those to 0 m dug a sea-level pit with cliff walls into every lake above
+// sea level — Lake Thun, Lake Powell, Titicaca (found with the automation harness, 2026-09-25).
+// Ocean texels' compression noise is 34-140 m, so 160 m still catches all of it.
+const float kWaterMaskMaxM = 160.0;
 float terrainHeightAtUV(sampler2D elevTex, sampler2D specTex, vec2 uv, float lod) {
-    if (textureLod(specTex, uv, lod).r > 0.5) return 0.0;   // ocean/water mask — sea level
-    return max(0.0, textureLod(elevTex, uv, lod).r * kElevRange - kElevOffset);
+    float h = max(0.0, textureLod(elevTex, uv, lod).r * kElevRange - kElevOffset);
+    if (h < kWaterMaskMaxM && textureLod(specTex, uv, lod).r > 0.5) return 0.0; // sea — see above
+    return h;
 }
 
 float terrainHeightAtDir(sampler2D elevTex, sampler2D specTex, vec3 dirECEF) {

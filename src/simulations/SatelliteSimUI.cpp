@@ -4209,7 +4209,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
     // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
     // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[91][16];
+    static char cloudBufs[97][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -4539,6 +4539,13 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         // S4 (RELEASE_v1_1_PLAN.md): terrain-relief march distance fade — see cloud_params.glsl.
         {"Terrain fade start (m)", &terrainDistFadeStartM, 50000.0f, 1000000.0f, 10000.0f, "%.0f", 59},
         {"Terrain fade end (m)", &terrainDistFadeEndM, 100000.0f, 4000000.0f, 25000.0f, "%.0f", 60},
+        // Procedural terrain detail (terrain_detail.glsl, 2026-09-25). Strength 0 = the plain DEM.
+        {"Terrain detail", &terrainDetailStrength, 0.0f, 2.0f, 0.05f, "%.2f", 91},
+        {"Detail height (m)", &terrainDetailAmpM, 0.0f, 800.0f, 10.0f, "%.0f", 92},
+        {"Detail roughness", &terrainDetailGain, 0.3f, 0.7f, 0.01f, "%.2f", 93},
+        {"Detail erosion", &terrainDetailErode, 0.0f, 6.0f, 0.1f, "%.1f", 94},
+        {"Terrain shadows", &terrainShadowStrength, 0.0f, 1.0f, 0.05f, "%.2f", 95},
+        {"Terrain materials", &terrainMaterialStrength, 0.0f, 1.0f, 0.05f, "%.2f", 96},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -5801,6 +5808,12 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cloudDistFadeEndM = c.value("cloud_dist_fade_end_m", cloudDistFadeEndM);
         terrainDistFadeStartM = c.value("terrain_dist_fade_start_m", terrainDistFadeStartM);
         terrainDistFadeEndM = c.value("terrain_dist_fade_end_m", terrainDistFadeEndM);
+        terrainDetailStrength = c.value("terrain_detail_strength", terrainDetailStrength);
+        terrainDetailAmpM = c.value("terrain_detail_amp_m", terrainDetailAmpM);
+        terrainDetailGain = c.value("terrain_detail_gain", terrainDetailGain);
+        terrainDetailErode = c.value("terrain_detail_erode", terrainDetailErode);
+        terrainShadowStrength = c.value("terrain_shadow_strength", terrainShadowStrength);
+        terrainMaterialStrength = c.value("terrain_material_strength", terrainMaterialStrength);
         cloudBaseVariance = c.value("cloud_base_variance", cloudBaseVariance);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
@@ -6025,6 +6038,12 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cloud_dist_fade_end_m", cloudDistFadeEndM},
         {"terrain_dist_fade_start_m", terrainDistFadeStartM},
         {"terrain_dist_fade_end_m", terrainDistFadeEndM},
+        {"terrain_detail_strength", terrainDetailStrength},
+        {"terrain_detail_amp_m", terrainDetailAmpM},
+        {"terrain_detail_gain", terrainDetailGain},
+        {"terrain_detail_erode", terrainDetailErode},
+        {"terrain_shadow_strength", terrainShadowStrength},
+        {"terrain_material_strength", terrainMaterialStrength},
         {"cloud_base_variance", cloudBaseVariance},
         {"cloud_erosion_edge", cloudErosionEdge},
         {"cloud_erosion_core", cloudErosionCore},

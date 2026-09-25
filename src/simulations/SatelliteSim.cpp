@@ -587,6 +587,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     }
 
     harnessInit(); // docs/HARNESS.md — no-op unless launched with harness flags
+    createTerrainProbe(ctx); // harness `probe` (a few KB; the pipeline only runs on request)
 }
 
 // ─── onResize ─────────────────────────────────────────────────────────────────
@@ -2177,6 +2178,25 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.fogSunGain = fogSunGain;
         cp.terrainDistFadeStartM = terrainDistFadeStartM;
         cp.terrainDistFadeEndM = terrainDistFadeEndM;
+        // Procedural terrain detail: anchor the noise lattice at the observer's sea-level point, in
+        // double, as an integer 2048-m cell + the offset inside it (terrain_detail.glsl's header).
+        // obsDir must be the same vector the shaders get as obsECEFDir.xyz.
+        {
+            const double kCell = 2048.0;
+            const glm::dvec3 sea = glm::normalize(glm::dvec3(obsDir)) * 6371000.0; // common.glsl R_EARTH
+            const glm::dvec3 cell = glm::floor(sea / kCell);
+            const glm::dvec3 rel = sea - cell * kCell;
+            cp.terrainAnchorRel = glm::vec4(glm::vec3(rel), 0.0f);
+            cp.terrainAnchorCell = glm::vec4(glm::vec3(cell), 0.0f);
+            cp.terrainDetailStrength = terrainDetailStrength;
+            cp.terrainDetailAmpM = terrainDetailAmpM;
+            cp.terrainDetailGain = terrainDetailGain;
+            cp.terrainDetailErode = terrainDetailErode;
+            cp.terrainShadowStrength = terrainShadowStrength;
+            cp.terrainMaterialStrength = terrainMaterialStrength;
+            cp.terrainDebugView = (float)terrainDebugView;
+            cp.terrainPad0 = (float)terrainExperiment; // TEMP experiment bits (sat_sky.frag)
+        }
         cp.cloudOpacityScale = cloudOpacityScale;
         cp.cityLightBlurLod = cityLightBlurLod;
         cp.cloudWarpStrength = cloudWarpStrength;
@@ -2369,6 +2389,19 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                          VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        // terrainFrameBuf (the observer's detailed ground height) -> sat_sky.frag.
+        VkBufferMemoryBarrier fb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        fb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        fb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        fb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        fb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        fb.buffer = terrainFrameBuf;
+        fb.offset = 0;
+        fb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                             nullptr, 1, &fb, 0, nullptr);
+        recordTerrainProbe(cmd, ctx); // harness `probe`: no-op unless requested this frame
     }
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
 
@@ -5307,6 +5340,13 @@ void SatelliteSim::cleanup(VkDevice device)
     if (followActive)
         stopFollow(); // persist the ground observer, not a position in orbit
     saveSettings();
+    if (terrainFrameBuf)
+    {
+        vkDestroyBuffer(device, terrainFrameBuf, nullptr);
+        vkFreeMemory(device, terrainFrameMem, nullptr);
+        terrainFrameBuf = VK_NULL_HANDLE;
+    }
+    destroyTerrainProbe(device);
     // Harness: a --stay run closed by hand still leaves a summary (no-op if one was written).
     if (harnessRunner_)
         harnessRunner_->writeSummary("closed");
@@ -7661,6 +7701,9 @@ void SatelliteSim::createCloudMarchPipeline(VulkanContext &ctx)
 // the depth-format blit portability problem that made the render-scale path skip depth entirely.
 void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
 {
+    if (!terrainFrameBuf) // resolution-independent: created once, survives resizes
+        ctx.createBuffer(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                         terrainFrameBuf, terrainFrameMem);
     uint32_t w = (ctx.swapExtent.width + 1) / 2;
     uint32_t h = (ctx.swapExtent.height + 1) / 2;
 
@@ -7720,23 +7763,29 @@ void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
 //   binding 2  sceneDepth   (storage image, r32f)
 void SatelliteSim::createSceneDepthDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[4] = {};
+    VkDescriptorSetLayoutBinding bindings[6] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     // Phase 4c: satellite mesh distance (full res) — written by writeMeshSceneDescriptors().
     bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    // The CloudParams UBO: procedural terrain detail (terrain_detail.glsl), 2026-09-25.
+    bindings[4] = {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    // terrainFrameBuf: this pass writes the observer's detailed ground height for sat_sky.frag.
+    bindings[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 4;
+    li.bindingCount = 6;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &sceneDepthDescLayout);
 
-    VkDescriptorPoolSize ps[2] = {
+    VkDescriptorPoolSize ps[4] = {
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2}};
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pi.poolSizeCount = 2;
+    pi.poolSizeCount = 4;
     pi.pPoolSizes = ps;
     pi.maxSets = 1;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &sceneDepthDescPool);
@@ -7759,14 +7808,27 @@ void SatelliteSim::createSceneDepthDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo specInfo{specSamplerFinal, specViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo depthInfo{VK_NULL_HANDLE, sceneDepthView, VK_IMAGE_LAYOUT_GENERAL};
 
-    VkWriteDescriptorSet writes[3] = {};
+    VkDescriptorBufferInfo uboInfo{cloudParamsBuf, 0, sizeof(GpuCloudParams)};
+    VkWriteDescriptorSet writes[4] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 0, 0, 1,
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo, nullptr, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 1, 0, 1,
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &specInfo, nullptr, nullptr};
     writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 2, 0, 1,
                  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &depthInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 3, writes, 0, nullptr);
+    writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 4, 0, 1,
+                 VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &uboInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 4, writes, 0, nullptr);
+
+    // terrainFrameBuf: written here (binding 5), read by sat_sky.frag (sky set binding 26 — the sky
+    // set already exists, createGlowResources runs first).
+    VkDescriptorBufferInfo frameInfo{terrainFrameBuf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet fw[2] = {};
+    fw[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 5, 0, 1,
+             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &frameInfo, nullptr};
+    fw[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, skyDescSet, 26, 0, 1,
+             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &frameInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 2, fw, 0, nullptr);
 }
 
 // ─── createSceneDepthPipeline ─────────────────────────────────────────────────
@@ -8653,7 +8715,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     }
 
     // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=beamGlowDomeBuf, 19=sceneDepthTex, 20=oceanGlintBuf, 21=groundBeamsBuf
-    VkDescriptorSetLayoutBinding bindings[26] = {};
+    VkDescriptorSetLayoutBinding bindings[27] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -8698,13 +8760,15 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // field — createStarEnvBuffer), 25 the mesh pass's reflection G-buffer (SKY_REFL).
     bindings[24] = {24, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[25] = {25, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // 26: terrainFrameBuf — the observer's ground height with terrain detail, from scene_depth.comp.
+    bindings[26] = {26, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 26;
+    li.bindingCount = 27;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 15},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3},

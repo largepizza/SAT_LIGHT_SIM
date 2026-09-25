@@ -1,0 +1,66 @@
+# Terrain golden views: fixed places, headings and Sun elevations for terrain/DEM work.
+# Clouds are off (coverage 0, fog off) so only terrain + atmosphere is in frame.
+# Each view: settle, capture. Run before and after a terrain change, then imgtools diff/sheet.
+preset High
+set clouds.coverage 0
+set clouds.fog_coverage 0
+time set 2036-06-21T12:00:00Z
+time pause
+
+# 1. Alps: near Thun (DEM ~1000 m) looking SE at the Bernese Oberland, morning sun
+observer lat=46.75 lon=7.70 agl=0
+time sun 25 rising
+camera az=140 el=3 fov=50
+wait settle
+capture v1_alps_ground
+
+# 2. Alps from 4 km looking along the range, low sun (long shadows show relief)
+observer lat=46.40 lon=7.60 agl=3500
+time sun 8 setting
+camera az=80 el=-4 fov=60
+wait settle
+capture v2_alps_air_lowsun
+
+# 3. Himalaya: Everest from the Gokyo side, 5 km altitude
+observer lat=27.96 lon=86.69 alt=5200
+time sun 30 rising
+camera az=90 el=4 fov=50
+wait settle
+capture v3_everest
+
+# 4. Grand Canyon south rim looking north
+observer lat=36.06 lon=-112.11 agl=0
+time sun 20 rising
+camera az=10 el=-6 fov=70
+wait settle
+capture v4_grand_canyon
+
+# 5. Colorado Rockies from airliner altitude looking west
+observer lat=39.75 lon=-104.6 alt=10500
+time sun 35 rising
+camera az=270 el=-8 fov=60
+wait settle
+capture v5_rockies_airliner
+
+# 6. Andes from 30 km looking down at 20 degrees
+observer lat=-32.65 lon=-69.5 alt=30000
+time sun 30 rising
+camera az=270 el=-20 fov=60
+wait settle
+capture v6_andes_30km
+
+# 7. Himalaya from LEO, oblique
+observer lat=24.0 lon=86.9 alt=400000
+time sun 40 rising
+camera az=0 el=-45 fov=40
+wait settle
+capture v7_himalaya_leo
+
+# 8. Coastal cliffs: Big Sur from the water's edge looking south
+observer lat=36.27 lon=-121.82 agl=30
+time sun 15 setting
+camera az=150 el=0 fov=60
+wait settle
+capture v8_big_sur
+
+perf frames=30 name=terrain_views_last

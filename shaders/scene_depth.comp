@@ -48,19 +48,18 @@ layout(set = 0, binding = 2, r32f) uniform writeonly image2D sceneDepth;
 // surfaces like terrain, so the shared depth is the nearest of the two — every volumetric march
 // then stops at a satellite exactly as it stops at a mountain.
 layout(set = 0, binding = 3, r32f) uniform readonly image2D meshDistImg;
+// The frame's CloudParams UBO — for the procedural terrain detail (terrain_detail.glsl), so this
+// pass marches exactly the surface sat_sky.frag draws.
+#define CLOUD_PARAMS_BINDING 4
+#include "cloud_params.glsl"
+// x = the observer's eye ground height with terrain detail, for sat_sky.frag (binding 26 there).
+layout(set = 0, binding = 5, std430) writeonly buffer TerrainFrame { vec4 terrainFrame; };
 
 
 #include "common.glsl"
 #include "terrain.glsl"
+#include "terrain_detail.glsl"
 
-// Step budget. sat_sky.frag's full-res march targets a ~2800 m coarsest step over 64-164 steps;
-// this runs at half resolution and only needs to resolve the surface well enough to occlude
-// volumetrics and beams, not to shade it, so it targets twice the step length over half the
-// ceiling. The quadratic distribution below packs steps toward the observer, so the coarsest step
-// lands at the far end: dt ~ 2*(tExit-2)/kN.
-const float kDepthStepTargetM = 5600.0;
-const int   kDepthStepsMin    = 48;
-const int   kDepthStepsMax    = 96;
 
 // Nearest mesh distance over the full-resolution texels this half-resolution texel covers.
 float meshDistAt(ivec2 halfCoord, ivec2 halfSize)
@@ -82,6 +81,12 @@ void main() {
     ivec2 size  = imageSize(sceneDepth);
     ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
     if (coord.x >= size.x || coord.y >= size.y) return;
+
+    // The observer's detailed ground height, once for sat_sky.frag (it would otherwise evaluate the
+    // detail octaves in every pixel). Written before the knockout early-out below so it is always
+    // this frame's value.
+    if (coord == ivec2(0))
+        terrainFrame = vec4(observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir), 0.0, 0.0, 0.0);
 
     // Knockout: fill with "nothing anywhere". Every consumer's operation is min()/>= against this,
     // so a uniform kNoSurfaceT reproduces the pre-unification behaviour (volumetrics and beams
@@ -108,7 +113,7 @@ void main() {
     // GPU-resolved observer height — the SAME shared helper sat_sky.frag and cloud_march.comp now
     // use. They previously disagreed (one CPU value, one GPU lookup), which was harmless while
     // each only compared against itself but is not once one produces distances the other consumes.
-    float obsEffH = observerEffHeight(earthElevTex, earthSpecTex, pc.obsECEFDir);
+    float obsEffH = observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir);
     vec3  obsPos  = observerPos(obsEffH);
 
     vec2 tBase  = raySphere(obsPos, dir, R_EARTH);
@@ -117,47 +122,21 @@ void main() {
     float tHit    = -1.0;
     float tSeaLvl = (tBase.x > 0.0) ? tBase.x : -1.0;
 
-    // Terrain march. Mirrors sat_sky.frag's structure exactly (same gate, same tCap, same
-    // quadratic step distribution, same 12-step bisection) so the two agree on where the surface
-    // is; only the step budget differs. Note the >0.7 gate: above ~44 degrees elevation no terrain
-    // on Earth is geometrically reachable from any altitude.
+    // Terrain march: terrain_detail.glsl's terrainMarchDetailed, the one sat_sky.frag draws with —
+    // same gate, same tCap and reach cut-off, same height function and geometry LOD. The LOD's
+    // floor (1% of the distance) dominates the pixel footprint at any normal FOV, so this
+    // half-resolution pass sees the same octaves as the full-resolution one. No screen jitter:
+    // this buffer feeds occlusion tests, where per-texel jitter would make silhouettes shimmer.
     if ((pc.debugDisableMask & 1u) == 0u && dir.z < 0.7 && tShell.y > 0.0) {
         float tExit = (tBase.x > 0.0) ? tBase.x
                     : (tShell.y > 0.0  ? tShell.y : 0.0);
         float tCap  = mix(250000.0, 3600000.0, clamp(obsEffH / 400000.0, 0.0, 1.0));
         tExit = min(tExit, tCap);
-
-        int kN = clamp(int(2.0 * (tExit - 2.0) / kDepthStepTargetM), kDepthStepsMin, kDepthStepsMax);
-
-        // No screen-space jitter here, deliberately. sat_sky.frag dithers its march start to trade
-        // banding for noise in a SHADED result; this buffer feeds occlusion tests, where per-texel
-        // jitter would turn a clean silhouette into a noisy one that shimmers under camera motion.
-        float tPrev = 2.0;
-        for (int i = 0; i < kN; ++i) {
-            if (tHit >= 0.0) break;
-            float frac = float(i) / float(kN);
-            float t    = 2.0 + (tExit - 2.0) * frac * frac;
-            if (t > tExit) break;
-            vec3  p    = obsPos + t * dir;
-            float rayH = length(p) - R_EARTH;
-            if (rayH <= 0.0) break;
-
-            vec3  pE       = p.x * enuX + p.y * enuY + p.z * enuZ;
-            float terrainH = terrainHeightAtUV(earthElevTex, earthSpecTex, posToUV(pE), 0.0);
-
-            if (rayH < terrainH) {
-                float tLo = tPrev, tHi = t;
-                for (int j = 0; j < 12; ++j) {
-                    float tM  = (tLo + tHi) * 0.5;
-                    vec3  pm  = obsPos + tM * dir;
-                    float mH  = length(pm) - R_EARTH;
-                    vec3  pmE = pm.x * enuX + pm.y * enuY + pm.z * enuZ;
-                    float mT  = terrainHeightAtUV(earthElevTex, earthSpecTex, posToUV(pmE), 0.0);
-                    if (mH < mT) tHi = tM; else tLo = tM;
-                }
-                tHit = (tLo + tHi) * 0.5;
-            }
-            tPrev = t;
+        if (tExit < cloud.terrainDistFadeEndM) {
+            int steps;
+            float pixAngle = pc.fovYRad / float(size.y);
+            tHit = terrainMarchDetailed(earthElevTex, earthSpecTex, obsEffH + 2.0, dir, enuX, enuY, enuZ,
+                                        2.0, tExit, pixAngle, 192, 1.0, false, kTdCoarseOctaves, steps);
         }
     }
 

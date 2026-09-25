@@ -210,6 +210,9 @@ layout(std430, set = 0, binding = 18) readonly buffer BeamGlowDomeBuf {
 // never actually declared/sampled here until now (2026-07-29) — used below to test whether
 // terrain blocks a lens-flare source's own direction, not this fragment's view ray.
 layout(set = 0, binding = 19) uniform sampler2D sceneDepthTex;
+// x = the observer's eye ground height with terrain detail, computed once per frame by
+// scene_depth.comp (terrain_detail.glsl observerEffHeightDetailed).
+layout(set = 0, binding = 26, std430) readonly buffer TerrainFrame { vec4 terrainFrame; };
 // Phase 4c — satellite meshes (SatMeshRenderer's scene pass, full swap extent). Storage images, not
 // samplers: this shader is one binding from the 16 sampled-image floor (CLAUDE.md, hardware table).
 layout(set = 0, binding = 22, rgba32f) uniform readonly image2D meshColorImg; // pre-exposure radiance
@@ -241,6 +244,7 @@ layout(location = 0) out vec4 outColor;
 // the shared header now. terrain.glsl brings the DEM decode + observer-frame helpers.
 #include "common.glsl"
 #include "terrain.glsl"
+#include "terrain_detail.glsl" // procedural 3D terrain detail + the shared march
 #include "atmosphere.glsl" // line-of-sight extinction (atmExtinctionMag)
 #include "darksky.glsl"   // dark-sky exposure gate (Milky Way / zodiacal)
 #include "depth.glsl"     // unified scene depth (gl_FragDepth)
@@ -1529,7 +1533,13 @@ void main() {
     // Elevation encoding constants (kElevRange / kMaxTerrain / kElevOffset) and the GPU-side
     // observer ground-height lookup both live in terrain.glsl now — see that file's header for
     // the DEM encoding, which is the single most re-broken piece of knowledge in this project.
+#ifdef SKY_ENV
+    // A probe renders from a satellite: the main observer's value below is not its eye.
     float obsEffH = observerEffHeight(earthElevTex, earthSpecTex, pc.obsECEFDir);
+#else
+    // The observer's ground with terrain detail — scene_depth.comp computed it once this frame.
+    float obsEffH = terrainFrame.x;
+#endif
 
     // Observer position: +2 m eye height above ground.
     vec3 obsPos = observerPos(obsEffH);
@@ -1552,103 +1562,100 @@ void main() {
     vec2  hitUV     = vec2(0.0);
     vec3  terrainNorm = vec3(0.0, 0.0, 1.0); // overwritten on terrain hit
 
+    // Procedural detail state at the hit, kept for the material/AO/shadow terms and debug views.
+    vec3     terrainDebugColor = vec3(-1.0); // >= 0: a terrain debug view replaces the pixel
+    int      terrainSteps  = 0;
+    TdSample terrainDet;
+    terrainDet.h = 0.0; terrainDet.grad = vec3(0.0); terrainDet.rough = 0.0; terrainDet.amp = 0.0;
+    float    terrainH0     = 0.0;   // DEM height at the hit
+    vec3     terrainQ      = vec3(0.0); // hit, observer-relative (terrain_detail.glsl's q)
+    vec3     terrainUpE    = vec3(0.0, 0.0, 1.0);
+    float    pixAngle      = pc.fovYRad / max(cloud.skyScreenH, 1.0);
+    const int kTerrainMaxSteps = 224;
+
     if (!dbgSkipTerrain() && dir.z < 0.7 && tShell.y > 0.0) {
         float tExit = (tBase.x > 0.0) ? tBase.x
                     : (tShell.y > 0.0  ? tShell.y : 0.0);
-        // Cap scales with observer altitude so terrain is visible from LEO.
-        // At ground the old 250 km limit is preserved (horizon is close anyway).
-        // At LEO (400 km) it extends to 900 km, covering ~65° off-nadir views.
-        // Limb-grazing rays that would otherwise generate very long tShell paths
-        // are still clamped so the march stays bounded.
+        // Cap scales with observer altitude so terrain is visible from LEO (250 km on the ground,
+        // 3600 km from 400 km up); limb-grazing rays stay bounded.
         float tCap = mix(250000.0, 3600000.0, clamp(obsEffH / 400000.0, 0.0, 1.0));
         tExit = min(tExit, tCap);
+        // S4: past terrainDistFadeEndM the relief is sub-pixel; skip the march and let tSeaLvl
+        // stand in (the smooth textured Earth). The detail march's own cost no longer scales with
+        // tExit — it steps on the height gap (terrain_detail.glsl) — so the old kN fade is gone and
+        // only this cut-off remains.
+        //
+        // 2026-09-25: the march is terrain_detail.glsl's terrainMarchDetailed(), shared with
+        // scene_depth.comp: DEM + procedural detail, stepped by the gap to the surface, no screen
+        // jitter. It replaced a fixed quadratic 64-164-step schedule with a per-pixel jittered start,
+        // whose jitter was the salt-and-pepper speckle along every silhouette.
+        // Seed from the shared depth (scene_depth.comp, earlier this frame): it marched the same
+        // surface at half resolution, so start just short of the nearest of the 3x3 half-res
+        // texels around this pixel (conservative at silhouettes), and skip the march where none
+        // of them found terrain or sea (sky). This is what makes the full-resolution march cheap:
+        // it starts where the coarse surface + the bound on the fine octaves was met, usually a
+        // few steps from the hit, instead of at the eye. Knockout bit 1024 fills
+        // the depth with kNoSurfaceT, so the seed is ignored then (tSeed stays 2).
+        float tSeed = 2.0;
+        bool  seedSky = false;
+#ifndef SKY_ENV
+        if ((cloud.dbgDisableMask & 1024u) == 0u) {
+            // The four half-res texels around this pixel (the bilinear footprint): a full-res pixel
+            // sits between their ray samples, so their nearest is a conservative start. A 3x3 min
+            // pulled foreground distances far across silhouettes and cost long marches there.
+            ivec2 dSize = textureSize(sceneDepthTex, 0);
+            vec2  dp    = gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH) * vec2(dSize) - 0.5;
+            ivec2 d0    = ivec2(floor(dp));
+            float dMin  = kNoSurfaceT;
+            for (int sy = 0; sy <= 1; ++sy)
+                for (int sx = 0; sx <= 1; ++sx)
+                    dMin = min(dMin, texelFetch(sceneDepthTex, clamp(d0 + ivec2(sx, sy), ivec2(0), dSize - 1), 0).r);
+            seedSky = dMin >= kNoSurfaceT * 0.5;
+            // The depth pass marched the same surface (half-res pixel footprint, so it stops up to a
+            // footprint short of it): start a few percent before.
+            tSeed = max(2.0, dMin * 0.96 - 2.0);
+        }
+#endif
+        if (tExit < cloud.terrainDistFadeEndM && !seedSky) {
+            float hEye = obsEffH + 2.0;
+            if ((int(cloud.terrainPad0) & 2) != 0 && tSeed > 2.0) tHit = tSeed; else
+            tHit = terrainMarchDetailed(earthElevTex, earthSpecTex, hEye, dir, enuX, enuY, enuZ,
+                                        tSeed, tExit, pixAngle, kTerrainMaxSteps, 1.0, false,
+                                        kTdCoarseOctaves, terrainSteps);
+            if (tHit > 0.0) {
+                terrainQ = vec3(0.0, 0.0, hEye) + tHit * dir;
+                vec3 phE = terrainQ.x * enuX + terrainQ.y * enuY + (R_EARTH + terrainQ.z) * enuZ;
+                hitUV = posToUV(phE);
+                float hMip3;
+                tdDemAt(earthElevTex, earthSpecTex, hitUV, terrainH0, hMip3);
 
-        // Quadratic step distribution: steps grow proportionally to their index so
-        // near terrain gets fine resolution while far terrain gets coarser steps.
-        // Perf (this session): step count now scales with this RAY's actual march distance
-        // (tExit), not observer altitude — same principle as the aurora march's path-length
-        // scaling (N_AURORA/kAuroraMaxStepM). The old altitude-only mix() gave a steep near-
-        // vertical ray and a long grazing-horizon ray from the SAME observer altitude identical
-        // step budgets, even though the grazing ray covers far more ground and needs more steps
-        // to avoid undersampling, while the steep ray was overpaying. With quadratic spacing the
-        // COARSEST step lands at the far end (frac≈1): dt ≈ 2*(tExit-2)/kN, so solving for kN
-        // at a target coarsest-step size reproduces the same ~2.8km-at-far-end calibration the
-        // original altitude-based tuning aimed for (see the historical "up to 320 at LEO...
-        // ~2.8km" comment this replaced). Min/max (64/164) are the user-validated range from the
-        // preliminary altitude-only test — jittery-but-passable at 64, fine at 164 — kept as-is,
-        // only the scaling variable changed from obsEffH to tExit.
-        const float kTerrainStepTargetM = 2800.0;
-        const int   kTerrainStepsMin = 64;
-        const int   kTerrainStepsMax = 164;
-        int kNFull = clamp(int(2.0 * (tExit - 2.0) / kTerrainStepTargetM), kTerrainStepsMin, kTerrainStepsMax);
-
-        // S4 (RELEASE_v1_1_PLAN.md, session 31): tCap above grows the march REACH with altitude
-        // faster than kNFull's budget grows, so kNFull pins at its 164 ceiling on essentially
-        // every screen pixel from LEO (measured via debugDisableMask bit 1 recovering a decent
-        // frame rate, more so from altitude) — because terrain relief is genuinely sub-pixel at
-        // the reach this ray is capable of. Fade the step budget down as tExit (this ray's own
-        // reach, not just observer altitude — a grazing ray pays more than a steep one at the
-        // SAME altitude) grows past terrainDistFadeStartM, and skip the march outright past
-        // terrainDistFadeEndM: tHit stays -1 and the code below falls back to tSeaLvl, already
-        // computed above at zero extra cost — the same "smooth textured Earth" result the
-        // terrain debug knockout already produces, not a pop to nothing.
-        float terrainReachFade = 1.0 - smoothstep(cloud.terrainDistFadeStartM, cloud.terrainDistFadeEndM, tExit);
-        int kN = int(float(kNFull) * terrainReachFade);
-
-        float jitter  = textureLod(noiseTex, gl_FragCoord.xy * (1.0/128.0), 0.0).r;
-        float tPrev   = 2.0;
-
-        for (int i = 0; i < kN; ++i) {
-            if (tHit >= 0.0) break;
-            float frac = (float(i) + jitter) / float(kN);
-            float t    = 2.0 + (tExit - 2.0) * frac * frac;
-            if (t > tExit) break;
-            vec3  p = obsPos + t * dir;
-            float rayH = length(p) - R_EARTH;
-            if (rayH <= 0.0) break;
-
-            vec3  pE  = p.x * enuX + p.y * enuY + p.z * enuZ;
-            float terrainH = terrainHeightAtUV(earthElevTex, earthSpecTex, posToUV(pE), 0.0);
-
-            if (rayH < terrainH) {
-                float tLo = tPrev, tHi = t;
-                for (int j = 0; j < 12; ++j) {
-                    float tM  = (tLo + tHi) * 0.5;
-                    vec3  pm  = obsPos + tM * dir;
-                    float mH  = length(pm) - R_EARTH;
-                    vec3  pmE = pm.x * enuX + pm.y * enuY + pm.z * enuZ;
-                    float mT  = terrainHeightAtUV(earthElevTex, earthSpecTex, posToUV(pmE), 0.0);
-                    if (mH < mT) tHi = tM; else tLo = tM;
+                // Normal: the DEM gradient over +-1 texel (bilinear central differences are
+                // continuous — the old +-0.69-texel offsets, written for a 21600-wide DEM, gave a
+                // gradient constant per texel, i.e. faceted shading), plus the detail gradient at
+                // the shading LOD (finer than the geometry's: small octaves are normal-mapped).
+                vec2  demSize = vec2(textureSize(earthElevTex, 0));
+                vec2  du = vec2(1.0 / demSize.x, 0.0), dv = vec2(0.0, 1.0 / demSize.y);
+                float hE2 = max(0.0, textureLod(earthElevTex, hitUV + du, 0.0).r * kElevRange - kElevOffset);
+                float hW2 = max(0.0, textureLod(earthElevTex, hitUV - du, 0.0).r * kElevRange - kElevOffset);
+                float hN2 = max(0.0, textureLod(earthElevTex, hitUV - dv, 0.0).r * kElevRange - kElevOffset);
+                float hS2 = max(0.0, textureLod(earthElevTex, hitUV + dv, 0.0).r * kElevRange - kElevOffset);
+                float hitLat2 = PI * 0.5 - hitUV.y * PI;
+                float texLon  = max(100.0, 2.0 * PI * R_EARTH * abs(cos(hitLat2)) / demSize.x);
+                float texLat  = PI * R_EARTH / demSize.y;
+                float dE2     = (hE2 - hW2) / (2.0 * texLon);
+                float dN2     = (hN2 - hS2) / (2.0 * texLat);
+                terrainUpE    = normalize(phE);
+                vec3 hEsE     = normalize(vec3(-terrainUpE.y, terrainUpE.x, 0.0)); // East in ECEF
+                vec3 hNrE     = cross(terrainUpE, hEsE);                            // North in ECEF
+                vec3 slopeE   = dE2 * hEsE + dN2 * hNrE;
+                if (tdEnabled() && (int(cloud.terrainPad0) & 1) == 0) {
+                    terrainDet = terrainDetail(terrainQ, enuX, enuY, enuZ, tdShadeLodM(tHit, pixAngle),
+                                               terrainH0, hMip3, kTdShadeOctaves);
+                    slopeE += terrainDet.grad;
                 }
-                tHit = (tLo + tHi) * 0.5;
-                vec3  ph  = obsPos + tHit * dir;
-                vec3  phE = ph.x * enuX + ph.y * enuY + ph.z * enuZ;
-                float phL = length(phE);
-                hitUV = vec2((atan(phE.y, phE.x) + PI) / (2.0*PI),
-                             (0.5*PI - asin(clamp(phE.z / phL, -1.0, 1.0))) / PI);
-
-                // Terrain normal from elevation gradient (central differences).
-                // Builds hit-point local East/North/Up in ECEF, then maps to observer ENU.
-                {
-                    const float kTexU = 1.0 / 21600.0;
-                    const float kTexV = 1.0 / 10800.0;
-                    float hE2 = max(0.0, textureLod(earthElevTex, hitUV + vec2(kTexU, 0.0), 0.0).r * kElevRange - kElevOffset);
-                    float hW2 = max(0.0, textureLod(earthElevTex, hitUV - vec2(kTexU, 0.0), 0.0).r * kElevRange - kElevOffset);
-                    float hN2 = max(0.0, textureLod(earthElevTex, hitUV - vec2(0.0, kTexV), 0.0).r * kElevRange - kElevOffset);
-                    float hS2 = max(0.0, textureLod(earthElevTex, hitUV + vec2(0.0, kTexV), 0.0).r * kElevRange - kElevOffset);
-                    float hitLat2 = PI * 0.5 - hitUV.y * PI;
-                    float texLon  = max(100.0, 2.0 * PI * R_EARTH * abs(cos(hitLat2)) / 21600.0);
-                    float texLat  = PI * R_EARTH / 10800.0; // ~1853 m/texel
-                    float dE2     = (hE2 - hW2) / (2.0 * texLon);
-                    float dN2     = (hN2 - hS2) / (2.0 * texLat);
-                    vec3 hUpE     = phE / phL;
-                    vec3 hEsE     = normalize(vec3(-hUpE.y, hUpE.x, 0.0)); // East in ECEF
-                    vec3 hNrE     = cross(hUpE, hEsE);                      // North in ECEF
-                    vec3 nECEF    = normalize(-dE2 * hEsE + -dN2 * hNrE + hUpE);
-                    terrainNorm   = normalize(vec3(dot(nECEF, enuX), dot(nECEF, enuY), dot(nECEF, enuZ)));
-                }
+                vec3 nECEF  = normalize(terrainUpE - slopeE);
+                terrainNorm = normalize(vec3(dot(nECEF, enuX), dot(nECEF, enuY), dot(nECEF, enuZ)));
             }
-            tPrev = t;
         }
     }
 
@@ -2319,6 +2326,41 @@ void main() {
             }
         }
 
+        // ── Procedural terrain material (terrain_detail.glsl, 2026-09-25) ──────────
+        // The day map is ~4.9 km/texel: from the ground it is one flat colour per hillside. The
+        // day map stays the authority on WHAT the ground is (its colour is the biome, its white is
+        // snow); this adds what it cannot resolve: a world-fixed mottle (tdMicro), rock on steep
+        // faces (dark rock where the map says snow), snow shed from steep faces with a noisy edge,
+        // and crevice darkening from the detail height. All of it fades out as the pixel footprint
+        // passes ~60-400 m, so from orbit the day map is untouched. terrainMaterialStrength 0 = the
+        // day map alone. (A latitude snowline was tried first: it painted the Tibetan plateau white.)
+        float terrainAO = 1.0;
+        float terrainMatSteep = 0.0, terrainMatSnow = 0.0;
+        if (tHit > 0.0 && cloud.terrainMaterialStrength > 0.0) {
+            float foot = pixAngle * tHit;
+            float ms   = cloud.terrainMaterialStrength * (1.0 - smoothstep(60.0, 400.0, foot));
+            if (ms > 0.0) {
+                vec3  nE   = terrainNorm.x * enuX + terrainNorm.y * enuY + terrainNorm.z * enuZ;
+                float nUp  = dot(nE, terrainUpE);
+                float dn   = terrainDet.amp > 1.0 ? clamp(terrainDet.h / terrainDet.amp, -1.0, 1.0) : 0.0;
+                float m    = tdMicro(terrainQ, enuX, enuY, enuZ, foot);
+                vec3  day  = dayColor;
+                float lum  = dot(day, vec3(0.2126, 0.7152, 0.0722));
+                float mx   = max(day.r, max(day.g, day.b));
+                float sat  = (mx - min(day.r, min(day.g, day.b))) / max(mx, 1e-3);
+                float snowMap = smoothstep(0.40, 0.62, lum) * (1.0 - smoothstep(0.10, 0.28, sat));
+                terrainMatSteep = smoothstep(0.30, 0.62, 1.0 - nUp + 0.10 * m);
+                vec3  rockBare = mix(vec3(lum), day, 0.35) * (0.72 + 0.18 * m);
+                vec3  rock     = mix(rockBare, vec3(0.20, 0.19, 0.17) * (0.85 + 0.25 * m), snowMap);
+                vec3  alb      = day * (1.0 + 0.28 * m) * (1.0 + 0.12 * dn);
+                alb = mix(alb, rock, terrainMatSteep * 0.85);
+                terrainMatSnow = snowMap * (1.0 - smoothstep(0.22, 0.48, 1.0 - nUp + 0.12 * m - 0.06 * dn));
+                alb = mix(alb, vec3(0.80, 0.82, 0.86) * (0.96 + 0.06 * m), terrainMatSnow);
+                dayColor  = mix(dayColor, alb, ms);
+                terrainAO = mix(1.0, 0.68 + 0.32 * smoothstep(-0.9, 0.6, dn), ms * terrainDet.rough);
+            }
+        }
+
         // ── Spectral sun color at terrain hit ─────────────────────────────────
         // Sun light arriving at the terrain is orange at low angles (long atmospheric path).
         // Normalized so the brightest channel = 1.0 (preserves hue; noon ≈ warm white).
@@ -2424,12 +2466,39 @@ void main() {
         // sky reflection). Previously this term used dayFrac alone with no cloud-shadow factor at
         // all, so cloud shadows never appeared on land — only on the ocean/sea-level branch, which
         // is the only place `directSun` (dayFrac * cloudShadowT) was actually consumed.
+        // Terrain sun shadow (terrain_detail.glsl terrainSunShadow): a soft march toward the Sun over
+        // DEM + detail. Only where the Sun is up at this point and the face can see it.
+        float terrainShadow = 1.0;
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+        if (tHit > 0.0 && cloud.terrainShadowStrength > 0.0 && dayFrac > 0.0 && sunDot > -0.05) {
+            float sh = terrainSunShadow(earthElevTex, earthSpecTex, terrainQ, terrainNorm, sunDir, enuX, enuY, enuZ,
+                                        tdGeomLodM(tHit, pixAngle));
+            terrainShadow = mix(1.0, sh, cloud.terrainShadowStrength);
+        }
+#endif
         vec3 surfColor  = mix(nightColor * 0.12,
-                              dayColor * sunSpecTint * clamp(sunDot * 1.5, 0.05, 1.0) * cloudShadowT
-                            + dayColor * skyAmbientTerrain * 0.4,  // sky ambient fill (blue day, orange dusk)
+                              (dayColor * sunSpecTint * clamp(sunDot * 1.5, 0.05, 1.0) * cloudShadowT * terrainShadow
+                            + dayColor * skyAmbientTerrain * 0.4) * terrainAO,  // sky ambient fill (blue day, orange dusk)
                               dayFrac)
                         + moonContribTerrain
                         + auroraContribTerrain;
+
+        // Terrain debug views (harness `debugview`, cloud.terrainDebugView) — override the pixel.
+        if (cloud.terrainDebugView > 0.5 && tHit > 0.0) {
+            int dv = int(cloud.terrainDebugView + 0.5);
+            vec3 dbg = vec3(0.0);
+            if (dv == 1) dbg = terrainNorm * 0.5 + 0.5;
+            else if (dv == 2) dbg = vec3(0.5 + 0.25 * (terrainDet.amp > 1.0 ? clamp(terrainDet.h / terrainDet.amp, -2.0, 2.0) : 0.0));
+            else if (dv == 3) {
+                float f = clamp(float(terrainSteps) / float(kTerrainMaxSteps), 0.0, 1.0);
+                dbg = (f < 0.5) ? mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), f * 2.0)
+                                : mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), f * 2.0 - 1.0);
+            }
+            else if (dv == 4) dbg = dayColor;
+            else if (dv == 5) dbg = vec3(terrainShadow * max(sunDot, 0.0));
+            else if (dv == 6) dbg = vec3(terrainDet.rough, terrainMatSteep, terrainMatSnow);
+            terrainDebugColor = dbg;
+        }
 
         // ── Ocean wave material (sea-level hits only, not terrain) ─────────────
         // ShaderToy "Seascape" by TDM adapted to Earth ENU/ECEF space.
@@ -3362,6 +3431,7 @@ void main() {
     }
 
     outColor = vec4(color, 1.0);
+    if (terrainDebugColor.x >= 0.0) outColor = vec4(terrainDebugColor, 1.0);
 
     // Unified scene depth (include/depth.glsl) for the passes that follow: the TRUE distance to the
     // first opaque surface — terrain, else ocean (tSeaLvl covers ocean pixels with no terrain

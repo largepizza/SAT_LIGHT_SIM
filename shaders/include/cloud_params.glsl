@@ -371,4 +371,19 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // that frame to turn its own directions into it: xyz = the main observer's ECEF up (obsDir),
     // w unused.
     vec4  envMainObsDir;
+    // -- Procedural terrain detail (592 -> 656) -- terrain_detail.glsl -------------------------------
+    // The noise lattice is anchored to the observer's sea-level point WITHOUT an absolute ECEF
+    // coordinate in float: the CPU (double) gives the 2048-m cell it lies in (exact small integers)
+    // and its offset inside that cell. See terrain_detail.glsl's header.
+    vec4  terrainAnchorRel;      // xyz = observer sea-level point - anchor cell origin (ECEF m, 0..2048)
+    vec4  terrainAnchorCell;     // xyz = the anchor's 2048-m cell index (integers stored as float)
+    float terrainDetailStrength; // 0 = the plain DEM (the pre-detail terrain), 1 = full
+    float terrainDetailAmpM;     // amplitude of the 2048-m octave where roughness = 1 (m)
+    float terrainDetailGain;     // amplitude ratio per octave (0.5 = each halving of size halves height)
+    float terrainDetailErode;    // slope damping of the finer octaves (0 = plain fBm)
+    float terrainShadowStrength; // terrain sun shadows (0 = off)
+    float terrainMaterialStrength; // slope/snow/rock albedo and detail AO (0 = the day map only)
+    float terrainDebugView;      // 0 off; 1 normals, 2 detail height, 3 march steps, 4 albedo,
+                                 // 5 sun shadow, 6 roughness (sat_sky.frag, harness `debugview`)
+    float terrainPad0;
 } cloud;

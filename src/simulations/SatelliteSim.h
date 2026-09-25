@@ -1402,8 +1402,19 @@ struct GpuCloudParams
     // ── Environment probes (576 -> 592) — see cloud_params.glsl ─────────────────────────────
     glm::vec4 envMainObsDir; // xyz = the main observer's ECEF up (obsDir): the ENU frame the Milky
                              // Way / zodiacal bases are in, for sat_sky.frag's SKY_ENV variant
+    // ── Procedural terrain detail (592 -> 656) — see cloud_params.glsl / terrain_detail.glsl ──
+    glm::vec4 terrainAnchorRel;
+    glm::vec4 terrainAnchorCell;
+    float terrainDetailStrength;
+    float terrainDetailAmpM;
+    float terrainDetailGain;
+    float terrainDetailErode;
+    float terrainShadowStrength;
+    float terrainMaterialStrength;
+    float terrainDebugView;
+    float terrainPad0;
 };
-static_assert(sizeof(GpuCloudParams) == 592, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 656, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -2616,6 +2627,11 @@ private:
     // R32, not R16: distances reach 3.6e6 m from LEO and half-float saturates at 65504. That
     // overflow is exactly the bug this buffer retires (see tEnterCombined) — do not shrink it.
     // Recreated in onResize alongside the cloud targets; see there for the descriptor patches.
+    // 16 B, device-local: x = the observer's eye ground height with terrain detail (obsEffH),
+    // computed once per frame by scene_depth.comp and read by sat_sky.frag (binding 26) instead of
+    // evaluating the eight detail octaves again in every pixel (measured 1.5 ms at 1600x900).
+    VkBuffer terrainFrameBuf = VK_NULL_HANDLE;
+    VkDeviceMemory terrainFrameMem = VK_NULL_HANDLE;
     VkImage sceneDepthImg = VK_NULL_HANDLE;
     VkDeviceMemory sceneDepthMem = VK_NULL_HANDLE;
     VkImageView sceneDepthView = VK_NULL_HANDLE;
@@ -3107,6 +3123,15 @@ private:
     // Low's start distances in applyGraphicsPreset; see the comment on that table.
     float terrainDistFadeStartM = 50000.0f;
     float terrainDistFadeEndM = 900000.0f;
+    // Procedural terrain detail (terrain_detail.glsl; Terrain tab; clouds.terrain_detail_* keys).
+    float terrainDetailStrength = 1.0f;
+    float terrainDetailAmpM = 160.0f;
+    float terrainDetailGain = 0.5f;
+    float terrainDetailErode = 0.7f;
+    float terrainShadowStrength = 1.0f;
+    float terrainMaterialStrength = 1.0f;
+    int terrainDebugView = 0; // harness `debugview` only; not persisted
+    int terrainExperiment = 0; // TEMP: perf experiment bits
     // Cloud opacity scale (see GpuCloudParams::cloudOpacityScale) — multiplies the volumetric
     // cloud march's extinction-per-metre constant directly (and, since this same value also
     // scales layer 0's flat-2D-crossfade alphaMax ceiling in recordCompute(), the flat layer used
@@ -3355,6 +3380,21 @@ private:
     int harnessTrack_ = 0;
     int harnessTrackPlanet_ = -1;
     std::string lastSweepRecordJson; // the knockout sweep's last record (for `sweep`)
+    // `probe x y`: terrain_probe.comp re-runs the terrain march for one pixel (one thread, only when
+    // requested, right after scene_depth.comp) into a host-visible buffer read back next frame.
+    VkDescriptorSetLayout probeDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool probeDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet probeDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout probePipeLayout = VK_NULL_HANDLE;
+    VkPipeline probePipeline = VK_NULL_HANDLE;
+    VkBuffer probeBuf = VK_NULL_HANDLE;
+    VkDeviceMemory probeMem = VK_NULL_HANDLE;
+    void *probeMapped = nullptr;
+    bool probeRequested = false;
+    glm::vec2 probePx{0.0f};
+    void createTerrainProbe(VulkanContext &ctx);
+    void recordTerrainProbe(VkCommandBuffer cmd, VulkanContext &ctx);
+    void destroyTerrainProbe(VkDevice device);
     int sweepsCompleted = 0;
     // The ~ console: the same command language typed by a person (docs/HARNESS.md). Outside a
     // harness run its first command lazily creates a runner writing to harness_runs/console_<time>
@@ -3684,10 +3724,11 @@ private:
                                  // sliders (idx 22-26, 2026-09-23)
     bool hovPhotoPlus[33] = {};
     bool draggingPhoto[33] = {};
-    bool hovCloudMinus[91] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
-                                 // idx 90 the ocean Milky Way reflection gain (2026-09-08)
-    bool hovCloudPlus[91] = {};
-    bool draggingCloud[91] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudMinus[97] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
+                                 // idx 90 the ocean Milky Way reflection gain (2026-09-08),
+                                 // idx 91-96 the terrain detail sliders (2026-09-25)
+    bool hovCloudPlus[97] = {};
+    bool draggingCloud[97] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.

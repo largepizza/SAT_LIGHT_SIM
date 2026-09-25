@@ -106,6 +106,7 @@ layout(set = 0, binding = 13) uniform sampler2D sceneDepthTex;
 // kElevOffsetBeam were a local re-declaration of exactly kElevRange / kElevOffset.
 #include "common.glsl"
 #include "terrain.glsl"
+#include "terrain_detail.glsl" // observerEffHeightDetailed: the same ground as sat_sky/scene_depth
 #include "atmosphere.glsl" // line-of-sight extinction (atmExtinctionMag)
 #include "darksky.glsl"   // dark-sky exposure gate (aurora)
 
@@ -2464,7 +2465,7 @@ void main() {
     // Resolved here, ABOVE the out-of-bounds return, because the beam cull below needs it. Safe for
     // the out-of-range threads of an edge workgroup: it depends only on pc.obsECEFDir, not on
     // coord, so it is workgroup-uniform and reads nothing out of range.
-    float obsEffH = observerEffHeight(earthElevTex, earthSpecTex, pc.obsECEFDir);
+    float obsEffH = observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir);
     vec3  obsPos  = observerPos(obsEffH);
 
     // Both per-tile culls run BEFORE the out-of-bounds return: they contain barriers, which every

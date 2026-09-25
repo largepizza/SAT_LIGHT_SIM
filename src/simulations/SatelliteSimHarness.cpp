@@ -189,7 +189,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; "
-    "state [name]; perf [frames=N] [name=]; sweep; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; debugview <off|normals|detail|steps|albedo|shadow|rough>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
     "window <W>x<H>; log <text>; quit";
 } // namespace
 
@@ -586,10 +586,18 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             harnessSetLook(camera.azDeg, camera.elDeg); // keep the view direction in the new local frame
             trailClearPending = true;
         }
-        if (c.has("agl"))
-            obsHeightOffset = std::max(0.0f, (float)c.num("agl", 0.0));
+        // obsHeightOffset is read by the sky shaders as an altitude ABOVE SEA LEVEL floored at the
+        // ground (eye = max(ground, offset) + 2 m; terrain.glsl observerEffHeight). `alt` sets it
+        // directly. `agl` adds the CPU's terrain estimate, which comes from an 18 km/px copy of the
+        // DEM — so agl=0 means "on the ground" exactly (the GPU's own ground), and a small agl is
+        // approximate.
         if (c.has("alt"))
-            obsHeightOffset = std::max(0.0f, (float)c.num("alt", 0.0) - cpuTerrainHeightM(obsLatDeg, obsLonDeg));
+            obsHeightOffset = std::max(0.0f, (float)c.num("alt", 0.0));
+        if (c.has("agl"))
+        {
+            const float agl = (float)c.num("agl", 0.0);
+            obsHeightOffset = agl <= 0.0f ? 0.0f : cpuTerrainHeightM(obsLatDeg, obsLonDeg) + agl;
+        }
         obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
         r["lat_deg"] = obsLatDeg;
         r["lon_deg"] = obsLonDeg;
@@ -1089,6 +1097,79 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         return Status::Pending;
     }
 
+    // ── probe ───────────────────────────────────────────────────────────────────
+    if (n == "probe")
+    {
+        // What the terrain algorithm computes for one pixel's ray (terrain_probe.comp): the seed
+        // from the shared depth, the seeded and unseeded march (distance, steps), the DEM/detail at
+        // the hit, and a 64-sample height profile along the ray. Pixel in full-resolution
+        // coordinates, top-left origin (the same pixels a capture's PNG has).
+        if (a.frame == 0)
+        {
+            if (!probePipeline)
+                fail("probe: the probe pipeline failed to build");
+            probePx = glm::vec2((float)parseNum(pos(0), "probe x"), (float)parseNum(pos(1), "probe y"));
+            probeRequested = true;
+            return Status::Pending;
+        }
+        if (a.frame < 2)
+            return Status::Pending;
+        const glm::vec4 *v = static_cast<const glm::vec4 *>(probeMapped);
+        auto v4 = [](const glm::vec4 &x) { return json::array({x.x, x.y, x.z, x.w}); };
+        r["pixel"] = {probePx.x, probePx.y};
+        r["obs_eff_h"] = v[0].x;
+        r["t_exit"] = v[0].y;
+        r["seed_depth"] = v[0].z >= 1e29f ? json("sky") : json(v[0].z);
+        r["seed_sky"] = v[0].w > 0.5f;
+        r["t_seed"] = v[6].y;
+        r["march_gate"] = v[6].x > 0.5f;
+        r["t_hit_seeded"] = v[1].x;
+        r["steps_seeded"] = v[1].y;
+        r["t_hit_from_eye"] = v[1].z;
+        r["steps_from_eye"] = v[1].w;
+        r["dir_enu"] = {v[2].x, v[2].y, v[2].z};
+        r["pix_angle"] = v[2].w;
+        r["t_base_sphere"] = {v[5].x, v[5].y};
+        r["t_shell"] = {v[5].z, v[5].w};
+        r["hit"] = {{"dem_h", v[3].x}, {"dem_mip3", v[3].y}, {"detail_h", v[3].z}, {"amp0", v[3].w},
+                    {"rough", v[4].x}, {"ray_alt", v[4].y}, {"lat", v[4].z}, {"lon", v[4].w}};
+        json prof = json::array();
+        for (int i = 0; i < 64; ++i)
+            prof.push_back(v4(v[8 + i]));
+        r["profile_t_rayalt_dem_H"] = prof;
+        char buf[200];
+        snprintf(buf, sizeof(buf), "seed %s, hit %.0f m (%d steps) / from eye %.0f m (%d steps)",
+                 v[0].w > 0.5f ? "SKY" : std::to_string((int)v[0].z).c_str(), v[1].x, (int)v[1].y, v[1].z, (int)v[1].w);
+        r["message"] = buf;
+        return Status::Done;
+    }
+
+    // ── debug views ─────────────────────────────────────────────────────────────
+    if (n == "experiment")
+    {
+        terrainExperiment = (int)parseNum(pos(0), "experiment");
+        r["message"] = "experiment " + pos(0);
+        return Status::Done;
+    }
+    if (n == "debugview")
+    {
+        // Terrain debug views (sat_sky.frag, cloud.terrainDebugView). Not persisted.
+        static const char *kViews[] = {"off", "normals", "detail", "steps", "albedo", "shadow", "rough"};
+        const std::string v = lower(pos(0) == "terrain" ? pos(1) : pos(0));
+        int idx = -1;
+        for (int i = 0; i < 7; ++i)
+            if (v == kViews[i])
+                idx = i;
+        if (idx < 0 && !v.empty() && isdigit((unsigned char)v[0]))
+            idx = (int)parseNum(v, "debugview");
+        if (idx < 0 || idx > 6)
+            fail("debugview: off | normals | detail | steps | albedo | shadow | rough "
+                 "(steps: blue = few march steps .. red = the budget; rough: R roughness, G rock, B snow)");
+        terrainDebugView = idx;
+        r["message"] = std::string("terrain debug view ") + kViews[idx];
+        return Status::Done;
+    }
+
     // ── capture / state ─────────────────────────────────────────────────────────
     if (n == "capture" || n == "screenshot")
     {
@@ -1346,4 +1427,127 @@ void SatelliteSim::onChar(GLFWwindow *, unsigned int cp)
         return; // the toggle key's own character
     if (cp >= 32 && cp < 127 && consoleInput_.size() < 400)
         consoleInput_ += (char)cp;
+}
+
+// ─── Terrain probe (harness `probe`) ──────────────────────────────────────────────────────────────
+struct TerrainProbePC
+{
+    glm::mat4 skyView;
+    glm::vec4 cam;    // fovY, aspect, pixel x, pixel y
+    glm::vec4 screen; // full-res size
+    glm::vec4 obsECEFDir;
+};
+static_assert(sizeof(TerrainProbePC) <= 128, "push constant floor");
+static constexpr VkDeviceSize kProbeBytes = (8 + 64) * sizeof(glm::vec4);
+
+void SatelliteSim::createTerrainProbe(VulkanContext &ctx)
+{
+    VkDescriptorSetLayoutBinding b[5] = {};
+    b[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    b[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    b[2] = {2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    b[3] = {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    b[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = 5;
+    li.pBindings = b;
+    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &probeDescLayout);
+    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+                                  {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.poolSizeCount = 3;
+    pi.pPoolSizes = ps;
+    pi.maxSets = 1;
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &probeDescPool);
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = probeDescPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &probeDescLayout;
+    vkAllocateDescriptorSets(ctx.device, &ai, &probeDescSet);
+
+    ctx.createBuffer(kProbeBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, probeBuf, probeMem);
+    vkMapMemory(ctx.device, probeMem, 0, kProbeBytes, 0, &probeMapped);
+    memset(probeMapped, 0, (size_t)kProbeBytes);
+
+    VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TerrainProbePC)};
+    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &probeDescLayout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pr;
+    vkCreatePipelineLayout(ctx.device, &pli, nullptr, &probePipeLayout);
+    VkShaderModule mod = ctx.loadShader("shaders/terrain_probe.comp.spv");
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod, "main",
+                nullptr};
+    ci.layout = probePipeLayout;
+    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &probePipeline) != VK_SUCCESS)
+        probePipeline = VK_NULL_HANDLE;
+    vkDestroyShaderModule(ctx.device, mod, nullptr);
+}
+
+void SatelliteSim::recordTerrainProbe(VkCommandBuffer cmd, VulkanContext &ctx)
+{
+    if (!probeRequested || !probePipeline)
+        return;
+    probeRequested = false;
+    // Descriptors every time: sceneDepthView is recreated on resize. The previous frame's use of
+    // this set has completed (single frame in flight, fence waited at the top of the frame).
+    VkSampler elevS = earthElevSampler ? earthElevSampler : noiseSampler;
+    VkImageView elevV = earthElevView ? earthElevView : noiseTexView;
+    VkSampler specS = earthSpecSampler ? earthSpecSampler : noiseSampler;
+    VkImageView specV = earthSpecView ? earthSpecView : noiseTexView;
+    VkDescriptorImageInfo elev{elevS, elevV, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo spec{specS, specV, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo depth{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo ubo{cloudParamsBuf, 0, sizeof(GpuCloudParams)};
+    VkDescriptorBufferInfo out{probeBuf, 0, kProbeBytes};
+    VkWriteDescriptorSet w[5] = {};
+    w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elev, nullptr, nullptr};
+    w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &spec, nullptr, nullptr};
+    w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &ubo, nullptr};
+    w[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depth, nullptr, nullptr};
+    w[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &out, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 5, w, 0, nullptr);
+
+    TerrainProbePC pc{};
+    pc.skyView = camera.viewMatrix();
+    pc.cam = glm::vec4(glm::radians(camera.fovYDeg), (float)ctx.swapExtent.width / (float)ctx.swapExtent.height,
+                       probePx.x, probePx.y);
+    pc.screen = glm::vec4((float)ctx.swapExtent.width, (float)ctx.swapExtent.height, 0.0f, 0.0f);
+    pc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, probePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, probePipeLayout, 0, 1, &probeDescSet, 0, nullptr);
+    vkCmdPushConstants(cmd, probePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdDispatch(cmd, 1, 1, 1);
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, nullptr, 0,
+                         nullptr);
+}
+
+void SatelliteSim::destroyTerrainProbe(VkDevice device)
+{
+    if (probePipeline)
+        vkDestroyPipeline(device, probePipeline, nullptr);
+    if (probePipeLayout)
+        vkDestroyPipelineLayout(device, probePipeLayout, nullptr);
+    if (probeDescPool)
+        vkDestroyDescriptorPool(device, probeDescPool, nullptr);
+    if (probeDescLayout)
+        vkDestroyDescriptorSetLayout(device, probeDescLayout, nullptr);
+    if (probeBuf)
+    {
+        vkUnmapMemory(device, probeMem);
+        vkDestroyBuffer(device, probeBuf, nullptr);
+        vkFreeMemory(device, probeMem, nullptr);
+    }
+    probePipeline = VK_NULL_HANDLE;
+    probePipeLayout = VK_NULL_HANDLE;
+    probeDescPool = VK_NULL_HANDLE;
+    probeDescLayout = VK_NULL_HANDLE;
+    probeBuf = VK_NULL_HANDLE;
 }
