@@ -18,13 +18,20 @@ layout(push_constant) uniform PC {
 void main() {
     vec3 c = texture(flareTex, uv).rgb * pc.gain;
 
-    // Hard ceiling, per-channel: this glow layer can never add more than 0.5 in any channel, no
-    // matter how high "Flare glow gain"/"Flare streak" are pushed. Below a satellite's own point-
-    // sprite core (sat_point.frag can reach ~3x brightness at its inner core, i.e. full white on
-    // its own) the core always reads brighter than its surrounding flare, so the flare no longer
-    // washes the point itself out to white — this is what satellites AND the sun both draw
-    // through (flare_source.vert adds one virtual point for the sun, gl_VertexIndex==satCount).
-    c = min(c, vec3(0.8));
+    // Ceiling: this glow layer never adds more than ~0.8, however high "Flare glow gain"/"Flare streak"
+    // go, so a satellite's own point-sprite core always reads brighter than its surrounding glow (the
+    // sun and satellites both draw through here). Until 2026-09-24 it was a hard per-channel
+    // min(c, 0.8): where many flares overlapped the glow went flat at the cap with a sharp edge around
+    // it — the "puffy white areas with distinctive cutoffs" of a dense constellation. Now a soft knee on
+    // the luminance: unchanged below kKnee, then an exponential approach to kCap with a continuous
+    // slope, so overlapping glows keep their gradients and fade out smoothly.
+    const float kKnee = 0.45, kCap = 0.8;
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    if (l > kKnee) {
+        float lc = kKnee + (kCap - kKnee) * (1.0 - exp(-(l - kKnee) / (kCap - kKnee)));
+        c *= lc / l;
+    }
+    c = min(c, vec3(1.0));
 
     outColor = vec4(c, 1.0);
 }

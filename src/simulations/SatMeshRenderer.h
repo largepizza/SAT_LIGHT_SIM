@@ -54,7 +54,9 @@ struct GpuMeshInstance
     uint32_t firstComponent; // Phase 4f: into the per-component pivot buffer (binding 7)
     uint32_t probeSlot;      // environment probe (SatEnvProbes) lighting it, kNoProbe = none (the
                              // analytic earth_env.glsl reflection and the photometric earthshine)
-    uint32_t cpad1, cpad2;
+    float glareNorm;         // the sprite's effectFlare per unit of bloom seed: mesh_bloom.frag writes a
+                             // glint's light in effectFlare units for glare_find.comp (0 = no glare)
+    uint32_t cpad2;
     // Earthshine as a broad source (SatEarthLight, 2026-09-24): the SH plane-irradiance fit and its
     // frame, world axes. Diffuse light = max(SH(n), earthshine.w·(n·earthshine.xyz)₊).
     glm::vec4 earthX;   // xyz = the Sun's side ⟂ nadir, w = sh0

@@ -695,6 +695,8 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     flareCompositePipeline = VK_NULL_HANDLE;
     vkDestroyPipeline(ctx.device, glarePipeline, nullptr);
     glarePipeline = VK_NULL_HANDLE;
+    vkDestroyPipeline(ctx.device, glareMeshPipeline, nullptr);
+    glareMeshPipeline = VK_NULL_HANDLE;
     destroyFlareResources(ctx.device);
     createFlareResources(ctx);
     createFlarePipelines(ctx);
@@ -708,7 +710,7 @@ void SatelliteSim::onResize(VulkanContext &ctx)
                           VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &flareBInfo, nullptr, nullptr};
     vkUpdateDescriptorSets(ctx.device, 2, flareBlurWrites, 0, nullptr);
 
-    VkDescriptorImageInfo flareFinalInfo{flareSampler, flareScratchView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo flareFinalInfo{flareSampler, flareSourceView, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet flareCompWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                                         flareCompositeDescSet, 0, 0, 1,
                                         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &flareFinalInfo, nullptr, nullptr};
@@ -2773,6 +2775,35 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         vkCmdEndRenderPass(cmd);                     // finalLayout=GENERAL — ready for the compute blur below, no
                                                      // extra barrier (same convention skyLowResRenderPass established)
 
+        // Mesh glints for glare (glare_find.comp), from the unblurred source's alpha. Its list is
+        // drawn in recordDraw (glare_mesh.vert, indirect on the list's own count).
+        meshGlareListed = false;
+        if (meshRendererInit && meshesDrawnThisFrame && glareGain > 0.0f && glareFindPipeline)
+        {
+            const uint32_t hdr[8] = {0u, 0u, 1u, 0u, 0u, 0u, 0u, 0u}; // count 0; draw 0 vertices, 1 instance
+            vkCmdUpdateBuffer(cmd, glintBuf, 0, sizeof(hdr), hdr);
+            VkBufferMemoryBarrier gb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+            gb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            gb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            gb.srcQueueFamilyIndex = gb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            gb.buffer = glintBuf;
+            gb.size = VK_WHOLE_SIZE;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                                 nullptr, 1, &gb, 0, nullptr);
+            const float findPc[4] = {std::exp2(2.0f * glareThreshold), 0.0f, 0.0f, 0.0f};
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, glareFindPipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, glareFindPipeLayout, 0, 1, &glareFindDescSet,
+                                    0, nullptr);
+            vkCmdPushConstants(cmd, glareFindPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(findPc), findPc);
+            vkCmdDispatch(cmd, (flareExtent.width + 15) / 16, (flareExtent.height + 15) / 16, 1);
+            gb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            gb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 0, nullptr,
+                                 1, &gb, 0, nullptr);
+            meshGlareListed = true;
+        }
+
         // Stage 2: blur/streak — one pipeline, three dispatches ping-ponging flareSourceImg <->
         // flareScratchImg (see FlareBlurPC's comment for the direction/mode scheme). Each
         // dispatch's write must be complete before the next dispatch's read/write — a full
@@ -2825,13 +2856,22 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              0, 0, nullptr, 0, nullptr, 1, &flareBarrier);
 
         bpc.direction = 0;
-        bpc.mode = 2; // streak: source->scratch (final result)
+        bpc.mode = 2; // wide horizontal gaussian: source->scratch
         vkCmdPushConstants(cmd, flareBlurPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(bpc), &bpc);
         vkCmdDispatch(cmd, gx, gy, 1);
 
-        // Final result (flareScratchImg) is read by the composite draw's FRAGMENT shader later
-        // this frame, in recordDraw().
         flareBarrier.image = flareScratchImg;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &flareBarrier);
+
+        bpc.direction = 1;
+        bpc.mode = 3; // wide vertical gaussian: scratch->source, added to the narrow glow (final result)
+        vkCmdPushConstants(cmd, flareBlurPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(bpc), &bpc);
+        vkCmdDispatch(cmd, gx, gy, 1);
+
+        // Final result (flareSourceImg) is read by the composite draw's FRAGMENT shader later
+        // this frame, in recordDraw().
+        flareBarrier.image = flareSourceImg;
         flareBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &flareBarrier);
@@ -2962,18 +3002,104 @@ void SatelliteSim::openModelViewer(int typeIdx, const char *label, float altM, i
     viewerSatIndex = satIndex;
     viewerLastSelected = selectedSatIndex;
     viewerAltM = altM > 0.0f ? altM : 550000.0f;
-    if (satIndex >= 0)
-        snprintf(viewerTitle, sizeof(viewerTitle), "Model: %s (satellite #%d)", label, satIndex);
-    else
-        snprintf(viewerTitle, sizeof(viewerTitle), "Model: %s", label);
-    const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(typeIdx);
+    // Named as the selection panel names it: constellation + its number within the constellation.
     const SatelliteType &t = satTypes[typeIdx];
-    snprintf(viewerInfo, sizeof(viewerInfo), "%s  -  %d triangles, %zu parts, %zu materials, %.1f m across",
+    if (satIndex >= 0 && satIndex < (int)satOrbits.size() && satOrbits[satIndex].constIdx < constellations.size())
+    {
+        const ConstellationConfig &c = constellations[satOrbits[satIndex].constIdx];
+        snprintf(viewerTitle, sizeof(viewerTitle), "%s #%d", c.name.c_str(), satIndex - (int)c.orbitStart);
+    }
+    else
+        snprintf(viewerTitle, sizeof(viewerTitle), "%s", label);
+    const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(typeIdx);
+    snprintf(viewerInfo, sizeof(viewerInfo), "%s  -  %s, %d triangles, %zu parts, %.1f m across", t.name.c_str(),
              t.modelId.c_str(), tm->triangles, t.model ? t.model->components.size() : (size_t)0,
-             t.model ? t.model->materials.size() : (size_t)0, 2.0f * tm->boundsRadius);
+             2.0f * tm->boundsRadius);
+    viewerObsNextWall = 0.0; // refresh the observer box now
     viewerCheckLine[0] = '\0';
     viewerCheckAwaiting = viewerCheckRequested = false;
     viewerChrome.open = true;
+}
+
+void SatelliteSim::selectSatellite(int idx)
+{
+    if (idx < 0 || idx >= (int)satOrbits.size())
+        return;
+    selectedSatIndex = idx;
+    selectedPlanetIndex = -1;
+    formatSelectedSatInfo();
+}
+
+// The model viewer's observer box: where the viewed satellite is in the observer's sky, its phase
+// angle and its magnitude (the CPU evaluator, as the selection panel's readout; above the air and
+// after the line of sight's extinction).
+void SatelliteSim::updateViewerObserverInfo()
+{
+    for (auto &l : viewerObsLine)
+        l[0] = '\0';
+    if (viewerSatIndex < 0 || viewerSatIndex >= (int)satOrbits.size())
+    {
+        snprintf(viewerObsLine[0], sizeof(viewerObsLine[0]), "Not tracking a satellite");
+        return;
+    }
+    const SatOrbit &orb = satOrbits[viewerSatIndex];
+    if (orb.typeIdx >= satTypes.size())
+        return;
+    const SatelliteType &type = satTypes[orb.typeIdx];
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double theta = earthRotationAngle(t);
+    const double ct = std::cos(theta), st = std::sin(theta);
+    const glm::dvec3 obs =
+        followActive ? glm::dvec3(ct * followObsEcef.x - st * followObsEcef.y, st * followObsEcef.x + ct * followObsEcef.y,
+                                  followObsEcef.z)
+                     : observerEciAt(glm::dvec3(obsDir), (double)kEarthRadius + obsTerrainH + obsHeightOffset, t);
+    const SatOrbitElems e = orbitElemsOf(orb);
+    SatPhotInputs in;
+    in.sunDirEci = glm::dvec3(sunDirECI);
+    in.obsEci = obs;
+    in.flareTiltRad = glm::radians((double)flareMitigationTiltDeg);
+    in.mirrorBoost = mirrorBoost;
+    if (type.isModel() && attUsesGroundSite(type.groups))
+    {
+        in.hasSiteIdeal = true;
+        in.siteIdeal = satGroundSiteIdeal(groundSiteAim(), e, (uint32_t)viewerSatIndex, t, in.sunDirEci).ideal;
+    }
+    if (!type.isModel())
+        return;
+    const SatPhotResult r = evalSatPhotometry(type.groups, type.lobes, e, t, in, nullptr,
+                                              satOcclusionActive() ? &type.occlusion : nullptr);
+    const glm::dvec3 rel = r.orbit.posEci - obs;
+    const double range = glm::length(rel);
+    const glm::dvec3 d = rel / std::max(range, 1e-6);
+    const double east = glm::dot(d, glm::dvec3(eci2enuX)), north = glm::dot(d, glm::dvec3(eci2enuY));
+    const double elDeg = glm::degrees(std::asin(glm::clamp(r.sinElevation, -1.0, 1.0)));
+    double azDeg = glm::degrees(std::atan2(east, north));
+    if (azDeg < 0.0)
+        azDeg += 360.0;
+    // Behind the Earth: the sightline meets the sphere before reaching the satellite.
+    const double b = glm::dot(obs, d), c = glm::dot(obs, obs) - (double)kEarthRadius * kEarthRadius;
+    const double disc = b * b - c;
+    const bool hidden = disc > 0.0 && -b - std::sqrt(disc) > 0.0 && -b - std::sqrt(disc) < range;
+    snprintf(viewerObsLine[0], sizeof(viewerObsLine[0]), "%s el %.1f deg, az %.0f deg",
+             hidden ? "Below your horizon:" : "In your sky:", elDeg, azDeg);
+    snprintf(viewerObsLine[1], sizeof(viewerObsLine[1]), "Range %.0f km, phase %.0f deg", range / 1000.0,
+             glm::degrees(r.phaseAngleRad));
+    if (!r.supported)
+        snprintf(viewerObsLine[2], sizeof(viewerObsLine[2]), "Mag: n/a (no ground-site aim)");
+    else if (!std::isfinite(r.magnitude))
+        snprintf(viewerObsLine[2], sizeof(viewerObsLine[2]), "Dark: in Earth's shadow");
+    else
+    {
+        snprintf(viewerObsLine[2], sizeof(viewerObsLine[2]), "Mag %.2f above the air", r.magnitude);
+        if (!hidden)
+        {
+            const double ext = atmExtinctionMag(obs, d, range, (double)extinctionCoeff);
+            snprintf(viewerObsLine[3], sizeof(viewerObsLine[3]), "Mag %.2f seen by you (air %.2f)", r.magnitude + ext,
+                     ext);
+        }
+        else
+            snprintf(viewerObsLine[3], sizeof(viewerObsLine[3]), "(1000 km: %.2f)", r.magnitude1000);
+    }
 }
 
 int SatelliteSim::pickViewerSatellite(int constIdx) const
@@ -3163,9 +3289,11 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     const bool envOn = envActive() && !viewerStudioLight;
     if (envOn)
     {
-        if (!envSlots[0].rendered || (viewerProbeFrame++ % 2u) == 0u ||
-            glm::length(envSlots[0].posEcef - P) > 50.0)
-            renderEnvProbe(cmd, 0, P);
+        // The viewer's probe is fine (SatEnvProbes::kViewerFaceSize), so it is refreshed a face per
+        // frame: a full cycle is 6 frames, in which a satellite moves < 1 km — under a texel at the
+        // Earth's distance. A new satellite (or a jump) renders all six at once.
+        const bool jump = !envSlots[0].rendered || glm::length(envSlots[0].posEcef - P) > 20000.0;
+        renderEnvProbe(cmd, 0, P, jump ? 0x3Fu : (1u << (viewerProbeFrame++ % 6u)));
         inst.probeSlot = 0;
         if (viewerBgW > 0)
         {
@@ -3181,8 +3309,8 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     frame.bgParams.y = std::max(4.0f, 5.0f * uiScale);
     frame.bgParams.z = (float)std::max(1u, viewerBgW);
     frame.bgParams.w = (float)std::max(1u, viewerBgH);
-    frame.marker0 = glm::vec4(glm::vec3(obsEcef - P), 1.0f);
-    if (tracked && !viewerStudioLight && attUsesGroundSite(type.groups))
+    frame.marker0 = glm::vec4(glm::vec3(obsEcef - P), viewerMarkers ? 1.0f : 0.0f);
+    if (viewerMarkers && tracked && !viewerStudioLight && attUsesGroundSite(type.groups))
     {
         const SatGroundSiteAim aim = groundSiteAim();
         const SatGroundSiteResult gs = satGroundSiteIdeal(aim, orbitElemsOf(satOrbits[viewerSatIndex]),
@@ -3324,12 +3452,12 @@ SatDrawPC SatelliteSim::envSkyPC(const glm::dvec3 &posEcef, const glm::dmat3 &ca
     return pc;
 }
 
-void SatelliteSim::renderEnvProbe(VkCommandBuffer cmd, int slot, const glm::dvec3 &posEcef)
+void SatelliteSim::renderEnvProbe(VkCommandBuffer cmd, int slot, const glm::dvec3 &posEcef, uint32_t faceMask)
 {
     SatDrawPC pcs[6];
     for (int f = 0; f < 6; ++f)
         pcs[f] = envSkyPC(posEcef, SatEnvProbes::faceCamToWorld(f), glm::half_pi<float>(), 1.0f);
-    envProbes.recordProbe(cmd, slot, skyDescSet, pcs, sizeof(SatDrawPC));
+    envProbes.recordProbe(cmd, slot, skyDescSet, pcs, sizeof(SatDrawPC), faceMask);
     envSlots[slot].rendered = true;
     envSlots[slot].posEcef = posEcef;
     envSlots[slot].renderedWall = glfwGetTime();
@@ -3534,6 +3662,9 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
                               ? (float)(seed * pixSolidAngle * range * range / (glm::pi<double>() * r.intensity) *
                                         spriteGone / fade)
                               : 0.0f;
+        // Glare on its glints (mesh_bloom.frag -> glare_find.comp): the sprite's effectFlare per unit of
+        // its seed, so a glint carrying all the mesh's seed glares as the sprite did.
+        inst.glareNorm = seed > 0.0 ? (float)((double)effectFlare / seed) : 0.0f;
         inst.probeSlot = kNoProbe; // assigned below, once every instance is known
         insts.push_back(inst);
         types.push_back(ti);
@@ -4754,12 +4885,24 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
             gpc.screenSizePx = glm::vec2((float)ctx.swapExtent.width, (float)ctx.swapExtent.height);
             gpc.maxPointSize = std::min(props.limits.pointSizeRange[1], 1024.0f);
             gpc.threshold = glareThreshold;
+            gpc.falloff = glareFalloff;
+            gpc.spikes = glareSpikes;
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glarePipeline);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flareSourcePipeLayout, 0, 1, &descSet, 0,
                                     nullptr);
             vkCmdPushConstants(cmd, flareSourcePipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                sizeof(gpc), &gpc);
             vkCmdDrawIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, drawVertexCount), 1, 0);
+            // Glare on the mesh glints glare_find.comp listed this frame.
+            if (meshGlareListed && glareMeshPipeline != VK_NULL_HANDLE)
+            {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareMeshPipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareMeshPipeLayout, 0, 1,
+                                        &glareMeshDescSet, 0, nullptr);
+                vkCmdPushConstants(cmd, glareMeshPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(gpc), &gpc);
+                vkCmdDrawIndirect(cmd, glintBuf, offsetof(GpuGlintList, vertexCount), 1, 0);
+            }
         }
     }
 
@@ -4881,6 +5024,15 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyDescriptorSetLayout(device, flareBlurDescLayout, nullptr);
     vkDestroyPipeline(device, flareCompositePipeline, nullptr);
     vkDestroyPipeline(device, glarePipeline, nullptr);
+    vkDestroyPipeline(device, glareMeshPipeline, nullptr);
+    vkDestroyPipeline(device, glareFindPipeline, nullptr);
+    vkDestroyPipelineLayout(device, glareFindPipeLayout, nullptr);
+    vkDestroyPipelineLayout(device, glareMeshPipeLayout, nullptr);
+    vkDestroyDescriptorPool(device, glintDescPool, nullptr);
+    vkDestroyDescriptorSetLayout(device, glareFindDescLayout, nullptr);
+    vkDestroyDescriptorSetLayout(device, glareMeshDescLayout, nullptr);
+    vkDestroyBuffer(device, glintBuf, nullptr);
+    vkFreeMemory(device, glintMem, nullptr);
     vkDestroyPipelineLayout(device, flareCompositePipeLayout, nullptr);
     vkDestroyDescriptorPool(device, flareCompositeDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, flareCompositeDescLayout, nullptr);
@@ -8824,9 +8976,9 @@ void SatelliteSim::createFlareDescriptors(VulkanContext &ctx)
     compAi.pSetLayouts = &flareCompositeDescLayout;
     vkAllocateDescriptorSets(ctx.device, &compAi, &flareCompositeDescSet);
 
-    // Final result lands in flareScratchImg (see the dispatch-order comment at the flare_blur.comp
-    // call site in recordCompute()).
-    VkDescriptorImageInfo flareFinalInfo{flareSampler, flareScratchView, VK_IMAGE_LAYOUT_GENERAL};
+    // Final result lands back in flareSourceImg (see the dispatch-order comment at the flare_blur.comp
+    // call site in recordCompute() and flare_blur.comp's header).
+    VkDescriptorImageInfo flareFinalInfo{flareSampler, flareSourceView, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet compWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
                                    flareCompositeDescSet, 0, 0, 1,
                                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &flareFinalInfo, nullptr, nullptr};
@@ -8942,6 +9094,78 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         vkDestroyShaderModule(ctx.device, mod, nullptr);
     }
 
+    // -- Mesh-glint glare: the glint list, glare_find.comp and the mesh glare's layout. Swapchain-
+    // size independent (created once); only the find set's image is rewritten, since flareSourceView
+    // is recreated on resize.
+    if (glareFindPipeline == VK_NULL_HANDLE)
+    {
+        ctx.createBuffer(sizeof(GpuGlintList),
+                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, glintBuf, glintMem);
+        VkDescriptorSetLayoutBinding fb[2] = {
+            {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        li.bindingCount = 2;
+        li.pBindings = fb;
+        vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &glareFindDescLayout);
+        VkDescriptorSetLayoutBinding mb{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+        li.bindingCount = 1;
+        li.pBindings = &mb;
+        vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &glareMeshDescLayout);
+
+        VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
+        VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pi.poolSizeCount = 2;
+        pi.pPoolSizes = ps;
+        pi.maxSets = 2;
+        vkCreateDescriptorPool(ctx.device, &pi, nullptr, &glintDescPool);
+        VkDescriptorSetLayout sl[2] = {glareFindDescLayout, glareMeshDescLayout};
+        VkDescriptorSet sets[2] = {};
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool = glintDescPool;
+        ai.descriptorSetCount = 2;
+        ai.pSetLayouts = sl;
+        vkAllocateDescriptorSets(ctx.device, &ai, sets);
+        glareFindDescSet = sets[0];
+        glareMeshDescSet = sets[1];
+        VkDescriptorBufferInfo bi{glintBuf, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet w[2] = {};
+        w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareFindDescSet, 1, 0, 1,
+                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bi, nullptr};
+        w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareMeshDescSet, 0, 0, 1,
+                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bi, nullptr};
+        vkUpdateDescriptorSets(ctx.device, 2, w, 0, nullptr);
+
+        VkPushConstantRange fpcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+        VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pli.setLayoutCount = 1;
+        pli.pSetLayouts = &glareFindDescLayout;
+        pli.pushConstantRangeCount = 1;
+        pli.pPushConstantRanges = &fpcr;
+        vkCreatePipelineLayout(ctx.device, &pli, nullptr, &glareFindPipeLayout);
+        VkPushConstantRange mpcr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(GlarePC)};
+        pli.pSetLayouts = &glareMeshDescLayout;
+        pli.pPushConstantRanges = &mpcr;
+        vkCreatePipelineLayout(ctx.device, &pli, nullptr, &glareMeshPipeLayout);
+
+        VkShaderModule mod = ctx.loadShader("shaders/glare_find.comp.spv");
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod,
+                    "main", nullptr};
+        ci.layout = glareFindPipeLayout;
+        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &glareFindPipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create glare find pipeline");
+        vkDestroyShaderModule(ctx.device, mod, nullptr);
+    }
+    {
+        VkDescriptorImageInfo ii{VK_NULL_HANDLE, flareSourceView, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareFindDescSet, 0, 0, 1,
+                               VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ii, nullptr, nullptr};
+        vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+    }
+
     // ── Stage 3: flareCompositePipeline (graphics, fullscreen tri, additive blend) ────────────
     {
         VkShaderModule vert = ctx.loadShader("shaders/flare_composite.vert.spv");
@@ -9038,6 +9262,17 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         gci.layout = flareSourcePipeLayout;
         if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &gci, nullptr, &glarePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create glare pipeline");
+        vkDestroyShaderModule(ctx.device, gv, nullptr);
+        vkDestroyShaderModule(ctx.device, gf, nullptr);
+
+        // The mesh glints' glare: same state, its own list (glare_mesh.vert/.frag).
+        gv = ctx.loadShader("shaders/glare_mesh.vert.spv");
+        gf = ctx.loadShader("shaders/glare_mesh.frag.spv");
+        gst[0].module = gv;
+        gst[1].module = gf;
+        gci.layout = glareMeshPipeLayout;
+        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &gci, nullptr, &glareMeshPipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create mesh glare pipeline");
         vkDestroyShaderModule(ctx.device, gv, nullptr);
         vkDestroyShaderModule(ctx.device, gf, nullptr);
     }

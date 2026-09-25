@@ -1,0 +1,61 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+// ── glare_find.comp — find the bright glints on satellite MESHES (2026-09-24) ─────────────────
+// A satellite drawn as a sprite gets its glare from glare.vert. A mesh has no point to draw one at:
+// its light is wherever its surfaces glint. mesh_bloom.frag writes that light into the flare source
+// buffer's alpha in effectFlare units (satellite sprites leave alpha 0), and this pass, run on that
+// buffer before it is blurred, lists every CONCENTRATED local maximum bright enough to glare:
+//   - a 3x3 local maximum of alpha (ties broken by texel index, so one texel wins);
+//   - at least half the light of its 5x5 neighbourhood in the 3x3 — a glint, not a bright surface
+//     (a uniformly lit panel filling the screen has no single point to flare from);
+//   - its 5x5 light is its effectFlare, given the same threshold as a sprite's glare.
+// Position: the light-weighted centroid of the 3x3, so the glare moves smoothly, not a texel at a time.
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly image2D flareSrc;
+#define GLINT_LIST_BINDING 1
+#include "glint_list.glsl"
+
+layout(push_constant) uniform PC {
+    float minFlare; // 2^(2 x glare threshold): effectFlare at the threshold
+    float pad0, pad1, pad2;
+} pc;
+
+void main()
+{
+    ivec2 size = imageSize(flareSrc);
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    if (c.x >= size.x || c.y >= size.y) return;
+    float a = imageLoad(flareSrc, c).a;
+    // Its 5x5 sum is at most 25a if it is the local maximum.
+    if (a <= 0.0 || a * 25.0 < pc.minFlare) return;
+
+    int myIdx = c.y * size.x + c.x;
+    float e3 = 0.0, e5 = 0.0;
+    vec2  cen = vec2(0.0);
+    vec3  col = vec3(0.0);
+    for (int y = -2; y <= 2; ++y)
+        for (int x = -2; x <= 2; ++x) {
+            ivec2 q = c + ivec2(x, y);
+            if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y) continue;
+            vec4 v = imageLoad(flareSrc, q);
+            e5 += v.a;
+            if (abs(x) <= 1 && abs(y) <= 1) {
+                if (x != 0 || y != 0) {
+                    int qi = q.y * size.x + q.x;
+                    if (v.a > a || (v.a == a && qi < myIdx)) return; // not the maximum
+                }
+                e3 += v.a;
+                cen += v.a * vec2(q);
+                col += v.rgb;
+            }
+        }
+    if (e5 < pc.minFlare || e3 < 0.5 * e5) return;
+
+    uint i = atomicAdd(glints.count, 1u);
+    if (i >= kMaxGlints) return;
+    vec2 p = cen / e3 + 0.5;
+    float m = max(max(col.r, col.g), max(col.b, 1e-6));
+    glints.glintPos[i]   = vec4(p / vec2(size), e5, 0.0);
+    glints.glintColor[i] = vec4(col / m, 1.0);
+    atomicMax(glints.vertexCount, i + 1u);
+}

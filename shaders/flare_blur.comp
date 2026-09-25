@@ -3,39 +3,43 @@ layout(local_size_x = 16, local_size_y = 16) in;
 
 // ── flare_blur.comp ────────────────────────────────────────────────────────────
 // Stage 2 of the flare architecture overhaul (see FlareSourcePC's comment in SatelliteSim.h).
-// Post-processes the small (quarter-res) bright-source buffer flare_source.vert/.frag renders:
-// two passes of a separable Gaussian (softens each point into a round corona) followed by one
-// multi-directional streak pass — the godray mechanism. Operating uniformly on the WHOLE buffer
-// means any bright, unoccluded region streaks — sun and satellites alike — with no "pick a light
-// source" logic needed at all, and occlusion (already baked into the source buffer by
-// flare_source.frag) naturally produces shafts spilling from cloud/terrain gaps.
+// Post-processes the small (quarter-res) bright-source buffer flare_source.vert/.frag renders into a
+// ROUND glow: a narrow separable Gaussian (the corona right around each source) plus a wide one
+// (the broad glow a crowd of satellites, or a bright glint, spreads over the sky). Both are
+// separable Gaussians, so the result is exactly isotropic with no truncation edge. The sharp spikes
+// of a bright source are not made here: glare.vert/.frag draws them at full resolution.
 //
-// Ping-pongs between two same-sized storage images (flareA/flareB) rather than reading/writing the
-// same image in one dispatch, which would race between neighbouring-texel reads. Three dispatches
-// per frame, same pipeline, direction/mode selected via push constants:
-//   dispatch 1: mode=0 (horizontal gaussian), direction=0 (flareA -> flareB)
-//   dispatch 2: mode=1 (vertical gaussian),   direction=1 (flareB -> flareA)
-//   dispatch 3: mode=2 (streak),               direction=0 (flareA -> flareB) -- final result in flareB
+// Until 2026-09-24 the last pass sampled 6, then 16, fixed directions: a bright point came out as a
+// 6- (then 16-) armed starfish of dotted rays that stopped dead where the taps ran out.
+//
+// Ping-pongs between two same-sized storage images (flareA = the source, flareB = scratch). Four
+// dispatches per frame, same pipeline, mode selected by push constants:
+//   1: mode 0, narrow horizontal  A -> B
+//   2: mode 1, narrow vertical    B -> A    (A = narrow glow)
+//   3: mode 2, wide horizontal    A -> B
+//   4: mode 3, wide vertical      B -> A, added to A's own texel (only that texel of A is read, so the
+//      in-place write is race-free). Final result in flareA.
 
 layout(set = 0, binding = 0, rgba16f) uniform image2D flareA;
 layout(set = 0, binding = 1, rgba16f) uniform image2D flareB;
 
 layout(push_constant) uniform PC {
     uint  direction;  // 0 = read flareA write flareB, 1 = read flareB write flareA
-    uint  mode;       // 0 = horizontal gaussian, 1 = vertical gaussian, 2 = streak
-    float streakGain; // user-tunable streak/godray strength
+    uint  mode;       // 0/1 = narrow horizontal/vertical, 2/3 = wide horizontal/vertical
+    float streakGain; // the wide glow's strength ("Flare streak" x the night eye-adaptation)
     float pad0;
 } pc;
 
 const float kGaussWeights[9] = float[9](0.028, 0.066, 0.123, 0.180, 0.206, 0.180, 0.123, 0.066, 0.028);
 
-// Mode 2 was a six-spoke streak until 2026-09-24: right for a crowd, but it turned a single bright
-// glint into a soft six-pointed blob. It is now a broad, ROUND halo (16 directions, Gaussian falloff
-// out to ~30 texels of this quarter-res buffer); the sharp spikes of a bright glint are drawn at full
-// resolution by glare.vert/.frag instead.
-const int   kStreakDirs  = 16;
-const int   kStreakTaps  = 10;
-const float kHaloSigma   = 5.0; // taps
+// The wide glow: sigma 10 texels of this buffer (~40 px on screen), sampled every 2 texels out to
+// 3.6 sigma (the narrow pass has already smoothed the source to sigma ~2, so the stride cannot alias).
+const float kWideSigma  = 10.0;
+const int   kWideStride = 2;
+const int   kWideTaps   = 18;
+const float kWideGain   = 1.5;
+
+vec4 loadSrc(bool readA, ivec2 c) { return readA ? imageLoad(flareA, c) : imageLoad(flareB, c); }
 
 void main() {
     ivec2 size  = imageSize(flareA);
@@ -43,37 +47,33 @@ void main() {
     if (coord.x >= size.x || coord.y >= size.y) return;
 
     bool readA = (pc.direction == 0u);
+    ivec2 axis = (pc.mode == 0u || pc.mode == 2u) ? ivec2(1, 0) : ivec2(0, 1);
 
     if (pc.mode <= 1u) {
-        // Separable Gaussian: mode 0 = horizontal, mode 1 = vertical.
-        ivec2 step = (pc.mode == 0u) ? ivec2(1, 0) : ivec2(0, 1);
         vec4 sum = vec4(0.0);
-        for (int i = -4; i <= 4; ++i) {
-            ivec2 sc = clamp(coord + step * i, ivec2(0), size - 1);
-            vec4  v  = readA ? imageLoad(flareA, sc) : imageLoad(flareB, sc);
-            sum += v * kGaussWeights[i + 4];
-        }
+        for (int i = -4; i <= 4; ++i)
+            sum += loadSrc(readA, clamp(coord + axis * i, ivec2(0), size - 1)) * kGaussWeights[i + 4];
         if (readA) imageStore(flareB, coord, sum); else imageStore(flareA, coord, sum);
         return;
     }
 
-    // mode == 2: multi-directional streak. Samples outward along kStreakDirs fixed angles with
-    // exponential decay, additively combined on top of the (already blurred) source pixel.
-    vec4 center = readA ? imageLoad(flareA, coord) : imageLoad(flareB, coord);
-    vec4 accum = center;
-    const float TWO_PI = 6.28318530718;
-    // Each ring of taps carries the area it stands for (∝ radius), so the halo's profile is the
-    // Gaussian itself rather than one peaked at the centre; 6/16 keeps the old total energy.
-    for (int d = 0; d < kStreakDirs; ++d) {
-        float ang = (TWO_PI / float(kStreakDirs)) * (float(d) + 0.5 * float(d & 1));
-        vec2  dir = vec2(cos(ang), sin(ang));
-        for (int t = 1; t <= kStreakTaps; ++t) {
-            float w = exp(-float(t * t) / (2.0 * kHaloSigma * kHaloSigma)) * float(t) * (0.9 / float(kStreakDirs));
-            ivec2 sc = coord + ivec2(dir * float(t * 3));
-            if (sc.x < 0 || sc.y < 0 || sc.x >= size.x || sc.y >= size.y) break;
-            vec4 v = readA ? imageLoad(flareA, sc) : imageLoad(flareB, sc);
-            accum += v * (w * pc.streakGain);
-        }
+    // Wide Gaussian, normalised (energy-preserving per axis); off-screen taps count as black.
+    vec4  sum = vec4(0.0);
+    float wsum = 0.0;
+    for (int i = -kWideTaps; i <= kWideTaps; ++i) {
+        float t = float(i * kWideStride);
+        float w = exp(-t * t / (2.0 * kWideSigma * kWideSigma));
+        wsum += w;
+        ivec2 sc = coord + axis * (i * kWideStride);
+        if (sc.x < 0 || sc.y < 0 || sc.x >= size.x || sc.y >= size.y) continue;
+        sum += loadSrc(readA, sc) * w;
     }
-    if (readA) imageStore(flareB, coord, accum); else imageStore(flareA, coord, accum);
+    sum /= wsum;
+    if (pc.mode == 2u) {
+        if (readA) imageStore(flareB, coord, sum); else imageStore(flareA, coord, sum);
+        return;
+    }
+    // mode 3: B's wide vertical pass, added onto the narrow glow already in A (this texel only).
+    vec4 narrow = imageLoad(flareA, coord);
+    imageStore(flareA, coord, narrow + sum * (kWideGain * pc.streakGain));
 }

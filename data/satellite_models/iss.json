@@ -20,9 +20,11 @@
         },
         {
             "name": "truss_lattice",
-            "preset": "aluminum",
-            "diffuse_albedo": 0.3,
-            "specular_f0": 0.3,
+            "preset": "truss",
+            "coverage": 0.5,
+            "truss_pitch": 2.3,
+            "diffuse_albedo": 0.6,
+            "specular_f0": 0.6,
             "roughness": 0.45,
             "color": [0.78, 0.78, 0.76]
         },
@@ -756,8 +758,8 @@
         {
             "subject": "truss_lattice",
             "status": "estimate",
-            "value": "albedo 0.3, F0 0.3, roughness 0.45: an open aluminium lattice with ORUs, as a solid box with ~half the fill",
-            "source": "No published reflectance; the lowered albedo stands in for the truss's open area (it also over-shadows as a solid occluder)."
+            "value": "open lattice (truss preset), coverage 0.5, 2.3 m bays; members albedo 0.6, F0 0.6, roughness 0.45 - the same mean reflectance as the solid-box stand-in it replaced (albedo 0.3, F0 0.3)",
+            "source": "No published reflectance or fill. Coverage 0.5 (not the preset's 0.3): the ITS carries ORUs, cable trays and the Mobile Transporter rail inside its bays. The bay pitch is an estimate from the 4.6 m segment height (two bays per face). As an open lattice it no longer shadows as a solid box (2026-09-24; until then a solid box with ~half the albedo)."
         },
         {
             "subject": "radiator_z93",

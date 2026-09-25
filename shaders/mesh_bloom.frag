@@ -5,10 +5,14 @@
 // sprite would have put down (flare_source: b(effectFlare) over its point disc), per unit of the
 // mesh's rendered flux. So a mesh seeds exactly its sprite's glow, placed wherever its light actually
 // is: across the hand-off a flare keeps its punch, and on a large model the glow sits on the glint.
+// Alpha carries the same light as effectFlare units (seed x the instance's glareNorm = its sprite's
+// effectFlare per unit of seed): glare_find.comp finds concentrated glints in it and gives them the
+// sharp glare a sprite of that brightness gets (2026-09-24).
 
 layout(set = 0, binding = 0, rgba32f) uniform readonly image2D meshColorImg; // rgb radiance, a = slot + 1
 // Stride must equal GpuMeshInstance (432 B, SatMeshRenderer.h): the earthshine SH block was appended
 // 2026-09-24 — this struct must grow with it or every instance past the first reads the wrong one.
+// tail = firstComponent, probeSlot, glareNorm (float bits), pad.
 struct MeshInstanceBloom { vec4 pad[20]; uint firstMaterial, firstOccluder, occluderCount; float bloomScale; uvec4 tail; vec4 earthSh[5]; };
 layout(set = 0, binding = 1, std430) readonly buffer MeshInstances { MeshInstanceBloom instances[]; };
 layout(push_constant) uniform PC {
@@ -24,7 +28,7 @@ void main()
     ivec2 size = imageSize(meshColorImg);
     int   s    = max(1, int(pc.scale + 0.5));
     ivec2 base = ivec2(gl_FragCoord.xy) * s;
-    float seed = 0.0;
+    float seed = 0.0, flare = 0.0;
     vec3  col  = vec3(0.0);
     for (int y = 0; y < s; ++y)
         for (int x = 0; x < s; ++x) {
@@ -34,10 +38,12 @@ void main()
             // only sunlight and earthshine seed the bloom, not reflections of the Earth or moonlight,
             // matching the model intensity bloomScale is normalised by.
             float l = dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)) * fract(m.a);
-            float k = l * instances[int(floor(m.a)) - 1].bloomScale;
+            MeshInstanceBloom inst = instances[int(floor(m.a)) - 1];
+            float k = l * inst.bloomScale;
             seed += k;
+            flare += k * uintBitsToFloat(inst.tail.z);
             col  += m.rgb * (k / max(dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)), 1e-6));
         }
     if (seed <= 0.0) discard;
-    outColor = vec4(col * pc.gain, seed * pc.gain); // rgb carries the tint, like fragColor × brightness
+    outColor = vec4(col * pc.gain, flare); // rgb carries the tint, like fragColor × brightness
 }

@@ -37,8 +37,8 @@ layout(location = 1) out float outDist; // scene mode: TRUE distance from the ca
 layout(set = 1, binding = 0) uniform samplerCube probeTex;
 layout(set = 0, binding = 8, std430) readonly buffer ProbeSh { vec4 probeSh[]; };
 const uint  kProbeCount     = 8u;          // SatEnvProbes::kProbes
-const float kProbeTexelRad  = 1.5707963 / 128.0; // a mip-0 texel (kFaceSize)
-const float kProbeMaxLod    = 7.0;
+// Probes differ in size (the viewer's slot 0 is finer than the scene's), so the mip-0 texel and the
+// last useful level come from the bound cube itself.
 
 vec3 probeIrradiance(uint slot, vec3 n)
 {
@@ -398,7 +398,9 @@ void main()
             vec3 env;
             if (hasProbe) {
                 // The full renderer's view from this satellite: a mip whose texel spans the lobe (~2α).
-                float lod = clamp(log2(max(2.0 * sf.rough / kProbeTexelRad, 1.0)), 0.0, kProbeMaxLod);
+                float texelRad = 1.5707963 / float(textureSize(probeTex, 0).x);
+                float maxLod = float(textureQueryLevels(probeTex)) - 2.0;
+                float lod = clamp(log2(max(2.0 * sf.rough / texelRad, 1.0)), 0.0, maxLod);
                 env = textureLod(probeTex, Rd, lod).rgb;
             } else {
                 vec3  ro = vWorld - frame.earthCenter.xyz;

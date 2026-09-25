@@ -47,7 +47,7 @@ VkImageView makeView(VkDevice d, VkImage img, VkImageViewType type, uint32_t bas
 
 void barrier(VkCommandBuffer cmd, VkImage img, VkImageLayout from, VkImageLayout to, VkAccessFlags srcAccess,
              VkAccessFlags dstAccess, VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage, uint32_t baseMip,
-             uint32_t mips, uint32_t layers)
+             uint32_t mips, uint32_t layers, uint32_t baseLayer = 0)
 {
     VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     b.oldLayout = from;
@@ -56,7 +56,7 @@ void barrier(VkCommandBuffer cmd, VkImage img, VkImageLayout from, VkImageLayout
     b.dstAccessMask = dstAccess;
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = img;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, baseMip, mips, 0, layers};
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, baseMip, mips, baseLayer, layers};
     vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
@@ -104,6 +104,14 @@ VkRenderPass makeColorPass(VkDevice d, VkImageLayout finalLayout)
     return rp;
 }
 } // namespace
+
+uint32_t SatEnvProbes::mipCount(int slot)
+{
+    uint32_t m = 1;
+    for (uint32_t s = faceSize(slot); s > 1; s >>= 1)
+        ++m;
+    return m;
+}
 
 // ─── Cube faces ───────────────────────────────────────────────────────────────────────────────────
 glm::dmat3 SatEnvProbes::faceCamToWorld(int face)
@@ -187,15 +195,19 @@ void SatEnvProbes::init(VulkanContext &ctx, VkPipelineLayout skyLayout)
     sci.minFilter = VK_FILTER_LINEAR;
     sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.maxLod = (float)kMips;
+    sci.maxLod = (float)mipCount(0);
     vkCreateSampler(ctx.device, &sci, nullptr, &linearSampler);
 
     probePass = makeColorPass(ctx.device, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     bgPass = makeColorPass(ctx.device, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     // Probe images: cube-compatible, 6 layers, full mip chain.
-    for (Probe &p : probes)
+    for (int slot = 0; slot < kProbes; ++slot)
     {
+        Probe &p = probes[slot];
+        p.size = faceSize(slot);
+        p.mips = mipCount(slot);
+        const uint32_t kFaceSize = p.size, kMips = p.mips;
         VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         ci.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
         ci.imageType = VK_IMAGE_TYPE_2D;
@@ -234,6 +246,7 @@ void SatEnvProbes::init(VulkanContext &ctx, VkPipelineLayout skyLayout)
         VkCommandBuffer cmd = ctx.beginOneTimeCommands();
         for (Probe &p : probes)
         {
+            const uint32_t kMips = p.mips;
             barrier(cmd, p.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
                     kMips, 6);
@@ -362,7 +375,8 @@ void SatEnvProbes::init(VulkanContext &ctx, VkPipelineLayout skyLayout)
         vkDestroyShaderModule(ctx.device, vs, nullptr);
         vkDestroyShaderModule(ctx.device, fs, nullptr);
     }
-    Log::line("env probes: " + std::to_string(kProbes) + " probes of 6 x " + std::to_string(kFaceSize) + "^2");
+    Log::line("env probes: viewer 6 x " + std::to_string(kViewerFaceSize) + "^2, " + std::to_string(kProbes - 1) +
+              " scene probes of 6 x " + std::to_string(kSceneFaceSize) + "^2");
 }
 
 void SatEnvProbes::destroyViewerBg()
@@ -403,15 +417,25 @@ void SatEnvProbes::cleanup(VkDevice d)
 
 // ─── Probe rendering ──────────────────────────────────────────────────────────────────────────────
 void SatEnvProbes::recordProbe(VkCommandBuffer cmd, int slot, VkDescriptorSet skyDescSet, const void *pcs,
-                               uint32_t pcSize)
+                               uint32_t pcSize, uint32_t faceMask)
 {
-    if (!envPipe || slot < 0 || slot >= kProbes)
+    if (!envPipe || slot < 0 || slot >= kProbes || (faceMask & 0x3Fu) == 0u)
         return;
     Probe &p = probes[slot];
+    const uint32_t kFaceSize = p.size, kMips = p.mips;
     const VkViewport vp{0.0f, 0.0f, (float)kFaceSize, (float)kFaceSize, 0.0f, 1.0f};
     const VkRect2D sc{{0, 0}, {kFaceSize, kFaceSize}};
     for (int f = 0; f < 6; ++f)
     {
+        if ((faceMask & (1u << f)) == 0u)
+        {
+            // Kept from its last render: mip 0 of this face joins the others as the blit source.
+            barrier(cmd, p.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, 1, (uint32_t)f);
+            continue;
+        }
         VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         rbi.renderPass = probePass;
         rbi.framebuffer = p.fb[f];
@@ -464,7 +488,7 @@ void SatEnvProbes::recordProbe(VkCommandBuffer cmd, int slot, VkDescriptorSet sk
         {
             uint32_t slot;
             float lod;
-        } pc{(uint32_t)slot, 3.0f};
+        } pc{(uint32_t)slot, (float)(kMips - 5)}; // the 16² level
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, shPipe);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, shLayout, 0, 1, &shSets[slot], 0, nullptr);
         vkCmdPushConstants(cmd, shLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);

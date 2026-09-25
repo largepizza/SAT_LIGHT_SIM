@@ -628,9 +628,13 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     march of its own (`envAurora`), the sun disc and lens flare are left out, the Milky Way and
     zodiacal bases are turned from the main observer's ENU frame (`CloudParams::envMainObsDir`), and
     the output is pre-exposure HDR (post-tonemap terms divided back by their exposure). A probe is
-    six 128² faces of that around one position (`faceCamToWorld`, checked against Vulkan's cube-face
+    six faces of that around one position (`faceCamToWorld`, checked against Vulkan's cube-face
     rule at init), a box mip chain, and an order-2 SH irradiance (`env_probe_sh.comp`, 1024
-    Fibonacci directions). `sat_mesh.frag` reflects the probe (a mip whose texel spans ~2α) and
+    Fibonacci directions, read from the 16² level). Face size per slot: the viewer's slot 0 is 512²
+    (0.18°/texel, re-rendered ONE FACE PER FRAME, all six on a new satellite or a > 20 km jump),
+    scene slots 256²; 128² read as pixelated in mirrors. `sat_mesh.frag` takes the texel size and
+    last useful mip from the bound cube (`textureSize`/`textureQueryLevels`), reflects the probe (a
+    mip whose texel spans ~2α) and
     takes its SH as diffuse light; the photometric earthshine still feeds the bloom normalisation.
     Each probe is its own cube image and descriptor set (pipeline set 1, bound per draw — no
     cube-array feature). Slot 0 is the model viewer's; scene instances share slots 1-7: the nearest
@@ -644,7 +648,15 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     `kEnvToScene` into pre-exposure units. The sun disc is not in it; the GGX sun lobe is the glint.
   - **The viewer:** always a REAL satellite where it is now: "View model" beside "Trace pass" tracks
     the selection; "VIEW" on a constellation row picks that constellation's satellite highest in the
-    observer's sky (`pickViewerSatellite`). Position, velocity and attitude come from
+    observer's sky (`pickViewerSatellite`) AND SELECTS it (`selectSatellite`), so the viewer never
+    shows an unreferenced satellite and a station is one click to find. Layout (2026-09-24): the
+    title is the satellite's name as the selection panel gives it ("<constellation> #<n>"), amber +
+    "(selected)" while it is the selection; title-bar icons Select (re-select it) and Follow (eye:
+    fly to it); the image left; a settings column right (camera, render, OBSERVER box — markers
+    toggle, elevation/azimuth, range, phase, magnitude above the air and after extinction from the
+    CPU evaluator at 10 Hz (`updateViewerObserverInfo`), "Trace pass" — and the photometric check).
+    The window registers a mouse-capture rect: without it a drag on the model clicked the sky behind
+    and re-selected whatever was under the window. Position, velocity and attitude come from
     `satOrbitStateAt` + `evalGroupPoses` in ECEF. With Live light its background is the SKY_ENV
     renderer at the viewer's own camera (`SatEnvProbes::recordViewerBg`, an HDR target
     `sat_mesh_bg.frag` samples and tonemaps) and its reflections come from probe slot 0; Studio light
@@ -748,14 +760,17 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, `iss.json` (the first parity model: 50 components; station
   root, TRRJ radiators edge-on, SARJ alpha, one beta group with four mast pivots; 8 legacy Kapton
-  wings of two blankets each plus the six iROSAs installed by 2023; 514 exact lobes), `tiangong.json`
+  wings of two blankets each plus the six iROSAs installed by 2023; 514 exact lobes; the integrated
+  truss is the `truss` lattice at coverage 0.5, 2.3 m bays, so it no longer shadows as a solid box), `tiangong.json`
   (T of three modules; the labs' two-axis wings as alpha about the labs' axis + beta with two
   pivots), `starship_depot.json` (9 x 60 m body of revolution in the `stainless_steel` preset with a
-  body-mounted solar band), `spacex_ai_sat.json` (Starmind AI1, rebuilt 2026-09-24 to the project
-  owner's reading of the AI1 spec sheet: a flat 10 x 3 x 0.6 m "door" bus that stacks PEZ-style, two
-  70 m-span wings of three strips on trusses across a 3.5 m gap, and two 10 m-long white radiators
-  standing 20 m top to bottom from the bus's flat faces, edge-on to the Sun; 10 lobes, flown by a
-  million; trusses, spars and terminals are render-only), `reflect_orbital.json` (a 55 m square membrane mirror on `sun_reflect_ground_site`),
+  body-mounted solar band), `spacex_ai_sat.json` (Starmind AI1, rebuilt twice 2026-09-24 to the project
+  owner's reading of the AI1 spec sheet: nadir-pointing, a flat 10 x 3 x 0.6 m "door" bus that stacks
+  PEZ-style with its 3 x 0.6 m end toward the Sun, two 10 m-long white radiators standing up and hanging
+  down from its flat faces (20 m top to bottom, edge-on to the Sun), and two 70 m-span wings of three
+  strips, each on ONE truss to a gimbal at its root, tracking the Sun about the span axis (then the
+  flare-mitigation tilt, toward zenith, about +Y); 10 lobes, flown by a million; trusses, gimbals,
+  spars and terminals are render-only), `reflect_orbital.json` (a 55 m square membrane mirror on `sun_reflect_ground_site`),
   the Starlinks `starlink_v1_5` (gen-1 dielectric mirror film, a translucent 'lampshade' backsheet
   whose transmission is fitted to the Post-VisorSat phase function), `starlink_v2_mini` (rebuilt
   2026-09-24 to SpaceX's published mitigations: gen-2 film on the nadir face, black paint, opaque
@@ -1600,15 +1615,28 @@ curves: a mag-3 satellite drew about as bright as a mag −2 star (Jupiter), a m
 mag-5 star. Not unified yet: the bloom/corona (`flare_source`) exists for satellites and the Sun only.
 
 **Bloom and glare (2026-09-24).** The bloom (`flare_source` → `flare_blur` → `flare_composite`) is a
-quarter-resolution BROAD glow; its last pass was a six-spoke streak, which turned a single bright
-glint into a soft six-pointed blob, and is now a round Gaussian halo (16 directions, "Flare
-streak" still scales it). The sharp part is `glare.vert/.frag`: a full-resolution point sprite per
-satellite past `glareThreshold` in the bloom's log response, drawn after the composite with the
-flare source's descriptor set — the sun's corona built the way `lensFlare()`'s f0 is (a Lorentzian
-1/(1 + 1.1·r) whose angular profile a smooth noise of the angle modulates ~20x: thin rays with dark
-gaps), one ray pattern for every source (an aperture's), a thin horizontal anamorphic streak past a
-brighter threshold, occlusion tested at the source's screen position. Photometry sliders "Glare
-gain / size (px) / threshold" (`photometry.glare_*`).
+quarter-resolution BROAD glow: a narrow separable Gaussian plus a wide one (σ 10 texels, "Flare
+streak" scales it), exactly round, final result back in `flareSourceImg` (four dispatches — see
+`flare_blur.comp`'s header). Its last pass was a six-spoke, then a 16-direction streak: a bright point
+came out as a dotted starfish that stopped dead where the taps ran out. The composite's ceiling is a
+soft knee on luminance (unchanged below 0.45, exponential approach to 0.8); it was a hard per-channel
+`min(c, 0.8)`, which flattened overlapping glows into white plateaus with sharp edges.
+The sharp part is the glare (`include/glare.glsl`): a full-resolution point sprite past
+`glareThreshold` in the bloom's log response — a glint core, a tight halo, and `glareSpikes` spikes of
+their own length and brightness, each a line of constant pixel width (anti-aliased at any radius)
+fading along its length as (1 − r/len)^`glareFalloff`, windowed smoothly to zero at the sprite edge so
+a crowd of glares sums softly. The first cut used the sun corona's angular noise (hundreds of rays,
+an aliased centre) and a blue anamorphic streak the sun doesn't have; both are gone.
+- Satellites: `glare.vert/.frag`, one sprite per listed satellite, flare source descriptor set,
+  occlusion tested at the source's screen position.
+- Mesh glints: `mesh_bloom.frag` writes each texel's mesh light in effectFlare units into the flare
+  source's ALPHA (per-instance `GpuMeshInstance::glareNorm` = the sprite's effectFlare per unit of
+  bloom seed; satellite sprites write alpha 0). `glare_find.comp` runs on the unblurred buffer and
+  lists every concentrated 3×3 local maximum (≥ half its 5×5 light — a glint, not a bright surface)
+  past the threshold into `glintBuf` (`GpuGlintList`, `include/glint_list.glsl`, 64 max, its own
+  indirect args); `glare_mesh.vert/.frag` draws them with the same profile. So a satellite keeps its
+  glare across the sprite → mesh hand-off, and a mirror's sun glint gets it too.
+Photometry sliders "Glare gain / size (px) / threshold / falloff / spikes" (`photometry.glare_*`).
 
 `dayBright`/`moonBright` are elevation-ramp scalars (squared linear, sun/moon dot observer-zenith)
 computed once per frame — **uniform across the sky, not per-satellite-direction**. This is an

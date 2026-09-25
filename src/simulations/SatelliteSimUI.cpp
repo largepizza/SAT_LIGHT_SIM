@@ -29,6 +29,8 @@ static constexpr int kIconPlay = 4;       // pixel--play.png
 static constexpr int kIconSettings = 5;   // pixel--settings.png
 static constexpr int kIconCamera = 6;     // camera-solid.png — UC6 screenshot button
 static constexpr int kIconStarTrails = 7; // pixel--star-trails.png — long-exposure trail toggle
+static constexpr int kIconEye = 8;        // pixel--eye.png — model viewer: fly to the satellite (follow)
+static constexpr int kIconSelect = 9;     // pixel--crosshair.png — model viewer: select the satellite
 
 // Settings schema version (NEW-5). Bump this whenever a settings.json change would make an
 // old file's graphics-affecting values (photometry/clouds/render_scale) meaningless against
@@ -540,8 +542,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             "assets/icons/ui/pixel--settings.png",
             "assets/icons/ui/camera-solid.png",
             "assets/icons/ui/pixel--star-trails.png",
+            "assets/icons/ui/pixel--eye.png",
+            "assets/icons/ui/pixel--crosshair.png",
         };
-        ui.loadIcons(*ctx_, iconPaths, 8);
+        ui.loadIcons(*ctx_, iconPaths, 10);
         iconsLoaded = true;
     }
 
@@ -609,6 +613,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         ui.addMouseCaptureRect(viewControlsChrome.x, viewControlsChrome.y, viewControlsChrome.w, viewControlsChrome.h);
     if (traceChrome.open)
         ui.addMouseCaptureRect(traceChrome.x, traceChrome.y, traceChrome.w, traceChrome.h);
+    // The model viewer: without it a drag on the model also clicked the sky behind the window and
+    // selected (or deselected) whatever satellite was under it.
+    if (viewerChrome.open && meshRendererInit)
+        ui.addMouseCaptureRect(viewerChrome.x, viewerChrome.y, viewerChrome.w, viewerChrome.h);
 
     buildCrashRecoveryNotice(dt, inp, ui);
     buildGraphicsAutoNotice(dt, inp, ui);
@@ -1397,10 +1405,12 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
         });
 }
 
-// ─── Model viewer window (Phase 4b) ──────────────────────────────────────────
-// The selected type's geometry model, rendered offscreen by SatMeshRenderer (recordModelViewer, in
-// recordCompute) and shown here as a UIImage. Drag on the image to orbit, scroll to zoom. The
-// offscreen target follows the image element's laid-out size from the previous frame.
+// ─── Model viewer window (Phase 4b; reorganised 2026-09-24) ──────────────────
+// A REAL satellite (the selection, or a constellation's VIEW pick, which also selects it), rendered
+// offscreen by SatMeshRenderer (recordModelViewer, in recordCompute) and shown as a UIImage. Title
+// bar: the satellite's name (highlighted, "(selected)", while it is the selection), then Select and
+// Follow icons. Body: the image on the left (drag to orbit, scroll to zoom); on the right a column of
+// settings and the observer box — where it is in your sky, how bright, and a trace of its pass.
 void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
 {
     if (!viewerChrome.open || !meshRendererInit)
@@ -1415,9 +1425,12 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
     }
     if (viewerChrome.w <= 0.0f)
     {
-        viewerChrome.w = 560.0f;
-        viewerChrome.h = 560.0f;
+        viewerChrome.w = 860.0f;
+        viewerChrome.h = 600.0f;
     }
+    const bool tracked = viewerSatIndex >= 0 && viewerSatIndex < (int)satOrbits.size();
+    const bool isSelected = tracked && selectedSatIndex == viewerSatIndex;
+    const bool isFollowed = tracked && followActive && followSatIndex == viewerSatIndex;
 
     // Size the offscreen target to the image element (one frame behind while resizing).
     const Clay_ElementId imgId = CLAY_ID("ViewerImage");
@@ -1484,26 +1497,34 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
         const double mR = satMagnitudeFromIntensity(iRender, 1.0e6), mM = satMagnitudeFromIntensity(viewerCheckModelI, 1.0e6);
         if (std::isfinite(mR) && std::isfinite(mM))
             snprintf(viewerCheckLine, sizeof(viewerCheckLine),
-                     "Check (sun only, phase %.0f deg%s): render %.2f, model %.2f mag at 1000 km  (render - model %+.3f)",
+                     "Sun only, phase %.0f deg%s:\nrender %.2f, model %.2f\n(1000 km; difference %+.3f)",
                      viewerCheckPhaseDeg, viewerShadows ? ", shadows" : "", mR, mM, mR - mM);
         else
-            snprintf(viewerCheckLine, sizeof(viewerCheckLine),
-                     "Check (phase %.0f deg): not sunlit from this side (render %s, model %s)", viewerCheckPhaseDeg,
-                     std::isfinite(mR) ? "lit" : "dark", std::isfinite(mM) ? "lit" : "dark");
+            snprintf(viewerCheckLine, sizeof(viewerCheckLine), "Phase %.0f deg: not sunlit from\nthis side (render %s, model %s)",
+                     viewerCheckPhaseDeg, std::isfinite(mR) ? "lit" : "dark", std::isfinite(mM) ? "lit" : "dark");
+    }
+
+    // Observer box: re-evaluated at up to 10 Hz.
+    if (glfwGetTime() >= viewerObsNextWall)
+    {
+        viewerObsNextWall = glfwGetTime() + 0.1;
+        updateViewerObserverInfo();
     }
 
     auto text = [&](const char *s, Clay_Color c, float size) {
         Clay_String str{false, (int32_t)strlen(s), s};
         CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
     };
-    auto button = [&](int id, const char *label, const char *tip) {
+    // A full-width button of the settings column; `on` shows an active state.
+    auto button = [&](int id, const char *label, const char *tip, bool on = false) {
         bool clicked = false;
         bool &hov = hovViewerBtn[id];
         CLAY(CLAY_IDI("ViewerBtn", id), {.layout = {
-                                             .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(11) + 12.0f)},
+                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED((float)fs(11) + 12.0f)},
                                              .padding = {8, 8, 0, 0},
-                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                         .backgroundColor = hov ? Pal::btnHover : Pal::btnIdle,
+                                             .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}},
+                                         .backgroundColor = hov ? (on ? Pal::btnAccentHv : Pal::btnHover)
+                                                                : (on ? Pal::btnAccent : Pal::btnIdle),
                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
         {
             bool n = Clay_Hovered();
@@ -1518,27 +1539,57 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
         }
         return clicked;
     };
-    auto buttonRow = [&](int id, const std::function<void()> &body) {
-        CLAY(CLAY_IDI("ViewerButtonRow", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                          .childGap = 6,
-                                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                          .layoutDirection = CLAY_LEFT_TO_RIGHT},
-                                               .clip = {.horizontal = true}})
+    auto section = [&](int id, const char *label) {
+        CLAY(CLAY_IDI("ViewerSection", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                        .padding = {0, 0, 6, 0}}})
         {
-            body();
+            Clay_String ls{false, (int32_t)strlen(label), label};
+            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(10),
+                                            .wrapMode = CLAY_TEXT_WRAP_NONE}));
         }
     };
-    // Narrowest width the two button rows fit in at this UI scale (~26 label characters + padding).
-    const float minViewerW = std::max(320.0f, (float)fs(11) * 30.0f);
+    // Title-bar icon buttons, left of the close button.
+    auto titleIcon = [&](int k, int icon, bool on, const char *tip) {
+        bool clicked = false;
+        const float sz = std::max(24.0f, (float)fs(12) + 12.0f);
+        bool &hov = hovViewerTitleBtn[k];
+        CLAY(CLAY_IDI("ViewerTitleBtn", k), {.layout = {
+                                                 .sizing = {CLAY_SIZING_FIXED(sz), CLAY_SIZING_FIXED(sz)},
+                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                             .backgroundColor = hov ? (on ? Pal::btnAccentHv : Pal::btnHover)
+                                                                    : (on ? Pal::btnAccent : Pal::btnIdle),
+                                             .cornerRadius = CLAY_CORNER_RADIUS(4)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hov);
+            sndClick(n, inp.lmbPressed);
+            hov = n;
+            clicked = n && inp.lmbPressed;
+            ui.tooltip(inp, n, tip, fs(11));
+            const float isz = sz - 8.0f;
+            CLAY(CLAY_IDI("ViewerTitleIcon", k), {.layout = {.sizing = {CLAY_SIZING_FIXED(isz), CLAY_SIZING_FIXED(isz)}},
+                                                  .image = {.imageData = (void *)(intptr_t)(icon + 1)}}) {}
+        }
+        CLAY(CLAY_IDI("ViewerTitleGap", k), {.layout = {.sizing = {CLAY_SIZING_FIXED(6), CLAY_SIZING_FIXED(1)}}}) {}
+        return clicked;
+    };
+
+    // Title: the satellite's name, highlighted while it is the selection.
+    static char titleBuf[140];
+    snprintf(titleBuf, sizeof(titleBuf), "%s%s", viewerTitle, isSelected ? "  (selected)" : "");
+
+    const float colW = std::max(190.0f, (float)fs(11) * 17.0f);
+    const float minViewerW = colW + 300.0f;
 
     buildResizableWindow(
-        inp, ui, viewerChrome, 3, viewerTitle, true, hovViewerClose, inp.screenW - viewerChrome.w - 40.0f, 80.0f,
-        minViewerW, 300.0f, 1800.0f, 1400.0f,
+        inp, ui, viewerChrome, 3, titleBuf, true, hovViewerClose, inp.screenW - viewerChrome.w - 40.0f, 80.0f,
+        minViewerW, 360.0f, 2000.0f, 1400.0f,
         [&]()
         {
-            CLAY(CLAY_ID("ViewerBody"), {.layout = {
+            // ── Left: info line, the image, a hint ──────────────────────────────────────────────
+            CLAY(CLAY_ID("ViewerLeft"), {.layout = {
                                              .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
-                                             .padding = {10, 10, 6, 10},
+                                             .padding = {10, 6, 6, 10},
                                              .childGap = 6,
                                              .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
@@ -1552,54 +1603,101 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                     CLAY(imgId, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
                                  .custom = {.customData = meshRenderer.viewerRendered() ? &viewerImage : nullptr}}) {}
                 }
-                buttonRow(0, [&]()
-                {
-                    if (button(0, viewerSpin ? "Spin: ON" : "Spin: OFF", "Turn slowly around the model"))
-                        viewerSpin = !viewerSpin;
-                    if (button(1, viewerStudioLight ? "Light: Studio" : "Light: Live",
-                               "Studio: the sun 35 deg above the model's horizon. Live: the sim's real sun at "
-                               "the observer's location and time, including Earth's shadow"))
-                        viewerStudioLight = !viewerStudioLight;
-                    if (button(2, viewerSunlitPose ? "Pose: Sunlit" : "Pose: Rest",
-                               "Sunlit: joints follow the attitude law (arrays track the sun). Rest: every joint at 0"))
-                        viewerSunlitPose = !viewerSunlitPose;
-                    if (button(5, "Reset", "Frame the model again"))
-                    {
-                        viewerDist = 0.0f;
-                        viewerYawDeg = 35.0f;
-                        viewerPitchDeg = 18.0f;
-                        viewerAim = 0;
-                    }
-                    static const char *kAimLabels[3] = {"Camera: Free", "Camera: From you", "Camera: Toward you"};
-                    if (button(8, kAimLabels[viewerAim],
-                               "Free: drag to orbit. From you: on the line from the satellite to you, so you see "
-                               "the side of it that faces you. Toward you: behind it, looking past it at your "
-                               "marker (cyan) on the Earth. Dragging returns to Free"))
-                        viewerAim = (viewerAim + 1) % 3;
-                });
-                buttonRow(1, [&]()
-                {
-                    if (button(3, viewerShadows ? "Shadows: ON" : "Shadows: OFF",
-                               "Parts shadow each other (the model's own primitives, as the photometry's occlusion)"))
-                        viewerShadows = !viewerShadows;
-                    if (button(4, viewerReflections ? "Reflect: ON" : "Reflect: OFF",
-                               "Surfaces reflect what the sky renderer draws around the satellite (Live light): "
-                               "the Earth, clouds, city lights, aurora and the Milky Way"))
-                        viewerReflections = !viewerReflections;
-                    if (button(7, viewerDetail ? "Detail: ON" : "Detail: OFF",
-                               "Procedural surface detail: solar-cell and module gaps, foil crinkle and quilting, "
-                               "panel seams (visual only - the brightness model is unchanged)"))
-                        viewerDetail = !viewerDetail;
-                    if (button(6, "Check",
-                               "Photometric check: render the model sun-only from this direction, integrate its "
-                               "pixels, and compare with the brightness model (magnitude at 1000 km)"))
-                        viewerCheckRequested = true;
-                });
-                if (viewerCheckLine[0])
-                    text(viewerCheckLine, Pal::textDim, 11);
                 text("Drag to orbit, scroll to zoom. Cyan: you; orange: a mirror's ground site", Pal::textHint, 11);
             }
-        });
+            // ── Right: settings column + observer box ───────────────────────────────────────────
+            CLAY(CLAY_ID("ViewerRight"), {.layout = {
+                                              .sizing = {CLAY_SIZING_FIXED(colW), CLAY_SIZING_GROW(0)},
+                                              .padding = {4, 10, 6, 10},
+                                              .childGap = 4,
+                                              .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                          .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
+            {
+                section(0, "CAMERA");
+                static const char *kAimLabels[3] = {"Camera: Free", "Camera: From you", "Camera: Toward you"};
+                if (button(8, kAimLabels[viewerAim],
+                           "Free: drag to orbit. From you: on the line from the satellite to you, so you see "
+                           "the side of it that faces you. Toward you: behind it, looking past it at your "
+                           "marker (cyan) on the Earth. Dragging returns to Free", viewerAim != 0))
+                    viewerAim = (viewerAim + 1) % 3;
+                if (button(0, viewerSpin ? "Spin: on" : "Spin: off", "Turn slowly around the model (Free camera)",
+                           viewerSpin))
+                    viewerSpin = !viewerSpin;
+                if (button(5, "Reset view", "Frame the model again"))
+                {
+                    viewerDist = 0.0f;
+                    viewerYawDeg = 35.0f;
+                    viewerPitchDeg = 18.0f;
+                    viewerAim = 0;
+                }
+
+                section(1, "RENDER");
+                if (button(1, viewerStudioLight ? "Light: Studio" : "Light: Live",
+                           "Live: the sim's real sun where the satellite is now, including Earth's shadow, and the "
+                           "full sky renderer around it. Studio: the sun 35 deg above the model's horizon"))
+                    viewerStudioLight = !viewerStudioLight;
+                if (button(2, viewerSunlitPose ? "Pose: Sunlit" : "Pose: Rest",
+                           "Sunlit: joints follow the attitude law (arrays track the sun). Rest: every joint at 0"))
+                    viewerSunlitPose = !viewerSunlitPose;
+                if (button(3, viewerShadows ? "Shadows: on" : "Shadows: off",
+                           "Parts shadow each other (the model's own primitives, as the photometry's occlusion)",
+                           viewerShadows))
+                    viewerShadows = !viewerShadows;
+                if (button(4, viewerReflections ? "Reflections: on" : "Reflections: off",
+                           "Surfaces reflect what the sky renderer draws around the satellite (Live light): "
+                           "the Earth, clouds, city lights, aurora and the Milky Way", viewerReflections))
+                    viewerReflections = !viewerReflections;
+                if (button(7, viewerDetail ? "Detail: on" : "Detail: off",
+                           "Procedural surface detail: solar-cell and module gaps, foil crinkle and quilting, "
+                           "panel seams (visual only - the brightness model is unchanged)", viewerDetail))
+                    viewerDetail = !viewerDetail;
+
+                section(2, "OBSERVER");
+                if (button(9, viewerMarkers ? "Markers: on" : "Markers: off",
+                           "Your position on the Earth (cyan, with a line from the satellite) and, for a mirror, "
+                           "the ground site it aims at (orange)", viewerMarkers))
+                    viewerMarkers = !viewerMarkers;
+                for (const auto &line : viewerObsLine)
+                    if (line[0])
+                        text(line, Pal::textDim, 11);
+                if (tracked && button(10, "Trace pass",
+                                      "Select this satellite and plot its magnitude over its current or next pass"))
+                {
+                    selectSatellite(viewerSatIndex);
+                    computeSelectedTrace();
+                }
+
+                section(3, "CHECK");
+                if (button(6, "Photometric check",
+                           "Render the model sun-only from this direction, integrate its pixels, and compare "
+                           "with the brightness model (magnitude at 1000 km)"))
+                    viewerCheckRequested = true;
+                if (viewerCheckLine[0])
+                    text(viewerCheckLine, Pal::textDim, 11);
+            }
+        },
+        [&]()
+        {
+            if (!tracked)
+                return;
+            if (titleIcon(0, kIconSelect, isSelected,
+                          isSelected ? "This satellite is selected"
+                                     : "Select this satellite (find it in the sky again)"))
+                selectSatellite(viewerSatIndex);
+            if (titleIcon(1, kIconEye, isFollowed,
+                          isFollowed ? "Stop following and return to the ground"
+                                     : "Go and look at it up close: fly to this satellite and ride along with it"))
+            {
+                if (isFollowed)
+                    stopFollow();
+                else
+                {
+                    selectSatellite(viewerSatIndex);
+                    startFollow(viewerSatIndex);
+                }
+            }
+        },
+        isSelected);
 }
 
 // ─── buildViewButton ─────────────────────────────────────────────────────────
@@ -1755,7 +1853,8 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
                                         int winId, const char *title, bool closable, bool &hovCloseFlag,
                                         float defaultX, float defaultY,
                                         float minW, float minH, float maxW, float maxH,
-                                        const std::function<void()> &buildBody)
+                                        const std::function<void()> &buildBody,
+                                        const std::function<void()> &titleExtras, bool titleHighlight)
 {
     if (!chrome.open)
         return false;
@@ -1794,16 +1893,21 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
         {
             {
                 bool n = Clay_Hovered();
-                if (n && inp.lmbPressed && !hovCloseFlag)
+                // (The viewer's title-bar buttons: hovViewerTitleBtn — last frame's hover, like the close.)
+                const bool overExtra = winId == 3 && (hovViewerTitleBtn[0] || hovViewerTitleBtn[1]);
+                if (n && inp.lmbPressed && !hovCloseFlag && !overExtra)
                     chrome.dragging = true;
             }
 
             CLAY(CLAY_IDI("GenWinTitleText", winId), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}},
                                                       .clip = {.horizontal = true}})
             {
-                CLAY_TEXT(titleStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(16),
-                                                      .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                CLAY_TEXT(titleStr, CLAY_TEXT_CONFIG({.textColor = titleHighlight ? Pal::reticule : Pal::textPrimary,
+                                                      .fontSize = fs(16), .wrapMode = CLAY_TEXT_WRAP_NONE}));
             }
+
+            if (titleExtras)
+                titleExtras();
 
             if (closable)
             {
@@ -2047,12 +2151,16 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                     {
                         sndRollover(n, hovView);
                         sndClick(n, inp.lmbPressed);
-                        if (n && inp.lmbPressed) // a real satellite of it, where it is now
-                            openModelViewer((int)c.typeIdx, c.name.c_str(), c.altM, pickViewerSatellite((int)ci));
+                        if (n && inp.lmbPressed) // a real satellite of it, where it is now — and selected,
+                        {                        // so the viewer always refers to the selection
+                            const int pick = pickViewerSatellite((int)ci);
+                            selectSatellite(pick);
+                            openModelViewer((int)c.typeIdx, c.name.c_str(), c.altM, pick);
+                        }
                     }
                     hovViewConst[ci] = n;
-                    ui.tooltip(inp, n, hasMesh ? "View one of this constellation's satellites in 3D where it is now (the one "
-                                                 "highest in your sky), with the Earth beneath it and you marked on it"
+                    ui.tooltip(inp, n, hasMesh ? "Select one of this constellation's satellites (the one highest in your sky) "
+                                                 "and view it in 3D where it is now - a quick way to find a station"
                                                : "No 3D model: this type uses the legacy two-surface model", fs(11));
                     CLAY_TEXT(CLAY_STRING("VIEW"), CLAY_TEXT_CONFIG({.textColor = hasMesh ? Pal::textPrimary : Pal::textHint,
                                                                    .fontSize = fs(10)}));
@@ -3245,7 +3353,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[31][12];
+    static char photoBufs[33][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -3307,6 +3415,8 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"Glare gain", &glareGain, 0.0f, 4.0f, 0.05f, "%.2f", 28},
         {"Glare size (px)", &glareSizePx, 4.0f, 200.0f, 2.0f, "%.0f", 29},
         {"Glare threshold", &glareThreshold, 0.0f, 3.5f, 0.05f, "%.2f", 30},
+        {"Glare falloff", &glareFalloff, 0.5f, 8.0f, 0.1f, "%.1f", 31},
+        {"Glare spikes", &glareSpikes, 3.0f, 32.0f, 1.0f, "%.0f", 32},
     };
     for (auto &pp : photoParams)
     {
@@ -4899,6 +5009,8 @@ void SatelliteSim::loadSettings()
         glareGain = p.value("glare_gain", glareGain);
         glareSizePx = p.value("glare_size_px", glareSizePx);
         glareThreshold = p.value("glare_threshold", glareThreshold);
+        glareFalloff = p.value("glare_falloff", glareFalloff);
+        glareSpikes = p.value("glare_spikes", glareSpikes);
         mwPollutionThresholdLo = p.value("mw_pollution_threshold_lo", mwPollutionThresholdLo);
         mwPollutionThresholdHi = p.value("mw_pollution_threshold_hi", mwPollutionThresholdHi);
         darkSkyCityMag = p.value("dark_sky_city_mag", darkSkyCityMag);
@@ -5222,6 +5334,8 @@ void SatelliteSim::saveSettings()
         {"glare_gain", glareGain},
         {"glare_size_px", glareSizePx},
         {"glare_threshold", glareThreshold},
+        {"glare_falloff", glareFalloff},
+        {"glare_spikes", glareSpikes},
         {"mw_pollution_threshold_lo", mwPollutionThresholdLo},
         {"mw_pollution_threshold_hi", mwPollutionThresholdHi},
         {"dark_sky_city_mag", darkSkyCityMag},

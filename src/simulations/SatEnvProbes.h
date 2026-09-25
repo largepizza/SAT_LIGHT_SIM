@@ -24,9 +24,14 @@ struct VulkanContext;
 class SatEnvProbes
 {
 public:
-    static constexpr int kProbes = 8;          // slot 0: the model viewer
-    static constexpr uint32_t kFaceSize = 128; // texels per face edge (0.7 deg per texel)
-    static constexpr uint32_t kMips = 8;       // 128 .. 1
+    static constexpr int kProbes = 8; // slot 0: the model viewer
+    // Texels per face edge. The viewer's probe is what a mirror filling the window reflects, so it is
+    // finer (0.18 deg per texel, finer than the 8K Earth texture seen from orbit); it is re-rendered a
+    // face per frame. 128 (0.7 deg) read as pixelated in mirrors.
+    static constexpr uint32_t kViewerFaceSize = 512;
+    static constexpr uint32_t kSceneFaceSize = 256; // 0.35 deg
+    static uint32_t faceSize(int slot) { return slot == 0 ? kViewerFaceSize : kSceneFaceSize; }
+    static uint32_t mipCount(int slot); // full chain: log2(faceSize) + 1
     static constexpr VkFormat kFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 
     // skyLayout: SatelliteSim's skyBgPipeLayout (the env pipeline binds the sky's own set 0).
@@ -41,10 +46,12 @@ public:
     VkBuffer shBuffer() const { return shBuf; }
     VkDeviceSize shBufferSize() const { return sizeof(glm::vec4) * 9 * kProbes; }
 
-    // Records the six faces of probe `slot` (push constants pcs[f], pcSize bytes each, SatDrawPC —
-    // faceSkyView() gives each face's rotation), its mip chain and its SH projection. Outside any
-    // render pass. The probe is SHADER_READ_ONLY afterwards (fragment + compute).
-    void recordProbe(VkCommandBuffer cmd, int slot, VkDescriptorSet skyDescSet, const void *pcs, uint32_t pcSize);
+    // Records the faces of probe `slot` in faceMask (bit f = face f; push constants pcs[f], pcSize bytes
+    // each, SatDrawPC — faceCamToWorld() gives each face's rotation), then its whole mip chain and its
+    // SH projection. Faces left out keep their last render. Outside any render pass. The probe is
+    // SHADER_READ_ONLY afterwards (fragment + compute).
+    void recordProbe(VkCommandBuffer cmd, int slot, VkDescriptorSet skyDescSet, const void *pcs, uint32_t pcSize,
+                     uint32_t faceMask = 0x3Fu);
 
     // Cube face f (Vulkan order +X −X +Y −Y +Z −Z): the rotation from the sky shader's camera space
     // (x right, y up, looking down −z) to the probe's world axes (ECEF). faceSelfCheck() verifies the
@@ -67,6 +74,7 @@ private:
 
     struct Probe
     {
+        uint32_t size = 0, mips = 0;
         VkImage image = VK_NULL_HANDLE;
         VkDeviceMemory mem = VK_NULL_HANDLE;
         VkImageView cubeView = VK_NULL_HANDLE;

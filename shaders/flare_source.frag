@@ -57,5 +57,6 @@ void main() {
     float g = exp(-(d * d) / (2.0 * sigma * sigma));
     float brightness = g * clamp(log2(max(fragIntensity, 1.0)) * 0.5, 0.0, 4.0) * cloudVis * terrainVis;
 
-    outColor = vec4(fragColor * brightness, brightness);
+    // Alpha is the MESH glints' channel (mesh_bloom.frag, glare_find.comp): satellites leave it 0.
+    outColor = vec4(fragColor * brightness, 0.0);
 }

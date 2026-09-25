@@ -820,8 +820,25 @@ struct GlarePC
     glm::vec2 screenSizePx;
     float maxPointSize;
     float threshold;
+    float falloff; // glareFalloff
+    float spikes;  // glareSpikes
+    float pad0, pad1;
 };
-static_assert(sizeof(GlarePC) == 96, "GlarePC layout (glare.vert)");
+static_assert(sizeof(GlarePC) == 112, "GlarePC layout (include/glare.glsl)");
+
+// Mesh glints found for glare (glare_find.comp -> glare_mesh.vert; include/glint_list.glsl).
+static constexpr uint32_t kMaxGlints = 64;
+struct GpuGlintList
+{
+    uint32_t count;
+    uint32_t vertexCount, instanceCount, firstVertex, firstInstance; // VkDrawIndirectCommand
+    uint32_t pad[3];
+    glm::vec4 pos[kMaxGlints];   // xy = screen uv, z = effectFlare
+    glm::vec4 color[kMaxGlints];
+};
+static_assert(offsetof(GpuGlintList, vertexCount) == 4 && offsetof(GpuGlintList, pos) == 32 &&
+                  sizeof(GpuGlintList) == 32 + 32 * kMaxGlints,
+              "GpuGlintList layout (include/glint_list.glsl)");
 
 struct FlareSourcePC
 {
@@ -1745,7 +1762,16 @@ private:
     bool viewerDragging = false;
     uint32_t viewerImageId = 0;
     UIImage viewerImage;
-    bool hovViewerClose = false, hovViewerBtn[10] = {}, hovSelViewBtn = false;
+    bool hovViewerClose = false, hovViewerBtn[12] = {}, hovSelViewBtn = false;
+    bool hovViewerTitleBtn[2] = {}; // title bar: select, follow
+    bool viewerMarkers = true;      // the observer / ground-site markers
+    // Observer box (right column): where the viewed satellite is in your sky and how bright, from the
+    // CPU evaluator at up to 10 Hz (updateViewerObserverInfo).
+    char viewerObsLine[4][96] = {};
+    double viewerObsNextWall = 0.0;
+    void updateViewerObserverInfo();
+    // Select a satellite as a click on it does (clears a planet selection, refreshes its info).
+    void selectSatellite(int idx);
     // Photometric check: sun-only render integrated on the CPU vs evalSatLobesPosed() (see
     // recordModelViewer). Requested by the button, recorded in recordCompute, read the next buildUI.
     bool viewerCheckRequested = false, viewerCheckAwaiting = false;
@@ -1830,7 +1856,7 @@ private:
     // The sky's push constants for the env renderer at posEcef, camera rotation camToEcef (sky camera
     // space → ECEF axes).
     SatDrawPC envSkyPC(const glm::dvec3 &posEcef, const glm::dmat3 &camToEcef, float fovYRad, float aspect) const;
-    void renderEnvProbe(VkCommandBuffer cmd, int slot, const glm::dvec3 &posEcef);
+    void renderEnvProbe(VkCommandBuffer cmd, int slot, const glm::dvec3 &posEcef, uint32_t faceMask = 0x3Fu);
     // Picks (and schedules) a scene probe for an instance at posEcef; kNoProbe until rendered.
     uint32_t assignEnvProbe(const glm::dvec3 &posEcef);
     void renderScheduledEnvProbes(VkCommandBuffer cmd);
@@ -2493,6 +2519,17 @@ private:
     VkPipelineLayout flareCompositePipeLayout = VK_NULL_HANDLE;
     VkPipeline flareCompositePipeline = VK_NULL_HANDLE;
     VkPipeline glarePipeline = VK_NULL_HANDLE; // per-satellite glare sprites (main pass)
+    // Mesh-glint glare (2026-09-24): glare_find.comp lists the concentrated glints mesh_bloom.frag put
+    // in the flare source's alpha; glare_mesh.vert/.frag draws them like glare.vert's sprites.
+    VkBuffer glintBuf = VK_NULL_HANDLE;
+    VkDeviceMemory glintMem = VK_NULL_HANDLE;
+    VkDescriptorSetLayout glareFindDescLayout = VK_NULL_HANDLE, glareMeshDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool glintDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet glareFindDescSet = VK_NULL_HANDLE, glareMeshDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout glareFindPipeLayout = VK_NULL_HANDLE, glareMeshPipeLayout = VK_NULL_HANDLE;
+    VkPipeline glareFindPipeline = VK_NULL_HANDLE; // compute: not recreated on resize
+    VkPipeline glareMeshPipeline = VK_NULL_HANDLE; // graphics: recreated with glarePipeline
+    bool meshGlareListed = false;                  // glare_find.comp ran this frame (recordCompute)
     // Ocean-glint list (see GpuOceanGlintBuf) — device-local, zeroed every frame like glowBuf.
     VkBuffer oceanGlintBuf = VK_NULL_HANDLE;
     VkDeviceMemory oceanGlintMem = VK_NULL_HANDLE;
@@ -2502,12 +2539,16 @@ private:
                                         // UI slider's actual [0, 0.01] range (SatelliteSimUI.cpp),
                                         // so a fresh settings.json (or any older save predating
                                         // this key) booted the flare glow fully maxed out
-    // Per-satellite glare sprites (glare.vert/.frag, 2026-09-24): a sharp core, the sun's corona-style
-    // rays and, for the brightest, an anamorphic streak, at full resolution over the broad bloom.
-    // Threshold is in the bloom's log response (0 at effectFlare 1 ~ mag 0.8, 4 at its cap).
+    // Glare sprites (glare.vert/.frag, glare_mesh.*, include/glare.glsl, 2026-09-24): a sharp core, a
+    // tight halo and thin spikes, at full resolution over the broad bloom, for bright satellites and
+    // bright mesh glints alike. Threshold is in the bloom's log response (0 at effectFlare 1 ~ mag 0.8,
+    // 4 at its cap). Falloff: spike brightness along its length, (1 - r/length)^falloff - higher keeps
+    // a crowd of glares from summing into a white patch the size of the sprite.
     float glareGain = 1.0f;
     float glareSizePx = 48.0f;   // sprite radius per unit of response past the threshold
     float glareThreshold = 0.3f;
+    float glareFalloff = 2.5f;
+    float glareSpikes = 10.0f;
     float flareStreakGain = 0.35f;      // per-tap streak/godray strength (flare_blur.comp mode=2)
     float sunFlareRefIntensity = 40.0f; // fixed reference brightness for the sun's virtual point
                                         // in the flare-source buffer — NOT a slider (kept small in
@@ -3449,12 +3490,12 @@ private:
     // Sized 11, not 9 — flare_glow_gain/flare_streak_gain (flare architecture overhaul) added two
     // more PhotoParam rows; per [[feedback_cloud_slider_arrays]], all three hover/dragging arrays
     // must grow together with any new slider id.
-    bool hovPhotoMinus[31] = {}; // 15 existing photometry params + 2 trail sliders (Trail decay/gain)
+    bool hovPhotoMinus[33] = {}; // 15 existing photometry params + 2 trail sliders (Trail decay/gain)
                                  // + flare-mitigation tilt + the four dark-sky mags (2026-09-08)
                                  // + 1 flare-mitigation tilt (idx 17) + the five point-model
                                  // sliders (idx 22-26, 2026-09-23)
-    bool hovPhotoPlus[31] = {};
-    bool draggingPhoto[31] = {};
+    bool hovPhotoPlus[33] = {};
+    bool draggingPhoto[33] = {};
     bool hovCloudMinus[91] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08)
     bool hovCloudPlus[91] = {};
@@ -3676,11 +3717,15 @@ private:
     // settings, a plain scroll list for view-controls). Returns true the frame the
     // close button was clicked (closable windows only), so callers can react (e.g.
     // save settings).
+    // titleExtras (optional) adds elements to the title bar just left of the close button;
+    // titleHighlight draws the title in the selection colour.
     bool buildResizableWindow(const UIInput &inp, UIRenderer &ui, WindowChrome &chrome,
                               int winId, const char *title, bool closable, bool &hovCloseFlag,
                               float defaultX, float defaultY,
                               float minW, float minH, float maxW, float maxH,
-                              const std::function<void()> &buildBody);
+                              const std::function<void()> &buildBody,
+                              const std::function<void()> &titleExtras = nullptr,
+                              bool titleHighlight = false);
 
     void buildSettingsWindow(const UIInput &inp, UIRenderer &ui);
     void buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui);
