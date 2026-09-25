@@ -1,4 +1,5 @@
 #include "App.h"
+#include "Harness.h"
 #include <stdexcept>
 #include <algorithm>
 #include <chrono>
@@ -46,13 +47,22 @@ void App::initWindow() {
     // default — a small window the player has to manually enlarge undercuts the intro cinematic's
     // impact and invites fiddling with the window instead of watching it. WIN_W/WIN_H are still
     // passed as the restore size for whenever the player un-maximizes later.
-    glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
+    // Harness runs (docs/HARNESS.md) use a fixed, non-resizable window instead, so every capture
+    // of a script has the same pixel size, and it doesn't steal focus from whatever the user is doing.
+    const bool fixedWindow = harness::active() && harness::options().winW > 0;
+    glfwWindowHint(GLFW_MAXIMIZED, fixedWindow ? GLFW_FALSE : GLFW_TRUE);
+    if (fixedWindow)
+    {
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+    }
     // macOS: render at logical (point) resolution, not the 2x Retina backing size. On the
     // integrated/older discrete GPUs these machines have, a maximized Retina framebuffer is
     // ~4x the pixels and the volumetric passes can't keep up. Also makes the fixed-bitmap
     // font atlas pixel-exact instead of upscaled. No-op on non-Apple platforms.
     glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_FALSE);
-    window = glfwCreateWindow(WIN_W, WIN_H, sim->name(), nullptr, nullptr);
+    window = glfwCreateWindow(fixedWindow ? harness::options().winW : WIN_W,
+                              fixedWindow ? harness::options().winH : WIN_H, sim->name(), nullptr, nullptr);
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, cbResize);
     glfwSetKeyCallback(window, cbKey);
@@ -62,7 +72,7 @@ void App::initWindow() {
 
 void App::mainLoop() {
     lastTime = glfwGetTime();
-    while (!glfwWindowShouldClose(window)) {
+    while (!glfwWindowShouldClose(window) && !sim->wantsQuit()) {
         double frameStart = glfwGetTime();
         glfwPollEvents();
         drawFrame();
@@ -128,6 +138,7 @@ void App::drawFrame() {
     double now = glfwGetTime();
     float  dt  = std::min((float)(now - lastTime), 1.0f);
     lastTime   = now;
+    dt = sim->frameDt(dt); // harness: fixed step (docs/HARNESS.md)
 
     // Get current mouse state
     double mx, my;

@@ -1,4 +1,5 @@
 #include "App.h"
+#include "Harness.h"
 #include "Log.h"
 #include "Paths.h"
 #include "simulations/GameOfLife.h"
@@ -15,8 +16,39 @@
 #include <windows.h>
 #endif
 
-int main()
+int main(int argc, char **argv)
 {
+    // Harness flags (docs/HARNESS.md) are parsed before anything else: they decide where the log
+    // and settings live. Relative paths in them resolve against the directory the app was launched
+    // from, so the launch cwd is recorded before the chdir below.
+    {
+        std::error_code cwdEc;
+        harness::options().launchCwd = std::filesystem::current_path(cwdEc).string();
+        std::string err;
+        if (!harness::parseArgs(argc, argv, err))
+        {
+            if (err != "help")
+                std::cerr << "Error: " << err << "\n\n";
+            std::cerr << harness::usage();
+            return err == "help" ? EXIT_SUCCESS : 2;
+        }
+        if (harness::active())
+        {
+            const auto &ho = harness::options();
+            std::error_code ec;
+            std::filesystem::create_directories(ho.outDir, ec);
+            if (!ho.useUserData)
+            {
+                Paths::setUserDataDirOverride(ho.outDir);
+                // --settings: start from a given settings.json (e.g. the user's own) instead of the
+                // built-in defaults. Copied, so the run can't modify the original.
+                if (!ho.settingsPath.empty())
+                    std::filesystem::copy_file(ho.settingsPath, std::filesystem::path(ho.outDir) / "settings.json",
+                                               std::filesystem::copy_options::overwrite_existing, ec);
+            }
+        }
+    }
+
     // As early as possible — before any Vulkan call — so an instance/device creation
     // failure (missing driver, unsupported GPU) still lands in the log file (NEW-2).
     Log::init();
@@ -55,6 +87,8 @@ int main()
         Log::line(std::string("FATAL: ") + e.what());
 
 #if defined(_WIN32)
+        if (harness::active())
+            return EXIT_FAILURE; // never block an unattended run on a modal dialog
         std::string msg = std::string(e.what()) +
                            "\n\nMake sure your GPU drivers are up to date and support Vulkan.\n\n"
                            "Details were written to:\n" + Log::path();

@@ -51,3 +51,7 @@ __pycache__/
 # Stray run logs from manual launches
 ft_slow.log
 satlight_log.txt
+
+# ── Automation harness output (docs/HARNESS.md) ───────────────────────────────
+/harness_runs/
+/harness_live/

@@ -1,0 +1,12 @@
+# Determinism check: run twice, then `imgtools.py diff` the two captures. Clouds, sky and terrain
+# at a fixed place and Sun elevation, after a settle.
+preset High
+observer lat=46.55 lon=7.98 agl=50
+time sun -4 setting
+time pause
+camera az=280 el=3 fov=60
+wait settle
+capture alps_dusk
+time sun 20 rising
+wait settle
+capture alps_morning

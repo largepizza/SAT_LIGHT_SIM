@@ -1,4 +1,5 @@
 #include "SatelliteSim.h"
+#include "../Harness.h"
 #include "SatPhotometry.h"
 #include "SatTrace.h"
 #include "../UIRenderer.h"
@@ -584,6 +585,8 @@ void SatelliteSim::init(VulkanContext &ctx)
         fprintf(stderr, "[SatelliteSim] Previous session did not exit cleanly — forcing "
                         "Planetarium preset.\n");
     }
+
+    harnessInit(); // docs/HARNESS.md — no-op unless launched with harness flags
 }
 
 // ─── onResize ─────────────────────────────────────────────────────────────────
@@ -1186,7 +1189,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // comment for why the encode runs on a thread). Polled here (always runs, every frame)
     // rather than inside buildScreenshotToast (gated on uiVisible) so a screenshot taken with the
     // UI hidden still gets its toast queued up and ready the moment the UI is shown again.
-    if (screenshotResultReady.exchange(false))
+    if (screenshotResultReady.exchange(false) && !harnessRunner_) // harness captures: no toast in the next shot
     {
         std::lock_guard<std::mutex> lock(screenshotResultMutex);
         snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", screenshotResultText.c_str());
@@ -2061,18 +2064,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // recordDraw's SatDrawPC) is obsHeightOffset ONLY, not obsTerrainH+obsHeightOffset — obsEffH
     // below computes the max explicitly rather than trusting that combination.
     if (!earthElevCpu.empty())
-    {
-        float latRad = glm::radians(obsLatDeg);
-        float lonRad = glm::radians(obsLonDeg);
-        float u = (lonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
-        float v = (0.5f * glm::pi<float>() - latRad) / glm::pi<float>();
-        int px = (int)(u * (float)earthElevCpuW) % earthElevCpuW;
-        int py = std::min((int)(v * (float)earthElevCpuH), earthElevCpuH - 1);
-        float pixVal = earthElevCpu[py * earthElevCpuW + px] / 255.0f;
-        // DEM ocean baseline is 15/255; subtract it so sea-level land maps to 0 m.
-        const float kSeaLevel = 15.0f / 255.0f;
-        obsTerrainH = (pixVal <= kSeaLevel) ? 0.0f : std::max(0.0f, (pixVal - kSeaLevel) * 8848.0f);
-    }
+        obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
 
     // ── City-detail world-fixed offset ────────────────────────────────────────────────────────
     // sat_sky.frag's "City detail texture blend" adds this (cityOffsetEastM/NorthM, packed into
@@ -5288,9 +5280,13 @@ void SatelliteSim::setAudio(AudioSystem *audio)
 
     audio_->addTrack("assets/sound/music/gravity_wave.mp3");
     audio_->addTrack("assets/sound/music/fuse.mp3");
-    audio_->startMusic();
+    // Harness runs (docs/HARNESS.md) are unattended — often overnight — so silent unless --sound.
+    // The persisted masterVol_ is left alone; only the device gain is zeroed.
+    const bool harnessMute = harnessRunner_ && harness::options().mute;
+    if (!harnessMute)
+        audio_->startMusic();
     // Apply any volumes loaded from settings.json before the audio system was ready.
-    audio_->setMasterVolume(masterVol_);
+    audio_->setMasterVolume(harnessMute ? 0.0f : masterVol_);
     audio_->setMusicVolume(musicVol_);
     audio_->setSfxVolume(sfxVol_);
 }
@@ -5311,6 +5307,9 @@ void SatelliteSim::cleanup(VkDevice device)
     if (followActive)
         stopFollow(); // persist the ground observer, not a position in orbit
     saveSettings();
+    // Harness: a --stay run closed by hand still leaves a summary (no-op if one was written).
+    if (harnessRunner_)
+        harnessRunner_->writeSummary("closed");
     if (meshRendererInit)
         meshRenderer.cleanup(device);
     meshRendererInit = false;
@@ -5990,6 +5989,24 @@ void SatelliteSim::finishIntro(bool wasSkipped)
     introIsReplay = false;
 }
 
+// The observer's terrain height from the CPU copy of the DEM (nearest texel). Also the harness's
+// `observer alt=` (height above sea level -> height above terrain).
+float SatelliteSim::cpuTerrainHeightM(float latDeg, float lonDeg) const
+{
+    if (earthElevCpu.empty())
+        return 0.0f;
+    float latRad = glm::radians(latDeg);
+    float lonRad = glm::radians(lonDeg);
+    float u = (lonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
+    float v = (0.5f * glm::pi<float>() - latRad) / glm::pi<float>();
+    int px = ((int)(u * (float)earthElevCpuW) % earthElevCpuW + earthElevCpuW) % earthElevCpuW;
+    int py = std::clamp((int)(v * (float)earthElevCpuH), 0, earthElevCpuH - 1);
+    float pixVal = earthElevCpu[py * earthElevCpuW + px] / 255.0f;
+    // DEM ocean baseline is 15/255; subtract it so sea-level land maps to 0 m.
+    const float kSeaLevel = 15.0f / 255.0f;
+    return (pixVal <= kSeaLevel) ? 0.0f : std::max(0.0f, (pixVal - kSeaLevel) * 8848.0f);
+}
+
 // ─── recordScreenshotCopy ────────────────────────────────────────────────────
 // UC6. See Simulation.h for the calling convention: App calls this once per frame, right after
 // the render pass ends (image is back in PRESENT_SRC_KHR, holding the fully composited frame —
@@ -6080,6 +6097,58 @@ void SatelliteSim::finalizeScreenshot()
         pixels[i * 4 + 3] = 255;
     }
 
+    // Harness captures (docs/HARNESS.md): crop, then rescale — down by a box filter (a thumbnail
+    // that keeps the mean), up by nearest neighbour (pixel peeping: one frame pixel becomes an
+    // exact block, nothing invented). Both reset for the next request.
+    uint32_t outW = screenshotW, outH = screenshotH;
+    if (screenshotCrop[2] > 0 && screenshotCrop[3] > 0)
+    {
+        const int cx = std::clamp(screenshotCrop[0], 0, (int)screenshotW - 1);
+        const int cy = std::clamp(screenshotCrop[1], 0, (int)screenshotH - 1);
+        const int cw = std::min(screenshotCrop[2], (int)screenshotW - cx);
+        const int ch = std::min(screenshotCrop[3], (int)screenshotH - cy);
+        std::vector<uint8_t> cropped((size_t)cw * ch * 4);
+        for (int y = 0; y < ch; ++y)
+            memcpy(&cropped[(size_t)y * cw * 4], &pixels[((size_t)(cy + y) * screenshotW + cx) * 4], (size_t)cw * 4);
+        pixels.swap(cropped);
+        outW = (uint32_t)cw;
+        outH = (uint32_t)ch;
+    }
+    if (screenshotScale > 0.0f && fabsf(screenshotScale - 1.0f) > 1e-4f)
+    {
+        const float sc = screenshotScale;
+        const uint32_t nw = std::max(1u, (uint32_t)lroundf(outW * sc));
+        const uint32_t nh = std::max(1u, (uint32_t)lroundf(outH * sc));
+        std::vector<uint8_t> scaled((size_t)nw * nh * 4);
+        for (uint32_t y = 0; y < nh; ++y)
+            for (uint32_t x = 0; x < nw; ++x)
+            {
+                uint8_t *dst = &scaled[((size_t)y * nw + x) * 4];
+                if (sc > 1.0f)
+                {
+                    const uint32_t sx = std::min(outW - 1, (uint32_t)(x / sc));
+                    const uint32_t sy = std::min(outH - 1, (uint32_t)(y / sc));
+                    memcpy(dst, &pixels[((size_t)sy * outW + sx) * 4], 4);
+                    continue;
+                }
+                const uint32_t x0 = (uint32_t)(x / sc), x1 = std::min(outW, std::max(x0 + 1, (uint32_t)((x + 1) / sc)));
+                const uint32_t y0 = (uint32_t)(y / sc), y1 = std::min(outH, std::max(y0 + 1, (uint32_t)((y + 1) / sc)));
+                uint32_t acc[4] = {0, 0, 0, 0}, n = 0;
+                for (uint32_t yy = y0; yy < y1; ++yy)
+                    for (uint32_t xx = x0; xx < x1; ++xx, ++n)
+                        for (int c = 0; c < 4; ++c)
+                            acc[c] += pixels[((size_t)yy * outW + xx) * 4 + c];
+                for (int c = 0; c < 4; ++c)
+                    dst[c] = (uint8_t)(n ? (acc[c] + n / 2) / n : 0);
+            }
+        pixels.swap(scaled);
+        outW = nw;
+        outH = nh;
+    }
+    screenshotCrop[0] = screenshotCrop[1] = screenshotCrop[2] = screenshotCrop[3] = 0;
+    screenshotScale = 1.0f;
+    screenshotIncludeUI = false;
+
     // PNG encoding (stbi_write_png) is genuinely slow in an unoptimized Debug build — tens of
     // seconds at 1080p+ is normal for its unoptimized DEFLATE-style compressor — which reads as
     // "the game froze" when run synchronously on the main thread. Encode on a background thread
@@ -6089,7 +6158,7 @@ void SatelliteSim::finalizeScreenshot()
         screenshotThread.join(); // previous capture's thread — screenshotEncoding guarantees it's
                                  // already finished (or about to), so this never blocks noticeably
     screenshotEncoding = true;
-    uint32_t w = screenshotW, h = screenshotH;
+    uint32_t w = outW, h = outH;
     std::string path = screenshotPath;
     screenshotThread = std::thread([this, pixels = std::move(pixels), w, h, path]() mutable
                                    {

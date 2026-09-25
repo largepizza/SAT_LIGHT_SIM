@@ -109,6 +109,16 @@ static constexpr DebugToggleEntry kDebugToggles[] = {
     {2097152u, "Satellite meshes", "sat_meshes"},
 };
 static constexpr int kDebugToggleCount = (int)(sizeof(kDebugToggles) / sizeof(kDebugToggles[0]));
+int debugToggleTableSize() { return kDebugToggleCount; }
+bool debugToggleAt(int i, uint32_t &bit, const char *&label, const char *&jsonKey)
+{
+    if (i < 0 || i >= kDebugToggleCount)
+        return false;
+    bit = kDebugToggles[i].bit;
+    label = kDebugToggles[i].label;
+    jsonKey = kDebugToggles[i].jsonKey;
+    return true;
+}
 // The matching static_assert against SatelliteSim::kDebugToggleSlots lives inside
 // startKnockoutSweep() — that constant is a private member, so only a member function can see it.
 
@@ -121,6 +131,23 @@ static constexpr int kDebugToggleCount = (int)(sizeof(kDebugToggles) / sizeof(kD
 static constexpr const char *kSettingsTabNames[12] = {
     "Constellations", "Sound", "Controls", "Camera",
     "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Aurora", "Beams", "Attributions"};
+int settingsTabIndexByName(const std::string &name)
+{
+    for (int i = 0; i < 12; ++i)
+    {
+        const char *t = kSettingsTabNames[i];
+        size_t n = strlen(t);
+        if (n != name.size())
+            continue;
+        bool eq = true;
+        for (size_t k = 0; k < n && eq; ++k)
+            eq = tolower((unsigned char)t[k]) == tolower((unsigned char)name[k]);
+        if (eq)
+            return i;
+    }
+    return -1;
+}
+const char *settingsTabName(int i) { return (i >= 0 && i < 12) ? kSettingsTabNames[i] : ""; }
 
 // Helper: short display name for a GLFW key code (used in settings window + tooltips).
 static const char *keyDisplayName(int key)
@@ -417,6 +444,9 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // writes into the accumulator this call resets.
     beginCpuFrameTiming();
     CpuTimer _tUI(cpuAccumMs[CPU_BUILD_UI]);
+    // Automation harness (docs/HARNESS.md): run this frame's commands before anything reads the
+    // camera/observer/settings they change. A no-op outside a harness run.
+    harnessTick();
 
     // Apply camera mouse look.
     // Yaw  (dmx): rotate obsFacing around obsDir via Rodrigues — no ENU frame, no pole issue.
@@ -5474,13 +5504,26 @@ void SatelliteSim::loadSettings()
         return;
     }
 
+    applySettingsJson(j, false);
+
+    fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
+}
+
+// ─── applySettingsJson ────────────────────────────────────────────────────────
+// The body of loadSettings, shared with the harness's `set` command (docs/HARNESS.md): every
+// field reads `value(key, current)`, so a partial object (one key) changes exactly that key.
+// isPatch: the object is a harness patch rather than a settings.json (see its three uses below).
+void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
+{
     // Schema versioning (NEW-5): an old/missing schema_version means the graphics-affecting
     // sections below (photometry/clouds/render_scale) may hold values that no longer make sense
     // against current code (re-tuned defaults, or — once UC1 lands — a preset system). Camera,
     // audio, keybindings, observer position, time scale, and constellation toggles are not
     // "graphics" and stay loaded regardless; only photometry/clouds/render_scale are gated.
     int loadedSchemaVersion = j.value("schema_version", 0);
-    bool schemaMatches = loadedSchemaVersion == kSettingsSchemaVersion;
+    // A harness patch (`set section.key value`) carries no schema_version: it is written against
+    // the running build by definition.
+    bool schemaMatches = isPatch || loadedSchemaVersion == kSettingsSchemaVersion;
     if (!schemaMatches)
         fprintf(stderr, "[SatelliteSim] settings.json schema %d != current %d — resetting "
                         "photometry/clouds/render_scale to defaults, keeping the rest.\n",
@@ -5565,8 +5608,11 @@ void SatelliteSim::loadSettings()
         // true, so upgrading players don't suddenly get a cinematic that didn't exist in their
         // version — a true first run never reaches this block at all (see the "no file" early
         // return above), so it still keeps the compiled-in true default there.
-        playIntroOnStartup = d.value("play_intro_on_startup", false);
-        showIntro = playIntroOnStartup;
+        if (!isPatch || d.contains("play_intro_on_startup"))
+        {
+            playIntroOnStartup = d.value("play_intro_on_startup", false);
+            showIntro = playIntroOnStartup;
+        }
     }
 
     // Left/right HUD panels are corner-anchored, not persisted (see buildLeftHudPanel/
@@ -5790,10 +5836,11 @@ void SatelliteSim::loadSettings()
     // in a later build reach existing installs automatically, and means whatever was loaded above
     // (which predates presets on an older file, or could otherwise disagree) never wins over the
     // preset's own name. Custom is intentionally skipped — it means "trust what was just loaded."
-    if (graphicsPreset != GraphicsPreset::Custom)
+    // A patch re-derives only when it names the preset itself: `set clouds.coverage 0.2` must not be
+    // overwritten by the preset table it is deliberately departing from.
+    const bool patchNamesPreset = isPatch && j.contains("display") && j["display"].contains("graphics_preset");
+    if (graphicsPreset != GraphicsPreset::Custom && (!isPatch || patchNamesPreset))
         applyGraphicsPreset(graphicsPreset);
-
-    fprintf(stderr, "[SatelliteSim] Loaded settings from %s\n", path.c_str());
 }
 
 // ─── saveSettings ─────────────────────────────────────────────────────────────
@@ -5808,6 +5855,22 @@ void SatelliteSim::saveSettings()
     if (userDataDir_.empty())
         return;
 
+    nlohmann::json j = buildSettingsJson();
+    auto path = (std::filesystem::path(userDataDir_) / "settings.json").string();
+    try
+    {
+        std::ofstream f(path);
+        f << j.dump(4) << '\n';
+    }
+    catch (const std::exception &e)
+    {
+        fprintf(stderr, "[SatelliteSim] Failed to save settings.json: %s\n", e.what());
+    }
+}
+
+// Everything saveSettings persists, as one object. Also the harness's `get` (docs/HARNESS.md).
+nlohmann::json SatelliteSim::buildSettingsJson()
+{
     nlohmann::json j;
 
     j["schema_version"] = kSettingsSchemaVersion;
@@ -6006,17 +6069,7 @@ void SatelliteSim::saveSettings()
     for (int pi = 0; pi < kPlanetCount; ++pi)
         planetArr.push_back({{"name", kPlanetNames[pi]}, {"enabled", planetEnabled[pi]}});
     j["planets"] = {{"show_planets", showPlanets}, {"list", planetArr}};
-
-    auto path = (std::filesystem::path(userDataDir_) / "settings.json").string();
-    try
-    {
-        std::ofstream f(path);
-        f << j.dump(4) << '\n';
-    }
-    catch (const std::exception &e)
-    {
-        fprintf(stderr, "[SatelliteSim] Failed to save settings.json: %s\n", e.what());
-    }
+    return j;
 }
 
 // ─── savePerfSnapshot ───────────────────────────────────────────────────────
@@ -6456,6 +6509,8 @@ void SatelliteSim::updateKnockoutSweep(float cpuDt)
         {"steps", steps}};
 
     appendPerfRecord(j);
+    lastSweepRecordJson = j.dump();
+    ++sweepsCompleted;
     sweepDoneMsgTimer = 3.0f;
     printf("[SatelliteSim] Knockout sweep complete (%d steps measured, %d already disabled by the "
            "baseline mask 0x%X, baseline %.2f ms) -> profile_log.jsonl\n",

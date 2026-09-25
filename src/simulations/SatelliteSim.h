@@ -23,6 +23,22 @@
 // here would put it in every TU that touches this simulation for two method signatures.
 #include <nlohmann/json_fwd.hpp>
 
+// Automation harness (docs/HARNESS.md). Only pointers/refs cross this header, so the full Harness.h
+// (and nlohmann/json.hpp with it) stays out of every file that includes SatelliteSim.h.
+namespace harness
+{
+class Runner;
+struct Active;
+enum class Status;
+} // namespace harness
+
+// The knockout table and settings tab names live in SatelliteSimUI.cpp; the harness reads them by
+// name through these (docs/HARNESS.md: `knockout`, `ui open settings tab=...`).
+int debugToggleTableSize();
+bool debugToggleAt(int i, uint32_t &bit, const char *&label, const char *&jsonKey);
+int settingsTabIndexByName(const std::string &name); // -1 if none (case-insensitive)
+const char *settingsTabName(int i);
+
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -1582,7 +1598,7 @@ public:
     }
     // UC6: see Simulation.h for the calling convention (peek before ui.record(), record the copy
     // after the render pass ends, finalize at the top of the next frame).
-    bool wantsCleanScreenshot() const override { return screenshotRequested; }
+    bool wantsCleanScreenshot() const override { return screenshotRequested && !screenshotIncludeUI; }
     void recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image) override;
     void finalizeScreenshot() override;
     // UC6: shared by KB_SCREENSHOT (dispatchKeyAction) and the left HUD panel's camera button —
@@ -1592,6 +1608,9 @@ public:
     void cleanup(VkDevice device) override;
     void onKey(GLFWwindow *w, int key, int action) override;
     void onCursorPos(GLFWwindow *w, double x, double y) override;
+    // Automation harness (docs/HARNESS.md, SatelliteSimHarness.cpp).
+    float frameDt(float realDt) override;
+    bool wantsQuit() const override { return harnessQuit_; }
 
 private:
     // ── SSBOs ─────────────────────────────────────────────────────────────────
@@ -3314,6 +3333,36 @@ private:
     // existing at once, so join() here is always fast (the previous one has either already
     // finished or is about to).
     std::thread screenshotThread;
+    // Harness captures (docs/HARNESS.md `capture`): keep the UI in the shot, crop and rescale before
+    // the encode. Reset after every request.
+    bool screenshotIncludeUI = false;
+    int screenshotCrop[4] = {0, 0, 0, 0}; // x, y, w, h in frame pixels; w == 0 = the whole frame
+    float screenshotScale = 1.0f;          // < 1 box-filtered down, > 1 nearest-neighbour up (pixel peeping)
+
+    // ── Automation harness (docs/HARNESS.md; all code in SatelliteSimHarness.cpp) ──────────────
+    // Null outside a harness run: every hook below is then a no-op.
+    harness::Runner *harnessRunner_ = nullptr;
+    bool harnessQuit_ = false;
+    // `wait settle`: frames left. While > 0 the frame time is kHarnessSettleDt and sim time is held,
+    // so every eased quantity (sky glare, dark-sky dome, mesh fades, beam-light fades, env probes)
+    // converges without the scene moving.
+    int harnessSettleFrames_ = 0;
+    bool harnessSettleSavedPaused_ = false;
+    static constexpr float kHarnessSettleDt = 0.5f;
+    // `camera track`: re-aim every frame. 0 off, 1 selection, 2 sun, 3 moon, 4 planet.
+    int harnessTrack_ = 0;
+    int harnessTrackPlanet_ = -1;
+    std::string lastSweepRecordJson; // the knockout sweep's last record (for `sweep`)
+    int sweepsCompleted = 0;
+    void harnessInit();
+    void harnessTick();
+    harness::Status harnessExec(harness::Active &a);
+    void harnessSetLook(float azDeg, float elDeg);
+    bool harnessLookDir(int track, int planet, glm::vec3 &enuDir); // false if unavailable
+    nlohmann::json harnessStateJson();
+    float cpuTerrainHeightM(float latDeg, float lonDeg) const;
+    nlohmann::json buildSettingsJson();
+    void applySettingsJson(const nlohmann::json &j, bool isPatch);
 
     // ── Key bindings (editable in the settings window) ────────────────────────
     // All interactive keys go here — both event keys (pressed once) and held keys

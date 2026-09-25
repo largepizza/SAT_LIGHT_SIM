@@ -22,4 +22,10 @@ namespace Paths
     //   macOS:   ~/Library/Application Support/SatLightSim
     // Creates the directory if it does not already exist.
     std::string userDataDir();
+
+    // Harness runs (docs/HARNESS.md) point every per-user write — settings.json, the log, the
+    // crash sentinel, perf logs — at their own run folder, so an automated run never reads or
+    // clobbers the user's settings and a killed run never trips crash-recovery on the next
+    // normal launch. Empty = the normal rule above.
+    void setUserDataDirOverride(const std::string &dir);
 }

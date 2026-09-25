@@ -1,0 +1,35 @@
+# Smoke test: every command family once. Run: python tools/harness/run.py tools/harness/scripts/smoke.satcmd
+log "smoke test start"
+state start
+preset High
+time set 2036-06-21T03:30:00Z
+time pause
+observer lat=37.77 lon=-122.42 agl=2
+camera az=250 el=8 fov=70
+wait settle
+capture sf_west
+capture sf_west_ui ui=on scale=0.5
+capture sf_crop crop=600,300,200,120 scale=4
+knockout +terrain_march
+wait settle 10
+capture sf_no_terrain scale=0.5
+knockout none
+get clouds.coverage
+set clouds.coverage 0.0
+wait settle 10
+capture sf_no_clouds scale=0.5
+set clouds.coverage 0.45
+select const "Starlink Gen1"
+camera look sel
+camera fov=5
+wait settle
+capture starlink_sel scale=0.5 ui=on
+select planet Jupiter
+camera look sel
+ui open settings tab=Terrain
+wait 5
+capture settings_terrain ui=on
+ui close all
+perf frames=30
+state end
+quit

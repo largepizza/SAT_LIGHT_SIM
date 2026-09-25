@@ -124,4 +124,12 @@ public:
     // finishes any screenshot whose copy was recorded last frame: maps the staging buffer,
     // encodes, writes the file, clears pending state. Default: no-op.
     virtual void finalizeScreenshot() {}
+
+    // ── Automation harness (docs/HARNESS.md) ───────────────────────────────────
+    // The frame time App hands to this frame's buildUI/recordCompute/recordDraw. A harness run
+    // replaces the wall-clock value with a fixed step so a script is deterministic frame to frame.
+    // Default: unchanged.
+    virtual float frameDt(float realDt) { return realDt; }
+    // True once a harness script has finished (or ran `quit`): App leaves the main loop.
+    virtual bool wantsQuit() const { return false; }
 };

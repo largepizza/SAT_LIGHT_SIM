@@ -62,8 +62,18 @@ namespace Paths
         }
     }
 
+    static std::string g_userDataOverride;
+
+    void setUserDataDirOverride(const std::string &dir) { g_userDataOverride = dir; }
+
     std::string userDataDir()
     {
+        if (!g_userDataOverride.empty())
+        {
+            std::error_code oec;
+            std::filesystem::create_directories(g_userDataOverride, oec);
+            return g_userDataOverride;
+        }
         std::filesystem::path dir;
         std::error_code ec;
 

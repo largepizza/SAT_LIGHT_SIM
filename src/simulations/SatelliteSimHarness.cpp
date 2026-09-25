@@ -1,0 +1,1157 @@
+// ── Automation harness: SatelliteSim's commands ─────────────────────────────────────────────────
+// The command language itself (parsing, queue, run folder, live inbox) is src/Harness.h/.cpp; this
+// file is what each command DOES to the sim. Reference with examples: docs/HARNESS.md. Keep that
+// document's command table in step with harnessExec() below — it is what other agents read.
+//
+// Everything here runs at the top of buildUI (harnessTick), i.e. before this frame's camera
+// derivation, recordCompute and draws: a command's effect is in the very frame it ran in, and a
+// `capture` issued after it records that frame.
+#include "SatelliteSim.h"
+#include "SatPhotometry.h"
+#include "../Harness.h"
+#include "../Log.h"
+#include "version.h"
+
+#include <nlohmann/json.hpp>
+
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <stdexcept>
+
+namespace fs = std::filesystem;
+using harness::Status;
+using nlohmann::json;
+
+namespace
+{
+[[noreturn]] void fail(const std::string &msg) { throw std::runtime_error(msg); }
+
+std::string lower(std::string s)
+{
+    for (char &c : s)
+        c = (char)tolower((unsigned char)c);
+    return s;
+}
+
+bool ieq(const std::string &a, const char *b) { return lower(a) == lower(std::string(b)); }
+
+double parseNum(const std::string &s, const char *what)
+{
+    char *end = nullptr;
+    double v = strtod(s.c_str(), &end);
+    if (s.empty() || end == s.c_str() || *end != '\0')
+        fail(std::string(what) + ": expected a number, got '" + s + "'");
+    return v;
+}
+
+// Civil date <-> days since 1970-01-01 (proleptic Gregorian; H. Hinnant's algorithms).
+int64_t daysFromCivil(int64_t y, unsigned m, unsigned d)
+{
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int64_t)doe - 719468;
+}
+void civilFromDays(int64_t z, int64_t &y, unsigned &m, unsigned &d)
+{
+    z += 719468;
+    const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const unsigned doe = (unsigned)(z - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    y = (int64_t)yoe + era * 400;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    d = doy - (153 * mp + 2) / 5 + 1;
+    m = mp < 10 ? mp + 3 : mp - 9;
+    y += m <= 2;
+}
+
+// The sim's clock is seconds since J2000 = 2000-01-01T12:00:00 (see SatelliteSim::init; the sim
+// treats that as UTC, and its Earth rotation has no GMST offset — CLAUDE.md "sim clock != real UTC").
+constexpr int64_t kJ2000Unix = 946728000;
+
+double j2000FromIso(const std::string &iso)
+{
+    int Y = 0, M = 0, D = 0, h = 0, mi = 0;
+    double sec = 0.0;
+    int n = sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%lf", &Y, &M, &D, &h, &mi, &sec);
+    if (n < 3)
+        n = sscanf(iso.c_str(), "%d-%d-%d %d:%d:%lf", &Y, &M, &D, &h, &mi, &sec);
+    if (n < 3 || M < 1 || M > 12 || D < 1 || D > 31)
+        fail("time: expected an ISO time like 2036-06-21T02:10:00Z, got '" + iso + "'");
+    const int64_t days = daysFromCivil(Y, (unsigned)M, (unsigned)D);
+    return (double)(days * 86400 - kJ2000Unix) + h * 3600.0 + mi * 60.0 + sec;
+}
+
+std::string isoFromJ2000(double t)
+{
+    const double unix = t + (double)kJ2000Unix;
+    int64_t days = (int64_t)std::floor(unix / 86400.0);
+    double sod = unix - (double)days * 86400.0;
+    int64_t y;
+    unsigned m, d;
+    civilFromDays(days, y, m, d);
+    int hh = (int)(sod / 3600.0);
+    int mm = (int)((sod - hh * 3600.0) / 60.0);
+    double ss = sod - hh * 3600.0 - mm * 60.0;
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%04lld-%02u-%02uT%02d:%02d:%06.3fZ", (long long)y, m, d, hh, mm, ss);
+    return buf;
+}
+
+float azDegOf(const glm::vec3 &enu) { return glm::degrees(atan2f(enu.x, enu.y)); }
+float elDegOf(const glm::vec3 &enu) { return glm::degrees(asinf(glm::clamp(enu.z, -1.0f, 1.0f))); }
+
+// Output names become file names.
+std::string safeName(const std::string &s)
+{
+    if (s.empty())
+        fail("a name is required");
+    std::string o;
+    for (char c : s)
+        o += (isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.') ? c : '_';
+    return o;
+}
+
+bool pngSize(const std::string &path, uint32_t &w, uint32_t &h)
+{
+    std::ifstream f(path, std::ios::binary);
+    unsigned char b[24];
+    if (!f.read((char *)b, 24))
+        return false;
+    w = (b[16] << 24) | (b[17] << 16) | (b[18] << 8) | b[19];
+    h = (b[20] << 24) | (b[21] << 16) | (b[22] << 8) | b[23];
+    return true;
+}
+
+// `set a.b.c v`: value as JSON when it parses (numbers, true/false, arrays, quoted strings), else a
+// bare string.
+json parseValue(const std::string &v)
+{
+    try
+    {
+        return json::parse(v);
+    }
+    catch (...)
+    {
+        return json(v);
+    }
+}
+
+const json *lookupPath(const json &root, const std::string &dotted)
+{
+    const json *cur = &root;
+    size_t start = 0;
+    while (start <= dotted.size())
+    {
+        size_t dot = dotted.find('.', start);
+        std::string part = dotted.substr(start, dot == std::string::npos ? std::string::npos : dot - start);
+        if (!cur->is_object() || !cur->contains(part))
+            return nullptr;
+        cur = &(*cur)[part];
+        if (dot == std::string::npos)
+            break;
+        start = dot + 1;
+    }
+    return cur;
+}
+
+json patchFor(const std::string &dotted, const json &value)
+{
+    json root = json::object();
+    json *cur = &root;
+    size_t start = 0;
+    while (true)
+    {
+        size_t dot = dotted.find('.', start);
+        if (dot == std::string::npos)
+        {
+            (*cur)[dotted.substr(start)] = value;
+            break;
+        }
+        cur = &(*cur)[dotted.substr(start, dot - start)];
+        start = dot + 1;
+    }
+    return root;
+}
+
+const char *kHelp =
+    "wait <frames> | wait seconds <s> | wait settle [frames]; "
+    "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
+    "observer lat= lon= [agl=|alt=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
+    "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; "
+    "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
+    "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; "
+    "state [name]; perf [frames=N] [name=]; sweep; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
+    "window <W>x<H>; log <text>; quit";
+} // namespace
+
+// ─── Lifecycle ────────────────────────────────────────────────────────────────────────────────────
+void SatelliteSim::harnessInit()
+{
+    if (!harness::active())
+        return;
+    // A harness run starts in the scene, not the cinematic, and without first-run notices that would
+    // otherwise sit in every UI capture for their first eight seconds.
+    showIntro = false;
+    graphicsAutoNoticeTimer = 0.0f;
+    crashRecoveryNoticeTimer = 0.0f;
+    harnessRunner_ = new harness::Runner();
+    std::string err;
+    if (!harnessRunner_->begin(err))
+    {
+        fprintf(stderr, "[harness] %s\n", err.c_str());
+        Log::line("harness: " + err);
+        harnessRunner_->writeSummary("script_error", err);
+        harnessQuit_ = true;
+        return;
+    }
+    harness::startWatchdog(harnessRunner_);
+}
+
+float SatelliteSim::frameDt(float realDt)
+{
+    if (!harnessRunner_)
+        return realDt;
+    if (harnessSettleFrames_ > 0)
+        return kHarnessSettleDt;
+    const float f = harness::options().fixedDt;
+    return f > 0.0f ? f : realDt;
+}
+
+void SatelliteSim::harnessTick()
+{
+    if (!harnessRunner_ || harnessQuit_)
+        return;
+    if (harnessTrack_ != 0)
+    {
+        glm::vec3 d;
+        if (harnessLookDir(harnessTrack_, harnessTrackPlanet_, d))
+            harnessSetLook(azDegOf(d), elDegOf(d));
+    }
+    harnessRunner_->tick([this](harness::Active &a) { return harnessExec(a); });
+    const bool done = harnessRunner_->quitRequested() ||
+                      (harness::options().exitWhenDone && harnessRunner_->scriptFinished());
+    if (done)
+    {
+        harnessRunner_->writeSummary(harnessRunner_->errorCount() ? "errors" : "ok");
+        harnessQuit_ = true;
+    }
+}
+
+// Aim the camera: obsFacing is the authority (buildUI derives camera.azDeg from it every frame), so
+// set both.
+void SatelliteSim::harnessSetLook(float azDeg, float elDeg)
+{
+    const float sL = obsDir.z;
+    const float cLH = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);
+    const float inv = (cLH > 1e-7f) ? 1.0f / cLH : 0.0f;
+    const float cLn = cLH > 1e-7f ? obsDir.x * inv : 1.0f, sLn = cLH > 1e-7f ? obsDir.y * inv : 0.0f;
+    const glm::vec3 eastEF = {-sLn, cLn, 0.0f};
+    const glm::vec3 northEF = {-sL * cLn, -sL * sLn, cLH};
+    const float az = glm::radians(azDeg);
+    obsFacing = glm::normalize(cosf(az) * northEF + sinf(az) * eastEF);
+    camera.azDeg = azDeg;
+    camera.elDeg = glm::clamp(elDeg, -89.9f, 89.9f);
+}
+
+bool SatelliteSim::harnessLookDir(int track, int planet, glm::vec3 &d)
+{
+    switch (track)
+    {
+    case 1:
+        if (selectedPlanetIndex >= 0)
+            return harnessLookDir(4, selectedPlanetIndex, d);
+        if (selectedSatIndex < 0)
+            return false;
+        updateSelectedSkyDir();
+        d = selSkyDirCpu;
+        return true;
+    case 2:
+        d = glm::vec3(sunDirENU);
+        return true;
+    case 3:
+        d = glm::vec3(moonDirENU);
+        return true;
+    case 4:
+    {
+        if (planet < 0 || planet >= kPlanetCount)
+            return false;
+        const glm::dvec3 e = planetStates[planet].eciDir;
+        d = glm::normalize(glm::vec3((float)glm::dot(e, glm::dvec3(eci2enuX)), (float)glm::dot(e, glm::dvec3(eci2enuY)),
+                                     (float)glm::dot(e, glm::dvec3(eci2enuZ))));
+        return true;
+    }
+    }
+    return false;
+}
+
+// ─── State snapshot ───────────────────────────────────────────────────────────────────────────────
+// Everything needed to reproduce (and interpret) a frame. It is written beside every capture.
+json SatelliteSim::harnessStateJson()
+{
+    json j;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    j["time"] = {{"utc", isoFromJ2000(t)},
+                 {"j2000_s", t},
+                 {"paused", timePaused},
+                 {"scale", kTimeLabels[std::clamp(timeScaleIdx, 0, kNumTimeScales - 1)]},
+                 {"reverse", timeDir < 0.0f}};
+    j["observer"] = {{"lat_deg", obsLatDeg},
+                     {"lon_deg", obsLonDeg},
+                     {"agl_m", obsHeightOffset},
+                     {"terrain_m", obsTerrainH},
+                     {"alt_m", obsTerrainH + obsHeightOffset},
+                     {"following", followActive}};
+    if (followActive)
+        j["observer"]["follow"] = {{"sat", followSatIndex},
+                                   {"offset_m", {followOffset.x, followOffset.y, followOffset.z}}};
+    j["camera"] = {{"az_deg", camera.azDeg}, {"el_deg", camera.elDeg}, {"fov_y_deg", camera.fovYDeg}};
+    const glm::vec3 sun(sunDirENU), moon(moonDirENU);
+    j["sun"] = {{"az_deg", azDegOf(sun)}, {"el_deg", elDegOf(sun)}};
+    j["moon"] = {{"az_deg", azDegOf(moon)}, {"el_deg", elDegOf(moon)}, {"illum", moonDirENU.w}};
+
+    json ko = json::array();
+    for (int i = 0; i < debugToggleTableSize(); ++i)
+    {
+        uint32_t bit;
+        const char *label, *key;
+        if (debugToggleAt(i, bit, label, key) && (debugDisableMask & bit))
+            ko.push_back(key);
+    }
+    if (debugDisableMask & 262144u)
+        ko.push_back("potato_sky");
+    if (debugDisableMask & 524288u)
+        ko.push_back("lite_sky");
+    j["render"] = {{"preset", kGraphicsPresetNames[(int)graphicsPreset]},
+                   {"knockout_mask", debugDisableMask},
+                   {"knockouts", ko},
+                   {"render_scale", renderScale},
+                   {"width", ctx_ ? ctx_->swapExtent.width : 0},
+                   {"height", ctx_ ? ctx_->swapExtent.height : 0},
+                   {"ui_visible", uiVisible},
+                   {"ui_scale", uiScale}};
+
+    json sel = json::object();
+    if (selectedSatIndex >= 0 && selectedSatIndex < (int)satOrbits.size())
+    {
+        const SatOrbit &o = satOrbits[selectedSatIndex];
+        sel["sat"] = selectedSatIndex;
+        sel["type"] = satTypes[o.typeIdx].name;
+        if (o.constIdx < constellations.size())
+        {
+            sel["constellation"] = constellations[o.constIdx].name;
+            sel["n"] = selectedSatIndex - (int)constellations[o.constIdx].orbitStart;
+        }
+        updateSelectedSkyDir();
+        sel["az_deg"] = azDegOf(selSkyDirCpu);
+        sel["el_deg"] = elDegOf(selSkyDirCpu);
+        sel["above_earth"] = selAboveEarth;
+    }
+    if (selectedPlanetIndex >= 0)
+        sel["planet"] = kPlanetNames[selectedPlanetIndex];
+    j["selection"] = sel;
+
+    static const char *kBucketKeys[8] = {"scene_depth", "beam_cloud_block", "orbit_compute", "cloud_march",
+                                         "flare_compute", "sky_background_draw", "satellite_star_draw", "ui_overlay"};
+    json g;
+    for (int b = 0; b < 8; ++b)
+        g[kBucketKeys[b]] = gpuMsRaw[b];
+    g["total"] = gpuMsRawTotal;
+    j["gpu_ms_last_frame"] = g;
+    j["gpu_ms_smoothed_total"] = gpuMsTotalSmoothed;
+
+    std::string gpu;
+    if (ctx_)
+    {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(ctx_->physicalDevice, &props);
+        gpu = props.deviceName;
+    }
+#ifdef NDEBUG
+    const char *cfg = "Release";
+#else
+    const char *cfg = "Debug";
+#endif
+    j["build"] = {{"version", APP_VERSION}, {"commit", APP_GIT_COMMIT}, {"config", cfg}, {"gpu", gpu}};
+    j["harness_frame"] = harnessRunner_ ? harnessRunner_->frame() : 0;
+    return j;
+}
+
+// ─── Commands ─────────────────────────────────────────────────────────────────────────────────────
+Status SatelliteSim::harnessExec(harness::Active &a)
+{
+    const harness::Command &c = a.cmd;
+    const std::string &n = c.name;
+    json &r = a.result;
+    auto pos = [&](size_t i) -> std::string { return i < c.pos.size() ? c.pos[i] : std::string(); };
+
+    // ── flow ────────────────────────────────────────────────────────────────────
+    if (n == "help")
+    {
+        r["message"] = kHelp;
+        return Status::Done;
+    }
+    if (n == "log" || n == "echo")
+    {
+        std::string msg;
+        for (size_t i = 0; i < c.pos.size(); ++i)
+            msg += (i ? " " : "") + c.pos[i];
+        Log::line("harness: " + msg);
+        r["message"] = msg;
+        return Status::Done;
+    }
+    if (n == "quit" || n == "exit")
+        return Status::Done; // the Runner sees the name and stops after recording it
+    if (n == "wait" || n == "settle")
+    {
+        const std::string mode = n == "settle" ? "settle" : lower(pos(0));
+        if (mode == "settle")
+        {
+            const std::string arg = n == "settle" ? pos(0) : pos(1);
+            if (a.frame == 0)
+            {
+                const int frames = arg.empty() ? 40 : (int)parseNum(arg, "wait settle");
+                harnessSettleSavedPaused_ = timePaused;
+                timePaused = true;
+                harnessSettleFrames_ = std::max(1, frames);
+                a.scratch["frames"] = harnessSettleFrames_;
+                return Status::Pending;
+            }
+            if (--harnessSettleFrames_ > 0)
+                return Status::Pending;
+            harnessSettleFrames_ = 0;
+            timePaused = harnessSettleSavedPaused_;
+            r["message"] = "settled " + std::to_string(a.scratch["frames"].get<int>()) + " frames";
+            return Status::Done;
+        }
+        if (mode == "seconds" || mode == "s")
+        {
+            if (a.frame == 0)
+                a.scratch["until"] = harness::nowS() + parseNum(pos(1), "wait seconds");
+            return harness::nowS() >= a.scratch["until"].get<double>() ? Status::Done : Status::Pending;
+        }
+        const std::string arg = (mode == "frames") ? pos(1) : pos(0);
+        const int frames = arg.empty() ? 1 : (int)parseNum(arg, "wait");
+        return a.frame >= frames ? Status::Done : Status::Pending;
+    }
+
+    // ── time ────────────────────────────────────────────────────────────────────
+    if (n == "time")
+    {
+        const std::string sub = lower(pos(0));
+        auto setAbs = [&](double t)
+        {
+            const double days = std::floor(t / 86400.0);
+            simDayJ2000 = (int64_t)days;
+            simSecInDay = t - days * 86400.0;
+            trailClearPending = true;
+        };
+        const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        if (sub == "set")
+            setAbs(j2000FromIso(pos(1)));
+        else if (sub == "j2000")
+            setAbs(parseNum(pos(1), "time j2000"));
+        else if (sub == "add")
+            setAbs(now + parseNum(pos(1), "time add"));
+        else if (sub == "sun")
+        {
+            // The sim clock is not real UTC (no GMST offset), so a UTC hour does not give a local
+            // time of day. This finds one: the time nearest the current one (within +-12 h) at which
+            // the Sun stands at the requested elevation for THIS observer, from the same Sun and
+            // observer formulas updatePositions uses.
+            const glm::dvec3 od = glm::dvec3(obsDir);
+            const double rObs = satphot::kEarthRadiusM + obsTerrainH + obsHeightOffset;
+            auto sunEl = [&](double tt)
+            {
+                const glm::dvec3 up = glm::normalize(observerEciAt(od, rObs, tt));
+                return glm::degrees(std::asin(glm::clamp(glm::dot(sunDirEciAt(tt), up), -1.0, 1.0)));
+            };
+            const std::string what = lower(pos(1));
+            const std::string dir = lower(pos(2));
+            const double step = 60.0;
+            double best = now, bestCost = 1e30;
+            if (what == "noon" || what == "midnight")
+            {
+                for (double dt = -43200.0; dt <= 43200.0; dt += step)
+                {
+                    const double e = sunEl(now + dt);
+                    const double cost = what == "noon" ? -e : e;
+                    if (cost < bestCost)
+                        bestCost = cost, best = now + dt;
+                }
+            }
+            else
+            {
+                const double target = parseNum(what, "time sun <elevation deg>");
+                if (!dir.empty() && dir != "rising" && dir != "setting")
+                    fail("time sun: rising | setting");
+                bool found = false;
+                for (double dt = -43200.0; dt < 43200.0; dt += step)
+                {
+                    const double e0 = sunEl(now + dt) - target, e1 = sunEl(now + dt + step) - target;
+                    if ((e0 <= 0.0) == (e1 <= 0.0))
+                        continue;
+                    const bool rising = e1 > e0;
+                    if ((dir == "rising" && !rising) || (dir == "setting" && rising))
+                        continue;
+                    double lo = now + dt, hi = lo + step; // bisect to a second
+                    for (int k = 0; k < 20; ++k)
+                    {
+                        const double mid = 0.5 * (lo + hi);
+                        if (((sunEl(mid) - target) <= 0.0) == (e0 <= 0.0))
+                            lo = mid;
+                        else
+                            hi = mid;
+                    }
+                    const double cand = 0.5 * (lo + hi);
+                    if (std::fabs(cand - now) < bestCost)
+                        bestCost = std::fabs(cand - now), best = cand, found = true;
+                }
+                if (!found)
+                    fail("time sun: the Sun never reaches " + what + " deg here within 12 h (polar day/night?)");
+            }
+            setAbs(best);
+            r["sun_el_deg"] = sunEl(best);
+        }
+        else if (sub == "pause")
+            timePaused = true;
+        else if (sub == "play")
+            timePaused = false;
+        else if (sub == "scale")
+        {
+            int idx = -1;
+            for (int i = 0; i < kNumTimeScales; ++i)
+                if (ieq(pos(1), kTimeLabels[i]))
+                    idx = i;
+            if (idx < 0)
+            {
+                std::string opts;
+                for (int i = 0; i < kNumTimeScales; ++i)
+                    opts += std::string(i ? ", " : "") + kTimeLabels[i];
+                fail("time scale: one of " + opts);
+            }
+            timeScaleIdx = idx;
+        }
+        else if (sub == "reverse")
+            timeDir = c.pos.size() > 1 && (pos(1) == "off" || pos(1) == "0") ? 1.0f : -1.0f;
+        else if (!sub.empty())
+            fail("time: unknown subcommand '" + sub + "' (set, add, j2000, sun, pause, play, scale, reverse)");
+        const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        r["utc"] = isoFromJ2000(t);
+        r["j2000_s"] = t;
+        r["paused"] = timePaused;
+        r["message"] = isoFromJ2000(t) + (timePaused ? " (paused)" : "");
+        return Status::Done;
+    }
+
+    // ── observer ────────────────────────────────────────────────────────────────
+    if (n == "observer")
+    {
+        if (c.has("lat") || c.has("lon"))
+        {
+            if (followActive)
+                stopFollow();
+            const float lat = (float)c.num("lat", obsLatDeg), lon = (float)c.num("lon", obsLonDeg);
+            if (lat < -90.0f || lat > 90.0f)
+                fail("observer: lat must be in [-90, 90]");
+            const float la = glm::radians(lat), lo = glm::radians(lon);
+            obsDir = {cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)};
+            obsLatDeg = lat;
+            obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+            harnessSetLook(camera.azDeg, camera.elDeg); // keep the view direction in the new local frame
+            trailClearPending = true;
+        }
+        if (c.has("agl"))
+            obsHeightOffset = std::max(0.0f, (float)c.num("agl", 0.0));
+        if (c.has("alt"))
+            obsHeightOffset = std::max(0.0f, (float)c.num("alt", 0.0) - cpuTerrainHeightM(obsLatDeg, obsLonDeg));
+        obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
+        r["lat_deg"] = obsLatDeg;
+        r["lon_deg"] = obsLonDeg;
+        r["agl_m"] = obsHeightOffset;
+        r["terrain_m"] = obsTerrainH;
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%.4f, %.4f  agl %.0f m  (terrain %.0f m)", obsLatDeg, obsLonDeg, obsHeightOffset,
+                 obsTerrainH);
+        r["message"] = buf;
+        return Status::Done;
+    }
+
+    // ── camera ──────────────────────────────────────────────────────────────────
+    if (n == "camera")
+    {
+        const std::string sub = lower(pos(0));
+        auto targetOf = [&](const std::string &name, int &track, int &planet)
+        {
+            const std::string t = lower(name);
+            planet = -1;
+            if (t == "off" || t == "none")
+                track = 0;
+            else if (t == "sel" || t == "selection" || t == "sat")
+                track = 1;
+            else if (t == "sun")
+                track = 2;
+            else if (t == "moon")
+                track = 3;
+            else
+            {
+                track = 4;
+                for (int i = 0; i < kPlanetCount; ++i)
+                    if (ieq(t, kPlanetNames[i]))
+                        planet = i;
+                if (planet < 0)
+                    fail("camera: unknown target '" + name + "' (sun, moon, sel, a planet name, off)");
+            }
+        };
+        if (sub == "look" || sub == "track")
+        {
+            int track, planet;
+            targetOf(pos(1), track, planet);
+            glm::vec3 d;
+            if (track != 0 && !harnessLookDir(track, planet, d))
+                fail("camera " + sub + ": nothing selected");
+            if (track != 0)
+                harnessSetLook(azDegOf(d), elDegOf(d));
+            harnessTrack_ = sub == "track" ? track : 0;
+            harnessTrackPlanet_ = planet;
+        }
+        else if (!sub.empty())
+            fail("camera: unknown subcommand '" + sub + "' (look, track, or az= el= fov=)");
+        if (c.has("az") || c.has("el"))
+        {
+            harnessTrack_ = 0;
+            harnessSetLook((float)c.num("az", camera.azDeg), (float)c.num("el", camera.elDeg));
+        }
+        if (c.has("fov"))
+            camera.fovYDeg = glm::clamp((float)c.num("fov", camera.fovYDeg), SkyCamera::kMinFovDeg, SkyCamera::kMaxFovDeg);
+        r["az_deg"] = camera.azDeg;
+        r["el_deg"] = camera.elDeg;
+        r["fov_y_deg"] = camera.fovYDeg;
+        char buf[96];
+        snprintf(buf, sizeof(buf), "az %.2f el %.2f fov %.2f%s", camera.azDeg, camera.elDeg, camera.fovYDeg,
+                 harnessTrack_ ? " (tracking)" : "");
+        r["message"] = buf;
+        return Status::Done;
+    }
+
+    // ── selection / follow ──────────────────────────────────────────────────────
+    if (n == "select")
+    {
+        const std::string sub = lower(pos(0));
+        if (sub == "none")
+        {
+            selectedSatIndex = -1;
+            selectedPlanetIndex = -1;
+        }
+        else if (sub == "sat")
+        {
+            const int idx = (int)parseNum(pos(1), "select sat");
+            if (idx < 0 || idx >= (int)satOrbits.size())
+                fail("select sat: index out of range (0.." + std::to_string(satOrbits.size() - 1) + ")");
+            selectSatellite(idx);
+        }
+        else if (sub == "const" || sub == "constellation")
+        {
+            int ci = -1;
+            for (int i = 0; i < (int)constellations.size(); ++i)
+                if (ieq(constellations[i].name, pos(1).c_str()))
+                    ci = i;
+            if (ci < 0)
+                fail("select const: no constellation '" + pos(1) + "' (see `const list`)");
+            int idx;
+            if (c.has("n"))
+            {
+                const int k = (int)c.num("n", 0);
+                if (k < 0 || k >= (int)constellations[ci].orbitCount)
+                    fail("select const: n out of range");
+                idx = (int)constellations[ci].orbitStart + k;
+            }
+            else
+                idx = pickViewerSatellite(ci); // the member highest in the observer's sky
+            if (idx < 0)
+                fail("select const: constellation has no satellites");
+            selectSatellite(idx);
+        }
+        else if (sub == "planet")
+        {
+            int pi = -1;
+            for (int i = 0; i < kPlanetCount; ++i)
+                if (ieq(pos(1), kPlanetNames[i]))
+                    pi = i;
+            if (pi < 0)
+                fail("select planet: unknown planet '" + pos(1) + "'");
+            selectedPlanetIndex = pi;
+            selectedSatIndex = -1;
+            formatSelectedPlanetInfo();
+        }
+        else
+            fail("select: sat <i> | const <name> [n=<k>] | planet <name> | none");
+        r = harnessStateJson()["selection"];
+        std::string msg = "selected";
+        if (r.contains("constellation"))
+            msg += " " + r["constellation"].get<std::string>() + " #" + std::to_string(r["n"].get<int>()) +
+                   " (sat " + std::to_string(r["sat"].get<int>()) + ")";
+        if (r.contains("planet"))
+            msg += " " + r["planet"].get<std::string>();
+        if (r.empty())
+            msg = "selection cleared";
+        r["message"] = msg;
+        return Status::Done;
+    }
+    if (n == "follow")
+    {
+        if (lower(pos(0)) == "off")
+        {
+            stopFollow();
+            r["message"] = "follow off";
+            return Status::Done;
+        }
+        const int idx = c.has("sat") ? (int)c.num("sat", -1) : selectedSatIndex;
+        if (idx < 0 || idx >= (int)satOrbits.size())
+            fail("follow: select a satellite first (or sat=<i>)");
+        if (!followActive || followSatIndex != idx)
+            startFollow(idx);
+        if (!followActive)
+            fail("follow: this satellite's type has no geometry model");
+        if (c.has("offset"))
+        {
+            double x, y, z;
+            if (sscanf(c.str("offset").c_str(), "%lf,%lf,%lf", &x, &y, &z) != 3)
+                fail("follow: offset=<along>,<cross>,<radial> in metres");
+            followOffset = glm::dvec3(x, y, z);
+            updateFollow(0.0f);
+        }
+        r["sat"] = followSatIndex;
+        r["offset_m"] = {followOffset.x, followOffset.y, followOffset.z};
+        r["message"] = followLabel;
+        return Status::Done;
+    }
+    if (n == "const")
+    {
+        const std::string name = pos(0);
+        if (lower(name) == "list" || name.empty())
+        {
+            json list = json::array();
+            for (const auto &cc : constellations)
+                list.push_back({{"name", cc.name}, {"enabled", cc.enabled}, {"highlight", cc.highlight},
+                                {"count", cc.orbitCount}, {"type", satTypes[cc.typeIdx].name}});
+            r["constellations"] = list;
+            r["message"] = std::to_string(list.size()) + " constellations";
+            return Status::Done;
+        }
+        const std::string state = lower(pos(1));
+        int changed = 0;
+        for (auto &cc : constellations)
+            if (lower(name) == "all" || ieq(cc.name, name.c_str()))
+            {
+                if (state == "on" || state == "off")
+                    cc.enabled = state == "on";
+                else if (!state.empty())
+                    fail("const: on|off");
+                if (c.has("highlight"))
+                    cc.highlight = c.flag("highlight", cc.highlight);
+                ++changed;
+            }
+        if (!changed)
+            fail("const: no constellation '" + name + "' (see `const list`)");
+        r["message"] = std::to_string(changed) + " constellation(s) updated";
+        return Status::Done;
+    }
+
+    // ── settings ────────────────────────────────────────────────────────────────
+    if (n == "get")
+    {
+        const json all = buildSettingsJson();
+        if (c.pos.empty())
+        {
+            r["settings"] = all;
+            r["message"] = "all settings";
+            return Status::Done;
+        }
+        const json *v = lookupPath(all, pos(0));
+        if (!v)
+            fail("get: no setting '" + pos(0) + "' (use `get` or `get <section>` to list)");
+        r["key"] = pos(0);
+        r["value"] = *v;
+        r["message"] = pos(0) + " = " + v->dump();
+        return Status::Done;
+    }
+    if (n == "set")
+    {
+        std::vector<std::pair<std::string, std::string>> pairs;
+        for (size_t i = 0; i + 1 < c.pos.size(); i += 2)
+            pairs.push_back({c.pos[i], c.pos[i + 1]});
+        if (c.pos.size() % 2)
+            fail("set: <section.key> <value>");
+        for (const auto &kv : c.kv)
+            pairs.push_back(kv);
+        if (pairs.empty())
+            fail("set: <section.key> <value>");
+        const json before = buildSettingsJson();
+        const float oldRenderScale = renderScale;
+        const FpsCapMode oldCap = fpsCapMode;
+        std::string msg;
+        for (const auto &kv : pairs)
+        {
+            const json *cur = lookupPath(before, kv.first);
+            if (!cur)
+                fail("set: no setting '" + kv.first + "' (use `get <section>` to list)");
+            json v = parseValue(kv.second);
+            if (cur->is_number() && !v.is_number())
+                fail("set: " + kv.first + " is a number, got '" + kv.second + "'");
+            if (cur->is_boolean() && v.is_string())
+            {
+                const std::string s = lower(v.get<std::string>());
+                if (s == "on" || s == "off")
+                    v = s == "on";
+            }
+            applySettingsJson(patchFor(kv.first, v), true);
+            const json after = buildSettingsJson(); // held: lookupPath returns a pointer into it
+            const json *now = lookupPath(after, kv.first);
+            r[kv.first] = now ? *now : json();
+            msg += (msg.empty() ? "" : ", ") + kv.first + " = " + (now ? now->dump() : "?");
+        }
+        if (ctx_ && fabsf(renderScale - oldRenderScale) > 1e-6f)
+        {
+            vkDeviceWaitIdle(ctx_->device);
+            destroySkyLowResResources(ctx_->device);
+            createSkyLowResResources(*ctx_);
+        }
+        if (fpsCapMode != oldCap)
+            applyFpsCapMode();
+        r["message"] = msg;
+        return Status::Done;
+    }
+    if (n == "preset")
+    {
+        for (int i = 0; i <= (int)GraphicsPreset::Potato; ++i)
+            if (ieq(pos(0), kGraphicsPresetNames[i]))
+            {
+                applyGraphicsPreset((GraphicsPreset)i);
+                r["preset"] = kGraphicsPresetNames[i];
+                r["knockout_mask"] = debugDisableMask;
+                r["message"] = std::string("preset ") + kGraphicsPresetNames[i];
+                return Status::Done;
+            }
+        fail("preset: Planetarium, Low, Medium, High, Ultra, Potato (or Custom)");
+    }
+    if (n == "knockout" || n == "ko")
+    {
+        auto bitOf = [&](const std::string &key) -> uint32_t
+        {
+            if (key == "potato_sky")
+                return 262144u;
+            if (key == "lite_sky")
+                return 524288u;
+            for (int i = 0; i < debugToggleTableSize(); ++i)
+            {
+                uint32_t bit;
+                const char *label, *jk;
+                if (debugToggleAt(i, bit, label, jk) && (key == jk || key == std::to_string(bit)))
+                    return bit;
+            }
+            fail("knockout: unknown key '" + key + "' (see `knockout list`)");
+        };
+        if (lower(pos(0)) == "list")
+        {
+            json list = json::array();
+            for (int i = 0; i < debugToggleTableSize(); ++i)
+            {
+                uint32_t bit;
+                const char *label, *jk;
+                if (debugToggleAt(i, bit, label, jk))
+                    list.push_back({{"key", jk}, {"bit", bit}, {"label", label}, {"on", (debugDisableMask & bit) != 0}});
+            }
+            list.push_back({{"key", "potato_sky"}, {"bit", 262144}, {"label", "Potato sky shader"}, {"on", (debugDisableMask & 262144u) != 0}});
+            list.push_back({{"key", "lite_sky"}, {"bit", 524288}, {"label", "SKY_LITE sky shader"}, {"on", (debugDisableMask & 524288u) != 0}});
+            r["knockouts"] = list;
+            r["message"] = std::to_string(list.size()) + " knockout bits";
+            return Status::Done;
+        }
+        for (const std::string &tok : c.pos)
+        {
+            if (tok == "none" || tok == "0")
+                debugDisableMask = 0;
+            else if (isdigit((unsigned char)tok[0]))
+                debugDisableMask = (uint32_t)strtoul(tok.c_str(), nullptr, 0);
+            else if (tok[0] == '+')
+                debugDisableMask |= bitOf(tok.substr(1));
+            else if (tok[0] == '-')
+                debugDisableMask &= ~bitOf(tok.substr(1));
+            else
+                debugDisableMask |= bitOf(tok);
+        }
+        graphicsPreset = GraphicsPreset::Custom; // what the Display tab does when a box is ticked
+        r = harnessStateJson()["render"];
+        r["message"] = "mask " + std::to_string(debugDisableMask);
+        return Status::Done;
+    }
+
+    // ── UI ──────────────────────────────────────────────────────────────────────
+    if (n == "ui")
+    {
+        const std::string sub = lower(pos(0));
+        auto chromeOf = [&](const std::string &w) -> WindowChrome *
+        {
+            const std::string l = lower(w);
+            if (l == "settings")
+                return &settingsChrome;
+            if (l == "viewcontrols" || l == "controls")
+                return &viewControlsChrome;
+            if (l == "trace")
+                return &traceChrome;
+            if (l == "info")
+                return &infoChrome;
+            if (l == "viewer" || l == "view")
+                return &viewerChrome;
+            return nullptr;
+        };
+        if (sub == "show" || sub == "hide")
+            uiVisible = sub == "show";
+        else if (sub == "scale")
+            uiScale = glm::clamp((float)parseNum(pos(1), "ui scale"), 0.75f, 2.0f);
+        else if (sub == "open")
+        {
+            const std::string w = lower(pos(1));
+            if (w == "info" || w == "viewer" || w == "view")
+            {
+                if (selectedSatIndex < 0)
+                    fail("ui open " + w + ": select a satellite first");
+                const SatOrbit &o = satOrbits[selectedSatIndex];
+                if (!meshRenderer.typeMesh((int)o.typeIdx))
+                    fail("ui open " + w + ": this satellite's type has no geometry model");
+                openModelViewer((int)o.typeIdx, satTypes[o.typeIdx].name.c_str(), o.altM, selectedSatIndex, w != "info");
+            }
+            else if (w == "trace")
+            {
+                if (selectedSatIndex < 0)
+                    fail("ui open trace: select a satellite first");
+                computeSelectedTrace();
+            }
+            else
+            {
+                WindowChrome *ch = chromeOf(w);
+                if (!ch)
+                    fail("ui open: settings, viewcontrols, trace, info, viewer");
+                ch->open = true;
+            }
+            if (c.has("tab"))
+            {
+                const int t = settingsTabIndexByName(c.str("tab"));
+                if (t < 0)
+                    fail("ui open: unknown settings tab '" + c.str("tab") + "'");
+                settingsActiveTab = t;
+                if (t >= 6 && t <= 10) // Clouds..Beams are "advanced" (buildSettingsTabbedBody)
+                    showAdvancedSettings = true;
+            }
+            uiVisible = true;
+        }
+        else if (sub == "close")
+        {
+            if (lower(pos(1)) == "all")
+                settingsChrome.open = viewControlsChrome.open = traceChrome.open = infoChrome.open = viewerChrome.open = false;
+            else if (WindowChrome *ch = chromeOf(pos(1)))
+                ch->open = false;
+            else
+                fail("ui close: settings, viewcontrols, trace, info, viewer, all");
+        }
+        else
+            fail("ui: show | hide | scale <x> | open <window> [tab=<name>] | close <window|all>");
+        r["message"] = "ui " + sub + (pos(1).empty() ? "" : " " + pos(1));
+        return Status::Done;
+    }
+    if (n == "window")
+    {
+        if (a.frame == 0)
+        {
+            int w = 0, h = 0;
+            if (sscanf(pos(0).c_str(), "%dx%d", &w, &h) != 2 || w < 64 || h < 64)
+                fail("window: <W>x<H>, e.g. 1280x720");
+            a.scratch["w"] = w;
+            a.scratch["h"] = h;
+            glfwSetWindowSize(win, w, h);
+            return Status::Pending;
+        }
+        const int w = a.scratch["w"], h = a.scratch["h"];
+        if (ctx_ && (int)ctx_->swapExtent.width == w && (int)ctx_->swapExtent.height == h)
+        {
+            r["message"] = "window " + std::to_string(w) + "x" + std::to_string(h);
+            return Status::Done;
+        }
+        if (a.frame > 120)
+            fail("window: the swapchain did not reach the requested size (is it larger than the screen?)");
+        return Status::Pending;
+    }
+
+    // ── capture / state ─────────────────────────────────────────────────────────
+    if (n == "capture" || n == "screenshot")
+    {
+        const bool busy = screenshotRequested || screenshotCopyPending || screenshotEncoding.load();
+        if (!a.scratch.contains("requested"))
+        {
+            if (busy)
+                return Status::Pending; // a previous capture is still encoding
+            if (ctx_ && !ctx_->screenshotSupported)
+                fail("capture: this GPU/driver can't copy from the swapchain (no TRANSFER_SRC)");
+            const std::string name = safeName(pos(0));
+            screenshotPath = harnessRunner_->capturePath(name, ".png");
+            screenshotIncludeUI = c.flag("ui", false);
+            screenshotScale = (float)c.num("scale", 1.0);
+            if (screenshotScale <= 0.0f || screenshotScale > 16.0f)
+                fail("capture: scale must be in (0, 16]");
+            if (c.has("crop"))
+            {
+                int x, y, w, h;
+                if (sscanf(c.str("crop").c_str(), "%d,%d,%d,%d", &x, &y, &w, &h) != 4 || w <= 0 || h <= 0)
+                    fail("capture: crop=x,y,w,h in frame pixels");
+                screenshotCrop[0] = x;
+                screenshotCrop[1] = y;
+                screenshotCrop[2] = w;
+                screenshotCrop[3] = h;
+            }
+            a.scratch["requested"] = true;
+            a.scratch["name"] = name;
+            a.scratch["state"] = harnessStateJson();
+            screenshotRequested = true;
+            return Status::Pending;
+        }
+        if (busy)
+            return Status::Pending;
+        const std::string name = a.scratch["name"];
+        const std::string png = harnessRunner_->capturePath(name, ".png");
+        uint32_t w = 0, h = 0;
+        if (!fs::exists(png) || !pngSize(png, w, h))
+            fail("capture: no image was written (see the log)");
+        json side = {{"name", name},
+                     {"png", png},
+                     {"width", w},
+                     {"height", h},
+                     {"ui", c.flag("ui", false)},
+                     {"crop", c.str("crop")},
+                     {"scale", c.num("scale", 1.0)},
+                     {"command", c.text},
+                     {"state", a.scratch["state"]}};
+        const std::string sidecar = harnessRunner_->capturePath(name, ".json");
+        std::ofstream(sidecar) << side.dump(2) << '\n';
+        r["png"] = png;
+        r["sidecar"] = sidecar;
+        r["width"] = w;
+        r["height"] = h;
+        r["message"] = name + ".png " + std::to_string(w) + "x" + std::to_string(h);
+        return Status::Done;
+    }
+    if (n == "state")
+    {
+        r = harnessStateJson();
+        if (!c.pos.empty())
+        {
+            const std::string path = harnessRunner_->capturePath(safeName(pos(0)), ".state.json");
+            std::ofstream(path) << r.dump(2) << '\n';
+            r["file"] = path;
+        }
+        r["message"] = r["time"]["utc"].get<std::string>() + "  " + std::to_string(obsLatDeg) + ", " +
+                       std::to_string(obsLonDeg);
+        return Status::Done;
+    }
+
+    // ── perf ────────────────────────────────────────────────────────────────────
+    if (n == "perf")
+    {
+        static const char *kBucketKeys[8] = {"scene_depth", "beam_cloud_block", "orbit_compute", "cloud_march",
+                                             "flare_compute", "sky_background_draw", "satellite_star_draw", "ui_overlay"};
+        static const char *kCpuKeys[CPU_COUNT] = {"build_ui", "update_positions", "beam_readback", "update_stars",
+                                                  "light_pollution_dome", "update_planets"};
+        constexpr int kWarmup = 3; // gpuMsRaw lags a frame; skip the frames around the command itself
+        const int frames = (int)c.num("frames", pos(0).empty() ? 60.0 : parseNum(pos(0), "perf"));
+        if (a.frame == 0)
+        {
+            if (!ctx_ || ctx_->timestampPeriodNs <= 0.0)
+                fail("perf: GPU timestamp queries are not supported on this device");
+            a.scratch["gpu"] = std::vector<double>(8, 0.0);
+            a.scratch["cpu"] = std::vector<double>(CPU_COUNT, 0.0);
+            a.scratch["totals"] = json::array();
+            a.scratch["walls"] = json::array();
+            a.scratch["last"] = harness::nowS();
+            return Status::Pending;
+        }
+        const double now = harness::nowS();
+        const double wall = (now - a.scratch["last"].get<double>()) * 1000.0;
+        a.scratch["last"] = now;
+        if (a.frame > kWarmup)
+        {
+            for (int b = 0; b < 8; ++b)
+                a.scratch["gpu"][b] = a.scratch["gpu"][b].get<double>() + gpuMsRaw[b];
+            for (int k = 0; k < CPU_COUNT; ++k)
+                a.scratch["cpu"][k] = a.scratch["cpu"][k].get<double>() + cpuMsRaw[k];
+            a.scratch["totals"].push_back(gpuMsRawTotal);
+            a.scratch["walls"].push_back(wall);
+        }
+        if (a.frame < kWarmup + frames)
+            return Status::Pending;
+        std::vector<double> tot = a.scratch["totals"].get<std::vector<double>>();
+        std::vector<double> walls = a.scratch["walls"].get<std::vector<double>>();
+        auto stats = [](std::vector<double> v)
+        {
+            std::sort(v.begin(), v.end());
+            double sum = 0;
+            for (double x : v)
+                sum += x;
+            auto q = [&](double p) { return v[std::min(v.size() - 1, (size_t)(p * (v.size() - 1) + 0.5))]; };
+            return json{{"mean", sum / v.size()}, {"min", v.front()}, {"p50", q(0.5)}, {"p90", q(0.9)}, {"max", v.back()}};
+        };
+        json g;
+        for (int b = 0; b < 8; ++b)
+            g[kBucketKeys[b]] = a.scratch["gpu"][b].get<double>() / frames;
+        json cpu;
+        for (int k = 0; k < CPU_COUNT; ++k)
+            cpu[kCpuKeys[k]] = a.scratch["cpu"][k].get<double>() / frames;
+        r["frames"] = frames;
+        r["gpu_ms"] = g;
+        r["gpu_total_ms"] = stats(tot);
+        r["cpu_ms"] = cpu;
+        r["wall_frame_ms"] = stats(walls);
+        r["fixed_dt"] = harness::options().fixedDt;
+        r["state"] = harnessStateJson();
+        r["state"].erase("gpu_ms_last_frame");
+        if (c.has("name"))
+        {
+            json rec = r;
+            rec["record_kind"] = "harness_sample";
+            rec["name"] = c.str("name");
+            appendPerfRecord(rec);
+        }
+        char buf[128];
+        snprintf(buf, sizeof(buf), "GPU %.2f ms (p90 %.2f), frame %.2f ms over %d frames", r["gpu_total_ms"]["mean"].get<double>(),
+                 r["gpu_total_ms"]["p90"].get<double>(), r["wall_frame_ms"]["mean"].get<double>(), frames);
+        r["message"] = buf;
+        return Status::Done;
+    }
+    if (n == "sweep")
+    {
+        if (a.frame == 0)
+        {
+            if (sweepActive)
+                fail("sweep: a sweep is already running");
+            a.scratch["before"] = sweepsCompleted;
+            startKnockoutSweep();
+            if (!sweepActive)
+                fail("sweep: unavailable (no GPU timestamps?)");
+            return Status::Pending;
+        }
+        if (sweepsCompleted == a.scratch["before"].get<int>())
+            return Status::Pending;
+        r = json::parse(lastSweepRecordJson);
+        r["message"] = "sweep: " + std::to_string(r["knockout_sweep"]["steps"].size()) + " steps, baseline " +
+                       std::to_string(r["knockout_sweep"]["baseline"]["total"].get<double>()) + " ms";
+        return Status::Done;
+    }
+
+    fail("unknown command '" + n + "' (try `help`)");
+}
