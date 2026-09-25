@@ -1413,8 +1413,9 @@ struct GpuCloudParams
     float terrainMaterialStrength;
     float terrainDebugView;
     float terrainPad0;
+    glm::vec4 terrainObsTexel; // xy = integer, zw = fraction of the observer's DEM texel coordinate
 };
-static_assert(sizeof(GpuCloudParams) == 656, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 672, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -2799,16 +2800,12 @@ private:
     VkPipeline beamSelfMarchPipeline = VK_NULL_HANDLE;
     // Earth elevation texture (binding 5): 21600×10800 R8_UNORM land-elevation DEM.
     // Pixel p → elevation_m = p * 8848; ocean stored as 0. Terrain shell = R_EARTH + 9000 m.
-    // Max-height mip chain of the DEM (level i = max over 2^(i+1) x 2^(i+1) DEM texels), built on the
-    // CPU at load: the depth pass's empty-space skipping (terrain_detail.glsl tdMaxMipH). ~37 MB.
-    VkImage earthElevMaxImg = VK_NULL_HANDLE;
-    VkDeviceMemory earthElevMaxMem = VK_NULL_HANDLE;
-    VkImageView earthElevMaxView = VK_NULL_HANDLE;
     VkImage earthElevImg = VK_NULL_HANDLE;
     VkDeviceMemory earthElevMem = VK_NULL_HANDLE;
     VkImageView earthElevView = VK_NULL_HANDLE;
     VkSampler earthElevSampler = VK_NULL_HANDLE;
     uint32_t earthElevMips = 1;
+    int earthElevW = 0, earthElevH = 0; // the DEM's size (terrainObsTexel)
     // CPU-side downsampled elevation for observer height lookup (2160×1080, ~18km/px)
     std::vector<uint8_t> earthElevCpu;
     int earthElevCpuW = 0, earthElevCpuH = 0;
@@ -3384,6 +3381,34 @@ private:
     int harnessTrack_ = 0;
     int harnessTrackPlanet_ = -1;
     std::string lastSweepRecordJson; // the knockout sweep's last record (for `sweep`)
+    // `path key` / `path play` (docs/HARNESS.md "Camera paths"): keyframes in path seconds, cubic
+    // Hermite (Catmull-Rom tangents) per channel; angles unwrapped against the previous key, altitude
+    // interpolated in log space (2 m to LEO is five orders of magnitude).
+    struct HarnessCamKey
+    {
+        double t = 0.0;
+        double lat = 0.0, lon = 0.0, alt = 0.0, az = 0.0, el = 0.0, fov = 60.0;
+        bool hasSim = false;
+        double simT = 0.0; // seconds since J2000
+    };
+    std::vector<HarnessCamKey> harnessPath_;
+    float harnessFixedDtOverride_ = 0.0f; // > 0 while a path plays: 1 / fps
+    HarnessCamKey harnessEvalPath(double t) const;
+    void harnessApplyCam(const HarnessCamKey &k);
+    // `overlay`: screen text and labels that follow a sky target, drawn even with the HUD hidden (so
+    // `ui hide` + `capture ui=on` gives a clean titled frame for videos).
+    struct HarnessOverlay
+    {
+        std::string id, text;
+        float x = 0.5f, y = 0.1f; // screen fractions (text), or the offset in px from the target (label)
+        float size = 28.0f;
+        int target = -1;           // -1 = screen text; else the camera-track code (1 sel, 2 sun, 3 moon, 4 planet)
+        int planet = -1;
+        bool center = true;
+        glm::vec4 color{255.0f, 255.0f, 255.0f, 255.0f}; // 0-255 RGBA (Clay_Color at draw time)
+    };
+    std::vector<HarnessOverlay> harnessOverlays_;
+    void buildHarnessOverlays(const UIInput &inp, UIRenderer &ui);
     // `probe x y`: terrain_probe.comp re-runs the terrain march for one pixel (one thread, only when
     // requested, right after scene_depth.comp) into a host-visible buffer read back next frame.
     VkDescriptorSetLayout probeDescLayout = VK_NULL_HANDLE;
@@ -3412,6 +3437,7 @@ private:
     bool consoleKey(int key, int action); // true = consumed
     void ensureConsoleRunner();
     void buildHarnessConsole(const UIInput &inp, UIRenderer &ui);
+    // (see harnessOverlays_)
     void harnessInit();
     void harnessTick();
     harness::Status harnessExec(harness::Active &a);

@@ -14,6 +14,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -190,7 +191,7 @@ const char *kHelp =
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; "
     "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
-    "window <W>x<H>; log <text>; quit";
+    "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; log <text>; quit";
 } // namespace
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────────────────────────
@@ -220,6 +221,8 @@ float SatelliteSim::frameDt(float realDt)
 {
     if (!harnessRunner_)
         return realDt;
+    if (harnessFixedDtOverride_ > 0.0f)
+        return harnessFixedDtOverride_;
     if (harnessSettleFrames_ > 0)
         return kHarnessSettleDt;
     const float f = harness::options().fixedDt;
@@ -291,6 +294,82 @@ bool SatelliteSim::harnessLookDir(int track, int planet, glm::vec3 &d)
     }
     }
     return false;
+}
+
+// ─── Camera paths ─────────────────────────────────────────────────────────────────────────────────
+SatelliteSim::HarnessCamKey SatelliteSim::harnessEvalPath(double t) const
+{
+    const auto &K = harnessPath_;
+    if (K.empty())
+        return HarnessCamKey{};
+    if (t <= K.front().t)
+        return K.front();
+    if (t >= K.back().t)
+        return K.back();
+    size_t i = 0;
+    while (i + 1 < K.size() && K[i + 1].t < t)
+        ++i;
+    const HarnessCamKey &a = K[i], &b = K[i + 1];
+    const double h = b.t - a.t, s = (t - a.t) / h;
+    const double h00 = 2 * s * s * s - 3 * s * s + 1, h10 = s * s * s - 2 * s * s + s;
+    const double h01 = -2 * s * s * s + 3 * s * s, h11 = s * s * s - s * s;
+    // Catmull-Rom tangent of channel f at key j (one-sided at the ends), per path second.
+    auto tangent = [&](size_t j, double (*f)(const HarnessCamKey &)) -> double
+    {
+        const size_t j0 = j > 0 ? j - 1 : j, j1 = j + 1 < K.size() ? j + 1 : j;
+        const double dt = K[j1].t - K[j0].t;
+        return dt > 0.0 ? (f(K[j1]) - f(K[j0])) / dt : 0.0;
+    };
+    auto herm = [&](double (*f)(const HarnessCamKey &))
+    { return h00 * f(a) + h10 * h * tangent(i, f) + h01 * f(b) + h11 * h * tangent(i + 1, f); };
+    HarnessCamKey r;
+    r.t = t;
+    r.lat = herm([](const HarnessCamKey &k) { return k.lat; });
+    r.lon = herm([](const HarnessCamKey &k) { return k.lon; });
+    r.alt = std::exp(herm([](const HarnessCamKey &k) { return std::log(std::max(k.alt, 0.0) + 10.0); })) - 10.0;
+    r.az = herm([](const HarnessCamKey &k) { return k.az; });
+    r.el = herm([](const HarnessCamKey &k) { return k.el; });
+    r.fov = std::exp(herm([](const HarnessCamKey &k) { return std::log(k.fov); }));
+    // Sim time: linear between the keys that set it (hold outside them).
+    const HarnessCamKey *sa = nullptr, *sb = nullptr;
+    for (const auto &k : K)
+    {
+        if (!k.hasSim)
+            continue;
+        if (k.t <= t)
+            sa = &k;
+        if (k.t >= t && !sb)
+            sb = &k;
+    }
+    if (sa || sb)
+    {
+        r.hasSim = true;
+        if (sa && sb && sb->t > sa->t)
+            r.simT = sa->simT + (sb->simT - sa->simT) * (t - sa->t) / (sb->t - sa->t);
+        else
+            r.simT = sa ? sa->simT : sb->simT;
+    }
+    return r;
+}
+
+void SatelliteSim::harnessApplyCam(const HarnessCamKey &k)
+{
+    if (followActive)
+        stopFollow();
+    const float lat = (float)glm::clamp(k.lat, -89.999, 89.999), lon = (float)k.lon;
+    const float la = glm::radians(lat), lo = glm::radians(lon);
+    obsDir = {cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)};
+    obsLatDeg = lat;
+    obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+    obsHeightOffset = (float)std::max(0.0, k.alt);
+    harnessSetLook((float)k.az, (float)k.el);
+    camera.fovYDeg = glm::clamp((float)k.fov, SkyCamera::kMinFovDeg, SkyCamera::kMaxFovDeg);
+    if (k.hasSim)
+    {
+        const double days = std::floor(k.simT / 86400.0);
+        simDayJ2000 = (int64_t)days;
+        simSecInDay = k.simT - days * 86400.0;
+    }
 }
 
 // ─── State snapshot ───────────────────────────────────────────────────────────────────────────────
@@ -1097,6 +1176,215 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         return Status::Pending;
     }
 
+    // ── camera paths ────────────────────────────────────────────────────────────
+    if (n == "path")
+    {
+        const std::string sub = lower(pos(0));
+        if (sub == "clear")
+        {
+            harnessPath_.clear();
+            r["message"] = "path cleared";
+            return Status::Done;
+        }
+        if (sub == "key")
+        {
+            // Unspecified channels inherit from the previous key (the current view for the first).
+            HarnessCamKey k;
+            if (!harnessPath_.empty())
+                k = harnessPath_.back();
+            else
+            {
+                k.lat = obsLatDeg;
+                k.lon = obsLonDeg;
+                k.alt = obsHeightOffset;
+                k.az = camera.azDeg;
+                k.el = camera.elDeg;
+                k.fov = camera.fovYDeg;
+            }
+            k.t = parseNum(pos(1), "path key <t>");
+            if (!harnessPath_.empty() && k.t <= harnessPath_.back().t)
+                fail("path key: times must increase");
+            k.hasSim = false;
+            if (c.has("lat"))
+                k.lat = c.num("lat", 0.0);
+            if (c.has("lon"))
+            {
+                // Unwrap against the previous key so a path crossing the antimeridian goes the short way.
+                double lon = c.num("lon", 0.0);
+                if (!harnessPath_.empty())
+                    while (lon - harnessPath_.back().lon > 180.0)
+                        lon -= 360.0;
+                if (!harnessPath_.empty())
+                    while (lon - harnessPath_.back().lon < -180.0)
+                        lon += 360.0;
+                k.lon = lon;
+            }
+            if (c.has("alt"))
+                k.alt = c.num("alt", 0.0);
+            if (c.has("az"))
+            {
+                double az = c.num("az", 0.0);
+                const double prev = harnessPath_.empty() ? camera.azDeg : harnessPath_.back().az;
+                while (az - prev > 180.0)
+                    az -= 360.0;
+                while (az - prev < -180.0)
+                    az += 360.0;
+                k.az = az;
+            }
+            if (c.has("el"))
+                k.el = c.num("el", 0.0);
+            if (c.has("fov"))
+                k.fov = c.num("fov", 60.0);
+            if (c.has("sim"))
+            {
+                k.hasSim = true;
+                k.simT = j2000FromIso(c.str("sim"));
+            }
+            if (c.has("simadd"))
+            {
+                // Relative to the current sim time at the moment the key is added.
+                k.hasSim = true;
+                k.simT = (double)simDayJ2000 * 86400.0 + simSecInDay + c.num("simadd", 0.0);
+            }
+            harnessPath_.push_back(k);
+            r["keys"] = harnessPath_.size();
+            r["message"] = "key " + std::to_string(harnessPath_.size()) + " at t=" + pos(1);
+            return Status::Done;
+        }
+        if (sub == "goto")
+        {
+            harnessApplyCam(harnessEvalPath(parseNum(pos(1), "path goto <t>")));
+            r["message"] = "path at t=" + pos(1);
+            return Status::Done;
+        }
+        if (sub == "play")
+        {
+            // Plays the path at a fixed frame rate: every frame is exactly 1/fps of path time and of
+            // frame time (the sim's eased quantities see a real 1/fps step). With record=<name> each
+            // frame is captured (captures/<name>_00000.png ...) before the next is shown, so a slow
+            // encode never drops or doubles a frame; sim time then comes from the path (or, without
+            // sim keys, the time scale) rather than from however many frames the encode waited.
+            if (a.frame == 0)
+            {
+                if (harnessPath_.size() < 2)
+                    fail("path play: add at least two keys (path key <t> ...)");
+                const double fps = c.num("fps", 30.0);
+                if (fps < 1.0 || fps > 240.0)
+                    fail("path play: fps in [1, 240]");
+                a.scratch["fps"] = fps;
+                a.scratch["i"] = 0;
+                a.scratch["n"] = (int)std::floor((harnessPath_.back().t - harnessPath_.front().t) * fps + 1e-6) + 1;
+                a.scratch["record"] = c.str("record");
+                a.scratch["simStart"] = (double)simDayJ2000 * 86400.0 + simSecInDay;
+                a.scratch["simRate"] = timePaused ? 0.0 : (double)kTimeScales[timeScaleIdx] * timeDir;
+                a.scratch["pausedBefore"] = timePaused;
+                a.scratch["captured"] = 0;
+                harnessFixedDtOverride_ = (float)(1.0 / fps);
+                timePaused = true; // the path owns the clock
+                harnessTrack_ = 0;
+            }
+            const std::string rec = a.scratch["record"];
+            if (!rec.empty() && (screenshotRequested || screenshotCopyPending || screenshotEncoding.load()))
+                return Status::Pending; // last frame still encoding
+            const int i = a.scratch["i"], nF = a.scratch["n"];
+            if (i >= nF)
+            {
+                harnessFixedDtOverride_ = 0.0f;
+                timePaused = a.scratch["pausedBefore"].get<bool>();
+                r["frames"] = nF;
+                if (!rec.empty())
+                    r["pattern"] = harnessRunner_->capturePath(rec + "_%05d", ".png");
+                r["message"] = "played " + std::to_string(nF) + " frames" +
+                               (rec.empty() ? std::string() : " -> captures/" + rec + "_#####.png");
+                return Status::Done;
+            }
+            const double fps = a.scratch["fps"];
+            const double tp = harnessPath_.front().t + i / fps;
+            HarnessCamKey k = harnessEvalPath(tp);
+            if (!k.hasSim)
+            {
+                k.hasSim = true;
+                k.simT = a.scratch["simStart"].get<double>() + a.scratch["simRate"].get<double>() * (tp - harnessPath_.front().t);
+            }
+            harnessApplyCam(k);
+            obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
+            updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, 0.0f);
+            if (!rec.empty())
+            {
+                char nm[64];
+                snprintf(nm, sizeof(nm), "_%05d", i);
+                screenshotPath = harnessRunner_->capturePath(safeName(rec) + nm, ".png");
+                screenshotIncludeUI = c.flag("ui", false);
+                screenshotScale = (float)c.num("scale", 1.0);
+                screenshotRequested = true;
+            }
+            a.scratch["i"] = i + 1;
+            return Status::Pending;
+        }
+        fail("path: clear | key <t> [lat= lon= alt= az= el= fov= sim=<iso>|simadd=<s>] | goto <t> | play [fps=30] [record=name] [ui=on] [scale=s]");
+    }
+
+    // ── overlays ────────────────────────────────────────────────────────────────
+    if (n == "overlay")
+    {
+        const std::string sub = lower(pos(0));
+        if (sub == "clear")
+        {
+            const std::string id = pos(1);
+            harnessOverlays_.erase(std::remove_if(harnessOverlays_.begin(), harnessOverlays_.end(),
+                                                  [&](const HarnessOverlay &o) { return id.empty() || o.id == id; }),
+                                   harnessOverlays_.end());
+            r["message"] = id.empty() ? "overlays cleared" : "overlay " + id + " cleared";
+            return Status::Done;
+        }
+        if (sub != "text" && sub != "label")
+            fail("overlay: text <id> \"<text>\" [x= y= size= align=left|center color=RRGGBB] | label <id> \"<text>\" target=<sel|sun|moon|planet> [size=] | clear [id]");
+        HarnessOverlay o;
+        o.id = pos(1);
+        o.text = pos(2);
+        if (o.id.empty())
+            fail("overlay: an id is required");
+        o.size = (float)c.num("size", sub == "text" ? 28.0 : 18.0);
+        o.center = lower(c.str("align", "center")) != "left";
+        if (c.has("color"))
+        {
+            unsigned rgb = (unsigned)strtoul(c.str("color").c_str(), nullptr, 16);
+            o.color = glm::vec4((float)((rgb >> 16) & 255), (float)((rgb >> 8) & 255), (float)(rgb & 255), 255.0f);
+        }
+        if (sub == "text")
+        {
+            o.x = (float)c.num("x", 0.5);
+            o.y = (float)c.num("y", 0.1);
+        }
+        else
+        {
+            const std::string tg = lower(c.str("target", "sel"));
+            o.x = (float)c.num("dx", 14.0);
+            o.y = (float)c.num("dy", -10.0);
+            if (tg == "sel" || tg == "selection")
+                o.target = 1;
+            else if (tg == "sun")
+                o.target = 2;
+            else if (tg == "moon")
+                o.target = 3;
+            else
+            {
+                o.target = 4;
+                for (int i = 0; i < kPlanetCount; ++i)
+                    if (ieq(tg, kPlanetNames[i]))
+                        o.planet = i;
+                if (o.planet < 0)
+                    fail("overlay label: target sel | sun | moon | <planet>");
+            }
+        }
+        harnessOverlays_.erase(std::remove_if(harnessOverlays_.begin(), harnessOverlays_.end(),
+                                              [&](const HarnessOverlay &e) { return e.id == o.id; }),
+                               harnessOverlays_.end());
+        harnessOverlays_.push_back(o);
+        r["message"] = "overlay " + o.id;
+        return Status::Done;
+    }
+
     // ── probe ───────────────────────────────────────────────────────────────────
     if (n == "probe")
     {
@@ -1437,18 +1725,17 @@ static constexpr VkDeviceSize kProbeBytes = (8 + 64) * sizeof(glm::vec4);
 
 void SatelliteSim::createTerrainProbe(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding b[6] = {};
+    VkDescriptorSetLayoutBinding b[5] = {};
     b[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     b[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     b[2] = {2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     b[3] = {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     b[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    b[5] = {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 6;
+    li.bindingCount = 5;
     li.pBindings = b;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &probeDescLayout);
-    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4},
+    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
                                   {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
                                   {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -1500,15 +1787,13 @@ void SatelliteSim::recordTerrainProbe(VkCommandBuffer cmd, VulkanContext &ctx)
     VkDescriptorImageInfo depth{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo ubo{cloudParamsBuf, 0, sizeof(GpuCloudParams)};
     VkDescriptorBufferInfo out{probeBuf, 0, kProbeBytes};
-    VkDescriptorImageInfo maxv{elevS, earthElevMaxView ? earthElevMaxView : elevV, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet w[6] = {};
+    VkWriteDescriptorSet w[5] = {};
     w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elev, nullptr, nullptr};
     w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &spec, nullptr, nullptr};
     w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &ubo, nullptr};
     w[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depth, nullptr, nullptr};
     w[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &out, nullptr};
-    w[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 5, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &maxv, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 6, w, 0, nullptr);
+    vkUpdateDescriptorSets(ctx.device, 5, w, 0, nullptr);
 
     TerrainProbePC pc{};
     pc.skyView = camera.viewMatrix();

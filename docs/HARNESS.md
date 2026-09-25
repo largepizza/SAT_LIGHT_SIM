@@ -110,10 +110,45 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|console>`, `ui close <name\|all>` | windows (`info`/`viewer`/`trace` need a selected satellite). An advanced tab turns on "show advanced settings" |
 | `ui dump [name]` | every drawn rect/text/image with its box and element id, plus checks: text cut by its scissor, text off the window, and overlapping text under the same scissor |
 | `window <W>x<H>` | resize the window and wait for the new swapchain |
+| `path clear`, `path key <t> [lat= lon= alt= az= el= fov= sim=<ISO>\|simadd=<s>]` | camera-path keyframes at path time `t` (seconds). Channels you leave out inherit from the previous key (from the current view for the first). See "Camera paths" |
+| `path goto <t>` | jump to the path's pose at `t` |
+| `path play [fps=30] [record=<name>] [ui=on] [scale=s]` | play the path at a fixed frame rate; with `record` every frame is captured as `captures/<name>_00000.png` ... |
+| `overlay text <id> "<text>" [x=0.5 y=0.1 size=28 align=center\|left color=RRGGBB]` | screen text at fractional coordinates, drawn even with the HUD hidden |
+| `overlay label <id> "<text>" target=<sel\|sun\|moon\|planet> [size= dx= dy=]` | a label that follows a sky target |
+| `overlay clear [id]` | |
 | `log <text>`, `help`, `quit` | |
 
 A command that fails is recorded with its reason and the script continues. The run's status is
 then `errors`.
+
+## Camera paths and videos
+
+```
+preset High
+observer lat=46.62 lon=8.03 agl=0
+time sun 6 setting
+time pause
+ui hide                                   # overlays still draw; `capture ui=on` includes them
+overlay text title "SAT LIGHT SIM" y=0.12 size=48
+path clear
+path key 0 alt=1200 az=150 el=4 fov=55 simadd=0
+path key 3 alt=2500 az=170 el=0 fov=50
+path key 6 alt=5500 az=200 el=-6 fov=60 simadd=240   # the Sun sets 4 min of sim time over 6 s
+path play fps=24 record=alps ui=on
+```
+
+then `python tools/harness/frames2video.py harness_runs/<run>/captures/alps -o alps.mp4 --fps 24`
+(ffmpeg on PATH). Full example: `tools/harness/scripts/demo_path.satcmd`.
+
+- Interpolation is a cubic Hermite spline with Catmull-Rom tangents per channel (lat, lon, az, el,
+  log altitude, log FOV). Azimuth and longitude are unwrapped against the previous key, so the path
+  turns the short way. Sim time, when keys set it, is linear between those keys; otherwise it
+  advances at the time scale that was active when `path play` started.
+- Playback is offline: every frame is exactly 1/fps of path time and of frame time, whatever the
+  real frame rate. With `record`, a frame is captured before the next one is shown, so slow PNG
+  encoding never drops or repeats a frame (a 1600x900 frame takes ~0.1 s in Release).
+- The observer's altitude channel is the same `alt` as `observer alt=` (above sea level, floored
+  at the ground). A path in follow mode is not supported: `path play` ends follow mode.
 
 ## Determinism
 
@@ -186,8 +221,10 @@ small, and `sheet` to compare many variants in one image.
 `python tools/harness/selftest.py` (≈2 minutes) runs real scripts and checks capture sizes and
 sidecars, bit-identical determinism, a knockout changing and then restoring the image, settings
 round-trips and error reporting, script parse errors, `wait settle` holding time, `time sun`
-accuracy, perf and sweep numbers, selection/follow/`ui dump`, the watchdog, and live mode. Run it
-after changing `src/Harness.*` or `src/simulations/SatelliteSimHarness.cpp`.
+accuracy, perf and sweep numbers, selection/follow/`ui dump`, `probe` (the seeded march agrees
+with a march from the eye) and `debugview`, a recorded camera path (spline midpoint, frame count),
+the watchdog, and live mode — 13 tests. Run it after changing `src/Harness.*` or
+`src/simulations/SatelliteSimHarness.cpp`.
 
 ## Debugging a rendering problem (worked example)
 

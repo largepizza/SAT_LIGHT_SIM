@@ -2188,6 +2188,16 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             const glm::dvec3 rel = sea - cell * kCell;
             cp.terrainAnchorRel = glm::vec4(glm::vec3(rel), 0.0f);
             cp.terrainAnchorCell = glm::vec4(glm::vec3(cell), 0.0f);
+            // The same point as a DEM texel coordinate, in double (texel centres at +0.5).
+            {
+                const glm::dvec3 d = glm::normalize(glm::dvec3(obsDir));
+                const double lon = std::atan2(d.y, d.x), lat = std::asin(std::clamp(d.z, -1.0, 1.0));
+                const double W = (double)std::max(1, earthElevW), Hh = (double)std::max(1, earthElevH);
+                const double tx = (lon + glm::pi<double>()) / (2.0 * glm::pi<double>()) * W - 0.5;
+                const double ty = (0.5 * glm::pi<double>() - lat) / glm::pi<double>() * Hh - 0.5;
+                cp.terrainObsTexel = glm::vec4((float)std::floor(tx), (float)std::floor(ty),
+                                               (float)(tx - std::floor(tx)), (float)(ty - std::floor(ty)));
+            }
             cp.terrainDetailStrength = terrainDetailStrength;
             cp.terrainDetailAmpM = terrainDetailAmpM;
             cp.terrainDetailGain = terrainDetailGain;
@@ -5346,15 +5356,7 @@ void SatelliteSim::cleanup(VkDevice device)
         terrainFrameBuf = VK_NULL_HANDLE;
     }
     destroyTerrainProbe(device);
-    if (earthElevMaxView)
-        vkDestroyImageView(device, earthElevMaxView, nullptr);
-    if (earthElevMaxImg)
-    {
-        vkDestroyImage(device, earthElevMaxImg, nullptr);
-        vkFreeMemory(device, earthElevMaxMem, nullptr);
-    }
-    earthElevMaxView = VK_NULL_HANDLE;
-    earthElevMaxImg = VK_NULL_HANDLE;
+
     // Harness: a --stay run closed by hand still leaves a summary (no-op if one was written).
     if (harnessRunner_)
         harnessRunner_->writeSummary("closed");
@@ -7771,7 +7773,7 @@ void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
 //   binding 2  sceneDepth   (storage image, r32f)
 void SatelliteSim::createSceneDepthDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[7] = {};
+    VkDescriptorSetLayoutBinding bindings[6] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -7781,16 +7783,14 @@ void SatelliteSim::createSceneDepthDescriptors(VulkanContext &ctx)
     bindings[4] = {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     // terrainFrameBuf: this pass writes the observer's detailed ground height for sat_sky.frag.
     bindings[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
-    // The DEM max-mip chain (empty-space skipping in the march).
-    bindings[6] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 7;
+    li.bindingCount = 6;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &sceneDepthDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
@@ -7839,14 +7839,7 @@ void SatelliteSim::createSceneDepthDescriptors(VulkanContext &ctx)
     fw[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, skyDescSet, 26, 0, 1,
              VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &frameInfo, nullptr};
     vkUpdateDescriptorSets(ctx.device, 2, fw, 0, nullptr);
-    // DEM max-mips (binding 6). They are built from the same pixels as the DEM, so they exist
-    // whenever the DEM does; the fallback view only keeps the descriptor valid when the DEM itself
-    // failed to load (and the terrain is the noise placeholder anyway).
-    VkDescriptorImageInfo maxInfo{elevSamplerFinal, earthElevMaxView ? earthElevMaxView : elevViewFinal,
-                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet mw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 6, 0, 1,
-                            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &maxInfo, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 1, &mw, 0, nullptr);
+
 }
 
 // ─── createSceneDepthPipeline ─────────────────────────────────────────────────
@@ -8492,6 +8485,8 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         if (pixels)
         {
             earthElevMips = (uint32_t)std::floor(std::log2((float)std::max(w, h))) + 1;
+            earthElevW = w;
+            earthElevH = h;
             VkDeviceSize imgBytes = (VkDeviceSize)w * h * 1;
 
             VkBuffer stageBuf;
@@ -8519,94 +8514,6 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
                 }
             }
 
-            // Max-height mips for the depth pass's empty-space skipping (terrain_detail.glsl): level 0
-            // is the max over 2x2 DEM texels, each further level the max over 2x2 of the previous.
-            // Raw DEM bytes: the max of the encoded value is the max of the height (the decode is
-            // monotonic), and ocean noise only makes it more conservative.
-            {
-                std::vector<std::vector<uint8_t>> levels;
-                std::vector<std::pair<int, int>> sizes;
-                const uint8_t *src = pixels;
-                int sw = w, sh = h;
-                for (int L = 0; L < 9 && (sw > 1 || sh > 1); ++L)
-                {
-                    // Vulkan mip sizes round DOWN (validation caught the first cut rounding up); the
-                    // last row/column of an odd level folds its leftover texel into the max.
-                    const int dw = std::max(1, sw / 2), dh = std::max(1, sh / 2);
-                    std::vector<uint8_t> dst((size_t)dw * dh);
-                    for (int y = 0; y < dh; ++y)
-                        for (int x = 0; x < dw; ++x)
-                        {
-                            const int xa = 2 * x, xb = (x == dw - 1) ? sw - 1 : 2 * x + 1;
-                            const int ya = 2 * y, yb = (y == dh - 1) ? sh - 1 : 2 * y + 1;
-                            uint8_t m = 0;
-                            for (int yy = ya; yy <= yb; ++yy)
-                                for (int xx = xa; xx <= xb; ++xx)
-                                    m = std::max(m, src[(size_t)yy * sw + xx]);
-                            dst[(size_t)y * dw + x] = m;
-                        }
-                    levels.push_back(std::move(dst));
-                    sizes.push_back({dw, dh});
-                    src = levels.back().data();
-                    sw = dw;
-                    sh = dh;
-                }
-                const uint32_t nLevels = (uint32_t)levels.size();
-                VkDeviceSize total = 0;
-                for (auto &l : levels)
-                    total += l.size();
-                VkBuffer mStage;
-                VkDeviceMemory mStageMem;
-                ctx.createBuffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, mStage, mStageMem);
-                void *mm;
-                vkMapMemory(ctx.device, mStageMem, 0, total, 0, &mm);
-                std::vector<VkBufferImageCopy> regions(nLevels);
-                VkDeviceSize off = 0;
-                for (uint32_t L = 0; L < nLevels; ++L)
-                {
-                    memcpy(static_cast<char *>(mm) + off, levels[L].data(), levels[L].size());
-                    regions[L] = {};
-                    regions[L].bufferOffset = off;
-                    regions[L].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, L, 0, 1};
-                    regions[L].imageExtent = {(uint32_t)sizes[L].first, (uint32_t)sizes[L].second, 1};
-                    off += levels[L].size();
-                }
-                vkUnmapMemory(ctx.device, mStageMem);
-                ctx.createImage((uint32_t)sizes[0].first, (uint32_t)sizes[0].second, VK_FORMAT_R8_UNORM,
-                                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, earthElevMaxImg,
-                                earthElevMaxMem, nLevels);
-                VkCommandBuffer mcmd = ctx.beginOneTimeCommands();
-                VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-                b.srcAccessMask = 0;
-                b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-                b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                b.image = earthElevMaxImg;
-                b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, nLevels, 0, 1};
-                vkCmdPipelineBarrier(mcmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
-                                     0, nullptr, 1, &b);
-                vkCmdCopyBufferToImage(mcmd, mStage, earthElevMaxImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, nLevels,
-                                       regions.data());
-                b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                vkCmdPipelineBarrier(mcmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
-                                     nullptr, 0, nullptr, 1, &b);
-                ctx.endOneTimeCommands(mcmd);
-                vkDestroyBuffer(ctx.device, mStage, nullptr);
-                vkFreeMemory(ctx.device, mStageMem, nullptr);
-                VkImageViewCreateInfo mv{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-                mv.image = earthElevMaxImg;
-                mv.viewType = VK_IMAGE_VIEW_TYPE_2D;
-                mv.format = VK_FORMAT_R8_UNORM;
-                mv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, nLevels, 0, 1};
-                vkCreateImageView(ctx.device, &mv, nullptr, &earthElevMaxView);
-                Log::line("terrain: DEM max-mip chain, " + std::to_string(nLevels) + " levels, " +
-                          std::to_string(total / (1024 * 1024)) + " MB");
-            }
             stbi_image_free(pixels);
 
             ctx.createImage((uint32_t)w, (uint32_t)h,

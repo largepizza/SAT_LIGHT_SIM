@@ -21,7 +21,6 @@ layout(set = 0, binding = 1) uniform sampler2D earthSpecTex;
 #define CLOUD_PARAMS_BINDING 2
 #include "cloud_params.glsl"
 layout(set = 0, binding = 3) uniform sampler2D sceneDepthTex;
-layout(set = 0, binding = 5) uniform sampler2D earthElevMaxTex; // as scene_depth.comp's binding 6
 layout(set = 0, binding = 4, std430) writeonly buffer ProbeOut {
     vec4 a[8];
     vec4 profile[64];
@@ -66,9 +65,9 @@ void main() {
     float tHitSeed = -1.0, tHitEye = -1.0;
     if (gate) {
         if (!seedSky)
-            tHitSeed = terrainMarchDetailed(earthElevTex, earthSpecTex, earthElevTex, false, hEye, dir, enuX, enuY, enuZ,
+            tHitSeed = terrainMarchDetailed(earthElevTex, earthSpecTex, hEye, dir, enuX, enuY, enuZ,
                                             tSeed, tExit, pixAngle, 224, 1.0, false, kTdCoarseOctaves, stepsSeed);
-        tHitEye = terrainMarchDetailed(earthElevTex, earthSpecTex, earthElevMaxTex, true, hEye, dir, enuX, enuY, enuZ,
+        tHitEye = terrainMarchDetailed(earthElevTex, earthSpecTex, hEye, dir, enuX, enuY, enuZ,
                                        2.0, tExit, pixAngle, 224, 1.0, false, kTdCoarseOctaves, stepsEye);
     }
 
@@ -81,7 +80,7 @@ void main() {
         vec3  q = vec3(0.0, 0.0, hEye) + tH * dir;
         float h0, hMip3;
         vec2  uv = tdUV(q, enuX, enuY, enuZ);
-        tdDemAt(earthElevTex, earthSpecTex, uv, h0, hMip3);
+        tdDemAt(earthElevTex, earthSpecTex, q, enuX, enuY, enuZ, h0, hMip3);
         TdSample d = terrainDetail(q, enuX, enuY, enuZ, tdGeomLodM(tH, pixAngle), h0, hMip3, kTdOctaves);
         outp.a[3] = vec4(h0, hMip3, d.h, d.amp);
         outp.a[4] = vec4(d.rough, tdAltitude(q), 90.0 - uv.y * 180.0, uv.x * 360.0 - 180.0);
@@ -98,7 +97,7 @@ void main() {
         float t = 2.0 * pow(tEnd / 2.0, float(i) / 63.0);
         vec3  q = vec3(0.0, 0.0, hEye) + t * dir;
         float h0, hMip3;
-        tdDemAt(earthElevTex, earthSpecTex, tdUV(q, enuX, enuY, enuZ), h0, hMip3);
+        tdDemAt(earthElevTex, earthSpecTex, q, enuX, enuY, enuZ, h0, hMip3);
         float H = tdEnabled() ? h0 + terrainDetail(q, enuX, enuY, enuZ, tdGeomLodM(t, pixAngle), h0, hMip3, kTdOctaves).h : h0;
         outp.profile[i] = vec4(t, tdAltitude(q), h0, H);
     }

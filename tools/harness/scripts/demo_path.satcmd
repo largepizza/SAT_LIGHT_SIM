@@ -1,0 +1,21 @@
+# Demo camera path: rise out of an Alpine valley at sunset to aircraft height, with a title.
+# Record + encode:
+#   python tools/harness/run.py tools/harness/scripts/demo_path.satcmd --out harness_runs/demo
+#   python tools/harness/frames2video.py harness_runs/demo/captures/alps -o harness_runs/demo/alps.mp4
+preset High
+time set 2036-06-21T12:00:00Z
+observer lat=46.62 lon=8.03 agl=0
+time sun 6 setting
+time pause
+ui hide
+camera az=150 el=4 fov=55
+wait settle
+overlay text title "SAT LIGHT SIM" y=0.12 size=48
+overlay text sub "Bernese Oberland at sunset" y=0.19 size=22 color=D8E4F0
+
+path clear
+path key 0 alt=1200 az=150 el=4 fov=55 simadd=0
+path key 3 alt=2500 az=170 el=0 fov=50
+path key 6 alt=5500 az=200 el=-6 fov=60 simadd=240
+path play fps=24 record=alps ui=on scale=0.5
+overlay clear

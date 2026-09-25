@@ -239,6 +239,26 @@ debugview off
 
 
 @test
+def camera_path_record():
+    out, res, _ = run("path", SCENE + """
+overlay text t "TEST" y=0.1 size=30
+path clear
+path key 0 az=180 el=5 fov=60
+path key 1 az=220 el=10 fov=40
+path goto 0.5
+state mid
+path play fps=10 record=clip scale=0.25
+""")
+    mid = result(res, "state mid")["result"]["camera"]
+    assert 195 < (mid["az_deg"] % 360) < 205 and 7 < mid["el_deg"] < 8.5, mid  # spline midpoint
+    frames = sorted(f for f in os.listdir(os.path.join(out, "captures")) if f.startswith("clip_") and f.endswith(".png"))
+    assert len(frames) == 11, frames                                          # 1 s at 10 fps, both ends
+    assert png_size(os.path.join(out, "captures", frames[0])) == (400, 225)
+    c0, c10 = (png_pixels_crc(os.path.join(out, "captures", f)) for f in (frames[0], frames[10]))
+    assert c0 != c10, "the camera did not move"
+
+
+@test
 def watchdog_timeout():
     out, res, summ = run("timeout", "wait seconds 120", extra=("--timeout", "8"), expect_ok=False)
     assert summ.get("status") == "timeout", summ

@@ -391,6 +391,9 @@ User guide and command reference: **docs/HARNESS.md** (keep its table in step wi
   re-derivation unless the patch names the preset); `get` reads `buildSettingsJson()`. So every
   persisted setting is scriptable with no per-setting code — add a setting to those two functions
   and the harness has it.
+- Camera paths (`path key/play`) and `overlay` text are harness state too (`harnessPath_`,
+  `harnessOverlays_`); `path play` owns the clock (fixed 1/fps via `harnessFixedDtOverride_`, sim
+  time set per frame) so a recording is uniform in time however slowly frames encode.
 - `harnessRunner_` is null outside a harness run (and before the console's first use), and every
   hook is then a no-op. The first-run preset seed, intro, first-run notices, music and toasts are
   all suppressed in a harness run.
@@ -2817,8 +2820,16 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   All fade out by a ~400 m pixel footprint, so orbit views are the day map untouched. Soft terrain
   sun shadows (16 steps, 3 octaves, normal-offset start — starting on the surface gave texel-sized
   acne) with a 15% bounce floor.
-- **Empty-space skipping**: `earthElevMaxImg`, a CPU-built max-mip chain of the DEM (Vulkan mip
-  sizes round DOWN — validation caught the first upload), used by the depth pass only.
+- **Empty-space skipping was tried and removed**: a CPU-built max-mip chain of the DEM, tested in
+  the depth pass where the ray cleared the local max + the detail bound. It made the depth pass
+  SLOWER at every altitude (v4 3.3 -> 4.5 ms): the rays that cost are the ones just above the
+  horizon, and those are within the bound of the local max for tens of km, so the extra fetches on
+  every step bought almost no skipped steps. (Its upload also taught that Vulkan mip sizes round
+  DOWN — the validation layer via VK_INSTANCE_LAYERS caught it; see docs/HARNESS.md.)
+- **The DEM is sampled exactly near the observer** (`tdDemTexel`/`tdDemBilinear`, within 4 km):
+  the float UV resolves ~2.4 m and hardware bilinear of R8 uses 8-bit sub-texel weights; together
+  they built metre-high shelves on a steep wall seen from 10 m. The CPU passes the observer's texel
+  (integer + fraction, `terrainObsTexel`); each point adds a cancellation-free lon/lat offset.
 - **Cost (RTX 3070 Ti, 1600x900, clouds off, harness `perf`)**: +5-8 ms at High on the ground in
   mountains (depth 2.3-3.3 ms + sky 4-6 ms incl. 1-2 ms shadows), ~+1 ms from aircraft, ~0 from
   orbit; +3 ms at Medium in the Anchorage worst case (10.0 vs 6.9 ms). Presets: on for

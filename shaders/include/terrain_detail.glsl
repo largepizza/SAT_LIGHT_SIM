@@ -154,9 +154,55 @@ vec2 tdUV(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ) {
     return posToUV(q.x * enuX + q.y * enuY + (R_EARTH + q.z) * enuZ);
 }
 
-// DEM at a point: bilinear mip 0 (the height), and mip 3 (roughness). Ocean-masked like terrain.glsl.
-void tdDemAt(sampler2D elevTex, sampler2D specTex, vec2 uv, out float h0, out float hMip3) {
-    h0    = max(0.0, textureLod(elevTex, uv, 0.0).r * kElevRange - kElevOffset);
+// The DEM texel coordinate of q (texel-centre convention), relative to the observer's texel from
+// the CPU, with the lon/lat offsets formed from the SMALL ECEF offset of q — no cancellation. The
+// float UV route (atan of an absolute ECEF position, then *W) resolves only ~2.4 m on the ground, and
+// the hardware bilinear filter adds 8-bit sub-texel weights (~10 m steps): together they built
+// metre-high shelves on a steep wall seen from 10 m (found with the harness, a valley-wall close-up).
+//
+// Only used within kTdExactDemM of the observer, so the offset is the observer's local projection
+// (east/north metres over R cos(lat) and R): smooth, a few metres off true lon/lat at 4 km, which is
+// invisible — quantization STEPS are what show, and this has none. (Exact spherical angles via two
+// atans cost measurably more in the depth pass for no visible difference.)
+void tdDemTexel(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 size, out ivec2 base, out vec2 frac) {
+    float cosLat = max(length(enuZ.xy), 1e-3);
+    float dLon = q.x / (R_EARTH * cosLat);
+    float dLat = q.y / R_EARTH;
+    vec2  t = cloud.terrainObsTexel.zw + vec2(dLon * size.x / (2.0 * PI), -dLat * size.y / PI);
+    vec2  fl = floor(t);
+    base = ivec2(cloud.terrainObsTexel.xy + fl);
+    frac = t - fl;
+}
+
+float tdDemBilinear(sampler2D elevTex, ivec2 base, vec2 f, ivec2 sz) {
+    int x0 = ((base.x % sz.x) + sz.x) % sz.x, x1 = (x0 + 1) % sz.x;
+    int y0 = clamp(base.y, 0, sz.y - 1), y1 = clamp(base.y + 1, 0, sz.y - 1);
+    float a = texelFetch(elevTex, ivec2(x0, y0), 0).r, b = texelFetch(elevTex, ivec2(x1, y0), 0).r;
+    float c = texelFetch(elevTex, ivec2(x0, y1), 0).r, e = texelFetch(elevTex, ivec2(x1, y1), 0).r;
+    return mix(mix(a, b, f.x), mix(c, e, f.x), f.y);
+}
+
+// DEM at q: mip 0 (the height) and mip 3 (roughness — the ~21 km mean needs no precision).
+// Water-masked like terrain.glsl. Within kTdExactDemM (horizontally) of the observer the height is
+// the exact bilinear at the observer-relative texel (tdDemTexel); beyond it, where 2.4 m and 10 m
+// steps are far below a pixel, the hardware filter at the float UV (1 fetch instead of 4 plus the
+// angle math — the exact path everywhere measured +1 ms in the depth pass). The choice depends on q
+// alone, so every pass makes the same one for the same point.
+const float kTdExactDemM = 4000.0;
+void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
+             out float h0, out float hMip3) {
+    ivec2 sz = textureSize(elevTex, 0);
+    vec2  uv;
+    if (dot(q.xy, q.xy) < kTdExactDemM * kTdExactDemM) {
+        ivec2 base;
+        vec2  f;
+        tdDemTexel(q, enuX, enuY, enuZ, vec2(sz), base, f);
+        uv = (vec2(base) + f + 0.5) / vec2(sz);
+        h0 = max(0.0, tdDemBilinear(elevTex, base, f, sz) * kElevRange - kElevOffset);
+    } else {
+        uv = tdUV(q, enuX, enuY, enuZ);
+        h0 = max(0.0, textureLod(elevTex, uv, 0.0).r * kElevRange - kElevOffset);
+    }
     hMip3 = max(0.0, textureLod(elevTex, uv, 3.0).r * kElevRange - kElevOffset);
     if (h0 < kWaterMaskMaxM && textureLod(specTex, uv, 0.0).r > 0.5) { h0 = 0.0; hMip3 = 0.0; } // sea (terrain.glsl)
 }
@@ -300,7 +346,7 @@ float tdShadeLodM(float t, float pixAngle) { return max(3.0 * pixAngle * t, 0.25
 float terrainHeightDetailed(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
                             float lodM, int kEnd, out float h0) {
     float hMip3;
-    tdDemAt(elevTex, specTex, tdUV(q, enuX, enuY, enuZ), h0, hMip3);
+    tdDemAt(elevTex, specTex, q, enuX, enuY, enuZ, h0, hMip3);
     if (!tdEnabled()) return h0;
     TdState st = tdBegin(q, enuX, enuY, enuZ, h0, hMip3);
     tdOctaves(st, lodM, kEnd);
@@ -337,27 +383,7 @@ float observerEffHeightDetailed(sampler2D elevTex, sampler2D specTex, vec4 obsEC
 // full-resolution march (it starts there) — and cheap. Consumers of the shared depth (cloud and
 // beam clamps, the cloud-shadow start point) see a surface at most that bound (~30 m on the most
 // rugged terrain) above the real one.
-// DEM max over the 2x2 texels of max-mip `level` around uv (level i = max over 2^(i+1) DEM texels),
-// i.e. over every point within half a level-i texel of uv. Decoded like terrain.glsl (the decode is
-// monotonic, so the max of the bytes is the max of the heights).
-float tdMaxMipH(sampler2D maxTex, vec2 uv, int level) {
-    ivec2 sz = textureSize(maxTex, level);
-    ivec2 i0 = ivec2(floor(uv * vec2(sz) - 0.5));
-    float m = 0.0;
-    for (int y = 0; y <= 1; ++y)
-        for (int x = 0; x <= 1; ++x) {
-            ivec2 c = ivec2((i0.x + x + sz.x) % sz.x, clamp(i0.y + y, 0, sz.y - 1));
-            m = max(m, texelFetch(maxTex, c, level).r);
-        }
-    return max(0.0, m * kElevRange - kElevOffset);
-}
-
-// maxTex/useMaxMip (scene_depth.comp): above the envelope, try to skip half a max-mip texel at a
-// time where the ray clears the DEM max there plus the bound on all detail. The full-res pass does
-// not need it (it starts at the seed); rays a few degrees above the horizon took 160-220 steps in
-// the depth pass without it.
-float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, sampler2D maxTex, bool useMaxMip,
-                           float hEye, vec3 dir,
+float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec3 dir,
                            vec3 enuX, vec3 enuY, vec3 enuZ, float tStart, float tExit, float pixAngle,
                            int maxSteps, float lodScale, bool envelope, int coarseK, out int stepsUsed) {
     stepsUsed = 0;
@@ -376,7 +402,7 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, sampler2D maxTe
         float rayH = tdAltitude(q);
         if (rayH < -1.0) break;
         float h0, hMip3;
-        tdDemAt(elevTex, specTex, tdUV(q, enuX, enuY, enuZ), h0, hMip3);
+        tdDemAt(elevTex, specTex, q, enuX, enuY, enuZ, h0, hMip3);
         float grow    = float(i) / float(maxSteps);
         float minStep = max(0.5, t * mix(0.015, 0.05, grow * grow));
         // The cap only binds far above the terrain (0.6 * gap is safe for any DEM slope below ~0.6):
@@ -388,20 +414,6 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, sampler2D maxTe
         if (rayH > h0 + tdTailBound(amp0)) {
             gap = rayH - h0 - tdTailBound(amp0);
             armed = true;
-            if (useMaxMip) {
-                // Largest skip first: level 5 (64 DEM texels, ~170 km at the equator), then 3, then 1.
-                vec2  uv     = tdUV(q, enuX, enuY, enuZ);
-                float cosLat = sin(uv.y * PI);                  // uv.y = colatitude / PI
-                float bound  = detail ? cloud.terrainDetailAmpM * cloud.terrainDetailStrength
-                                        / max(1.0 - cloud.terrainDetailGain, 0.05) : 0.0;
-                for (int L = 5; L >= 1; L -= 2) {
-                    if (rayH > tdMaxMipH(maxTex, uv, L) + bound + 5.0) {
-                        float texM = 2669.0 * float(1 << (L + 1)) * max(cosLat, 0.05);
-                        gap = max(gap, 0.5 * texM / 0.6);        // step (0.6 * gap) = half a texel
-                        break;
-                    }
-                }
-            }
         } else if (!detail) {
             gap = rayH - h0;
             if (gap < 0.0) {
@@ -410,7 +422,7 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, sampler2D maxTe
                     float tM = 0.5 * (tLo + tHi);
                     vec3  qm = vec3(0.0, 0.0, hEye) + tM * dir;
                     float m0, m3;
-                    tdDemAt(elevTex, specTex, tdUV(qm, enuX, enuY, enuZ), m0, m3);
+                    tdDemAt(elevTex, specTex, qm, enuX, enuY, enuZ, m0, m3);
                     if (tdAltitude(qm) < m0) tHi = tM; else tLo = tM;
                 }
                 return 0.5 * (tLo + tHi);

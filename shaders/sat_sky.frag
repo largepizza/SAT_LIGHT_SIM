@@ -1620,7 +1620,7 @@ void main() {
 #endif
         if (tExit < cloud.terrainDistFadeEndM && !seedSky) {
             float hEye = obsEffH + 2.0;
-            tHit = terrainMarchDetailed(earthElevTex, earthSpecTex, earthElevTex, false, hEye, dir, enuX, enuY, enuZ,
+            tHit = terrainMarchDetailed(earthElevTex, earthSpecTex, hEye, dir, enuX, enuY, enuZ,
                                         tSeed, tExit, pixAngle, kTerrainMaxSteps, 1.0, false,
                                         kTdCoarseOctaves, terrainSteps);
             if (tHit > 0.0) {
@@ -1628,7 +1628,7 @@ void main() {
                 vec3 phE = terrainQ.x * enuX + terrainQ.y * enuY + (R_EARTH + terrainQ.z) * enuZ;
                 hitUV = posToUV(phE);
                 float hMip3;
-                tdDemAt(earthElevTex, earthSpecTex, hitUV, terrainH0, hMip3);
+                tdDemAt(earthElevTex, earthSpecTex, terrainQ, enuX, enuY, enuZ, terrainH0, hMip3);
 
                 // Normal: the DEM gradient over +-1 texel (bilinear central differences are
                 // continuous — the old +-0.69-texel offsets, written for a 21600-wide DEM, gave a

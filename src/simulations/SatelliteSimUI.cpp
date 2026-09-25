@@ -665,7 +665,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         }
     }
 
-    buildHarnessConsole(inp, ui); // the ~ console draws even with the HUD hidden
+    buildHarnessConsole(inp, ui);  // the ~ console draws even with the HUD hidden
+    buildHarnessOverlays(inp, ui); // harness `overlay` titles/labels, likewise (docs/HARNESS.md)
 
     // ── Tab: skip all UI when hidden ─────────────────────────────────────────
     if (!uiVisible)
@@ -5331,6 +5332,52 @@ void SatelliteSim::buildHarnessConsole(const UIInput &inp, UIRenderer &ui)
                                     : Clay_Color{200, 200, 200, 255};
             Clay_String s{false, (int32_t)l.size(), l.c_str()};
             CLAY_TEXT(s, CLAY_TEXT_CONFIG({.textColor = col, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+    }
+}
+
+// ─── Harness overlays (docs/HARNESS.md `overlay`) ─────────────────────────────
+// Screen text and target-following labels for scripted shots and videos. A dark copy offset by
+// 1-2 px behind each string keeps it legible on any sky.
+void SatelliteSim::buildHarnessOverlays(const UIInput &inp, UIRenderer &ui)
+{
+    (void)ui;
+    for (size_t i = 0; i < harnessOverlays_.size(); ++i)
+    {
+        const HarnessOverlay &o = harnessOverlays_[i];
+        float px, py;
+        if (o.target < 0)
+        {
+            px = o.x * inp.screenW;
+            py = o.y * inp.screenH;
+        }
+        else
+        {
+            glm::vec3 d;
+            if (!harnessLookDir(o.target, o.planet, d) || !projectSkyDirToScreen(d, inp.screenW, inp.screenH, px, py))
+                continue;
+            px += o.x;
+            py += o.y;
+        }
+        const uint16_t size = (uint16_t)std::max(8.0f, o.size);
+        // Width estimate only for centring (the font is proportional; ~0.5 em per glyph).
+        const float w = o.center ? 0.5f * size * (float)o.text.size() : 0.0f;
+        Clay_String s{false, (int32_t)o.text.size(), o.text.c_str()};
+        const float shadow = std::max(1.0f, size / 16.0f);
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            const float off = pass == 0 ? shadow : 0.0f;
+            const Clay_Color col = pass == 0 ? Clay_Color{0, 0, 0, 200}
+                                             : Clay_Color{o.color.r, o.color.g, o.color.b, o.color.a};
+            CLAY(CLAY_IDI("HarnessOverlay", (int)(i * 2 + pass)),
+                 {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}},
+                  .floating = {.offset = {px - w * 0.5f + off, py - size * 0.5f + off},
+                               .zIndex = (int16_t)(58 + pass),
+                               .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+                               .attachTo = CLAY_ATTACH_TO_ROOT}})
+            {
+                CLAY_TEXT(s, CLAY_TEXT_CONFIG({.textColor = col, .fontSize = size, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            }
         }
     }
 }

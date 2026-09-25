@@ -386,4 +386,9 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     float terrainDebugView;      // 0 off; 1 normals, 2 detail height, 3 march steps, 4 albedo,
                                  // 5 sun shadow, 6 roughness (sat_sky.frag, harness `debugview`)
     float terrainPad0;
+    // The observer's sea-level point as a DEM texel coordinate (texel-centre convention: x = u*W - 0.5,
+    // y = v*H - 0.5), split into integer (xy, exact in float) and fraction (zw), from the CPU's double.
+    // terrain_detail.glsl adds each point's small lon/lat offset to it, so the DEM is sampled at full
+    // precision near the observer (a float UV resolves only ~2.4 m; see tdDemAt).
+    vec4  terrainObsTexel;
 } cloud;
