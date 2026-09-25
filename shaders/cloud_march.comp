@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_control_flow_attributes : require // [[dont_unroll]] in terrain_detail.glsl
 
 // ── Half-resolution cloud/cirrus compute march ────────────────────────────────
 // Moved out of sat_sky.frag's per-pixel fragment shader (where cloudMarch/cirrusMarch used to

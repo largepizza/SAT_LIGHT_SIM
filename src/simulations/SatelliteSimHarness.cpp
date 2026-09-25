@@ -1472,16 +1472,17 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     if (n == "debugview")
     {
         // Terrain debug views (sat_sky.frag, cloud.terrainDebugView). Not persisted.
-        static const char *kViews[] = {"off", "normals", "detail", "steps", "albedo", "shadow", "rough", "elevzebra", "distzebra"};
+        static const char *kViews[] = {"off", "normals", "detail", "steps", "albedo", "shadow", "rough", "elevzebra", "distzebra",
+                                       "erosion"};
         const std::string v = lower(pos(0) == "terrain" ? pos(1) : pos(0));
         int idx = -1;
-        for (int i = 0; i < 9; ++i)
+        for (int i = 0; i < 10; ++i)
             if (v == kViews[i])
                 idx = i;
         if (idx < 0 && !v.empty() && isdigit((unsigned char)v[0]))
             idx = (int)parseNum(v, "debugview");
-        if (idx < 0 || idx > 8)
-            fail("debugview: off | normals | detail | steps | albedo | shadow | rough | elevzebra | distzebra "
+        if (idx < 0 || idx > 9)
+            fail("debugview: off | normals | detail | steps | albedo | shadow | rough | elevzebra | distzebra | erosion "
                  "(steps: blue = few march steps .. red = the budget; rough: R roughness, G rock, B snow; "
                  "zebras: stripes every 25 m of elevation / 100 m of distance)");
         terrainDebugView = idx;

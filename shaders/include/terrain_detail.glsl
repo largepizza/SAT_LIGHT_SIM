@@ -3,7 +3,9 @@
 
 // ── Procedural terrain detail: a real 3D heightfield on top of the DEM ─────────────────────────
 //
-// Requires common.glsl, cloud_params.glsl (the `cloud` UBO) and terrain.glsl, in that order.
+// Requires common.glsl, cloud_params.glsl (the `cloud` UBO) and terrain.glsl, in that order, and
+// `#extension GL_EXT_control_flow_attributes : require` in the including shader (the erosion's loops
+// are [[dont_unroll]]: unrolled, their inlined copies bloated every pass that includes this file).
 // Shared by every pass that needs to agree on where the ground is: sat_sky.frag (the march that
 // draws it), scene_depth.comp (the shared depth every volumetric clamps to) and cloud_march.comp
 // (the observer's own height). Docs: CLAUDE.md "Procedural terrain detail".
@@ -31,6 +33,11 @@
 // distance (tdGeomLodM: max(2 px footprint, 1.2% of the distance)); finer octaves still reach the
 // shading normal (tdShadeLodM, ~1.5 px). So near ground is fully 3D, far ridgelines keep the large
 // octaves, and nothing aliases.
+//
+// Erosion octaves (tdErosion, 2026-09-25): between the coarse and fine octaves, three octaves of
+// slope-aligned stripe noise (512/256/128 m) cut gullies that run DOWNHILL and branch — the
+// clayjohn 2018 / Fewes 2023 "eroded terrain noise" the `erosion` branch used, but here part of the
+// marched surface (they notch ridgelines and change silhouettes), not a correction after the hit.
 //
 // Cost (the first cut was 15-28 ms of extra sky pass at ground level, measured with the harness):
 // the octaves are evaluated in two stages. The march steps on the COARSE surface (DEM + the first
@@ -237,11 +244,18 @@ struct TdState {
     float amp0;   // octave-0 amplitude
     vec3  rel;    // noise-domain position (ECEF metres from the anchor cell origin)
     vec3  up;     // ECEF up
+    vec3  flow;   // the slope the erosion follows: the gradient after the two largest octaves
+    bool  ero;    // the erosion octaves have been added
+    bool  lodDone; // the value octaves stopped at the LOD (none finer will run)
+    float hEro;   // metres of h that came from them (debug view, the march's refinement)
+    vec3  gEro;   // their tangential gradient (ECEF, m/m)
+    float hC3;    // h after the first three octaves: the terrain shadow's surface (terrainSunShadow)
 };
 
 TdState tdBegin(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float h0, float hMip3) {
     TdState s;
     s.h = 0.0; s.grad = vec3(0.0); s.slope = vec3(0.0);
+    s.ero = false; s.hEro = 0.0; s.gEro = vec3(0.0); s.flow = vec3(0.0); s.lodDone = false; s.hC3 = 0.0;
     s.rough = tdRoughness(h0, hMip3);
     s.amp0  = tdAmp0(h0, hMip3);
     s.amp   = s.amp0;
@@ -253,13 +267,183 @@ TdState tdBegin(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float h0, float hMip3) 
     return s;
 }
 
+// ── Erosion octaves ───────────────────────────────────────────────────────────────────────────
+// Each octave is a cell grid of jittered points, each drawing a cosine stripe whose phase runs
+// ACROSS the local slope, so its ridges and grooves run down it; the weighted average over the 3x3
+// neighbourhood gives gullies that wander and end. Each octave's direction follows the slope PLUS the
+// octaves before it (tributaries run down the walls of the gully they feed — the branching; the
+// terrainErosion.y slider scales that feedback).
+//
+// Differences from the source, each for a reason:
+//  - a compact kernel (1 - d^2/R^2)^3, R = 1.25 cells, with the points jittered within the middle
+//    half of their cell: every point that can reach p is in the 3x3, so cell borders have no seam
+//    (the Gaussian of the source needs a 4x4 and still truncates);
+//  - the value and its gradient are exact (weights' derivatives included): the gradient is the
+//    shading normal and the branching input, not only an approximation;
+//  - the 2D domain is world-fixed and anchored like the value noise: the ECEF plane perpendicular to
+//    the dominant axis of up (dropping one coordinate keeps the anchor's integer cell exact), blended
+//    between the two dominant axes near a cube-face edge. The projection stretches spacing up to
+//    1.7x near the corners but not the direction: the stripes vary across the PROJECTED slope, and
+//    the plane projection is a linear bijection on the tangent plane, so grooves run exactly downhill.
+const int   kTdErosionOctaves = 2;
+const int   kTdErosionFirstK  = 2;       // first cell 2048 / 2^2 = 512 m
+const float kTdErosionSum     = 0.75;    // 0.5 + 0.25: |sum| of the octave weights
+
+// Upper bound on the erosion's height (|stripe average| <= 1, slope factor <= 1).
+float tdErosionBound(float amp0) { return amp0 * cloud.terrainErosion.x * kTdErosionSum; }
+
+// Three values in [-1, 1] from one hash (tdRand's mix): 11 + 11 + 10 bits.
+vec3 tdRand3(ivec3 c) {
+    uvec3 v = uvec3(c);
+    uint h = v.x * 0x8da6b343u ^ v.y * 0xd8163841u ^ v.z * 0xcb1ab31fu;
+    h ^= h >> 16; h *= 0x7feb352du;
+    h ^= h >> 15; h *= 0x846ca68bu;
+    h ^= h >> 16;
+    return vec3(float(h >> 21) * (2.0 / 2047.0), float((h >> 10) & 0x7FFu) * (2.0 / 2047.0),
+                float(h & 0x3FFu) * (2.0 / 1023.0)) - 1.0;
+}
+
+// One octave at p (lattice units, lattice offset `off`), stripes varying along the unit 2D `dir`.
+// Returns (value in [-1, 1], d/dp) per lattice unit. Each point draws its stripe at its own
+// frequency (0.75-1.25 per cell): with one frequency, a far slope where only the 512-m octave is
+// left read as regular parallel ripples (harness, the Andes from 30 km).
+vec3 tdErosionCell(vec2 p, ivec2 off, int salt, vec2 dir) {
+    const float kTwoPi = 6.2831853;
+    const float kInvR2 = 1.0 / 1.5625;   // kernel radius 1.25 cells
+    vec2  fl = floor(p);
+    vec2  f  = p - fl;
+    ivec2 i  = ivec2(fl) + off;
+    float wsum = 0.0, vsum = 0.0;
+    vec2  dwsum = vec2(0.0), dvsum = vec2(0.0);
+    [[dont_unroll]] for (int c = 0; c < 9; ++c) {
+        {
+            int   x  = c % 3 - 1, y = c / 3 - 1;
+            vec3  r  = tdRand3(ivec3(i + ivec2(x, y), salt));
+            vec2  pp = f - (vec2(float(x), float(y)) + 0.5 + 0.25 * r.xy);
+            float s  = 1.0 - dot(pp, pp) * kInvR2;
+            if (s <= 0.0) continue;
+            float w  = s * s * s;
+            vec2  dw = (-6.0 * kInvR2 * s * s) * pp;
+            float fr = kTwoPi * (1.0 + 0.25 * r.z);
+            float ph = fr * dot(pp, dir);
+            float cv = cos(ph), sv = sin(ph);
+            wsum  += w;
+            dwsum += dw;
+            vsum  += w * cv;
+            dvsum += dw * cv - (w * sv * fr) * dir;
+        }
+    }
+    float v = vsum / wsum;               // wsum > 0: p's own cell point is always within R
+    return vec3(v, (dvsum - v * dwsum) / wsum);
+}
+
+// Face axes: the two ECEF axes left when the dominant one (f) is dropped.
+ivec2 tdFaceAxes(int f) { return f == 0 ? ivec2(1, 2) : (f == 1 ? ivec2(2, 0) : ivec2(0, 1)); }
+
+// The erosion octaves on one face: vec4(height in amplitude units, gradient in ECEF per metre, not
+// yet projected onto the tangent plane). g = the slope they follow (ECEF, m/m); amp = the metres
+// one amplitude unit is (for the branching feedback, which is in real slope).
+vec4 tdErosionFace(vec3 rel, int f, vec3 g, float amp, float lodM) {
+    ivec2 ax     = tdFaceAxes(f);
+    vec2  rel2   = vec2(rel[ax.x], rel[ax.y]);
+    ivec3 anchor = ivec3(cloud.terrainAnchorCell.xyz);
+    ivec2 anc2   = ivec2(anchor[ax.x], anchor[ax.y]);
+    vec2  g2     = vec2(g[ax.x], g[ax.y]);
+    float h = 0.0, a = 0.5;
+    vec2  dh = vec2(0.0);                // per metre, face coordinates
+    float cell = kTdBaseCellM / float(1 << kTdErosionFirstK);
+    [[dont_unroll]] for (int o = 0; o < kTdErosionOctaves; ++o) {
+        // Twice the value noise's margin: a stripe period is one cell, so a cell of 2 LODs is a
+        // stripe pattern at the resolution limit — the ripples above.
+        float fade = smoothstep(2.0 * lodM, 4.0 * lodM, cell);
+        if (fade <= 0.0) break;
+        vec2 gs  = g2 + cloud.terrainErosion.y * amp * dh;   // slope + the gullies so far
+        vec2 dir = vec2(-gs.y, gs.x) / max(length(gs), 1e-6);
+        vec3 e   = tdErosionCell(rel2 / cell, anc2 << (kTdErosionFirstK + o), 4099 + 17 * f + o, dir);
+        h  += a * fade * e.x;
+        dh += (a * fade / cell) * e.yz;
+        a *= 0.5;
+        cell *= 0.5;
+    }
+    vec3 G = vec3(0.0);
+    G[ax.x] = dh.x;
+    G[ax.y] = dh.y;
+    return vec4(h, G);
+}
+
+// The DEM's slope at up (ECEF, m/m): central differences over two texels of the bilinear DEM, which
+// is continuous across texel borders (a one-sided difference of the bilinear jumps there, and the
+// stripes would break along every texel edge) and smooth enough to steer by: stripes cross-cut the
+// slope, so where its direction turns fast (a crest, a valley floor) they crowd into fringes — seen as
+// thin parallel lines along the ridges with a one-texel difference (harness, Alps from 3.5 km). Only
+// the erosion needs it, so only it pays the fetches.
+vec3 tdDemGrad(sampler2D elevTex, vec3 up) {
+    vec2  sz = vec2(textureSize(elevTex, 0));
+    vec2  uv = dirToUV(up);
+    vec2  du = vec2(1.0 / sz.x, 0.0), dv = vec2(0.0, 1.0 / sz.y);
+    float hE = textureLod(elevTex, uv + du, 0.0).r, hW = textureLod(elevTex, uv - du, 0.0).r;
+    float hN = textureLod(elevTex, uv - dv, 0.0).r, hS = textureLod(elevTex, uv + dv, 0.0).r;
+    float cosLat = max(length(up.xy), 0.02);
+    float dE = (hE - hW) * kElevRange / (4.0 * PI * R_EARTH * cosLat / sz.x);
+    float dN = (hN - hS) * kElevRange / (2.0 * PI * R_EARTH / sz.y);
+    vec3  east  = normalize(vec3(-up.y, up.x, 0.0) + vec3(1e-7, 0.0, 0.0));
+    vec3  north = cross(up, east);
+    return dE * east + dN * north;
+}
+
+// Add the erosion octaves to s (once). They follow the DEM slope plus the two largest octaves'
+// (s.flow): the 512/256-m octaves turn too fast to steer 512-m gullies by (fringes on every crest).
+void tdErosion(sampler2D elevTex, inout TdState s, float lodM) {
+    s.ero = true;
+    float strength = cloud.terrainErosion.x;
+    if (strength <= 0.0 || s.amp0 <= 0.0) return;
+    if (kTdBaseCellM / float(1 << kTdErosionFirstK) <= 2.0 * lodM) return;
+    vec3  g   = tdDemGrad(elevTex, s.up) + s.grad;
+    g -= s.up * dot(g, s.up);
+    // Gullies need a slope to run down: none on flats, valley floors and crests (where the slope's
+    // direction flips, the other source of fringes).
+    float amp = s.amp0 * strength * smoothstep(0.03, 0.25, length(g));
+    if (amp <= 0.0) return;
+    vec3 au = abs(s.up);
+    int  f0 = (au.x >= au.y && au.x >= au.z) ? 0 : (au.y >= au.z ? 1 : 2);
+    int  f1 = (f0 == 0) ? (au.y >= au.z ? 1 : 2) : (f0 == 1 ? (au.x >= au.z ? 0 : 2) : (au.x >= au.y ? 0 : 1));
+    float w0 = 0.5 + 0.5 * smoothstep(0.0, 0.02, au[f0] - au[f1]);
+    // One call site for both faces (a second site doubled the inlined code, and GLSL inlines all of
+    // it: the shader's registers are sized for its largest path, so code that never runs still cost
+    // every terrain pixel ~40% — measured with the harness).
+    vec4 e  = vec4(0.0);
+    int  nf = (w0 < 1.0) ? 2 : 1;
+    [[dont_unroll]] for (int fi = 0; fi < nf; ++fi)
+        e += (fi == 0 ? w0 + (1.0 - w0) * float(nf == 1) : 1.0 - w0) * tdErosionFace(s.rel, fi == 0 ? f0 : f1, g, amp, lodM);
+    vec3 G = e.yzw - s.up * dot(e.yzw, s.up);
+    s.h     += amp * e.x;
+    s.hEro   = amp * e.x;
+    s.gEro   = amp * G;
+    s.grad  += amp * G;
+    s.slope += amp * G;
+}
+
+// What the octaves not yet run can still add (the march's bounds).
+float tdRemainingBound(TdState s) {
+    return (s.k < kTdOctaves && !s.lodDone ? tdTailBound(s.amp) : 0.0) + (s.ero ? 0.0 : tdErosionBound(s.amp0));
+}
+
 // Run octaves s.k .. kEnd-1 (and stop at the LOD: octaves with a cell below lodM are dropped,
-// faded in between lodM and 2*lodM).
-void tdOctaves(inout TdState s, float lodM, int kEnd) {
+// faded in between lodM and 2*lodM). The erosion octaves run once, between the coarse and the fine
+// octaves, whenever the call reaches past the coarse ones — also when the value octaves stopped at
+// the LOD before that (the erosion's first cell is larger than theirs): a stop below the coarse
+// octaves jumps to them with lodDone set, so the erosion still comes up. ONE call site for the
+// erosion, and allowEro is a literal at every call site so the coarse-only paths compile without it.
+void tdValueOctaves(inout TdState s, float lodM, int kEnd) {
     ivec3 anchor = ivec3(cloud.terrainAnchorCell.xyz);
     for (; s.k < kEnd; ++s.k) {
-        float fade = smoothstep(lodM, 2.0 * lodM, s.cell);
-        if (fade <= 0.0 || s.amp <= 0.0) { s.k = kTdOctaves; break; }
+        float fade = s.lodDone ? 0.0 : smoothstep(lodM, 2.0 * lodM, s.cell);
+        if (fade <= 0.0 || s.amp <= 0.0) {
+            s.lodDone = true;
+            if (s.k < kTdCoarseOctaves) { s.k = kTdCoarseOctaves - 1; continue; }
+            s.k = kTdOctaves;
+            break;
+        }
         vec4 n  = tdNoised(s.rel / s.cell, anchor << s.k);
         vec3 g  = n.yzw / s.cell;
         g -= s.up * dot(g, s.up);                         // tangential part only
@@ -267,9 +451,26 @@ void tdOctaves(inout TdState s, float lodM, int kEnd) {
         float damp = 1.0 / (1.0 + cloud.terrainDetailErode * dot(s.slope, s.slope));
         s.h    += s.amp * fade * damp * n.x;
         s.grad += s.amp * fade * damp * g;
+        if (s.k == 1)
+            s.flow = s.grad;
+        if (s.k <= kTdCoarseOctaves - 2)
+            s.hC3 = s.h;
         s.amp  *= cloud.terrainDetailGain;
         s.cell *= 0.5;
     }
+}
+// The erosion call sits OUTSIDE the octave loop: inside it, an unrolled loop that starts at a
+// runtime s.k cannot know which iteration reaches the coarse boundary, so the compiler copied the
+// whole erosion into every iteration.
+void tdOctaves(sampler2D elevTex, inout TdState s, float lodM, int kEnd, bool allowEro) {
+    if (!allowEro || kEnd <= kTdCoarseOctaves) {
+        tdValueOctaves(s, lodM, kEnd);
+        return;
+    }
+    tdValueOctaves(s, lodM, kTdCoarseOctaves);
+    if (!s.ero)
+        tdErosion(elevTex, s, lodM);
+    tdValueOctaves(s, lodM, kEnd);
 }
 
 // The full detail at q (for shading, AO, and the debug views).
@@ -278,16 +479,19 @@ struct TdSample {
     vec3  grad;  // tangential gradient of h (ECEF, metres per metre)
     float rough; // 0..1 roughness used (material/AO)
     float amp;   // the octave-0 amplitude used (metres)
+    float hEro;  // metres of h from the erosion octaves
+    float hC3;   // metres of h from the first three octaves (the terrain shadow's surface)
 };
 
 // Shading-only micro relief: octaves 8..13 (8 m down to 0.25 m cells) — see tdMicroBump.
 const int kTdMicroFirst = 8;
 const int kTdMicroLast  = 13;
-TdSample terrainDetail(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lodM, float h0, float hMip3, int kEnd) {
+TdSample terrainDetail(sampler2D elevTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lodM, float h0,
+                       float hMip3, int kEnd) {
     TdState st = tdBegin(q, enuX, enuY, enuZ, h0, hMip3);
-    tdOctaves(st, lodM, kEnd);
+    tdOctaves(elevTex, st, lodM, kEnd, true);
     TdSample s;
-    s.h = st.h; s.grad = st.grad; s.rough = st.rough; s.amp = st.amp0;
+    s.h = st.h; s.grad = st.grad; s.rough = st.rough; s.amp = st.amp0; s.hEro = st.hEro; s.hC3 = st.hC3;
     return s;
 }
 
@@ -347,14 +551,42 @@ float tdGeomLodM(float t, float pixAngle) { return max(2.0 * pixAngle * t, 0.012
 // 3 px: finer normal detail than that aliases into a paper-like grain at a few km.
 float tdShadeLodM(float t, float pixAngle) { return max(3.0 * pixAngle * t, 0.25); }
 
-// Full terrain height (DEM + detail) at q. h0 returns the DEM part.
+// Full terrain height (DEM + detail) at q. h0 returns the DEM part. terrainHeightCoarse: the same
+// up to kEnd <= kTdCoarseOctaves, without the erosion (shadows, the tail march) — a separate
+// function so those paths do not carry its code.
 float terrainHeightDetailed(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
                             float lodM, int kEnd, out float h0) {
     float hMip3;
     tdDemAt(elevTex, specTex, q, enuX, enuY, enuZ, h0, hMip3);
     if (!tdEnabled()) return h0;
     TdState st = tdBegin(q, enuX, enuY, enuZ, h0, hMip3);
-    tdOctaves(st, lodM, kEnd);
+    tdOctaves(elevTex, st, lodM, kEnd, true);
+    return h0 + st.h;
+}
+float terrainHeightCoarse(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
+                          float lodM, int kEnd, out float h0) {
+    float hMip3;
+    tdDemAt(elevTex, specTex, q, enuX, enuY, enuZ, h0, hMip3);
+    if (!tdEnabled()) return h0;
+    TdState st = tdBegin(q, enuX, enuY, enuZ, h0, hMip3);
+    tdOctaves(elevTex, st, lodM, kEnd, false);
+    return h0 + st.h;
+}
+// The full height with the erosion taken as a plane through (qB, hEroB, slope gEroB) — for the
+// march's refinement inside a bracket a few metres to tens of metres long, where the 256/512-m
+// gullies are flat to a few centimetres. The erosion was ~4 ms of the terrain passes at ground
+// level and the refinement was half of its evaluations (harness perf, 2026-09-25).
+float terrainHeightLinEro(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
+                          float lodM, vec3 qB, float hEroB, vec3 gEroB) {
+    float h0, hMip3;
+    tdDemAt(elevTex, specTex, q, enuX, enuY, enuZ, h0, hMip3);
+    if (!tdEnabled()) return h0;
+    TdState st = tdBegin(q, enuX, enuY, enuZ, h0, hMip3);
+    tdValueOctaves(st, lodM, kTdCoarseOctaves);
+    vec3 d = q - qB;
+    float he = hEroB + dot(gEroB, d.x * enuX + d.y * enuY + d.z * enuZ);
+    st.h += he; st.grad += gEroB; st.slope += gEroB; st.ero = true;
+    tdValueOctaves(st, lodM, kTdOctaves);
     return h0 + st.h;
 }
 
@@ -366,6 +598,28 @@ float observerEffHeightDetailed(sampler2D elevTex, sampler2D specTex, vec4 obsEC
     float h0;
     float g = terrainHeightDetailed(elevTex, specTex, vec3(0.0), enuX, enuY, enuZ, 0.0, kTdOctaves, h0);
     return max(max(g, 0.0), max(0.0, obsECEFDir.w));
+}
+
+// The erosion at the hit point of the last terrainMarchDetailed(), for the caller's shading
+// (terrainDetailLinEro): xyz = its gradient, w = its height, at gTdHitEroQ. Zero for hits that
+// carry no erosion (DEM-only, or the coarse tail march — consistent with their geometry). A module
+// variable rather than out-parameters so the depth passes, which ignore it, are unchanged.
+vec4 gTdHitEro  = vec4(0.0);
+vec3 gTdHitEroQ = vec3(0.0);
+
+// The full detail at q with the erosion as the plane the march left (see terrainHeightLinEro): the
+// shading normal, at the shading LOD. Saves one full erosion evaluation per terrain pixel.
+TdSample terrainDetailLinEro(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lodM, float h0, float hMip3) {
+    TdState st = tdBegin(q, enuX, enuY, enuZ, h0, hMip3);
+    tdValueOctaves(st, lodM, kTdCoarseOctaves);
+    vec3 d = q - gTdHitEroQ;
+    st.hEro = gTdHitEro.w + dot(gTdHitEro.xyz, d.x * enuX + d.y * enuY + d.z * enuZ);
+    st.gEro = gTdHitEro.xyz;
+    st.h += st.hEro; st.grad += st.gEro; st.slope += st.gEro; st.ero = true;
+    tdValueOctaves(st, lodM, kTdOctaves);
+    TdSample s;
+    s.h = st.h; s.grad = st.grad; s.rough = st.rough; s.amp = st.amp0; s.hEro = st.hEro; s.hC3 = st.hC3;
+    return s;
 }
 
 // ── The march ─────────────────────────────────────────────────────────────────────────────────
@@ -392,6 +646,7 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
                            vec3 enuX, vec3 enuY, vec3 enuZ, float tStart, float tExit, float pixAngle,
                            int maxSteps, float lodScale, bool envelope, int coarseK, out int stepsUsed) {
     stepsUsed = 0;
+    gTdHitEro = vec4(0.0);
     bool  detail = tdEnabled();
     float t = max(tStart, 2.0), tPrev = t;
     // An envelope hit only counts once the ray has been OUTSIDE the envelope: an eye 2 m above the
@@ -416,8 +671,9 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
         float maxStep = clamp(t * 0.3, 20.0, 12000.0);
         float gap;
         float amp0 = detail ? tdAmp0(h0, hMip3) : 0.0;
-        if (rayH > h0 + tdTailBound(amp0)) {
-            gap = rayH - h0 - tdTailBound(amp0);
+        float allBound = detail ? tdTailBound(amp0) + tdErosionBound(amp0) : 0.0;
+        if (rayH > h0 + allBound) {
+            gap = rayH - h0 - allBound;
             armed = true;
         } else if (!detail) {
             gap = rayH - h0;
@@ -435,41 +691,41 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
         } else {
             TdState st = tdBegin(q, enuX, enuY, enuZ, h0, hMip3);
             float lod = tdGeomLodM(t, pixAngle) * lodScale;
-            tdOctaves(st, lod, coarseK);
-            float fineBound = (st.k < kTdOctaves) ? tdTailBound(st.amp) : 0.0;
+            tdOctaves(elevTex, st, lod, coarseK, false);
+            float fineBound = tdRemainingBound(st);
             gap = rayH - h0 - st.h - fineBound;
             if (envelope && armed && gap < pixAngle * t)
                 return (gap >= 0.0) ? t : tPrev;   // conservative: the last sample before, if inside
             if (gap > 0.0)
                 armed = true;
             if (gap <= 0.0) {
-                tdOctaves(st, lod, kTdOctaves);
+                tdOctaves(elevTex, st, lod, kTdOctaves, true);
                 gap = rayH - h0 - st.h;
                 // Within a pixel footprint of the surface is a hit: a ray skimming a slope or a
                 // plain would otherwise creep along it in ever smaller relaxation steps (and a ray
                 // that runs out of steps is a MISS). IQ's "Elevated" terminates the same way.
-                if (gap >= 0.0 && gap < pixAngle * t)
+                if (gap >= 0.0 && gap < pixAngle * t) {
+                    gTdHitEro = vec4(st.gEro, st.hEro); gTdHitEroQ = q;
                     return t;
+                }
                 if (gap < 0.0) {
                     // Bracket [tPrev, t]: regula falsi on the same height function. The bracket is
                     // a fraction of the gap one step back, so three secant steps land well inside a
                     // pixel; bisection took eight full evaluations for the same answer.
-                    float tA = tPrev, gA = prevGap, tB = t, gB = gap;
-                    if (!prevGapValid) {
-                        vec3 qa = vec3(0.0, 0.0, hEye) + tA * dir;
-                        float a0;
-                        gA = tdAltitude(qa) - terrainHeightDetailed(elevTex, specTex, qa, enuX, enuY, enuZ,
-                                                                    tdGeomLodM(tA, pixAngle) * lodScale, kTdOctaves, a0);
-                    }
-                    gA = max(gA, 1e-3);
-                    for (int j = 0; j < 3; ++j) {
-                        float tM = tA + (tB - tA) * gA / (gA - gB);
+                    // One evaluation site (j = -1 fills in the gap at tPrev when the last step did
+                    // not compute it): each inlined full-height call is the whole detail + erosion.
+                    float tA = tPrev, gA = max(prevGap, 1e-3), tB = t, gB = gap;
+                    for (int j = prevGapValid ? 0 : -1; j < 3; ++j) {
+                        float tM = (j < 0) ? tA : tA + (tB - tA) * gA / (gA - gB);
                         vec3  qm = vec3(0.0, 0.0, hEye) + tM * dir;
-                        float m0;
-                        float gM = tdAltitude(qm) - terrainHeightDetailed(elevTex, specTex, qm, enuX, enuY, enuZ,
-                                                                          tdGeomLodM(tM, pixAngle) * lodScale, kTdOctaves, m0);
-                        if (gM < 0.0) { tB = tM; gB = gM; } else { tA = tM; gA = max(gM, 1e-3); }
+                        float gM = tdAltitude(qm) - terrainHeightLinEro(elevTex, specTex, qm, enuX, enuY, enuZ,
+                                                                        tdGeomLodM(tM, pixAngle) * lodScale,
+                                                                        q, st.hEro, st.gEro);
+                        if (j < 0)            gA = max(gM, 1e-3);
+                        else if (gM < 0.0)  { tB = tM; gB = gM; }
+                        else                { tA = tM; gA = max(gM, 1e-3); }
                     }
+                    gTdHitEro = vec4(st.gEro, st.hEro); gTdHitEroQ = q;
                     return tA + (tB - tA) * gA / (gA - gB);
                 }
                 prevGap = gap;
@@ -494,16 +750,16 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
         for (int i = 0; i < 48 && t < tExit; ++i) {
             vec3  q  = vec3(0.0, 0.0, hEye) + t * dir;
             float h0;
-            float gap = tdAltitude(q) - terrainHeightDetailed(elevTex, specTex, q, enuX, enuY, enuZ,
-                                                              tdGeomLodM(t, pixAngle) * lodScale, coarseK, h0);
+            float gap = tdAltitude(q) - terrainHeightCoarse(elevTex, specTex, q, enuX, enuY, enuZ,
+                                                            tdGeomLodM(t, pixAngle) * lodScale, coarseK, h0);
             if (gap < 0.0) {
                 float tLo = tPrev, tHi = t;
                 for (int j = 0; j < 8; ++j) {
                     float tM = 0.5 * (tLo + tHi);
                     vec3  qm = vec3(0.0, 0.0, hEye) + tM * dir;
                     float m0;
-                    float mT = terrainHeightDetailed(elevTex, specTex, qm, enuX, enuY, enuZ,
-                                                     tdGeomLodM(tM, pixAngle) * lodScale, coarseK, m0);
+                    float mT = terrainHeightCoarse(elevTex, specTex, qm, enuX, enuY, enuZ,
+                                                   tdGeomLodM(tM, pixAngle) * lodScale, coarseK, m0);
                     if (tdAltitude(qm) < mT) tHi = tM; else tLo = tM;
                 }
                 return 0.5 * (tLo + tHi);
@@ -521,18 +777,17 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
 // the surface along n: the shadow's surface is a coarser LOD than the one drawn, and starting on it
 // shadowed every sun-facing facet in texel-sized blocks (acne) — found with the harness's shadow view.
 float terrainSunShadow(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 n, vec3 sunDir,
-                       vec3 enuX, vec3 enuY, vec3 enuZ, float lodBase) {
+                       vec3 enuX, vec3 enuY, vec3 enuZ, float lodBase, float hCoarseAtQ) {
     float res  = 1.0;
     float bias = 1.0 + 1.5 * lodBase;
     // The ray is tested against the COARSE octaves only, but q lies on the full surface: where the
     // fine octaves dip below the coarse ones the ray began inside the surface it is tested against
     // and the point shadowed itself — black blobs with grey rims tracing the fine octaves' contours
     // on any gentle sunlit slope seen from the ground (found with a harness flight into a glacier).
-    // Start from the coarse surface instead where it is higher.
-    float hc0;
-    float Hc   = terrainHeightDetailed(elevTex, specTex, q, enuX, enuY, enuZ, max(lodBase, 0.05 * bias),
-                                       kTdCoarseOctaves - 1, hc0);
-    float lift = max(0.0, Hc - tdAltitude(q));
+    // Start from the coarse surface instead where it is higher. hCoarseAtQ = DEM + the first three
+    // octaves at q, which the caller's shading-normal evaluation already has (TdSample::hC3):
+    // recomputing it here cost ~0.5 ms at ground level.
+    float lift = max(0.0, hCoarseAtQ - tdAltitude(q));
     vec3  q0   = q + normalize(vec3(q.xy, R_EARTH + q.z)) * lift + n * bias;
     float t    = bias;
     // 16 steps, three octaves, the step floor at 8% of t: measured 2-4 ms at ground level with 24
@@ -543,8 +798,8 @@ float terrainSunShadow(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 n, vec
         float rayH = tdAltitude(qs);
         if (rayH > kMaxTerrain + 600.0) break;
         float h0;
-        float H = terrainHeightDetailed(elevTex, specTex, qs, enuX, enuY, enuZ, max(lodBase, 0.05 * t),
-                                        kTdCoarseOctaves - 1, h0);
+        float H = terrainHeightCoarse(elevTex, specTex, qs, enuX, enuY, enuZ, max(lodBase, 0.05 * t),
+                                      kTdCoarseOctaves - 1, h0);
         float gap = rayH - H;
         res = min(res, 6.0 * gap / t);
         if (res < 0.0) break;

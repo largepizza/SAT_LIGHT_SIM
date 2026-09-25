@@ -4221,7 +4221,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
     // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
     // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[97][16];
+    static char cloudBufs[99][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -4558,6 +4558,9 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Detail erosion", &terrainDetailErode, 0.0f, 6.0f, 0.1f, "%.1f", 94},
         {"Terrain shadows", &terrainShadowStrength, 0.0f, 1.0f, 0.05f, "%.2f", 95},
         {"Terrain materials", &terrainMaterialStrength, 0.0f, 1.0f, 0.05f, "%.2f", 96},
+        // Erosion octaves (tdErosion): gullies that run downhill and branch.
+        {"Erosion strength", &terrainErosionStrength, 0.0f, 1.5f, 0.05f, "%.2f", 97},
+        {"Erosion branching", &terrainErosionBranch, 0.0f, 3.0f, 0.1f, "%.1f", 98},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -5882,6 +5885,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         terrainDetailErode = c.value("terrain_detail_erode", terrainDetailErode);
         terrainShadowStrength = c.value("terrain_shadow_strength", terrainShadowStrength);
         terrainMaterialStrength = c.value("terrain_material_strength", terrainMaterialStrength);
+        terrainErosionStrength = c.value("terrain_erosion_strength", terrainErosionStrength);
+        terrainErosionBranch = c.value("terrain_erosion_branch", terrainErosionBranch);
         cloudBaseVariance = c.value("cloud_base_variance", cloudBaseVariance);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
@@ -6112,6 +6117,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"terrain_detail_erode", terrainDetailErode},
         {"terrain_shadow_strength", terrainShadowStrength},
         {"terrain_material_strength", terrainMaterialStrength},
+        {"terrain_erosion_strength", terrainErosionStrength},
+        {"terrain_erosion_branch", terrainErosionBranch},
         {"cloud_base_variance", cloudBaseVariance},
         {"cloud_erosion_edge", cloudErosionEdge},
         {"cloud_erosion_core", cloudErosionCore},

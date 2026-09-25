@@ -1414,8 +1414,9 @@ struct GpuCloudParams
     float terrainDebugView;
     float terrainPad0;
     glm::vec4 terrainObsTexel; // xy = integer, zw = fraction of the observer's DEM texel coordinate
+    glm::vec4 terrainErosion;  // x = strength, y = branching (terrain_detail.glsl tdErosion)
 };
-static_assert(sizeof(GpuCloudParams) == 672, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 688, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -3147,6 +3148,8 @@ private:
     float terrainDetailErode = 0.7f;
     float terrainShadowStrength = 1.0f;
     float terrainMaterialStrength = 1.0f;
+    float terrainErosionStrength = 0.6f; // erosion octaves (tdErosion): fraction of the detail amplitude
+    float terrainErosionBranch = 1.0f;   // how much each erosion octave follows the gullies before it
     int terrainDebugView = 0; // harness `debugview` only; not persisted
     // Cloud opacity scale (see GpuCloudParams::cloudOpacityScale) — multiplies the volumetric
     // cloud march's extinction-per-metre constant directly (and, since this same value also
@@ -3769,11 +3772,11 @@ private:
                                  // sliders (idx 22-26, 2026-09-23)
     bool hovPhotoPlus[33] = {};
     bool draggingPhoto[33] = {};
-    bool hovCloudMinus[97] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
+    bool hovCloudMinus[99] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
-                                 // idx 91-96 the terrain detail sliders (2026-09-25)
-    bool hovCloudPlus[97] = {};
-    bool draggingCloud[97] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+                                 // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25)
+    bool hovCloudPlus[99] = {};
+    bool draggingCloud[99] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.

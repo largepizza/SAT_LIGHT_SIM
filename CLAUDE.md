@@ -2839,6 +2839,40 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   - A ground bounce proportional to the day map's luminance and the Sun's local height
     (`bounceK`, scaled by the material strength): snow lifts its shaded faces, forest barely moves.
   - `tdMicroBump` is 0.3x on day-map snow, and its floor on smooth ground is 0.25 (was 0.35).
+- **Erosion octaves (`tdErosion`, 2026-09-25)** — the `erosion` branch's algorithm (clayjohn 2018 /
+  Fewes 2023 "eroded terrain noise": per-cell cosine stripes whose phase runs across the slope, so
+  gullies run downhill, each octave following the slope plus the octaves before it = branching),
+  made part of the marched surface: two octaves (512, 256 m) between the coarse and fine value
+  octaves, amplitude `terrainErosion.x` x octave-0 amplitude x a slope factor, bounded, so the march
+  stays conservative (`tdErosionBound`, `tdRemainingBound`). Sliders "Erosion strength" (0.6) /
+  "Erosion branching" (1.0), keys `clouds.terrain_erosion_*`; `debugview erosion`.
+  - **Domain**: the ECEF plane perpendicular to the dominant axis of up (drop one coordinate — the
+    anchor's integer cell carries over exactly, so nothing swims), blended across cube-face edges.
+    Stripes vary across the PROJECTED slope, so grooves run exactly downhill whatever the projection
+    stretch. The Alps sit on the x/z face edge — views there pay for two faces in a narrow band.
+  - **Kernel**: compact (1 - d^2/R^2)^3, R = 1.25 cells, points jittered within the middle half of
+    their cell, so the 3x3 neighbourhood is exact (no cell-border seams); per-point frequency
+    (+-25%) — one frequency read as regular ripples on a far slope; the erosion needs a cell of 4x the
+    LOD for full weight (twice the value octaves' margin) for the same reason.
+  - **Steering**: the DEM slope by central differences over +-1 texel (continuous across texel
+    borders) plus the coarse octaves' gradient. Where that direction flips (crests, valley floors)
+    the stripes crowd into fringes — visible in `debugview erosion`, faint or hidden by haze in the
+    render; steering by the smoothest slope only removed them but also most of the effect (tried).
+  - **Cost is what shaped the code.** GLSL inlines everything and the registers are sized for the
+    largest path, so erosion code that never runs still slowed every terrain pixel: a first cut with
+    the erosion inside the octave loop (copied into every unrolled iteration), two face-evaluation
+    sites and three full-height sites in the march made the ground views ~50% slower with the
+    erosion switched OFF. Now: one erosion call site outside the value-octave loop (`tdOctaves` =
+    value octaves, erosion, value octaves; `allowEro` literal false on coarse-only paths, which use
+    `terrainHeightCoarse`), one face site, `[[dont_unroll]]` loops (GL_EXT_control_flow_attributes in
+    every shader including terrain_detail.glsl). The march's refinement and the shading normal take
+    the erosion as the plane the last full evaluation left (`terrainHeightLinEro`,
+    `terrainDetailLinEro`, `gTdHitEro`) — the gullies are flat to centimetres over a bracket. A
+    per-cell cull (skip cells out of the kernel's reach) was SLOWER (divergence), a third 128-m
+    octave cost ~1 ms for little. The terrain shadow's lift reuses the normal's coarse height (`hC3`).
+  - **Measured** (RTX 3070 Ti, 1600x900, High, harness perf): +2.5-3 ms on the ground in mountains
+    with clouds off (v1 13.0, v4 13.7 ms), ~0 from 10 km up; Grand Canyon rim with clouds at High
+    15.8 ms (p90 16.4) vs 13.0 without, at Medium 12.8 vs 10.7.
 - **Empty-space skipping was tried and removed**: a CPU-built max-mip chain of the DEM, tested in
   the depth pass where the ray cleared the local max + the detail bound. It made the depth pass
   SLOWER at every altitude (v4 3.3 -> 4.5 ms): the rays that cost are the ones just above the
@@ -2854,9 +2888,10 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   1-2 ms shadows), ~+1 ms from aircraft, ~0 from orbit; +3 ms at Medium in the Anchorage worst
   case (measured before the quarter pass; less now). Presets: on for
   Medium/High/Ultra, off for Low/Planetarium/Potato (`applyGraphicsPreset`). Terrain tab sliders:
-  Terrain detail / Detail height / roughness / erosion / Terrain shadows / Terrain materials.
+  Terrain detail / Detail height / roughness / erosion (the value octaves' slope damping) / Terrain
+  shadows / Terrain materials / Erosion strength / Erosion branching (the gully octaves).
 - **Tools**: `tools/harness/scripts/terrain_views.satcmd` (eight golden views), harness `debugview`
-  (normals, detail, steps, albedo, shadow, rough) and `probe x y`.
+  (normals, detail, steps, albedo, shadow, rough, elevzebra, distzebra, erosion) and `probe x y`.
 - **Known limits**: the ground within ~20 m is soft (it would need real texture maps); silhouettes
   are not antialiased; value noise shapes; the DEM itself is 2.67 km / 8-bit (the Everest region is a
   smooth plateau in it); SKY_LITE and SKY_ENV draw the plain DEM (`tdEnabled()`).

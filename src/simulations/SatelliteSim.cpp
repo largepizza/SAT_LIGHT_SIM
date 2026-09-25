@@ -2212,6 +2212,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cp.terrainShadowStrength = terrainShadowStrength;
             cp.terrainMaterialStrength = terrainMaterialStrength;
             cp.terrainDebugView = (float)terrainDebugView;
+            cp.terrainErosion = glm::vec4(terrainErosionStrength, terrainErosionBranch, 0.0f, 0.0f);
         }
         cp.cloudOpacityScale = cloudOpacityScale;
         cp.cityLightBlurLod = cityLightBlurLod;

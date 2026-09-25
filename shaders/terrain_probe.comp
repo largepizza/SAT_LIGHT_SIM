@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_control_flow_attributes : require // [[dont_unroll]] in terrain_detail.glsl
 
 // ── Harness terrain probe (docs/HARNESS.md `probe`) ───────────────────────────────────────────────
 // One thread. Re-runs the terrain algorithm for ONE full-resolution pixel's view ray with the very
@@ -81,7 +82,7 @@ void main() {
         float h0, hMip3;
         vec2  uv = tdUV(q, enuX, enuY, enuZ);
         tdDemAt(earthElevTex, earthSpecTex, q, enuX, enuY, enuZ, h0, hMip3);
-        TdSample d = terrainDetail(q, enuX, enuY, enuZ, tdGeomLodM(tH, pixAngle), h0, hMip3, kTdOctaves);
+        TdSample d = terrainDetail(earthElevTex, q, enuX, enuY, enuZ, tdGeomLodM(tH, pixAngle), h0, hMip3, kTdOctaves);
         outp.a[3] = vec4(h0, hMip3, d.h, d.amp);
         outp.a[4] = vec4(d.rough, tdAltitude(q), 90.0 - uv.y * 180.0, uv.x * 360.0 - 180.0);
     } else {
@@ -98,7 +99,7 @@ void main() {
         vec3  q = vec3(0.0, 0.0, hEye) + t * dir;
         float h0, hMip3;
         tdDemAt(earthElevTex, earthSpecTex, q, enuX, enuY, enuZ, h0, hMip3);
-        float H = tdEnabled() ? h0 + terrainDetail(q, enuX, enuY, enuZ, tdGeomLodM(t, pixAngle), h0, hMip3, kTdOctaves).h : h0;
+        float H = tdEnabled() ? h0 + terrainDetail(earthElevTex, q, enuX, enuY, enuZ, tdGeomLodM(t, pixAngle), h0, hMip3, kTdOctaves).h : h0;
         outp.profile[i] = vec4(t, tdAltitude(q), h0, H);
     }
 }

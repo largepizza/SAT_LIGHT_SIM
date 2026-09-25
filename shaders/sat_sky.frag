@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_control_flow_attributes : require // [[dont_unroll]] in terrain_detail.glsl
 // SKY_ENV (-DSKY_ENV -> sat_sky_env.frag.spv, 2026-09-24): the same renderer seen from a SATELLITE —
 // the mesh reflection probes (SatEnvProbes: six cube faces per probe) and the model viewer's
 // background. The observer (pc.obsECEFDir, w = altitude) is the satellite; everything the frame
@@ -1570,6 +1571,7 @@ void main() {
     int      terrainSteps  = 0;
     TdSample terrainDet;
     terrainDet.h = 0.0; terrainDet.grad = vec3(0.0); terrainDet.rough = 0.0; terrainDet.amp = 0.0;
+    terrainDet.hEro = 0.0; terrainDet.hC3 = 0.0;
     float    terrainH0     = 0.0;   // DEM height at the hit
     vec3     terrainQ      = vec3(0.0); // hit, observer-relative (terrain_detail.glsl's q)
     vec3     terrainUpE    = vec3(0.0, 0.0, 1.0);
@@ -1653,8 +1655,8 @@ void main() {
                 vec3 hNrE     = cross(terrainUpE, hEsE);                            // North in ECEF
                 vec3 slopeE   = dE2 * hEsE + dN2 * hNrE;
                 if (tdEnabled()) {
-                    terrainDet = terrainDetail(terrainQ, enuX, enuY, enuZ, tdShadeLodM(tHit, pixAngle),
-                                               terrainH0, hMip3, kTdOctaves);
+                    terrainDet = terrainDetailLinEro(terrainQ, enuX, enuY, enuZ, tdShadeLodM(tHit, pixAngle),
+                                                     terrainH0, hMip3);   // the march's erosion, as a plane
                     slopeE += terrainDet.grad;
                 }
                 vec3 nECEF  = normalize(terrainUpE - slopeE);
@@ -2492,7 +2494,7 @@ void main() {
 #if !defined(SKY_LITE) && !defined(SKY_ENV)
         if (tHit > 0.0 && cloud.terrainShadowStrength > 0.0 && dayFrac > 0.0 && sunDot > -0.05) {
             float sh = terrainSunShadow(earthElevTex, earthSpecTex, terrainQ, terrainNorm, sunDir, enuX, enuY, enuZ,
-                                        tdGeomLodM(tHit, pixAngle));
+                                        tdGeomLodM(tHit, pixAngle), terrainH0 + terrainDet.hC3);
             terrainShadow = mix(1.0, sh, cloud.terrainShadowStrength);
         }
 #endif
@@ -2537,6 +2539,12 @@ void main() {
             // elevation) or hit-distance (8: every 100 m along the ray) instability, not texture.
             else if (dv == 7) dbg = vec3(mix(0.05, 0.95, mod(floor(tdAltitude(terrainQ) / 25.0), 2.0)));
             else if (dv == 8) dbg = vec3(mix(0.05, 0.95, mod(floor(tHit / 100.0), 2.0)));
+            // 9: the erosion octaves alone (grey = none; bright = ridge, dark = gully), relative to
+            // their bound; blue where the slope is too gentle for any.
+            else if (dv == 9) {
+                float eb = terrainDet.amp * cloud.terrainErosion.x * 0.875;
+                dbg = eb > 1.0 ? vec3(0.5 + 0.5 * clamp(terrainDet.hEro / eb, -1.0, 1.0)) : vec3(0.1, 0.2, 0.5);
+            }
             terrainDebugColor = dbg;
         }
 
