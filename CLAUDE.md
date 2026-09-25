@@ -2829,7 +2829,16 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   snow, rock on steep faces, darker where the map is snow); a latitude snowline painted Tibet white.
   All fade out by a ~400 m pixel footprint, so orbit views are the day map untouched. Soft terrain
   sun shadows (16 steps, 3 octaves, normal-offset start — starting on the surface gave texel-sized
-  acne) with a 15% bounce floor.
+  acne, and lifted onto the coarse surface the ray is tested against) with a 15% bounce floor.
+- **Lighting of faces turned from the Sun** (found flying the harness into a glacier, where half
+  the metre-scale facets of a snowfield went pure black under a 20-degree Sun):
+  - `dayFrac` is the GEOGRAPHIC horizon gate only. It was also gated by the shading normal, which
+    sent every face turned > ~8 degrees past edge-on to the Sun to the NIGHT branch: no skylight,
+    and the city-lights map, in daylight. DEM normals seldom got there; detail normals constantly do.
+  - The direct term's 0.05 floor is reached smoothly (`sunLit`); its hard clamp drew contour rims.
+  - A ground bounce proportional to the day map's luminance and the Sun's local height
+    (`bounceK`, scaled by the material strength): snow lifts its shaded faces, forest barely moves.
+  - `tdMicroBump` is 0.3x on day-map snow, and its floor on smooth ground is 0.25 (was 0.35).
 - **Empty-space skipping was tried and removed**: a CPU-built max-mip chain of the DEM, tested in
   the depth pass where the ray cleared the local max + the detail bound. It made the depth pass
   SLOWER at every altitude (v4 3.3 -> 4.5 ms): the rays that cost are the ones just above the

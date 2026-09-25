@@ -303,11 +303,16 @@ vec3 tdSolidRel(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ) {
 // to the cell), solid in 3D, returned as the part of its gradient tangent to the macro normal nE
 // (ECEF) — subtract it from nE. Gradient noise, not value noise: value noise's lattice showed as
 // sheared boxes in the lighting at pebble scale.
-vec3 tdMicroBump(vec3 q, vec3 nE, vec3 enuX, vec3 enuY, vec3 enuZ, float lodM, float rough) {
+// smoothness (0..1) flattens it: snow (the caller's day-map snow mask) is far smoother at metre scale
+// than rock or turf. At full slope a snowfield under a 20-degree Sun turned half its metre-scale
+// facets away from the Sun — near-black blobs across a glacier seen from the ground (harness
+// flight). The floor on smooth ground came down from 0.35 to 0.25 of the rough value for the
+// same reason.
+vec3 tdMicroBump(vec3 q, vec3 nE, vec3 enuX, vec3 enuY, vec3 enuZ, float lodM, float rough, float smoothness) {
     vec3  rel = tdSolidRel(q, enuX, enuY, enuZ);
     ivec3 anchor = ivec3(cloud.terrainAnchorCell.xyz);
     vec3  gsum = vec3(0.0);
-    float slopeAmp = 0.22 * max(rough, 0.35) * cloud.terrainDetailStrength;
+    float slopeAmp = 0.22 * max(rough, 0.25) * mix(1.0, 0.3, smoothness) * cloud.terrainDetailStrength;
     for (int k = kTdMicroFirst; k <= kTdMicroLast; ++k) {
         float cell = kTdBaseCellM / float(1 << k);
         float fade = smoothstep(lodM, 2.0 * lodM, cell);
@@ -519,7 +524,16 @@ float terrainSunShadow(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 n, vec
                        vec3 enuX, vec3 enuY, vec3 enuZ, float lodBase) {
     float res  = 1.0;
     float bias = 1.0 + 1.5 * lodBase;
-    vec3  q0   = q + n * bias;
+    // The ray is tested against the COARSE octaves only, but q lies on the full surface: where the
+    // fine octaves dip below the coarse ones the ray began inside the surface it is tested against
+    // and the point shadowed itself — black blobs with grey rims tracing the fine octaves' contours
+    // on any gentle sunlit slope seen from the ground (found with a harness flight into a glacier).
+    // Start from the coarse surface instead where it is higher.
+    float hc0;
+    float Hc   = terrainHeightDetailed(elevTex, specTex, q, enuX, enuY, enuZ, max(lodBase, 0.05 * bias),
+                                       kTdCoarseOctaves - 1, hc0);
+    float lift = max(0.0, Hc - tdAltitude(q));
+    vec3  q0   = q + normalize(vec3(q.xy, R_EARTH + q.z)) * lift + n * bias;
     float t    = bias;
     // 16 steps, three octaves, the step floor at 8% of t: measured 2-4 ms at ground level with 24
     // steps / four octaves / 5% (harness perf, clouds off), for no visible difference at the

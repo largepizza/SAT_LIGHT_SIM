@@ -1658,9 +1658,16 @@ void main() {
                     slopeE += terrainDet.grad;
                 }
                 vec3 nECEF  = normalize(terrainUpE - slopeE);
-                if (tdEnabled())
+                if (tdEnabled()) {
+                    // Snow in the day map (the material block's test) smooths the micro relief.
+                    vec3  dayS  = textureLod(earthDayTex, hitUV, 0.0).rgb;
+                    float lumS  = dot(dayS, vec3(0.2126, 0.7152, 0.0722));
+                    float mxS   = max(dayS.r, max(dayS.g, dayS.b));
+                    float satS  = (mxS - min(dayS.r, min(dayS.g, dayS.b))) / max(mxS, 1e-3);
+                    float snowS = smoothstep(0.40, 0.62, lumS) * (1.0 - smoothstep(0.10, 0.28, satS));
                     nECEF = normalize(nECEF - tdMicroBump(terrainQ, nECEF, enuX, enuY, enuZ,
-                                                          tdShadeLodM(tHit, pixAngle), terrainDet.rough));
+                                                          tdShadeLodM(tHit, pixAngle), terrainDet.rough, snowS));
+                }
                 terrainNorm = normalize(vec3(dot(nECEF, enuX), dot(nECEF, enuY), dot(nECEF, enuZ)));
             }
         }
@@ -2157,7 +2164,13 @@ void main() {
         // past the flat horizon; anything below -1.7° geographic is forced to zero.
         float geoSunDot   = dot(normalize(hitPt), sunDir);
         float horizonGate = smoothstep(-0.03, 0.02, geoSunDot);
-        float dayFrac     = smoothstep(-0.15, -0.12, sunDot) * horizonGate;
+        // Day vs night is the GEOGRAPHIC gate alone. It was also gated by the shading normal
+        // (smoothstep(-0.15, -0.12, sunDot)), which sent any face turned more than ~8 degrees past
+        // edge-on to the Sun to the NIGHT branch — no skylight at all, in daylight. DEM normals
+        // rarely got there; the terrain-detail normals do all the time, and every such facet
+        // rendered pure black (a harness flight into a glacier). Direct sun has its own Lambert
+        // term (sunLit below); a face turned away still sees the sky.
+        float dayFrac     = horizonGate;
         // directSun combines day/night blend for all sun-driven contributions.
         float directSun   = dayFrac;
         // Cloud shadow: cloud_march.comp already marched sunward from this pixel's own terrain
@@ -2483,10 +2496,23 @@ void main() {
             terrainShadow = mix(1.0, sh, cloud.terrainShadowStrength);
         }
 #endif
+        // Direct sun: 1.5x Lambert with a 0.05 floor. The floor used to be a hard clamp; with the
+        // detail normals turning many small facets away from a low Sun its kink drew hard contour
+        // rims around every one, so it is now reached smoothly (unchanged above sunDot*1.5 = 0.2).
+        float sunLit = clamp(sunDot * 1.5, 0.0, 1.0) + 0.05 * (1.0 - smoothstep(0.0, 0.2, sunDot * 1.5));
+        // Ground bounce (procedural material only, terrainMaterialStrength): light reflected off the
+        // sunlit ground around a face, proportional to that ground's own albedo — the day map's
+        // luminance here — and the Sun's height over the local horizon. Snow reflects ~0.8 and lit
+        // it strongly: without this a snowfield's faces turned from a low Sun went near-black
+        // (harness flight into a glacier); forest (~0.1) barely changes.
+        float bounceK = 0.0;
+        if (tHit > 0.0 && cloud.terrainMaterialStrength > 0.0)
+            bounceK = 0.3 * cloud.terrainMaterialStrength * dot(dayColor, vec3(0.2126, 0.7152, 0.0722))
+                    * max(dot(normalize(hitPt), sunDir), 0.0);
         vec3 surfColor  = mix(nightColor * 0.12,
                               // mix(0.15, 1, shadow): light bounced off the sunlit terrain around a
                               // shadowed face — without it terrain shadows went near-black.
-                              (dayColor * sunSpecTint * clamp(sunDot * 1.5, 0.05, 1.0) * cloudShadowT * mix(0.15, 1.0, terrainShadow)
+                              (dayColor * sunSpecTint * (sunLit * mix(0.15, 1.0, terrainShadow) + bounceK) * cloudShadowT
                             + dayColor * skyAmbientTerrain * 0.4) * terrainAO,  // sky ambient fill (blue day, orange dusk)
                               dayFrac)
                         + moonContribTerrain
