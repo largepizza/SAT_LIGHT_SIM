@@ -1217,7 +1217,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // while the keys visibly did nothing. updateIntroCinematic stops forcing the camera from that
     // beat onward (its camera-live check above), so this can run unopposed; !showIntro covers the
     // normal post-intro case the same way the old "else" branch did.
-    if ((!showIntro || introCaptionIndex >= kIntroControlsIndex) && win)
+    if ((!showIntro || introCaptionIndex >= kIntroControlsIndex) && win && !consoleOpen_)
     {
         bool boost = (win && glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS) || gpHeld(KB_MOVE_BOOST);
         // Sprinting cancels fine/slow mode outright (untoggles it, so it stays off after boost is
@@ -6313,6 +6313,8 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
 void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
 {
     win = w;
+    if (consoleKey(key, action)) // the ~ console (docs/HARNESS.md) owns the keyboard while open
+        return;
     if (action != GLFW_PRESS)
         return;
 

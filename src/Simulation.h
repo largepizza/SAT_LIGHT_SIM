@@ -67,6 +67,11 @@ public:
     // Optional input handlers — default implementations do nothing.
     virtual void onKey(GLFWwindow* window, int key, int action) {}
     virtual void onCursorPos(GLFWwindow* window, double x, double y) {}
+    // Text input (GLFW char callback, Unicode code point) — the harness console (docs/HARNESS.md).
+    virtual void onChar(GLFWwindow* window, unsigned int codepoint) {}
+    // True while a text field owns the keyboard: App then leaves Esc to the simulation instead of
+    // closing the window.
+    virtual bool capturesKeyboard() const { return false; }
 
     // Called by App after both the simulation and AudioSystem are initialised.
     // Override to configure the playlist and store the pointer for use in buildUI.

@@ -17,6 +17,7 @@ Design decisions and their dates live next to the code they constrain, not in a 
 |---|---|
 | `README.md` | User-facing: what this is, prerequisites, build, packaging |
 | `docs/CONSTELLATION_MODDING.md` | User-facing modding guide (`constellations.json`, `satellite_models/*.json`) |
+| `docs/HARNESS.md` | **Automation harness**: scripted runs, captures, perf, UI dumps — how an agent runs and sees the app |
 | `CHANGELOG.md` | What changed per release |
 | `data/benchmarks/KNOWN_RESIDUALS.md` | Accepted photometric error, with the measurement behind it |
 | `.plans/*.md` | **Untracked local design logs** (phase plans, terrain, cloud perf). Sections below link to them; a fresh clone has none |
@@ -25,8 +26,8 @@ Design decisions and their dates live next to the code they constrain, not in a 
 → Unified scene depth → Satellite Types (Rigid attitude groups, Geometry models) → Photometry /
 Shader Constants → VulkanContext Helpers. Then jump to the section you actually need.
 
-**Build & release** — *Build Commands* (configure/build/run, exe name, and the rule about never
-launching the app yourself) · *Presets and release packaging* (the two Windows release paths,
+**Build & release** — *Build Commands* (configure/build/run, exe name, and the rule about
+launching the app: only through the harness) · *Presets and release packaging* (the two Windows release paths,
 `package-release`) · *macOS release architecture* · *Old / low-end hardware floor* (the
 guaranteed-minimum table and the push-constant gate).
 
@@ -53,18 +54,20 @@ Performance Profiling* · *Intro Cinematic (UC3)* · *Controls / Keybinding Pipe
 Development: Earth / Terrain Rendering* (read **Elevation texture encoding** before touching terrain
 code).
 
-**Tools and gates** — `tools/sat_model_tool/` (SatModelTool: bake, validate, benchmark, trace
-replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_icons.py` (regenerates the
+**Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
+`imgtools.py`, `selftest.py` — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
+validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/benchmarks/` ·
 `cmake/AccuracyGate.cmake` (`cmake --build build --target accuracy-gate`) ·
 `cmake/PackageRelease.cmake` (the single "what ships" list).
 
-**Rules that bite (each one has a section behind it)** — do not launch the app to verify a change
-(build, then let the user run it); `GpuCloudParams` is a hand-maintained mirror of
+**Rules that bite (each one has a section behind it)** — launch the app only through the harness
+(`tools/harness/run.py`, docs/HARNESS.md), never interactively; how a change *feels* is the user's to
+judge; `GpuCloudParams` is a hand-maintained mirror of
 `cloud_params.glsl` (run the checker after touching either); never store a distance in a half-float;
 every push-constant struct `static_assert`s to exactly 128 bytes; `CMakePresets.json` and `.vscode/`
 are committed and must stay free of absolute paths; `.plans/`, `.claude/`, `build*/`, `dist/` and
-`benchmark_runs/` are gitignored.
+`benchmark_runs/`, `harness_runs/`, `harness_live/` are gitignored.
 
 ---
 
@@ -90,7 +93,13 @@ those files, so changing one (e.g. regenerating an icon with `tools/make_icons.p
 Without it, nothing relinks, nothing copies, and the exe keeps loading the old file that is already
 sitting next to it — the change just silently "does not take".
 
-**Do not launch or run the app yourself** (no `run` skill, no invoking the exe) to verify changes, especially UI behavior. Verifying UI/UX changes (opening the program, panning the camera, clicking through menus, etc.) is an involved manual process — the user runs and audits the app themselves after you build. Just build (and typecheck/compile-check) and report what changed; let the user test it.
+**Launch the app only through the automation harness** (`tools/harness/run.py` / `live.py`,
+docs/HARNESS.md) — never interactively (no `run` skill, no bare exe). A harness run is scripted,
+exits on its own, runs muted in its own user-data folder (it cannot touch the user's
+`settings.json` or trigger crash recovery), and returns captures, state sidecars, layout dumps and
+timings you can check. Use it to verify rendering, performance and UI layout. How a change *feels*
+(camera motion, input, audio, a menu's ergonomics) is still the user's to judge. (Until 2026-09-25
+this rule was "never launch the app"; the harness is the controlled exception it was missing.)
 
 **Requirements**: Vulkan SDK + `VULKAN_SDK` env var, CMake 3.20+, MSVC C++20.
 
@@ -350,6 +359,36 @@ sharing them needs sampler parameters threaded through all five. Keep both copie
 someone does that work. Same applies to the cloud-column sample body, which appears in
 `cloud_march.comp` (view march + sun cone + terrain shadow) and `beam_self_march.comp` (per-beam
 cloud occlusion march — see "Subsystem: Reflect-Orbital Beam Cloud Occlusion" below).
+
+---
+
+## Subsystem: Automation harness (2026-09-25)
+
+User guide and command reference: **docs/HARNESS.md** (keep its table in step with
+`harnessExec()` and `kHelp`). Architecture, for editing it:
+
+- **Two halves.** `src/Harness.h/.cpp` is app-independent: argv options, the statement parser, the
+  `Runner` (one command at a time across frames, `results.jsonl`, `summary.json`, the live inbox,
+  the watchdog). `src/simulations/SatelliteSimHarness.cpp` is what each command does to the sim,
+  plus `harnessStateJson()` (the capture sidecar) and the console's key handling.
+- **Where it runs:** `harnessTick()` is the second statement of `buildUI` (after
+  `beginCpuFrameTiming`), so a command's effect is in the frame it ran in and a `capture` after it
+  records that frame. Time/observer/follow commands also re-run `updatePositions()` immediately so
+  a `state` or sidecar in the same frame is not one frame stale.
+- **Hooks it owns:** `Simulation::frameDt()` (fixed step; 0.5 s during `wait settle`, which also
+  holds sim time), `wantsQuit()`, `onChar()`/`capturesKeyboard()` (the console; App leaves Esc to
+  it), `Paths::setUserDataDirOverride()` (main.cpp points it at the run folder before `Log::init`),
+  `wantsCleanScreenshot()` honouring `screenshotIncludeUI`, the crop/scale step in
+  `finalizeScreenshot()`, `UIRenderer::requestLayoutDump()`.
+- **Settings go through the settings.json path:** `loadSettings()` is now file read +
+  `applySettingsJson(j, isPatch=false)`; `saveSettings()` is `buildSettingsJson()` + write. `set`
+  applies a one-key patch (`isPatch=true`: no schema check, no intro re-arm, and no preset
+  re-derivation unless the patch names the preset); `get` reads `buildSettingsJson()`. So every
+  persisted setting is scriptable with no per-setting code — add a setting to those two functions
+  and the harness has it.
+- `harnessRunner_` is null outside a harness run (and before the console's first use), and every
+  hook is then a no-op. The first-run preset seed, intro, first-run notices, music and toasts are
+  all suppressed in a harness run.
 
 ---
 

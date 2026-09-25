@@ -35,5 +35,6 @@ private:
     static void cbResize(GLFWwindow* w, int, int);
     static void cbKey(GLFWwindow* w, int key, int scancode, int action, int mods);
     static void cbCursorPos(GLFWwindow* w, double x, double y);
+    static void cbChar(GLFWwindow* w, unsigned int codepoint);
     static void cbScroll(GLFWwindow* w, double dx, double dy);
 };

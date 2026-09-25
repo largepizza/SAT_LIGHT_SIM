@@ -1220,6 +1220,46 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
 
     Clay_RenderCommandArray cmds = Clay_EndLayout(frameInput.dt);
 
+    if (layoutDumpPending_) {
+        layoutDump_.clear();
+        float clip[4] = {0.0f, 0.0f, (float)ctx.swapExtent.width, (float)ctx.swapExtent.height};
+        for (int32_t i = 0; i < cmds.length; ++i) {
+            Clay_RenderCommand* rc = Clay_RenderCommandArray_Get(&cmds, i);
+            const Clay_BoundingBox& bb = rc->boundingBox;
+            LayoutItem it{};
+            it.x = bb.x; it.y = bb.y; it.w = bb.width; it.h = bb.height;
+            switch (rc->commandType) {
+            case CLAY_RENDER_COMMAND_TYPE_RECTANGLE:     it.kind = "rect"; break;
+            case CLAY_RENDER_COMMAND_TYPE_TEXT:          it.kind = "text"; break;
+            case CLAY_RENDER_COMMAND_TYPE_BORDER:        it.kind = "border"; break;
+            case CLAY_RENDER_COMMAND_TYPE_IMAGE:         it.kind = "image"; break;
+            case CLAY_RENDER_COMMAND_TYPE_CUSTOM:        it.kind = "custom"; break;
+            case CLAY_RENDER_COMMAND_TYPE_SCISSOR_START: it.kind = "scissor_start"; break;
+            case CLAY_RENDER_COMMAND_TYPE_SCISSOR_END:   it.kind = "scissor_end"; break;
+            default:                                     it.kind = "other"; break;
+            }
+            if (rc->commandType == CLAY_RENDER_COMMAND_TYPE_SCISSOR_END) {
+                clip[0] = 0.0f; clip[1] = 0.0f;
+                clip[2] = (float)ctx.swapExtent.width; clip[3] = (float)ctx.swapExtent.height;
+            }
+            for (int k = 0; k < 4; ++k) it.clip[k] = clip[k];
+            if (rc->commandType == CLAY_RENDER_COMMAND_TYPE_SCISSOR_START) {
+                clip[0] = bb.x; clip[1] = bb.y; clip[2] = bb.width; clip[3] = bb.height;
+            }
+            if (Clay_LayoutElementHashMapItem* item = Clay__GetHashMapItem(rc->id))
+                if (item->elementId.stringId.length > 0)
+                    it.id.assign(item->elementId.stringId.chars, (size_t)item->elementId.stringId.length);
+            if (rc->commandType == CLAY_RENDER_COMMAND_TYPE_TEXT) {
+                const Clay_TextRenderData& td = rc->renderData.text;
+                it.text.assign(td.stringContents.chars, (size_t)td.stringContents.length);
+                it.fontSize = td.fontSize;
+            }
+            layoutDump_.push_back(std::move(it));
+        }
+        layoutDumpPending_ = false;
+        layoutDumpReady_ = true;
+    }
+
     for (int32_t i = 0; i < cmds.length; ++i) {
         Clay_RenderCommand* rc = Clay_RenderCommandArray_Get(&cmds, i);
         Clay_BoundingBox    bb = rc->boundingBox;

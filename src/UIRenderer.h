@@ -206,7 +206,31 @@ public:
     // of relying on the user discovering they can scroll by trial and error.
     void scrollbar(Clay_ElementId containerId);
 
+    // ── Layout dump (harness `ui dump`, docs/HARNESS.md) ─────────────────────
+    // The next record() keeps a copy of every render command: kind, box, element id (when it has a
+    // string one), text, and the scissor it was drawn under. Frames whose UI is skipped (a clean
+    // screenshot) don't record, so poll layoutDumpReady().
+    struct LayoutItem
+    {
+        const char *kind; // rect, text, border, image, custom, scissor_start, scissor_end
+        float x, y, w, h;
+        std::string id;
+        std::string text;
+        float clip[4]; // the active scissor (x, y, w, h); the full screen when none
+        int fontSize;
+    };
+    void requestLayoutDump()
+    {
+        layoutDumpPending_ = true;
+        layoutDumpReady_ = false;
+    }
+    bool layoutDumpReady() const { return layoutDumpReady_; }
+    const std::vector<LayoutItem> &layoutDump() const { return layoutDump_; }
+
 private:
+    bool layoutDumpPending_ = false;
+    bool layoutDumpReady_ = false;
+    std::vector<LayoutItem> layoutDump_;
     // ── Clay state ────────────────────────────────────────────────────────
     void*    clayMemory     = nullptr;
     uint32_t clayMemorySize = 0;

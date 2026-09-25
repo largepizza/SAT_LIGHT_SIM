@@ -1,0 +1,46 @@
+# UI tour: every settings tab at two UI scales, with a layout dump (clipped / off-screen / overlapping
+# text) and a capture of each. Plus the selection panel, info window and console.
+preset High
+observer lat=34.05 lon=-118.25 agl=10
+time sun -10 setting
+time pause
+camera az=270 el=15 fov=70
+wait settle 20
+ui scale 1.5
+ui open settings tab=Constellations
+wait 3
+ui dump s15_constellations
+capture s15_constellations ui=on scale=0.5
+ui open settings tab=Display
+wait 3
+ui dump s15_display
+capture s15_display ui=on scale=0.5
+ui open settings tab=Photometry
+wait 3
+ui dump s15_photometry
+capture s15_photometry ui=on scale=0.5
+ui open settings tab=Clouds
+wait 3
+ui dump s15_clouds
+capture s15_clouds ui=on scale=0.5
+ui scale 2.0
+ui open settings tab=Controls
+wait 3
+ui dump s20_controls
+capture s20_controls ui=on scale=0.5
+ui open settings tab=Beams
+wait 3
+ui dump s20_beams
+capture s20_beams ui=on scale=0.5
+ui close all
+ui scale 1.5
+select const "International Space Station"
+ui open info
+wait 10
+ui dump info_iss
+capture info_iss ui=on
+ui close all
+ui open console
+log console should show this line
+wait 3
+capture console ui=on scale=0.5

@@ -68,6 +68,7 @@ void App::initWindow() {
     glfwSetKeyCallback(window, cbKey);
     glfwSetCursorPosCallback(window, cbCursorPos);
     glfwSetScrollCallback(window, cbScroll);
+    glfwSetCharCallback(window, cbChar);
 }
 
 void App::mainLoop() {
@@ -301,10 +302,15 @@ void App::cbResize(GLFWwindow* w, int, int) {
 }
 
 void App::cbKey(GLFWwindow* w, int key, int, int action, int) {
-    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
-        glfwSetWindowShouldClose(w, GLFW_TRUE);
     auto* app = reinterpret_cast<App*>(glfwGetWindowUserPointer(w));
+    // Esc quits — unless a text field (the harness console) has the keyboard; it closes that instead.
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS && !app->sim->capturesKeyboard())
+        glfwSetWindowShouldClose(w, GLFW_TRUE);
     app->sim->onKey(w, key, action);
+}
+
+void App::cbChar(GLFWwindow* w, unsigned int codepoint) {
+    reinterpret_cast<App*>(glfwGetWindowUserPointer(w))->sim->onChar(w, codepoint);
 }
 
 void App::cbCursorPos(GLFWwindow* w, double x, double y) {

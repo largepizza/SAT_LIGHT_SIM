@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -387,6 +388,23 @@ json SatelliteSim::harnessStateJson()
 // ─── Commands ─────────────────────────────────────────────────────────────────────────────────────
 Status SatelliteSim::harnessExec(harness::Active &a)
 {
+    // Time/observer/follow commands change what this frame's recordCompute will derive (Sun, Moon,
+    // the ENU frame, terrain height). Derive it now as well, so a `state`, `camera look sun` or
+    // capture sidecar in the same frame reports the new values rather than last frame's.
+    // updatePositions is O(1) and has no per-call state, so a second call per frame is harmless.
+    struct Refresh
+    {
+        SatelliteSim *s;
+        const std::string &name;
+        ~Refresh()
+        {
+            if (name == "time" || name == "observer" || name == "follow")
+            {
+                s->obsTerrainH = s->cpuTerrainHeightM(s->obsLatDeg, s->obsLonDeg);
+                s->updatePositions((double)s->simDayJ2000 * 86400.0 + s->simSecInDay, 0.0f);
+            }
+        }
+    } refresh{this, a.cmd.name};
     const harness::Command &c = a.cmd;
     const std::string &n = c.name;
     json &r = a.result;
@@ -913,6 +931,82 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 return &viewerChrome;
             return nullptr;
         };
+        if (sub == "dump")
+        {
+            // Every drawn rect/text/image with its box, id and text, plus three automatic checks:
+            // text cut by its scissor (a clipped label, or a scroll view's edge row), text off the
+            // window, and text boxes overlapping each other (two labels drawn on top of each other).
+            if (!harnessUi_)
+                fail("ui dump: no UI renderer yet");
+            if (a.frame == 0)
+            {
+                harnessUi_->requestLayoutDump();
+                return Status::Pending;
+            }
+            if (!harnessUi_->layoutDumpReady())
+            {
+                if (a.frame > 30)
+                    fail("ui dump: the UI did not record (is a clean capture pending every frame?)");
+                return Status::Pending;
+            }
+            const auto &items = harnessUi_->layoutDump();
+            const float W = ctx_ ? (float)ctx_->swapExtent.width : 0.0f, H = ctx_ ? (float)ctx_->swapExtent.height : 0.0f;
+            json list = json::array(), clipped = json::array(), offscreen = json::array(), overlaps = json::array();
+            std::vector<size_t> texts;
+            for (size_t i = 0; i < items.size(); ++i)
+            {
+                const auto &it = items[i];
+                json e = {{"i", i}, {"kind", it.kind}, {"box", {it.x, it.y, it.w, it.h}}};
+                if (!it.id.empty())
+                    e["id"] = it.id;
+                if (it.kind == std::string("text"))
+                {
+                    e["text"] = it.text;
+                    e["font"] = it.fontSize;
+                    texts.push_back(i);
+                    const float tol = 0.5f;
+                    const bool inClip = it.x >= it.clip[0] - tol && it.y >= it.clip[1] - tol &&
+                                        it.x + it.w <= it.clip[0] + it.clip[2] + tol &&
+                                        it.y + it.h <= it.clip[1] + it.clip[3] + tol;
+                    if (!inClip)
+                        clipped.push_back({{"i", i}, {"text", it.text}, {"box", e["box"]},
+                                           {"clip", {it.clip[0], it.clip[1], it.clip[2], it.clip[3]}}});
+                    if (it.x < -tol || it.y < -tol || it.x + it.w > W + tol || it.y + it.h > H + tol)
+                        offscreen.push_back({{"i", i}, {"text", it.text}, {"box", e["box"]}});
+                }
+                list.push_back(e);
+            }
+            for (size_t p = 0; p < texts.size(); ++p)
+                for (size_t q = p + 1; q < texts.size(); ++q)
+                {
+                    const auto &A = items[texts[p]], &B = items[texts[q]];
+                    // Only text under the same scissor: a window floating over the HUD is layering,
+                    // not a layout bug.
+                    if (A.clip[0] != B.clip[0] || A.clip[1] != B.clip[1] || A.clip[2] != B.clip[2] || A.clip[3] != B.clip[3])
+                        continue;
+                    const float ox = std::min(A.x + A.w, B.x + B.w) - std::max(A.x, B.x);
+                    const float oy = std::min(A.y + A.h, B.y + B.h) - std::max(A.y, B.y);
+                    if (ox > 1.0f && oy > 1.0f)
+                        overlaps.push_back({{"a", A.text}, {"b", B.text}, {"a_box", {A.x, A.y, A.w, A.h}},
+                                            {"b_box", {B.x, B.y, B.w, B.h}}});
+                }
+            json out = {{"width", W}, {"height", H}, {"ui_scale", uiScale}, {"items", list},
+                        {"text_clipped", clipped}, {"text_offscreen", offscreen}, {"text_overlaps", overlaps}};
+            const std::string name = safeName(pos(1).empty() ? "layout" : pos(1));
+            const std::string path = harnessRunner_->capturePath(name, ".layout.json");
+            std::ofstream(path) << out.dump(1) << '\n';
+            r["file"] = path;
+            r["items"] = list.size();
+            r["text_clipped"] = clipped.size();
+            r["text_offscreen"] = offscreen.size();
+            r["text_overlaps"] = overlaps.size();
+            if (!overlaps.empty())
+                r["overlaps"] = overlaps;
+            r["message"] = name + ".layout.json: " + std::to_string(list.size()) + " items, " +
+                           std::to_string(clipped.size()) + " clipped, " + std::to_string(offscreen.size()) +
+                           " off-screen, " + std::to_string(overlaps.size()) + " overlapping text";
+            return Status::Done;
+        }
         if (sub == "show" || sub == "hide")
             uiVisible = sub == "show";
         else if (sub == "scale")
@@ -929,6 +1023,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     fail("ui open " + w + ": this satellite's type has no geometry model");
                 openModelViewer((int)o.typeIdx, satTypes[o.typeIdx].name.c_str(), o.altM, selectedSatIndex, w != "info");
             }
+            else if (w == "console")
+                consoleOpen_ = true;
             else if (w == "trace")
             {
                 if (selectedSatIndex < 0)
@@ -939,7 +1035,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             {
                 WindowChrome *ch = chromeOf(w);
                 if (!ch)
-                    fail("ui open: settings, viewcontrols, trace, info, viewer");
+                    fail("ui open: settings, viewcontrols, trace, info, viewer, console");
                 ch->open = true;
             }
             if (c.has("tab"))
@@ -956,14 +1052,17 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         else if (sub == "close")
         {
             if (lower(pos(1)) == "all")
-                settingsChrome.open = viewControlsChrome.open = traceChrome.open = infoChrome.open = viewerChrome.open = false;
+                consoleOpen_ = settingsChrome.open = viewControlsChrome.open = traceChrome.open = infoChrome.open =
+                    viewerChrome.open = false;
+            else if (lower(pos(1)) == "console")
+                consoleOpen_ = false;
             else if (WindowChrome *ch = chromeOf(pos(1)))
                 ch->open = false;
             else
                 fail("ui close: settings, viewcontrols, trace, info, viewer, all");
         }
         else
-            fail("ui: show | hide | scale <x> | open <window> [tab=<name>] | close <window|all>");
+            fail("ui: show | hide | scale <x> | open <window> [tab=<name>] | close <window|all> | dump [name]");
         r["message"] = "ui " + sub + (pos(1).empty() ? "" : " " + pos(1));
         return Status::Done;
     }
@@ -1154,4 +1253,97 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
 
     fail("unknown command '" + n + "' (try `help`)");
+}
+
+// ─── The ~ console ────────────────────────────────────────────────────────────────────────────────
+void SatelliteSim::ensureConsoleRunner()
+{
+    if (harnessRunner_)
+        return;
+    // A normal session: a runner of its own, in real time, never exiting on its own.
+    harness::Options &o = harness::options();
+    o.exitWhenDone = false;
+    o.fixedDt = 0.0f;
+    char stamp[32];
+    std::time_t tt = std::time(nullptr);
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", std::localtime(&tt));
+    o.outDir = (fs::path(exeDir_) / "harness_runs" / (std::string("console_") + stamp)).string();
+    harnessRunner_ = new harness::Runner();
+    std::string err;
+    if (!harnessRunner_->begin(err))
+        harnessRunner_->consoleEcho("  ERROR: " + err);
+    else
+        harnessRunner_->consoleEcho("run folder: " + harnessRunner_->runDir());
+}
+
+bool SatelliteSim::consoleKey(int key, int action)
+{
+    if (!consoleOpen_)
+    {
+        if (key == GLFW_KEY_GRAVE_ACCENT && action == GLFW_PRESS && !showIntro)
+        {
+            consoleOpen_ = true;
+            ensureConsoleRunner();
+            return true;
+        }
+        return false;
+    }
+    if (action != GLFW_PRESS && action != GLFW_REPEAT)
+        return true; // releases of keys pressed while typing must not reach the game either
+    switch (key)
+    {
+    case GLFW_KEY_ESCAPE:
+    case GLFW_KEY_GRAVE_ACCENT:
+        if (action == GLFW_PRESS)
+            consoleOpen_ = false;
+        break;
+    case GLFW_KEY_BACKSPACE:
+        if (!consoleInput_.empty())
+            consoleInput_.pop_back();
+        break;
+    case GLFW_KEY_ENTER:
+    case GLFW_KEY_KP_ENTER:
+        if (!consoleInput_.empty())
+        {
+            std::string err;
+            if (!harnessRunner_->enqueueText(consoleInput_, "console", err))
+                harnessRunner_->consoleEcho("  ERROR: " + err);
+            if (consoleHistory_.empty() || consoleHistory_.back() != consoleInput_)
+                consoleHistory_.push_back(consoleInput_);
+            consoleInput_.clear();
+            consoleHistIdx_ = -1;
+        }
+        break;
+    case GLFW_KEY_UP:
+        if (!consoleHistory_.empty())
+        {
+            consoleHistIdx_ = consoleHistIdx_ < 0 ? (int)consoleHistory_.size() - 1 : std::max(0, consoleHistIdx_ - 1);
+            consoleInput_ = consoleHistory_[consoleHistIdx_];
+        }
+        break;
+    case GLFW_KEY_DOWN:
+        if (consoleHistIdx_ >= 0)
+        {
+            ++consoleHistIdx_;
+            if (consoleHistIdx_ >= (int)consoleHistory_.size())
+            {
+                consoleHistIdx_ = -1;
+                consoleInput_.clear();
+            }
+            else
+                consoleInput_ = consoleHistory_[consoleHistIdx_];
+        }
+        break;
+    default:
+        break;
+    }
+    return true;
+}
+
+void SatelliteSim::onChar(GLFWwindow *, unsigned int cp)
+{
+    if (!consoleOpen_ || cp == '`' || cp == '~')
+        return; // the toggle key's own character
+    if (cp >= 32 && cp < 127 && consoleInput_.size() < 400)
+        consoleInput_ += (char)cp;
 }

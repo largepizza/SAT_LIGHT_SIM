@@ -1611,6 +1611,8 @@ public:
     // Automation harness (docs/HARNESS.md, SatelliteSimHarness.cpp).
     float frameDt(float realDt) override;
     bool wantsQuit() const override { return harnessQuit_; }
+    void onChar(GLFWwindow *w, unsigned int codepoint) override;
+    bool capturesKeyboard() const override { return consoleOpen_; }
 
 private:
     // ── SSBOs ─────────────────────────────────────────────────────────────────
@@ -3354,6 +3356,18 @@ private:
     int harnessTrackPlanet_ = -1;
     std::string lastSweepRecordJson; // the knockout sweep's last record (for `sweep`)
     int sweepsCompleted = 0;
+    // The ~ console: the same command language typed by a person (docs/HARNESS.md). Outside a
+    // harness run its first command lazily creates a runner writing to harness_runs/console_<time>
+    // next to the exe, in real time (no fixed frame step).
+    UIRenderer *harnessUi_ = nullptr; // this frame's renderer (buildUI's argument), for `ui dump`
+    bool consoleOpen_ = false;
+    std::string consoleInput_;
+    std::vector<std::string> consoleHistory_;
+    int consoleHistIdx_ = -1;
+    std::vector<std::string> consoleView_; // this frame's lines; Clay keeps raw pointers into them
+    bool consoleKey(int key, int action); // true = consumed
+    void ensureConsoleRunner();
+    void buildHarnessConsole(const UIInput &inp, UIRenderer &ui);
     void harnessInit();
     void harnessTick();
     harness::Status harnessExec(harness::Active &a);

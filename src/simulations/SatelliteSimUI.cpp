@@ -8,6 +8,7 @@
 #include "../UIRenderer.h"
 #include "../AudioSystem.h"
 #include "../Log.h"
+#include "../Harness.h"
 #include "version.h"
 #include "clay.h"
 
@@ -446,6 +447,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     CpuTimer _tUI(cpuAccumMs[CPU_BUILD_UI]);
     // Automation harness (docs/HARNESS.md): run this frame's commands before anything reads the
     // camera/observer/settings they change. A no-op outside a harness run.
+    harnessUi_ = &ui;
     harnessTick();
 
     // Apply camera mouse look.
@@ -662,6 +664,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             }
         }
     }
+
+    buildHarnessConsole(inp, ui); // the ~ console draws even with the HUD hidden
 
     // ── Tab: skip all UI when hidden ─────────────────────────────────────────
     if (!uiVisible)
@@ -5275,6 +5279,52 @@ void SatelliteSim::buildScreenshotToast(float dt, const UIInput &inp, UIRenderer
                                       .floating = {.offset = {0, -16}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_BOTTOM, .parent = CLAY_ATTACH_POINT_CENTER_BOTTOM}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
         CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
+    }
+}
+
+// ─── Harness console (docs/HARNESS.md) ───────────────────────────────────────
+// A translucent strip across the top: the recent command/result lines and the input line. Key and
+// text handling live in SatelliteSimHarness.cpp (consoleKey / onChar).
+void SatelliteSim::buildHarnessConsole(const UIInput &inp, UIRenderer &ui)
+{
+    if (!consoleOpen_)
+        return;
+    consoleView_.clear();
+    const int maxLines = std::max(4, (int)(inp.screenH * 0.38f / (fs(12) + 4)) - 2);
+    if (harnessRunner_)
+    {
+        const auto &lines = harnessRunner_->consoleLines();
+        const int first = std::max(0, (int)lines.size() - maxLines);
+        for (int i = first; i < (int)lines.size(); ++i)
+            consoleView_.push_back(lines[i]);
+    }
+    else
+        consoleView_.push_back("Harness console - `help` lists commands; Enter runs, Up/Down history, Esc or ~ closes.");
+    consoleView_.push_back("> " + consoleInput_ + "_");
+    const float h = inp.screenH * 0.40f;
+    ui.addMouseCaptureRect(0.0f, 0.0f, inp.screenW, h);
+    CLAY(CLAY_ID("HarnessConsole"), {.layout = {.sizing = {CLAY_SIZING_FIXED(inp.screenW), CLAY_SIZING_FIXED(h)},
+                                               .padding = {12, 12, 8, 8},
+                                               .childGap = 4,
+                                               .childAlignment = {.y = CLAY_ALIGN_Y_BOTTOM},
+                                               .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                    .backgroundColor = {6, 8, 10, 225},
+                                    .floating = {.offset = {0, 0}, .zIndex = 60, .attachTo = CLAY_ATTACH_TO_ROOT},
+                                    .clip = {.vertical = true}})
+    {
+        for (size_t i = 0; i < consoleView_.size(); ++i)
+        {
+            const std::string &l = consoleView_[i];
+            const bool input = i + 1 == consoleView_.size();
+            const bool err = l.rfind("  ERROR", 0) == 0;
+            const bool echo = l.rfind("> ", 0) == 0;
+            Clay_Color col = input ? Clay_Color{255, 255, 255, 255}
+                             : err ? Clay_Color{255, 110, 100, 255}
+                             : echo ? Clay_Color{150, 200, 255, 255}
+                                    : Clay_Color{200, 200, 200, 255};
+            Clay_String s{false, (int32_t)l.size(), l.c_str()};
+            CLAY_TEXT(s, CLAY_TEXT_CONFIG({.textColor = col, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
     }
 }
 
