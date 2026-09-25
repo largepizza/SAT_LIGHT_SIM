@@ -14,6 +14,16 @@
 //                fallback) — replaces the earthshine specular lobe, which it contains
 //   moonlight    diffuse, directional
 
+// Scene-pass variants (CMakeLists: sat_mesh_depth / sat_mesh_scene .frag.spv, SatMeshRenderer):
+//   MESH_DEPTH_PASS  depth only — just the open-lattice cut-outs (the only discard);
+//   MESH_SCENE_PASS  shading, drawn with depth EQUAL after it: early fragment tests forced and no
+//                    discard, so each covered pixel runs this shader ONCE. With the discard, early-Z
+//                    was off and every overlapping layer of a close-up station paid the full shader
+//                    (up to three occluder-loop shadow rays per pixel).
+#ifdef MESH_SCENE_PASS
+layout(early_fragment_tests) in;
+#endif
+
 #include "common.glsl"
 #include "terrain.glsl"
 #include "sat_mesh_common.glsl"
@@ -303,12 +313,17 @@ void main()
 {
     MeshInstance inst = instances[vInstance];
     MeshMaterial mat  = materials[vMaterial];
+#ifndef MESH_SCENE_PASS // there, the depth pre-pass has already cut the gaps (depth EQUAL fails in them)
     if (mat.lattice.x < 1.0) {
         // Not optional detail (the Detail toggle keeps it): the gaps are the part's real geometry.
         float keep = latticeCover(mat);
         float thr  = float(hashU(uvec3(uvec2(gl_FragCoord.xy), 977u)) & 0xFFFFu) / 65536.0;
         if (keep <= thr) discard;
     }
+#endif
+#ifdef MESH_DEPTH_PASS
+    return;
+#endif
     vec3 N = normalize(vNormal);
     vec3 V = normalize(frame.camPos.xyz - vWorld);
     float nv = dot(N, V);

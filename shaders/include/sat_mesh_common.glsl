@@ -34,7 +34,7 @@ struct MeshInstance {
     uint firstComponent; // into components[] (per-component joint pivots)
     uint probeSlot;      // environment probe lighting it (set 1 is that probe), 0xFFFFFFFF = none
     float glareNorm; // sprite effectFlare per unit of bloom seed (mesh_bloom.frag -> glare_find.comp)
-    uint cpad2;
+    float glarePoint; // 1 = point-like on screen (all its light may glare), 0 = resolved (mesh_bloom.frag)
     vec4 earthX;   // earthshine SH frame: xyz = the Sun's side perpendicular to nadir, w = sh0
     vec4 earthZ;   // xyz = nadir, w = sh1
     vec4 earthShA; // sh2..sh5 (SatEarthLight — diffuse = max(SH(n), vector irradiance))

@@ -56,7 +56,8 @@ struct GpuMeshInstance
                              // analytic earth_env.glsl reflection and the photometric earthshine)
     float glareNorm;         // the sprite's effectFlare per unit of bloom seed: mesh_bloom.frag writes a
                              // glint's light in effectFlare units for glare_find.comp (0 = no glare)
-    uint32_t cpad2;
+    float glarePoint;        // 1 while the mesh is small enough on screen to be a point (all its light
+                             // may glare), 0 once resolved (only sun-like reflections glare)
     // Earthshine as a broad source (SatEarthLight, 2026-09-24): the SH plane-irradiance fit and its
     // frame, world axes. Diffuse light = max(SH(n), earthshine.w·(n·earthshine.xyz)₊).
     glm::vec4 earthX;   // xyz = the Sun's side ⟂ nadir, w = sh0
@@ -216,7 +217,8 @@ private:
 
     // Scene pass.
     VkRenderPass scenePass = VK_NULL_HANDLE;
-    VkPipeline sceneMeshPipe = VK_NULL_HANDLE;
+    VkPipeline sceneMeshPipe = VK_NULL_HANDLE;  // shading, depth EQUAL after the pre-pass
+    VkPipeline sceneDepthPipe = VK_NULL_HANDLE; // depth pre-pass (lattice cut-outs only)
     uint32_t sceneW = 0, sceneH = 0;
     VkImage sceneColor = VK_NULL_HANDLE, sceneDist = VK_NULL_HANDLE, sceneDepth = VK_NULL_HANDLE;
     VkDeviceMemory sceneColorMem = VK_NULL_HANDLE, sceneDistMem = VK_NULL_HANDLE, sceneDepthMem = VK_NULL_HANDLE;

@@ -654,7 +654,8 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     "(selected)" while it is the selection; title-bar icons Select (re-select it) and Follow (eye:
     fly to it); the image left; a settings column right (camera, render, OBSERVER box — markers
     toggle, elevation/azimuth, range, phase, magnitude above the air and after extinction from the
-    CPU evaluator at 10 Hz (`updateViewerObserverInfo`), "Trace pass" — and the photometric check).
+    CPU evaluator at 10 Hz (`updateViewerObserverInfo`), "Trace pass" — and the photometric check);
+    the window grows to fit that column. A ground-site mirror shows a solid orange line to its site.
     The window registers a mouse-capture rect: without it a drag on the model clicked the sky behind
     and re-selected whatever was under the window. Position, velocity and attitude come from
     `satOrbitStateAt` + `evalGroupPoses` in ECEF. With Live light its background is the SKY_ENV
@@ -736,6 +737,13 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     far too weak.
   - **Targets:** RGBA32F pre-exposure radiance plus R32F *true distance* (0 = none), full swap
     extent, GENERAL layout, always cleared.
+  - **Depth pre-pass (2026-09-24):** each mesh is drawn twice — `sat_mesh_depth.frag.spv` (only the
+    open-lattice discard) then `sat_mesh_scene.frag.spv` with depth EQUAL, depth writes off and
+    `early_fragment_tests` (both `sat_mesh.frag` with `-DMESH_DEPTH_PASS` / `-DMESH_SCENE_PASS`;
+    `sat_mesh.vert`'s `gl_Position` is `invariant`). The lattice discard had turned early-Z off, so every
+    overlapping layer of a close-up station ran the full shader and its per-pixel occluder-loop shadow
+    rays. Scene probes refresh TWO faces per frame (all six only when new); a satellite at 7.6 km/s
+    crossed the 2 km drift threshold every few frames and re-rendered a whole cube each time.
   - **Consumers**, all through `imageLoad`, because `sat_sky.frag` is one below the 16
     sampled-image floor:
     - `scene_depth.comp` (binding 3) mins the mesh distance into the shared depth, so clouds and
@@ -770,7 +778,10 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   down from its flat faces (20 m top to bottom, edge-on to the Sun), and two 70 m-span wings of three
   strips, each on ONE truss to a gimbal at its root, tracking the Sun about the span axis (then the
   flare-mitigation tilt, toward zenith, about +Y); 10 lobes, flown by a million; trusses, gimbals,
-  spars and terminals are render-only), `reflect_orbital.json` (a 55 m square membrane mirror on `sun_reflect_ground_site`),
+  spars and terminals are render-only), `reflect_orbital.json` (a 55 m square membrane mirror on `sun_reflect_ground_site`; its beams take
+  the mirror's area and F0 from the lobes along the site-aimed axis — `bakeModelType` writes them into
+  the legacy `crossSectionM2`/`mirrorFrac` the beam code reads, which a model type had left at 10 m²
+  and 0, so no Reflect beam was drawn from the roster's move to the model until 2026-09-24),
   the Starlinks `starlink_v1_5` (gen-1 dielectric mirror film, a translucent 'lampshade' backsheet
   whose transmission is fitted to the Post-VisorSat phase function), `starlink_v2_mini` (rebuilt
   2026-09-24 to SpaceX's published mitigations: gen-2 film on the nadir face, black paint, opaque
@@ -1631,11 +1642,17 @@ an aliased centre) and a blue anamorphic streak the sun doesn't have; both are g
   occlusion tested at the source's screen position.
 - Mesh glints: `mesh_bloom.frag` writes each texel's mesh light in effectFlare units into the flare
   source's ALPHA (per-instance `GpuMeshInstance::glareNorm` = the sprite's effectFlare per unit of
-  bloom seed; satellite sprites write alpha 0). `glare_find.comp` runs on the unblurred buffer and
-  lists every concentrated 3×3 local maximum (≥ half its 5×5 light — a glint, not a bright surface)
-  past the threshold into `glintBuf` (`GpuGlintList`, `include/glint_list.glsl`, 64 max, its own
-  indirect args); `glare_mesh.vert/.frag` draws them with the same profile. So a satellite keeps its
-  glare across the sprite → mesh hand-off, and a mirror's sun glint gets it too.
+  bloom seed; satellite sprites write alpha 0), capped at 1e4 per texel (glare saturates at 256; a
+  Reflect mirror in its beam overflowed the RGBA16F target to inf, so its glint's position was NaN
+  and the Sun in the mirror never glared). Which light may glare: ALL of it while the mesh is still
+  point-like (`glarePoint`, below `kGlarePointPx` = 12 px, gone by 36), so the sprite's glare carries
+  across the hand-off; on a resolved mesh only SUN-LIKE surface brightness (π·L/E 150 → 1500: the Sun
+  in a mirror ~4e4, an OSR radiator ~2e3; a rough-metal edge, even grazing, < 50). The first cut let
+  all of it glare: every edge and vertex of a close-up satellite flared (each a sliver of a very
+  bright satellite's flux) and filled the 64 slots with ~400 px sprites, a large part of the close-up
+  frame-rate drop. `glare_find.comp` lists every 5×5 local maximum past the threshold into `glintBuf`
+  (`GpuGlintList`, `include/glint_list.glsl`, 64 max, its own indirect args); `glare_mesh.vert/.frag`
+  draws them with the same profile.
 Photometry sliders "Glare gain / size (px) / threshold / falloff / spikes" (`photometry.glare_*`).
 
 `dayBright`/`moonBright` are elevation-ramp scalars (squared linear, sun/moon dot observer-zenith)

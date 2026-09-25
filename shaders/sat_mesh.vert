@@ -17,6 +17,9 @@ layout(location = 4) flat out uint vComponent;
 layout(location = 5) flat out uint vInstance;
 layout(location = 6) out vec3 vRest;         // rest-pose body position (procedural patterns)
 layout(location = 7) flat out uint vGroup;
+// The scene pass draws each mesh twice (a depth pre-pass, then shading with depth EQUAL): both must
+// produce bit-identical positions.
+invariant gl_Position;
 
 void main()
 {

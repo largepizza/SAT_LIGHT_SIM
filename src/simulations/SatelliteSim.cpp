@@ -96,6 +96,16 @@ static AttitudeGroup legacyAttitudeGroup(AttitudeMode m, glm::vec3 &normal, cons
     return g;
 }
 
+// A geometry model's ground-site mirror: the root group whose primary axis is aimed at the site
+// (-1 = none).
+static int modelSiteGroup(const std::vector<AttitudeGroup> &groups)
+{
+    for (size_t g = 0; g < groups.size(); ++g)
+        if (groups[g].parent < 0 && groups[g].primaryTarget == AttTarget::SunReflectGroundSite)
+            return (int)g;
+    return -1;
+}
+
 // Fills in groups for any legacy surface, dedupes identical groups, and validates the result.
 // Called once per type after loading (JSON or hardcoded). After this, every surface has a valid
 // `group`, and groups.size() <= kMaxAttitudeGroups.
@@ -104,8 +114,16 @@ static void resolveAttitude(SatelliteType &t)
     if (!t.modelId.empty())
     {
         // Geometry model: groups came from (and were validated with) the model file; the legacy
-        // surfaces are unused, so park them on group 0.
+        // surfaces are unused, so park them on group 0 — except that a ground-site mirror's beam
+        // (sat_orbit.comp) reads its mirror normal from surface 0: mount it on the site-aimed group,
+        // along the axis that group points at the site (its area and reflectance: bakeModelType).
         t.primary.group = t.secondary.group = 0;
+        const int site = modelSiteGroup(t.groups);
+        if (site >= 0)
+        {
+            t.primary.group = site;
+            t.primary.normal = t.groups[site].primaryAxis;
+        }
         return;
     }
 
@@ -3528,7 +3546,23 @@ void SatelliteSim::renderScheduledEnvProbes(VkCommandBuffer cmd)
         }
         if (best < 0)
             break;
-        renderEnvProbe(cmd, best, envSlots[best].wantEcef);
+        // A new probe renders all six faces; a refresh renders two, so a satellite passing the drift
+        // threshold every few frames (7.6 km/s against a 2 km threshold, close up) does not pay for a
+        // whole cube each frame. Its position counts as updated once all six have been redone.
+        EnvProbeSlot &e = envSlots[best];
+        if (!e.rendered)
+        {
+            renderEnvProbe(cmd, best, e.wantEcef);
+            e.faceCursor = 0;
+        }
+        else
+        {
+            const glm::dvec3 prev = e.posEcef;
+            renderEnvProbe(cmd, best, e.wantEcef, (1u << e.faceCursor) | (1u << ((e.faceCursor + 1u) % 6u)));
+            e.faceCursor = (e.faceCursor + 2u) % 6u;
+            if (e.faceCursor != 0u)
+                e.posEcef = prev;
+        }
     }
 }
 
@@ -3665,6 +3699,11 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
         // Glare on its glints (mesh_bloom.frag -> glare_find.comp): the sprite's effectFlare per unit of
         // its seed, so a glint carrying all the mesh's seed glares as the sprite did.
         inst.glareNorm = seed > 0.0 ? (float)((double)effectFlare / seed) : 0.0f;
+        // Only while the mesh is still point-like may ALL its light glare (the sprite's glare carries on
+        // across the hand-off); resolved, only sun-like reflections do (mesh_bloom.frag) — otherwise
+        // every edge and vertex of a close-up satellite, holding a sliver of a very bright satellite's
+        // flux, flared.
+        inst.glarePoint = 1.0f - (float)glm::smoothstep((double)kGlarePointPx, 3.0 * kGlarePointPx, px);
         inst.probeSlot = kNoProbe; // assigned below, once every instance is known
         insts.push_back(inst);
         types.push_back(ti);
@@ -10427,6 +10466,28 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
     t.occlusion = buildSatOcclusion(model, tris, t.lobes, lobeTris);
     t.occlusionGpu = packSatOcclusionGpu(t.groups, t.occlusion, t.lobes);
     t.model = std::make_shared<const SatModel>(model); // Phase 4: the mesh renderer draws it
+    // A ground-site mirror's beam (sat_orbit.comp: irradiance = S · area · mirrorFrac · cos) still
+    // reads the legacy crossSection / mirrorFrac, which a model type left at 10 m² and 0 — so from the
+    // roster's move to the model, every Reflect beam had zero intensity and none was drawn. Take them
+    // from the model: the lobes facing along the site-aimed axis, their area and area-weighted F0.
+    if (const int site = modelSiteGroup(t.groups); site >= 0)
+    {
+        const glm::vec3 axisT = attTriadCoords(t.groups, site, glm::normalize(t.groups[site].primaryAxis));
+        double area = 0.0, areaF0 = 0.0;
+        for (const GpuSatLobe &L : t.lobes)
+            if ((int)L.group == site && glm::dot(glm::normalize(L.normalT), axisT) > 0.999f)
+            {
+                area += L.area;
+                areaF0 += (double)L.area * L.f0;
+            }
+        if (area > 0.0)
+        {
+            t.crossSectionM2 = (float)area;
+            t.mirrorFrac = (float)(areaF0 / area);
+        }
+        else
+            Log::line("model '" + t.modelId + "': no mirror face along its site-aimed axis; its beams are off");
+    }
     {
         glm::dvec3 lo(1e30), hi(-1e30);
         for (const SatTri &tr : tris)

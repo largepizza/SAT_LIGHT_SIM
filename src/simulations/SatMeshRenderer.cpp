@@ -144,6 +144,7 @@ void SatMeshRenderer::cleanup(VkDevice d)
     checkMapped = checkFrameMapped = nullptr;
     destroySceneTarget();
     destroy(d, sceneMeshPipe, vkDestroyPipeline);
+    destroy(d, sceneDepthPipe, vkDestroyPipeline);
     destroy(d, scenePass, vkDestroyRenderPass);
     destroy(d, sceneFrameBuf, vkDestroyBuffer);
     destroy(d, sceneFrameMem, vkFreeMemory);
@@ -440,8 +441,13 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     auto build = [&](const char *vs, const char *fs, bool mesh, VkRenderPass pass, VkSampleCountFlagBits ns,
-                     VkPipeline &out, uint32_t colorCount = 1, VkCompareOp depthOp = VK_COMPARE_OP_LESS) {
+                     VkPipeline &out, uint32_t colorCount = 1, VkCompareOp depthOp = VK_COMPARE_OP_LESS,
+                     bool depthWrite = true, bool colorWrite = true) {
         cb.attachmentCount = colorCount;
+        const VkColorComponentFlags rgba = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        for (auto &a : cba)
+            a.colorWriteMask = colorWrite ? rgba : 0;
         VkPipelineMultisampleStateCreateInfo msci{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         msci.rasterizationSamples = ns;
         VkShaderModule v = ctx.loadShader(vs), f = ctx.loadShader(fs);
@@ -478,7 +484,7 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
 
         VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         ds.depthTestEnable = mesh ? VK_TRUE : VK_FALSE;
-        ds.depthWriteEnable = mesh ? VK_TRUE : VK_FALSE;
+        ds.depthWriteEnable = (mesh && depthWrite) ? VK_TRUE : VK_FALSE;
         ds.depthCompareOp = depthOp;
 
         VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -505,8 +511,13 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
           checkMeshPipe);
     // Scene: infinite reverse-Z (SatelliteSim::recordMeshScene builds depth = near / distance), so
     // GREATER and a clear to 0 — meshes from centimetres to a thousand km apart all keep precision.
-    build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh.frag.spv", true, scenePass, VK_SAMPLE_COUNT_1_BIT,
-          sceneMeshPipe, 2, VK_COMPARE_OP_GREATER);
+    // Two passes (recordScene): depth first — only the open-lattice cut-outs run — then shading with
+    // depth EQUAL and forced early fragment tests (sat_mesh.frag's MESH_*_PASS variants), so each
+    // covered pixel is shaded once however many layers of a station overlap there.
+    build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh_depth.frag.spv", true, scenePass, VK_SAMPLE_COUNT_1_BIT,
+          sceneDepthPipe, 2, VK_COMPARE_OP_GREATER, true, false);
+    build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh_scene.frag.spv", true, scenePass, VK_SAMPLE_COUNT_1_BIT,
+          sceneMeshPipe, 2, VK_COMPARE_OP_EQUAL, false, true);
 }
 
 // ─── Viewer target ────────────────────────────────────────────────────────────────────────────────
@@ -873,21 +884,26 @@ void SatMeshRenderer::recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame
         vkCmdSetViewport(cmd, 0, 1, &vp);
         vkCmdSetScissor(cmd, 0, 1, &sc);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 0, 1, &descSetScene, 0, nullptr);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sceneMeshPipe);
         VkDeviceSize off = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuf, &off);
         vkCmdBindIndexBuffer(cmd, indexBuf, 0, VK_INDEX_TYPE_UINT32);
-        VkDescriptorSet bound = VK_NULL_HANDLE;
-        for (size_t i = 0; i < n; ++i)
-            if (const TypeMesh *tm = typeMesh(types[i]))
-            {
-                if (i < probeSets.size() && probeSets[i] != bound) // each instance's own probe (set 1)
+        // Depth pre-pass, then shading with depth EQUAL (see createPipelines).
+        for (VkPipeline pipe : {sceneDepthPipe, sceneMeshPipe})
+        {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+            VkDescriptorSet bound = VK_NULL_HANDLE;
+            for (size_t i = 0; i < n; ++i)
+                if (const TypeMesh *tm = typeMesh(types[i]))
                 {
-                    bound = probeSets[i];
-                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 1, 1, &bound, 0, nullptr);
+                    if (i < probeSets.size() && probeSets[i] != bound) // each instance's own probe (set 1)
+                    {
+                        bound = probeSets[i];
+                        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 1, 1, &bound, 0,
+                                                nullptr);
+                    }
+                    vkCmdDrawIndexed(cmd, tm->indexCount, 1, tm->firstIndex, tm->vertexOffset, (uint32_t)(2 + i));
                 }
-                vkCmdDrawIndexed(cmd, tm->indexCount, 1, tm->firstIndex, tm->vertexOffset, (uint32_t)(2 + i));
-            }
+        }
     }
     vkCmdEndRenderPass(cmd);
 }

@@ -270,6 +270,24 @@ add_custom_command(
 )
 list(APPEND SPV_FILES ${SKY_ENV_SPV})
 
+# Two more compiles of sat_mesh.frag for the scene pass's depth pre-pass (SatMeshRenderer): a
+# depth-only variant (just the open-lattice cut-outs) and a shading variant with forced early
+# fragment tests and no discard, drawn with depth EQUAL — so each covered pixel is shaded ONCE. The
+# discard in the plain shader turned early-Z off, and every overlapping layer of a close-up station
+# ran the full shader with its per-pixel shadow rays.
+foreach(MESH_VARIANT depth scene)
+    string(TOUPPER ${MESH_VARIANT} MESH_VARIANT_UC)
+    set(MESH_VARIANT_SPV "${SHADER_OUT_DIR}/sat_mesh_${MESH_VARIANT}.frag.spv")
+    add_custom_command(
+        OUTPUT ${MESH_VARIANT_SPV}
+        COMMAND ${GLSLC} -I "${SHADER_INC_DIR}" -DMESH_${MESH_VARIANT_UC}_PASS "${SHADER_SRC_DIR}/sat_mesh.frag" -o ${MESH_VARIANT_SPV}
+        DEPENDS "${SHADER_SRC_DIR}/sat_mesh.frag" ${SHADER_HEADERS}
+        COMMENT "Compiling shader: sat_mesh.frag (${MESH_VARIANT} pass variant)"
+        VERBATIM
+    )
+    list(APPEND SPV_FILES ${MESH_VARIANT_SPV})
+endforeach()
+
 add_custom_target(CompileShaders ALL DEPENDS ${SPV_FILES})
 add_dependencies(SatLightSim CompileShaders)
 

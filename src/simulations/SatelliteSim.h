@@ -1805,6 +1805,9 @@ private:
     // than the mesh fades in, so the magnitude-based flare stays with the satellite while its model
     // resolves; the bloom is split between the two so its total stays the sprite's.
     static constexpr float kSpriteGoneFullPx = 10.0f;
+    // Mesh glare (mesh_bloom.frag): below this on-screen size a mesh is still a point and all its light
+    // may glare; by 3x it, only sun-like reflections do.
+    static constexpr float kGlarePointPx = 12.0f;
     VkBuffer meshKeepBuf = VK_NULL_HANDLE;
     VkDeviceMemory meshKeepMem = VK_NULL_HANDLE;
     void *meshKeepMapped = nullptr;
@@ -1849,6 +1852,7 @@ private:
         uint64_t lastUsed = 0;    // envFrame it was last assigned
         bool wanted = false;      // assigned this frame
         double renderedWall = 0.0; // glfwGetTime() of the last render
+        uint32_t faceCursor = 0;   // refresh: the next pair of faces to re-render
     };
     EnvProbeSlot envSlots[SatEnvProbes::kProbes];
     uint64_t envFrame = 0;

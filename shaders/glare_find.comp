@@ -4,11 +4,13 @@ layout(local_size_x = 16, local_size_y = 16) in;
 // A satellite drawn as a sprite gets its glare from glare.vert. A mesh has no point to draw one at:
 // its light is wherever its surfaces glint. mesh_bloom.frag writes that light into the flare source
 // buffer's alpha in effectFlare units (satellite sprites leave alpha 0), and this pass, run on that
-// buffer before it is blurred, lists every CONCENTRATED local maximum bright enough to glare:
-//   - a 3x3 local maximum of alpha (ties broken by texel index, so one texel wins);
-//   - at least half the light of its 5x5 neighbourhood in the 3x3 — a glint, not a bright surface
-//     (a uniformly lit panel filling the screen has no single point to flare from);
+// buffer before it is blurred, lists every local maximum bright enough to glare:
+//   - a 5x5 local maximum of alpha (ties broken by texel index, so one texel wins);
 //   - its 5x5 light is its effectFlare, given the same threshold as a sprite's glare.
+// Which light may glare is decided upstream (mesh_bloom.frag): all of a point-like mesh's, and only
+// sun-like surface brightness on a resolved one. That replaced a "concentration" test here (≥ half the
+// 5x5 light in the 3x3), which passed every thin bright edge and rejected the Sun's disc in a mirror
+// once it spanned a few texels.
 // Position: the light-weighted centroid of the 3x3, so the glare moves smoothly, not a texel at a time.
 
 layout(set = 0, binding = 0, rgba16f) uniform readonly image2D flareSrc;
@@ -39,17 +41,17 @@ void main()
             if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y) continue;
             vec4 v = imageLoad(flareSrc, q);
             e5 += v.a;
+            if (x != 0 || y != 0) {
+                int qi = q.y * size.x + q.x;
+                if (v.a > a || (v.a == a && qi < myIdx)) return; // not the maximum
+            }
             if (abs(x) <= 1 && abs(y) <= 1) {
-                if (x != 0 || y != 0) {
-                    int qi = q.y * size.x + q.x;
-                    if (v.a > a || (v.a == a && qi < myIdx)) return; // not the maximum
-                }
                 e3 += v.a;
                 cen += v.a * vec2(q);
-                col += v.rgb;
+                col += min(v.rgb, vec3(6.0e4)); // the half-float target can hold inf
             }
         }
-    if (e5 < pc.minFlare || e3 < 0.5 * e5) return;
+    if (e5 < pc.minFlare) return;
 
     uint i = atomicAdd(glints.count, 1u);
     if (i >= kMaxGlints) return;

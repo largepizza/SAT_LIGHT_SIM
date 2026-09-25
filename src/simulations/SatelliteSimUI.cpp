@@ -1504,6 +1504,24 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                      viewerCheckPhaseDeg, std::isfinite(mR) ? "lit" : "dark", std::isfinite(mM) ? "lit" : "dark");
     }
 
+    // Grow the window to fit the settings column (last frame's layout): the check result and the
+    // observer lines appear below their buttons, and were hidden under the window's bottom edge until
+    // it was resized by hand. Only ever grows, never while the user is resizing it.
+    {
+        const Clay_ElementData col = Clay_GetElementData(CLAY_ID("ViewerRight"));
+        const Clay_ElementData content = Clay_GetElementData(CLAY_ID("ViewerRightContent"));
+        if (col.found && content.found && viewerChrome.resizeEdge == kResizeNone && !viewerChrome.dragging)
+        {
+            const float over = content.boundingBox.height + 16.0f - col.boundingBox.height; // + its padding
+            if (over > 1.0f)
+            {
+                viewerChrome.h = std::min(viewerChrome.h + over, std::max(viewerChrome.h, inp.screenH - 20.0f));
+                if (viewerChrome.y + viewerChrome.h > inp.screenH - 10.0f)
+                    viewerChrome.y = std::max(10.0f, inp.screenH - 10.0f - viewerChrome.h);
+            }
+        }
+    }
+
     // Observer box: re-evaluated at up to 10 Hz.
     if (glfwGetTime() >= viewerObsNextWall)
     {
@@ -1612,6 +1630,9 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                                               .childGap = 4,
                                               .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                           .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
+            CLAY(CLAY_ID("ViewerRightContent"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                            .childGap = 4,
+                                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
                 section(0, "CAMERA");
                 static const char *kAimLabels[3] = {"Camera: Free", "Camera: From you", "Camera: Toward you"};
