@@ -21,6 +21,7 @@ layout(set = 0, binding = 1) uniform sampler2D earthSpecTex;
 #define CLOUD_PARAMS_BINDING 2
 #include "cloud_params.glsl"
 layout(set = 0, binding = 3) uniform sampler2D sceneDepthTex;
+layout(set = 0, binding = 5) uniform sampler2D earthElevMaxTex; // as scene_depth.comp's binding 6
 layout(set = 0, binding = 4, std430) writeonly buffer ProbeOut {
     vec4 a[8];
     vec4 profile[64];
@@ -58,16 +59,16 @@ void main() {
         for (int sx = 0; sx <= 1; ++sx)
             dMin = min(dMin, texelFetch(sceneDepthTex, clamp(d0 + ivec2(sx, sy), ivec2(0), dSize - 1), 0).r);
     bool  seedSky = dMin >= kNoSurfaceT * 0.5;
-    float tSeed   = max(2.0, dMin * 0.96 - 2.0);
+    float tSeed   = max(2.0, dMin * 0.995 - 0.5); // as sat_sky.frag
 
     bool gate = dir.z < 0.7 && tShell.y > 0.0 && tExit < cloud.terrainDistFadeEndM;
     int stepsSeed = 0, stepsEye = 0;
     float tHitSeed = -1.0, tHitEye = -1.0;
     if (gate) {
         if (!seedSky)
-            tHitSeed = terrainMarchDetailed(earthElevTex, earthSpecTex, hEye, dir, enuX, enuY, enuZ,
+            tHitSeed = terrainMarchDetailed(earthElevTex, earthSpecTex, earthElevTex, false, hEye, dir, enuX, enuY, enuZ,
                                             tSeed, tExit, pixAngle, 224, 1.0, false, kTdCoarseOctaves, stepsSeed);
-        tHitEye = terrainMarchDetailed(earthElevTex, earthSpecTex, hEye, dir, enuX, enuY, enuZ,
+        tHitEye = terrainMarchDetailed(earthElevTex, earthSpecTex, earthElevMaxTex, true, hEye, dir, enuX, enuY, enuZ,
                                        2.0, tExit, pixAngle, 224, 1.0, false, kTdCoarseOctaves, stepsEye);
     }
 

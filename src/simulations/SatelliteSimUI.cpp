@@ -5504,6 +5504,16 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
     terrainDistFadeEndM = v.terrainFadeEndM;
     cloudDistFadeStartM = v.cloudFadeStartM;
     cloudDistFadeEndM = v.cloudFadeEndM;
+    // Procedural terrain detail (terrain_detail.glsl). Measured with the harness on an RTX 3070 Ti:
+    // +3 ms at Medium in the Anchorage worst case (10.0 vs 6.9 ms), +5-8 ms at High on the ground in
+    // mountains, ~+1 ms from aircraft altitude. Off on the integrated-GPU tiers — and on Planetarium /
+    // Potato the sky shader could not draw it anyway, while scene_depth.comp would still march it.
+    {
+        const bool detail = p == GraphicsPreset::Medium || p == GraphicsPreset::High || p == GraphicsPreset::Ultra;
+        terrainDetailStrength = detail ? 1.0f : 0.0f;
+        terrainShadowStrength = detail ? 1.0f : 0.0f;
+        terrainMaterialStrength = detail ? 1.0f : 0.0f;
+    }
     graphicsPreset = p;
 
     if (std::getenv("SATLIGHTSIM_FRAME_TRACE"))

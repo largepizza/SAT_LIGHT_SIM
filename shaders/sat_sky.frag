@@ -1611,15 +1611,16 @@ void main() {
                 for (int sx = 0; sx <= 1; ++sx)
                     dMin = min(dMin, texelFetch(sceneDepthTex, clamp(d0 + ivec2(sx, sy), ivec2(0), dSize - 1), 0).r);
             seedSky = dMin >= kNoSurfaceT * 0.5;
-            // The depth pass marched the same surface (half-res pixel footprint, so it stops up to a
-            // footprint short of it): start a few percent before.
-            tSeed = max(2.0, dMin * 0.96 - 2.0);
+            // The depth pass marched the same surface with the same geometry LOD (its 1.2%-of-t floor
+            // dominates the pixel term at any normal FOV); its larger footprint makes it stop EARLY,
+            // never late. So the seed needs only float slack: at 4% the seeded march measured 3.8 ms of
+            // extra sky pass at ground level, at 0.5% most pixels resolve in one or two evaluations.
+            tSeed = max(2.0, dMin * 0.995 - 0.5);
         }
 #endif
         if (tExit < cloud.terrainDistFadeEndM && !seedSky) {
             float hEye = obsEffH + 2.0;
-            if ((int(cloud.terrainPad0) & 2) != 0 && tSeed > 2.0) tHit = tSeed; else
-            tHit = terrainMarchDetailed(earthElevTex, earthSpecTex, hEye, dir, enuX, enuY, enuZ,
+            tHit = terrainMarchDetailed(earthElevTex, earthSpecTex, earthElevTex, false, hEye, dir, enuX, enuY, enuZ,
                                         tSeed, tExit, pixAngle, kTerrainMaxSteps, 1.0, false,
                                         kTdCoarseOctaves, terrainSteps);
             if (tHit > 0.0) {
@@ -1648,12 +1649,15 @@ void main() {
                 vec3 hEsE     = normalize(vec3(-terrainUpE.y, terrainUpE.x, 0.0)); // East in ECEF
                 vec3 hNrE     = cross(terrainUpE, hEsE);                            // North in ECEF
                 vec3 slopeE   = dE2 * hEsE + dN2 * hNrE;
-                if (tdEnabled() && (int(cloud.terrainPad0) & 1) == 0) {
+                if (tdEnabled()) {
                     terrainDet = terrainDetail(terrainQ, enuX, enuY, enuZ, tdShadeLodM(tHit, pixAngle),
-                                               terrainH0, hMip3, kTdShadeOctaves);
+                                               terrainH0, hMip3, kTdOctaves);
                     slopeE += terrainDet.grad;
                 }
                 vec3 nECEF  = normalize(terrainUpE - slopeE);
+                if (tdEnabled())
+                    nECEF = normalize(nECEF - tdMicroBump(terrainQ, nECEF, enuX, enuY, enuZ,
+                                                          tdShadeLodM(tHit, pixAngle), terrainDet.rough));
                 terrainNorm = normalize(vec3(dot(nECEF, enuX), dot(nECEF, enuY), dot(nECEF, enuZ)));
             }
         }
@@ -2352,7 +2356,7 @@ void main() {
                 terrainMatSteep = smoothstep(0.30, 0.62, 1.0 - nUp + 0.10 * m);
                 vec3  rockBare = mix(vec3(lum), day, 0.35) * (0.72 + 0.18 * m);
                 vec3  rock     = mix(rockBare, vec3(0.20, 0.19, 0.17) * (0.85 + 0.25 * m), snowMap);
-                vec3  alb      = day * (1.0 + 0.28 * m) * (1.0 + 0.12 * dn);
+                vec3  alb      = day * (1.0 + 0.32 * m) * (1.0 + 0.12 * dn);
                 alb = mix(alb, rock, terrainMatSteep * 0.85);
                 terrainMatSnow = snowMap * (1.0 - smoothstep(0.22, 0.48, 1.0 - nUp + 0.12 * m - 0.06 * dn));
                 alb = mix(alb, vec3(0.80, 0.82, 0.86) * (0.96 + 0.06 * m), terrainMatSnow);
@@ -2477,7 +2481,9 @@ void main() {
         }
 #endif
         vec3 surfColor  = mix(nightColor * 0.12,
-                              (dayColor * sunSpecTint * clamp(sunDot * 1.5, 0.05, 1.0) * cloudShadowT * terrainShadow
+                              // mix(0.15, 1, shadow): light bounced off the sunlit terrain around a
+                              // shadowed face — without it terrain shadows went near-black.
+                              (dayColor * sunSpecTint * clamp(sunDot * 1.5, 0.05, 1.0) * cloudShadowT * mix(0.15, 1.0, terrainShadow)
                             + dayColor * skyAmbientTerrain * 0.4) * terrainAO,  // sky ambient fill (blue day, orange dusk)
                               dayFrac)
                         + moonContribTerrain

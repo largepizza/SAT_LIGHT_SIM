@@ -224,7 +224,11 @@ sim->recordCompute(cmd)  → WASD movement; simTime advance;
                                                mesh (two mesh draws: the depth pre-pass, then the
                                                scene pass with depth EQUAL; then, for mirror pixels,
                                                the SKY_REFL sharp-reflection pass + mesh_refl_add)
-                           dispatch 1: scene_depth.comp   (half-res shared terrain/ocean/MESH depth)
+                           dispatch 1: scene_depth.comp   (half-res shared terrain/ocean/MESH depth —
+                                                            the detailed terrain march, terrain_detail.glsl;
+                                                            also writes the observer's ground height into
+                                                            terrainFrameBuf for sat_sky.frag; then the
+                                                            harness probe, if one was requested)
                            dispatch 2: sat_orbit.comp     (orbital mechanics + attitude + beam list +
                                                             reflectance model → APPENDS visible
                                                             satellites to the compact satVisibleBuf
@@ -315,6 +319,7 @@ generators and this project requires 3.20.
 | `common.glsl` | PI, R_EARTH/R_ATMOS, BETA_R/M, H_R/H_M, G_MIE, SUN_INTENSITY, cloud noise freqs, `kNoSurfaceT`, `raySphere`, `rotateZ`, `remap`, phase functions |
 | `terrain.glsl` | DEM decode constants, `dirToUV`/`posToUV`, `terrainHeightAtUV/AtDir`, `enuBasis`, `observerEffHeight`, `observerPos` |
 | `cloud_params.glsl` | the `CloudParams` UBO block + `CloudLayer` (`#define CLOUD_PARAMS_BINDING` first) |
+| `terrain_detail.glsl` | procedural terrain detail + THE terrain march (needs common, cloud_params, terrain first) — see "Procedural terrain detail" |
 
 **`GpuCloudParams` in `SatelliteSim.h` is a hand-maintained mirror of `cloud_params.glsl`** — GLSL
 and C++ cannot share a declaration, so that pairing is the one place a CloudParams mismatch can
@@ -2704,7 +2709,8 @@ Read it at the start of any terrain-related session before making changes.
   under "Subsystem: GPU Orbital Pipeline → Push constants" and the "Push-constant relief" block in
   `GpuCloudParams`. Both point pipeline layouts (`drawPipeLayout`, `starPipeLayout`) use
   `sizeof(PointDrawPC)`; `skyBgPipeLayout` uses `sizeof(SatDrawPC)`.
-- Sky descriptor set has 26 bindings (0-25; 22/23 the mesh targets, 24 the env star grid, 25 the
+- Sky descriptor set has 27 bindings (0-26; 26 = terrainFrameBuf, the observer's detailed ground height
+  from scene_depth.comp, 2026-09-25). Before that it had 26 (0-25; 22/23 the mesh targets, 24 the env star grid, 25 the
   sharp-reflection G-buffer — the last two read only by the SKY_ENV / SKY_REFL variants). The original 22 (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h. **As of 2026-08-10 its entries are `GpuGroundBeam` (32 bytes), not raw `GpuReflectBeam`** — a pre-solved record, see "Beam ground-spot CPU hoist" below
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
 - `sat_sky.frag` ground path: terrain march step count is path-length-adaptive as of session 29
@@ -2775,9 +2781,62 @@ Read it at the start of any terrain-related session before making changes.
   29 (background-only, satellites/stars/UI always native res) — see "Subsystem: Resolution
   Scaling" below.
 
+### Procedural terrain detail (2026-09-25) — `shaders/include/terrain_detail.glsl`
+
+Built overnight with the automation harness (docs/HARNESS.md) as its first real client; the
+`erosion` branch's approach (a one-Newton-step displacement at the smooth hit + a normal perturbation)
+was studied and not merged — its own notes say a real 3D surface was the goal and could not be
+reached by patching the bisection. This is that surface. Read the header comment of
+terrain_detail.glsl first; invariants and the reasons behind them:
+
+- **The surface is `H = DEM + D`, and every pass that needs "where is the ground" uses the same
+  function and the same march** (`terrainMarchDetailed`): sat_sky.frag, scene_depth.comp,
+  terrain_probe.comp. D is eight octaves of 3D value noise (2048 m .. 16 m cells) on the sea-level
+  sphere, slope-damped (IQ-style erosion look), amplitude = `terrainDetailAmpM` x roughness (the DEM's
+  SIGNED relief against mip 3 — ridges rugged, valley floors smooth; |relief| dug pits into every
+  valley floor) x coast fade. The geometry LOD (`tdGeomLodM` = max(2 px, 1.2% of t)) depends on t
+  alone at any normal FOV, which is what makes the half-res and full-res passes see the SAME surface.
+- **Never form an absolute ECEF coordinate in float.** The lattice is anchored to the observer's
+  sea-level point as an integer 2048-m cell + offset (CPU double -> `terrainAnchorCell/Rel`); every
+  height uses the observer-relative `q` (`tdAltitude`, `tdSphereOffset`). The erosion branch fought
+  exactly this precision loss (stretched/swimming noise).
+- **scene_depth.comp marches the true surface from the eye; sat_sky.frag starts from it** (min of
+  the 2x2 half-res texels, x0.995 — conservative because the half-res footprint test stops early)
+  and usually resolves in 1-5 steps + a 3-step regula falsi. The first cuts (full-res march from the
+  eye; an envelope depth) cost 10-25 ms at ground level; measured with `perf` + `debugview steps`.
+- **Out of budget is not a miss**: the march finishes on a coarse-octave tail. Returning -1 made the
+  depth say "sky" and the sky pass skip the pixel — holes through distant hills (found with `probe`).
+- **The observer's ground includes the detail** (`observerEffHeightDetailed`), computed once by
+  scene_depth.comp into `terrainFrameBuf` (sky binding 26) and per texel by cloud_march.comp.
+  beam_self_march.comp still takes the CPU's obsEffH (pre-existing), and the mesh shaders use the
+  DEM-only `observerEffHeight` — both off by at most the detail height.
+- **Shading**: detail normals at a 3 px LOD (finer aliases into paper-like grain), plus shading-only
+  micro relief (`tdMicroBump`, 8 m .. 0.25 m, gradient noise, SOLID 3D so steep faces are not
+  vertical smears) and a solid albedo mottle (`tdMicro`). Materials key off the day map (its white =
+  snow, rock on steep faces, darker where the map is snow); a latitude snowline painted Tibet white.
+  All fade out by a ~400 m pixel footprint, so orbit views are the day map untouched. Soft terrain
+  sun shadows (16 steps, 3 octaves, normal-offset start — starting on the surface gave texel-sized
+  acne) with a 15% bounce floor.
+- **Empty-space skipping**: `earthElevMaxImg`, a CPU-built max-mip chain of the DEM (Vulkan mip
+  sizes round DOWN — validation caught the first upload), used by the depth pass only.
+- **Cost (RTX 3070 Ti, 1600x900, clouds off, harness `perf`)**: +5-8 ms at High on the ground in
+  mountains (depth 2.3-3.3 ms + sky 4-6 ms incl. 1-2 ms shadows), ~+1 ms from aircraft, ~0 from
+  orbit; +3 ms at Medium in the Anchorage worst case (10.0 vs 6.9 ms). Presets: on for
+  Medium/High/Ultra, off for Low/Planetarium/Potato (`applyGraphicsPreset`). Terrain tab sliders:
+  Terrain detail / Detail height / roughness / erosion / Terrain shadows / Terrain materials.
+- **Tools**: `tools/harness/scripts/terrain_views.satcmd` (eight golden views), harness `debugview`
+  (normals, detail, steps, albedo, shadow, rough) and `probe x y`.
+- **Known limits**: the ground within ~20 m is soft (it would need real texture maps); silhouettes
+  are not antialiased; value noise shapes; the DEM itself is 2.67 km / 8-bit (the Everest region is a
+  smooth plateau in it); SKY_LITE and SKY_ENV draw the plain DEM (`tdEnabled()`).
+- Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
+  Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
+  used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the
+  salt-and-pepper silhouette speckle.
+
 ### Elevation texture encoding — READ THIS BEFORE TOUCHING TERRAIN CODE
 
-**File:** `assets/textures/earth_elevation.png` (R8_UNORM, 21600×10800, land-only DEM)
+**File:** `assets/textures/earth_elevation.png` (R8_UNORM, 14999×7500 — ~2.67 km/texel; older notes said 21600×10800 — land-only DEM)
 
 **This is NOT ETOPO1 and has NO bathymetry / below-sea-level data.** Do not assume
 pixel=0 means sea level — it does not. The actual encoding is:

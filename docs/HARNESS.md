@@ -87,7 +87,7 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `time sun <el> [rising\|setting]` | the time nearest now (within 12 h) when the Sun is at `<el>` degrees for this observer. `time sun noon` / `time sun midnight` |
 | `time add <s>`, `time j2000 <s>` | relative / absolute (seconds since J2000) |
 | `time pause`, `time play`, `time scale <1x\|10x\|1m\|5m\|1h\|1d\|1w\|1mo\|1yr>`, `time reverse on\|off` | |
-| `observer lat= lon= [agl=\|alt=]` | move the observer; `agl` = metres above the terrain, `alt` = above sea level. Keeps the camera heading. Ends follow mode |
+| `observer lat= lon= [agl=\|alt=]` | move the observer. `alt` = metres above sea level (the shaders' meaning of the height offset: the eye is at max(ground, alt) + 2 m). `agl=0` = on the ground exactly; `agl>0` adds the CPU's terrain estimate, which comes from an 18 km/px DEM copy, so small values are approximate. Keeps the camera heading. Ends follow mode |
 | `camera az= el= fov=` | azimuth (0 = north, 90 = east), elevation, vertical FOV (0.5-120) in degrees |
 | `camera look <sun\|moon\|sel\|planet>` | aim once. `sel` = the selected satellite or planet |
 | `camera track <...\|off>` | re-aim every frame (a moving satellite stays centred) |
@@ -102,6 +102,8 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `knockout none\|<mask>\|+key\|-key\|key ...`, `knockout list` | debug knockout bits by stable key (`terrain_march`, `volumetric_cloud_march`, ...; `potato_sky`, `lite_sky`). Sets the preset to Custom, like the Display tab does |
 | `capture <name> [ui=on] [crop=x,y,w,h] [scale=s]` | PNG of the frame (no UI unless `ui=on`), cropped then scaled: `scale<1` box-filters down, `scale>1` enlarges with nearest neighbour for pixel-level inspection. Writes `<name>.json` with the state |
 | `state [name]` | the full state as the command result (and a file if named) |
+| `probe <x> <y>` | what the terrain algorithm does for one pixel's ray (`terrain_probe.comp`, the same functions the renderer uses): the seed from the shared depth, the seeded march and a march from the eye (distance, steps), the DEM/detail/roughness at the hit, and a 64-sample `profile_t_rayalt_dem_H` (t, ray altitude, DEM, DEM + detail) along the ray. Pixel coordinates are the capture PNG's |
+| `debugview <off\|normals\|detail\|steps\|albedo\|shadow\|rough>` | replace terrain pixels with a debug channel: normals, detail height / amplitude, march steps (blue few .. red the budget), albedo, sun shadow x Lambert, roughness/rock/snow as R/G/B. Not persisted |
 | `perf [frames=60] [name=]` | average raw GPU timestamp buckets and CPU buckets over N frames, plus the GPU total and wall frame-time distributions. `name=` also appends it to the run's perf log |
 | `sweep` | the automated knockout sweep (≈15 s); returns the whole record |
 | `ui show\|hide`, `ui scale <0.75-2>` | HUD visibility and UI scale |
@@ -186,6 +188,23 @@ sidecars, bit-identical determinism, a knockout changing and then restoring the 
 round-trips and error reporting, script parse errors, `wait settle` holding time, `time sun`
 accuracy, perf and sweep numbers, selection/follow/`ui dump`, the watchdog, and live mode. Run it
 after changing `src/Harness.*` or `src/simulations/SatelliteSimHarness.cpp`.
+
+## Debugging a rendering problem (worked example)
+
+The terrain work that motivated the harness went roughly like this, and the pattern generalizes:
+
+1. `capture` the problem at a fixed view (`observer`, `time sun`, `camera`, `wait settle`), and a
+   `sheet` of the same view with each feature toggled (`set ... 0`, `knockout +...`) — which toggle
+   makes it disappear?
+2. `debugview` the suspect channel. Stripes in `normals` but not `albedo` point at the geometry
+   (it was a weak hash); a saturated `detail` view means the noise lost its zero mean.
+3. `probe` a pixel on the artifact and one next to it. "seed SKY, but a march from the eye hits at
+   2.6 km after 150 steps" located a budget bug that no picture could have.
+4. Crash or device loss? Run the same script with the validation layer:
+   `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation python tools/harness/run.py ...` — the messages
+   land in `app_stdout.txt`. (That is how a mip-size mismatch in a new texture upload was found.)
+5. `perf` the view with each feature toggled to attribute cost; `debugview steps` shows where a
+   raymarch spends it.
 
 ## Gotchas
 

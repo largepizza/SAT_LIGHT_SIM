@@ -214,6 +214,31 @@ ui dump settings
 
 
 @test
+def probe_and_debugview():
+    out, res, _ = run("probe", SCENE + """
+observer lat=46.55 lon=7.98 alt=6000
+camera az=200 el=-10 fov=60
+wait settle 10
+probe 800 700
+probe 800 50
+capture shaded scale=0.25
+debugview normals
+wait 2
+capture normals scale=0.25
+debugview off
+""")
+    ground = result(res, "probe 800 700")["result"]
+    sky = result(res, "probe 800 50")["result"]
+    assert ground["t_hit_seeded"] > 0 and ground["hit"]["dem_h"] > 0, ground["message"]
+    # the seeded march must agree with the march from the eye (the seed is conservative)
+    assert abs(ground["t_hit_seeded"] - ground["t_hit_from_eye"]) < 0.02 * ground["t_hit_from_eye"] + 1.0, ground["message"]
+    assert len(ground["profile_t_rayalt_dem_H"]) == 64
+    assert sky["seed_sky"] or sky["t_hit_seeded"] < 0, sky["message"]
+    cap = os.path.join(out, "captures")
+    assert png_pixels_crc(os.path.join(cap, "shaded.png")) != png_pixels_crc(os.path.join(cap, "normals.png"))
+
+
+@test
 def watchdog_timeout():
     out, res, summ = run("timeout", "wait seconds 120", extra=("--timeout", "8"), expect_ok=False)
     assert summ.get("status") == "timeout", summ

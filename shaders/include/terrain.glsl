@@ -12,7 +12,8 @@
 
 // ── Elevation texture encoding — READ THIS BEFORE CHANGING ANY TERRAIN CODE ────────────────
 //
-// assets/textures/earth_elevation.png is R8_UNORM, 21600x10800, LAND-ONLY. It is NOT ETOPO1 and
+// assets/textures/earth_elevation.png is R8_UNORM, 14999x7500 (not 21600x10800 as this comment long
+// said), LAND-ONLY. It is NOT ETOPO1 and
 // has NO bathymetry. Do not assume pixel=0 means sea level:
 //
 //   0-14/255    compression noise in ocean regions — treat as sea level

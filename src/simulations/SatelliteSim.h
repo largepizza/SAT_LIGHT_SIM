@@ -2799,6 +2799,11 @@ private:
     VkPipeline beamSelfMarchPipeline = VK_NULL_HANDLE;
     // Earth elevation texture (binding 5): 21600×10800 R8_UNORM land-elevation DEM.
     // Pixel p → elevation_m = p * 8848; ocean stored as 0. Terrain shell = R_EARTH + 9000 m.
+    // Max-height mip chain of the DEM (level i = max over 2^(i+1) x 2^(i+1) DEM texels), built on the
+    // CPU at load: the depth pass's empty-space skipping (terrain_detail.glsl tdMaxMipH). ~37 MB.
+    VkImage earthElevMaxImg = VK_NULL_HANDLE;
+    VkDeviceMemory earthElevMaxMem = VK_NULL_HANDLE;
+    VkImageView earthElevMaxView = VK_NULL_HANDLE;
     VkImage earthElevImg = VK_NULL_HANDLE;
     VkDeviceMemory earthElevMem = VK_NULL_HANDLE;
     VkImageView earthElevView = VK_NULL_HANDLE;
@@ -3131,7 +3136,6 @@ private:
     float terrainShadowStrength = 1.0f;
     float terrainMaterialStrength = 1.0f;
     int terrainDebugView = 0; // harness `debugview` only; not persisted
-    int terrainExperiment = 0; // TEMP: perf experiment bits
     // Cloud opacity scale (see GpuCloudParams::cloudOpacityScale) — multiplies the volumetric
     // cloud march's extinction-per-metre constant directly (and, since this same value also
     // scales layer 0's flat-2D-crossfade alphaMax ceiling in recordCompute(), the flat layer used

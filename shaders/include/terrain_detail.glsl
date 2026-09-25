@@ -91,6 +91,40 @@ vec4 tdNoised(vec3 x, ivec3 cellOff) {
     return vec4(v, gr);
 }
 
+// 3D gradient (Perlin) noise with its analytic gradient, same lattice convention. Used for the
+// shading-only micro octaves: value noise's lattice shows up in the lighting at pebble scale as
+// sheared boxes (seen in a 3x harness crop of the Grand Canyon foreground); gradient noise does not.
+vec3 tdGrad(ivec3 c) {
+    uvec3 v = uvec3(c);
+    uint h = v.x * 0x8da6b343u ^ v.y * 0xd8163841u ^ v.z * 0xcb1ab31fu;
+    h ^= h >> 16; h *= 0x7feb352du;
+    h ^= h >> 15; h *= 0x846ca68bu;
+    h ^= h >> 16;
+    uint h2 = h * 0x9e3779b9u;
+    return normalize(vec3(float(h & 1023u), float((h >> 10) & 1023u), float(h2 >> 22)) - 511.5 + 1e-3);
+}
+vec4 tdGradNoised(vec3 x, ivec3 cellOff) {
+    vec3  fl = floor(x);
+    ivec3 i  = ivec3(fl) + cellOff;
+    vec3  w  = x - fl;
+    vec3  u  = w * w * w * (w * (w * 6.0 - 15.0) + 10.0);
+    vec3  du = 30.0 * w * w * (w * (w - 2.0) + 1.0);
+    vec3 ga = tdGrad(i), gb = tdGrad(i + ivec3(1, 0, 0)), gc = tdGrad(i + ivec3(0, 1, 0)), gd = tdGrad(i + ivec3(1, 1, 0));
+    vec3 ge = tdGrad(i + ivec3(0, 0, 1)), gf = tdGrad(i + ivec3(1, 0, 1)), gg = tdGrad(i + ivec3(0, 1, 1)), gh = tdGrad(i + ivec3(1, 1, 1));
+    float va = dot(ga, w), vb = dot(gb, w - vec3(1, 0, 0)), vc = dot(gc, w - vec3(0, 1, 0)), vd = dot(gd, w - vec3(1, 1, 0));
+    float ve = dot(ge, w - vec3(0, 0, 1)), vf = dot(gf, w - vec3(1, 0, 1)), vg = dot(gg, w - vec3(0, 1, 1)), vh = dot(gh, w - vec3(1, 1, 1));
+    float k1 = vb - va, k2 = vc - va, k3 = ve - va, k4 = va - vb - vc + vd;
+    float k5 = va - vc - ve + vg, k6 = va - vb - ve + vf, k7 = -va + vb + vc - vd + ve - vf - vg + vh;
+    float v = va + k1 * u.x + k2 * u.y + k3 * u.z + k4 * u.x * u.y + k5 * u.y * u.z + k6 * u.z * u.x + k7 * u.x * u.y * u.z;
+    vec3 g = ga + u.x * (gb - ga) + u.y * (gc - ga) + u.z * (ge - ga) + u.x * u.y * (ga - gb - gc + gd)
+           + u.y * u.z * (ga - gc - ge + gg) + u.z * u.x * (ga - gb - ge + gf)
+           + u.x * u.y * u.z * (-ga + gb + gc - gd + ge - gf - gg + gh)
+           + du * vec3(k1 + k4 * u.y + k6 * u.z + k7 * u.y * u.z,
+                       k2 + k5 * u.z + k4 * u.x + k7 * u.z * u.x,
+                       k3 + k6 * u.x + k5 * u.y + k7 * u.x * u.y);
+    return vec4(v * 1.6, g * 1.6); // ~[-1, 1] like the value noise
+}
+
 // ── Observer-relative geometry, all without forming a 6.4e6-m coordinate ─────────────────────
 // q = point - (the observer's sea-level point), in the observer's ENU axes. The march builds it as
 // vec3(0, 0, hEye) + t * dir.
@@ -200,9 +234,9 @@ struct TdSample {
     float amp;   // the octave-0 amplitude used (metres)
 };
 
-// kEnd may exceed kTdOctaves for SHADING: octaves 8..10 (8, 4, 2 m cells, ~1 m and less of relief)
-// are normal-mapped micro relief — the sky shader asks for them, the march never does.
-const int kTdShadeOctaves = 11;
+// Shading-only micro relief: octaves 8..13 (8 m down to 0.25 m cells) — see tdMicroBump.
+const int kTdMicroFirst = 8;
+const int kTdMicroLast  = 13;
 TdSample terrainDetail(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lodM, float h0, float hMip3, int kEnd) {
     TdState st = tdBegin(q, enuX, enuY, enuZ, h0, hMip3);
     tdOctaves(st, lodM, kEnd);
@@ -211,18 +245,44 @@ TdSample terrainDetail(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lodM, floa
     return s;
 }
 
-// World-fixed albedo mottle in [-1, 1] at q: three octaves of the same anchored value noise
-// (32, 8 and 2 m cells, decorrelated from the height field by a lattice offset), each faded out
-// once the pixel footprint `foot` reaches its cell size, so it never shimmers.
+// The TRUE 3D point in the noise domain (not projected to the sea-level sphere like the heightfield's
+// octaves): solid noise for the surface texture, so a steep face seen edge-on is not a vertical smear
+// of one ground-plan value (the first cut's "curtains" on every hillside facing the observer).
+vec3 tdSolidRel(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ) {
+    return cloud.terrainAnchorRel.xyz + q.x * enuX + q.y * enuY + q.z * enuZ;
+}
+
+// Shading-only micro relief (rock and turf in the lighting within a few hundred metres, which the
+// fractal alone left as smooth plastic): gradient noise at a constant SLOPE (amplitude proportional
+// to the cell), solid in 3D, returned as the part of its gradient tangent to the macro normal nE
+// (ECEF) — subtract it from nE. Gradient noise, not value noise: value noise's lattice showed as
+// sheared boxes in the lighting at pebble scale.
+vec3 tdMicroBump(vec3 q, vec3 nE, vec3 enuX, vec3 enuY, vec3 enuZ, float lodM, float rough) {
+    vec3  rel = tdSolidRel(q, enuX, enuY, enuZ);
+    ivec3 anchor = ivec3(cloud.terrainAnchorCell.xyz);
+    vec3  gsum = vec3(0.0);
+    float slopeAmp = 0.22 * max(rough, 0.35) * cloud.terrainDetailStrength;
+    for (int k = kTdMicroFirst; k <= kTdMicroLast; ++k) {
+        float cell = kTdBaseCellM / float(1 << k);
+        float fade = smoothstep(lodM, 2.0 * lodM, cell);
+        if (fade <= 0.0) break;
+        vec4 n = tdGradNoised(rel / cell, anchor << k);
+        gsum += fade * slopeAmp * n.yzw;               // amplitude slopeAmp*cell, per metre: cancels
+    }
+    return gsum - nE * dot(gsum, nE);
+}
+
+// World-fixed albedo mottle in [-1, 1] at q: four octaves of the same anchored value noise
+// (32, 8, 2 and 0.5 m cells, decorrelated from the height field by a lattice offset), solid in 3D,
+// each faded out once the pixel footprint `foot` reaches its cell size, so it never shimmers.
 float tdMicro(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float foot) {
-    vec3  off = tdSphereOffset(q);
-    vec3  rel = cloud.terrainAnchorRel.xyz + off.x * enuX + off.y * enuY + off.z * enuZ;
+    vec3  rel = tdSolidRel(q, enuX, enuY, enuZ);
     ivec3 anchor = ivec3(cloud.terrainAnchorCell.xyz);
     float m = 0.0, wsum = 0.0;
-    for (int j = 0; j < 3; ++j) {
-        int   k    = 6 + 2 * j;               // 32, 8, 2 m
+    for (int j = 0; j < 4; ++j) {
+        int   k    = 6 + 2 * j;               // 32, 8, 2, 0.5 m
         float cell = kTdBaseCellM / float(1 << k);
-        float w    = 1.0 - smoothstep(0.35 * cell, cell, foot);
+        float w    = 1.0 - smoothstep(0.12 * cell, 0.4 * cell, foot);
         if (w <= 0.0) break;
         m    += w * tdNoised(rel / cell, (anchor << k) + ivec3(911, 373, 1297)).x;
         wsum += 1.0;
@@ -233,7 +293,8 @@ float tdMicro(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float foot) {
 // Geometry and shading LODs for a point at distance t along a ray with the given pixel angle.
 // lodScale > 1 coarsens the geometry (scene_depth.comp, which only needs occlusion).
 float tdGeomLodM(float t, float pixAngle) { return max(2.0 * pixAngle * t, 0.012 * t); }
-float tdShadeLodM(float t, float pixAngle) { return max(1.5 * pixAngle * t, 0.5); }
+// 3 px: finer normal detail than that aliases into a paper-like grain at a few km.
+float tdShadeLodM(float t, float pixAngle) { return max(3.0 * pixAngle * t, 0.25); }
 
 // Full terrain height (DEM + detail) at q. h0 returns the DEM part.
 float terrainHeightDetailed(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
@@ -276,7 +337,27 @@ float observerEffHeightDetailed(sampler2D elevTex, sampler2D specTex, vec4 obsEC
 // full-resolution march (it starts there) — and cheap. Consumers of the shared depth (cloud and
 // beam clamps, the cloud-shadow start point) see a surface at most that bound (~30 m on the most
 // rugged terrain) above the real one.
-float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec3 dir,
+// DEM max over the 2x2 texels of max-mip `level` around uv (level i = max over 2^(i+1) DEM texels),
+// i.e. over every point within half a level-i texel of uv. Decoded like terrain.glsl (the decode is
+// monotonic, so the max of the bytes is the max of the heights).
+float tdMaxMipH(sampler2D maxTex, vec2 uv, int level) {
+    ivec2 sz = textureSize(maxTex, level);
+    ivec2 i0 = ivec2(floor(uv * vec2(sz) - 0.5));
+    float m = 0.0;
+    for (int y = 0; y <= 1; ++y)
+        for (int x = 0; x <= 1; ++x) {
+            ivec2 c = ivec2((i0.x + x + sz.x) % sz.x, clamp(i0.y + y, 0, sz.y - 1));
+            m = max(m, texelFetch(maxTex, c, level).r);
+        }
+    return max(0.0, m * kElevRange - kElevOffset);
+}
+
+// maxTex/useMaxMip (scene_depth.comp): above the envelope, try to skip half a max-mip texel at a
+// time where the ray clears the DEM max there plus the bound on all detail. The full-res pass does
+// not need it (it starts at the seed); rays a few degrees above the horizon took 160-220 steps in
+// the depth pass without it.
+float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, sampler2D maxTex, bool useMaxMip,
+                           float hEye, vec3 dir,
                            vec3 enuX, vec3 enuY, vec3 enuZ, float tStart, float tExit, float pixAngle,
                            int maxSteps, float lodScale, bool envelope, int coarseK, out int stepsUsed) {
     stepsUsed = 0;
@@ -298,12 +379,29 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
         tdDemAt(elevTex, specTex, tdUV(q, enuX, enuY, enuZ), h0, hMip3);
         float grow    = float(i) / float(maxSteps);
         float minStep = max(0.5, t * mix(0.015, 0.05, grow * grow));
-        float maxStep = clamp(t * 0.25, 20.0, 2500.0);
+        // The cap only binds far above the terrain (0.6 * gap is safe for any DEM slope below ~0.6):
+        // at 2.5 km, rays leaving the terrain shell a few degrees above the horizon took 160-220
+        // steps in the half-res depth pass (harness probe) — most of that pass's cost at ground level.
+        float maxStep = clamp(t * 0.3, 20.0, 12000.0);
         float gap;
         float amp0 = detail ? tdAmp0(h0, hMip3) : 0.0;
         if (rayH > h0 + tdTailBound(amp0)) {
             gap = rayH - h0 - tdTailBound(amp0);
             armed = true;
+            if (useMaxMip) {
+                // Largest skip first: level 5 (64 DEM texels, ~170 km at the equator), then 3, then 1.
+                vec2  uv     = tdUV(q, enuX, enuY, enuZ);
+                float cosLat = sin(uv.y * PI);                  // uv.y = colatitude / PI
+                float bound  = detail ? cloud.terrainDetailAmpM * cloud.terrainDetailStrength
+                                        / max(1.0 - cloud.terrainDetailGain, 0.05) : 0.0;
+                for (int L = 5; L >= 1; L -= 2) {
+                    if (rayH > tdMaxMipH(maxTex, uv, L) + bound + 5.0) {
+                        float texM = 2669.0 * float(1 << (L + 1)) * max(cosLat, 0.05);
+                        gap = max(gap, 0.5 * texM / 0.6);        // step (0.6 * gap) = half a texel
+                        break;
+                    }
+                }
+            }
         } else if (!detail) {
             gap = rayH - h0;
             if (gap < 0.0) {
@@ -411,18 +509,21 @@ float terrainSunShadow(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 n, vec
     float bias = 1.0 + 1.5 * lodBase;
     vec3  q0   = q + n * bias;
     float t    = bias;
-    for (int i = 0; i < 24; ++i) {
+    // 16 steps, three octaves, the step floor at 8% of t: measured 2-4 ms at ground level with 24
+    // steps / four octaves / 5% (harness perf, clouds off), for no visible difference at the
+    // shadow's own scale.
+    for (int i = 0; i < 16; ++i) {
         vec3  qs   = q0 + sunDir * t;
         float rayH = tdAltitude(qs);
         if (rayH > kMaxTerrain + 600.0) break;
         float h0;
-        float H = terrainHeightDetailed(elevTex, specTex, qs, enuX, enuY, enuZ, max(lodBase, 0.03 * t),
-                                        kTdCoarseOctaves, h0);
+        float H = terrainHeightDetailed(elevTex, specTex, qs, enuX, enuY, enuZ, max(lodBase, 0.05 * t),
+                                        kTdCoarseOctaves - 1, h0);
         float gap = rayH - H;
         res = min(res, 6.0 * gap / t);
         if (res < 0.0) break;
-        t += clamp(0.7 * gap, max(6.0, 0.05 * t), 4000.0);
-        if (t > 60000.0) break;
+        t += clamp(0.7 * gap, max(6.0, 0.08 * t), 5000.0);
+        if (t > 50000.0) break;
     }
     return smoothstep(0.0, 1.0, clamp(res, 0.0, 1.0));
 }

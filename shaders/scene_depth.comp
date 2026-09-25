@@ -54,6 +54,8 @@ layout(set = 0, binding = 3, r32f) uniform readonly image2D meshDistImg;
 #include "cloud_params.glsl"
 // x = the observer's eye ground height with terrain detail, for sat_sky.frag (binding 26 there).
 layout(set = 0, binding = 5, std430) writeonly buffer TerrainFrame { vec4 terrainFrame; };
+// The DEM max-mip chain (terrain_detail.glsl tdMaxMipH): empty-space skipping in the march.
+layout(set = 0, binding = 6) uniform sampler2D earthElevMaxTex;
 
 
 #include "common.glsl"
@@ -135,7 +137,7 @@ void main() {
         if (tExit < cloud.terrainDistFadeEndM) {
             int steps;
             float pixAngle = pc.fovYRad / float(size.y);
-            tHit = terrainMarchDetailed(earthElevTex, earthSpecTex, obsEffH + 2.0, dir, enuX, enuY, enuZ,
+            tHit = terrainMarchDetailed(earthElevTex, earthSpecTex, earthElevMaxTex, true, obsEffH + 2.0, dir, enuX, enuY, enuZ,
                                         2.0, tExit, pixAngle, 192, 1.0, false, kTdCoarseOctaves, steps);
         }
     }
