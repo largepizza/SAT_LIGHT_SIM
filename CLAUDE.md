@@ -394,6 +394,11 @@ User guide and command reference: **docs/HARNESS.md** (keep its table in step wi
 - Camera paths (`path key/play`) and `overlay` text are harness state too (`harnessPath_`,
   `harnessOverlays_`); `path play` owns the clock (fixed 1/fps via `harnessFixedDtOverride_`, sim
   time set per frame) so a recording is uniform in time however slowly frames encode.
+- **`observer agl=` reads the GPU's ground back** (`terrainFrameBuf.y` -> host-mapped
+  `terrainFrameReadBuf`, copied every frame after the depth pass): the CPU's `cpuTerrainHeightM` is
+  an 18 km/px DEM copy, and until 2026-09-25 `agl` used it — the Big Sur golden view (agl=30) stood
+  at 758 m over ground that is really at 342 m. `state`'s observer block used to add the terrain to
+  the height offset a second time as well.
 - `harnessRunner_` is null outside a harness run (and before the console's first use), and every
   hook is then a no-op. The first-run preset seed, intro, first-run notices, music and toasts are
   all suppressed in a harness run.

@@ -383,11 +383,20 @@ json SatelliteSim::harnessStateJson()
                  {"paused", timePaused},
                  {"scale", kTimeLabels[std::clamp(timeScaleIdx, 0, kNumTimeScales - 1)]},
                  {"reverse", timeDir < 0.0f}};
+    // obsHeightOffset is an altitude above sea level floored at the ground (see `observer`), so the
+    // eye is at max(ground, offset) (+2 m). The ground is the GPU's (DEM + detail, last completed
+    // frame) unless the depth pass is knocked out; then the CPU's coarse DEM copy.
+    const bool gpuGround = harnessGpuGroundValid();
+    const float ground = gpuGround ? terrainFrameMapped[1] : obsTerrainH;
+    const float eyeAsl = std::max(ground, obsHeightOffset);
     j["observer"] = {{"lat_deg", obsLatDeg},
                      {"lon_deg", obsLonDeg},
-                     {"agl_m", obsHeightOffset},
-                     {"terrain_m", obsTerrainH},
-                     {"alt_m", obsTerrainH + obsHeightOffset},
+                     {"alt_m", eyeAsl},
+                     {"agl_m", eyeAsl - ground},
+                     {"ground_m", ground},
+                     {"ground_source", gpuGround ? "gpu" : "cpu"},
+                     {"terrain_cpu_m", obsTerrainH},
+                     {"height_offset_m", obsHeightOffset},
                      {"following", followActive}};
     if (followActive)
         j["observer"]["follow"] = {{"sat", followSatIndex},
@@ -651,6 +660,26 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     // ── observer ────────────────────────────────────────────────────────────────
     if (n == "observer")
     {
+        // agl > 0 finishes a frame later: the GPU's ground at the new position (DEM + detail, what
+        // the renderer stands on) replaces the CPU's coarse estimate.
+        if (a.frame > 0)
+        {
+            if (a.frame < 2)
+                return Status::Pending;
+            const float agl = a.scratch["agl"].get<float>();
+            const float ground = terrainFrameMapped[1];
+            obsHeightOffset = ground + agl;
+            r["lat_deg"] = obsLatDeg;
+            r["lon_deg"] = obsLonDeg;
+            r["alt_m"] = obsHeightOffset;
+            r["agl_m"] = agl;
+            r["ground_m"] = ground;
+            char buf[128];
+            snprintf(buf, sizeof(buf), "%.4f, %.4f  alt %.0f m, agl %.0f m  (ground %.0f m)", obsLatDeg, obsLonDeg,
+                     obsHeightOffset, agl, ground);
+            r["message"] = buf;
+            return Status::Done;
+        }
         if (c.has("lat") || c.has("lon"))
         {
             if (followActive)
@@ -667,24 +696,31 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         }
         // obsHeightOffset is read by the sky shaders as an altitude ABOVE SEA LEVEL floored at the
         // ground (eye = max(ground, offset) + 2 m; terrain.glsl observerEffHeight). `alt` sets it
-        // directly. `agl` adds the CPU's terrain estimate, which comes from an 18 km/px copy of the
-        // DEM — so agl=0 means "on the ground" exactly (the GPU's own ground), and a small agl is
-        // approximate.
+        // directly. agl=0 is 0 (on the ground, exactly). agl > 0 needs the ground height: the CPU's
+        // (an 18 km/px copy of the DEM, off by hundreds of metres on a coast) for one frame, then
+        // the GPU's, read back above. With the depth pass knocked out only the CPU's exists.
         if (c.has("alt"))
             obsHeightOffset = std::max(0.0f, (float)c.num("alt", 0.0));
         if (c.has("agl"))
         {
             const float agl = (float)c.num("agl", 0.0);
             obsHeightOffset = agl <= 0.0f ? 0.0f : cpuTerrainHeightM(obsLatDeg, obsLonDeg) + agl;
+            if (agl > 0.0f && harnessGpuGroundValid())
+            {
+                a.scratch["agl"] = agl;
+                return Status::Pending;
+            }
         }
         obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
         r["lat_deg"] = obsLatDeg;
         r["lon_deg"] = obsLonDeg;
-        r["agl_m"] = obsHeightOffset;
+        const float eyeAsl = std::max(obsTerrainH, obsHeightOffset); // CPU ground: approximate
+        r["alt_m"] = eyeAsl;
+        r["agl_m"] = eyeAsl - obsTerrainH;
         r["terrain_m"] = obsTerrainH;
         char buf[128];
-        snprintf(buf, sizeof(buf), "%.4f, %.4f  agl %.0f m  (terrain %.0f m)", obsLatDeg, obsLonDeg, obsHeightOffset,
-                 obsTerrainH);
+        snprintf(buf, sizeof(buf), "%.4f, %.4f  alt %.0f m, agl %.0f m  (terrain %.0f m)", obsLatDeg, obsLonDeg,
+                 eyeAsl, eyeAsl - obsTerrainH, obsTerrainH);
         r["message"] = buf;
         return Status::Done;
     }

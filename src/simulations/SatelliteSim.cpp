@@ -2427,18 +2427,30 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                          VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-        // terrainFrameBuf (the observer's detailed ground height) -> sat_sky.frag.
+        // terrainFrameBuf (the observer's detailed ground height) -> sat_sky.frag, and a copy to the
+        // host for the harness.
         VkBufferMemoryBarrier fb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         fb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        fb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        fb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
         fb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         fb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         fb.buffer = terrainFrameBuf;
         fb.offset = 0;
         fb.size = VK_WHOLE_SIZE;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
-                             nullptr, 1, &fb, 0, nullptr);
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 1, &fb, 0, nullptr);
+        {
+            const VkBufferCopy cp{0, 0, 16};
+            vkCmdCopyBuffer(cmd, terrainFrameBuf, terrainFrameReadBuf, 1, &cp);
+            VkBufferMemoryBarrier hb = fb;
+            hb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            hb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            hb.buffer = terrainFrameReadBuf;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
+                                 &hb, 0, nullptr);
+        }
         recordTerrainProbe(cmd, ctx); // harness `probe`: no-op unless requested this frame
     }
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
@@ -5386,6 +5398,10 @@ void SatelliteSim::cleanup(VkDevice device)
         vkDestroyBuffer(device, terrainFrameBuf, nullptr);
         vkFreeMemory(device, terrainFrameMem, nullptr);
         terrainFrameBuf = VK_NULL_HANDLE;
+        vkDestroyBuffer(device, terrainFrameReadBuf, nullptr);
+        vkFreeMemory(device, terrainFrameReadMem, nullptr); // unmaps
+        terrainFrameReadBuf = VK_NULL_HANDLE;
+        terrainFrameMapped = nullptr;
     }
     destroyTerrainProbe(device);
 
@@ -7747,8 +7763,17 @@ void SatelliteSim::createCloudMarchPipeline(VulkanContext &ctx)
 void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
 {
     if (!terrainFrameBuf) // resolution-independent: created once, survives resizes
-        ctx.createBuffer(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                         terrainFrameBuf, terrainFrameMem);
+    {
+        ctx.createBuffer(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, terrainFrameBuf, terrainFrameMem);
+        ctx.createBuffer(16, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         terrainFrameReadBuf, terrainFrameReadMem);
+        void *p = nullptr;
+        vkMapMemory(ctx.device, terrainFrameReadMem, 0, 16, 0, &p);
+        std::memset(p, 0, 16);
+        terrainFrameMapped = static_cast<const float *>(p);
+    }
     uint32_t w = (ctx.swapExtent.width + 1) / 2;
     uint32_t h = (ctx.swapExtent.height + 1) / 2;
 

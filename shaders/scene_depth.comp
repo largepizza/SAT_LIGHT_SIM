@@ -90,7 +90,9 @@ void main() {
     // this frame's value.
     const bool quarter = pc.quarterPass > 0.5;
     if (quarter && coord == ivec2(0))
-        terrainFrame = vec4(observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir), 0.0, 0.0, 0.0);
+        terrainFrame = vec4(observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir),
+                            observerEffHeightDetailed(earthElevTex, earthSpecTex, vec4(pc.obsECEFDir.xyz, 0.0)),
+                            0.0, 0.0);
 
     // Knockout: fill with "nothing anywhere". Every consumer's operation is min()/>= against this,
     // so a uniform kNoSurfaceT reproduces the pre-unification behaviour (volumetrics and beams

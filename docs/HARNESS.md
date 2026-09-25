@@ -87,7 +87,7 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `time sun <el> [rising\|setting]` | the time nearest now (within 12 h) when the Sun is at `<el>` degrees for this observer. `time sun noon` / `time sun midnight` |
 | `time add <s>`, `time j2000 <s>` | relative / absolute (seconds since J2000) |
 | `time pause`, `time play`, `time scale <1x\|10x\|1m\|5m\|1h\|1d\|1w\|1mo\|1yr>`, `time reverse on\|off` | |
-| `observer lat= lon= [agl=\|alt=]` | move the observer. `alt` = metres above sea level (the shaders' meaning of the height offset: the eye is at max(ground, alt) + 2 m). `agl=0` = on the ground exactly; `agl>0` adds the CPU's terrain estimate, which comes from an 18 km/px DEM copy, so small values are approximate. Keeps the camera heading. Ends follow mode |
+| `observer lat= lon= [agl=\|alt=]` | move the observer. `alt` = metres above sea level (the shaders' meaning of the height offset: the eye is at max(ground, alt) + 2 m). `agl=0` = on the ground exactly; `agl>0` is exact too: the command takes one extra frame to read back the GPU's own ground (DEM + terrain detail) at the new position. With the depth pass knocked out (bit 1024) it falls back to the CPU's 18 km/px DEM copy, which is off by hundreds of metres on coasts and in valleys. `state` reports `alt_m`, `agl_m`, `ground_m` (+ `ground_source` gpu/cpu), `terrain_cpu_m` and the raw `height_offset_m`. Keeps the camera heading. Ends follow mode |
 | `camera az= el= fov=` | azimuth (0 = north, 90 = east), elevation, vertical FOV (0.5-120) in degrees |
 | `camera look <sun\|moon\|sel\|planet>` | aim once. `sel` = the selected satellite or planet |
 | `camera track <...\|off>` | re-aim every frame (a moving satellite stays centred) |

@@ -2631,8 +2631,14 @@ private:
     // 16 B, device-local: x = the observer's eye ground height with terrain detail (obsEffH),
     // computed once per frame by scene_depth.comp and read by sat_sky.frag (binding 26) instead of
     // evaluating the eight detail octaves again in every pixel (measured 1.5 ms at 1600x900).
+    // y = the detailed ground alone (no height offset). Copied every frame into the host-mapped
+    // terrainFrameRead*, which the harness reads (exact `observer agl=`, `state`'s ground).
     VkBuffer terrainFrameBuf = VK_NULL_HANDLE;
     VkDeviceMemory terrainFrameMem = VK_NULL_HANDLE;
+    VkBuffer terrainFrameReadBuf = VK_NULL_HANDLE;
+    VkDeviceMemory terrainFrameReadMem = VK_NULL_HANDLE;
+    const float *terrainFrameMapped = nullptr; // last completed frame's terrainFrameBuf
+    bool harnessGpuGroundValid() const { return terrainFrameMapped && (debugDisableMask & 1024u) == 0; }
     VkImage sceneDepthImg = VK_NULL_HANDLE;
     VkDeviceMemory sceneDepthMem = VK_NULL_HANDLE;
     VkImageView sceneDepthView = VK_NULL_HANDLE;
