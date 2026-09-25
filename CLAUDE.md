@@ -2803,10 +2803,15 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   sea-level point as an integer 2048-m cell + offset (CPU double -> `terrainAnchorCell/Rel`); every
   height uses the observer-relative `q` (`tdAltitude`, `tdSphereOffset`). The erosion branch fought
   exactly this precision loss (stretched/swimming noise).
-- **scene_depth.comp marches the true surface from the eye; sat_sky.frag starts from it** (min of
-  the 2x2 half-res texels, x0.995 — conservative because the half-res footprint test stops early)
-  and usually resolves in 1-5 steps + a 3-step regula falsi. The first cuts (full-res march from the
-  eye; an envelope depth) cost 10-25 ms at ground level; measured with `perf` + `debugview steps`.
+- **A seed pyramid: quarter-res -> half-res -> full-res.** scene_depth.comp runs twice: a
+  quarter-res pre-pass (`quarterPass`, its own descriptor set `sceneDepthQDescSet`, writes
+  `sceneDepthQImg` and `terrainFrameBuf`) marches the true surface from the eye; the half-res pass
+  starts from the nearest of its 2x2 texels (x0.995) or skips rays where all four were sky; sat_sky.frag
+  does the same from the half-res result and usually resolves in 1-5 steps + a 3-step regula falsi.
+  Conservative at every level because each coarser pass's pixel-footprint test is wider, so it stops
+  EARLY and counts near misses of a crest as hits. Each set's binding 7 samples the OTHER image (so
+  neither is read in the layout it is being written in). The first cuts (full-res march from the eye;
+  an envelope depth) cost 10-25 ms at ground level; measured with `perf` + `debugview steps`.
 - **Out of budget is not a miss**: the march finishes on a coarse-octave tail. Returning -1 made the
   depth say "sky" and the sky pass skip the pixel — holes through distant hills (found with `probe`).
 - **The observer's ground includes the detail** (`observerEffHeightDetailed`), computed once by
@@ -2830,9 +2835,10 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   the float UV resolves ~2.4 m and hardware bilinear of R8 uses 8-bit sub-texel weights; together
   they built metre-high shelves on a steep wall seen from 10 m. The CPU passes the observer's texel
   (integer + fraction, `terrainObsTexel`); each point adds a cancellation-free lon/lat offset.
-- **Cost (RTX 3070 Ti, 1600x900, clouds off, harness `perf`)**: +5-8 ms at High on the ground in
-  mountains (depth 2.3-3.3 ms + sky 4-6 ms incl. 1-2 ms shadows), ~+1 ms from aircraft, ~0 from
-  orbit; +3 ms at Medium in the Anchorage worst case (10.0 vs 6.9 ms). Presets: on for
+- **Cost (RTX 3070 Ti, 1600x900, clouds off, harness `perf`, final)**: +4-6 ms at High on the ground
+  in mountains (worst total 9.7 ms vs ~4 ms without detail: depth passes 1.5-2.1 ms, sky 4-5 ms incl.
+  1-2 ms shadows), ~+1 ms from aircraft, ~0 from orbit; +3 ms at Medium in the Anchorage worst
+  case (measured before the quarter pass; less now). Presets: on for
   Medium/High/Ultra, off for Low/Planetarium/Potato (`applyGraphicsPreset`). Terrain tab sliders:
   Terrain detail / Detail height / roughness / erosion / Terrain shadows / Terrain materials.
 - **Tools**: `tools/harness/scripts/terrain_views.satcmd` (eight golden views), harness `debugview`

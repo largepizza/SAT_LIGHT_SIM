@@ -1537,8 +1537,11 @@ void main() {
     // A probe renders from a satellite: the main observer's value below is not its eye.
     float obsEffH = observerEffHeight(earthElevTex, earthSpecTex, pc.obsECEFDir);
 #else
-    // The observer's ground with terrain detail — scene_depth.comp computed it once this frame.
-    float obsEffH = terrainFrame.x;
+    // The observer's ground with terrain detail — scene_depth.comp computed it once this frame,
+    // unless knockout bit 1024 skipped that pass (then the buffer is stale: compute it here).
+    float obsEffH = ((cloud.dbgDisableMask & 1024u) != 0u)
+                  ? observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir)
+                  : terrainFrame.x;
 #endif
 
     // Observer position: +2 m eye height above ground.

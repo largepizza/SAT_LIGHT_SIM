@@ -685,7 +685,14 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     sceneDepthImg = VK_NULL_HANDLE;
     sceneDepthMem = VK_NULL_HANDLE;
     sceneDepthView = VK_NULL_HANDLE;
-    createSceneDepthResources(ctx); // recreates image/view; leaves it in SHADER_READ_ONLY_OPTIMAL
+    vkDestroyImageView(ctx.device, sceneDepthQView, nullptr);
+    vkDestroyImage(ctx.device, sceneDepthQImg, nullptr);
+    vkFreeMemory(ctx.device, sceneDepthQMem, nullptr);
+    sceneDepthQImg = VK_NULL_HANDLE;
+    sceneDepthQMem = VK_NULL_HANDLE;
+    sceneDepthQView = VK_NULL_HANDLE;
+    createSceneDepthResources(ctx); // recreates both images/views; leaves them in SHADER_READ_ONLY_OPTIMAL
+    writeSceneDepthSeedDescriptors(ctx);
 
     VkDescriptorImageInfo depthStorageInfo{VK_NULL_HANDLE, sceneDepthView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo depthSampledInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -2372,6 +2379,28 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         uint32_t halfW = (ctx.swapExtent.width + 1) / 2;
         uint32_t halfH = (ctx.swapExtent.height + 1) / 2;
 
+        // Quarter-res pre-pass: the same march at 1/16 of the pixels; its result seeds the half-res
+        // pass below (and it writes terrainFrameBuf). Measured with the harness: the half-res pass
+        // marched ground-level rays from the eye and cost 2-4 ms among mountains.
+        {
+            const uint32_t qW = (ctx.swapExtent.width + 3) / 4, qH = (ctx.swapExtent.height + 3) / 4;
+            ctx.imageBarrier(cmd, sceneDepthQImg,
+                             VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+            SceneDepthPC qpc = dpc;
+            qpc.quarterPass = 1.0f;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, sceneDepthPipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, sceneDepthPipeLayout, 0, 1,
+                                    &sceneDepthQDescSet, 0, nullptr);
+            vkCmdPushConstants(cmd, sceneDepthPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(qpc), &qpc);
+            vkCmdDispatch(cmd, (qW + 15) / 16, (qH + 15) / 16, 1);
+            ctx.imageBarrier(cmd, sceneDepthQImg,
+                             VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                             VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        }
+
         // Pre-dispatch: SHADER_READ_ONLY_OPTIMAL → GENERAL.
         // srcStage includes COMPUTE as well as FRAGMENT — unlike cloudMarchTargetA/B (read only by
         // fragment shaders), this image is also read by cloud_march.comp, so the write-after-read
@@ -3555,7 +3584,7 @@ void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo colorInfo{VK_NULL_HANDLE, meshRenderer.sceneColorView(), VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo distInfo{VK_NULL_HANDLE, meshRenderer.sceneDistView(), VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo reflInfo{VK_NULL_HANDLE, meshRenderer.sceneReflGView(), VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet w[4] = {};
+    VkWriteDescriptorSet w[5] = {};
     w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, skyDescSet, 22, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             &colorInfo, nullptr, nullptr};
     w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, skyDescSet, 23, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -3564,7 +3593,10 @@ void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &distInfo, nullptr, nullptr};
     w[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, skyDescSet, 25, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             &reflInfo, nullptr, nullptr}; // sat_sky.frag SKY_REFL: the reflection G-buffer
-    vkUpdateDescriptorSets(ctx.device, 4, w, 0, nullptr);
+    // The quarter-res depth set: not read in quarter mode, but a statically used binding must be valid.
+    w[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthQDescSet, 3, 0, 1,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &distInfo, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, sceneDepthQDescSet ? 5 : 4, w, 0, nullptr);
 }
 
 // ─── Environment probes (2026-09-24) ─────────────────────────────────────────
@@ -5399,6 +5431,9 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyImageView(device, sceneDepthView, nullptr);
     vkDestroyImage(device, sceneDepthImg, nullptr);
     vkFreeMemory(device, sceneDepthMem, nullptr);
+    vkDestroyImageView(device, sceneDepthQView, nullptr);
+    vkDestroyImage(device, sceneDepthQImg, nullptr);
+    vkFreeMemory(device, sceneDepthQMem, nullptr);
     // ── Beam self-march pipeline (2026-08-09, replaces beam_cloud_block.comp) ──
     vkDestroyPipeline(device, beamSelfMarchPipeline, nullptr);
     vkDestroyPipelineLayout(device, beamSelfMarchPipeLayout, nullptr);
@@ -7751,18 +7786,35 @@ void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
     // entirely on the CPU side rather than early-returning in the shader — a skipped dispatch
     // leaves whatever is here, so it must be a valid "nothing occludes" buffer. Same one-time-
     // setup role createCloudMarchResources' matching barriers play, for first init and onResize.
+    // The quarter-res pre-pass image (see sceneDepthQImg).
+    {
+        const uint32_t qw = (ctx.swapExtent.width + 3) / 4, qh = (ctx.swapExtent.height + 3) / 4;
+        ctx.createImage(qw, qh, VK_FORMAT_R32_SFLOAT,
+                        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                        sceneDepthQImg, sceneDepthQMem);
+        VkImageViewCreateInfo qv{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        qv.image = sceneDepthQImg;
+        qv.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        qv.format = VK_FORMAT_R32_SFLOAT;
+        qv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCreateImageView(ctx.device, &qv, nullptr, &sceneDepthQView);
+    }
+
     auto cmd = ctx.beginOneTimeCommands();
-    ctx.imageBarrier(cmd, sceneDepthImg, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkClearColorValue noSurface{};
     noSurface.float32[0] = noSurface.float32[1] = noSurface.float32[2] = noSurface.float32[3] = 1e30f;
     VkImageSubresourceRange fullColor{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(cmd, sceneDepthImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                         &noSurface, 1, &fullColor);
-    ctx.imageBarrier(cmd, sceneDepthImg, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    for (VkImage img : {sceneDepthImg, sceneDepthQImg})
+    {
+        ctx.imageBarrier(cmd, img, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        vkCmdClearColorImage(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &noSurface, 1, &fullColor);
+        ctx.imageBarrier(cmd, img, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    }
     ctx.endOneTimeCommands(cmd);
 }
 
@@ -7773,7 +7825,7 @@ void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
 //   binding 2  sceneDepth   (storage image, r32f)
 void SatelliteSim::createSceneDepthDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[6] = {};
+    VkDescriptorSetLayoutBinding bindings[7] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -7783,28 +7835,34 @@ void SatelliteSim::createSceneDepthDescriptors(VulkanContext &ctx)
     bindings[4] = {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     // terrainFrameBuf: this pass writes the observer's detailed ground height for sat_sky.frag.
     bindings[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    // The other resolution's depth (the half-res pass's seed; see sceneDepthQImg).
+    bindings[6] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 6;
+    li.bindingCount = 7;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &sceneDepthDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 4;
     pi.pPoolSizes = ps;
-    pi.maxSets = 1;
+    pi.maxSets = 2;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &sceneDepthDescPool);
 
+    VkDescriptorSetLayout twoLayouts[2] = {sceneDepthDescLayout, sceneDepthDescLayout};
+    VkDescriptorSet twoSets[2] = {};
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ai.descriptorPool = sceneDepthDescPool;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &sceneDepthDescLayout;
-    vkAllocateDescriptorSets(ctx.device, &ai, &sceneDepthDescSet);
+    ai.descriptorSetCount = 2;
+    ai.pSetLayouts = twoLayouts;
+    vkAllocateDescriptorSets(ctx.device, &ai, twoSets);
+    sceneDepthDescSet = twoSets[0];
+    sceneDepthQDescSet = twoSets[1];
 
     // Same fallback pattern the sky and cloud-march sets use — the elevation/spec textures may
     // have failed to load, so fall back to the always-valid noise sampler rather than leaving a
@@ -7819,6 +7877,24 @@ void SatelliteSim::createSceneDepthDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo depthInfo{VK_NULL_HANDLE, sceneDepthView, VK_IMAGE_LAYOUT_GENERAL};
 
     VkDescriptorBufferInfo uboInfo{cloudParamsBuf, 0, sizeof(GpuCloudParams)};
+    // The quarter-res set: the same textures, UBO and frame buffer; writes the quarter image.
+    {
+        VkDescriptorImageInfo qStore{VK_NULL_HANDLE, sceneDepthQView, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorBufferInfo qFrame{terrainFrameBuf, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet qw[5] = {};
+        qw[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthQDescSet, 0, 0, 1,
+                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo, nullptr, nullptr};
+        qw[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthQDescSet, 1, 0, 1,
+                 VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &specInfo, nullptr, nullptr};
+        qw[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthQDescSet, 2, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &qStore, nullptr, nullptr};
+        qw[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthQDescSet, 4, 0, 1,
+                 VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &uboInfo, nullptr};
+        qw[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthQDescSet, 5, 0, 1,
+                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &qFrame, nullptr};
+        vkUpdateDescriptorSets(ctx.device, 5, qw, 0, nullptr);
+    }
+    writeSceneDepthSeedDescriptors(ctx);
     VkWriteDescriptorSet writes[4] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 0, 0, 1,
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo, nullptr, nullptr};
@@ -7840,6 +7916,26 @@ void SatelliteSim::createSceneDepthDescriptors(VulkanContext &ctx)
              VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &frameInfo, nullptr};
     vkUpdateDescriptorSets(ctx.device, 2, fw, 0, nullptr);
 
+}
+
+// Binding 7 of both scene-depth sets (the other resolution's depth, sampled) — and the quarter set's
+// binding 3 (the mesh distance: the quarter pass does not read it, but the binding must be valid).
+// Called at init and after every resize, when both images are recreated.
+void SatelliteSim::writeSceneDepthSeedDescriptors(VulkanContext &ctx)
+{
+    if (!sceneDepthQDescSet)
+        return;
+    VkDescriptorImageInfo qSampled{sceneDepthSampler, sceneDepthQView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo hSampled{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo qStore{VK_NULL_HANDLE, sceneDepthQView, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w[3] = {};
+    w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthDescSet, 7, 0, 1,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &qSampled, nullptr, nullptr};
+    w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthQDescSet, 7, 0, 1,
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &hSampled, nullptr, nullptr};
+    w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthQDescSet, 2, 0, 1,
+            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &qStore, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 3, w, 0, nullptr);
 }
 
 // ─── createSceneDepthPipeline ─────────────────────────────────────────────────

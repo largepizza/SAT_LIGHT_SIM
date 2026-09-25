@@ -767,7 +767,7 @@ struct SceneDepthPC
                                //             whole pass (fills kNoSurfaceT = nothing occludes
                                //             anything, reproducing pre-unification behaviour, so
                                //             the entire architecture A/Bs from one checkbox)
-    float pad0;                // offset 76 — explicit, aligns the vec4 below to 16
+    float quarterPass;         // offset 76 — 1 = the quarter-res pre-pass (was pad0)
     glm::vec4 obsECEFDir;      // offset 80 — xyz = observer ECEF unit vector, w = height offset
 }; // total: 96 bytes
 static_assert(sizeof(SceneDepthPC) == 96, "SceneDepthPC layout mismatch");
@@ -2636,6 +2636,15 @@ private:
     VkImage sceneDepthImg = VK_NULL_HANDLE;
     VkDeviceMemory sceneDepthMem = VK_NULL_HANDLE;
     VkImageView sceneDepthView = VK_NULL_HANDLE;
+    // Quarter-resolution pre-pass of scene_depth.comp (2026-09-25): the same march at 1/16 of the
+    // pixels, whose result seeds the half-resolution pass (as the half-res one seeds sat_sky.frag).
+    // Two sets: sceneDepthQDescSet writes this image and samples the half-res one at binding 7 (not
+    // read in quarter mode, but it must be a valid view in the layout it is in at that moment);
+    // sceneDepthDescSet writes the half-res image and samples this one at binding 7.
+    VkImage sceneDepthQImg = VK_NULL_HANDLE;
+    VkDeviceMemory sceneDepthQMem = VK_NULL_HANDLE;
+    VkImageView sceneDepthQView = VK_NULL_HANDLE;
+    VkDescriptorSet sceneDepthQDescSet = VK_NULL_HANDLE;
     VkSampler sceneDepthSampler = VK_NULL_HANDLE; // resolution-independent; created once
     VkDescriptorSetLayout sceneDepthDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool sceneDepthDescPool = VK_NULL_HANDLE;
@@ -3853,6 +3862,7 @@ private:
     void createSceneDepthResources(VulkanContext &ctx);
     void createSceneDepthDescriptors(VulkanContext &ctx);
     void createSceneDepthPipeline(VulkanContext &ctx);
+    void writeSceneDepthSeedDescriptors(VulkanContext &ctx);
     void createBeamSelfMarchDescriptors(VulkanContext &ctx);
     void createBeamSelfMarchPipeline(VulkanContext &ctx);
     void createGlowResources(VulkanContext &ctx);

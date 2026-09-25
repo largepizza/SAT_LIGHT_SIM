@@ -37,7 +37,7 @@ layout(push_constant) uniform PC {
     float fovYRad;          //                                            — offset 64
     float aspect;           // ALWAYS the true swapchain aspect           — offset 68
     uint  debugDisableMask; // bit 1 = skip terrain, bit 1024 = skip pass — offset 72
-    float pad0;             //                                            — offset 76
+    float quarterPass;      // 1 = the quarter-res pre-pass                — offset 76
     vec4  obsECEFDir;       // xyz = observer ECEF unit vec, w = height   — offset 80
 } pc;
 
@@ -54,6 +54,9 @@ layout(set = 0, binding = 3, r32f) uniform readonly image2D meshDistImg;
 #include "cloud_params.glsl"
 // x = the observer's eye ground height with terrain detail, for sat_sky.frag (binding 26 there).
 layout(set = 0, binding = 5, std430) writeonly buffer TerrainFrame { vec4 terrainFrame; };
+// The quarter-res pre-pass's result, which seeds this (half-res) pass. In the quarter pass itself
+// this binding is the half-res image and is not read.
+layout(set = 0, binding = 7) uniform sampler2D seedDepthTex;
 
 
 #include "common.glsl"
@@ -85,7 +88,8 @@ void main() {
     // The observer's detailed ground height, once for sat_sky.frag (it would otherwise evaluate the
     // detail octaves in every pixel). Written before the knockout early-out below so it is always
     // this frame's value.
-    if (coord == ivec2(0))
+    const bool quarter = pc.quarterPass > 0.5;
+    if (quarter && coord == ivec2(0))
         terrainFrame = vec4(observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir), 0.0, 0.0, 0.0);
 
     // Knockout: fill with "nothing anywhere". Every consumer's operation is min()/>= against this,
@@ -132,11 +136,28 @@ void main() {
                     : (tShell.y > 0.0  ? tShell.y : 0.0);
         float tCap  = mix(250000.0, 3600000.0, clamp(obsEffH / 400000.0, 0.0, 1.0));
         tExit = min(tExit, tCap);
-        if (tExit < cloud.terrainDistFadeEndM) {
+        // Half-res pass: start from the quarter-res result — the nearest of the 2x2 quarter texels
+        // around this texel, x0.995 — and skip rays where all four found neither terrain nor sea.
+        // Conservative for the same reason the full-res seed is: the quarter pass's pixel-footprint
+        // test is 2x wider, so it stops EARLY and counts near misses of a crest as hits.
+        float tStart  = 2.0;
+        bool  seedSky = false;
+        if (!quarter) {
+            ivec2 sSize = textureSize(seedDepthTex, 0);
+            vec2  sp    = (vec2(coord) + 0.5) / vec2(size) * vec2(sSize) - 0.5;
+            ivec2 s0    = ivec2(floor(sp));
+            float dMin  = kNoSurfaceT;
+            for (int sy = 0; sy <= 1; ++sy)
+                for (int sx = 0; sx <= 1; ++sx)
+                    dMin = min(dMin, texelFetch(seedDepthTex, clamp(s0 + ivec2(sx, sy), ivec2(0), sSize - 1), 0).r);
+            seedSky = dMin >= kNoSurfaceT * 0.5;
+            tStart  = max(2.0, dMin * 0.995 - 0.5);
+        }
+        if (tExit < cloud.terrainDistFadeEndM && !seedSky) {
             int steps;
             float pixAngle = pc.fovYRad / float(size.y);
             tHit = terrainMarchDetailed(earthElevTex, earthSpecTex, obsEffH + 2.0, dir, enuX, enuY, enuZ,
-                                        2.0, tExit, pixAngle, 192, 1.0, false, kTdCoarseOctaves, steps);
+                                        tStart, tExit, pixAngle, 192, 1.0, false, kTdCoarseOctaves, steps);
         }
     }
 
@@ -144,5 +165,7 @@ void main() {
     // march found any, else the sea-level sphere. Converted to the large-finite sentinel so every
     // consumer can use a branch-free min()/>= without its own "did we hit anything" guard.
     float tSurface = (tHit > 0.0) ? tHit : tSeaLvl;
-    imageStore(sceneDepth, coord, vec4(min(tSurface > 0.0 ? tSurface : kNoSurfaceT, meshDistAt(coord, size))));
+    // The quarter pass only seeds the half-res one: no satellite meshes in it.
+    float tOut = tSurface > 0.0 ? tSurface : kNoSurfaceT;
+    imageStore(sceneDepth, coord, vec4(quarter ? tOut : min(tOut, meshDistAt(coord, size))));
 }
