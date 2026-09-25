@@ -1733,6 +1733,51 @@ bool SatelliteSim::buildViewChip(const UIInput &inp, UIRenderer &ui, int row, in
 //   Studio    — LIGHTING (live sky vs the fixed studio sun). Deliberately its own group: spin + live
 //               light is a legitimate combination, so it is not part of the view radio set.
 //   Maximize  — pops the render out into its own window ("Restore" from inside it).
+// ─── buildViewerMarkerLabels ─────────────────────────────────────────────────
+// "You" / "Target" beside the viewer's marker dots: floating text anchored to the image element, placed
+// from the dot's position in the render target (viewerMarkerLabels) through the view's crop of it
+// (viewerUvMini / viewerUvPop) onto the element's last laid-out box. Pointer-transparent, so a drag on
+// the image under a label still orbits the camera.
+void SatelliteSim::buildViewerMarkerLabels(int view)
+{
+    if (!meshRenderer.viewerRendered() || viewerBgW == 0 || viewerBgH == 0)
+        return;
+    const Clay_ElementId imgId = view == 0 ? CLAY_ID("ViewerImageMini") : CLAY_ID("ViewerImagePop");
+    const Clay_ElementData d = Clay_GetElementData(imgId);
+    if (!d.found || d.boundingBox.width < 1.0f || d.boundingBox.height < 1.0f)
+        return;
+    const float *uv = view == 0 ? viewerUvMini : viewerUvPop;
+    static const Clay_Color kLabelColor[2] = {{90, 242, 255, 255}, {255, 158, 46, 255}};
+    const float r = std::max(4.0f, 5.0f * uiScale); // the dot's radius (recordModelViewer)
+    for (int m = 0; m < 2; ++m)
+    {
+        const ViewerMarkerLabel &L = viewerMarkerLabels[m];
+        if (!L.on)
+            continue;
+        const float u = L.x / (float)viewerBgW, v = L.y / (float)viewerBgH;
+        const float ex = (u - uv[0]) / std::max(uv[2] - uv[0], 1e-6f) * d.boundingBox.width;
+        const float ey = (v - uv[1]) / std::max(uv[3] - uv[1], 1e-6f) * d.boundingBox.height;
+        if (ex < 0.0f || ey < 0.0f || ex > d.boundingBox.width || ey > d.boundingBox.height)
+            continue;
+        CLAY(CLAY_IDI("ViewerMarkerLabel", view * 2 + m),
+             {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}, .padding = {4, 4, 1, 1}},
+              .backgroundColor = {0, 0, 0, 150},
+              .cornerRadius = CLAY_CORNER_RADIUS(3),
+              .floating = {.offset = {ex + r + 5.0f, ey - 0.5f * (float)fs(11) - 2.0f},
+                           .parentId = imgId.id,
+                           .zIndex = 11,
+                           .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_TOP},
+                           .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+                           .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID}})
+        {
+            if (m == 0)
+                CLAY_TEXT(CLAY_STRING("You"), CLAY_TEXT_CONFIG({.textColor = kLabelColor[0], .fontSize = fs(11)}));
+            else
+                CLAY_TEXT(CLAY_STRING("Target"), CLAY_TEXT_CONFIG({.textColor = kLabelColor[1], .fontSize = fs(11)}));
+        }
+    }
+}
+
 void SatelliteSim::buildViewChips(const UIInput &inp, UIRenderer &ui, int row)
 {
     const bool popped = viewerChrome.open;
@@ -1938,6 +1983,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                     {
                         buildViewChips(inp, ui, 0);
                     }
+                    buildViewerMarkerLabels(0);
                 }
                 text("Drag to orbit, scroll to zoom. Cyan: you; orange: site", Pal::textHint, 11);
                 // ── The sections: only these scroll ──────────────────────────────────────────────
@@ -2106,6 +2152,7 @@ void SatelliteSim::buildViewPopoutWindow(const UIInput &inp, UIRenderer &ui)
                 {
                     buildViewChips(inp, ui, 1);
                 }
+                buildViewerMarkerLabels(1);
             }
         },
         [&]() { buildViewTitleIcons(inp, ui, true); }, isSelected);
@@ -3990,6 +4037,39 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
                       CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
         }
     }
+    // Sharp mirror reflections (SKY_REFL): the full renderer per pixel in mirror-smooth surfaces.
+    CLAY(CLAY_ID("SharpReflRow"), {.layout = {
+                                       .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                       .padding = {4, 4, 4, 4},
+                                       .childGap = 8,
+                                       .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                       .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Sharp mirror reflections"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+        CLAY(CLAY_ID("SharpReflSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+        Clay_Color chkBg = sharpReflections ? Pal::btnAccent : (hovSharpReflChk ? Pal::btnHover : Pal::btnIdle);
+        CLAY(CLAY_ID("SharpReflChk"), {.layout = {
+                                           .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                       .backgroundColor = chkBg,
+                                       .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovSharpReflChk);
+            sndClick(n, inp.lmbPressed);
+            hovSharpReflChk = n;
+            if (n && inp.lmbPressed)
+                sharpReflections = !sharpReflections;
+            ui.tooltip(inp, n,
+                       "Mirrors (a Reflect Orbital membrane, quartz radiators) reflect the full sky renderer pixel by "
+                       "pixel, sharp at any distance, instead of a reflection map. Costs a sky render of the mirror's "
+                       "area on screen, for the four largest such satellites in view. Needs full-renderer reflections",
+                       fs(11));
+            CLAY_TEXT(sharpReflections ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+        }
+    }
     buildBulkExportRows(inp, ui);
 }
 
@@ -5444,6 +5524,7 @@ void SatelliteSim::loadSettings()
         flareMitigationTiltDeg = p.value("flare_mitigation_tilt_deg", flareMitigationTiltDeg);
         satPartOcclusion = p.value("sat_part_occlusion", satPartOcclusion);
         envReflections = p.value("full_renderer_reflections", envReflections);
+        sharpReflections = p.value("sharp_mirror_reflections", sharpReflections);
     }
 
     if (j.contains("display"))
@@ -5768,7 +5849,8 @@ void SatelliteSim::saveSettings()
         {"trail_composite_gain", trailCompositeGain},
         {"flare_mitigation_tilt_deg", flareMitigationTiltDeg},
         {"sat_part_occlusion", satPartOcclusion},
-        {"full_renderer_reflections", envReflections}};
+        {"full_renderer_reflections", envReflections},
+        {"sharp_mirror_reflections", sharpReflections}};
 
     j["display"] = {
         {"ui_scale", uiScale},

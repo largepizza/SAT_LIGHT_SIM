@@ -270,6 +270,18 @@ add_custom_command(
 )
 list(APPEND SPV_FILES ${SKY_ENV_SPV})
 
+# And -DSKY_ENV -DSKY_REFL: the env renderer along the reflected rays of mirror-smooth mesh pixels, at
+# screen resolution (SatMeshRenderer::recordReflections) — exact reflections in a flat mirror.
+set(SKY_REFL_SPV "${SHADER_OUT_DIR}/sat_sky_refl.frag.spv")
+add_custom_command(
+    OUTPUT ${SKY_REFL_SPV}
+    COMMAND ${GLSLC} -I "${SHADER_INC_DIR}" -DSKY_ENV -DSKY_REFL "${SHADER_SRC_DIR}/sat_sky.frag" -o ${SKY_REFL_SPV}
+    DEPENDS "${SHADER_SRC_DIR}/sat_sky.frag" ${SHADER_HEADERS}
+    COMMENT "Compiling shader: sat_sky.frag (SKY_REFL variant)"
+    VERBATIM
+)
+list(APPEND SPV_FILES ${SKY_REFL_SPV})
+
 # Two more compiles of sat_mesh.frag for the scene pass's depth pre-pass (SatMeshRenderer): a
 # depth-only variant (just the open-lattice cut-outs) and a shading variant with forced early
 # fragment tests and no discard, drawn with depth EQUAL — so each covered pixel is shaded ONCE. The

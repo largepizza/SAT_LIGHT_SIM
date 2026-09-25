@@ -365,8 +365,9 @@ struct GpuSatListHeader
     uint32_t selectedFound;
     uint32_t selectedPad;
     // offset 80 — Phase 4d: satellites big enough on screen to draw as meshes (sat_flare.comp
-    // appends; the CPU draws them next frame in double precision). A satellite that got a slot has
-    // already had its sprite faded by `fade`; past kMaxMeshCandidates the rest stay sprites.
+    // appends every satellite past the CPU's nomination size; the CPU picks the largest next frame and
+    // draws them in double precision). meshCandCount is the atomic counter, so it can exceed the
+    // list: the CPU then raises the nomination size until the list holds them all again.
     uint32_t meshCandCount;
     uint32_t meshCandPad[3];
     struct MeshCandidate
@@ -375,9 +376,15 @@ struct GpuSatListHeader
         float meshPx;      // its mesh diameter on screen (GPU float; the CPU recomputes in double)
         float effectFlare; // its sprite's final flux before the fade (bloom seed matching)
         float angSize;     // its sprite's size (px) before the fade
-    } meshCand[64];
+    } meshCand[1024];
 };
-static constexpr int kMaxMeshCandidates = 64;
+// The GPU's candidate list, and how many of them the CPU draws as meshes. Until 2026-09-25 both were
+// 64 and the list was filled in atomic-append (random) order: in the AI ring ~250 satellites are
+// mesh-sized at once, so WHICH 64 got a mesh changed every frame and neighbours flickered between
+// mesh and sprite. Now the list is complete (the nomination size adapts to keep it so), the CPU
+// draws the largest kMaxMeshInstances, and the mesh fade-in size rises past the rest.
+static constexpr int kMaxMeshCandidates = 1024;
+static constexpr int kMaxMeshInstances = 256;
 
 // Phase 4d: the satellites the CPU draws as meshes THIS frame and how much of each one's sprite
 // remains (host-coherent, descSet binding 12, written in recordMeshScene before sat_flare runs), so
@@ -386,8 +393,11 @@ static constexpr int kMaxMeshCandidates = 64;
 struct GpuMeshKeepList
 {
     uint32_t count;
-    uint32_t pad[3];
-    glm::uvec4 entries[kMaxMeshCandidates + 1]; // x = satellite, y = sprite keep (float bits)
+    float nominatePx; // sat_flare.comp lists satellites whose mesh spans more than this (px)
+    uint32_t pad[2];
+    // x = satellite, y = sprite keep, z = glare keep (float bits): the sprite's GLARE outlasts its point
+    // and bloom (kGlarePointPx), so a mesh that is still point-like glares once, at its centre.
+    glm::uvec4 entries[kMaxMeshInstances + 1];
 };
 static_assert(sizeof(GpuSatListHeader) == 96 + 16 * kMaxMeshCandidates, "GpuSatListHeader layout mismatch");
 static_assert(offsetof(GpuSatListHeader, meshCandCount) == 80, "mesh candidate offset");
@@ -1853,13 +1863,32 @@ private:
     void buildViewPopoutWindow(const UIInput &inp, UIRenderer &ui); // the maximized render
     bool buildViewChip(const UIInput &inp, UIRenderer &ui, int row, int k, const char *name, int iconIdx, bool on);
     void buildViewChips(const UIInput &inp, UIRenderer &ui, int row);
+    // The viewer's marker dots in its target's pixels (recordModelViewer, from the frame's projection),
+    // for their "You" / "Target" labels (buildViewerMarkerLabels, floating over the image: view 0 the
+    // info window's band, 1 the pop-out). One frame behind the render, like every viewer readout.
+    struct ViewerMarkerLabel
+    {
+        bool on = false;
+        float x = 0.0f, y = 0.0f;
+    };
+    ViewerMarkerLabel viewerMarkerLabels[2];
+    void buildViewerMarkerLabels(int view);
     // Select / Go to in a satellite window's title bar. `popout` = the popped-out 3D view (its own
     // hover pair), false = the info window.
     void buildViewTitleIcons(const UIInput &inp, UIRenderer &ui, bool popout);
     // Which window's title icons were hovered last frame — buildResizableWindow skips starting a
     // title-bar drag when the click is on one of them (winId 3 = pop-out, 4 = info window).
     bool viewTitleIconsHovered(int winId) const;
-    void recordModelViewer(VkCommandBuffer cmd);
+    void recordModelViewer(VkCommandBuffer cmd, float dt);
+    // The env renderer's star field (sat_sky.frag SKY_ENV, skyDescSet binding 24): createStarEnvBuffer.
+    static constexpr int kStarEnvCount = 8404;     // = the catalogue = sat_sky.frag's STAR_ENV_COUNT
+    static constexpr uint32_t kStarEnvGrid = 32;   // cells per cube-face edge (~2.8 deg)
+    static constexpr float kStarEnvMaxSigmaPx = 2.0f; // bright stars widen at most this far there
+    VkBuffer starEnvBuf = VK_NULL_HANDLE;
+    VkDeviceMemory starEnvMem = VK_NULL_HANDLE;
+    void *starEnvMapped = nullptr;
+    void createStarEnvBuffer(VulkanContext &ctx);
+    void uploadStarEnvHeader();
 
     // ── Phase 4c: satellite meshes in the main view ──────────────────────────────────────────────
     // The followed satellite (else the selected one) is drawn as a mesh by SatMeshRenderer's scene
@@ -1869,6 +1898,10 @@ private:
     // satOrbitStateAt, the observer from obsDir/radius (or followObsEcef), camera-relative floats.
     // (4d generalises this from one satellite to every satellite big enough on screen.)
     static constexpr float kMeshFadeInPx = 1.5f, kMeshFullPx = 3.0f;
+    // The fade-in size actually used: kMeshFadeInPx, raised while more than kMaxMeshInstances satellites
+    // are that big (the AI ring close up), so the ones past the cap stay sprites rather than popping
+    // between the two (recordMeshScene). The mesh then spans meshFadePx..2x it.
+    float meshFadePx = kMeshFadeInPx;
     // The sprite (the apparent-magnitude flare: point, glare and bloom) fades out over a WIDER range
     // than the mesh fades in, so the magnitude-based flare stays with the satellite while its model
     // resolves; the bloom is split between the two so its total stays the sprite's.
@@ -1898,23 +1931,35 @@ private:
     bool selAboveEarth = false; // not hidden behind the Earth
     void updateSelectedSkyDir();
     float meshSceneFade = 0.0f;   // its fade
-    void recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx);
+    void recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, float dt);
+    uint32_t meshCandTotal = 0; // last frame's meshCandCount: past kMaxMeshCandidates = the list overflowed
 
     // ── Environment probes: full-renderer reflections + ambient on meshes (2026-09-24) ───────────
     // SatEnvProbes renders sat_sky.frag (-DSKY_ENV) as six cube faces around a satellite: the mesh
     // shader reflects that and takes its SH irradiance as diffuse light, so a mirror shows the real
     // Earth, clouds, aurora and Milky Way, and an edge-on face is lit by the Earth it sees. Slot 0 is
-    // the model viewer's (refreshed every other frame while it is open, Live light); scene instances
-    // share the rest: an instance uses the nearest probe within max(20 km, 2% of its altitude), else
-    // takes the least recently used slot; kEnvRendersPerFrame probes are (re)rendered per frame, new
-    // ones first, then the one that has drifted furthest from its instance. Until its probe exists an
-    // instance falls back to earth_env.glsl + the photometric earthshine.
+    // the model viewer's (a face per frame while it is open, Live light); scene instances share the
+    // rest. A probe belongs to the satellite it was made for and FOLLOWS it (2026-09-25): its owner
+    // keeps it however far it drifts between refreshes; another instance shares the nearest probe within
+    // max(20 km, 2% of its altitude), else takes the least recently used slot. kEnvRendersPerFrame
+    // probes are (re)rendered per frame, new ones first, then the one that has drifted furthest. Until
+    // its own probe exists an instance borrows the nearest rendered one; with none it falls back to
+    // earth_env.glsl + the photometric earthshine. Probes used to be tied to positions: at 5 min/s a
+    // satellite outran the 20 km reuse radius every frame, took a fresh slot, and every instance but
+    // the one rendered that frame dropped to the (differently lit) fallback — the ambient light of
+    // everything flickered.
     SatEnvProbes envProbes;
     bool envReflections = true; // Settings → Display "Full-renderer reflections" (off = the analytic fallback)
+    // Settings → Photometry "Sharp mirror reflections" (2026-09-25): the mirror-smooth pixels of up to
+    // kMaxSharpReflInstances of the largest instances with such a material reflect the env renderer
+    // per pixel (sat_sky.frag SKY_REFL) instead of a probe texel; needs envReflections.
+    bool sharpReflections = true;
+    static constexpr int kMaxSharpReflInstances = 4;
     static constexpr int kEnvRendersPerFrame = 1;
     struct EnvProbeSlot
     {
         bool rendered = false;
+        int owner = -1;           // the satellite it follows
         glm::dvec3 posEcef{0.0};  // where it was rendered
         glm::dvec3 wantEcef{0.0}; // where its instances are now
         uint64_t lastUsed = 0;    // envFrame it was last assigned
@@ -1927,10 +1972,18 @@ private:
     bool envActive() const;
     // The sky's push constants for the env renderer at posEcef, camera rotation camToEcef (sky camera
     // space → ECEF axes).
-    SatDrawPC envSkyPC(const glm::dvec3 &posEcef, const glm::dmat3 &camToEcef, float fovYRad, float aspect) const;
+    // viewExposure / glareVis: the exposure and sun-glare gate of the view that will SHOW the result (the
+    // main view for scene probes, the model viewer for its own) — the env renderer's post-tonemap terms
+    // (Milky Way, zodiacal light, stars) follow that view's rules, not the probe position's.
+    SatDrawPC envSkyPC(const glm::dvec3 &posEcef, const glm::dmat3 &camToEcef, float fovYRad, float aspect,
+                       float viewExposure, float glareVis) const;
+    float viewerExposureNow = 1.8f; // the model viewer's exposure this frame (recordModelViewer)
+    float viewerGlareEased = 1.0f;  // its sun-glare gate for stars / Milky Way (skyGlareEased's rule)
     void renderEnvProbe(VkCommandBuffer cmd, int slot, const glm::dvec3 &posEcef, uint32_t faceMask = 0x3Fu);
     // Picks (and schedules) a scene probe for an instance at posEcef; kNoProbe until rendered.
-    uint32_t assignEnvProbe(const glm::dvec3 &posEcef);
+    uint32_t assignEnvProbe(const glm::dvec3 &posEcef, int sat);
+    uint32_t nearestRenderedProbe(const glm::dvec3 &posEcef) const; // kNoProbe if none within 1000 km
+    int viewerProbeSat = -1; // the satellite slot 0 was last rendered for (a new one renders all faces)
     void renderScheduledEnvProbes(VkCommandBuffer cmd);
     void writeMeshSceneDescriptors(VulkanContext &ctx); // sky 22/23, scene_depth 3 (init + resize)
     float skyExposure() const; // sat_sky.frag's exposure for this frame (bloom threshold)
@@ -3626,7 +3679,7 @@ private:
     // a cinematic that didn't exist in their version — see loadSettings().
     bool playIntroOnStartup = true;
     bool hovPlayIntroStartup = false;
-    bool hovSatOcclusionChk = false, hovEnvReflChk = false;
+    bool hovSatOcclusionChk = false, hovEnvReflChk = false, hovSharpReflChk = false;
 
     // ── Private helpers ───────────────────────────────────────────────────────
     // NEW-7: pushes fpsCapMode's present-mode requirement into VulkanContext and flags App to

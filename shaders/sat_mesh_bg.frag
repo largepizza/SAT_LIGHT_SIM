@@ -1,10 +1,8 @@
 #version 450
 // Model viewer background: the full sky renderer seen from the viewer's camera (SatEnvProbes'
 // SKY_ENV target, HDR) — or, before that exists, the camera's ray into earth_env.glsl — plus the
-// Sun's disc, through the same exposure as the mesh. Markers on the Earth: where the OBSERVER stands
-// (with a faint line from the satellite to them: the direction it would have to send light to be
-// seen) and, for a ground-site mirror, the site it is aiming at (with a solid line from the satellite:
-// where its beam goes).
+// Sun's disc, through the same exposure as the mesh. The observer / ground-site markers are drawn
+// over the mesh by sat_mesh_marker.frag (2026-09-25; they were drawn here, under it).
 
 #include "common.glsl"
 #include "terrain.glsl"
@@ -15,54 +13,6 @@ layout(set = 0, binding = 9) uniform sampler2D viewerBgTex; // SatEnvProbes::vie
 
 layout(location = 0) in vec2 vNdc;
 layout(location = 0) out vec4 outColor;
-
-// Screen position (px) of a world point, and whether it is in front of the camera.
-bool projectPx(vec3 p, out vec2 px)
-{
-    vec4 c = frame.viewProj * vec4(p, 1.0);
-    px = vec2(0.0);
-    if (c.w <= 1e-6) return false;
-    px = (c.xy / c.w * 0.5 + 0.5) * frame.bgParams.zw;
-    return true;
-}
-
-// A ground marker: a filled dot with a dark rim, hidden once the point is over the Earth's limb.
-vec4 groundMarker(vec4 m, vec3 color, vec2 frag)
-{
-    if (m.w < 0.5) return vec4(0.0);
-    vec3 up = normalize(m.xyz - frame.earthCenter.xyz);
-    if (dot(up, frame.camPos.xyz - m.xyz) <= 0.0) return vec4(0.0); // behind the Earth from here
-    vec2 px;
-    if (!projectPx(m.xyz, px)) return vec4(0.0);
-    float r = frame.bgParams.y, d = length(frag - px);
-    float fill = 1.0 - smoothstep(r - 1.0, r, d);
-    float rim  = 1.0 - smoothstep(r + 1.0, r + 2.5, d);
-    return vec4(mix(vec3(0.0), color, fill), rim);
-}
-
-// Screen endpoints (px) of the world segment p0-p1, clipped to the part in front of the camera (a
-// marker line with one end behind the camera would otherwise vanish, or flip across the screen).
-bool segmentPx(vec3 p0, vec3 p1, out vec2 a, out vec2 b)
-{
-    vec4 c0 = frame.viewProj * vec4(p0, 1.0), c1 = frame.viewProj * vec4(p1, 1.0);
-    a = vec2(0.0);
-    b = vec2(0.0);
-    const float kW = 1e-4;
-    if (c0.w < kW && c1.w < kW) return false;
-    if (c0.w < kW) c0 = mix(c0, c1, (kW - c0.w) / (c1.w - c0.w));
-    if (c1.w < kW) c1 = mix(c1, c0, (kW - c1.w) / (c0.w - c1.w));
-    a = (c0.xy / c0.w * 0.5 + 0.5) * frame.bgParams.zw;
-    b = (c1.xy / c1.w * 0.5 + 0.5) * frame.bgParams.zw;
-    return true;
-}
-
-// Distance (px) from `frag` to the screen segment a-b.
-float segDist(vec2 frag, vec2 a, vec2 b)
-{
-    vec2 ab = b - a;
-    float t = clamp(dot(frag - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
-    return length(frag - (a + t * ab));
-}
 
 void main()
 {
@@ -83,28 +33,5 @@ void main()
         L += vec3(1.0, 0.94, 0.82) * 0.08 * pow(max(c, 0.0), 800.0);
     }
     vec3 col = vec3(1.0) - exp(-frame.camPos.w * L);
-
-    // Markers, drawn over the sky and under the mesh.
-    vec2 frag = gl_FragCoord.xy;
-    if (frame.marker0.w > 0.5) {
-        // Line from the satellite (the frame origin) toward the observer, faint and dashed.
-        vec2 a, b;
-        if (segmentPx(vec3(0.0), frame.marker0.xyz, a, b)) {
-            float d = segDist(frag, a, b);
-            float along = length(frag - a);
-            float dash = step(0.5, fract(along / 14.0));
-            col = mix(col, vec3(0.35, 0.95, 1.0), (1.0 - smoothstep(0.6, 1.6, d)) * 0.55 * dash);
-        }
-    }
-    if (frame.marker1.w > 0.5) {
-        // A mirror's beam: a solid line from the satellite to the site it is aiming at.
-        vec2 a, b;
-        if (segmentPx(vec3(0.0), frame.marker1.xyz, a, b))
-            col = mix(col, vec3(1.0, 0.62, 0.18), (1.0 - smoothstep(0.8, 1.9, segDist(frag, a, b))) * 0.8);
-    }
-    vec4 t = groundMarker(frame.marker1, vec3(1.0, 0.62, 0.18), frag); // a mirror's ground site
-    col = mix(col, t.rgb, t.a);
-    vec4 o = groundMarker(frame.marker0, vec3(0.35, 0.95, 1.0), frag); // you
-    col = mix(col, o.rgb, o.a);
     outColor = vec4(col, 1.0);
 }

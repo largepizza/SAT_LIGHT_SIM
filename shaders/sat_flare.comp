@@ -56,15 +56,15 @@ layout(set = 0, binding = 9) readonly buffer SatVisibleIdxBuf {
 // the selected satellite's raw pre-photometry values: the CPU copies the whole 80-byte header back
 // every frame for selection tracking, the real visible-satellite count (compact slots are no
 // longer addressable by satellite index) and the GPU-parity readout (benchmarking M2).
-const uint  MESH_CAND_MAX = 64u;  // = kMaxMeshCandidates (SatelliteSim.h)
+const uint  MESH_CAND_MAX = 1024u; // = kMaxMeshCandidates (SatelliteSim.h)
+const uint  MESH_INST_MAX = 256u;  // = kMaxMeshInstances
 // Phase 4d: satellites the CPU draws as meshes this frame, with their sprite's remaining weight.
 layout(set = 0, binding = 12) readonly buffer MeshKeepBuf {
     uint  keepCount;
-    uint  keepPad0, keepPad1, keepPad2;
-    uvec4 keepEntries[MESH_CAND_MAX + 1u]; // x = satellite, y = keep (float bits)
+    float nominatePx;          // list satellites whose mesh spans more than this (CPU-adapted)
+    uint  keepPad1, keepPad2;
+    uvec4 keepEntries[MESH_INST_MAX + 1u]; // x = satellite, y = keep, z = glare keep (float bits)
 };
-const float MESH_FADE_IN_PX = 1.5; // = SatelliteSim::kMeshFadeInPx / kMeshFullPx
-const float MESH_FULL_PX    = 3.0;
 layout(set = 0, binding = 10) buffer SatListBuf {
     uint listCount;
     uint dispatchX, dispatchY, dispatchZ;
@@ -349,16 +349,21 @@ void main() {
     // (point_style.glsl) — the same one stars and planets use, so equal magnitudes look equal.
     // (Until 2026-09-23 this was its own log-of-effectFlare curve with a range-dependent base.)
     // ── Phase 4c/4d: sprite → mesh hand-off ─────────────────────────────────
-    // A model satellite whose mesh spans MESH_FADE_IN_PX..MESH_FULL_PX fades out of every
+    // A model satellite whose mesh spans the CPU's fade-in range (SatelliteSim::meshFadePx) fades out of every
     // sprite-side effect — its point, its sprite bloom, the sky-glow bins, the ocean-glint list — as
     // its mesh fades in, and is listed for the CPU to draw (next frame, in double). Its final flux and
     // sprite size are recorded first: the mesh's glints seed exactly the bloom this sprite would have
     // (SatMeshRenderer::recordBloom), so a flare keeps its punch across the hand-off. The followed
     // satellite is the CPU's own (always drawn, even in Earth's shadow): SatFlarePC carries its fade.
-    // Nominated (sat.meshPx over the threshold, with a margin) → listed for NEXT frame's draw; the
+    // Nominated (sat.meshPx over nominatePx, below the fade-in size) → listed for NEXT frame's draw; the
     // sprite's weight THIS frame is whatever the CPU drew it with this frame (MeshKeepBuf), so the two
     // always agree. The followed satellite comes through the same list.
-    if (sat.meshPx > MESH_FADE_IN_PX * 0.8) {
+    // The glare of a mesh that is still point-like: its sprite's, at its centre (glare.vert reads it
+    // from the record's last field), so the one glare a distant satellite has does not wander between
+    // whichever texels of its small mesh happen to be brightest. mesh_bloom.frag only adds glare for
+    // sun-like glints on a resolved mesh.
+    float glareFlare = 0.0;
+    if (sat.meshPx > nominatePx) {
         uint satI = visibleSatIdx[idx];
         uint slot = atomicAdd(meshCandCount, 1u);
         if (slot < MESH_CAND_MAX) {
@@ -366,9 +371,10 @@ void main() {
             meshCand[slot] = uvec4(satI, floatBitsToUint(sat.meshPx), floatBitsToUint(effectFlare),
                                    floatBitsToUint(fullSize));
         }
-        uint n = min(keepCount, MESH_CAND_MAX + 1u);
+        uint n = min(keepCount, MESH_INST_MAX + 1u);
         for (uint k = 0u; k < n; ++k)
             if (keepEntries[k].x == satI) {
+                glareFlare = effectFlare * uintBitsToFloat(keepEntries[k].z);
                 effectFlare *= uintBitsToFloat(keepEntries[k].y);
                 // Its remaining sprite overlaps its own mesh, whose surface is nearer than the centre by
                 // up to the model's radius (< 1% of the range while any sprite is left at 10 px) — draw
@@ -404,9 +410,12 @@ void main() {
     // Fainter than the point model's limiting magnitude: nothing to draw (the sky glow and ocean
     // glint above have their own, brighter thresholds). An invisible record costs no fill.
     if (psf.x <= 0.0) {
-        emit(idx, SatVisible(vec3(0.0, 0.0, 1.0), 0.0, 0u, 0.0, 0.0, 0.0));
+        // A mesh whose sprite is gone may still carry its point-like glare (glare.vert).
+        emit(idx, glareFlare > 0.0 ? SatVisible(skyDir, 0.0, sat.color, 0.0, range, glareFlare)
+                                   : SatVisible(vec3(0.0, 0.0, 1.0), 0.0, 0u, 0.0, 0.0, 0.0));
         return;
     }
-    // baseColor was already eclipse-tinted by sat_orbit.comp.
-    emit(idx, SatVisible(skyDir, effectFlare, sat.color, angSize, range, 0.0));
+    // baseColor was already eclipse-tinted by sat_orbit.comp. The last field (pre-photometry: the
+    // mesh size) is the point-like mesh glare from here on.
+    emit(idx, SatVisible(skyDir, effectFlare, sat.color, angSize, range, glareFlare));
 }

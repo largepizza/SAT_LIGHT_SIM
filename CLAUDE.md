@@ -213,7 +213,8 @@ sim->recordCompute(cmd)  → WASD movement; simTime advance;
                                                relative) + env-probe cube faces. Runs BEFORE
                                                scene_depth.comp, so clouds and beams clamp to a
                                                mesh (two mesh draws: the depth pre-pass, then the
-                                               scene pass with depth EQUAL)
+                                               scene pass with depth EQUAL; then, for mirror pixels,
+                                               the SKY_REFL sharp-reflection pass + mesh_refl_add)
                            dispatch 1: scene_depth.comp   (half-res shared terrain/ocean/MESH depth)
                            dispatch 2: sat_orbit.comp     (orbital mechanics + attitude + beam list +
                                                             reflectance model → APPENDS visible
@@ -763,22 +764,58 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     glints, beam ground spots), the flat cloud layers draw at full weight, the aurora gets a 16-step
     march of its own (`envAurora`), the sun disc and lens flare are left out, the Milky Way and
     zodiacal bases are turned from the main observer's ENU frame (`CloudParams::envMainObsDir`), and
-    the output is pre-exposure HDR (post-tonemap terms divided back by their exposure). A probe is
+    the output is pre-exposure HDR. **The post-tonemap terms (Milky Way, zodiacal light, stars) follow
+    the VIEWER's rules (2026-09-25):** they are divided back by the exposure of the view that shows the
+    result and gated by that view's sun glare — the main view's (`skyExposure()`, `skyGlareEased`) for
+    scene probes, the model viewer's (`viewerExposureNow`, `viewerGlareEased`) for slot 0 and its
+    background — carried in `pc.sunDirENU.w` = floor(exposure·100) + glare (the env fragment rebuilds
+    sin(elevation) from `.z`; `envSkyPC(..., viewExposure, glareVis)`), and the Milky Way's
+    sun-proximity dimming now applies in them too. They used the probe position's exposure and no
+    glare, so a mirror showed the full Milky Way beside a Sun that had dimmed it everywhere else.
+    **Stars** (2026-09-25): SKY_ENV draws the catalogue itself (`envStars`) — the main view's stars
+    are point sprites no probe or mirror ever saw. `createStarEnvBuffer` bins it on a 6×32² ECI cube
+    grid (skyDescSet binding 24; each star listed in every cell its widest PSF reaches, so a lookup
+    reads one cell); each star is the point model's display flux (`point_style.glsl`, the header is
+    rewritten by `uploadPointStyle`) as a Gaussian of the main view's sigma in THIS render's pixels,
+    carrying its on-screen energy — sharp in the viewer and in mirrors, averaged away in a probe texel.
+    A probe is
     six faces of that around one position (`faceCamToWorld`, checked against Vulkan's cube-face
     rule at init), a box mip chain, and an order-2 SH irradiance (`env_probe_sh.comp`, 1024
     Fibonacci directions, read from the 16² level). Face size per slot: the viewer's slot 0 is 512²
-    (0.18°/texel, re-rendered ONE FACE PER FRAME, all six on a new satellite or a > 20 km jump),
+    (0.18°/texel, re-rendered ONE FACE PER FRAME, all six only for a new satellite — two a frame while
+    it is > 20 km from where the cube was made; at 5 min/s "all six past 20 km" meant every frame),
     scene slots 256²; 128² read as pixelated in mirrors. `sat_mesh.frag` takes the texel size and
     last useful mip from the bound cube (`textureSize`/`textureQueryLevels`), reflects the probe (a
     mip whose texel spans ~2α) and
     takes its SH as diffuse light; the photometric earthshine still feeds the bloom normalisation.
     Each probe is its own cube image and descriptor set (pipeline set 1, bound per draw — no
-    cube-array feature). Slot 0 is the model viewer's; scene instances share slots 1-7: the nearest
-    probe within max(20 km, 2% of altitude), else the least recently used slot;
-    `kEnvRendersPerFrame` (1) re-renders per frame, new probes first, then the most drifted (> max(2
-    km, 0.2% alt)), then any older than 3 s. Until its probe exists an instance falls back to
-    `earth_env.glsl` + the photometric earthshine. Off under Potato, the mesh knockout, or Settings →
-    Photometry "Full-renderer reflections" (`envReflections`, `photometry.full_renderer_reflections`).
+    cube-array feature). Slot 0 is the model viewer's; scene instances share slots 1-7. **A probe
+    belongs to the satellite it was made for and follows it** (`EnvProbeSlot::owner`, 2026-09-25): the
+    owner keeps it however far it drifts; another instance shares the nearest probe within max(20 km, 2%
+    of altitude) (and adopts one nobody claimed this frame — instances come largest first), else takes
+    the least recently used slot. `kEnvRendersPerFrame` (1) re-renders per frame, new probes first, then
+    the most drifted (> max(2 km, 0.2% alt), two faces at a time), then any older than 3 s. Until its own
+    probe exists an instance BORROWS the nearest rendered one within 1000 km
+    (`nearestRenderedProbe`); only with none does it fall back to `earth_env.glsl` + the photometric
+    earthshine. Probes used to be keyed by position alone: at 5 min/s a satellite outran the reuse
+    radius every frame, took a fresh slot, and every instance but the one rendered that frame dropped
+    to the differently lit fallback — the ambient light of every mesh flickered. Off under Potato, the
+    mesh knockout, or Settings → Photometry "Full-renderer reflections" (`envReflections`,
+    `photometry.full_renderer_reflections`).
+  - **Sharp mirror reflections (2026-09-25, `sharpReflections`, Photometry "Sharp mirror reflections",
+    `photometry.sharp_mirror_reflections`).** A probe texel is 0.35° (0.18° in the viewer): a Reflect
+    mirror filling the screen magnified each over dozens of pixels. For the mirror-smooth pixels
+    (sharp share = 1 − smoothstep(0.004, 0.02, α): the `mirror` preset fully, an OSR radiator ~3/4) of
+    up to `kMaxSharpReflInstances` (4) instances — those whose type `hasSharp`, largest rectangle on
+    screen first — `sat_mesh.frag`'s scene variant writes a reflection G-buffer instead of a probe
+    lookup (a 3rd scene attachment, RGBA32UI: octahedral direction, weight = Fresnel × tint × share ×
+    fade, slot + 1; flag `GpuMeshInstance::earthShC.y`). `SatMeshRenderer::recordReflections` then
+    draws `sat_sky.frag -DSKY_ENV -DSKY_REFL` (`sat_sky_refl.frag.spv`) once per instance inside its
+    screen rectangle, from the instance's position (its slot + 1 in `pc.aspect`, which an env fragment
+    never reads; skyDescSet binding 25 = the G-buffer), into an RGBA16F target, and
+    `mesh_refl_add.comp` adds that into the mesh radiance, rescaling the alpha's photometric share (a
+    reflection is not in the model the bloom is normalised by). Exact for a flat mirror at any zoom;
+    costs a sky render of the mirror's area. The viewer still reflects its 512² probe (MSAA pass).
   - **Fallback reflections:** the reflected ray goes into `earthEnv()`, the Potato sky's analytic
     atmosphere, textured ground and flat cloud deck, rewritten in ECEF from any origin and scaled by
     `kEnvToScene` into pre-exposure units. The sun disc is not in it; the GGX sun lobe is the glint.
@@ -830,10 +867,22 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
       is the camera itself (`updateFollow` sets it from the flight offset and even overwrites `obsDir`),
       so the readouts, the "you" marker and the Observer preset all use `followSavedObsDir` /
       `followSavedHeight` (saved on `startFollow`). That is also the fix for the glitchy marker line:
-      with the camera as the marker's own endpoint, `sat_mesh_bg.frag`'s `segmentPx` near-plane clip and
-      `groundMarker`'s behind-camera test both degenerate (the dashed line flips and the dot flickers as
-      the mouse moves). `showYouMarker` additionally hides the marker when the camera is within four
+      with the camera as the marker's own endpoint, the line's clip and the dot's behind-camera test
+      both degenerated. `showYouMarker` additionally hides the marker when the camera is within four
       model radii of it. A ground-site mirror still shows a solid orange line to its site.
+    - **Markers are drawn OVER the mesh (2026-09-25, `sat_mesh_marker.frag`, `viewerMarkerPipe`):** a
+      fullscreen pass after the model, depth-tested, no depth write. Each line pixel takes the line's own
+      depth there (z/w is affine in screen space), so the model hides the part behind it and the part in
+      front shows; the dots take depth 0 (always visible, unless the Earth hides them). Segments are
+      clipped to w ≥ 1e-3 and |x|,|y| ≤ 1.5w in clip space before the divide — the first cut clipped
+      only at w = 1e-4, and a line passing near or behind the camera projected to millions of pixels
+      and flickered as the camera orbited close. "You" / "Target" labels: `recordModelViewer` projects
+      the dots (`viewerMarkerLabels`), `buildViewerMarkerLabels` floats UI text beside them through the
+      view's crop.
+    - **Exposure = the sky's rule at the satellite** (`skyExposure()`'s curve on the Sun's elevation in
+      its local sky, 2026-09-25): it was the day value whenever the satellite was lit, but a lit
+      satellite over twilight is under the NIGHT exposure in the main view — the viewer read ~5x darker,
+      as if it had no earthshine.
     Position, velocity and attitude come from
     `satOrbitStateAt` + `evalGroupPoses` in ECEF. With Live light its background is the SKY_ENV
     renderer at the viewer's own camera (`SatEnvProbes::recordViewerBg`, an HDR target
@@ -890,11 +939,21 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   - **Choice (4d):** `sat_orbit.comp` writes each model satellite's on-screen diameter into the
     pre-photometry record (`GpuSatVisible::meshPx`, from `GpuSatType::meshRadius` and
     `GpuSatTypeHeader::meshPixelAngle`; the latter is 0 when meshes are off). `sat_flare.comp`
-    nominates the big ones into `GpuSatListHeader::meshCand[64]` (satellite, meshPx, final
-    effectFlare, sprite size). The CPU draws last frame's nominations: one frame of lag in *which*
-    satellites, none in *where*. Past 64, the rest stay sprites.
-  - **Fades are decided on the CPU, this frame, in double** (mesh fades in over 1.5-3 px; the sprite
-    fades out over 1.5-10 px, so the magnitude flare stays with the satellite while it resolves).
+    lists every one past the CPU's nomination size (`GpuMeshKeepList::nominatePx`) into
+    `GpuSatListHeader::meshCand[kMaxMeshCandidates = 1024]` (satellite, meshPx, final effectFlare,
+    sprite size). The CPU sorts last frame's list by size and draws the largest
+    `kMaxMeshInstances` (256): one frame of lag in *which* satellites, none in *where*. **The fade-in
+    size adapts (`meshFadePx`, 2026-09-25):** eased toward the size of the 80%-of-the-cap'th largest (up
+    in ~0.15 s, down in ~1 s) but never below the cap'th, so no more than the cap ever fade in and none
+    is cut off part-way through its fade; the nomination size is 0.8× it, and it rises by 30% while the
+    atomic counter says the list overflowed. Until then the first 64 appended were drawn — in
+    atomic-append (random) order: in the AI ring ~250 satellites are mesh-sized at once, so which got a
+    mesh changed every frame and neighbours flickered 50/50 between mesh and sprite. The instances are
+    evaluated in parallel (`parallelFor`, SatelliteSim.cpp: `evalSatPhotometry` + `evalGroupPoses` per
+    instance, a few µs each).
+  - **Fades are decided on the CPU, this frame, in double** (mesh fades in over meshFadePx-2× it, 1.5-3
+    px by default; the sprite fades out over meshFadePx-6.7× it, so the magnitude flare stays with the
+    satellite while it resolves).
     The CPU hands the sprite weights to `sat_flare.comp` through `MeshKeepBuf` (descSet binding 12,
     `GpuMeshKeepList`). The first cut let the GPU fade a sprite the frame it nominated it, while the
     mesh came a frame later: a visible "flare, nothing, flare" gap. A kept sprite is drawn at 98% of
@@ -1823,10 +1882,14 @@ an aliased centre) and a blue anamorphic streak the sun doesn't have; both are g
   source's ALPHA (per-instance `GpuMeshInstance::glareNorm` = the sprite's effectFlare per unit of
   bloom seed; satellite sprites write alpha 0), capped at 1e4 per texel (glare saturates at 256; a
   Reflect mirror in its beam overflowed the RGBA16F target to inf, so its glint's position was NaN
-  and the Sun in the mirror never glared). Which light may glare: ALL of it while the mesh is still
-  point-like (`glarePoint`, below `kGlarePointPx` = 12 px, gone by 36), so the sprite's glare carries
-  across the hand-off; on a resolved mesh only SUN-LIKE surface brightness (π·L/E 150 → 1500: the Sun
-  in a mirror ~4e4, an OSR radiator ~2e3; a rough-metal edge, even grazing, < 50). The first cut let
+  and the Sun in the mirror never glared). Which light may glare: only SUN-LIKE surface brightness
+  (π·L/E 150 → 1500: the Sun in a mirror ~4e4, an OSR radiator ~2e3; a rough-metal edge, even grazing,
+  < 50). While the mesh is still point-like (below `kGlarePointPx` = 12 px, gone by 36) its glare is
+  the SPRITE's, at its centre: the keep list's z (glare keep) goes to `sat_flare.comp`, which writes
+  effectFlare × it into the visible record's last field (the pre-photometry mesh size, free by then),
+  and `glare.vert` glares on max(flareIntensity, that) (2026-09-25). Until then mesh_bloom counted all
+  of a point-like mesh's light, so its one glare sat on whichever few texels of the small mesh were
+  brightest and jumped about until the satellite was close. The first cut let
   all of it glare: every edge and vertex of a close-up satellite flared (each a sliver of a very
   bright satellite's flux) and filled the 64 slots with ~400 px sprites, a large part of the close-up
   frame-rate drop. `glare_find.comp` lists every 5×5 local maximum past the threshold into `glintBuf`
@@ -2602,7 +2665,8 @@ Read it at the start of any terrain-related session before making changes.
   under "Subsystem: GPU Orbital Pipeline → Push constants" and the "Push-constant relief" block in
   `GpuCloudParams`. Both point pipeline layouts (`drawPipeLayout`, `starPipeLayout`) use
   `sizeof(PointDrawPC)`; `skyBgPipeLayout` uses `sizeof(SatDrawPC)`.
-- Sky descriptor set has 22 bindings (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h. **As of 2026-08-10 its entries are `GpuGroundBeam` (32 bytes), not raw `GpuReflectBeam`** — a pre-solved record, see "Beam ground-spot CPU hoist" below
+- Sky descriptor set has 26 bindings (0-25; 22/23 the mesh targets, 24 the env star grid, 25 the
+  sharp-reflection G-buffer — the last two read only by the SKY_ENV / SKY_REFL variants). The original 22 (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h. **As of 2026-08-10 its entries are `GpuGroundBeam` (32 bytes), not raw `GpuReflectBeam`** — a pre-solved record, see "Beam ground-spot CPU hoist" below
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
 - `sat_sky.frag` ground path: terrain march step count is path-length-adaptive as of session 29
   (`kN` scales with this ray's own `tExit`, clamped to a user-tuned [64,164] range — the old

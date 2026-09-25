@@ -7,17 +7,19 @@
 // is: across the hand-off a flare keeps its punch, and on a large model the glow sits on the glint.
 // Alpha carries the same light as effectFlare units (seed x the instance's glareNorm = its sprite's
 // effectFlare per unit of seed): glare_find.comp finds concentrated glints in it and gives them the
-// sharp glare a sprite of that brightness gets (2026-09-24). Only while the mesh is still point-like
-// (tail.w) does all its light count; resolved, only SUN-LIKE surface brightness does — the Sun seen in
-// a mirror or a quartz radiator, thousands of times a white panel's radiance. The first cut counted
-// all of it, so every edge and vertex of a close-up satellite, each a sliver of a very bright
-// satellite's flux, flared, while the one thing that should — the Sun in a mirror — could not: its
-// effectFlare passed the RGBA16F target's 65504 and the glint's position came out NaN.
+// sharp glare a sprite of that brightness gets (2026-09-24). Only SUN-LIKE surface brightness counts —
+// the Sun seen in a mirror or a quartz radiator, thousands of times a white panel's radiance. The first
+// cut counted all of it, so every edge and vertex of a close-up satellite, each a sliver of a very
+// bright satellite's flux, flared, while the one thing that should — the Sun in a mirror — could not:
+// its effectFlare passed the RGBA16F target's 65504 and the glint's position came out NaN. While a
+// mesh is still point-like its glare is its sprite's, drawn at its centre by glare.vert (2026-09-25):
+// counting all its light here put that glare on whichever few texels of the small mesh were
+// brightest, so it jumped about until the satellite was close.
 
 layout(set = 0, binding = 0, rgba32f) uniform readonly image2D meshColorImg; // rgb radiance, a = slot + 1
 // Stride must equal GpuMeshInstance (432 B, SatMeshRenderer.h): the earthshine SH block was appended
 // 2026-09-24 — this struct must grow with it or every instance past the first reads the wrong one.
-// tail = firstComponent, probeSlot, glareNorm, glarePoint (float bits).
+// tail = firstComponent, probeSlot, glareNorm, glarePoint (float bits; glarePoint unused here since 2026-09-25).
 struct MeshInstanceBloom { vec4 pad[20]; uint firstMaterial, firstOccluder, occluderCount; float bloomScale; uvec4 tail; vec4 earthSh[5]; };
 layout(set = 0, binding = 1, std430) readonly buffer MeshInstances { MeshInstanceBloom instances[]; };
 layout(push_constant) uniform PC {
@@ -55,7 +57,7 @@ void main()
             MeshInstanceBloom inst = instances[int(floor(m.a)) - 1];
             float k = l * inst.bloomScale;
             seed += k;
-            float glareW = max(uintBitsToFloat(inst.tail.w), smoothstep(kGlareRadiance0, kGlareRadiance1, l));
+            float glareW = smoothstep(kGlareRadiance0, kGlareRadiance1, l);
             flare += k * uintBitsToFloat(inst.tail.z) * glareW;
             col  += m.rgb * (k / max(dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)), 1e-6));
         }

@@ -7,7 +7,19 @@
 // volumetric ones at full weight (what the main renderer draws from orbit anyway), the aurora gets
 // its own short march along the ray, the sun disc and lens flare are left out (a mesh's GGX sun lobe
 // is the glint), and the output is PRE-exposure HDR radiance: the post-tonemap terms (Milky Way,
-// zodiacal light, moon glow) are divided back by the exposure they were tuned against.
+// zodiacal light, moon glow, stars) are divided back by the exposure of whoever LOOKS at the result —
+// the main view's for the scene probes, the model viewer's for its own — and gated by that viewer's
+// sun glare (2026-09-25; they used the probe position's exposure and no glare, so a mirror showed the
+// full Milky Way next to a Sun that had dimmed it everywhere else). pc.sunDirENU.w carries those two
+// (w = floor(exposure·100) + glare visibility); the fragment rebuilds sin(elevation) from .z.
+//
+// SKY_REFL (-DSKY_ENV -DSKY_REFL -> sat_sky_refl.frag.spv, 2026-09-25): the env renderer along the
+// reflected rays of one mesh instance's mirror-smooth pixels, at screen resolution — the reflection of
+// a flat mirror is exact, not a cube texel stretched over many pixels. The scene mesh pass writes, per
+// such pixel, the reflected direction, its weight (Fresnel × tint × fade) and the instance
+// (SatMeshRenderer's reflection G-buffer, binding 25); SatMeshRenderer::recordReflections draws this
+// once per qualifying instance with the instance's position as the observer and its slot + 1 in
+// pc.aspect (unused by an env fragment), and adds the result into the mesh radiance.
 
 // ── Camera + sun push constants (same layout as C++ SatDrawPC, 128 bytes) ─────
 // The pipeline layout declares VK_SHADER_STAGE_VERTEX_BIT|FRAGMENT_BIT so both
@@ -31,7 +43,12 @@ layout(push_constant) uniform PC {
 } pc;
 
 layout(location = 0) in  vec3 enuDir;           // interpolated ENU view ray (not normalised)
+#ifdef SKY_ENV
+layout(location = 1) in flat vec4 sunDirENUIn;  // w: the viewer's exposure and glare (header note)
+vec4 sunDirENU;                                  // xyz, w = sin(elevation) = z — set first in main()
+#else
 layout(location = 1) in flat vec4 sunDirENU;    // passed through from vertex (same as pc.sunDirENU)
+#endif
 layout(location = 2) in flat vec4 moonDirENU;   // moon dir + phase pass-through
 
 // Sky glow histogram, written by sat_flare.comp each frame. Must match GpuGlowBuf exactly.
@@ -197,6 +214,25 @@ layout(set = 0, binding = 19) uniform sampler2D sceneDepthTex;
 // samplers: this shader is one binding from the 16 sampled-image floor (CLAUDE.md, hardware table).
 layout(set = 0, binding = 22, rgba32f) uniform readonly image2D meshColorImg; // pre-exposure radiance
 layout(set = 0, binding = 23, r32f)    uniform readonly image2D meshDistImg;  // true distance, 0 = none
+#ifdef SKY_ENV
+// The star catalogue for the env renderer (2026-09-25; the main view draws stars as points, which a
+// probe or a mirror never saw): SatelliteSim::createStarEnvBuffer. starHdr0 = the point model
+// (point_style.glsl: refMag, gamma, limitMag, sigmaPx), starHdr1 = x the main view's pixel angle (rad),
+// y the widest sigma drawn here (px), z the grid size, w unused. starRec[2i] = ECI direction + visual
+// magnitude, [2i+1] = colour. starCells = per cube cell (6·G·G, ECI, cubeCell below) the first entry,
+// then one past the last (so 6·G·G + 1 offsets), then the star indices; each star is listed in every
+// cell within the widest PSF's reach, so a lookup reads one cell and no seam can cut a star.
+#define STAR_ENV_COUNT 8404 // = the catalogue (static_assert in SatelliteSim.cpp)
+layout(std430, set = 0, binding = 24) readonly buffer StarEnvBuf {
+    vec4 starHdr0;
+    vec4 starHdr1;
+    vec4 starRec[STAR_ENV_COUNT * 2];
+    uint starCells[];
+};
+#endif
+#ifdef SKY_REFL
+layout(set = 0, binding = 25, rgba32ui) uniform readonly uimage2D reflGbuf; // SatMeshRenderer
+#endif
 
 layout(location = 0) out vec4 outColor;
 
@@ -1380,6 +1416,51 @@ vec3 envAurora(vec3 obsPos, vec3 dir, float tSurface, vec3 enuX, vec3 enuY, vec3
     return acc * seg * kAuroraScale * cloud.auroraGain * ext;
 }
 
+// Cell of a unit direction on the star grid's cube (SatelliteSim::starEnvCell mirrors it).
+uint starEnvCell(vec3 d, uint G)
+{
+    vec3 a = abs(d);
+    uint face;
+    vec2 uv;
+    if (a.x >= a.y && a.x >= a.z) { face = d.x > 0.0 ? 0u : 1u; uv = d.yz / a.x; }
+    else if (a.y >= a.z)         { face = d.y > 0.0 ? 2u : 3u; uv = d.xz / a.y; }
+    else                         { face = d.z > 0.0 ? 4u : 5u; uv = d.xy / a.z; }
+    uvec2 ij = uvec2(clamp(ivec2((uv * 0.5 + 0.5) * float(G)), ivec2(0), ivec2(int(G) - 1)));
+    return (face * G + ij.y) * G + ij.x;
+}
+
+// The stars along ECEF direction dEcef, as the main view draws them (point_style.glsl: the same
+// display flux D per magnitude), at a pixel angle pAng: each a Gaussian of the main view's PSF width in
+// pixels of THIS render, carrying the energy it has on the main screen — so in a probe texel a faint
+// star averages away as it would, and in a mirror (pixels the size of the screen's) it is the star.
+// Display units (the caller divides by the viewer's exposure).
+vec3 envStars(vec3 dEcef, float pAng)
+{
+    float th = pc.gmst; // ECEF → ECI (the sim's Earth rotation angle)
+    vec3 d = vec3(cos(th) * dEcef.x - sin(th) * dEcef.y, sin(th) * dEcef.x + cos(th) * dEcef.y, dEcef.z);
+    uint G = uint(starHdr1.z + 0.5);
+    uint cell = starEnvCell(d, G);
+    uint a = starCells[cell], b = starCells[cell + 1u];
+    const float k = 1.3287712; // 0.4 · log2(10)
+    float dl = exp2(-k * starHdr0.y * (starHdr0.z - starHdr0.x));
+    float s0 = starHdr0.w, pRef = starHdr1.x;
+    vec3 acc = vec3(0.0);
+    for (uint n = a; n < b; ++n) {
+        uint i = starCells[n];
+        vec4 r0 = starRec[2u * i];
+        vec3 e = d - r0.xyz;
+        float th2 = dot(e, e); // chord² ≈ angle² at these sizes
+        float D = max(exp2(-k * starHdr0.y * (r0.w - starHdr0.x)) - dl, 0.0);
+        float sPx = clamp(s0 * sqrt(max(D, 1.0)), s0, starHdr1.y);
+        float sig = sPx * max(pAng, 1e-6);
+        if (D <= 0.0 || th2 > 9.0 * sig * sig) continue;
+        // Energy D·2π(s0·pRef)² spread over this Gaussian.
+        float peak = D * (s0 * pRef) * (s0 * pRef) / (sig * sig);
+        acc += starRec[2u * i + 1u].rgb * peak * exp(-0.5 * th2 / (sig * sig));
+    }
+    return acc;
+}
+
 // A direction in this (satellite's) ENU frame, in the MAIN observer's ENU frame — the frame of the
 // Milky Way and zodiacal bases (cloud.envMainObsDir).
 vec3 envMainEnuDir(vec3 d, vec3 enuX, vec3 enuY, vec3 enuZ)
@@ -1399,13 +1480,34 @@ void main() {
     vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
     float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
 
-    vec3 dir    = normalize(enuDir);
-    vec3 sunDir = normalize(sunDirENU.xyz);
+#ifdef SKY_ENV
+    sunDirENU = vec4(sunDirENUIn.xyz, sunDirENUIn.z);
+    float envViewExposure = max(floor(sunDirENUIn.w) * 0.01, 0.01); // the viewer's (header note)
+    float envGlareVis     = fract(sunDirENUIn.w);                   // its sun-glare gate
+#endif
+#ifdef SKY_REFL
+    // This instance's mirror-smooth pixels only (the G-buffer's w = slot + 1, pc.aspect = ours).
+    uvec4 reflG = imageLoad(reflGbuf, ivec2(gl_FragCoord.xy));
+    if (reflG.w == 0u || reflG.w != uint(pc.aspect + 0.5)) discard;
+    vec2 reflOct = unpackUnorm2x16(reflG.x) * 2.0 - 1.0;
+    vec3 reflEcef = vec3(reflOct, 1.0 - abs(reflOct.x) - abs(reflOct.y)); // octahedral decode
+    if (reflEcef.z < 0.0) reflEcef.xy = (1.0 - abs(reflEcef.yx)) * vec2(reflEcef.x >= 0.0 ? 1.0 : -1.0,
+                                                                      reflEcef.y >= 0.0 ? 1.0 : -1.0);
+    reflEcef = normalize(reflEcef);
+    vec3 reflWeight = vec3(unpackHalf2x16(reflG.y), unpackHalf2x16(reflG.z).x);
+#endif
 
     // ENU→ECEF rotation built from observer ECEF direction (needed early for terrain UV).
     vec3 enuZ = normalize(pc.obsECEFDir.xyz); // observer Up in ECEF
     vec3 enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ)); // East
     vec3 enuY = cross(enuZ, enuX);            // North
+
+#ifdef SKY_REFL
+    vec3 dir    = vec3(dot(reflEcef, enuX), dot(reflEcef, enuY), dot(reflEcef, enuZ));
+#else
+    vec3 dir    = normalize(enuDir);
+#endif
+    vec3 sunDir = normalize(sunDirENU.xyz);
 
 #if CLOUD_DEBUG == 6
     // Minimal, direct test: sample cloudNoiseTex straight from the view direction, bypassing
@@ -2861,7 +2963,7 @@ void main() {
         // cloud.skyGlareVisibility (CPU-eased sun-glare gate) replaces
         // the old flat 1.0 space target — matches the same replacement in CPU's updateStars().
 #ifdef SKY_ENV
-        float nightFactorEffSky = mix(1.0, nightFactorSky, atmFracSky); // no eye to dazzle
+        float nightFactorEffSky = mix(envGlareVis, nightFactorSky, atmFracSky); // the viewer's glare
 #else
         float nightFactorEffSky = mix(cloud.skyGlareVisibility, nightFactorSky, atmFracSky);
 #endif
@@ -2923,11 +3025,8 @@ void main() {
         // sunset point (or, from orbit, toward wherever the Earth hides the sun) long after the
         // sun itself was fully Earth-occluded and no real glare could exist.
         float sunAngleMW = acos(clamp(dot(dir, sunDir), -1.0, 1.0));
-#ifdef SKY_ENV
-        float sunGlareSuppress = 1.0 + 0.0 * sunAngleMW;
-#else
+        // In a reflection too: the sky next to the Sun's reflected image dims as it does next to the Sun.
         float sunGlareSuppress = (sunDirENU.w > limbZ) ? smoothstep(0.12, 0.5, sunAngleMW) : 1.0; // 0 within ~7deg, 1 beyond ~29deg or sun occluded
-#endif
 
         // Project the view ray into the galactic frame and sample the panorama.
 #ifdef SKY_ENV
@@ -2978,6 +3077,22 @@ void main() {
                           * (moonDiscHit ? 0.0 : 1.0)    // blocked by the Moon's own opaque disc
                           * pow(clamp(cloudBlock, 0.0, 1.0), kMWCloudSuppressPower);
         color += mwColor * visibility;
+#ifdef SKY_ENV
+        // The stars, under the same gates as the Milky Way bar the dark-sky one (the main view's stars
+        // are the point model's alone). A reflection's pixels are the screen's; elsewhere this
+        // render's own pixel angle.
+#ifdef SKY_REFL
+        float starPAng = starHdr1.x;
+#else
+        float starPAng = length(fwidth(dir)) * 0.70710678;
+#endif
+        float starVis = nightFactorEffSky * extinctionMW * sunGlareSuppress
+                      * (1.0 - moonBrightSky * kMWMoonMaxDim)
+                      * (tSurface > 0.0 ? 0.0 : 1.0) * (moonDiscHit ? 0.0 : 1.0)
+                      * pow(clamp(cloudBlock, 0.0, 1.0), kMWCloudSuppressPower);
+        if (starVis > 0.0)
+            color += envStars(dir.x * enuX + dir.y * enuY + dir.z * enuZ, starPAng) * starVis;
+#endif
     }
 #endif
 
@@ -3056,7 +3171,7 @@ void main() {
         // SatDrawPC was trimmed to the 128-byte maxPushConstantsSize floor. The Milky Way
         // block above reads it the same way.
 #ifdef SKY_ENV
-        float nightFactorEffZ = mix(1.0, nightFactorSkyZ, atmFracSkyZ);
+        float nightFactorEffZ = mix(envGlareVis, nightFactorSkyZ, atmFracSkyZ);
 #else
         float nightFactorEffZ = mix(cloud.skyGlareVisibility, nightFactorSkyZ, atmFracSkyZ);
 #endif
@@ -3131,8 +3246,14 @@ void main() {
     }
 
 #ifdef SKY_ENV
-    // No sun disc or lens flare (the mesh's GGX sun lobe is the glint) and no depth attachment.
-    outColor = vec4(max(envHdr + color / exposure, vec3(0.0)), 1.0);
+    // No sun disc or lens flare (the mesh's GGX sun lobe is the glint) and no depth attachment. The
+    // display-space terms go back to radiance through the VIEWER's exposure (header note).
+    vec3 envOut = max(envHdr + color / envViewExposure, vec3(0.0));
+#ifdef SKY_REFL
+    outColor = vec4(envOut * reflWeight, 1.0);
+#else
+    outColor = vec4(envOut, 1.0);
+#endif
 #else
     // ── Sun disc + atmospheric corona ─────────────────────────────────────────
     if (sunDirENU.w > limbZ - 0.1) {

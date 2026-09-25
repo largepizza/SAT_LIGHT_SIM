@@ -97,6 +97,7 @@ public:
         glm::vec3 boundsCenter{0.0f}; // rest pose
         float boundsRadius = 0.0f;
         int triangles = 0;
+        bool hasSharp = false; // a material smooth enough for the sharp (per-pixel) reflection pass
     };
 
     // Environment probes (SatEnvProbes): the layout of pipeline set 1 (one probe's cube, bound per
@@ -158,6 +159,23 @@ public:
     void createBloomPipeline(VulkanContext &ctx, VkRenderPass flareSourcePass);
     void recordBloom(VkCommandBuffer cmd, uint32_t targetW, uint32_t targetH, float exposure, float gain);
 
+    // ── Sharp reflections (2026-09-25) ──────────────────────────────────────────────────────────
+    // The scene pass also writes a reflection G-buffer (RGBA32UI, sceneReflGView): for each mirror-smooth
+    // pixel of an instance flagged for it (GpuMeshInstance::earthShC.y), the reflected direction, its
+    // weight and slot + 1. recordReflections() then draws sat_sky.frag's SKY_REFL variant once per such
+    // instance (its own SatDrawPC: the instance's position as the observer, slot + 1 in `aspect`), inside
+    // its screen rectangle, into an RGBA16F target, and mesh_refl_add.comp adds that into the mesh
+    // radiance. skyLayout: SatelliteSim's skyBgPipeLayout (the pass binds the sky's own set).
+    void createReflPipeline(VulkanContext &ctx, VkPipelineLayout skyLayout);
+    VkImageView sceneReflGView() const { return sceneReflGViewH; }
+    struct ReflDraw
+    {
+        VkRect2D rect;       // its pixels on screen (scissor)
+        const void *pc;      // SatDrawPC, pcSize bytes
+    };
+    void recordReflections(VkCommandBuffer cmd, VkDescriptorSet skyDescSet, const std::vector<ReflDraw> &draws,
+                           uint32_t pcSize);
+
 private:
     VkDevice device_ = VK_NULL_HANDLE;
     VkFormat colorFormat = VK_FORMAT_B8G8R8A8_SRGB;
@@ -193,7 +211,7 @@ private:
 
     // Viewer pass.
     VkRenderPass viewerPass = VK_NULL_HANDLE;
-    VkPipeline viewerMeshPipe = VK_NULL_HANDLE, viewerBgPipe = VK_NULL_HANDLE;
+    VkPipeline viewerMeshPipe = VK_NULL_HANDLE, viewerBgPipe = VK_NULL_HANDLE, viewerMarkerPipe = VK_NULL_HANDLE;
     uint32_t viewerW = 0, viewerH = 0;
     VkImage viewerColorMs = VK_NULL_HANDLE, viewerDepthMs = VK_NULL_HANDLE, viewerResolve = VK_NULL_HANDLE;
     VkDeviceMemory viewerColorMsMem = VK_NULL_HANDLE, viewerDepthMsMem = VK_NULL_HANDLE,
@@ -224,6 +242,22 @@ private:
     VkDeviceMemory sceneColorMem = VK_NULL_HANDLE, sceneDistMem = VK_NULL_HANDLE, sceneDepthMem = VK_NULL_HANDLE;
     VkImageView sceneColorViewH = VK_NULL_HANDLE, sceneDistViewH = VK_NULL_HANDLE, sceneDepthView = VK_NULL_HANDLE;
     VkFramebuffer sceneFb = VK_NULL_HANDLE;
+    VkImage sceneReflG = VK_NULL_HANDLE;              // reflection G-buffer (RGBA32UI)
+    VkDeviceMemory sceneReflGMem = VK_NULL_HANDLE;
+    VkImageView sceneReflGViewH = VK_NULL_HANDLE;
+    VkImage reflRad = VK_NULL_HANDLE;                 // the SKY_REFL output (RGBA16F)
+    VkDeviceMemory reflRadMem = VK_NULL_HANDLE;
+    VkImageView reflRadView = VK_NULL_HANDLE;
+    VkFramebuffer reflFb = VK_NULL_HANDLE;
+    VkRenderPass reflPass = VK_NULL_HANDLE;
+    VkPipelineLayout skyLayout_ = VK_NULL_HANDLE;     // not owned
+    VkPipeline reflPipe = VK_NULL_HANDLE;
+    VkDescriptorSetLayout reflAddLayout = VK_NULL_HANDLE;
+    VkDescriptorPool reflAddPool = VK_NULL_HANDLE;
+    VkDescriptorSet reflAddSet = VK_NULL_HANDLE;
+    VkPipelineLayout reflAddPipeLayout = VK_NULL_HANDLE;
+    VkPipeline reflAddPipe = VK_NULL_HANDLE;
+    void writeReflAddDescriptors();
     VkBuffer sceneFrameBuf = VK_NULL_HANDLE;
     VkDeviceMemory sceneFrameMem = VK_NULL_HANDLE;
     void *sceneFrameMapped = nullptr;

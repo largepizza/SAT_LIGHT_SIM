@@ -41,6 +41,21 @@ layout(location = 7) flat in uint vGroup;
 layout(location = 0) out vec4 outColor;
 layout(location = 1) out float outDist; // scene mode: TRUE distance from the camera (m); other modes
                                         // have no attachment at location 1 and the write is dropped
+#ifdef MESH_SCENE_PASS
+// Sharp reflections (2026-09-25): for the mirror-smooth pixels of an instance picked for them
+// (earthShC.y), the reflected direction and its weight instead of a probe lookup — sat_sky.frag's
+// SKY_REFL variant renders the sky along each at screen resolution (SatMeshRenderer::
+// recordReflections). x = octahedral direction (unorm 2x16), y/z = weight rgb (half), w = slot + 1.
+layout(location = 2) out uvec4 outRefl;
+
+vec2 octEncode(vec3 n)
+{
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+    vec2 o = n.xy;
+    if (n.z < 0.0) o = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    return o;
+}
+#endif
 
 // Environment probes (SatEnvProbes, 2026-09-24): set 1 is this instance's probe, bound per draw;
 // binding 8 holds every probe's order-2 SH irradiance (env_probe_sh.comp): E(n)/π = Σ c_k·P_k(n).
@@ -313,6 +328,9 @@ void main()
 {
     MeshInstance inst = instances[vInstance];
     MeshMaterial mat  = materials[vMaterial];
+#ifdef MESH_SCENE_PASS
+    outRefl = uvec4(0u);
+#endif
 #ifndef MESH_SCENE_PASS // there, the depth pre-pass has already cut the gaps (depth EQUAL fails in them)
     if (mat.lattice.x < 1.0) {
         // Not optional detail (the Detail toggle keeps it): the gaps are the part's real geometry.
@@ -410,8 +428,25 @@ void main()
         vec3 Rd = reflect(-V, N);
         bool blocked = shadows && inst.occluderCount > 0u && rayBlocked(inst, vWorld, Rd);
         if (!blocked && dot(Rd, N) > 0.0) {
-            vec3 env;
-            if (hasProbe) {
+            float Fr  = mat.f0 + (max(1.0 - sf.rough, mat.f0) - mat.f0) * pow(1.0 - nv, 5.0);
+            // A mirror-smooth pixel (a membrane mirror; most of a quartz radiator) of an instance picked
+            // for sharp reflections: that share goes to the G-buffer, the rest (a rougher lobe) to the
+            // probe, which is right for it. A probe texel is 0.35 deg: a mirror filling the screen
+            // magnified each one over dozens of pixels.
+            float sharp = 0.0;
+#ifdef MESH_SCENE_PASS
+            if (inst.earthShC.y > 0.5)
+                sharp = 1.0 - smoothstep(0.004, 0.02, sf.rough);
+            if (sharp > 0.0) {
+                vec3 w = specC * Fr * sharp * inst.origin.w; // the scene output is × the fade too
+                outRefl = uvec4(packUnorm2x16(octEncode(Rd) * 0.5 + 0.5), packHalf2x16(w.rg),
+                                packHalf2x16(vec2(w.b, 0.0)), vInstance + 1u);
+            }
+#endif
+            vec3 env = vec3(0.0);
+            if (sharp >= 1.0) {
+                // all of it in the sharp pass
+            } else if (hasProbe) {
                 // The full renderer's view from this satellite: a mip whose texel spans the lobe (~2α).
                 float texelRad = 1.5707963 / float(textureSize(probeTex, 0).x);
                 float maxLod = float(textureQueryLevels(probeTex)) - 2.0;
@@ -425,8 +460,7 @@ void main()
                 float lod = log2(max(2.0 * sf.rough * h / 4900.0, 1.0));
                 env = earthEnv(ro, Rd, frame.sunDir.xyz, lod, frame.earthCenter.w);
             }
-            float Fr  = mat.f0 + (max(1.0 - sf.rough, mat.f0) - mat.f0) * pow(1.0 - nv, 5.0);
-            L += env * specC * Fr;
+            L += env * specC * Fr * (1.0 - sharp);
         }
     }
 

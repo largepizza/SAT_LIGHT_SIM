@@ -34,6 +34,10 @@
   Guowang, Amazon LEO, the SpaceX AI satellite, Reflect Orbital mirrors, Starmind AI1 and debris
   fragments — plus render-only parts (free greebles) and open lattice trusses.
 - **UI**: trace window with axis ticks, live magnitude and reasons; model viewer; UI scaling.
+- **Sharp mirror reflections** (Photometry, on by default): mirror-smooth surfaces of the four largest
+  such satellites in view reflect the full sky renderer per pixel instead of a reflection map.
+- **Stars in reflections and in the model viewer's sky**, drawn from the catalogue by the same point
+  model as the main view.
 
 ### Changed
 - Unified scene depth: one encoding (log2 of the true ray distance, 1 cm to 1e9 m) written by
@@ -67,6 +71,20 @@
   scrollable instead of just ending at the window edge.
 
 ### Fixed
+- **Meshes and flares no longer fight in dense constellations (2026-09-25).** Only 64 satellites could be
+  meshes, picked in random GPU order, so in the AI ring neighbours flickered between model and flare
+  every frame. Up to 256 are now drawn, largest first, and the size at which a satellite turns into a
+  model rises while more than that are in range.
+- A distant satellite's glare no longer jumps between texels of its small model: it stays the flare's,
+  at its centre, until the model is resolved.
+- Environment probes follow their satellite: at high time rates they no longer drop to the fallback
+  lighting every frame (the ambient light of every model flickered). The model viewer no longer
+  re-renders its whole probe every frame at those rates either.
+- Model viewer: exposure follows the sky's rule at the satellite (it was ~5x too dark over twilight);
+  marker lines are drawn over the model with their own depth and clipped to the view (they flickered
+  when orbiting close); the dots are always on top and labelled "You" / "Target".
+- Reflections dim the Milky Way and zodiacal light near the Sun and under sun glare as the direct
+  view does, at the viewer's exposure.
 - Scene meshes could render as a red bloom-only ghost; the model viewer's first cut came up all-black
   (Clay draws an element's own background over its custom content); a satellite that went dark while
   selected could drop out of view; and a click on the trace window fell through to the camera.

@@ -7,8 +7,8 @@ layout(local_size_x = 16, local_size_y = 16) in;
 // buffer before it is blurred, lists every local maximum bright enough to glare:
 //   - a 5x5 local maximum of alpha (ties broken by texel index, so one texel wins);
 //   - its 5x5 light is its effectFlare, given the same threshold as a sprite's glare.
-// Which light may glare is decided upstream (mesh_bloom.frag): all of a point-like mesh's, and only
-// sun-like surface brightness on a resolved one. That replaced a "concentration" test here (≥ half the
+// Which light may glare is decided upstream (mesh_bloom.frag): only sun-like surface brightness. A
+// mesh that is still point-like keeps its sprite's glare at its centre instead (glare.vert, 2026-09-25). That replaced a "concentration" test here (≥ half the
 // 5x5 light in the 3x3), which passed every thin bright edge and rejected the Sun's disc in a mirror
 // once it spanned a few texels.
 // Position: the light-weighted centroid of the 3x3, so the glare moves smoothly, not a texel at a time.
