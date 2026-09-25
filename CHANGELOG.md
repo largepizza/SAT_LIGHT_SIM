@@ -19,8 +19,8 @@
   bake, validate and OBJ-export models; `--selftest`, `--benchmark`, `--run-benchmark`,
   `--sensitivity`, `--replay-trace`, `--set` material overrides, bulk export.
 - **Benchmarking.** 9 published photometry datasets with provenance in `data/benchmarks/`, the
-  `SatBench` campaign runner, `sat-light-sim-trace/1` CSV export/replay, a GPU parity readout for the
-  selected satellite, and the photometric accuracy gate (`cmake/AccuracyGate.cmake`, M11) which runs
+  `SatBench` campaign runner, `sat-light-sim-trace/1` CSV export/replay, a GPU parity check for the
+  selected satellite (mismatches are logged), and the photometric accuracy gate (`cmake/AccuracyGate.cmake`, M11) which runs
   those selftests and benchmarks in CI.
 - **In-app satellite renderer + model viewer (Phases 4a-4f).** Any satellite that is big enough on
   screen is drawn as a 3D mesh, composited as a surface of the scene (clouds in front occlude it,
@@ -45,6 +45,13 @@
   surface.
 - The satellite roster is model-first: `data/constellations.json` ships the modelled types, and lobe
   budgets scale with roster size.
+- **UI layout pass.** The selection panel now shows name, type and magnitude plus a row of
+  **icon-only** buttons whose tooltip is just the button's name — **Info** (a serif "i", opens the
+  info window), **Go to** (follow mode) and **Trace pass** (a new chart icon); the GPU-parity readout
+  is gone (the check and its mismatch log stay). Its orbit rows and the range/phase line moved into the
+  info window, whose settings column is narrower (170 px) and which now opens 640x460 pinned to the
+  top-right corner. The trace window opens 520x380 in the bottom-left above the time controls, so the
+  two coexist instead of covering the middle of the sky.
 
 ### Fixed
 - Scene meshes could render as a red bloom-only ghost; the model viewer's first cut came up all-black

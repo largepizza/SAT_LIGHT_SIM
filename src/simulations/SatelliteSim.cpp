@@ -3048,22 +3048,48 @@ void SatelliteSim::selectSatellite(int idx)
     formatSelectedSatInfo();
 }
 
-// The model viewer's observer box: where the viewed satellite is in the observer's sky, its phase
-// angle and its magnitude (the CPU evaluator, as the selection panel's readout; above the air and
-// after the line of sight's extinction).
+// The model viewer's readouts: the orbit line under the image (altitude / inclination / RAAN /
+// period / the flare-mitigation power — the rows the selection panel used to carry), and the observer
+// box in the right column: where the viewed satellite is in the observer's sky, its phase angle and
+// its magnitude (the CPU evaluator, as the selection panel's readout; above the air and after the
+// line of sight's extinction).
 void SatelliteSim::updateViewerObserverInfo()
 {
     for (auto &l : viewerObsLine)
         l[0] = '\0';
+    viewerOrbitLine[0] = '\0';
     if (viewerSatIndex < 0 || viewerSatIndex >= (int)satOrbits.size())
     {
-        snprintf(viewerObsLine[0], sizeof(viewerObsLine[0]), "Not tracking a satellite");
+        snprintf(viewerObsLine[0], sizeof(viewerObsLine[0]), "No satellite tracked");
         return;
     }
     const SatOrbit &orb = satOrbits[viewerSatIndex];
     if (orb.typeIdx >= satTypes.size())
         return;
     const SatelliteType &type = satTypes[orb.typeIdx];
+
+    // Orbit line. Static orbital elements, so it is rebuilt here only for the 10 Hz refresh; it must
+    // come before the !isModel() early return below, since a legacy type still has an orbit.
+    {
+        char raan[32];
+        if (orb.alignTerminator)
+            snprintf(raan, sizeof(raan), "  RAAN sun-sync (precessing)");
+        else
+            snprintf(raan, sizeof(raan), "  RAAN %.1f deg", glm::degrees(orb.raan));
+        char period[32] = "";
+        if (orb.meanMot > 0.0f)
+            snprintf(period, sizeof(period), "  Period %.1f min", (2.0f * glm::pi<float>() / orb.meanMot) / 60.0f);
+        // Flare-mitigation power readout — only for types whose primary surface uses the tilt, exactly
+        // as formatSelectedSatInfo used to decide it (power loss is cos(tilt)).
+        char power[48] = "";
+        if (type.primary.group >= 0 && type.primary.group < (int)type.groups.size() &&
+            type.groups[type.primary.group].jointMode == JointMode::FlareMitigationTilt)
+            snprintf(power, sizeof(power), "  Power %.0f%% (tilt %.0f deg)",
+                     cosf(glm::radians(flareMitigationTiltDeg)) * 100.0f, flareMitigationTiltDeg);
+        snprintf(viewerOrbitLine, sizeof(viewerOrbitLine), "Alt %.0f km  Incl %.1f deg%s%s%s", orb.altM / 1000.0f,
+                 glm::degrees(orb.incl), raan, period, power);
+    }
+
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const double theta = earthRotationAngle(t);
     const double ct = std::cos(theta), st = std::sin(theta);
@@ -3098,25 +3124,26 @@ void SatelliteSim::updateViewerObserverInfo()
     const double b = glm::dot(obs, d), c = glm::dot(obs, obs) - (double)kEarthRadius * kEarthRadius;
     const double disc = b * b - c;
     const bool hidden = disc > 0.0 && -b - std::sqrt(disc) > 0.0 && -b - std::sqrt(disc) < range;
-    snprintf(viewerObsLine[0], sizeof(viewerObsLine[0]), "%s el %.1f deg, az %.0f deg",
-             hidden ? "Below your horizon:" : "In your sky:", elDeg, azDeg);
-    snprintf(viewerObsLine[1], sizeof(viewerObsLine[1]), "Range %.0f km, phase %.0f deg", range / 1000.0,
-             glm::degrees(r.phaseAngleRad));
+    // Short lines: the settings column is ~170 px wide (see buildModelViewerWindow's colW), so a
+    // long line would be clipped mid-word rather than wrapped by anything but Clay's own text wrap.
+    snprintf(viewerObsLine[0], sizeof(viewerObsLine[0]), hidden ? "Below your horizon" : "In your sky");
+    snprintf(viewerObsLine[1], sizeof(viewerObsLine[1]), "El %.1f  Az %.0f", elDeg, azDeg);
+    snprintf(viewerObsLine[2], sizeof(viewerObsLine[2]), "Range %.0f km", range / 1000.0);
+    snprintf(viewerObsLine[3], sizeof(viewerObsLine[3]), "Phase %.0f deg", glm::degrees(r.phaseAngleRad));
     if (!r.supported)
-        snprintf(viewerObsLine[2], sizeof(viewerObsLine[2]), "Mag: n/a (no ground-site aim)");
+        snprintf(viewerObsLine[4], sizeof(viewerObsLine[4]), "Mag: n/a (site aim)");
     else if (!std::isfinite(r.magnitude))
-        snprintf(viewerObsLine[2], sizeof(viewerObsLine[2]), "Dark: in Earth's shadow");
+        snprintf(viewerObsLine[4], sizeof(viewerObsLine[4]), "Dark: Earth's shadow");
     else
     {
-        snprintf(viewerObsLine[2], sizeof(viewerObsLine[2]), "Mag %.2f above the air", r.magnitude);
+        snprintf(viewerObsLine[4], sizeof(viewerObsLine[4]), "Mag %.2f above air", r.magnitude);
         if (!hidden)
         {
             const double ext = atmExtinctionMag(obs, d, range, (double)extinctionCoeff);
-            snprintf(viewerObsLine[3], sizeof(viewerObsLine[3]), "Mag %.2f seen by you (air %.2f)", r.magnitude + ext,
-                     ext);
+            snprintf(viewerObsLine[5], sizeof(viewerObsLine[5]), "Mag %.2f (ext %.2f)", r.magnitude + ext, ext);
         }
         else
-            snprintf(viewerObsLine[3], sizeof(viewerObsLine[3]), "(1000 km: %.2f)", r.magnitude1000);
+            snprintf(viewerObsLine[5], sizeof(viewerObsLine[5]), "(1000 km: %.2f)", r.magnitude1000);
     }
 }
 
@@ -4234,7 +4261,7 @@ void SatelliteSim::computeSelectedTrace()
         traceExportStatus[0] = '\0'; // a different satellite: the last export message no longer applies
     traceValid = false;
     traceRows.clear();
-    traceStatus[0] = traceSummary[0] = traceNowLine[0] = '\0';
+    traceStatus[0] = traceSummary[0] = traceNowLine[0] = traceNowDetail[0] = '\0';
     traceMagTickCount = 0;
     tracePlot.seriesCount = 0;
     traceChrome.open = true;
@@ -4555,9 +4582,12 @@ void SatelliteSim::startBulkExport()
 }
 
 // ─── updateSelectedPhotometry (benchmarking M2) ───────────────────────────────
-// Per-frame photometry readout + GPU parity for the selected satellite. Called right after the
-// list header copy is read back; that copy belongs to the PREVIOUS frame's dispatch, whose inputs
-// parityPending recorded — so the CPU evaluator runs at exactly the instant and inputs the GPU saw.
+// Per-frame photometry readout for the selected satellite: one line, its magnitude (the panel's whole
+// numeric readout now). Called right after the list header copy is read back; that copy belongs to the
+// PREVIOUS frame's dispatch, whose inputs parityPending recorded — so the CPU evaluator runs at exactly
+// the instant and inputs the GPU saw, which is also what makes the GPU-vs-CPU parity CHECK below
+// meaningful. The check's result is no longer displayed (2026-09-24 — it was a development instrument
+// in a panel the player reads), but a mismatch is still logged, throttled to one line per 120 frames.
 void SatelliteSim::updateSelectedPhotometry()
 {
     for (auto &line : selPhotLine)
@@ -4612,7 +4642,7 @@ void SatelliteSim::updateSelectedPhotometry()
         r.flareUnits * pin.brightnessScale >= occlusionFluxFloor(pin.brightnessScale))
         r = evalSatPhotometry(type.groups, type.lobes, e, pin.tAbs, in, &legacy, &type.occlusion);
 
-    // ── Readout lines ─────────────────────────────────────────────────────────────────────
+    // ── Readout line ─────────────────────────────────────────────────────────────────────
     if (!r.supported)
         snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: n/a (ground-site aim)");
     else if (r.legacy)
@@ -4621,32 +4651,23 @@ void SatelliteSim::updateSelectedPhotometry()
         snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag %.2f  (1000 km %.2f)", r.magnitude, r.magnitude1000);
     else
         snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: dark (Earth's shadow)");
-    snprintf(selPhotLine[1], sizeof(selPhotLine[1]), "Range %.0f km  Phase %.0f deg", r.rangeM / 1000.0,
-             glm::degrees(r.phaseAngleRad));
 
-    // ── GPU parity ───────────────────────────────────────────────────────────────────────
+    // ── GPU parity: check + log only, no readout line (the range/phase line this used to follow is the
+    // info window's OBSERVER box now). ──────────────────────────────────────────────────────
     const GpuSatListHeader *hdr = static_cast<const GpuSatListHeader *>(pickedVisibleMapped);
     if (!r.supported)
         return;
-    if (!hdr->selectedFound)
-    {
-        snprintf(selPhotLine[2], sizeof(selPhotLine[2]), "GPU parity: not in view");
+    if (!hdr->selectedFound) // not in view: nothing on the GPU side to compare against
         return;
-    }
     const double gpu = hdr->selectedRawFlux;
     const double cpu = r.flareUnits * pin.brightnessScale;
     // Below ~magnitude 20 in flare units (0.008 at mag 6) both are noise — see the M1 gate.
     const double kDarkFlare = 0.008 * std::pow(10.0, -0.4 * 14.0) * pin.brightnessScale;
     if (gpu < kDarkFlare && cpu < kDarkFlare)
-    {
-        snprintf(selPhotLine[2], sizeof(selPhotLine[2]), "GPU parity: both dark");
         return;
-    }
     double dmag = (gpu > 0.0 && cpu > 0.0) ? -2.5 * std::log10(gpu / cpu)
                                            : (gpu > cpu ? -99.0 : 99.0); // one side dark: gross mismatch
     selParityWarn = std::abs(dmag) > kParityWarnMag;
-    snprintf(selPhotLine[2], sizeof(selPhotLine[2]), "GPU parity: %+.3f mag%s", dmag,
-             selParityWarn ? "  MISMATCH" : "");
     if (selParityWarn && parityLogCooldown == 0)
     {
         char buf[256];

@@ -1626,10 +1626,13 @@ private:
     // Cached info text, reformatted only when selectedSatIndex changes (see formatSelectedSatInfo).
     // Separate per-line buffers, not one multi-line string — Clay/UIRenderer text draws a single
     // line per CLAY_TEXT call with no embedded-newline support.
+    // buildSelectedSatPanel renders only [0] (name) and [1] (type) for a satellite — its orbit rows
+    // [2..6] are shown by the model viewer instead, as `viewerOrbitLine` (see updateViewerObserverInfo).
+    // A PLANET selection still renders the whole array: it has no model window to move into.
     // 7th slot (session follow-up): optional "Power output" line, filled only for satellites whose
     // primary surface uses AttitudeMode::SunTrackingTilted (see formatSelectedSatInfo); left empty
-    // (and skipped by buildSelectedSatPanel's render loop) for everything else, including planets —
-    // formatSelectedPlanetInfo never touches planetInfoLine[6].
+    // for everything else, including planets — formatSelectedPlanetInfo never touches
+    // planetInfoLine[6].
     static constexpr int kSelInfoLines = 7;
     char selInfoLine[kSelInfoLines][40] = {};
     char planetInfoLine[kSelInfoLines][40] = {}; // same shape, filled by formatSelectedPlanetInfo
@@ -1653,9 +1656,13 @@ private:
         bool occlusionOn = true;
     };
     ParityInputs parityPending;
-    static constexpr int kSelPhotLines = 3;
-    char selPhotLine[kSelPhotLines][48] = {}; // magnitude / geometry / parity — rebuilt every frame
-    bool selParityWarn = false;               // parity gap above kParityWarnMag (colours the line)
+    // The magnitude readout the selection panel shows ("Mag -1.23  (1000 km -1.10)"). It used to be
+    // three lines (magnitude / range+phase / the GPU-vs-CPU parity text) — the range and phase moved
+    // to the info window's OBSERVER box, and the parity LINE was dropped from the UI (2026-09-24) with
+    // the whole selector-window readout; the parity CHECK and its mismatch log below stay.
+    static constexpr int kSelPhotLines = 1;
+    char selPhotLine[kSelPhotLines][48] = {}; // rebuilt every frame
+    bool selParityWarn = false;               // parity gap above kParityWarnMag (drives the log's severity)
     static constexpr double kParityWarnMag = 0.02;
     int parityLogCooldown = 0;                // frames until the next mismatch may be logged
     void updateSelectedPhotometry();
@@ -1698,6 +1705,7 @@ private:
     char traceStatus[200] = {};     // export result, or why there is no trace
     char traceSummary[112] = {};    // peak brightness, pass length
     char traceNowLine[128] = {};    // current magnitude, rebuilt every frame the window is open
+    char traceNowDetail[64] = {};   // its elevation / phase, on a second short line (narrow window)
     char traceExportStatus[160] = {}; // last export result (kept across live retraces)
     // Live mode: retrace at up to kTraceLiveHz while the window is open, whenever the result would
     // differ — the observer moved, the selection changed, the pass ended, or a photometry input
@@ -1736,10 +1744,18 @@ private:
     void startBulkExport();
     void buildBulkExportRows(const UIInput &inp, UIRenderer &ui);
     void buildTraceWindow(const UIInput &inp, UIRenderer &ui);
-    void buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx); // "Trace pass" in the selection UI
+    // "Trace pass" in the selection UI (icon + label).
+    void buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx);
+    // The one place the selection panel's and the out-of-view chip's action buttons are drawn: the icon
+    // alone, tooltip = the button's name. `id` must be unique among the buttons drawn this frame (the
+    // panel and the chip each pass their own); `name` must outlive the frame (Clay stores the pointer
+    // for the tooltip) — all callers pass a literal.
+    bool buildSelActionButton(const UIInput &inp, UIRenderer &ui, int id, const char *name, int iconIdx,
+                              bool on, bool &hov);
 
     // ── Phase 4: satellite mesh renderer + model viewer (.plans/SAT_RENDERER_PHASE4.md) ──────────
-    // "VIEW" on a constellation row (or "View model" on a selected satellite) opens a window showing that
+    // "VIEW" on a constellation row (or "Info" on a selected satellite — it was "View model" until the
+    // window grew an orbit/brightness readout) opens a window showing that
     // type's geometry model, rendered by SatMeshRenderer into an offscreen image the UI draws
     // (UIImage). The model sits at its constellation's altitude above the observer's ground point,
     // posed by its attitude law, lit by the sun (Studio: fixed 35 deg over its horizon; Live: the sim's
@@ -1762,12 +1778,21 @@ private:
     bool viewerDragging = false;
     uint32_t viewerImageId = 0;
     UIImage viewerImage;
-    bool hovViewerClose = false, hovViewerBtn[12] = {}, hovSelViewBtn = false;
+    bool hovViewerClose = false, hovViewerBtn[12] = {}, hovSelInfoBtn = false;
     bool hovViewerTitleBtn[2] = {}; // title bar: select, follow
     bool viewerMarkers = true;      // the observer / ground-site markers
     // Observer box (right column): where the viewed satellite is in your sky and how bright, from the
-    // CPU evaluator at up to 10 Hz (updateViewerObserverInfo).
-    char viewerObsLine[4][96] = {};
+    // CPU evaluator at up to 10 Hz (updateViewerObserverInfo). Six short lines, not four long ones:
+    // the column is ~170 px wide, so each fits its ~156 px of content width without wrapping.
+    // 0 = "In your sky" / "Below your horizon", 1 = elevation + azimuth, 2 = range, 3 = phase,
+    // 4 = magnitude above the air, 5 = magnitude as seen (with the extinction it lost).
+    char viewerObsLine[6][96] = {};
+    // The viewed satellite's orbit — altitude, inclination, RAAN, period and the flare-mitigation
+    // power readout — as one wrapped line under the image in the left column. These are the rows the
+    // selection panel used to carry (see buildSelectedSatPanel); they live here because the viewer can
+    // be tracking a satellite that is not the selection. Rebuilt with the observer box; the data is
+    // static orbital elements, so 10 Hz is generous.
+    char viewerOrbitLine[192] = {};
     double viewerObsNextWall = 0.0;
     void updateViewerObserverInfo();
     // Select a satellite as a click on it does (clears a planet selection, refreshes its info).
@@ -1789,7 +1814,10 @@ private:
     // (or, if none is up, the nearest) — so the constellation row's VIEW shows a satellite where it is.
     int pickViewerSatellite(int constIdx) const;
     void openModelViewer(int typeIdx, const char *label, float altM, int satIndex = -1);
-    void buildViewButton(const UIInput &inp, UIRenderer &ui, int idx); // "View model" in the selection UI
+    // The selection panel's / out-of-view chip's three actions. "Info" opens the model viewer window
+    // (which has become an info pane: orbit, brightness, observer box, 3D view); the label is Info,
+    // not "View model", for that reason.
+    void buildInfoButton(const UIInput &inp, UIRenderer &ui, int idx);
     void buildModelViewerWindow(const UIInput &inp, UIRenderer &ui);
     void recordModelViewer(VkCommandBuffer cmd);
 

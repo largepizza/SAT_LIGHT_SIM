@@ -29,8 +29,15 @@ static constexpr int kIconPlay = 4;       // pixel--play.png
 static constexpr int kIconSettings = 5;   // pixel--settings.png
 static constexpr int kIconCamera = 6;     // camera-solid.png — UC6 screenshot button
 static constexpr int kIconStarTrails = 7; // pixel--star-trails.png — long-exposure trail toggle
-static constexpr int kIconEye = 8;        // pixel--eye.png — model viewer: fly to the satellite (follow)
-static constexpr int kIconSelect = 9;     // pixel--crosshair.png — model viewer: select the satellite
+static constexpr int kIconEye = 8;        // pixel--eye.png — follow mode (fly to the satellite)
+static constexpr int kIconSelect = 9;     // pixel--crosshair.png — view/select the satellite's model
+static constexpr int kIconTrace = 10;     // pixel--trace.png — "Trace pass" (magnitude over the pass)
+static constexpr int kIconInfo = 11;      // pixel--info.png — "Info": the satellite's info window
+
+// The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
+// are ICON-ONLY: the button's name is the tooltip, never a sentence. `kSelIconBtnMin` matches the view
+// window's title-bar icon targets.
+static constexpr float kSelIconBtnMin = 24.0f;
 
 // Settings schema version (NEW-5). Bump this whenever a settings.json change would make an
 // old file's graphics-affecting values (photometry/clouds/render_scale) meaningless against
@@ -544,8 +551,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             "assets/icons/ui/pixel--star-trails.png",
             "assets/icons/ui/pixel--eye.png",
             "assets/icons/ui/pixel--crosshair.png",
+            "assets/icons/ui/pixel--trace.png",
+            "assets/icons/ui/pixel--info.png",
         };
-        ui.loadIcons(*ctx_, iconPaths, 10);
+        ui.loadIcons(*ctx_, iconPaths, 12);
         iconsLoaded = true;
     }
 
@@ -1041,6 +1050,13 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
 // of planetBuf's own host-mapped memory (no GPU round-trip needed — see pickPlanetAt's comment),
 // so it's never stale. When the selection is currently off-screen or below the horizon, the
 // floating panel is skipped in favor of a small fixed corner chip, so it isn't silently lost.
+//
+// TREATMENT (2026-09-24): the panel carries name + type + the magnitude readout and one row of
+// icon buttons. The orbital elements it used to list (altitude, inclination, RAAN, period, the
+// flare-mitigation power) and the range/phase line live in the 3D view window now — ten text rows
+// under the satellite covered the sky it is trying to show. The last line, the GPU-vs-CPU parity
+// Δmag, stays: it compares this dispatch's own numbers against the CPU evaluator, which is the one
+// thing the view window (a CPU-only evaluator) has no counterpart for.
 // Registers an element's mouse-capture rect from its bounds in the last layout, falling back to
 // the given estimate on its first frame. Estimates alone let clicks on a panel's lower rows (the
 // Trace button) fall through to satellite picking, which deselected before the button could run.
@@ -1101,9 +1117,9 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
             CLAY_TEXT(chipStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
             if (!isPlanet)
             {
-                buildTraceButton(inp, ui, 0);
-                buildViewButton(inp, ui, 0);
+                buildInfoButton(inp, ui, 0);
                 buildFollowButton(inp, ui, 0);
+                buildTraceButton(inp, ui, 0);
             }
         }
         captureLaidOut(ui, CLAY_ID("SelSatChip"), kMargin, kMargin, 360.0f, 34.0f);
@@ -1148,36 +1164,50 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     {
         Clay_String headStr{false, (int32_t)strlen(infoLines[0]), infoLines[0]};
         CLAY_TEXT(headStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(13)}));
-        for (int i = 1; i < kSelInfoLines; ++i)
+        if (isPlanet)
         {
-            if (infoLines[i][0] == '\0') // e.g. the power-readout line, blank for non-datacenter picks
-                continue;
-            Clay_String lineStr{false, (int32_t)strlen(infoLines[i]), infoLines[i]};
-            CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
-        }
-        // Per-frame photometry + GPU parity (benchmarking M2) — satellites only.
-        if (!isPlanet)
-            for (int i = 0; i < kSelPhotLines; ++i)
+            // A planet has no 3D model window to move the rest of its readout into, so it keeps the
+            // whole block (type / magnitude / distance / phase / sun distance).
+            for (int i = 1; i < kSelInfoLines; ++i)
             {
-                if (selPhotLine[i][0] == '\0')
+                if (infoLines[i][0] == '\0')
                     continue;
-                bool warn = (i == kSelPhotLines - 1) && selParityWarn;
-                Clay_String lineStr{false, (int32_t)strlen(selPhotLine[i]), selPhotLine[i]};
-                CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = warn ? Pal::listenKey : Pal::textDim, .fontSize = fs(12)}));
+                Clay_String lineStr{false, (int32_t)strlen(infoLines[i]), infoLines[i]};
+                CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
             }
-        if (!isPlanet)
+        }
+        else
+        {
+            // A satellite shows its type here and moves the orbit lines (altitude / inclination /
+            // RAAN / period / power) to the info window, which describes whatever it is showing.
+            if (infoLines[1][0])
+            {
+                Clay_String lineStr{false, (int32_t)strlen(infoLines[1]), infoLines[1]};
+                CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
+            }
+            // Magnitude only. The range/phase line moved to the info window's OBSERVER box, and the
+            // GPU-parity Δmag readout was dropped entirely (2026-09-24) — it was a development
+            // instrument in a panel the player reads, and the check still logs a mismatch.
+            if (selPhotLine[0][0])
+            {
+                Clay_String lineStr{false, (int32_t)strlen(selPhotLine[0]), selPhotLine[0]};
+                CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12),
+                                                      .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            }
             CLAY(CLAY_ID("SelSatButtons"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                        .childGap = 6,
+                                                       .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
             {
-                buildTraceButton(inp, ui, 1);
-                buildViewButton(inp, ui, 1);
+                buildInfoButton(inp, ui, 1);
                 buildFollowButton(inp, ui, 1);
+                buildTraceButton(inp, ui, 1);
             }
+        }
     }
     // Panel size isn't known until Clay lays it out this frame — this is a rough estimate for
     // capture purposes only, same approximation the corner HUD panels' capture rects already use.
-    captureLaidOut(ui, CLAY_ID("SelSatPanel"), sx + kOffsetX, sy + kOffsetY, 240.0f, 200.0f);
+    captureLaidOut(ui, CLAY_ID("SelSatPanel"), sx + kOffsetX, sy + kOffsetY, 240.0f, 110.0f);
 }
 
 // ─── buildTraceWindow (benchmarking M9) ──────────────────────────────────────
@@ -1185,14 +1215,24 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
 // extinction (solid), above the atmosphere (faint), phase angle on the second axis (orange), and a
 // marker at the current sim time. Retrace re-runs it for the current selection and time; Export
 // writes the CSV that SatModelTool --replay-trace checks.
+//
+// PLACEMENT (2026-09-24): default 520x380, pinned to the bottom-left just above the time controls
+// panel, so it coexists with the 3D view window in the top-right corner instead of covering the sky
+// between them (it used to open centered, 680x440, over the middle of the screen). Its labels are
+// sized for that narrower width — the legend and the "Now …" readout wrap in two otherwise.
 void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
 {
     if (!traceChrome.open)
         return;
     if (traceChrome.w <= 0.0f)
     {
-        traceChrome.w = 680.0f;
-        traceChrome.h = 440.0f;
+        // 520x380, shrunk on a small window (never wider than ~34% of it, never taller than ~50%) so
+        // that the default leaves the middle of the sky alone and stops short of the view window. The
+        // height is what the plot gets the leftovers of: the summary, the two readout lines, the
+        // legend, the axis titles, the clock gutter and the button row come to ~240 px with the title
+        // bar, so 380 leaves a ~140 px plot.
+        traceChrome.w = std::min(520.0f, std::max(420.0f, inp.screenW * 0.34f));
+        traceChrome.h = std::min(380.0f, std::max(300.0f, inp.screenH * 0.5f));
     }
     // Live mode: retrace at up to kTraceLiveHz, only when the result would change.
     if (traceLive && std::chrono::steady_clock::now() - traceLastRetrace >=
@@ -1211,6 +1251,8 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
     bool observerMoved = false;
     if (traceValid && traceSetup.satelliteIndex >= 0 && traceSetup.satelliteIndex < (int)satOrbits.size())
     {
+        // Both readout lines are rebuilt together, so one can never show last pass's numbers.
+        traceNowLine[0] = traceNowDetail[0] = '\0';
         const uint32_t ti = satOrbits[traceSetup.satelliteIndex].typeIdx;
         const SatelliteType &type = satTypes[ti];
         const SatTraceRow r = evalSatTraceRow(traceSetup, type.groups, type.lobes, &type.occlusion, tNow);
@@ -1219,15 +1261,17 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
         struct tm *utc = gmtime(&unixSim);
         snprintf(clock, sizeof(clock), "%02d:%02d:%02d", utc ? utc->tm_hour : 0, utc ? utc->tm_min : 0,
                  utc ? utc->tm_sec : 0);
+        // Two short lines rather than one 72-character one: the window is 520 px wide by default, and
+        // the single line wrapped to two messily (a mid-word break in the middle of the numbers).
+        snprintf(traceNowDetail, sizeof(traceNowDetail), "el %.0f deg  phase %.0f deg", r.elevationDeg, r.phaseDeg);
         if (r.elevationDeg <= 0.0)
-            snprintf(traceNowLine, sizeof(traceNowLine), "Now %s: below the horizon (el %.0f deg)", clock, r.elevationDeg);
+            snprintf(traceNowLine, sizeof(traceNowLine), "Now %s: below the horizon", clock);
         else if (!std::isfinite(r.magApparent))
-            snprintf(traceNowLine, sizeof(traceNowLine), "Now %s: in Earth's shadow (el %.0f deg)", clock, r.elevationDeg);
+            snprintf(traceNowLine, sizeof(traceNowLine), "Now %s: in Earth's shadow", clock);
         else
         {
-            snprintf(traceNowLine, sizeof(traceNowLine),
-                     "Now %s: mag %.2f  (%.2f above atmosphere)  el %.0f deg  phase %.0f deg", clock, r.magApparent,
-                     r.mag, r.elevationDeg, r.phaseDeg);
+            snprintf(traceNowLine, sizeof(traceNowLine), "Now %s: mag %.2f  (%.2f above the air)", clock,
+                     r.magApparent, r.mag);
             if (nowIn)
             {
                 const float y = (traceMagFaint - (float)r.magApparent) / (traceMagFaint - traceMagBright);
@@ -1296,8 +1340,8 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
     static const char *kPhaseTicks[kTracePhaseTicks] = {"180", "135", "90", "45", "0"};
 
     buildResizableWindow(
-        inp, ui, traceChrome, 2, titleBuf, true, hovTraceClose, (inp.screenW - traceChrome.w) * 0.5f,
-        inp.screenH - traceChrome.h - 70.0f, 440.0f, 300.0f, 1600.0f, 1000.0f,
+        inp, ui, traceChrome, 2, titleBuf, true, hovTraceClose, 12.0f,
+        inp.screenH - traceChrome.h - 88.0f, 420.0f, 300.0f, 1600.0f, 1000.0f,
         [&]()
         {
             CLAY(CLAY_ID("TraceBody"), {.layout = {
@@ -1310,6 +1354,8 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                     text(traceSummary, Pal::textPrimary, 12);
                 if (traceValid && traceNowLine[0])
                     text(traceNowLine, {255, 255, 255, 230}, 12);
+                if (traceValid && traceNowDetail[0])
+                    text(traceNowDetail, Pal::textDim, 11);
                 if (traceValid)
                 {
                     CLAY(CLAY_ID("TraceLegend"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
@@ -1317,9 +1363,11 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                                                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                     {
-                        legend(0, {140, 204, 255, 255}, "apparent (after extinction)");
-                        legend(1, {140, 204, 255, 90}, "above atmosphere");
-                        legend(2, {255, 173, 77, 190}, "phase angle");
+                        // Short labels: the full ones ("apparent (after extinction)", "above atmosphere")
+                        // total ~527 px and no longer fit the narrower window's 496 px content width.
+                        legend(0, {140, 204, 255, 255}, "apparent");
+                        legend(1, {140, 204, 255, 90}, "above air");
+                        legend(2, {255, 173, 77, 190}, "phase");
                         legend(3, {255, 255, 255, 128}, "now");
                     }
                     // Axis titles over the two label gutters.
@@ -1409,8 +1457,15 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
 // A REAL satellite (the selection, or a constellation's VIEW pick, which also selects it), rendered
 // offscreen by SatMeshRenderer (recordModelViewer, in recordCompute) and shown as a UIImage. Title
 // bar: the satellite's name (highlighted, "(selected)", while it is the selection), then Select and
-// Follow icons. Body: the image on the left (drag to orbit, scroll to zoom); on the right a column of
-// settings and the observer box — where it is in your sky, how bright, and a trace of its pass.
+// Follow icons. Body: the image on the left (drag to orbit, scroll to zoom) with the viewed
+// satellite's orbit readout under it; on the right a narrow column of settings and the observer box
+// (where it is in your sky, how bright, and a trace of its pass).
+//
+// PLACEMENT (2026-09-24): default 640x460 pinned to the top-right corner — the trace window lives
+// above the time controls in the bottom-left, and with the two of them anchored to opposite corners
+// they coexist instead of covering the middle of the sky. The settings column is deliberately narrow
+// (colW) so the image keeps most of the width; the orbital elements that used to sit in the
+// selection panel are a wrapped one-liner under the image, where the width is.
 void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
 {
     if (!viewerChrome.open || !meshRendererInit)
@@ -1425,8 +1480,11 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
     }
     if (viewerChrome.w <= 0.0f)
     {
-        viewerChrome.w = 860.0f;
-        viewerChrome.h = 600.0f;
+        // 640x460 on a normal desktop, never more than ~42% of the window's width or 55% of its
+        // height: the whole point of the top-right default is that the sky stays visible, and on a
+        // 1280-wide window a fixed 640 would reach into the middle of the screen.
+        viewerChrome.w = std::min(640.0f, std::max(430.0f, inp.screenW * 0.42f));
+        viewerChrome.h = std::min(460.0f, std::max(320.0f, inp.screenH * 0.55f));
     }
     const bool tracked = viewerSatIndex >= 0 && viewerSatIndex < (int)satOrbits.size();
     const bool isSelected = tracked && selectedSatIndex == viewerSatIndex;
@@ -1506,7 +1564,9 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
 
     // Grow the window to fit the settings column (last frame's layout): the check result and the
     // observer lines appear below their buttons, and were hidden under the window's bottom edge until
-    // it was resized by hand. Only ever grows, never while the user is resizing it.
+    // it was resized by hand. Only ever grows, never while the user is resizing it — and only up to
+    // 72% of the screen height, since the window is pinned to the top-right corner and a taller
+    // column would run down past the middle of the screen (past that cap the column scrolls).
     {
         const Clay_ElementData col = Clay_GetElementData(CLAY_ID("ViewerRight"));
         const Clay_ElementData content = Clay_GetElementData(CLAY_ID("ViewerRightContent"));
@@ -1515,7 +1575,8 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
             const float over = content.boundingBox.height + 16.0f - col.boundingBox.height; // + its padding
             if (over > 1.0f)
             {
-                viewerChrome.h = std::min(viewerChrome.h + over, std::max(viewerChrome.h, inp.screenH - 20.0f));
+                const float cap = std::min(inp.screenH - 20.0f, std::max(viewerChrome.h, inp.screenH * 0.72f));
+                viewerChrome.h = std::min(viewerChrome.h + over, cap);
                 if (viewerChrome.y + viewerChrome.h > inp.screenH - 10.0f)
                     viewerChrome.y = std::max(10.0f, inp.screenH - 10.0f - viewerChrome.h);
             }
@@ -1596,15 +1657,18 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
     static char titleBuf[140];
     snprintf(titleBuf, sizeof(titleBuf), "%s%s", viewerTitle, isSelected ? "  (selected)" : "");
 
-    const float colW = std::max(190.0f, (float)fs(11) * 17.0f);
-    const float minViewerW = colW + 300.0f;
+    // Narrow settings column: the image keeps most of the window (this used to be fs(11) * 17 = 190 px
+    // at uiScale 1, which cost the model a sixth of the width). Every label in the column is sized to
+    // fit roughly 20 characters at that width.
+    const float colW = std::max(170.0f, (float)fs(11) * 15.5f);
+    const float minViewerW = colW + 260.0f;
 
     buildResizableWindow(
-        inp, ui, viewerChrome, 3, titleBuf, true, hovViewerClose, inp.screenW - viewerChrome.w - 40.0f, 80.0f,
+        inp, ui, viewerChrome, 3, titleBuf, true, hovViewerClose, inp.screenW - viewerChrome.w - 12.0f, 12.0f,
         minViewerW, 360.0f, 2000.0f, 1400.0f,
         [&]()
         {
-            // ── Left: info line, the image, a hint ──────────────────────────────────────────────
+            // ── Left: info line, the image, the orbit readout, a hint ───────────────────────────
             CLAY(CLAY_ID("ViewerLeft"), {.layout = {
                                              .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
                                              .padding = {10, 6, 6, 10},
@@ -1621,7 +1685,12 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                     CLAY(imgId, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
                                  .custom = {.customData = meshRenderer.viewerRendered() ? &viewerImage : nullptr}}) {}
                 }
-                text("Drag to orbit, scroll to zoom. Cyan: you; orange: a mirror's ground site", Pal::textHint, 11);
+                // The viewed satellite's orbit — altitude / inclination / RAAN / period / the
+                // flare-mitigation power readout. One wrapped line (Clay breaks it on spaces) rather
+                // than the selection panel's fixed table, so a narrower window reflows it.
+                if (viewerOrbitLine[0])
+                    text(viewerOrbitLine, Pal::textDim, 11);
+                text("Drag to orbit, scroll to zoom. Cyan: you; orange: site", Pal::textHint, 11);
             }
             // ── Right: settings column + observer box ───────────────────────────────────────────
             CLAY(CLAY_ID("ViewerRight"), {.layout = {
@@ -1681,8 +1750,7 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                 for (const auto &line : viewerObsLine)
                     if (line[0])
                         text(line, Pal::textDim, 11);
-                if (tracked && button(10, "Trace pass",
-                                      "Select this satellite and plot its magnitude over its current or next pass"))
+                if (tracked && button(10, "Trace pass", "Trace pass"))
                 {
                     selectSatellite(viewerSatIndex);
                     computeSelectedTrace();
@@ -1701,13 +1769,10 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
         {
             if (!tracked)
                 return;
-            if (titleIcon(0, kIconSelect, isSelected,
-                          isSelected ? "This satellite is selected"
-                                     : "Select this satellite (find it in the sky again)"))
+            // Icon-only, tooltip = the button's name (the panel's Select/Go to equivalents).
+            if (titleIcon(0, kIconSelect, isSelected, "Select"))
                 selectSatellite(viewerSatIndex);
-            if (titleIcon(1, kIconEye, isFollowed,
-                          isFollowed ? "Stop following and return to the ground"
-                                     : "Go and look at it up close: fly to this satellite and ride along with it"))
+            if (titleIcon(1, kIconEye, isFollowed, "Go to"))
             {
                 if (isFollowed)
                     stopFollow();
@@ -1721,65 +1786,71 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
         isSelected);
 }
 
-// ─── buildViewButton ─────────────────────────────────────────────────────────
-// "View model" next to "Trace pass" for a selected satellite whose type has a geometry model: the
-// viewer then tracks that satellite (its real position, attitude and the Earth beneath it).
-void SatelliteSim::buildViewButton(const UIInput &inp, UIRenderer &ui, int idx)
+// ─── buildSelActionButton ───────────────────────────────────────────────────
+// One action button for the selection panel / out-of-view chip: the icon on its own, with the button's
+// NAME as the tooltip ("Info" / "Go to" / "Trace pass"). No label in the row and no paragraph of
+// explanation — that is the treatment for every satellite action button now, the info window's own
+// icon buttons included; a button that needs a sentence to explain itself is mislabeled.
+// Returns true when clicked this frame.
+bool SatelliteSim::buildSelActionButton(const UIInput &inp, UIRenderer &ui, int id, const char *name, int iconIdx,
+                                        bool on, bool &hov)
+{
+    bool clicked = false;
+    const float sz = std::max(kSelIconBtnMin, (float)fs(12) + 12.0f);
+    const float isz = sz - 8.0f;
+    CLAY(CLAY_SIDI(CLAY_STRING("SelActBtn"), id),
+         {.layout = {.sizing = {CLAY_SIZING_FIXED(sz), CLAY_SIZING_FIXED(sz)},
+                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+          .backgroundColor = hov ? (on ? Pal::btnAccentHv : Pal::btnHover) : (on ? Pal::btnAccent : Pal::btnIdle),
+          .cornerRadius = CLAY_CORNER_RADIUS(4)})
+    {
+        bool n = Clay_Hovered();
+        sndRollover(n, hov);
+        sndClick(n, inp.lmbPressed);
+        hov = n;
+        clicked = n && inp.lmbPressed;
+        ui.tooltip(inp, n, name, fs(11));
+        CLAY(CLAY_SIDI(CLAY_STRING("SelActIcon"), id),
+             {.layout = {.sizing = {CLAY_SIZING_FIXED(isz), CLAY_SIZING_FIXED(isz)}},
+              .image = {.imageData = (void *)(intptr_t)(iconIdx + 1)}}) {}
+    }
+    return clicked;
+}
+
+// ─── buildInfoButton ─────────────────────────────────────────────────────────
+// The "Info" button (a serif "i" icon, tooltip "Info") for a selected satellite whose type has a
+// geometry model: opens the info window (the model viewer, which now leads with the satellite's orbit
+// and brightness and keeps the 3D view in its left half). The button is lit while that window is
+// showing this satellite.
+void SatelliteSim::buildInfoButton(const UIInput &inp, UIRenderer &ui, int idx)
 {
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
         return;
     const SatOrbit &orb = satOrbits[selectedSatIndex];
     if (!meshRenderer.typeMesh((int)orb.typeIdx))
         return;
-    CLAY(CLAY_IDI("SelViewBtn", idx), {.layout = {
-                                           .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(22)},
-                                           .padding = {8, 8, 0, 0},
-                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                       .backgroundColor = hovSelViewBtn ? Pal::btnHover : Pal::btnIdle,
-                                       .cornerRadius = CLAY_CORNER_RADIUS(3)})
-    {
-        bool n = Clay_Hovered();
-        sndRollover(n, hovSelViewBtn);
-        sndClick(n, inp.lmbPressed);
-        hovSelViewBtn = n;
-        if (n && inp.lmbPressed)
-            openModelViewer((int)orb.typeIdx, satTypes[orb.typeIdx].name.c_str(), orb.altM, selectedSatIndex);
-        ui.tooltip(inp, n, "Open this satellite's 3D model where it is now, with the Earth beneath it", fs(11));
-        CLAY_TEXT(CLAY_STRING("View model"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
-    }
+    const bool on = viewerChrome.open && meshRendererInit && viewerSatIndex == selectedSatIndex;
+    if (buildSelActionButton(inp, ui, idx * 4 + 0, "Info", kIconInfo, on, hovSelInfoBtn))
+        openModelViewer((int)orb.typeIdx, satTypes[orb.typeIdx].name.c_str(), orb.altM, selectedSatIndex);
 }
 
 // ─── Follow mode UI (Phase 4e) ───────────────────────────────────────────────
-// "Follow" next to "Trace pass" / "View model" for a selected satellite with a geometry model.
+// The "Go to" button (an eye icon, tooltip "Go to") next to "Info" / "Trace pass" for a selected
+// satellite with a geometry model: it starts follow mode — fly to the satellite and ride along. The
+// name is "Go to" because that is what the player is asking for; the mechanism is still follow mode
+// everywhere else.
 void SatelliteSim::buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx)
 {
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size() ||
         !meshRenderer.typeMesh((int)satOrbits[selectedSatIndex].typeIdx))
         return;
     const bool on = followActive && followSatIndex == selectedSatIndex;
-    CLAY(CLAY_IDI("SelFollowBtn", idx), {.layout = {
-                                             .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(11) + 11.0f)},
-                                             .padding = {8, 8, 0, 0},
-                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                         .backgroundColor = on ? Pal::btnAccent : (hovSelFollowBtn ? Pal::btnHover : Pal::btnIdle),
-                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
+    if (buildSelActionButton(inp, ui, idx * 4 + 1, "Go to", kIconEye, on, hovSelFollowBtn))
     {
-        bool n = Clay_Hovered();
-        sndRollover(n, hovSelFollowBtn);
-        sndClick(n, inp.lmbPressed);
-        hovSelFollowBtn = n;
-        if (n && inp.lmbPressed)
-        {
-            if (on)
-                stopFollow();
-            else
-                startFollow(selectedSatIndex);
-        }
-        ui.tooltip(inp, n, on ? "Stop following and return to the ground"
-                              : "Fly to this satellite and ride along with it (WASD / Q-E move around it, RMB looks)",
-                   fs(11));
-        CLAY_TEXT(on ? CLAY_STRING("Following") : CLAY_STRING("Follow"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        if (on)
+            stopFollow();
+        else
+            startFollow(selectedSatIndex);
     }
 }
 
@@ -1840,29 +1911,16 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
 }
 
 // ─── buildTraceButton ────────────────────────────────────────────────────────
-// "Trace pass" for the selected satellite — in its floating panel, and in the corner chip when it
-// is out of view or too faint to draw (the trace then finds its pass or its next one). Shown for
-// every satellite: when one can't be traced (legacy type, ground-site aim) the window says why.
+// "Trace pass" for the selected satellite — an icon (pixel--trace.png) + label in its floating panel,
+// and in the corner chip when it is out of view or too faint to draw (the trace then finds its pass or
+// its next one). Shown for every satellite: when one can't be traced (legacy type, ground-site aim) the
+// window says why.
 void SatelliteSim::buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx)
 {
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
         return;
-    CLAY(CLAY_IDI("SelTraceBtn", idx), {.layout = {
-                                            .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(22)},
-                                            .padding = {8, 8, 0, 0},
-                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                        .backgroundColor = hovSelTraceBtn ? Pal::btnHover : Pal::btnIdle,
-                                        .cornerRadius = CLAY_CORNER_RADIUS(3)})
-    {
-        bool n = Clay_Hovered();
-        sndRollover(n, hovSelTraceBtn);
-        sndClick(n, inp.lmbPressed);
-        hovSelTraceBtn = n;
-        if (n && inp.lmbPressed)
-            computeSelectedTrace();
-        ui.tooltip(inp, n, "Plot this satellite's magnitude over its current or next pass", fs(11));
-        CLAY_TEXT(CLAY_STRING("Trace pass"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
-    }
+    if (buildSelActionButton(inp, ui, idx * 4 + 2, "Trace pass", kIconTrace, false, hovSelTraceBtn))
+        computeSelectedTrace();
 }
 
 // ─── buildResizableWindow ───────────────────────────────────────────────────

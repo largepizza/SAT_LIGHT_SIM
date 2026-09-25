@@ -628,14 +628,44 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   VisorSat phase-matched mean 7.220 vs 7.218, curve RMS 0.13, mean 6.97 vs 7.22; V1.0 (HELD OUT —
   its antennas are an untouched estimate) 5.926 vs 5.93; differential 1.04 vs 1.29. Remaining: the
   110-120° bin is 0.37 too bright (25 obs); model scatter 0.72 vs 0.85 observed (fixed attitude).
+- **Selection panel (buildSelectedSatPanel) + the icon atlas (2026-09-24 UI pass).** The floating
+  panel that tracks the selected satellite carries its name, its type and the magnitude readout, then
+  one row of **icon-only** action buttons, all drawn by the single helper `buildSelActionButton`
+  (which is also what the out-of-view chip uses): **Info** (pixel--info.png — a serif italic "i")
+  opens the info window, **Go to** (pixel--eye.png) starts follow mode, and **Trace pass**
+  (pixel--trace.png) plots the pass. **Each button's tooltip is its NAME, never a sentence** — the
+  same rule the info window's title-bar Select / Go to icons follow — and the `on` state is the accent
+  colour (the eye lights while following, the "i" while the info window is showing that satellite).
+  `kSelIconBtnMin` = 24 px targets, the info window's title-bar icon size; a planet selection gets no
+  button row, and the Info / Go to buttons need the type to have a geometry model. Only the satellite
+  ACTIONS are icon-only — the info window's CAMERA / RENDER / OBSERVER / CHECK rows are still text
+  buttons. The orbit
+  rows the panel used to list — altitude, inclination, RAAN, period, the flare-mitigation power readout —
+  moved to the info window, as `viewerOrbitLine` under the image; the range/phase line moved to that
+  window's OBSERVER box. **The GPU-parity Δmag line is gone from the UI entirely** (it was a
+  development instrument in a panel the player reads): `updateSelectedPhotometry` still computes the
+  check at the dispatch's own inputs and still logs a mismatch (throttled to 120 frames), it just has
+  no readout line — so `selPhotLine` is one line now (`kSelPhotLines` = 1). Icons are packed into one
+  atlas by `UIRenderer::loadIcons` in the order listed in `buildUI`'s lazy-load block
+  (`assets/icons/ui/*.png`, index constants at the top of `SatelliteSimUI.cpp`); add a path there and
+  bump the count when adding an icon.
 - **Magnitude trace + CSV (milestone M9, 2026-09-23).** "Trace pass" in the selected-satellite panel
-  (or its out-of-view corner chip) runs the CPU evaluator over the selection's current pass — or its
-  next one, within two orbits — at `kTraceSamples` = 400 points (`computeSelectedTrace()`), and
+  (or its out-of-view corner chip — both are the icon-only `buildTraceButton`, pixel--trace.png, whose
+  tooltip is just "Trace pass", since
+  2026-09-24; see *Selection panel*
+  above) runs the
+  CPU evaluator over the selection's current pass — or its next one, within two orbits — at
+  `kTraceSamples` = 400 points (`computeSelectedTrace()`), and
   plots it in its own window: apparent magnitude after extinction, above-atmosphere magnitude,
   phase angle on a second axis, whole-magnitude / phase / sim-clock tick labels (floating Clay text
   placed from the plot's last laid-out size), a moving "now" marker, and a per-frame "Now: mag …"
   readout evaluated with the trace's own inputs (so it sits on the curve; the window says when the
-  observer has moved since). **Live** (default on) retraces at up to `kTraceLiveHz` = 10 while the
+  observer has moved since). **The window opens default 520x380 in the bottom-left, just above the
+  time controls, so it coexists with the 3D view window in the top-right corner** (it used to open
+  centered at 680x440, over the middle of the sky); its labels are sized for that width — the legend
+  is "apparent / above air / phase / now" (the full wording totalled ~527 px against ~496 px of
+  content width) and the "Now …" line is split in two (`traceNowLine` magnitude, `traceNowDetail`
+  elevation/phase). **Live** (default on) retraces at up to `kTraceLiveHz` = 10 while the
   window is open, only when `traceStale()` says the result would change (observer moved, selection
   changed, pass over, extinction/tilt/occlusion changed); the window shows one retrace's cost. Tick
   labels are thinned to what fits the plot's pixel size (grid lines stay at every whole magnitude).
@@ -725,16 +755,27 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   - **Fallback reflections:** the reflected ray goes into `earthEnv()`, the Potato sky's analytic
     atmosphere, textured ground and flat cloud deck, rewritten in ECEF from any origin and scaled by
     `kEnvToScene` into pre-exposure units. The sun disc is not in it; the GGX sun lobe is the glint.
-  - **The viewer:** always a REAL satellite where it is now: "View model" beside "Trace pass" tracks
+  - **The viewer / info window:** always a REAL satellite where it is now: "Info" (an icon+label
+    button in the selection panel — it was "View model"; the window leads with the satellite's orbit,
+    brightness and observer box, so it reads as an info pane) beside "Trace pass" tracks
     the selection; "VIEW" on a constellation row picks that constellation's satellite highest in the
     observer's sky (`pickViewerSatellite`) AND SELECTS it (`selectSatellite`), so the viewer never
     shows an unreferenced satellite and a station is one click to find. Layout (2026-09-24): the
     title is the satellite's name as the selection panel gives it ("<constellation> #<n>"), amber +
     "(selected)" while it is the selection; title-bar icons Select (re-select it) and Follow (eye:
-    fly to it); the image left; a settings column right (camera, render, OBSERVER box — markers
-    toggle, elevation/azimuth, range, phase, magnitude above the air and after extinction from the
-    CPU evaluator at 10 Hz (`updateViewerObserverInfo`), "Trace pass" — and the photometric check);
-    the window grows to fit that column. A ground-site mirror shows a solid orange line to its site.
+    fly to it); the image left, with the viewed satellite's **orbit readout** (`viewerOrbitLine`:
+    altitude, inclination, RAAN, period, the flare-mitigation power — one wrapped line, the rows the
+    selection panel used to list) beneath it; a settings column right (camera, render, OBSERVER box —
+    markers toggle, elevation/azimuth, range, phase, magnitude above the air and after extinction from
+    the CPU evaluator at 10 Hz (`updateViewerObserverInfo`), "Trace pass" — and the photometric
+    check); the window grows to fit that column, capped at 72% of the screen height so a long column
+    cannot run down the middle of the screen (past the cap it scrolls). **Default 640x460 (or 42% of
+    the screen's width / 55% of its height if that is smaller) pinned to the top-right corner**, so it
+    coexists with the trace window in the bottom-left instead of covering the sky between them. The
+    settings column is deliberately narrow — `colW = max(170, fs(11)*15.5)`, it was `fs(11)*17` = 190 —
+    and every label in it fits ~20 characters, which is why the OBSERVER box is six short lines
+    (`viewerObsLine[6]`) and why the long readouts live in the left column. A ground-site mirror shows
+    a solid orange line to its site.
     The window registers a mouse-capture rect: without it a drag on the model clicked the sky behind
     and re-selected whatever was under the window. Position, velocity and attitude come from
     `satOrbitStateAt` + `evalGroupPoses` in ECEF. With Live light its background is the SKY_ENV
@@ -1187,8 +1228,10 @@ was a `vec3`; packing it freed the slot for `rangeM`, which the point draws writ
 The `selected*` raw fields feed the **GPU-parity readout** (benchmarking M2): where `SatOrbitPC` is
 built, `parityPending` records that dispatch's exact inputs (sim time, Sun, observer, tilt,
 brightnessScale, mirrorBoost); next frame `updateSelectedPhotometry()` re-evaluates the selection with
-`evalSatPhotometry()` at those inputs and shows physical magnitude, range/phase and the GPU−CPU gap
-(Δmag, red above `kParityWarnMag` = 0.02, logged with a 120-frame cooldown) in the selection panel.
+`evalSatPhotometry()` at those inputs, shows the physical magnitude in the selection panel, and
+computes the GPU−CPU gap (Δmag, a mismatch above `kParityWarnMag` = 0.02 is logged with a 120-frame
+cooldown). The gap's readout line was dropped from the panel (2026-09-24): the check and its log
+remain, the UI no longer shows it.
 Legacy types are compared through the evaluator's `legacyFlux()` mirror (`LegacyReflectance`), in
 their own display units. The gap is float-vs-double arithmetic. Until Phase 4 it was chiefly
 `u0 + meanMot·deltaT` in float (median 60 m, up to ~770 m along-track by day 7 of a rebake); since
