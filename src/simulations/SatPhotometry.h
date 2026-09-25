@@ -18,6 +18,7 @@
 #include "SatModel.h"
 
 #include <glm/glm.hpp>
+#include <array>
 #include <limits>
 #include <vector>
 
@@ -55,13 +56,23 @@ constexpr float kEarthLutLnFloor = -60.0f; // ln irradiance stored where no lit 
 // twilight observation is made — the lit crescent is dim and off to the Sun's side. `irradiance` is
 // what a plate facing `tiltRad` from nadir toward the Sun receives. The integral around each ring of
 // the cap is closed-form; the one over the cap's radius is numerical (n steps).
-void earthshineExact(double rOverD, double cosSunZenith, double &irradiance, double &tiltRad, int n = 512);
+// `sh`, when given (kEarthShTerms values), receives the order-4 spherical-harmonic fit of the cap's
+// IRRADIANCE function (SatEarthLight::sh: the plane irradiance for any normal, local frame nadir /
+// Sun side), from the same ring integrals (∫μ0·cos kφ dφ, k = 0..4, closed-form).
+void earthshineExact(double rOverD, double cosSunZenith, double &irradiance, double &tiltRad, int n = 512,
+                     double *sh = nullptr);
 // The table sat_orbit.comp reads (float, [λ row * kEarthLutCos + cos column] = (ln irradiance, tilt)),
 // and its bilinear lookup exactly as the shader does it.
 const std::vector<glm::vec2> &earthshineLut();
-void earthshineLookup(double rOverD, double cosSunZenith, double &irradiance, double &tiltRad);
+// Its companion (earthShA/B/C in sat_orbit.comp): the SH coefficients per entry as RATIOS to the
+// vector irradiance, so they interpolate across the table's many decades like the ln column does.
+const std::vector<std::array<float, kEarthShTerms>> &earthshineShLut();
+void earthshineLookup(double rOverD, double cosSunZenith, double &irradiance, double &tiltRad, double *sh = nullptr);
 // Effective source direction: nadir turned `tiltRad` toward the Sun (nadir if the Sun is on the axis).
 glm::dvec3 earthshineDirection(glm::dvec3 nadir, glm::dvec3 sun, double tiltRad);
+// Everything a lit surface needs from the Earth at a satellite (table lookup): vector irradiance,
+// direction, the SH irradiance fit and its frame, and the Earth's angular size as α². rOverD = R/r.
+SatEarthLight earthshineLight(glm::dvec3 nadir, glm::dvec3 sun, double rOverD);
 
 // ── Atmospheric extinction along a line of sight ──────────────────────────────────────────────
 // Mirror of shaders/include/atmosphere.glsl (see it for the model): molecular (8 km) + aerosol
@@ -163,11 +174,12 @@ struct SatPhotResult
     double offSpecularRad = 0.0; // angle between the observer and the Sun's mirror image in a nadir-
                                  // facing plate — provisional flare-curve definition (design page)
     double litFactor = 0.0;     // Earth-shadow factor, 1 = full sunlight
-    double earthIrradiance = 0.0; // earthshine irradiance as a fraction of sunlight (earthshineLookup)
+    double earthIrradiance = 0.0; // earthshine (vector) irradiance as a fraction of sunlight (earthshineLookup)
     glm::dvec3 earthDir{0.0};     // its effective source direction (earthshineDirection)
+    SatEarthLight earth;          // the whole earthshine light (SH diffuse + specular source)
     double intensitySun = 0.0;  // I from the Sun per unit irradiance, before litFactor (m² sr⁻¹)
-    double intensityEarth = 0.0; // I from the lit Earth per unit Earth irradiance
-    double intensity = 0.0;     // intensitySun·litFactor + intensityEarth·earthIrradiance
+    double intensityEarth = 0.0; // I from the lit Earth, per unit SOLAR irradiance (already × earthshine)
+    double intensity = 0.0;     // intensitySun·litFactor + intensityEarth
     int dominantLobe = -1;      // brightest lobe under sunlight (-1: none lit)
     // Above-atmosphere apparent magnitude at the actual range, and reduced to 1000 km. +inf when dark.
     double magnitude = std::numeric_limits<double>::infinity();

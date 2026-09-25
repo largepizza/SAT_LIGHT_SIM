@@ -390,6 +390,8 @@ int satMaterialPattern(const SatMaterial &m)
         return kPatternSolarCells;
     if (p == "mli_foil")
         return kPatternMli;
+    if (p == "truss")
+        return kPatternTruss;
     return kPatternNone;
 }
 
@@ -398,11 +400,23 @@ const std::vector<SatMaterial> &satMaterialPresets()
     static const std::vector<SatMaterial> withTransmission = [] {
         std::vector<SatMaterial> v = satMaterialPresetsBase();
         for (SatMaterial &m : v)
+        {
             if (m.name == "solar_cell_flex" || m.name == "solar_array_flex_back")
                 m.transmission = 0.05f;
+            if (m.name == "truss")
+                m.coverage = 0.3f;
+        }
         return v;
     }();
     return withTransmission;
+}
+
+bool satComponentOccludes(const SatModel &m, int ci)
+{
+    if (ci < 0 || ci >= (int)m.components.size())
+        return false;
+    const SatComponent &c = m.components[ci];
+    return !c.renderOnly && m.materials[c.material].coverage >= 1.0f;
 }
 
 const std::vector<SatMaterial> &satMaterialPresetsBase()
@@ -449,6 +463,9 @@ const std::vector<SatMaterial> &satMaterialPresetsBase()
         // transmittance in V.
         {"solar_cell_flex", 0.02f, 0.04f, 0.05f, {0.20f, 0.25f, 0.55f}},
         {"solar_array_flex_back", 0.30f, 0.04f, 0.35f, {0.80f, 0.62f, 0.32f}},
+        // Open lattice truss of anodised / bare aluminium members (coverage 0.3: set in
+        // satMaterialPresets). INITIAL ESTIMATE; members read as a lightly brushed metal.
+        {"truss", 0.30f, 0.60f, 0.30f, {0.72f, 0.72f, 0.74f}},
     };
     return presets;
 }
@@ -513,6 +530,13 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
             m.color = jsonVec3(jm, "color", m.color);
             m.transmission = jm.value("transmission", m.transmission);
             m.transmissionColor = jsonVec3(jm, "transmission_color", m.transmissionColor);
+            m.coverage = jm.value("coverage", m.coverage);
+            if (!(m.coverage > 0.0f && m.coverage <= 1.0f))
+            {
+                warn.push_back("material '" + m.name + "': coverage must be in (0, 1]; using 1");
+                m.coverage = 1.0f;
+            }
+            m.trussPitch = std::max(0.05f, jm.value("truss_pitch", m.trussPitch));
             if (jm.contains("pattern"))
             {
                 const std::string pat = jm.value("pattern", std::string());
@@ -524,9 +548,11 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
                     m.pattern = kPatternMli;
                 else if (pat == "panel_seams")
                     m.pattern = kPatternPanelSeams;
+                else if (pat == "truss")
+                    m.pattern = kPatternTruss;
                 else
                     warn.push_back("material '" + m.name + "': unknown pattern '" + pat +
-                                   "' (none|solar_cells|mli|panel_seams)");
+                                   "' (none|solar_cells|mli|panel_seams|truss)");
             }
             matLib[m.name] = m;
             out.localMaterials.push_back(m.name);
@@ -652,8 +678,17 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
             c.material = materialRef(jc.at("material").get<std::string>());
             c.backMaterial = jc.contains("back_material") ? materialRef(jc["back_material"].get<std::string>()) : -1;
             c.group = groupRef(jc);
+            c.renderOnly = jc.value("render_only", false);
             out.components.push_back(std::move(c));
         }
+        // Render-only detail goes last (stable): the photometric components keep indices 0..n-1, so
+        // occluder i is component i for every consumer (sat_orbit.comp, sat_mesh.frag, the tool).
+        std::stable_partition(out.components.begin(), out.components.end(),
+                              [](const SatComponent &c) { return !c.renderOnly; });
+        if (std::all_of(out.components.begin(), out.components.end(),
+                        [](const SatComponent &c) { return c.renderOnly; }) &&
+            !out.components.empty())
+            throw std::runtime_error("every component is render_only: the model has nothing to light");
     }
     catch (const std::exception &e)
     {
@@ -691,7 +726,7 @@ std::vector<std::string> unexplainedModelParts(const SatModel &m)
         if (!covered(g.name))
             missing.push_back("group " + g.name);
     for (const SatComponent &c : m.components)
-        if (!covered(c.name))
+        if (!c.renderOnly && !covered(c.name)) // render-only detail has no photometric numbers to source
             missing.push_back("component " + c.name);
     for (const std::string &mat : m.localMaterials)
         if (!covered(mat))
@@ -822,6 +857,9 @@ std::vector<SatTri> tessellateSatModel(const SatModel &m)
     for (size_t ci = 0; ci < m.components.size(); ++ci)
     {
         const SatComponent &c = m.components[ci];
+        if (c.renderOnly)
+            continue; // visual detail: the render mesh draws it, the photometry never sees it
+        const size_t firstTri = tris.size();
         TriSink s{tris, glm::dmat3(glm::mat3_cast(c.rotation)), origin[c.group] + glm::dvec3(c.position),
                   c.group, (int)ci};
         switch (c.prim)
@@ -865,6 +903,26 @@ std::vector<SatTri> tessellateSatModel(const SatModel &m)
         case PrimitiveKind::Sphere:
             tessSphere(s, c.radius, c.material);
             break;
+        }
+        // Open lattice (SatMaterial::coverage < 1): each facet counts `coverage` of its area; a closed
+        // primitive's far side shows through the near side's gaps, as inner faces at
+        // coverage·(1 − coverage).
+        const bool closed = c.prim != PrimitiveKind::Plane;
+        const size_t endTri = tris.size();
+        for (size_t i = firstTri; i < endTri; ++i)
+        {
+            const double cov = m.materials[tris[i].material].coverage;
+            if (cov >= 1.0)
+                continue;
+            const double full = tris[i].area;
+            tris[i].area = full * cov;
+            if (!closed)
+                continue;
+            SatTri in = tris[i];
+            std::swap(in.p[1], in.p[2]);
+            in.n = -in.n;
+            in.area = full * cov * (1.0 - cov);
+            tris.push_back(in);
         }
     }
     return tris;
@@ -1101,6 +1159,39 @@ double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector
     return sum;
 }
 
+double satLobeEarthIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2,
+                             bool beckmann, const SatEarthLight &earth, glm::dvec3 o, double transmission)
+{
+    const double no = glm::dot(n, o);
+    if (no <= 0.0 || earth.E <= 0.0)
+        return 0.0;
+    // Diffuse (and transmitted, from the far side) under the whole cap; the specular glint of the
+    // tilted source with the Earth's size folded into α — lobeIntensity() with no diffuse part.
+    double I = (albedo * earth.diffuse(n) + transmission * earth.diffuse(-n)) / kPi * diffArea * no;
+    if (glm::dot(n, earth.dir) > 0.0)
+        I += earth.E * lobeIntensity(n, area, diffArea, 0.0, f0, a2 + earth.a2, earth.dir, o, beckmann, 0.0);
+    return I;
+}
+
+double evalSatLobesEarthPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
+                              const std::vector<GroupPose> &poses, const SatEarthLight &earth, glm::dvec3 o,
+                              const SatOcclusion *occ)
+{
+    double sum = 0.0;
+    for (size_t li = 0; li < lobes.size(); ++li)
+    {
+        const GpuSatLobe &L = lobes[li];
+        glm::dvec3 nBody = bodyTriad(groups[attRootOf(groups, (int)L.group)]) * glm::dvec3(L.normalT);
+        glm::dvec3 n = glm::normalize(poses[L.group].R * nBody);
+        double I = satLobeEarthIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat, L.distribution != 0,
+                                         earth, o, L.transmission);
+        if (I > 0.0 && occ && li < occ->lobes.size())
+            I *= satLobeVisibility(*occ, (int)li, (int)L.group, poses, earth.dir, false, o);
+        sum += I;
+    }
+    return sum;
+}
+
 double satLobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2, bool beckmann,
                         glm::dvec3 s, glm::dvec3 o, double transmission)
 {
@@ -1241,8 +1332,11 @@ SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tri
     for (size_t gi = 0; gi < m.groups.size(); ++gi)
         if (m.groups[gi].parent >= 0)
             origin[gi] = origin[m.groups[gi].parent] + glm::dvec3(m.groups[gi].hingePos);
-    for (const SatComponent &c : m.components)
+    for (size_t ci = 0; ci < m.components.size(); ++ci)
     {
+        const SatComponent &c = m.components[ci];
+        if (c.renderOnly)
+            break; // render-only detail sits after every photometric component (loadSatModel)
         if ((int)occ.occluders.size() >= kMaxOccluders)
         {
             ++occ.droppedOccluders;
@@ -1250,6 +1344,7 @@ SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tri
         }
         SatOccluder o;
         o.kind = c.prim;
+        o.blocks = satComponentOccludes(m, (int)ci);
         o.group = c.group;
         o.pivot = glm::dvec3(c.pivot);
         o.center = origin[c.group] + glm::dvec3(c.position);
@@ -1459,6 +1554,8 @@ SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tri
         for (size_t oi = 0; oi < occ.occluders.size(); ++oi)
         {
             const SatOccluder &o = occ.occluders[oi];
+            if (!o.blocks)
+                continue; // an open lattice: light passes (its facets' coverage already counts it)
             bool candidate = o.group != lobeGroup;
             if (!candidate)
                 for (const glm::dvec3 &q : occluderPoints(o))
@@ -1711,7 +1808,7 @@ SatShadowStudy studySatShadowing(const SatModel &m, const std::vector<SatTri> &t
                 glm::dvec3 pt = w.x * t.p[0] + w.y * t.p[1] + w.z * t.p[2] + t.n * 1e-6;
                 bool blocked = false;
                 for (size_t j = 0; j < posed.size() && !blocked; ++j)
-                    if (j != i && (rayHitsTri(pt, geo.sun, posed[j].p[0], posed[j].p[1], posed[j].p[2]) ||
+                    if (j != i && satComponentOccludes(m, posed[j].component) && (rayHitsTri(pt, geo.sun, posed[j].p[0], posed[j].p[1], posed[j].p[2]) ||
                                    rayHitsTri(pt, o, posed[j].p[0], posed[j].p[1], posed[j].p[2])))
                         blocked = true;
                 both += blocked ? 0 : 1;

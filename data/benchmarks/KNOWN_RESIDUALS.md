@@ -21,21 +21,21 @@ Benchmarking" design page (Results log).
 | VisorSat 40–60° / 60–100° bins | — | — | −0.11 / +0.10..0.21 | Mild S-shaped residual around the observed curve. |
 | VisorSat scatter (sd m1000) | 0.740 | 0.854 | −0.11 | Attitude is fixed; real satellites jitter and fly varying roll. No attitude-noise model yet. |
 | VisorSat phase slope | 0.004 mag/deg | 0.005 | −0.001 | Informational. |
-| VisorSat − V1.0 differential | +1.067 | +1.29 | −0.223 (tol 0.3) | The visor's real shape is unpublished (derived from Cole's 23° full-shade constraint). |
-| V1.0 mean m1000 (Mallama 2020a) | 5.926 | 5.93 | −0.004 | Held out of all fitting. sd 0.769 vs 0.67 published (informational). |
+| VisorSat − V1.0 differential | +1.069 | +1.29 | −0.221 (tol 0.3) | The visor's real shape is unpublished (derived from Cole's 23° full-shade constraint). |
+| V1.0 mean m1000 (Mallama 2020a) | 5.924 | 5.93 | −0.006 | Held out of all fitting. sd 0.763 vs 0.67 published (informational). |
 | V1.0 app bulk export (32.7°S, sim 2036-11-21) | 5.934 | 5.93 | +0.004 | Out-of-sample site and season; not a paper's sampling. |
 | ISS (2023-2026 configuration) | mean m1000 −0.59 (≈ −2.5 overhead at 415 km) | −2 to −4 on favourable passes (satobs.org) | — | **No benchmark yet.** Dimensions sourced, layout derived, every surface material an estimate (`iss.json` sources). The m1000 values in this and the next rows are a V1.0-campaign copy (twilight, ≥ 20°, fully sunlit, 3000 samples, seed 1) on the model's own shell - a sanity check, not a comparison. |
 | Tiangong | mean m1000 0.73 (≈ −1.3 overhead at 386 km) | — | — | No benchmark. Attitude and materials estimates. |
 | Starship HLS depot | mean m1000 2.20, sd 1.3 | — | — | No benchmark and no published depot hardware: length, solar band, attitude and the bare-steel skin (the real depot has in-space insulating tiles, unpublished) are estimates. |
-| SpaceX AI satellite | mean m1000 5.51, sd 3.6 (glints) | — | — | Only orbits are published (FCC, 2026-01): every dimension is an estimate sized to the v1.1 legacy type. |
+| SpaceX AI satellite (Starmind AI1) | mean m1000 4.58, sd 2.9 (glints; 1000 km SSO shell) | — | — | Rebuilt 2026-09-24 to the project owner's layout from the AI1 spec sheet: flat 10 m bus, 70 m span, two 10 x 9.65 m radiators edge-on to the Sun (193 m² a face - the sheet's 110 m² would be a 2.75 m strip). Was 5.51 / 3.6 with the earlier estimate. No benchmark. |
 | Reflect Orbital mirror | — | — | — | No benchmark; the operational mirror size is the legacy type's 2376 m² in Earendil-1's square shape. |
 | V2 Mini app bulk export | 5.81 (median 5.31, sd 1.57) | 7.87 mitigated; ~5.2 unmitigated (Mallama et al. 2023) | — | **Uncalibrated model**, flown without SpaceX's brightness-mitigation attitude. Next benchmark candidate. |
 | V2 Mini, mitigated (Mallama et al. 2023) | 7.90 | 7.87 | +0.03 | Film distribution chosen with this benchmark in view (Beckmann; GGX read 7.43). Phase-curve shape: ~1 mag fainter than the paper's fit below 40 deg and 0.5-0.9 fainter at 80-140 deg; sd 1.3 vs 0.79. A second dataset (Jul-Dec 2024, 550 km, arXiv:2502.03651) gives 7.22 for the same satellites. |
 | V2 Mini DTC, mitigated (Mallama et al. 2025) | 6.42 | 6.47 | −0.05 | HELD OUT (no fitting): corroborates the V2 Mini materials. sd 1.02 vs 1.32. |
 | Starlink V1.5 (arXiv:2507.00107 Table 1) | 6.06 | 6.34 | −0.28 (tol 0.3) | Narrow margin. Backsheet transmission (0.03) fitted to Mallama & Respler 2022's Post-VisorSat phase function; its low-phase bins stay 0.6-0.8 too bright (weighted RMS 0.63 vs the fit). Observers/period assumed. |
-| OneWeb (Mallama 2020b) | 6.99 | 7.18 | −0.19 | The bus MLI (albedo 0.1, F0 0.25) was FITTED to this mean (gold-foil MLI read 6.49). sd 1.1 vs 0.68. |
+| OneWeb (Mallama 2020b) | 6.96 | 7.18 | −0.22 | The bus MLI (albedo 0.1, F0 0.25) was FITTED to this mean (gold-foil MLI read 6.49). sd 1.1 vs 0.68. |
 | Amazon Leo, operational (Mallama et al. 2026) | 6.60 | 6.81 | −0.21 | Held out; layout from the authors' interpretation of Amazon imagery. sd 0.94 vs 0.64. |
-| Guowang, orbit-raising (arXiv:2507.00107) | 5.82 | 4.21 | **+1.61, NOT GATED** | Unpublished hardware and attitude during orbit raising; the estimated 10 m-span model is far too faint. The benchmark file is `"gated": false`. |
+| Guowang, orbit-raising (arXiv:2507.00107) | 5.78 | 4.21 | **+1.57, NOT GATED** | Unpublished hardware and attitude during orbit raising; the estimated 10 m-span model is far too faint. The benchmark file is `"gated": false`. |
 | Starlink V3, V2 Mini DTC dims, stations, debris | — | — | — | No benchmarks. Stations are render-level estimates. |
 
 ## Fitted, estimated or stood-in values
@@ -57,6 +57,7 @@ Benchmarking" design page (Results log).
 | GPU occlusion: lobes under 1e-4 of the total left unoccluded; skipped below mag 10 | ≤ 0.005 mag | design choice (`kOccMinLobeFrac`, `kOcclusionMagFloor`) |
 | Cone occluder uses its larger radius | conservative (over-shadows) | `buildSatOcclusion` |
 | Earthshine table vs exact integral | p95 0.004, max 0.014 mag | `--selftest` |
+| Earthshine on a tilted plane: order-4 SH fit (floored at the vector value) vs brute-force cap integral | ≤ 0.029 of the vector irradiance (exact coefficients and table) | `--selftest`. Until 2026-09-24 the diffuse term used the vector irradiance alone: 0 for a face edge-on to it, where the cap really gives ~30% of a nadir plate's. Moved the benchmarks by ≤ 0.05 mag (OneWeb −0.03, Guowang −0.04, differential +0.002). |
 | Earth is a uniform Lambertian sphere, albedo 0.3 | no clouds, oceans, glint or seasonal albedo | model limit |
 | Extinction: Chapman column (erfcx fit) vs brute-force ray integral | max 0.32% of the column | `--selftest` |
 | Extinction constants: 8 km / 1.2 km scale heights, 60/40 split | fixed, no weather or site haze | model limit |

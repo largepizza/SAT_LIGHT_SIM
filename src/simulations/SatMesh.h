@@ -38,7 +38,7 @@ struct SatRenderMesh
 // `segments` = facets around a revolved primitive (and sphere longitude); latitude uses half.
 SatRenderMesh buildSatRenderMesh(const SatModel &m, int segments = 48);
 
-// Material as the mesh shader reads it (std430, 48 bytes; sat_mesh.frag `MeshMaterial`).
+// Material as the mesh shader reads it (std430, 64 bytes; sat_mesh.frag `MeshMaterial`).
 struct GpuSatMeshMaterial
 {
     glm::vec3 color;      // diffuse tint (and specular tint for metals: F0 >= 0.5)
@@ -48,13 +48,15 @@ struct GpuSatMeshMaterial
     uint32_t beckmann;    // 1 = Beckmann distribution, else GGX (as the photometry)
     uint32_t pattern;     // procedural surface pattern (0 = none) — 4b procedural detail
     glm::vec4 extra;      // rgb = transmission tint (luminance 1), a = transmission (Phase 4f)
+    glm::vec4 lattice;    // open lattice: x = coverage (1 = solid), y = bay pitch (m), z = member width (bays)
 };
-static_assert(sizeof(GpuSatMeshMaterial) == 48, "GpuSatMeshMaterial layout");
+static_assert(sizeof(GpuSatMeshMaterial) == 64, "GpuSatMeshMaterial layout");
 GpuSatMeshMaterial packSatMeshMaterial(const SatMaterial &m);
 
 // Occluder as the mesh shader reads it (std430, 80 bytes; sat_mesh.frag `MeshOccluder`): the same
 // primitive as SatOccluder in the REST body frame (not the root-triad frame of GpuSatOccluder), so
-// the shader poses it with the instance's group transform. Occluder i is component i.
+// the shader poses it with the instance's group transform. Occluder i is component i; kind 0xFF =
+// an open lattice, which never blocks (SatOccluder::blocks).
 struct GpuSatMeshOccluder
 {
     glm::vec3 center;

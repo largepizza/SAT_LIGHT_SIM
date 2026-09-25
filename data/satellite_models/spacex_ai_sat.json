@@ -1,6 +1,6 @@
 {
     "name": "SpaceX Starmind AI1 orbital data center satellite",
-    "note": "Parity model for the v1.1 'SpaceX AI Satellites' type (Starmind AI1, a million-satellite dawn-dusk disk). Body frame: +Z to the Sun, +X toward nadir. Two sun-pointing wings spanning 70 m; edge-on radiators zenith and nadir of the bus, 20 m top to bottom. Widths derived from the 250 kW design power. Kept small (10 lobes) because a million satellites fly it.",
+    "note": "Parity model for the v1.1 'SpaceX AI Satellites' type (Starmind AI1, a million-satellite dawn-dusk disk). Body frame: +Z to the Sun, +X toward nadir, +Y along the span. A flat 10 x 3 x 0.6 m bus (it stacks PEZ-style); two wings of three 3.2 m strips spanning 70 m, on trusses across a 3.5 m gap; two white radiators standing edge-on to the Sun from the bus's flat faces, 10 m long and 20 m top to bottom. 10 lobes: a million satellites fly it. Trusses, spars, fittings and terminals are render-only detail.",
     "materials": [
         {
             "name": "bus_metal",
@@ -16,6 +16,20 @@
             "name": "radiator_white",
             "preset": "white_paint",
             "diffuse_albedo": 0.85
+        },
+        {
+            "name": "truss_frame",
+            "preset": "truss",
+            "truss_pitch": 0.8
+        },
+        {
+            "name": "spar_metal",
+            "preset": "aluminum",
+            "roughness": 0.3
+        },
+        {
+            "name": "terminal_mli",
+            "preset": "mli_foil"
         }
     ],
     "attitude_groups": [
@@ -47,83 +61,352 @@
             "name": "bus",
             "type": "box",
             "group": "bus",
-            "size": [3.0, 4.0, 1.5],
-            "position": [0, 0, 0],
+            "size": [10.0, 3.0, 0.6],
             "material": "bus_metal"
         },
         {
-            "name": "wing_pos",
+            "name": "wing_pos_0",
             "type": "plane",
             "group": "array",
-            "size": [9.2, 32.5],
-            "position": [0, 18.75, 0],
+            "size": [3.2333, 30.0],
+            "position": [-3.3833, 20.0, 0],
             "material": "solar_cell",
             "back_material": "array_back"
         },
         {
-            "name": "wing_neg",
+            "name": "wing_pos_1",
             "type": "plane",
             "group": "array",
-            "size": [9.2, 32.5],
-            "position": [0, -18.75, 0],
+            "size": [3.2333, 30.0],
+            "position": [0.0, 20.0, 0],
             "material": "solar_cell",
             "back_material": "array_back"
         },
         {
-            "name": "radiator_nadir",
+            "name": "wing_pos_2",
+            "type": "plane",
+            "group": "array",
+            "size": [3.2333, 30.0],
+            "position": [3.3833, 20.0, 0],
+            "material": "solar_cell",
+            "back_material": "array_back"
+        },
+        {
+            "name": "wing_neg_0",
+            "type": "plane",
+            "group": "array",
+            "size": [3.2333, 30.0],
+            "position": [-3.3833, -20.0, 0],
+            "material": "solar_cell",
+            "back_material": "array_back"
+        },
+        {
+            "name": "wing_neg_1",
+            "type": "plane",
+            "group": "array",
+            "size": [3.2333, 30.0],
+            "position": [0.0, -20.0, 0],
+            "material": "solar_cell",
+            "back_material": "array_back"
+        },
+        {
+            "name": "wing_neg_2",
+            "type": "plane",
+            "group": "array",
+            "size": [3.2333, 30.0],
+            "position": [3.3833, -20.0, 0],
+            "material": "solar_cell",
+            "back_material": "array_back"
+        },
+        {
+            "name": "radiator_sun",
             "type": "plane",
             "group": "bus",
-            "size": [8.1, 18.0],
-            "position": [5.95, 0, 0],
+            "size": [10.0, 9.65],
+            "position": [0, 0, 5.175],
             "rotation_deg": [-90, 0, 0],
             "material": "radiator_white"
         },
         {
-            "name": "radiator_zenith",
+            "name": "radiator_anti_sun",
             "type": "plane",
             "group": "bus",
-            "size": [8.1, 18.0],
-            "position": [-5.95, 0, 0],
+            "size": [10.0, 9.65],
+            "position": [0, 0, -5.175],
             "rotation_deg": [-90, 0, 0],
             "material": "radiator_white"
+        },
+        {
+            "name": "truss_pos_0",
+            "type": "box",
+            "group": "array",
+            "size": [0.8, 3.7, 0.8],
+            "position": [-3.0, 3.35, 0],
+            "material": "truss_frame",
+            "render_only": true
+        },
+        {
+            "name": "truss_pos_1",
+            "type": "box",
+            "group": "array",
+            "size": [0.8, 3.7, 0.8],
+            "position": [3.0, 3.35, 0],
+            "material": "truss_frame",
+            "render_only": true
+        },
+        {
+            "name": "root_spar_pos",
+            "type": "box",
+            "group": "array",
+            "size": [10.0, 0.2, 0.3],
+            "position": [0, 4.9, 0],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "tip_spar_pos",
+            "type": "box",
+            "group": "array",
+            "size": [10.0, 0.15, 0.2],
+            "position": [0, 35.075, 0],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "truss_neg_0",
+            "type": "box",
+            "group": "array",
+            "size": [0.8, 3.7, 0.8],
+            "position": [-3.0, -3.35, 0],
+            "material": "truss_frame",
+            "render_only": true
+        },
+        {
+            "name": "truss_neg_1",
+            "type": "box",
+            "group": "array",
+            "size": [0.8, 3.7, 0.8],
+            "position": [3.0, -3.35, 0],
+            "material": "truss_frame",
+            "render_only": true
+        },
+        {
+            "name": "root_spar_neg",
+            "type": "box",
+            "group": "array",
+            "size": [10.0, 0.2, 0.3],
+            "position": [0, -4.9, 0],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "tip_spar_neg",
+            "type": "box",
+            "group": "array",
+            "size": [10.0, 0.15, 0.2],
+            "position": [0, -35.075, 0],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "radiator_manifold_sun",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.14,
+            "height": 10.0,
+            "position": [0, 0, 0.44],
+            "rotation_deg": [0, 90, 0],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "stack_fitting_sun_0",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.12,
+            "height": 0.12,
+            "position": [-4.6, -1.2, 0.36],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "stack_fitting_sun_1",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.12,
+            "height": 0.12,
+            "position": [-4.6, 1.2, 0.36],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "stack_fitting_sun_2",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.12,
+            "height": 0.12,
+            "position": [4.6, -1.2, 0.36],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "stack_fitting_sun_3",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.12,
+            "height": 0.12,
+            "position": [4.6, 1.2, 0.36],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "radiator_manifold_anti_sun",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.14,
+            "height": 10.0,
+            "position": [0, 0, -0.44],
+            "rotation_deg": [0, 90, 0],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "stack_fitting_anti_sun_0",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.12,
+            "height": 0.12,
+            "position": [-4.6, -1.2, -0.36],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "stack_fitting_anti_sun_1",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.12,
+            "height": 0.12,
+            "position": [-4.6, 1.2, -0.36],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "stack_fitting_anti_sun_2",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.12,
+            "height": 0.12,
+            "position": [4.6, -1.2, -0.36],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "stack_fitting_anti_sun_3",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.12,
+            "height": 0.12,
+            "position": [4.6, 1.2, -0.36],
+            "material": "spar_metal",
+            "render_only": true
+        },
+        {
+            "name": "laser_terminal_base_fwd",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.22,
+            "height": 0.3,
+            "position": [4.2, 1.0, -0.45],
+            "material": "black_paint",
+            "render_only": true
+        },
+        {
+            "name": "laser_terminal_head_fwd",
+            "type": "sphere",
+            "group": "bus",
+            "radius": 0.26,
+            "position": [4.2, 1.0, -0.75],
+            "material": "terminal_mli",
+            "render_only": true
+        },
+        {
+            "name": "thruster_pod_fwd",
+            "type": "box",
+            "group": "bus",
+            "size": [0.25, 0.7, 0.4],
+            "position": [5.125, -0.8, 0],
+            "material": "black_paint",
+            "render_only": true
+        },
+        {
+            "name": "laser_terminal_base_aft",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.22,
+            "height": 0.3,
+            "position": [-4.2, 1.0, -0.45],
+            "material": "black_paint",
+            "render_only": true
+        },
+        {
+            "name": "laser_terminal_head_aft",
+            "type": "sphere",
+            "group": "bus",
+            "radius": 0.26,
+            "position": [-4.2, 1.0, -0.75],
+            "material": "terminal_mli",
+            "render_only": true
+        },
+        {
+            "name": "thruster_pod_aft",
+            "type": "box",
+            "group": "bus",
+            "size": [0.25, 0.7, 0.4],
+            "position": [-5.125, -0.8, 0],
+            "material": "black_paint",
+            "render_only": true
         }
     ],
     "sources": [
         {
             "subject": "attitude",
             "status": "sourced",
-            "value": "Sun-pointing panels (+Z to the Sun), +X toward nadir; panels tilted off the Sun by the flare-mitigation slider",
-            "source": "Starmind AI1 as specified by the project owner (2026-09-24): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'. Press (The Robotics Media / Winzheng, 2026-08): 'about 30 meters tall when deployed, with a wingspan of roughly 75 meters', '75-meter solar panels, 30-meter radiative cooling panels, and peak computing power of 250 kilowatts'; SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node. The tilt joint is the v1.1 legacy type's (SunTrackingTilted), kept for the slider."
+            "value": "Sun-pointing (+Z to the Sun), +X toward nadir; arrays tilted off the Sun by the flare-mitigation slider",
+            "source": "Starmind AI1 as specified by the project owner (2026-09-24, from the AI1 spec sheet image): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'; the bus 'flatter, proportions similar to a door ... as wide as the solar panels', 'the radiators need to be the same length as that body', panels and radiators extending 'horizontally (panels) and vertically (radiators)' with 'widths contained within the length of the bus', 'flat, so it can pancake on top of other datacenters' (PEZ-style stacking), and 'the larger gap between the panels and the satellite body ... with large trusses'. AI1 spec sheet: 150 kW solar array at 250 W/m2, 110 m2 deployable liquid radiator, 150 kW peak compute. The tilt joint is the v1.1 legacy type's (SunTrackingTilted), kept for the slider."
         },
         {
             "subject": "bus",
-            "status": "estimate",
-            "value": "3 x 4 x 1.5 m aluminium box (a 4 t node)",
-            "source": "Starmind AI1 as specified by the project owner (2026-09-24): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'. Press (The Robotics Media / Winzheng, 2026-08): 'about 30 meters tall when deployed, with a wingspan of roughly 75 meters', '75-meter solar panels, 30-meter radiative cooling panels, and peak computing power of 250 kilowatts'; SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node. Bus dimensions unpublished; range +-50%."
+            "status": "derived",
+            "value": "flat 10 x 3 x 0.6 m aluminium bus (a 4 t node)",
+            "source": "Starmind AI1 as specified by the project owner (2026-09-24, from the AI1 spec sheet image): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'; the bus 'flatter, proportions similar to a door ... as wide as the solar panels', 'the radiators need to be the same length as that body', panels and radiators extending 'horizontally (panels) and vertically (radiators)' with 'widths contained within the length of the bus', 'flat, so it can pancake on top of other datacenters' (PEZ-style stacking), and 'the larger gap between the panels and the satellite body ... with large trusses'. AI1 spec sheet: 150 kW solar array at 250 W/m2, 110 m2 deployable liquid radiator, 150 kW peak compute. Length DERIVED = the array chord (below); width and thickness estimates (+-50%). SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node."
         },
         {
             "subject": "array",
             "status": "sourced",
             "value": "both wings on one group, tilted about -Y by the flare-mitigation slider",
-            "source": "Starmind AI1 as specified by the project owner (2026-09-24): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'. Press (The Robotics Media / Winzheng, 2026-08): 'about 30 meters tall when deployed, with a wingspan of roughly 75 meters', '75-meter solar panels, 30-meter radiative cooling panels, and peak computing power of 250 kilowatts'; SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node (sun-pointing panels); the tilt is the legacy type's joint."
+            "source": "Starmind AI1 as specified by the project owner (2026-09-24, from the AI1 spec sheet image): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'; the bus 'flatter, proportions similar to a door ... as wide as the solar panels', 'the radiators need to be the same length as that body', panels and radiators extending 'horizontally (panels) and vertically (radiators)' with 'widths contained within the length of the bus', 'flat, so it can pancake on top of other datacenters' (PEZ-style stacking), and 'the larger gap between the panels and the satellite body ... with large trusses'. AI1 spec sheet: 150 kW solar array at 250 W/m2, 110 m2 deployable liquid radiator, 150 kW peak compute."
         },
         {
             "subjects": [
-                "wing_pos",
-                "wing_neg"
+                "wing_pos_0",
+                "wing_pos_1",
+                "wing_pos_2",
+                "wing_neg_0",
+                "wing_neg_1",
+                "wing_neg_2"
             ],
             "status": "derived",
-            "value": "two 32.5 x 9.2 m rigid glass-covered wings, 70 m tip to tip (598 m2)",
-            "source": "Starmind AI1 as specified by the project owner (2026-09-24): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'. Press (The Robotics Media / Winzheng, 2026-08): 'about 30 meters tall when deployed, with a wingspan of roughly 75 meters', '75-meter solar panels, 30-meter radiative cooling panels, and peak computing power of 250 kilowatts'; SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node. Span sourced; width DERIVED: 250 kW at ~30% cell efficiency and 1361 W/m2 needs ~610 m2, which also matches the legacy type's 600 m2."
+            "value": "per wing three 3.23 x 30 m strips (10 m chord), 5 to 35 m from the axis: 70 m tip to tip, 582 m2",
+            "source": "Starmind AI1 as specified by the project owner (2026-09-24, from the AI1 spec sheet image): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'; the bus 'flatter, proportions similar to a door ... as wide as the solar panels', 'the radiators need to be the same length as that body', panels and radiators extending 'horizontally (panels) and vertically (radiators)' with 'widths contained within the length of the bus', 'flat, so it can pancake on top of other datacenters' (PEZ-style stacking), and 'the larger gap between the panels and the satellite body ... with large trusses'. AI1 spec sheet: 150 kW solar array at 250 W/m2, 110 m2 deployable liquid radiator, 150 kW peak compute. Span sourced; area DERIVED from 150 kW at 250 W/m2 (600 m2), chord = 600 m2 / 60 m of wing, split in three strips as the spec-sheet image shows; the 3.5 m root gap bridged by trusses, as the image shows."
         },
         {
             "subjects": [
-                "radiator_nadir",
-                "radiator_zenith"
+                "radiator_sun",
+                "radiator_anti_sun"
             ],
             "status": "derived",
-            "value": "two 8.1 x 18 m white radiators, zenith and nadir of the bus, 20 m top to bottom, in the Sun-nadir plane",
-            "source": "Starmind AI1 as specified by the project owner (2026-09-24): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'. Press (The Robotics Media / Winzheng, 2026-08): 'about 30 meters tall when deployed, with a wingspan of roughly 75 meters', '75-meter solar panels, 30-meter radiative cooling panels, and peak computing power of 250 kilowatts'; SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node. Height sourced; width DERIVED: 250 kW from both faces at ~300 K (2 x 0.9 x sigma T^4 = 830 W/m2) needs ~300 m2 (291 here). Edge-on to the Sun as specified."
+            "value": "two 10 x 9.65 m white radiators on the bus's flat faces, edge-on to the Sun (the Sun-nadir plane), 20 m top to bottom",
+            "source": "Starmind AI1 as specified by the project owner (2026-09-24, from the AI1 spec sheet image): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'; the bus 'flatter, proportions similar to a door ... as wide as the solar panels', 'the radiators need to be the same length as that body', panels and radiators extending 'horizontally (panels) and vertically (radiators)' with 'widths contained within the length of the bus', 'flat, so it can pancake on top of other datacenters' (PEZ-style stacking), and 'the larger gap between the panels and the satellite body ... with large trusses'. AI1 spec sheet: 150 kW solar array at 250 W/m2, 110 m2 deployable liquid radiator, 150 kW peak compute. Height sourced (20 m); length = the bus's, as the project owner specified. That is 193 m2 per face, more than the spec sheet's 110 m2 (a 2.75 m wide strip would match it): the owner's layout is used."
         },
         {
             "subject": "bus_metal",
@@ -142,6 +425,16 @@
             "status": "estimate",
             "value": "white paint, albedo 0.85",
             "source": "No published data."
+        },
+        {
+            "subjects": [
+                "truss_frame",
+                "spar_metal",
+                "terminal_mli"
+            ],
+            "status": "estimate",
+            "value": "render-only detail materials (truss lattice 0.8 m bays, aluminium spars, MLI terminal heads)",
+            "source": "Visual only: these parts are render_only and never enter the photometry."
         }
     ]
 }

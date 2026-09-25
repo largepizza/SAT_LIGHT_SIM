@@ -47,8 +47,19 @@ struct GpuMeshInstance
     float bloomScale; // scene: bloom seed per unit of rendered luminance (energy-matched to the sprite)
     uint32_t firstComponent; // Phase 4f: into the per-component pivot buffer (binding 7)
     uint32_t cpad0, cpad1, cpad2;
+    // Earthshine as a broad source (SatEarthLight, 2026-09-24): the SH plane-irradiance fit and its
+    // frame, world axes. Diffuse light = max(SH(n), earthshine.w·(n·earthshine.xyz)₊).
+    glm::vec4 earthX;   // xyz = the Sun's side ⟂ nadir, w = sh0
+    glm::vec4 earthZ;   // xyz = nadir, w = sh1
+    glm::vec4 earthShA; // sh2..sh5
+    glm::vec4 earthShB; // sh6..sh9
+    glm::vec4 earthShC; // x = sh10
 };
-static_assert(sizeof(GpuMeshInstance) == 352, "GpuMeshInstance layout (sat_mesh_common.glsl)");
+static_assert(sizeof(GpuMeshInstance) == 432, "GpuMeshInstance layout (sat_mesh_common.glsl)");
+struct SatEarthLight;
+// Fills the instance's earthshine fields (earthshine, earthX/Z/Sh) from `L`, turning its world
+// vectors with `rot` (e.g. ECI → the renderer's ECEF axes).
+void setMeshInstanceEarth(GpuMeshInstance &inst, const SatEarthLight &L, const glm::dmat3 &rot);
 
 class SatMeshRenderer
 {

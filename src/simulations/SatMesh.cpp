@@ -40,8 +40,10 @@ struct MeshSink
     // on the quad's own axes.
     void quad(glm::dvec3 a, glm::dvec3 b, glm::dvec3 c, glm::dvec3 d, glm::dvec3 n, int material)
     {
+        // UV origin at the first corner, so periodic patterns (truss bays, solar-cell modules) start at
+        // an edge of the face rather than straddling it.
         const glm::dvec3 ex = glm::normalize(b - a), ey = glm::normalize(glm::cross(n, ex));
-        auto uvOf = [&](glm::dvec3 p) { return glm::dvec2(glm::dot(p, ex), glm::dot(p, ey)); };
+        auto uvOf = [&](glm::dvec3 p) { return glm::dvec2(glm::dot(p - a, ex), glm::dot(p - a, ey)); };
         uint32_t ia = vert(a, n, uvOf(a), material), ib = vert(b, n, uvOf(b), material);
         uint32_t ic = vert(c, n, uvOf(c), material), id = vert(d, n, uvOf(d), material);
         tri(ia, ib, ic, n);
@@ -135,6 +137,7 @@ SatRenderMesh buildSatRenderMesh(const SatModel &m, int segments)
     for (size_t ci = 0; ci < m.components.size(); ++ci)
     {
         const SatComponent &c = m.components[ci];
+        const size_t firstVert = mesh.vertices.size(), firstIdx = mesh.indices.size();
         MeshSink s{mesh, glm::dmat3(glm::mat3_cast(c.rotation)), origin[c.group] + glm::dvec3(c.position),
                    c.group, (int)ci};
         switch (c.prim)
@@ -179,6 +182,27 @@ SatRenderMesh buildSatRenderMesh(const SatModel &m, int segments)
             meshSphere(s, c.radius, c.material, segments);
             break;
         }
+        // An open lattice (SatMaterial::coverage < 1) of a closed primitive: its far side shows
+        // through the near side's gaps, so every face is drawn from the inside too (same positions,
+        // reversed winding and normal). Back faces are culled, so each copy is drawn only from its
+        // own side.
+        if (c.prim != PrimitiveKind::Plane && m.materials[c.material].coverage < 1.0f)
+        {
+            const size_t v1 = mesh.vertices.size(), i1 = mesh.indices.size();
+            for (size_t v = firstVert; v < v1; ++v)
+            {
+                SatMeshVertex iv = mesh.vertices[v];
+                iv.normal = -iv.normal;
+                mesh.vertices.push_back(iv);
+            }
+            const uint32_t shift = (uint32_t)(v1 - firstVert);
+            for (size_t i = firstIdx; i < i1; i += 3)
+            {
+                const uint32_t a = mesh.indices[i] + shift, b = mesh.indices[i + 1] + shift,
+                               cc = mesh.indices[i + 2] + shift;
+                mesh.indices.insert(mesh.indices.end(), {a, cc, b});
+            }
+        }
     }
 
     // Bounding sphere: centre of the vertex AABB, radius to the farthest vertex.
@@ -211,6 +235,22 @@ GpuSatMeshMaterial packSatMeshMaterial(const SatMaterial &m)
     const float lum = std::max(0.2126f * m.transmissionColor.r + 0.7152f * m.transmissionColor.g +
                                    0.0722f * m.transmissionColor.b, 1e-4f);
     g.extra = glm::vec4(m.transmissionColor / lum, m.transmission);
+    // Truss: the member width (fraction of a bay) whose drawn area fraction is `coverage` — members
+    // on the bay grid in both directions, 1 − (1 − x)², plus one diagonal per bay across the open
+    // square, √2·x·(1 − x).
+    float x = 0.0f;
+    if (m.coverage < 1.0f)
+    {
+        float lo = 0.0f, hi = 1.0f;
+        for (int it = 0; it < 40; ++it)
+        {
+            const float mid = 0.5f * (lo + hi);
+            const float f = 1.0f - (1.0f - mid) * (1.0f - mid) + 1.41421356f * mid * (1.0f - mid);
+            (f < m.coverage ? lo : hi) = mid;
+        }
+        x = 0.5f * (lo + hi);
+    }
+    g.lattice = glm::vec4(m.coverage, m.trussPitch, x, 0.0f);
     return g;
 }
 
@@ -222,7 +262,7 @@ std::vector<GpuSatMeshOccluder> packSatMeshOccluders(const SatOcclusion &occ)
     {
         GpuSatMeshOccluder g{};
         g.center = glm::vec3(o.center);
-        g.kind = (uint32_t)o.kind;
+        g.kind = o.blocks ? (uint32_t)o.kind : 0xFFu; // 0xFF: an open lattice, skipped by sat_mesh.frag
         g.half = glm::vec3(o.half);
         g.group = (uint32_t)o.group;
         g.axisX = glm::vec4(glm::vec3(o.axes[0]), 0.0f);

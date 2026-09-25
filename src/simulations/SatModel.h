@@ -14,6 +14,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <nlohmann/json_fwd.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -204,6 +205,14 @@ struct SatMaterial
     // cell pattern, sends it through the gaps between cells (the cells themselves are opaque).
     float transmission = 0.0f;
     glm::vec3 transmissionColor{1.0f, 0.55f, 0.15f}; // Kapton: amber (blue absorbed)
+    // Open lattice (a truss): the fraction of the surface that is solid members, 0..1 (JSON
+    // "coverage"; 1 = a solid surface). Photometry: every facet counts coverage × its area, and a
+    // closed primitive (box, cylinder, cone, sphere) adds its inner faces, seen through the gaps of
+    // the near side, at coverage·(1 − coverage). A part in such a material never shadows anything
+    // (its occluder is kept, so occluder i is still component i, but no lobe lists it). The
+    // renderer cuts the members out of the surface (the "truss" pattern) with the same area mean.
+    float coverage = 1.0f;
+    float trussPitch = 1.0f; // truss bay size, metres (members along the edges of every bay + one diagonal)
 };
 enum SatSurfacePattern : int
 {
@@ -211,6 +220,7 @@ enum SatSurfacePattern : int
     kPatternSolarCells = 1, // cell grid with lighter substrate gaps, per-cell facet jitter
     kPatternMli = 2,        // crinkled film: micro-facet normals instead of a blurred lobe
     kPatternPanelSeams = 3, // panel joints every 0.5 m
+    kPatternTruss = 4,      // open lattice: members on a square bay grid + alternating diagonals
 };
 // The pattern a material draws with (resolving -1).
 int satMaterialPattern(const SatMaterial &m);
@@ -247,6 +257,11 @@ struct SatComponent
     // in one group, all at the same angle. Normals (every lobe, every magnitude) are unaffected; a
     // posed POSITION gains satPivotOffset(). Child groups only, and only groups with no children.
     glm::vec3 pivot{0.0f};
+    // Visual detail only (JSON "render_only"): drawn by the mesh renderer, absent from the photometry
+    // (no facets, no lobes, never an occluder, no `sources` entry required). For greebles too small
+    // to change a magnitude. loadSatModel moves these after every photometric component, so the
+    // photometric components keep indices 0..n-1 and occluder i stays component i.
+    bool renderOnly = false;
 };
 
 // Provenance of one part of a model (benchmarking M4): every group, component and model-local
@@ -275,6 +290,10 @@ struct SatModel
     std::vector<SatModelSource> sources;
     std::vector<std::string> localMaterials; // materials defined in the model file (need sources)
 };
+
+// Does component `ci` block light in the photometry and the renderer's shadows? Not when it is
+// render-only or made of an open lattice (SatMaterial::coverage < 1).
+bool satComponentOccludes(const SatModel &m, int ci);
 
 // Subjects of a model that no `sources` entry covers (groups, components, model-local materials).
 // Empty = every part is explained, though some may be explained as estimates.
@@ -369,6 +388,7 @@ static constexpr int kMaxOccluders = 64; // per model (a 64-bit mask per lobe se
 struct SatOccluder
 {
     PrimitiveKind kind = PrimitiveKind::Plane;
+    bool blocks = true; // false: an open-lattice part (satComponentOccludes) — never in a lobe's mask
     int group = 0;
     glm::dvec3 pivot{0.0}; // the component's joint pivot (SatComponent::pivot)
     glm::dvec3 center{0.0};  // rest pose, root body frame
@@ -476,6 +496,53 @@ double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector
 // sat_orbit.comp's lobeIntensity()) uses. `a2` includes the source-size term.
 double satLobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2, bool beckmann,
                         glm::dvec3 s, glm::dvec3 o, double transmission = 0.0);
+
+// ── Earthshine as a light source (2026-09-24) ─────────────────────────────────────────────────
+// The lit cap of the Earth is a broad source: a face turned sideways to it still sees a large part
+// of the disk. Until 2026-09-24 every consumer treated it as ONE direction (the vector irradiance
+// E·dir), which is exact for a face that sees the whole cap but gives zero to a face edge-on to that
+// direction — the black sides of a satellite lit only by the Earth. Now:
+//   * DIFFUSE and transmitted light use the irradiance of the whole cap on the face's plane, stored
+//     as an order-4 spherical-harmonic fit of the lit cap's irradiance function (11 non-zero terms:
+//     symmetric about the Sun-nadir plane, and the cosine kernel has no l = 3), never below the exact
+//     vector value where the plane sees the whole cap: E(n) = max(SH(n), E·(n·dir)₊). Worst case 3%
+//     of E in LEO, 4% at GEO (order 2 was 6-8%: a twilight crescent on the limb is a sharp source).
+//   * SPECULAR stays the tilted single source with the Earth's angular size folded into α.
+// Local frame: ez = nadir, ex = the Sun's direction perpendicular to nadir, ey = ez × ex.
+static constexpr int kEarthShTerms = 11;
+struct SatEarthLight
+{
+    double E = 0.0;          // vector irradiance magnitude, fraction of sunlight
+    glm::dvec3 dir{0.0};     // its direction (from the satellite toward the Earth, tilted sunward)
+    glm::dvec3 ez{0.0, 0.0, -1.0}, ex{1.0, 0.0, 0.0}; // world frame of the SH coefficients
+    // E(n) ≈ Σ sh[k]·P_k(n), n in the local frame (earthShBasis): 1, z, x, 3z²−1, xz, x²−y², then the
+    // l = 4 terms 35z⁴−30z²+3, xz(7z²−3), (x²−y²)(7z²−1), xz(x²−3y²), x⁴−6x²y²+y⁴.
+    double sh[kEarthShTerms] = {};
+    double a2 = 0.0;         // the Earth's angular size as a GGX α² (tan²(ρ/2)), for the specular lobe
+
+    // Irradiance on a plane with unit normal n (world), fraction of sunlight.
+    double diffuse(const glm::dvec3 &n) const
+    {
+        if (E <= 0.0)
+            return 0.0;
+        const glm::dvec3 ey = glm::cross(ez, ex);
+        const double x = glm::dot(n, ex), y = glm::dot(n, ey), z = glm::dot(n, ez);
+        const double x2 = x * x, y2 = y * y, z2 = z * z;
+        const double s = sh[0] + sh[1] * z + sh[2] * x + sh[3] * (3.0 * z2 - 1.0) + sh[4] * x * z +
+                         sh[5] * (x2 - y2) + sh[6] * (35.0 * z2 * z2 - 30.0 * z2 + 3.0) +
+                         sh[7] * x * z * (7.0 * z2 - 3.0) + sh[8] * (x2 - y2) * (7.0 * z2 - 1.0) +
+                         sh[9] * x * z * (x2 - 3.0 * y2) + sh[10] * (x2 * x2 - 6.0 * x2 * y2 + y2 * y2);
+        return std::max(std::max(s, 0.0), E * std::max(glm::dot(n, dir), 0.0));
+    }
+};
+// Intensity of one facet/lobe lit by the Earth (already × irradiance: an absolute intensity per unit
+// solar irradiance). `a2` is the material's (without the Earth's size, which `earth.a2` adds).
+double satLobeEarthIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2,
+                             bool beckmann, const SatEarthLight &earth, glm::dvec3 o, double transmission = 0.0);
+// Σ over the posed lobes of satLobeEarthIntensity (occlusion: the observer ray only).
+double evalSatLobesEarthPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
+                              const std::vector<GroupPose> &poses, const SatEarthLight &earth, glm::dvec3 o,
+                              const SatOcclusion *occ = nullptr);
 
 // How much does self-shadowing (all groups, posed) change the model's brightness? Poses the model
 // at `samples` random geometries — sun anywhere that lights the satellite, observer within the

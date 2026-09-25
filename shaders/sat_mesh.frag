@@ -122,6 +122,7 @@ bool rayBlocked(MeshInstance inst, vec3 p, vec3 dir)
     for (uint i = 0u; i < inst.occluderCount; ++i) {
         if (i == vComponent) continue;
         MeshOccluder O = occluders[inst.firstOccluder + i];
+        if (O.kind > 4u) continue; // 0xFF: an open lattice (truss) — light passes between its members
         mat3 R = instGroupRot(inst, O.group);
         vec3 pr = transpose(R) * (p - inst.origin.xyz - inst.trans[O.group].xyz -
                                   instPivotOffset(inst, O.group, i)) - O.center; // occluder i = component i
@@ -253,10 +254,40 @@ Surface applyPattern(MeshMaterial mat, MeshInstance inst, vec3 N)
     return s;
 }
 
+// ── Open lattice (truss): which pixels are members ───────────────────────────────────────────
+// Members on a square bay grid (pitch lattice.y, UV metres from a face corner) in both directions,
+// plus one diagonal per bay, alternating like a Warren truss; member width lattice.z bays, sized on
+// the CPU so the drawn area fraction is the material's coverage (the photometry's). Box-filtered
+// over the pixel, then kept with that probability against a fixed per-pixel threshold: sharp members
+// close up, and at a distance, where a member is sub-pixel, the right fraction of pixels — the far
+// side's inner faces showing through the rest — with no shimmer while the view is still.
+float latticeCover(MeshMaterial mat)
+{
+    const float P = mat.lattice.y, x = mat.lattice.z;
+    vec2 b  = vUv / P;                       // bay units
+    vec2 fw = max(fwidth(b), vec2(1e-5));
+    // Grid members centred on the bay edges: shift by half a member so lineCover's line starts there.
+    float grid = gridCover(b + 0.5 * x, vec2(x), fw);
+    // One diagonal per bay, direction alternating with the bay parity.
+    vec2  cell = floor(b), f = b - cell;
+    bool  up   = mod(cell.x + cell.y, 2.0) < 0.5;
+    float s    = up ? (f.x - f.y) : (f.x + f.y - 1.0);          // signed offset from the diagonal
+    float d    = abs(s) * 0.70710678;                            // perpendicular distance, bays
+    float fwd  = 0.70710678 * (fw.x + fw.y) * 0.5;
+    float diag = 1.0 - smoothstep(0.5 * x - fwd, 0.5 * x + fwd, d);
+    return max(grid, diag);
+}
+
 void main()
 {
     MeshInstance inst = instances[vInstance];
     MeshMaterial mat  = materials[vMaterial];
+    if (mat.lattice.x < 1.0) {
+        // Not optional detail (the Detail toggle keeps it): the gaps are the part's real geometry.
+        float keep = latticeCover(mat);
+        float thr  = float(hashU(uvec3(uvec2(gl_FragCoord.xy), 977u)) & 0xFFFFu) / 65536.0;
+        if (keep <= thr) discard;
+    }
     vec3 N = normalize(vNormal);
     vec3 V = normalize(frame.camPos.xyz - vWorld);
     float nv = dot(N, V);
@@ -314,9 +345,11 @@ void main()
     }
 
     // ── Earthshine (diffuse; its specular part is the reflection below) ─────
-    L += inst.earthshine.w * diffC * max(dot(N, inst.earthshine.xyz), 0.0);
+    // The whole lit cap, not one direction (instEarthDiffuse): a face edge-on to the Earth light still
+    // sees a large part of the disk — the photometry's SatEarthLight.
+    L += diffC * instEarthDiffuse(inst, N);
     if (Tm > 0.0) // and through a translucent blanket from its far side (the lit Earth behind it)
-        L += inst.earthshine.w * tC * max(-dot(Ngeo, inst.earthshine.xyz), 0.0);
+        L += tC * instEarthDiffuse(inst, -Ngeo);
     // Everything so far is what the photometric model counts (sunlight + earthshine through its
     // lobes); moonlight and the reflected Earth below are not in it. The bloom seed is normalised by
     // the model's intensity, so it must only be fed this part — feeding it the reflections made a

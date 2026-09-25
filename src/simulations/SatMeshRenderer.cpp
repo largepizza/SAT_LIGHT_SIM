@@ -69,6 +69,16 @@ template <typename T> void destroy(VkDevice d, T &h, void (*fn)(VkDevice, T, con
 }
 } // namespace
 
+void setMeshInstanceEarth(GpuMeshInstance &inst, const SatEarthLight &L, const glm::dmat3 &rot)
+{
+    inst.earthshine = glm::vec4(glm::vec3(rot * L.dir), (float)L.E);
+    inst.earthX = glm::vec4(glm::vec3(rot * L.ex), (float)L.sh[0]);
+    inst.earthZ = glm::vec4(glm::vec3(rot * L.ez), (float)L.sh[1]);
+    inst.earthShA = glm::vec4((float)L.sh[2], (float)L.sh[3], (float)L.sh[4], (float)L.sh[5]);
+    inst.earthShB = glm::vec4((float)L.sh[6], (float)L.sh[7], (float)L.sh[8], (float)L.sh[9]);
+    inst.earthShC = glm::vec4((float)L.sh[10], 0.0f, 0.0f, 0.0f);
+}
+
 // ─── init / cleanup ───────────────────────────────────────────────────────────────────────────────
 void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth)
 {

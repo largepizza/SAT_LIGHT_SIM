@@ -446,6 +446,20 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   their own `(1−R/d)/2 · illumFrac` term, deliberately, so they don't change. Output is a real apparent
   magnitude mapped into effectFlare through the existing anchor: `flare = K_FLUX·I/r²·brightnessScale`,
   `K_FLUX` = 9.979e10 (0.008 ↔ mag 6).
+  **Earthshine is a broad source (2026-09-24, `SatEarthLight` in `SatModel.h`).** The single tilted
+  direction above is exact only for a face that sees the whole cap; a face edge-on to it got nothing,
+  though the cap really gives it ~30% of a nadir plate's irradiance at 550 km (the black, Earth-lit
+  sides the user reported). Diffuse and transmitted light now use the irradiance of the whole cap on
+  the face's plane: an order-4 SH fit of the cap's irradiance function (11 terms — symmetric about
+  the Sun-nadir plane, and the cosine kernel has no l = 3), from the same closed-form ring integrals
+  (`earthshineExact(..., sh)`), floored at the exact vector value: `E(n) = max(SH(n), E·(n·dir)₊)`.
+  Specular keeps the tilted source. Tabulated with the vector table as ratios to E
+  (`earthshineShLut()`, `earthShA/B/C` in `sat_orbit.comp`, `GpuEarthshineLut`); CPU
+  `satLobeEarthIntensity()` / `evalSatLobesEarthPosed()`, GPU `lobeEarthIntensity()`; the mesh
+  renderer reads the same fit per instance (`GpuMeshInstance::earthX/Z/ShA-C`, `instEarthDiffuse()`).
+  Order 2 was tried first: 6-8% of E worst case (a twilight crescent on the limb is a sharp source);
+  order 4 is ≤ 2.9% (`--selftest` gate 5%). `SatPhotResult::intensityEarth` is now ABSOLUTE (already
+  × the irradiance). Benchmarks moved ≤ 0.05 mag.
 - **Validation + shape check.** At load every model is compared against a brute-force per-triangle
   evaluation (logged p95/max |Δmag| over configurations within 5 mag of its median brightness), and
   its rest/sunlit poses are written to `<user data>/satellite_models_debug/<id>_{rest,sunlit}.obj`
@@ -622,6 +636,17 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     same-group occluders on BOTH sides (it is lit from behind). The first cut used the front-only
     mask, which was the ISS's largest occlusion error: its iROSAs shade the light the legacy
     blankets pass through (self-test p95 0.26 → 0.17).
+  - **Render-only parts and open lattices (2026-09-24).** A component with `"render_only": true` is
+    drawn and nothing else: no facets, lobes, occluder or `sources` entry — greebles cost only render
+    triangles. `loadSatModel` moves them after every photometric component, so occluder i is still
+    component i. A material's `"coverage"` (0..1, the `truss` preset: 0.3, pitch `"truss_pitch"`)
+    makes an open lattice: facets count coverage × area, a closed primitive adds its inner faces at
+    coverage·(1 − coverage), and the part never shadows (`satComponentOccludes`; its occluder is
+    kept with `SatOccluder::blocks = false`, kind 0xFF in the renderer). `sat_mesh.frag` cuts the
+    members out (`latticeCover`: bay grid + alternating diagonals, member width solved on the CPU for
+    the same area fraction), kept per pixel against a fixed hash, so sub-pixel members at a distance
+    become the right fraction of pixels with the far side's inner faces behind them. Quad UVs now
+    start at a face corner, so bays and cell modules start at an edge.
   - **Procedural surface detail** (`SatMaterial::pattern`, JSON `"pattern"`: none / solar_cells / mli
     / panel_seams; -1 = from the preset — `solar_cell` → cells, `mli_foil` → crinkle). Visual only and
     **photometrically neutral**: each pattern scales albedo by a factor with area mean 1, leaves the
@@ -701,9 +726,11 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   wings of two blankets each plus the six iROSAs installed by 2023; 514 exact lobes), `tiangong.json`
   (T of three modules; the labs' two-axis wings as alpha about the labs' axis + beta with two
   pivots), `starship_depot.json` (9 x 60 m body of revolution in the `stainless_steel` preset with a
-  body-mounted solar band), `spacex_ai_sat.json` (sun-pointing bus, flare-mitigation-tilted wings,
-  radiators in the Sun-nadir plane; 10 lobes, flown by a million - Starmind AI1: 70 m span, 20 m of
-  radiators), `reflect_orbital.json` (a 55 m square membrane mirror on `sun_reflect_ground_site`),
+  body-mounted solar band), `spacex_ai_sat.json` (Starmind AI1, rebuilt 2026-09-24 to the project
+  owner's reading of the AI1 spec sheet: a flat 10 x 3 x 0.6 m "door" bus that stacks PEZ-style, two
+  70 m-span wings of three strips on trusses across a 3.5 m gap, and two 10 m-long white radiators
+  standing 20 m top to bottom from the bus's flat faces, edge-on to the Sun; 10 lobes, flown by a
+  million; trusses, spars and terminals are render-only), `reflect_orbital.json` (a 55 m square membrane mirror on `sun_reflect_ground_site`),
   the Starlinks `starlink_v1_5` (gen-1 dielectric mirror film, a translucent 'lampshade' backsheet
   whose transmission is fitted to the Post-VisorSat phase function), `starlink_v2_mini` (rebuilt
   2026-09-24 to SpaceX's published mitigations: gen-2 film on the nadir face, black paint, opaque
@@ -979,8 +1006,8 @@ anything that is constant per type goes in `GpuSatType`.
 One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, at `kSatTypeArrayOffset`: after a
 32-byte `GpuSatTypeHeader` (`brightnessScale`, `mirrorBoost`, `occlusionFluxFloor`, `occlusionOn`,
 `deltaTLo` —
-rewritten every frame; `SatOrbitPC` is full) and the 64 KB `GpuEarthshineLut` (`earthLut` in the
-shader, written once by `createSatBuffers()`). Must match
+rewritten every frame; `SatOrbitPC` is full) and the 448 KB `GpuEarthshineLut` (`earthLut` +
+`earthShA/B/C` in the shader, written once by `createSatBuffers()`). Must match
 `SatType`/`AttGroup`/`SatTypeBuf` in `sat_orbit.comp` (`offsetof` static_asserts guard the C++ side).
 ```
 [ 0] baseColorR, baseColorG, baseColorB, crossSection

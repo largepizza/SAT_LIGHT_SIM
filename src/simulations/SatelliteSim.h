@@ -306,6 +306,10 @@ static_assert(sizeof(GpuPointStyle) == 32, "GpuPointStyle layout mismatch");
 struct GpuEarthshineLut
 {
     glm::vec2 v[satphot::kEarthLutLambda * satphot::kEarthLutCos]; // (ln irradiance, tilt rad)
+    // The SH plane-irradiance fit (satphot::earthshineShLut, ratios to the irradiance): earthShA/B/C.
+    glm::vec4 shA[satphot::kEarthLutLambda * satphot::kEarthLutCos]; // sh0..3
+    glm::vec4 shB[satphot::kEarthLutLambda * satphot::kEarthLutCos]; // sh4..7
+    glm::vec4 shC[satphot::kEarthLutLambda * satphot::kEarthLutCos]; // sh8..10
 };
 static constexpr size_t kSatTypeArrayOffset = sizeof(GpuSatTypeHeader) + sizeof(GpuEarthshineLut);
 static_assert(kSatTypeArrayOffset % 16 == 0, "GpuSatType array must stay 16-byte aligned (std430)");

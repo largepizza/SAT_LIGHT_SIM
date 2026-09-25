@@ -3049,15 +3049,10 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
         inst.trans[g] = glm::vec4(glm::vec3(gp.t), 0.0f);
     }
     const double rOverD = satphot::kEarthRadiusM / glm::length(P);
-    double earthE = 0.0, tilt = 0.0;
-    earthshineLookup(rOverD, glm::dot(up, sun), earthE, tilt);
-    const glm::dvec3 perp = sun - glm::dot(sun, -up) * -up;
-    const double pl = glm::length(perp);
-    const glm::dvec3 earthDir = pl < 1e-9 ? -up : std::cos(tilt) * -up + std::sin(tilt) * (perp / pl);
-    const double alphaE = rOverD / (1.0 + std::sqrt(std::max(0.0, 1.0 - rOverD * rOverD)));
+    const SatEarthLight earthL = earthshineLight(-up, sun, rOverD); // already in the viewer's ECEF axes
     inst.sun = glm::vec4(glm::vec3(sun), (float)lit);
-    inst.sunColor = glm::vec4(1.0f, 1.0f, 1.0f, (float)(alphaE * alphaE));
-    inst.earthshine = glm::vec4(glm::vec3(earthDir), (float)earthE);
+    inst.sunColor = glm::vec4(1.0f, 1.0f, 1.0f, (float)earthL.a2);
+    setMeshInstanceEarth(inst, earthL, glm::dmat3(1.0));
     inst.firstMaterial = tm->firstMaterial;
     inst.firstOccluder = tm->firstOccluder;
     inst.occluderCount = tm->occluderCount;
@@ -3291,7 +3286,8 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx)
         const glm::dvec3 tint = glm::mix(glm::dvec3(1.0), glm::dvec3(1.0, 0.45, 0.15), 4.0 * lit * (1.0 - lit));
         inst.sun = glm::vec4(glm::vec3(geo.sun), (float)lit);
         inst.sunColor = glm::vec4(glm::vec3(tint), (float)(alphaE * alphaE));
-        inst.earthshine = glm::vec4(glm::vec3(eciToEcef(r.earthDir)), (float)r.earthIrradiance);
+        setMeshInstanceEarth(inst, r.earth, glm::dmat3(glm::dvec3(ct, -st, 0.0), glm::dvec3(st, ct, 0.0),
+                                                       glm::dvec3(0.0, 0.0, 1.0))); // ECI → ECEF (eciToEcef)
         inst.firstMaterial = tm->firstMaterial;
         inst.firstOccluder = tm->firstOccluder;
         inst.occluderCount = tm->occluderCount;
@@ -5683,9 +5679,20 @@ void SatelliteSim::createSatBuffers(VulkanContext &ctx)
     vkMapMemory(ctx.device, satTypeMem, 0, typeBytes, 0, &satTypeMapped);
     memset(satTypeMapped, 0, typeBytes);
     {
-        const std::vector<glm::vec2> &lut = earthshineLut();
-        static_assert(sizeof(GpuEarthshineLut) == sizeof(glm::vec2) * satphot::kEarthLutLambda * satphot::kEarthLutCos);
-        memcpy(static_cast<char *>(satTypeMapped) + sizeof(GpuSatTypeHeader), lut.data(), sizeof(GpuEarthshineLut));
+        constexpr size_t N = (size_t)satphot::kEarthLutLambda * satphot::kEarthLutCos;
+        static_assert(sizeof(GpuEarthshineLut) == N * (sizeof(glm::vec2) + 3 * sizeof(glm::vec4)));
+        static_assert(kEarthShTerms == 11, "earthShA/B/C hold 11 terms");
+        auto lut = std::make_unique<GpuEarthshineLut>();
+        const std::vector<glm::vec2> &vec = earthshineLut();
+        const std::vector<std::array<float, kEarthShTerms>> &sh = earthshineShLut();
+        for (size_t i = 0; i < N; ++i)
+        {
+            lut->v[i] = vec[i];
+            lut->shA[i] = glm::vec4(sh[i][0], sh[i][1], sh[i][2], sh[i][3]);
+            lut->shB[i] = glm::vec4(sh[i][4], sh[i][5], sh[i][6], sh[i][7]);
+            lut->shC[i] = glm::vec4(sh[i][8], sh[i][9], sh[i][10], 0.0f);
+        }
+        memcpy(static_cast<char *>(satTypeMapped) + sizeof(GpuSatTypeHeader), lut.get(), sizeof(GpuEarthshineLut));
     }
 
     // pointStyleBuf: the shared point-source model's parameters (GpuPointStyle), a host-coherent

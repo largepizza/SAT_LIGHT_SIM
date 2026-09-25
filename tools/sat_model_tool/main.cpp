@@ -193,6 +193,77 @@ bool selfTestEarthshine()
     std::printf("    %s table lookup vs exact (%zu points above 1e-4 of sunlight): |dmag| p95 %.4f, max %.3f; "
                 "tilt max err %.3f rad  (gate p95 < 0.02, max < 0.15)\n",
                 lutOk ? "ok  " : "FAIL", errMag.size(), p95, mx, worstTiltLut);
+
+    // Diffuse earthshine on a plane of ANY orientation (SatEarthLight::diffuse — SH fit, floored at
+    // the exact vector value) against a brute-force cap integral of radiance · (n·ω)₊, errors as a
+    // fraction of the irradiance a nadir-facing plate receives. Both the exact coefficients and the
+    // table lookup the GPU mirrors. Scale: the vector irradiance, what the best-placed plate receives.
+    double worstShExact = 0.0, worstShLut = 0.0, edgeFrac = 0.0;
+    std::mt19937 rngN(99);
+    std::normal_distribution<double> nd;
+    for (double hKm : {400.0, 550.0, 1200.0, 8000.0})
+        for (double zDeg : {0.0, 40.0, 70.0, 85.0, 92.0, 98.0})
+        {
+            const double rOverD = 6371.0 / (6371.0 + hKm), cz = std::cos(zDeg * kDeg);
+            const double r = 1.0 / rOverD, lam0 = std::acos(rOverD), sinZ = std::sin(zDeg * kDeg);
+            const glm::dvec3 sun(sinZ, 0.0, cz), sat(0.0, 0.0, r);
+            auto brute = [&](const glm::dvec3 &np) {
+                const int nl = 240, nphi = 240;
+                double E = 0.0;
+                for (int i = 0; i < nl; ++i)
+                {
+                    const double lam = (i + 0.5) / nl * lam0;
+                    for (int j = 0; j < nphi; ++j)
+                    {
+                        const double phi = (j + 0.5) / nphi * 2.0 * satphot::kPi;
+                        const glm::dvec3 g(std::sin(lam) * std::cos(phi), std::sin(lam) * std::sin(phi), std::cos(lam));
+                        const double mu0 = glm::dot(g, sun);
+                        if (mu0 <= 0.0)
+                            continue;
+                        const glm::dvec3 d = g - sat;
+                        const double dl = glm::length(d);
+                        const glm::dvec3 du = d / dl;
+                        const double mu = -glm::dot(g, du), c = glm::dot(np, du);
+                        if (mu <= 0.0 || c <= 0.0)
+                            continue;
+                        const double dA = std::sin(lam) * (lam0 / nl) * (2.0 * satphot::kPi / nphi);
+                        E += satphot::kEarthAlbedo / satphot::kPi * mu0 * c * dA * mu / (dl * dl);
+                    }
+                }
+                return E;
+            };
+            const glm::dvec3 nadir(0.0, 0.0, -1.0);
+            const double eNadir = brute(nadir);
+            if (eNadir < 1e-6)
+                continue;
+            SatEarthLight ex;
+            double tilt;
+            earthshineExact(rOverD, cz, ex.E, tilt, 512, ex.sh);
+            const double scale = ex.E; // errors as a fraction of the vector irradiance (the peak plate's)
+            ex.ez = nadir;
+            ex.ex = glm::dvec3(1.0, 0.0, 0.0);
+            ex.dir = std::cos(tilt) * nadir + std::sin(tilt) * ex.ex;
+            const SatEarthLight lut = earthshineLight(nadir, sun, rOverD);
+            for (int k = 0; k < 24; ++k)
+            {
+                const glm::dvec3 np = glm::normalize(glm::dvec3(nd(rngN), nd(rngN), nd(rngN)));
+                const double b = brute(np);
+                worstShExact = std::max(worstShExact, std::abs(ex.diffuse(np) - b) / scale);
+                worstShLut = std::max(worstShLut, std::abs(lut.diffuse(np) - b) / scale);
+            }
+            if (hKm == 550.0 && zDeg == 70.0) // a plate edge-on to the Earth-light direction
+            {
+                const glm::dvec3 side = glm::normalize(glm::cross(ex.dir, glm::dvec3(1.0, 0.0, 0.0)));
+                edgeFrac = brute(side) / eNadir;
+            }
+        }
+    const bool shOk = worstShExact < 0.05 && worstShLut < 0.06;
+    ok &= shOk;
+    std::printf("    %s plane irradiance, SH fit vs brute-force cap integral (any orientation): max err %.3f exact, "
+                "%.3f table, of the vector irradiance  (gate < 0.05 / 0.06)\n",
+                shOk ? "ok  " : "FAIL", worstShExact, worstShLut);
+    std::printf("    info 550 km, Sun zenith 70 deg: a plate edge-on to the Earth light gets %.2f of a nadir plate's "
+                "irradiance (the single-direction model gave 0)\n", edgeFrac);
     return ok;
 }
 
@@ -335,8 +406,6 @@ bool selfTestModel(const SatModel &m, const std::vector<SatTri> &tris, int budge
         geo.tumbleAxis = e.tumbleAxis;
         std::vector<GroupPose> poses = evalGroupPoses(m.groups, geo, false);
         glm::dvec3 o = glm::normalize(in.obsEci - st.posEci);
-        double rOverD = satphot::kEarthRadiusM / e.rSatM;
-        double alphaE = rOverD / (1.0 + std::sqrt(1.0 - rOverD * rOverD));
         double Isun = 0.0, Iearth = 0.0;
         for (const SatTri &tr : tris)
         {
@@ -345,11 +414,10 @@ bool selfTestModel(const SatModel &m, const std::vector<SatTri> &tris, int budge
             double a2 = (double)mat.roughness * mat.roughness + tr.spread2;
             Isun += satLobeIntensity(n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + a2Sun, mat.beckmann,
                                      in.sunDirEci, o, mat.transmission);
-            Iearth += satLobeIntensity(n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + alphaE * alphaE,
-                                       mat.beckmann,
-                                       r.earthDir, o, mat.transmission); // the evaluator's earthshine direction (M8)
+            Iearth += satLobeEarthIntensity(n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2, mat.beckmann,
+                                            r.earth, o, mat.transmission); // the evaluator's earthshine light
         }
-        double ref = Isun * r.litFactor + Iearth * r.earthIrradiance;
+        double ref = Isun * r.litFactor + Iearth;
         // Significance floor: fainter than magnitude 20 is beyond any instrument this project
         // compares against, and down there (I ~ 1e-17 m², deep penumbra) float rounding of a grazing
         // lobe normal decides whether a sliver of it counts as lit — noise, not a disagreement.
@@ -549,8 +617,6 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
             return glm::dot(q, q) - tc * tc <= compR[c] * compR[c] || glm::dot(q, q) <= compR[c] * compR[c];
         };
         const glm::dvec3 o = glm::normalize(in.obsEci - so.posEci);
-        const double rOverD = satphot::kEarthRadiusM / e.rSatM;
-        const double alphaE = rOverD / (1.0 + std::sqrt(1.0 - rOverD * rOverD));
         double Isun = 0.0, Iearth = 0.0;
         for (size_t i = 0; i < posed.size(); ++i)
         {
@@ -559,8 +625,8 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
             const double a2 = (double)mat.roughness * mat.roughness + tr.spread2;
             double is = satLobeIntensity(tr.n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + a2Sun, mat.beckmann,
                                          in.sunDirEci, o, mat.transmission);
-            double ie = satLobeIntensity(tr.n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0,
-                                         a2 + alphaE * alphaE, mat.beckmann, open.earthDir, o, mat.transmission);
+            double ie = satLobeEarthIntensity(tr.n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0,
+                                         a2, mat.beckmann, open.earth, o, mat.transmission);
             if (is <= 0.0 && ie <= 0.0)
                 continue;
             double visSun = 0.0, visObs = 0.0;
@@ -575,8 +641,8 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
                     // A triangle of the same component never occludes it (convex/flat primitives) —
                     // the rule the runtime uses too, and what keeps a faceted cylinder from
                     // shadowing itself through its own chords.
-                    if ((int)c == tr.component || compTris[c].empty())
-                        continue;
+                    if ((int)c == tr.component || compTris[c].empty() || !satComponentOccludes(m, (int)c))
+                        continue; // an open lattice passes light (SatMaterial::coverage)
                     const bool testObs = !blockObs && rayNearSphere(pt, o, c);
                     const bool testSun = !blockSun && rayNearSphere(pt, in.sunDirEci, c);
                     if (!testObs && !testSun)
@@ -598,7 +664,7 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
             Isun += is * visSun;
             Iearth += ie * visObs;
         }
-        const double ref = Isun * open.litFactor + Iearth * open.earthIrradiance;
+        const double ref = Isun * open.litFactor + Iearth;
         if (!(ref > 0.0) || satMagnitudeFromIntensity(ref, open.rangeM) > 20.0)
             continue;
         SatPhotResult rv[3];

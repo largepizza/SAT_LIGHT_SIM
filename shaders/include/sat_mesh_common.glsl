@@ -30,7 +30,27 @@ struct MeshInstance {
     float bloomScale;   // scene: bloom seed per unit of rendered luminance (mesh_bloom.frag)
     uint firstComponent; // into components[] (per-component joint pivots)
     uint cpad0, cpad1, cpad2;
+    vec4 earthX;   // earthshine SH frame: xyz = the Sun's side perpendicular to nadir, w = sh0
+    vec4 earthZ;   // xyz = nadir, w = sh1
+    vec4 earthShA; // sh2..sh5 (SatEarthLight — diffuse = max(SH(n), vector irradiance))
+    vec4 earthShB; // sh6..sh9
+    vec4 earthShC; // x = sh10
 };
+
+// Irradiance of the lit Earth on a plane with unit normal n (fraction of sunlight): the SH fit of
+// the whole cap, floored at the exact vector value — SatEarthLight::diffuse() (SatModel.h).
+float instEarthDiffuse(MeshInstance inst, vec3 n)
+{
+    vec3  ex = inst.earthX.xyz, ez = inst.earthZ.xyz, ey = cross(ez, ex);
+    float x = dot(n, ex), y = dot(n, ey), z = dot(n, ez);
+    float x2 = x * x, y2 = y * y, z2 = z * z;
+    float s = inst.earthX.w + inst.earthZ.w * z + inst.earthShA.x * x + inst.earthShA.y * (3.0 * z2 - 1.0)
+            + inst.earthShA.z * x * z + inst.earthShA.w * (x2 - y2)
+            + inst.earthShB.x * (35.0 * z2 * z2 - 30.0 * z2 + 3.0) + inst.earthShB.y * x * z * (7.0 * z2 - 3.0)
+            + inst.earthShB.z * (x2 - y2) * (7.0 * z2 - 1.0) + inst.earthShB.w * x * z * (x2 - 3.0 * y2)
+            + inst.earthShC.x * (x2 * x2 - 6.0 * x2 * y2 + y2 * y2);
+    return max(max(s, 0.0), inst.earthshine.w * max(dot(n, inst.earthshine.xyz), 0.0));
+}
 layout(set = 0, binding = 1, std430) readonly buffer MeshInstances { MeshInstance instances[]; };
 
 struct MeshMaterial {
@@ -41,6 +61,7 @@ struct MeshMaterial {
     uint  beckmann;
     uint  pattern;
     vec4  extra;
+    vec4  lattice; // open lattice (truss): x = coverage (1 = solid), y = bay pitch (m), z = member width (bays)
 };
 layout(set = 0, binding = 2, std430) readonly buffer MeshMaterials { MeshMaterial materials[]; };
 
