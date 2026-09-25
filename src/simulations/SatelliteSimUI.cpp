@@ -7,6 +7,7 @@
 #include "SatelliteSim.h"
 #include "../UIRenderer.h"
 #include "../AudioSystem.h"
+#include "../Log.h"
 #include "version.h"
 #include "clay.h"
 
@@ -33,11 +34,20 @@ static constexpr int kIconEye = 8;        // pixel--eye.png — follow mode (fly
 static constexpr int kIconSelect = 9;     // pixel--crosshair.png — view/select the satellite's model
 static constexpr int kIconTrace = 10;     // pixel--trace.png — "Trace pass" (magnitude over the pass)
 static constexpr int kIconInfo = 11;      // pixel--info.png — "Info": the satellite's info window
+static constexpr int kIconSpin = 12;      // pixel--spin.png — the free camera's idle rotation
+static constexpr int kIconObserver = 13;  // pixel--observer.png — the view from the ground observer
+static constexpr int kIconStudio = 14;    // pixel--studio.png — studio lighting (vs the live sky)
+static constexpr int kIconMaximize = 15;  // pixel--maximize.png — pop the 3D view out / restore
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
 // are ICON-ONLY: the button's name is the tooltip, never a sentence. `kSelIconBtnMin` matches the view
 // window's title-bar icon targets.
 static constexpr float kSelIconBtnMin = 24.0f;
+
+// The view-preset chips drawn over a render (buildViewChips): Spin, Observer, Studio, Maximize /
+// Restore — the 3D view's own controls. Select and Go to are title-bar icons now (they act on the
+// subject, not on the view). The rows live in SatelliteSim::kViewChipRows.
+static constexpr int kViewChipCount = 4;
 
 // Settings schema version (NEW-5). Bump this whenever a settings.json change would make an
 // old file's graphics-affecting values (photometry/clouds/render_scale) meaningless against
@@ -311,6 +321,13 @@ namespace Pal
     // Selection
     constexpr Clay_Color reticule = {255, 205, 60, 230}; // target-lock reticule (amber — distinct
                                                          // from the red accent used everywhere else)
+    // View-preset chips over the 3D render (buildViewChip): translucent, so the image reads through
+    // them, with a dark scrim under the idle/hover states because a bare white icon over bright clouds
+    // or the Earth's limb is invisible.
+    constexpr Clay_Color chipIdle = {0, 0, 0, 84};
+    constexpr Clay_Color chipHover = {0, 0, 0, 150};
+    constexpr Clay_Color chipOn = {150, 20, 20, 150};      // the accent, translucent
+    constexpr Clay_Color chipOnHover = {150, 20, 20, 205};
 }
 
 // ── Global styling parameters ─────────────────────────────────────────────────
@@ -553,8 +570,27 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             "assets/icons/ui/pixel--crosshair.png",
             "assets/icons/ui/pixel--trace.png",
             "assets/icons/ui/pixel--info.png",
+            "assets/icons/ui/pixel--spin.png",
+            "assets/icons/ui/pixel--observer.png",
+            "assets/icons/ui/pixel--studio.png",
+            "assets/icons/ui/pixel--maximize.png",
         };
-        ui.loadIcons(*ctx_, iconPaths, 12);
+        // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
+        // number used to be a silent way to drop the last icon of the array.
+        const int wanted = (int)(sizeof(iconPaths) / sizeof(iconPaths[0]));
+        const int got = ui.loadIcons(*ctx_, iconPaths, wanted);
+        // One line into the startup log (Log::path()): which directory the icons were resolved from,
+        // and how many of them loaded. A stale or missing asset otherwise shows up only as a wrong or
+        // magenta glyph, with nothing recorded anywhere about where it came from — the exact confusion
+        // the CMake runtime-file sync (`sat_sync_runtime_sources`) exists to prevent.
+        std::error_code cwdEc;
+        const std::string cwd = std::filesystem::current_path(cwdEc).string();
+        char iconLog[512];
+        snprintf(iconLog, sizeof(iconLog), "UI: %d/%d icons loaded ('%s', cwd '%s')", got, wanted, iconPaths[0],
+                 cwd.c_str());
+        Log::line(iconLog);
+        if (got < wanted)
+            fprintf(stderr, "[icons] only %d of %d loaded — see %s\n", got, wanted, Log::path().c_str());
         iconsLoaded = true;
     }
 
@@ -606,7 +642,9 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildSettingsWindow(inp, ui);
     buildViewControlsWindow(inp, ui);
     buildTraceWindow(inp, ui);
-    buildModelViewerWindow(inp, ui);
+    updateViewerView(inp, ui); // the satellite windows' shared prologue (target, drag, readouts)
+    buildInfoWindow(inp, ui);
+    buildViewPopoutWindow(inp, ui);
     buildFollowHud(inp, ui);
     buildSelectedSatPanel(inp, ui);
 
@@ -622,8 +660,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         ui.addMouseCaptureRect(viewControlsChrome.x, viewControlsChrome.y, viewControlsChrome.w, viewControlsChrome.h);
     if (traceChrome.open)
         ui.addMouseCaptureRect(traceChrome.x, traceChrome.y, traceChrome.w, traceChrome.h);
-    // The model viewer: without it a drag on the model also clicked the sky behind the window and
-    // selected (or deselected) whatever satellite was under it.
+    // The satellite windows: without these a drag on a render also clicked the sky behind the window
+    // and re-selected (or deselected) whatever satellite was under it.
+    if (infoChrome.open && meshRendererInit)
+        ui.addMouseCaptureRect(infoChrome.x, infoChrome.y, infoChrome.w, infoChrome.h);
     if (viewerChrome.open && meshRendererInit)
         ui.addMouseCaptureRect(viewerChrome.x, viewerChrome.y, viewerChrome.w, viewerChrome.h);
 
@@ -1453,23 +1493,22 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
         });
 }
 
-// ─── Model viewer window (Phase 4b; reorganised 2026-09-24) ──────────────────
-// A REAL satellite (the selection, or a constellation's VIEW pick, which also selects it), rendered
-// offscreen by SatMeshRenderer (recordModelViewer, in recordCompute) and shown as a UIImage. Title
-// bar: the satellite's name (highlighted, "(selected)", while it is the selection), then Select and
-// Follow icons. Body: the image on the left (drag to orbit, scroll to zoom) with the viewed
-// satellite's orbit readout under it; on the right a narrow column of settings and the observer box
-// (where it is in your sky, how bright, and a trace of its pass).
+// ─── Info window + the popped-out 3D view (Phase 4b; split 2026-09-24) ───────
+// ONE satellite window by default. The info window leads with a compact 4:3 render of the subject —
+// the view-preset chips sit over it — and scrolls through collapsible sections below: Satellite,
+// Orbit and Photometry open, Observer / Camera / Render / Check collapsed (the Clouds tab's form).
+// "Maximize" over the render pops the 3D view out into its own larger, resizable window; the small
+// render stays live underneath it (one texture drawn twice, the small one showing a centred 4:3 crop
+// of the larger target — see UIImage's u0..v1).
 //
-// PLACEMENT (2026-09-24): default 640x460 pinned to the top-right corner — the trace window lives
-// above the time controls in the bottom-left, and with the two of them anchored to opposite corners
-// they coexist instead of covering the middle of the sky. The settings column is deliberately narrow
-// (colW) so the image keeps most of the width; the orbital elements that used to sit in the
-// selection panel are a wrapped one-liner under the image, where the width is.
-void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
+// One window with a pop-out rather than two permanent windows: both describe the same subject, so a
+// second always-open window would double the chrome the player has to place and close. The pop-out is
+// on demand, which is also what makes a small render worth having — the preset chips are one click at
+// any size.
+void SatelliteSim::updateViewerView(const UIInput &inp, UIRenderer &ui)
 {
-    if (!viewerChrome.open || !meshRendererInit)
-        return;
+    if (!meshRendererInit || (!infoChrome.open && !viewerChrome.open))
+        return; // nothing visible: no target to size, no drag to read, no readouts to refresh
     // A viewer tracking a satellite follows the selection (as the magnitude trace does), when the
     // newly selected satellite has a model.
     if (selectedSatIndex >= 0 && selectedSatIndex != viewerLastSelected && selectedSatIndex != viewerSatIndex &&
@@ -1478,23 +1517,35 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
         const SatOrbit &orb = satOrbits[selectedSatIndex];
         openModelViewer((int)orb.typeIdx, satTypes[orb.typeIdx].name.c_str(), orb.altM, selectedSatIndex);
     }
+    if (infoChrome.w <= 0.0f)
+    {
+        // Right edge: the trace window lives above the time controls in the bottom-left corner, so the
+        // satellite windows anchor right. Narrow, because its body is a scrolling list of sections.
+        infoChrome.w = std::min(470.0f, std::max(380.0f, inp.screenW * 0.34f));
+        infoChrome.h = std::min(680.0f, std::max(470.0f, inp.screenH - 24.0f)); // 470 = its min height
+    }
     if (viewerChrome.w <= 0.0f)
     {
-        // 640x460 on a normal desktop, never more than ~42% of the window's width or 55% of its
-        // height: the whole point of the top-right default is that the sky stays visible, and on a
-        // 1280-wide window a fixed 640 would reach into the middle of the screen.
-        viewerChrome.w = std::min(640.0f, std::max(430.0f, inp.screenW * 0.42f));
-        viewerChrome.h = std::min(460.0f, std::max(320.0f, inp.screenH * 0.55f));
+        // The pop-out: as large as the desktop allows, placed beside (left of) the info window so
+        // opening it does not cover the window it came out of.
+        viewerChrome.w = std::min(900.0f, std::max(480.0f, inp.screenW * 0.48f));
+        viewerChrome.h = std::min(640.0f, std::max(360.0f, inp.screenH * 0.8f));
     }
-    const bool tracked = viewerSatIndex >= 0 && viewerSatIndex < (int)satOrbits.size();
-    const bool isSelected = tracked && selectedSatIndex == viewerSatIndex;
-    const bool isFollowed = tracked && followActive && followSatIndex == viewerSatIndex;
 
-    // Size the offscreen target to the image element (one frame behind while resizing).
-    const Clay_ElementId imgId = CLAY_ID("ViewerImage");
-    const Clay_ElementData imgData = Clay_GetElementData(imgId);
-    const uint32_t tw = imgData.found ? (uint32_t)std::max(16.0f, imgData.boundingBox.width) : 480u;
-    const uint32_t th = imgData.found ? (uint32_t)std::max(16.0f, imgData.boundingBox.height) : 360u;
+    // ── The two view boxes, the ONE target, and each view's crop ──────────────────────────
+    // Sizes are derived from the chrome rects rather than from last frame's layout, so the target and
+    // the crops can never disagree with what gets drawn (a resize costs one frame of mismatch, the
+    // same idiom the image element's own box already used). `kViewPad` is the padding the two builders
+    // give their image frame — keep them in step with this.
+    const float kViewPad = 10.0f;
+    const float bandW = std::max(32.0f, infoChrome.w - 2.0f * kViewPad - 2.0f);
+    const float bandH = bandW * 0.75f; // the mini view is 4:3 whatever the window is
+    viewerBandH = bandH;
+    const float popW = std::max(32.0f, viewerChrome.w - 2.0f * kViewPad - 2.0f);
+    const float popH = std::max(32.0f, viewerChrome.h - std::max(36.0f, (float)fs(16) + 16.0f) - 2.0f * kViewPad - 2.0f);
+    const bool usePop = viewerChrome.open && popW * popH >= bandW * bandH; // the larger view drives it
+    const uint32_t tw = (uint32_t)std::max(16.0f, usePop ? popW : bandW);
+    const uint32_t th = (uint32_t)std::max(16.0f, usePop ? popH : bandH);
     const bool recreated = meshRenderer.ensureViewerTarget(*ctx_, tw, th);
     if (envProbes.ready())
     {
@@ -1507,15 +1558,83 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
         viewerImageId = ui.registerImage(ctx_->device, meshRenderer.viewerView(), meshRenderer.viewerSampler());
     else if (recreated)
         ui.updateImage(ctx_->device, viewerImageId, meshRenderer.viewerView(), meshRenderer.viewerSampler());
-    viewerImage.imageId = viewerImageId;
     viewerAspect = (float)tw / (float)th;
+    // Each view samples a centred sub-rect with its OWN aspect, so one render fills both shapes (4:3
+    // and whatever the pop-out is) with no stretch. The view that drives the target samples all of it.
+    {
+        const float srcAspect = viewerAspect;
+        float mU0 = 0.0f, mV0 = 0.0f, mU1 = 1.0f, mV1 = 1.0f;
+        const float bandAspect = bandW / bandH; // 4:3
+        if (srcAspect > bandAspect)
+        {
+            const float s = bandAspect / srcAspect;
+            mU0 = (1.0f - s) * 0.5f;
+            mU1 = 1.0f - mU0;
+        }
+        else if (srcAspect < bandAspect)
+        {
+            const float s = srcAspect / bandAspect;
+            mV0 = (1.0f - s) * 0.5f;
+            mV1 = 1.0f - mV0;
+        }
+        viewerUvMini[0] = mU0;
+        viewerUvMini[1] = mV0;
+        viewerUvMini[2] = mU1;
+        viewerUvMini[3] = mV1;
+        const float pU0 = 0.0f, pV0 = 0.0f, pU1 = 1.0f, pV1 = 1.0f;
+        const float popAspect = popW / popH;
+        if (!usePop && viewerChrome.open && popAspect > 0.0f)
+        {
+            // The mini view drove the target (a tiny pop-out): crop for it instead. Won't happen with
+            // the default sizes, but the window is resizable all the way down.
+            if (srcAspect > popAspect)
+            {
+                const float s = popAspect / srcAspect;
+                viewerUvPop[0] = (1.0f - s) * 0.5f;
+                viewerUvPop[2] = 1.0f - viewerUvPop[0];
+            }
+            else if (srcAspect < popAspect)
+            {
+                const float s = srcAspect / popAspect;
+                viewerUvPop[1] = (1.0f - s) * 0.5f;
+                viewerUvPop[3] = 1.0f - viewerUvPop[1];
+            }
+        }
+        else
+        {
+            viewerUvPop[0] = pU0;
+            viewerUvPop[1] = pV0;
+            viewerUvPop[2] = pU1;
+            viewerUvPop[3] = pV1;
+        }
+        viewerImageMini.imageId = viewerImageId;
+        viewerImageMini.u0 = viewerUvMini[0];
+        viewerImageMini.v0 = viewerUvMini[1];
+        viewerImageMini.u1 = viewerUvMini[2];
+        viewerImageMini.v1 = viewerUvMini[3];
+        viewerImagePop.imageId = viewerImageId;
+        viewerImagePop.u0 = viewerUvPop[0];
+        viewerImagePop.v0 = viewerUvPop[1];
+        viewerImagePop.u1 = viewerUvPop[2];
+        viewerImagePop.v1 = viewerUvPop[3];
+    }
 
-    // Orbit / zoom on the image (its box from the previous layout).
-    const bool overImg = imgData.found && inp.mouseX >= imgData.boundingBox.x &&
-                         inp.mouseX < imgData.boundingBox.x + imgData.boundingBox.width &&
-                         inp.mouseY >= imgData.boundingBox.y &&
-                         inp.mouseY < imgData.boundingBox.y + imgData.boundingBox.height;
-    if (overImg && inp.lmbPressed && !viewerChrome.dragging && viewerChrome.resizeEdge == kResizeNone)
+    // ── Drag to orbit / scroll to zoom, on either view ────────────────────────────────────
+    // Hit-tested against the two image elements' laid-out boxes (the PREVIOUS frame's, the established
+    // idiom) and gated on the preset chips' hover flags: without that gate a click on a chip would also
+    // grab the camera and orbit the model under the pointer.
+    auto overBox = [&](const Clay_ElementData &d) {
+        return d.found && inp.mouseX >= d.boundingBox.x && inp.mouseX < d.boundingBox.x + d.boundingBox.width &&
+               inp.mouseY >= d.boundingBox.y && inp.mouseY < d.boundingBox.y + d.boundingBox.height;
+    };
+    const bool overImg = (infoChrome.open && overBox(Clay_GetElementData(CLAY_ID("ViewerImageMini")))) ||
+                         (viewerChrome.open && overBox(Clay_GetElementData(CLAY_ID("ViewerImagePop"))));
+    bool chipHover = false;
+    for (int row = 0; row < kViewChipRows; ++row)
+        for (int k = 0; k < kViewChipCount; ++k)
+            chipHover = chipHover || hovViewChip[row][k];
+    if (overImg && !chipHover && inp.lmbPressed && !infoChrome.dragging && !viewerChrome.dragging &&
+        infoChrome.resizeEdge == kResizeNone && viewerChrome.resizeEdge == kResizeNone)
     {
         viewerDragging = true;
         viewerAim = 0; // taking the camera ends a preset (it continues from where the preset left it)
@@ -1562,39 +1681,162 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
                      viewerCheckPhaseDeg, std::isfinite(mR) ? "lit" : "dark", std::isfinite(mM) ? "lit" : "dark");
     }
 
-    // Grow the window to fit the settings column (last frame's layout): the check result and the
-    // observer lines appear below their buttons, and were hidden under the window's bottom edge until
-    // it was resized by hand. Only ever grows, never while the user is resizing it — and only up to
-    // 72% of the screen height, since the window is pinned to the top-right corner and a taller
-    // column would run down past the middle of the screen (past that cap the column scrolls).
-    {
-        const Clay_ElementData col = Clay_GetElementData(CLAY_ID("ViewerRight"));
-        const Clay_ElementData content = Clay_GetElementData(CLAY_ID("ViewerRightContent"));
-        if (col.found && content.found && viewerChrome.resizeEdge == kResizeNone && !viewerChrome.dragging)
-        {
-            const float over = content.boundingBox.height + 16.0f - col.boundingBox.height; // + its padding
-            if (over > 1.0f)
-            {
-                const float cap = std::min(inp.screenH - 20.0f, std::max(viewerChrome.h, inp.screenH * 0.72f));
-                viewerChrome.h = std::min(viewerChrome.h + over, cap);
-                if (viewerChrome.y + viewerChrome.h > inp.screenH - 10.0f)
-                    viewerChrome.y = std::max(10.0f, inp.screenH - 10.0f - viewerChrome.h);
-            }
-        }
-    }
-
     // Observer box: re-evaluated at up to 10 Hz.
     if (glfwGetTime() >= viewerObsNextWall)
     {
         viewerObsNextWall = glfwGetTime() + 0.1;
         updateViewerObserverInfo();
     }
+}
+
+// ─── buildViewChip ───────────────────────────────────────────────────────────
+// One view-preset chip over a render: the icon alone, tooltip = its name (the same rule as every other
+// satellite action button), on a translucent scrim so it stays readable over bright clouds or the
+// Earth's limb — a bare white icon on those is invisible. `on` is the accent fill: the "obvious tell"
+// that this preset is the active one.
+bool SatelliteSim::buildViewChip(const UIInput &inp, UIRenderer &ui, int row, int k, const char *name, int iconIdx,
+                                 bool on)
+{
+    const float sz = std::max(26.0f, (float)fs(12) + 14.0f);
+    const float isz = sz - 10.0f;
+    bool &hov = hovViewChip[row][k];
+    bool clicked = false;
+    Clay_Color bg = on ? (hov ? Pal::chipOnHover : Pal::chipOn) : (hov ? Pal::chipHover : Pal::chipIdle);
+    CLAY(CLAY_SIDI(CLAY_STRING("ViewChip"), row * 8 + k),
+         {.layout = {.sizing = {CLAY_SIZING_FIXED(sz), CLAY_SIZING_FIXED(sz)},
+                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+          .backgroundColor = bg,
+          .cornerRadius = CLAY_CORNER_RADIUS(5)})
+    {
+        bool n = Clay_Hovered();
+        sndRollover(n, hov);
+        sndClick(n, inp.lmbPressed);
+        hov = n;
+        clicked = n && inp.lmbPressed;
+        ui.tooltip(inp, n, name, fs(11));
+        CLAY(CLAY_SIDI(CLAY_STRING("ViewChipIcon"), row * 8 + k),
+             {.layout = {.sizing = {CLAY_SIZING_FIXED(isz), CLAY_SIZING_FIXED(isz)}},
+              .image = {.imageData = (void *)(intptr_t)(iconIdx + 1)}}) {}
+    }
+    return clicked;
+}
+
+// ─── buildViewChips ──────────────────────────────────────────────────────────
+// The chip row over a render: the 3D VIEW's own controls, nothing else. Select and Go to used to
+// live here too and moved back to the title bar — they act on the SUBJECT (they are the same two
+// actions the selection panel carries), while these four change what the render shows.
+//   Spin      — the free camera's idle rotation. A plain toggle: clicking it while lit stops it, and
+//               "nothing lit" is simply the free camera (there is no Free chip to light up).
+//   Observer  — the view from the ground observer's direction, which is what makes a ground flare's
+//               specular show on the model. Exclusive with Spin by construction: taking a preset
+//               clears the free camera, so the Spin chip reads off while it is active.
+//   Studio    — LIGHTING (live sky vs the fixed studio sun). Deliberately its own group: spin + live
+//               light is a legitimate combination, so it is not part of the view radio set.
+//   Maximize  — pops the render out into its own window ("Restore" from inside it).
+void SatelliteSim::buildViewChips(const UIInput &inp, UIRenderer &ui, int row)
+{
+    const bool popped = viewerChrome.open;
+    CLAY(CLAY_SIDI(CLAY_STRING("ViewChips"), row),
+         {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                     .childGap = 4,
+                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        const bool spinning = viewerSpin && viewerAim == 0;
+        if (buildViewChip(inp, ui, row, 0, "Spin", kIconSpin, spinning))
+        {
+            if (spinning)
+                viewerSpin = false;
+            else
+            {
+                viewerAim = 0; // spin belongs to the free camera, so asking for it takes it back
+                viewerSpin = true;
+            }
+            viewerDragging = false;
+        }
+        if (buildViewChip(inp, ui, row, 1, "Observer", kIconObserver, viewerAim == 1))
+            viewerAim = viewerAim == 1 ? 0 : 1;
+        if (buildViewChip(inp, ui, row, 2, "Studio", kIconStudio, viewerStudioLight))
+            viewerStudioLight = !viewerStudioLight;
+        if (buildViewChip(inp, ui, row, 3, popped ? "Restore" : "Maximize", kIconMaximize, popped))
+            viewerChrome.open = !viewerChrome.open;
+    }
+}
+
+// ─── buildViewTitleIcons ─────────────────────────────────────────────────────
+// Select and Go to, in the title bar of both satellite windows (left of the close button) — the two
+// SUBJECT actions, as distinct from the view chips over the render. Icon-only with name tooltips, as
+// every satellite action button is. `popout` picks which window's hover state to use, so the two
+// title bars do not fight over it.
+void SatelliteSim::buildViewTitleIcons(const UIInput &inp, UIRenderer &ui, bool popout)
+{
+    const bool tracked = viewerSatIndex >= 0 && viewerSatIndex < (int)satOrbits.size();
+    if (!tracked)
+        return;
+    const bool isSelected = selectedSatIndex == viewerSatIndex;
+    const bool isFollowed = followActive && followSatIndex == viewerSatIndex;
+    bool *hov = popout ? hovViewerTitleBtn : hovInfoTitleBtn;
+    const int idBase = popout ? 0 : 2; // unique Clay ids across the two windows
+    auto icon = [&](int k, int iconIdx, bool on, const char *name) {
+        bool clicked = false;
+        const float sz = std::max(24.0f, (float)fs(12) + 12.0f);
+        CLAY(CLAY_SIDI(CLAY_STRING("ViewTitleBtn"), idBase + k),
+             {.layout = {.sizing = {CLAY_SIZING_FIXED(sz), CLAY_SIZING_FIXED(sz)},
+                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+              .backgroundColor = hov[k] ? (on ? Pal::btnAccentHv : Pal::btnHover)
+                                        : (on ? Pal::btnAccent : Pal::btnIdle),
+              .cornerRadius = CLAY_CORNER_RADIUS(4)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hov[k]);
+            sndClick(n, inp.lmbPressed);
+            hov[k] = n;
+            clicked = n && inp.lmbPressed;
+            ui.tooltip(inp, n, name, fs(11));
+            const float isz = sz - 8.0f;
+            CLAY(CLAY_SIDI(CLAY_STRING("ViewTitleIcon"), idBase + k),
+                 {.layout = {.sizing = {CLAY_SIZING_FIXED(isz), CLAY_SIZING_FIXED(isz)}},
+                  .image = {.imageData = (void *)(intptr_t)(iconIdx + 1)}}) {}
+        }
+        CLAY(CLAY_SIDI(CLAY_STRING("ViewTitleGap"), idBase + k),
+             {.layout = {.sizing = {CLAY_SIZING_FIXED(6), CLAY_SIZING_FIXED(1)}}}) {}
+        return clicked;
+    };
+    if (icon(0, kIconSelect, isSelected, "Select"))
+        selectSatellite(viewerSatIndex);
+    if (icon(1, kIconEye, isFollowed, "Go to"))
+    {
+        if (isFollowed)
+            stopFollow();
+        else
+        {
+            selectSatellite(viewerSatIndex);
+            startFollow(viewerSatIndex);
+        }
+    }
+}
+
+// ─── buildInfoWindow (the satellite window; split + sections 2026-09-24) ─────
+// Title: the subject's name, amber + "(selected)" while it is the selection. Body: the fixed 4:3 render
+// at the top with the chip row over it (it does not scroll away — only the sections below do), then the
+// collapsible sections: Satellite / Orbit / Photometry open, Observer / Camera / Render / Check
+// collapsed. The values come from updateViewerObserverInfo (10 Hz, the CPU evaluator on the VIEWED
+// satellite — the viewer can be tracking one that is not the selection).
+void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
+{
+    if (!infoChrome.open || !meshRendererInit)
+        return;
+    const bool tracked = viewerSatIndex >= 0 && viewerSatIndex < (int)satOrbits.size();
+    const bool isSelected = tracked && selectedSatIndex == viewerSatIndex;
+
+    static const char *kInfoSectionNames[kInfoSectionCount] = {
+        "SATELLITE", "ORBIT", "PHOTOMETRY", "OBSERVER", "CAMERA", "RENDER", "CHECK"};
+    static const char *kOrbitLabels[kViewerOrbitRows] = {"Altitude", "Inclination", "RAAN", "Period", "Power"};
 
     auto text = [&](const char *s, Clay_Color c, float size) {
         Clay_String str{false, (int32_t)strlen(s), s};
         CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
     };
-    // A full-width button of the settings column; `on` shows an active state.
+    // A full-width button of a section; `on` shows an active state.
     auto button = [&](int id, const char *label, const char *tip, bool on = false) {
         bool clicked = false;
         bool &hov = hovViewerBtn[id];
@@ -1618,172 +1860,268 @@ void SatelliteSim::buildModelViewerWindow(const UIInput &inp, UIRenderer &ui)
         }
         return clicked;
     };
-    auto section = [&](int id, const char *label) {
-        CLAY(CLAY_IDI("ViewerSection", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                        .padding = {0, 0, 6, 0}}})
-        {
-            Clay_String ls{false, (int32_t)strlen(label), label};
-            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(10),
-                                            .wrapMode = CLAY_TEXT_WRAP_NONE}));
-        }
-    };
-    // Title-bar icon buttons, left of the close button.
-    auto titleIcon = [&](int k, int icon, bool on, const char *tip) {
-        bool clicked = false;
-        const float sz = std::max(24.0f, (float)fs(12) + 12.0f);
-        bool &hov = hovViewerTitleBtn[k];
-        CLAY(CLAY_IDI("ViewerTitleBtn", k), {.layout = {
-                                                 .sizing = {CLAY_SIZING_FIXED(sz), CLAY_SIZING_FIXED(sz)},
-                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                             .backgroundColor = hov ? (on ? Pal::btnAccentHv : Pal::btnHover)
-                                                                    : (on ? Pal::btnAccent : Pal::btnIdle),
-                                             .cornerRadius = CLAY_CORNER_RADIUS(4)})
+    // A collapsible section: header + body, the Clouds tab's form (buildCloudSliderSections). "+"/"-"
+    // rather than a chevron glyph — the font atlas bakes ASCII 32-126 only — and the open state is
+    // session-only, not a preference.
+    auto infoSection = [&](int si, const std::function<void()> &body) {
+        bool open = infoSectionOpen[si];
+        CLAY(CLAY_IDI("InfoSectHdr", si), {.layout = {
+                                               .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
+                                               .padding = {8, 10, 0, 0},
+                                               .childGap = 8,
+                                               .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                               .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                           .backgroundColor = hovInfoSection[si] ? Pal::btnHover : Pal::sectionHdr,
+                                           .cornerRadius = CLAY_CORNER_RADIUS(3)})
         {
             bool n = Clay_Hovered();
-            sndRollover(n, hov);
+            sndRollover(n, hovInfoSection[si]);
             sndClick(n, inp.lmbPressed);
-            hov = n;
-            clicked = n && inp.lmbPressed;
-            ui.tooltip(inp, n, tip, fs(11));
-            const float isz = sz - 8.0f;
-            CLAY(CLAY_IDI("ViewerTitleIcon", k), {.layout = {.sizing = {CLAY_SIZING_FIXED(isz), CLAY_SIZING_FIXED(isz)}},
-                                                  .image = {.imageData = (void *)(intptr_t)(icon + 1)}}) {}
+            hovInfoSection[si] = n;
+            if (n && inp.lmbPressed)
+                infoSectionOpen[si] = !open;
+            CLAY(CLAY_IDI("InfoSectMark", si), {.layout = {
+                                                    .sizing = {CLAY_SIZING_FIXED(10), CLAY_SIZING_FIT(0)},
+                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+            {
+                CLAY_TEXT(open ? CLAY_STRING("-") : CLAY_STRING("+"),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12)}));
+            }
+            CLAY(CLAY_IDI("InfoSectTitle", si), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+            {
+                Clay_String ts{false, (int32_t)strlen(kInfoSectionNames[si]), kInfoSectionNames[si]};
+                CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12)}));
+            }
         }
-        CLAY(CLAY_IDI("ViewerTitleGap", k), {.layout = {.sizing = {CLAY_SIZING_FIXED(6), CLAY_SIZING_FIXED(1)}}}) {}
-        return clicked;
+        if (open)
+            body();
     };
 
     // Title: the satellite's name, highlighted while it is the selection.
     static char titleBuf[140];
     snprintf(titleBuf, sizeof(titleBuf), "%s%s", viewerTitle, isSelected ? "  (selected)" : "");
 
-    // Narrow settings column: the image keeps most of the window (this used to be fs(11) * 17 = 190 px
-    // at uiScale 1, which cost the model a sixth of the width). Every label in the column is sized to
-    // fit roughly 20 characters at that width.
-    const float colW = std::max(170.0f, (float)fs(11) * 15.5f);
-    const float minViewerW = colW + 260.0f;
-
+    // minH 470: the render band is 4:3 (268 px at the 380 px minimum width) and the sections need a
+    // usable slice under it — below that the window would be all render and no list.
     buildResizableWindow(
-        inp, ui, viewerChrome, 3, titleBuf, true, hovViewerClose, inp.screenW - viewerChrome.w - 12.0f, 12.0f,
-        minViewerW, 360.0f, 2000.0f, 1400.0f,
+        inp, ui, infoChrome, 4, titleBuf, true, hovInfoClose, inp.screenW - infoChrome.w - 12.0f, 12.0f,
+        380.0f, 470.0f, 1400.0f, 1600.0f,
         [&]()
         {
-            // ── Left: info line, the image, the orbit readout, a hint ───────────────────────────
-            CLAY(CLAY_ID("ViewerLeft"), {.layout = {
-                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
-                                             .padding = {10, 6, 6, 10},
-                                             .childGap = 6,
-                                             .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+            CLAY(CLAY_ID("InfoBody"), {.layout = {
+                                           .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                           .padding = {10, 10, 8, 8},
+                                           .childGap = 8,
+                                           .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
-                text(viewerInfo, Pal::textDim, 11);
-                // The black backing is on a PARENT: Clay emits an element's CUSTOM command before the
-                // RECTANGLE for its own backgroundColor, so a background on the image element itself
-                // is drawn over the render (the first cut showed only the rectangle's AA edges).
-                CLAY(CLAY_ID("ViewerImageFrame"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
-                                                   .backgroundColor = {0, 0, 0, 255}})
+                // ── The render: fixed 4:3 with the chips over it, never scrolls away ──────────────
+                // The black backing is on the PARENT: Clay emits an element's CUSTOM command before the
+                // RECTANGLE for its own backgroundColor, which would cover the image (see UIImage).
+                CLAY(CLAY_ID("ViewerImageFrameMini"), {.layout = {
+                                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(viewerBandH)}},
+                                                      .backgroundColor = {0, 0, 0, 255}})
                 {
-                    CLAY(imgId, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
-                                 .custom = {.customData = meshRenderer.viewerRendered() ? &viewerImage : nullptr}}) {}
+                    CLAY(CLAY_ID("ViewerImageMini"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
+                                                      .custom = {.customData = meshRenderer.viewerRendered()
+                                                                                   ? &viewerImageMini
+                                                                                   : nullptr}}) {}
+                    // Floating, anchored to the image element (not a child of it: an element's own
+                    // children are laid out by it). Without the anchor a window resize slides the chips
+                    // off the image.
+                    CLAY(CLAY_ID("ViewChipsMini"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}},
+                                                    .floating = {.offset = {8, 8},
+                                                                 .parentId = CLAY_ID("ViewerImageMini").id,
+                                                                 .zIndex = 12,
+                                                                 .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_TOP,
+                                                                                  .parent = CLAY_ATTACH_POINT_LEFT_TOP},
+                                                                 .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID}})
+                    {
+                        buildViewChips(inp, ui, 0);
+                    }
                 }
-                // The viewed satellite's orbit — altitude / inclination / RAAN / period / the
-                // flare-mitigation power readout. One wrapped line (Clay breaks it on spaces) rather
-                // than the selection panel's fixed table, so a narrower window reflows it.
-                if (viewerOrbitLine[0])
-                    text(viewerOrbitLine, Pal::textDim, 11);
                 text("Drag to orbit, scroll to zoom. Cyan: you; orange: site", Pal::textHint, 11);
-            }
-            // ── Right: settings column + observer box ───────────────────────────────────────────
-            CLAY(CLAY_ID("ViewerRight"), {.layout = {
-                                              .sizing = {CLAY_SIZING_FIXED(colW), CLAY_SIZING_GROW(0)},
-                                              .padding = {4, 10, 6, 10},
-                                              .childGap = 4,
-                                              .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                          .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
-            CLAY(CLAY_ID("ViewerRightContent"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                            .childGap = 4,
-                                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-            {
-                section(0, "CAMERA");
-                static const char *kAimLabels[3] = {"Camera: Free", "Camera: From you", "Camera: Toward you"};
-                if (button(8, kAimLabels[viewerAim],
-                           "Free: drag to orbit. From you: on the line from the satellite to you, so you see "
-                           "the side of it that faces you. Toward you: behind it, looking past it at your "
-                           "marker (cyan) on the Earth. Dragging returns to Free", viewerAim != 0))
-                    viewerAim = (viewerAim + 1) % 3;
-                if (button(0, viewerSpin ? "Spin: on" : "Spin: off", "Turn slowly around the model (Free camera)",
-                           viewerSpin))
-                    viewerSpin = !viewerSpin;
-                if (button(5, "Reset view", "Frame the model again"))
+                // ── The sections: only these scroll ──────────────────────────────────────────────
+                CLAY(CLAY_ID("InfoSections"), {.layout = {
+                                                   .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                                   .childGap = 4,
+                                                   .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                               .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
                 {
-                    viewerDist = 0.0f;
-                    viewerYawDeg = 35.0f;
-                    viewerPitchDeg = 18.0f;
-                    viewerAim = 0;
+                    // ── SATELLITE: what model it is ──────────────────────────────────────────────
+                    infoSection(0, [&]()
+                                {
+                                    text(viewerInfo, Pal::textDim, 11);
+                                    if (!tracked)
+                                        text("Not tracking a satellite: pick one from the sky.", Pal::textHint, 11);
+                                    else if (isSelected)
+                                        text("Selected in the sky", Pal::textDim, 11);
+                                    if (tracked && followActive && followSatIndex == viewerSatIndex)
+                                        text("Following it (Go to)", Pal::textDim, 11);
+                                });
+                    // ── ORBIT: the rows the selection panel used to carry ───────────────────────
+                    infoSection(1, [&]()
+                                {
+                                    for (int i = 0; i < viewerOrbitCount && i < kViewerOrbitRows; ++i)
+                                    {
+                                        CLAY(CLAY_IDI("InfoOrbitRow", i), {.layout = {
+                                                                               .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                               .childGap = 8,
+                                                                               .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                               .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                                        {
+                                            CLAY(CLAY_IDI("InfoOrbitLabel", i), {.layout = {
+                                                                                     .sizing = {CLAY_SIZING_FIXED((float)fs(11) * 8.0f),
+                                                                                                CLAY_SIZING_FIT(0)}}})
+                                            {
+                                                Clay_String ls{false, (int32_t)strlen(kOrbitLabels[i]), kOrbitLabels[i]};
+                                                CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::textDim,
+                                                                                .fontSize = fs(11),
+                                                                                .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                                            }
+                                            Clay_String vs{false, (int32_t)strlen(viewerOrbitValue[i]), viewerOrbitValue[i]};
+                                            CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = Pal::volValue,
+                                                                            .fontSize = fs(11),
+                                                                            .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                                        }
+                                    }
+                                });
+                    // ── PHOTOMETRY: the CPU evaluator on the viewed satellite + the pass trace ──
+                    infoSection(2, [&]()
+                                {
+                                    for (const auto &line : viewerPhotLine)
+                                        if (line[0])
+                                            text(line, Pal::textDim, 11);
+                                    if (tracked && button(10, "Trace pass", "Trace pass"))
+                                    {
+                                        selectSatellite(viewerSatIndex);
+                                        computeSelectedTrace();
+                                    }
+                                });
+                    // ── OBSERVER: where it is in the parked observer's sky ─────────────────────
+                    infoSection(3, [&]()
+                                {
+                                    for (const auto &line : viewerObsLine)
+                                        if (line[0])
+                                            text(line, Pal::textDim, 11);
+                                    if (button(9, viewerMarkers ? "Markers: on" : "Markers: off", "Markers",
+                                               viewerMarkers))
+                                        viewerMarkers = !viewerMarkers;
+                                });
+                    // ── CAMERA: the presets' long tail (the chips carry the quick ones) ────────
+                    infoSection(4, [&]()
+                                {
+                                    static const char *kAimLabels[3] = {"Camera: Free", "Camera: From you",
+                                                                        "Camera: Toward you"};
+                                    if (button(8, kAimLabels[viewerAim], "Camera aim", viewerAim != 0))
+                                        viewerAim = (viewerAim + 1) % 3;
+                                    if (button(0, viewerSpin ? "Spin: on" : "Spin: off", "Spin", viewerSpin))
+                                        viewerSpin = !viewerSpin;
+                                    if (button(5, "Reset view", "Reset view"))
+                                    {
+                                        viewerDist = 0.0f;
+                                        viewerYawDeg = 35.0f;
+                                        viewerPitchDeg = 18.0f;
+                                        viewerAim = 0;
+                                    }
+                                });
+
+                    // ── RENDER ─────────────────────────────────────────────────────────────────
+                    infoSection(5, [&]()
+                                {
+                                    if (button(1, viewerStudioLight ? "Light: Studio" : "Light: Live", "Light",
+                                               viewerStudioLight))
+                                        viewerStudioLight = !viewerStudioLight;
+                                    if (button(2, viewerSunlitPose ? "Pose: Sunlit" : "Pose: Rest", "Pose",
+                                               viewerSunlitPose))
+                                        viewerSunlitPose = !viewerSunlitPose;
+                                    if (button(3, viewerShadows ? "Shadows: on" : "Shadows: off", "Shadows",
+                                               viewerShadows))
+                                        viewerShadows = !viewerShadows;
+                                    if (button(4, viewerReflections ? "Reflections: on" : "Reflections: off",
+                                               "Reflections", viewerReflections))
+                                        viewerReflections = !viewerReflections;
+                                    if (button(7, viewerDetail ? "Detail: on" : "Detail: off", "Detail",
+                                               viewerDetail))
+                                        viewerDetail = !viewerDetail;
+                                });
+
+                    // ── CHECK: the render-vs-lobes cross-check ─────────────────────────────────
+                    infoSection(6, [&]()
+                                {
+                                    if (button(6, "Photometric check", "Photometric check"))
+                                        viewerCheckRequested = true;
+                                    if (viewerCheckLine[0])
+                                        text(viewerCheckLine, Pal::textDim, 11);
+                                });
                 }
-
-                section(1, "RENDER");
-                if (button(1, viewerStudioLight ? "Light: Studio" : "Light: Live",
-                           "Live: the sim's real sun where the satellite is now, including Earth's shadow, and the "
-                           "full sky renderer around it. Studio: the sun 35 deg above the model's horizon"))
-                    viewerStudioLight = !viewerStudioLight;
-                if (button(2, viewerSunlitPose ? "Pose: Sunlit" : "Pose: Rest",
-                           "Sunlit: joints follow the attitude law (arrays track the sun). Rest: every joint at 0"))
-                    viewerSunlitPose = !viewerSunlitPose;
-                if (button(3, viewerShadows ? "Shadows: on" : "Shadows: off",
-                           "Parts shadow each other (the model's own primitives, as the photometry's occlusion)",
-                           viewerShadows))
-                    viewerShadows = !viewerShadows;
-                if (button(4, viewerReflections ? "Reflections: on" : "Reflections: off",
-                           "Surfaces reflect what the sky renderer draws around the satellite (Live light): "
-                           "the Earth, clouds, city lights, aurora and the Milky Way", viewerReflections))
-                    viewerReflections = !viewerReflections;
-                if (button(7, viewerDetail ? "Detail: on" : "Detail: off",
-                           "Procedural surface detail: solar-cell and module gaps, foil crinkle and quilting, "
-                           "panel seams (visual only - the brightness model is unchanged)", viewerDetail))
-                    viewerDetail = !viewerDetail;
-
-                section(2, "OBSERVER");
-                if (button(9, viewerMarkers ? "Markers: on" : "Markers: off",
-                           "Your position on the Earth (cyan, with a line from the satellite) and, for a mirror, "
-                           "the ground site it aims at (orange)", viewerMarkers))
-                    viewerMarkers = !viewerMarkers;
-                for (const auto &line : viewerObsLine)
-                    if (line[0])
-                        text(line, Pal::textDim, 11);
-                if (tracked && button(10, "Trace pass", "Trace pass"))
-                {
-                    selectSatellite(viewerSatIndex);
-                    computeSelectedTrace();
-                }
-
-                section(3, "CHECK");
-                if (button(6, "Photometric check",
-                           "Render the model sun-only from this direction, integrate its pixels, and compare "
-                           "with the brightness model (magnitude at 1000 km)"))
-                    viewerCheckRequested = true;
-                if (viewerCheckLine[0])
-                    text(viewerCheckLine, Pal::textDim, 11);
+                // A visible thumb on the section list: without it nothing says the list continues
+                // below the window's edge (the tab bodies are long and only the summary is in view).
+                ui.scrollbar(CLAY_ID("InfoSections"));
             }
         },
+        [&]() { buildViewTitleIcons(inp, ui, false); }, isSelected);
+}
+
+// ─── buildViewPopoutWindow (the maximized 3D view) ───────────────────────────
+// The render on its own, resizable, with the same chip row. Opened by "Maximize" over the info
+// window's small view; the small view keeps running underneath (one texture, its own crop), so
+// "Restore" is just closing this one.
+void SatelliteSim::buildViewPopoutWindow(const UIInput &inp, UIRenderer &ui)
+{
+    if (!viewerChrome.open || !meshRendererInit)
+        return;
+    const bool tracked = viewerSatIndex >= 0 && viewerSatIndex < (int)satOrbits.size();
+    const bool isSelected = tracked && selectedSatIndex == viewerSatIndex;
+
+    static char titleBuf[140];
+    snprintf(titleBuf, sizeof(titleBuf), "%s%s", viewerTitle, isSelected ? "  (selected)" : "");
+
+    // The pop-out opens beside (left of) the info window — or at the right edge if the info window has
+    // never been placed. Only used the first time it is placed (x < 0).
+    const float popDefaultX = infoChrome.x >= 0.0f ? std::max(12.0f, infoChrome.x - viewerChrome.w - 12.0f)
+                                                   : inp.screenW - viewerChrome.w - 12.0f;
+    buildResizableWindow(
+        inp, ui, viewerChrome, 3, titleBuf, true, hovViewerClose, popDefaultX, 12.0f, 400.0f, 300.0f, 2000.0f,
+        1400.0f,
         [&]()
         {
-            if (!tracked)
-                return;
-            // Icon-only, tooltip = the button's name (the panel's Select/Go to equivalents).
-            if (titleIcon(0, kIconSelect, isSelected, "Select"))
-                selectSatellite(viewerSatIndex);
-            if (titleIcon(1, kIconEye, isFollowed, "Go to"))
+            // The black backing is on the PARENT — see the info window's copy of this note. The padding
+            // is kViewPad in updateViewerView, which sizes the target from it.
+            CLAY(CLAY_ID("ViewerImageFramePop"), {.layout = {
+                                                      .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                                      .padding = {10, 10, 10, 10}},
+                                                  .backgroundColor = {0, 0, 0, 255}})
             {
-                if (isFollowed)
-                    stopFollow();
-                else
+                CLAY(CLAY_ID("ViewerImagePop"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
+                                                 .custom = {.customData = meshRenderer.viewerRendered()
+                                                                              ? &viewerImagePop
+                                                                              : nullptr}}) {}
+                CLAY(CLAY_ID("ViewChipsPop"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}},
+                                               .floating = {.offset = {10, 10},
+                                                            .parentId = CLAY_ID("ViewerImagePop").id,
+                                                            .zIndex = 12,
+                                                            .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_TOP,
+                                                                             .parent = CLAY_ATTACH_POINT_LEFT_TOP},
+                                                            .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID}})
                 {
-                    selectSatellite(viewerSatIndex);
-                    startFollow(viewerSatIndex);
+                    buildViewChips(inp, ui, 1);
                 }
             }
         },
-        isSelected);
+        [&]() { buildViewTitleIcons(inp, ui, true); }, isSelected);
+}
+
+// ─── viewTitleIconsHovered ───────────────────────────────────────────────────
+// Reads the title-icon hover state for a window id: buildResizableWindow's title bar must NOT start a
+// drag when the click landed on one of those icons (they are buttons drawn inside the title bar).
+bool SatelliteSim::viewTitleIconsHovered(int winId) const
+{
+    switch (winId)
+    {
+    case 3: return hovViewerTitleBtn[0] || hovViewerTitleBtn[1];
+    case 4: return hovInfoTitleBtn[0] || hovInfoTitleBtn[1];
+    default: return false;
+    }
 }
 
 // ─── buildSelActionButton ───────────────────────────────────────────────────
@@ -1829,7 +2167,7 @@ void SatelliteSim::buildInfoButton(const UIInput &inp, UIRenderer &ui, int idx)
     const SatOrbit &orb = satOrbits[selectedSatIndex];
     if (!meshRenderer.typeMesh((int)orb.typeIdx))
         return;
-    const bool on = viewerChrome.open && meshRendererInit && viewerSatIndex == selectedSatIndex;
+    const bool on = infoChrome.open && meshRendererInit && viewerSatIndex == selectedSatIndex;
     if (buildSelActionButton(inp, ui, idx * 4 + 0, "Info", kIconInfo, on, hovSelInfoBtn))
         openModelViewer((int)orb.typeIdx, satTypes[orb.typeIdx].name.c_str(), orb.altM, selectedSatIndex);
 }
@@ -1972,8 +2310,9 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
         {
             {
                 bool n = Clay_Hovered();
-                // (The viewer's title-bar buttons: hovViewerTitleBtn — last frame's hover, like the close.)
-                const bool overExtra = winId == 3 && (hovViewerTitleBtn[0] || hovViewerTitleBtn[1]);
+                // Title-bar icons (Select / Go to on the satellite windows) are buttons drawn INSIDE
+                // the bar: a click on one of them must not also start a window drag.
+                const bool overExtra = viewTitleIconsHovered(winId);
                 if (n && inp.lmbPressed && !hovCloseFlag && !overExtra)
                     chrome.dragging = true;
             }
@@ -2234,7 +2573,9 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                         {                        // so the viewer always refers to the selection
                             const int pick = pickViewerSatellite((int)ci);
                             selectSatellite(pick);
-                            openModelViewer((int)c.typeIdx, c.name.c_str(), c.altM, pick);
+                            // popOut: this caller asked for the VIEW, not the readout, so the 3D view
+                            // opens as well as the satellite window.
+                            openModelViewer((int)c.typeIdx, c.name.c_str(), c.altM, pick, true);
                         }
                     }
                     hovViewConst[ci] = n;

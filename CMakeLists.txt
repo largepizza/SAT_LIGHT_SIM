@@ -371,9 +371,61 @@ function(sat_copy_runtime_files tgt)
     endif()
 endfunction()
 
+# ── Runtime-file sync (assets / data / satellite models / notices) ─────────────────────────────
+# The POST_BUILD copies above run only when the target actually relinks, which makes them useless for
+# a file the build otherwise ignores. That is the "my change is not in the sim" trap: regenerate an
+# icon with tools/make_icons.py (or edit constellations.json), build, and nothing relinks — so the exe
+# keeps loading the OLD file sitting next to it, with no error anywhere. These stamp targets DEPEND on
+# the files themselves, so any content change re-syncs the output directory on the next build even
+# when no C++ changed. The `CONFIGURE_DEPENDS` globs make cmake re-run when files are added or removed
+# (a brand-new icon PNG), which a plain POST_BUILD copy also misses.
+function(sat_sync_runtime_sources tgt)
+    set(sync_files "")
+    set(sync_copies "")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
+        file(GLOB_RECURSE _assets CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/*")
+        list(APPEND sync_files ${_assets})
+        list(APPEND sync_copies
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+                "$<TARGET_FILE_DIR:${tgt}>/assets")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/satellite_models")
+        file(GLOB_RECURSE _models CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/data/satellite_models/*")
+        list(APPEND sync_files ${_models})
+        list(APPEND sync_copies
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/satellite_models"
+                "$<TARGET_FILE_DIR:${tgt}>/satellite_models")
+    endif()
+    foreach(f data/constellations.json data/constellations.schema.json data/reflector_targets.json
+              THIRD_PARTY_NOTICES.txt)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${f}")
+            list(APPEND sync_files "${CMAKE_CURRENT_SOURCE_DIR}/${f}")
+            list(APPEND sync_copies
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/${f}"
+                    "$<TARGET_FILE_DIR:${tgt}>/")
+        endif()
+    endforeach()
+
+    if(sync_files)
+        set(_stamp "${CMAKE_CURRENT_BINARY_DIR}/${tgt}_runtime.stamp")
+        add_custom_command(OUTPUT "${_stamp}"
+            ${sync_copies}
+            COMMAND ${CMAKE_COMMAND} -E touch "${_stamp}"
+            DEPENDS ${sync_files}
+            COMMENT "Syncing runtime files next to ${tgt}")
+        add_custom_target(${tgt}_runtime DEPENDS "${_stamp}")
+        add_dependencies(${tgt} ${tgt}_runtime)
+    endif()
+endfunction()
+
 sat_copy_runtime_files(SatLightSim)
+sat_sync_runtime_sources(SatLightSim)
 if(SAT_BUILD_FRESH_TARGET)
     sat_copy_runtime_files(SatLightSimFresh)
+    sat_sync_runtime_sources(SatLightSimFresh)
 endif()
 
 # ── Release packaging ─────────────────────────────────────────────────────────

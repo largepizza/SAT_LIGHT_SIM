@@ -45,13 +45,26 @@
   surface.
 - The satellite roster is model-first: `data/constellations.json` ships the modelled types, and lobe
   budgets scale with roster size.
-- **UI layout pass.** The selection panel now shows name, type and magnitude plus a row of
-  **icon-only** buttons whose tooltip is just the button's name — **Info** (a serif "i", opens the
-  info window), **Go to** (follow mode) and **Trace pass** (a new chart icon); the GPU-parity readout
-  is gone (the check and its mismatch log stay). Its orbit rows and the range/phase line moved into the
-  info window, whose settings column is narrower (170 px) and which now opens 640x460 pinned to the
-  top-right corner. The trace window opens 520x380 in the bottom-left above the time controls, so the
-  two coexist instead of covering the middle of the sky.
+- **UI layout pass, round 2 (2026-09-24).** The satellite UI is now ONE window with an on-demand
+  pop-out: the info window carries a **fixed 4:3 render** of the subject with the **view-preset chips**
+  floating over it (Select, Go to, Spin, Observer, Studio, Maximize — icon-only, tooltip = the button's
+  name, accent fill for the active preset), and a **scrollable list of collapsible sections** below
+  (Satellite / Orbit / Photometry open by default; Observer / Camera / Render / Check collapsed) — the
+  Clouds settings tab's form. **Maximize** pops the 3D view out into its own 900x640 resizable window;
+  one offscreen render serves both views, each sampling a centred sub-rect of its own aspect, so the 4:3
+  band and the wide pop-out both stay unstretched. **Select / Go to** are title-bar icons again (they act
+  on the subject, not the view — the chips are Spin / Observer / Studio / Maximize, and Spin is a plain
+  toggle: free camera = nothing lit). The observer readouts, the "you" marker and the
+  Observer preset now use the parked ground telescope rather than the camera (in follow mode the camera
+  IS the observer, which is what made the marker line flip and flicker in space).
+- **UI icons are generated, not hand-drawn** — `python tools/make_icons.py` rebuilds every new icon in
+  `assets/icons/ui/` from geometry declared in that file and prints 48 px + 16 px previews (the size
+  they are actually drawn at), replacing the ad-hoc shell rasterising those four glyphs started as.
+- **Runtime files now re-sync next to the exe whenever they change** (`sat_sync_runtime_sources` in
+  `CMakeLists.txt`): the POST_BUILD copies only ran when the target relinked, so a regenerated icon (or
+  an edited `constellations.json`) could sit stale beside the exe forever with nothing reporting it.
+  The satellite window's section list also draws a scroll thumb (`ui.scrollbar`), so it reads as
+  scrollable instead of just ending at the window edge.
 
 ### Fixed
 - Scene meshes could render as a red bloom-only ghost; the model viewer's first cut came up all-black

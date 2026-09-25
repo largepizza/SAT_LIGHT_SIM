@@ -621,7 +621,7 @@ void SatMeshRenderer::recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &fram
 // ─── Photometric check ────────────────────────────────────────────────────────────────────────────
 // A sun-only, single-sampled R32F render (sat_mesh.frag's check mode writes L·d² per pixel) copied to
 // host memory, so the CPU can integrate the rendered radiant intensity and compare it with the lobe
-// model (SatelliteSim::recordModelViewer / buildModelViewerWindow).
+// model (SatelliteSim::recordModelViewer / buildInfoWindow / buildViewPopoutWindow).
 void SatMeshRenderer::createCheckPass(VulkanContext &ctx)
 {
     VkAttachmentDescription att[2] = {};

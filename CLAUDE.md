@@ -54,7 +54,8 @@ Development: Earth / Terrain Rendering* (read **Elevation texture encoding** bef
 code).
 
 **Tools and gates** — `tools/sat_model_tool/` (SatModelTool: bake, validate, benchmark, trace
-replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/benchmarks/` ·
+replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_icons.py` (regenerates the
+UI icon PNGs from geometry declared in that file) · `tools/benchmarks/` ·
 `cmake/AccuracyGate.cmake` (`cmake --build build --target accuracy-gate`) ·
 `cmake/PackageRelease.cmake` (the single "what ships" list).
 
@@ -80,6 +81,14 @@ Run: `build/Debug/SAT_LIGHT_SIM_V_<version>.exe` (e.g. `build/Debug/SAT_LIGHT_SI
 exact name tracks `VERSION`; see `CMakeLists.txt`'s `EXE_BASENAME`).
 
 Shaders: auto-detected glob (`shaders/*.vert|.frag|.comp`), compiled by `glslc`, copied as `shaders/*.spv`. New shader files are picked up automatically on next build.
+
+Runtime files (`assets/`, `data/*.json`, `data/satellite_models/`, `THIRD_PARTY_NOTICES.txt`) land next
+to the exe via **two** mechanisms, and the second one is the one that matters day to day: the POST_BUILD
+copy steps (for a fresh build dir), and `sat_sync_runtime_sources()` — a stamp target that DEPENDS on
+those files, so changing one (e.g. regenerating an icon with `tools/make_icons.py`, or editing
+`constellations.json`) re-syncs the exe's directory on the next build **even when no C++ changed**.
+Without it, nothing relinks, nothing copies, and the exe keeps loading the old file that is already
+sitting next to it — the change just silently "does not take".
 
 **Do not launch or run the app yourself** (no `run` skill, no invoking the exe) to verify changes, especially UI behavior. Verifying UI/UX changes (opening the program, panning the camera, clicking through menus, etc.) is an involved manual process — the user runs and audits the app themselves after you build. Just build (and typecheck/compile-check) and report what changed; let the user test it.
 
@@ -358,12 +367,30 @@ cloud occlusion march — see "Subsystem: Reflect-Orbital Beam Cloud Occlusion" 
 - `CLAY_STRING(x)` requires a **string literal**. For runtime strings: `Clay_String{ false, (int32_t)strlen(buf), buf }` with a **member variable** buffer (Clay stores raw pointers read after `buildUI` returns).
 - **Clip rule**: never put `.clip` on a floating container that also has `backgroundColor` — SCISSOR_START fires before RECTANGLE, hiding the background.
 - **Pointer-capture rule**: any `.floating` element with no explicit `pointerCaptureMode` defaults to `CLAY_POINTER_CAPTURE_MODE_CAPTURE` — Clay's root hit-test DFS stops dead the instant it finds the pointer inside that element, so nothing below it (in z-order) gets hover/click at all. Harmless for a normal panel (you want it to swallow clicks meant for it), but fatal for any floating element that is deliberately drawn *at* the pointer's own position every frame — the pointer is then *always* "inside" it, so it permanently blackholes every panel/button underneath. This shipped once as the gamepad virtual cursor dot (`buildUI`'s `VirtualCursor`): hover/click on every real button looked totally dead while the pad cursor sat still over it (the dot's own stale hitbox from last frame permanently overlapped the current test point), but worked in brief "blips" while the cursor was moving (the one-frame-stale dot briefly lagged behind the live position, leaving a gap for the real element underneath to get tested that frame) — a pattern that reads like a coordinate or deadzone bug but isn't. Any purely-visual floating element positioned at/following the pointer (cursor dots, drag ghosts, custom tooltips) MUST set `.pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH`.
-- Scrollable containers: `.clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}` on the content div.
+- Scrollable containers: `.clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}` on the content div, and **call `ui.scrollbar(CLAY_ID("<that container>"))` right after the container closes** — a
+  thin thumb along its right edge, sized from `Clay_GetScrollContainerData`. Without it a long panel
+  looks like it simply ends at the window edge (the Settings tab bodies and the satellite window's
+  section list both had no indication they continue below).
 
 ### Icon Atlas
 - `ui.loadIcons(ctx, paths, count)` — loads PNGs, packs into RGBA GPU atlas, rebinds descriptor. Call once on first frame (lazy init). Store `VulkanContext*` in your sim.
 - Icons: `.image = {.imageData = (void*)(intptr_t)iconIdx}`. Renderer samples the atlas UV range for that index.
 - Shader `mode`: `0.0` = solid rect, `1.0` = text glyph, `2.0` = icon sprite. Binding 1 is always valid (1×1 white placeholder at init).
+- **The PNGs are generated, not hand-drawn: `python tools/make_icons.py [name...]`** rewrites
+  `assets/icons/ui/pixel--<name>.png` from the shapes declared in that file (all WHITE + alpha, 48×48,
+  3× supersampled edges) and prints a 48 px preview plus the box-filtered **16 px** one — the size they
+  are actually drawn at, which is the only preview worth judging. Edit a `build_*` shape list and
+  re-run; do not retouch the PNGs by hand, or the next run silently drops the change. To add an icon:
+  add the builder + the `ICONS` entry there, append its path in `buildUI`'s lazy-load block (the count
+  is `sizeof(iconPaths)/sizeof(iconPaths[0])` — no separate number to bump), add a `kIcon*` constant —
+  and re-check the preview at 16 px before wiring it in.
+- **Which icons the sim actually loaded is recorded once at startup:** `buildUI`'s lazy-load block logs
+  `UI: <n>/<count> icons loaded ('assets/icons/ui/...', cwd '<dir>')` into `satlight_log.txt`
+  (`Log::path()`), and `loadIcons` returns the number that *loaded* (it used to return the number it
+  was asked for, so a missing file was invisible apart from the magenta 1×1 it substitutes). Assets are
+  CWD-relative and `main.cpp` chdirs to `Paths::exeDir()` first, so the icons always come from the
+  directory the exe sits in — if a regenerated glyph "does not appear", read that line before anything
+  else (and note the old process keeps its old atlas: rebuilding does not touch a running instance).
 
 ### Font atlas is a fixed-size bitmap, not resolution-independent
 `loadFont()` bakes ASCII 32-126 once via `stbtt_BakeFontBitmap` at a single pixel height
@@ -755,29 +782,59 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   - **Fallback reflections:** the reflected ray goes into `earthEnv()`, the Potato sky's analytic
     atmosphere, textured ground and flat cloud deck, rewritten in ECEF from any origin and scaled by
     `kEnvToScene` into pre-exposure units. The sun disc is not in it; the GGX sun lobe is the glint.
-  - **The viewer / info window:** always a REAL satellite where it is now: "Info" (an icon+label
-    button in the selection panel — it was "View model"; the window leads with the satellite's orbit,
-    brightness and observer box, so it reads as an info pane) beside "Trace pass" tracks
-    the selection; "VIEW" on a constellation row picks that constellation's satellite highest in the
-    observer's sky (`pickViewerSatellite`) AND SELECTS it (`selectSatellite`), so the viewer never
-    shows an unreferenced satellite and a station is one click to find. Layout (2026-09-24): the
-    title is the satellite's name as the selection panel gives it ("<constellation> #<n>"), amber +
-    "(selected)" while it is the selection; title-bar icons Select (re-select it) and Follow (eye:
-    fly to it); the image left, with the viewed satellite's **orbit readout** (`viewerOrbitLine`:
-    altitude, inclination, RAAN, period, the flare-mitigation power — one wrapped line, the rows the
-    selection panel used to list) beneath it; a settings column right (camera, render, OBSERVER box —
-    markers toggle, elevation/azimuth, range, phase, magnitude above the air and after extinction from
-    the CPU evaluator at 10 Hz (`updateViewerObserverInfo`), "Trace pass" — and the photometric
-    check); the window grows to fit that column, capped at 72% of the screen height so a long column
-    cannot run down the middle of the screen (past the cap it scrolls). **Default 640x460 (or 42% of
-    the screen's width / 55% of its height if that is smaller) pinned to the top-right corner**, so it
-    coexists with the trace window in the bottom-left instead of covering the sky between them. The
-    settings column is deliberately narrow — `colW = max(170, fs(11)*15.5)`, it was `fs(11)*17` = 190 —
-    and every label in it fits ~20 characters, which is why the OBSERVER box is six short lines
-    (`viewerObsLine[6]`) and why the long readouts live in the left column. A ground-site mirror shows
-    a solid orange line to its site.
-    The window registers a mouse-capture rect: without it a drag on the model clicked the sky behind
-    and re-selected whatever was under the window. Position, velocity and attitude come from
+  - **The satellite window + the popped-out 3D view** (split + sections, 2026-09-24). Always a REAL
+    satellite where it is now: the selection panel's **Info** chip (it was "View model"; the window
+    leads with the orbit, brightness and observer readouts, so it reads as an info pane) opens
+    `infoChrome`; "VIEW" on a constellation row picks that constellation's satellite highest in the
+    observer's sky (`pickViewerSatellite`), SELECTS it (`selectSatellite`) and opens BOTH windows
+    (`openModelViewer(..., popOut = true)`), so the viewer never shows an unreferenced satellite and a
+    station is one click to find.
+    - **Info window** (`buildInfoWindow`, default 470x~680 at the right edge, min 380x470): the title is
+      the satellite's name as the selection panel gives it ("<constellation> #<n>"), amber +
+      "(selected)" while it is the selection, plus the **Select / Go to title-bar icons**
+      (`buildViewTitleIcons`; both satellite windows carry them, each with its own hover pair, and
+      `buildResizableWindow` skips the title drag when the click is on one — `viewTitleIconsHovered`).
+      A **fixed 4:3 render band** sits at the top with the
+      **view chips** floating over it (`buildViewChips`, anchored to the image element with
+      `attachTo = ELEMENT_WITH_ID` so a resize cannot slide them off), then the scrollable
+      collapsible **sections** — the Clouds tab's form (`infoSection`, `+`/`-` headers, because the font
+      atlas is ASCII-only): SATELLITE (`viewerInfo`: type, model, triangles, parts, size), ORBIT
+      (`viewerOrbitValue[5]`: altitude, inclination, RAAN, period, the flare-mitigation power — the rows
+      the selection panel used to list), PHOTOMETRY (`viewerPhotLine[4]`: phase, magnitude above the air,
+      magnitude as seen with its extinction, the 1000 km figure) — those three **open by default** —
+      then OBSERVER (`viewerObsLine[3]` + the markers toggle), CAMERA, RENDER and CHECK, collapsed.
+      `infoSectionOpen[]` is session state, like the Clouds sections'. The band does not scroll with the
+      sections: it is re-drawn each frame from the same crop.
+    - **The chips** (`buildViewChip`: the icon alone, tooltip = its name, on a translucent scrim so a
+      white icon survives bright clouds) are the 3D VIEW's own controls, four of them: **Spin**
+      (the free camera's idle rotation — a plain toggle now, so clicking it while lit stops it and
+      "nothing lit" simply means the free camera; taking Observer clears the free camera so Spin reads
+      off while it is active), **Observer** (the view from the ground observer's direction, which is
+      what makes a ground flare's specular show on the model), **Studio** (LIGHTING, deliberately its
+      own group: spin + live light is a legitimate combination) and **Maximize/Restore**. Select and Go
+      to are NOT chips: they act on the subject rather than the view, so they live in the title bars.
+    - **Pop-out** (`buildViewPopoutWindow`, winId 3, default 900x640 left of the info window, resizable):
+      the same render, one chip row, nothing else. **One offscreen target serves both** — sized to
+      whichever view is larger (`updateViewerView`) — and each view samples a centred sub-rect of its own
+      aspect via `UIImage::u0..v1`, so a 4:3 band and a wide pop-out both show the frame unstretched
+      (`viewerUvMini` / `viewerUvPop`). The small view keeps running while popped out.
+    - **`updateViewerView` is the shared prologue** (called from buildUI before either window): it sizes
+      the target and the background probe, registers the image, handles drag-to-orbit / scroll-to-zoom
+      for EITHER view (hit-tested on the two image elements' last-frame boxes and gated on the chips'
+      hover flags, or a chip click would also grab the camera), reads the photometric check back and
+      refreshes the readouts at 10 Hz — all from the CPU evaluator on the VIEWED satellite.
+      `recordModelViewer` runs when either window is open (it used to need the viewer open), so the
+      photometric check still works with only the info window up. Both windows register mouse-capture
+      rects, and the auto-grow-to-fit-column hack is gone — the sections scroll instead.
+    - **The observer is the parked ground telescope, never the camera.** In follow mode `followObsEcef`
+      is the camera itself (`updateFollow` sets it from the flight offset and even overwrites `obsDir`),
+      so the readouts, the "you" marker and the Observer preset all use `followSavedObsDir` /
+      `followSavedHeight` (saved on `startFollow`). That is also the fix for the glitchy marker line:
+      with the camera as the marker's own endpoint, `sat_mesh_bg.frag`'s `segmentPx` near-plane clip and
+      `groundMarker`'s behind-camera test both degenerate (the dashed line flips and the dot flickers as
+      the mouse moves). `showYouMarker` additionally hides the marker when the camera is within four
+      model radii of it. A ground-site mirror still shows a solid orange line to its site.
+    Position, velocity and attitude come from
     `satOrbitStateAt` + `evalGroupPoses` in ECEF. With Live light its background is the SKY_ENV
     renderer at the viewer's own camera (`SatEnvProbes::recordViewerBg`, an HDR target
     `sat_mesh_bg.frag` samples and tonemaps) and its reflections come from probe slot 0; Studio light

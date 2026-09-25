@@ -3010,7 +3010,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 }
 
 // ─── Model viewer (Phase 4b) ─────────────────────────────────────────────────
-void SatelliteSim::openModelViewer(int typeIdx, const char *label, float altM, int satIndex)
+void SatelliteSim::openModelViewer(int typeIdx, const char *label, float altM, int satIndex, bool popOut)
 {
     if (typeIdx < 0 || typeIdx >= (int)satTypes.size() || !meshRenderer.typeMesh(typeIdx))
         return;
@@ -3033,10 +3033,12 @@ void SatelliteSim::openModelViewer(int typeIdx, const char *label, float altM, i
     snprintf(viewerInfo, sizeof(viewerInfo), "%s  -  %s, %d triangles, %zu parts, %.1f m across", t.name.c_str(),
              t.modelId.c_str(), tm->triangles, t.model ? t.model->components.size() : (size_t)0,
              2.0f * tm->boundsRadius);
-    viewerObsNextWall = 0.0; // refresh the observer box now
+    viewerObsNextWall = 0.0; // refresh the readouts now
     viewerCheckLine[0] = '\0';
     viewerCheckAwaiting = viewerCheckRequested = false;
-    viewerChrome.open = true;
+    infoChrome.open = true;             // the satellite window
+    if (popOut)
+        viewerChrome.open = true;       // ... and the 3D view on its own (the constellation VIEW)
 }
 
 void SatelliteSim::selectSatellite(int idx)
@@ -3048,16 +3050,20 @@ void SatelliteSim::selectSatellite(int idx)
     formatSelectedSatInfo();
 }
 
-// The model viewer's readouts: the orbit line under the image (altitude / inclination / RAAN /
-// period / the flare-mitigation power — the rows the selection panel used to carry), and the observer
-// box in the right column: where the viewed satellite is in the observer's sky, its phase angle and
-// its magnitude (the CPU evaluator, as the selection panel's readout; above the air and after the
-// line of sight's extinction).
+// The info window's readouts, all from the CPU evaluator on the VIEWED satellite (which the viewer can
+// be tracking without it being the selection): the ORBIT rows (altitude / inclination / RAAN / period /
+// the flare-mitigation power — the rows the selection panel used to carry), the OBSERVER lines (where
+// it is in the parked ground observer's sky) and the PHOTOMETRY lines (phase, brightness above the air
+// and after the line of sight's extinction).
 void SatelliteSim::updateViewerObserverInfo()
 {
     for (auto &l : viewerObsLine)
         l[0] = '\0';
-    viewerOrbitLine[0] = '\0';
+    for (auto &l : viewerPhotLine)
+        l[0] = '\0';
+    for (auto &v : viewerOrbitValue)
+        v[0] = '\0';
+    viewerOrbitCount = 0;
     if (viewerSatIndex < 0 || viewerSatIndex >= (int)satOrbits.size())
     {
         snprintf(viewerObsLine[0], sizeof(viewerObsLine[0]), "No satellite tracked");
@@ -3068,35 +3074,38 @@ void SatelliteSim::updateViewerObserverInfo()
         return;
     const SatelliteType &type = satTypes[orb.typeIdx];
 
-    // Orbit line. Static orbital elements, so it is rebuilt here only for the 10 Hz refresh; it must
-    // come before the !isModel() early return below, since a legacy type still has an orbit.
+    // Orbit rows. Static orbital elements, so they come before the !isModel() early return below — a
+    // legacy type still has an orbit.
+    snprintf(viewerOrbitValue[0], sizeof(viewerOrbitValue[0]), "%.0f km", orb.altM / 1000.0f);
+    snprintf(viewerOrbitValue[1], sizeof(viewerOrbitValue[1]), "%.1f deg", glm::degrees(orb.incl));
+    if (orb.alignTerminator)
+        snprintf(viewerOrbitValue[2], sizeof(viewerOrbitValue[2]), "sun-sync (precessing)");
+    else
+        snprintf(viewerOrbitValue[2], sizeof(viewerOrbitValue[2]), "%.1f deg", glm::degrees(orb.raan));
+    if (orb.meanMot > 0.0f)
+        snprintf(viewerOrbitValue[3], sizeof(viewerOrbitValue[3]), "%.1f min",
+                 (2.0f * glm::pi<float>() / orb.meanMot) / 60.0f);
+    viewerOrbitCount = 4;
+    // Flare-mitigation power readout — only for types whose primary surface uses the tilt, exactly as
+    // formatSelectedSatInfo used to decide it (power loss is cos(tilt)).
+    if (type.primary.group >= 0 && type.primary.group < (int)type.groups.size() &&
+        type.groups[type.primary.group].jointMode == JointMode::FlareMitigationTilt)
     {
-        char raan[32];
-        if (orb.alignTerminator)
-            snprintf(raan, sizeof(raan), "  RAAN sun-sync (precessing)");
-        else
-            snprintf(raan, sizeof(raan), "  RAAN %.1f deg", glm::degrees(orb.raan));
-        char period[32] = "";
-        if (orb.meanMot > 0.0f)
-            snprintf(period, sizeof(period), "  Period %.1f min", (2.0f * glm::pi<float>() / orb.meanMot) / 60.0f);
-        // Flare-mitigation power readout — only for types whose primary surface uses the tilt, exactly
-        // as formatSelectedSatInfo used to decide it (power loss is cos(tilt)).
-        char power[48] = "";
-        if (type.primary.group >= 0 && type.primary.group < (int)type.groups.size() &&
-            type.groups[type.primary.group].jointMode == JointMode::FlareMitigationTilt)
-            snprintf(power, sizeof(power), "  Power %.0f%% (tilt %.0f deg)",
-                     cosf(glm::radians(flareMitigationTiltDeg)) * 100.0f, flareMitigationTiltDeg);
-        snprintf(viewerOrbitLine, sizeof(viewerOrbitLine), "Alt %.0f km  Incl %.1f deg%s%s%s", orb.altM / 1000.0f,
-                 glm::degrees(orb.incl), raan, period, power);
+        snprintf(viewerOrbitValue[4], sizeof(viewerOrbitValue[4]), "%.0f%% (tilt %.0f deg)",
+                 cosf(glm::radians(flareMitigationTiltDeg)) * 100.0f, flareMitigationTiltDeg);
+        viewerOrbitCount = 5;
     }
 
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    const double theta = earthRotationAngle(t);
-    const double ct = std::cos(theta), st = std::sin(theta);
+    // The observer these readouts describe is the PARKED telescope on the ground, not the camera: in
+    // follow mode followObsEcef IS the camera (updateFollow sets it from the flight offset and even
+    // overwrites obsDir from it), so using it here would turn "as you see it" into a readout of the
+    // camera's own position. followSavedObsDir holds the ground observer for exactly this — saved on
+    // startFollow, restored on stopFollow.
+    const glm::vec3 obsGround = followActive ? followSavedObsDir : obsDir;
+    const float obsGroundH = followActive ? followSavedHeight : obsHeightOffset;
     const glm::dvec3 obs =
-        followActive ? glm::dvec3(ct * followObsEcef.x - st * followObsEcef.y, st * followObsEcef.x + ct * followObsEcef.y,
-                                  followObsEcef.z)
-                     : observerEciAt(glm::dvec3(obsDir), (double)kEarthRadius + obsTerrainH + obsHeightOffset, t);
+        observerEciAt(glm::dvec3(obsGround), (double)kEarthRadius + (double)obsTerrainH + (double)obsGroundH, t);
     const SatOrbitElems e = orbitElemsOf(orb);
     SatPhotInputs in;
     in.sunDirEci = glm::dvec3(sunDirECI);
@@ -3124,38 +3133,43 @@ void SatelliteSim::updateViewerObserverInfo()
     const double b = glm::dot(obs, d), c = glm::dot(obs, obs) - (double)kEarthRadius * kEarthRadius;
     const double disc = b * b - c;
     const bool hidden = disc > 0.0 && -b - std::sqrt(disc) > 0.0 && -b - std::sqrt(disc) < range;
-    // Short lines: the settings column is ~170 px wide (see buildModelViewerWindow's colW), so a
-    // long line would be clipped mid-word rather than wrapped by anything but Clay's own text wrap.
+    // OBSERVER: the ground observer's sky. The window is ~450 px wide, so these can be full phrases.
     snprintf(viewerObsLine[0], sizeof(viewerObsLine[0]), hidden ? "Below your horizon" : "In your sky");
-    snprintf(viewerObsLine[1], sizeof(viewerObsLine[1]), "El %.1f  Az %.0f", elDeg, azDeg);
+    snprintf(viewerObsLine[1], sizeof(viewerObsLine[1]), "Elevation %.1f deg, azimuth %.0f deg", elDeg, azDeg);
     snprintf(viewerObsLine[2], sizeof(viewerObsLine[2]), "Range %.0f km", range / 1000.0);
-    snprintf(viewerObsLine[3], sizeof(viewerObsLine[3]), "Phase %.0f deg", glm::degrees(r.phaseAngleRad));
+    // PHOTOMETRY: what the observer sees, from the same evaluator the selection panel's magnitude uses.
+    snprintf(viewerPhotLine[0], sizeof(viewerPhotLine[0]), "Phase %.0f deg", glm::degrees(r.phaseAngleRad));
     if (!r.supported)
-        snprintf(viewerObsLine[4], sizeof(viewerObsLine[4]), "Mag: n/a (site aim)");
-    else if (!std::isfinite(r.magnitude))
-        snprintf(viewerObsLine[4], sizeof(viewerObsLine[4]), "Dark: Earth's shadow");
-    else
     {
-        snprintf(viewerObsLine[4], sizeof(viewerObsLine[4]), "Mag %.2f above air", r.magnitude);
-        if (!hidden)
-        {
-            const double ext = atmExtinctionMag(obs, d, range, (double)extinctionCoeff);
-            snprintf(viewerObsLine[5], sizeof(viewerObsLine[5]), "Mag %.2f (ext %.2f)", r.magnitude + ext, ext);
-        }
-        else
-            snprintf(viewerObsLine[5], sizeof(viewerObsLine[5]), "(1000 km: %.2f)", r.magnitude1000);
+        snprintf(viewerPhotLine[1], sizeof(viewerPhotLine[1]), "Mag: n/a (ground-site aim)");
+        return;
     }
+    if (!std::isfinite(r.magnitude))
+    {
+        snprintf(viewerPhotLine[1], sizeof(viewerPhotLine[1]), "Dark: in Earth's shadow");
+        snprintf(viewerPhotLine[3], sizeof(viewerPhotLine[3]), "1000 km: %.2f", r.magnitude1000);
+        return;
+    }
+    snprintf(viewerPhotLine[1], sizeof(viewerPhotLine[1]), "Mag %.2f above the air", r.magnitude);
+    if (!hidden)
+    {
+        const double ext = atmExtinctionMag(obs, d, range, (double)extinctionCoeff);
+        snprintf(viewerPhotLine[2], sizeof(viewerPhotLine[2]), "Mag %.2f as you see it (ext %.2f)",
+                 r.magnitude + ext, ext);
+    }
+    snprintf(viewerPhotLine[3], sizeof(viewerPhotLine[3]), "1000 km: %.2f", r.magnitude1000);
 }
 
 int SatelliteSim::pickViewerSatellite(int constIdx) const
 {
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    const double theta = earthRotationAngle(t);
-    const double ct = std::cos(theta), st = std::sin(theta);
+    // "Highest in YOUR sky" means the parked ground observer's sky even while flying: in follow mode
+    // followObsEcef is the camera, from which nearly everything is below the horizon, so the pick would
+    // stop meaning anything (see updateViewerObserverInfo / recordModelViewer for the same point).
+    const glm::vec3 obsGround = followActive ? followSavedObsDir : obsDir;
+    const float obsGroundH = followActive ? followSavedHeight : obsHeightOffset;
     const glm::dvec3 obs =
-        followActive ? glm::dvec3(ct * followObsEcef.x - st * followObsEcef.y, st * followObsEcef.x + ct * followObsEcef.y,
-                                  followObsEcef.z)
-                     : observerEciAt(glm::dvec3(obsDir), (double)kEarthRadius + obsTerrainH + obsHeightOffset, t);
+        observerEciAt(glm::dvec3(obsGround), (double)kEarthRadius + (double)obsTerrainH + (double)obsGroundH, t);
     const glm::dvec3 upObs = glm::normalize(obs);
     // Members of the constellation (stride through the big ones: a million-satellite disk needs no
     // more than ~40k candidates to find one high in the sky).
@@ -3187,8 +3201,8 @@ int SatelliteSim::pickViewerSatellite(int constIdx) const
 // constellation row, placed at viewerAltM above the observer's ground point, flying east.
 void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
 {
-    if (!meshRendererInit || !viewerChrome.open || viewerType < 0 || viewerType >= (int)satTypes.size() ||
-        !meshRenderer.viewerView())
+    if (!meshRendererInit || (!infoChrome.open && !viewerChrome.open) || viewerType < 0 ||
+        viewerType >= (int)satTypes.size() || !meshRenderer.viewerView())
         return;
     const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(viewerType);
     if (!tm)
@@ -3276,9 +3290,13 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     inst.probeSlot = kNoProbe;
 
     // ── Where the observer is (the marker, and the camera presets) ───────────
-    const double obsRadius = followActive ? followRadiusM
-                                          : (double)kEarthRadius + (double)obsTerrainH + (double)obsHeightOffset;
-    const glm::dvec3 obsEcef = followActive ? followObsEcef : glm::normalize(glm::dvec3(obsDir)) * obsRadius;
+    // The PARKED ground telescope, never the camera: in follow mode followObsEcef is the camera itself
+    // (updateFollow sets it from the flight offset), so pointing the marker and the "from you" preset
+    // at it would put the marker on the camera and aim the observer view from wherever the player is
+    // flying. followSavedObsDir/Height hold the ground observer (saved on startFollow).
+    const double obsRadius = (double)kEarthRadius + (double)obsTerrainH +
+                             (double)(followActive ? followSavedHeight : obsHeightOffset);
+    const glm::dvec3 obsEcef = glm::normalize(glm::dvec3(followActive ? followSavedObsDir : obsDir)) * obsRadius;
     const glm::dvec3 toObs = glm::normalize(obsEcef - P);
 
     // ── Camera: orbit the posed bounding sphere's centre (root group's pose) ─
@@ -3354,8 +3372,13 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
     frame.bgParams.y = std::max(4.0f, 5.0f * uiScale);
     frame.bgParams.z = (float)std::max(1u, viewerBgW);
     frame.bgParams.w = (float)std::max(1u, viewerBgH);
-    frame.marker0 = glm::vec4(glm::vec3(obsEcef - P), viewerMarkers ? 1.0f : 0.0f);
-    if (viewerMarkers && tracked && !viewerStudioLight && attUsesGroundSite(type.groups))
+    // The "you" marker is hidden when the camera is nearly on top of it: its line is a screen-space
+    // segment between the projected endpoints, and near its own endpoint the near-plane clip in
+    // segmentPx degenerates — the dashed line flips and flickers as the mouse moves (the "glitchy"
+    // look when flying in follow mode, where the marker used to BE the camera).
+    const bool showYouMarker = viewerMarkers && glm::length(obsEcef - (P + camPos)) > radius * 4.0;
+    frame.marker0 = glm::vec4(glm::vec3(obsEcef - P), showYouMarker ? 1.0f : 0.0f);
+    if (showYouMarker && tracked && !viewerStudioLight && attUsesGroundSite(type.groups))
     {
         const SatGroundSiteAim aim = groundSiteAim();
         const SatGroundSiteResult gs = satGroundSiteIdeal(aim, orbitElemsOf(satOrbits[viewerSatIndex]),
@@ -3370,7 +3393,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd)
 
     // ── Photometric check ───────────────────────────────────────────────────
     // From the viewer's current direction, 60 model radii out (parallax across the model ~1 deg), sun
-    // only at full sunlight: the render's Σ L·d²·Ω/π (buildModelViewerWindow) against the lobe model's
+    // only at full sunlight: the render's Σ L·d²·Ω/π (buildInfoWindow) against the lobe model's
     // intensity for the same pose, sun and observer direction.
     if (viewerCheckRequested)
     {

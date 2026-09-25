@@ -1627,7 +1627,8 @@ private:
     // Separate per-line buffers, not one multi-line string — Clay/UIRenderer text draws a single
     // line per CLAY_TEXT call with no embedded-newline support.
     // buildSelectedSatPanel renders only [0] (name) and [1] (type) for a satellite — its orbit rows
-    // [2..6] are shown by the model viewer instead, as `viewerOrbitLine` (see updateViewerObserverInfo).
+    // [2..6] are shown by the satellite window instead, as the ORBIT section's `viewerOrbitValue`
+    // (see updateViewerObserverInfo).
     // A PLANET selection still renders the whole array: it has no model window to move into.
     // 7th slot (session follow-up): optional "Power output" line, filled only for satellites whose
     // primary surface uses AttitudeMode::SunTrackingTilted (see formatSelectedSatInfo); left empty
@@ -1763,6 +1764,11 @@ private:
     // its surfaces. Drag to orbit, scroll to zoom.
     SatMeshRenderer meshRenderer;
     bool meshRendererInit = false;
+    // TWO windows, one subject (2026-09-24): `infoChrome` is the satellite window — the small 4:3
+    // render plus the collapsible sections — and `viewerChrome` is the 3D view POPPED OUT of it by the
+    // Maximize chip. Both share every member below and the one offscreen target, sized to whichever
+    // view is larger (updateViewerView), so the smaller one shows a crop instead of stretching.
+    WindowChrome infoChrome;
     WindowChrome viewerChrome;
     int viewerType = -1;          // satTypes index shown
     int viewerSatIndex = -1;      // >= 0: track this satellite (its real position/attitude), else placed
@@ -1772,27 +1778,47 @@ private:
     char viewerInfo[160] = {};
     float viewerYawDeg = 35.0f, viewerPitchDeg = 18.0f;
     float viewerDist = 0.0f; // m from the model's centre; 0 = frame it on the next render
-    float viewerAspect = 1.2f; // the image element's laid-out width / height (set by the UI)
+    // The render target's width / height: the projection's aspect, and what the two views crop.
+    float viewerAspect = 1.2f;
+    // The info window's render band height (fixed 4:3): set with the crops, used by the builder as its
+    // FIXED height so the band and the target can never disagree.
+    float viewerBandH = 0.0f;
+    // Each view's sub-rect of the target: the popped-out view samples all of it, the small 4:3 band the
+    // centred crop (see UIImage's u0..v1).
+    float viewerUvMini[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+    float viewerUvPop[4] = {0.0f, 0.0f, 1.0f, 1.0f};
     bool viewerSpin = true, viewerStudioLight = false, viewerSunlitPose = true, viewerDetail = true;
     bool viewerShadows = true, viewerReflections = true;
     bool viewerDragging = false;
     uint32_t viewerImageId = 0;
-    UIImage viewerImage;
-    bool hovViewerClose = false, hovViewerBtn[12] = {}, hovSelInfoBtn = false;
-    bool hovViewerTitleBtn[2] = {}; // title bar: select, follow
-    bool viewerMarkers = true;      // the observer / ground-site markers
-    // Observer box (right column): where the viewed satellite is in your sky and how bright, from the
-    // CPU evaluator at up to 10 Hz (updateViewerObserverInfo). Six short lines, not four long ones:
-    // the column is ~170 px wide, so each fits its ~156 px of content width without wrapping.
-    // 0 = "In your sky" / "Below your horizon", 1 = elevation + azimuth, 2 = range, 3 = phase,
-    // 4 = magnitude above the air, 5 = magnitude as seen (with the extinction it lost).
-    char viewerObsLine[6][96] = {};
-    // The viewed satellite's orbit — altitude, inclination, RAAN, period and the flare-mitigation
-    // power readout — as one wrapped line under the image in the left column. These are the rows the
-    // selection panel used to carry (see buildSelectedSatPanel); they live here because the viewer can
-    // be tracking a satellite that is not the selection. Rebuilt with the observer box; the data is
-    // static orbital elements, so 10 Hz is generous.
-    char viewerOrbitLine[192] = {};
+    UIImage viewerImageMini, viewerImagePop;
+    bool hovViewerClose = false, hovInfoClose = false, hovViewerBtn[12] = {}, hovSelInfoBtn = false;
+    // Title-bar Select / Go to icons: one hover pair per window, so the two title bars don't fight
+    // over it (buildViewTitleIcons picks by `popout`).
+    bool hovViewerTitleBtn[2] = {}, hovInfoTitleBtn[2] = {};
+    // The view-preset chips over each render: [row][chip], row 0 = the info window's small view.
+    static constexpr int kViewChipRows = 2;
+    bool hovViewChip[kViewChipRows][8] = {};
+    bool viewerMarkers = true; // the observer / ground-site markers
+    // The info window's collapsible sections (buildInfoWindow). Satellite / Orbit / Photometry start
+    // OPEN — those are what the window is for; the rest start collapsed. Open state is session-only,
+    // like the Clouds tab's section state (buildCloudSliderSections), not a preference.
+    static constexpr int kInfoSectionCount = 7;
+    bool infoSectionOpen[kInfoSectionCount] = {true, true, true, false, false, false, false};
+    bool hovInfoSection[kInfoSectionCount] = {};
+    // ORBIT section rows: altitude, inclination, RAAN, period, then the flare-mitigation power readout
+    // (only for types whose primary surface uses the tilt, so the count is usually 4).
+    static constexpr int kViewerOrbitRows = 5;
+    char viewerOrbitValue[kViewerOrbitRows][40] = {};
+    int viewerOrbitCount = 0;
+    // OBSERVER section: where the viewed satellite is in the parked ground observer's sky.
+    // 0 = "In your sky" / "Below your horizon", 1 = elevation + azimuth, 2 = range.
+    static constexpr int kViewerObsLines = 3;
+    char viewerObsLine[kViewerObsLines][96] = {};
+    // PHOTOMETRY section: the CPU evaluator on the viewed satellite. 0 = phase, 1 = magnitude above the
+    // air, 2 = magnitude as seen (with the extinction it lost), 3 = the 1000 km figure or why not.
+    static constexpr int kViewerPhotLines = 4;
+    char viewerPhotLine[kViewerPhotLines][96] = {};
     double viewerObsNextWall = 0.0;
     void updateViewerObserverInfo();
     // Select a satellite as a click on it does (clears a planet selection, refreshes its info).
@@ -1813,12 +1839,26 @@ private:
     // A real satellite of constellation `constIdx` to show: the one highest in the observer's sky
     // (or, if none is up, the nearest) — so the constellation row's VIEW shows a satellite where it is.
     int pickViewerSatellite(int constIdx) const;
-    void openModelViewer(int typeIdx, const char *label, float altM, int satIndex = -1);
-    // The selection panel's / out-of-view chip's three actions. "Info" opens the model viewer window
-    // (which has become an info pane: orbit, brightness, observer box, 3D view); the label is Info,
-    // not "View model", for that reason.
+    // Open the satellite window (and, with popOut, the 3D view as well — what the constellation row's
+    // VIEW does, since that caller asked for the view rather than the readout).
+    void openModelViewer(int typeIdx, const char *label, float altM, int satIndex = -1, bool popOut = false);
+    // The selection panel's / out-of-view chip's three actions. "Info" opens the satellite window
+    // (it was "View model": the window leads with the orbit, brightness and observer readouts, so it
+    // reads as an info pane).
     void buildInfoButton(const UIInput &inp, UIRenderer &ui, int idx);
-    void buildModelViewerWindow(const UIInput &inp, UIRenderer &ui);
+    // The shared per-frame prologue for both windows: sizes the one target, registers the image,
+    // handles drag/zoom, reads the photometric check back, refreshes the readouts.
+    void updateViewerView(const UIInput &inp, UIRenderer &ui);
+    void buildInfoWindow(const UIInput &inp, UIRenderer &ui);       // render band + sections
+    void buildViewPopoutWindow(const UIInput &inp, UIRenderer &ui); // the maximized render
+    bool buildViewChip(const UIInput &inp, UIRenderer &ui, int row, int k, const char *name, int iconIdx, bool on);
+    void buildViewChips(const UIInput &inp, UIRenderer &ui, int row);
+    // Select / Go to in a satellite window's title bar. `popout` = the popped-out 3D view (its own
+    // hover pair), false = the info window.
+    void buildViewTitleIcons(const UIInput &inp, UIRenderer &ui, bool popout);
+    // Which window's title icons were hovered last frame — buildResizableWindow skips starting a
+    // title-bar drag when the click is on one of them (winId 3 = pop-out, 4 = info window).
+    bool viewTitleIconsHovered(int winId) const;
     void recordModelViewer(VkCommandBuffer cmd);
 
     // ── Phase 4c: satellite meshes in the main view ──────────────────────────────────────────────

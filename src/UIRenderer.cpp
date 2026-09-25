@@ -727,7 +727,10 @@ int UIRenderer::loadIcons(VulkanContext& ctx, const char* const* paths, int coun
     std::vector<uint8_t> atlas((size_t)(totalW * maxH * 4), 0);
     iconEntries.resize(count);
     int x = 0;
+    int loaded = 0;
     for (int i = 0; i < count; ++i) {
+        if (icons[i].w > 1) // the 1x1 magenta fallback above is exactly how a failure is marked
+            ++loaded;
         for (int row = 0; row < icons[i].h; ++row) {
             memcpy(&atlas[((size_t)(row * totalW + x)) * 4],
                    &icons[i].data[(size_t)(row * icons[i].w) * 4],
@@ -743,7 +746,11 @@ int UIRenderer::loadIcons(VulkanContext& ctx, const char* const* paths, int coun
 
     uploadIconAtlas(ctx, atlas, totalW, maxH);
     rebindIconDescriptor(ctx.device);
-    return count;
+    // The number that actually loaded, not the number asked for (the header has always documented it
+    // that way): the caller logs "n/count icons" in the startup log, which is how a wrong working
+    // directory or a stale assets/ tree next to the exe becomes visible — a failed icon otherwise
+    // just draws as a 1x1 magenta speck with no clue where it came from.
+    return loaded;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1340,7 +1347,9 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
                 const UIImage* img = static_cast<const UIImage*>(data);
                 if (img->imageId > 0 && (int)img->imageId <= extCount) {
                     flushBatch(cmd); // everything before it, with the atlas set
-                    pushQuad(bb.x, bb.y, bb.width, bb.height, 0.0f, 0.0f, 1.0f, 1.0f,
+                    // The sub-rect (u0..v1) lets two differently-shaped elements show the same
+                    // render without stretching — see UIImage's comment.
+                    pushQuad(bb.x, bb.y, bb.width, bb.height, img->u0, img->v0, img->u1, img->v1,
                              glm::vec4(1.0f), 2.0f);
                     flushBatch(cmd, extSets[img->imageId - 1]);
                 }

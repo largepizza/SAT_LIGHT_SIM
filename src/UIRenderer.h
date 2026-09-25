@@ -108,10 +108,15 @@ struct UIPlot {
 // texels straight through, as it does for icons). Do NOT give the UIImage element its own
 // backgroundColor: Clay emits CUSTOM before that element's RECTANGLE, which then covers the image —
 // put a backing colour on a parent instead.
+//
+// u0..v1 is a sub-rect of the texture, so ONE render can be drawn into two elements of different
+// shapes without stretching: the info window's small 4:3 view samples a centred 4:3 crop of the wider
+// target the popped-out 3D window renders at (see SatelliteSim::viewerAspect).
 struct UIImage {
     static constexpr uint32_t kMagic = 0x494D4745u; // 'IMGE'
     uint32_t magic = kMagic;
     uint32_t imageId = 0; // 0 = none
+    float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
 };
 
 class UIRenderer {
