@@ -2364,6 +2364,10 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
         chrome.y = defaultY;
     }
     ui.updateWindowChrome(chrome, inp, minW, minH, maxW, maxH);
+    // updateWindowChrome clamps while resizing; a minimum can also grow while the window is open (the
+    // settings window's follows uiScale), so enforce the limits every frame.
+    chrome.w = std::clamp(chrome.w, minW, std::max(minW, maxW));
+    chrome.h = std::clamp(chrome.h, minH, std::max(minH, maxH));
 
     bool justClosed = false;
     Clay_String titleStr{false, (int32_t)strlen(title), title};
@@ -2464,8 +2468,11 @@ void SatelliteSim::buildSettingsWindow(const UIInput &inp, UIRenderer &ui)
     static char settingsTitleBuf[64];
     if (!settingsTitleBuf[0])
         snprintf(settingsTitleBuf, sizeof(settingsTitleBuf), "Settings — v%s (%s)", APP_VERSION, APP_GIT_COMMIT);
+    // The Controls rows scale with uiScale (buildSettingsControlsTab), so the minimum width does too —
+    // at 2.0 the fixed 680 let the "Bind Pad" column run past the window's right edge.
+    const float minW = std::min(680.0f * std::max(1.0f, uiScale / 1.5f), inp.screenW - 40.0f);
     bool justClosed = buildResizableWindow(inp, ui, settingsChrome, 0, settingsTitleBuf, true, hovSettingsClose,
-                                           defaultX, defaultY, 680.0f, 420.0f, 1000.0f, 820.0f,
+                                           defaultX, defaultY, minW, 420.0f, std::max(1000.0f, minW), 820.0f,
                                            [&]()
                                            { buildSettingsTabbedBody(inp, ui); });
     if (justClosed)
@@ -2900,8 +2907,12 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
         Clay_Color rowBg = (kb.listening || kb.listeningPad)
                                ? Pal::listenRow
                                : Clay_Color{0, 0, 0, 0};
+        // Column widths and the row height scale with uiScale like the fonts in them (they were fixed
+        // pixels sized at the default 1.5: at 2.0 "Lower Elevation" wrapped onto the next row and
+        // "[D-Right]" ran into its button — found by the harness's `ui dump` overlap check).
+        const float cs = uiScale / 1.5f;
         CLAY(CLAY_IDI("KbRow", ki), {.layout = {
-                                         .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                         .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28 * cs)},
                                          .padding = {4, 4, 4, 4},
                                          .childGap = 6,
                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
@@ -2910,15 +2921,15 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
                                      .cornerRadius = CLAY_CORNER_RADIUS(3)})
         {
             CLAY(CLAY_IDI("KbAction", ki), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(130), CLAY_SIZING_FIT(0)}}})
+                                                .sizing = {CLAY_SIZING_FIXED(130 * cs), CLAY_SIZING_FIT(0)}}})
             {
                 Clay_String actStr{false, (int32_t)strlen(kb.action), kb.action};
                 CLAY_TEXT(actStr,
-                          CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
+                          CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13), .wrapMode = CLAY_TEXT_WRAP_NONE}));
             }
 
             CLAY(CLAY_IDI("KbKey", ki), {.layout = {
-                                             .sizing = {CLAY_SIZING_FIXED(60), CLAY_SIZING_FIT(0)}}})
+                                             .sizing = {CLAY_SIZING_FIXED(60 * cs), CLAY_SIZING_FIT(0)}}})
             {
                 Clay_String keyStr{false, (int32_t)strlen(kbKeyBuf[ki]), kbKeyBuf[ki]};
                 Clay_Color keyCol = kb.listening
@@ -2932,7 +2943,7 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
                                       ? Pal::listenBtn
                                       : (hovRebind[ki] ? Pal::btnHover : Pal::btnIdle);
             CLAY(CLAY_IDI("KbRebind", ki), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(120), CLAY_SIZING_FIXED(20)},
+                                                .sizing = {CLAY_SIZING_FIXED(120 * cs), CLAY_SIZING_FIXED(20 * cs)},
                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                             .backgroundColor = rebindBg,
                                             .cornerRadius = CLAY_CORNER_RADIUS(3)})
@@ -2955,7 +2966,7 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
             }
 
             CLAY(CLAY_IDI("KbPad", ki), {.layout = {
-                                             .sizing = {CLAY_SIZING_FIXED(70), CLAY_SIZING_FIT(0)}}})
+                                             .sizing = {CLAY_SIZING_FIXED(70 * cs), CLAY_SIZING_FIT(0)}}})
             {
                 Clay_String padStr{false, (int32_t)strlen(kbPadBuf[ki]), kbPadBuf[ki]};
                 Clay_Color padCol = kb.listeningPad
@@ -2969,7 +2980,7 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
                                          ? Pal::listenBtn
                                          : (hovRebindPad[ki] ? Pal::btnHover : Pal::btnIdle);
             CLAY(CLAY_IDI("KbRebindPad", ki), {.layout = {
-                                                   .sizing = {CLAY_SIZING_FIXED(90), CLAY_SIZING_FIXED(20)},
+                                                   .sizing = {CLAY_SIZING_FIXED(90 * cs), CLAY_SIZING_FIXED(20 * cs)},
                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                                .backgroundColor = rebindPadBg,
                                                .cornerRadius = CLAY_CORNER_RADIUS(3)})
