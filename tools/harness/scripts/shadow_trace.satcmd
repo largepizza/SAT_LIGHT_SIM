@@ -1,0 +1,74 @@
+# The dark band climbing the terrain, as a time series at the tw_east repro state.
+#
+# tw_east (harness_runs/20260925_211036_repro_night_terrain/captures/tw_east.png) is the frame in
+# question: red-lit ridge, and a grey band on the ground below it whose upper edge traces UP the
+# slope. This runs the same instant (Sun 0.96 deg below the horizon) with the same observer,
+# camera and settings, then walks it forward in 5-minute steps so that edge can be compared with
+# where the shadow line sits at each step.
+#
+# Anchor: sh_t00 was written to be pixel-identical to tw_east. It is not, and it should not be -
+# the shader has changed under it, and the 92,969 differing pixels are the fix (see the result note
+# below). Re-running this expecting the match means expecting the grey slab back.
+#
+# The `sunvis` captures are the shadow line itself: R = sunDiscVis (0 when the Sun's disc is below
+# that point's own horizon), G = geoSunDot + dipSin (0 exactly ON the line, negative below it),
+# B = dipSin at the point's altitude (sat_sky.frag:2454-2455, 2655). Comparing each beauty capture's
+# light/dark edge to its sunvis G zero-crossing says whether that edge is the shadow line or a
+# constant-altitude contour.
+#
+# Result (first run, 2026-09-25 23:03, harness_runs/shadow_trace): sh_t00 differs from tw_east.png in
+# 92,969 pixels - the grey slab is gone - because `tDirectSun` is now multiplied by sunDiscVis
+# (sat_sky.frag:2591-2596, the fix for "the grey slab of 2026-09-25"). The slab was the direct-sun
+# term's 0.05 sunLit floor, 0.15 terrain-shadow floor and dayFrac soft gate leaking a NEUTRAL wash
+# onto ground the Sun cannot reach - the same ground the eye reads as "Earth's shadow", which is why
+# its edge tracked the terminator up the slope. It was never the shadow itself being non-black.
+preset High
+set clouds.coverage 0
+set clouds.fog_coverage 0
+observer lat=56.1 lon=-159.6 agl=450
+camera az=90 el=3 fov=60
+time set 2026-11-21T21:04:50Z
+time pause
+wait settle
+capture sh_t00
+debugview sunvis
+wait settle
+capture sh_t00_sunvis
+debugview off
+
+time add 300
+wait settle
+capture sh_t05
+debugview sunvis
+wait settle
+capture sh_t05_sunvis
+debugview off
+
+time add 300
+wait settle
+capture sh_t10
+debugview sunvis
+wait settle
+capture sh_t10_sunvis
+debugview off
+
+time add 300
+wait settle
+capture sh_t15
+debugview sunvis
+wait settle
+capture sh_t15_sunvis
+debugview off
+
+time add 300
+wait settle
+capture sh_t20
+debugview sunvis
+wait settle
+capture sh_t20_sunvis
+debugview off
+
+# Ground truth at the band pixel and up the column, at the last instant.
+probe 800 820
+probe 800 600
+probe 800 400

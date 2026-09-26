@@ -260,6 +260,25 @@ For multimodal review: models see large images downscaled, so a one-pixel featur
 1600x900 frame can vanish. Use `capture ... crop=... scale=4` or `imgtools crop` for anything
 small, and `sheet` to compare many variants in one image.
 
+`tools/harness/lightscan.py` (Pillow only, no numpy - it still runs where the system Python is too
+new for numpy wheels) reads the terrain-lighting NUMBERS back out of a `debugview` capture. The
+`terms`, `direct`, `skyamb`, `night`, `moon` and `aurora` views write linear radiance x100 straight
+into the frame, bypassing exposure and tonemap, so the byte is `srgb_encode(v * gain)`; the tool
+inverts the sRGB curve and divides by the gain, which turns "that patch looks grey" into a value and
+a hue per term.
+
+| | |
+|---|---|
+| `--x 800 --y 400 560 820 --view direct,skyamb` | decode those terms at those pixels |
+| `--split` | per view, the biggest down-column jumps (where a column breaks) |
+| `--hue [--ref name.png]` | the beauty frame's own RGB down the column |
+
+Gains: the light terms and `skyambraw` x100, `nightmap` x20, and `day`/`albedo`, `gates`, `factors`,
+`aofactors`, `geodot`, `sunvis`, `suntint` raw. Only pixels the terrain march claimed (`tHit > 0`) are
+overridden, so sky rows show the ordinary sky in every view - check `geodot`'s B (`tHit/4000`) or
+`probe` first. A run folder holds one capture per view NAME: a per-time-step `*_sunvis` script such as
+`scripts/shadow_trace.satcmd` collides, so pass the frame you mean explicitly.
+
 ## Verifying the harness
 
 `python tools/harness/selftest.py` (≈2 minutes) runs real scripts and checks capture sizes and
