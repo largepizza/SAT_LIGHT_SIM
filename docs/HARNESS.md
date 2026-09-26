@@ -312,6 +312,21 @@ The terrain work that motivated the harness went roughly like this, and the patt
 ## Gotchas
 
 - **Build Release.** A Debug build encodes each 1600x900 PNG in tens of seconds.
+- **`run.py` finds the exe under `build/` only** — `build/<config>/SAT_LIGHT_SIM_V_*.exe`, freshest
+  first, and nothing else unless you pass `--exe`. `build-win-release/` is where the `windows-release`
+  preset puts the release build, so building *that* tree and then running the harness runs the previous
+  binary, silently and completely. Line 1 of `satlight_log.txt` says which one ran: `<commit>, built
+  <date>` comes from `<build dir>/generated/version.h`, and that stamp is written at **CMake-configure**
+  time (`CMakeLists.txt:42-66`), not per build. Entry 5 of the reset tally is this trap: a run meant to
+  check a build fresh out of `build-win-release` reported `f9aa040` — the `build/Release` exe from 75 s
+  earlier.
+- **A reset can leave the always-on recorder dead, and silently (fixed 2026-09-26).** It starts under
+  `pythonw` from the logon task, so a refusal or a crash is invisible unless you look: after any reset,
+  read `harness_runs\blackbox\daemon.log` (every start, refusal and stop now goes there) and check the
+  newest `<day>.csv`'s mtime. The lock used to name its holder by pid alone — a reset leaves it behind
+  and Windows reuses the pid within the minute, so the next boot's recorder refused and exited without
+  a word. It now names (pid, creation time) and treats a pre-boot lock as stale. See *The flight
+  recorder* in `docs/HARNESS.md`.
 - **The window must stay visible (not minimized)**, or the swapchain stops presenting. It opens
   without taking focus.
 - Captures are the final 8-bit tonemapped swapchain image, not HDR buffers.
@@ -334,11 +349,15 @@ The terrain work that motivated the harness went roughly like this, and the patt
 
 ### Machine-level resets (tally)
 
-The platform has hard-reset the whole machine several times while a run was up — a firmware event,
-not an app crash. Windows leaves two witnesses on the next boot, and **neither is a crash dump**:
+The platform has hard-reset the whole machine several times — a platform event, not an app crash (4 of
+the 9 resets in the last 72 h happened with no app running at all). Windows leaves two witnesses on the
+next boot, and **neither is a crash dump**:
 
 - **WHEA-Logger 1** in the System log: the firmware's raw CPER record, hex in `EventData.RawData`,
   severity `fatal`, `notify=BOOT` (UEFI BERT). Its timestamp fields are **binary, not BCD**, and **UTC**.
+  Read what it *says* before reading it as a hardware fault: decoding all 46 of them (below) shows the
+  record is the platform reporting **how it was reset** — the power button held 4 s — not something it
+  found broken. The word "fatal" is the record's severity class, not a diagnosis.
 - **Kernel-Power 41** with `BugcheckCode=0`: Windows never saw a bugcheck, so **no dump exists**
   (no `MEMORY.DMP`, nothing in `Minidump`, no WER 1001). Do not go looking for one.
 - **The app's own log.** `satlight_log.txt` is fsynced per line, so where it stops is real evidence;
@@ -358,6 +377,7 @@ python tools/harness/crashes.py --scan-run harness_runs/<dir>   # what survived 
 python tools/harness/crashes.py --witness harness_runs/<dir>    # write crash_witness.txt into it
 python tools/harness/crashes.py --preflight          # exit 3 if the firmware recorded a fatal error
 python tools/harness/crashes.py --history            # every fatal record Windows kept, by month
+python tools/harness/crashes.py --dump-status        # is the manual-crash key armed, has it ever fired
 python tools/harness/crashes.py --export-crashlog D  # one CPER (Intel CrashLog inside) per record
 python tools/harness/crashes.py --decode-crashlog D  # Intel's iclg over them (see Decoding the CrashLog)
 ```
@@ -390,11 +410,14 @@ collateral includes TGP. See *Decoding the CrashLog* below.
 ### History: the resets predate the app (2026-09-26)
 
 `crashes.py --history` reads `Microsoft-Windows-Kernel-WHEA/Errors`, which keeps every fatal record
-Windows found at boot far longer than the System log does. On this machine: **45 fatal records,
-2025-05-29 .. 2026-09-25, 19 of them before this repository's first commit (2026-03-11).** They come
-in episodes (2025-06/07, 2025-10, 2026-02, 2026-08-01..21, 2026-09-22..25), often several within
+Windows found at boot far longer than the System log does. On this machine: **46 fatal records,
+2025-05-29 .. 2026-09-26, 19 of them before this repository's first commit (2026-03-11).** They come
+in episodes (2025-06/07, 2025-10, 2026-02, 2026-08-01..21, 2026-09-22..26), often several within
 minutes, with long quiet stretches between (none 2026-03..07, the project's busiest months). So the
 app is at most a *trigger* — the entries below are when a launch happened to coincide with an episode.
+The 2026-09-26 00:11 reset (entry 5) added nothing to this channel (its boot found no firmware record
+at all); entry 6 (00:40) added the 46th, and decoding it says what the other 26 PMC records say — which
+is why the tally below is kept by hand either way.
 
 ### Decoding the CrashLog
 
@@ -405,20 +428,24 @@ python tools/harness/crashes.py --decode-crashlog harness_runs/crashlog   # <tim
 ```
 
 Use `--export-crashlog`, not `iclg extract`: every record here has record id 0 and `iclg extract`
-keeps one per id (it kept 2 of 45). `iclg info` on the 2026-09-25 21:57 record lists `PMC rev 3
+keeps one per id (it kept 2 of 46). `iclg info` on the 2026-09-25 21:57 record lists `PMC rev 3
 TGP/H`, `PMC_TRACE rev 1 TGP/H`, `Punit` (product 0x028, no collateral) and two CPU regions. `--decode-crashlog` ends with a
 table of the PMC's reset-cause bits per record (`reset_cause_table`).
 
-**Decoded 2026-09-26 — the answer: these are FREEZES, forced off with the power button.** Of the 45
-records, the 26 that carry a PMC record name the global reset cause, and it is never the hardware:
+**Decoded 2026-09-26 — all 46 records, and the answer is FREEZES, forced off with the power button.**
+27 of the 46 carry a PMC record; the other 19 carry no PMC record at all (PMC trace + a Punit header +
+a CPU region iclg marks invalid — the smaller CPERs are those), so the counts below are over the 27.
+**The union of every reset-cause bit that is set anywhere in all 46 records is exactly two fields.**
 
 | n | PMC reset cause | meaning |
 |---|---|---|
-| 23 | `gblrst_cause_0.pb_ovr` (+ `host_pr_cause_0.cf9`) | **power-button override** — the button held 4 s |
+| 24 | `gblrst_cause_0.pb_ovr` (+ `host_pr_cause_0.cf9`) | **power-button override** — the button held 4 s |
 | 3 | `host_pr_cause_0.cf9` only | a software-initiated restart |
-| 19 | no PMC record (PMC trace + Punit + a CPU region iclg marks invalid) | — |
+| 19 | no PMC record (see above) | — |
 
-Every hardware cause the PMC tracks is 0 in every record: `cpu_trip` (thermal trip), `syspwr_flr` /
+`cf9` is the host's software-reset bit, set in all 27; on a forced power-off the platform sets it too,
+so it is not a second event. Nothing else has ever been set: every hardware cause the PMC tracks is 0
+in **every** record — `cpu_trip` (thermal trip), `syspwr_flr` /
 `pchpwr_flr` (power failure), `pmc_3strike` (a core stopped responding), `cpu_thrm_wdt`, the
 PMC/ME/TCO watchdogs, `ich_cat_tmp`. So the machine did **not** reset itself: it **hung**, was forced
 off, and the firmware filed a "fatal" CrashLog about that reset, which Windows then reports as a fatal
@@ -438,6 +465,18 @@ every CPU was doing. If even that does nothing, the hang is below the OS (a bus 
 is itself the diagnosis. `blackbox.py`'s last line then says when the machine froze (its samples stop),
 and the power-button reset time (Kernel-Power 41) how long it stayed frozen.
 
+**Armed since 2026-09-25 23:58 (checked 2026-09-26).** `crashes.py --dump-status` reads the whole path
+back, and it is set up on this machine: `kbdhid\Parameters\CrashOnCtrlScroll = 1` (the USB driver; the
+PS/2 one is absent), written 2026-09-25 23:58:02 local — before the 00:11:48 boot, so it was itself
+*loaded*: kbdhid reads the key when the driver starts, so one written during a boot catches nothing
+until the next one, and a freeze in between would be missed while the key still reads back as armed
+(`--dump-status` now prints the write time next to this boot's start and says which side of that line
+you are on). `CrashDumpEnabled = 2` = kernel dump, the right size for a hung kernel, with 80 GB free on
+`C:`. Nothing has come of it yet: no `C:\Windows\MEMORY.DMP`, an empty `Minidump\`, and the only
+bugcheck Windows still holds is from 2026-08-31 (`0x0000010d`, WDF_VIOLATION — a real driver BSOD, 25
+days before these freezes, not one of them). **Entry 6 is the first freeze it was armed for, and it was
+pressed: the answer is the interesting part (entry 6, below).**
+
 ### The flight recorder (`blackbox.py`)
 
 A reset erases everything in memory and Windows writes no dump, so the only record of what the
@@ -451,26 +490,76 @@ power and temperature, and the marks.
 
 ```powershell
 python tools/harness/blackbox.py --daemon      # ALWAYS ON: harness_runs/blackbox/<UTC day>.csv (250 ms, 14 days kept)
+python tools/harness/blackbox.py --install-task   # same, but it comes back after a reset (logon task, one instance only)
 python tools/harness/blackbox.py --out bb.csv -- cmake --build build --config Release --target accuracy-gate
 python tools/harness/blackbox.py --summary harness_runs/blackbox --at "2026-09-25 21:57:53"   # local time
 ```
 
-**Run `--daemon` in a spare terminal whenever the machine is in use**: half the resets happened with
-no harness run live, and those are exactly the ones nothing recorded. At idle the GPU sits at P8 with
+**Run `--daemon` whenever the machine is in use**, and use `--install-task` to keep that promise across
+the resets: half of them happened with no harness run live, and those are exactly the ones nothing
+recorded. Entry 5 is what skipping it costs — nothing was recording machine-wide (no `harness_runs\blackbox`
+existed), so the only record of that reset is the run's own `blackbox.csv`, which starts one second
+before the launch and ends where the machine died: 8 samples of an idle GPU, 15 of a launch, and nothing
+at all about the 44 s the machine spent frozen.
+
+**Installed on this machine (2026-09-26):** the logon *task* could not be created — `schtasks /create
+/sc onlogon` answers `Access is denied` from an unelevated shell, and `--install-task` says so and
+falls back to its no-admin half — so what keeps the recorder alive across a reset here is the Startup
+launcher `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\satlight-blackbox.cmd`, pointing at
+`C:\Python314\pythonw.exe …\blackbox.py --daemon`. It is there and current. So
+`schtasks /query /tn "SatLightSim blackbox"` answering "cannot find the file" is *expected* here, not a
+fault; check the `.cmd` and `daemon.log` instead.
+
+**The file's two time columns are meant to be the same instant, and were not.** A row is
+`epoch,utc,src,fields`; the epoch column is printed with `%.3f` (rounds to the millisecond) while the
+`utc` column was built with `int((t % 1) * 1000)` (truncates), so whenever the fractional second was
+≥ .0005 the two disagreed by 1 ms — **3450 of the 7122 rows** in `20260926.csv`, entry 6's freeze block
+included, and half of every older `blackbox.csv` as well. Two symptoms: a report can print a stamp no
+row in the file has, and two samples ~1 ms apart share an epoch value while their `utc` columns differ.
+`_utc` rounds now and both columns come from one rounded instant, verified over 300 freshly written
+rows; the always-on recorder was restarted on the fixed code at **07:59:18.960Z** and every row since
+agrees (`stored utc − epoch column = 0`). Rows before that — and any older run's `blackbox.csv` — can
+read 1 ms early in the `utc` column: when correlating with the event log, the `epoch` column is the
+authority.
+
+**The recorder has to be *checked*, because it can be silent.** The logon task starts it under
+`pythonw`, where stdout goes nowhere, so a refusal or a crash used to leave no trace at all — and on
+2026-09-26 that is what happened. The 00:40 reset left `harness_runs\blackbox\daemon.pid` behind (a
+reset cleans nothing up), the pid inside it was reused by an unrelated process within the minute, and
+the recorder the 00:41 logon started read a *live* pid, concluded another recorder was running and
+exited — silently, so the freeze under investigation had no machine-wide recording at all until it was
+noticed by hand. `DaemonLock` now names its holder by **(pid, creation time)** rather than a bare pid
+(reuse cannot counterfeit a creation time), treats a lock written before this boot as stale whatever it
+says, and logs every start, refusal and stop to `harness_runs\blackbox\daemon.log`. So after a reset:
+`Get-Content harness_runs\blackbox\daemon.log -Tail 5` and the newest `<day>.csv`'s mtime are the two
+things to look at before trusting either.
+
+At idle the GPU sits at P8 with
 the PCIe link at **Gen 1** and a launch retrains it to Gen 4 at the same moment the power steps up —
 one of the transitions the recorder is there to catch. First measurement (`harness_runs\viewer_glare_1`,
 2026-09-26): a 7 s run went through **five** P-state/link changes (P8 gen1 → P0 gen4 → P5 gen2 → P8
 gen1 → P5 gen2 → P0 gen4), ~23 W → ~220 W; the first came at 06:40:41.618Z, **16 ms before `init:
-buffers`** — i.e. at the `Logical device created` / `Swapchain created` lines where every in-run reset's
-log stopped. A correlation, not a cause: the decoded CrashLog decides.
+buffers`** — i.e. at the `Logical device created` / `Swapchain created` lines where the first four
+in-run resets' logs stopped. Entry 5's own file shows the same step inside a single 100 ms sample
+(`07:11:02.244Z` P8/gen1/23.6 W → `07:11:02.355Z` P0/gen4/1800 MHz), 1.4 s before the machine died.
+A correlation, not a cause: the decoded CrashLog decides.
 
 The app's side: `satlight_log.txt` stamps are **UTC with milliseconds** since 2026-09-26 (they line
 up with `blackbox.csv`), and `SatelliteSim::init` logs `init: <step>` before each step of the launch
 window (buffers, the three noise bakes, the cloud/depth targets, the Earth textures, pipelines, mesh
-renderer) — the ~2 s all four in-run resets fell inside, which the log used to show as one silent gap.
+renderer) — the ~2 s every in-run reset has fallen inside, which the log used to show as one silent
+gap. Since 2026-09-26 the Earth-texture step is subdivided as well: it logs `init: texture: <file>`
+before each of its nine decodes (entry 5 died 1.2 s into that step and nothing in the log said which
+file; entry 6 died *inside* one of them and the stamp named it by file). Those stamps price the step:
+2.0 s total, of which `earth_elevation.png` is 888 ms (14999×7500, R8 — 112 MB decoded, the launch's
+slowest step by 3×; an earlier note here said 21600×10800 / 233 MB, which is not the file) and the two
+8K JPEGs 277 and 271 ms, against 7 ms for the noise map. The first texture line is 2 ms after the
+step's own line, so the profile is what sits between them.
 
 Every row below was confirmed with `--scan-run` (that is where "all-zero" and "zero tail" come from).
 A run that is not named in a row finished normally — a reset cost the named folder, and nothing else.
+(Entry 6 is not a run folder at all: it was launched by hand, so nothing but the app's own log and the
+always-on recorder covers it.)
 
 | # | Reset (local) | Firmware record | Run that was live | What it was doing | Damage |
 |---|---------------|-----------------|-------------------|-------------------|--------|
@@ -478,21 +567,65 @@ A run that is not named in a row finished normally — a reset cost the named fo
 | 2 | 2026-09-25 20:44:33 (KP41 20:44:26) | WHEA-Logger 1, fatal CPER, same 3 sections | `ocean_rings_fix\land_v5_d20` (a *nested* run folder) | app had just launched — `satlight_log.txt` stops at line 7 of 67, right after `Swapchain created`, before `env stars: …` (the next line of a healthy launch) and before the first command ran | that run only: the folder holds `session.lock` + a 7-line log, no captures, no `summary.json`. The other 10 nested runs under `ocean_rings_fix` all have `summary.json` and were untouched, and no new all-zero file exists anywhere. It did kill that experiment (a v5 date A/B), which never captured |
 | 3 | 2026-09-25 21:25:42 | **none** — Kernel-Power 41 alone (`BugcheckCode=0`, no BERT/WHEA record: the boot found no firmware error, i.e. it hung or was forced off) | `harness_runs\tw_terms_01` (started 21:25:02, 40 s before the reset; the Release exe had been written 21:24:58) | app had just launched — log stops at line 6, `Logical device created.`, with line 7 committed **all-NUL** (entry 1's exact fingerprint) | that run only: `session.lock` + a 7-line log, no `captures\`, no `summary.json` — none of its 15 per-term captures happened. Its script survives at `build\tw_terms.satcmd` |
 | 4 | 2026-09-25 21:58:01 (KP41 21:57:53) | WHEA-Logger 1, fatal CPER, same 3 sections | `harness_runs\tw_day2` (started 21:55:05) | app had just launched — log stops at line 7, `Swapchain created`, with nothing all-NUL (no partial write survived) | that run only (a date A/B): `session.lock` + a 7-line log. The three runs in between (`tw_terms_fixed` 21:47, `tw_terms_fix1` 21:53, `tw_day` 21:54) finished, and the next launch (`20260925_221520_smoke`, 22:15) was clean |
+| 5 | 2026-09-26 00:11:48 | **none** — Kernel-Power 41 alone (`BugcheckCode=0`, no BERT/WHEA record: the boot found no firmware error, like entry 3) | `harness_runs\nearcheck` (started 00:11:02; its own `blackbox.csv` ends at 00:11:03.771 local — the freeze — and the boot was 44 s later, so 00:11:48 is the reboot, not the freeze) | app had just launched — log stops at line 13 of 67, `init: Earth textures (decode + upload)`: **the deepest any reset has reached**, 1.23 s into that step and 1.79 s after the launch mark. The per-texture stamps a healthy launch of the same tree wrote 80 min later (`harness_runs\nearcheck2`) put that instant **~430 ms into the `earth_elevation.png` decode** — 14999×7500, 112 MB decoded, 888 ms, the single slowest step of the whole launch. Its own `blackbox.csv` (100 ms) ends at `07:11:03.771Z`, right after the idle→load step: P8/gen1 23.6 W → P0/gen4 1800 MHz (mem 9501), 75.60 W avg (81.31 W instant, peak *0.5 s before the end* — the ramp was still going up), 44 °C, util 14 %, 2153 MiB used (1587 MiB before the launch), CPU 138 % of 3504 MHz — no rail, clock or temperature anywhere near a limit, and nothing after it: the machine was dead for the next 44 s (boot at 00:11:48) | that run only: `session.lock` + a 13-line log, no captures, no `summary.json` — the capture it was launched for never happened. **It also was not running the build it was meant to test**: line 1's stamp is `f9aa040` (`build/generated/version.h`, exe written 2026-09-25 23:43:35), not the `c112930` `build-win-release\Release` exe written 75 s earlier — `run.py` searches only under `build/`, so the release-preset tree is invisible to it (see Gotchas). So this reset is *not* evidence about the change that run was checking |
+| 6 | 2026-09-26 00:40:32 (WHEA event at boot; Kernel-Power 41 and the record's own firmware stamp both say 00:40:26 = **the forced power-off, 93 s after the freeze**) | WHEA-Logger 1, fatal CPER, same 3 sections — decoded: `gblrst_cause_0.pb_ovr` + `host_pr_cause_0.cf9`, every fault bit 0 (the 46th record) | **no run folder** — a *by-hand* launch of `build-win-release\Release` (a by-hand launch writes its log beside the exe; the `satlight_log.prev.txt` next to it is `nearcheck2` from 00:30) | app had just launched — log stops at line 21 of 67, `init: texture: assets/textures/earth_elevation.png`, 232 ms before the recorder's last sample. That is the step entry 5 was only inferred to be inside, now printed by name | the app's log, preserved at `harness_runs\crashlog2\20260926T073853_launch_death_app_log.txt` — **the next launch renames it to `satlight_log.prev.txt`**, so copy it out before relaunching. No captures and no `summary.json` (there was no run). The always-on recorder covered it: `harness_runs\blackbox\20260926.csv` ends mid-upload (the block below) |
 
-**All four resets caught a run in its first ~3 s — the launch window** — and `satlight_log.txt` says
-where: a healthy launch writes 67 lines and ends at `sky pipeline: FULL sat_sky.frag`, while these
-stopped at line 6-7, within one line of each other (entries 1 and 3 at `Logical device created.` with
-line 7 committed all-NUL; entries 2 and 4 at `Swapchain created`). The next line a healthy launch
-writes is `env stars: …`, then the constellation build (27 model lobe validations, 1.38 M satellites,
-the 132 MB device-local buffer upload). So the window is: Vulkan logical device up → swapchain / first
-GPU work → star and constellation build. No steady-state run has been hit yet.
+**All six resets that caught a launch did it in its first ~3 s — the launch window** — and
+`satlight_log.txt` says where: a healthy launch writes 67 lines and ends at `sky pipeline: FULL
+sat_sky.frag`. Entries 1-4 stopped at line 6-7, within one line of each other (1 and 3 at `Logical
+device created.` with line 7 committed all-NUL; 2 and 4 at `Swapchain created`) — those four ran builds
+from *before* 2026-09-26, which had no `init: <step>` breadcrumbs to stop on (`git log -S 'init:
+buffers'` dates them to `c112930`). Entry 5 is the first reset caught by a build that had them, and it
+landed on line 13, `init: Earth textures (decode + upload)` — 1.23 s into that step, i.e. *past* the
+device/swapchain pair the earlier four died in, inside the launch's largest CPU burst (nine texture
+decodes + uploads, 8K JPEGs and the 14999×7500 elevation map among them; `SatelliteSim::init` now logs
+one line per texture, see *The flight recorder*). The lines after it in a healthy launch are `env stars: …` and
+the constellation build (27 model lobe validations, 1.38 M satellites, the 132 MB device-local buffer
+upload). So the window is: Vulkan logical device up → swapchain / first GPU work → the noise bakes →
+the Earth texture decode + upload → star and constellation build, and nothing past that has ever been
+hit.
+
+**Entry 6: the manual-crash key was armed and pressed, and it answered nothing — so the freeze is
+below the OS.** The key had been armed since 23:58 the evening before, i.e. *before* entry 6's boot
+(00:11:48), so kbdhid had it loaded and live (`crashes.py --dump-status` prints exactly that
+reasoning, because a key written during a boot catches nothing until the next one), and it was pressed
+— right Ctrl + Scroll Lock twice, several times — while the machine was frozen. Still no
+`C:\Windows\MEMORY.DMP`, `Minidump\` still empty, no WER 1001, and entry 6's Kernel-Power 41 carries
+`BugcheckCode=0`. That matters: with the key armed, 0xE2 is raised *inside* the keyboard ISR, so
+Windows needs nothing but an interrupt to write a kernel dump. Nothing came out, so **the frozen
+platform was not delivering keyboard interrupts to Windows at all** — it stopped where the OS does not
+run, and no recorder that lives in the OS can see that far. It is a finding, not a failed attempt. (The
+one way to lose it: the *left* Ctrl, which kbdhid ignores by design.)
+
+Entry 6 also came with a name on it. The per-texture breadcrumb printed `init: texture:
+assets/textures/earth_elevation.png` at `07:38:53.491Z`, 232 ms before the flight recorder's last
+sample — the same file and same step entry 5's timing was measured into. The recorder's last second:
+
+| UTC | state | pwr avg / inst | clocks gr / mem | °C | util | VRAM used |
+|---|---|---|---|---|---|---|
+| 07:38:52.691 | P8, gen1 | 23.4 / 23.5 W | 210 / 405 | 39 | 7 % | 1012 MiB |
+| 07:38:52.954 | **P0, gen4** | 34.4 / 81.3 W | 1800 / 9501 | 43 | 10 % | 1142 MiB |
+| 07:38:53.219 | P0, gen4 | 34.4 / 81.3 W | 1800 / 9501 | 43 | 10 % | 1355 MiB |
+| 07:38:53.470 | P0, gen4 | **61.6 / 79.7 W** | 1800 / 9501 | 43 | 5 % | 1547 MiB |
+| 07:38:53.723 | P0, gen4 | 61.6 / 79.7 W | 1800 / 9501 | 43 | 5 % | **1568 MiB — last sample** |
+
+Nothing is near a limit — 43 °C, 62 W of a ~115 W budget, 5 % utilisation, CPU at its usual 138 % of
+3504 MHz — and the machine dies *while VRAM is being filled*: +556 MiB in the last 800 ms, in steps of
+~112-213 MiB, which is what one 112 MB texture costs (a 112 MiB staging buffer plus a 112 MiB device
+image), on the gen4 link it had switched to 0.7 s earlier. Same profile as entry 5, same file, 26
+minutes and one reset apart, with clean launches of the same tree in between (00:30's `nearcheck2`
+wrote the stamps that price the step). The launch does that upload every time — so the thing to chase
+is the *coincidence*, not a hardware limit that was reached. The last sample is 00:38:53.723 local and
+the platform says it was forced off at 00:40:26, so this machine sat frozen — answering nothing, no
+interrupts, no dump key — for another **93 s** before the power button ended it (those are the 4 s the
+`pb_ovr` bit reports, started ~00:40:22).
 
 **It is not deterministic, and it is not the app.** 12 run folders finished between entry 2 and
-entry 3, and 3 more between entry 3 and entry 4 — and in the same 72 h, **4 of the 8 resets happened
-with no run folder live at all** (09-24 23:51, 09-25 08:29, 08:40, 16:34; `crashes.py` prints who was
-live, if anyone). So treat a reset as a per-launch risk, not a regression to bisect: one launch at a
-time, and split scripts rather than writing one long one, since a reset costs that run (and its
-unflushed tail) and nothing else.
+entry 3, and 3 more between entry 3 and entry 4 — and in the same 72 h, **4 of the 9 resets happened
+with no app running at all** (09-24 23:51, 09-25 08:29, 08:40, 16:34; `crashes.py` prints who was
+live, if anyone), so entry 6's by-hand launch only had the recorder watching it. Treat a reset as a
+per-launch risk, not a regression to bisect: one launch at a time, and split scripts rather than
+writing one long one, since a reset costs that run (and its unflushed tail) and nothing else.
 
 **A reset is not a crash.** A stale `session.lock` only means "the process never cleaned up", which is
 also what an *app abort* looks like — and aborts are common here: `harness_runs\bisect1`, `bisect2` and
@@ -502,7 +635,7 @@ create cloud_noise bake pipeline` — the bug fixed at 21:47, after which `tw_te
 `tw_terms_fix1` both finished. All five aborted the process and lost nothing to an all-zero write. The
 reset is the one whose log simply *stops*, usually with the next line committed as NUL.
 
-Earlier occurrences predate this table: see *History* above (45 records since 2025-05).
+Earlier occurrences predate this table: see *History* above (46 records since 2025-05).
 
 To check a single file by hand:
 `python -c "import sys;b=open(sys.argv[1],'rb').read();print('all-zero' if b and not any(b) else 'ok')" <file>`

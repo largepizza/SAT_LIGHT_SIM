@@ -10,6 +10,7 @@
     python tools/harness/crashes.py --history           # every fatal record Windows kept, by month
     python tools/harness/crashes.py --export-crashlog harness_runs/crashlog   # the Intel CrashLogs
     python tools/harness/crashes.py --decode-crashlog harness_runs/crashlog   # needs Intel iclg
+    python tools/harness/crashes.py --dump-status       # is the manual-crash key armed, has it ever fired
 
 A machine-level reset here is not an app crash and leaves no dump: Windows boots, finds a UEFI BERT
 record of a *fatal hardware error*, logs WHEA-Logger 1 (the raw CPER record, as hex, in EventData)
@@ -527,10 +528,11 @@ def report(ev, runs_dir, hours, slack, as_json):
         d = b.get("data") or {}
         print("    %s  %s" % (b["time"][:19].replace("T", " "), d.get("param1", "")))
     if fatal:
-        print("\n  verdict: the firmware filed a 'fatal' CrashLog record at boot. On this machine that record")
-        print("           has so far always been the chipset noting HOW it was reset - 23 of 26 decoded:")
-        print("           the power button held 4 s, i.e. a forced power-off of a FROZEN machine, with no")
-        print("           thermal trip, power failure or three-strike (--decode-crashlog prints the causes).")
+        print("\n  verdict: the firmware filed a 'fatal' CrashLog record at boot. All 46 records decoded so")
+        print("           far are the chipset noting HOW it was reset: 24 name the power button held 4 s")
+        print("           (a forced power-off of a FROZEN machine), 3 a software restart, 19 carry no PMC")
+        print("           record - and every hardware cause bit is 0 in every one, so the record is the")
+        print("           consequence of the freeze, never its cause (--decode-crashlog prints the bits).")
         print("           BugcheckCode 0: Windows never bugchecked, so no dump exists.")
     return 3 if fatal else 0
 
@@ -658,9 +660,140 @@ def history_report():
     return 3
 
 
+# Dump kinds (Control\CrashControl\CrashDumpEnabled). A hang is caught with CrashOnCtrlScroll, which
+# needs the kernel alive *and* a dump big enough to hold kernel stacks: a small dump (3) is written by
+# the crash path but is not what shows what a hung driver's threads were doing.
+DUMP_KINDS = {0: "none - a hang can never leave a dump",
+              1: "complete (the whole RAM)",
+              2: "kernel (enough for a hang: kernel stacks, no user pages)",
+              3: "small/minidump - too small to show what a hung driver was doing",
+              7: "automatic"}
+
+
+def _reg(name, value):
+    """One value out of HKLM via reg.exe (read-only). None when the key or the value is absent."""
+    p = subprocess.run(["reg", "query", name, "/v", value],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
+    if p.returncode != 0:
+        return None
+    for line in p.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].lower() == value.lower():
+            return parts[2].strip()
+    return None
+
+
+def _reg_path(name, value, default):
+    """A REG_EXPAND_SZ path out of the registry, expanded, or `default` when it is not set."""
+    raw = _reg(name, value)
+    return os.path.expandvars(raw.strip().strip('"')) if raw else os.path.expandvars(default)
+
+
+def _reg_written(path):
+    """When the HKLM subkey `path` was last written (local time), or None. reg.exe will not say, and it
+    matters: kbdhid reads CrashOnCtrlScroll when the driver loads, so a key set *during* the current
+    boot catches nothing until the next one. A freeze in between would be missed while the key still
+    reads back as armed."""
+    import ctypes
+    adv = ctypes.windll.advapi32
+    h = ctypes.c_void_p()
+    if adv.RegOpenKeyExW(ctypes.c_void_p(0x80000002), ctypes.c_wchar_p(path), 0, 0x20019,
+                         ctypes.byref(h)) != 0:
+        return None
+    try:
+        ft = ctypes.c_longlong()
+        if adv.RegQueryInfoKeyW(h, None, None, None, None, None, None, None, None, None, None,
+                                ctypes.byref(ft)) != 0:
+            return None
+        return time.localtime(ft.value / 1e7 - 11644473600.0)  # FILETIME ticks -> Unix epoch
+    finally:
+        adv.RegCloseKey(h)
+
+
+def _boot_local():
+    """When this machine booted (local time), or None."""
+    import ctypes
+    try:
+        return time.localtime(time.time() - ctypes.windll.kernel32.GetTickCount64() / 1000.0)
+    except (AttributeError, OSError):
+        return None
+
+
+def dump_status():
+    """Is the manual-crash key armed (hold right Ctrl, press Scroll Lock twice) - and has it ever
+    fired? docs/HARNESS.md tells the reader to set it up once; nothing says whether it worked, and a
+    freeze leaves no other trace, so this reads the keys, the dump paths and the crash history back."""
+    ctl = r"HKLM\SYSTEM\CurrentControlSet\Control\CrashControl"
+    L = ["manual crash key (hold right Ctrl, press Scroll Lock twice while the machine is frozen):"]
+    for svc, kb in (("kbdhid", "USB"), ("i8042prt", "PS/2")):
+        v = _reg(r"HKLM\SYSTEM\CurrentControlSet\Services\%s\Parameters" % svc, "CrashOnCtrlScroll")
+        state = ("ARMED" if _int(v) == 1 else "NOT SET") if v is not None else "absent (driver not present)"
+        L.append("  %-4s %-9s CrashOnCtrlScroll = %s" % (kb, svc, state))
+    when = _reg_written(r"SYSTEM\CurrentControlSet\Services\kbdhid\Parameters")
+    boot = _boot_local()
+    if when:
+        live = "this boot's start is unknown"
+        if boot:
+            live = ("in effect for this boot" if time.mktime(when) < time.mktime(boot) else
+                    "NOT in effect until the next boot - kbdhid reads it when the driver loads")
+        L.append("       %-9s last written %s local%s -> %s"
+                 % ("", time.strftime("%Y-%m-%d %H:%M:%S", when),
+                    ", this boot began " + time.strftime("%H:%M:%S", boot) if boot else "", live))
+    kind = _int(_reg(ctl, "CrashDumpEnabled"), -1)
+    L.append("  dump %-10s CrashDumpEnabled = %s -> %s"
+             % ("", "?" if kind < 0 else kind, DUMP_KINDS.get(kind, "unknown kind")))
+    dump = _reg_path(ctl, "DumpFile", r"%SystemRoot%\MEMORY.DMP")
+    mini = _reg_path(ctl, "MinidumpDir", r"%SystemRoot%\Minidump")
+    for label, path in (("dump file", dump), ("minidumps", mini)):
+        if os.path.isfile(path):
+            L.append("  %-9s %s  %.1f MB, written %s" % (label, path, os.path.getsize(path) / 1e6,
+                       time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(path)))))
+        elif os.path.isdir(path):
+            L.append("  %-9s %s  no dump in it" % (label, path))
+        else:
+            L.append("  %-9s %s  does not exist" % (label, path))
+    import shutil
+    drive = os.path.splitdrive(os.path.abspath(dump))[0] + "\\"
+    try:
+        L.append("  free      %s  %.1f GB (a kernel dump needs room for the kernel's pages)"
+                 % (drive, shutil.disk_usage(drive).free / 1e9))
+    except OSError:
+        pass
+    try:
+        bugs = ps_collect(_iso(time.time() - 30 * 86400))["bug"]
+        L.append("  bugchecks %d WER 1001 in the last 30 days%s" % (
+            len(bugs), " - 0x000000e2 would be this key (MANUALLY_INITIATED_CRASH)" if not bugs
+            else ":"))
+        for b in bugs[-3:]:
+            L.append("    %s  %s" % (b["time"][:19].replace("T", " "),
+                                     (b.get("data") or {}).get("param1", "")))
+    except (RuntimeError, KeyError, TypeError) as e:
+        L.append("  bugchecks cannot read the event log: %s" % e)
+    armed = any(_int(_reg(r"HKLM\SYSTEM\CurrentControlSet\Services\%s\Parameters" % s, "CrashOnCtrlScroll")) == 1
+                for s in ("kbdhid", "i8042prt"))
+    has = os.path.isfile(dump) or (os.path.isdir(mini) and glob.glob(os.path.join(mini, "*.dmp")))
+    if not armed:
+        L.append("\n  verdict: a freeze will keep leaving NO dump - that is what 'Kernel-Power 41 with")
+        L.append("           BugcheckCode=0' means. Arm it (docs/HARNESS.md, 'What that changes').")
+    elif kind not in (1, 2, 7):
+        L.append("\n  verdict: the key is armed but CrashDumpEnabled=%d won't capture a hung kernel." % kind)
+    elif not has:
+        L.append("\n  verdict: armed and a dump is configured, but none has ever been written here -")
+        L.append("           so press the key *while* the machine is frozen, before reaching for the")
+        L.append("           power button (right Ctrl; the left one is ignored by design). If it was")
+        L.append("           pressed during a freeze and still nothing appeared, that freeze answered")
+        L.append("           no keyboard interrupt at all, which puts it below the OS: see entry 6 of")
+        L.append("           the tally in docs/HARNESS.md.")
+    else:
+        L.append("\n  verdict: armed, and dump(s) exist - compare their timestamps with the tally in")
+        L.append("           docs/HARNESS.md before assuming this freeze left one.")
+    print("\n".join(L))
+    return 0
+
+
 def export_crashlogs(dest):
     """One CPER file per fatal record (<local time>.crashlog). `iclg extract` keeps only one record per
-    record id, and every record here has id 0, so it drops 43 of 45; this keeps them all."""
+    record id, and every record here has id 0, so it drops 44 of 46; this keeps them all."""
     os.makedirs(dest, exist_ok=True)
     n = 0
     for e in whea_history():
@@ -781,9 +914,14 @@ def main():
     ap.add_argument("--preflight", action="store_true", help="exit 3 if the machine reset since the last run")
     ap.add_argument("--witness", metavar="DIR", help="write crash_witness.txt into a dead run folder")
     ap.add_argument("--history", action="store_true", help="every fatal record Windows kept (Kernel-WHEA/Errors), by month")
+    ap.add_argument("--dump-status", action="store_true",
+                    help="is the manual-crash key (Ctrl+ScrollLock) armed, and has it ever written a dump")
     ap.add_argument("--export-crashlog", metavar="DIR", help="write each fatal record's CPER (Intel CrashLog inside) to DIR")
     ap.add_argument("--decode-crashlog", metavar="DIR", help="run Intel's iclg over DIR/*.crashlog (see find_iclg)")
     a = ap.parse_args()
+
+    if a.dump_status:
+        return dump_status()
 
     try:
         if a.history:

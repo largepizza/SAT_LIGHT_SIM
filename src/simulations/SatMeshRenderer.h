@@ -146,6 +146,9 @@ public:
         float minFlare = 1.0f;  // exp2(2 × glare threshold), as glare_find.comp
         float tanHalfX = 0.0f, tanHalfY = 0.0f;
         glm::vec3 tint{1.0f};   // the sunlight's colour, max channel 1
+        float rangeM = 0.0f;    // the viewer camera to the satellite (m): a resolved model fills the
+                                // viewer from metres away, so its glints take the full proximity size
+                                // (SatelliteSim sets it from its own viewer distance)
     };
     void recordViewerGlare(VkCommandBuffer cmd, const GpuMeshFrame &frame, int typeIdx, VkDescriptorSet probeSet,
                            const ViewerGlare &g, const void *glarePc, uint32_t glarePcSize);

@@ -11,6 +11,8 @@ layout(set = 0, binding = GLINT_LIST_BINDING, std430) GLINT_LIST_ACCESS buffer G
     uint count;                                              // append counter (may pass kMaxGlints)
     uint vertexCount, instanceCount, firstVertex, firstInstance; // VkDrawIndirectCommand
     uint pad0, pad1, pad2;
-    vec4 glintPos[kMaxGlints];   // xy = screen uv, z = the glint's light in effectFlare units
+    vec4 glintPos[kMaxGlints];   // xy = screen uv, z = the glint's light in effectFlare units,
+                                 // w = its mesh's range from the camera in metres (0 = unknown), which
+                                 // glare_mesh.vert scales the glare's size by (glare.glsl)
     vec4 glintColor[kMaxGlints]; // rgb = tint (max channel 1)
 } glints;

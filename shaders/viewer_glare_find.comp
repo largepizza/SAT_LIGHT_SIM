@@ -27,7 +27,10 @@ layout(push_constant) uniform PC {
     float flarePerI; // effectFlare per unit of intensity per unit irradiance (m²), the ground observer's
     float minFlare;  // 2^(2 × glare threshold)
     float tanHalfX, tanHalfY; // the viewer camera's
-    vec4  tint;      // rgb = the sunlight's colour (max 1)
+    vec3  tint;      // rgb = the sunlight's colour (max 1)
+    float rangeM;    // the viewer camera's range to the satellite (m): the model fills the viewer from
+                     // metres away, so its glints take the full proximity size (glare.glsl's
+                     // glareNearScale, applied in glare_mesh.vert) — the point of this path
 } pc;
 
 float texelFlare(ivec2 q, ivec2 size)
@@ -72,7 +75,7 @@ void main()
     uint i = atomicAdd(glints.count, 1u);
     if (i >= kMaxGlints) return;
     vec2 p = cen / e3 + 0.5;
-    glints.glintPos[i]   = vec4(p / vec2(size), e5, 0.0);
-    glints.glintColor[i] = vec4(pc.tint.rgb, 1.0);
+    glints.glintPos[i]   = vec4(p / vec2(size), e5, pc.rangeM);
+    glints.glintColor[i] = vec4(pc.tint, 1.0);
     atomicMax(glints.vertexCount, i + 1u);
 }

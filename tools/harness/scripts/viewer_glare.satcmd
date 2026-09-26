@@ -7,6 +7,14 @@
 #   g20  glare threshold -3 (a test setting; the slider stops at 0): the same view lists its glints
 #        (2 at 2036-11-21T20:15Z) and draws sprites on the bus and wing roots
 #   g21  glare=off: the only difference from g20 is the sprites (imgtools diff on the viewer crop)
+#   g22  glare near gain 1 (proximity off) at g20's view and threshold: the same glints, sprites a third
+#        of the radius — imgtools diff g20_observer_lowthr.png g22_nearoff.png isolates the sprite rings
+#        around them. The viewer's model is ~30 m away, so at the default gain 3 it takes the full
+#        proximity size (photometry.glare_near_gain / _range_km, 2026-09-26). Measured 2026-09-26
+#        (harness_runs\nearcheck2), a 360x280 crop of the viewer at threshold 2: diff(g20,g22) changes
+#        7.1 % of it inside a 363x378 box, diff(g22,g21) 1.5 % inside 162x150 — a ring ~4.6x the disc it
+#        surrounds, a radius ratio of ~2.4. Compare crops, not whole frames: the sun pillar and the
+#        status bar's fps text change frame to frame (more numbers in CLAUDE.md, "Proximity")
 #   g30  aim=sun (harness only): the camera on the Sun's side, a different set of glints
 preset High
 observer lat=34.5 lon=-120.4 agl=30
@@ -26,6 +34,12 @@ capture g20_observer_lowthr ui=on
 viewer glare=off
 wait 3
 capture g21_observer_lowthr_off ui=on
+viewer glare=on
+set photometry.glare_near_gain 1
+wait 3
+viewer
+capture g22_nearoff ui=on
+set photometry.glare_near_gain 3
 viewer glare=on aim=sun
 wait settle 20
 viewer

@@ -3,6 +3,8 @@
 // One point per glint glare_find.comp listed (drawn indirect on the list's own count), sized and
 // weighted exactly as glare.vert does a sprite of the same effectFlare, so a satellite keeps its glare
 // across the sprite → mesh hand-off, and on a large model the glare sits on the glint that makes it.
+// The list's w field (the mesh's range from the camera) feeds the same proximity size scaling the
+// sprite gets from its own rangeM (glare.glsl's glareNearScale) — glare_find.comp writes it.
 
 #include "glare.glsl"
 #define GLINT_LIST_BINDING 0
@@ -26,7 +28,7 @@ void main()
         gRadiusPx = 0.0;
         return;
     }
-    float radius = gpc.sizePx * (0.6 + s);
+    float radius = gpc.sizePx * (0.6 + s) * glareNearScale(p.w); // p.w: the mesh's range, glare.glsl
     gl_Position  = vec4(p.xy * 2.0 - 1.0, 0.5, 1.0);
     gl_PointSize = min(2.0 * radius, gpc.maxPointSize);
     gColor    = glints.glintColor[gl_VertexIndex].rgb;

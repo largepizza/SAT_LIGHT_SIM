@@ -22,10 +22,25 @@ layout(push_constant) uniform GlarePC {
     float threshold;    // the log response a glint needs before it glares
     float falloff;      // spike brightness along its length: (1 - r/length)^falloff
     float spikes;       // number of spikes
-    float pad0, pad1;
+    float nearGain;     // glareNearGain: the size multiplier at zero range (1 = off)
+    float nearRangeM;   // glareNearRangeKm in metres: at/beyond it the size is exactly as tuned
 } gpc;
 
 float glareHash(float n) { return fract(sin(n * 12.9898 + 4.1414) * 43758.5453); }
+
+// Proximity (2026-09-26): the SAME satellite glares far wider when the camera is near it — the viewer
+// resolves it from metres away, and a mesh resolved in the main view is a close-up too, while its
+// point sprite from the ground carries the glare the distance tuning was chosen for. So the sprite's
+// size scales by 1 → nearGain over range nearRangeM → 0, smoothly; at nearRangeM and beyond it is
+// exactly 1.0, leaving every distant/ground source untouched. Cost: two ALU ops off a range the
+// record already carries (a sprite's rangeM, a glint's glintPos.w), no extra pass or buffer.
+// A range of 0 means "unknown" (a record without one) and gets no scaling.
+float glareNearScale(float rangeM)
+{
+    if (rangeM <= 0.0 || gpc.nearRangeM <= 0.0 || gpc.nearGain <= 1.0) return 1.0;
+    float t = clamp(1.0 - rangeM / gpc.nearRangeM, 0.0, 1.0);
+    return mix(1.0, gpc.nearGain, t * t * (3.0 - 2.0 * t));
+}
 
 // d: pixels from the source; radius: the sprite's radius in pixels. Returns the corona's weight (x)
 // and the core's (y), both already windowed.

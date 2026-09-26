@@ -979,7 +979,7 @@ void SatMeshRenderer::recordViewerGlare(VkCommandBuffer cmd, const GpuMeshFrame 
     bb.size = VK_WHOLE_SIZE;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1,
                          &bb, 0, nullptr);
-    const float fpc[8] = {g.flarePerI, g.minFlare, g.tanHalfX, g.tanHalfY, g.tint.r, g.tint.g, g.tint.b, 1.0f};
+    const float fpc[8] = {g.flarePerI, g.minFlare, g.tanHalfX, g.tanHalfY, g.tint.r, g.tint.g, g.tint.b, g.rangeM};
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, glareFindPipe);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, glareFindPipeLayout, 0, 1, &glareFindSet, 0, nullptr);
     vkCmdPushConstants(cmd, glareFindPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(fpc), fpc);

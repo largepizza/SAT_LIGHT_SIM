@@ -412,29 +412,57 @@ User guide and command reference: **docs/HARNESS.md** (keep its table in step wi
 - `harnessRunner_` is null outside a harness run (and before the console's first use), and every
   hook is then a no-op. The first-run preset seed, intro, first-run notices, music and toasts are
   all suppressed in a harness run.
-- **Machine-level resets: 4 so far** — the *platform* (firmware, not the app) has hard-reset the
+- **Machine-level resets: 6 so far** — the *platform* (firmware, not the app) has hard-reset the
   whole machine while a run was up. Windows records WHEA-Logger 1 (the raw CPER record: fatal, UEFI
   BERT) and Kernel-Power 41 with `BugcheckCode=0`, i.e. **no dump will ever exist**, so the app's
-  fsynced log is the other witness — and a write that was mid-flight reads all-NUL. All four hit in
-  the ~3 s *launch* window, around line 7 of `satlight_log.txt` (entries 2 and 4 stopped at
-  `Swapchain created`; entries 1 and 3 one line earlier at `Logical device created.`), each costing
-  only its own run. `tools/harness/crashes.py` reads the evidence (read-only; `--preflight` runs
-  before every launch and `run.py` drops a `crash_witness.txt` into any run that dies without
-  `summary.json`). Usage, the tally, the UTC-vs-local rule (the app logs UTC, the event list is
-  local) and the "is this capture real?" check are in `docs/HARNESS.md` under *Machine-level resets*.
-  Note that 4 of the 8 resets in the last 72 h happened with **no run live** — not the app's doing.
-  Add a line to the tally every time it happens.
+  fsynced log is the other witness — and a write that was mid-flight reads all-NUL. All six hit in
+  the ~3 s *launch* window: entries 1-4 around line 7 of `satlight_log.txt` (entries 2 and 4 at
+  `Swapchain created`, 1 and 3 a line earlier at `Logical device created.`), entry 5 (2026-09-26
+  00:11, which found no firmware record at all) deeper, at line 13 `init: Earth textures (decode +
+  upload)` — and by the per-texture stamps of a healthy launch, ~430 ms into `earth_elevation.png`,
+  the 888 ms 14999×7500 decode that is the launch's slowest single step (earlier notes here said
+  21600×10800 — wrong size for that file). So `SatelliteSim::init` also logs `init: texture: <file>`
+  per texture now, and a reset inside that step names the file — which entry 6 (00:40, a by-hand
+  launch with no run folder) then did: line 21, `init: texture: assets/textures/earth_elevation.png`,
+  232 ms before the flight recorder's last sample, with VRAM mid-fill at P0/gen4 and nothing near a
+  limit. Two freezes, same file and step, 26 minutes apart, clean launches in between. Each
+  reset cost only its own run. `tools/harness/crashes.py` reads
+  the evidence (read-only; `--preflight` runs before every launch, `run.py` drops a
+  `crash_witness.txt` into any run that dies without `summary.json`, `--dump-status` checks whether
+  the manual-crash key is armed). Usage, the tally, the UTC-vs-local rule (the app logs UTC, the
+  event list is local) and the "is this capture real?" check are in `docs/HARNESS.md` under
+  *Machine-level resets*. Note that 4 of the 9 resets in the last 72 h happened with **no app
+  live** — not the app's doing — which is what `blackbox.py --install-task` is for (it keeps the
+  always-on recorder alive across a reset: after one, check `harness_runs\blackbox\daemon.log` and the
+  newest `<day>.csv`'s mtime, because a reset's leftover pid lock used to make the recorder refuse
+  *silently* — fixed 2026-09-26, the lock now names (pid, creation time)). Add a line to the tally every time it happens, and check
+  which binary the dead run was actually running before blaming a change: line 1 of its log is the
+  build stamp of the tree `run.py` found, and `run.py` only ever looks under `build/`. That is
+  exactly how entry 5 was misread for an hour (it ran the `build\Release` exe, not the fresh
+  `build-win-release` one the run was meant to check).
   **The resets predate the app** (2026-09-26): `crashes.py --history` reads the Kernel-WHEA/Errors
-  channel — 45 fatal records since 2025-05, 19 before the first commit, in episodes. Each record
+  channel — 46 fatal records since 2025-05, 19 before the first commit, in episodes (entry 5 added
+  none: its boot found no record; entry 6 added the 46th). Each record
   EMBEDS an Intel CrashLog (PMC `TGP/H` + trace + Punit), decodable with Intel's `iclg`
-  (`--export-crashlog` / `--decode-crashlog`); the old "pointers only" reading was wrong. **Decoded:
-  the machine FREEZES and is forced off** — 23 of the 26 PMC records give `pb_ovr` (power button held
-  4 s) as the reset cause, 3 a software restart, and no thermal trip / power failure / three-strike
-  ever. The WHEA "fatal" event is the firmware reporting that forced reset; catch the hang itself with
-  CrashOnCtrlScroll (docs/HARNESS.md, *Decoding the CrashLog*). Every
-  harness run also carries `blackbox.csv` (`tools/harness/blackbox.py`: GPU/CPU telemetry fsynced per
-  sample; `--daemon` for always-on), and `satlight_log.txt` has ms UTC stamps + `init: <step>`
-  breadcrumbs through the launch window.
+  (`--export-crashlog` / `--decode-crashlog`); the old "pointers only" reading was wrong. **Decoded,
+  all 46: the machine FREEZES and is forced off.** 24 of the 27 records that carry a PMC reset cause
+  give `pb_ovr` (power button held 4 s), 3 a software restart, 19 carry no reset cause at all — and
+  every hardware bit the PMC tracks (thermal trip, power-rail failure, three-strike, the watchdogs) is
+  0 in every record, so the WHEA "fatal" event is the firmware reporting the forced power-off, never a
+  fault it found. Catch the hang itself with CrashOnCtrlScroll (docs/HARNESS.md, *Decoding the
+  CrashLog*): armed since 2026-09-25 23:58 and loaded for entry 6's boot, pressed repeatedly *during*
+  entry 6's freeze — and it wrote nothing (no 0xE2, no dump, `BugcheckCode=0`), which is the useful
+  part of that: the freeze answered no keyboard interrupt, so it stopped below the OS, where no recorder
+  that lives in the OS can see. Every harness run also carries `blackbox.csv` (`tools/harness/blackbox.py`:
+  GPU/CPU telemetry fsynced per sample; `--daemon` for always-on, `--install-task` to survive a reset),
+  and `satlight_log.txt` has ms UTC stamps + `init: <step>` breadcrumbs through the launch window. Two
+  recorder faults found and fixed on 2026-09-26, both worth re-checking after a reset: the lock named its
+  holder by bare pid, so a reset's leftover pid (reused by a stranger within the minute) locked the next
+  boot's recorder out *silently* — it now names (pid, creation time), treats a pre-boot lock as stale, and
+  logs every start/refusal to `harness_runs\blackbox\daemon.log`; and the CSV's `utc` column truncated
+  where its `epoch` column rounded, so ~half of all rows disagreed with themselves by 1 ms (`_utc` now
+  rounds). `--install-task` cannot create a logon task here (`Access is denied` unelevated): the machine's
+  recorder comes back via the Startup launcher `satlight-blackbox.cmd`, so "no such task" is expected.
 
 ---
 
@@ -1080,7 +1108,9 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
       observer's, so at the Observer preset the glints carry their share of the ground flare, and the
       threshold is the main view's (glare from about mag 0.3). Live light + a tracked satellite only.
       Only reflections glare: the first cut gated on L > 2 (the most a diffuse face reaches), and a
-      Sun-facing rough-glass array (L ≈ 1) never glared. Harness: `viewer aim=observer|sun glare=`,
+      Sun-facing rough-glass array (L ≈ 1) never glared. Its glints carry the viewer camera's own range
+      (`ViewerGlare::rangeM` = `viewerDist`), so they take the full proximity glare size (2026-09-26,
+      above) — the viewer resolves a model from metres away. Harness: `viewer aim=observer|sun glare=`,
       `glints_last_frame`; `tools/harness/scripts/viewer_glare.satcmd`.
     - **Exposure = the sky's rule at the satellite** (`skyExposure()`'s curve on the Sun's elevation in
       its local sky, 2026-09-25): it was the day value whenever the satellite was lit, but a lit
@@ -2099,7 +2129,37 @@ an aliased centre) and a blue anamorphic streak the sun doesn't have; both are g
   frame-rate drop. `glare_find.comp` lists every 5×5 local maximum past the threshold into `glintBuf`
   (`GpuGlintList`, `include/glint_list.glsl`, 64 max, its own indirect args); `glare_mesh.vert/.frag`
   draws them with the same profile.
-Photometry sliders "Glare gain / size (px) / threshold / falloff / spikes" (`photometry.glare_*`).
+- **Proximity (2026-09-26, `glareNearGain` / `glareNearRangeKm`):** sprite radius =
+  `glareSizePx` × (0.6 + s) × `glareNearScale(range)`, which ramps 1 → `glareNearGain` over
+  `glareNearRangeKm` → 0, smoothstepped — exactly 1.0 at or beyond that range, for a range of 0
+  (unknown / none) and wherever `glareNearGain` ≤ 1 (the off switch). So a source hundreds of km off
+  — any satellite seen as a point sprite from the ground — keeps the distance-tuned look, while the
+  viewer's model and a mesh resolved in the main view, metres from the camera, spread their glare
+  `glareNearGain` (3) times wider. The range comes from data the record already carries — no extra
+  pass, buffer or RTT: a sprite's `GpuSatVisible::rangeM` (`glare.vert`), a glint's `glintPos.w`
+  (`glare_find.comp` writes `SatelliteSim::meshGlareRangeM`, the nearest mesh it drew this frame;
+  `viewer_glare_find.comp` writes `ViewerGlare::rangeM`, the viewer camera's own `viewerDist`), both
+  read back through the one `glareNearScale` in `include/glare.glsl`. `GlarePC`'s old `pad0`/`pad1`
+  became `nearGain`/`nearRangeM` (metres): the block is pinned at 112 B by `flareSourcePipeLayout`
+  (`glare.vert` is drawn with it), so it may not grow — hence the reuse of the padding.
+Photometry sliders "Glare gain / size (px) / threshold / falloff / spikes" (`photometry.glare_*`),
+plus "Glare near gain / near range (km)" (`photometry.glare_near_gain`, default 3.0, and
+`glare_near_range_km`, default 400). The five glare defaults are now the values tuned on screen for
+satellites seen from the ground at a distance — a release build's own `settings.json` (gain 0.684,
+size 29.79 px, threshold 1.765, falloff 4.678, spikes 10), not the earlier untuned 1.0/48/0.3/2.5/10
+— so a fresh install starts at the shape the proximity scaling must leave alone.
+  **Measured 2026-09-26** (`harness_runs\nearcheck2`, the `viewer_glare.satcmd` g20/g21/g22 A/B,
+  `imgtools` at threshold 2 on a 360×280 crop of the viewer — the only place this view draws a glint):
+  gain 3 vs gain 1 changes 7.1 % of that crop (bounding box 363×378 px around the glint) against 1.5 %
+  (162×150) for glare on-vs-off at gain 1, i.e. a ring ~4.6× the disc it surrounds → a radius ratio of
+  ~2.4, and visibly a whole burst instead of a compact star. Over glare-off, a 120×120 window on the
+  glint reads +17.3 mean luminance at gain 3, +3.8 at gain 1, +11.8 for the pre-proximity build
+  (`viewer_glare_final2`, which has no `glareNearScale` at all) — so the near case restores something
+  like the old on-screen size while the off case is the new release shape, ~1/3 of it. Nothing outside
+  the glints moves: the g10 viewer crop and a 300×300 main-view sky crop are byte-identical
+  (`mean_abs` 0.0) between the two builds with the low threshold both on and off. Two whole-frame diffs
+  of the same pair are *not* comparable — the sun-pillar beam and the status bar's fps text change
+  frame to frame — so A/B the crop.
 
 `dayBright`/`moonBright` are elevation-ramp scalars (squared linear, sun/moon dot observer-zenith)
 computed once per frame — **uniform across the sky, not per-satellite-direction**. This is an

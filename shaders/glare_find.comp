@@ -12,6 +12,8 @@ layout(local_size_x = 16, local_size_y = 16) in;
 // 5x5 light in the 3x3), which passed every thin bright edge and rejected the Sun's disc in a mirror
 // once it spanned a few texels.
 // Position: the light-weighted centroid of the 3x3, so the glare moves smoothly, not a texel at a time.
+// glintPos.w carries pc.rangeM (the nearest drawn mesh's range) so glare_mesh.vert can size a near
+// mesh's glare wider (glare.glsl's glareNearScale).
 
 layout(set = 0, binding = 0, rgba16f) uniform readonly image2D flareSrc;
 #define GLINT_LIST_BINDING 1
@@ -19,7 +21,9 @@ layout(set = 0, binding = 0, rgba16f) uniform readonly image2D flareSrc;
 
 layout(push_constant) uniform PC {
     float minFlare; // 2^(2 x glare threshold): effectFlare at the threshold
-    float pad0, pad1, pad2;
+    float rangeM;   // the nearest drawn mesh's range from the camera (0 = none): written into every
+                    // glint's w, so a near mesh's glare is sized wider (glare.glsl's glareNearScale)
+    float pad0, pad1;
 } pc;
 
 void main()
@@ -57,7 +61,7 @@ void main()
     if (i >= kMaxGlints) return;
     vec2 p = cen / e3 + 0.5;
     float m = max(max(col.r, col.g), max(col.b, 1e-6));
-    glints.glintPos[i]   = vec4(p / vec2(size), e5, 0.0);
+    glints.glintPos[i]   = vec4(p / vec2(size), e5, pc.rangeM);
     glints.glintColor[i] = vec4(col / m, 1.0);
     atomicMax(glints.vertexCount, i + 1u);
 }

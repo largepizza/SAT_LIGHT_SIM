@@ -50,7 +50,7 @@ void main()
     vec2  ndc = vec2(cam.x / (-cam.z) / (tanHalfFov * gpc.aspect), -cam.y / (-cam.z) / tanHalfFov);
     if (any(greaterThan(abs(ndc), vec2(1.3)))) { cull(); return; }
 
-    float radius = gpc.sizePx * (0.6 + s);
+    float radius = gpc.sizePx * (0.6 + s) * glareNearScale(sat.rangeM); // a near source glares wider
     gl_Position  = vec4(ndc, 0.5, 1.0);
     gl_PointSize = min(2.0 * radius, gpc.maxPointSize);
     gColor    = unpackUnorm4x8(sat.color).rgb;

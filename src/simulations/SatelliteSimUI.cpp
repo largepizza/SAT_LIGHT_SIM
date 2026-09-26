@@ -4059,7 +4059,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[33][12];
+    static char photoBufs[35][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -4123,6 +4123,12 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"Glare threshold", &glareThreshold, 0.0f, 3.5f, 0.05f, "%.2f", 30},
         {"Glare falloff", &glareFalloff, 0.5f, 8.0f, 0.1f, "%.1f", 31},
         {"Glare spikes", &glareSpikes, 3.0f, 32.0f, 1.0f, "%.0f", 32},
+        // Proximity (2026-09-26): the same satellite's glare widens as the camera nears it — 1.0 × the
+        // size above at this range and beyond, up to the gain below at zero range. The viewer's model
+        // and a mesh resolved in the main view are metres away and take the full gain; a satellite's
+        // point sprite from the ground, hundreds of km off, keeps the look tuned on "Glare size (px)".
+        {"Glare near gain", &glareNearGain, 1.0f, 8.0f, 0.25f, "%.2f", 33},
+        {"Glare near range (km)", &glareNearRangeKm, 1.0f, 20000.0f, 10.0f, "%.0f", 34},
     };
     for (auto &pp : photoParams)
     {
@@ -5879,6 +5885,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         glareThreshold = p.value("glare_threshold", glareThreshold);
         glareFalloff = p.value("glare_falloff", glareFalloff);
         glareSpikes = p.value("glare_spikes", glareSpikes);
+        glareNearGain = p.value("glare_near_gain", glareNearGain);
+        glareNearRangeKm = p.value("glare_near_range_km", glareNearRangeKm);
         mwPollutionThresholdLo = p.value("mw_pollution_threshold_lo", mwPollutionThresholdLo);
         mwPollutionThresholdHi = p.value("mw_pollution_threshold_hi", mwPollutionThresholdHi);
         darkSkyCityMag = p.value("dark_sky_city_mag", darkSkyCityMag);
@@ -6250,6 +6258,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"glare_threshold", glareThreshold},
         {"glare_falloff", glareFalloff},
         {"glare_spikes", glareSpikes},
+        {"glare_near_gain", glareNearGain},
+        {"glare_near_range_km", glareNearRangeKm},
         {"mw_pollution_threshold_lo", mwPollutionThresholdLo},
         {"mw_pollution_threshold_hi", mwPollutionThresholdHi},
         {"dark_sky_city_mag", darkSkyCityMag},

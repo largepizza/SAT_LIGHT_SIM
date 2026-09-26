@@ -450,11 +450,14 @@ void SatelliteSim::init(VulkanContext &ctx)
     };
     static_assert(KB_COUNT == 18, "KB enum and keybindings initializer are out of sync");
 
-    // Launch breadcrumbs (docs/HARNESS.md, "Machine-level resets"): every machine reset that caught
-    // a run died between "Swapchain created" and "env stars" — the ~2 s this block takes, which is
-    // the launch's first heavy GPU work (three noise bakes: one dispatch takes the GPU from idle to
-    // full load) and its largest CPU burst (8K texture + DEM decode). One fsynced line per step
-    // names the step the next one dies in; the ms stamps line up with tools/harness/blackbox.py.
+    // Launch breadcrumbs (docs/HARNESS.md, "Machine-level resets"): every one of the five resets that
+    // caught a run died inside this block — the four before 2026-09-26 in the device/swapchain lines
+    // just above it, the fifth (00:11, the first one whose binary had these breadcrumbs) 1.2 s into
+    // "init: Earth textures (decode + upload)". That step is the launch's largest CPU burst and its
+    // largest PCIe burst — nine texture decodes + uploads, 8K JPEGs and a 21600×10800 DEM among them —
+    // so createGlowResources() logs one line per texture too, and a freeze inside it names the file.
+    // One fsynced line per step names the step the next one dies in; the ms stamps line up with
+    // tools/harness/blackbox.py.
     Log::line("init: buffers");
     createBuffers(ctx);
     Log::line("init: cloud noise bake");
@@ -2905,7 +2908,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             gb.size = VK_WHOLE_SIZE;
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
                                  nullptr, 1, &gb, 0, nullptr);
-            const float findPc[4] = {std::exp2(2.0f * glareThreshold), 0.0f, 0.0f, 0.0f};
+            // [1] = the nearest drawn mesh's range: its glints get the proximity size a sprite of the
+            // same effectFlare gets from its own rangeM (glare_mesh.vert / glare.vert, glareNearScale).
+            const float findPc[4] = {std::exp2(2.0f * glareThreshold), meshGlareRangeM, 0.0f, 0.0f};
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, glareFindPipeline);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, glareFindPipeLayout, 0, 1, &glareFindDescSet,
                                     0, nullptr);
@@ -3560,7 +3565,12 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
         gpc.threshold = glareThreshold;
         gpc.falloff = glareFalloff;
         gpc.spikes = glareSpikes;
+        gpc.nearGain = glareNearGain;
+        gpc.nearRangeM = glareNearRangeKm * 1000.0f; // the model fills the viewer from metres away, so
+                                                     // its glints get the full glareNearGain — the
+                                                     // ground-view sprites are what it must not touch
         SatMeshRenderer::ViewerGlare vg;
+        vg.rangeM = (float)viewerDist; // camera to the bounding sphere's centre, by construction
         vg.flarePerI = (float)viewerFlarePerI;
         vg.minFlare = std::exp2(2.0f * glareThreshold);
         vg.tanHalfY = (float)std::tan(0.5 * fovY);
@@ -3977,6 +3987,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         int type = -1;
         glm::dvec3 satEcef{0.0};
         float fade = 0.0f, keep = 1.0f, glareKeep = 1.0f;
+        float rangeM = 0.0f; // its range from the observer, for the glare's proximity size
         MeshDrawn drawn{};
     };
     auto evalInstance = [&](const Job &job, InstResult &out) {
@@ -4072,6 +4083,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         out.type = ti;
         out.satEcef = satEcef;
         out.fade = fade;
+        out.rangeM = (float)range;
         out.keep = 1.0f - spriteGone;
         out.glareKeep = glarePoint;
         out.drawn = {sat, glm::normalize(glm::vec3(ecefToEnu * glm::vec3(rel))),
@@ -4091,6 +4103,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     };
     std::vector<KeepEntry> keepEntries;
     meshDrawn.clear();
+    meshGlareRangeM = 0.0f;
     for (size_t i = 0; i < jobs.size(); ++i)
     {
         const InstResult &r = results[i];
@@ -4102,6 +4115,11 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         instSat.push_back(jobs[i].sat);
         keepEntries.push_back({(uint32_t)jobs[i].sat, r.keep, r.glareKeep});
         meshDrawn.push_back(r.drawn);
+        // The nearest drawn mesh, for the glare's proximity size: glare_find.comp's glint records have
+        // no room for a range each (see meshGlareRangeM in the header), and a mesh on screen at all
+        // means the camera is close to something.
+        if (meshGlareRangeM <= 0.0f || r.rangeM < meshGlareRangeM)
+            meshGlareRangeM = r.rangeM;
         if (jobs[i].sat == followSatIndex && followActive)
         {
             meshSceneSatIdx = jobs[i].sat;
@@ -5435,6 +5453,8 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
             gpc.threshold = glareThreshold;
             gpc.falloff = glareFalloff;
             gpc.spikes = glareSpikes;
+            gpc.nearGain = glareNearGain;
+            gpc.nearRangeM = glareNearRangeKm * 1000.0f;
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glarePipeline);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flareSourcePipeLayout, 0, 1, &descSet, 0,
                                     nullptr);
@@ -8269,6 +8289,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // The sky shader samples it at angular coordinates around each flare source
     // to produce the irregular spiky corona shape (see lensFlare() in sat_sky.frag).
     {
+        Log::line("init: texture: assets/noise/rgba_noise.png");
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/noise/rgba_noise.png", &w, &h, &ch, 4);
         if (!pixels)
@@ -8336,6 +8357,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 
     // ── Moon texture: near-side face disc image (binding 2) ──────────────────
     {
+        Log::line("init: texture: assets/textures/full_moon.png");
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/textures/full_moon.png", &w, &h, &ch, 4);
         if (!pixels)
@@ -8398,6 +8420,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 
     // ── Earth day texture (binding 3): 8K equirectangular colour map ─────────
     {
+        Log::line("init: texture: assets/textures/8k_earth_daymap.jpg");
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/textures/8k_earth_daymap.jpg", &w, &h, &ch, 4);
         if (!pixels)
@@ -8490,6 +8513,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // CPU-computed ENU->galactic direction; see the "Milky Way skybox basis" block in
     // updatePositions().
     {
+        Log::line("init: texture: assets/textures/8k_stars_milky_way.jpg");
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/textures/8k_stars_milky_way.jpg", &w, &h, &ch, 4);
         if (!pixels)
@@ -8559,6 +8583,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 
     // ── Earth night texture (binding 4): 8K equirectangular night-lights map ─
     {
+        Log::line("init: texture: assets/textures/8k_earth_nightmap.jpg");
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/textures/8k_earth_nightmap.jpg", &w, &h, &ch, 4);
         if (!pixels)
@@ -8691,6 +8716,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         };
         for (auto &t : detailTexes)
         {
+            Log::line("init: texture: " + std::string(t.path));
             int w = 0, h = 0, ch = 0;
             stbi_uc *pixels = stbi_load(t.path, &w, &h, &ch, 4);
             if (!pixels)
@@ -8762,6 +8788,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 
     // ── Load earth elevation map (binding 5): 21600×10800 R8_UNORM , 0 = sea level
     {
+        Log::line("init: texture: assets/textures/earth_elevation.png");
         int w, h, ch;
         unsigned char *pixels = stbi_load("assets/textures/earth_elevation.png", &w, &h, &ch, 1);
         if (pixels)
@@ -8860,6 +8887,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 
     // ── Load earth specular map (binding 6): 8K R8_UNORM ocean mask ──────────────
     {
+        Log::line("init: texture: assets/textures/8k_earth_specular_map.png");
         int w, h, ch;
         unsigned char *pixels = stbi_load("assets/textures/8k_earth_specular_map.png", &w, &h, &ch, 1);
         if (pixels)
@@ -8934,6 +8962,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 
     // ── Load earth cloud map (binding 7): 8K R8_UNORM grayscale coverage ─────────
     {
+        Log::line("init: texture: assets/textures/8k_earth_clouds.jpg");
         int w, h, ch;
         unsigned char *pixels = stbi_load("assets/textures/8k_earth_clouds.jpg", &w, &h, &ch, 1);
         if (pixels)

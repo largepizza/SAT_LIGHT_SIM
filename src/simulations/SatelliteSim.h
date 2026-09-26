@@ -838,7 +838,8 @@ static_assert(sizeof(GpuOceanGlintBuf) == 16 + kMaxOceanGlints * 16, "GpuOceanGl
 // in sat_sky.frag UNCHANGED — "lens elements" (ghosts, chromatic streaks) stay sun-only, per
 // explicit user decision; it ALSO becomes one bright point in this new pipeline, so it gains real
 // godray shafts through cloud/terrain gaps on top of its existing hand-authored treatment.
-// glare.vert/.frag push constants (drawn with flareSourcePipeLayout, whose range is FlareSourcePC's).
+// glare.vert/.frag push constants (drawn with flareSourcePipeLayout, whose range is FlareSourcePC's —
+// so this may never grow past 112 bytes; the two fields below took over the old pad0/pad1, 2026-09-26).
 struct GlarePC
 {
     glm::mat4 skyView;
@@ -850,7 +851,8 @@ struct GlarePC
     float threshold;
     float falloff; // glareFalloff
     float spikes;  // glareSpikes
-    float pad0, pad1;
+    float nearGain;   // was pad0 — glareNearGain: the size multiplier a glare gets at zero range
+    float nearRangeM; // was pad1 — glareNearRangeKm in metres (include/glare.glsl's glareNearScale)
 };
 static_assert(sizeof(GlarePC) == 112, "GlarePC layout (include/glare.glsl)");
 
@@ -2735,6 +2737,10 @@ private:
     VkPipeline glareFindPipeline = VK_NULL_HANDLE; // compute: not recreated on resize
     VkPipeline glareMeshPipeline = VK_NULL_HANDLE; // graphics: recreated with glarePipeline
     bool meshGlareListed = false;                  // glare_find.comp ran this frame (recordCompute)
+    float meshGlareRangeM = 0.0f;                  // the nearest mesh drawn this frame (0 = none): its
+                                                   // glint list's records carry it so a mesh's glare gets
+                                                   // the proximity size a sprite's rangeM gives its own
+                                                   // (updateMeshes -> recordCompute -> glare_find.comp)
     // Ocean-glint list (see GpuOceanGlintBuf) — device-local, zeroed every frame like glowBuf.
     VkBuffer oceanGlintBuf = VK_NULL_HANDLE;
     VkDeviceMemory oceanGlintMem = VK_NULL_HANDLE;
@@ -2749,11 +2755,20 @@ private:
     // bright mesh glints alike. Threshold is in the bloom's log response (0 at effectFlare 1 ~ mag 0.8,
     // 4 at its cap). Falloff: spike brightness along its length, (1 - r/length)^falloff - higher keeps
     // a crowd of glares from summing into a white patch the size of the sprite.
-    float glareGain = 1.0f;
-    float glareSizePx = 48.0f;   // sprite radius per unit of response past the threshold
-    float glareThreshold = 0.3f;
-    float glareFalloff = 2.5f;
+    // Defaults are the values tuned on screen for satellites seen from the ground at a distance (the
+    // user's own settings.json, 2026-09-26: gain 0.684, size 29.79, threshold 1.765, falloff 4.678).
+    float glareGain = 0.684f;
+    float glareSizePx = 29.79f; // sprite radius per unit of response past the threshold
+    float glareThreshold = 1.765f;
+    float glareFalloff = 4.678f;
     float glareSpikes = 10.0f;
+    // ...and they stay exactly that for a source at `glareNearRangeKm` or beyond: proximity scales the
+    // sprite's SIZE alone, so a satellite up in the sky is untouched while one resolved metres away (the
+    // 3D viewer) or closing in on a zoomed 3D mesh spreads a much wider glare than a point 400 km off
+    // (glare.glsl's glareNearScale: 1 → glareNearGain over 0..nearRangeM, smoothstepped).
+    float glareNearGain = 3.0f;      // the size multiplier at zero range (1 = off)
+    float glareNearRangeKm = 400.0f; // where the multiplier is 1 again: a LEO satellite seen from the
+                                     // ground is never this close, so the tuned look above is intact
     float flareStreakGain = 0.35f;      // per-tap streak/godray strength (flare_blur.comp mode=2)
     float sunFlareRefIntensity = 40.0f; // fixed reference brightness for the sun's virtual point
                                         // in the flare-source buffer — NOT a slider (kept small in

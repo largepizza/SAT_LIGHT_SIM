@@ -59,6 +59,15 @@
   model as the main view.
 
 ### Changed
+- **Glare scales with proximity (2026-09-26).** A satellite's glare sprite is up to 3× wider where the
+  camera is right on top of it and untouched at 400 km and beyond, so a resolved model — in the 3D
+  viewer, or drawn as a mesh in the main view — spreads a far wider flare than the same satellite 400
+  km off, while a point sprite's glare from the ground is exactly the shape it was tuned to. The range
+  is one the frame already had, so the cost is a couple of ALU ops. Settings → Photometry gained
+  "Glare near gain" and "Glare near range (km)" (`photometry.glare_near_gain` = 3.0,
+  `photometry.glare_near_range_km` = 400; gain 1 = off). The glare's own defaults are now the
+  distance-tuned values a release build shipped in its `settings.json` (gain 0.684, size 29.79 px,
+  threshold 1.765, falloff 4.678) instead of the earlier untuned 1.0 / 48 / 0.3 / 2.5.
 - Unified scene depth: one encoding (log2 of the true ray distance, 1 cm to 1e9 m) written by
   terrain, ocean, opaque cloud, meshes, points and stars, replacing the 150 km cap and its manual
   occlusion tests. Satellites in front of the distant Earth (or a mountain, or a cloud) now occult
