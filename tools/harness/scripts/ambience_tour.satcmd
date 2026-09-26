@@ -17,9 +17,9 @@ audio expect birds_forest absent=crickets,jungle_day; audio record tour_03b_fore
 observer lat=50 lon=10 agl=2; time sun -3 rising; wait settle
 audio expect birds_dawn; audio record tour_03c_dawn seconds=10
 observer lat=-3 lon=-62 agl=2; time sun 30; wait settle
-audio expect jungle_day absent=birds_forest; audio record tour_03d_jungle_day seconds=10
+audio expect jungle_day absent=birds_forest,jungle_night; audio record tour_03d_jungle_day seconds=10
 observer lat=-3 lon=-62 agl=2; time sun -25; wait settle
-audio expect tropical_night; audio record tour_03e_jungle_night seconds=10
+audio expect tropical_night,jungle_night absent=jungle_day; audio record tour_03e_jungle_night seconds=10
 observer lat=23 lon=10 agl=2; time sun 30; wait settle
 audio expect wind_desert absent=wind_ground,crickets; audio record tour_03f_sahara seconds=10
 observer lat=34.05 lon=-118.25 agl=2; time sun -20; wait settle

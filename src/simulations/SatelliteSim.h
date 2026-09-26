@@ -2756,7 +2756,8 @@ private:
     // 4 at its cap). Falloff: spike brightness along its length, (1 - r/length)^falloff - higher keeps
     // a crowd of glares from summing into a white patch the size of the sprite.
     // Defaults are the values tuned on screen for satellites seen from the ground at a distance (the
-    // user's own settings.json, 2026-09-26: gain 0.684, size 29.79, threshold 1.765, falloff 4.678).
+    // user's own settings.json, 2026-09-26: gain 0.684, size 29.79, threshold 1.765, falloff 4.678,
+    // near gain 8.0, near range 21.86 km).
     float glareGain = 0.684f;
     float glareSizePx = 29.79f; // sprite radius per unit of response past the threshold
     float glareThreshold = 1.765f;
@@ -2764,11 +2765,11 @@ private:
     float glareSpikes = 10.0f;
     // ...and they stay exactly that for a source at `glareNearRangeKm` or beyond: proximity scales the
     // sprite's SIZE alone, so a satellite up in the sky is untouched while one resolved metres away (the
-    // 3D viewer) or closing in on a zoomed 3D mesh spreads a much wider glare than a point 400 km off
+    // 3D viewer) or closing in on a zoomed 3D mesh spreads a much wider glare than a distant point
     // (glare.glsl's glareNearScale: 1 → glareNearGain over 0..nearRangeM, smoothstepped).
-    float glareNearGain = 3.0f;      // the size multiplier at zero range (1 = off)
-    float glareNearRangeKm = 400.0f; // where the multiplier is 1 again: a LEO satellite seen from the
-                                     // ground is never this close, so the tuned look above is intact
+    float glareNearGain = 8.0f;      // the size multiplier at zero range (1 = off)
+    float glareNearRangeKm = 21.86f; // where the multiplier is 1 again: a satellite seen from the ground
+                                     // is never this close, so the tuned look above is intact
     float flareStreakGain = 0.35f;      // per-tap streak/godray strength (flare_blur.comp mode=2)
     float sunFlareRefIntensity = 40.0f; // fixed reference brightness for the sun's virtual point
                                         // in the flare-source buffer — NOT a slider (kept small in
@@ -2885,6 +2886,13 @@ private:
     // desert / ice drivers), classified from the same colours the ground is drawn with.
     std::vector<uint8_t> earthDayCpu;
     int earthDayCpuW = 0, earthDayCpuH = 0;
+    // Box-filtered 1024x512 byte copy of the CLOUD MAP (~39 km/px), the 2D coverage the clouds are
+    // drawn from: the ambience's `cloud` driver, i.e. how cloudy the sky is over the listener. The
+    // ground wind bed follows it, so it is windy in some places and a light breeze in others — the
+    // same weather the eye sees (the driver samples it with the same `cloudPhase` drift the surface
+    // overlay and the volumetric march use).
+    std::vector<uint8_t> earthCloudsCpu;
+    int earthCloudsCpuW = 0, earthCloudsCpuH = 0;
 
     // ── UI visibility & settings ──────────────────────────────────────────────
     // UC3: persisted (see loadSettings/saveSettings) so this only auto-plays on first run —
@@ -2900,14 +2908,16 @@ private:
     float masterVol_ = 0.8f; // mirrors AudioSystem default (display fallback)
     float musicVol_ = 0.6f;
     float sfxVol_ = 1.0f;
-    float ambienceVol_ = 0.7f;
-    // Sound tab (advanced) — persisted under "audio".
+    float ambienceVol_ = 0.8f;
+    // Sound tab (advanced) — persisted under "audio". Defaults are the user's own settings.json
+    // (2026-09-26), rounded to 2 s.f. per the cloud/photometry rule: fades 0.27/0.32, root 41 Hz,
+    // group gains (Ambience::groupNames() order) 0.93 / 1.0 / 1.0 / 1.6 / 1.2 / 2.0.
     float musicGapS = 30.0f;          // silence between tracks, for the ambience
-    float ambFadeInScale = 1.0f;      // multiplies every layer's fade_in_s
-    float ambFadeOutScale = 1.0f;     // ... and fade_out_s
+    float ambFadeInScale = 0.27f;     // multiplies every layer's fade_in_s
+    float ambFadeOutScale = 0.32f;    // ... and fade_out_s
     float musicAltFade = 1.0f;        // music bus multiplier from altitude (updateAmbience)
-    float ambRootHz = 55.0f;          // the tonal root every pitched ambience voice is a multiple of
-    float ambGroupGain[6] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f}; // Ambience::groupNames() order
+    float ambRootHz = 41.0f;          // the tonal root every pitched ambience voice is a multiple of
+    float ambGroupGain[6] = {0.93f, 1.0f, 1.0f, 1.6f, 1.2f, 2.0f}; // Ambience::groupNames() order
     // ── Ambient sound (SatelliteSimAmbience.cpp, the layer table in Ambience.h) ─────────────────
     // The sim's side: the context drivers, computed each frame from the CAMERA (in follow mode the
     // camera, not the parked telescope — ambience is what the listener hears).
@@ -2915,13 +2925,14 @@ private:
     struct AmbienceDrivers
     {
         int altM = -1, aglM = -1, groundM = -1, latDeg = -1, lonDeg = -1, sunElDeg = -1, oceanNear = -1, oceanWide = -1,
-            urban = -1, beam = -1, aurora = -1, wind = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
+            urban = -1, beam = -1, aurora = -1, wind = -1, cloud = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
             forest = -1, desert = -1, ice = -1, speed = -1, eas = -1;
     } ambD_;
     glm::dvec3 ambPrevCamEcef{0.0}; // wind rush: the camera's last position (ECEF, m)
     bool ambPrevValid = false;
     float ambSpeedEased = 0.0f;     // m/s, eased over ~0.3 s
     float ambSpeedRaw[3] = {};      // the last three raw speeds (median-of-3: one-frame spikes out)
+    float ambCloudEased = -1.0f;    // sky coverage over the listener, eased over ~1.5 s (-1 = unset)
     std::vector<std::vector<int>> ambGroupConsts_; // per shell group: constellation indices it matches
     void initAmbience();
     void updateAmbience(float dt);

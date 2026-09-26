@@ -118,6 +118,7 @@ void SatelliteSim::initAmbience()
     ambD_.beam = a.registerDriver("beam");
     ambD_.aurora = a.registerDriver("aurora");
     ambD_.wind = a.registerDriver("wind");
+    ambD_.cloud = a.registerDriver("cloud");
     ambD_.timeScale = a.registerDriver("time_scale");
     ambD_.following = a.registerDriver("following");
     ambD_.intro = a.registerDriver("intro");
@@ -322,6 +323,42 @@ void SatelliteSim::computeAmbienceContext(float dt)
         const float w = 0.65f * valueNoise(p.x, p.y, p.z + tH / 5.0) +
                         0.35f * valueNoise(p.x * 2.7 + 17.0, p.y * 2.7, p.z * 2.7 + tH / 1.7);
         a.set(ambD_.wind, std::clamp((w - 0.2f) / 0.6f, 0.0f, 1.0f));
+    }
+
+    // Cloudiness over the listener, straight from the CLOUD MAP — the 2D coverage the clouds are
+    // drawn from (earthCloudsCpu), sampled with the same cloudPhase longitude drift the surface
+    // overlay and the volumetric march use, so the weather the ear gets moves with the weather the
+    // eye sees. The ground wind bed follows this (driver `cloud`): a full bed under cloud, a light
+    // breeze in clear air — which is what makes the wind vary from place to place. It is the map's
+    // OWN coverage, not what the `coverage` slider draws of it, and if the map failed to load the
+    // driver is 1.0 (full wind) rather than a silently calmed bed.
+    // Eased over ~1.5 s: the map is coarse (39 km/px), so a Go to — or the first frame after the map
+    // loads — would otherwise step the bed's level by several dB in a single frame.
+    {
+        float raw = 1.0f;
+        if (!earthCloudsCpu.empty())
+        {
+            const double twoPi = 2.0 * glm::pi<double>();
+            double u = (lon + glm::pi<double>()) / twoPi +
+                       std::fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay), twoPi) / twoPi;
+            u -= std::floor(u);
+            const double v = (0.5 * glm::pi<double>() - lat) / glm::pi<double>();
+            const double fx = u * earthCloudsCpuW - 0.5, fy = v * earthCloudsCpuH - 0.5;
+            const int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy);
+            const float tx = (float)(fx - x0), ty = (float)(fy - y0);
+            auto px = [&](int x, int y)
+            {
+                x = ((x % earthCloudsCpuW) + earthCloudsCpuW) % earthCloudsCpuW;
+                y = std::clamp(y, 0, earthCloudsCpuH - 1);
+                return earthCloudsCpu[(size_t)y * earthCloudsCpuW + x] / 255.0f;
+            };
+            raw = glm::mix(glm::mix(px(x0, y0), px(x0 + 1, y0), tx),
+                           glm::mix(px(x0, y0 + 1), px(x0 + 1, y0 + 1), tx), ty);
+        }
+        ambCloudEased = (ambCloudEased < 0.0f || dt <= 0.0f)
+                            ? raw
+                            : ambCloudEased + (raw - ambCloudEased) * (1.0f - expf(-dt / 1.5f));
+        a.set(ambD_.cloud, std::clamp(ambCloudEased, 0.0f, 1.0f));
     }
 
     // ── Satellite shells ─────────────────────────────────────────────────────────────────────

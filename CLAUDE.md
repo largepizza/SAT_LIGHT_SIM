@@ -548,7 +548,11 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   the map is a dry-season mosaic, the Great Plains read tan — "not desert, not ice" is the grassland
   test), `urban` (night lights, the dome's response curve), `beam` (the `groundBeams` Gaussians at
   the origin: ~1.8e6 in a lit spot's core), `aurora` (oval band only), `wind` (value noise over
-  ECEF direction and sim time), `time_scale`, `following`, `intro`, and per shell group
+  ECEF direction and sim time — the jet stream and the alpine/desert/ice/sea winds), `cloud` (the 2D
+  coverage map's value overhead: bilinear over the 1024×512 `earthCloudsCpu`, drifted by the same
+  `cloudPhase` the surface overlay uses and eased over 1.5 s so a Go to cannot step it — `wind_ground`
+  follows it, a full bed under cloud and a light breeze in clear air, so the wind is loud in some
+  places and quiet in others), `time_scale`, `following`, `intro`, and per shell group
   `<g>_count` / `<g>_near_m`, and `speed_mps` / `eas`: the camera's ECEF speed and its
   equivalent airspeed `v·√(ρ/ρ0)` (8.5 km scale height), eased over 0.3 s. **No layer uses them:** a
   `wind_rush` layer on `eas` was removed at the user's request — it swamped every other layer
@@ -588,6 +592,9 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   44.1 kHz, 55.2 s — the length of `leo_motif.mp3`, the music track written alongside them. They are
   not at −24 LUFS (vlf_earth −20, firmament −29): the table's gains (0.16, 0.42) compensate.
   `make_ambience.py` credits them in `CREDITS.txt` (`ORIGINAL_NOTE`).
+  The jungle pair is one recordist's Amazonian set — `jungle_day` (676675) and `jungle_night` (868746,
+  a night frog and toad chorus), both by felix.blume (2026-09-26); the first jungle day recording
+  carried people talking, which is why the day bed and a night twin were re-sourced together.
 - **Music player** (`AudioSystem`): the playlist is `assets/sound/music/` with `gravity_wave.mp3`
   ALWAYS first (the intro is cut to it; Replay Intro restarts it), then every other mp3/flac/wav in
   name order. Between tracks a silent gap (`musicGapS`, 30 s, Sound tab advanced) gives the ambience

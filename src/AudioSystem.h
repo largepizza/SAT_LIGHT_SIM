@@ -157,5 +157,5 @@ private:
     float musicVol_  = 0.6f;
     float musicFade_ = 1.0f;
     float sfxVol_    = 1.0f;
-    float ambienceVol_ = 0.7f;
+    float ambienceVol_ = 0.8f;
 };

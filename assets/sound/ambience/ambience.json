@@ -5,8 +5,9 @@
     "A layer's gain = gain x its group's gain x every 'when' ramp x the best 'any' alternative; it slews linearly to that, up in fade_in_s, down in fade_out_s.",
     "Groups (Sound tab gains): wind water nature city space machines. A synth param given as {\"root\": k} is k x the tonal root (Sound tab, default 55 Hz), so pitched voices share one key.",
     "Ramp [a, b]: 0 at a -> 1 at b (a > b falls). [a, b, c, d]: rises a -> b, falls c -> d.",
-    "Drivers: alt_m agl_m ground_m lat_deg lon_deg sun_el_deg ocean_near ocean_wide veg forest desert ice urban beam aurora wind",
+    "Drivers: alt_m agl_m ground_m lat_deg lon_deg sun_el_deg ocean_near ocean_wide veg forest desert ice urban beam aurora wind cloud",
     "         speed_mps eas time_scale following intro, plus <group>_count / <group>_near_m per shell group.",
+    "         cloud = the 2D coverage map overhead, 0..1 (windy where it is cloudy, a light breeze where it is clear).",
     "Mix: every place should total about 10 dB under the music (~-35 LUFS against its ~-25; ambience_tour.satcmd measures it).",
     "Synths: wind hum drone beeps disk chorus surf (parameters: src/AmbientSynth.cpp). Files are relative to this folder;",
     "        miniaudio decodes WAV, FLAC and MP3."
@@ -20,11 +21,12 @@
       "id": "wind_ground",
       "group": "wind",
       "synth": "wind",
-      "gain": 0.25,
+      "gain": 0.15,
       "fade_in_s": 1.5,
       "fade_out_s": 1.0,
       "params": { "color": 0.4, "center_hz": 450, "q": 0.9, "body": 0.15, "body_hz": 140, "gust": 0.7, "gust_rate": 0.3, "hiss": 0.25, "width": 0.75 },
-      "mod": { "level": {"driver": "wind", "in": [0, 1], "out": [0.35, 1.0]} },
+      "_note": "The bed every other ground voice sits on: it follows the WEATHER overhead (driver `cloud`, the 2D coverage map the clouds are drawn from - a full bed under cloud, a light breeze in clear air), so it is windy in some places and calm in others, and it is quieter than it was because it used to drown the rest. The jet stream and the alpine/desert/ice/sea winds keep the noise field (driver `wind`).",
+      "mod": { "level": {"driver": "cloud", "in": [0.2, 0.75], "out": [0.4, 1.0]} },
       "when": { "agl_m": [1500, 150], "ocean_near": [0.7, 0.3], "ground_m": [3200, 1800], "desert": [0.8, 0.4] }
     },
     {
@@ -150,6 +152,15 @@
       "fade_in_s": 2.0,
       "fade_out_s": 1.0,
       "when": { "agl_m": [300, 30], "sun_el_deg": [2, 10], "forest": [0.3, 0.7], "lat_deg": [-25, -18, 18, 25], "urban": [0.8, 0.4], "time_scale": [3600, 300] }
+    },
+    {
+      "id": "jungle_night",
+      "group": "nature",
+      "loop": "jungle_night.flac",
+      "gain": 0.3,
+      "fade_in_s": 2.0,
+      "fade_out_s": 1.0,
+      "when": { "agl_m": [300, 30], "sun_el_deg": [-2, -10], "forest": [0.3, 0.7], "lat_deg": [-25, -18, 18, 25], "urban": [0.8, 0.4], "time_scale": [3600, 300] }
     },
     {
       "id": "city_day",

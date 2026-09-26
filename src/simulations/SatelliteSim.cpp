@@ -8994,6 +8994,26 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
             vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
             memcpy(mapped, pixels, (size_t)imgBytes);
             vkUnmapMemory(ctx.device, stageMem);
+            // Box-filtered 1024x512 byte copy (~39 km/px on the 8K source) for the ambience's `cloud`
+            // driver: how cloudy the sky is over the listener. The decode above is already paid for,
+            // so this is ~0.5 MB and a few million adds at boot for a per-place weather sample.
+            earthCloudsCpuW = 1024;
+            earthCloudsCpuH = 512;
+            earthCloudsCpu.assign((size_t)earthCloudsCpuW * earthCloudsCpuH, 0);
+            for (int cy = 0; cy < earthCloudsCpuH; ++cy)
+            {
+                const int y0 = cy * h / earthCloudsCpuH, y1 = std::max(y0 + 1, (cy + 1) * h / earthCloudsCpuH);
+                for (int cx = 0; cx < earthCloudsCpuW; ++cx)
+                {
+                    const int x0 = cx * w / earthCloudsCpuW, x1 = std::max(x0 + 1, (cx + 1) * w / earthCloudsCpuW);
+                    uint32_t sum = 0, n = 0;
+                    for (int y = y0; y < y1; ++y)
+                        for (int x = x0; x < x1; ++x, ++n)
+                            sum += pixels[(size_t)y * w + x];
+                    earthCloudsCpu[(size_t)cy * earthCloudsCpuW + cx] = (uint8_t)(sum / std::max(1u, n));
+                }
+            }
+
             stbi_image_free(pixels);
 
             ctx.createImage((uint32_t)w, (uint32_t)h,

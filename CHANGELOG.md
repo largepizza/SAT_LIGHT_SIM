@@ -59,6 +59,15 @@
   model as the main view.
 
 ### Changed
+- **The ground wind bed follows the weather (2026-09-26).** `wind_ground` was the loudest thing on the
+  ambience bus wherever the camera was low, in every place and every season. It now reads the 2D
+  coverage map the clouds are drawn from — a new `cloud` driver, bilinear over a 1024×512 CPU copy
+  taken at boot from the map already decoded for the GPU, drifted by the same `cloudPhase` the
+  surface overlay uses and eased over 1.5 s — so it is a full bed under an overcast and a light breeze
+  under a clear sky, and it varies from place to place as you fly. Its gain also drops 0.25 → 0.15
+  (it used to drown everything else). The curve lives in the layer table, so it stays moddable: level
+  0.4 → 1.0 across coverage 0.2 → 0.75 in `assets/sound/ambience/ambience.json`. The jet stream and
+  the alpine, desert, ice and sea winds are untouched — they keep the noise-field `wind` driver.
 - **Glare scales with proximity (2026-09-26).** A satellite's glare sprite is up to 3× wider where the
   camera is right on top of it and untouched at 400 km and beyond, so a resolved model — in the 3D
   viewer, or drawn as a mesh in the main view — spreads a far wider flare than the same satellite 400
@@ -99,6 +108,12 @@
   scrollable instead of just ending at the window edge.
 
 ### Fixed
+- **The jungle day bed is a different recording.** "jungle forest 02" (rucisko) carried people talking
+  under the insects; `jungle_day` is now an Amazon rainforest morning by felix.blume, and the night side
+  gained its own `jungle_night` species chorus (night frogs and toads at a caiman pond, French Guiana) —
+  both CC0, both from the same recordist, both normalised like the rest (`tools/make_ambience.py`,
+  `CREDITS.txt`). The equatorial night stop of `ambience_tour.satcmd` now expects crickets, tropical
+  night and jungle night together and still sits at the mix's ~10 dB under the music.
 - **Meshes and flares no longer fight in dense constellations (2026-09-25).** Only 64 satellites could be
   meshes, picked in random GPU order, so in the AI ring neighbours flickered between model and flare
   every frame. Up to 256 are now drawn, largest first, and the size at which a satellite turns into a
