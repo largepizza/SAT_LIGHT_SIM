@@ -55,3 +55,4 @@ satlight_log.txt
 # ── Automation harness output (docs/HARNESS.md) ───────────────────────────────
 /harness_runs/
 /harness_live/
+/tools/harness/iclg/

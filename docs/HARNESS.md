@@ -55,6 +55,8 @@ harness_runs/<stamp>_<script>/
   captures/<name>.state.json    `state <name>`
   perf_profiles/profile_log.jsonl   `perf name=...` samples and `sweep` records
   satlight_log.txt, settings.json, app_stdout.txt, <script>.satcmd (a copy of what ran)
+  blackbox.csv         GPU/CPU telemetry, fsynced per sample, from ~1 s before launch to exit
+                       (blackbox.py; --no-blackbox to skip) — see "Machine-level resets"
 ```
 
 Each run gets its own user-data folder, so it starts from the built-in defaults, never reads or
@@ -97,6 +99,7 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `select planet <name>`, `select none` | |
 | `follow [sat=<i>] [offset=along,cross,radial]`, `follow off` | fly with a satellite (types with a geometry model). The offset is in metres in the satellite's frame |
 | `track [on\|off]` | the selection panel's **Track** button: lock the camera onto the selected satellite and re-aim every frame (the observer stays put, so WASD still walks, and the wheel's `camera fov=` zoom is untouched). No argument = toggle; needs a satellite selection. Released by `select none`, `select planet`, `follow` and any explicit aim (`camera az=`/`el=`, `camera look`, `camera track`, a scripted camera key). `state` reports it as `camera.tracking` and `selection.track`. Not to be confused with `camera track <target>`, which is the harness's own aim-every-frame |
+| `viewer [aim=free\|observer\|toward\|sun] [light=live\|studio] [glare=on\|off] [shadows=on\|off] [dist=<radii>]` | the 3D view's own controls, for a `ui open viewer` / `ui open info` capture: `aim=observer` is the Observer chip (the satellite from the ground observer's direction), `aim=sun` (harness only) looks from the Sun's side, where a Sun-facing array glints; `dist` is in model radii. `glare=on` (the default) draws the main view's glare on the glints that make the flare the observer sees (Live light and a tracked satellite only). Reports `flare_per_i` (the observer's effectFlare per unit intensity; 0 = no glare), `glints_last_frame` (the previous frame's glint list: `wait` a frame after a change) and the PHOTOMETRY lines |
 | `const list`, `const "<name>"\|all on\|off [highlight=on\|off]` | constellation visibility |
 | `get [section[.key]]` | any persisted setting; `get` alone lists them all (the keys are `settings.json`'s) |
 | `set <section.key> <value>` (also `key=value`, several per line) | change settings through the same code path `settings.json` loads through. Unknown keys and wrong types are errors. Doesn't change the preset label |
@@ -354,6 +357,9 @@ python tools/harness/crashes.py --decode cper.json   # re-read a saved dump, no 
 python tools/harness/crashes.py --scan-run harness_runs/<dir>   # what survived in a run folder
 python tools/harness/crashes.py --witness harness_runs/<dir>    # write crash_witness.txt into it
 python tools/harness/crashes.py --preflight          # exit 3 if the firmware recorded a fatal error
+python tools/harness/crashes.py --history            # every fatal record Windows kept, by month
+python tools/harness/crashes.py --export-crashlog D  # one CPER (Intel CrashLog inside) per record
+python tools/harness/crashes.py --decode-crashlog D  # Intel's iclg over them (see Decoding the CrashLog)
 ```
 
 Exit codes: `0` nothing found, `3` a fatal firmware record (`--preflight` too), `2` the event log
@@ -372,10 +378,96 @@ instant and shows the binary reading next to the (wrong) BCD one.
 
 **Every section in every record here is a *firmware error record reference***
 (`81212A96-09ED-4996-9471-8D729C8E69ED`, UEFI 2.7 §N.2.5; that name is verified against EDK2
-`MdePkg/Include/Guid/Cper.h`). All 7608 bytes are three pointers: the platform stored the real record
-during POST, so this event proves the *severity* and the *moment* of the fatal error, never the
-device. `crashes.py` names the section type and says so under the record — the device-level detail
-needs the firmware's own log/BMC, or correlation by time, which is all the tally below has.
+`MdePkg/Include/Guid/Cper.h`) — **of type 2, which embeds the record itself.** Until 2026-09-26 this
+section said the 7608 bytes were "three pointers" with no device detail; that was wrong. Each section
+is a 32-byte header (type 2 = SoC firmware record, a record id, and the format GUID
+`8F87F311-C998-4D9E-A0C4-6065518C4F6D` = **Intel CrashLog**) followed by the raw CrashLog: 2560 B from
+the PCH's PMC (product `TGP/H`, the Z590's chipset), 512 B of PMC trace, and 4096 B from the CPU's
+Punit. Some records carry only the last two. Intel publishes the decoder: **`iclg`**
+([github.com/intel/crashlog](https://github.com/intel/crashlog), `iclg-windows.zip`), whose built-in
+collateral includes TGP. See *Decoding the CrashLog* below.
+
+### History: the resets predate the app (2026-09-26)
+
+`crashes.py --history` reads `Microsoft-Windows-Kernel-WHEA/Errors`, which keeps every fatal record
+Windows found at boot far longer than the System log does. On this machine: **45 fatal records,
+2025-05-29 .. 2026-09-25, 19 of them before this repository's first commit (2026-03-11).** They come
+in episodes (2025-06/07, 2025-10, 2026-02, 2026-08-01..21, 2026-09-22..25), often several within
+minutes, with long quiet stretches between (none 2026-03..07, the project's busiest months). So the
+app is at most a *trigger* — the entries below are when a launch happened to coincide with an episode.
+
+### Decoding the CrashLog
+
+```powershell
+python tools/harness/crashes.py --export-crashlog harness_runs/crashlog   # one CPER file per record
+# unzip iclg-windows.zip (github.com/intel/crashlog/releases) to tools/harness/iclg/ (gitignored)
+python tools/harness/crashes.py --decode-crashlog harness_runs/crashlog   # <time>.json + <time>.info.txt
+```
+
+Use `--export-crashlog`, not `iclg extract`: every record here has record id 0 and `iclg extract`
+keeps one per id (it kept 2 of 45). `iclg info` on the 2026-09-25 21:57 record lists `PMC rev 3
+TGP/H`, `PMC_TRACE rev 1 TGP/H`, `Punit` (product 0x028, no collateral) and two CPU regions. `--decode-crashlog` ends with a
+table of the PMC's reset-cause bits per record (`reset_cause_table`).
+
+**Decoded 2026-09-26 — the answer: these are FREEZES, forced off with the power button.** Of the 45
+records, the 26 that carry a PMC record name the global reset cause, and it is never the hardware:
+
+| n | PMC reset cause | meaning |
+|---|---|---|
+| 23 | `gblrst_cause_0.pb_ovr` (+ `host_pr_cause_0.cf9`) | **power-button override** — the button held 4 s |
+| 3 | `host_pr_cause_0.cf9` only | a software-initiated restart |
+| 19 | no PMC record (PMC trace + Punit + a CPU region iclg marks invalid) | — |
+
+Every hardware cause the PMC tracks is 0 in every record: `cpu_trip` (thermal trip), `syspwr_flr` /
+`pchpwr_flr` (power failure), `pmc_3strike` (a core stopped responding), `cpu_thrm_wdt`, the
+PMC/ME/TCO watchdogs, `ich_cat_tmp`. So the machine did **not** reset itself: it **hung**, was forced
+off, and the firmware filed a "fatal" CrashLog about that reset, which Windows then reports as a fatal
+hardware error. The WHEA event is the *consequence* of the freeze, never its cause, and everything above
+that reads "the firmware reset the platform" should be read that way. (It also explains entry 3's
+Kernel-Power 41 with no record, and the bursts minutes apart: a machine that froze again on the way
+back up.)
+
+What that changes: the thing to catch is the **hang**. A hard hang leaves no dump because Windows never
+bugchecks — unless it is told to on a key press. As administrator, once: `reg add
+HKLM\SYSTEM\CurrentControlSet\Services\kbdhid\Parameters /v CrashOnCtrlScroll /t REG_DWORD /d 1 /f`
+(USB keyboards; `i8042prt\Parameters` for PS/2), a *Kernel* or *Automatic* memory dump in System →
+Advanced → Startup and Recovery, and a reboot. Then, when it freezes: hold **right Ctrl** and press
+**Scroll Lock twice** before reaching for the power button. If the kernel still takes interrupts, the
+machine bugchecks with 0xE2 (MANUALLY_INITIATED_CRASH) and writes `C:\Windows\MEMORY.DMP`, showing what
+every CPU was doing. If even that does nothing, the hang is below the OS (a bus or device lockup), which
+is itself the diagnosis. `blackbox.py`'s last line then says when the machine froze (its samples stop),
+and the power-button reset time (Kernel-Power 41) how long it stayed frozen.
+
+### The flight recorder (`blackbox.py`)
+
+A reset erases everything in memory and Windows writes no dump, so the only record of what the
+hardware was doing is one already on disk. `tools/harness/blackbox.py` samples the GPU (`nvidia-smi`,
+100 ms: P-state, power avg + instant, clocks, temperature, utilisation, **PCIe link gen/width**, the
+active clock limiter) and the CPU (perf counters, 1 s: % performance, % utility, MHz, the ACPI thermal
+zone) and fsyncs every line. `run.py` and `live.py start` record one into every run folder
+(`blackbox.csv`, from ~1 s before the launch, so the idle → load step is in it); `crash_witness.txt`
+and the `crashes.py` report print its last 20 s — the final P-state / PCIe link transitions, peak
+power and temperature, and the marks.
+
+```powershell
+python tools/harness/blackbox.py --daemon      # ALWAYS ON: harness_runs/blackbox/<UTC day>.csv (250 ms, 14 days kept)
+python tools/harness/blackbox.py --out bb.csv -- cmake --build build --config Release --target accuracy-gate
+python tools/harness/blackbox.py --summary harness_runs/blackbox --at "2026-09-25 21:57:53"   # local time
+```
+
+**Run `--daemon` in a spare terminal whenever the machine is in use**: half the resets happened with
+no harness run live, and those are exactly the ones nothing recorded. At idle the GPU sits at P8 with
+the PCIe link at **Gen 1** and a launch retrains it to Gen 4 at the same moment the power steps up —
+one of the transitions the recorder is there to catch. First measurement (`harness_runs\viewer_glare_1`,
+2026-09-26): a 7 s run went through **five** P-state/link changes (P8 gen1 → P0 gen4 → P5 gen2 → P8
+gen1 → P5 gen2 → P0 gen4), ~23 W → ~220 W; the first came at 06:40:41.618Z, **16 ms before `init:
+buffers`** — i.e. at the `Logical device created` / `Swapchain created` lines where every in-run reset's
+log stopped. A correlation, not a cause: the decoded CrashLog decides.
+
+The app's side: `satlight_log.txt` stamps are **UTC with milliseconds** since 2026-09-26 (they line
+up with `blackbox.csv`), and `SatelliteSim::init` logs `init: <step>` before each step of the launch
+window (buffers, the three noise bakes, the cloud/depth targets, the Earth textures, pipelines, mesh
+renderer) — the ~2 s all four in-run resets fell inside, which the log used to show as one silent gap.
 
 Every row below was confirmed with `--scan-run` (that is where "all-zero" and "zero tail" come from).
 A run that is not named in a row finished normally — a reset cost the named folder, and nothing else.
@@ -410,7 +502,7 @@ create cloud_noise bake pipeline` — the bug fixed at 21:47, after which `tw_te
 `tw_terms_fix1` both finished. All five aborted the process and lost nothing to an all-zero write. The
 reset is the one whose log simply *stops*, usually with the next line committed as NUL.
 
-Earlier occurrences, if any, predate this table — the user's own count is authoritative.
+Earlier occurrences predate this table: see *History* above (45 records since 2025-05).
 
 To check a single file by hand:
 `python -c "import sys;b=open(sys.argv[1],'rb').read();print('all-zero' if b and not any(b) else 'ok')" <file>`

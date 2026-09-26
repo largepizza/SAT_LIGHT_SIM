@@ -2,6 +2,7 @@
 #include "Paths.h"
 #include "version.h"
 
+#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -97,11 +98,15 @@ namespace Log
     {
         if (g_path.empty())
             return;
-        time_t now = time(nullptr);
+        // Milliseconds, UTC: tools/harness/blackbox.py samples the GPU/CPU every 100 ms in UTC, and a
+        // whole-second stamp could not say which side of a launch step a hardware spike fell on.
+        const auto sinceEpoch = std::chrono::system_clock::now().time_since_epoch();
+        const time_t now = (time_t)std::chrono::duration_cast<std::chrono::seconds>(sinceEpoch).count();
+        const int ms = (int)(std::chrono::duration_cast<std::chrono::milliseconds>(sinceEpoch).count() % 1000);
         struct tm *utc = gmtime(&now);
-        char buf[16] = {};
+        char buf[24] = {};
         if (utc)
-            snprintf(buf, sizeof(buf), "[%02d:%02d:%02d] ", utc->tm_hour, utc->tm_min, utc->tm_sec);
+            snprintf(buf, sizeof(buf), "[%02d:%02d:%02d.%03d] ", utc->tm_hour, utc->tm_min, utc->tm_sec, ms);
         const std::string out = std::string(buf) + msg + '\n';
         std::lock_guard<std::mutex> lock(g_mutex);
         writeAll(out.data(), out.size());

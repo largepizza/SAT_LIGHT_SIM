@@ -14,6 +14,7 @@
 
 #include "SatMesh.h"
 
+#include <algorithm>
 #include <vector>
 
 struct VulkanContext;
@@ -28,7 +29,8 @@ struct GpuMeshFrame
     glm::vec4 moonDir;     // xyz, w = moonlight irradiance (fraction of sunlight)
     glm::vec4 earthCenter; // xyz, w = Earth rotation angle (cloud drift)
     glm::vec4 params;      // x = self-shadows, y = reflections, z = procedural detail,
-                           // w = output mode: 0 viewer (tonemapped), 1 photometric check, 2 scene (HDR + distance)
+                           // w = output mode: 0 viewer (tonemapped), 1 photometric check, 2 scene (HDR + distance),
+                           // 3 viewer glare source (check shading; L·d² and L)
     // Model viewer background only (sat_mesh_bg.frag): markers on the Earth, world positions
     // relative to the frame origin; w = 1 to draw. 0 = the observer, 1 = a mirror's ground site.
     glm::vec4 marker0;
@@ -131,6 +133,28 @@ public:
     void recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst, int typeIdx,
                       VkDescriptorSet probeSet);
 
+    // ── Viewer glare (2026-09-26) ───────────────────────────────────────────────────
+    // The glints that make the flare the ground observer sees, drawn as the main view's glare. A sun-only
+    // render from the viewer camera at half its resolution (sat_mesh.frag mode 3: L·d² and L, RGBA32F),
+    // viewer_glare_find.comp listing its specular 5×5 maxima as effectFlare (the texel's intensity ×
+    // flarePerI), and glare_mesh.vert/.frag drawing them additively onto the resolved viewer image.
+    // Record right after recordViewer() in the same frame: it draws the instance recordViewer() wrote
+    // (slot 0) with its own frame UBO. glarePc is SatelliteSim's GlarePC (include/glare.glsl).
+    struct ViewerGlare
+    {
+        float flarePerI = 0.0f; // effectFlare per unit of intensity per unit irradiance (0 = no glare)
+        float minFlare = 1.0f;  // exp2(2 × glare threshold), as glare_find.comp
+        float tanHalfX = 0.0f, tanHalfY = 0.0f;
+        glm::vec3 tint{1.0f};   // the sunlight's colour, max channel 1
+    };
+    void recordViewerGlare(VkCommandBuffer cmd, const GpuMeshFrame &frame, int typeIdx, VkDescriptorSet probeSet,
+                           const ViewerGlare &g, const void *glarePc, uint32_t glarePcSize);
+    // Glints the last completed recordViewerGlare() listed (the list's append count, capped at 64).
+    uint32_t viewerGlintCount() const
+    {
+        return glintMapped ? std::min(*static_cast<const uint32_t *>(glintMapped), 64u) : 0u;
+    }
+
     // ── Photometric check ─────────────────────────────────────────────────────────
     // Renders `inst` (frame.params.w = 1: sun only, scalar, L·d² per pixel) into a kCheckSize² R32F
     // target and copies it to host memory. After the frame that recorded it has completed (the next
@@ -220,6 +244,28 @@ private:
                 viewerResolveView = VK_NULL_HANDLE;
     VkFramebuffer viewerFb = VK_NULL_HANDLE;
     bool viewerHasContent = false;
+
+    // Viewer glare: the source render (half res), the glint list, the find and draw pipelines, and a
+    // pass that loads the resolved viewer image and adds the glare sprites onto it.
+    VkRenderPass glareSrcPass = VK_NULL_HANDLE, glareOverPass = VK_NULL_HANDLE;
+    VkPipeline glareSrcMeshPipe = VK_NULL_HANDLE;
+    uint32_t glareSrcW = 0, glareSrcH = 0;
+    VkImage glareSrc = VK_NULL_HANDLE, glareSrcDepth = VK_NULL_HANDLE;
+    VkDeviceMemory glareSrcMem = VK_NULL_HANDLE, glareSrcDepthMem = VK_NULL_HANDLE;
+    VkImageView glareSrcView = VK_NULL_HANDLE, glareSrcDepthView = VK_NULL_HANDLE;
+    VkFramebuffer glareSrcFb = VK_NULL_HANDLE, glareOverFb = VK_NULL_HANDLE;
+    VkBuffer glareFrameBuf = VK_NULL_HANDLE, glintBuf = VK_NULL_HANDLE;
+    VkDeviceMemory glareFrameMem = VK_NULL_HANDLE, glintMem = VK_NULL_HANDLE;
+    void *glareFrameMapped = nullptr, *glintMapped = nullptr;
+    VkDescriptorSet descSetGlare = VK_NULL_HANDLE; // descLayout, its own frame UBO (glareFrameBuf)
+    VkDescriptorSetLayout glareFindLayout = VK_NULL_HANDLE, glareDrawLayout = VK_NULL_HANDLE;
+    VkDescriptorPool glareDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet glareFindSet = VK_NULL_HANDLE, glareDrawSet = VK_NULL_HANDLE;
+    VkPipelineLayout glareFindPipeLayout = VK_NULL_HANDLE, glareDrawPipeLayout = VK_NULL_HANDLE;
+    VkPipeline glareFindPipe = VK_NULL_HANDLE, glareDrawPipe = VK_NULL_HANDLE;
+    void createViewerGlare(VulkanContext &ctx);  // passes, buffers, layouts, find + draw pipelines
+    void createViewerGlareTargets(VulkanContext &ctx);
+    void destroyViewerGlareTargets();
 
     // Photometric check pass (single-sampled, R32F → host).
     VkRenderPass checkPass = VK_NULL_HANDLE;

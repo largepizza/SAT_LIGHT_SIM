@@ -62,6 +62,23 @@ def crash_witness(out):
         return None
 
 
+def blackbox_start(out):
+    """GPU/CPU telemetry into <run>/blackbox.csv, fsynced per sample, from ~1 s before the launch
+    (so the idle -> load step is recorded) to the exit. A machine reset leaves no dump; this file
+    then ends at the last sample before the power went (docs/HARNESS.md, Machine-level resets).
+    Best-effort: returns None rather than fail a run."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import blackbox
+        os.makedirs(out, exist_ok=True)
+        bb = blackbox.BlackBox(os.path.join(out, "blackbox.csv")).start()
+        time.sleep(1.0)
+        bb.mark("launch")
+        return bb
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("script", nargs="?", help=".satcmd file")
@@ -74,6 +91,7 @@ def main():
     ap.add_argument("--fixed-dt", help="seconds per frame fed to the sim (default 1/60; 0 = real time)")
     ap.add_argument("--timeout", type=float, default=600, help="seconds before the run is killed")
     ap.add_argument("--quiet", action="store_true", help="only errors and the summary")
+    ap.add_argument("--no-blackbox", action="store_true", help="don't record GPU/CPU telemetry (blackbox.csv)")
     a = ap.parse_args()
 
     if not a.script and not a.commands:
@@ -98,6 +116,7 @@ def main():
     if warn:
         print(warn, flush=True)
     print(f"exe: {exe}\nrun: {out}", flush=True)
+    bb = None if a.no_blackbox else blackbox_start(out)
     t0 = time.time()
     try:
         proc = subprocess.run(cmd, cwd=REPO, timeout=a.timeout + 30,
@@ -106,6 +125,9 @@ def main():
     except subprocess.TimeoutExpired as e:
         code, output = "killed (timeout)", (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
     wall = time.time() - t0
+    if bb:
+        bb.mark("exit %s" % code)
+        bb.stop()
     with open(os.path.join(out, "app_stdout.txt"), "w", encoding="utf-8", errors="replace") if os.path.isdir(out) else open(os.devnull, "w") as f:
         f.write(output or "")
 

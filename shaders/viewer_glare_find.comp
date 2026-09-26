@@ -1,0 +1,78 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+// ── viewer_glare_find.comp — the glints of the satellite in the 3D viewer (2026-09-26) ─────────
+// The viewer shows one satellite resolved over hundreds of pixels; this finds the glints that make the
+// flare the ground observer sees, so each gets the glare a satellite of ITS share of the brightness
+// would get in the main view (glare_mesh.vert/.frag draw them, SatMeshRenderer::recordViewerGlare).
+//
+// Input: the viewer camera's sun-only render (sat_mesh.frag mode 3), half the viewer's resolution:
+// r = Ls·d², Ls the SPECULAR part of the sunlight (luminance, π × radiance per unit solar irradiance);
+// g = all of the sunlit L (unused here). A texel's radiant intensity per unit irradiance is L·d²·Ω/π
+// (the photometric check's integral), and × pc.flarePerI — the ground observer's effectFlare per unit
+// of it (range, extinction, brightnessScale) — its effectFlare. At the "Observer" camera preset the
+// glints therefore carry their share of the flare seen from the ground.
+//
+// Only reflections glare, never a diffuse face — however rough the reflection: a Sun-facing array of
+// rough glass peaks at L ≈ 1, no brighter than white paint, and a first cut that gated on L > 2 (the
+// most a diffuse face can reach) found no glint on the AI satellites at all. (The main view gates on
+// Sun-like brightness, 150..1500, because there a resolved mesh's glare competes with its sprite's.)
+// Then, like glare_find.comp: 5×5 local maxima (ties by texel index), glare if the 5×5 light passes the
+// threshold, placed at the light-weighted centroid of the 3×3.
+
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D glareSrc;
+#define GLINT_LIST_BINDING 1
+#include "glint_list.glsl"
+
+layout(push_constant) uniform PC {
+    float flarePerI; // effectFlare per unit of intensity per unit irradiance (m²), the ground observer's
+    float minFlare;  // 2^(2 × glare threshold)
+    float tanHalfX, tanHalfY; // the viewer camera's
+    vec4  tint;      // rgb = the sunlight's colour (max 1)
+} pc;
+
+float texelFlare(ivec2 q, ivec2 size)
+{
+    float ld2 = imageLoad(glareSrc, q).r;
+    if (ld2 <= 0.0) return 0.0;
+    // Solid angle of this texel: the tangent-plane area over (1 + u² + v²)^(3/2).
+    vec2 uv = ((vec2(q) + 0.5) / vec2(size) * 2.0 - 1.0) * vec2(pc.tanHalfX, pc.tanHalfY);
+    float omega = 4.0 * pc.tanHalfX * pc.tanHalfY / float(size.x * size.y) / pow(1.0 + dot(uv, uv), 1.5);
+    return pc.flarePerI * ld2 * omega * (1.0 / 3.14159265);
+}
+
+void main()
+{
+    ivec2 size = imageSize(glareSrc);
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    if (c.x >= size.x || c.y >= size.y) return;
+    float a = texelFlare(c, size);
+    // Its 5x5 sum is at most 25a if it is the local maximum.
+    if (a <= 0.0 || a * 25.0 < pc.minFlare) return;
+
+    int myIdx = c.y * size.x + c.x;
+    float e3 = 0.0, e5 = 0.0;
+    vec2  cen = vec2(0.0);
+    for (int y = -2; y <= 2; ++y)
+        for (int x = -2; x <= 2; ++x) {
+            ivec2 q = c + ivec2(x, y);
+            if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y) continue;
+            float f = texelFlare(q, size);
+            e5 += f;
+            if (x != 0 || y != 0) {
+                int qi = q.y * size.x + q.x;
+                if (f > a || (f == a && qi < myIdx)) return; // not the maximum
+            }
+            if (abs(x) <= 1 && abs(y) <= 1) {
+                e3 += f;
+                cen += f * vec2(q);
+            }
+        }
+    if (e5 < pc.minFlare) return;
+
+    uint i = atomicAdd(glints.count, 1u);
+    if (i >= kMaxGlints) return;
+    vec2 p = cen / e3 + 0.5;
+    glints.glintPos[i]   = vec4(p / vec2(size), e5, 0.0);
+    glints.glintColor[i] = vec4(pc.tint.rgb, 1.0);
+    atomicMax(glints.vertexCount, i + 1u);
+}

@@ -424,6 +424,17 @@ User guide and command reference: **docs/HARNESS.md** (keep its table in step wi
   local) and the "is this capture real?" check are in `docs/HARNESS.md` under *Machine-level resets*.
   Note that 4 of the 8 resets in the last 72 h happened with **no run live** — not the app's doing.
   Add a line to the tally every time it happens.
+  **The resets predate the app** (2026-09-26): `crashes.py --history` reads the Kernel-WHEA/Errors
+  channel — 45 fatal records since 2025-05, 19 before the first commit, in episodes. Each record
+  EMBEDS an Intel CrashLog (PMC `TGP/H` + trace + Punit), decodable with Intel's `iclg`
+  (`--export-crashlog` / `--decode-crashlog`); the old "pointers only" reading was wrong. **Decoded:
+  the machine FREEZES and is forced off** — 23 of the 26 PMC records give `pb_ovr` (power button held
+  4 s) as the reset cause, 3 a software restart, and no thermal trip / power failure / three-strike
+  ever. The WHEA "fatal" event is the firmware reporting that forced reset; catch the hang itself with
+  CrashOnCtrlScroll (docs/HARNESS.md, *Decoding the CrashLog*). Every
+  harness run also carries `blackbox.csv` (`tools/harness/blackbox.py`: GPU/CPU telemetry fsynced per
+  sample; `--daemon` for always-on), and `satlight_log.txt` has ms UTC stamps + `init: <step>`
+  breadcrumbs through the launch window.
 
 ---
 
@@ -1059,6 +1070,18 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
       and flickered as the camera orbited close. "You" / "Target" labels: `recordModelViewer` projects
       the dots (`viewerMarkerLabels`), `buildViewerMarkerLabels` floats UI text beside them through the
       view's crop.
+    - **Glare on the viewer's glints (2026-09-26, `viewerGlare`, RENDER "Glare", default on).** The main
+      view's glare, drawn on the glints that make the flare the ground observer sees
+      (`SatMeshRenderer::recordViewerGlare`, right after `recordViewer`): a half-res sun-only render from
+      the viewer camera (`sat_mesh.frag` **mode 3** = the check's shading, writing the SPECULAR sunlight
+      as L·d²), `viewer_glare_find.comp` (per texel effectFlare = L·d²·Ω/π × `viewerFlarePerI`, then
+      glare_find.comp's 5×5 maxima), and `glare_mesh.vert/.frag` additive onto the resolved image.
+      `viewerFlarePerI` (`updateViewerObserverInfo`) = K_FLUX·brightnessScale/r²·10^(−0.4·ext), the
+      observer's, so at the Observer preset the glints carry their share of the ground flare, and the
+      threshold is the main view's (glare from about mag 0.3). Live light + a tracked satellite only.
+      Only reflections glare: the first cut gated on L > 2 (the most a diffuse face reaches), and a
+      Sun-facing rough-glass array (L ≈ 1) never glared. Harness: `viewer aim=observer|sun glare=`,
+      `glints_last_frame`; `tools/harness/scripts/viewer_glare.satcmd`.
     - **Exposure = the sky's rule at the satellite** (`skyExposure()`'s curve on the Sun's elevation in
       its local sky, 2026-09-25): it was the day value whenever the satellite was lit, but a lit
       satellite over twilight is under the NIGHT exposure in the main view — the viewer read ~5x darker,

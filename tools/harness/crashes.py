@@ -7,6 +7,9 @@
     python tools/harness/crashes.py --json > cper.json  # keep the raw evidence forever
     python tools/harness/crashes.py --decode cper.json  # re-read a saved dump (no machine needed)
     python tools/harness/crashes.py --preflight         # run.py calls this before every launch
+    python tools/harness/crashes.py --history           # every fatal record Windows kept, by month
+    python tools/harness/crashes.py --export-crashlog harness_runs/crashlog   # the Intel CrashLogs
+    python tools/harness/crashes.py --decode-crashlog harness_runs/crashlog   # needs Intel iclg
 
 A machine-level reset here is not an app crash and leaves no dump: Windows boots, finds a UEFI BERT
 record of a *fatal hardware error*, logs WHEA-Logger 1 (the raw CPER record, as hex, in EventData)
@@ -18,6 +21,7 @@ Exit codes: 0 nothing found, 3 a fatal firmware record was found (report and --p
 event log could not be read.
 """
 import argparse
+import glob
 import json
 import os
 import struct
@@ -60,10 +64,20 @@ SECTION_TYPES = {
     "036F84E1-7F37-428C-A79E-575FDFAA84EC": "IOMMU DMAr error",
     "81212A96-09ED-4996-9471-8D729C8E69ED": "firmware error record reference",
 }
-# A firmware error record reference carries no hardware detail of its own: it points at the record the
-# platform stored during POST (FRU id + a GUID naming that stored record). Every record on this machine
-# is three of these, so the fatal detail is *not* in the event log - only the pointer to it is.
+# A "firmware error record reference" section (UEFI 2.7 N.2.10) starts with a 32-byte header: record
+# type (0 IPF SAL, 1 SoC type 1, 2 SoC type 2), revision, 6 reserved, a 64-bit record id and (type 2) a
+# GUID naming the record's format. Types 1/2 carry the record ITSELF after the header. Every record on
+# this machine is three type-2 sections with the Intel CrashLog GUID, i.e. 2560 + 512 + 4096 bytes of
+# raw Intel CrashLog: the PCH's PMC record, a PMC trace, and the CPU's Punit record. Until 2026-09-26
+# this file and docs/HARNESS.md called them "pointers with no hardware detail" - wrong: the detail is
+# here, and Intel's decoder (github.com/intel/crashlog, `iclg`) reads it; see --export-crashlog.
 FW_RECORD_GUID = "81212A96-09ED-4996-9471-8D729C8E69ED"
+FW_RECORD_TYPES = {0: "IPF SAL (pointer only)", 1: "SoC firmware record type 1", 2: "SoC firmware record type 2"}
+FW_RECORD_FORMATS = {"8F87F311-C998-4D9E-A0C4-6065518C4F6D": "Intel CrashLog"}
+# The Kernel-WHEA/Errors channel keeps every fatal record Windows found at boot, for far longer than
+# the System log (which rolls over): on this machine it reaches back to 2025-05, ten months before the
+# project's first commit.
+WHEA_ERRORS_LOG = "Microsoft-Windows-Kernel-WHEA/Errors"
 
 PS_COLLECT = r"""
 $ErrorActionPreference = 'SilentlyContinue'
@@ -216,7 +230,16 @@ def decode_cper(raw):
         s_off, s_len = struct.unpack_from("<II", b, off)
         s_sev = struct.unpack_from("<I", b, off + 48)[0]
         s_guid = _guid(b, off + 16)
+        fw = None
+        if s_guid == FW_RECORD_GUID and s_off + 32 <= len(b):
+            fw_type = b[s_off]
+            fw_fmt = _guid(b, s_off + 16) if fw_type == 2 else ""
+            fw = {"type": fw_type, "type_name": FW_RECORD_TYPES.get(fw_type, "?%d" % fw_type),
+                  "revision": b[s_off + 1], "record_id": struct.unpack_from("<Q", b, s_off + 8)[0],
+                  "format_guid": fw_fmt, "format_name": FW_RECORD_FORMATS.get(fw_fmt),
+                  "payload_bytes": max(0, s_len - 32) if fw_type in (1, 2) else 0}
         r["sections"].append({
+            "fw_record": fw,
             "offset": s_off, "length": s_len,
             "revision": struct.unpack_from("<H", b, off + 8)[0],
             "flags": struct.unpack_from("<I", b, off + 12)[0],
@@ -327,9 +350,14 @@ def describe(d):
         L.append("  section %d  @0x%X  %d B  sev=%s  type=%s%s"
                  % (i, s["offset"], s["length"], s["severity_name"], s["type_guid"],
                     ("  [" + ", ".join(note) + "]") if note else "  (type not identified)"))
-    if any(s["type_guid"] == FW_RECORD_GUID for s in d["sections"]):
-        L.append("  ^ a firmware error record reference is a pointer, not the error: the platform stored"
-                 " the real record during POST, and the hardware detail lives there, not in this event")
+        fw = s.get("fw_record")
+        if fw:
+            L.append("      %s rev %d, %s%s"
+                     % (fw["type_name"], fw["revision"], fw["format_name"] or fw["format_guid"] or "no format GUID",
+                        (", %d bytes of it embedded" % fw["payload_bytes"]) if fw["payload_bytes"] else ""))
+    if any((s.get("fw_record") or {}).get("format_name") == "Intel CrashLog" for s in d["sections"]):
+        L.append("  ^ the Intel CrashLog itself is in this event: decode it with Intel's iclg"
+                 " (crashes.py --export-crashlog DIR, then --decode-crashlog DIR)")
     return L
 
 
@@ -473,6 +501,11 @@ def report(ev, runs_dir, hours, slack, as_json):
                          ", finished" if x["finished"] else ", NO summary.json"))
         else:
             print("      no harness run folder was being written in that window")
+        live = [x for x in r["runs"] if not x["finished"]]
+        bb = blackbox_lines(live[-1]["dir"] if live else None,
+                            _ts(r["power"]["time"]) if r["power"] else r["ts"])
+        for l in bb:
+            print("      " + l)
     used = set(r["power"]["time"] for r in recs if r["power"])
     rest = [k for k in ev["power"] if k["time"] not in used]
     if rest:
@@ -494,9 +527,11 @@ def report(ev, runs_dir, hours, slack, as_json):
         d = b.get("data") or {}
         print("    %s  %s" % (b["time"][:19].replace("T", " "), d.get("param1", "")))
     if fatal:
-        print("\n  verdict: the firmware recorded a FATAL hardware error and reset the platform.")
-        print("           BugcheckCode 0 means no dump will ever be written - the CPER record above and")
-        print("           the app's own log (now fsynced per line) are the only evidence that survives.")
+        print("\n  verdict: the firmware filed a 'fatal' CrashLog record at boot. On this machine that record")
+        print("           has so far always been the chipset noting HOW it was reset - 23 of 26 decoded:")
+        print("           the power button held 4 s, i.e. a forced power-off of a FROZEN machine, with no")
+        print("           thermal trip, power failure or three-strike (--decode-crashlog prints the causes).")
+        print("           BugcheckCode 0: Windows never bugchecked, so no dump exists.")
     return 3 if fatal else 0
 
 
@@ -538,7 +573,10 @@ def write_witness(run_dir, hours=6):
          "# the app last wrote something at %s" % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end)),
          "", "what survived in the run folder:"]
     L += ["  " + x for x in scan_lines(run_dir)]
-    hits = [e for e in ev["whea"] if _ts(e["time"]) >= end - hours * 3600]
+    bb = blackbox_lines(run_dir)
+    if bb:
+        L += ["", "the flight recorder (blackbox.csv) - the hardware's last seconds:"] + ["  " + x for x in bb]
+    hits =[e for e in ev["whea"] if _ts(e["time"]) >= end - hours * 3600]
     if hits:
         for e in sorted(hits, key=lambda x: _ts(x["time"])):
             L += ["", "WHEA-Logger 1 at %s - hardware error recorded by the firmware:"
@@ -558,6 +596,180 @@ def write_witness(run_dir, hours=6):
     return path
 
 
+# ── the long history, and the CrashLog payloads ──
+
+PS_WHEA_ERRORS = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+@(Get-WinEvent -LogName '%s' -MaxEvents 5000 -ErrorAction SilentlyContinue | ForEach-Object {
+  $r = ''
+  try { $x = [xml]$_.ToXml(); foreach ($n in $x.Event.EventData.Data) { if ($n.Name -eq 'RawData') { $r = $n.'#text' } } } catch {}
+  [pscustomobject]@{ time = $_.TimeCreated.ToString('o'); id = $_.Id; raw = $r }
+}) | ConvertTo-Json -Depth 3 -Compress
+""" % WHEA_ERRORS_LOG
+
+
+def whea_history():
+    """Every fatal record in the Kernel-WHEA/Errors channel, oldest first: [{time, ts, raw}]."""
+    p = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", PS_WHEA_ERRORS],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
+    if p.returncode != 0:
+        raise RuntimeError("event log read failed (rc=%s): %s" % (p.returncode, (p.stderr or "").strip()[-400:]))
+    txt = p.stdout.strip()
+    d = json.loads(txt) if txt else []
+    d = d if isinstance(d, list) else [d]
+    out = [{"time": e["time"], "ts": _ts(e["time"]), "raw": e.get("raw") or ""} for e in d if e.get("raw")]
+    return sorted(out, key=lambda e: e["ts"])
+
+
+def first_commit_ts():
+    try:
+        p = subprocess.run(["git", "log", "--reverse", "--format=%ct"], cwd=REPO, stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, text=True)
+        return float(p.stdout.split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def history_report():
+    ev = whea_history()
+    if not ev:
+        print("no records in %s" % WHEA_ERRORS_LOG)
+        return 0
+    fc = first_commit_ts()
+    months = {}
+    for e in ev:
+        months.setdefault(e["time"][:7], []).append(e)
+    print("%s: %d fatal firmware records, %s .. %s"
+          % (WHEA_ERRORS_LOG, len(ev), ev[0]["time"][:10], ev[-1]["time"][:10]))
+    if fc:
+        pre = [e for e in ev if e["ts"] < fc]
+        print("  %d of them BEFORE this repository's first commit (%s) - the resets predate the app"
+              % (len(pre), time.strftime("%Y-%m-%d", time.localtime(fc))))
+    sig = {}
+    for e in ev:  # same firmware record shape each time? (section count and sizes)
+        c = decode_cper(e["raw"])
+        k = tuple(s["length"] for s in c.get("sections", []))
+        sig[k] = sig.get(k, 0) + 1
+    print("  record shapes (section sizes): " + ", ".join("%s x%d" % (list(k), n) for k, n in sig.items()))
+    print("\n  by month:")
+    for m in sorted(months):
+        days = sorted(set(e["time"][8:10] for e in months[m]))
+        print("    %s  %2d  %s" % (m, len(months[m]), "#" * len(months[m])) + "   days " + " ".join(days))
+    return 3
+
+
+def export_crashlogs(dest):
+    """One CPER file per fatal record (<local time>.crashlog). `iclg extract` keeps only one record per
+    record id, and every record here has id 0, so it drops 43 of 45; this keeps them all."""
+    os.makedirs(dest, exist_ok=True)
+    n = 0
+    for e in whea_history():
+        name = e["time"][:19].replace(":", "").replace("-", "") + ".crashlog"
+        try:
+            data = bytes.fromhex("".join(e["raw"].split()))
+        except ValueError:
+            continue
+        with open(os.path.join(dest, name), "wb") as f:
+            f.write(data)
+        n += 1
+    print("wrote %d CPER record(s) to %s" % (n, dest))
+    return 0
+
+
+def find_iclg():
+    """Intel's CrashLog decoder (github.com/intel/crashlog releases, iclg-windows.zip). Looked for in
+    $ICLG, tools/harness/iclg/, then PATH. Not vendored: it is a 3 MB third-party binary."""
+    cands = [os.environ.get("ICLG", ""), os.path.join(os.path.dirname(os.path.abspath(__file__)), "iclg", "iclg.exe")]
+    for c in cands:
+        if c and os.path.isfile(c):
+            return c
+    from shutil import which
+    return which("iclg") or which("iclg.exe")
+
+
+def decode_crashlogs(src):
+    """iclg decode each <src>/*.crashlog into <name>.json, and iclg info into <name>.info.txt."""
+    exe = find_iclg()
+    if not exe:
+        print("iclg not found: download iclg-windows.zip from https://github.com/intel/crashlog/releases,"
+              " unzip it to tools/harness/iclg/ (or set ICLG=<path to iclg.exe>)")
+        return 2
+    files = sorted(glob.glob(os.path.join(src, "*.crashlog")))
+    for fp in files:
+        base = os.path.splitext(fp)[0]
+        for args, suffix in ((["info", fp], ".info.txt"), (["decode", fp], ".json")):
+            p = subprocess.run([exe] + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            with open(base + suffix, "wb") as f:
+                f.write(p.stdout)
+            if p.returncode != 0:
+                print("%s: iclg %s failed (%d): %s" % (os.path.basename(fp), args[0], p.returncode,
+                                                        p.stderr.decode(errors="replace").strip()[-300:]))
+    print("decoded %d record(s) in %s (<time>.json + <time>.info.txt)" % (len(files), src))
+    print("\n" + "\n".join(reset_cause_table(src)))
+    return 0
+
+
+# PMC reset-cause flags worth naming (TGP collateral, iclg's field names). pb_ovr is the one that has
+# been set on this machine: the power button held for 4 s. The rest would mean the hardware itself pulled
+# the reset: a thermal trip, a power-rail failure, a watchdog, a CPU three-strike.
+RESET_CAUSES = {
+    "pb_ovr": "power button held 4 s (a forced power-off)",
+    "cf9": "software restart (a write to port CF9)",
+    "cpu_trip": "CPU THERMAL TRIP", "syspwr_flr": "SYSTEM POWER FAILURE", "pchpwr_flr": "PCH POWER FAILURE",
+    "pmc_3strike": "CPU THREE-STRIKE (a core stopped responding)", "cpu_thrm_wdt": "CPU thermal watchdog",
+    "pmc_wdt": "PMC watchdog", "me_wdt": "ME watchdog", "tco_wdt": "TCO watchdog", "ich_cat_tmp": "PCH catastrophic temperature",
+}
+
+
+def reset_cause_table(src):
+    """Per decoded record (<src>/*.json from iclg): the PMC's non-zero reset-cause bits, and a tally."""
+    def walk(o, p=""):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                yield from walk(v, p + "." + k)
+        elif isinstance(o, list):
+            for i, v in enumerate(o):
+                yield from walk(v, p + "[%d]" % i)
+        else:
+            yield p, o
+    L, tally = ["reset causes the chipset (PMC) recorded:"], {}
+    for fp in sorted(glob.glob(os.path.join(src, "*.json"))):
+        try:
+            with open(fp, encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        rows = list(walk(d))
+        has_pmc = any(".pmc.pmu." in p for p, _ in rows)
+        causes = sorted(set(p.rsplit(".", 1)[1] for p, v in rows
+                            if ".pmu." in p and not p.endswith("_value") and _int(v)))
+        key = ", ".join(causes) if has_pmc else "(no PMC record in this one)"
+        tally[key] = tally.get(key, 0) + 1
+        L.append("  %s  %s" % (os.path.basename(fp)[:15], key))
+    L.append("tally:")
+    for k, n in sorted(tally.items(), key=lambda x: -x[1]):
+        named = "; ".join(RESET_CAUSES.get(c.strip(), c.strip()) for c in k.split(",")) if not k.startswith("(") else k
+        L.append("  %3d  %s" % (n, named))
+    return L
+
+
+def blackbox_lines(run_dir=None, at_ts=None):
+    """The flight recorder's last seconds (blackbox.py): the run's own blackbox.csv, else the
+    always-on recorder's day files around `at_ts`. [] when nothing was recording."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import blackbox
+    except Exception:
+        return []
+    if run_dir and os.path.exists(os.path.join(run_dir, "blackbox.csv")):
+        return blackbox.summarize(os.path.join(run_dir, "blackbox.csv"))
+    if at_ts is not None and os.path.isdir(blackbox.DAEMON_DIR):
+        rows = [r for r in blackbox.read(blackbox.DAEMON_DIR) if at_ts - 600 <= r[0] <= at_ts + 1]
+        if rows:
+            return blackbox.summarize(blackbox.DAEMON_DIR, at_ts)
+    return []
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--hours", type=float, default=72, help="how far back to look (default 72)")
@@ -568,7 +780,21 @@ def main():
     ap.add_argument("--decode", action="append", default=[], metavar="FILE", help="decode a saved --json dump or raw hex")
     ap.add_argument("--preflight", action="store_true", help="exit 3 if the machine reset since the last run")
     ap.add_argument("--witness", metavar="DIR", help="write crash_witness.txt into a dead run folder")
+    ap.add_argument("--history", action="store_true", help="every fatal record Windows kept (Kernel-WHEA/Errors), by month")
+    ap.add_argument("--export-crashlog", metavar="DIR", help="write each fatal record's CPER (Intel CrashLog inside) to DIR")
+    ap.add_argument("--decode-crashlog", metavar="DIR", help="run Intel's iclg over DIR/*.crashlog (see find_iclg)")
     a = ap.parse_args()
+
+    try:
+        if a.history:
+            return history_report()
+        if a.export_crashlog:
+            return export_crashlogs(os.path.abspath(a.export_crashlog))
+    except RuntimeError as e:
+        print("cannot read the event log: %s" % e, file=sys.stderr)
+        return 2
+    if a.decode_crashlog:
+        return decode_crashlogs(os.path.abspath(a.decode_crashlog))
 
     if a.witness:
         print(write_witness(os.path.abspath(a.witness)) or "no witness written")

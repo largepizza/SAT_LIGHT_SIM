@@ -450,13 +450,25 @@ void SatelliteSim::init(VulkanContext &ctx)
     };
     static_assert(KB_COUNT == 18, "KB enum and keybindings initializer are out of sync");
 
+    // Launch breadcrumbs (docs/HARNESS.md, "Machine-level resets"): every machine reset that caught
+    // a run died between "Swapchain created" and "env stars" — the ~2 s this block takes, which is
+    // the launch's first heavy GPU work (three noise bakes: one dispatch takes the GPU from idle to
+    // full load) and its largest CPU burst (8K texture + DEM decode). One fsynced line per step
+    // names the step the next one dies in; the ms stamps line up with tools/harness/blackbox.py.
+    Log::line("init: buffers");
     createBuffers(ctx);
+    Log::line("init: cloud noise bake");
     createCloudNoisePipeline(ctx);
+    Log::line("init: cloud warp noise bake");
     createCloudWarpNoisePipeline(ctx); // must run before createCloudMarchDescriptors (binding 9)
+    Log::line("init: aurora noise bake");
     createAuroraNoisePipeline(ctx);    // must run before createGlowResources' writes (binding 16)
+    Log::line("init: cloud march + scene depth targets");
     createCloudMarchResources(ctx);    // images must exist before createGlowResources' writes (bindings 10/11)
     createSceneDepthResources(ctx);    // image must exist before createGlowResources' writes (binding 19)
+    Log::line("init: Earth textures (decode + upload)");
     createGlowResources(ctx);
+    Log::line("init: Earth textures done");
     // Constellations are built BEFORE the descriptor sets (lighting overhaul Phase 1): the
     // per-satellite buffers are sized to the real satellite count rather than MAX_SATELLITES, so
     // they can't exist until initConstellation() has run. initConstellation() needs earthElevCpu
@@ -492,6 +504,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     }
     uploadSatOrbits(ctx); // bake + upload GpuSatOrbit/GpuSatType data after orbits are built
     Log::line("satellite orbits uploaded");
+    Log::line("init: pipelines");
     createDescriptors(ctx);
     createComputePipeline(ctx);
     createOrbitDescriptors(ctx);
@@ -512,6 +525,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     createFlareResources(ctx);
     createFlareDescriptors(ctx);
     createFlarePipelines(ctx);
+    Log::line("init: mesh renderer + environment probes");
     // Phase 4 mesh renderer: needs the Earth textures (createGlowResources) and the loaded models
     // (initConstellation, above).
     {
@@ -3147,6 +3161,7 @@ void SatelliteSim::updateViewerObserverInfo()
     for (auto &v : viewerOrbitValue)
         v[0] = '\0';
     viewerOrbitCount = 0;
+    viewerFlarePerI = 0.0;
     if (viewerSatIndex < 0 || viewerSatIndex >= (int)satOrbits.size())
     {
         snprintf(viewerObsLine[0], sizeof(viewerObsLine[0]), "No satellite tracked");
@@ -3234,9 +3249,15 @@ void SatelliteSim::updateViewerObserverInfo()
         return;
     }
     snprintf(viewerPhotLine[1], sizeof(viewerPhotLine[1]), "Mag %.2f above the air", r.magnitude);
+    // The viewer's glare (recordViewerGlare): effectFlare per unit of intensity per unit irradiance as
+    // the ground observer receives it — sat_orbit.comp's K_FLUX·I/r²·brightnessScale, dimmed by the line
+    // of sight's extinction. Below the horizon, above the air (the glints are still the ones that would
+    // flare there).
+    viewerFlarePerI = satphot::kFluxToFlare * (double)brightnessScale / std::max(range * range, 1.0);
     if (!hidden)
     {
         const double ext = atmExtinctionMag(obs, d, range, (double)extinctionCoeff);
+        viewerFlarePerI *= std::pow(10.0, -0.4 * ext);
         snprintf(viewerPhotLine[2], sizeof(viewerPhotLine[2]), "Mag %.2f as you see it (ext %.2f)",
                  r.magnitude + ext, ext);
     }
@@ -3519,6 +3540,34 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
                                  (c.y / c.w * 0.5f + 0.5f) * frame.bgParams.w};
     }
     meshRenderer.recordViewer(cmd, frame, inst, viewerType, envProbes.probeSet(0));
+
+    // ── Glare on its glints (2026-09-26) ───────────────────────────────────
+    // The main view's glare, on the glints that make the flare the ground observer sees: each glint's
+    // effectFlare is its rendered intensity toward the camera × the observer's flare per unit intensity
+    // (updateViewerObserverInfo), so with the "Observer" camera preset they add up to that flare. Needs a
+    // tracked satellite (a range) and Live light (Studio's sun is not the one the observer sees).
+    if (viewerGlare && glareGain > 0.0f && tracked && !viewerStudioLight && viewerFlarePerI > 0.0)
+    {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(ctx_->physicalDevice, &props);
+        const float kFlareDayFloor = 0.35f; // recordDraw's eye adaptation, at the ground observer
+        const float eyeAdapt = glm::mix(kFlareDayFloor, 1.0f, glm::clamp(-sunDirENU.w * 5.0f, 0.0f, 1.0f));
+        GlarePC gpc{};
+        gpc.gain = glareGain * eyeAdapt;
+        // Sized for the viewer's pixels as the main view's are for its own (per 1080 px of height).
+        gpc.sizePx = glareSizePx * (float)std::max(1u, viewerBgH) / 1080.0f;
+        gpc.maxPointSize = std::min(props.limits.pointSizeRange[1], 1024.0f);
+        gpc.threshold = glareThreshold;
+        gpc.falloff = glareFalloff;
+        gpc.spikes = glareSpikes;
+        SatMeshRenderer::ViewerGlare vg;
+        vg.flarePerI = (float)viewerFlarePerI;
+        vg.minFlare = std::exp2(2.0f * glareThreshold);
+        vg.tanHalfY = (float)std::tan(0.5 * fovY);
+        vg.tanHalfX = vg.tanHalfY * viewerAspect;
+        vg.tint = glm::vec3(inst.sunColor);
+        meshRenderer.recordViewerGlare(cmd, frame, viewerType, envProbes.probeSet(0), vg, &gpc, sizeof(gpc));
+    }
 
     // ── Photometric check ───────────────────────────────────────────────────
     // From the viewer's current direction, 60 model radii out (parallax across the model ~1 deg), sun

@@ -2175,6 +2175,10 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                     if (button(7, viewerDetail ? "Detail: on" : "Detail: off", "Detail",
                                                viewerDetail))
                                         viewerDetail = !viewerDetail;
+                                    // Glare on the glints that make the flare you see (recordViewerGlare):
+                                    // Live light and a tracked satellite only.
+                                    if (button(11, viewerGlare ? "Glare: on" : "Glare: off", "Glare", viewerGlare))
+                                        viewerGlare = !viewerGlare;
                                 });
 
                     // ── CHECK: the render-vs-lobes cross-check ─────────────────────────────────

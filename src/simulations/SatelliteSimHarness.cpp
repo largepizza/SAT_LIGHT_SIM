@@ -189,7 +189,7 @@ const char *kHelp =
     "wait <frames> | wait seconds <s> | wait settle [frames]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
     "observer lat= lon= [agl=|alt=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
-    "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; "
+    "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; "
     "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
@@ -896,6 +896,85 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     // with `camera track <target>`, which is this harness's own aim-every-frame. No argument = toggle.
     // Needs a satellite selection; `select none`, `select planet`, `camera az=|el=|look|track`, `follow`
     // and any scripted camera key all release it.
+    // `viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]`
+    // — the 3D view's own controls (its chips and RENDER section) for a `ui open viewer` capture.
+    // aim=observer is the Observer chip: the satellite from the ground observer's direction, where the
+    // glare (2026-09-26) shows the glints of the flare the observer sees. aim=sun (harness only) looks from
+    // the Sun's side, where a Sun-facing array glints. dist is in model radii.
+    if (n == "viewer")
+    {
+        auto onOff = [&](const char *key, bool &v) {
+            if (!c.has(key))
+                return;
+            const std::string s = lower(c.str(key));
+            if (s != "on" && s != "off")
+                fail(std::string("viewer: ") + key + "=on|off");
+            v = s == "on";
+        };
+        if (c.has("aim"))
+        {
+            const std::string a = lower(c.str("aim"));
+            if (a == "free")
+                viewerAim = 0;
+            else if (a == "observer" || a == "from")
+                viewerAim = 1;
+            else if (a == "toward")
+                viewerAim = 2;
+            else if (a == "sun")
+            {
+                // Harness only: a free camera on the Sun's side of the satellite (the backscatter
+                // direction) — where a Sun-facing array's own glint is, whatever the observer sees. The
+                // same yaw/pitch frame recordModelViewer's presets use (ECEF, the satellite's east/north/up).
+                if (viewerSatIndex < 0 || viewerSatIndex >= (int)satOrbits.size())
+                    fail("viewer aim=sun: open the viewer on a satellite first (`ui open viewer`)");
+                const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+                const double th = earthRotationAngle(t), ct = std::cos(th), st = std::sin(th);
+                auto toEcef = [&](glm::dvec3 v) { return glm::dvec3(ct * v.x + st * v.y, -st * v.x + ct * v.y, v.z); };
+                const glm::dvec3 P = toEcef(satOrbitStateAt(orbitElemsOf(satOrbits[viewerSatIndex]), t).posEci);
+                const glm::dvec3 up = glm::normalize(P);
+                glm::dvec3 east = glm::cross(glm::dvec3(0.0, 0.0, 1.0), up);
+                east = glm::length(east) > 1e-9 ? glm::normalize(east) : glm::dvec3(1.0, 0.0, 0.0);
+                const glm::dvec3 north = glm::cross(up, east);
+                const glm::dvec3 d = glm::normalize(toEcef(glm::dvec3(sunDirECI)));
+                viewerAim = 0;
+                viewerPitchDeg = (float)glm::degrees(std::asin(glm::clamp(glm::dot(d, up), -1.0, 1.0)));
+                viewerYawDeg = (float)glm::degrees(std::atan2(glm::dot(d, north), glm::dot(d, east)));
+            }
+            else
+                fail("viewer: aim=free|observer|toward|sun");
+        }
+        if (c.has("light"))
+        {
+            const std::string l = lower(c.str("light"));
+            if (l != "live" && l != "studio")
+                fail("viewer: light=live|studio");
+            viewerStudioLight = l == "studio";
+        }
+        onOff("glare", viewerGlare);
+        onOff("shadows", viewerShadows);
+        if (c.has("dist"))
+        {
+            const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(viewerType);
+            if (!tm)
+                fail("viewer dist=: open the viewer on a model satellite first (`ui open viewer`)");
+            viewerDist = (float)(parseNum(c.str("dist"), "viewer dist") * std::max(0.1f, tm->boundsRadius));
+        }
+        updateViewerObserverInfo();
+        r["aim"] = viewerAim;
+        r["studio_light"] = viewerStudioLight;
+        r["glare"] = viewerGlare;
+        r["flare_per_i"] = viewerFlarePerI;
+        r["glints_last_frame"] = meshRenderer.viewerGlintCount(); // the previous frame's list
+        r["sat"] = viewerSatIndex;
+        nlohmann::json phot = nlohmann::json::array();
+        for (const auto &l : viewerPhotLine)
+            if (l[0])
+                phot.push_back(l);
+        r["photometry"] = phot;
+        r["message"] = std::string("viewer aim=") + (viewerAim == 1 ? "observer" : viewerAim == 2 ? "toward" : "free") +
+                       (viewerGlare ? " glare=on" : " glare=off");
+        return Status::Done;
+    }
     if (n == "track")
     {
         const std::string arg = lower(pos(0));

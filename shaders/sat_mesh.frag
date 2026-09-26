@@ -352,10 +352,13 @@ void main()
 
     // Photometric check (frame.params.w): sun only, scalar (the photometry has no colour), no
     // patterns; output L·d² so the CPU's Σ L·d²·Ω/π is the model's radiant intensity toward the camera.
-    // params.w is a MODE (0 viewer, 1 check, 2 scene), not a flag: the first scene-pass cut tested
-    // `> 0.5` here, so the scene rendered check output (red L·d², distance 0) — a glowing red
-    // silhouette in the bloom and no mesh in the sky.
-    const bool check = abs(frame.params.w - 1.0) < 0.5;
+    // params.w is a MODE (0 viewer, 1 check, 2 scene, 3 viewer glare source), not a flag: the first
+    // scene-pass cut tested `> 0.5` here, so the scene rendered check output (red L·d², distance 0) — a
+    // glowing red silhouette in the bloom and no mesh in the sky.
+    // Mode 3 (2026-09-26) shades exactly as the check does, for viewer_glare_find.comp, and writes the
+    // SPECULAR part of the sunlight: the viewer glares each glint by its share of the flare.
+    const bool glareSrc = abs(frame.params.w - 3.0) < 0.5;
+    const bool check = abs(frame.params.w - 1.0) < 0.5 || glareSrc;
     const vec3 Ngeo = N; // before the pattern's micro-normals: which SIDE the light is on
     Surface sf = check ? Surface(N, vec3(1.0), 1.0, mat.roughness, 1.0) : applyPattern(mat, inst, N);
     N  = sf.N;
@@ -368,6 +371,7 @@ void main()
     const bool  shadows = frame.params.x > 0.5;
 
     vec3 L = vec3(0.0);
+    vec3 Lspec = vec3(0.0); // the sunlight's specular part (mode 3 writes it: the glints the viewer glares)
 
     // ── Sun ──────────────────────────────────────────────────────────────────
     vec3  S  = inst.sun.xyz;
@@ -376,7 +380,8 @@ void main()
         bool blocked = shadows && inst.occluderCount > 0u && rayBlocked(inst, vWorld, S);
         if (!blocked) {
             vec3 E = inst.sunColor.rgb * inst.sun.w;
-            L += E * (diffC * ns + specC * specCos(N, V, S, a2 + SUN_ALPHA2, mat.f0, beck));
+            Lspec = E * specC * specCos(N, V, S, a2 + SUN_ALPHA2, mat.f0, beck);
+            L += E * diffC * ns + Lspec;
         }
     }
 
@@ -393,7 +398,11 @@ void main()
 
     if (check) {
         vec3 d = vWorld - frame.camPos.xyz;
-        outColor = vec4(L.r * dot(d, d), 0.0, 0.0, 1.0);
+        // Mode 3: the specular sunlight (a reflection, however rough, never a diffuse face) as L·d², and
+        // the whole sunlit L; both luminance (L is sunColor × a scalar here).
+        const vec3 kLum = vec3(0.2126, 0.7152, 0.0722);
+        float Ls = dot(Lspec, kLum);
+        outColor = glareSrc ? vec4(Ls * dot(d, d), dot(L, kLum), 0.0, 1.0) : vec4(L.r * dot(d, d), 0.0, 0.0, 1.0);
         outDist  = 0.0;
         return;
     }

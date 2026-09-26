@@ -1,0 +1,32 @@
+# Viewer glare (2026-09-26): the 3D view draws the main view's glare on the glints that make the flare
+# the ground observer sees (SatMeshRenderer::recordViewerGlare). `viewer` reports glints_last_frame (the
+# previous frame's glint list) and flare_per_i (the observer's effectFlare per unit intensity).
+#   g10  Observer preset at the default threshold: this AI satellite is mag 2.66 and its specular light
+#        is faint (rough-glass arrays, flare-mitigation tilt), so NO glints — as in the main view, where
+#        glare starts near mag 0.3. Expected: glints_last_frame 0
+#   g20  glare threshold -3 (a test setting; the slider stops at 0): the same view lists its glints
+#        (2 at 2036-11-21T20:15Z) and draws sprites on the bus and wing roots
+#   g21  glare=off: the only difference from g20 is the sprites (imgtools diff on the viewer crop)
+#   g30  aim=sun (harness only): the camera on the Sun's side, a different set of glints
+preset High
+observer lat=34.5 lon=-120.4 agl=30
+time sun -8 setting
+time pause
+wait settle
+select const "SpaceX AI Satellites"
+ui open info
+viewer aim=observer
+wait settle 20
+viewer
+capture g10_observer ui=on
+set photometry.glare_threshold -3
+wait 3
+viewer
+capture g20_observer_lowthr ui=on
+viewer glare=off
+wait 3
+capture g21_observer_lowthr_off ui=on
+viewer glare=on aim=sun
+wait settle 20
+viewer
+capture g30_sun_lowthr ui=on

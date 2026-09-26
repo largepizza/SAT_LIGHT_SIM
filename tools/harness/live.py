@@ -55,7 +55,17 @@ def cmd_start(a):
     if a.fixed_dt is not None:
         args += ["--fixed-dt", a.fixed_dt]
     flags = 0x00000008 if os.name == "nt" else 0  # DETACHED_PROCESS
-    subprocess.Popen(args, cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+    app = subprocess.Popen(args, cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+    # The flight recorder (blackbox.py, docs/HARNESS.md "Machine-level resets"): detached like the
+    # app, it records GPU/CPU telemetry into the run folder until the app's process exits.
+    if not a.no_blackbox:
+        try:
+            os.makedirs(out, exist_ok=True)
+            subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "blackbox.py"),
+                              "--out", os.path.join(out, "blackbox.csv"), "--until-pid", str(app.pid)],
+                             cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+        except OSError:
+            pass
     t0 = time.time()
     while time.time() - t0 < a.timeout:
         ok, st = alive(a.dir)
@@ -116,6 +126,7 @@ def main():
     s = sp.add_parser("start")
     s.add_argument("--config", default="Release"); s.add_argument("--exe"); s.add_argument("--window", default="1600x900")
     s.add_argument("--settings"); s.add_argument("--fixed-dt"); s.add_argument("--timeout", type=float, default=90)
+    s.add_argument("--no-blackbox", action="store_true", help="don't record GPU/CPU telemetry (blackbox.csv)")
     s = sp.add_parser("send")
     s.add_argument("commands", nargs="?", default=""); s.add_argument("-f", "--file")
     s.add_argument("--timeout", type=float, default=300); s.add_argument("--json", action="store_true")

@@ -1835,6 +1835,11 @@ private:
     float viewerUvPop[4] = {0.0f, 0.0f, 1.0f, 1.0f};
     bool viewerSpin = true, viewerStudioLight = false, viewerSunlitPose = true, viewerDetail = true;
     bool viewerShadows = true, viewerReflections = true;
+    // Glare on the viewer's glints (SatMeshRenderer::recordViewerGlare, 2026-09-26), and the ground
+    // observer's effectFlare per unit of intensity per unit irradiance that scales it (0 = none), set by
+    // updateViewerObserverInfo at 10 Hz.
+    bool viewerGlare = true;
+    double viewerFlarePerI = 0.0;
     bool viewerDragging = false;
     uint32_t viewerImageId = 0;
     UIImage viewerImageMini, viewerImagePop;

@@ -99,6 +99,8 @@ void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth, const
                    checkFrameMem, &checkFrameMapped);
     makeHostBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, nullptr, sceneFrameBuf,
                    sceneFrameMem, &sceneFrameMapped);
+    makeHostBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, nullptr, glareFrameBuf,
+                   glareFrameMem, &glareFrameMapped);
     makeHostBuffer(ctx, sizeof(GpuMeshInstance) * kMaxInstances, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr,
                    instanceBuf, instanceMem, &instanceMapped);
     // Placeholders until setTypeModels() so the descriptor set is always complete.
@@ -119,6 +121,7 @@ void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth, const
     createViewerPass(ctx);
     createCheckPass(ctx);
     createScenePass(ctx);
+    createViewerGlare(ctx); // its source pass must exist before createPipelines builds glareSrcMeshPipe
     createPipelines(ctx);
     Log::line(std::string("mesh renderer: viewer MSAA ") + (samples == VK_SAMPLE_COUNT_4_BIT ? "4x" : "off"));
 }
@@ -143,6 +146,22 @@ void SatMeshRenderer::cleanup(VkDevice d)
     destroy(d, checkFrameMem, vkFreeMemory);
     checkMapped = checkFrameMapped = nullptr;
     destroySceneTarget();
+    destroy(d, glareSrcMeshPipe, vkDestroyPipeline);
+    destroy(d, glareFindPipe, vkDestroyPipeline);
+    destroy(d, glareDrawPipe, vkDestroyPipeline);
+    destroy(d, glareFindPipeLayout, vkDestroyPipelineLayout);
+    destroy(d, glareDrawPipeLayout, vkDestroyPipelineLayout);
+    destroy(d, glareDescPool, vkDestroyDescriptorPool);
+    destroy(d, glareFindLayout, vkDestroyDescriptorSetLayout);
+    destroy(d, glareDrawLayout, vkDestroyDescriptorSetLayout);
+    destroy(d, glareSrcPass, vkDestroyRenderPass);
+    destroy(d, glareOverPass, vkDestroyRenderPass);
+    destroy(d, glintBuf, vkDestroyBuffer);
+    destroy(d, glintMem, vkFreeMemory);
+    glintMapped = nullptr;
+    destroy(d, glareFrameBuf, vkDestroyBuffer);
+    destroy(d, glareFrameMem, vkFreeMemory);
+    glareFrameMapped = nullptr;
     destroy(d, reflPipe, vkDestroyPipeline);
     destroy(d, reflPass, vkDestroyRenderPass);
     destroy(d, reflAddPipe, vkDestroyPipeline);
@@ -209,31 +228,31 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
     li.pBindings = b;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
-    // Two sets of the same layout: the viewer's and the photometric check's (own frame UBO — both
-    // can be recorded in one frame, and a shared host-written UBO would hold only the last write).
-    // Three sets of the same layout — viewer, photometric check, scene — each with its own frame UBO
-    // (all can be recorded in one frame, and a shared host-written UBO would hold only the last write).
-    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3},
-                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 15},
-                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12}};
+    // Four sets of the same layout — viewer, photometric check, scene, viewer glare source — each with
+    // its own frame UBO (all can be recorded in one frame, and a shared host-written UBO would hold only
+    // the last write).
+    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4},
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 20},
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 3;
     pi.pPoolSizes = ps;
-    pi.maxSets = 3;
+    pi.maxSets = 4;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &descPool);
 
-    VkDescriptorSetLayout layouts[3] = {descLayout, descLayout, descLayout};
-    VkDescriptorSet sets[3] = {};
+    VkDescriptorSetLayout layouts[4] = {descLayout, descLayout, descLayout, descLayout};
+    VkDescriptorSet sets[4] = {};
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ai.descriptorPool = descPool;
-    ai.descriptorSetCount = 3;
+    ai.descriptorSetCount = 4;
     ai.pSetLayouts = layouts;
     vkAllocateDescriptorSets(ctx.device, &ai, sets);
     descSet = sets[0];
     descSetCheck = sets[1];
     descSetScene = sets[2];
-    const VkBuffer frameBufs[3] = {frameBuf, checkFrameBuf, sceneFrameBuf};
-    for (int si = 0; si < 3; ++si)
+    descSetGlare = sets[3];
+    const VkBuffer frameBufs[4] = {frameBuf, checkFrameBuf, sceneFrameBuf, glareFrameBuf};
+    for (int si = 0; si < 4; ++si)
     {
     const VkDescriptorSet set = sets[si];
     VkDescriptorBufferInfo frameInfo{frameBufs[si], 0, sizeof(GpuMeshFrame)};
@@ -275,7 +294,7 @@ void SatMeshRenderer::writeGeometryDescriptors()
     VkDescriptorBufferInfo matInfo{materialBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo occInfo{occluderBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo compInfo{componentBuf, 0, VK_WHOLE_SIZE};
-    for (VkDescriptorSet set : {descSet, descSetCheck, descSetScene})
+    for (VkDescriptorSet set : {descSet, descSetCheck, descSetScene, descSetGlare})
     {
         VkWriteDescriptorSet w[3] = {};
         w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -533,6 +552,8 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
           viewerMarkerPipe, 1, VK_COMPARE_OP_LESS_OR_EQUAL, false, true, true);
     build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh.frag.spv", true, checkPass, VK_SAMPLE_COUNT_1_BIT,
           checkMeshPipe);
+    build("shaders/sat_mesh.vert.spv", "shaders/sat_mesh.frag.spv", true, glareSrcPass, VK_SAMPLE_COUNT_1_BIT,
+          glareSrcMeshPipe);
     // Scene: infinite reverse-Z (SatelliteSim::recordMeshScene builds depth = near / distance), so
     // GREATER and a clear to 0 — meshes from centimetres to a thousand km apart all keep precision.
     // Two passes (recordScene): depth first — only the open-lattice cut-outs run — then shading with
@@ -547,6 +568,7 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
 // ─── Viewer target ────────────────────────────────────────────────────────────────────────────────
 void SatMeshRenderer::destroyViewerTarget()
 {
+    destroyViewerGlareTargets();
     destroy(device_, viewerFb, vkDestroyFramebuffer);
     destroy(device_, viewerColorMsView, vkDestroyImageView);
     destroy(device_, viewerDepthMsView, vkDestroyImageView);
@@ -592,6 +614,7 @@ bool SatMeshRenderer::ensureViewerTarget(VulkanContext &ctx, uint32_t w, uint32_
         throw std::runtime_error("SatMeshRenderer: viewer framebuffer");
     viewerW = w;
     viewerH = h;
+    createViewerGlareTargets(ctx);
 
     // The UI may sample it before the first recordViewer(): give it a defined, readable layout.
     VkCommandBuffer cmd = ctx.beginOneTimeCommands();
@@ -645,6 +668,345 @@ void SatMeshRenderer::recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &fram
     }
     vkCmdEndRenderPass(cmd);
     viewerHasContent = true;
+}
+
+// ─── Viewer glare (2026-09-26) ────────────────────────────────────────────────────────────────────
+// See the header. Two passes of their own: the half-res RGBA32F glare source (left in GENERAL for the
+// find's imageLoad), and an overlay that LOADs the resolved viewer image, adds the sprites and hands it
+// back to the UI in SHADER_READ_ONLY — the layout recordViewer() leaves it in.
+void SatMeshRenderer::createViewerGlare(VulkanContext &ctx)
+{
+    {
+        VkAttachmentDescription att[2] = {};
+        att[0].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        att[0].samples = VK_SAMPLE_COUNT_1_BIT;
+        att[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        att[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        att[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        att[0].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+        att[1].format = ctx.depthFormat;
+        att[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        att[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        att[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        att[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription sub{};
+        sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sub.colorAttachmentCount = 1;
+        sub.pColorAttachments = &colorRef;
+        sub.pDepthStencilAttachment = &depthRef;
+        VkSubpassDependency dep[2] = {};
+        dep[0].srcSubpass = VK_SUBPASS_EXTERNAL; // last frame's find read it
+        dep[0].dstSubpass = 0;
+        dep[0].srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        dep[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dep[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dep[1].srcSubpass = 0;
+        dep[1].dstSubpass = VK_SUBPASS_EXTERNAL; // this frame's find reads it
+        dep[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep[1].dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        dep[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dep[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        rpci.attachmentCount = 2;
+        rpci.pAttachments = att;
+        rpci.subpassCount = 1;
+        rpci.pSubpasses = &sub;
+        rpci.dependencyCount = 2;
+        rpci.pDependencies = dep;
+        if (vkCreateRenderPass(ctx.device, &rpci, nullptr, &glareSrcPass) != VK_SUCCESS)
+            throw std::runtime_error("SatMeshRenderer: viewer glare source pass");
+    }
+    {
+        VkAttachmentDescription att{};
+        att.format = colorFormat;
+        att.samples = VK_SAMPLE_COUNT_1_BIT;
+        att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        att.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription sub{};
+        sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sub.colorAttachmentCount = 1;
+        sub.pColorAttachments = &colorRef;
+        VkSubpassDependency dep[2] = {};
+        dep[0].srcSubpass = VK_SUBPASS_EXTERNAL; // the viewer pass's writes (its resolve), and the glint list
+        dep[0].dstSubpass = 0;
+        dep[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dep[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dep[1].srcSubpass = 0;
+        dep[1].dstSubpass = VK_SUBPASS_EXTERNAL; // the UI samples it this frame
+        dep[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dep[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dep[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dep[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        rpci.attachmentCount = 1;
+        rpci.pAttachments = &att;
+        rpci.subpassCount = 1;
+        rpci.pSubpasses = &sub;
+        rpci.dependencyCount = 2;
+        rpci.pDependencies = dep;
+        if (vkCreateRenderPass(ctx.device, &rpci, nullptr, &glareOverPass) != VK_SUCCESS)
+            throw std::runtime_error("SatMeshRenderer: viewer glare overlay pass");
+    }
+
+    // The glint list: include/glint_list.glsl's layout (SatelliteSim's GpuGlintList, 64 entries).
+    const VkDeviceSize glintBytes = 32 + 64 * 16 * 2;
+    // Host-visible (2 KB): viewerGlintCount() reads the last frame's count for the harness.
+    makeHostBuffer(ctx, glintBytes,
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                   nullptr, glintBuf, glintMem, &glintMapped);
+
+    VkDescriptorSetLayoutBinding fb[2] = {
+        {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+    };
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = 2;
+    li.pBindings = fb;
+    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &glareFindLayout);
+    VkDescriptorSetLayoutBinding db{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+    li.bindingCount = 1;
+    li.pBindings = &db;
+    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &glareDrawLayout);
+
+    VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.poolSizeCount = 2;
+    pi.pPoolSizes = ps;
+    pi.maxSets = 2;
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &glareDescPool);
+    const VkDescriptorSetLayout sl[2] = {glareFindLayout, glareDrawLayout};
+    VkDescriptorSet sets[2] = {};
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = glareDescPool;
+    ai.descriptorSetCount = 2;
+    ai.pSetLayouts = sl;
+    vkAllocateDescriptorSets(ctx.device, &ai, sets);
+    glareFindSet = sets[0];
+    glareDrawSet = sets[1];
+    VkDescriptorBufferInfo gi{glintBuf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet w[2] = {};
+    w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareFindSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            nullptr, &gi, nullptr};
+    w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareDrawSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            nullptr, &gi, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 2, w, 0, nullptr); // binding 0 of the find set: createViewerGlareTargets
+
+    // Find: compute, 32-byte push constants (viewer_glare_find.comp).
+    VkPushConstantRange fpr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
+    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &glareFindLayout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &fpr;
+    vkCreatePipelineLayout(ctx.device, &pli, nullptr, &glareFindPipeLayout);
+    {
+        VkShaderModule mod = ctx.loadShader("shaders/viewer_glare_find.comp.spv");
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod,
+                    "main", nullptr};
+        ci.layout = glareFindPipeLayout;
+        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &glareFindPipe) != VK_SUCCESS)
+            throw std::runtime_error("SatMeshRenderer: viewer glare find pipeline");
+        vkDestroyShaderModule(ctx.device, mod, nullptr);
+    }
+
+    // Draw: the main view's mesh-glare sprite (glare_mesh.vert/.frag), GlarePC (112 B), additive.
+    VkPushConstantRange dpr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 112};
+    pli.pSetLayouts = &glareDrawLayout;
+    pli.pPushConstantRanges = &dpr;
+    vkCreatePipelineLayout(ctx.device, &pli, nullptr, &glareDrawPipeLayout);
+    {
+        VkShaderModule v = ctx.loadShader("shaders/glare_mesh.vert.spv"), f = ctx.loadShader("shaders/glare_mesh.frag.spv");
+        VkPipelineShaderStageCreateInfo st[2] = {};
+        st[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, v, "main",
+                 nullptr};
+        st[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, f,
+                 "main", nullptr};
+        VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+        VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        vps.viewportCount = 1;
+        vps.scissorCount = 1;
+        VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dys{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dys.dynamicStateCount = 2;
+        dys.pDynamicStates = dyn;
+        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rs.polygonMode = VK_POLYGON_MODE_FILL;
+        rs.cullMode = VK_CULL_MODE_NONE;
+        rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo msci{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        msci.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.blendEnable = VK_TRUE; // ONE/ONE, as the main view's glare
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.colorBlendOp = VK_BLEND_OP_ADD;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                             VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        cb.attachmentCount = 1;
+        cb.pAttachments = &cba;
+        VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        ci.stageCount = 2;
+        ci.pStages = st;
+        ci.pVertexInputState = &vi;
+        ci.pInputAssemblyState = &ia;
+        ci.pViewportState = &vps;
+        ci.pRasterizationState = &rs;
+        ci.pMultisampleState = &msci;
+        ci.pDepthStencilState = &ds;
+        ci.pColorBlendState = &cb;
+        ci.pDynamicState = &dys;
+        ci.layout = glareDrawPipeLayout;
+        ci.renderPass = glareOverPass;
+        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &glareDrawPipe) != VK_SUCCESS)
+            throw std::runtime_error("SatMeshRenderer: viewer glare draw pipeline");
+        vkDestroyShaderModule(ctx.device, v, nullptr);
+        vkDestroyShaderModule(ctx.device, f, nullptr);
+    }
+}
+
+void SatMeshRenderer::destroyViewerGlareTargets()
+{
+    destroy(device_, glareSrcFb, vkDestroyFramebuffer);
+    destroy(device_, glareOverFb, vkDestroyFramebuffer);
+    destroy(device_, glareSrcView, vkDestroyImageView);
+    destroy(device_, glareSrcDepthView, vkDestroyImageView);
+    destroy(device_, glareSrc, vkDestroyImage);
+    destroy(device_, glareSrcDepth, vkDestroyImage);
+    destroy(device_, glareSrcMem, vkFreeMemory);
+    destroy(device_, glareSrcDepthMem, vkFreeMemory);
+    glareSrcW = glareSrcH = 0;
+}
+
+// Half the viewer target (rounded up), and the overlay framebuffer on the viewer's resolved image.
+void SatMeshRenderer::createViewerGlareTargets(VulkanContext &ctx)
+{
+    glareSrcW = std::max(1u, (viewerW + 1) / 2);
+    glareSrcH = std::max(1u, (viewerH + 1) / 2);
+    makeImage(ctx, glareSrcW, glareSrcH, VK_FORMAT_R32G32B32A32_SFLOAT,
+              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT, VK_SAMPLE_COUNT_1_BIT,
+              VK_IMAGE_ASPECT_COLOR_BIT, glareSrc, glareSrcMem, glareSrcView);
+    makeImage(ctx, glareSrcW, glareSrcH, ctx.depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+              VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, glareSrcDepth, glareSrcDepthMem, glareSrcDepthView);
+    VkImageView views[2] = {glareSrcView, glareSrcDepthView};
+    VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fci.renderPass = glareSrcPass;
+    fci.attachmentCount = 2;
+    fci.pAttachments = views;
+    fci.width = glareSrcW;
+    fci.height = glareSrcH;
+    fci.layers = 1;
+    if (vkCreateFramebuffer(ctx.device, &fci, nullptr, &glareSrcFb) != VK_SUCCESS)
+        throw std::runtime_error("SatMeshRenderer: viewer glare source framebuffer");
+    fci.renderPass = glareOverPass;
+    fci.attachmentCount = 1;
+    fci.pAttachments = &viewerResolveView;
+    fci.width = viewerW;
+    fci.height = viewerH;
+    if (vkCreateFramebuffer(ctx.device, &fci, nullptr, &glareOverFb) != VK_SUCCESS)
+        throw std::runtime_error("SatMeshRenderer: viewer glare overlay framebuffer");
+
+    VkDescriptorImageInfo ii{VK_NULL_HANDLE, glareSrcView, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareFindSet, 0, 0, 1,
+                           VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ii, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+}
+
+void SatMeshRenderer::recordViewerGlare(VkCommandBuffer cmd, const GpuMeshFrame &frame, int typeIdx,
+                                        VkDescriptorSet probeSet, const ViewerGlare &g, const void *glarePc,
+                                        uint32_t glarePcSize)
+{
+    const TypeMesh *tm = typeMesh(typeIdx);
+    if (!glareSrcFb || !glareOverFb || !viewerHasContent || !tm || !vertexBuf || g.flarePerI <= 0.0f)
+        return;
+
+    // 1. The glare source: the viewer's instance (slot 0, written by recordViewer), sun only.
+    GpuMeshFrame gf = frame;
+    gf.params.w = 3.0f;
+    memcpy(glareFrameMapped, &gf, sizeof(gf));
+    VkClearValue clears[2] = {};
+    clears[1].depthStencil = {1.0f, 0};
+    VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    rbi.renderPass = glareSrcPass;
+    rbi.framebuffer = glareSrcFb;
+    rbi.renderArea = {{0, 0}, {glareSrcW, glareSrcH}};
+    rbi.clearValueCount = 2;
+    rbi.pClearValues = clears;
+    vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+    VkViewport vp{0.0f, 0.0f, (float)glareSrcW, (float)glareSrcH, 0.0f, 1.0f};
+    VkRect2D sc{{0, 0}, {glareSrcW, glareSrcH}};
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+    const VkDescriptorSet sets[2] = {descSetGlare, probeSet};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 0, 2, sets, 0, nullptr);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareSrcMeshPipe);
+    VkDeviceSize off = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuf, &off);
+    vkCmdBindIndexBuffer(cmd, indexBuf, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, tm->indexCount, 1, tm->firstIndex, tm->vertexOffset, 0); // instance slot 0
+    vkCmdEndRenderPass(cmd);
+
+    // 2. Find the glints (the list header reset first: count 0; draw 0 vertices, 1 instance).
+    const uint32_t hdr[8] = {0u, 0u, 1u, 0u, 0u, 0u, 0u, 0u};
+    vkCmdUpdateBuffer(cmd, glintBuf, 0, sizeof(hdr), hdr);
+    VkBufferMemoryBarrier bb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    bb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    bb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    bb.srcQueueFamilyIndex = bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bb.buffer = glintBuf;
+    bb.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1,
+                         &bb, 0, nullptr);
+    const float fpc[8] = {g.flarePerI, g.minFlare, g.tanHalfX, g.tanHalfY, g.tint.r, g.tint.g, g.tint.b, 1.0f};
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, glareFindPipe);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, glareFindPipeLayout, 0, 1, &glareFindSet, 0, nullptr);
+    vkCmdPushConstants(cmd, glareFindPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(fpc), fpc);
+    vkCmdDispatch(cmd, (glareSrcW + 15) / 16, (glareSrcH + 15) / 16, 1);
+    bb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    bb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 0, nullptr, 1,
+                         &bb, 0, nullptr);
+
+    // 3. The sprites, over the resolved viewer image.
+    rbi.renderPass = glareOverPass;
+    rbi.framebuffer = glareOverFb;
+    rbi.renderArea = {{0, 0}, {viewerW, viewerH}};
+    rbi.clearValueCount = 0;
+    rbi.pClearValues = nullptr;
+    vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+    vp = {0.0f, 0.0f, (float)viewerW, (float)viewerH, 0.0f, 1.0f};
+    sc = {{0, 0}, {viewerW, viewerH}};
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareDrawPipe);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareDrawPipeLayout, 0, 1, &glareDrawSet, 0, nullptr);
+    vkCmdPushConstants(cmd, glareDrawPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       std::min(glarePcSize, 112u), glarePc);
+    vkCmdDrawIndirect(cmd, glintBuf, 4, 1, 0); // the list's own VkDrawIndirectCommand (offset 4)
+    vkCmdEndRenderPass(cmd);
 }
 
 // ─── Photometric check ────────────────────────────────────────────────────────────────────────────
