@@ -43,6 +43,7 @@ void VulkanContext::init(GLFWwindow *window)
     createSwapchain(window);
     createRenderPass();
     createRenderPassLoad();
+    createRenderPassBoot();
     createDepthResources();
     createFramebuffers();
     createCommandPool();
@@ -76,6 +77,7 @@ void VulkanContext::cleanup()
     cleanupSwapchain();
     if (queryPool != VK_NULL_HANDLE)
         vkDestroyQueryPool(device, queryPool, nullptr);
+    vkDestroyRenderPass(device, renderPassBoot, nullptr);
     vkDestroyRenderPass(device, renderPassLoad, nullptr);
     vkDestroyRenderPass(device, renderPass, nullptr);
     vkDestroySemaphore(device, semImageAvailable, nullptr);
@@ -774,6 +776,75 @@ void VulkanContext::createRenderPassLoad()
 
     if (vkCreateRenderPass(device, &ci, nullptr, &renderPassLoad) != VK_SUCCESS)
         throw std::runtime_error("vkCreateRenderPass (load variant) failed.");
+}
+
+// ─── Boot render pass (the app's first frames) ────────────────────────────────
+// BOOT_LOADER_PLAN.md §3.1. Third variant of the same pass — and, like createRenderPassLoad above,
+// it is deliberately built so it can reuse the SAME ctx.framebuffers: render pass compatibility
+// only requires matching attachment formats/sample-counts, not matching load/store ops or layouts,
+// so there are no boot framebuffers to create and nothing to rebuild when the window resizes.
+//
+// What differs from createRenderPass():
+//   - Color attachment CLEARs (the image has never been written, so there is nothing to load) and
+//     the boot screen is the only thing that draws into it. `UIRenderer`'s pipeline sets
+//     depthTestEnable = VK_FALSE ("UI always draws on top"), so it is a legal pipeline for a
+//     subpass whose depth attachment is never tested against.
+//   - Depth is DONT_CARE in both directions — UIRenderer neither tests nor writes depth; the
+//     attachment only exists to keep this pass compatible with the shared framebuffers.
+//   - The depth attachment is still declared as a SUBPASS attachment, not just listed: an
+//     attachment whose initialLayout != finalLayout and that no subpass uses is invalid.
+//   - The single dependency is a plain external->0 color-output one (there is no compute work
+//     ahead of a boot frame to order against), rather than renderPass's compute->fragment rule.
+void VulkanContext::createRenderPassBoot()
+{
+    VkAttachmentDescription color{};
+    color.format = swapFormat;
+    color.samples = VK_SAMPLE_COUNT_1_BIT;
+    color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    color.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentDescription depth{};
+    depth.format = depthFormat;
+    depth.samples = VK_SAMPLE_COUNT_1_BIT;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+    VkSubpassDescription sub{};
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 1;
+    sub.pColorAttachments = &colorRef;
+    sub.pDepthStencilAttachment = &depthRef;
+
+    VkSubpassDependency dep{};
+    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+    dep.dstSubpass = 0;
+    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dep.srcAccessMask = 0;
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    VkAttachmentDescription attachments[] = {color, depth};
+    VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+    ci.attachmentCount = 2;
+    ci.pAttachments = attachments;
+    ci.subpassCount = 1;
+    ci.pSubpasses = &sub;
+    ci.dependencyCount = 1;
+    ci.pDependencies = &dep;
+
+    if (vkCreateRenderPass(device, &ci, nullptr, &renderPassBoot) != VK_SUCCESS)
+        throw std::runtime_error("vkCreateRenderPass (boot variant) failed.");
 }
 
 // ─── Depth resources ──────────────────────────────────────────────────────────

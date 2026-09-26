@@ -29,7 +29,7 @@ Options g_opts;
 std::mutex g_fileMutex; // results.jsonl / summary.json (the watchdog thread may write the summary)
 std::atomic<bool> g_summaryWritten{false};
 
-// Same durability rule as Log::line (docs/HARNESS.md, "Machine-level resets"): results.jsonl and
+// Same durability rule as Log::line (docs/FREEZES.md, "Machine-level resets"): results.jsonl and
 // summary.json are what a crash is diagnosed from, and a tail left in the page cache commits with
 // its size but reads all-NUL — indistinguishable from a command that never ran. One fsync per write
 // is affordable here (a line per command, a summary per run). Deliberately NOT used for

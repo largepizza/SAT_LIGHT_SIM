@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""What the firmware recorded when the machine died (see docs/HARNESS.md, "Machine-level resets").
+"""What the firmware recorded when the machine died (see docs/FREEZES.md, "Machine-level resets").
 
     python tools/harness/crashes.py                     # the last 72 hours
     python tools/harness/crashes.py --hours 336         # two weeks, for the running tally
@@ -70,7 +70,7 @@ SECTION_TYPES = {
 # GUID naming the record's format. Types 1/2 carry the record ITSELF after the header. Every record on
 # this machine is three type-2 sections with the Intel CrashLog GUID, i.e. 2560 + 512 + 4096 bytes of
 # raw Intel CrashLog: the PCH's PMC record, a PMC trace, and the CPU's Punit record. Until 2026-09-26
-# this file and docs/HARNESS.md called them "pointers with no hardware detail" - wrong: the detail is
+# this file and docs/FREEZES.md called them "pointers with no hardware detail" - wrong: the detail is
 # here, and Intel's decoder (github.com/intel/crashlog, `iclg`) reads it; see --export-crashlog.
 FW_RECORD_GUID = "81212A96-09ED-4996-9471-8D729C8E69ED"
 FW_RECORD_TYPES = {0: "IPF SAL (pointer only)", 1: "SoC firmware record type 1", 2: "SoC firmware record type 2"}
@@ -294,7 +294,7 @@ NUL_MAX_FILES = 4000  # a run folder tree can hold thousands of files (satellite
 
 def nul_files(path):
     """(all-zero files, files whose tail is zero) - the fingerprint of a write that committed its
-    size and never its contents (see docs/HARNESS.md "Machine-level resets")."""
+    size and never its contents (see docs/FREEZES.md "Machine-level resets")."""
     whole, tailnul, n = [], [], 0
     for root, dirs, files in os.walk(path):
         dirs.sort()
@@ -570,7 +570,7 @@ def write_witness(run_dir, hours=6):
     end = newest_mtime(run_dir)
     ev = ps_collect(_iso(end - hours * 3600))
     L = ["# crash witness: %s" % os.path.basename(run_dir.replace("/", os.sep).rstrip(os.sep)),
-         "# written %s by tools/harness/crashes.py (docs/HARNESS.md, Machine-level resets)"
+         "# written %s by tools/harness/crashes.py (docs/FREEZES.md, Machine-level resets)"
          % time.strftime("%Y-%m-%d %H:%M:%S"),
          "# the app last wrote something at %s" % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end)),
          "", "what survived in the run folder:"]
@@ -645,7 +645,8 @@ def history_report():
           % (WHEA_ERRORS_LOG, len(ev), ev[0]["time"][:10], ev[-1]["time"][:10]))
     if fc:
         pre = [e for e in ev if e["ts"] < fc]
-        print("  %d of them BEFORE this repository's first commit (%s) - the resets predate the app"
+        print("  %d of them BEFORE this repository's first commit (%s) - out of scope for the tally here "
+              "(docs/FREEZES.md)"
               % (len(pre), time.strftime("%Y-%m-%d", time.localtime(fc))))
     sig = {}
     for e in ev:  # same firmware record shape each time? (section count and sizes)
@@ -721,7 +722,7 @@ def _boot_local():
 
 def dump_status():
     """Is the manual-crash key armed (hold right Ctrl, press Scroll Lock twice) - and has it ever
-    fired? docs/HARNESS.md tells the reader to set it up once; nothing says whether it worked, and a
+    fired? docs/FREEZES.md tells the reader to set it up once; nothing says whether it worked, and a
     freeze leaves no other trace, so this reads the keys, the dump paths and the crash history back."""
     ctl = r"HKLM\SYSTEM\CurrentControlSet\Control\CrashControl"
     L = ["manual crash key (hold right Ctrl, press Scroll Lock twice while the machine is frozen):"]
@@ -774,7 +775,7 @@ def dump_status():
     has = os.path.isfile(dump) or (os.path.isdir(mini) and glob.glob(os.path.join(mini, "*.dmp")))
     if not armed:
         L.append("\n  verdict: a freeze will keep leaving NO dump - that is what 'Kernel-Power 41 with")
-        L.append("           BugcheckCode=0' means. Arm it (docs/HARNESS.md, 'What that changes').")
+        L.append("           BugcheckCode=0' means. Arm it (docs/FREEZES.md, 'What that changes').")
     elif kind not in (1, 2, 7):
         L.append("\n  verdict: the key is armed but CrashDumpEnabled=%d won't capture a hung kernel." % kind)
     elif not has:
@@ -783,10 +784,10 @@ def dump_status():
         L.append("           power button (right Ctrl; the left one is ignored by design). If it was")
         L.append("           pressed during a freeze and still nothing appeared, that freeze answered")
         L.append("           no keyboard interrupt at all, which puts it below the OS: see entry 6 of")
-        L.append("           the tally in docs/HARNESS.md.")
+        L.append("           the tally in docs/FREEZES.md.")
     else:
         L.append("\n  verdict: armed, and dump(s) exist - compare their timestamps with the tally in")
-        L.append("           docs/HARNESS.md before assuming this freeze left one.")
+        L.append("           docs/FREEZES.md before assuming this freeze left one.")
     print("\n".join(L))
     return 0
 

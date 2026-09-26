@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flight recorder for machine-level resets (docs/HARNESS.md, "Machine-level resets").
+"""Flight recorder for machine-level resets (docs/FREEZES.md, "Machine-level resets").
 
     python tools/harness/blackbox.py --out bb.csv -- cmake --build build --target accuracy-gate
     python tools/harness/blackbox.py --daemon            # always on: harness_runs/blackbox/<day>.csv
@@ -7,6 +7,7 @@
     python tools/harness/blackbox.py --uninstall-task     # stop it doing that again
     python tools/harness/blackbox.py --summary harness_runs/<run>/blackbox.csv
     python tools/harness/blackbox.py --summary harness_runs/blackbox --at "2026-09-25 21:57:53"
+    python tools/harness/blackbox.py --gaps harness_runs/blackbox   # every freeze on tape, at a glance
 
 When this machine resets, nothing that was in memory survives and Windows writes no dump, so the
 only record of what the hardware was doing is one that was already on disk. This samples the GPU
@@ -86,6 +87,41 @@ def _utc(t):
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%03dZ" % ms
 
 
+def _open_csv(path):
+    """Append-mode handle for a recording, with the format header when the file is new. One writer per
+    file is the rule (DaemonLock enforces it machine-wide), so nothing here has to know about readers."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    new = not os.path.exists(path) or os.path.getsize(path) == 0
+    f = open(path, "a", encoding="utf-8", newline="")
+    if new:
+        f.write("# blackbox.py: fsynced per line; epoch,utc,src,fields\n")
+        f.write("# gpu," + ",".join(GPU_NAMES) + "\n# cpu," + ",".join(CPU_NAMES) + "\n")
+    return f
+
+
+def row(t, src, fields):
+    """One line of the format. Both time columns come from this one `t`, and `t` is already the rounded
+    value the epoch column prints, so a row cannot disagree with itself (see _utc)."""
+    return "%.3f,%s,%s,%s\n" % (t, _utc(t), src, ",".join(str(x).strip() for x in fields))
+
+
+def write_row(path, src, fields):
+    """One fsynced row in a recording this process does not otherwise own - a supervisor's marks, in the
+    same format so a single --summary reads it back (tools/harness/overnight.py). Returns the epoch."""
+    t = float("%.3f" % time.time())
+    f = _open_csv(path)
+    try:
+        f.write(row(t, src, fields))
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    finally:
+        f.close()
+    return t
+
+
 class BlackBox:
     """Samples until stop(). Every line is flushed and fsynced before the next is taken: a sample
     that only reached the page cache is lost with the machine, which is the one case this is for."""
@@ -98,20 +134,14 @@ class BlackBox:
         self.day = None
 
     def _open(self, path):
-        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-        new = not os.path.exists(path) or os.path.getsize(path) == 0
-        f = open(path, "a", encoding="utf-8", newline="")
-        if new:
-            f.write("# blackbox.py: fsynced per line; epoch,utc,src,fields\n")
-            f.write("# gpu," + ",".join(GPU_NAMES) + "\n# cpu," + ",".join(CPU_NAMES) + "\n")
-        return f
+        return _open_csv(path)
 
     def write(self, src, fields):
-        # Print both time columns from one rounded instant: %.3f rounds while _utc used to truncate, so
-        # a cpu and a gpu row 1 ms apart could share an epoch value with different ISO stamps (and one
-        # row could disagree with itself). The epoch column is the key everything is correlated on.
+        # Both time columns from one rounded instant: %.3f rounds while _utc used to truncate, so a cpu
+        # and a gpu row 1 ms apart could share an epoch value with different ISO stamps (and one row
+        # could disagree with itself). The epoch column is the key everything is correlated on.
         t = float("%.3f" % time.time())
-        line = "%.3f,%s,%s,%s\n" % (t, _utc(t), src, ",".join(str(x).strip() for x in fields))
+        line = row(t, src, fields)
         with self.lock:
             if self.f is None:
                 return
@@ -280,6 +310,83 @@ def summarize(path, at=None, seconds=20):
     for t, m in marks:
         L.append("  mark %s  (-%.2f s)  %s" % (_utc(t)[11:], end - t, m))
     return L
+
+
+def _row_desc(src, fields):
+    """One short line for whatever a row is, so a gap in the report says what was on tape when it ended."""
+    if src == "gpu":
+        d = dict(zip(GPU_NAMES, fields))
+        return "gpu %s, %s W, %s/%s MHz, %s C, util %s %%, gen%s x%s, %s MiB" % (
+            d.get("pstate"), d.get("gpu_w"), d.get("gr_mhz"), d.get("mem_mhz"), d.get("gpu_c"),
+            d.get("gpu_util"), d.get("pcie_gen"), d.get("pcie_width"), d.get("vram_mib"))
+    if src == "cpu":
+        d = dict(zip(CPU_NAMES, fields))
+        return "cpu perf %s %%, util %s %%, %s MHz, %s K" % (
+            d.get("cpu_perf"), d.get("cpu_util"), d.get("cpu_mhz"), d.get("tz_k"))
+    return "mark " + (fields[0] if fields else "")
+
+
+def _start_pid(rows, rng):
+    """The pid in the first `blackbox start` mark of `rng` (row indices), or None."""
+    for i in rng:
+        _, src, fields = rows[i]
+        if src == "mark" and fields and fields[0].startswith("blackbox start "):
+            tok = fields[0].split()
+            if "pid" in tok:
+                return tok[tok.index("pid") + 1]
+    return None
+
+
+def _span(secs):
+    """A gap length a human reads at a glance: 43.0 s, 7.6 min, 8.6 h, 2.1 days."""
+    for unit, div, cap in (("s", 1.0, 60.0), ("min", 60.0, 3600.0), ("h", 3600.0, 86400.0),
+                           ("days", 86400.0, 1e18)):
+        if secs < cap:
+            return "%.1f %s" % (secs / div, unit)
+
+
+def gaps(path, min_gap=2.0):
+    """Every discontinuity in a recording, oldest first - the morning's first question, answered.
+
+    The recorder lives in the OS: when the machine dies it stops mid-flight, and after the reboot the
+    launcher's recorder starts a new run of rows in the same day file. So a gap whose last row is
+    *telemetry* is the machine dying (or the process being killed); a gap whose last row is a mark is a
+    recorder stopped by hand. The pid either side of it is the rest of it: the same pid means the process
+    was still there when rows resumed (the machine slept, nothing reset), a new one means a fresh
+    recorder - a reboot, and the gap is the frozen interval. A freeze with no harness run live leaves
+    nothing else at all, which is why this reads the always-on file and not a run folder."""
+    files = sorted(glob.glob(os.path.join(path, "*.csv"))) if os.path.isdir(path) else [path]
+    L = []
+    for fp in files:
+        rows = read(fp)
+        if not rows:
+            continue
+        found = 0
+        L.append("%s: %d rows, %s .. %s UTC"
+                 % (os.path.basename(fp), len(rows), _utc(rows[0][0]), _utc(rows[-1][0])))
+        for i in range(1, len(rows)):
+            t0, s0, f0 = rows[i - 1]
+            t1, s1, f1 = rows[i]
+            if t1 - t0 < min_gap:
+                continue
+            found += 1
+            before = _start_pid(rows, range(i - 1, -1, -1)) or "?"
+            after = _start_pid(rows, range(i, len(rows))) or "?"
+            if s0 in ("gpu", "cpu"):
+                how = "the recorder died mid-flight - a reset (or a kill)"
+            elif before == after:
+                how = "the same recorder pid either side: the machine slept, nothing reset"
+            else:
+                how = "stopped it by hand (%s)" % (f0[0] if f0 else "?")
+            L.append("  gap %-9s %s -> %s UTC  (%s -> %s local)"
+                     % (_span(t1 - t0), _utc(t0), _utc(t1),
+                        time.strftime("%H:%M:%S", time.localtime(t0)),
+                        time.strftime("%H:%M:%S", time.localtime(t1))))
+            L.append("    last on tape: " + _row_desc(s0, f0))
+            L.append("    %s; recorder %s -> %s" % (how, before, after))
+        if not found:
+            L.append("  no gap over %g s: rows run from start to end" % min_gap)
+    return L or ["blackbox: no rows in %s" % path]
 
 
 def prune(days=14):
@@ -564,6 +671,10 @@ def main():
     ap.add_argument("--summary", metavar="PATH", help="summarize a recording (file or folder)")
     ap.add_argument("--at", help="with --summary: local time of a reset, 'YYYY-MM-DD HH:MM:SS'")
     ap.add_argument("--seconds", type=float, default=20, help="with --summary: window length (default 20)")
+    ap.add_argument("--gaps", metavar="PATH", help="with --gaps: every discontinuity in a recording (file or "
+                                                   "folder) - each reset the recorder was alive for")
+    ap.add_argument("--min-gap", type=float, default=2.0, help="with --gaps: shortest gap to report "
+                                                              "(default 2 s; the sample period is 0.1-0.25 s)")
     ap.add_argument("--until-pid", type=int, help="with --out: record until this process exits (live.py)")
     ap.add_argument("command", nargs=argparse.REMAINDER, help="-- command to run while recording")
     a = ap.parse_args()
@@ -573,6 +684,10 @@ def main():
 
     if a.summary:
         print("\n".join(summarize(a.summary, _local_epoch(a.at) if a.at else None, a.seconds)))
+        return 0
+
+    if a.gaps:
+        print("\n".join(gaps(a.gaps, a.min_gap)))
         return 0
 
     if a.until_pid and a.out:

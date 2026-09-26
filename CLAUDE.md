@@ -18,9 +18,10 @@ Design decisions and their dates live next to the code they constrain, not in a 
 | `README.md` | User-facing: what this is, prerequisites, build, packaging |
 | `docs/CONSTELLATION_MODDING.md` | User-facing modding guide (`constellations.json`, `satellite_models/*.json`) |
 | `docs/HARNESS.md` | **Automation harness**: scripted runs, captures, perf, UI dumps — how an agent runs and sees the app |
+| `docs/FREEZES.md` | The 2026-09 machine freezes (unresolved; mitigated by launch spacing) and the forensics tools built for them |
 | `CHANGELOG.md` | What changed per release |
 | `data/benchmarks/KNOWN_RESIDUALS.md` | Accepted photometric error, with the measurement behind it |
-| `.plans/*.md` | **Untracked local design logs** (phase plans, terrain, cloud perf). Sections below link to them; a fresh clone has none |
+| `.plans/*.md` | **Untracked local design logs** (phase plans, terrain, cloud perf, boot loader). Sections below link to them; a fresh clone has none |
 
 **Read in this order (~10 minutes) if you are new:** Build Commands → Architecture → Frame Loop Order
 → Unified scene depth → Satellite Types (Rigid attitude groups, Geometry models) → Photometry /
@@ -31,7 +32,7 @@ launching the app: only through the harness) · *Presets and release packaging* 
 `package-release`) · *macOS release architecture* · *Old / low-end hardware floor* (the
 guaranteed-minimum table and the push-constant gate).
 
-**Architecture** — *Frame Loop Order* (the canonical pass order) · *Unified scene depth* (one
+**Architecture** — *Frame Loop Order* (the canonical pass order) · *Loading screen* (frames presented while init runs) · *Unified scene depth* (one
 log-distance encoding, written by every surface) · *Occlusion: one shared depth buffer* (why
 `sceneDepthImg` is half-res R32F, and what it replaced) · *Shader `#include`* (the header table, the
 `CloudParams` mirror and `check_cloud_params.py`).
@@ -66,7 +67,8 @@ from CC0 sources declared in that file) · `tools/benchmarks/` ·
 `cmake/PackageRelease.cmake` (the single "what ships" list).
 
 **Rules that bite (each one has a section behind it)** — launch the app only through the harness
-(`tools/harness/run.py`, docs/HARNESS.md), never interactively; how a change *feels* is the user's to
+(`tools/harness/run.py`, docs/HARNESS.md), never interactively, and never back-to-back (the harness
+spaces launches 30 s apart); how a change *feels* is the user's to
 judge; `GpuCloudParams` is a hand-maintained mirror of
 `cloud_params.glsl` (run the checker after touching either); never store a distance in a half-float;
 every push-constant struct `static_assert`s to exactly 128 bytes; `CMakePresets.json` and `.vscode/`
@@ -84,7 +86,7 @@ cmake --build build                           # build + compile shaders + copy S
 cmake --build build --config Release          # release build
 ```
 
-Run: `build/Debug/SAT_LIGHT_SIM_V_<version>.exe` (e.g. `build/Debug/SAT_LIGHT_SIM_V_1_1_0.exe` — the
+Run: `build/Debug/SAT_LIGHT_SIM_V_<version>.exe` (e.g. `build/Debug/SAT_LIGHT_SIM_V_1_2_0.exe` — the
 exact name tracks `VERSION`; see `CMakeLists.txt`'s `EXE_BASENAME`).
 
 Shaders: auto-detected glob (`shaders/*.vert|.frag|.comp`), compiled by `glslc`, copied as `shaders/*.spv`. New shader files are picked up automatically on next build.
@@ -412,57 +414,33 @@ User guide and command reference: **docs/HARNESS.md** (keep its table in step wi
 - `harnessRunner_` is null outside a harness run (and before the console's first use), and every
   hook is then a no-op. The first-run preset seed, intro, first-run notices, music and toasts are
   all suppressed in a harness run.
-- **Machine-level resets: 6 so far** — the *platform* (firmware, not the app) has hard-reset the
-  whole machine while a run was up. Windows records WHEA-Logger 1 (the raw CPER record: fatal, UEFI
-  BERT) and Kernel-Power 41 with `BugcheckCode=0`, i.e. **no dump will ever exist**, so the app's
-  fsynced log is the other witness — and a write that was mid-flight reads all-NUL. All six hit in
-  the ~3 s *launch* window: entries 1-4 around line 7 of `satlight_log.txt` (entries 2 and 4 at
-  `Swapchain created`, 1 and 3 a line earlier at `Logical device created.`), entry 5 (2026-09-26
-  00:11, which found no firmware record at all) deeper, at line 13 `init: Earth textures (decode +
-  upload)` — and by the per-texture stamps of a healthy launch, ~430 ms into `earth_elevation.png`,
-  the 888 ms 14999×7500 decode that is the launch's slowest single step (earlier notes here said
-  21600×10800 — wrong size for that file). So `SatelliteSim::init` also logs `init: texture: <file>`
-  per texture now, and a reset inside that step names the file — which entry 6 (00:40, a by-hand
-  launch with no run folder) then did: line 21, `init: texture: assets/textures/earth_elevation.png`,
-  232 ms before the flight recorder's last sample, with VRAM mid-fill at P0/gen4 and nothing near a
-  limit. Two freezes, same file and step, 26 minutes apart, clean launches in between. Each
-  reset cost only its own run. `tools/harness/crashes.py` reads
-  the evidence (read-only; `--preflight` runs before every launch, `run.py` drops a
-  `crash_witness.txt` into any run that dies without `summary.json`, `--dump-status` checks whether
-  the manual-crash key is armed). Usage, the tally, the UTC-vs-local rule (the app logs UTC, the
-  event list is local) and the "is this capture real?" check are in `docs/HARNESS.md` under
-  *Machine-level resets*. Note that 4 of the 9 resets in the last 72 h happened with **no app
-  live** — not the app's doing — which is what `blackbox.py --install-task` is for (it keeps the
-  always-on recorder alive across a reset: after one, check `harness_runs\blackbox\daemon.log` and the
-  newest `<day>.csv`'s mtime, because a reset's leftover pid lock used to make the recorder refuse
-  *silently* — fixed 2026-09-26, the lock now names (pid, creation time)). Add a line to the tally every time it happens, and check
-  which binary the dead run was actually running before blaming a change: line 1 of its log is the
-  build stamp of the tree `run.py` found, and `run.py` only ever looks under `build/`. That is
-  exactly how entry 5 was misread for an hour (it ran the `build\Release` exe, not the fresh
-  `build-win-release` one the run was meant to check).
-  **The resets predate the app** (2026-09-26): `crashes.py --history` reads the Kernel-WHEA/Errors
-  channel — 46 fatal records since 2025-05, 19 before the first commit, in episodes (entry 5 added
-  none: its boot found no record; entry 6 added the 46th). Each record
-  EMBEDS an Intel CrashLog (PMC `TGP/H` + trace + Punit), decodable with Intel's `iclg`
-  (`--export-crashlog` / `--decode-crashlog`); the old "pointers only" reading was wrong. **Decoded,
-  all 46: the machine FREEZES and is forced off.** 24 of the 27 records that carry a PMC reset cause
-  give `pb_ovr` (power button held 4 s), 3 a software restart, 19 carry no reset cause at all — and
-  every hardware bit the PMC tracks (thermal trip, power-rail failure, three-strike, the watchdogs) is
-  0 in every record, so the WHEA "fatal" event is the firmware reporting the forced power-off, never a
-  fault it found. Catch the hang itself with CrashOnCtrlScroll (docs/HARNESS.md, *Decoding the
-  CrashLog*): armed since 2026-09-25 23:58 and loaded for entry 6's boot, pressed repeatedly *during*
-  entry 6's freeze — and it wrote nothing (no 0xE2, no dump, `BugcheckCode=0`), which is the useful
-  part of that: the freeze answered no keyboard interrupt, so it stopped below the OS, where no recorder
-  that lives in the OS can see. Every harness run also carries `blackbox.csv` (`tools/harness/blackbox.py`:
-  GPU/CPU telemetry fsynced per sample; `--daemon` for always-on, `--install-task` to survive a reset),
-  and `satlight_log.txt` has ms UTC stamps + `init: <step>` breadcrumbs through the launch window. Two
-  recorder faults found and fixed on 2026-09-26, both worth re-checking after a reset: the lock named its
-  holder by bare pid, so a reset's leftover pid (reused by a stranger within the minute) locked the next
-  boot's recorder out *silently* — it now names (pid, creation time), treats a pre-boot lock as stale, and
-  logs every start/refusal to `harness_runs\blackbox\daemon.log`; and the CSV's `utc` column truncated
-  where its `epoch` column rounded, so ~half of all rows disagreed with themselves by 1 ms (`_utc` now
-  rounds). `--install-task` cannot create a logon task here (`Access is denied` unelevated): the machine's
-  recorder comes back via the Startup launcher `satlight-blackbox.cmd`, so "no such task" is expected.
+- **Launch spacing: the harness waits 30 s after an app exit before the next launch**
+  (`tools/harness/launchgate.py`, used by `run.py` and `live.py start`). Back-to-back relaunches are
+  the leading suspect for the machine freezes (docs/FREEZES.md, still unresolved; BIOS Gen3 did not
+  fix them). For many batches use one `live.py` app, not a `run.py` loop. Freeze forensics
+  (`blackbox.py`, `crashes.py`, `overnight.py`) are opt-in: `run.py --forensics`.
+- **The loading screen runs in harness launches too** (its frames precede the script).
+  `run.py --boot-capture` writes them to `captures/boot_NN.png`; see *Loading screen* below.
+
+## Loading screen (2026-09-26)
+
+`App::run()` creates the UI before `sim->init()`, with its pipeline built against
+`ctx.renderPassBoot` (a third variant of the main pass, compatible with the same framebuffers), and
+installs `Simulation::setBootStatus`. `SatelliteSim::init` calls `bootStatus("<step>")` beside each
+`init:` breadcrumb, per texture and per satellite model (`bakeModelType`); each call appends a line,
+logs `boot: <step> (<ms since launch>)` and presents one frame (`App::bootFrame`, `buildBootUI`).
+Invariants:
+- **`vkDeviceWaitIdle` before `ui.rebuildPipeline()`** hands the UI to `ctx.renderPass`: the last
+  loading frame may still be executing with the old pipeline. Without the wait the first real frame's
+  `vkQueueSubmit` failed with a lost device.
+- Boot frames reuse drawFrame's command buffer, fence and semaphores and never touch the timestamp
+  slots. The sim's key/char/cursor callbacks are ignored until init returns (Esc still closes). A
+  resize during init is deferred to one `sim->onResize()` after it.
+- `bootStatus()` presents a frame, so it may only be called from the main thread during init.
+- Text fades on a perceptual curve (alpha = brightness^2.2): the UI blends linearly into an sRGB
+  swapchain, so linear alpha steps look far brighter than intended. Font sizes never scale below
+  16 px (the baked bitmap font breaks up smaller).
+- `SATLIGHTSIM_BOOT_SCREEN=0` (`run.py --boot-screen off`) restores the old white-window launch.
 
 ---
 

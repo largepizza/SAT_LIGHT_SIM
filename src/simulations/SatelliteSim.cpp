@@ -450,23 +450,23 @@ void SatelliteSim::init(VulkanContext &ctx)
     };
     static_assert(KB_COUNT == 18, "KB enum and keybindings initializer are out of sync");
 
-    // Launch breadcrumbs (docs/HARNESS.md, "Machine-level resets"): every one of the five resets that
-    // caught a run died inside this block — the four before 2026-09-26 in the device/swapchain lines
-    // just above it, the fifth (00:11, the first one whose binary had these breadcrumbs) 1.2 s into
-    // "init: Earth textures (decode + upload)". That step is the launch's largest CPU burst and its
-    // largest PCIe burst — nine texture decodes + uploads, 8K JPEGs and a 21600×10800 DEM among them —
-    // so createGlowResources() logs one line per texture too, and a freeze inside it names the file.
-    // One fsynced line per step names the step the next one dies in; the ms stamps line up with
-    // tools/harness/blackbox.py.
+    // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
+    // names the step it died in), and a bootStatus() line for the loading screen (App), which
+    // presents a frame per step.
     Log::line("init: buffers");
+    bootStatus("Buffers");
     createBuffers(ctx);
     Log::line("init: cloud noise bake");
+    bootStatus("Cloud noise");
     createCloudNoisePipeline(ctx);
     Log::line("init: cloud warp noise bake");
+    bootStatus("Cloud warp noise");
     createCloudWarpNoisePipeline(ctx); // must run before createCloudMarchDescriptors (binding 9)
     Log::line("init: aurora noise bake");
+    bootStatus("Aurora noise");
     createAuroraNoisePipeline(ctx);    // must run before createGlowResources' writes (binding 16)
     Log::line("init: cloud march + scene depth targets");
+    bootStatus("Render targets");
     createCloudMarchResources(ctx);    // images must exist before createGlowResources' writes (bindings 10/11)
     createSceneDepthResources(ctx);    // image must exist before createGlowResources' writes (binding 19)
     Log::line("init: Earth textures (decode + upload)");
@@ -482,6 +482,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     // memory scale with the roster (seconds and GBs at 10M), so if a large roster ever hangs a
     // machine again the log should say which of these steps it reached.
     Log::line("constellation: building...");
+    bootStatus("Constellations");
     initConstellation();
     Log::line("constellation: " + std::to_string(activeSatCount) + " satellites, " +
               std::to_string(satTypes.size()) + " types, " + std::to_string(constellations.size()) +
@@ -505,9 +506,11 @@ void SatelliteSim::init(VulkanContext &ctx)
         snprintf(msg, sizeof(msg), "satellite GPU buffers: %.0f MB device-local", satMB);
         Log::line(msg);
     }
+    bootStatus("Satellite orbits");
     uploadSatOrbits(ctx); // bake + upload GpuSatOrbit/GpuSatType data after orbits are built
     Log::line("satellite orbits uploaded");
     Log::line("init: pipelines");
+    bootStatus("Pipelines");
     createDescriptors(ctx);
     createComputePipeline(ctx);
     createOrbitDescriptors(ctx);
@@ -529,6 +532,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     createFlareDescriptors(ctx);
     createFlarePipelines(ctx);
     Log::line("init: mesh renderer + environment probes");
+    bootStatus("Satellite meshes");
     // Phase 4 mesh renderer: needs the Earth textures (createGlowResources) and the loaded models
     // (initConstellation, above).
     {
@@ -8290,6 +8294,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // to produce the irregular spiky corona shape (see lensFlare() in sat_sky.frag).
     {
         Log::line("init: texture: assets/noise/rgba_noise.png");
+        bootStatus("Noise texture");
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/noise/rgba_noise.png", &w, &h, &ch, 4);
         if (!pixels)
@@ -8358,6 +8363,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // ── Moon texture: near-side face disc image (binding 2) ──────────────────
     {
         Log::line("init: texture: assets/textures/full_moon.png");
+        bootStatus("Moon");
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/textures/full_moon.png", &w, &h, &ch, 4);
         if (!pixels)
@@ -8421,6 +8427,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // ── Earth day texture (binding 3): 8K equirectangular colour map ─────────
     {
         Log::line("init: texture: assets/textures/8k_earth_daymap.jpg");
+        bootStatus("Earth day map");
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/textures/8k_earth_daymap.jpg", &w, &h, &ch, 4);
         if (!pixels)
@@ -8514,6 +8521,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // updatePositions().
     {
         Log::line("init: texture: assets/textures/8k_stars_milky_way.jpg");
+        bootStatus("Milky Way");
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/textures/8k_stars_milky_way.jpg", &w, &h, &ch, 4);
         if (!pixels)
@@ -8584,6 +8592,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // ── Earth night texture (binding 4): 8K equirectangular night-lights map ─
     {
         Log::line("init: texture: assets/textures/8k_earth_nightmap.jpg");
+        bootStatus("Earth night lights");
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/textures/8k_earth_nightmap.jpg", &w, &h, &ch, 4);
         if (!pixels)
@@ -8717,6 +8726,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         for (auto &t : detailTexes)
         {
             Log::line("init: texture: " + std::string(t.path));
+            bootStatus(std::strstr(t.path, "night") ? "City lights detail" : "City detail");
             int w = 0, h = 0, ch = 0;
             stbi_uc *pixels = stbi_load(t.path, &w, &h, &ch, 4);
             if (!pixels)
@@ -8786,9 +8796,11 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         }
     }
 
-    // ── Load earth elevation map (binding 5): 21600×10800 R8_UNORM , 0 = sea level
+    // ── Load earth elevation map (binding 5): 14999×7500 greyscale-stored-as-RGB8 -> R8_UNORM ,
+    //    sea level = 15 (the value oceanMaskCpu tests for; older notes here said 21600×10800)
     {
         Log::line("init: texture: assets/textures/earth_elevation.png");
+        bootStatus("Earth elevation");
         int w, h, ch;
         unsigned char *pixels = stbi_load("assets/textures/earth_elevation.png", &w, &h, &ch, 1);
         if (pixels)
@@ -8888,6 +8900,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // ── Load earth specular map (binding 6): 8K R8_UNORM ocean mask ──────────────
     {
         Log::line("init: texture: assets/textures/8k_earth_specular_map.png");
+        bootStatus("Ocean map");
         int w, h, ch;
         unsigned char *pixels = stbi_load("assets/textures/8k_earth_specular_map.png", &w, &h, &ch, 1);
         if (pixels)
@@ -8963,6 +8976,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // ── Load earth cloud map (binding 7): 8K R8_UNORM grayscale coverage ─────────
     {
         Log::line("init: texture: assets/textures/8k_earth_clouds.jpg");
+        bootStatus("Cloud map");
         int w, h, ch;
         unsigned char *pixels = stbi_load("assets/textures/8k_earth_clouds.jpg", &w, &h, &ch, 1);
         if (pixels)
@@ -11371,6 +11385,7 @@ bool SatelliteSim::loadModelType(SatelliteType &t, SatModel &model)
 
 void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int budget, size_t rosterCount)
 {
+    bootStatus(("Satellite model: " + t.modelId).c_str()); // the loading screen (App); a no-op after init
     std::vector<SatTri> tris = tessellateSatModel(model);
     SatLobeBakeStats stats;
     std::vector<std::vector<int>> lobeTris;

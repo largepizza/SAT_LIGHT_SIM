@@ -3,6 +3,7 @@
 #define GLFW_INCLUDE_NONE // see VulkanContext.h — must be repeated at every raw glfw3.h include site
 #include <GLFW/glfw3.h>
 #include "VulkanContext.h"
+#include <functional>
 
 class UIRenderer;   // forward declare — simulations include UIRenderer.h in their .cpp
 class AudioSystem;  // forward declare — simulations include AudioSystem.h in their .cpp
@@ -85,6 +86,18 @@ public:
 
     // Window title shown while this simulation runs
     virtual const char* name() const { return "SAT LIGHT SIM"; }
+
+    // ── Loading screen ─────────────────────────────────────────────────────────
+    // App installs this before init() when the loading screen is on. init() calls bootStatus()
+    // with a short line ("Earth day map", "Satellite model: iss") BEFORE each step; App appends it to
+    // the screen and presents one frame, so the screen always names the step that is running. Null
+    // (a no-op) when the screen is off and after init() returns.
+    void setBootStatus(std::function<void(const char*)> fn) { bootStatus_ = std::move(fn); }
+protected:
+    void bootStatus(const char* line) { if (bootStatus_) bootStatus_(line); }
+private:
+    std::function<void(const char*)> bootStatus_;
+public:
 
     // NEW-7 (RELEASE_v1_1_PLAN.md): target frame rate for App-side pacing, in Hz. Vulkan present
     // modes have no native "cap to N fps" concept — FIFO paces to the display's own refresh rate,

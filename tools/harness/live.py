@@ -54,11 +54,13 @@ def cmd_start(a):
         args += ["--settings", os.path.abspath(a.settings)]
     if a.fixed_dt is not None:
         args += ["--fixed-dt", a.fixed_dt]
+    import launchgate
+    launchgate.wait()  # spacing after the last app exit (docs/HARNESS.md, "Launch spacing")
     flags = 0x00000008 if os.name == "nt" else 0  # DETACHED_PROCESS
     app = subprocess.Popen(args, cwd=REPO, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
-    # The flight recorder (blackbox.py, docs/HARNESS.md "Machine-level resets"): detached like the
-    # app, it records GPU/CPU telemetry into the run folder until the app's process exits.
-    if not a.no_blackbox:
+    # --forensics: the flight recorder (blackbox.py, docs/FREEZES.md), detached like the app, records
+    # GPU/CPU telemetry into the run folder until the app's process exits.
+    if a.forensics:
         try:
             os.makedirs(out, exist_ok=True)
             subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "blackbox.py"),
@@ -117,6 +119,9 @@ def cmd_stop(a):
         cmd_send(a)
     except SystemExit:
         pass
+    sys.path.insert(0, os.path.dirname(__file__))
+    import launchgate
+    launchgate.mark_exit()
 
 
 def main():
@@ -126,7 +131,8 @@ def main():
     s = sp.add_parser("start")
     s.add_argument("--config", default="Release"); s.add_argument("--exe"); s.add_argument("--window", default="1600x900")
     s.add_argument("--settings"); s.add_argument("--fixed-dt"); s.add_argument("--timeout", type=float, default=90)
-    s.add_argument("--no-blackbox", action="store_true", help="don't record GPU/CPU telemetry (blackbox.csv)")
+    s.add_argument("--forensics", action="store_true", help="record GPU/CPU telemetry to blackbox.csv (docs/FREEZES.md)")
+    s.add_argument("--no-blackbox", action="store_true", help=argparse.SUPPRESS)
     s = sp.add_parser("send")
     s.add_argument("commands", nargs="?", default=""); s.add_argument("-f", "--file")
     s.add_argument("--timeout", type=float, default=300); s.add_argument("--json", action="store_true")

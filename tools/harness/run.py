@@ -44,8 +44,8 @@ def _crashes():
 
 
 def crash_preflight():
-    """Does the machine hard-reset since the last run? (See docs/HARNESS.md, "Machine-level
-    resets".) Returns a one-line warning or None; never raises."""
+    """--forensics only: did the firmware log a fatal record since the last run? (docs/FREEZES.md)
+    Returns a one-line warning or None; never raises."""
     try:
         return _crashes().preflight_message()
     except Exception:
@@ -63,10 +63,8 @@ def crash_witness(out):
 
 
 def blackbox_start(out):
-    """GPU/CPU telemetry into <run>/blackbox.csv, fsynced per sample, from ~1 s before the launch
-    (so the idle -> load step is recorded) to the exit. A machine reset leaves no dump; this file
-    then ends at the last sample before the power went (docs/HARNESS.md, Machine-level resets).
-    Best-effort: returns None rather than fail a run."""
+    """--forensics only: GPU/CPU telemetry into <run>/blackbox.csv, fsynced per sample, from ~1 s
+    before the launch to the exit (docs/FREEZES.md). Best-effort: returns None rather than fail a run."""
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import blackbox
@@ -91,7 +89,17 @@ def main():
     ap.add_argument("--fixed-dt", help="seconds per frame fed to the sim (default 1/60; 0 = real time)")
     ap.add_argument("--timeout", type=float, default=600, help="seconds before the run is killed")
     ap.add_argument("--quiet", action="store_true", help="only errors and the summary")
-    ap.add_argument("--no-blackbox", action="store_true", help="don't record GPU/CPU telemetry (blackbox.csv)")
+    ap.add_argument("--cooldown", type=float, default=None,
+                    help="seconds to wait after the last app exit before launching (default 30; see launchgate.py)")
+    ap.add_argument("--forensics", action="store_true",
+                    help="freeze forensics (docs/FREEZES.md): record GPU/CPU telemetry to blackbox.csv and "
+                         "check the event log for a firmware reset before launching")
+    ap.add_argument("--no-blackbox", action="store_true", help=argparse.SUPPRESS)  # the old default's opt-out
+    ap.add_argument("--boot-screen", choices=["on", "off"], default=None,
+                    help="the loading screen (SATLIGHTSIM_BOOT_SCREEN); on by default, off = the old "
+                         "white-window launch")
+    ap.add_argument("--boot-capture", action="store_true",
+                    help="also write every loading-screen frame to captures/boot_NN.png (implies --boot-screen on)")
     a = ap.parse_args()
 
     if not a.script and not a.commands:
@@ -112,19 +120,32 @@ def main():
         cmd += ["--settings", os.path.abspath(a.settings)]
     if a.fixed_dt is not None:
         cmd += ["--fixed-dt", a.fixed_dt]
-    warn = crash_preflight()
-    if warn:
-        print(warn, flush=True)
+    # The loading screen is a property of the launch, not a harness option, so it travels in the
+    # environment (SATLIGHTSIM_BOOT_SCREEN / SATLIGHTSIM_BOOT_CAPTURE), and only when asked for.
+    env = dict(os.environ)
+    if a.boot_screen is not None:
+        env["SATLIGHTSIM_BOOT_SCREEN"] = "1" if a.boot_screen == "on" else "0"
+    if a.boot_capture:
+        env["SATLIGHTSIM_BOOT_SCREEN"] = "1"
+        env["SATLIGHTSIM_BOOT_CAPTURE"] = "1"
+    if a.forensics:
+        warn = crash_preflight()
+        if warn:
+            print(warn, flush=True)
     print(f"exe: {exe}\nrun: {out}", flush=True)
-    bb = None if a.no_blackbox else blackbox_start(out)
+    bb = blackbox_start(out) if a.forensics else None
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import launchgate
+    launchgate.wait(launchgate.COOLDOWN_S if a.cooldown is None else a.cooldown)
     t0 = time.time()
     try:
-        proc = subprocess.run(cmd, cwd=REPO, timeout=a.timeout + 30,
+        proc = subprocess.run(cmd, cwd=REPO, timeout=a.timeout + 30, env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
         code, output = proc.returncode, proc.stdout
     except subprocess.TimeoutExpired as e:
         code, output = "killed (timeout)", (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
     wall = time.time() - t0
+    launchgate.mark_exit()
     if bb:
         bb.mark("exit %s" % code)
         bb.stop()
@@ -169,7 +190,7 @@ def main():
         wit = crash_witness(out)
         if wit:
             print("crash witness: " + os.path.relpath(wit, REPO)
-                  + "  (why: no summary.json - see docs/HARNESS.md, Machine-level resets)")
+                  + "  (why: no summary.json - see docs/FREEZES.md, Machine-level resets)")
     sys.exit(0 if ok else 1)
 
 

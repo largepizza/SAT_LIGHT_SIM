@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 (unreleased — internal version, not tagged)
 
 > DRAFT, summarised from `git log v1.1.1..HEAD` (43 commits, 2026-09-10 .. 2026-09-24). Trim, split or
-> re-word before tagging — in particular decide whether the lighting overhaul makes this v1.2.0.
+> re-word before tagging. The internal version is 1.2.0 (`VERSION`) as of 2026-09-26.
 > Per-subsystem detail lives in `CLAUDE.md`; accepted photometric error lives in
 > `data/benchmarks/KNOWN_RESIDUALS.md`.
 

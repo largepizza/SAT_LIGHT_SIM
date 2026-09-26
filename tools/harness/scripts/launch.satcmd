@@ -1,0 +1,6 @@
+# Bare launch: the closest thing the harness has to starting the app by hand, which is how entry 6
+# froze. Nothing but a few seconds of frames, so the run *is* the launch - all of init, including the
+# Earth texture decode + upload (`assets/textures/earth_elevation.png`, the slowest step) where entries
+# 5 and 6 both stopped. Small on disk (no captures) and fast, which is why overnight.py runs it most.
+wait 5
+quit

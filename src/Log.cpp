@@ -21,7 +21,7 @@ namespace
 #ifdef _WIN32
     // The log is the only witness when the machine dies mid-run, so it stays open and every line
     // is pushed through FlushFileBuffers: an unflushed tail commits with its size but reads
-    // all-NUL, which destroys the single record of where a run stopped (docs/HARNESS.md,
+    // all-NUL, which destroys the single record of where a run stopped (docs/FREEZES.md,
     // "Machine-level resets"). The call sites are launch / breadcrumb events (~40 of them, never
     // per frame), so one fsync per line is affordable. FILE_SHARE_READ so a driver can tail it.
     HANDLE g_file = INVALID_HANDLE_VALUE;

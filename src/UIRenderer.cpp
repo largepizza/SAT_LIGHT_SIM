@@ -30,7 +30,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // init
 // ─────────────────────────────────────────────────────────────────────────────
-void UIRenderer::init(VulkanContext& ctx, GLFWwindow* window) {
+void UIRenderer::init(VulkanContext& ctx, GLFWwindow* window, VkRenderPass pass) {
+    // Which render pass the pipeline binds to: the caller's, or the app's normal one (the
+    // pre-existing behaviour, and what a null handle means). See the header for the boot-screen case.
+    pipelinePass_ = (pass != VK_NULL_HANDLE) ? pass : ctx.renderPass;
+
     window_ = window;
     cursorEW   = glfwCreateStandardCursor(GLFW_RESIZE_EW_CURSOR);
     cursorNS   = glfwCreateStandardCursor(GLFW_RESIZE_NS_CURSOR);
@@ -488,7 +492,10 @@ void UIRenderer::createPipeline(VulkanContext& ctx) {
     ci.pColorBlendState    = &cb;
     ci.pDynamicState       = &dyn;
     ci.layout              = pipeLayout;
-    ci.renderPass          = ctx.renderPass;
+    // pipelinePass_, not ctx.renderPass: the UI draws into either the app's normal pass or the boot
+    // pass (see init/rebuildPipeline). A pass whose attachments have the same formats as the one the
+    // pipeline was created for is NOT interchangeable — the pipeline is created for one exact pass.
+    ci.renderPass          = (pipelinePass_ != VK_NULL_HANDLE) ? pipelinePass_ : ctx.renderPass;
     ci.subpass             = 0;
 
     if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline) != VK_SUCCESS)
@@ -506,6 +513,19 @@ void UIRenderer::destroyPipeline(VkDevice device) {
         vkDestroyPipeline(device, pipeline, nullptr);
         pipeline = VK_NULL_HANDLE;
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// rebuildPipeline — re-point the UI pipeline at a different render pass
+// ─────────────────────────────────────────────────────────────────────────────
+// The boot-screen handover (BOOT_LOADER_PLAN.md §3.3): everything except pipeLayout/pipeline is
+// deliberately left alone — no font reload, no Clay re-init, no descriptor reset, no iconCount
+// reset, because the boot screen and the running app are the same UIRenderer. The pass handle must
+// already be valid (App calls it with ctx.renderPass after ctx.init()).
+void UIRenderer::rebuildPipeline(VulkanContext& ctx, VkRenderPass pass) {
+    destroyPipeline(ctx.device);
+    pipelinePass_ = (pass != VK_NULL_HANDLE) ? pass : ctx.renderPass;
+    createPipeline(ctx); // reuses the existing pipeLayout (it is pass-independent)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

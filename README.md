@@ -43,7 +43,7 @@ to build only.
 
 Shaders are auto-detected by CMake, compiled by `glslc`, and copied next to the executable. No
 manual shader step needed. The built executable is named `SAT_LIGHT_SIM_V_<version>` (tracks the
-`VERSION` file), e.g. `build/Debug/SAT_LIGHT_SIM_V_1_1_0.exe`.
+`VERSION` file), e.g. `build/Debug/SAT_LIGHT_SIM_V_1_2_0.exe`.
 
 ### Presets (CMake 3.21+)
 

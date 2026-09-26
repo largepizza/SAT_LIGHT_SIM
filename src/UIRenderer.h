@@ -122,8 +122,18 @@ struct UIImage {
 class UIRenderer {
 public:
     // Call after VulkanContext is initialized. `window` is used only to set OS resize
-    // cursors while hovering/dragging a window edge (see updateWindowChrome).
-    void init(VulkanContext& ctx, GLFWwindow* window);
+    // cursors while hovering/dragging a window edge (see updateWindowChrome). `pass` is the render
+    // pass the UI pipeline is built against; VK_NULL_HANDLE (the default, so every pre-existing
+    // caller is unaffected) means ctx.renderPass. App passes ctx.renderPassBoot here when the boot
+    // screen is on (BOOT_LOADER_PLAN.md §3.3) and then rebuildPipeline() re-points the pipeline at
+    // ctx.renderPass once the simulation is up — the boot screen and the app share this one
+    // UIRenderer: same font/icon atlases, same descriptor sets, same Clay arena.
+    void init(VulkanContext& ctx, GLFWwindow* window, VkRenderPass pass = VK_NULL_HANDLE);
+
+    // Rebuild just the pipeline (and its layout if it ever needed one) against a different render
+    // pass, for the boot-screen handover above. Deliberately does NOT touch anything else: the font
+    // atlas, icon atlas, descriptor sets and the Clay arena survive (see the init() comment).
+    void rebuildPipeline(VulkanContext& ctx, VkRenderPass pass);
 
     // Call when swapchain is recreated (window resize).
     void onResize(VulkanContext& ctx);
@@ -306,6 +316,10 @@ private:
     // ── Pipeline ──────────────────────────────────────────────────────────
     VkPipelineLayout pipeLayout = VK_NULL_HANDLE;
     VkPipeline       pipeline   = VK_NULL_HANDLE;
+    // The render pass `pipeline` was built against — ctx.renderPass normally, ctx.renderPassBoot
+    // while the boot screen is up (see rebuildPipeline). Also read by onResize(), so a resize during
+    // boot rebuilds the pipeline against the pass that is actually in use.
+    VkRenderPass     pipelinePass_ = VK_NULL_HANDLE;
 
     // ── Per-frame CPU-side geometry ───────────────────────────────────────
     std::vector<UIVertex>  vertices;

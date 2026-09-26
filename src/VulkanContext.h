@@ -74,6 +74,12 @@ struct VulkanContext {
     // that pre-populate the swapchain image via a blit before the main pass begins (see
     // Simulation::recordPrePass/activeRenderPass). Depth still CLEARs normally either way.
     VkRenderPass                renderPassLoad = VK_NULL_HANDLE;
+    // Third pass variant, for the boot/staging screen (BOOT_LOADER_PLAN.md §3.1): the frames App
+    // presents while Simulation::init() is still running draw with this instead of renderPass.
+    // Same attachment formats/sample-counts as renderPass/renderPassLoad, so it is compatible with
+    // the SAME framebuffers above — no framebuffers of its own and nothing to rebuild on resize.
+    // See createRenderPassBoot's definition for what actually differs.
+    VkRenderPass                renderPassBoot = VK_NULL_HANDLE;
     std::vector<VkFramebuffer>  framebuffers;
 
     // ── Depth buffer (shared; recreated on resize) ─────────────────────────
@@ -174,6 +180,7 @@ private:
     void createSwapchain(GLFWwindow* window);
     void createRenderPass();
     void createRenderPassLoad();
+    void createRenderPassBoot();
     void createDepthResources();
     void destroyDepthResources();
     void createFramebuffers();
