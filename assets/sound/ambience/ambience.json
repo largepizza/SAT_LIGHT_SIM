@@ -1,0 +1,267 @@
+{
+  "version": 1,
+  "_about": [
+    "Ambient sound layers (SatelliteSim ambience; loader src/simulations/Ambience.h, drivers in SatelliteSimAmbience.cpp).",
+    "A layer's gain = gain x its group's gain x every 'when' ramp x the best 'any' alternative; it slews linearly to that, up in fade_in_s, down in fade_out_s.",
+    "Groups (Sound tab gains): wind water nature city space machines. A synth param given as {\"root\": k} is k x the tonal root (Sound tab, default 55 Hz), so pitched voices share one key.",
+    "Ramp [a, b]: 0 at a -> 1 at b (a > b falls). [a, b, c, d]: rises a -> b, falls c -> d.",
+    "Drivers: alt_m agl_m ground_m lat_deg lon_deg sun_el_deg ocean_near ocean_wide veg forest desert ice urban beam aurora wind",
+    "         speed_mps eas time_scale following intro, plus <group>_count / <group>_near_m per shell group.",
+    "Mix: every place should total about 10 dB under the music (~-35 LUFS against its ~-25; ambience_tour.satcmd measures it).",
+    "Synths: wind hum drone beeps disk chorus surf (parameters: src/AmbientSynth.cpp). Files are relative to this folder;",
+    "        miniaudio decodes WAV, FLAC and MP3."
+  ],
+  "shell_groups": {
+    "comms": { "match": ["starlink*", "oneweb", "amazon_leo", "guowang"], "hearing_m": 500000 },
+    "datacenter": { "match": ["spacex_ai_sat"], "hearing_m": 50000 }
+  },
+  "layers": [
+    {
+      "id": "wind_ground",
+      "group": "wind",
+      "synth": "wind",
+      "gain": 0.25,
+      "fade_in_s": 1.5,
+      "fade_out_s": 1.0,
+      "params": { "color": 0.4, "center_hz": 450, "q": 0.9, "body": 0.15, "body_hz": 140, "gust": 0.7, "gust_rate": 0.3, "hiss": 0.25, "width": 0.75 },
+      "mod": { "level": {"driver": "wind", "in": [0, 1], "out": [0.35, 1.0]} },
+      "when": { "agl_m": [1500, 150], "ocean_near": [0.7, 0.3], "ground_m": [3200, 1800], "desert": [0.8, 0.4] }
+    },
+    {
+      "id": "wind_desert",
+      "group": "wind",
+      "synth": "wind",
+      "gain": 0.16,
+      "fade_in_s": 1.5,
+      "fade_out_s": 1.0,
+      "params": { "color": 0.5, "center_hz": 380, "q": 0.8, "body": 0.2, "body_hz": 120, "gust": 0.8, "gust_rate": 0.35, "hiss": 0.5, "hiss_hz": 2800, "width": 0.8 },
+      "mod": { "level": {"driver": "wind", "in": [0, 1], "out": [0.4, 1.0]} },
+      "when": { "agl_m": [1500, 150], "ocean_near": [0.7, 0.3], "ground_m": [3200, 1800], "desert": [0.4, 0.8] }
+    },
+    {
+      "id": "wind_alpine",
+      "group": "wind",
+      "synth": "wind",
+      "gain": 0.28,
+      "fade_in_s": 1.5,
+      "fade_out_s": 1.0,
+      "params": { "color": 0.35, "center_hz": 650, "q": 1.1, "body": 0.1, "gust": 0.85, "gust_rate": 0.45, "whistle": 0.6, "whistle_hz": 1100, "hiss": 0.35, "hiss_hz": 4000, "width": 0.85 },
+      "mod": { "level": {"driver": "wind", "in": [0, 1], "out": [0.5, 1.0]} },
+      "when": { "agl_m": [1200, 100], "ground_m": [1800, 3200], "lat_deg": [-67, -62, 62, 67] }
+    },
+    {
+      "id": "wind_glacier",
+      "group": "wind",
+      "synth": "wind",
+      "gain": 0.24,
+      "fade_in_s": 1.5,
+      "fade_out_s": 1.0,
+      "params": { "color": 0.2, "center_hz": 1500, "q": 0.7, "body": 0.08, "gust": 0.35, "gust_rate": 0.15, "whistle": 0.25, "whistle_hz": 1500, "hiss": 0.6, "hiss_hz": 5000, "width": 0.9 },
+      "mod": { "level": {"driver": "wind", "in": [0, 1], "out": [0.6, 1.0]} },
+      "when": { "agl_m": [1500, 150], "ocean_near": [0.6, 0.2] },
+      "any": [{"lat_deg": [62, 67]}, {"lat_deg": [-62, -67]}]
+    },
+    {
+      "id": "beach_waves",
+      "group": "water",
+      "loop": "beach_waves.flac",
+      "gain": 0.45,
+      "fade_in_s": 2.0,
+      "fade_out_s": 1.0,
+      "when": { "agl_m": [600, 50], "ocean_near": [0.05, 0.3, 0.85, 0.99] }
+    },
+    {
+      "id": "gulls",
+      "group": "nature",
+      "events": ["gull_1.flac", "gull_2.flac", "gull_3.flac", "gull_4.flac", "gull_5.flac", "gull_6.flac"],
+      "interval_s": [4, 14],
+      "pan": 0.9,
+      "gain_jitter": 0.6,
+      "gain": 0.3,
+      "fade_in_s": 2.0,
+      "fade_out_s": 1.0,
+      "when": { "agl_m": [300, 30], "ocean_near": [0.05, 0.3, 0.9, 0.99], "sun_el_deg": [-4, 4], "ice": [0.3, 0.05], "time_scale": [3600, 300] }
+    },
+    {
+      "id": "sea_open",
+      "group": "water",
+      "synth": "surf",
+      "gain": 0.2,
+      "fade_in_s": 2.0,
+      "fade_out_s": 1.0,
+      "params": { "period": 12, "distance": 0.85, "fizz": 0.4, "bed": 0.4 },
+      "when": { "agl_m": [1500, 100], "ocean_near": [0.8, 1.0] }
+    },
+    {
+      "id": "sea_wind",
+      "group": "wind",
+      "synth": "wind",
+      "gain": 0.12,
+      "fade_in_s": 1.5,
+      "fade_out_s": 1.0,
+      "params": { "color": 0.35, "center_hz": 800, "q": 0.7, "body": 0.1, "gust": 0.5, "gust_rate": 0.25, "hiss": 0.2, "width": 0.9 },
+      "mod": { "level": {"driver": "wind", "in": [0, 1], "out": [0.4, 1.0]} },
+      "when": { "agl_m": [1500, 100], "ocean_near": [0.6, 0.95] }
+    },
+    {
+      "id": "crickets",
+      "group": "nature",
+      "loop": "crickets_field.flac",
+      "gain": 0.3,
+      "fade_in_s": 2.0,
+      "fade_out_s": 1.0,
+      "_note": "Crickets fall silent in Reflect Orbital light: 'beam' is ~1.8e6 at the centre of a lit spot, 0 outside.",
+      "when": { "agl_m": [300, 30], "sun_el_deg": [-2, -10], "ocean_near": [0.8, 0.4], "ice": [0.3, 0.05], "desert": [0.8, 0.4], "urban": [0.75, 0.35], "lat_deg": [-58, -50, 50, 58], "beam": [200000, 20000], "time_scale": [3600, 300] }
+    },
+    {
+      "id": "tropical_night",
+      "group": "nature",
+      "loop": "tropical_night.flac",
+      "gain": 0.3,
+      "fade_in_s": 2.0,
+      "fade_out_s": 1.0,
+      "when": { "agl_m": [300, 30], "sun_el_deg": [-2, -10], "forest": [0.3, 0.7], "lat_deg": [-28, -20, 20, 28], "urban": [0.75, 0.35], "beam": [200000, 20000], "time_scale": [3600, 300] }
+    },
+    {
+      "id": "birds_forest",
+      "group": "nature",
+      "loop": "birds_forest.flac",
+      "gain": 0.35,
+      "fade_in_s": 2.0,
+      "fade_out_s": 1.0,
+      "when": { "agl_m": [300, 30], "sun_el_deg": [2, 10], "veg": [0.2, 0.6], "ice": [0.3, 0.05], "urban": [0.8, 0.4], "time_scale": [3600, 300] },
+      "any": [{"lat_deg": [18, 25, 58, 66]}, {"lat_deg": [-66, -58, -25, -18]}]
+    },
+    {
+      "id": "birds_dawn",
+      "group": "nature",
+      "loop": "birds_dawn.flac",
+      "gain": 0.5,
+      "fade_in_s": 2.0,
+      "fade_out_s": 1.0,
+      "when": { "agl_m": [300, 30], "sun_el_deg": [-7, -2, 6, 14], "veg": [0.2, 0.6], "ice": [0.3, 0.05], "urban": [0.8, 0.4], "time_scale": [3600, 300] },
+      "any": [{"lat_deg": [18, 25, 58, 66]}, {"lat_deg": [-66, -58, -25, -18]}]
+    },
+    {
+      "id": "jungle_day",
+      "group": "nature",
+      "loop": "jungle_day.flac",
+      "gain": 0.35,
+      "fade_in_s": 2.0,
+      "fade_out_s": 1.0,
+      "when": { "agl_m": [300, 30], "sun_el_deg": [2, 10], "forest": [0.3, 0.7], "lat_deg": [-25, -18, 18, 25], "urban": [0.8, 0.4], "time_scale": [3600, 300] }
+    },
+    {
+      "id": "city_day",
+      "group": "city",
+      "loop": "city_day.flac",
+      "gain": 0.3,
+      "fade_in_s": 2.0,
+      "fade_out_s": 1.0,
+      "when": { "agl_m": [500, 60], "urban": [0.3, 0.7], "sun_el_deg": [-8, 0], "time_scale": [3600, 300] }
+    },
+    {
+      "id": "city_night",
+      "group": "city",
+      "loop": "city_night.flac",
+      "gain": 0.3,
+      "fade_in_s": 2.0,
+      "fade_out_s": 1.0,
+      "when": { "agl_m": [500, 60], "urban": [0.3, 0.7], "sun_el_deg": [0, -8], "time_scale": [3600, 300] }
+    },
+    {
+      "id": "air_low",
+      "group": "wind",
+      "synth": "wind",
+      "gain": 0.22,
+      "fade_in_s": 1.5,
+      "fade_out_s": 1.0,
+      "params": { "color": 0.5, "center_hz": 700, "q": 0.6, "body": 0.2, "gust": 0.35, "gust_rate": 0.15, "hiss": 0.1, "width": 0.8 },
+      "when": { "agl_m": [300, 1500], "alt_m": [13000, 9000] }
+    },
+    {
+      "id": "jetstream",
+      "group": "wind",
+      "synth": "wind",
+      "gain": 0.25,
+      "fade_in_s": 1.5,
+      "fade_out_s": 1.0,
+      "params": { "color": 0.7, "center_hz": 250, "q": 0.7, "body": 0.5, "body_hz": 110, "gust": 0.3, "gust_rate": 0.08, "hiss": 0.05, "width": 0.7 },
+      "when": { "alt_m": [7000, 10000, 15000, 22000] }
+    },
+    {
+      "id": "stratosphere",
+      "group": "wind",
+      "synth": "wind",
+      "gain": 0.22,
+      "fade_in_s": 1.5,
+      "fade_out_s": 1.0,
+      "params": { "color": 0.8, "center_hz": 150, "q": 0.8, "body": 0.6, "body_hz": 80, "gust": 0.2, "gust_rate": 0.05, "hiss": 0.0, "width": 0.6 },
+      "when": { "alt_m": [15000, 22000, 45000, 70000] }
+    },
+    {
+      "id": "leo_cabin",
+      "group": "space",
+      "synth": "hum",
+      "gain": 0.12,
+      "fade_in_s": 2.5,
+      "fade_out_s": 1.5,
+      "params": { "f0": {"root": 1}, "harmonics": 3, "q": 9, "drift": 12, "drift_rate": 0.03, "air": 0.55, "air_hz": 700, "wobble": 0.12, "wobble_rate": 0.07, "width": 0.5 },
+      "when": { "alt_m": [80000, 150000, 3000000, 6000000] }
+    },
+    {
+      "id": "aurora_hum",
+      "group": "space",
+      "synth": "hum",
+      "gain": 0.15,
+      "fade_in_s": 2.5,
+      "fade_out_s": 1.5,
+      "params": { "f0": {"root": 2}, "harmonics": 2, "q": 5, "drift": 70, "drift_rate": 0.06, "air": 0.25, "air_hz": 1200, "wobble": 0.55, "wobble_rate": 0.12, "width": 0.9 },
+      "when": { "aurora": [0.15, 0.7], "alt_m": [60000, 120000, 1500000, 3000000], "sun_el_deg": [0, -12], "time_scale": [3600, 300] }
+    },
+    {
+      "id": "vlf_earth",
+      "group": "space",
+      "loop": "vlf_earth.flac",
+      "gain": 0.16,
+      "fade_in_s": 3.0,
+      "fade_out_s": 2.0,
+      "_note": "Real whistlers (original, FL Studio; -20 LUFS, hence the low gain). MEO: in over 1500-3000 km, out over 25000-50000 km into high orbit.",
+      "when": { "alt_m": [1500000, 3000000, 25000000, 50000000] }
+    },
+    {
+      "id": "firmament",
+      "group": "space",
+      "loop": "firmament.flac",
+      "gain": 0.42,
+      "fade_in_s": 8.0,
+      "fade_out_s": 3.0,
+      "_note": "High-orbit pad (original, FL Studio). One long ramp: a trace in upper LEO, half at ~20000 km, full from 40000 km (past GEO) up.",
+      "when": { "alt_m": [1000000, 40000000] }
+    },
+    {
+      "id": "comms_drone",
+      "group": "space",
+      "synth": "drone",
+      "gain": 0.2,
+      "fade_in_s": 2.5,
+      "fade_out_s": 1.5,
+      "_note": "Among the broadband shells: a low phased buzz on 2x the root, and now and then a soft status motif on 4x.",
+      "params": { "f0": {"root": 2}, "harmonics": 7, "bright": 1.3, "odd": 0.5, "detune": 2.5, "phaser": 0.7, "phaser_rate": 0.06, "phaser_depth": 0.9, "phaser_fb": 0.55, "air": 0.05, "tone_ratio": 2, "tone_ms": 160, "tone_level": 0.6, "swell": 0.2 },
+      "mod": { "tones": {"driver": "comms_count", "in": [1, 80], "out": [0.03, 0.25]} },
+      "when": { "comms_count": [0.3, 3], "alt_m": [100000, 200000] }
+    },
+    {
+      "id": "datacenter_hum",
+      "group": "machines",
+      "synth": "drone",
+      "gain": 0.2,
+      "fade_in_s": 2.0,
+      "fade_out_s": 1.2,
+      "_note": "Inside the AI datacenter disk: a fridge-like hum on the root that cycles on and off, a thin whine on 16x the root (an octave-multiple of the comms drone, so the two agree), soft status tones on 3x.",
+      "params": { "f0": {"root": 1}, "harmonics": 5, "bright": 1.2, "odd": 0.2, "detune": 2, "phaser": 0.3, "phaser_rate": 0.04, "whine": 0.5, "whine_ratio": 16, "whine_wobble": 5, "air": 0.15, "air_hz": 500, "cycle_s": 45, "cycle_depth": 0.5, "tone_ratio": 3, "tone_ms": 220, "tone_level": 0.5, "swell": 0.1 },
+      "mod": { "tones": {"driver": "datacenter_near_m", "in": [30000, 2000], "out": [0.02, 0.15]} },
+      "when": { "datacenter_near_m": [60000, 6000], "alt_m": [100000, 200000] }
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+# Ambience tour: golden locations, each checked (`audio expect`) and recorded (docs/HARNESS.md,
+# "Ambient sound"). A wrong layer at a spot fails the run. Listen to the WAVs, or look:
+#   tools/harness/.venv/Scripts/python tools/harness/imgtools.py audio <run>/captures/tour_*.wav -o tour.png
+# `wait settle` runs 40 half-second steps, so every layer's fade (<= 6 s) has converged.
+
+# Ground: beach, open sea, plains, high mountains, ice sheet
+observer lat=36.2381 lon=-121.8163 agl=2; camera az=250 el=5; time sun 25; wait settle
+audio expect beach_waves,gulls; audio record tour_01_beach seconds=15; capture tour_01_beach scale=0.25
+observer lat=30 lon=-140 agl=2; wait settle
+audio expect sea_open,sea_wind absent=beach_waves,gulls,wind_ground; audio record tour_02_open_sea seconds=12
+observer lat=38.5 lon=-98.5 agl=2; time sun -20; wait settle
+audio expect wind_ground,crickets absent=beach_waves,sea_open,wind_alpine,birds_forest; audio record tour_03_plains_night seconds=10
+observer lat=35.38 lon=-120.07 agl=2; time sun -20; wait settle
+audio expect wind_ground absent=crickets; audio state tour_beam_site   # Topaz Solar Farm, inside a lit Reflect spot
+observer lat=50 lon=10 agl=2; time sun noon; wait settle
+audio expect birds_forest absent=crickets,jungle_day; audio record tour_03b_forest_day seconds=10
+observer lat=50 lon=10 agl=2; time sun -3 rising; wait settle
+audio expect birds_dawn; audio record tour_03c_dawn seconds=10
+observer lat=-3 lon=-62 agl=2; time sun 30; wait settle
+audio expect jungle_day absent=birds_forest; audio record tour_03d_jungle_day seconds=10
+observer lat=-3 lon=-62 agl=2; time sun -25; wait settle
+audio expect tropical_night; audio record tour_03e_jungle_night seconds=10
+observer lat=23 lon=10 agl=2; time sun 30; wait settle
+audio expect wind_desert absent=wind_ground,crickets; audio record tour_03f_sahara seconds=10
+observer lat=34.05 lon=-118.25 agl=2; time sun -20; wait settle
+audio expect city_night absent=crickets; audio record tour_03g_la_night seconds=10
+observer lat=46.547 lon=7.985 agl=5; wait settle
+audio expect wind_alpine absent=wind_ground; audio record tour_04_alps seconds=8
+observer lat=72.58 lon=-38.46 agl=2; wait settle
+audio expect wind_glacier absent=wind_alpine; audio record tour_05_greenland seconds=8
+
+# The air: an airliner's altitude, the stratosphere
+observer lat=38.5 lon=-98.5 alt=11000; wait settle
+audio expect jetstream absent=wind_ground; audio record tour_06_11km seconds=8
+observer lat=38.5 lon=-98.5 alt=30000; wait settle
+audio expect stratosphere absent=jetstream; audio record tour_07_30km seconds=8
+
+# Orbit: over the aurora at night, beside a Starlink, inside the AI datacenter disk, high orbit
+observer lat=67 lon=-150 alt=400000; time sun -30; wait settle
+audio expect leo_cabin,aurora_hum; audio record tour_08_aurora seconds=8
+select const "Starlink Gen1"; follow offset=-30,0,10; wait settle
+audio expect leo_cabin,comms_drone; audio record tour_09_starlink seconds=10
+select const "SpaceX AI Satellites"; follow offset=-60,0,20; wait settle
+audio expect datacenter_hum; audio state tour_10_datacenter; audio record tour_10_datacenter seconds=10
+follow off; observer lat=0 lon=0 alt=20000000; wait settle
+audio expect vlf_earth,firmament absent=leo_cabin,wind_ground; audio record tour_11_high_orbit seconds=12
+
+# The music under it all, for the level comparison
+audio record tour_00_music bus=music seconds=20

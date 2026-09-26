@@ -8,6 +8,25 @@
 > `data/benchmarks/KNOWN_RESIDUALS.md`.
 
 ### Added
+- **Ambient sound.** A location- and context-aware ambience bus under the music (Settings → Sound →
+  "Ambience"): wind for plains, deserts, mountains and ice sheets; surf and gulls at the coast, the
+  open sea offshore; crickets at night (silent inside a Reflect Orbital beam), forest birds and a
+  dawn chorus, jungle day and night; city traffic day and night; the jet stream, the thin
+  stratosphere; a cabin hum in orbit, a warm hum over the aurora at night, a low phased drone
+  among the broadband shells, a fridge-like hum inside the AI datacenter disk, real VLF whistlers
+  in medium Earth orbit and the "Firmament" pad rising toward high orbit (both original, made in FL
+  Studio). Procedural voices (`src/AmbientSynth.cpp`) plus CC0 field recordings
+  (`tools/make_ambience.py`), mixed by a moddable layer table
+  (`assets/sound/ambience/ambience.json`). The automation harness renders and checks it
+  (`audio state/record/expect/force/music`, `imgtools.py audio`). In orbit, low phased drones and soft status tones in one shared key (Settings → Sound →
+  "Tonal root"). Advanced Sound settings: fade speeds, the tonal root, per-group gains (wind, water,
+  nature, city, space, machines).
+- **Music player.** Settings → Sound shows the current track and its position, with previous /
+  pause / next. A 30 s gap between tracks (adjustable) lets the ambience breathe. Gravity Wave always
+  plays first; any mp3/flac/wav added to `assets/sound/music/` joins the playlist. New track: LEO
+  Motif, a short piece written to sit with the ambience. The music fades out as you climb: half
+  volume in medium Earth orbit, silent from geostationary altitude up, leaving high orbit to the
+  ambience.
 - **Satellite lighting overhaul (Phases 1-3).** Data-driven rigid attitude groups (`attitude_groups`
   in `constellations.json`) replace the `AttitudeMode` enum — legacy modes are converted at load and
   verified against the old surface normals. Geometry models (`"model": "<id>"` →

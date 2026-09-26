@@ -8,6 +8,8 @@
 // `capture` issued after it records that frame.
 #include "SatelliteSim.h"
 #include "SatPhotometry.h"
+#include "Ambience.h"
+#include "../AudioSystem.h"
 #include "../Harness.h"
 #include "../Log.h"
 #include "version.h"
@@ -191,7 +193,9 @@ const char *kHelp =
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; "
     "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
-    "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; log <text>; quit";
+    "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
+    "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
+    "audio force <layer> <gain|off> | audio music [next|prev|pause|play]; log <text>; quit";
 } // namespace
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────────────────────────
@@ -468,6 +472,23 @@ json SatelliteSim::harnessStateJson()
 #else
     const char *cfg = "Debug";
 #endif
+    if (ambience_ && ambience_->loaded())
+    {
+        j["ambience"] = ambience_->stateJson();
+        if (audio_)
+        {
+            j["ambience"]["volumes"] = {{"master", audio_->getMasterVolume()},
+                                        {"music", audio_->getMusicVolume()},
+                                        {"sfx", audio_->getSfxVolume()},
+                                        {"ambience", audio_->getAmbienceVolume()}};
+            j["ambience"]["music"] = {{"track", audio_->trackIndex()},
+                                      {"name", audio_->trackName(audio_->trackIndex())},
+                                      {"tracks", audio_->trackCount()},
+                                      {"paused", audio_->musicPaused()},
+                                      {"gap_remaining_s", audio_->gapRemaining()},
+                                      {"gap_s", audio_->musicGap()}};
+        }
+    }
     j["build"] = {{"version", APP_VERSION}, {"commit", APP_GIT_COMMIT}, {"config", cfg}, {"gpu", gpu}};
     j["harness_frame"] = harnessRunner_ ? harnessRunner_->frame() : 0;
     return j;
@@ -1559,6 +1580,220 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["message"] = r["time"]["utc"].get<std::string>() + "  " + std::to_string(obsLatDeg) + ", " +
                        std::to_string(obsLonDeg);
         return Status::Done;
+    }
+
+    // ── audio ───────────────────────────────────────────────────────────────────
+    // `audio [state [name]]` — the ambience context and layer gains. `audio record <name> [seconds=8]
+    // [bus=ambience|music|sfx|all|music+ambience] [solo=<layer>]` — renders the mix offline into
+    // captures/<name>.wav (+ <name>.json: the state and the levels). `audio force <layer> <gain>|off`
+    // pins a layer's gain (calibrating one voice anywhere); `audio force off` releases them all.
+    if (n == "audio")
+    {
+        const std::string sub = lower(pos(0));
+        if (!ambience_)
+            updateAmbience(0.0f); // loads the table (it otherwise loads on the first recordCompute)
+        if (!ambience_ || !ambience_->loaded())
+        {
+            a.error = "ambience is not loaded (assets/sound/ambience/ambience.json - see satlight_log.txt)";
+            return Status::Error;
+        }
+        if (sub.empty() || sub == "state")
+        {
+            r = ambience_->stateJson();
+            if (!pos(1).empty())
+            {
+                const std::string path = harnessRunner_->capturePath(safeName(pos(1)), ".audio.json");
+                std::ofstream(path) << r.dump(2) << '\n';
+                r["file"] = path;
+            }
+            std::string msg;
+            for (const auto &id : r["audible"])
+                msg += (msg.empty() ? "" : ", ") + id.get<std::string>();
+            r["message"] = msg.empty() ? "(silence)" : msg;
+            return Status::Done;
+        }
+        // `audio expect a,b [absent=c,d] [min=0.05]`: fails unless every listed layer is at least
+        // `min` gain and every `absent` one below it — a location tour checks itself.
+        if (sub == "expect")
+        {
+            const json st = ambience_->stateJson();
+            const float minGain = (float)c.num("min", 0.05);
+            auto gainOf = [&](const std::string &id) -> float
+            {
+                for (const auto &l : st["layers"])
+                    if (l["id"] == id)
+                        return l["gain"].get<float>();
+                return -1.0f;
+            };
+            auto split = [](const std::string &list)
+            {
+                std::vector<std::string> out;
+                size_t b = 0;
+                while (b <= list.size())
+                {
+                    const size_t e = list.find(',', b);
+                    const std::string t = list.substr(b, e == std::string::npos ? std::string::npos : e - b);
+                    if (!t.empty())
+                        out.push_back(t);
+                    if (e == std::string::npos)
+                        break;
+                    b = e + 1;
+                }
+                return out;
+            };
+            std::string fails;
+            for (const std::string &id : split(pos(1)))
+            {
+                const float g = gainOf(id);
+                if (g < 0.0f)
+                    fails += " no layer '" + id + "';";
+                else if (g < minGain)
+                    fails += " " + id + " is " + std::to_string(g) + ";";
+            }
+            for (const std::string &id : split(c.str("absent")))
+            {
+                const float g = gainOf(id);
+                if (g < 0.0f)
+                    fails += " no layer '" + id + "';";
+                else if (g >= minGain)
+                    fails += " " + id + " should be silent but is " + std::to_string(g) + ";";
+            }
+            r["audible"] = st["audible"];
+            r["drivers"] = st["drivers"];
+            if (!fails.empty())
+            {
+                std::string audible;
+                for (const auto &id : st["audible"])
+                    audible += (audible.empty() ? "" : ", ") + id.get<std::string>();
+                a.error = "ambience expectation failed:" + fails + " (audible: " + audible + ")";
+                return Status::Error;
+            }
+            std::string msg;
+            for (const auto &id : st["audible"])
+                msg += (msg.empty() ? "" : ", ") + id.get<std::string>();
+            r["message"] = "ok: " + msg;
+            return Status::Done;
+        }
+        if (sub == "music")
+        {
+            if (!audio_)
+            {
+                a.error = "no audio system";
+                return Status::Error;
+            }
+            const std::string op = lower(pos(1));
+            if (op == "next")
+                audio_->nextTrack();
+            else if (op == "prev")
+                audio_->prevTrack();
+            else if (op == "pause")
+                audio_->setMusicPaused(true);
+            else if (op == "play")
+                audio_->setMusicPaused(false);
+            else if (!op.empty() && op != "state")
+            {
+                a.error = "audio music [next|prev|pause|play|state]";
+                return Status::Error;
+            }
+            r = {{"track", audio_->trackIndex()},       {"name", audio_->trackName(audio_->trackIndex())},
+                 {"tracks", audio_->trackCount()},      {"paused", audio_->musicPaused()},
+                 {"gap_remaining_s", audio_->gapRemaining()}, {"gap_s", audio_->musicGap()},
+                 {"altitude_fade", audio_->musicFade()}};
+            r["message"] = audio_->trackName(audio_->trackIndex()) + (audio_->musicPaused() ? " (paused)" : "") +
+                           " - track " + std::to_string(audio_->trackIndex() + 1) + "/" +
+                           std::to_string(audio_->trackCount());
+            return Status::Done;
+        }
+        if (sub == "force")
+        {
+            const std::string id = pos(1);
+            if (id == "off" || id.empty())
+            {
+                ambience_->releaseForced();
+                r["message"] = "released all forced layers";
+                return Status::Done;
+            }
+            const std::string v = lower(pos(2));
+            const float g = (v == "off" || v.empty()) ? -1.0f : (float)parseNum(v, "audio force");
+            if (!ambience_->force(id, g))
+            {
+                a.error = "no ambience layer '" + id + "'";
+                return Status::Error;
+            }
+            r["message"] = id + (g < 0.0f ? " released" : " forced to " + v);
+            return Status::Done;
+        }
+        if (sub == "record")
+        {
+            if (!audio_)
+            {
+                a.error = "no audio system";
+                return Status::Error;
+            }
+            const std::string name = safeName(pos(1).empty() ? "audio" : pos(1));
+            const double seconds = c.num("seconds", 8.0);
+            uint32_t mask = 0;
+            const std::string bus = lower(c.str("bus", "ambience"));
+            if (bus == "all")
+                mask = AudioSystem::BusAll;
+            if (bus.find("music") != std::string::npos)
+                mask |= AudioSystem::BusMusic;
+            if (bus.find("sfx") != std::string::npos)
+                mask |= AudioSystem::BusSfx;
+            if (bus.find("ambience") != std::string::npos)
+                mask |= AudioSystem::BusAmbience;
+            if (mask == 0)
+            {
+                a.error = "bus= must name music, sfx, ambience (joined by +) or all";
+                return Status::Error;
+            }
+            int solo = -1;
+            if (c.has("solo"))
+            {
+                const int li = ambience_->layerIndex(c.str("solo"));
+                if (li < 0)
+                {
+                    a.error = "no ambience layer '" + c.str("solo") + "'";
+                    return Status::Error;
+                }
+                solo = ambience_->layerVoice(li);
+                if (solo < 0)
+                {
+                    a.error = "layer '" + c.str("solo") + "' has no voice here (silent, events-only, or failed); "
+                              "`audio force " + c.str("solo") + " 1` first";
+                    return Status::Error;
+                }
+            }
+            const std::string path = harnessRunner_->capturePath(name, ".wav");
+            AudioSystem::RenderStats st;
+            std::string err;
+            if (!audio_->renderWav(path, seconds, mask, solo, [this](float dt) { ambience_->tickEvents(dt, audio_); },
+                                   st, err))
+            {
+                a.error = err;
+                return Status::Error;
+            }
+            r["file"] = path;
+            r["seconds"] = st.seconds;
+            r["rms_db"] = st.rmsDb;
+            r["peak_db"] = st.peakDb;
+            r["rms_db_per_second"] = st.rmsDbPerSecond;
+            r["bus"] = bus;
+            if (c.has("solo"))
+                r["solo"] = c.str("solo");
+            r["audible"] = ambience_->stateJson()["audible"];
+            json side = harnessStateJson();
+            side["audio_record"] = r;
+            std::ofstream(harnessRunner_->capturePath(name, ".json")) << side.dump(2) << '\n';
+            char buf[512];
+            snprintf(buf, sizeof(buf), "%s: %.1f s, RMS %.1f dBFS, peak %.1f dBFS", path.c_str(), st.seconds, st.rmsDb,
+                     st.peakDb);
+            r["message"] = buf;
+            return Status::Done;
+        }
+        a.error = "audio [state [name]] | record <name> [seconds=] [bus=] [solo=] | expect <layers> [absent=<layers>] "
+                  "[min=] | force <layer> <gain|off> | force off";
+        return Status::Error;
     }
 
     // ── perf ────────────────────────────────────────────────────────────────────

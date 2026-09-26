@@ -25,6 +25,8 @@
 
 // Automation harness (docs/HARNESS.md). Only pointers/refs cross this header, so the full Harness.h
 // (and nlohmann/json.hpp with it) stays out of every file that includes SatelliteSim.h.
+class Ambience; // SatelliteSimAmbience.cpp / Ambience.h
+
 namespace harness
 {
 class Runner;
@@ -2835,6 +2837,15 @@ private:
     // coarser mip level, to smooth the dome's blocky per-sector transitions.
     std::vector<uint8_t> earthNightCpuBlur;
     int earthNightCpuBlurW = 0, earthNightCpuBlurH = 0;
+    // Full-resolution (14999x7500, ~2.7 km/px) ocean mask from the DEM, one bit per texel (DEM
+    // pixel <= 15/255, the ocean baseline — lakes are land here), ~14 MB. The ambience's
+    // ocean/beach drivers; the 18 km/px earthElevCpu turns every coastal town into half ocean.
+    std::vector<uint64_t> oceanMaskCpu;
+    int oceanMaskW = 0, oceanMaskH = 0;
+    // Box-filtered 2048x1024 RGB copy of the day map: the ambience's land cover (veg / forest /
+    // desert / ice drivers), classified from the same colours the ground is drawn with.
+    std::vector<uint8_t> earthDayCpu;
+    int earthDayCpuW = 0, earthDayCpuH = 0;
 
     // ── UI visibility & settings ──────────────────────────────────────────────
     // UC3: persisted (see loadSettings/saveSettings) so this only auto-plays on first run —
@@ -2850,6 +2861,35 @@ private:
     float masterVol_ = 0.8f; // mirrors AudioSystem default (display fallback)
     float musicVol_ = 0.6f;
     float sfxVol_ = 1.0f;
+    float ambienceVol_ = 0.7f;
+    // Sound tab (advanced) — persisted under "audio".
+    float musicGapS = 30.0f;          // silence between tracks, for the ambience
+    float ambFadeInScale = 1.0f;      // multiplies every layer's fade_in_s
+    float ambFadeOutScale = 1.0f;     // ... and fade_out_s
+    float musicAltFade = 1.0f;        // music bus multiplier from altitude (updateAmbience)
+    float ambRootHz = 55.0f;          // the tonal root every pitched ambience voice is a multiple of
+    float ambGroupGain[6] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f}; // Ambience::groupNames() order
+    // ── Ambient sound (SatelliteSimAmbience.cpp, the layer table in Ambience.h) ─────────────────
+    // The sim's side: the context drivers, computed each frame from the CAMERA (in follow mode the
+    // camera, not the parked telescope — ambience is what the listener hears).
+    Ambience *ambience_ = nullptr;
+    struct AmbienceDrivers
+    {
+        int altM = -1, aglM = -1, groundM = -1, latDeg = -1, lonDeg = -1, sunElDeg = -1, oceanNear = -1, oceanWide = -1,
+            urban = -1, beam = -1, aurora = -1, wind = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
+            forest = -1, desert = -1, ice = -1, speed = -1, eas = -1;
+    } ambD_;
+    glm::dvec3 ambPrevCamEcef{0.0}; // wind rush: the camera's last position (ECEF, m)
+    bool ambPrevValid = false;
+    float ambSpeedEased = 0.0f;     // m/s, eased over ~0.3 s
+    float ambSpeedRaw[3] = {};      // the last three raw speeds (median-of-3: one-frame spikes out)
+    std::vector<std::vector<int>> ambGroupConsts_; // per shell group: constellation indices it matches
+    void initAmbience();
+    void updateAmbience(float dt);
+    void computeAmbienceContext(float dt);
+    bool oceanAt(double latRad, double lonRad) const;
+    float oceanFraction(double latRad, double lonRad, double radiusM, int rings) const;
+    std::string ambienceNowPlaying() const; // Sound tab readout
     // ── Photometry tuning (synced to SatFlarePC each frame) ───────────────────
     // Defaults below are the user-tuned values baked in from settings.json rather than placeholder
     // guesses — re-synced 2026-08-10 (extinctionCoeff, lightPollutionGain, and the Milky Way
@@ -3747,6 +3787,9 @@ private:
     bool hovMusicVolPlus = false;
     bool hovSfxVolMinus = false;
     bool hovSfxVolPlus = false;
+    bool hovAmbVolMinus = false;
+    bool hovAmbVolPlus = false;
+    bool hovMusicBtn[3] = {}; // Sound tab player: prev / pause-play / next
     bool hovRebind[KB_COUNT] = {};    // per keybinding row — sized to match keybindings vector
     bool hovRebindPad[KB_COUNT] = {}; // per keybinding row, gamepad-button rebind button
     bool hovFullscreen = false;
@@ -3772,11 +3815,11 @@ private:
                                  // sliders (idx 22-26, 2026-09-23)
     bool hovPhotoPlus[33] = {};
     bool draggingPhoto[33] = {};
-    bool hovCloudMinus[99] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
+    bool hovCloudMinus[112] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25)
-    bool hovCloudPlus[99] = {};
-    bool draggingCloud[99] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudPlus[112] = {};
+    bool draggingCloud[112] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.
@@ -4032,7 +4075,10 @@ private:
         const char *fmt;
         int idx;
     };
-    void buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, CloudSlider *sliders, int count);
+    // marksPreset: an edit sets the graphics preset to Custom (every tab but Sound). Slot idx 99+
+    // are the Sound tab's.
+    void buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, CloudSlider *sliders, int count,
+                              bool marksPreset = true);
     // Collapsible category grouping on top of buildCloudSliderRows. A section owns no slider
     // state — it only decides whether its slice of the array is rendered this frame — so a
     // slider's global `idx` (and therefore its hover/drag/text-buffer slots) is untouched by

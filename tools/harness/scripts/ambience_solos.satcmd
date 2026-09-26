@@ -1,0 +1,18 @@
+# Ambience calibration: every layer rendered ALONE at gain 1 (docs/HARNESS.md, "Ambient sound").
+# Compare with: tools/harness/imgtools.py audio <run>/captures/solo_*.wav -o solos.png
+# The music reference is recorded first (its RMS/LUFS is what the ambience must sit under).
+audio record ref_music bus=music seconds=20
+audio force wind_ground 1; wait settle 20; audio record solo_wind_ground solo=wind_ground seconds=8; audio force off
+audio force wind_alpine 1; wait settle 20; audio record solo_wind_alpine solo=wind_alpine seconds=8; audio force off
+audio force wind_glacier 1; wait settle 20; audio record solo_wind_glacier solo=wind_glacier seconds=8; audio force off
+audio force sea_open 1; wait settle 20; audio record solo_sea_open solo=sea_open seconds=24; audio force off
+audio force sea_wind 1; wait settle 20; audio record solo_sea_wind solo=sea_wind seconds=8; audio force off
+audio force air_low 1; wait settle 20; audio record solo_air_low solo=air_low seconds=8; audio force off
+audio force jetstream 1; wait settle 20; audio record solo_jetstream solo=jetstream seconds=8; audio force off
+audio force stratosphere 1; wait settle 20; audio record solo_stratosphere solo=stratosphere seconds=8; audio force off
+audio force leo_cabin 1; wait settle 20; audio record solo_leo_cabin solo=leo_cabin seconds=8; audio force off
+audio force aurora_hum 1; wait settle 20; audio record solo_aurora_hum solo=aurora_hum seconds=8; audio force off
+audio force vlf_earth 1; wait settle 20; audio record solo_vlf_earth solo=vlf_earth seconds=16; audio force off
+audio force firmament 1; wait settle 20; audio record solo_firmament solo=firmament seconds=16; audio force off
+audio force comms_drone 1; wait settle 20; audio record solo_comms_drone solo=comms_drone seconds=20; audio force off
+audio force datacenter_hum 1; wait settle 20; audio record solo_datacenter_hum solo=datacenter_hum seconds=20; audio force off

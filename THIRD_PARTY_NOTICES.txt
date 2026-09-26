@@ -219,6 +219,16 @@ Files:   assets/sound/music/*
 Source:  papereater
 
 --------------------------------------------------------------------
+Ambient sound recordings
+--------------------------------------------------------------------
+Files:   assets/sound/ambience/*.flac
+Source:  freesound.org, all CC0 1.0 (public domain dedication); each
+         recording and its author is credited in
+         assets/sound/ambience/CREDITS.txt (tools/make_ambience.py).
+         The wind, surf, hum, beep, disk and VLF sounds are synthesised
+         in code (src/AmbientSynth.cpp).
+
+--------------------------------------------------------------------
 Noise texture
 --------------------------------------------------------------------
 File:    assets/noise/rgba_noise.png

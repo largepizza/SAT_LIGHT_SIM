@@ -38,7 +38,8 @@ command failed.
 Exe flags: `--script <file>`, `--live <dir>`, `--out <dir>`, `--window WxH` (default 1600x900),
 `--settings <settings.json>` (start from these settings instead of the defaults), `--user-data`
 (use the normal user data folder, not the run folder), `--fixed-dt <s>` (default 1/60, 0 = real
-time), `--timeout <s>` (watchdog), `--stay` (keep running after the script), `--sound`.
+time), `--timeout <s>` (watchdog), `--stay` (keep running after the script), `--sound` (a real audio
+device; without it the engine has none — silent, but `audio record` can still render the mix).
 
 The console, used outside a harness run, writes to `harness_runs/console_<time>/` next to the exe,
 runs in real time, and never exits by itself.
@@ -116,6 +117,11 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `overlay text <id> "<text>" [x=0.5 y=0.1 size=28 align=center\|left color=RRGGBB]` | screen text at fractional coordinates, drawn even with the HUD hidden |
 | `overlay label <id> "<text>" target=<sel\|sun\|moon\|planet> [size= dx= dy=]` | a label that follows a sky target |
 | `overlay clear [id]` | |
+| `audio [state [name]]` | the ambience: every context driver (altitude, Sun, ocean, land cover, beam, shells, ...) and every layer's target and current gain, loudest first in `audible`. With a name, also `captures/<name>.audio.json`. Capture sidecars carry the same block as `ambience` |
+| `audio record <name> [seconds=8] [bus=ambience\|music\|sfx\|all\|music+ambience] [solo=<layer>]` | renders the mix offline into `captures/<name>.wav` (+ `<name>.json`: state + levels) and returns RMS / peak / per-second RMS. Needs the default muted run (no device). See "Ambient sound" |
+| `audio expect <layer,...> [absent=<layer,...>] [min=0.05]` | fails unless each listed layer's gain is at least `min` and each `absent` one below it — a location tour checks itself |
+| `audio force <layer> <gain\|off>`, `audio force off` | pin a layer's gain wherever the observer is (calibrating one voice) / release them all |
+| `audio music [next\|prev\|pause\|play\|state]` | the music player: returns the track, its name, paused, and the gap countdown. (Offline, a track never ENDS, so the between-track gap is not reachable in a harness run) |
 | `log <text>`, `help`, `quit` | |
 
 A command that fails is recorded with its reason and the script continues. The run's status is
@@ -197,6 +203,37 @@ tools/harness/.venv/Scripts/python tools/harness/imgtools.py diff harness_runs/b
 **UI check.** `ui scale 2.0; ui open settings tab=Controls; wait 3; ui dump controls; capture controls ui=on`,
 then read `text_overlaps` in the result before looking at the picture.
 
+## Ambient sound
+
+The ambience (CLAUDE.md, "Subsystem: Ambient sound") is verified at three levels, and only the last
+needs ears:
+
+1. **State.** `audio state` / the `ambience` block of every capture sidecar: the drivers and the
+   layer gains. `tools/harness/scripts/ambience_tour.satcmd` visits ~19 golden places (beach, open
+   sea, plains at night, a Reflect Orbital beam site, forest, dawn, jungle day/night, Sahara, LA at
+   night, Alps, Greenland, 11 km, 30 km, over the aurora, beside a Starlink, inside the AI datacenter
+   disk, 20,000 km) and `audio expect`s the right layers at each — a wrong layer fails the run.
+2. **Signal.** A muted harness run has an audio engine with NO device: nothing plays, and nothing
+   is mixed until `audio record` pulls the graph synchronously — deterministic (seeded synths) and
+   independent of frame rate. `imgtools.py audio <wav...> -o spec.png` gives, per file, RMS / peak /
+   ungated LUFS, energy per band, stereo correlation, transients per second, tonal peaks, and a
+   log-frequency spectrogram with an RMS strip: chirps, beeps and clicks show as shapes, a hum as
+   lines, wind as a moving band, a loop seam as a vertical edge.
+   `tools/harness/scripts/ambience_solos.satcmd` renders every layer alone at gain 1 plus a music
+   reference — the calibration run.
+3. **Feel.** The user's: play the WAVs, or run with `--sound`.
+
+The mix rule: at every tour stop the ambience totals about 10 dB under the music (the tour's last
+recording is the music reference; compare `lufs_ungated`). A solo render mutes the one-shots (gulls)
+as well as the other voices.
+
+Motion: a camera path moves the camera, so `path key 0 ... alt=1500; path key 8 lat=+0.05 ...;
+path play fps=30; audio state` shows `speed_mps` / `eas` — a jump by `observer` does not (the
+teleport guard). No layer uses them since the wind rush was removed (2026-09-25).
+
+Gotcha: ambience.json and the samples reach the exe folder only on a BUILD (the runtime-sync
+stamp) — edit, build, then run, or the old table plays.
+
 ## Image tools
 
 `tools/harness/imgtools.py` (needs Pillow + numpy; set up once with
@@ -211,6 +248,7 @@ subcommand prints JSON first, so you can check numbers before spending tokens on
 | `stats a.png` | luminance percentiles, clipped black/white fractions, a 4x4 grid of mean luminance |
 | `crop a.png x y w h --scale 4 -o out.png` | pixel-exact enlargement |
 | `seams a.png` | rows/columns whose mean luminance jumps against their neighbours (bands, tile seams) |
+| `audio a.wav [b.wav ...] [-o spec.png] [--width 1000]` | levels, bands, correlation, transients and a stacked spectrogram per `audio record` WAV (see "Ambient sound") |
 
 For multimodal review: models see large images downscaled, so a one-pixel feature in a
 1600x900 frame can vanish. Use `capture ... crop=... scale=4` or `imgtools crop` for anything

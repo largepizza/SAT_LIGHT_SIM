@@ -1,4 +1,5 @@
 #include "SatelliteSim.h"
+#include "Ambience.h"
 #include "../Harness.h"
 #include "SatPhotometry.h"
 #include "SatTrace.h"
@@ -1398,6 +1399,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         CpuTimer _t(cpuAccumMs[CPU_UPDATE_PLANETS]);
         updatePlanets();
     }
+    // Ambient sound: the context (camera position, Sun, ground beams, shells) is this frame's.
+    updateAmbience(dt);
     // Unlike formatSelectedSatInfo() (called only when the selection changes, since a satellite's
     // orbital elements are static), a planet's distance/phase/magnitude changes every frame — so
     // this re-derives planetInfoLine[] every frame the selection is active, from the planetStates[]
@@ -5365,17 +5368,40 @@ void SatelliteSim::setAudio(AudioSystem *audio)
     if (!audio_)
         return;
 
-    audio_->addTrack("assets/sound/music/gravity_wave.mp3");
-    audio_->addTrack("assets/sound/music/fuse.mp3");
+    // The playlist is the music folder: gravity_wave first ALWAYS (the intro is cut to it), then
+    // every other track in name order, so dropping a file into assets/sound/music adds it.
+    {
+        std::vector<std::string> others;
+        std::error_code ec;
+        for (const auto &e : std::filesystem::directory_iterator("assets/sound/music", ec))
+        {
+            std::string ext = e.path().extension().string();
+            for (char &c : ext)
+                c = (char)tolower((unsigned char)c);
+            const std::string name = e.path().filename().string();
+            if ((ext == ".mp3" || ext == ".flac" || ext == ".wav") && name != "gravity_wave.mp3")
+                others.push_back("assets/sound/music/" + name);
+        }
+        std::sort(others.begin(), others.end());
+        audio_->addTrack("assets/sound/music/gravity_wave.mp3");
+        for (const std::string &t : others)
+            audio_->addTrack(t);
+    }
+    audio_->setMusicGap(musicGapS);
     // Harness runs (docs/HARNESS.md) are unattended — often overnight — so silent unless --sound.
     // The persisted masterVol_ is left alone; only the device gain is zeroed.
-    const bool harnessMute = harnessRunner_ && harness::options().mute;
+    // App initialises the engine OFFLINE for such a run (no device: nothing is audible, and the mix
+    // is only computed when `audio record` pulls it), so the music can start as usual and a
+    // recording hears the real mix. A live-device run (--sound, or the console in a normal run)
+    // keeps the old rule: silent unless asked.
+    const bool harnessMute = harnessRunner_ && harness::options().mute && !audio_->isOffline();
     if (!harnessMute)
         audio_->startMusic();
     // Apply any volumes loaded from settings.json before the audio system was ready.
     audio_->setMasterVolume(harnessMute ? 0.0f : masterVol_);
     audio_->setMusicVolume(musicVol_);
     audio_->setSfxVolume(sfxVol_);
+    audio_->setAmbienceVolume(ambienceVol_);
 }
 
 // ─── cleanup ──────────────────────────────────────────────────────────────────
@@ -5390,6 +5416,9 @@ void SatelliteSim::cleanup(VkDevice device)
     bulkCancel.store(true);
     if (bulkThread.joinable())
         bulkThread.join();
+    // App tears the AudioSystem down first, so the voices are already gone; only the table is left.
+    delete ambience_;
+    ambience_ = nullptr;
 
     if (followActive)
         stopFollow(); // persist the ground observer, not a position in orbit
@@ -8274,6 +8303,25 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
         memcpy(mapped, pixels, (size_t)imgBytes);
         vkUnmapMemory(ctx.device, stageMem);
+        // Box-filtered 2048x1024 RGB copy (~20 km/px) for the ambience's land-cover drivers.
+        earthDayCpuW = 2048;
+        earthDayCpuH = 1024;
+        earthDayCpu.assign((size_t)earthDayCpuW * earthDayCpuH * 3, 0);
+        for (int cy = 0; cy < earthDayCpuH; ++cy)
+        {
+            const int y0 = cy * h / earthDayCpuH, y1 = std::max(y0 + 1, (cy + 1) * h / earthDayCpuH);
+            for (int cx = 0; cx < earthDayCpuW; ++cx)
+            {
+                const int x0 = cx * w / earthDayCpuW, x1 = std::max(x0 + 1, (cx + 1) * w / earthDayCpuW);
+                uint32_t sum[3] = {0, 0, 0}, n = 0;
+                for (int y = y0; y < y1; ++y)
+                    for (int x = x0; x < x1; ++x, ++n)
+                        for (int k = 0; k < 3; ++k)
+                            sum[k] += pixels[((size_t)y * w + x) * 4 + k];
+                for (int k = 0; k < 3; ++k)
+                    earthDayCpu[((size_t)cy * earthDayCpuW + cx) * 3 + k] = (uint8_t)(sum[k] / std::max(1u, n));
+            }
+        }
         stbi_image_free(pixels);
 
         ctx.createImage((uint32_t)w, (uint32_t)h, VK_FORMAT_R8G8B8A8_SRGB,
@@ -8635,6 +8683,13 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
                     earthElevCpu[cy * earthElevCpuW + cx] = pixels[sy * w + sx];
                 }
             }
+            // Full-resolution ocean bit mask for the ambience (see oceanMaskCpu).
+            oceanMaskW = w;
+            oceanMaskH = h;
+            oceanMaskCpu.assign(((size_t)w * h + 63) / 64, 0ull);
+            for (size_t i = 0, n = (size_t)w * h; i < n; ++i)
+                if (pixels[i] <= 15)
+                    oceanMaskCpu[i >> 6] |= 1ull << (i & 63);
 
             stbi_image_free(pixels);
 

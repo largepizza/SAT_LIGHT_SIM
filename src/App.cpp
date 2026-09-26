@@ -26,7 +26,9 @@ void App::run() {
     ctx.init(window);
     sim->init(ctx);
     sim->setWindow(window);  // give sim access to window handle (e.g. fullscreen toggle)
-    audio.init();
+    // A muted harness run gets an engine with no device: silent, and its mix is still there for
+    // `audio record` to render (docs/HARNESS.md).
+    audio.init(harness::active() && harness::options().mute);
     sim->setAudio(&audio);  // let the simulation configure its playlist
     ui.init(ctx, window);
     mainLoop();

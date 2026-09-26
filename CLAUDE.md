@@ -49,6 +49,9 @@ Extinction* · *Sky Glow SSBO* · *Planets* · *Cloud Shadows* · *Resolution Sc
 Sky Tiers (Potato / SKY_LITE)*. The mesh renderer, model viewer and environment probes are
 subsections of *Satellite Types* (Phases 4b–4f).
 
+**Sound** — *Ambient sound* (the layer table, the context drivers, procedural voices + CC0
+samples, the harness's offline audio mode and the mix rule).
+
 **State, profiling, cinematics, terrain** — *Persistent Settings* · *Fixed Simulation State* · *GPU
 Performance Profiling* · *Intro Cinematic (UC3)* · *Controls / Keybinding Pipeline* · *Active
 Development: Earth / Terrain Rendering* (read **Elevation texture encoding** before touching terrain
@@ -57,7 +60,8 @@ code).
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
 `imgtools.py`, `selftest.py` — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
 validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_icons.py` (regenerates the
-UI icon PNGs from geometry declared in that file) · `tools/benchmarks/` ·
+UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
+from CC0 sources declared in that file) · `tools/benchmarks/` ·
 `cmake/AccuracyGate.cmake` (`cmake --build build --target accuracy-gate`) ·
 `cmake/PackageRelease.cmake` (the single "what ships" list).
 
@@ -469,6 +473,100 @@ MSVC requires designators in declaration order:
 
 ### Manual Hit-Testing
 Clay does not expose element positions post-layout. Compute absolute positions from constants that exactly match Clay sizing declarations. Wrap labels in `CLAY_SIZING_FIXED` containers so layout width matches hit-test math.
+
+---
+
+## Subsystem: Ambient sound (2026-09-25)
+
+Location- and context-aware ambience on its own bus under the music (Settings → Sound →
+"Ambience", `audio.ambience_vol`). Three layers, app-independent → sim:
+
+| File | Role |
+|---|---|
+| `src/AmbientSynth.h/.cpp` | procedural voices as miniaudio data sources: `wind`, `surf`, `hum` (noise through resonances), `drone` (harmonic wavetable + phaser + whine + compressor cycle + soft status motifs), and the unused-by-default `chorus` (procedural VLF chorus / whistlers / sferics, flanged — replaced by the recorded `vlf_earth` loop), `beeps` (FSK bursts) and `disk` (seek clicks). Params are atomics set by the main thread, eased per 64-frame block on the audio thread; seeded xorshift, so a render is deterministic |
+| `src/AudioSystem.h/.cpp` | the ambience group, voices (sample loop or synth) with per-voice gain, one-shots with pan, the music PLAYER (see below), and **offline mode** |
+| `src/simulations/Ambience.h/.cpp` | the layer table: `assets/sound/ambience/ambience.json` → per-layer target gain from named drivers, eased over `fade_s`, voices created lazily, events scheduled |
+| `src/simulations/SatelliteSimAmbience.cpp` | the sim's context drivers, computed each frame at the end of the planets block in `recordCompute` |
+| `tools/make_ambience.py` | builds the CC0 sample FLACs (fetch, high-pass, crossfaded loop, loudness-normalise) and `CREDITS.txt` |
+
+- **A layer is ramps, never switches.** `gain × group gain × Π when-ramps × max(any-alternatives)`,
+  a ramp being `[a, b]` (smooth 0→1, reversed for a > b) or `[a, b, c, d]`. Every transition is a
+  crossfade by construction. An unknown driver/param/synth kind is a LOAD error (logged to
+  `satlight_log.txt`), not a silently muted layer.
+- **Fades are LINEAR slews** (`fade_in_s` / `fade_out_s` per layer, × the Sound tab's global
+  multipliers): silent to full in fade_in_s, back in fade_out_s, whatever the distance. The first cut
+  eased exponentially — it never finished (a layer 4 s behind was still at −20 dB nine seconds
+  later), so a jump from the ground to orbit dragged the crickets and birds up with it. Harness check:
+  1.2 s after a jump to 400 km, crickets and ground wind are below 1%.
+- **One key for every pitched voice.** A synth param written `{"root": k}` is k × the tonal root
+  (`ambRootHz`, default 55 Hz, Sound tab): the comms drone on 2× (110/220/330 Hz), the datacenter hum
+  on 1× with its whine on 16× (880), their status motifs on just-intonation ratios (1, 9/8, 5/4, 3/2,
+  5/3, 2) of 4× and 3×, the cabin and aurora hums on 1× and 2× — they overlap in LEO and stay
+  consonant. The first cut's FSK beeps (2.4 kHz, squared-off) and disk clicks + fan noise read as
+  brash and as audio glitches; they were replaced by the two drones.
+- **Groups** (`"group"`: wind water nature city space machines) each have a gain on the Sound tab.
+- **Drivers are the listener's, i.e. the CAMERA's** (follow mode: the camera, not the parked
+  telescope): `alt_m agl_m ground_m` (GPU ground, like harness `state`), `lat_deg lon_deg`,
+  `sun_el_deg`, `ocean_near/_wide` (`oceanMaskCpu`: a full-resolution 1-bit mask from the DEM —
+  the 18 km/px `earthElevCpu` made every coastal town half ocean), `veg forest desert ice`
+  (classified from a 2048×1024 copy of the DAY MAP, so the sound agrees with the ground as drawn;
+  the map is a dry-season mosaic, the Great Plains read tan — "not desert, not ice" is the grassland
+  test), `urban` (night lights, the dome's response curve), `beam` (the `groundBeams` Gaussians at
+  the origin: ~1.8e6 in a lit spot's core), `aurora` (oval band only), `wind` (value noise over
+  ECEF direction and sim time), `time_scale`, `following`, `intro`, and per shell group
+  `<g>_count` / `<g>_near_m`, and `speed_mps` / `eas`: the camera's ECEF speed and its
+  equivalent airspeed `v·√(ρ/ρ0)` (8.5 km scale height), eased over 0.3 s. **No layer uses them:** a
+  `wind_rush` layer on `eas` was removed at the user's request — it swamped every other layer
+  whenever the camera moved and lingered — so don't re-add movement sound without asking. A jump of > 20 km in one
+  frame (observer, Go to) counts as no motion, so a teleport never whooshes; time warp alone moves
+  nothing in ECEF, and orbital speed in vacuum gives eas ≈ 0.
+- **Shell proximity is closed form, not a roster search.** Walker density at latitude φ is
+  `N / (2π²R² √(sin²i − sin²φ))`, RandomShell uniform over the band, count within hearing range
+  `σ·π·(H² − dr²)`, nearest `√(dr² + (0.5/√σ)²)`. **A Disk is not one plane:** each SSO ring's
+  inclination follows its own altitude, so across the AI disk's 1400 km the outer rings are tilted
+  hundreds of km from the inner ones at that radius. The code takes the plane of the ring nearest
+  the camera (its first satellite, in `initConstellation()`'s ring order). The first cut used one
+  plane and read "0 satellites" from inside the disk; a second bug clamped the ring spacing to ≥ 1 km
+  when the AI disk's is 0.7 km, which picked the wrong ring.
+- **Offline mode (harness).** A muted harness run initialises the engine with NO device
+  (`App::run` → `AudioSystem::init(offline)`): nothing is audible and nothing is mixed until
+  `audio record` pulls the graph synchronously (`renderWav`, with a 0.25 s discarded pre-roll and
+  per-1/60 s event ticks). Offline renders outrun miniaudio's streamer — the music came out with a
+  0.25 s hole every second — so offline, streamed sounds are DECODED instead (music on the first
+  recording that asks for it, loops at creation). In the live app loops STREAM: a voice is created
+  the first time its layer becomes audible, on the main thread, and decoding a 36 s FLAC there is a
+  hitch.
+- **Levels.** At level 1, gain 1 and the default bus volume every synth kind measures ≈ −24 LUFS
+  (`ambience_solos.satcmd`); samples are normalised to −24 LUFS. The table's gains then set the mix
+  so each tour stop totals ≈ 10 dB under the music (≈ −35 against its ≈ −25 LUFS). No tonal
+  "melody" content: hums are noise through resonances, beeps are data bursts.
+- **Every synth output is high-passed** (wind 45 Hz, surf 55 Hz, disk 60 Hz, hum 32 Hz) and the
+  sample beds per source in `make_ambience.py`: the first wind was a sub-bass wall (brown noise
+  through a gentle band-pass) and its gusts were a linear swing that measured flat — gusts are a
+  swing in dB now.
+- **Samples are FLAC** (gapless loops; MP3 encoder padding breaks a loop seam, and miniaudio has no
+  Vorbis). Loops at 32 kHz, 36-42 s. Sources are Freesound CC0 previews (128 kbps); a lossless
+  original dropped into `build/ambience_cache/<id>.wav` is preferred on the next run.
+  **Two are the user's own (FL Studio), not generated — don't normalise or regenerate them:**
+  `vlf_earth.flac` (real whistlers, MEO: in over 1500-3000 km, out over 25000-50000 km) and
+  `firmament.flac` (a pad on one long ramp from 1000 km to full at 40000 km, 8 s fade-in). Both are
+  44.1 kHz, 55.2 s — the length of `leo_motif.mp3`, the music track written alongside them. They are
+  not at −24 LUFS (vlf_earth −20, firmament −29): the table's gains (0.16, 0.42) compensate.
+  `make_ambience.py` credits them in `CREDITS.txt` (`ORIGINAL_NOTE`).
+- **Music player** (`AudioSystem`): the playlist is `assets/sound/music/` with `gravity_wave.mp3`
+  ALWAYS first (the intro is cut to it; Replay Intro restarts it), then every other mp3/flac/wav in
+  name order. Between tracks a silent gap (`musicGapS`, 30 s, Sound tab advanced) gives the ambience
+  room; pause freezes the gap too. Sound tab: current track + position (or "Next: … in N s"), `<<`
+  (restart if > 3 s in, else previous), `||`/`>`, `>>`. `loadTrack` must not call `stopMusic()` — that
+  also switches the player off. **Music fades with altitude** (`updateAmbience` →
+  `AudioSystem::setMusicFade`, a multiplier under the user's music volume): full to 1500 km, half at
+  5000 km, silent from 35786 km (GEO/HEO), linear in log altitude, slewed 1/4 per second — the high
+  orbits belong to `vlf_earth` / `firmament`. The intro tops out at 300 km, so it is unaffected.
+- **Sound tab (advanced)**: music gap, fade in/out multipliers, tonal root, six group gains —
+  `buildCloudSliderRows(..., marksPreset=false)` at slot idx 99-108 (the slot arrays are 112 now).
+- Verification: docs/HARNESS.md "Ambient sound" — `audio state/record/expect/force/music`,
+  `ambience_tour.satcmd` (self-checking), `imgtools.py audio` (spectrograms, LUFS). How it SOUNDS is
+  the user's to judge.
 
 ---
 

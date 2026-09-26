@@ -7,6 +7,7 @@
 #include "SatelliteSim.h"
 #include "../UIRenderer.h"
 #include "../AudioSystem.h"
+#include "Ambience.h"
 #include "../Log.h"
 #include "../Harness.h"
 #include "version.h"
@@ -2771,7 +2772,7 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
 // ─── buildSettingsSoundTab ──────────────────────────────────────────────────
 void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
 {
-    static char volBufs[3][8];
+    static char volBufs[4][8];
     struct VolRow
     {
         const char *label;
@@ -2784,6 +2785,7 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
         {"Master vol", audio_ ? audio_->getMasterVolume() : masterVol_, hovMasterVolMinus, hovMasterVolPlus, 0},
         {"Music vol", audio_ ? audio_->getMusicVolume() : musicVol_, hovMusicVolMinus, hovMusicVolPlus, 1},
         {"SFX vol", audio_ ? audio_->getSfxVolume() : sfxVol_, hovSfxVolMinus, hovSfxVolPlus, 2},
+        {"Ambience", audio_ ? audio_->getAmbienceVolume() : ambienceVol_, hovAmbVolMinus, hovAmbVolPlus, 3},
     };
     for (auto &vr : volRows)
     {
@@ -2821,6 +2823,8 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
                         audio_->setMusicVolume(audio_->getMusicVolume() - 0.05f);
                     else if (vr.bufIdx == 2 && audio_)
                         audio_->setSfxVolume(audio_->getSfxVolume() - 0.05f);
+                    else if (vr.bufIdx == 3 && audio_)
+                        audio_->setAmbienceVolume(audio_->getAmbienceVolume() - 0.05f);
                 }
                 CLAY_TEXT(CLAY_STRING("-"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
             }
@@ -2849,11 +2853,121 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
                         audio_->setMusicVolume(audio_->getMusicVolume() + 0.05f);
                     else if (vr.bufIdx == 2 && audio_)
                         audio_->setSfxVolume(audio_->getSfxVolume() + 0.05f);
+                    else if (vr.bufIdx == 3 && audio_)
+                        audio_->setAmbienceVolume(audio_->getAmbienceVolume() + 0.05f);
                 }
                 CLAY_TEXT(CLAY_STRING("+"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
             }
         }
     }
+
+    // ── Music player ─────────────────────────────────────────────────────────
+    static char trackLine[160];
+    if (!audio_ || audio_->trackCount() == 0)
+        snprintf(trackLine, sizeof(trackLine), "No music");
+    else
+    {
+        const int ti = audio_->trackIndex();
+        auto mmss = [](float s, char *b, size_t n)
+        {
+            const int t = std::max(0, (int)s);
+            snprintf(b, n, "%d:%02d", t / 60, t % 60);
+        };
+        char pos[16], len[16];
+        mmss(audio_->trackPosition(), pos, sizeof(pos));
+        mmss(audio_->trackLength(), len, sizeof(len));
+        const std::string name = audio_->trackName(ti);
+        const std::string next = audio_->trackName((ti + 1) % audio_->trackCount());
+        if (audio_->gapRemaining() > 0.0f)
+            snprintf(trackLine, sizeof(trackLine), "%sNext: %s in %d s", audio_->musicPaused() ? "(paused) " : "",
+                     next.c_str(), (int)ceilf(audio_->gapRemaining()));
+        else
+            snprintf(trackLine, sizeof(trackLine), "%s%s  %s / %s", audio_->musicPaused() ? "(paused) " : "",
+                     name.c_str(), pos, len);
+    }
+    CLAY(CLAY_ID("MusicRow"), {.layout = {
+                                   .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(30)},
+                                   .padding = {4, 4, 4, 4},
+                                   .childGap = 6,
+                                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                   .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY(CLAY_ID("MusicLbl"), {.layout = {.sizing = {CLAY_SIZING_FIXED(76), CLAY_SIZING_FIT(0)}}})
+        {
+            CLAY_TEXT(CLAY_STRING("Music"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+        }
+        CLAY(CLAY_ID("MusicTrack"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+        {
+            Clay_String tStr{false, (int32_t)strlen(trackLine), trackLine};
+            CLAY_TEXT(tStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+        // "<<" / "||" or ">" / ">>": ASCII only (the font atlas has no media glyphs).
+        const bool paused = audio_ && audio_->musicPaused();
+        const char *labels[3] = {"<<", paused ? ">" : "||", ">>"};
+        const char *tips[3] = {"Previous track", paused ? "Resume music" : "Pause music", "Next track"};
+        for (int b = 0; b < 3; ++b)
+        {
+            CLAY(CLAY_IDI("MusicBtn", b), {.layout = {
+                                               .sizing = {CLAY_SIZING_FIXED(30), CLAY_SIZING_FIXED(22)},
+                                               .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                           .backgroundColor = hovMusicBtn[b] ? Pal::btnHover : Pal::btnIdle,
+                                           .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovMusicBtn[b]);
+                sndClick(n, inp.lmbPressed);
+                hovMusicBtn[b] = n;
+                if (n && inp.lmbPressed && audio_)
+                {
+                    if (b == 0)
+                        audio_->prevTrack();
+                    else if (b == 1)
+                        audio_->setMusicPaused(!audio_->musicPaused());
+                    else
+                        audio_->nextTrack();
+                }
+                ui.tooltip(inp, n, tips[b], fs(11));
+                Clay_String lStr{false, (int32_t)strlen(labels[b]), labels[b]};
+                CLAY_TEXT(lStr, CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
+            }
+        }
+    }
+
+    // What the ambience is playing here, loudest first — the quickest way to tell "wrong layer"
+    // from "wrong mix" while flying around.
+    static char nowPlaying[256];
+    snprintf(nowPlaying, sizeof(nowPlaying), "Ambience now: %s", ambienceNowPlaying().c_str());
+    CLAY(CLAY_ID("AmbNowPlaying"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                               .padding = {4, 4, 6, 2}}})
+    {
+        Clay_String npStr{false, (int32_t)strlen(nowPlaying), nowPlaying};
+        CLAY_TEXT(npStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(11)}));
+    }
+
+    // ── Advanced: the mix ────────────────────────────────────────────────────
+    if (!showAdvancedSettings)
+        return;
+    CLAY(CLAY_ID("AmbAdvHdr"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}, .padding = {4, 4, 10, 2}}})
+    {
+        CLAY_TEXT(CLAY_STRING("AMBIENCE MIX"), CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12)}));
+    }
+    // Slot idx 99..109 (see buildCloudSliderRows' arrays). Fades are multipliers on each layer's own
+    // fade times; the root is the key every pitched voice (drones, whines, status tones) shares.
+    CloudSlider amb[] = {
+        {"Music gap (s)", &musicGapS, 0.0f, 120.0f, 5.0f, "%.0f", 99},
+        {"Fade in x", &ambFadeInScale, 0.1f, 4.0f, 0.1f, "%.1f", 100},
+        {"Fade out x", &ambFadeOutScale, 0.1f, 4.0f, 0.1f, "%.1f", 101},
+        {"Tonal root (Hz)", &ambRootHz, 41.0f, 82.0f, 1.0f, "%.0f", 102},
+        {"Wind & air", &ambGroupGain[0], 0.0f, 2.0f, 0.05f, "%.2f", 103},
+        {"Water", &ambGroupGain[1], 0.0f, 2.0f, 0.05f, "%.2f", 104},
+        {"Nature", &ambGroupGain[2], 0.0f, 2.0f, 0.05f, "%.2f", 105},
+        {"City", &ambGroupGain[3], 0.0f, 2.0f, 0.05f, "%.2f", 106},
+        {"Space", &ambGroupGain[4], 0.0f, 2.0f, 0.05f, "%.2f", 107},
+        {"Machines", &ambGroupGain[5], 0.0f, 2.0f, 0.05f, "%.2f", 108},
+    };
+    buildCloudSliderRows(inp, ui, amb, (int)(sizeof(amb) / sizeof(amb[0])), false);
+    if (audio_)
+        audio_->setMusicGap(musicGapS);
 }
 
 // ─── buildSettingsControlsTab ───────────────────────────────────────────────
@@ -3192,6 +3306,11 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                 introBenchMsSum = 0.0f;
                 introBenchFrames = 0;
                 introIsReplay = true;
+                if (audio_) // the intro is cut to the first track
+                {
+                    audio_->setMusicPaused(false);
+                    audio_->playTrack(0);
+                }
             }
             ui.tooltip(inp, n, "Replay the cinematic intro", fs(11));
             CLAY_TEXT(CLAY_STRING("Replay Intro"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
@@ -4211,7 +4330,8 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
 // CloudSlider keeps its ORIGINAL global value (0-32) regardless of which tab it's rendered from,
 // so the shared draggingCloud/hovCloudMinus/hovCloudPlus member arrays and the function-local
 // static text-buffer array below don't need per-tab remapping.
-void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, CloudSlider *sliders, int count)
+void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, CloudSlider *sliders, int count,
+                                        bool marksPreset)
 {
     const float kSliderAbsX = settingsChrome.x + kSliderFixedLeft;
     const float kSliderW = settingsSliderWidth(settingsChrome.w);
@@ -4221,7 +4341,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
     // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
     // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[99][16];
+    static char cloudBufs[112][16];
 
     for (int si = 0; si < count; ++si)
     {
@@ -4260,7 +4380,8 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
                 {
                     float nt = (inp.mouseX - kSliderAbsX) / kSliderW;
                     *cs.val = glm::clamp(cs.vmin + nt * (cs.vmax - cs.vmin), cs.vmin, cs.vmax);
-                    graphicsPreset = GraphicsPreset::Custom; // UC1: any advanced-tab edit leaves a preset
+                    if (marksPreset)
+                        graphicsPreset = GraphicsPreset::Custom; // UC1: any advanced-tab edit leaves a preset
                 }
                 float fillW = t * kSliderW;
                 if (fillW >= 1.0f)
@@ -4292,7 +4413,8 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
                 if (hovCloudMinus[ci] && inp.lmbPressed)
                 {
                     *cs.val = glm::clamp(*cs.val - cs.step, cs.vmin, cs.vmax);
-                    graphicsPreset = GraphicsPreset::Custom;
+                    if (marksPreset)
+                        graphicsPreset = GraphicsPreset::Custom;
                 }
                 CLAY_TEXT(CLAY_STRING("-"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
             }
@@ -4311,7 +4433,8 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
                 if (hovCloudPlus[ci] && inp.lmbPressed)
                 {
                     *cs.val = glm::clamp(*cs.val + cs.step, cs.vmin, cs.vmax);
-                    graphicsPreset = GraphicsPreset::Custom;
+                    if (marksPreset)
+                        graphicsPreset = GraphicsPreset::Custom;
                 }
                 CLAY_TEXT(CLAY_STRING("+"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
             }
@@ -5754,6 +5877,23 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         masterVol_ = a.value("master_vol", masterVol_);
         musicVol_ = a.value("music_vol", musicVol_);
         sfxVol_ = a.value("sfx_vol", sfxVol_);
+        ambienceVol_ = a.value("ambience_vol", ambienceVol_);
+        musicGapS = a.value("music_gap_s", musicGapS);
+        ambFadeInScale = a.value("ambience_fade_in_scale", ambFadeInScale);
+        ambFadeOutScale = a.value("ambience_fade_out_scale", ambFadeOutScale);
+        ambRootHz = a.value("ambience_root_hz", ambRootHz);
+        if (a.contains("ambience_groups") && a["ambience_groups"].is_object())
+            for (size_t g = 0; g < Ambience::groupNames().size() && g < 6; ++g)
+                ambGroupGain[g] = a["ambience_groups"].value(Ambience::groupNames()[g], ambGroupGain[g]);
+        if (audio_)
+            audio_->setMusicGap(musicGapS);
+        if (audio_ && isPatch) // a harness `set audio.*` patch; at load time setAudio applies them
+        {
+            audio_->setMasterVolume(masterVol_);
+            audio_->setMusicVolume(musicVol_);
+            audio_->setSfxVolume(sfxVol_);
+            audio_->setAmbienceVolume(ambienceVol_);
+        }
         // audio_ is null here (setAudio not called yet); volumes are applied there.
     }
 
@@ -6077,7 +6217,18 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     j["audio"] = {
         {"master_vol", audio_ ? audio_->getMasterVolume() : masterVol_},
         {"music_vol", audio_ ? audio_->getMusicVolume() : musicVol_},
-        {"sfx_vol", audio_ ? audio_->getSfxVolume() : sfxVol_}};
+        {"sfx_vol", audio_ ? audio_->getSfxVolume() : sfxVol_},
+        {"ambience_vol", audio_ ? audio_->getAmbienceVolume() : ambienceVol_},
+        {"music_gap_s", musicGapS},
+        {"ambience_fade_in_scale", ambFadeInScale},
+        {"ambience_fade_out_scale", ambFadeOutScale},
+        {"ambience_root_hz", ambRootHz}};
+    {
+        nlohmann::json g = nlohmann::json::object();
+        for (size_t k = 0; k < Ambience::groupNames().size() && k < 6; ++k)
+            g[Ambience::groupNames()[k]] = ambGroupGain[k];
+        j["audio"]["ambience_groups"] = g;
+    }
 
     // Follow mode (Phase 4e) persists the ground observer it will return to, not the orbit.
     const glm::vec3 saveObsDir = followActive ? followSavedObsDir : obsDir;

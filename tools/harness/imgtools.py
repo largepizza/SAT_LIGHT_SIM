@@ -19,6 +19,11 @@ Subcommands (all print JSON to stdout, so an agent can read numbers before looki
   seams a.png [--axis both] [--top 10]
         Rows/columns whose mean luminance jumps against their neighbours: tile seams, bands,
         the horizontal lines of a bad terrain march.
+  audio a.wav [b.wav ...] [-o spec.png]
+        For `audio record` WAVs: RMS / peak / ungated loudness (LUFS, BS.1770 K-weighting), energy
+        per band, stereo correlation, transients per second, the loudest spectral peaks, and a
+        log-frequency spectrogram (+ RMS strip) per file — several files stack into one image.
+        Chirps, beeps and clicks are visible as shapes; a hum as horizontal lines; wind as a band.
 """
 import argparse
 import glob
@@ -26,6 +31,7 @@ import json
 import math
 import os
 import sys
+import wave
 
 try:
     import numpy as np
@@ -144,6 +150,154 @@ def cmd_seams(a):
     print(json.dumps(out, indent=1))
 
 
+# ── audio ────────────────────────────────────────────────────────────────────────────────────────
+BANDS = [("sub", 20, 60), ("low", 60, 250), ("lowmid", 250, 1000), ("mid", 1000, 4000),
+         ("high", 4000, 12000), ("air", 12000, 20000)]
+
+
+def read_wav(path):
+    with wave.open(path, "rb") as w:
+        if w.getsampwidth() != 2:
+            sys.exit(f"{path}: only 16-bit PCM WAV is supported")
+        sr, ch, n = w.getframerate(), w.getnchannels(), w.getnframes()
+        x = np.frombuffer(w.readframes(n), dtype="<i2").astype(np.float64) / 32768.0
+    return sr, x.reshape(-1, ch)
+
+
+def biquad(x, b, a):
+    # Direct form I, one channel. A plain loop: fast enough for seconds of audio, no scipy needed.
+    y = np.empty_like(x)
+    x1 = x2 = y1 = y2 = 0.0
+    b0, b1, b2 = b
+    _, a1, a2 = a
+    for i, v in enumerate(x.tolist()):
+        o = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+        x2, x1, y2, y1 = x1, v, y1, o
+        y[i] = o
+    return y
+
+
+def lufs(x, sr):
+    if sr != 48000:
+        return None  # the BS.1770 coefficients below are for 48 kHz
+    b1, a1 = (1.53512485958697, -2.69169618940638, 1.19839281085285), (1.0, -1.69065929318241, 0.73248077421585)
+    b2, a2 = (1.0, -2.0, 1.0), (1.0, -1.99004745483398, 0.99007225036621)
+    ms = sum(float(np.mean(biquad(biquad(x[:, c], b1, a1), b2, a2) ** 2)) for c in range(x.shape[1]))
+    return -0.691 + 10.0 * math.log10(ms) if ms > 0 else -120.0
+
+
+def db(v):
+    return 20.0 * math.log10(v) if v > 1e-12 else -120.0
+
+
+def colormap(t):
+    # black -> violet -> orange -> pale yellow, t in [0, 1]
+    stops = np.array([[0, 0, 0], [40, 10, 90], [150, 30, 110], [240, 110, 40], [255, 240, 170]], np.float64)
+    t = np.clip(t, 0, 1) * (len(stops) - 1)
+    i = np.minimum(t.astype(int), len(stops) - 2)
+    f = (t - i)[..., None]
+    return (stops[i] * (1 - f) + stops[i + 1] * f).astype(np.uint8)
+
+
+def spectrogram_image(mono, sr, width=1000, height=300, range_db=70.0):
+    nfft, hop = 4096, 256
+    if len(mono) < nfft:
+        mono = np.pad(mono, (0, nfft - len(mono)))
+    win = np.hanning(nfft)
+    frames = 1 + (len(mono) - nfft) // hop
+    idx = np.arange(nfft)[None, :] + hop * np.arange(frames)[:, None]
+    spec = np.abs(np.fft.rfft(mono[idx] * win, axis=1)) * (2.0 / win.sum())
+    freqs = np.fft.rfftfreq(nfft, 1.0 / sr)
+    rows = 20.0 * (1000.0 ** (np.arange(height)[::-1] / (height - 1)))  # 20 Hz .. 20 kHz, log
+    mag = np.stack([np.interp(rows, freqs, spec[f]) for f in range(frames)], axis=1)
+    cols = np.linspace(0, frames - 1, width).astype(int)
+    d = 20.0 * np.log10(np.maximum(mag[:, cols], 1e-12))
+    hi_db = float(np.percentile(d, 99.5))  # auto range: the loudest cells are the top of the scale
+    return colormap((d - (hi_db - range_db)) / range_db), rows
+
+
+def cmd_audio(a):
+    panels, reports = [], []
+    for path in a.inputs:
+        sr, x = read_wav(path)
+        mono = x.mean(axis=1)
+        n = len(mono)
+        rms = math.sqrt(float(np.mean(x ** 2)))
+        peak = float(np.max(np.abs(x))) if n else 0.0
+        spec = np.abs(np.fft.rfft(mono * np.hanning(n))) ** 2
+        freqs = np.fft.rfftfreq(n, 1.0 / sr)
+        total = float(spec[(freqs >= 20) & (freqs <= 20000)].sum()) or 1e-30
+        bands = {name: round(10 * math.log10(max(float(spec[(freqs >= lo) & (freqs < hi)].sum()) / total, 1e-12)), 1)
+                 for name, lo, hi in BANDS}
+        centroid = float((spec * freqs).sum() / max(spec.sum(), 1e-30))
+        # The strongest narrow peaks (tones / resonances), 1/6-octave apart at least.
+        sm = np.convolve(spec, np.ones(9) / 9, mode="same")
+        cand = np.argsort(spec)[::-1]
+        peaks = []
+        for k in cand[:4000]:
+            f = freqs[k]
+            if f < 30 or f > 16000 or spec[k] < 4 * sm[k]:
+                continue
+            if all(abs(math.log2(f / p)) > 1 / 6 for p in peaks):
+                peaks.append(float(f))
+            if len(peaks) == 5:
+                break
+        corr = float(np.corrcoef(x[:, 0], x[:, 1])[0, 1]) if x.shape[1] == 2 and n > 1 else 1.0
+        # Transients: 2 ms windows of the first difference far above the median.
+        dif = np.abs(np.diff(mono))
+        w = max(1, int(0.002 * sr))
+        e = dif[: len(dif) // w * w].reshape(-1, w).mean(axis=1)
+        trans = int(np.sum((e > 8 * np.median(e)) & (np.r_[0, np.diff((e > 8 * np.median(e)).astype(int))] == 1)))
+        seg = max(1, int(0.05 * sr))
+        strip = [db(math.sqrt(float(np.mean(mono[i:i + seg] ** 2)))) for i in range(0, n - seg + 1, seg)]
+        rep = {"file": path, "seconds": round(n / sr, 2), "rms_dbfs": round(db(rms), 1), "peak_dbfs": round(db(peak), 1),
+               "lufs_ungated": None, "bands_db_rel": bands, "centroid_hz": round(centroid), "tonal_peaks_hz": [round(p) for p in peaks],
+               "stereo_corr": round(corr, 2), "transients_per_s": round(trans / max(n / sr, 1e-9), 2),
+               "rms_dbfs_min_max_50ms": [round(min(strip), 1), round(max(strip), 1)] if strip else None}
+        L = lufs(x, sr)
+        rep["lufs_ungated"] = round(L, 1) if L is not None else None
+        reports.append(rep)
+
+        img, rows = spectrogram_image(mono, sr, width=a.width)
+        H, W = img.shape[0], img.shape[1]
+        stripH, pad = 50, 40
+        canvas = Image.new("RGB", (W + pad, H + stripH + 36), (18, 18, 22))
+        canvas.paste(Image.fromarray(img), (pad, 22))
+        dr = ImageDraw.Draw(canvas)
+        f = font(12)
+        dr.text((pad, 3), f"{os.path.basename(path)}   RMS {rep['rms_dbfs']} dBFS   LUFS {rep['lufs_ungated']}   "
+                          f"peak {rep['peak_dbfs']}   corr {rep['stereo_corr']}", fill=(230, 230, 230), font=f)
+        for fr in (50, 100, 200, 500, 1000, 2000, 5000, 10000):
+            y = 22 + int((H - 1) * (1 - math.log(fr / 20.0) / math.log(1000.0)))
+            dr.line([(pad - 4, y), (pad, y)], fill=(200, 200, 200))
+            dr.text((2, y - 7), f"{fr // 1000}k" if fr >= 1000 else str(fr), fill=(200, 200, 200), font=f)
+        secs = n / sr
+        for t in range(int(secs) + 1):
+            x0 = pad + int(t / max(secs, 1e-9) * (W - 1))
+            dr.line([(x0, 22 + H), (x0, 26 + H)], fill=(200, 200, 200))
+        if strip:
+            # Scaled to its own range (at least 12 dB), labelled, so a 6 dB gust is visible.
+            y0 = 30 + H
+            top = max(strip)
+            bot = min(min(strip), top - 12.0)
+            pts = [(pad + int(i / max(len(strip) - 1, 1) * (W - 1)),
+                    y0 + stripH - 4 - int(np.clip((v - bot) / (top - bot), 0, 1) * (stripH - 8))) for i, v in enumerate(strip)]
+            dr.line(pts, fill=(120, 200, 255), width=1)
+            dr.text((2, y0), f"{top:.0f}", fill=(120, 200, 255), font=f)
+            dr.text((2, y0 + stripH - 14), f"{bot:.0f}", fill=(120, 200, 255), font=f)
+        panels.append(canvas)
+
+    if a.out and panels:
+        W = max(p.width for p in panels)
+        out = Image.new("RGB", (W, sum(p.height for p in panels)), (18, 18, 22))
+        y = 0
+        for p in panels:
+            out.paste(p, (0, y))
+            y += p.height
+        out.save(a.out)
+    print(json.dumps({"files": reports, "image": a.out}, indent=1))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -158,8 +312,11 @@ def main():
     s.add_argument("--scale", type=int, default=4); s.add_argument("-o", "--out", required=True)
     s = sp.add_parser("seams"); s.add_argument("a"); s.add_argument("--axis", default="both", choices=["both", "rows", "cols"])
     s.add_argument("--top", type=int, default=10)
+    s = sp.add_parser("audio"); s.add_argument("inputs", nargs="+"); s.add_argument("-o", "--out")
+    s.add_argument("--width", type=int, default=1000)
     a = ap.parse_args()
-    {"sheet": cmd_sheet, "diff": cmd_diff, "stats": cmd_stats, "crop": cmd_crop, "seams": cmd_seams}[a.cmd](a)
+    {"sheet": cmd_sheet, "diff": cmd_diff, "stats": cmd_stats, "crop": cmd_crop, "seams": cmd_seams,
+     "audio": cmd_audio}[a.cmd](a)
 
 
 if __name__ == "__main__":
