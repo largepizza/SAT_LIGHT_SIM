@@ -1,0 +1,69 @@
+# Per-term terrain lighting at the original repro instant: every channel is linear radiance
+# written straight to the frame buffer (see sat_sky.frag's debug block), so invert the sRGB
+# curve of a pixel and divide by the channel's gain to read the number.
+preset High
+set clouds.coverage 0
+set clouds.fog_coverage 0
+observer lat=56.1 lon=-159.6 agl=450
+camera az=90 el=3 fov=60
+time set 2026-11-21T21:04:50Z
+time pause
+wait settle
+capture t_beauty
+
+# Ground truth for the two bands, same pixels build\tw_diag.satcmd probed: 800/820 is the flat
+# near plateau (grey before the fix), 800/600 and 800/560 are the red-lit far slope. Also pins the
+# command order so t_beauty is pixel-comparable with tw_diag_01's d0_base.
+probe 800 820
+probe 800 600
+probe 800 560
+
+debugview terms
+wait settle
+capture t_terms
+debugview direct
+wait settle
+capture t_direct
+debugview skyamb
+wait settle
+capture t_skyamb
+debugview night
+wait settle
+capture t_night
+debugview moon
+wait settle
+capture t_moon
+debugview aurora
+wait settle
+capture t_aurora
+debugview gates
+wait settle
+capture t_gates
+debugview factors
+wait settle
+capture t_factors
+debugview skyambraw
+wait settle
+capture t_skyambraw
+debugview suntint
+wait settle
+capture t_suntint
+debugview aofactors
+wait settle
+capture t_aofactors
+debugview day
+wait settle
+capture t_day
+debugview nightmap
+wait settle
+capture t_nightmap
+debugview geodot
+wait settle
+capture t_geodot
+debugview sunvis
+wait settle
+capture t_sunvis
+debugview albedo
+wait settle
+capture t_albedo
+debugview off

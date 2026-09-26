@@ -310,44 +310,92 @@ The terrain work that motivated the harness went roughly like this, and the patt
   sidecars agree on `state.time.utc` before believing a pixel diff: a moved day looks exactly like a
   regression.
 
-### Machine-level freezes (tally)
+### Machine-level resets (tally)
 
-The app has, at least once, frozen the whole machine rather than merely crashing while a run was
-driving it. This is the running tally — add a line per occurrence. It is not an app crash: the
-process never gets to write `summary.json`, so a frozen run leaves a stale `session.lock` behind
-and its last seconds of writes in the page cache (size committed, contents all zero). After any
-freeze, check what survived:
+The platform has hard-reset the whole machine several times while a run was up — a firmware event,
+not an app crash. Windows leaves two witnesses on the next boot, and **neither is a crash dump**:
+
+- **WHEA-Logger 1** in the System log: the firmware's raw CPER record, hex in `EventData.RawData`,
+  severity `fatal`, `notify=BOOT` (UEFI BERT). Its timestamp fields are **binary, not BCD**, and **UTC**.
+- **Kernel-Power 41** with `BugcheckCode=0`: Windows never saw a bugcheck, so **no dump exists**
+  (no `MEMORY.DMP`, nothing in `Minidump`, no WER 1001). Do not go looking for one.
+- **The app's own log.** `satlight_log.txt` is fsynced per line, so where it stops is real evidence;
+  a line that was mid-write when the power went instead commits its size and reads all-NUL. (An app
+  *abort* leaves a stale `session.lock` too, but it ends in a `FATAL:` line with nothing all-NUL —
+  the difference matters, see below.)
+
+`tools/harness/crashes.py` reads all of it, read-only (it runs `wevtutil` on the System log and stats
+the run folders; it never writes to the event log, the registry or the machine):
 
 ```powershell
-python -c "import sys;b=open(sys.argv[1],'rb').read();print('all-zero' if b and not any(b) else 'ok')" <file>
+python tools/harness/crashes.py                      # the last 72 h: records, sections, live runs
+python tools/harness/crashes.py --hours 336          # two weeks, for the tally below
+python tools/harness/crashes.py --json > cper.json   # keep the raw evidence forever (UTF-16-safe)
+python tools/harness/crashes.py --decode cper.json   # re-read a saved dump, no machine needed
+python tools/harness/crashes.py --scan-run harness_runs/<dir>   # what survived in a run folder
+python tools/harness/crashes.py --witness harness_runs/<dir>    # write crash_witness.txt into it
+python tools/harness/crashes.py --preflight          # exit 3 if the firmware recorded a fatal error
 ```
 
-and treat an all-zero capture as absent (it will not decode as a PNG either).
+Exit codes: `0` nothing found, `3` a fatal firmware record (`--preflight` too), `2` the event log
+could not be read. `tools/harness/run.py` wires this in: `--preflight` before every launch (one
+warning line if the *firmware* recorded a fatal error since the newest run folder — a Kernel-Power
+41-only reset has no WHEA event behind it, so entry 3's kind of reset is **invisible to `--preflight`**;
+the report's "resets with no firmware error record" list is where those appear) and `--witness`
+automatically whenever a run ends without `summary.json`, so a dead run carries its own
+`crash_witness.txt` (log tail, live Kernel-Power events, the decoded record) across the next reboot.
+Both are best-effort — an unreadable event log never fails a run.
 
-| # | When | Run that was up | What it was doing | Damage |
-|---|------|-----------------|-------------------|--------|
-| 1 | 2026-09-25 ≈20:24 | `terrain_views.satcmd` (immediately after `ocean_rings_sea.satcmd`) | app had just launched; the previous run's final ~3 s of writes were still unflushed | `harness_runs\ocean_rings_fix\sea_after`: `sea60_*.png/json`, `settings.json`, `summary.json`, `app_stdout.txt`, `perf_profiles\profile_log.jsonl` all-zero (the alt=1200 captures, written earlier, were fine); `harness_runs\ocean_rings_fix\land_after` holds only `satlight_log.txt` + `session.lock` |
-| 2 | 2026-09-25 ≈20:39 | `land_v5_d20` (its own run dir, post-fix build) | app had just launched — `satlight_log.txt` stops at line 7 of 67, right after `Swapchain created`, before `env stars: …` (the next line of a healthy launch) and before the first command ran | nothing else lost: the run dir holds only `session.lock` + `satlight_log.txt` (no captures, no `summary.json`), and a full re-scan found no new all-zero files — the 10 NUL files are all entry 1's `sea_after` tail. It did kill the experiment that was up (a v5 date A/B), which never captured |
+**UTC vs local.** The app logs UTC (`gmtime` in `src/Log.cpp`), the firmware stamp is UTC, but the
+Windows event *list* prints local time (UTC−7 on this box). So `[04:44:38]` in a run folder and
+`21:44:38` in the event log are the same moment — compare in UTC only. `--decode` prints the UTC
+instant and shows the binary reading next to the (wrong) BCD one.
 
-Both entries so far are **launch** hangs, not steady-state ones, and `satlight_log.txt` is the evidence: a
-healthy launch writes 67 lines and ends at `sky pipeline: FULL sat_sky.frag` (all six clean launches in
-this session did). The two hangs stopped in the same init window, one line apart — entry 1 at line 6,
-`Logical device created.`, its line 7 committed but all-NUL (the unflushed write that is entry 1's
-fingerprint); entry 2 at line 7, `Swapchain created`. The next line a healthy launch writes is
-`env stars: …`, 2 s later, then the constellation build (27 model lobe validations, 1.38 M satellites,
+**Every section in every record here is a *firmware error record reference***
+(`81212A96-09ED-4996-9471-8D729C8E69ED`, UEFI 2.7 §N.2.5; that name is verified against EDK2
+`MdePkg/Include/Guid/Cper.h`). All 7608 bytes are three pointers: the platform stored the real record
+during POST, so this event proves the *severity* and the *moment* of the fatal error, never the
+device. `crashes.py` names the section type and says so under the record — the device-level detail
+needs the firmware's own log/BMC, or correlation by time, which is all the tally below has.
+
+Every row below was confirmed with `--scan-run` (that is where "all-zero" and "zero tail" come from).
+A run that is not named in a row finished normally — a reset cost the named folder, and nothing else.
+
+| # | Reset (local) | Firmware record | Run that was live | What it was doing | Damage |
+|---|---------------|-----------------|-------------------|-------------------|--------|
+| 1 | 2026-09-25 20:25:34 (Kernel-Power 41 at 20:25:27) | WHEA-Logger 1, fatal CPER, 3 × firmware error record reference | `terrain_views.satcmd` (right after `ocean_rings_sea.satcmd`, which finished at 20:23:28) | app had just launched; the *previous* run's final ~3 s of writes were still unflushed | `ocean_rings_fix\sea_after` (the previous run): **29 all-zero files** — `settings.json`, `summary.json`, `app_stdout.txt`, `perf_profiles\profile_log.jsonl`, the 3 `sea60_e*.json` sidecars and 22 `satellite_models_debug\*.mtl` — plus **4 zero tails** (`sea60_e30/e60/e60_normals.png`, `results.jsonl`), and `land_after\satlight_log.txt` is a fifth. The alt=1200 captures written earlier were fine. Treat every all-zero capture as absent (it will not decode as a PNG either) |
+| 2 | 2026-09-25 20:44:33 (KP41 20:44:26) | WHEA-Logger 1, fatal CPER, same 3 sections | `ocean_rings_fix\land_v5_d20` (a *nested* run folder) | app had just launched — `satlight_log.txt` stops at line 7 of 67, right after `Swapchain created`, before `env stars: …` (the next line of a healthy launch) and before the first command ran | that run only: the folder holds `session.lock` + a 7-line log, no captures, no `summary.json`. The other 10 nested runs under `ocean_rings_fix` all have `summary.json` and were untouched, and no new all-zero file exists anywhere. It did kill that experiment (a v5 date A/B), which never captured |
+| 3 | 2026-09-25 21:25:42 | **none** — Kernel-Power 41 alone (`BugcheckCode=0`, no BERT/WHEA record: the boot found no firmware error, i.e. it hung or was forced off) | `harness_runs\tw_terms_01` (started 21:25:02, 40 s before the reset; the Release exe had been written 21:24:58) | app had just launched — log stops at line 6, `Logical device created.`, with line 7 committed **all-NUL** (entry 1's exact fingerprint) | that run only: `session.lock` + a 7-line log, no `captures\`, no `summary.json` — none of its 15 per-term captures happened. Its script survives at `build\tw_terms.satcmd` |
+| 4 | 2026-09-25 21:58:01 (KP41 21:57:53) | WHEA-Logger 1, fatal CPER, same 3 sections | `harness_runs\tw_day2` (started 21:55:05) | app had just launched — log stops at line 7, `Swapchain created`, with nothing all-NUL (no partial write survived) | that run only (a date A/B): `session.lock` + a 7-line log. The three runs in between (`tw_terms_fixed` 21:47, `tw_terms_fix1` 21:53, `tw_day` 21:54) finished, and the next launch (`20260925_221520_smoke`, 22:15) was clean |
+
+**All four resets caught a run in its first ~3 s — the launch window** — and `satlight_log.txt` says
+where: a healthy launch writes 67 lines and ends at `sky pipeline: FULL sat_sky.frag`, while these
+stopped at line 6-7, within one line of each other (entries 1 and 3 at `Logical device created.` with
+line 7 committed all-NUL; entries 2 and 4 at `Swapchain created`). The next line a healthy launch
+writes is `env stars: …`, then the constellation build (27 model lobe validations, 1.38 M satellites,
 the 132 MB device-local buffer upload). So the window is: Vulkan logical device up → swapchain / first
-GPU work → star and constellation build. No steady-state run has hung yet.
+GPU work → star and constellation build. No steady-state run has been hit yet.
 
-The hang is not deterministic — 6 launches since entry 1 were clean — so treat it as a per-launch risk:
-one launch at a time, and scripts split rather than one long one, since a hang costs that run (and its
+**It is not deterministic, and it is not the app.** 12 run folders finished between entry 2 and
+entry 3, and 3 more between entry 3 and entry 4 — and in the same 72 h, **4 of the 8 resets happened
+with no run folder live at all** (09-24 23:51, 09-25 08:29, 08:40, 16:34; `crashes.py` prints who was
+live, if anyone). So treat a reset as a per-launch risk, not a regression to bisect: one launch at a
+time, and split scripts rather than writing one long one, since a reset costs that run (and its
 unflushed tail) and nothing else.
 
-A freeze is not a crash. `harness_runs\bisect1`, `bisect2` and `tv1p3` (2026-09-25 02:48-02:49) also
-lack `summary.json` and hold a stale `session.lock`, but their logs end with `FATAL: vkQueueSubmit
-failed.` — the *process* aborted and the machine was fine. The freeze is the one whose log simply
-*stops*, with its committed tail reading as NUL.
+**A reset is not a crash.** A stale `session.lock` only means "the process never cleaned up", which is
+also what an *app abort* looks like — and aborts are common here: `harness_runs\bisect1`, `bisect2` and
+`tv1p3` (2026-09-25 02:48-02:49) end in `FATAL: vkQueueSubmit failed.`, and `tw_terms_02` (21:44:38) and
+`tw_terms_03` (21:45:24), both launched *after* entry 3's reset, end in `FATAL: SatelliteSim: failed to
+create cloud_noise bake pipeline` — the bug fixed at 21:47, after which `tw_terms_fixed` and
+`tw_terms_fix1` both finished. All five aborted the process and lost nothing to an all-zero write. The
+reset is the one whose log simply *stops*, usually with the next line committed as NUL.
 
 Earlier occurrences, if any, predate this table — the user's own count is authoritative.
+
+To check a single file by hand:
+`python -c "import sys;b=open(sys.argv[1],'rb').read();print('all-zero' if b and not any(b) else 'ok')" <file>`
+— `--scan-run` does that (and the zero-tail scan) for a whole folder.
 
 ## Extending
 

@@ -1567,7 +1567,14 @@ void main() {
     vec3  terrainNorm = vec3(0.0, 0.0, 1.0); // overwritten on terrain hit
 
     // Procedural detail state at the hit, kept for the material/AO/shadow terms and debug views.
-    vec3     terrainDebugColor = vec3(-1.0); // >= 0: a terrain debug view replaces the pixel
+    vec3     terrainDebugColor = vec3(0.0);
+    // Set together with terrainDebugColor by the terrain debug block, tested at the end of main.
+    // A separate flag because a SIGN test on the colour is not enough: view 23 (geodot) is
+    // (geoSunDot, sunDot, tHit/4000), whose x component is negative on every night pixel — exactly
+    // the pixels that view exists for — so the old `terrainDebugColor.x >= 0.0` gate silently kept
+    // the beauty frame there. Caught 2026-09-25 by diffing the capture against t_beauty: 159 867 of
+    // 160 200 sampled pixels byte-identical, the other 333 differing by <= 3/255 (PNG rounding).
+    bool     terrainDebugActive = false;
     int      terrainSteps  = 0;
     TdSample terrainDet;
     terrainDet.h = 0.0; terrainDet.grad = vec3(0.0); terrainDet.rough = 0.0; terrainDet.amp = 0.0;
@@ -2197,6 +2204,19 @@ void main() {
         float dayFrac     = horizonGate;
         // directSun combines day/night blend for all sun-driven contributions.
         float directSun   = dayFrac;
+        // ── Surface twilight gate ──────────────────────────────────────────────────────────────
+        // Civil twilight runs until the Sun is 6 degrees below the horizon (sin = -0.105): the
+        // ground is still visibly lit by the sky the whole way down, and the sky is at its most
+        // orange while the Sun is only a degree or two under. dayFrac above is the DIRECT-SUN
+        // gate — it spans 1.5 degrees of Sun altitude and is the right gate for the Sun's disc,
+        // but it was also used to blend the whole surface colour, which handed the city-lights
+        // map 83% of every ground pixel at Sun -1 degree. The near ground (neutral snow albedo,
+        // this terrain) then came out dead grey — 63,63,63 with r=g=b — at the exact instant the
+        // sky was at its brightest, and its light was neutral while the peaks kept only a dimmed
+        // red from the 17% left over (2026-09-25 twilight-terrain harness captures). Albedo is
+        // dimmed by light, not replaced by it: one gate per job.
+        const float kCivilTwilightSin = -0.105; // sin of -6 degrees of geographic sun altitude
+        float twilightFrac = smoothstep(kCivilTwilightSin, 0.02, geoSunDot);
         // Cloud shadow: cloud_march.comp already marched sunward from this pixel's own terrain
         // hit point and stored the transmittance in cloudB.a (sampled earlier, alongside the rest
         // of the composite).
@@ -2405,20 +2425,43 @@ void main() {
             }
         }
 
-        // ── Spectral sun color at terrain hit ─────────────────────────────────
-        // Sun light arriving at the terrain is orange at low angles (long atmospheric path).
-        // Normalized so the brightest channel = 1.0 (preserves hue; noon ≈ warm white).
+        // ── The Sun's shadow line at this hit point, and the colour of the light on it ────────
+        // Two things come out of this block, and they are one geometric fact seen twice:
+        //
+        //   1. `sunDiscVis`: does the Sun's DISC clear this point's OWN horizon? An elevated point
+        //      sees further over the Earth's curve, so its horizon is DIPPED by
+        //      sin(dip) = sqrt(1 - (R/|hitPt|)^2) — 0.96 degrees at 900 m. The code below always
+        //      had this test (the raySphere against R_EARTH) but used it only to CHOOSE A TINT, so
+        //      ground that cannot see the Sun at all still received 17% of full direct sunlight
+        //      (dayFrac at Sun -0.96 degrees) in WHITE, because the tint fell back to vec3(1.0)
+        //      inside the shadow. Measured at the twilight-terrain view (harness tw_terms_fixed,
+        //      2026-09-25): the shadowed ground's tDirectSun was (6.0, 6.2, 6.0)e-3 — dead neutral,
+        //      and 4x the whole sky ambient (1.4e-3) — a flat grey slab whose edge was exactly the
+        //      shadow line, so it appeared to CHASE the red-lit slopes above it as the Sun moved.
+        //      0.0046 is sin(0.27 deg), the Sun's own angular radius, so that soft edge is the
+        //      physical width of the solar limb crossing the terrain's horizon.
+        //   2. `sunSpecTint`: the hue of the light arriving along the Sun's direction, with that
+        //      direction clamped to (never below) the same local horizon. Below the shadow line the
+        //      ground therefore gets the deep sunset red that grazes the horizon toward the Sun's
+        //      azimuth instead of a WHITE fallback, so the tint is continuous ACROSS the line:
+        //      warm alpenglow on the slopes above it, its dimmed continuation below, no colour
+        //      cliff between them.
+        // Where the Sun IS up nothing changes: sunDiscVis is 1, the tint is the same computation
+        // from the true sunDir, and tDirectSun's 0.05 sunLit floor and 0.15 terrain-shadow floor
+        // (both there for faces turned from a DAYTIME Sun) keep applying.
+        vec3  hitUp    = normalize(hitPt);
+        float dipCos   = R_EARTH / length(hitPt);
+        float dipSin   = sqrt(max(0.0, 1.0 - dipCos * dipCos)); // sin of the horizon dip at this altitude
+        float sunDiscVis = smoothstep(-dipSin - 0.0046, -dipSin + 0.0046, geoSunDot);
+        vec3  sunDirLocal = (geoSunDot > -dipSin) ? sunDir : normalize(sunDir - hitUp * geoSunDot);
         vec3 sunSpecTint = vec3(1.0);
         {
-            vec2 tSET = raySphere(hitPt, sunDir, R_EARTH);
-            if (!(tSET.x > 0.0 && tSET.y > 0.0)) {  // terrain not in Earth's shadow
-                vec2 tSAT = raySphere(hitPt, sunDir, R_ATMOS);
-                if (tSAT.y > 0.0) {
-                    vec2 sODT    = optDepth(hitPt, sunDir, tSAT.y);
-                    vec3 attnT   = exp(-(BETA_R * sODT.x + BETA_M * 1.1 * sODT.y));
-                    float maxAttn = max(max(attnT.r, attnT.g), max(attnT.b, 0.001));
-                    sunSpecTint  = attnT / maxAttn;  // hue-normalized: max channel → 1.0
-                }
+            vec2 tSAT = raySphere(hitPt, sunDirLocal, R_ATMOS);
+            if (tSAT.y > 0.0) {
+                vec2 sODT    = optDepth(hitPt, sunDirLocal, tSAT.y);
+                vec3 attnT   = exp(-(BETA_R * sODT.x + BETA_M * 1.1 * sODT.y));
+                float maxAttn = max(max(attnT.r, attnT.g), max(attnT.b, 0.001));
+                sunSpecTint  = attnT / maxAttn;  // hue-normalized: max channel → 1.0
             }
         }
 
@@ -2533,12 +2576,28 @@ void main() {
         if (tHit > 0.0 && cloud.terrainMaterialStrength > 0.0)
             bounceK = 0.3 * cloud.terrainMaterialStrength * dot(dayColor, vec3(0.2126, 0.7152, 0.0722))
                     * max(dot(normalize(hitPt), sunDir), 0.0);
-        vec3 surfColor  = mix(nightColor * 0.12,
-                              // mix(0.15, 1, shadow): light bounced off the sunlit terrain around a
-                              // shadowed face — without it terrain shadows went near-black.
-                              (dayColor * sunSpecTint * (sunLit * mix(0.15, 1.0, terrainShadow) + bounceK) * cloudShadowT
-                            + dayColor * skyAmbientTerrain * 0.4) * terrainAO,  // sky ambient fill (blue day, orange dusk)
-                              dayFrac)
+        // The terrain's own albedo IS the surface all through twilight — dimmed and reddened by
+        // the sky, never swapped out for another map — and the city-lights texture is only an
+        // emissive ADD on top of it, faded in as the twilight closes (and back out above, the
+        // same way). Deep night is therefore unchanged by design: albedo lit by nothing is
+        // black, so only the lights and the Moon are left there (no terrain night ambient term —
+        // decided in session 25), and the night detail texture stays the city layout at close
+        // range, on top of black rather than under a grey wash.
+        // Each contribution is named, so the harness debug channels below (`debugview terms`,
+        // `direct`, `skyamb`, `night`, `moon`, `aurora`) can report which one actually lights a
+        // pixel instead of leaving it to arithmetic on the beauty frame. Behaviour is unchanged:
+        // the sum below is the same expression the unnamed version evaluated.
+        // mix(0.15, 1, shadow): light bounced off the sunlit terrain around a shadowed face — without it terrain shadows went near-black.
+        // * sunDiscVis: no direct sun reaches ground that cannot see the Sun's disc (see the tint
+        // block above) — without it the 0.05 sunLit floor, the 0.15 terrain-shadow floor and
+        // dayFrac's 1.5-degree soft gate lit the whole night side with a NEUTRAL wash 4x brighter
+        // than the sky ambient. That was the grey slab of 2026-09-25.
+        vec3 tDirectSun = dayColor * sunSpecTint * (sunLit * mix(0.15, 1.0, terrainShadow) + bounceK)
+                        * cloudShadowT * dayFrac * sunDiscVis;
+        vec3 tSkyAmb    = dayColor * skyAmbientTerrain * 0.4 * twilightFrac; // sky ambient fill (blue day, orange dusk)
+        vec3 tNight     = nightColor * (0.12 * (1.0 - twilightFrac));        // city lights: emissive only, never the surface
+        vec3 surfColor  = (tDirectSun + tSkyAmb) * terrainAO  // terrainAO darkens only the map/sky-lit surface
+                        + tNight
                         + moonContribTerrain
                         + auroraContribTerrain;
 
@@ -2567,7 +2626,35 @@ void main() {
                 float eb = terrainDet.amp * cloud.terrainErosion.x * 0.875;
                 dbg = eb > 1.0 ? vec3(0.5 + 0.5 * clamp(terrainDet.hEro / eb, -1.0, 1.0)) : vec3(0.1, 0.2, 0.5);
             }
-            terrainDebugColor = dbg;
+            // 10-24: the terrain LIGHTING, term by term. These are LINEAR radiance values written
+            // straight into the frame buffer (this block bypasses the exposure/tonemap at the end of
+            // main), so a capture's own pixels are the numbers: the value the eye gets is
+            // srgb(v * gain) / 255, i.e. invert the sRGB curve to read v. Radiance terms are scaled
+            // x100 (and per-channel, never luminance, so a term's COLOUR shows too); the gates and
+            // factors of 16/17/21 are raw. twilight_terrain's ground sits near 8e-3 total, so x100
+            // puts the interesting range inside 0..1 with ~1e-4 resolution per 8-bit step.
+            else if (dv == 10) dbg = surfColor * 100.0;        // total terrain light, x100
+            else if (dv == 11) dbg = tDirectSun * 100.0;       // direct sun (Lambert x dayFrac x cloud shadow)
+            else if (dv == 12) dbg = tSkyAmb * 100.0;          // sky ambient x twilightFrac
+            else if (dv == 13) dbg = tNight * 100.0;           // city-lights emissive add
+            else if (dv == 14) dbg = moonContribTerrain * 100.0;
+            else if (dv == 15) dbg = auroraContribTerrain * 100.0;
+            else if (dv == 16) dbg = vec3(dayFrac, twilightFrac, terrainShadow);  // the gates
+            else if (dv == 17) dbg = vec3(sunLit, bounceK * 10.0, dot(skyAmbientTerrain, vec3(1.0 / 3.0)) * 100.0);
+            else if (dv == 18) dbg = skyAmbientTerrain * 100.0;  // its hue: blue day .. orange dusk
+            else if (dv == 19) dbg = sunSpecTint;                // sun hue at the hit point (max channel 1)
+            else if (dv == 20) dbg = vec3(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)), terrainAO, cloudShadowT);
+            else if (dv == 21) dbg = vec3(clamp((sunDir.z + 0.2) / 1.2, 0.0, 1.0), sunDir.z, dot(normalize(hitPt), sunDir));
+            else if (dv == 22) dbg = nightColor * 20.0;          // the city-lights map itself here
+            else if (dv == 23) dbg = vec3(geoSunDot, sunDot, tHit / 4000.0);
+            // 24: the Sun's shadow line at this hit point. R = sunDiscVis (0 = the Sun's disc is
+            // below this point's own horizon, so no direct sun reaches it), G = geoSunDot + dipSin
+            // (>= 0 exactly when the disc is clear of that horizon, 0 on the line), B = dipSin at
+            // this altitude. R is what tDirectSun is multiplied by, so one capture shows both the
+            // gate and its margin over the line.
+            else if (dv == 24) dbg = vec3(sunDiscVis, geoSunDot + dipSin, dipSin);
+            terrainDebugColor  = dbg;
+            terrainDebugActive = true;
         }
 
         // ── Ocean wave material (sea-level hits only, not terrain) ─────────────
@@ -3501,7 +3588,7 @@ void main() {
     }
 
     outColor = vec4(color, 1.0);
-    if (terrainDebugColor.x >= 0.0) outColor = vec4(terrainDebugColor, 1.0);
+    if (terrainDebugActive) outColor = vec4(terrainDebugColor, 1.0);
 
     // Unified scene depth (include/depth.glsl) for the passes that follow: the TRUE distance to the
     // first opaque surface — terrain, else ocean (tSeaLvl covers ocean pixels with no terrain

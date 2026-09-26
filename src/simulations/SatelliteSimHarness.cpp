@@ -1523,18 +1523,27 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     {
         // Terrain debug views (sat_sky.frag, cloud.terrainDebugView). Not persisted.
         static const char *kViews[] = {"off", "normals", "detail", "steps", "albedo", "shadow", "rough", "elevzebra", "distzebra",
-                                       "erosion"};
+                                       "erosion",
+                                       // 10+: the terrain LIGHTING term by term (linear radiance x100, see sat_sky.frag)
+                                       "terms", "direct", "skyamb", "night", "moon", "aurora", "gates", "factors",
+                                       "skyambraw", "suntint", "aofactors", "day", "nightmap", "geodot", "sunvis"};
+        const int viewCount = (int)(sizeof(kViews) / sizeof(kViews[0]));
         const std::string v = lower(pos(0) == "terrain" ? pos(1) : pos(0));
         int idx = -1;
-        for (int i = 0; i < 10; ++i)
+        for (int i = 0; i < viewCount; ++i)
             if (v == kViews[i])
                 idx = i;
         if (idx < 0 && !v.empty() && isdigit((unsigned char)v[0]))
             idx = (int)parseNum(v, "debugview");
-        if (idx < 0 || idx > 9)
-            fail("debugview: off | normals | detail | steps | albedo | shadow | rough | elevzebra | distzebra | erosion "
+        if (idx < 0 || idx >= viewCount)
+            fail("debugview: off | normals | detail | steps | albedo | shadow | rough | elevzebra | distzebra | erosion | "
+                 "terms | direct | skyamb | night | moon | aurora | gates | factors | skyambraw | suntint | aofactors | "
+                 "day | nightmap | geodot | sunvis "
                  "(steps: blue = few march steps .. red = the budget; rough: R roughness, G rock, B snow; "
-                 "zebras: stripes every 25 m of elevation / 100 m of distance)");
+                 "zebras: stripes every 25 m of elevation / 100 m of distance; terms/direct/skyamb/night/moon/aurora: "
+                 "the terrain light term by term as linear radiance x100, so a capture pixel reads the number; "
+                 "sunvis: R = the Sun's disc clears this point's own horizon (0 = no direct sun reaches it), "
+                 "G = its margin over that horizon, B = the horizon dip at this altitude)");
         terrainDebugView = idx;
         r["message"] = std::string("terrain debug view ") + kViews[idx];
         return Status::Done;

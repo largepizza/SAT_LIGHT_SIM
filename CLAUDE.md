@@ -412,12 +412,18 @@ User guide and command reference: **docs/HARNESS.md** (keep its table in step wi
 - `harnessRunner_` is null outside a harness run (and before the console's first use), and every
   hook is then a no-op. The first-run preset seed, intro, first-run notices, music and toasts are
   all suppressed in a harness run.
-- **Machine-level freezes: 2 so far** — the app has frozen the whole machine (not just crashed)
-  while a run was up, which loses that run's unflushed tail and leaves a stale `session.lock`. Both
-  were *launch* hangs, ~7 lines into `satlight_log.txt` (right after `Swapchain created`, in the
-  star/constellation build), and both cost only their own run. The tally, the per-instance detail and
-  the "is this capture real?" check are in `docs/HARNESS.md` under *Machine-level freezes*; add a
-  line there every time it happens.
+- **Machine-level resets: 4 so far** — the *platform* (firmware, not the app) has hard-reset the
+  whole machine while a run was up. Windows records WHEA-Logger 1 (the raw CPER record: fatal, UEFI
+  BERT) and Kernel-Power 41 with `BugcheckCode=0`, i.e. **no dump will ever exist**, so the app's
+  fsynced log is the other witness — and a write that was mid-flight reads all-NUL. All four hit in
+  the ~3 s *launch* window, around line 7 of `satlight_log.txt` (entries 2 and 4 stopped at
+  `Swapchain created`; entries 1 and 3 one line earlier at `Logical device created.`), each costing
+  only its own run. `tools/harness/crashes.py` reads the evidence (read-only; `--preflight` runs
+  before every launch and `run.py` drops a `crash_witness.txt` into any run that dies without
+  `summary.json`). Usage, the tally, the UTC-vs-local rule (the app logs UTC, the event list is
+  local) and the "is this capture real?" check are in `docs/HARNESS.md` under *Machine-level resets*.
+  Note that 4 of the 8 resets in the last 72 h happened with **no run live** — not the app's doing.
+  Add a line to the tally every time it happens.
 
 ---
 

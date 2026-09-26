@@ -35,6 +35,33 @@ def find_exe(config):
     return max(found, key=os.path.getmtime)  # the freshest build (old versioned exes linger)
 
 
+def _crashes():
+    """crashes.py lives next to this file. Forensics are best-effort: if it cannot read the event
+    log (not Windows, no powershell), a run must still work, so every call here is guarded."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import crashes
+    return crashes
+
+
+def crash_preflight():
+    """Does the machine hard-reset since the last run? (See docs/HARNESS.md, "Machine-level
+    resets".) Returns a one-line warning or None; never raises."""
+    try:
+        return _crashes().preflight_message()
+    except Exception:
+        return None
+
+
+def crash_witness(out):
+    """Called when a run died without writing summary.json - which is exactly what a firmware
+    reset does. Writes crash_witness.txt next to what survived, so the evidence outlives the
+    next reboot. Returns the run-relative path or None; never raises."""
+    try:
+        return _crashes().write_witness(out)
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("script", nargs="?", help=".satcmd file")
@@ -67,6 +94,9 @@ def main():
         cmd += ["--settings", os.path.abspath(a.settings)]
     if a.fixed_dt is not None:
         cmd += ["--fixed-dt", a.fixed_dt]
+    warn = crash_preflight()
+    if warn:
+        print(warn, flush=True)
     print(f"exe: {exe}\nrun: {out}", flush=True)
     t0 = time.time()
     try:
@@ -113,6 +143,11 @@ def main():
         if output:
             print("stdout/stderr tail:\n  " + "\n  ".join(output.splitlines()[-25:]))
     ok = code == 0 and status == "ok"
+    if not summary and os.path.isdir(out):
+        wit = crash_witness(out)
+        if wit:
+            print("crash witness: " + os.path.relpath(wit, REPO)
+                  + "  (why: no summary.json - see docs/HARNESS.md, Machine-level resets)")
     sys.exit(0 if ok else 1)
 
 

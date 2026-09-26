@@ -15,6 +15,10 @@
 #include <stdexcept>
 #include <thread>
 
+#ifdef _WIN32
+#include <io.h> // _commit / _fileno, used by writeDurable below
+#endif
+
 namespace fs = std::filesystem;
 
 namespace harness
@@ -24,6 +28,29 @@ namespace
 Options g_opts;
 std::mutex g_fileMutex; // results.jsonl / summary.json (the watchdog thread may write the summary)
 std::atomic<bool> g_summaryWritten{false};
+
+// Same durability rule as Log::line (docs/HARNESS.md, "Machine-level resets"): results.jsonl and
+// summary.json are what a crash is diagnosed from, and a tail left in the page cache commits with
+// its size but reads all-NUL — indistinguishable from a command that never ran. One fsync per write
+// is affordable here (a line per command, a summary per run). Deliberately NOT used for
+// status.json, which is rewritten every frame in --live mode.
+bool writeDurable(const fs::path &path, const std::string &bytes, bool append)
+{
+#ifdef _WIN32
+    std::FILE *f = _wfopen(path.wstring().c_str(), append ? L"ab" : L"wb");
+#else
+    std::FILE *f = std::fopen(path.string().c_str(), append ? "ab" : "wb");
+#endif
+    if (!f)
+        return false;
+    const bool ok = std::fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size();
+    std::fflush(f);
+#ifdef _WIN32
+    _commit(_fileno(f)); // FlushFileBuffers on the underlying handle; best effort
+#endif
+    std::fclose(f);
+    return ok;
+}
 
 std::string resolveAgainstLaunch(const std::string &p)
 {
@@ -382,7 +409,7 @@ bool Runner::begin(std::string &err)
     }
     {
         std::lock_guard<std::mutex> lock(g_fileMutex);
-        std::ofstream(fs::path(runDir_) / "results.jsonl", std::ios::trunc);
+        writeDurable(fs::path(runDir_) / "results.jsonl", std::string(), false);
     }
     if (!g_opts.liveDir.empty())
     {
@@ -509,8 +536,7 @@ void Runner::finish(Active &a, Status st)
         j["result"] = a.result;
     {
         std::lock_guard<std::mutex> lock(g_fileMutex);
-        std::ofstream f(fs::path(runDir_) / "results.jsonl", std::ios::app);
-        f << j.dump() << '\n';
+        writeDurable(fs::path(runDir_) / "results.jsonl", j.dump() + "\n", true);
     }
     if (ok)
     {
@@ -531,8 +557,7 @@ void Runner::finish(Active &a, Status st)
             fs::path tmp = out;
             tmp += ".tmp";
             {
-                std::ofstream f(tmp, std::ios::trunc);
-                f << nlohmann::json{{"file", a.liveFile}, {"results", liveResults_[a.liveFile]}}.dump(2) << '\n';
+                writeDurable(tmp, nlohmann::json{{"file", a.liveFile}, {"results", liveResults_[a.liveFile]}}.dump(2) + "\n", false);
             }
             std::error_code ec;
             fs::rename(tmp, out, ec); // atomic publish: a reader never sees half a file
@@ -575,7 +600,7 @@ void Runner::pollLive()
         {
             nlohmann::json j{{"file", name},
                              {"results", nlohmann::json::array({{{"ok", false}, {"error", err.empty() ? "no commands" : err}}})}};
-            std::ofstream(fs::path(g_opts.liveDir) / "outbox" / (p.stem().string() + ".json")) << j.dump(2) << '\n';
+            writeDurable(fs::path(g_opts.liveDir) / "outbox" / (p.stem().string() + ".json"), j.dump(2) + "\n", false);
             continue;
         }
         liveRemaining_[name] = (int)cmds.size();
@@ -628,7 +653,7 @@ void Runner::writeSummary(const char *status, const std::string &message)
         fs::remove(fs::path(g_opts.liveDir) / "status.json", ec);
     }
     std::lock_guard<std::mutex> lock(g_fileMutex);
-    std::ofstream(fs::path(runDir_) / "summary.json", std::ios::trunc) << j.dump(2) << '\n';
+    writeDurable(fs::path(runDir_) / "summary.json", j.dump(2) + "\n", false);
 }
 
 void startWatchdog(Runner *runner)

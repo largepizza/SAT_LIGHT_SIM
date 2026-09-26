@@ -1,0 +1,79 @@
+# Diagnostic: where does the neutral grey low ground at twilight come from?
+# Same view + instant as tools/harness/scripts/twilight_terrain.satcmd (Sun 0.96 deg below
+# the horizon), then one contributor removed at a time. d0_base is the reference.
+preset High
+set clouds.coverage 0
+set clouds.fog_coverage 0
+observer lat=56.1 lon=-159.6 agl=450
+camera az=90 el=3 fov=60
+time set 2026-11-21T21:04:50Z
+time pause
+wait settle
+capture d0_base
+state d0_state
+
+# Ground truth for the grey slab: is it a terrain hit, at what distance/height?
+probe 800 820
+probe 800 860
+probe 800 760
+probe 300 780
+probe 1300 780
+
+# Current defaults of the terms under suspicion.
+get clouds.moon_gain
+get clouds.aurora_ground_gain
+get clouds.terrain_material_strength
+get clouds.terrain_shadow_strength
+get clouds.fog_coverage
+get clouds.airglow_gain
+get clouds.aurora_gain
+
+# 1. Atmosphere in-scatter (aerial perspective + the whole N_VIEW integral): the surface is
+#    added on top of it, so if the slab survives this, it is the surface's own light.
+knockout +atmosphere_loop
+wait settle
+capture d1_noatmo
+knockout none
+
+# 2. Fog layer (C11).
+knockout +fog_layer
+wait settle
+capture d2_nofog
+knockout none
+
+# 3. Terrain itself: what is behind/below the grey band.
+knockout +terrain_march
+wait settle
+capture d3_noterrain
+knockout none
+
+# 4. Sky emissive layers (airglow / aurora / sky-glow bins) -- they also reach the ground
+#    through the in-scatter and via auroraContribTerrain.
+knockout +airglow_red +aurora_curtain +sat_sky_glow_bins
+wait settle
+capture d4_noskyemissive
+knockout none
+
+knockout list
+
+# 5. Surface light sources: Moon, aurora ground glow, the procedural terrain material
+#    (its albedo mix-in, its 0.3*bounce term and its terrainAO).
+set clouds.moon_gain 0
+wait settle
+capture d5_nomoon
+set clouds.aurora_ground_gain 0
+wait settle
+capture d6_nomoon_noaurora
+set clouds.terrain_material_strength 0
+wait settle
+capture d7_nomoon_noaurora_nomaterial
+set clouds.terrain_shadow_strength 0
+wait settle
+capture d8_plus_noshadow
+
+# The albedo that feeds all of the above (post-procedural-material dayColor).
+set clouds.terrain_material_strength 1
+debugview albedo
+wait settle
+capture d9_albedo
+debugview off

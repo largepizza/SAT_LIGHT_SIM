@@ -1,0 +1,44 @@
+# Twilight terminator on terrain: one place, one heading, Sun swept from just above the
+# horizon down to full night. The ground here must keep its ALBEDO and its sky-lighting
+# all through civil twilight (Sun 0 .. -6 deg) and only hand over to the city-lights
+# emissive look once the sky is actually dark; the sunlit peaks must stay red-orange
+# throughout. Also captures the raw day albedo (debugview albedo) so the two can be told
+# apart: a neutral-grey ground in the beauty frame while albedo shows biome colour = the
+# ground is being painted by the night map.
+#
+# Alaska Peninsula (Veniaminof), looking east along the coast at 450 m AGL.
+# Run before and after a terrain-lighting change, then imgtools stats/diff/sheet.
+preset High
+set clouds.coverage 0
+set clouds.fog_coverage 0
+observer lat=56.1 lon=-159.6 agl=450
+camera az=90 el=3 fov=60
+
+# The original repro instant: Sun 0.96 deg BELOW the horizon (bright civil twilight).
+time set 2026-11-21T21:04:50Z
+time pause
+wait settle
+capture tw_sun_m1
+
+debugview albedo
+wait settle
+capture tw_sun_m1_albedo
+debugview off
+
+time sun 0 setting
+wait settle
+capture tw_sun_0
+
+time sun -3 setting
+wait settle
+capture tw_sun_m3
+
+time sun -6 setting
+wait settle
+capture tw_sun_m6
+
+time sun -15 setting
+wait settle
+capture tw_sun_m15
+
+perf frames=20 name=twilight_last
