@@ -1,0 +1,56 @@
+# Diagnostic: concentric ocean rings, observer NEAR SEA LEVEL over open Pacific water.
+# The rings show up as arcs of "detail present / detail absent" (see rings_vis.py), so this run
+# separates the two branches that can paint an ocean pixel:
+#   - the terrain branch (a march hit) at sea level, which is FLAT (h0 = 0 -> amp0 = 0, no
+#     detail) and shows the terrain debug views,
+#   - the ocean wave branch (tHit < 0), which shows waves and never takes a debug view.
+# `debugview normals` over open water therefore paints any terrain-branch ocean pixel flat violet.
+# `debugview distzebra` (100 m of tHit) tests whether the banding is distance-quantised.
+preset High
+set clouds.coverage 0
+set clouds.fog_coverage 0
+time set 2036-06-21T12:00:00Z
+time pause
+
+observer lat=20.0 lon=-150.0 alt=1200
+time sun 45 rising
+camera az=0 el=-30 fov=70
+wait settle
+capture sea1200_e30
+camera el=-60
+wait settle
+capture sea1200_e60
+camera el=-88
+wait settle
+capture sea1200_e88
+
+debugview normals
+camera el=-60
+wait settle 6
+capture sea1200_e60_normals
+debugview distzebra
+wait settle 6
+capture sea1200_e60_distzebra
+debugview off
+
+observer lat=20.0 lon=-150.0 alt=60
+camera el=-30
+wait settle
+capture sea60_e30
+camera el=-60
+wait settle
+capture sea60_e60
+
+debugview normals
+wait settle 6
+capture sea60_e60_normals
+debugview off
+
+probe 400 450
+probe 700 450
+probe 780 450
+probe 860 450
+probe 1200 450
+
+perf frames=20 name=ocean_rings_sea_last
+quit

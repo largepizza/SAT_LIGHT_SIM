@@ -1635,42 +1635,64 @@ void main() {
                 float hMip3;
                 tdDemAt(earthElevTex, earthSpecTex, terrainQ, enuX, enuY, enuZ, terrainH0, hMip3);
 
-                // Normal: the DEM gradient over +-1 texel (bilinear central differences are
-                // continuous — the old +-0.69-texel offsets, written for a 21600-wide DEM, gave a
-                // gradient constant per texel, i.e. faceted shading), plus the detail gradient at
-                // the shading LOD (finer than the geometry's: small octaves are normal-mapped).
-                vec2  demSize = vec2(textureSize(earthElevTex, 0));
-                vec2  du = vec2(1.0 / demSize.x, 0.0), dv = vec2(0.0, 1.0 / demSize.y);
-                float hE2 = max(0.0, textureLod(earthElevTex, hitUV + du, 0.0).r * kElevRange - kElevOffset);
-                float hW2 = max(0.0, textureLod(earthElevTex, hitUV - du, 0.0).r * kElevRange - kElevOffset);
-                float hN2 = max(0.0, textureLod(earthElevTex, hitUV - dv, 0.0).r * kElevRange - kElevOffset);
-                float hS2 = max(0.0, textureLod(earthElevTex, hitUV + dv, 0.0).r * kElevRange - kElevOffset);
-                float hitLat2 = PI * 0.5 - hitUV.y * PI;
-                float texLon  = max(100.0, 2.0 * PI * R_EARTH * abs(cos(hitLat2)) / demSize.x);
-                float texLat  = PI * R_EARTH / demSize.y;
-                float dE2     = (hE2 - hW2) / (2.0 * texLon);
-                float dN2     = (hN2 - hS2) / (2.0 * texLat);
-                terrainUpE    = normalize(phE);
-                vec3 hEsE     = normalize(vec3(-terrainUpE.y, terrainUpE.x, 0.0)); // East in ECEF
-                vec3 hNrE     = cross(terrainUpE, hEsE);                            // North in ECEF
-                vec3 slopeE   = dE2 * hEsE + dN2 * hNrE;
-                if (tdEnabled()) {
-                    terrainDet = terrainDetailLinEro(terrainQ, enuX, enuY, enuZ, tdShadeLodM(tHit, pixAngle),
-                                                     terrainH0, hMip3);   // the march's erosion, as a plane
-                    slopeE += terrainDet.grad;
+                // ── The sea is not terrain ───────────────────────────────────────────────
+                // Over water tdDemAt reports h0 = 0 (its sea branch) and nothing the march adds on
+                // top is non-zero there (tdAmp0's smoothstep(0, 80, h0), and the erosion scales
+                // with it), so the surface this hit lies on IS the sea-level sphere — the same
+                // sphere tExit bounds the march by. Landing exactly on it is step-size luck: the
+                // ray has to land in the sub-metre band the march accepts (rayH >= -1 in the loop
+                // and then gap = rayH - 0 < 0, the regula-falsi branch) while minStep alone is
+                // 0.5 m, and a satellite's near-tangential crossing has to win by a fraction of a
+                // millimetre before tExit. Which rays win flips with distance, in arcs concentric
+                // about the nadir: the ocean rings (harness ocean_rings_sea, `debugview normals`
+                // over open water — 15% of the frame repainted at 60 m AGL, 0% at 1200 m).
+                // A hit whose surface is the sea is not a terrain hit: void it so the pixel takes
+                // the ocean branch below (its own mask test agrees with this h0) instead of the
+                // flat, detail-free sea-level land shading this branch draws for it today.
+                // h0 alone is the test: it is the march's own height function, so the two cannot
+                // disagree, and land cannot read 0 here — the DEM's land baseline (16/255) is 35 m
+                // above the sea baseline, and the water mask only forces a sea height below
+                // kWaterMaskMaxM (tdDemAt, terrain.glsl).
+                if (terrainH0 <= 0.0) {
+                    tHit = -1.0;   // sea, not terrain: the pixel is ocean (waves), see above
+                } else {
+                    // Normal: the DEM gradient over +-1 texel (bilinear central differences are
+                    // continuous — the old +-0.69-texel offsets, written for a 21600-wide DEM, gave a
+                    // gradient constant per texel, i.e. faceted shading), plus the detail gradient at
+                    // the shading LOD (finer than the geometry's: small octaves are normal-mapped).
+                    vec2  demSize = vec2(textureSize(earthElevTex, 0));
+                    vec2  du = vec2(1.0 / demSize.x, 0.0), dv = vec2(0.0, 1.0 / demSize.y);
+                    float hE2 = max(0.0, textureLod(earthElevTex, hitUV + du, 0.0).r * kElevRange - kElevOffset);
+                    float hW2 = max(0.0, textureLod(earthElevTex, hitUV - du, 0.0).r * kElevRange - kElevOffset);
+                    float hN2 = max(0.0, textureLod(earthElevTex, hitUV - dv, 0.0).r * kElevRange - kElevOffset);
+                    float hS2 = max(0.0, textureLod(earthElevTex, hitUV + dv, 0.0).r * kElevRange - kElevOffset);
+                    float hitLat2 = PI * 0.5 - hitUV.y * PI;
+                    float texLon  = max(100.0, 2.0 * PI * R_EARTH * abs(cos(hitLat2)) / demSize.x);
+                    float texLat  = PI * R_EARTH / demSize.y;
+                    float dE2     = (hE2 - hW2) / (2.0 * texLon);
+                    float dN2     = (hN2 - hS2) / (2.0 * texLat);
+                    terrainUpE    = normalize(phE);
+                    vec3 hEsE     = normalize(vec3(-terrainUpE.y, terrainUpE.x, 0.0)); // East in ECEF
+                    vec3 hNrE     = cross(terrainUpE, hEsE);                            // North in ECEF
+                    vec3 slopeE   = dE2 * hEsE + dN2 * hNrE;
+                    if (tdEnabled()) {
+                        terrainDet = terrainDetailLinEro(terrainQ, enuX, enuY, enuZ, tdShadeLodM(tHit, pixAngle),
+                                                         terrainH0, hMip3);   // the march's erosion, as a plane
+                        slopeE += terrainDet.grad;
+                    }
+                    vec3 nECEF  = normalize(terrainUpE - slopeE);
+                    if (tdEnabled()) {
+                        // Snow in the day map (the material block's test) smooths the micro relief.
+                        vec3  dayS  = textureLod(earthDayTex, hitUV, 0.0).rgb;
+                        float lumS  = dot(dayS, vec3(0.2126, 0.7152, 0.0722));
+                        float mxS   = max(dayS.r, max(dayS.g, dayS.b));
+                        float satS  = (mxS - min(dayS.r, min(dayS.g, dayS.b))) / max(mxS, 1e-3);
+                        float snowS = smoothstep(0.40, 0.62, lumS) * (1.0 - smoothstep(0.10, 0.28, satS));
+                        nECEF = normalize(nECEF - tdMicroBump(terrainQ, nECEF, enuX, enuY, enuZ,
+                                                              tdShadeLodM(tHit, pixAngle), terrainDet.rough, snowS));
+                    }
+                    terrainNorm = normalize(vec3(dot(nECEF, enuX), dot(nECEF, enuY), dot(nECEF, enuZ)));
                 }
-                vec3 nECEF  = normalize(terrainUpE - slopeE);
-                if (tdEnabled()) {
-                    // Snow in the day map (the material block's test) smooths the micro relief.
-                    vec3  dayS  = textureLod(earthDayTex, hitUV, 0.0).rgb;
-                    float lumS  = dot(dayS, vec3(0.2126, 0.7152, 0.0722));
-                    float mxS   = max(dayS.r, max(dayS.g, dayS.b));
-                    float satS  = (mxS - min(dayS.r, min(dayS.g, dayS.b))) / max(mxS, 1e-3);
-                    float snowS = smoothstep(0.40, 0.62, lumS) * (1.0 - smoothstep(0.10, 0.28, satS));
-                    nECEF = normalize(nECEF - tdMicroBump(terrainQ, nECEF, enuX, enuY, enuZ,
-                                                          tdShadeLodM(tHit, pixAngle), terrainDet.rough, snowS));
-                }
-                terrainNorm = normalize(vec3(dot(nECEF, enuX), dot(nECEF, enuY), dot(nECEF, enuZ)));
             }
         }
     }

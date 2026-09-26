@@ -297,6 +297,57 @@ The terrain work that motivated the harness went roughly like this, and the patt
 - `set` changes values without touching the preset label. A later `preset` command overwrites
   the preset's sliders.
 - `get` values are floats, so `0.2` reads back as `0.20000000298`.
+- **`time sun` is relative to the clock, so the render is *script-position dependent*.** Each
+  `time sun` moves the clock to the nearest matching moment (within 12 h), so splitting a script in two,
+  reordering views or inserting a view in front silently moves the later views in time — including the
+  *date*. That is not cosmetic: the same `v5` view (same observer `lat=39.75 lon=-104.6`, same camera,
+  the Sun's az/el agreeing to 0.002° — `87.1866°` vs `87.1879°`, el 35.0000 in both) differed over
+  **32.6 %** of the frame, mean 26/255 across the changed pixels, between the full script (which left it
+  on 2036-06-20) and the split (2036-06-21). The capture sidecars show the moved day
+  (`state.time.utc`) and a different Moon (`state.moon.illum` 0.101 vs 0.176, `moon.az_deg` 22° apart).
+  Starting the script with `time set <ISO>` does **not** pin it — the whole preceding `time sun` sequence
+  decides. So when an A/B spans two runs, keep the command sequence identical, or at least check that the
+  sidecars agree on `state.time.utc` before believing a pixel diff: a moved day looks exactly like a
+  regression.
+
+### Machine-level freezes (tally)
+
+The app has, at least once, frozen the whole machine rather than merely crashing while a run was
+driving it. This is the running tally — add a line per occurrence. It is not an app crash: the
+process never gets to write `summary.json`, so a frozen run leaves a stale `session.lock` behind
+and its last seconds of writes in the page cache (size committed, contents all zero). After any
+freeze, check what survived:
+
+```powershell
+python -c "import sys;b=open(sys.argv[1],'rb').read();print('all-zero' if b and not any(b) else 'ok')" <file>
+```
+
+and treat an all-zero capture as absent (it will not decode as a PNG either).
+
+| # | When | Run that was up | What it was doing | Damage |
+|---|------|-----------------|-------------------|--------|
+| 1 | 2026-09-25 ≈20:24 | `terrain_views.satcmd` (immediately after `ocean_rings_sea.satcmd`) | app had just launched; the previous run's final ~3 s of writes were still unflushed | `harness_runs\ocean_rings_fix\sea_after`: `sea60_*.png/json`, `settings.json`, `summary.json`, `app_stdout.txt`, `perf_profiles\profile_log.jsonl` all-zero (the alt=1200 captures, written earlier, were fine); `harness_runs\ocean_rings_fix\land_after` holds only `satlight_log.txt` + `session.lock` |
+| 2 | 2026-09-25 ≈20:39 | `land_v5_d20` (its own run dir, post-fix build) | app had just launched — `satlight_log.txt` stops at line 7 of 67, right after `Swapchain created`, before `env stars: …` (the next line of a healthy launch) and before the first command ran | nothing else lost: the run dir holds only `session.lock` + `satlight_log.txt` (no captures, no `summary.json`), and a full re-scan found no new all-zero files — the 10 NUL files are all entry 1's `sea_after` tail. It did kill the experiment that was up (a v5 date A/B), which never captured |
+
+Both entries so far are **launch** hangs, not steady-state ones, and `satlight_log.txt` is the evidence: a
+healthy launch writes 67 lines and ends at `sky pipeline: FULL sat_sky.frag` (all six clean launches in
+this session did). The two hangs stopped in the same init window, one line apart — entry 1 at line 6,
+`Logical device created.`, its line 7 committed but all-NUL (the unflushed write that is entry 1's
+fingerprint); entry 2 at line 7, `Swapchain created`. The next line a healthy launch writes is
+`env stars: …`, 2 s later, then the constellation build (27 model lobe validations, 1.38 M satellites,
+the 132 MB device-local buffer upload). So the window is: Vulkan logical device up → swapchain / first
+GPU work → star and constellation build. No steady-state run has hung yet.
+
+The hang is not deterministic — 6 launches since entry 1 were clean — so treat it as a per-launch risk:
+one launch at a time, and scripts split rather than one long one, since a hang costs that run (and its
+unflushed tail) and nothing else.
+
+A freeze is not a crash. `harness_runs\bisect1`, `bisect2` and `tv1p3` (2026-09-25 02:48-02:49) also
+lack `summary.json` and hold a stale `session.lock`, but their logs end with `FATAL: vkQueueSubmit
+failed.` — the *process* aborted and the machine was fine. The freeze is the one whose log simply
+*stops*, with its committed tail reading as NUL.
+
+Earlier occurrences, if any, predate this table — the user's own count is authoritative.
 
 ## Extending
 

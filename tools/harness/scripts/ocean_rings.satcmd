@@ -1,0 +1,27 @@
+# Diagnostic: ocean ring artifacts, looking straight down at open Pacific water.
+preset High
+set clouds.coverage 0
+set clouds.fog_coverage 0
+time set 2036-06-21T12:00:00Z
+time pause
+
+observer lat=20.0 lon=-150.0 alt=1500
+time sun 45 rising
+camera az=0 el=-88 fov=70
+wait settle
+capture o1500
+
+observer lat=20.0 lon=-150.0 alt=4000
+wait settle
+capture o4000
+
+observer lat=20.0 lon=-150.0 alt=9000
+wait settle
+capture o9000
+
+observer lat=20.0 lon=-150.0 alt=30000
+wait settle
+capture o30000
+
+perf frames=20 name=ocean_rings_last
+quit

@@ -412,6 +412,12 @@ User guide and command reference: **docs/HARNESS.md** (keep its table in step wi
 - `harnessRunner_` is null outside a harness run (and before the console's first use), and every
   hook is then a no-op. The first-run preset seed, intro, first-run notices, music and toasts are
   all suppressed in a harness run.
+- **Machine-level freezes: 2 so far** — the app has frozen the whole machine (not just crashed)
+  while a run was up, which loses that run's unflushed tail and leaves a stale `session.lock`. Both
+  were *launch* hangs, ~7 lines into `satlight_log.txt` (right after `Swapchain created`, in the
+  star/constellation build), and both cost only their own run. The tally, the per-instance detail and
+  the "is this capture real?" check are in `docs/HARNESS.md` under *Machine-level freezes*; add a
+  line there every time it happens.
 
 ---
 
@@ -3040,3 +3046,28 @@ Failing to subtract `kElevOffset` makes every coastline on Earth appear as a ~53
 cliff because sea-level land reads as 529 m above the ocean sphere. This bug has been
 introduced and re-introduced across multiple sessions. The ocean sphere sits at exactly
 `R_EARTH`; the terrain height formula must produce 0 m for ocean-baseline pixels.
+
+### The sea is not terrain — the march's `h0 <= 0` gate (2026-09-25) — `sat_sky.frag`
+
+The terrain march can "hit" the sea-level sphere. Over water `tdDemAt` reports `h0 = 0` and nothing the
+march adds on top is non-zero (the detail octaves scale with `tdAmp0`'s `smoothstep(0, 80, h0)`), so the
+surface such a hit lies on *is* the sphere `tExit` bounds the march by — landing on it is step-size luck:
+the ray has to land inside the sub-metre band the march accepts (`minStep` alone is 0.5 m, then the
+regula-falsi branch) and beat `tExit` by a fraction of a millimetre. Which rays win flips with distance,
+in **arcs concentric about the nadir**: the ocean "rings" (`harness_runs\ocean_rings_sea`, `debugview
+normals` over open water — 15.26 % of the frame repainted at 60 m AGL, 0 % at 1200 m). Those pixels drew
+flat, detail-free sea-level *land* shading where the ocean (wave) branch belongs.
+
+**Fix:** after the march, `if (terrainH0 <= 0.0) { tHit = -1.0; }`, with every normal/shading consumer
+gated on `tHit > 0`. `h0` alone is the test because it is the march's own height function, so the two
+cannot disagree, and land cannot read 0 here: the DEM's land baseline (16/255) is 35 m above the sea
+baseline (15/255, the table above), and the water mask only forces a sea height below `kWaterMaskMaxM`
+(`tdDemAt`, `terrain.glsl`).
+
+**Verified at pixel level** — probes are *not* evidence here (`probe` runs in its own compute shader and
+never consumes the fragment-side `tHit` gate, so probe output is byte-identical pre/post): `debugview
+normals` repaints **0.00 %** of open water at 60 m AGL afterwards, the beauty diff's `changed_frac`
+(0.1526) is exactly the ring pixels, and the 1200 m captures are bit-identical. Land views: v1-v4
+bit-identical to the pre-fix baselines, v6/v7 ≈0 %, v8 1.68 % confined to the seaward wedge below the
+horizon (that wedge *is* ocean), and v5's 32.6 % was a moved *date* from splitting the script rather than
+the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
