@@ -96,6 +96,7 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `select const "<name>" [n=<k>]` | the constellation's member highest in the observer's sky, or its k-th member. `const list` shows names |
 | `select planet <name>`, `select none` | |
 | `follow [sat=<i>] [offset=along,cross,radial]`, `follow off` | fly with a satellite (types with a geometry model). The offset is in metres in the satellite's frame |
+| `track [on\|off]` | the selection panel's **Track** button: lock the camera onto the selected satellite and re-aim every frame (the observer stays put, so WASD still walks, and the wheel's `camera fov=` zoom is untouched). No argument = toggle; needs a satellite selection. Released by `select none`, `select planet`, `follow` and any explicit aim (`camera az=`/`el=`, `camera look`, `camera track`, a scripted camera key). `state` reports it as `camera.tracking` and `selection.track`. Not to be confused with `camera track <target>`, which is the harness's own aim-every-frame |
 | `const list`, `const "<name>"\|all on\|off [highlight=on\|off]` | constellation visibility |
 | `get [section[.key]]` | any persisted setting; `get` alone lists them all (the keys are `settings.json`'s) |
 | `set <section.key> <value>` (also `key=value`, several per line) | change settings through the same code path `settings.json` loads through. Unknown keys and wrong types are errors. Doesn't change the preset label |
@@ -199,6 +200,11 @@ tools/harness/.venv/Scripts/python tools/harness/imgtools.py diff harness_runs/b
 ```
 
 **Satellite close-up.** `select const "Starlink Gen1"; follow offset=-30,0,10; wait settle; capture sat`.
+
+**Camera lock.** `select const "Starlink Gen1"; camera look sel; track on; time scale 1x` — the
+satellite stays centred while the sky moves; `camera fov=20` zooms in without releasing the lock, and
+the reticule answers it with four lock-on bars (`SelReticuleTick` in a `ui dump`). `track.satcmd` is
+the worked version.
 
 **UI check.** `ui scale 2.0; ui open settings tab=Controls; wait 3; ui dump controls; capture controls ui=on`,
 then read `text_overlaps` in the result before looking at the picture.

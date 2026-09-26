@@ -1,0 +1,62 @@
+# Track toggle (the selection panel's camera lock). Checks, by reading results.jsonl / the state and
+# layout sidecars:
+#   t05  untracked: the panel row has four action buttons (4x SelActBtn) and no lock-on ticks
+#   t10  `track on` pins the aim: camera.az_deg/el_deg == selection.az_deg/el_deg, camera.tracking true,
+#        and the reticule grows four SelReticuleTick bars around the satellite (the two crops also
+#        separate the tightened corner brackets from the untracked ones by pixels)
+#   t20  the aim keeps following after the clock jumps 60 s (the satellite crosses ~45 deg of sky)
+#   t30  `camera fov=20` still lands while tracking (the wheel's zoom is not look input)
+#   t40  `track off` stops re-aiming and leaves the camera where it was, `track on` re-snaps
+#   t45  walking the observer (`observer lat=`) does not release the lock: it re-aims from the new spot
+#   t50  `camera az=/el=` releases it (an explicit aim is never overwritten)
+#   t60  `follow` releases it (follow moves the observer; the lock only turns the camera)
+#   t70  `select planet` releases it (there is nothing to keep pointed at)
+#   t80  `select none` releases it
+# selftest.py's track_toggle keeps the same checks (minus the pixels, which need Pillow) in the
+# harness's own suite.
+preset High
+observer lat=46.55 lon=7.98 agl=50
+time sun -6 setting
+time pause
+wait settle
+select const "Starlink Gen1"
+camera look sel
+wait 5
+state t05_aimed
+ui dump t05_untracked
+capture t05_untracked crop=750,400,100,100 ui=on
+capture t05_untracked_ui ui=on scale=0.5
+track on
+wait 3
+state t10_on
+ui dump t10_tracked
+capture t10_tracked crop=750,400,100,100 ui=on
+time add 60
+wait 3
+state t20_moved
+camera fov=20
+state t30_zoom
+capture t30_tracked ui=on scale=0.5
+track off
+wait 3
+state t40_off
+track on
+observer lat=47.0 lon=8.0 agl=50
+wait 2
+state t45_observer_moved
+camera az=120 el=10
+state t50_camera_release
+select const "International Space Station"
+track on
+follow
+state t60_follow_release
+follow off
+track on
+select planet Jupiter
+state t70_planet_release
+select const "Starlink Gen1"
+track on
+select none
+state t80_none_release
+quit
+

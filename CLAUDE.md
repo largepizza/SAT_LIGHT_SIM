@@ -398,6 +398,12 @@ User guide and command reference: **docs/HARNESS.md** (keep its table in step wi
 - Camera paths (`path key/play`) and `overlay` text are harness state too (`harnessPath_`,
   `harnessOverlays_`); `path play` owns the clock (fixed 1/fps via `harnessFixedDtOverride_`, sim
   time set per frame) so a recording is uniform in time however slowly frames encode.
+- **The player's camera lock is scriptable:** `track on|off` drives the same `startTrack()` /
+  `stopTrack()` the selection panel's Track button does (nothing to do with `camera track <target>`,
+  which is this harness's own aim-every-frame), and `state` reports it twice: `camera.tracking` and
+  `selection.track`. `tools/harness/scripts/track.satcmd` is the worked example and `selftest.py`'s
+  `track_toggle` is the regression test — the drawn evidence comes straight out of a `ui dump`
+  (four `SelActBtn`, four `SelReticuleTick` only while locked).
 - **`observer agl=` reads the GPU's ground back** (`terrainFrameBuf.y` -> host-mapped
   `terrainFrameReadBuf`, copied every frame after the depth pass): the CPU's `cpuTerrainHeightM` is
   an 18 km/px DEM copy, and until 2026-09-25 `agl` used it — the Big Sur golden view (agl=30) stood
@@ -810,10 +816,22 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   panel that tracks the selected satellite carries its name, its type and the magnitude readout, then
   one row of **icon-only** action buttons, all drawn by the single helper `buildSelActionButton`
   (which is also what the out-of-view chip uses): **Info** (pixel--info.png — a serif italic "i")
-  opens the info window, **Go to** (pixel--eye.png) starts follow mode, and **Trace pass**
-  (pixel--trace.png) plots the pass. **Each button's tooltip is its NAME, never a sentence** — the
+  opens the info window, **Go to** (pixel--eye.png) starts follow mode, **Trace pass**
+  (pixel--trace.png) plots the pass, and **Track** (pixel--track.png, a sight reticle) locks the
+  CAMERA onto it and re-aims every frame as it crosses the sky. Track is aim-only and moves nothing
+  else: `updateTrack()` aims through `aimCameraAzEl` (so `obsFacing` stays the authority, and every
+  look input — mouse deltas, the cinematic drift, the gamepad stick — is zeroed for the frame rather
+  than left to fight it), while the observer stays where it is (WASD still walks) and the wheel's
+  `fovYDeg` zoom is untouched, so the player can pull back and watch. The reticule answers the lock by
+  tightening its corner brackets (radius 7 instead of 10) and adding four cardinal bars
+  (`SelReticuleTick`: length 7, width 2, gap 3). Released by `select none`, `select planet`, any
+  explicit aim (`camera az=`/`el=`, the harness's `camera look`/`camera track`, a scripted camera key)
+  and by `startFollow`; `observer lat=`/`lon=` never releases it (the aim re-solves from the new spot).
+  Unlike Info / Go to, Track needs no geometry model — any selected satellite can be tracked.
+  **Each button's tooltip is its NAME, never a sentence** — the
   same rule the info window's title-bar Select / Go to icons follow — and the `on` state is the accent
-  colour (the eye lights while following, the "i" while the info window is showing that satellite).
+  colour (the eye lights while following, the "i" while the info window is showing that satellite,
+  the reticle while tracking).
   `kSelIconBtnMin` = 24 px targets, the info window's title-bar icon size; a planet selection gets no
   button row, and the Info / Go to buttons need the type to have a geometry model. Only the satellite
   ACTIONS are icon-only — the info window's CAMERA / RENDER / OBSERVER / CHECK rows are still text
@@ -1149,7 +1167,8 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     derived from it (the sky shaders read `max(ground, obsHeightOffset)` as altitude, so it is set
     to the altitude above sea level), and `updatePositions()` uses `followRadiusM`. WASD/Q-E move
     the offset (speed ∝ distance); RMB look unlocks the aim lock. Settings persist the ground
-    observer, not the orbit.
+    observer, not the orbit. The panel's **Track** is the aim-only sibling: it leaves `followObsEcef`
+    alone (the observer keeps walking), and follow mode releases the lock instead of fighting it.
   - **Reflections in the scene** come from the environment probes above (4c part 2, 2026-09-24).
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, `iss.json` (the first parity model: 50 components; station

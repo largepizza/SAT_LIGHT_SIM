@@ -51,6 +51,10 @@ def write_png(path: Path, pixels: list[list[int]]) -> None:
            + chunk(b"IHDR", struct.pack(">IIBBBBB", SIZE, SIZE, 8, 6, 0, 0, 0))
            + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
            + chunk(b"IEND", b""))
+    # 2026-09-25: the bytes were built and then dropped on the floor — `main` only noticed because it
+    # stats the file afterwards, so running this script failed with FileNotFoundError instead of
+    # quietly writing nothing.
+    path.write_bytes(png)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,11 +172,27 @@ def build_studio():
     return shapes
 
 
+def build_track():
+    """Track: lock the camera onto the selected satellite and follow it across the sky.
+
+    A sight-reticle — centre ring with four gapped cardinal arms — not a crosshair: the gaps are what
+    keep the glyph distinct from pixel--crosshair.png (the Select icon) at button size, and the ring
+    is the thing being tracked."""
+    cx, cy = 24.0, 24.0
+    shapes = [ring(cx, cy, 3.0, 2.2)]
+    for ang in (0.0, 90.0, 180.0, 270.0):
+        a = math.radians(ang)
+        dx, dy = math.cos(a), math.sin(a)
+        shapes.append(seg(cx + dx * 11.5, cy + dy * 11.5, cx + dx * 20.5, cy + dy * 20.5, 2.2))
+    return shapes
+
+
 ICONS = {
     "maximize": build_maximize,
     "observer": build_observer,
     "spin": build_spin,
     "studio": build_studio,
+    "track": build_track,
 }
 
 

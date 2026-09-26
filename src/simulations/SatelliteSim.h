@@ -2047,6 +2047,25 @@ private:
     void buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx);
     void buildFollowHud(const UIInput &inp, UIRenderer &ui);
 
+    // ── Selection "Track" (the Track button in the selection panel / chip) ────────────────────────
+    // A CAMERA lock on the SELECTED satellite: updateTrack() re-aims from its live ENU direction every
+    // frame, so it stays centred as it crosses the sky, while the observer stays where it is (WASD
+    // still walks) and the wheel's FOV zoom still works — follow mode is the opposite bargain, it
+    // moves the observer to the satellite. buildUI swallows look input while the lock is on, since
+    // nothing may fight the aim; the `camera` command, a deselect, a planet selection, follow mode and
+    // the info window's Go to all release it. Tracking a satellite that has gone below the horizon
+    // keeps working on purpose (the aim just goes behind the Earth) instead of silently dropping.
+    bool trackActive = false;
+    bool hovSelTrackBtn = false;
+    void startTrack();
+    void stopTrack();
+    void updateTrack();
+    // Point the camera at an az/el in the observer's local ENU. obsFacing is the authority (buildUI
+    // derives camera.azDeg from it every frame), so this sets obsFacing and camera.azDeg/elDeg
+    // together; the harness's `camera az=`/`look`/`track` commands go through it as well.
+    void aimCameraAzEl(float azDeg, float elDeg);
+    void buildTrackButton(const UIInput &inp, UIRenderer &ui, int idx);
+
     // ── Orbit pipeline buffers ────────────────────────────────────────────────
     VkBuffer satOrbitBuf = VK_NULL_HANDLE; // device-local, uploaded once at init
     VkDeviceMemory satOrbitMem = VK_NULL_HANDLE;
@@ -3499,7 +3518,6 @@ private:
     void harnessInit();
     void harnessTick();
     harness::Status harnessExec(harness::Active &a);
-    void harnessSetLook(float azDeg, float elDeg);
     bool harnessLookDir(int track, int planet, glm::vec3 &enuDir); // false if unavailable
     nlohmann::json harnessStateJson();
     float cpuTerrainHeightM(float latDeg, float lonDeg) const;

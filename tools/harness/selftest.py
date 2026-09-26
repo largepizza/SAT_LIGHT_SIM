@@ -10,6 +10,7 @@ Run it after changing src/Harness.* or SatelliteSimHarness.cpp.
 """
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -211,6 +212,125 @@ ui dump settings
     assert result(res, "select const")["result"]["constellation"] == "Starlink Gen1"
     d = json.load(open(os.path.join(out, "captures", "settings.layout.json")))
     assert len(d["items"]) > 50 and any(i.get("text") == "Photometry" for i in d["items"])
+
+
+@test
+def track_toggle():
+    """The selection panel's Track lock: the camera re-aims, the observer and the zoom do not.
+
+    Everything is read back out of the run: `camera.tracking` / `selection.track` with the camera's
+    own aim beside the satellite's, the four SelActBtn action buttons and the four SelReticuleTick
+    bars in the `ui dump` layout, and the reticle crop's pixels (untracked vs locked).
+    """
+    out, res, summ = run("track", SCENE + """
+select const "Starlink Gen1"
+camera look sel
+wait 5
+ui dump untracked
+capture untracked_ret crop=750,400,100,100 ui=on
+state aim
+track on
+wait 3
+ui dump locked
+capture locked_ret crop=750,400,100,100 ui=on
+state locked
+time add 60
+wait 3
+state aged
+camera fov=20
+state zoomed
+track off
+state off
+time add 60
+wait 3
+state drifted
+track on
+camera az=120 el=10
+state camera_release
+select const "International Space Station"
+track on
+follow
+state follow_release
+track on
+select planet Jupiter
+state planet_release
+select const "Starlink Gen1"
+track on
+select none
+state none_release
+track on
+""", extra=("--timeout", "240"), expect_ok=False)
+
+    def dir_of(az, el):  # ENU unit vector, for angular separations that survive an az wrap
+        az, el = math.radians(az), math.radians(el)
+        return (math.cos(el) * math.sin(az), math.cos(el) * math.cos(az), math.sin(el))
+
+    def sep(u, v):
+        return math.degrees(math.acos(max(-1.0, min(1.0, sum(a * b for a, b in zip(u, v))))))
+
+    def state(name):
+        return result(res, "state " + name)["result"]
+
+    def aim_of(s, who):
+        return dir_of(s[who]["az_deg"], s[who]["el_deg"])
+
+    # The toggle reads back, and being locked means exactly on the satellite, not merely near it.
+    assert result(res, "track on")["result"]["track"] is True
+    lk = state("locked")
+    assert lk["camera"]["tracking"] and lk["selection"]["track"]
+    assert sep(aim_of(lk, "camera"), aim_of(lk, "selection")) < 0.01, lk
+    # 60 s of a LEO pass later the lock is still on it, and the camera has genuinely swung.
+    aged = state("aged")
+    assert aged["selection"]["above_earth"] and aged["camera"]["tracking"]
+    assert sep(aim_of(aged, "camera"), aim_of(aged, "selection")) < 0.01, aged
+    assert sep(aim_of(aged, "selection"), aim_of(lk, "selection")) > 5.0, (lk, aged)
+    # The wheel's zoom is not look input: `camera fov=` lands without releasing the lock.
+    z = state("zoomed")
+    assert z["camera"]["tracking"] and abs(z["camera"]["fov_y_deg"] - 20) < 0.01, z["camera"]
+    assert sep(aim_of(z, "camera"), aim_of(z, "selection")) < 0.01, z
+    # Off leaves the camera where the lock had it, and it stops re-aiming while the satellite moves on.
+    off, dr = state("off"), state("drifted")
+    assert not off["camera"]["tracking"] and not off["selection"]["track"]
+    assert sep(aim_of(off, "camera"), aim_of(z, "camera")) < 0.01, (off["camera"], z["camera"])
+    assert sep(aim_of(dr, "camera"), aim_of(off, "camera")) < 0.01, (off["camera"], dr["camera"])
+    assert sep(aim_of(dr, "selection"), aim_of(off, "selection")) > 5.0, (off, dr)
+    # An explicit aim outranks it (and re-snapping before it proves the lock aimed on its own).
+    cr = state("camera_release")
+    assert not cr["camera"]["tracking"] and not cr["selection"]["track"]
+    assert abs(cr["camera"]["az_deg"] - 120) < 0.01 and abs(cr["camera"]["el_deg"] - 10) < 0.01, cr["camera"]
+    # Follow moves the observer, `select planet` and `select none` take the target away: all release it.
+    fr = state("follow_release")
+    assert fr["observer"]["following"] and not fr["camera"]["tracking"] and not fr["selection"]["track"]
+    pr = state("planet_release")
+    assert pr["selection"].get("planet") == "Jupiter" and not pr["camera"]["tracking"], pr["selection"]
+    nr = state("none_release")
+    assert nr["selection"] == {} and not nr["camera"]["tracking"], nr["selection"]
+
+    # What is drawn: the button row has four buttons in both states (Info, Go to, Trace pass, Track),
+    # and the four cardinal lock-on bars exist only while tracked, around the satellite at screen centre.
+    def items(dump, want):
+        d = json.load(open(os.path.join(out, "captures", dump + ".layout.json")))
+        return d, [i for i in d["items"] if i.get("id") == want]
+
+    ud, buttons = items("untracked", "SelActBtn")
+    ld, locked_buttons = items("locked", "SelActBtn")
+    assert len(buttons) == len(locked_buttons) == 4, (buttons, locked_buttons)
+    assert len([i for i in ud["items"] if i.get("id") == "SelActIcon"]) == 4
+    assert len([i for i in ld["items"] if i.get("id") == "SelActIcon"]) == 4
+    assert not items("untracked", "SelReticuleTick")[1], "untracked frames have no lock-on bars"
+    ticks = items("locked", "SelReticuleTick")[1]
+    assert sorted((t["box"][2], t["box"][3]) for t in ticks) == [(2, 7), (2, 7), (7, 2), (7, 2)], ticks
+    for t in ticks:  # all inside the crop the two PNGs share, so the difference below is the reticle
+        x, y, w, h = t["box"]
+        assert 750 <= x and x + w <= 850 and 400 <= y and y + h <= 500, t
+    cap = os.path.join(out, "captures")
+    assert png_size(os.path.join(cap, "locked_ret.png")) == (100, 100)
+    assert png_pixels_crc(os.path.join(cap, "untracked_ret.png")) != png_pixels_crc(os.path.join(cap, "locked_ret.png"))
+
+    # Only the last command was meant to fail: `track on` with nothing selected.
+    bad = [r for r in res if not r["ok"]]
+    assert summ["status"] == "errors" and len(bad) == 1 and bad[0]["cmd"].startswith("track on"), bad
+    assert "select a satellite first" in bad[0]["error"], bad[0]
 
 
 @test

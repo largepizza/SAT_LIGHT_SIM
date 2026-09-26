@@ -4201,9 +4201,13 @@ void SatelliteSim::startFollow(int satIndex)
         followSavedEl = camera.elDeg;
         followSavedFov = camera.fovYDeg;
     }
+    // Follow mode moves the observer to the satellite; the Track lock only turns the camera. Two
+    // answers to the same question, so starting one releases the other.
+    stopTrack();
     followActive = true;
     followSatIndex = satIndex;
     followAimLock = true;
+
     // Start behind and a little above it, ~4 model radii out.
     const double r = std::max(1.0, (double)tm->boundsRadius);
     followOffset = glm::dvec3(-4.0 * r, 0.0, 1.5 * r);
@@ -4304,6 +4308,65 @@ void SatelliteSim::updateFollow(float dt)
         const glm::vec3 northEF = {-sL * cLn, -sL * sLn, cLH};
         camera.azDeg = glm::degrees(atan2f(glm::dot(obsFacing, eastEF), glm::dot(obsFacing, northEF)));
     }
+}
+
+// ─── Selection "Track" (the Track button in the selection panel / chip) ───────────────────────────
+// Point the camera at an azimuth/elevation in the observer's local ENU. obsFacing is the authority —
+// buildUI derives camera.azDeg from it every frame just below its look block — so both it and
+// camera.azDeg are set here, which is also what keeps the mouse-look math and WASD directions
+// coherent with what is on screen. (Same body the harness's own `camera az=`/`look`/`track` used
+// before this existed; it was `harnessSetLook`.)
+void SatelliteSim::aimCameraAzEl(float azDeg, float elDeg)
+{
+    const float sL = obsDir.z;
+    const float cLH = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);
+    const float inv = (cLH > 1e-7f) ? 1.0f / cLH : 0.0f;
+    const float cLn = cLH > 1e-7f ? obsDir.x * inv : 1.0f, sLn = cLH > 1e-7f ? obsDir.y * inv : 0.0f;
+    const glm::vec3 eastEF = {-sLn, cLn, 0.0f};
+    const glm::vec3 northEF = {-sL * cLn, -sL * sLn, cLH};
+    const float az = glm::radians(azDeg);
+    obsFacing = glm::normalize(cosf(az) * northEF + sinf(az) * eastEF);
+    camera.azDeg = azDeg;
+    camera.elDeg = glm::clamp(elDeg, -89.9f, 89.9f);
+}
+
+void SatelliteSim::startTrack()
+{
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+        return;
+    trackActive = true;
+    updateTrack(); // aim on the click's own frame, not the next one
+}
+
+void SatelliteSim::stopTrack()
+{
+    trackActive = false;
+}
+
+// Re-aim at the selection. Called at the top of buildUI, after harnessTick() (so this frame's commands
+// have already had their say) and before the look block, whose input is dropped while the lock is on —
+// the aim must be the last word on the camera's direction or the two fight frame by frame.
+void SatelliteSim::updateTrack()
+{
+    if (!trackActive)
+        return;
+    if (followActive || selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+    {
+        // Nothing to track: follow mode drives the camera itself, and a planet selection (or none) has
+        // no orbit to point at.
+        stopTrack();
+        return;
+    }
+    // The selection's live ENU direction, from this frame's sim time and observer. selSkyDirCpu is
+    // (east, north, up) — the same frame camera.azDeg/elDeg are expressed in.
+    updateSelectedSkyDir();
+    const glm::vec3 d = selSkyDirCpu;
+    if (glm::dot(d, d) < 1e-12f)
+        return; // no direction yet (nothing propagated) — leave the camera alone
+    aimCameraAzEl(glm::degrees(atan2f(d.x, d.y)), glm::degrees(asinf(glm::clamp(d.z, -1.0f, 1.0f))));
+    // Deliberately still aimed when the satellite is behind the Earth (el clamps at -89.9): the lock
+    // holds until the player releases it, and the selection panel's out-of-view chip — where the
+    // button that does that lives — is already on screen telling them it is out of view.
 }
 
 // ─── projectSkyDirToScreen ────────────────────────────────────────────────────

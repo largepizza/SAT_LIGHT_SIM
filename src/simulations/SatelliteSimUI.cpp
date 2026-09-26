@@ -40,6 +40,7 @@ static constexpr int kIconSpin = 12;      // pixel--spin.png — the free camera
 static constexpr int kIconObserver = 13;  // pixel--observer.png — the view from the ground observer
 static constexpr int kIconStudio = 14;    // pixel--studio.png — studio lighting (vs the live sky)
 static constexpr int kIconMaximize = 15;  // pixel--maximize.png — pop the 3D view out / restore
+static constexpr int kIconTrack = 16;     // pixel--track.png — "Track": lock the camera onto the satellite
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
 // are ICON-ONLY: the button's name is the tooltip, never a sentence. `kSelIconBtnMin` matches the view
@@ -451,6 +452,11 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     harnessUi_ = &ui;
     harnessTick();
 
+    // Track (the selection panel's toggle) re-aims at the selection here, before the look block below:
+    // it reads obsFacing/obsDir, and that block is where this frame's look input is dropped while the
+    // lock is on, so the aim ends up being the last word on the camera's direction.
+    updateTrack();
+
     // Apply camera mouse look.
     // Yaw  (dmx): rotate obsFacing around obsDir via Rodrigues — no ENU frame, no pole issue.
     // Pitch (dmy): handled by camera.update → camera.elDeg as usual.
@@ -468,6 +474,14 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // can safely run alongside the (by then static) cinematic hold.
     if (win && (!showIntro || introCaptionIndex >= kIntroControlsIndex))
     {
+        // Track lock: the aim above owns the camera's direction this frame, so every look input —
+        // mouse deltas, their cinematic-drift velocities, the gamepad stick — is dropped rather than
+        // allowed to overwrite it and fight it frame by frame. Zoom is not look input: the wheel's FOV
+        // (camera.zoomBy, below) is untouched, as is RMB's capture/release, so the player can still
+        // pull back to watch the satellite cross the sky.
+        if (trackActive)
+            dmx = dmy = gpLookYawDeg = gpLookPitchDeg = cinematicYawVel = cinematicPitchVel = 0.0f;
+
         // Optional per-axis look inversion (Settings > Controls). Mutate the frame's accumulated
         // deltas once, up front, so every consumer below (cinematic drift + direct control) sees
         // the inverted value; dmx/dmy are zeroed at the end of this block regardless.
@@ -607,6 +621,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             "assets/icons/ui/pixel--observer.png",
             "assets/icons/ui/pixel--studio.png",
             "assets/icons/ui/pixel--maximize.png",
+            "assets/icons/ui/pixel--track.png",
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -1196,6 +1211,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                 buildInfoButton(inp, ui, 0);
                 buildFollowButton(inp, ui, 0);
                 buildTraceButton(inp, ui, 0);
+                buildTrackButton(inp, ui, 0);
             }
         }
         captureLaidOut(ui, CLAY_ID("SelSatChip"), kMargin, kMargin, 360.0f, 34.0f);
@@ -1206,9 +1222,14 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     // Purely decorative (no capture rect) — Clay's default per-floating-element pointer capture
     // doesn't feed our own manual mouseOverUI() hit-testing (see CLAUDE.md's Manual Hit-Testing
     // note), so this can't accidentally swallow clicks meant for scene interaction.
+    //
+    // While the Track lock is on, the brackets close in and four cardinal ticks are added below: the
+    // satellite is pinned to the middle of the view then, so the mark reads as a lock-on sight rather
+    // than a selection box that could be anywhere on screen. Same amber either way.
+    const bool tracked = trackActive;
     const float kBoxSize = 6.0f;
     const float kBorderW = 2.0f;
-    const float kRadius = 10.0f;
+    const float kRadius = tracked ? 7.0f : 10.0f;
     struct ReticuleCorner
     {
         float ox, oy; // top-left offset of this corner's box, relative to (sx, sy)
@@ -1226,6 +1247,34 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
         CLAY(CLAY_IDI("SelReticuleCorner", i), {.layout = {.sizing = {CLAY_SIZING_FIXED(kBoxSize), CLAY_SIZING_FIXED(kBoxSize)}},
                                                 .floating = {.offset = {sx + c.ox, sy + c.oy}, .zIndex = 4, .attachTo = CLAY_ATTACH_TO_ROOT},
                                                 .border = {.color = Pal::reticule, .width = c.border}}) {}
+    }
+
+    if (tracked)
+    {
+        // The lock-on part of the mark: four fixed-size bars on the cardinal axes, outside the
+        // brackets' radius (7 px) with a 3 px gap left at the centre, so the satellite's own pixels —
+        // which is what the player is watching — stay readable.
+        const float kTickLen = 7.0f, kTickW = 2.0f, kTickGap = 3.0f;
+        struct ReticuleTick
+        {
+            float ox, oy; // top-left offset of this bar, relative to (sx, sy)
+        };
+        const ReticuleTick ticks[4] = {
+            {-kTickW * 0.5f, -kTickGap - kTickLen}, // top
+            {-kTickW * 0.5f, kTickGap},             // bottom
+            {-kTickGap - kTickLen, -kTickW * 0.5f}, // left
+            {kTickGap, -kTickW * 0.5f},             // right
+        };
+        for (int i = 0; i < 4; ++i)
+        {
+            const bool vertical = i < 2;
+            CLAY(CLAY_IDI("SelReticuleTick", i),
+                 {.layout = {.sizing = {CLAY_SIZING_FIXED(vertical ? kTickW : kTickLen),
+                                        CLAY_SIZING_FIXED(vertical ? kTickLen : kTickW)}},
+                  .backgroundColor = Pal::reticule,
+                  .floating = {.offset = {sx + ticks[i].ox, sy + ticks[i].oy}, .zIndex = 4,
+                               .attachTo = CLAY_ATTACH_TO_ROOT}}) {}
+        }
     }
 
     const float kOffsetX = 18.0f, kOffsetY = -8.0f; // nudge off the point itself
@@ -1278,6 +1327,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                 buildInfoButton(inp, ui, 1);
                 buildFollowButton(inp, ui, 1);
                 buildTraceButton(inp, ui, 1);
+                buildTrackButton(inp, ui, 1);
             }
         }
     }
@@ -2342,6 +2392,26 @@ void SatelliteSim::buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx)
         return;
     if (buildSelActionButton(inp, ui, idx * 4 + 2, "Trace pass", kIconTrace, false, hovSelTraceBtn))
         computeSelectedTrace();
+}
+
+// ─── buildTrackButton ────────────────────────────────────────────────────────
+// "Track" (pixel--track.png, a sight reticle) beside "Trace pass" for the selected satellite: lock the
+// CAMERA onto it and keep it centred as it crosses the sky — the observer stays where it is (unlike
+// Go to, which moves it) and the wheel still zooms. A toggle: the button stays lit while the lock is
+// on, and clicking it again looks away. Any satellite works (no geometry model needed) — what is
+// tracked is the satellite itself, and the reticle + the out-of-view chip say where it is. The lock is
+// released by the `camera` command, by deselecting, by selecting a planet and by follow mode.
+void SatelliteSim::buildTrackButton(const UIInput &inp, UIRenderer &ui, int idx)
+{
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+        return;
+    if (buildSelActionButton(inp, ui, idx * 4 + 3, "Track", kIconTrack, trackActive, hovSelTrackBtn))
+    {
+        if (trackActive)
+            stopTrack();
+        else
+            startTrack();
+    }
 }
 
 // ─── buildResizableWindow ───────────────────────────────────────────────────

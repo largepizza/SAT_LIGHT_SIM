@@ -189,7 +189,7 @@ const char *kHelp =
     "wait <frames> | wait seconds <s> | wait settle [frames]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
     "observer lat= lon= [agl=|alt=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
-    "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; "
+    "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; "
     "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
@@ -241,7 +241,7 @@ void SatelliteSim::harnessTick()
     {
         glm::vec3 d;
         if (harnessLookDir(harnessTrack_, harnessTrackPlanet_, d))
-            harnessSetLook(azDegOf(d), elDegOf(d));
+            aimCameraAzEl(azDegOf(d), elDegOf(d));
     }
     harnessRunner_->tick([this](harness::Active &a) { return harnessExec(a); });
     const bool done = harnessRunner_->quitRequested() ||
@@ -253,21 +253,9 @@ void SatelliteSim::harnessTick()
     }
 }
 
-// Aim the camera: obsFacing is the authority (buildUI derives camera.azDeg from it every frame), so
-// set both.
-void SatelliteSim::harnessSetLook(float azDeg, float elDeg)
-{
-    const float sL = obsDir.z;
-    const float cLH = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);
-    const float inv = (cLH > 1e-7f) ? 1.0f / cLH : 0.0f;
-    const float cLn = cLH > 1e-7f ? obsDir.x * inv : 1.0f, sLn = cLH > 1e-7f ? obsDir.y * inv : 0.0f;
-    const glm::vec3 eastEF = {-sLn, cLn, 0.0f};
-    const glm::vec3 northEF = {-sL * cLn, -sL * sLn, cLH};
-    const float az = glm::radians(azDeg);
-    obsFacing = glm::normalize(cosf(az) * northEF + sinf(az) * eastEF);
-    camera.azDeg = azDeg;
-    camera.elDeg = glm::clamp(elDeg, -89.9f, 89.9f);
-}
+// Aiming the camera from the harness goes through SatelliteSim::aimCameraAzEl() (it is shared with the
+// selection panel's Track lock, so it lives next to updateTrack() in SatelliteSim.cpp): obsFacing is
+// the authority, and buildUI derives camera.azDeg from it every frame, so both are set there.
 
 bool SatelliteSim::harnessLookDir(int track, int planet, glm::vec3 &d)
 {
@@ -360,13 +348,14 @@ void SatelliteSim::harnessApplyCam(const HarnessCamKey &k)
 {
     if (followActive)
         stopFollow();
+    stopTrack(); // a scripted camera key is an explicit aim, so it releases the selection's Track lock
     const float lat = (float)glm::clamp(k.lat, -89.999, 89.999), lon = (float)k.lon;
     const float la = glm::radians(lat), lo = glm::radians(lon);
     obsDir = {cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)};
     obsLatDeg = lat;
     obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
     obsHeightOffset = (float)std::max(0.0, k.alt);
-    harnessSetLook((float)k.az, (float)k.el);
+    aimCameraAzEl((float)k.az, (float)k.el);
     camera.fovYDeg = glm::clamp((float)k.fov, SkyCamera::kMinFovDeg, SkyCamera::kMaxFovDeg);
     if (k.hasSim)
     {
@@ -405,7 +394,8 @@ json SatelliteSim::harnessStateJson()
     if (followActive)
         j["observer"]["follow"] = {{"sat", followSatIndex},
                                    {"offset_m", {followOffset.x, followOffset.y, followOffset.z}}};
-    j["camera"] = {{"az_deg", camera.azDeg}, {"el_deg", camera.elDeg}, {"fov_y_deg", camera.fovYDeg}};
+    j["camera"] = {{"az_deg", camera.azDeg}, {"el_deg", camera.elDeg}, {"fov_y_deg", camera.fovYDeg},
+                   {"tracking", trackActive}};
     const glm::vec3 sun(sunDirENU), moon(moonDirENU);
     j["sun"] = {{"az_deg", azDegOf(sun)}, {"el_deg", elDegOf(sun)}};
     j["moon"] = {{"az_deg", azDegOf(moon)}, {"el_deg", elDegOf(moon)}, {"illum", moonDirENU.w}};
@@ -446,6 +436,7 @@ json SatelliteSim::harnessStateJson()
         sel["az_deg"] = azDegOf(selSkyDirCpu);
         sel["el_deg"] = elDegOf(selSkyDirCpu);
         sel["above_earth"] = selAboveEarth;
+        sel["track"] = trackActive; // the camera lock below `camera.tracking`, on the satellite it follows
     }
     if (selectedPlanetIndex >= 0)
         sel["planet"] = kPlanetNames[selectedPlanetIndex];
@@ -712,7 +703,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             obsDir = {cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)};
             obsLatDeg = lat;
             obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
-            harnessSetLook(camera.azDeg, camera.elDeg); // keep the view direction in the new local frame
+            aimCameraAzEl(camera.azDeg, camera.elDeg); // keep the view direction in the new local frame
             trailClearPending = true;
         }
         // obsHeightOffset is read by the sky shaders as an altitude ABOVE SEA LEVEL floored at the
@@ -780,16 +771,18 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             if (track != 0 && !harnessLookDir(track, planet, d))
                 fail("camera " + sub + ": nothing selected");
             if (track != 0)
-                harnessSetLook(azDegOf(d), elDegOf(d));
+                aimCameraAzEl(azDegOf(d), elDegOf(d));
             harnessTrack_ = sub == "track" ? track : 0;
             harnessTrackPlanet_ = planet;
+            stopTrack(); // the player's Track lock and this explicit aim would fight for the camera
         }
         else if (!sub.empty())
             fail("camera: unknown subcommand '" + sub + "' (look, track, or az= el= fov=)");
         if (c.has("az") || c.has("el"))
         {
             harnessTrack_ = 0;
-            harnessSetLook((float)c.num("az", camera.azDeg), (float)c.num("el", camera.elDeg));
+            stopTrack(); // an explicit aim outranks the Track lock (and would be overwritten by it)
+            aimCameraAzEl((float)c.num("az", camera.azDeg), (float)c.num("el", camera.elDeg));
         }
         if (c.has("fov"))
             camera.fovYDeg = glm::clamp((float)c.num("fov", camera.fovYDeg), SkyCamera::kMinFovDeg, SkyCamera::kMaxFovDeg);
@@ -855,6 +848,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         }
         else
             fail("select: sat <i> | const <name> [n=<k>] | planet <name> | none");
+        if (selectedSatIndex < 0)
+            stopTrack(); // deselected, or switched to a planet: there is no orbit left to lock onto
         r = harnessStateJson()["selection"];
         std::string msg = "selected";
         if (r.contains("constellation"))
@@ -893,6 +888,40 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["sat"] = followSatIndex;
         r["offset_m"] = {followOffset.x, followOffset.y, followOffset.z};
         r["message"] = followLabel;
+        return Status::Done;
+    }
+    // ── track (the selection panel's Track button) ────────────────────────────────────────────────
+    // `track on|off` is the PLAYER's camera lock (startTrack/stopTrack/updateTrack): the observer stays
+    // put and only the aim follows the selected satellite, so the wheel still zooms. Not to be confused
+    // with `camera track <target>`, which is this harness's own aim-every-frame. No argument = toggle.
+    // Needs a satellite selection; `select none`, `select planet`, `camera az=|el=|look|track`, `follow`
+    // and any scripted camera key all release it.
+    if (n == "track")
+    {
+        const std::string arg = lower(pos(0));
+        bool want = trackActive;
+        if (arg == "on" || arg == "true" || arg == "1")
+            want = true;
+        else if (arg == "off" || arg == "false" || arg == "0")
+            want = false;
+        else if (!arg.empty())
+            fail("track: on|off");
+        if (want)
+        {
+            if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+                fail("track: select a satellite first (`select sat <i>` or `select const <name>`)");
+            startTrack();
+        }
+        else
+            stopTrack();
+        // The camera's own aim beside the satellite's (selection.az_deg/el_deg): while tracking they
+        // converge, which is exactly what a test asserts.
+        r["track"] = trackActive;
+        r["sat"] = selectedSatIndex;
+        r["camera_az_deg"] = camera.azDeg;
+        r["camera_el_deg"] = camera.elDeg;
+        r["selection"] = harnessStateJson()["selection"];
+        r["message"] = trackActive ? "track on" : "track off";
         return Status::Done;
     }
     if (n == "const")
