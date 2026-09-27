@@ -12,9 +12,9 @@ observer lat=38.5 lon=-98.5 agl=2; time sun -20; wait settle
 audio expect wind_ground,crickets absent=beach_waves,sea_open,wind_alpine,birds_forest; audio record tour_03_plains_night seconds=10
 observer lat=35.38 lon=-120.07 agl=2; time sun -20; wait settle
 # Topaz Solar Farm, inside a lit Reflect spot. The crickets are gone (the light silences them) and
-# the beam swell is up: its GAIN is the table's 0.15 wherever there is light (only the camera
-# heading moves its loudness), which ambience_beams.satcmd checks.
-audio expect wind_ground,beam_swell absent=crickets; audio state tour_beam_site
+# the beam-site hum is up (~180 converged beams here). The glare pad depends on where the camera
+# looks (the flares on screen), which ambience_beams.satcmd checks.
+audio expect wind_ground,beam_site_hum absent=crickets; audio state tour_beam_site
 observer lat=50 lon=10 agl=2; time sun noon; wait settle
 audio expect birds_forest absent=crickets,jungle_day; audio record tour_03b_forest_day seconds=10
 observer lat=50 lon=10 agl=2; time sun -3 rising; wait settle

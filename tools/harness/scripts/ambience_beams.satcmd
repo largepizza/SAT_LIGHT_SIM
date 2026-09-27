@@ -1,28 +1,36 @@
-# Beam swell: the Reflect Orbital light heard as warmth (docs/HARNESS.md, "Ambient sound").
-# The stop is the tour's own beam site (Topaz Solar Farm, inside a lit Reflect spot), because the
-# driver `beam_view` only exists under beam light - it is the light AIMED where the camera is
-# looking, weighted by intensity, so ~1.8e6 is one strong beam in view and 0 is no light at all.
-# The azimuth sweep is therefore the direction-sensitivity check (read the numbers back with
-# `audio state`), and the two recordings are the same voice aimed at the beams and aimed away.
+# Beam sound (docs/HARNESS.md, "Ambient sound"), at the tour's beam site (Topaz Solar Farm, inside lit
+# Reflect spots) at night, facing the Reflect ring (hundreds of mirrors glaring).
+#   While a track plays   the glare raises the track's UPWELL stem (audio music state: upwell_gain);
+#                         the beam layers (beam_glare pad, beam_site_hum) stay silent (music_gap 0)
+#   Between tracks        the beam layers follow music_gap: 0 at the gap's start, 1 halfway, 0 at its end
+# Drivers: glare_n / glare_sum (flares glaring ON SCREEN — they follow the camera), beam_site
+# (converged beams near you — they do not). Read the numbers before believing a recording.
 #
 #   tools/harness/.venv/Scripts/python tools/harness/imgtools.py audio <run>/captures/beams_*.wav -o beams.png
 
+audio tonality wait
 observer lat=35.38 lon=-120.07 agl=2; time sun -20; wait settle
+select const "Reflect Orbital"; camera look sel; camera fov=90
 
-# Where are the beams? el=15 so the sweep catches a beam's ray (its satellite) as well as the spot
-# it lights on the ground.
-camera az=0 el=15; wait settle 8; audio state beams_az000
-camera az=45 el=15; wait settle 8; audio state beams_az045
-camera az=90 el=15; wait settle 8; audio state beams_az090
-camera az=135 el=15; wait settle 8; audio state beams_az135
-camera az=225 el=15; wait settle 8; audio state beams_az225
-camera az=270 el=15; wait settle 8; audio state beams_az270
-camera az=315 el=15; wait settle 8; audio state beams_az315
+# Music playing: upwell up, beam layers absent.
+wait settle 20; audio music state; audio state beams_music
+audio expect wind_ground absent=beam_glare,beam_site_hum
+audio record beams_music_upwell bus=music seconds=12
+audio record beams_music_mix bus=all seconds=12
 
-# Away from them (measured weakest of the sweep): a thin, high voice.
-camera az=180 el=15; wait settle
-audio expect beam_swell absent=crickets; audio record beams_weak seconds=12; audio state beams_weak
+# Looking away from the ring: the glare, and with it the upwell, falls (fade_out_s 6).
+camera az=90 el=50 fov=90; wait settle 20; audio music state; audio state beams_away
 
-# On them: the same voice with the stack under it.
-camera az=270 el=15; wait settle
-audio expect beam_swell,wind_ground; audio record beams_swell seconds=12; audio state beams_best
+# The gap: the beam layers ride the triangle.
+select const "Reflect Orbital"; camera look sel; camera fov=90
+set audio.music_gap_s 20
+audio music end
+wait settle 4; audio state gap_early
+wait settle 16; audio state gap_mid
+audio expect beam_glare,beam_site_hum
+audio record beams_gap_mid bus=ambience seconds=10
+audio record beams_gap_glare solo=beam_glare seconds=10
+audio record beams_gap_site solo=beam_site_hum seconds=10
+wait settle 16; audio state gap_late
+wait settle 12; audio music state; audio state next_track
+select none

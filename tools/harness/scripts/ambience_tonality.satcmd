@@ -1,0 +1,14 @@
+# The ambience's key (docs/HARNESS.md, "Ambient sound"): the soundtrack analysis, the root following
+# the playing track, and the glide to the next track's tonic through the gap between them.
+# Offline a track never ends by itself, so `audio music end` ends it; the gap then counts down at
+# the harness's frame time (wait settle: 0.5 s per frame).
+audio tonality wait
+audio music state
+audio tonality
+set audio.music_gap_s 20
+audio music end
+wait settle 4; audio tonality gap_early
+wait settle 16; audio tonality gap_mid
+wait settle 12; audio tonality gap_late
+wait settle 12; audio music state
+wait settle 8; audio tonality next_track

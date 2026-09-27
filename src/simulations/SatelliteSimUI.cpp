@@ -2955,6 +2955,9 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
         if (audio_->gapRemaining() > 0.0f)
             snprintf(trackLine, sizeof(trackLine), "%sNext: %s in %d s", audio_->musicPaused() ? "(paused) " : "",
                      next.c_str(), (int)ceilf(audio_->gapRemaining()));
+        else if (audio_->trackHasUpwell() && audio_->upwellGain() > 0.005f)
+            snprintf(trackLine, sizeof(trackLine), "%s%s  %s / %s  +upwell %d%%", audio_->musicPaused() ? "(paused) " : "",
+                     name.c_str(), pos, len, (int)lroundf(audio_->upwellGain() * 100.0f));
         else
             snprintf(trackLine, sizeof(trackLine), "%s%s  %s / %s", audio_->musicPaused() ? "(paused) " : "",
                      name.c_str(), pos, len);
@@ -3017,6 +3020,14 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
         Clay_String npStr{false, (int32_t)strlen(nowPlaying), nowPlaying};
         CLAY_TEXT(npStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(11)}));
     }
+    // The key the ambience is in (the playing track's, from its analysis — updateTonality).
+    static char keyLine[224];
+    snprintf(keyLine, sizeof(keyLine), "%s", tonalityLine().c_str());
+    CLAY(CLAY_ID("AmbKeyLine"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}, .padding = {4, 4, 2, 2}}})
+    {
+        Clay_String kStr{false, (int32_t)strlen(keyLine), keyLine};
+        CLAY_TEXT(kStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(11)}));
+    }
 
     // ── Advanced: the mix ────────────────────────────────────────────────────
     if (!showAdvancedSettings)
@@ -3025,8 +3036,37 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
     {
         CLAY_TEXT(CLAY_STRING("AMBIENCE MIX"), CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12)}));
     }
+    // The key: from the music (the playing track's tonic, gliding between tracks) or the slider below.
+    CLAY(CLAY_ID("RootFollowRow"), {.layout = {
+                                        .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                        .padding = {4, 4, 4, 4},
+                                        .childGap = 8,
+                                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Key follows the music"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+        CLAY(CLAY_ID("RootFollowSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+        Clay_Color chkBg = ambRootFollowMusic ? Pal::btnAccent : (hovRootFollowMusic ? Pal::btnHover : Pal::btnIdle);
+        CLAY(CLAY_ID("RootFollowChk"), {.layout = {
+                                            .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                        .backgroundColor = chkBg,
+                                        .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovRootFollowMusic);
+            sndClick(n, inp.lmbPressed);
+            hovRootFollowMusic = n;
+            if (n && inp.lmbPressed)
+                ambRootFollowMusic = !ambRootFollowMusic;
+            ui.tooltip(inp, n, "Off: the Tonal root slider sets the key", fs(11));
+            CLAY_TEXT(ambRootFollowMusic ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+        }
+    }
     // Slot idx 99..109 (see buildCloudSliderRows' arrays). Fades are multipliers on each layer's own
-    // fade times; the root is the key every pitched voice (drones, whines, status tones) shares.
+    // fade times; the root is the key every pitched voice (drones, whines, status tones) shares —
+    // the slider's value is used only while the key does not follow the music.
     CloudSlider amb[] = {
         {"Music gap (s)", &musicGapS, 0.0f, 120.0f, 5.0f, "%.0f", 99},
         {"Fade in x", &ambFadeInScale, 0.1f, 4.0f, 0.1f, "%.1f", 100},
@@ -4916,15 +4956,15 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
         }
     }
 
-    // ── Beam swell driver (ambience layer beam_swell) ────────────────
-    // How much beam light is aimed where the CAMERA is looking: the raw per-frame sum (about 1.8e6
-    // per strong beam looked at, 0 with no beam light), the value the layer actually gets (eased over
-    // 0.4 s) and the number of beams contributing to it. Pan off the beams and both numbers fall; if
-    // they don't, it's the frontal ramp or the horizon gate, not the audio.
+    // ── Beam sound drivers (ambience layers beam_glare, beam_site_hum) ────
+    // The glare pad's input — flares glaring ON SCREEN: their effective count (glare_n) and combined
+    // strength past the glare threshold (glare_sum), eased, with the number of glaring sources in
+    // view — and the site hum's (beam_site: converged beams on sites near the camera). Pan a glaring
+    // mirror out of frame and the first two fall; fly away from the sites and the last one does.
     {
-        static char swellBuf[64];
-        snprintf(swellBuf, sizeof(swellBuf), "%.2fe6 -> %.2fe6 / %d beams", ambBeamViewRaw * 1e-6f,
-                 ambBeamView * 1e-6f, ambBeamViewCount);
+        static char swellBuf[96];
+        snprintf(swellBuf, sizeof(swellBuf), "glare %.1f / %.1f (%d)  site %.1f", ambGlareN, ambGlareSum, ambGlareCount,
+                 std::max(ambBeamSite, 0.0f));
         CLAY(CLAY_ID("BeamSwellDiagRow"), {.layout = {
                                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
                                                .padding = {4, 4, 2, 2},
@@ -4932,7 +4972,7 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
                                                .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            CLAY_TEXT(CLAY_STRING("Beam swell (in view)"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            CLAY_TEXT(CLAY_STRING("Beam sound"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
             CLAY(CLAY_ID("BeamSwellDiagSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
             Clay_String swellStr{false, (int32_t)strlen(swellBuf), swellBuf};
             CLAY_TEXT(swellStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
@@ -6005,6 +6045,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         ambFadeInScale = a.value("ambience_fade_in_scale", ambFadeInScale);
         ambFadeOutScale = a.value("ambience_fade_out_scale", ambFadeOutScale);
         ambRootHz = a.value("ambience_root_hz", ambRootHz);
+        ambRootFollowMusic = a.value("ambience_root_follow_music", ambRootFollowMusic);
         if (a.contains("ambience_groups") && a["ambience_groups"].is_object())
             for (size_t g = 0; g < Ambience::groupNames().size() && g < 6; ++g)
                 ambGroupGain[g] = a["ambience_groups"].value(Ambience::groupNames()[g], ambGroupGain[g]);
@@ -6352,7 +6393,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"music_gap_s", musicGapS},
         {"ambience_fade_in_scale", ambFadeInScale},
         {"ambience_fade_out_scale", ambFadeOutScale},
-        {"ambience_root_hz", ambRootHz}};
+        {"ambience_root_hz", ambRootHz},
+        {"ambience_root_follow_music", ambRootFollowMusic}};
     {
         nlohmann::json g = nlohmann::json::object();
         for (size_t k = 0; k < Ambience::groupNames().size() && k < 6; ++k)

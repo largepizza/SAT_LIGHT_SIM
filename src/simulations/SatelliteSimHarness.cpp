@@ -12,6 +12,7 @@
 #include "../AudioSystem.h"
 #include "../Harness.h"
 #include "../Log.h"
+#include "../MusicAnalysis.h"
 #include "version.h"
 
 #include <nlohmann/json.hpp>
@@ -95,9 +96,9 @@ double j2000FromIso(const std::string &iso)
 
 std::string isoFromJ2000(double t)
 {
-    const double unix = t + (double)kJ2000Unix;
-    int64_t days = (int64_t)std::floor(unix / 86400.0);
-    double sod = unix - (double)days * 86400.0;
+    const double unixS = t + (double)kJ2000Unix;
+    int64_t days = (int64_t)std::floor(unixS / 86400.0);
+    double sod = unixS - (double)days * 86400.0;
     int64_t y;
     unsigned m, d;
     civilFromDays(days, y, m, d);
@@ -195,7 +196,7 @@ const char *kHelp =
     "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
-    "audio force <layer> <gain|off> | audio music [next|prev|pause|play]; log <text>; quit";
+    "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
 } // namespace
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────────────────────────
@@ -466,6 +467,7 @@ json SatelliteSim::harnessStateJson()
     if (ambience_ && ambience_->loaded())
     {
         j["ambience"] = ambience_->stateJson();
+        j["ambience"]["tonality"] = tonalityJson();
         if (audio_)
         {
             j["ambience"]["volumes"] = {{"master", audio_->getMasterVolume()},
@@ -1717,6 +1719,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (sub.empty() || sub == "state")
         {
             r = ambience_->stateJson();
+            r["tonality"] = tonalityJson();
             if (!pos(1).empty())
             {
                 const std::string path = harnessRunner_->capturePath(safeName(pos(1)), ".audio.json");
@@ -1807,18 +1810,38 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 audio_->setMusicPaused(true);
             else if (op == "play")
                 audio_->setMusicPaused(false);
+            else if (op == "end")
+                audio_->endTrack(); // offline a track never ends by itself: this reaches the gap
             else if (!op.empty() && op != "state")
             {
-                a.error = "audio music [next|prev|pause|play|state]";
+                a.error = "audio music [next|prev|pause|play|end|state]";
                 return Status::Error;
             }
             r = {{"track", audio_->trackIndex()},       {"name", audio_->trackName(audio_->trackIndex())},
                  {"tracks", audio_->trackCount()},      {"paused", audio_->musicPaused()},
                  {"gap_remaining_s", audio_->gapRemaining()}, {"gap_s", audio_->musicGap()},
-                 {"altitude_fade", audio_->musicFade()}};
+                 {"altitude_fade", audio_->musicFade()}, {"has_upwell", audio_->trackHasUpwell()},
+                 {"upwell_gain", audio_->upwellGain()}};
             r["message"] = audio_->trackName(audio_->trackIndex()) + (audio_->musicPaused() ? " (paused)" : "") +
                            " - track " + std::to_string(audio_->trackIndex() + 1) + "/" +
                            std::to_string(audio_->trackCount());
+            return Status::Done;
+        }
+        // `audio tonality [wait]`: the key the ambience is in (the playing track's, from its analysis)
+        // — root, source, key, chord, scale. `wait` holds the script until every track is analysed.
+        if (sub == "tonality")
+        {
+            if (lower(pos(1)) == "wait" && musicLib_ && musicLib_->pending() > 0)
+            {
+                if (harness::nowS() - a.startWall > 60.0)
+                {
+                    a.error = "music analysis still pending after 60 s";
+                    return Status::Error;
+                }
+                return Status::Pending;
+            }
+            r = tonalityJson();
+            r["message"] = tonalityLine();
             return Status::Done;
         }
         if (sub == "force")
@@ -1909,7 +1932,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             return Status::Done;
         }
         a.error = "audio [state [name]] | record <name> [seconds=] [bus=] [solo=] | expect <layers> [absent=<layers>] "
-                  "[min=] | force <layer> <gain|off> | force off";
+                  "[min=] | force <layer> <gain|off> | force off | music [...] | tonality [wait]";
         return Status::Error;
     }
 

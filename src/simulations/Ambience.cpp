@@ -56,6 +56,65 @@ int Ambience::layerIndex(const std::string &id) const
     return -1;
 }
 
+float Ambience::Mod::eval(float x) const
+{
+    if (x <= in.front())
+        return out.front();
+    for (size_t k = 1; k < in.size(); ++k)
+        if (x < in[k])
+        {
+            const float span = in[k] - in[k - 1];
+            const float t = span > 0.0f ? (x - in[k - 1]) / span : 1.0f;
+            return out[k - 1] + (out[k] - out[k - 1]) * t;
+        }
+    return out.back();
+}
+
+// {"driver", "in": [...], "out": [...]}: piecewise linear, "in" monotonic (a falling list is reversed),
+// the same length as "out", 2 or more points. More than two points shape a driver whose range spans
+// orders of magnitude (glare_n: one flare to hundreds) without a separate curve option.
+bool Ambience::parseMod(const json &mj, Mod &m, std::string &err) const
+{
+    if (!mj.is_object() || !mj.contains("driver") || !mj.contains("in") || !mj.contains("out"))
+    {
+        err = "needs \"driver\", \"in\" and \"out\"";
+        return false;
+    }
+    m.driver = driverIndex(mj["driver"].get<std::string>());
+    if (m.driver < 0)
+    {
+        err = "unknown driver '" + mj["driver"].get<std::string>() + "'";
+        return false;
+    }
+    m.in = mj["in"].get<std::vector<float>>();
+    m.out = mj["out"].get<std::vector<float>>();
+    if (m.in.size() < 2 || m.in.size() != m.out.size())
+    {
+        err = "\"in\" and \"out\" need the same number of points (2 or more)";
+        return false;
+    }
+    if (m.in.front() > m.in.back())
+    {
+        std::reverse(m.in.begin(), m.in.end());
+        std::reverse(m.out.begin(), m.out.end());
+    }
+    for (size_t k = 1; k < m.in.size(); ++k)
+        if (m.in[k] < m.in[k - 1])
+        {
+            err = "\"in\" must be monotonic";
+            return false;
+        }
+    return true;
+}
+
+bool Ambience::upwellTarget(float &gain) const
+{
+    if (!loaded_ || !hasUpwell_)
+        return false;
+    gain = std::clamp(upwellMod_.eval(values_[upwellMod_.driver]), 0.0f, 1.0f);
+    return true;
+}
+
 float Ambience::rampValue(const Ramp &r, float x)
 {
     auto s = [x](float a, float b) { return a == b ? (x >= a ? 1.0f : 0.0f) : smooth01((x - a) / (b - a)); };
@@ -132,6 +191,50 @@ bool Ambience::load(const std::string &path, std::string &err)
             }
         }
 
+        tonalityCfg_ = TonalityConfig{};
+        if (j.contains("tonality"))
+        {
+            const json &t = j["tonality"];
+            // Interval lists (semitones above the root) -> relative masks.
+            auto mask = [](const json &list)
+            {
+                uint16_t m = 0;
+                for (const json &v : list)
+                    m |= (uint16_t)(1u << (((v.get<int>() % 12) + 12) % 12));
+                return m;
+            };
+            if (t.contains("fallback_scale"))
+                tonalityCfg_.fallbackScale = (uint16_t)(mask(t["fallback_scale"]) | 1u);
+            if (t.contains("tension"))
+                tonalityCfg_.tension = mask(t["tension"]);
+            if (t.contains("root_range_hz"))
+            {
+                tonalityCfg_.rootLowHz = t["root_range_hz"].at(0).get<float>();
+                tonalityCfg_.rootHighHz = t["root_range_hz"].at(1).get<float>();
+                if (!(tonalityCfg_.rootHighHz >= 2.0f * tonalityCfg_.rootLowHz))
+                    throw std::runtime_error("tonality: root_range_hz must span at least an octave");
+            }
+            if (t.contains("gap_glide"))
+            {
+                tonalityCfg_.gapGlide[0] = t["gap_glide"].at(0).get<float>();
+                tonalityCfg_.gapGlide[1] = t["gap_glide"].at(1).get<float>();
+            }
+            tonalityCfg_.slewSemitonesPerS = t.value("slew_semitones_per_s", tonalityCfg_.slewSemitonesPerS);
+            tonalityCfg_.followTuningCurve = t.value("follow_tuning_curve", tonalityCfg_.followTuningCurve);
+        }
+
+        hasUpwell_ = false;
+        if (j.contains("music_upwell"))
+        {
+            const json &u = j["music_upwell"];
+            std::string me;
+            if (!parseMod(u, upwellMod_, me))
+                throw std::runtime_error("music_upwell: " + me);
+            upwellFadeInS_ = std::max(0.05f, u.value("fade_in_s", upwellFadeInS_));
+            upwellFadeOutS_ = std::max(0.05f, u.value("fade_out_s", upwellFadeOutS_));
+            hasUpwell_ = true;
+        }
+
         layers_.clear();
         for (const json &lj : j.at("layers"))
         {
@@ -152,7 +255,16 @@ bool Ambience::load(const std::string &path, std::string &err)
                         if (probe->paramIndex(it.key()) < 0)
                             throw std::runtime_error(l.id + ": synth '" + l.synthKind + "' has no parameter '" +
                                                      it.key() + "'");
-                        if (it.value().is_object())
+                        if (it.value().is_object() && it.value().contains("tonal"))
+                        {
+                            const std::string t = it.value()["tonal"].get<std::string>();
+                            const int which = t == "scale" ? 0 : t == "chord" ? 1 : t == "tension" ? 2 : -1;
+                            if (which < 0)
+                                throw std::runtime_error(l.id + ": " + it.key() + ": unknown tonal mask '" + t +
+                                                         "' (scale, chord or tension)");
+                            l.tonalParams.push_back({it.key(), which});
+                        }
+                        else if (it.value().is_object())
                             l.rootParams.push_back({it.key(), it.value().at("root").get<float>()});
                         else
                             l.params.push_back({it.key(), it.value().get<float>()});
@@ -200,15 +312,9 @@ bool Ambience::load(const std::string &path, std::string &err)
                 {
                     Mod m;
                     m.param = it.key();
-                    const json &mj = it.value();
-                    m.driver = driverIndex(mj.at("driver").get<std::string>());
-                    if (m.driver < 0)
-                        throw std::runtime_error(l.id + ": mod '" + m.param + "' names unknown driver '" +
-                                                 mj["driver"].get<std::string>() + "'");
-                    m.in0 = mj.at("in").at(0).get<float>();
-                    m.in1 = mj.at("in").at(1).get<float>();
-                    m.out0 = mj.at("out").at(0).get<float>();
-                    m.out1 = mj.at("out").at(1).get<float>();
+                    std::string me;
+                    if (!parseMod(it.value(), m, me))
+                        throw std::runtime_error(l.id + ": mod '" + m.param + "': " + me);
                     if (l.kind == Kind::Synth)
                     {
                         auto probe = AmbientSynth::create(l.synthKind, 48000, 1);
@@ -303,6 +409,12 @@ void Ambience::ensureVoice(Layer &l, AudioSystem *audio)
             l.rootParamIdx.push_back(s->paramIndex(p.first));
             s->setParam(l.rootParamIdx.back(), p.second * rootHz_);
         }
+        l.tonalParamIdx.clear();
+        for (const auto &p : l.tonalParams)
+        {
+            l.tonalParamIdx.push_back(s->paramIndex(p.first));
+            s->setParam(l.tonalParamIdx.back(), (float)tonal_[p.second]);
+        }
         l.voice = audio->addAmbienceSynth(std::move(s));
     }
     else
@@ -335,19 +447,21 @@ void Ambience::update(float dt, AudioSystem *audio)
         for (const Mod &m : l.mods)
         {
             const float x = values_[m.driver];
-            const float t = m.in1 == m.in0 ? (x >= m.in0 ? 1.0f : 0.0f)
-                                           : std::clamp((x - m.in0) / (m.in1 - m.in0), 0.0f, 1.0f);
-            const float v = m.out0 + (m.out1 - m.out0) * t;
+            const float v = m.eval(x);
             if (l.kind != Kind::Synth)
                 l.rateScale = std::max(1e-3f, v);
             else if (audio && l.voice >= 0)
                 if (AmbientSynth *s = audio->voiceSynth(l.voice))
                     s->setParam(m.paramIdx, v);
         }
-        if (audio && l.voice >= 0 && !l.rootParams.empty())
+        if (audio && l.voice >= 0 && (!l.rootParams.empty() || !l.tonalParams.empty()))
             if (AmbientSynth *s = audio->voiceSynth(l.voice))
+            {
                 for (size_t k = 0; k < l.rootParams.size() && k < l.rootParamIdx.size(); ++k)
                     s->setParam(l.rootParamIdx[k], l.rootParams[k].second * rootHz_);
+                for (size_t k = 0; k < l.tonalParams.size() && k < l.tonalParamIdx.size(); ++k)
+                    s->setParam(l.tonalParamIdx[k], (float)tonal_[l.tonalParams[k].second]);
+            }
 
         if (!audio || !audio->isInitialized())
             continue;

@@ -1,5 +1,6 @@
 #include "SatelliteSim.h"
 #include "Ambience.h"
+#include "MusicAnalysis.h"
 #include "../Harness.h"
 #include "SatPhotometry.h"
 #include "SatTrace.h"
@@ -1453,8 +1454,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // written, and how far is the nearest one) — AND (C12 follow-up #41) the source signal for
     // the beam-proximity sky-glow wash below — AND (2026-08-09) the small capped per-BEAM light
     // list that feeds cloud_march.comp's real beam->cloud illumination term (no per-target
-    // aggregation any more — see GpuBeamCloudLights' own comment) — AND the `beam_view` ambience
-    // driver (the beam swell's input: how much beam light is aimed where the camera is looking).
+    // aggregation any more — see GpuBeamCloudLights' own comment) — AND the `beam_site` ambience
+    // driver (the beam-site hum's input: how many beams are converging on sites near the listener).
     // Same one-frame-stale, HOST_COHERENT idiom as peakMagnitude above.
     {
         // CPU timing (2026-08-10): this whole block is the prime suspect for the ~2.8 ms non-GPU
@@ -1547,31 +1548,22 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             return glm::vec3(glm::dot(worldish, newEnuX), glm::dot(worldish, newEnuY), glm::dot(worldish, newEnuZ));
         };
 
-        // ── Ambience: the beam swell's driver (layer beam_swell, `beam_view`) ────────────────────
-        // "How much Reflect beam light is being aimed where I am looking", summed over beams. Two
-        // soft terms per beam: a FRONTAL ramp on the angle between the camera's forward axis and the
-        // beam (1 within ~45 deg, ~0.25 at 90 deg, 0 past ~107 deg), and a proximity ramp on the
-        // distance to the beam's 3D line. The frontal ramp is used instead of projecting the beam's
-        // direction into the frame (the sunDirENU NDC test one block up) on purpose: a frame-edge
-        // test makes the layer's level a function of the camera's FOV slider and of where in the
-        // frame the light happens to sit, while "am I looking at it" is the question this driver
-        // means. `limbZ` is the same geometric horizon the glare block above uses, applied to the
-        // beam's ground spot, so a spot across the curve of the Earth contributes nothing.
-        const glm::mat3 beamViewRot(camera.viewMatrix());
-        const glm::vec3 beamViewFwd = -glm::vec3(beamViewRot[0][2], beamViewRot[1][2], beamViewRot[2][2]);
-        const float beamViewObsR = kEarthRadius + obsEffHForLights;
-        const float beamViewLimbZ =
-            (beamViewObsR > kEarthRadius)
-                ? -sqrtf(std::max(0.0f, 1.0f - (kEarthRadius / beamViewObsR) * (kEarthRadius / beamViewObsR)))
-                : 0.0f;
-        constexpr float kBeamViewCosHi = 0.5f;        // cos(60 deg): fully on this well inside the view
-        constexpr float kBeamViewCosLo = -0.3f;       // cos(107 deg): off once the beam is behind you
-        constexpr float kBeamViewNearM = 100000.0f;   // a beam this close counts in full
-        constexpr float kBeamViewFalloffM = 400000.0f;// ... and this is the softening length
-        constexpr float kBeamViewConvRad = 0.174533f; // radians(10) — the same converged/transiting
+        // ── Ambience: the beam-site hum's driver (layer beam_site_hum, `beam_site`) ─────────────
+        // How many Reflect beams are converging on ground sites NEAR THE LISTENER — a count, not a
+        // direction: the hum is the concentration of beams around you, wherever you look. (The
+        // direction-sensitive part of the beam sound is the glare pad, driven by the flares actually
+        // on screen — see computeAmbienceContext.) Per beam: convergence (a locked beam is on its
+        // site, a slewing one is not there yet) x a soft proximity ramp on the camera's distance to
+        // its site. The first cut (`beam_view`, 2026-09-27) weighted beams by how close their 3D line
+        // passed and whether the camera faced them; flying through the atmosphere crosses beams you
+        // are not paying attention to, so it read the same almost everywhere and blended poorly.
+        constexpr float kBeamSiteNearM = 15000.0f;    // a site this close counts in full
+        constexpr float kBeamSiteFalloffM = 25000.0f; // ... then 1 / (1 + (excess / this)^2): at the
+                                                      // Topaz site ~180 beams read 177 on the spot,
+                                                      // ~10 from 120 km away (50 km gave 30 there)
+        constexpr float kBeamSiteConvRad = 0.174533f; // radians(10) — the same converged/transiting
                                                       // boundary the cluster split below uses
-        ambBeamViewRaw = 0.0f;
-        ambBeamViewCount = 0;
+        ambBeamSiteRaw = 0.0f;
 
         // ── Cloud-light identity (2026-08-12 rewrite) ─────────────────────────────────────────
         // See TrackedBeamLight in SatelliteSim.h for the full rationale. Summary: a light's
@@ -1792,46 +1784,12 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             float targetDistM = glm::length(tE);
             glm::vec3 rDir = rebase(beamsIn[s].reflectDirENU);
 
-            // Beam swell (ambience, layer beam_swell): is this beam's light aimed where the camera
-            // is looking? Smooth terms, summed over beams and weighted by each beam's own intensity
-            // — a raw COUNT of beams would cross the whole metric at once, which is exactly what
-            // would make the layer's `voices` step. Thresholds live with the hoisted constants
-            // above the loop.
-            //   cone    — the frontal ramp to the two ends of the beam: where its light lands (the
-            //             ground spot, `targetENU`) and where it comes from (the satellite, `satENU`)
-            //   prox    — `d`, the distance to the beam's 3D line (above), NOT to the spot: a beam
-            //             passing overhead is the beam you are under whatever its far target is
-            //   conv    — aim error: a locked beam is one bright spot, a slewing one is a smear
-            //   clarity — how much cloud is actually between the light and the camera
-            //   horizon — the spot still being above the observer's geometric horizon (limbZ)
-            if (intensity > 0.0f && targetDistM > 1.0f)
+            // Beam-site hum (ambience): this beam's share of the concentration around the listener.
+            if (intensity > 0.0f)
             {
-                const glm::vec3 toSpot = tE / targetDistM;
-                const float coneSpot =
-                    glm::smoothstep(kBeamViewCosLo, kBeamViewCosHi, glm::dot(beamViewFwd, toSpot));
-                const float sLen = glm::length(sE);
-                const float coneSrc = (sLen > 1.0f)
-                                          ? glm::smoothstep(kBeamViewCosLo, kBeamViewCosHi,
-                                                            glm::dot(beamViewFwd, sE / sLen))
-                                          : 0.0f;
-                const float cone = std::max(coneSpot, coneSrc);
-                if (cone > 0.0f)
-                {
-                    const float beyond = std::max(d - kBeamViewNearM, 0.0f) / kBeamViewFalloffM;
-                    const float prox = 1.0f / (1.0f + beyond * beyond);
-                    const float aim = beamsIn[s].aimErrorRad / kBeamViewConvRad;
-                    const float conv = 1.0f / (1.0f + aim * aim);
-                    const float clarity = 1.0f - glm::clamp(beamsIn[s].blockOpacity, 0.0f, 1.0f);
-                    // +z is up at the observer, so -toSpot.z is the spot's elevation sine — the same
-                    // quantity the sun's own limb test above compares against this same limbZ.
-                    const float horizon = glm::smoothstep(beamViewLimbZ - 0.02f, beamViewLimbZ + 0.01f, -toSpot.z);
-                    const float w = cone * prox * conv * clarity * horizon;
-                    if (w > 0.001f)
-                    {
-                        ambBeamViewRaw += intensity * w;
-                        ++ambBeamViewCount;
-                    }
-                }
+                const float aim = beamsIn[s].aimErrorRad / kBeamSiteConvRad;
+                const float beyond = std::max(targetDistM - kBeamSiteNearM, 0.0f) / kBeamSiteFalloffM;
+                ambBeamSiteRaw += 1.0f / ((1.0f + aim * aim) * (1.0f + beyond * beyond));
             }
 
             // Ground-spot compaction: same range cutoff sat_sky.frag's loop applies, done ONCE
@@ -3185,6 +3143,20 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
         VkBufferCopy hdrRegion{0, 0, sizeof(GpuSatListHeader)};
         vkCmdCopyBuffer(cmd, satListBuf, pickedVisibleBuf, 1, &hdrRegion);
+    }
+    // The bright-flare list, for the ambience's glare pad (glareReadBuf). sat_flare.comp wrote it
+    // earlier this frame; nothing after this writes it until next frame's vkCmdFillBuffer.
+    {
+        VkBufferMemoryBarrier gb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        gb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        gb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        gb.srcQueueFamilyIndex = gb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        gb.buffer = oceanGlintBuf;
+        gb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1,
+                             &gb, 0, nullptr);
+        VkBufferCopy region{0, 0, sizeof(GpuOceanGlintBuf)};
+        vkCmdCopyBuffer(cmd, oceanGlintBuf, glareReadBuf, 1, &region);
     }
     recordModelViewer(cmd, dt); // Phase 4 model viewer (offscreen; its own render pass)
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
@@ -5579,9 +5551,26 @@ void SatelliteSim::setAudio(AudioSystem *audio)
     if (!audio_)
         return;
 
-    // The playlist is the music folder: gravity_wave first ALWAYS (the intro is cut to it), then
-    // every other track in name order, so dropping a file into assets/sound/music adds it.
+    // The playlist is the music folder in the composer's order — gravity_wave first ALWAYS (the intro
+    // is cut to it), then fuse, leo_motif, BIOS — then any other track in name order (case-blind), so
+    // dropping a file into assets/sound/music adds it at the end.
     {
+        static const char *kOrder[] = {"gravity_wave", "fuse", "leo_motif", "bios"};
+        auto lowerStem = [](const std::string &path)
+        {
+            std::string s = std::filesystem::path(path).stem().string();
+            for (char &c : s)
+                c = (char)tolower((unsigned char)c);
+            return s;
+        };
+        auto rank = [&](const std::string &path)
+        {
+            const std::string s = lowerStem(path);
+            for (int k = 0; k < (int)(sizeof(kOrder) / sizeof(kOrder[0])); ++k)
+                if (s == kOrder[k])
+                    return k;
+            return (int)(sizeof(kOrder) / sizeof(kOrder[0]));
+        };
         std::vector<std::string> others;
         std::error_code ec;
         for (const auto &e : std::filesystem::directory_iterator("assets/sound/music", ec))
@@ -5590,14 +5579,40 @@ void SatelliteSim::setAudio(AudioSystem *audio)
             for (char &c : ext)
                 c = (char)tolower((unsigned char)c);
             const std::string name = e.path().filename().string();
-            if ((ext == ".mp3" || ext == ".flac" || ext == ".wav") && name != "gravity_wave.mp3")
+            const std::string stem = e.path().stem().string();
+            // `<track>_upwell.*` is not a track: it is the stem layered over <track> (see below).
+            const bool upwell = stem.size() > 7 && stem.compare(stem.size() - 7, 7, "_upwell") == 0;
+            if ((ext == ".mp3" || ext == ".flac" || ext == ".wav") && name != "gravity_wave.mp3" && !upwell)
                 others.push_back("assets/sound/music/" + name);
         }
-        std::sort(others.begin(), others.end());
-        audio_->addTrack("assets/sound/music/gravity_wave.mp3");
-        for (const std::string &t : others)
-            audio_->addTrack(t);
+        std::sort(others.begin(), others.end(), [&](const std::string &a, const std::string &b)
+                  {
+                      const int ra = rank(a), rb = rank(b);
+                      return ra != rb ? ra < rb : lowerStem(a) < lowerStem(b);
+                  });
+        musicTracks_.clear();
+        musicTracks_.push_back("assets/sound/music/gravity_wave.mp3");
+        musicTracks_.insert(musicTracks_.end(), others.begin(), others.end());
+        // Each track's upwell stem, if the composer made one: <stem>_upwell with any audio extension.
+        for (const std::string &t : musicTracks_)
+        {
+            std::string upwell;
+            const std::filesystem::path p(t);
+            for (const char *ext : {".mp3", ".flac", ".wav"})
+            {
+                const std::filesystem::path u = p.parent_path() / (p.stem().string() + "_upwell" + ext);
+                if (std::filesystem::exists(u, ec))
+                {
+                    upwell = u.generic_string();
+                    break;
+                }
+            }
+            audio_->addTrack(t, upwell);
+            Log::line("music: " + t + (upwell.empty() ? " (no upwell)" : " + " + upwell));
+        }
     }
+    // The ambience's key follows these tracks: analyse them (cached; a new file is analysed once).
+    startMusicAnalysis();
     audio_->setMusicGap(musicGapS);
     // Harness runs (docs/HARNESS.md) are unattended — often overnight — so silent unless --sound.
     // The persisted masterVol_ is left alone; only the device gain is zeroed.
@@ -5630,6 +5645,8 @@ void SatelliteSim::cleanup(VkDevice device)
     // App tears the AudioSystem down first, so the voices are already gone; only the table is left.
     delete ambience_;
     ambience_ = nullptr;
+    delete musicLib_; // joins the analysis worker if it is still running (it checks for cancel)
+    musicLib_ = nullptr;
 
     if (followActive)
         stopFollow(); // persist the ground observer, not a position in orbit
@@ -6059,6 +6076,11 @@ void SatelliteSim::cleanup(VkDevice device)
     vkFreeMemory(device, glowMem, nullptr);
     vkDestroyBuffer(device, oceanGlintBuf, nullptr);
     vkFreeMemory(device, oceanGlintMem, nullptr);
+    if (glareReadMapped)
+        vkUnmapMemory(device, glareReadMem);
+    vkDestroyBuffer(device, glareReadBuf, nullptr);
+    vkFreeMemory(device, glareReadMem, nullptr);
+    glareReadMapped = nullptr;
     if (pickedVisibleMapped)
         vkUnmapMemory(device, pickedVisibleMem);
     vkDestroyBuffer(device, pickedVisibleBuf, nullptr);
@@ -8347,9 +8369,16 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // Device-local (unlike glowBuf — nothing on the CPU ever reads this back), zeroed every frame
     // via vkCmdFillBuffer in recordCompute() (same idiom as glowBuf).
     ctx.createBuffer(sizeof(GpuOceanGlintBuf),
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                      oceanGlintBuf, oceanGlintMem);
+    // Its host copy, for the ambience's glare pad (see glareReadBuf in SatelliteSim.h).
+    ctx.createBuffer(sizeof(GpuOceanGlintBuf), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     glareReadBuf, glareReadMem);
+    vkMapMemory(ctx.device, glareReadMem, 0, sizeof(GpuOceanGlintBuf), 0, &glareReadMapped);
+    memset(glareReadMapped, 0, sizeof(GpuOceanGlintBuf));
 
     // ── Picked-satellite tracking buffer ───────────────────────────────────────
     // 80-byte host-visible mirror of the compact visible list's GpuSatListHeader (selected

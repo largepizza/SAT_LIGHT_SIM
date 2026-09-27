@@ -17,15 +17,28 @@
   in medium Earth orbit and the "Firmament" pad rising toward high orbit (both original, made in FL
   Studio). Procedural voices (`src/AmbientSynth.cpp`) plus CC0 field recordings
   (`tools/make_ambience.py`), mixed by a moddable layer table
-  (`assets/sound/ambience/ambience.json`). Under Reflect Orbital light a warm saw swell rises with
-  the number of beams aimed where you are looking. The automation harness renders and checks it
-  (`audio state/record/expect/force/music`, `ambience_beams.satcmd`, `imgtools.py audio`). In orbit, low phased drones and soft status tones in one shared key (Settings → Sound →
-  "Tonal root"). Advanced Sound settings: fade speeds, the tonal root, per-group gains (wind, water,
-  nature, city, space, machines).
+  (`assets/sound/ambience/ambience.json`). Reflect Orbital light has its own sound: bright flares
+  on screen become a hollow chord in the music's key (one glint is an open fifth; a sky full of
+  mirrors deepens and crowds into clusters, its voices drifting out of tune), over a deep, slowly
+  sagging hum wherever beams concentrate on the ground near you. While music plays, the glare is
+  answered by the music itself instead: every track has an "upwell" stem (`<track>_upwell.mp3`) that
+  rises over it, sample-locked, as flares fill the screen; the beam sounds swell in and out across
+  the silence between tracks. The automation harness renders and
+  checks it (`audio state/record/expect/force/music/tonality`, `ambience_beams.satcmd`,
+  `imgtools.py audio`). In orbit, low phased drones and soft status tones, all in one key.
+  Advanced Sound settings: fade speeds, the tonal root, per-group gains (wind, water, nature, city,
+  space, machines).
+- **The ambience plays in the music's key.** Each soundtrack file is analysed on first launch (key,
+  pitch set, chords, and its tuning over time — `src/MusicAnalysis.cpp`, cached per track), so the
+  ambience's root follows the playing track, bends with it (Gravity Wave's piano drifts by about
+  ±30 cents), and glides to the next track's key in the silence between them. Tracks added to
+  `assets/sound/music/` are analysed automatically. Settings → Sound shows the current key and
+  chord; "Key follows the music" (advanced) switches back to the fixed Tonal root. `SoundTool`
+  (`tools/sound_tool/`) runs the analysis and renders synth voices offline.
 - **Music player.** Settings → Sound shows the current track and its position, with previous /
   pause / next. A 30 s gap between tracks (adjustable) lets the ambience breathe. Gravity Wave always
   plays first; any mp3/flac/wav added to `assets/sound/music/` joins the playlist. New track: LEO
-  Motif, a short piece written to sit with the ambience. The music fades out as you climb: half
+  Motif, a short piece written to sit with the ambience, and BIOS. The music fades out as you climb: half
   volume in medium Earth orbit, silent from geostationary altitude up, leaving high orbit to the
   ambience.
 - **Satellite lighting overhaul (Phases 1-3).** Data-driven rigid attitude groups (`attitude_groups`

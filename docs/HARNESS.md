@@ -10,6 +10,8 @@ Use it for anything that needs the real renderer: shader and terrain changes, im
 performance, UI layout, camera shots. Things that don't need the renderer (photometry, orbits,
 benchmarks) stay in `SatModelTool`, which is faster and runs in CI.
 
+Be efficient with your sim launches. There is currently a bug (9/27/2026) on the host machine where the app entirely freezes and halts the machine. Only use the harness when strictly necessary, if something seems like a "one-liner" (ie: settings change, constant modification, small-medium tweak) or if is a matter of taste (ie: adjusted sim sounds), do not use the harness and defer judgement to the user.
+
 > **Agents:** this is the one sanctioned way to launch the app yourself. A harness run exits on
 > its own, never touches the user's settings, and is muted. Interactive "feel" is still for the
 > user to judge (see CLAUDE.md).
@@ -128,7 +130,8 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `audio record <name> [seconds=8] [bus=ambience\|music\|sfx\|all\|music+ambience] [solo=<layer>]` | renders the mix offline into `captures/<name>.wav` (+ `<name>.json`: state + levels) and returns RMS / peak / per-second RMS. Needs the default muted run (no device). See "Ambient sound" |
 | `audio expect <layer,...> [absent=<layer,...>] [min=0.05]` | fails unless each listed layer's gain is at least `min` and each `absent` one below it — a location tour checks itself |
 | `audio force <layer> <gain\|off>`, `audio force off` | pin a layer's gain wherever the observer is (calibrating one voice) / release them all |
-| `audio music [next\|prev\|pause\|play\|state]` | the music player: returns the track, its name, paused, and the gap countdown. (Offline, a track never ENDS, so the between-track gap is not reachable in a harness run) |
+| `audio music [next\|prev\|pause\|play\|end\|state]` | the music player: returns the track, its name, paused, the gap countdown, `has_upwell` and `upwell_gain`. Offline a track never ends by itself; `end` ends it now, as if it had played out, so the between-track gap (and the key's glide through it) is reachable |
+| `audio tonality [wait]` | the key the ambience is in: root (Hz, as played and its target), source (track / gap / manual), key, chord, scale and chord intervals, the tuning-curve cents. `wait` holds the script until every track is analysed (a harness run analyses synchronously, so it rarely waits). Also the `tonality` block of `audio state` and every sidecar's `ambience` |
 | `log <text>`, `help`, `quit` | |
 
 A command that fails is recorded with its reason and the script continues. The run's status is
@@ -225,11 +228,14 @@ needs ears:
    sea, plains at night, a Reflect Orbital beam site, forest, dawn, jungle day/night, Sahara, LA at
    night, Alps, Greenland, 11 km, 30 km, over the aurora, beside a Starlink, inside the AI datacenter
    disk, 20,000 km) and `audio expect`s the right layers at each — a wrong layer fails the run.
-   `tools/harness/scripts/ambience_beams.satcmd` does that for the one direction-SENSITIVE layer: at
-   the tour's beam site it sweeps the camera azimuth and reads `beam_view` back (~2.2e6 with the
-   beams in view, 6e5 with them behind the camera; 0 = no light at all), then records the swell with
-   the beams on and off the camera. Read the sweep's numbers before believing the recording — that
-   driver is the whole design.
+   `tools/harness/scripts/ambience_beams.satcmd` does the beam sound at the tour's beam site facing the
+   Reflect ring (`glare_n` ~440): with the music playing it reads the track's upwell stem up
+   (`audio music state`: `upwell_gain` 1.0) and the beam layers absent, looks away (upwell back to 0),
+   then ends the track (`audio music end`) and reads the beam layers riding `music_gap` through the
+   gap (0.15 early, 0.95 halfway, 0.25 late), recording music + upwell, the full mix and each beam
+   voice. `ambience_tonality.satcmd` reads the key per
+   track and through a between-track gap (`audio music end`). Read the numbers before believing a
+   recording.
 2. **Signal.** A muted harness run has an audio engine with NO device: nothing plays, and nothing
    is mixed until `audio record` pulls the graph synchronously — deterministic (seeded synths) and
    independent of frame rate. `imgtools.py audio <wav...> -o spec.png` gives, per file, RMS / peak /
@@ -237,8 +243,10 @@ needs ears:
    log-frequency spectrogram with an RMS strip: chirps, beeps and clicks show as shapes, a hum as
    lines, wind as a moving band, a loop seam as a vertical edge.
    `tools/harness/scripts/ambience_solos.satcmd` renders every layer alone at gain 1 plus a music
-   reference — the calibration run. `beam_swell` is soloed at the beam site with the camera on the
-   beams: a level of 0 with no light in view means a solo anywhere else would measure silence.
+   reference — the calibration run. `beam_glare` and `beam_site_hum` are soloed at the beam site with
+   the camera on the Reflect ring: anywhere else they would measure silence. For timbre and level work
+   without a launch, `SoundTool --render <synth> --out x.wav voices=0/0,1/2,6/8` renders one voice with
+   keyframed params (tools/sound_tool/main.cpp).
 3. **Feel.** The user's: play the WAVs, or run with `--sound`.
 
 The mix rule: at every tour stop the ambience totals about 10 dB under the music (the tour's last

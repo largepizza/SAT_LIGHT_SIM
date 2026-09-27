@@ -49,12 +49,18 @@ public:
     // Tracks play in order, then loop back to the first track, with a silent GAP between tracks
     // (default 30 s) so the ambience has room to breathe. The player (Settings -> Sound) can pause,
     // skip and go back; pausing also freezes the gap countdown.
-    void addTrack(const std::string& path);
+    //
+    // UPWELL: a track may carry a second file, a stem written to be layered over it (the composer's
+    // `<track>_upwell.mp3`). It starts on the same engine frame as the track, stays sample-locked to
+    // it through pause/resume, plays at the gain the sim asks for (setUpwellGain — the sim raises it
+    // with the glare on screen), and is allowed to ring out its own tail after the track ends.
+    void addTrack(const std::string& path, const std::string& upwellPath = std::string());
     void clearTracks();
     void startMusic();       // begin from track 0
     void stopMusic();
     void playTrack(int idx); // jump to a track now (no gap)
     void nextTrack();
+    void endTrack();         // end the current track now, as if it had played out: the gap starts
     void prevTrack();        // restarts the current track if more than 3 s in, else the previous one
     void setMusicPaused(bool paused);
     bool musicPaused() const { return musicPaused_; }
@@ -65,6 +71,12 @@ public:
     int  trackIndex() const { return trackIdx_; }
     int  trackCount() const { return (int)tracks_.size(); }
     std::string trackName(int idx) const;   // "gravity_wave.mp3" -> "Gravity Wave"
+    const std::string& trackPath(int idx) const; // as given to addTrack (empty if out of range)
+    bool musicOn() const { return musicOn_; }         // started and not stopped
+    bool trackPlaying() const { return music_ != nullptr; } // a track is loaded (not in a gap)
+    bool trackHasUpwell() const { return upwell_ != nullptr; }
+    void  setUpwellGain(float g);            // 0..1, the upwell stem's volume under the music bus
+    float upwellGain() const { return upwellGain_; }
     float trackPosition() const;            // seconds into the current track
     float trackLength() const;              // seconds, 0 if unknown
 
@@ -102,6 +114,10 @@ public:
     // One-shot on the ambience bus (a gull call): pan in [-1, 1]. Finished ones are reaped in update().
     void playAmbienceOneShot(const std::string& path, float gain, float pan);
     void  setAmbienceVolume(float v);
+    // A multiplier on the ambience bus under the user's ambience volume (the sim halves it during
+    // the intro). 0..1; not persisted.
+    void  setAmbienceFade(float f);
+    float ambienceFade() const { return ambienceFade_; }
     float getAmbienceVolume() const { return ambienceVol_; }
 
     // ── Offline render (offline mode only) ───────────────────────────────────
@@ -119,7 +135,9 @@ public:
                    const std::function<void(float)>& perChunk, RenderStats& stats, std::string& err);
 
 private:
-    void loadTrack(int idx);    // load + start tracks_[idx]
+    void loadTrack(int idx);    // load + start tracks_[idx] (and its upwell, on the same frame)
+    void releaseUpwell(bool keepTail); // keepTail: let it ring out (reaped in update) instead of cutting
+    void startSynced();         // start the track and its upwell on one engine frame
     void applyMusicVolume();    // push musicVol_ into the music group
     void applyVoiceVolume(int voice);
 
@@ -138,12 +156,16 @@ private:
     ma_sound_group* sfxGroup_   = nullptr;  // SFX  sub-mix node
     ma_sound_group* ambienceGroup_ = nullptr;
     ma_sound*       music_      = nullptr;  // currently streaming track
+    ma_sound*       upwell_     = nullptr;  // its upwell stem, sample-locked to it (or null)
+    ma_sound*       upwellTail_ = nullptr;  // the last track's upwell, ringing out past its end
+    float           upwellGain_ = 0.0f;
 
     std::vector<Voice>   voices_;
     std::vector<OneShot> oneShots_;
     int  solo_ = -1;            // renderWav's solo voice, -1 = none
 
     std::vector<std::string> tracks_;
+    std::vector<std::string> upwells_;   // parallel to tracks_; empty = none
     int  trackIdx_   = 0;
     bool  musicPaused_ = false;
     bool  musicOn_     = false;   // startMusic() called and not stopped
@@ -158,4 +180,6 @@ private:
     float musicFade_ = 1.0f;
     float sfxVol_    = 1.0f;
     float ambienceVol_ = 0.8f;
+    float ambienceFade_ = 1.0f;
+    void applyAmbienceVolume();
 };

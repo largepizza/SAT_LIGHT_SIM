@@ -2,9 +2,9 @@
 // ── AmbientSynth ──────────────────────────────────────────────────────────────────────────────────
 // Procedural ambience voices: wind and air, a noise hum, a harmonic drone (phaser, whine,
 // compressor cycling, soft low tones), FSK data beeps, disk/server activity, magnetospheric VLF
-// "chorus" (flanged), breaking surf and a warm saw stack (the Reflect beam light, one voice per
-// beam). Each synth is a miniaudio data source (f32 stereo
-// at the engine's rate) that AudioSystem plays through an ma_sound on the ambience bus, so its
+// "chorus" (flanged), breaking surf, a saw stack, a hollow chord pad in the sim's key (the glare of
+// the flares in view) and a pedal bass (the concentration of Reflect beams). Each synth is a
+// miniaudio data source (f32 stereo at the engine's rate) that AudioSystem plays through an ma_sound on the ambience bus, so its
 // level, the bus volume and the master volume apply like they do to a sample.
 //
 // Threading: the main thread writes parameters with setParam() (atomics); the audio thread reads
@@ -14,8 +14,10 @@
 // Deterministic: all randomness comes from a per-voice xorshift seeded at creation, so an offline
 // harness render of the same scene is the same waveform every run.
 //
-// No tonal "melody" content by design (the ambience must sit under the music): pitched material is
-// either filtered noise (a hum is noise through resonances, not a sine), short data blips, or sweeps.
+// No melody by design (the ambience must sit under the music): pitched material is filtered noise
+// (a hum is noise through resonances, not a sine), short data blips, sweeps, or — the pad and the
+// bass — sustained pitch classes the SIM chooses from the soundtrack's own key (MusicAnalysis.h),
+// handed over as masks, so they can only ever sound notes the music is using.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 #include "miniaudio.h"
 
@@ -28,18 +30,20 @@
 class AmbientSynth
 {
 public:
-    static constexpr int kMaxParams = 24;
+    static constexpr int kMaxParams = 32;
     static constexpr uint32_t kBlock = 64; // parameter update granularity (frames)
 
     struct ParamDef
     {
         const char *name;
         float def;
+        bool snap = false; // not eased: a discrete value (a pitch-class mask) must never pass
+                           // through the values between its old and new one
     };
 
     virtual ~AmbientSynth();
 
-    // "wind", "hum", "drone", "beeps", "disk", "chorus", "surf", "saw"; null for an unknown kind.
+    // "wind", "hum", "drone", "beeps", "disk", "chorus", "surf", "saw", "pad", "bass"; null if unknown.
     static std::unique_ptr<AmbientSynth> create(const std::string &kind, uint32_t sampleRate, uint32_t seed);
     static std::vector<std::string> kinds();
 

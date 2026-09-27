@@ -62,7 +62,7 @@ void AudioSystem::init(bool offline)
         delete ambienceGroup_;
         ambienceGroup_ = nullptr;
     } else {
-        ma_sound_group_set_volume(ambienceGroup_, ambienceVol_);
+        applyAmbienceVolume();
     }
 
     offline_ = offline;
@@ -121,7 +121,28 @@ void AudioSystem::update(float dt)
         }
     }
 
+    // The last track's upwell, ringing out its tail into the gap.
+    if (upwellTail_ && ma_sound_at_end(upwellTail_)) {
+        ma_sound_uninit(upwellTail_);
+        delete upwellTail_;
+        upwellTail_ = nullptr;
+    }
+
     if (!musicOn_ || musicPaused_ || tracks_.empty()) return;
+
+    // Keep the upwell locked to its track. They start on one engine frame and read at the same rate,
+    // so they should never drift; a resync (a seek, which can click) only happens past ~50 ms.
+    // (Read cursors, in the files' own frames: both files are 44.1 kHz; a stem at another rate
+    // would need its cursor scaled, and is not what the composer exports.)
+    if (music_ && upwell_ && ma_sound_is_playing(music_) && !ma_sound_at_end(upwell_)) {
+        ma_uint64 a = 0, b = 0;
+        if (ma_sound_get_cursor_in_pcm_frames(music_, &a) == MA_SUCCESS &&
+            ma_sound_get_cursor_in_pcm_frames(upwell_, &b) == MA_SUCCESS) {
+            const ma_uint64 d = a > b ? a - b : b - a;
+            if (d > ma_engine_get_sample_rate(engine_) / 20)
+                ma_sound_seek_to_pcm_frame(upwell_, a);
+        }
+    }
 
     // Between tracks: count the gap down, then start the next one.
     if (!music_) {
@@ -137,6 +158,7 @@ void AudioSystem::update(float dt)
         ma_sound_uninit(music_);
         delete music_;
         music_ = nullptr;
+        releaseUpwell(true); // its tail may run past the track (BIOS, LEO Motif: ~5 s)
         gapLeft_ = musicGapS_;
         if (gapLeft_ <= 0.0f) {
             trackIdx_ = (trackIdx_ + 1) % (int)tracks_.size();
@@ -157,6 +179,20 @@ void AudioSystem::playTrack(int idx)
 
 void AudioSystem::nextTrack() { playTrack(trackIdx_ + 1); }
 
+void AudioSystem::endTrack()
+{
+    if (!initialized_ || !music_) return;
+    ma_sound_uninit(music_);
+    delete music_;
+    music_ = nullptr;
+    releaseUpwell(true);
+    gapLeft_ = musicGapS_;
+    if (gapLeft_ <= 0.0f) {
+        trackIdx_ = (trackIdx_ + 1) % (int)tracks_.size();
+        loadTrack(trackIdx_);
+    }
+}
+
 void AudioSystem::prevTrack()
 {
     if (music_ && trackPosition() > 3.0f)
@@ -169,8 +205,61 @@ void AudioSystem::setMusicPaused(bool paused)
 {
     musicPaused_ = paused;
     if (!music_) return;
-    if (paused) ma_sound_stop(music_);   // keeps the cursor: resume continues from here
-    else        ma_sound_start(music_);
+    if (paused) {
+        ma_sound_stop(music_);   // keeps the cursor: resume continues from here
+        if (upwell_) ma_sound_stop(upwell_);
+    } else {
+        // Re-lock the upwell to where the track stopped, then start both on one frame.
+        ma_uint64 cur = 0;
+        if (upwell_ && ma_sound_get_cursor_in_pcm_frames(music_, &cur) == MA_SUCCESS)
+            ma_sound_seek_to_pcm_frame(upwell_, cur);
+        startSynced();
+    }
+}
+
+void AudioSystem::setUpwellGain(float g)
+{
+    upwellGain_ = std::clamp(g, 0.0f, 1.0f);
+    if (upwell_) ma_sound_set_volume(upwell_, upwellGain_);
+    if (upwellTail_) ma_sound_set_volume(upwellTail_, upwellGain_);
+}
+
+void AudioSystem::releaseUpwell(bool keepTail)
+{
+    if (upwellTail_) { // a previous tail still ringing: it goes now
+        ma_sound_uninit(upwellTail_);
+        delete upwellTail_;
+        upwellTail_ = nullptr;
+    }
+    if (!upwell_) return;
+    if (keepTail && !ma_sound_at_end(upwell_)) {
+        upwellTail_ = upwell_;
+    } else {
+        ma_sound_uninit(upwell_);
+        delete upwell_;
+    }
+    upwell_ = nullptr;
+}
+
+// Both on one engine frame: a start time a little ahead of the mixer (so the audio thread cannot
+// read between the two calls), or the current engine time offline, where nothing is mixed until
+// renderWav pulls the graph.
+void AudioSystem::startSynced()
+{
+    if (!music_) return;
+    const ma_uint64 at = ma_engine_get_time_in_pcm_frames(engine_) + (offline_ ? 0 : ma_engine_get_sample_rate(engine_) / 20);
+    ma_sound_set_start_time_in_pcm_frames(music_, at);
+    ma_sound_start(music_);
+    if (upwell_) {
+        ma_sound_set_start_time_in_pcm_frames(upwell_, at);
+        ma_sound_start(upwell_);
+    }
+}
+
+const std::string& AudioSystem::trackPath(int idx) const
+{
+    static const std::string kNone;
+    return (idx < 0 || idx >= (int)tracks_.size()) ? kNone : tracks_[idx];
 }
 
 std::string AudioSystem::trackName(int idx) const
@@ -211,15 +300,17 @@ float AudioSystem::trackLength() const
 }
 
 // ── playlist management ───────────────────────────────────────────────────────
-void AudioSystem::addTrack(const std::string& path)
+void AudioSystem::addTrack(const std::string& path, const std::string& upwellPath)
 {
     tracks_.push_back(path);
+    upwells_.push_back(upwellPath);
 }
 
 void AudioSystem::clearTracks()
 {
     stopMusic();
     tracks_.clear();
+    upwells_.clear();
     trackIdx_ = 0;
 }
 
@@ -240,6 +331,7 @@ void AudioSystem::stopMusic()
         delete music_;
         music_ = nullptr;
     }
+    releaseUpwell(false);
 }
 
 // ── loadTrack (private) ───────────────────────────────────────────────────────
@@ -255,6 +347,7 @@ void AudioSystem::loadTrack(int idx)
         delete music_;
         music_ = nullptr;
     }
+    releaseUpwell(false); // a skip cuts the stem with its track
     music_ = new ma_sound;
 
     // Stream; don't decode the entire file. Offline (harness) renders pull the graph far faster than
@@ -274,7 +367,17 @@ void AudioSystem::loadTrack(int idx)
         return;
     }
 
-    ma_sound_start(music_);
+    if (idx < (int)upwells_.size() && !upwells_[idx].empty()) {
+        upwell_ = new ma_sound;
+        if (ma_sound_init_from_file(engine_, upwells_[idx].c_str(), flags, musicGroup_, nullptr, upwell_) != MA_SUCCESS) {
+            fprintf(stderr, "[AudioSystem] Failed to load upwell: %s\n", upwells_[idx].c_str());
+            delete upwell_;
+            upwell_ = nullptr;
+        } else {
+            ma_sound_set_volume(upwell_, upwellGain_);
+        }
+    }
+    startSynced();
 }
 
 // ── SFX ───────────────────────────────────────────────────────────────────────
@@ -326,7 +429,20 @@ uint32_t AudioSystem::sampleRate() const
 void AudioSystem::setAmbienceVolume(float v)
 {
     ambienceVol_ = std::clamp(v, 0.0f, 1.0f);
-    if (ambienceGroup_) ma_sound_group_set_volume(ambienceGroup_, ambienceVol_);
+    applyAmbienceVolume();
+}
+
+void AudioSystem::setAmbienceFade(float f)
+{
+    f = std::clamp(f, 0.0f, 1.0f);
+    if (f == ambienceFade_) return;
+    ambienceFade_ = f;
+    applyAmbienceVolume();
+}
+
+void AudioSystem::applyAmbienceVolume()
+{
+    if (ambienceGroup_) ma_sound_group_set_volume(ambienceGroup_, ambienceVol_ * ambienceFade_);
 }
 
 // ── Ambience voices ───────────────────────────────────────────────────────────
@@ -469,7 +585,7 @@ bool AudioSystem::renderWav(const std::string& path, double seconds, uint32_t bu
     auto groupVol = [](ma_sound_group* g, float v) { if (g) ma_sound_group_set_volume(g, v); };
     groupVol(musicGroup_, (busMask & BusMusic) ? musicVol_ * musicFade_ : 0.0f);
     groupVol(sfxGroup_, (busMask & BusSfx) ? sfxVol_ : 0.0f);
-    groupVol(ambienceGroup_, (busMask & BusAmbience) ? ambienceVol_ : 0.0f);
+    groupVol(ambienceGroup_, (busMask & BusAmbience) ? ambienceVol_ * ambienceFade_ : 0.0f);
     if ((busMask & BusMusic) && !musicDecoded_ && music_) {
         musicDecoded_ = true;
         loadTrack(trackIdx_);
@@ -520,7 +636,7 @@ bool AudioSystem::renderWav(const std::string& path, double seconds, uint32_t bu
     for (int i = 0; i < (int)voices_.size(); ++i) applyVoiceVolume(i);
     groupVol(musicGroup_, musicVol_ * musicFade_);
     groupVol(sfxGroup_, sfxVol_);
-    groupVol(ambienceGroup_, ambienceVol_);
+    groupVol(ambienceGroup_, ambienceVol_ * ambienceFade_);
 
     stats.seconds = (double)total / sr;
     stats.rmsDb = toDb(std::sqrt(sumSq / (std::max<double>)(1.0, (double)total * 2)));

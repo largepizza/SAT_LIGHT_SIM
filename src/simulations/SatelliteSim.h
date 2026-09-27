@@ -26,6 +26,10 @@
 // Automation harness (docs/HARNESS.md). Only pointers/refs cross this header, so the full Harness.h
 // (and nlohmann/json.hpp with it) stays out of every file that includes SatelliteSim.h.
 class Ambience; // SatelliteSimAmbience.cpp / Ambience.h
+namespace music
+{
+class Library; // MusicAnalysis.h: the soundtrack's key, for the ambience's tonality
+}
 
 namespace harness
 {
@@ -2753,6 +2757,14 @@ private:
     // Ocean-glint list (see GpuOceanGlintBuf) — device-local, zeroed every frame like glowBuf.
     VkBuffer oceanGlintBuf = VK_NULL_HANDLE;
     VkDeviceMemory oceanGlintMem = VK_NULL_HANDLE;
+    // ... and its host-visible copy (8 KB, copied at the end of every recordCompute that ran
+    // sat_flare.comp): every satellite at effectFlare >= 1 with its sky direction — a superset of the
+    // ones that glare. The ambience's glare pad counts the ones glaring ON SCREEN from it (one frame
+    // stale, like pickedVisibleBuf). computeAmbienceContext zeroes the count after reading, so a frame
+    // whose flare pass was skipped reads an empty list rather than a stale one.
+    VkBuffer glareReadBuf = VK_NULL_HANDLE;
+    VkDeviceMemory glareReadMem = VK_NULL_HANDLE;
+    void *glareReadMapped = nullptr;
     // User tunables (Settings > Display), persisted in settings.json. First-pass defaults —
     // expected to need retuning once seen in-app, same as every other constant this session.
     float flareGlowGain = 0.005f;       // post-composite overall multiplier — was 1.0f, 100x the
@@ -2935,19 +2947,57 @@ private:
     {
         int altM = -1, aglM = -1, groundM = -1, latDeg = -1, lonDeg = -1, sunElDeg = -1, oceanNear = -1, oceanWide = -1,
             urban = -1, beam = -1, aurora = -1, wind = -1, cloud = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
-            forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, beamView = -1;
+            forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, glareN = -1, glareSum = -1, beamSite = -1, musicGap = -1;
     } ambD_;
     glm::dvec3 ambPrevCamEcef{0.0}; // wind rush: the camera's last position (ECEF, m)
     bool ambPrevValid = false;
     float ambSpeedEased = 0.0f;     // m/s, eased over ~0.3 s
     float ambSpeedRaw[3] = {};      // the last three raw speeds (median-of-3: one-frame spikes out)
     float ambCloudEased = -1.0f;    // sky coverage over the listener, eased over ~1.5 s (-1 = unset)
-    // Beam swell (the "saw" voice, layer beam_swell): how much Reflect beam light is aimed where the
-    // camera is looking, raw per frame (see the accumulation in the beam readback loop) and eased
-    // over ~0.4 s here so a pan doesn't step the mix. Counted beams are a diagnostic only.
-    float ambBeamViewRaw = 0.0f;
-    float ambBeamView = -1.0f;    // -1 = unset
-    int ambBeamViewCount = 0;
+    // The glare pad (layer beam_glare, synth "pad"): the flares GLARING ON SCREEN, from the host copy
+    // of the bright-flare list (glareReadBuf) — `glare_n` is how many (each counts in full once it is
+    // 0.4 past the glare threshold, partially below, so the count never steps), `glare_sum` their
+    // combined strength past the threshold (the glare sprite's own `s`). Eased: up in ~0.1 s (a flare
+    // is fleeting), down in ~0.6 s. Raw values and the count of glaring sources are for the Beams
+    // tab's readout.
+    float ambGlareN = 0.0f, ambGlareSum = 0.0f;
+    float ambGlareNRaw = 0.0f, ambGlareSumRaw = 0.0f;
+    int ambGlareCount = 0;
+    // The beam-site hum (layer beam_site_hum, synth "bass"): converged beams on sites near the
+    // listener, accumulated in the beam readback loop (SatelliteSim.cpp), eased ~1.5 s here.
+    float ambBeamSiteRaw = 0.0f;
+    float ambBeamSite = -1.0f; // -1 = unset
+    // Music vs the beam sound (2026-09-27, the user's rule): while a track plays, glare raises the
+    // track's UPWELL stem (ambUpwellGain -> AudioSystem::setUpwellGain, mapped by ambience.json's
+    // "music_upwell"); the beam pad and site hum speak only between tracks, under `music_gap` — a
+    // triangle over the silent gap (0 at its start, 1 halfway, 0 at its end), 1 when no music is
+    // audible (off, paused, muted, faded out in high orbit), slewed so a pause never steps it.
+    float ambMusicGap = -1.0f;  // -1 = unset
+    float ambIntroFade = -1.0f; // ambience bus multiplier: 0.5 during the intro (Gravity Wave leads); -1 = unset
+    float ambUpwellGain = 0.0f;
+
+    // ── Tonality: the ambience's key follows the soundtrack (MusicAnalysis.h) ─────────────────────
+    // Every {"root": k} voice and the pad's masks come from here. With ambRootFollowMusic on, the root
+    // is the playing track's tonic (at its live tuning-curve pitch), and it glides to the next track's
+    // tonic through the silent gap between them; off (or before the analysis is ready) it is the
+    // Sound tab's ambRootHz with the table's fallback scale.
+    music::Library *musicLib_ = nullptr;
+    std::vector<std::string> musicTracks_; // the playlist, as handed to AudioSystem (and the library)
+    bool ambRootFollowMusic = true;        // Sound tab (advanced), persisted
+    struct TonalState
+    {
+        double rootLog2 = -1.0;  // log2(Hz) as played; < 0 = unset
+        double targetLog2 = 0.0; // where it is gliding to
+        int octave = 0;          // octave shift applied to the current source (chosen when it changes)
+        std::string sourceKey;   // what the target is derived from ("t:1", "g:1>2", "manual")
+        uint16_t scale = 0x5AD, chord = 0x81; // relative to the root
+        std::string source, key, chordName, scaleText;
+        float tuningCents = 0.0f;
+    } tonal_;
+    void startMusicAnalysis();
+    void updateTonality(float dt);
+    nlohmann::json tonalityJson() const;
+    std::string tonalityLine() const; // Sound tab readout
     std::vector<std::vector<int>> ambGroupConsts_; // per shell group: constellation indices it matches
     void initAmbience();
     void updateAmbience(float dt);
@@ -3965,6 +4015,7 @@ private:
     // a cinematic that didn't exist in their version — see loadSettings().
     bool playIntroOnStartup = true;
     bool hovPlayIntroStartup = false;
+    bool hovRootFollowMusic = false;
     bool hovSatOcclusionChk = false, hovEnvReflChk = false, hovSharpReflChk = false;
 
     // ── Private helpers ───────────────────────────────────────────────────────

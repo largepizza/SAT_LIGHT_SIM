@@ -16,10 +16,19 @@
 //                        dome's response curve), 0..1
 //   beam                 Reflect Orbital light on the ground at the camera: the same Gaussian
 //                        spots sat_sky.frag draws, summed at the origin of groundBeams
-//   beam_view            that same light, but as seen from the camera: how much of it is being
-//                        AIMED where the camera is looking (frontal view ramp x beam proximity x
-//                        convergence x cloud clarity, spots beyond the geometric horizon excluded),
-//                        eased ~0.4 s. The beam swell's input; 1.8e6 ~= one strong beam in view.
+//   glare_n / glare_sum  the flares GLARING ON SCREEN (the glare sprites' own test: past the glare
+//                        threshold, in the view): how many (each in full once 0.4 past the threshold)
+//                        and their combined strength past it. From the host copy of sat_flare.comp's
+//                        bright-flare list; eased up in 0.1 s, down in 0.6 s. The glare pad's input.
+//                        Range: 0 to ~470 — facing the Reflect ring from a lit site, hundreds of
+//                        mirrors glare at once (0.06 facing away from it, 0 from 120 km off).
+//   beam_site            Reflect beams converging on ground sites near the listener: each converged
+//                        beam counts 1 within 15 km of the camera, 1/(1 + (excess/25 km)^2) beyond
+//                        (~180 on the Topaz site, ~10 from 120 km away). Eased ~1.5 s. The site hum's
+//                        input.
+//   music_gap            where the beam sounds may speak: 0 while a track plays (the track's upwell
+//                        stem answers the glare instead), a triangle over the silent gap between
+//                        tracks (0 -> 1 halfway -> 0), 1 when no music is audible. Slewed 1/4 per s.
 //   aurora               the auroral oval under the camera (band only, no curtain noise), 0..1
 //   wind                 a smooth pseudo-random wind strength over position and sim time, 0..1
 //   time_scale           sim seconds per wall second (time-of-day layers fade out under time warp)
@@ -36,10 +45,15 @@
 #include "Ambience.h"
 #include "AudioSystem.h"
 #include "Log.h"
+#include "MusicAnalysis.h"
+#include "Paths.h"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <filesystem>
 
 namespace
 {
@@ -132,7 +146,10 @@ void SatelliteSim::initAmbience()
     ambD_.ice = a.registerDriver("ice");
     ambD_.speed = a.registerDriver("speed_mps");
     ambD_.eas = a.registerDriver("eas");
-    ambD_.beamView = a.registerDriver("beam_view");
+    ambD_.glareN = a.registerDriver("glare_n");
+    ambD_.glareSum = a.registerDriver("glare_sum");
+    ambD_.beamSite = a.registerDriver("beam_site");
+    ambD_.musicGap = a.registerDriver("music_gap");
 
     std::string err;
     if (!a.load(kAmbiencePath, err))
@@ -308,17 +325,80 @@ void SatelliteSim::computeAmbienceContext(float dt)
     }
     a.set(ambD_.beam, beam);
 
-    // Beam swell (layer beam_swell, synth "saw"): how much Reflect beam light is currently aimed
-    // where the camera is LOOKING, computed per beam in the beam readback loop (SatelliteSim.cpp —
-    // see the accumulation there for the cone / proximity / convergence / clarity breakdown).
-    // Eased here over ~0.4 s: the layer's own fade is seconds long, but the raw metric can move by a
-    // lot in one frame when the camera pans across a lit spot, and the synth's `voices`/`fall_oct`
-    // are driven straight off it — easing is what keeps that a swell rather than a step. Raw sum,
-    // no normalisation: 1.8e6 is about one strong beam looked straight at (the same scale the `beam`
-    // driver above is written against), so the layer's ramp runs up to a few times that.
-    ambBeamView = (ambBeamView < 0.0f) ? ambBeamViewRaw
-                                       : glm::mix(ambBeamView, ambBeamViewRaw, 1.0f - expf(-dt / 0.4f));
-    a.set(ambD_.beamView, ambBeamView);
+    // Glare pad (layer beam_glare, synth "pad"): the flares glaring ON SCREEN. The same test the
+    // glare sprites make (glare.vert): the bloom's log response b = log2(effectFlare) / 2, glaring
+    // when it passes glareThreshold, and inside the view — with a soft frame edge (full at 95% of the
+    // half-extent, none past 115%) so a flare sliding out of frame fades rather than cutting off. It
+    // is what you SEE: the first cut drove the beam sound from beams near the camera's line of sight,
+    // and flying through the atmosphere put you next to beams you were not looking at, everywhere.
+    // Not tested: occlusion by terrain or cloud (the sprite tests it per pixel on the GPU).
+    {
+        float n = 0.0f, sum = 0.0f;
+        int cnt = 0;
+        if (glareReadMapped && ctx_)
+        {
+            auto *g = static_cast<GpuOceanGlintBuf *>(glareReadMapped);
+            const uint32_t count = std::min<uint32_t>(g->count, (uint32_t)kMaxOceanGlints);
+            const glm::mat3 view(camera.viewMatrix());
+            const float tanHalf = tanf(glm::radians(camera.fovYDeg) * 0.5f);
+            const float aspect = (float)ctx_->swapExtent.width / (float)std::max(1u, ctx_->swapExtent.height);
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                const glm::vec4 e = g->entries[i];
+                const float s = std::clamp(log2f(std::max(e.w, 1.0f)) * 0.5f, 0.0f, 4.0f) - glareThreshold;
+                if (s <= 0.0f)
+                    continue;
+                const glm::vec3 c = view * glm::vec3(e);
+                if (c.z >= -1e-3f)
+                    continue;
+                const float nx = c.x / (-c.z) / (tanHalf * aspect), ny = c.y / (-c.z) / tanHalf;
+                const float edge = smoothstepf(1.15f, 0.95f, std::max(std::fabs(nx), std::fabs(ny)));
+                if (edge <= 0.0f)
+                    continue;
+                n += std::min(1.0f, s / 0.4f) * edge;
+                sum += s * edge;
+                ++cnt;
+            }
+            g->count = 0; // consumed: a frame whose flare pass did not run reads an empty list
+        }
+        ambGlareNRaw = n;
+        ambGlareSumRaw = sum;
+        ambGlareCount = cnt;
+        auto ease = [dt](float cur, float raw)
+        { return cur + (raw - cur) * (1.0f - expf(-std::max(dt, 0.0f) / (raw > cur ? 0.1f : 0.6f))); };
+        ambGlareN = ease(ambGlareN, n);
+        ambGlareSum = ease(ambGlareSum, sum);
+        a.set(ambD_.glareN, ambGlareN);
+        a.set(ambD_.glareSum, ambGlareSum);
+    }
+
+    // Beam-site hum (layer beam_site_hum, synth "bass"): converged beams on sites near the listener,
+    // summed in the beam readback loop (SatelliteSim.cpp). Eased ~1.5 s: a Go to moves it in a frame.
+    ambBeamSite = (ambBeamSite < 0.0f || dt <= 0.0f)
+                      ? ambBeamSiteRaw
+                      : ambBeamSite + (ambBeamSiteRaw - ambBeamSite) * (1.0f - expf(-dt / 1.5f));
+    a.set(ambD_.beamSite, ambBeamSite);
+
+    // Music gap (see ambMusicGap in SatelliteSim.h). "Audible" is the player running AND the bus
+    // actually carrying it: music volume 0, or the altitude fade in high orbit, count as no music.
+    {
+        float target = 1.0f;
+        if (audio_ && audio_->musicOn() && !audio_->musicPaused() && audio_->getMusicVolume() * musicAltFade > 0.03f)
+        {
+            if (audio_->trackPlaying())
+                target = 0.0f;
+            else if (audio_->gapRemaining() > 0.0f)
+            {
+                const float ph = std::clamp(1.0f - audio_->gapRemaining() / std::max(audio_->musicGap(), 1e-3f), 0.0f, 1.0f);
+                target = 1.0f - std::fabs(2.0f * ph - 1.0f);
+            }
+            else
+                target = 0.0f; // between a gap's end and the next track's first frame
+        }
+        const float step = 0.25f * std::max(dt, 0.0f);
+        ambMusicGap = (ambMusicGap < 0.0f) ? target : std::clamp(target, ambMusicGap - step, ambMusicGap + step);
+        a.set(ambD_.musicGap, ambMusicGap);
+    }
 
     // Auroral oval under the camera: sat_sky's band (kGeomagPoleECEF, colatitude 20 deg + storm
     // expansion), without the curtain/coverage noise — a hum wants a smooth region, not patches.
@@ -480,11 +560,42 @@ void SatelliteSim::updateAmbience(float dt)
     if (!ambience_->loaded())
         return;
     computeAmbienceContext(dt);
+    updateTonality(dt);
     ambience_->setFadeScales(ambFadeInScale, ambFadeOutScale);
-    ambience_->setRootHz(ambRootHz);
+    ambience_->setRootHz((float)std::exp2(tonal_.rootLog2));
+    ambience_->setTonal(tonal_.scale, tonal_.chord, ambience_->tonality().tension);
     for (size_t g = 0; g < Ambience::groupNames().size() && g < 6; ++g)
         ambience_->setGroupGain(Ambience::groupNames()[g], ambGroupGain[g]);
     ambience_->update(dt, audio_);
+
+    // The playing track's upwell stem: its gain is the table's "music_upwell" map of the glare on
+    // screen, slewed linearly (up over fade_in_s, down over fade_out_s, full scale). Moving between
+    // tracks it keeps its value, so a glare that outlasts a track carries into the next one's stem.
+    if (audio_)
+    {
+        float target = 0.0f;
+        const bool haveUpwell = ambience_->upwellTarget(target);
+        if (showIntro)
+            target = 0.0f; // never during the intro: the cinematic is cut to Gravity Wave as written
+        if (haveUpwell)
+        {
+            const float up = std::max(dt, 0.0f) / ambience_->upwellFadeInS();
+            // A replayed intro takes the stem away within a second, not over the usual fade.
+            const float down = std::max(dt, 0.0f) / (showIntro ? 1.0f : ambience_->upwellFadeOutS());
+            ambUpwellGain = std::clamp(target, ambUpwellGain - down, ambUpwellGain + up);
+        }
+        else
+            ambUpwellGain = 0.0f;
+        audio_->setUpwellGain(ambUpwellGain);
+
+        // The intro is Gravity Wave's: the whole ambience bus sits at half while it plays, and comes
+        // back over ~2 s when it ends (skipped or finished).
+        const float introTarget = showIntro ? 0.5f : 1.0f;
+        const float introStep = 0.25f * std::max(dt, 0.0f);
+        ambIntroFade = (ambIntroFade < 0.0f) ? introTarget
+                                             : std::clamp(introTarget, ambIntroFade - introStep, ambIntroFade + introStep);
+        audio_->setAmbienceFade(ambIntroFade);
+    }
 
     // Music makes room for the high-orbit ambience: full through LEO, half by 5000 km (MEO), silent
     // from 35786 km (GEO, the start of HEO) up — linear in log altitude, so it is a slow, even fade
@@ -505,6 +616,162 @@ void SatelliteSim::updateAmbience(float dt)
                                   : std::clamp(target, musicAltFade - step, musicAltFade + step);
         audio_->setMusicFade(musicAltFade);
     }
+}
+
+// ── Tonality ──────────────────────────────────────────────────────────────────────────────────────
+// The soundtrack analysis (MusicAnalysis.h): every playlist track, on a worker thread (harness runs:
+// synchronously, so a scripted run hears the same key every time). The cache lives in the user data
+// folder; the exe's own folder is a read-only fallback, which is what a harness run (its user data is
+// its run folder) finds warm when the app has been run normally from the same build.
+void SatelliteSim::startMusicAnalysis()
+{
+    if (musicLib_ || musicTracks_.empty())
+        return;
+    musicLib_ = new music::Library();
+    std::vector<std::string> dirs = {(std::filesystem::path(userDataDir_.empty() ? Paths::userDataDir() : userDataDir_) /
+                                      "music_analysis")
+                                         .string()};
+    const std::string exeCache = (std::filesystem::path(Paths::exeDir()) / "music_analysis").string();
+    if (exeCache != dirs[0])
+        dirs.push_back(exeCache);
+    musicLib_->start(musicTracks_, dirs, harnessRunner_ != nullptr);
+}
+
+namespace
+{
+std::string chordLabel(const music::Analysis &a, uint16_t absMask)
+{
+    for (const music::Chord &c : a.chords)
+        if (c.mask == absMask && c.rootPc >= 0)
+            return music::chordName(c);
+    return "-";
+}
+} // namespace
+
+// The root every pitched ambience voice is a multiple of, and the masks the chord pad plays from.
+//   playing a track   its tonic, at the track's tuning-curve pitch where the music is now (so the
+//                     ambience bends with gravity_wave's piano), its pitch set, the chord it is on
+//   between tracks    a glide from where the last track ended to the next one's tonic, over the
+//                     middle of the gap (the table's tonality.gap_glide), masks switching halfway
+//   otherwise         the Sound tab's Tonal root and the table's fallback scale — follow-music off,
+//                     no music, or the analysis not ready yet
+// The octave is chosen when the SOURCE changes (nearest the root as it is, then kept within
+// tonality.root_range_hz), so a new track is a glide of at most a tritone, never an octave; and the
+// root never moves faster than tonality.slew_semitones_per_s — a skipped track glides too.
+void SatelliteSim::updateTonality(float dt)
+{
+    const Ambience::TonalityConfig &cfg = ambience_->tonality();
+    if (musicLib_)
+        for (const std::string &m : musicLib_->takeMessages())
+            Log::line(m);
+
+    std::string key = "manual";
+    double hz = std::max(ambRootHz, 1.0f);
+    uint16_t scale = cfg.fallbackScale, chord = 0x81;
+    std::string source = ambRootFollowMusic ? "Tonal root (no analysis yet)" : "Tonal root (manual)";
+    std::string keyName = "-", chordName = "-";
+    float cents = 0.0f;
+    if (ambRootFollowMusic && audio_ && musicLib_ && audio_->trackCount() > 0)
+    {
+        const int n = audio_->trackCount();
+        const int ti = audio_->trackIndex();
+        const auto A = musicLib_->get(audio_->trackPath(ti));
+        const auto B = musicLib_->get(audio_->trackPath((ti + 1) % n));
+        auto tonicAt = [&](const music::Analysis &x, float t)
+        { return x.tonicHz(cfg.rootLowHz, cfg.followTuningCurve ? x.tuningAt(t) : x.tuningCents); };
+        const bool gap = audio_->musicOn() && !audio_->trackPlaying() && audio_->gapRemaining() > 0.0f;
+        if (gap && A && B)
+        {
+            const double hzA = tonicAt(*A, A->durationS);
+            double hzB = tonicAt(*B, 0.0f);
+            while (hzB > hzA * 1.41421356)
+                hzB *= 0.5;
+            while (hzB < hzA / 1.41421356)
+                hzB *= 2.0;
+            const float ph = 1.0f - audio_->gapRemaining() / std::max(audio_->musicGap(), 1e-3f);
+            const float s = smoothstepf(cfg.gapGlide[0], cfg.gapGlide[1], ph);
+            hz = std::exp2(std::log2(hzA) + (std::log2(hzB) - std::log2(hzA)) * s);
+            const music::Analysis &M = s < 0.5f ? *A : *B;
+            scale = music::toRelative(M.pitchSet, M.tonicPc);
+            chord = music::toRelative(M.homeChord, M.tonicPc);
+            key = "g:" + std::to_string(ti);
+            source = "gap: " + audio_->trackName(ti) + " -> " + audio_->trackName((ti + 1) % n);
+            keyName = M.keyName();
+            chordName = chordLabel(M, M.homeChord);
+        }
+        else if (A)
+        {
+            const float pos = audio_->trackPlaying() ? audio_->trackPosition() : 0.0f;
+            cents = cfg.followTuningCurve ? A->tuningAt(pos) : A->tuningCents;
+            hz = A->tonicHz(cfg.rootLowHz, cents);
+            scale = music::toRelative(A->pitchSet, A->tonicPc);
+            const music::Chord *c = A->chordAt(pos);
+            chord = music::toRelative(c ? c->mask : A->homeChord, A->tonicPc);
+            key = "t:" + std::to_string(ti);
+            source = audio_->trackName(ti);
+            keyName = A->keyName();
+            chordName = c ? music::chordName(*c) : chordLabel(*A, A->homeChord);
+        }
+    }
+
+    if (key != tonal_.sourceKey)
+    {
+        tonal_.sourceKey = key;
+        tonal_.octave = 0;
+        if (key != "manual")
+        {
+            if (tonal_.rootLog2 >= 0.0)
+                tonal_.octave = -(int)std::lround(std::log2(hz) - tonal_.rootLog2);
+            double h = hz * std::exp2(tonal_.octave);
+            for (int k = 0; k < 4 && h < cfg.rootLowHz; ++k, h *= 2.0)
+                ++tonal_.octave;
+            for (int k = 0; k < 4 && h > cfg.rootHighHz; ++k, h *= 0.5)
+                --tonal_.octave;
+        }
+    }
+    tonal_.targetLog2 = std::log2(hz) + tonal_.octave;
+    if (tonal_.rootLog2 < 0.0)
+        tonal_.rootLog2 = tonal_.targetLog2;
+    else if (dt > 0.0f)
+    {
+        const double d = tonal_.targetLog2 - tonal_.rootLog2;
+        const double maxStep = cfg.slewSemitonesPerS / 12.0 * dt;
+        tonal_.rootLog2 += std::clamp(d * (1.0 - std::exp(-dt / 0.35)), -maxStep, maxStep);
+    }
+    tonal_.scale = (uint16_t)(scale | 1u);
+    tonal_.chord = chord ? chord : (uint16_t)0x81;
+    tonal_.source = source;
+    tonal_.key = keyName;
+    tonal_.chordName = chordName;
+    tonal_.scaleText = music::intervalList(tonal_.scale);
+    tonal_.tuningCents = cents;
+}
+
+nlohmann::json SatelliteSim::tonalityJson() const
+{
+    nlohmann::json j;
+    j["follow_music"] = ambRootFollowMusic;
+    j["root_hz"] = std::round(std::exp2(tonal_.rootLog2) * 100.0) / 100.0;
+    j["target_hz"] = std::round(std::exp2(tonal_.targetLog2) * 100.0) / 100.0;
+    j["source"] = tonal_.source;
+    j["key"] = tonal_.key;
+    j["chord"] = tonal_.chordName;
+    j["scale"] = tonal_.scaleText;
+    j["chord_intervals"] = music::intervalList(tonal_.chord);
+    j["tension"] = ambience_ ? music::intervalList(ambience_->tonality().tension) : "";
+    j["tuning_cents"] = std::round(tonal_.tuningCents * 10.0f) / 10.0f;
+    j["analysis_pending"] = musicLib_ ? musicLib_->pending() : 0;
+    return j;
+}
+
+std::string SatelliteSim::tonalityLine() const
+{
+    if (tonal_.rootLog2 < 0.0)
+        return "Key: -";
+    char buf[192];
+    snprintf(buf, sizeof(buf), "Key: %s, %s  |  root %.1f Hz  |  %s", tonal_.key.c_str(), tonal_.chordName.c_str(),
+             std::exp2(tonal_.rootLog2), tonal_.source.c_str());
+    return buf;
 }
 
 std::string SatelliteSim::ambienceNowPlaying() const

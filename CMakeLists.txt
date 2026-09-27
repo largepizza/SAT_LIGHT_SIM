@@ -178,6 +178,17 @@ target_include_directories(SatModelTool PRIVATE src/simulations)
 target_link_libraries(SatModelTool PRIVATE glm::glm nlohmann_json::nlohmann_json)
 sat_strict_warnings(SatModelTool)
 
+# SoundTool (ambient sound): runs the soundtrack analysis (MusicAnalysis.cpp — key, tuning curve,
+# chords) and renders any AmbientSynth voice to a WAV with keyframed parameters — the offline loop
+# for tuning the ambience without launching the app. Not part of ALL:
+#   cmake --build build --target SoundTool
+#   build/Debug/SoundTool.exe --analyze assets/sound/music/gravity_wave.mp3
+#   build/Debug/SoundTool.exe --render pad --out pad.wav --seconds 12 voices=0/0,1/2,6/8,9/0
+add_executable(SoundTool EXCLUDE_FROM_ALL tools/sound_tool/main.cpp src/AmbientSynth.cpp src/MusicAnalysis.cpp)
+target_include_directories(SoundTool PRIVATE src ${miniaudio_SOURCE_DIR})
+target_link_libraries(SoundTool PRIVATE nlohmann_json::nlohmann_json Threads::Threads)
+sat_strict_warnings(SoundTool)
+
 # Photometric accuracy gate (benchmarking milestone M11):
 #   cmake --build <build-dir> [--config Release] --target accuracy-gate
 # Builds SatModelTool and runs cmake/AccuracyGate.cmake — the one list of model selftests and

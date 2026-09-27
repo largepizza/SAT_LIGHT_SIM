@@ -3,16 +3,39 @@
   "_about": [
     "Ambient sound layers (SatelliteSim ambience; loader src/simulations/Ambience.h, drivers in SatelliteSimAmbience.cpp).",
     "A layer's gain = gain x its group's gain x every 'when' ramp x the best 'any' alternative; it slews linearly to that, up in fade_in_s, down in fade_out_s.",
-    "Groups (Sound tab gains): wind water nature city space machines. A synth param given as {\"root\": k} is k x the tonal root (Sound tab, default 55 Hz), so pitched voices share one key.",
+    "Groups (Sound tab gains): wind water nature city space machines. A synth param given as {\"root\": k} is k x the tonal root, so pitched voices share one key.",
+    "The tonal root FOLLOWS THE MUSIC (Sound tab 'Key follows the music'): the playing track's tonic at its live tuning, gliding to the next track's through the gap. Tracks are analysed at startup (src/MusicAnalysis.h; cached in <user data>/music_analysis).",
+    "A param given as {\"tonal\": \"scale\" | \"chord\" | \"tension\"} gets a pitch-class mask relative to the root: the track's pitch set, the chord it is on now, the tension tones below.",
     "Ramp [a, b]: 0 at a -> 1 at b (a > b falls). [a, b, c, d]: rises a -> b, falls c -> d.",
     "Drivers: alt_m agl_m ground_m lat_deg lon_deg sun_el_deg ocean_near ocean_wide veg forest desert ice urban beam aurora wind cloud",
-    "         beam_view speed_mps eas time_scale following intro, plus <group>_count / <group>_near_m per shell group.",
+    "         glare_n glare_sum beam_site speed_mps eas time_scale following intro, plus <group>_count / <group>_near_m per shell group.",
     "         cloud = the 2D coverage map overhead, 0..1 (windy where it is cloudy, a light breeze where it is clear).",
-    "         beam_view = beam light AIMED where you are looking (view ramp x proximity x convergence x clarity); ~1.8e6 = one strong beam in view.",
+    "         glare_n = flares glaring ON SCREEN (each counts 1 once 0.4 past the glare threshold); glare_sum = their combined strength past it.",
+    "         glare_n reaches ~470 facing the Reflect ring from a lit site (hundreds of mirrors glare at once): shape it with multi-point mods.",
+    "         beam_site = converged Reflect beams on ground sites near you (1 each within 15 km, 1/(1+(excess/25 km)^2) beyond): ~180 on the Topaz site, ~10 from 120 km.",
+    "         music_gap = 0 while a track plays, a triangle over the silence between tracks (0 -> 1 halfway -> 0), 1 when no music is audible (off, paused, muted, high orbit).",
+    "Mods are piecewise linear: \"in\": [a, b, c, ...] -> \"out\": [...] (same length, clamped at the ends).",
     "Mix: every place should total about 10 dB under the music (~-35 LUFS against its ~-25; ambience_tour.satcmd measures it).",
-    "Synths: wind hum drone beeps disk chorus surf saw (parameters: src/AmbientSynth.cpp). Files are relative to this folder;",
+    "Synths: wind hum drone beeps disk chorus surf saw pad bass (parameters: src/AmbientSynth.cpp). Files are relative to this folder;",
     "        miniaudio decodes WAV, FLAC and MP3."
   ],
+  "tonality": {
+    "_note": "How the key is derived from the music (MusicAnalysis.h). Intervals are semitones above the root. fallback_scale: when no analysis applies (follow-music off, no music). tension: tones only the glare pad's LAST voices reach - the minor second and the tritone against the tonic, beautiful and deeply uncomfortable over the music's own notes. The root is kept in root_range_hz by octaves, glides over gap_glide (fractions of the music gap) between tracks, never faster than slew_semitones_per_s, and rides each track's own tuning curve (gravity_wave's bending piano) when follow_tuning_curve.",
+    "fallback_scale": [0, 2, 3, 5, 7, 8, 10],
+    "tension": [1, 6],
+    "root_range_hz": [36, 96],
+    "gap_glide": [0.15, 0.85],
+    "slew_semitones_per_s": 1.5,
+    "follow_tuning_curve": true
+  },
+  "music_upwell": {
+    "_note": "While a track plays, the glare on screen is answered by the MUSIC, not the ambience: each track's <track>_upwell stem (the composer's, in assets/sound/music) plays sample-locked under it, at this gain (0..1, piecewise linear on the driver), rising over fade_in_s and falling over fade_out_s. The beam layers below are gated on music_gap, so they only speak between tracks.",
+    "driver": "glare_n",
+    "in": [1, 4, 20, 100],
+    "out": [0, 0.4, 0.8, 1.0],
+    "fade_in_s": 2.0,
+    "fade_out_s": 6.0
+  },
   "shell_groups": {
     "comms": { "match": ["starlink*", "oneweb", "amazon_leo", "guowang"], "hearing_m": 500000 },
     "datacenter": { "match": ["spacex_ai_sat"], "hearing_m": 50000 }
@@ -212,21 +235,41 @@
       "when": { "alt_m": [15000, 22000, 45000, 70000] }
     },
     {
-      "id": "beam_swell",
+      "id": "beam_glare",
       "group": "space",
-      "synth": "saw",
-      "gain": 0.15,
-      "fade_in_s": 3.0,
-      "fade_out_s": 6.0,
-      "_note": "The Reflect Orbital light heard as warmth: one saw voice per beam aimed where you are looking (driver `beam_view`), the stack sinking in pitch and growing a sub as more beams converge on the spot and as you get closer to them. A single beam is one high, quiet, twinkling oscillator - best heard against the crickets the same light silences (`beam`), and the drive is what lets twelve of them arrive without clipping. No sun gate: this is the light, not the daylight (the mirrors are only ever bright enough to hear at night anyway).",
-      "params": { "f0_hz": {"root": 12}, "voices": 1, "detune_cents": 22, "fall_oct": 0, "sub": 0, "bright": 0.55, "drive": 0.3, "shimmer": 0.45, "shimmer_rate": 0.5, "lfo_cents": 30, "lfo_rate_hz": 0.19, "spread": 0.8, "hp_hz": 40 },
+      "synth": "pad",
+      "gain": 0.32,
+      "fade_in_s": 0.5,
+      "fade_out_s": 4.0,
+      "_note": "The flares GLARING ON SCREEN heard as a chord in the music's key: one bright glint is two hollow voices (the chord's fifth and octave, 8x the root) that bloom and fade with it; more flares (glare_n) add voices down a fixed ladder - root, third, the ninth against the octave, the fifth below, the seventh, the root two octaves down - so the chord deepens and crowds with seconds, and only the last voices reach the tension tones. Their combined strength (glare_sum) raises the level, opens the filter and grows each voice's slow pitch warp, so a sky full of mirrors never sits in tune. No altitude or sun gate: a flare is a flare. Its voices release on their own (release_s + a reverb). Only between tracks (music_gap): while music plays, the track's upwell stem answers the glare instead (music_upwell above).",
+      "params": { "f0_hz": {"root": 8}, "scale_mask": {"tonal": "scale"}, "chord_mask": {"tonal": "chord"}, "tension_mask": {"tonal": "tension"}, "hollow": 0.8, "bright": 1.6, "attack_s": 0.35, "release_s": 1.1, "bloom": 0.8, "bloom_s": 1.4, "reverb": 0.4, "reverb_s": 4.5, "hp_hz": 110 },
       "mod": {
-        "level":    {"driver": "beam_view", "in": [0, 1800000], "out": [0.0, 1.0]},
-        "voices":   {"driver": "beam_view", "in": [150000, 2400000], "out": [1, 12]},
-        "fall_oct": {"driver": "beam_view", "in": [600000, 2400000], "out": [0, 1.1]},
-        "sub":      {"driver": "beam_view", "in": [900000, 3000000], "out": [0, 0.5]}
+        "voices":     {"driver": "glare_n", "in": [0, 1, 3, 10, 30, 100, 300], "out": [0, 2, 3, 5, 7, 10, 12]},
+        "level":      {"driver": "glare_sum", "in": [0, 1, 20, 400], "out": [1.0, 1.0, 0.8, 0.65]},
+        "warp_cents": {"driver": "glare_sum", "in": [0, 5, 50, 300], "out": [6, 10, 22, 38]},
+        "cutoff_hz":  {"driver": "glare_sum", "in": [0, 10, 300], "out": [1800, 2400, 3400]}
       },
-      "when": { "time_scale": [3600, 300], "alt_m": [400000, 150000] }
+      "when": { "time_scale": [3600, 300], "music_gap": [0, 1] }
+    },
+    {
+      "id": "beam_site_hum",
+      "group": "space",
+      "synth": "bass",
+      "gain": 0.55,
+      "fade_in_s": 4.0,
+      "fade_out_s": 4.0,
+      "_note": "Where Reflect beams concentrate (beam_site: converged beams on sites near you) a pedal on the tonic - 2x the root, a sine an octave under it, the fifth above - beating slowly against itself. More beams: louder, more drive and sub, a faster throb and a deeper, slower sag in pitch (the queasy bass under gravity_wave's piano). The bottom of the beam sound, under the glare pad. Only between tracks (music_gap), like the pad.",
+      "params": { "f0_hz": {"root": 2}, "fifth": 0.3, "beat_hz": 0.3, "hollow": 0.3, "hp_hz": 28 },
+      "mod": {
+        "level":      {"driver": "beam_site", "in": [1, 20, 180], "out": [0.3, 0.7, 1.0]},
+        "sub":        {"driver": "beam_site", "in": [5, 50, 180], "out": [0.15, 0.4, 0.6]},
+        "drive":      {"driver": "beam_site", "in": [5, 50, 200], "out": [0.25, 0.5, 0.75]},
+        "bend_cents": {"driver": "beam_site", "in": [10, 60, 200], "out": [4, 14, 28]},
+        "throb":      {"driver": "beam_site", "in": [5, 60, 200], "out": [0.15, 0.3, 0.4]},
+        "throb_rate": {"driver": "beam_site", "in": [5, 60, 200], "out": [0.08, 0.16, 0.3]},
+        "cutoff_hz":  {"driver": "beam_site", "in": [5, 60, 200], "out": [320, 480, 700]}
+      },
+      "when": { "beam_site": [0.5, 3.0], "time_scale": [3600, 300], "music_gap": [0, 1] }
     },
     {
       "id": "leo_cabin",

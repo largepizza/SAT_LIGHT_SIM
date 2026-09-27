@@ -194,7 +194,7 @@ inline float blockEase(float frames, float sr, float tau) { return 1.0f - expf(-
 
 // Band-limited harmonic wavetable: `harm` partials whose amplitudes fall as h^-bright (even ones
 // scaled by 1-odd), normalised to unit peak, linearly interpolated. bright = 1 and harm at Nyquist
-// IS a saw; the drone uses it for its organ-like series and the beam swell for a warm saw stack.
+// IS a saw; the drone uses it for its organ-like series and the saw stack for a warm saw stack.
 // Rebuild is the expensive part (harm x kTab sines), so the shape is cached and only rebuilt when a
 // shape parameter actually moves — same rule both callers used separately before this was shared.
 struct Wavetable
@@ -1084,7 +1084,9 @@ private:
     float nextNote_ = 0.0f, phrasePan_ = 0.0f, phraseAmp_ = 1.0f;
 };
 
-// ── beam swell ───────────────────────────────────────────────────────────────────────────────────
+// ── saw stack (unused by default) ─────────────────────────────────────────────────────────────────
+// The first beam sound (2026-09-27, layer beam_swell), kept as a synth kind for the table: it read as
+// an FPV drone, and the beams are now the glare pad (flares on screen) over the site bass below.
 // The Reflect Orbital beam light, heard as warmth: about one saw oscillator per beam of light in
 // view. A single beam is one oscillator high up and quiet; what makes it read as a twinkle rather
 // than a tone is its own slow amplitude shimmer (`shimmer`, each voice its own random rate), which
@@ -1244,6 +1246,461 @@ private:
     float shimRate_[kMaxVoices] = {};
     Drift shim_[kMaxVoices];
     float lfoPh_ = 0.0f, subPh_ = 0.0f;
+    Svf lpL_, lpR_, hpL_, hpR_;
+};
+
+// Feedback-delay-network reverb: four delay lines (31.7-49.9 ms x size), a Hadamard mix in the loop
+// and a one-pole damping per line, each line's gain set from its own length so the whole tail falls
+// 60 dB in `t60` seconds. Enough to turn a dry chord into a space; allocation-free (fixed buffers).
+struct Fdn
+{
+    static constexpr int kLen = 8192; // power of two; 49.9 ms x size 2 at 48 kHz fits (4790)
+    float buf[4][kLen] = {};
+    int len[4] = {64, 64, 64, 64};
+    float g[4] = {};
+    float lp[4] = {};
+    int w = 0;
+    float srSet = 0.0f, t60Set = -1.0f, sizeSet = -1.0f;
+
+    void set(float sr, float t60, float size)
+    {
+        if (sr == srSet && std::fabs(t60 - t60Set) < 0.02f && std::fabs(size - sizeSet) < 0.02f)
+            return;
+        static constexpr float kMs[4] = {31.7f, 37.3f, 43.1f, 49.9f};
+        for (int k = 0; k < 4; ++k)
+        {
+            len[k] = std::clamp((int)(kMs[k] * size * 0.001f * sr), 16, kLen - 1);
+            g[k] = powf(10.0f, -3.0f * (float)len[k] / (std::max(t60, 0.1f) * sr));
+        }
+        srSet = sr;
+        t60Set = t60;
+        sizeSet = size;
+    }
+    // damp: 0 = bright tail, 1 = very dark.
+    void process(float inL, float inR, float damp, float &outL, float &outR)
+    {
+        float d[4];
+        const float c = 1.0f - std::clamp(damp, 0.0f, 0.95f);
+        for (int k = 0; k < 4; ++k)
+        {
+            const float y = buf[k][(w - len[k]) & (kLen - 1)];
+            lp[k] += (y - lp[k]) * c;
+            d[k] = lp[k] * g[k];
+        }
+        const float h0 = 0.5f * (d[0] + d[1] + d[2] + d[3]);
+        const float h1 = 0.5f * (d[0] - d[1] + d[2] - d[3]);
+        const float h2 = 0.5f * (d[0] + d[1] - d[2] - d[3]);
+        const float h3 = 0.5f * (d[0] - d[1] - d[2] + d[3]);
+        buf[0][w] = inL + h0;
+        buf[1][w] = inR + h1;
+        buf[2][w] = inL * 0.6f - inR * 0.4f + h2;
+        buf[3][w] = inR * 0.6f - inL * 0.4f + h3;
+        w = (w + 1) & (kLen - 1);
+        outL = d[0] + 0.6f * d[2];
+        outR = d[1] + 0.6f * d[3];
+    }
+};
+
+// ── pad (the glare chorus) ───────────────────────────────────────────────────────────────────────
+// Bright flares in view heard as a chord: hollow voices (odd harmonics — a clarinet's, a stopped
+// pipe's — through a low-pass and a long FDN tail), one after another as more flares glare, each in
+// the sim's key. The sim writes three pitch-class masks RELATIVE to f0_hz (bit k = k semitones above
+// it): the SCALE (the music's own pitch set), the CHORD the music is on now, and TENSION tones (the
+// minor second and tritone by default, ambience.json "tonality") that are only reached by the last
+// voices. Voices are placed by a fixed LADDER of roles, so what a given number of flares sounds like
+// is always the same shape in whatever key:
+//   1 flare  ~ 2 voices: the chord's fifth and octave — open, hollow, no third: a single glint
+//   more     the root below, then the third high up, the ninth against the octave (the first
+//            cluster), the fifth an octave down, the seventh, the root two octaves down, the sixth
+//            against the fifth, a TENSION tone a semitone off the root, a low fifth, the tritone.
+// So the stack widens downward and fills in with seconds as flares gather: deeper and more crowded,
+// still inside the music's notes until the very end, where the tension tones rub against it.
+// Every voice has its own slow pitch WARP (a drift of +-warp_cents, which the table grows with the
+// glare): the chord never quite sits still, the way gravity_wave's piano bends under it. A voice
+// that joins BLOOMS: louder for bloom_s, with a glassy octave partial on top — the fleeting part —
+// then settles into the chord or fades with the flare. `voices` is fractional (the last voice
+// crossfades), so the count can never step. A chord change glides every voice to its new note over
+// glide_s instead of jumping.
+const AmbientSynth::ParamDef kPadParams[] = {
+    {"level", 1.0f},
+    {"f0_hz", 330.0f},
+    {"scale_mask", 1453.0f, true}, // Aeolian until the sim says otherwise (1 2 b3 4 5 b6 b7)
+    {"chord_mask", 129.0f, true},  // root + fifth
+    {"tension_mask", 66.0f, true}, // b2 + #4
+    {"voices", 0.0f},
+    {"hollow", 0.8f},
+    {"bright", 1.6f},
+    {"detune_cents", 5.0f},
+    {"warp_cents", 10.0f},
+    {"warp_rate", 0.06f},
+    {"glide_s", 0.9f},
+    {"attack_s", 0.4f},
+    {"release_s", 1.1f},
+    {"bloom", 0.8f},
+    {"bloom_s", 1.4f},
+    {"shimmer", 0.25f},
+    {"cutoff_hz", 2400.0f},
+    {"reverb", 0.4f},
+    {"reverb_s", 4.5f},
+    {"spread", 0.8f},
+    {"hp_hz", 110.0f},
+};
+enum
+{
+    kPdLvl,
+    kPdF0,
+    kPdScale,
+    kPdChord,
+    kPdTension,
+    kPdVoices,
+    kPdHollow,
+    kPdBright,
+    kPdDetune,
+    kPdWarp,
+    kPdWarpRate,
+    kPdGlide,
+    kPdAttack,
+    kPdRelease,
+    kPdBloom,
+    kPdBloomS,
+    kPdShimmer,
+    kPdCutoff,
+    kPdReverb,
+    kPdReverbS,
+    kPdSpread,
+    kPdHp
+};
+
+class PadSynth final : public AmbientSynth
+{
+public:
+    PadSynth(uint32_t sr, uint32_t seed)
+        : AmbientSynth("pad", kPadParams, (int)(sizeof(kPadParams) / sizeof(kPadParams[0])), sr, seed)
+    {
+        sine_.rebuild(1, 1.0f, 0.0f);
+        for (int v = 0; v < kMaxVoices; ++v)
+        {
+            phA_[v] = uni();
+            phB_[v] = uni();
+            phS_[v] = uni();
+            warpRate_[v] = 0.7f + 0.6f * uni();
+            shimRate_[v] = 0.5f + 0.9f * uni();
+            // Alternate sides, wider for later (lower, busier) voices.
+            pan_[v] = ((v % 2) ? 1.0f : -1.0f) * (0.2f + 0.8f * (float)v / (float)(kMaxVoices - 1));
+        }
+    }
+
+protected:
+    static constexpr int kMaxVoices = 12;
+    static constexpr int kTableHarm = 10; // f0 x 2^(26/12) x 10 stays under Nyquist for f0 < 470 Hz
+    // Trimmed so four voices at level 1, gain 1 measure about -24 LUFS (see the file header).
+    static constexpr float kOut = 0.055f;
+
+    enum RoleKind
+    {
+        kChord,
+        kScale,
+        kTension
+    };
+    struct Role
+    {
+        float pref; // preferred interval, semitones from f0
+        RoleKind kind;
+    };
+    // The ladder (see the class comment). A chord role takes the nearest chord tone within 3
+    // semitones, else a scale tone; a scale role the nearest unused scale tone; a tension role the
+    // nearest tension tone within 7, else a scale tone. No two voices share a note.
+    static constexpr Role kRoles[kMaxVoices] = {
+        {7.0f, kChord},  {12.0f, kChord},  {0.0f, kChord},   {15.5f, kChord},  {14.0f, kScale},    {-5.0f, kChord},
+        {10.5f, kScale}, {-12.0f, kChord}, {8.5f, kScale},   {13.0f, kTension}, {-17.0f, kChord}, {18.0f, kTension},
+    };
+
+    static bool has(uint16_t m, int iv) { return (m >> (((iv % 12) + 12) % 12)) & 1u; }
+
+    void placeVoices(uint16_t scale, uint16_t chord, uint16_t tension)
+    {
+        if (!chord)
+            chord = 129; // root + fifth
+        scale |= chord | 1u;
+        uint64_t used = 0; // bit (iv + 24)
+        auto search = [&](uint16_t m, float pref, float maxDist) -> int
+        {
+            int best = INT32_MIN;
+            float bestD = 1e9f;
+            for (int iv = -24; iv <= 26; ++iv)
+            {
+                if (!has(m, iv) || (used >> (iv + 24)) & 1ull)
+                    continue;
+                const float d = std::fabs((float)iv - pref);
+                if (d <= maxDist && d < bestD)
+                {
+                    bestD = d;
+                    best = iv;
+                }
+            }
+            return best;
+        };
+        for (int v = 0; v < kMaxVoices; ++v)
+        {
+            const Role &r = kRoles[v];
+            int iv = INT32_MIN;
+            if (r.kind == kChord)
+            {
+                iv = search(chord, r.pref, 3.0f);
+                if (iv == INT32_MIN)
+                    iv = search(scale, r.pref, 3.0f);
+            }
+            else if (r.kind == kScale)
+                iv = search(scale, r.pref, 3.0f);
+            else if (tension)
+                iv = search(tension, r.pref, 7.0f);
+            if (iv == INT32_MIN)
+                iv = search(scale, r.pref, 99.0f);
+            if (iv == INT32_MIN)
+                iv = (int)r.pref;
+            used |= 1ull << (iv + 24);
+            note_[v] = (float)iv;
+            if (!placed_)
+                cur_[v] = (float)iv; // the first placement doesn't glide in from nowhere
+        }
+        placed_ = true;
+    }
+
+    void block(float *out, uint32_t n) override
+    {
+        const float bt = (float)n / sr_;
+        const uint16_t scale = (uint16_t)std::clamp((int)lroundf(p_[kPdScale]), 0, 4095);
+        const uint16_t chord = (uint16_t)std::clamp((int)lroundf(p_[kPdChord]), 0, 4095);
+        const uint16_t tension = (uint16_t)std::clamp((int)lroundf(p_[kPdTension]), 0, 4095);
+        if (!placed_ || scale != scale_ || chord != chord_ || tension != tension_)
+        {
+            scale_ = scale;
+            chord_ = chord;
+            tension_ = tension;
+            placeVoices(scale, chord, tension);
+        }
+        const float bright = std::max(p_[kPdBright], 0.3f), hollow = std::clamp(p_[kPdHollow], 0.0f, 1.0f);
+        tab_.ensure(kTableHarm, bright, hollow);
+
+        const float f0 = std::max(p_[kPdF0], 20.0f);
+        const float voices = std::clamp(p_[kPdVoices], 0.0f, (float)kMaxVoices);
+        const float aAtk = 1.0f - expf(-bt / std::max(p_[kPdAttack], 0.01f));
+        const float aRel = 1.0f - expf(-bt / std::max(p_[kPdRelease], 0.01f));
+        const float aGlide = 1.0f - expf(-bt / std::max(p_[kPdGlide], 0.01f));
+        const float bloomDecay = expf(-bt / std::max(p_[kPdBloomS], 0.05f));
+        const float aBloom = 1.0f - expf(-bt / 0.04f); // the bloom's own 40 ms rise: no click
+        const float bloomAmt = std::clamp(p_[kPdBloom], 0.0f, 2.0f);
+        const float warp = std::clamp(p_[kPdWarp], 0.0f, 200.0f);
+        const float shim = std::clamp(p_[kPdShimmer], 0.0f, 1.0f);
+        const float det = std::clamp(p_[kPdDetune], 0.0f, 100.0f) / 2400.0f; // half the spread, octaves
+        const float spread = std::clamp(p_[kPdSpread], 0.0f, 1.0f);
+
+        float bloomSum = 0.0f;
+        int nv = 0;
+        for (int v = 0; v < kMaxVoices; ++v)
+        {
+            const float gt = std::clamp(voices - (float)v, 0.0f, 1.0f);
+            if (gt >= 0.5f && gtPrev_[v] < 0.5f)
+                bloomEnv_[v] = 1.0f; // a voice joins: it blooms
+            gtPrev_[v] = gt;
+            gate_[v] += (gt - gate_[v]) * (gt > gate_[v] ? aAtk : aRel);
+            bloomEnv_[v] *= bloomDecay;
+            bloomLvl_[v] += (bloomEnv_[v] - bloomLvl_[v]) * aBloom;
+            cur_[v] += (note_[v] - cur_[v]) * aGlide;
+            const float w = warp * (2.0f * warp_[v].tick(bt, p_[kPdWarpRate] * warpRate_[v], rng_) - 1.0f);
+            const float f = f0 * exp2f((cur_[v] + w * 0.01f) / 12.0f);
+            incA_[v] = f * exp2f(det) / sr_;
+            incB_[v] = f * exp2f(-det) / sr_;
+            incS_[v] = 2.0f * f * 1.0015f / sr_;
+            const float sg = 1.0f - shim * (1.0f - shim_[v].tick(bt, shimRate_[v], rng_));
+            ampTarget_[v] = gate_[v] * (1.0f + bloomAmt * bloomLvl_[v]) * sg;
+            sparkTarget_[v] = gate_[v] * bloomAmt * bloomLvl_[v] * 0.35f;
+            panGains(spread * std::clamp(pan_[v] - 0.2f, -1.0f, 1.0f), glA_[v], grA_[v]);
+            panGains(spread * std::clamp(pan_[v] + 0.2f, -1.0f, 1.0f), glB_[v], grB_[v]);
+            bloomSum += gate_[v] * bloomLvl_[v];
+            if (ampTarget_[v] > 1e-5f || amp_[v] > 1e-5f)
+                nv = v + 1;
+        }
+
+        // The low-pass opens a little with the blooms: a new flare is brighter than the chord.
+        const float fc = std::clamp(p_[kPdCutoff] * (1.0f + 0.6f * std::min(bloomSum, 2.0f)), 200.0f, 0.42f * sr_);
+        lpL_.set(fc, 0.6f, sr_);
+        lpR_.set(fc * 1.05f, 0.6f, sr_);
+        const float hp = std::clamp(p_[kPdHp], 20.0f, 2000.0f);
+        hpL_.set(hp, 0.7f, sr_);
+        hpR_.set(hp, 0.7f, sr_);
+        const float wet = std::clamp(p_[kPdReverb], 0.0f, 1.0f);
+        fdn_.set(sr_, std::max(p_[kPdReverbS], 0.2f), 1.6f);
+        const float level = p_[kPdLvl] * kOut;
+
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            const float x = (float)(i + 1) / (float)n;
+            float l = 0.0f, r = 0.0f;
+            for (int v = 0; v < nv; ++v)
+            {
+                const float a = amp_[v] + (ampTarget_[v] - amp_[v]) * x;
+                const float sp = spark_[v] + (sparkTarget_[v] - spark_[v]) * x;
+                phA_[v] += incA_[v];
+                if (phA_[v] >= 1.0f)
+                    phA_[v] -= 1.0f;
+                phB_[v] += incB_[v];
+                if (phB_[v] >= 1.0f)
+                    phB_[v] -= 1.0f;
+                const float sa = tab_.lookup(phA_[v]) * a * 0.5f, sb = tab_.lookup(phB_[v]) * a * 0.5f;
+                l += sa * glA_[v] + sb * glB_[v];
+                r += sa * grA_[v] + sb * grB_[v];
+                if (sp > 1e-5f)
+                {
+                    phS_[v] += incS_[v];
+                    if (phS_[v] >= 1.0f)
+                        phS_[v] -= 1.0f;
+                    const float s = sine_.lookup(phS_[v]) * sp;
+                    l += s * glB_[v];
+                    r += s * grA_[v];
+                }
+            }
+            lpL_.tick(l);
+            lpR_.tick(r);
+            float wl, wr;
+            fdn_.process(lpL_.lp, lpR_.lp, 0.35f, wl, wr);
+            hpL_.tick(lpL_.lp * (1.0f - 0.5f * wet) + wl * wet * 0.8f);
+            hpR_.tick(lpR_.lp * (1.0f - 0.5f * wet) + wr * wet * 0.8f);
+            // A soft ceiling for twelve voices blooming at once. Kept gentle: at 1.4x the chord's
+            // difference tones (third-order intermodulation) showed up as mud below 200 Hz.
+            out[2 * i] = tanhf(hpL_.hp * level * 0.6f) / 0.6f;
+            out[2 * i + 1] = tanhf(hpR_.hp * level * 0.6f) / 0.6f;
+        }
+        for (int v = 0; v < kMaxVoices; ++v)
+        {
+            amp_[v] = ampTarget_[v];
+            spark_[v] = sparkTarget_[v];
+        }
+    }
+
+private:
+    Wavetable tab_, sine_;
+    Drift warp_[kMaxVoices], shim_[kMaxVoices];
+    float warpRate_[kMaxVoices] = {}, shimRate_[kMaxVoices] = {}, pan_[kMaxVoices] = {};
+    float note_[kMaxVoices] = {}, cur_[kMaxVoices] = {}; // interval (semitones): placed, and gliding
+    float gate_[kMaxVoices] = {}, gtPrev_[kMaxVoices] = {}, bloomEnv_[kMaxVoices] = {}, bloomLvl_[kMaxVoices] = {};
+    float amp_[kMaxVoices] = {}, ampTarget_[kMaxVoices] = {}, spark_[kMaxVoices] = {}, sparkTarget_[kMaxVoices] = {};
+    float phA_[kMaxVoices] = {}, phB_[kMaxVoices] = {}, phS_[kMaxVoices] = {};
+    float incA_[kMaxVoices] = {}, incB_[kMaxVoices] = {}, incS_[kMaxVoices] = {};
+    float glA_[kMaxVoices] = {}, grA_[kMaxVoices] = {}, glB_[kMaxVoices] = {}, grB_[kMaxVoices] = {};
+    uint16_t scale_ = 0, chord_ = 0, tension_ = 0;
+    bool placed_ = false;
+    Svf lpL_, lpR_, hpL_, hpR_;
+    Fdn fdn_;
+};
+
+// ── bass (the beam-site hum) ─────────────────────────────────────────────────────────────────────
+// A pedal on the tonic for where Reflect beams concentrate: a harmonic tone on f0 beating against a
+// copy `beat_hz` sharp (the two sides beat against each other, so the throb moves across the head),
+// the fifth above it, a sine an octave below, all driven into a soft clip and low-passed — then a
+// slow SAG: the pitch drifts down by up to `bend_cents` and back (gravity_wave's queasy bass), with
+// a slow amplitude throb on top. The table grows the sag, the drive and the sub with the number of
+// beams concentrated near the listener.
+const AmbientSynth::ParamDef kBassParams[] = {
+    {"level", 1.0f},     {"f0_hz", 82.0f},     {"fifth", 0.3f},       {"sub", 0.35f},
+    {"bright", 1.3f},    {"hollow", 0.3f},     {"beat_hz", 0.3f},     {"throb", 0.25f},
+    {"throb_rate", 0.11f}, {"bend_cents", 0.0f}, {"bend_rate", 0.035f}, {"drive", 0.35f},
+    {"cutoff_hz", 420.0f}, {"width", 0.5f},    {"hp_hz", 28.0f},
+};
+enum
+{
+    kBsLvl,
+    kBsF0,
+    kBsFifth,
+    kBsSub,
+    kBsBright,
+    kBsHollow,
+    kBsBeat,
+    kBsThrob,
+    kBsThrobRate,
+    kBsBend,
+    kBsBendRate,
+    kBsDrive,
+    kBsCutoff,
+    kBsWidth,
+    kBsHp
+};
+
+class BassSynth final : public AmbientSynth
+{
+public:
+    BassSynth(uint32_t sr, uint32_t seed)
+        : AmbientSynth("bass", kBassParams, (int)(sizeof(kBassParams) / sizeof(kBassParams[0])), sr, seed)
+    {
+        for (float &p : ph_)
+            p = uni();
+    }
+
+protected:
+    // Trimmed so level 1, gain 1 measures about -24 LUFS (see the file header).
+    static constexpr float kOut = 0.21f;
+
+    void block(float *out, uint32_t n) override
+    {
+        const float bt = (float)n / sr_;
+        tab_.ensure(8, std::max(p_[kBsBright], 0.3f), std::clamp(p_[kBsHollow], 0.0f, 1.0f));
+        const float sag = p_[kBsBend] * bend_.tick(bt, p_[kBsBendRate], rng_); // down only
+        const float f = std::max(p_[kBsF0], 15.0f) * exp2f(-sag / 1200.0f);
+        const float beat = std::clamp(p_[kBsBeat], 0.0f, 10.0f);
+        inc_[0] = f / sr_;
+        inc_[1] = (f + beat) / sr_;
+        inc_[2] = 1.5f * f / sr_;
+        inc_[3] = (1.5f * f + 0.7f * beat) / sr_;
+        inc_[4] = 0.5f * f / sr_;
+        throbPh_ += kTwoPi * std::max(p_[kBsThrobRate], 0.0f) * bt;
+        if (throbPh_ > kTwoPi)
+            throbPh_ -= kTwoPi;
+        const float th = std::clamp(p_[kBsThrob], 0.0f, 1.0f);
+        const float ampTarget = 1.0f - th * (0.5f + 0.5f * sinf(throbPh_));
+        const float fifth = std::clamp(p_[kBsFifth], 0.0f, 1.0f), sub = std::clamp(p_[kBsSub], 0.0f, 1.0f);
+        const float w = std::clamp(p_[kBsWidth], 0.0f, 1.0f);
+        const float drive = std::clamp(p_[kBsDrive], 0.0f, 1.0f);
+        const float sat = 1.0f + 5.0f * drive, satInv = 1.0f / sat;
+        const float fc = std::clamp(p_[kBsCutoff], 60.0f, 0.42f * sr_);
+        lpL_.set(fc, 0.8f, sr_);
+        lpR_.set(fc * 1.04f, 0.8f, sr_);
+        hpL_.set(std::clamp(p_[kBsHp], 15.0f, 200.0f), 0.7f, sr_);
+        hpR_.set(std::clamp(p_[kBsHp], 15.0f, 200.0f), 0.7f, sr_);
+        const float level = p_[kBsLvl] * kOut;
+
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            const float x = (float)(i + 1) / (float)n;
+            const float amp = ampPrev_ + (ampTarget - ampPrev_) * x;
+            for (int k = 0; k < 5; ++k)
+            {
+                ph_[k] += inc_[k];
+                if (ph_[k] >= 1.0f)
+                    ph_[k] -= 1.0f;
+            }
+            const float a = tab_.lookup(ph_[0]), b = tab_.lookup(ph_[1]);
+            const float c = tab_.lookup(ph_[2]) * fifth, d = tab_.lookup(ph_[3]) * fifth;
+            const float s = sinf(kTwoPi * ph_[4]) * sub;
+            // The beating pair split across the sides by `width`: the throb of the beat moves.
+            float l = (a * (1.0f - 0.5f * w) + b * 0.5f * w) * 0.6f + (c * (1.0f - 0.5f * w) + d * 0.5f * w) * 0.35f + s;
+            float r = (b * (1.0f - 0.5f * w) + a * 0.5f * w) * 0.6f + (d * (1.0f - 0.5f * w) + c * 0.5f * w) * 0.35f + s;
+            l = tanhf(l * amp * sat) * satInv * (1.0f + drive);
+            r = tanhf(r * amp * sat) * satInv * (1.0f + drive);
+            lpL_.tick(l);
+            lpR_.tick(r);
+            hpL_.tick(lpL_.lp);
+            hpR_.tick(lpR_.lp);
+            out[2 * i] = hpL_.hp * level;
+            out[2 * i + 1] = hpR_.hp * level;
+        }
+        ampPrev_ = ampTarget;
+    }
+
+private:
+    Wavetable tab_;
+    Drift bend_;
+    float ph_[5] = {}, inc_[5] = {};
+    float throbPh_ = 0.0f, ampPrev_ = 1.0f;
     Svf lpL_, lpR_, hpL_, hpR_;
 };
 
@@ -1441,10 +1898,17 @@ std::unique_ptr<AmbientSynth> AmbientSynth::create(const std::string &kind, uint
         return std::make_unique<SurfSynth>(sampleRate, seed);
     if (kind == "saw")
         return std::make_unique<SawSynth>(sampleRate, seed);
+    if (kind == "pad")
+        return std::make_unique<PadSynth>(sampleRate, seed);
+    if (kind == "bass")
+        return std::make_unique<BassSynth>(sampleRate, seed);
     return nullptr;
 }
 
-std::vector<std::string> AmbientSynth::kinds() { return {"wind", "hum", "drone", "beeps", "disk", "chorus", "surf", "saw"}; }
+std::vector<std::string> AmbientSynth::kinds()
+{
+    return {"wind", "hum", "drone", "beeps", "disk", "chorus", "surf", "saw", "pad", "bass"};
+}
 
 int AmbientSynth::paramIndex(const std::string &name) const
 {
@@ -1478,7 +1942,7 @@ void AmbientSynth::render(float *out, uint32_t frames)
         for (int i = 0; i < paramCount_; ++i)
         {
             const float t = target_[i].load(std::memory_order_relaxed);
-            p_[i] += (t - p_[i]) * a;
+            p_[i] = defs_[i].snap ? t : p_[i] + (t - p_[i]) * a;
         }
         first_ = false;
         block(out, n);

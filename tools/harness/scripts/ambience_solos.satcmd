@@ -17,9 +17,11 @@ audio force firmament 1; wait settle 20; audio record solo_firmament solo=firmam
 audio force comms_drone 1; wait settle 20; audio record solo_comms_drone solo=comms_drone seconds=20; audio force off
 audio force datacenter_hum 1; wait settle 20; audio record solo_datacenter_hum solo=datacenter_hum seconds=20; audio force off
 
-# The beam swell is only audible where beam light is aimed at the camera, so its solo is taken at
-# the tour's beam site (Topaz Solar Farm) with the camera on the beams — the pose ambience_beams.
-# satcmd sweeps to and records at. The spawn point (where the rest of this run sits) has no beams,
-# so a solo there would measure level 0, not the voice.
-observer lat=35.38 lon=-120.07 agl=2; time sun -20; camera az=270 el=15; wait settle
-audio force beam_swell 1; wait settle 20; audio record solo_beam_swell solo=beam_swell seconds=12; audio force off
+# The beam voices only speak at a beam site: the glare pad needs flares ON SCREEN (so the camera
+# looks at the Reflect ring - the pose ambience_beams.satcmd records at) and the site hum needs
+# converged beams nearby. At the spawn point (where the rest of this run sits) both would measure
+# silence, not the voice.
+observer lat=35.38 lon=-120.07 agl=2; time sun -20; select const "Reflect Orbital"; camera look sel; camera fov=90; wait settle
+audio force beam_glare 1; wait settle 20; audio record solo_beam_glare solo=beam_glare seconds=12; audio force off
+audio force beam_site_hum 1; wait settle 20; audio record solo_beam_site_hum solo=beam_site_hum seconds=12; audio force off
+select none
