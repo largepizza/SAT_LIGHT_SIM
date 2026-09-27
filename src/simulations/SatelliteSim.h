@@ -2935,13 +2935,19 @@ private:
     {
         int altM = -1, aglM = -1, groundM = -1, latDeg = -1, lonDeg = -1, sunElDeg = -1, oceanNear = -1, oceanWide = -1,
             urban = -1, beam = -1, aurora = -1, wind = -1, cloud = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
-            forest = -1, desert = -1, ice = -1, speed = -1, eas = -1;
+            forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, beamView = -1;
     } ambD_;
     glm::dvec3 ambPrevCamEcef{0.0}; // wind rush: the camera's last position (ECEF, m)
     bool ambPrevValid = false;
     float ambSpeedEased = 0.0f;     // m/s, eased over ~0.3 s
     float ambSpeedRaw[3] = {};      // the last three raw speeds (median-of-3: one-frame spikes out)
     float ambCloudEased = -1.0f;    // sky coverage over the listener, eased over ~1.5 s (-1 = unset)
+    // Beam swell (the "saw" voice, layer beam_swell): how much Reflect beam light is aimed where the
+    // camera is looking, raw per frame (see the accumulation in the beam readback loop) and eased
+    // over ~0.4 s here so a pan doesn't step the mix. Counted beams are a diagnostic only.
+    float ambBeamViewRaw = 0.0f;
+    float ambBeamView = -1.0f;    // -1 = unset
+    int ambBeamViewCount = 0;
     std::vector<std::vector<int>> ambGroupConsts_; // per shell group: constellation indices it matches
     void initAmbience();
     void updateAmbience(float dt);

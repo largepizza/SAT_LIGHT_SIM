@@ -225,6 +225,11 @@ needs ears:
    sea, plains at night, a Reflect Orbital beam site, forest, dawn, jungle day/night, Sahara, LA at
    night, Alps, Greenland, 11 km, 30 km, over the aurora, beside a Starlink, inside the AI datacenter
    disk, 20,000 km) and `audio expect`s the right layers at each — a wrong layer fails the run.
+   `tools/harness/scripts/ambience_beams.satcmd` does that for the one direction-SENSITIVE layer: at
+   the tour's beam site it sweeps the camera azimuth and reads `beam_view` back (~2.2e6 with the
+   beams in view, 6e5 with them behind the camera; 0 = no light at all), then records the swell with
+   the beams on and off the camera. Read the sweep's numbers before believing the recording — that
+   driver is the whole design.
 2. **Signal.** A muted harness run has an audio engine with NO device: nothing plays, and nothing
    is mixed until `audio record` pulls the graph synchronously — deterministic (seeded synths) and
    independent of frame rate. `imgtools.py audio <wav...> -o spec.png` gives, per file, RMS / peak /
@@ -232,7 +237,8 @@ needs ears:
    log-frequency spectrogram with an RMS strip: chirps, beeps and clicks show as shapes, a hum as
    lines, wind as a moving band, a loop seam as a vertical edge.
    `tools/harness/scripts/ambience_solos.satcmd` renders every layer alone at gain 1 plus a music
-   reference — the calibration run.
+   reference — the calibration run. `beam_swell` is soloed at the beam site with the camera on the
+   beams: a level of 0 with no light in view means a solo anywhere else would measure silence.
 3. **Feel.** The user's: play the WAVs, or run with `--sound`.
 
 The mix rule: at every tour stop the ambience totals about 10 dB under the music (the tour's last

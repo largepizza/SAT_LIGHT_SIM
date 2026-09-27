@@ -2,7 +2,8 @@
 // ── AmbientSynth ──────────────────────────────────────────────────────────────────────────────────
 // Procedural ambience voices: wind and air, a noise hum, a harmonic drone (phaser, whine,
 // compressor cycling, soft low tones), FSK data beeps, disk/server activity, magnetospheric VLF
-// "chorus" (flanged) and breaking surf. Each synth is a miniaudio data source (f32 stereo
+// "chorus" (flanged), breaking surf and a warm saw stack (the Reflect beam light, one voice per
+// beam). Each synth is a miniaudio data source (f32 stereo
 // at the engine's rate) that AudioSystem plays through an ma_sound on the ambience bus, so its
 // level, the bus volume and the master volume apply like they do to a sample.
 //
@@ -38,7 +39,7 @@ public:
 
     virtual ~AmbientSynth();
 
-    // "wind", "hum", "drone", "beeps", "disk", "chorus", "surf"; null for an unknown kind.
+    // "wind", "hum", "drone", "beeps", "disk", "chorus", "surf", "saw"; null for an unknown kind.
     static std::unique_ptr<AmbientSynth> create(const std::string &kind, uint32_t sampleRate, uint32_t seed);
     static std::vector<std::string> kinds();
 

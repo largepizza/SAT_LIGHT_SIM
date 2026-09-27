@@ -17,8 +17,9 @@
   in medium Earth orbit and the "Firmament" pad rising toward high orbit (both original, made in FL
   Studio). Procedural voices (`src/AmbientSynth.cpp`) plus CC0 field recordings
   (`tools/make_ambience.py`), mixed by a moddable layer table
-  (`assets/sound/ambience/ambience.json`). The automation harness renders and checks it
-  (`audio state/record/expect/force/music`, `imgtools.py audio`). In orbit, low phased drones and soft status tones in one shared key (Settings → Sound →
+  (`assets/sound/ambience/ambience.json`). Under Reflect Orbital light a warm saw swell rises with
+  the number of beams aimed where you are looking. The automation harness renders and checks it
+  (`audio state/record/expect/force/music`, `ambience_beams.satcmd`, `imgtools.py audio`). In orbit, low phased drones and soft status tones in one shared key (Settings → Sound →
   "Tonal root"). Advanced Sound settings: fade speeds, the tonal root, per-group gains (wind, water,
   nature, city, space, machines).
 - **Music player.** Settings → Sound shows the current track and its position, with previous /

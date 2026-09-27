@@ -518,7 +518,7 @@ Location- and context-aware ambience on its own bus under the music (Settings �
 
 | File | Role |
 |---|---|
-| `src/AmbientSynth.h/.cpp` | procedural voices as miniaudio data sources: `wind`, `surf`, `hum` (noise through resonances), `drone` (harmonic wavetable + phaser + whine + compressor cycle + soft status motifs), and the unused-by-default `chorus` (procedural VLF chorus / whistlers / sferics, flanged — replaced by the recorded `vlf_earth` loop), `beeps` (FSK bursts) and `disk` (seek clicks). Params are atomics set by the main thread, eased per 64-frame block on the audio thread; seeded xorshift, so a render is deterministic |
+| `src/AmbientSynth.h/.cpp` | procedural voices as miniaudio data sources: `wind`, `surf`, `hum` (noise through resonances), `drone` (harmonic wavetable + phaser + whine + compressor cycle + soft status motifs), `saw` (the beam swell: up to twelve detuned band-limited saw voices, one per beam of Reflect light, per-voice shimmer, a shared vibrato and a `fall_oct` that sinks the stack as the mirrors converge), and the unused-by-default `chorus` (procedural VLF chorus / whistlers / sferics, flanged — replaced by the recorded `vlf_earth` loop), `beeps` (FSK bursts) and `disk` (seek clicks). Params are atomics set by the main thread, eased per 64-frame block on the audio thread; seeded xorshift, so a render is deterministic |
 | `src/AudioSystem.h/.cpp` | the ambience group, voices (sample loop or synth) with per-voice gain, one-shots with pan, the music PLAYER (see below), and **offline mode** |
 | `src/simulations/Ambience.h/.cpp` | the layer table: `assets/sound/ambience/ambience.json` → per-layer target gain from named drivers, eased over `fade_s`, voices created lazily, events scheduled |
 | `src/simulations/SatelliteSimAmbience.cpp` | the sim's context drivers, computed each frame at the end of the planets block in `recordCompute` |
@@ -540,6 +540,21 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   consonant. The first cut's FSK beeps (2.4 kHz, squared-off) and disk clicks + fan noise read as
   brash and as audio glitches; they were replaced by the two drones.
 - **Groups** (`"group"`: wind water nature city space machines) each have a gain on the Sound tab.
+- **The beam swell** (`beam_swell`, synth `saw`) is the one layer whose loudness is a DIRECTION: it is
+  the Reflect Orbital light the listener is looking at. Its driver `beam_view` is a frontal ramp on the
+  camera's forward axis against the two ends of each beam (the ground spot it lights and the satellite
+  it comes from) × proximity to the beam's 3D line × convergence (`aimErrorRad`, the same 10 deg signal
+  the cloud clustering uses) × cloud clarity, gated on the spot still being above the observer's
+  geometric horizon (`limbZ`, as the sun's own limb test is), summed over beams and eased 0.4 s. It
+  drives `voices` 1→12, `fall_oct` 0→1.1, `sub` 0→0.5 and `level` 0→1. Measured at the tour's beam
+  site (`ambience_beams.satcmd`): 2.2e6 with the beams in view, 6e5 with them behind the camera, and
+  the whole ambience mix moves ~4 dB between those two camera headings. One beam is one high, quiet,
+  twinkling oscillator (per-voice `shimmer`, since a steady tone would read as a synth pad); the stack
+  widens (`detune_cents`), sinks (`fall_oct`) and grows a sub as more beams converge, and `drive`
+  (tanh) is what lets twelve of them arrive without clipping. A param that is BOTH a `params` entry and
+  a `mod` target is overwritten by the root write every frame (`Ambience::update` applies mods, then the
+  table's root params), so the pitch drop is its own `fall_oct` param, never a mod on `f0_hz`. No sun
+  gate: this is the light, not the daylight.
 - **Drivers are the listener's, i.e. the CAMERA's** (follow mode: the camera, not the parked
   telescope): `alt_m agl_m ground_m` (GPU ground, like harness `state`), `lat_deg lon_deg`,
   `sun_el_deg`, `ocean_near/_wide` (`oceanMaskCpu`: a full-resolution 1-bit mask from the DEM —
@@ -547,7 +562,9 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   (classified from a 2048×1024 copy of the DAY MAP, so the sound agrees with the ground as drawn;
   the map is a dry-season mosaic, the Great Plains read tan — "not desert, not ice" is the grassland
   test), `urban` (night lights, the dome's response curve), `beam` (the `groundBeams` Gaussians at
-  the origin: ~1.8e6 in a lit spot's core), `aurora` (oval band only), `wind` (value noise over
+  the origin: ~1.8e6 in a lit spot's core), `beam_view` (the same light as SEEN from the camera — how
+  much of it is aimed where the camera is looking; see the beam swell bullet below), `aurora` (oval
+  band only), `wind` (value noise over
   ECEF direction and sim time — the jet stream and the alpine/desert/ice/sea winds), `cloud` (the 2D
   coverage map's value overhead: bilinear over the 1024×512 `earthCloudsCpu`, drifted by the same
   `cloudPhase` the surface overlay uses and eased over 1.5 s so a Go to cannot step it — `wind_ground`
@@ -579,7 +596,7 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   (`ambience_solos.satcmd`); samples are normalised to −24 LUFS. The table's gains then set the mix
   so each tour stop totals ≈ 10 dB under the music (≈ −35 against its ≈ −25 LUFS). No tonal
   "melody" content: hums are noise through resonances, beeps are data bursts.
-- **Every synth output is high-passed** (wind 45 Hz, surf 55 Hz, disk 60 Hz, hum 32 Hz) and the
+- **Every synth output is high-passed** (wind 45 Hz, surf 55 Hz, disk 60 Hz, hum 32 Hz, saw 40 Hz) and the
   sample beds per source in `make_ambience.py`: the first wind was a sub-bass wall (brown noise
   through a gentle band-pass) and its gusts were a linear swing that measured flat — gusts are a
   swing in dB now.
@@ -608,8 +625,9 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   `buildCloudSliderRows(..., marksPreset=false)` at slot idx 99-108 (the slot arrays are 112 now;
   idx 110/111 are the satellite ocean-glint pair below, rendered from the Ocean tab).
 - Verification: docs/HARNESS.md "Ambient sound" — `audio state/record/expect/force/music`,
-  `ambience_tour.satcmd` (self-checking), `imgtools.py audio` (spectrograms, LUFS). How it SOUNDS is
-  the user's to judge.
+  `ambience_tour.satcmd` (self-checking), `ambience_beams.satcmd` (the direction-sensitive beam swell:
+  an azimuth sweep read back through `audio state`, then the same voice recorded on and off the beams),
+  `imgtools.py audio` (spectrograms, LUFS). How it SOUNDS is the user's to judge.
 
 ---
 

@@ -1453,8 +1453,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // written, and how far is the nearest one) — AND (C12 follow-up #41) the source signal for
     // the beam-proximity sky-glow wash below — AND (2026-08-09) the small capped per-BEAM light
     // list that feeds cloud_march.comp's real beam->cloud illumination term (no per-target
-    // aggregation any more — see GpuBeamCloudLights' own comment). Same one-frame-stale,
-    // HOST_COHERENT idiom as peakMagnitude above.
+    // aggregation any more — see GpuBeamCloudLights' own comment) — AND the `beam_view` ambience
+    // driver (the beam swell's input: how much beam light is aimed where the camera is looking).
+    // Same one-frame-stale, HOST_COHERENT idiom as peakMagnitude above.
     {
         // CPU timing (2026-08-10): this whole block is the prime suspect for the ~2.8 ms non-GPU
         // remainder the Release Anchorage capture exposed — it scans up to kMaxActiveBeams (2048)
@@ -1545,6 +1546,32 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             glm::vec3 worldish = v.x * oldEnuX + v.y * oldEnuY + v.z * oldEnuZ;
             return glm::vec3(glm::dot(worldish, newEnuX), glm::dot(worldish, newEnuY), glm::dot(worldish, newEnuZ));
         };
+
+        // ── Ambience: the beam swell's driver (layer beam_swell, `beam_view`) ────────────────────
+        // "How much Reflect beam light is being aimed where I am looking", summed over beams. Two
+        // soft terms per beam: a FRONTAL ramp on the angle between the camera's forward axis and the
+        // beam (1 within ~45 deg, ~0.25 at 90 deg, 0 past ~107 deg), and a proximity ramp on the
+        // distance to the beam's 3D line. The frontal ramp is used instead of projecting the beam's
+        // direction into the frame (the sunDirENU NDC test one block up) on purpose: a frame-edge
+        // test makes the layer's level a function of the camera's FOV slider and of where in the
+        // frame the light happens to sit, while "am I looking at it" is the question this driver
+        // means. `limbZ` is the same geometric horizon the glare block above uses, applied to the
+        // beam's ground spot, so a spot across the curve of the Earth contributes nothing.
+        const glm::mat3 beamViewRot(camera.viewMatrix());
+        const glm::vec3 beamViewFwd = -glm::vec3(beamViewRot[0][2], beamViewRot[1][2], beamViewRot[2][2]);
+        const float beamViewObsR = kEarthRadius + obsEffHForLights;
+        const float beamViewLimbZ =
+            (beamViewObsR > kEarthRadius)
+                ? -sqrtf(std::max(0.0f, 1.0f - (kEarthRadius / beamViewObsR) * (kEarthRadius / beamViewObsR)))
+                : 0.0f;
+        constexpr float kBeamViewCosHi = 0.5f;        // cos(60 deg): fully on this well inside the view
+        constexpr float kBeamViewCosLo = -0.3f;       // cos(107 deg): off once the beam is behind you
+        constexpr float kBeamViewNearM = 100000.0f;   // a beam this close counts in full
+        constexpr float kBeamViewFalloffM = 400000.0f;// ... and this is the softening length
+        constexpr float kBeamViewConvRad = 0.174533f; // radians(10) — the same converged/transiting
+                                                      // boundary the cluster split below uses
+        ambBeamViewRaw = 0.0f;
+        ambBeamViewCount = 0;
 
         // ── Cloud-light identity (2026-08-12 rewrite) ─────────────────────────────────────────
         // See TrackedBeamLight in SatelliteSim.h for the full rationale. Summary: a light's
@@ -1764,6 +1791,48 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             float intensity = beamsIn[s].intensity;
             float targetDistM = glm::length(tE);
             glm::vec3 rDir = rebase(beamsIn[s].reflectDirENU);
+
+            // Beam swell (ambience, layer beam_swell): is this beam's light aimed where the camera
+            // is looking? Smooth terms, summed over beams and weighted by each beam's own intensity
+            // — a raw COUNT of beams would cross the whole metric at once, which is exactly what
+            // would make the layer's `voices` step. Thresholds live with the hoisted constants
+            // above the loop.
+            //   cone    — the frontal ramp to the two ends of the beam: where its light lands (the
+            //             ground spot, `targetENU`) and where it comes from (the satellite, `satENU`)
+            //   prox    — `d`, the distance to the beam's 3D line (above), NOT to the spot: a beam
+            //             passing overhead is the beam you are under whatever its far target is
+            //   conv    — aim error: a locked beam is one bright spot, a slewing one is a smear
+            //   clarity — how much cloud is actually between the light and the camera
+            //   horizon — the spot still being above the observer's geometric horizon (limbZ)
+            if (intensity > 0.0f && targetDistM > 1.0f)
+            {
+                const glm::vec3 toSpot = tE / targetDistM;
+                const float coneSpot =
+                    glm::smoothstep(kBeamViewCosLo, kBeamViewCosHi, glm::dot(beamViewFwd, toSpot));
+                const float sLen = glm::length(sE);
+                const float coneSrc = (sLen > 1.0f)
+                                          ? glm::smoothstep(kBeamViewCosLo, kBeamViewCosHi,
+                                                            glm::dot(beamViewFwd, sE / sLen))
+                                          : 0.0f;
+                const float cone = std::max(coneSpot, coneSrc);
+                if (cone > 0.0f)
+                {
+                    const float beyond = std::max(d - kBeamViewNearM, 0.0f) / kBeamViewFalloffM;
+                    const float prox = 1.0f / (1.0f + beyond * beyond);
+                    const float aim = beamsIn[s].aimErrorRad / kBeamViewConvRad;
+                    const float conv = 1.0f / (1.0f + aim * aim);
+                    const float clarity = 1.0f - glm::clamp(beamsIn[s].blockOpacity, 0.0f, 1.0f);
+                    // +z is up at the observer, so -toSpot.z is the spot's elevation sine — the same
+                    // quantity the sun's own limb test above compares against this same limbZ.
+                    const float horizon = glm::smoothstep(beamViewLimbZ - 0.02f, beamViewLimbZ + 0.01f, -toSpot.z);
+                    const float w = cone * prox * conv * clarity * horizon;
+                    if (w > 0.001f)
+                    {
+                        ambBeamViewRaw += intensity * w;
+                        ++ambBeamViewCount;
+                    }
+                }
+            }
 
             // Ground-spot compaction: same range cutoff sat_sky.frag's loop applies, done ONCE
             // here per beam instead of unconditionally per ground-hit pixel. Widened by

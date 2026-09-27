@@ -192,6 +192,55 @@ struct Phaser
 // Easing coefficient for a per-block one-pole toward a target with time constant tau.
 inline float blockEase(float frames, float sr, float tau) { return 1.0f - expf(-frames / (sr * tau)); }
 
+// Band-limited harmonic wavetable: `harm` partials whose amplitudes fall as h^-bright (even ones
+// scaled by 1-odd), normalised to unit peak, linearly interpolated. bright = 1 and harm at Nyquist
+// IS a saw; the drone uses it for its organ-like series and the beam swell for a warm saw stack.
+// Rebuild is the expensive part (harm x kTab sines), so the shape is cached and only rebuilt when a
+// shape parameter actually moves — same rule both callers used separately before this was shared.
+struct Wavetable
+{
+    static constexpr int kTab = 2048;
+    float tab[kTab] = {};
+    int harm = -1;
+    float bright = -1.0f, odd = -1.0f;
+
+    void rebuild(int h, float br, float od)
+    {
+        float peak = 1e-6f;
+        for (int i = 0; i < kTab; ++i)
+        {
+            const float x = kTwoPi * (float)i / (float)kTab;
+            float v = 0.0f;
+            for (int k = 1; k <= h; ++k)
+            {
+                const float a = powf((float)k, -br) * ((k % 2 == 0) ? (1.0f - od) : 1.0f);
+                v += a * sinf((float)k * x);
+            }
+            tab[i] = v;
+            peak = std::max(peak, std::fabs(v));
+        }
+        for (float &v : tab)
+            v /= peak;
+        harm = h;
+        bright = br;
+        odd = od;
+    }
+
+    void ensure(int h, float br, float od)
+    {
+        if (h != harm || std::fabs(br - bright) > 0.01f || std::fabs(od - odd) > 0.01f)
+            rebuild(h, br, od);
+    }
+
+    float lookup(float ph) const
+    {
+        const float p = ph * (float)kTab;
+        const int i0 = (int)p;
+        const float f = p - (float)i0;
+        return tab[i0 & (kTab - 1)] * (1.0f - f) + tab[(i0 + 1) & (kTab - 1)] * f;
+    }
+};
+
 // ── wind / air ───────────────────────────────────────────────────────────────────────────────────
 // Wind is band-limited noise whose loudness AND pitch rise together in a gust. Four parts:
 //   band    coloured noise through two cascaded band-passes (12 dB/oct skirts, the "whoosh"); a
@@ -876,7 +925,6 @@ public:
     }
 
 protected:
-    static constexpr int kTab = 2048;
     // Consonant ratios over the tone base (just intonation: 1, 9/8, 5/4, 3/2, 5/3, 2) and a few
     // short motifs over them. Sparse, soft and repeated: status chirps, not a tune.
     static constexpr float kRatios[6] = {1.0f, 1.125f, 1.25f, 1.5f, 1.6667f, 2.0f};
@@ -888,42 +936,12 @@ protected:
         float t = 0.0f, dur = 0.2f, f = 220.0f, ph = 0.0f, amp = 0.0f, gl = 0.7f, gr = 0.7f;
     };
 
-    void rebuildTable(int harm, float bright, float odd)
-    {
-        float peak = 1e-6f;
-        for (int i = 0; i < kTab; ++i)
-        {
-            const float x = kTwoPi * (float)i / (float)kTab;
-            float v = 0.0f;
-            for (int h = 1; h <= harm; ++h)
-            {
-                const float a = powf((float)h, -bright) * ((h % 2 == 0) ? (1.0f - odd) : 1.0f);
-                v += a * sinf((float)h * x);
-            }
-            tab_[i] = v;
-            peak = std::max(peak, std::fabs(v));
-        }
-        for (float &v : tab_)
-            v /= peak;
-        tabHarm_ = harm;
-        tabBright_ = bright;
-        tabOdd_ = odd;
-    }
-    float lookup(float ph) const
-    {
-        const float p = ph * (float)kTab;
-        const int i0 = (int)p;
-        const float f = p - (float)i0;
-        return tab_[i0 & (kTab - 1)] * (1.0f - f) + tab_[(i0 + 1) & (kTab - 1)] * f;
-    }
-
     void block(float *out, uint32_t n) override
     {
         const float bt = (float)n / sr_;
         const int harm = std::clamp((int)lroundf(p_[kDHarm]), 1, 12);
         const float bright = std::max(p_[kDBright], 0.0f), odd = std::clamp(p_[kDOdd], 0.0f, 1.0f);
-        if (harm != tabHarm_ || std::fabs(bright - tabBright_) > 0.01f || std::fabs(odd - tabOdd_) > 0.01f)
-            rebuildTable(harm, bright, odd);
+        tab_.ensure(harm, bright, odd);
 
         // Compressor cycle: on for 60% of the period, off for 40%, with 2 s ramps.
         float cycleTarget = 1.0f;
@@ -1006,7 +1024,7 @@ protected:
             for (float &p : ph_)
                 if (p >= 1.0f)
                     p -= 1.0f;
-            const float a = lookup(ph_[0]), b = lookup(ph_[1]), c = lookup(ph_[2]);
+            const float a = tab_.lookup(ph_[0]), b = tab_.lookup(ph_[1]), c = tab_.lookup(ph_[2]);
             // The detuned copies are a quarter of the mix: at 40% they pumped the level +-7 dB at
             // the beat rate, a slow "wah" that grew tiresome.
             float l = a * 0.75f + (b * (1.0f - w * 0.5f) + c * w * 0.5f) * 0.25f;
@@ -1053,9 +1071,7 @@ protected:
     }
 
 private:
-    float tab_[kTab] = {};
-    int tabHarm_ = -1;
-    float tabBright_ = -1.0f, tabOdd_ = -1.0f;
+    Wavetable tab_;
     float ph_[3] = {0.0f, 0.0f, 0.0f};
     float phW_ = 0.0f, vib_ = 0.0f, cycT_ = 0.0f, swellPrev_ = 1.0f;
     Phaser phaser_;
@@ -1066,6 +1082,169 @@ private:
     bool phraseLeft_ = false;
     int motif_ = 0, motifPos_ = 0;
     float nextNote_ = 0.0f, phrasePan_ = 0.0f, phraseAmp_ = 1.0f;
+};
+
+// ── beam swell ───────────────────────────────────────────────────────────────────────────────────
+// The Reflect Orbital beam light, heard as warmth: about one saw oscillator per beam of light in
+// view. A single beam is one oscillator high up and quiet; what makes it read as a twinkle rather
+// than a tone is its own slow amplitude shimmer (`shimmer`, each voice its own random rate), which
+// averages away into a steady warm wash as voices arrive. More beams add more oscillators — a
+// FRACTIONAL count, so the last one crossfades in and the count can never step — each a little
+// sharper than the last, so the stack widens and beats as it grows, while the whole stack sinks by
+// `fall_oct`: the light getting heavier and lower as the mirrors converge, with `sub` folding in an
+// octave below for the body. A shared ~30-cent vibrato, offset per voice so the stack breathes as a
+// chord instead of one organ, is the "uneasy warmth" this was asked for.
+// Everything pitched is a RATIO of f0_hz (f0 x 2^-(fall_oct) x 2^(cents/1200)), so the voice stays a
+// multiple of the tonal root like every other pitched layer ({"root": k} in the table). `fall_oct`
+// is a separate parameter rather than a mod on f0_hz because a parameter that is BOTH a table
+// `params` entry and a `mod` target is overwritten by the root write every frame — Ambience::update
+// applies mods first and the table's root params after.
+const AmbientSynth::ParamDef kSawParams[] = {
+    {"level", 1.0f},     {"f0_hz", 440.0f},      {"voices", 1.0f},     {"detune_cents", 22.0f},
+    {"fall_oct", 0.0f},  {"sub", 0.0f},          {"bright", 0.55f},    {"drive", 0.3f},
+    {"shimmer", 0.45f},  {"shimmer_rate", 0.5f}, {"lfo_cents", 30.0f}, {"lfo_rate_hz", 0.19f},
+    {"spread", 0.8f},    {"hp_hz", 40.0f},
+};
+enum
+{
+    kSwLvl,
+    kSwF0,
+    kSwVoices,
+    kSwDetune,
+    kSwFall,
+    kSwSub,
+    kSwBright,
+    kSwDrive,
+    kSwShimmer,
+    kSwShimRate,
+    kSwLfoCents,
+    kSwLfoRate,
+    kSwSpread,
+    kSwHp
+};
+
+class SawSynth final : public AmbientSynth
+{
+public:
+    SawSynth(uint32_t sr, uint32_t seed)
+        : AmbientSynth("saw", kSawParams, (int)(sizeof(kSawParams) / sizeof(kSawParams[0])), sr, seed)
+    {
+        for (int v = 0; v < kMaxVoices; ++v)
+        {
+            ph_[v] = uni();                              // the voices start spread over the cycle
+            const float off = kTwoPi * (float)v * 0.37f; // ... and so does their vibrato
+            lfoCos_[v] = cosf(off);
+            lfoSin_[v] = sinf(off);
+            shimRate_[v] = 0.6f + 0.8f * uni();          // each voice shimmers at its own rate
+        }
+    }
+
+protected:
+    static constexpr int kMaxVoices = 12;
+    // One FIXED band limit, built once: 16 harmonics is everything the low-pass below this leaves
+    // audible, and it stays under Nyquist for the whole range this voice can reach (the table's
+    // root tops out at 82 Hz, x12 = 984 Hz for voice 0, x2^(22 cents x 11) for the sharpest — 16
+    // x 1.13 kHz = 18 kHz, still below 24 kHz). A pitch-tracking table would be more "correct" and
+    // sound identical, but it would rebuild on every beam arriving — a 30k-sine loop on the audio
+    // thread, per crossing, for harmonics the low-pass has already muted.
+    static constexpr int kTableHarm = 16;
+    // Trimmed so a full stack measures about -24 LUFS at level 1, gain 1 (see the file header):
+    // measured -23.0 LUFS at the Topaz beam site, all beams in view, via ambience_solos.satcmd.
+    static constexpr float kOut = 0.19f;
+
+    void block(float *out, uint32_t n) override
+    {
+        const float bt = (float)n / sr_;
+        const float f0 = std::max(p_[kSwF0], 5.0f) * exp2f(-std::clamp(p_[kSwFall], -2.0f, 5.0f));
+        const float voices = std::clamp(p_[kSwVoices], 0.0f, (float)kMaxVoices);
+        const int nFull = std::min((int)voices, kMaxVoices);
+        const float frac = voices - (float)nFull;
+        const float cents = std::clamp(p_[kSwDetune], 0.0f, 200.0f) / 1200.0f;
+
+        // Voice 0 is exactly f0_hz; each further voice is `detune_cents` sharper. `bright` is the
+        // table's harmonic roll-off (1.0 with no band limit is a pure saw; below that the top end is
+        // softened — warm) and the low-pass below scales with the pitch, so the stack darkens as it
+        // sinks. See kTableHarm for why the band limit doesn't follow fTop.
+        const float fTop = f0 * exp2f(cents * (float)std::max(nFull, 1));
+        tab_.ensure(kTableHarm, std::max(p_[kSwBright], 0.05f), 0.0f);
+
+        const float spread = std::clamp(p_[kSwSpread], 0.0f, 1.0f);
+        const float shim = std::clamp(p_[kSwShimmer], 0.0f, 1.0f);
+        const float shimRate = std::max(p_[kSwShimRate], 0.0f);
+        for (int v = 0; v < kMaxVoices; ++v)
+        {
+            inc_[v] = f0 * exp2f(cents * (float)v) / sr_;
+            panGains(spread * ((v % 2) ? 1.0f : -1.0f) * (float)v / (float)(kMaxVoices - 1), gl_[v], gr_[v]);
+            shimGain_[v] = 1.0f - shim * (1.0f - shim_[v].tick(bt, shimRate * shimRate_[v], rng_));
+        }
+
+        // Soft saturation on the sum: the stack MUST get louder as beams arrive (that is the whole
+        // point of the layer), and tanh is what keeps twelve of them from clipping while it does —
+        // the peak stops rising long before the RMS does.
+        const float drive = std::clamp(p_[kSwDrive], 0.0f, 1.0f);
+        const float sat = 1.0f + 4.0f * drive, satInv = 1.0f / sat, post = 1.0f + 1.5f * drive;
+        // Cents as a ratio, linear approximation (1200/ln2 = 1731.2 cents per octave).
+        const float lfoDepth = std::clamp(p_[kSwLfoCents], 0.0f, 300.0f) / 1731.0f;
+        const float lfoInc = kTwoPi * std::max(p_[kSwLfoRate], 0.0f) * bt;
+        const float sub = std::clamp(p_[kSwSub], 0.0f, 1.0f);
+        const float fc = std::clamp(fTop * (1.0f + 6.0f * std::max(p_[kSwBright], 0.05f)), 300.0f, 0.42f * sr_);
+        const float hp = std::clamp(p_[kSwHp], 10.0f, 4000.0f);
+        lpL_.set(fc, 0.7f, sr_);
+        lpR_.set(fc * 1.04f, 0.7f, sr_); // a hair apart, so the two sides never sound identical
+        hpL_.set(hp, 0.7f, sr_);
+        hpR_.set(hp, 0.7f, sr_);
+        const float subInc = 0.5f * f0 / sr_;
+        const int nv = std::min(kMaxVoices, nFull + (frac > 0.0f ? 1 : 0));
+        const float level = p_[kSwLvl];
+
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            lfoPh_ += lfoInc;
+            if (lfoPh_ >= kTwoPi)
+                lfoPh_ -= kTwoPi;
+            const float sa = sinf(lfoPh_), ca = cosf(lfoPh_);
+            float l = 0.0f, r = 0.0f;
+            for (int v = 0; v < nv; ++v)
+            {
+                // sin(lfo + off_v) from one sin/cos pair per block: a rotation per voice, not a
+                // per-voice sin. Those offsets are what stop the stack moving as one body.
+                float &ph = ph_[v];
+                ph += inc_[v] * (1.0f + lfoDepth * (sa * lfoCos_[v] + ca * lfoSin_[v]));
+                if (ph >= 1.0f)
+                    ph -= 1.0f;
+                const float s = tab_.lookup(ph) * shimGain_[v] * (v == nFull ? frac : 1.0f);
+                l += s * gl_[v];
+                r += s * gr_[v];
+            }
+            if (sub > 0.0f)
+            {
+                subPh_ += subInc;
+                if (subPh_ >= 1.0f)
+                    subPh_ -= 1.0f;
+                const float s = sinf(kTwoPi * subPh_) * sub * 0.6f;
+                l += s;
+                r += s;
+            }
+            lpL_.tick(tanhf(l * sat) * satInv * post);
+            lpR_.tick(tanhf(r * sat) * satInv * post);
+            hpL_.tick(lpL_.lp);
+            hpR_.tick(lpR_.lp);
+            out[2 * i] = hpL_.hp * level * kOut;
+            out[2 * i + 1] = hpR_.hp * level * kOut;
+        }
+    }
+
+private:
+    Wavetable tab_;
+    float ph_[kMaxVoices] = {};
+    float inc_[kMaxVoices] = {};
+    float gl_[kMaxVoices] = {}, gr_[kMaxVoices] = {};
+    float lfoCos_[kMaxVoices] = {}, lfoSin_[kMaxVoices] = {};
+    float shimGain_[kMaxVoices] = {};
+    float shimRate_[kMaxVoices] = {};
+    Drift shim_[kMaxVoices];
+    float lfoPh_ = 0.0f, subPh_ = 0.0f;
+    Svf lpL_, lpR_, hpL_, hpR_;
 };
 
 // ── surf ─────────────────────────────────────────────────────────────────────────────────────────
@@ -1260,10 +1439,12 @@ std::unique_ptr<AmbientSynth> AmbientSynth::create(const std::string &kind, uint
         return std::make_unique<ChorusSynth>(sampleRate, seed);
     if (kind == "surf")
         return std::make_unique<SurfSynth>(sampleRate, seed);
+    if (kind == "saw")
+        return std::make_unique<SawSynth>(sampleRate, seed);
     return nullptr;
 }
 
-std::vector<std::string> AmbientSynth::kinds() { return {"wind", "hum", "drone", "beeps", "disk", "chorus", "surf"}; }
+std::vector<std::string> AmbientSynth::kinds() { return {"wind", "hum", "drone", "beeps", "disk", "chorus", "surf", "saw"}; }
 
 int AmbientSynth::paramIndex(const std::string &name) const
 {

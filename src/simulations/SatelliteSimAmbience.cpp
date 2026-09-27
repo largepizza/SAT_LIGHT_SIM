@@ -16,6 +16,10 @@
 //                        dome's response curve), 0..1
 //   beam                 Reflect Orbital light on the ground at the camera: the same Gaussian
 //                        spots sat_sky.frag draws, summed at the origin of groundBeams
+//   beam_view            that same light, but as seen from the camera: how much of it is being
+//                        AIMED where the camera is looking (frontal view ramp x beam proximity x
+//                        convergence x cloud clarity, spots beyond the geometric horizon excluded),
+//                        eased ~0.4 s. The beam swell's input; 1.8e6 ~= one strong beam in view.
 //   aurora               the auroral oval under the camera (band only, no curtain noise), 0..1
 //   wind                 a smooth pseudo-random wind strength over position and sim time, 0..1
 //   time_scale           sim seconds per wall second (time-of-day layers fade out under time warp)
@@ -128,6 +132,7 @@ void SatelliteSim::initAmbience()
     ambD_.ice = a.registerDriver("ice");
     ambD_.speed = a.registerDriver("speed_mps");
     ambD_.eas = a.registerDriver("eas");
+    ambD_.beamView = a.registerDriver("beam_view");
 
     std::string err;
     if (!a.load(kAmbiencePath, err))
@@ -302,6 +307,18 @@ void SatelliteSim::computeAmbienceContext(float dt)
         }
     }
     a.set(ambD_.beam, beam);
+
+    // Beam swell (layer beam_swell, synth "saw"): how much Reflect beam light is currently aimed
+    // where the camera is LOOKING, computed per beam in the beam readback loop (SatelliteSim.cpp —
+    // see the accumulation there for the cone / proximity / convergence / clarity breakdown).
+    // Eased here over ~0.4 s: the layer's own fade is seconds long, but the raw metric can move by a
+    // lot in one frame when the camera pans across a lit spot, and the synth's `voices`/`fall_oct`
+    // are driven straight off it — easing is what keeps that a swell rather than a step. Raw sum,
+    // no normalisation: 1.8e6 is about one strong beam looked straight at (the same scale the `beam`
+    // driver above is written against), so the layer's ramp runs up to a few times that.
+    ambBeamView = (ambBeamView < 0.0f) ? ambBeamViewRaw
+                                       : glm::mix(ambBeamView, ambBeamViewRaw, 1.0f - expf(-dt / 0.4f));
+    a.set(ambD_.beamView, ambBeamView);
 
     // Auroral oval under the camera: sat_sky's band (kGeomagPoleECEF, colatitude 20 deg + storm
     // expansion), without the curtain/coverage noise — a hum wants a smooth region, not patches.

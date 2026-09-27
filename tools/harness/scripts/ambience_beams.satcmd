@@ -1,0 +1,28 @@
+# Beam swell: the Reflect Orbital light heard as warmth (docs/HARNESS.md, "Ambient sound").
+# The stop is the tour's own beam site (Topaz Solar Farm, inside a lit Reflect spot), because the
+# driver `beam_view` only exists under beam light - it is the light AIMED where the camera is
+# looking, weighted by intensity, so ~1.8e6 is one strong beam in view and 0 is no light at all.
+# The azimuth sweep is therefore the direction-sensitivity check (read the numbers back with
+# `audio state`), and the two recordings are the same voice aimed at the beams and aimed away.
+#
+#   tools/harness/.venv/Scripts/python tools/harness/imgtools.py audio <run>/captures/beams_*.wav -o beams.png
+
+observer lat=35.38 lon=-120.07 agl=2; time sun -20; wait settle
+
+# Where are the beams? el=15 so the sweep catches a beam's ray (its satellite) as well as the spot
+# it lights on the ground.
+camera az=0 el=15; wait settle 8; audio state beams_az000
+camera az=45 el=15; wait settle 8; audio state beams_az045
+camera az=90 el=15; wait settle 8; audio state beams_az090
+camera az=135 el=15; wait settle 8; audio state beams_az135
+camera az=225 el=15; wait settle 8; audio state beams_az225
+camera az=270 el=15; wait settle 8; audio state beams_az270
+camera az=315 el=15; wait settle 8; audio state beams_az315
+
+# Away from them (measured weakest of the sweep): a thin, high voice.
+camera az=180 el=15; wait settle
+audio expect beam_swell absent=crickets; audio record beams_weak seconds=12; audio state beams_weak
+
+# On them: the same voice with the stack under it.
+camera az=270 el=15; wait settle
+audio expect beam_swell,wind_ground; audio record beams_swell seconds=12; audio state beams_best

@@ -6,10 +6,11 @@
     "Groups (Sound tab gains): wind water nature city space machines. A synth param given as {\"root\": k} is k x the tonal root (Sound tab, default 55 Hz), so pitched voices share one key.",
     "Ramp [a, b]: 0 at a -> 1 at b (a > b falls). [a, b, c, d]: rises a -> b, falls c -> d.",
     "Drivers: alt_m agl_m ground_m lat_deg lon_deg sun_el_deg ocean_near ocean_wide veg forest desert ice urban beam aurora wind cloud",
-    "         speed_mps eas time_scale following intro, plus <group>_count / <group>_near_m per shell group.",
+    "         beam_view speed_mps eas time_scale following intro, plus <group>_count / <group>_near_m per shell group.",
     "         cloud = the 2D coverage map overhead, 0..1 (windy where it is cloudy, a light breeze where it is clear).",
+    "         beam_view = beam light AIMED where you are looking (view ramp x proximity x convergence x clarity); ~1.8e6 = one strong beam in view.",
     "Mix: every place should total about 10 dB under the music (~-35 LUFS against its ~-25; ambience_tour.satcmd measures it).",
-    "Synths: wind hum drone beeps disk chorus surf (parameters: src/AmbientSynth.cpp). Files are relative to this folder;",
+    "Synths: wind hum drone beeps disk chorus surf saw (parameters: src/AmbientSynth.cpp). Files are relative to this folder;",
     "        miniaudio decodes WAV, FLAC and MP3."
   ],
   "shell_groups": {
@@ -209,6 +210,23 @@
       "fade_out_s": 1.0,
       "params": { "color": 0.8, "center_hz": 150, "q": 0.8, "body": 0.6, "body_hz": 80, "gust": 0.2, "gust_rate": 0.05, "hiss": 0.0, "width": 0.6 },
       "when": { "alt_m": [15000, 22000, 45000, 70000] }
+    },
+    {
+      "id": "beam_swell",
+      "group": "space",
+      "synth": "saw",
+      "gain": 0.15,
+      "fade_in_s": 3.0,
+      "fade_out_s": 6.0,
+      "_note": "The Reflect Orbital light heard as warmth: one saw voice per beam aimed where you are looking (driver `beam_view`), the stack sinking in pitch and growing a sub as more beams converge on the spot and as you get closer to them. A single beam is one high, quiet, twinkling oscillator - best heard against the crickets the same light silences (`beam`), and the drive is what lets twelve of them arrive without clipping. No sun gate: this is the light, not the daylight (the mirrors are only ever bright enough to hear at night anyway).",
+      "params": { "f0_hz": {"root": 12}, "voices": 1, "detune_cents": 22, "fall_oct": 0, "sub": 0, "bright": 0.55, "drive": 0.3, "shimmer": 0.45, "shimmer_rate": 0.5, "lfo_cents": 30, "lfo_rate_hz": 0.19, "spread": 0.8, "hp_hz": 40 },
+      "mod": {
+        "level":    {"driver": "beam_view", "in": [0, 1800000], "out": [0.0, 1.0]},
+        "voices":   {"driver": "beam_view", "in": [150000, 2400000], "out": [1, 12]},
+        "fall_oct": {"driver": "beam_view", "in": [600000, 2400000], "out": [0, 1.1]},
+        "sub":      {"driver": "beam_view", "in": [900000, 3000000], "out": [0, 0.5]}
+      },
+      "when": { "time_scale": [3600, 300], "alt_m": [400000, 150000] }
     },
     {
       "id": "leo_cabin",

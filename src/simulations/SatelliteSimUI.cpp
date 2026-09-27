@@ -4916,6 +4916,29 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
         }
     }
 
+    // ── Beam swell driver (ambience layer beam_swell) ────────────────
+    // How much beam light is aimed where the CAMERA is looking: the raw per-frame sum (about 1.8e6
+    // per strong beam looked at, 0 with no beam light), the value the layer actually gets (eased over
+    // 0.4 s) and the number of beams contributing to it. Pan off the beams and both numbers fall; if
+    // they don't, it's the frontal ramp or the horizon gate, not the audio.
+    {
+        static char swellBuf[64];
+        snprintf(swellBuf, sizeof(swellBuf), "%.2fe6 -> %.2fe6 / %d beams", ambBeamViewRaw * 1e-6f,
+                 ambBeamView * 1e-6f, ambBeamViewCount);
+        CLAY(CLAY_ID("BeamSwellDiagRow"), {.layout = {
+                                               .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
+                                               .padding = {4, 4, 2, 2},
+                                               .childGap = 8,
+                                               .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                               .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY_TEXT(CLAY_STRING("Beam swell (in view)"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            CLAY(CLAY_ID("BeamSwellDiagSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+            Clay_String swellStr{false, (int32_t)strlen(swellBuf), swellBuf};
+            CLAY_TEXT(swellStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        }
+    }
+
     // ── Debug pointing-ray visualization (C12 follow-up #12) ─────────
     // Draws each active beam's mirror's ACTUAL current reflected-sunlight direction as a thin
     // off-white ray from the satellite — not a knockout toggle (doesn't disable anything normal),

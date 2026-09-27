@@ -16,3 +16,10 @@ audio force vlf_earth 1; wait settle 20; audio record solo_vlf_earth solo=vlf_ea
 audio force firmament 1; wait settle 20; audio record solo_firmament solo=firmament seconds=16; audio force off
 audio force comms_drone 1; wait settle 20; audio record solo_comms_drone solo=comms_drone seconds=20; audio force off
 audio force datacenter_hum 1; wait settle 20; audio record solo_datacenter_hum solo=datacenter_hum seconds=20; audio force off
+
+# The beam swell is only audible where beam light is aimed at the camera, so its solo is taken at
+# the tour's beam site (Topaz Solar Farm) with the camera on the beams — the pose ambience_beams.
+# satcmd sweeps to and records at. The spawn point (where the rest of this run sits) has no beams,
+# so a solo there would measure level 0, not the voice.
+observer lat=35.38 lon=-120.07 agl=2; time sun -20; camera az=270 el=15; wait settle
+audio force beam_swell 1; wait settle 20; audio record solo_beam_swell solo=beam_swell seconds=12; audio force off
