@@ -396,4 +396,18 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // fraction of the detail's octave-0 amplitude), y = branching (how much each octave follows the
     // gullies of the ones before it), zw unused.
     vec4  terrainErosion;
+    // -- Satellite ocean-glint reflection (688 -> 704) -- sat_sky.frag's OceanGlintBuf loop ----------
+    // The mirror-flare glints sat_flare.comp appends to OceanGlintBuf and sat_sky.frag composites onto
+    // the sea surface. Unlike the Milky Way's reflection (oceanMwReflGain) these are point-like
+    // specular hits, so they are the one part of a flare that is visible only on the water. They
+    // shipped at the constants they replaced (gain 1.0, floor 2.0, hardcoded here until 2026-09-26),
+    // then were re-defaulted the same day to the tuned pair from the author's settings.json —
+    // 0.020175438 / 37.894737; see SatelliteSim.h for why the digits look like that. Shader code
+    // only ever reads them, so the defaults live and are documented on the C++ side.
+    float oceanGlintGain;    // multiplier on the whole glint contribution (0 = no flare glints at all)
+    float oceanGlintMinFlux; // minimum effectFlare (an OceanGlintBuf entry's .w) that draws at all —
+                             // the surgical control for "mild satellites light up the water": raising
+                             // it drops faint entries where the gain dims the spectacular ones too
+    float oceanGlintPad0;    // std140 rounds this block up to a 16-byte multiple while C++ would pack
+    float oceanGlintPad1;    // it at 696, so the trailing two are LOAD-BEARING — do not reuse.
 } cloud;

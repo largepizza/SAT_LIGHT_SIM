@@ -2969,7 +2969,13 @@ void main() {
                 float tanHFg = tan(pc.fovYRad * 0.5);
                 for (uint fi = 0u; fi < fCount; ++fi) {
                     float flux = oceanGlintBuf.oceanGlintEntries[fi].w;
-                    if (flux < 2.0) continue;
+                    // Floor and gain are the Ocean tab's "Flare refl floor" / "Ocean flare refl"
+                    // (CloudParams UBO, 2026-09-26). Both default to the constants that were
+                    // hardcoded here before then: 2.0 was this cutoff, and a gain of 1.0 is the old
+                    // look. Raising the floor is the surgical control for "a mild satellite lights
+                    // up the water" — the entry is dropped before any per-pixel work, where the gain
+                    // dims the spectacular glints by the same factor.
+                    if (flux < cloud.oceanGlintMinFlux) continue;
                     vec3 fe = normalize(oceanGlintBuf.oceanGlintEntries[fi].xyz);
                     if (fe.z < limbZ - 0.02) continue;
                     vec3 feCam = mat3(pc.skyView) * fe;
@@ -2983,7 +2989,7 @@ void main() {
                     float fIntens  = clamp(log2(max(flux, 1.0)) / 10.0, 0.0, 1.0);
                     surfColor += pow(max(0.0, dot(reflect(dir, waveN), fe)), fSpecPow)
                                * fNrm * fIntens * 0.008 * vec3(1.2, 1.1, 1.0) * (1.0 - dayFrac) * altFade
-                               * feCloudOccl * feTerrainOccl;
+                               * feCloudOccl * feTerrainOccl * cloud.oceanGlintGain;
                 }
             }
 #endif

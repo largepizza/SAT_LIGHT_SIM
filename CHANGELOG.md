@@ -57,8 +57,19 @@
   such satellites in view reflect the full sky renderer per pixel instead of a reflection map.
 - **Stars in reflections and in the model viewer's sky**, drawn from the catalogue by the same point
   model as the main view.
+- **Satellite glints on the water are tunable (Ocean tab, 2026-09-26).** A flare reaches the water
+  twice: the sprite/bloom/glare you see directly, and the specular hit reflected on the sea. Only the
+  first had controls, so "a mild satellite lights up the water" could only be answered by dimming the
+  whole satellite. Two sliders now: **Ocean flare refl** (gain on the reflected glint, 0 = none) and
+  **Flare refl floor** (reflections fainter than this are skipped before any per-pixel work — the
+  surgical fix for mild satellites is the floor, not the gain).
 
 ### Changed
+- **The ocean-glint pair ships at the tuned values, not at the constants it replaced** (2026-09-26).
+  `ocean_glint_gain` / `ocean_glint_min_flux` now default to `0.020175438` / `37.894737` (the UI shows
+  0.02 / 37.9) — copied float32-exact from the tuned `settings.json`, so a first run and the
+  `SatelliteSimFresh` build reproduce the tuned look. Files that already carry both keys are
+  unaffected; older ones (neither key present) now get the tuned look instead of the old hardcoded one.
 - **The ground wind bed follows the weather (2026-09-26).** `wind_ground` was the loudest thing on the
   ambience bus wherever the camera was low, in every place and every season. It now reads the 2D
   coverage map the clouds are drawn from — a new `cloud` driver, bilinear over a 1024×512 CPU copy

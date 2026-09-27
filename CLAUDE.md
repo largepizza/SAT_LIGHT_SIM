@@ -605,7 +605,8 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   5000 km, silent from 35786 km (GEO/HEO), linear in log altitude, slewed 1/4 per second — the high
   orbits belong to `vlf_earth` / `firmament`. The intro tops out at 300 km, so it is unaffected.
 - **Sound tab (advanced)**: music gap, fade in/out multipliers, tonal root, six group gains —
-  `buildCloudSliderRows(..., marksPreset=false)` at slot idx 99-108 (the slot arrays are 112 now).
+  `buildCloudSliderRows(..., marksPreset=false)` at slot idx 99-108 (the slot arrays are 112 now;
+  idx 110/111 are the satellite ocean-glint pair below, rendered from the Ocean tab).
 - Verification: docs/HARNESS.md "Ambient sound" — `audio state/record/expect/force/music`,
   `ambience_tour.satcmd` (self-checking), `imgtools.py audio` (spectrograms, LUFS). How it SOUNDS is
   the user's to judge.
@@ -3145,3 +3146,47 @@ normals` repaints **0.00 %** of open water at 60 m AGL afterwards, the beauty di
 bit-identical to the pre-fix baselines, v6/v7 ≈0 %, v8 1.68 % confined to the seaward wedge below the
 horizon (that wedge *is* ocean), and v5's 32.6 % was a moved *date* from splitting the script rather than
 the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
+
+### Satellite ocean-glint gain / floor (2026-09-26) — `sat_sky.frag`, `OceanGlintBuf`
+
+A satellite's mirror flare reaches the water twice: the point sprite/bloom/glare the observer sees
+directly, and the specular hit `sat_flare.comp` appends to `OceanGlintBuf` that `sat_sky.frag`
+composites onto sea-level hits. Only the first had controls, so "a mild satellite lights up the water"
+could only be answered by dimming the satellite itself (all of it shares
+`brightnessScale`/`flareGlowGain`). `GpuCloudParams` grew 688 → 704 for two floats, and
+`oceanGlintPad0/1` are the load-bearing std140 rounding (C++ packs the pair at 696). The pair first
+shipped defaulted to the constants that were hardcoded at the use site (gain 1.0, floor 2.0) so an
+unchanged `settings.json` rendered exactly as before; later the same day the defaults were moved to the
+tuned values below.
+
+| Field | Ocean tab slider | settings key | Default | Effect |
+|-------|------------------|--------------|---------|--------|
+| `oceanGlintGain` | "Ocean flare refl" (idx 110) | `ocean_glint_gain` | 0.020175438 | multiplier on the whole glint contribution (0 = none) |
+| `oceanGlintMinFlux` | "Flare refl floor" (idx 111) | `ocean_glint_min_flux` | 37.894737 | drop an entry whose `effectFlare` (`.w`) is below this |
+
+The floor is the surgical one: the entry is skipped before any per-pixel work, so faint satellites stop
+appearing on the water while a spectacular mirror flare is untouched; the gain scales both alike. They
+were written as `if (flux < 2.0) continue;` and a bare contribution term in the sea-level composite
+until this change — `sat_flare.comp`'s own write threshold (`OCEAN_GLINT_THRESH`, 1.0) means the list
+never carries a lower `effectFlare`, so a floor of 0 is simply "draw everything the list holds".
+
+**Defaults are the author's tuned values** (second half of 2026-09-26): both literals in
+`SatelliteSim.h` are float32-exact copies of the pair in `build-win-release/Release/settings.json`
+(`0.02017543837428093` / `37.894737243652344`, i.e. the UI's `0.02` / `37.9`), so a first run or the
+`SatelliteSimFresh` build reproduces the tuned look rather than the old hardcoded one. The trailing
+digits are slider-drag noise, not intent — read them as "~2 % of the original glint term" and "~60 % of
+`fIntens`' range". Nothing changes for the tuned file itself (it carries both keys), and nothing in
+`applyGraphicsPreset`'s table owns either field, so no preset re-decides them.
+`tools/settings_defaults_diff.py <settings.json>` lists every key in a settings file that differs from
+the compiled-in defaults — `build-win-release/Release/settings.json` currently differs on ~38 others,
+all older tuning or runtime state (camera, window geometry, active tab).
+
+**Latent OOB found on the way:** `hovPhotoMinus/hovPhotoPlus/draggingPhoto` were `[33]` while the
+Photometry table's idx range already reached 34 ("Glare near gain" 33 / "Glare near range (km)" 34 —
+added after the `[33]` resize and never followed up). An idx-33/34 write therefore landed in the *next*
+array's `[0]`: the near-glare rows' hover flags fought the first rows' (`hovPhotoMinus[33]` →
+`hovPhotoPlus[0]`) and `draggingPhoto[33]` → `hovCloudMinus[0]`, so their drag lock could grab the wrong
+slider. All three are `[35]` now — same class of silent-array bug as the `[33]`→`[46]`→`[112]` cloud
+history, and the reason this pair of sliders was slotted at free idx 110/111 rather than beside
+"Ocean MW refl" (renumbering a table means renumbering all four shared arrays in lockstep).
+`tools/check_cloud_params.py`: 118 fields, identical order.

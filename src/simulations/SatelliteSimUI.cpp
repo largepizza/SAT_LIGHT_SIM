@@ -4735,6 +4735,24 @@ void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
         {"Sea octaves", &oceanSeaOctaves, 1.0f, 3.0f, 1.0f, "%.0f", 21},
         {"Detail octaves", &oceanDetailOctaves, 1.0f, 5.0f, 1.0f, "%.0f", 22},
         {"Refl samples", &oceanReflSamples, 1.0f, 6.0f, 1.0f, "%.0f", 23},
+        // Satellite mirror-flare glints on the water (sat_sky.frag's OceanGlintBuf loop — the entries
+        // sat_flare.comp appends, composited onto sea-level hits only). Added 2026-09-26: the ocean
+        // end of a flare was the one part of the photometry with no control at all, so a mild
+        // satellite's glint could only be turned down by dimming the satellite itself (the point
+        // sprite, bloom, glare and this all share brightnessScale/flareGlowGain).
+        // "Flare refl floor" is the surgical one: an entry below it is dropped before any per-pixel
+        // work, so faint satellites stop appearing on the water while a spectacular mirror flare is
+        // untouched — the gain dims both by the same factor. The list sat_flare.comp hands over never
+        // carries an effectFlare below 1.0 (its own OCEAN_GLINT_THRESH), so 0 is simply "draw
+        // everything the list carries". The compiled-in defaults are the tuned pair from
+        // build-win-release/Release/settings.json (0.02 / 37.9 — see SatelliteSim.h), not the
+        // hardcoded 1.0/2.0 they shipped with earlier the same day.
+        // Slotted at the last two free idx slots (110/111 — the shared arrays are 112) rather than
+        // next to "Ocean MW refl" in the Aurora tab: renumbering a slider table means renumbering
+        // hovCloudMinus/hovCloudPlus/draggingCloud/cloudBufs in lockstep, and those four have drifted
+        // apart before. See [[feedback_cloud_slider_arrays]].
+        {"Ocean flare refl", &oceanGlintGain, 0.0f, 4.0f, 0.05f, "%.2f", 110},
+        {"Flare refl floor", &oceanGlintMinFlux, 0.0f, 64.0f, 0.5f, "%.1f", 111},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -6112,6 +6130,11 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cloudBaseVariance = c.value("cloud_base_variance", cloudBaseVariance);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
+        // Satellite ocean-glint gain/floor (Ocean tab's "Ocean flare refl"/"Flare refl floor",
+        // 2026-09-26). Stored under "clouds" because they are GpuCloudParams fields, same as the
+        // airglow/zodiacal/ocean-MW block below.
+        oceanGlintGain = c.value("ocean_glint_gain", oceanGlintGain);
+        oceanGlintMinFlux = c.value("ocean_glint_min_flux", oceanGlintMinFlux);
         cloudHgG = c.value("hg_g", cloudHgG);
         cloudMarchSteps = c.value("march_steps", cloudMarchSteps);
         cloudLightSteps = c.value("light_steps", cloudLightSteps);
@@ -6370,6 +6393,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"airglow_polar_gain", airglowPolarGain},
         {"zodiacal_gain", zodiacalGain},
         {"ocean_mw_refl_gain", oceanMwReflGain},
+        {"ocean_glint_gain", oceanGlintGain},
+        {"ocean_glint_min_flux", oceanGlintMinFlux},
         {"zodiacal_width_deg", zodiacalWidthDeg},
         {"shadow_max_dist_m", cloudShadowMaxDistM},
         {"max_render_dist_m", cloudMaxRenderDistM},

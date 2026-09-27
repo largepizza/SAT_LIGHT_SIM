@@ -2168,6 +2168,12 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.darkSkyTwilightEndDeg = darkSkyTwilightEndDeg;
         cp.darkSkyTwilightAniso = darkSkyTwilightAniso;
         cp.oceanMwReflGain = oceanMwReflGain;
+        // Satellite ocean glints (OceanGlintBuf, written by sat_flare.comp, composited by
+        // sat_sky.frag). The two pads are pure std140 rounding — see GpuCloudParams' tail comment.
+        cp.oceanGlintGain = oceanGlintGain;
+        cp.oceanGlintMinFlux = oceanGlintMinFlux;
+        cp.oceanGlintPad0 = 0.0f;
+        cp.oceanGlintPad1 = 0.0f;
         cp.cloudShadowRangeM = cloudShadowRangeM;
         // sat_sky.frag's render target: the low-res prepass extent when renderScale<1 (recordPrePass
         // draws the sky there and recordDraw's Pass 1 is skipped), else the full swap extent. The

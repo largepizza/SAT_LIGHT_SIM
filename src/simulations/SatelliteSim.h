@@ -1419,8 +1419,17 @@ struct GpuCloudParams
     float terrainPad0;
     glm::vec4 terrainObsTexel; // xy = integer, zw = fraction of the observer's DEM texel coordinate
     glm::vec4 terrainErosion;  // x = strength, y = branching (terrain_detail.glsl tdErosion)
+    // ── Satellite ocean-glint reflection (688 -> 704) — see cloud_params.glsl ────────────────
+    // The mirror-flare glints sat_flare.comp appends to OceanGlintBuf and sat_sky.frag composites
+    // onto the sea surface. 2 fields + 2 pads: std140 rounds the block up to a 16-byte multiple
+    // while C++ would pack it at 696, so oceanGlintPad0/1 are LOAD-BEARING — do not reuse them,
+    // same rule as pad21 above.
+    float oceanGlintGain;    // multiplier on the whole glint contribution (0 = no flare glints at all)
+    float oceanGlintMinFlux; // minimum effectFlare (an OceanGlintBuf entry's .w) that draws at all
+    float oceanGlintPad0;
+    float oceanGlintPad1;
 };
-static_assert(sizeof(GpuCloudParams) == 688, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 704, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -3344,6 +3353,27 @@ private:
     // entirely. Was 1.6 through 2026-09-07 — dropped after the reflected band read far too bright
     // against the real sky it mirrors.
     float oceanMwReflGain = 0.4f;
+    // Satellite mirror-flare glints on the water (sat_sky.frag's OceanGlintBuf loop — the entries
+    // sat_flare.comp appends, composited onto sea-level hits only). Added 2026-09-26: the ocean end
+    // of a flare was the one part of the photometry with no control at all, so a mild satellite's
+    // glint could only be turned down by dimming the satellite itself (point sprite, bloom, glare
+    // and the reflection share brightnessScale/flareGlowGain). See the Ocean tab's "Ocean flare refl"
+    // / "Flare refl floor", and tools/settings_defaults_diff.py to compare any settings.json against
+    // the defaults below.
+    //
+    // THEY SHIPPED AT THE VALUES THEY REPLACED — 1.0 × the whole contribution and a 2.0 effectFlare
+    // floor, the two constants hardcoded at the use site — so that the new sliders could not change
+    // anybody's look on their own. Later the same day they were re-defaulted to the tuned pair out
+    // of build-win-release/Release/settings.json, verbatim and float32-exact:
+    // 0.02017543837428093 and 37.894737243652344 (= 0.020175438f / 37.894737f below — the literals
+    // are written to the digits that round to those same floats). A slider drag produced the stored
+    // digits, so the tail is pixel noise rather than intent: read them as "the glint term at ~2 % of
+    // what it was" and "only entries at ~60 % of fIntens' range or brighter draw at all". The tuned
+    // file carries both keys, so this changes nothing for it; a settings.json written by an older
+    // build (neither key present) now gets this look instead of the old hardcoded one.
+    float oceanGlintGain = 0.020175438f;  // multiplier on the whole glint term (0 = no flare glints on water)
+    float oceanGlintMinFlux = 37.894737f; // min effectFlare of an entry that draws at all (the writer's
+                                          // own floor, OCEAN_GLINT_THRESH, is 1.0)
     float zodiacalWidthDeg = 10.0f;    // ecliptic-latitude Gaussian sigma near the sun (degrees)
     float zodiacalOuterFadeDeg = 80.0f; // elongation at which the cone has fully faded (degrees)
     // Sun self-shadow cone (N_CONE) fades out beyond this distance. Was 22 km, when the cone
@@ -3855,18 +3885,24 @@ private:
                                                  // simultaneously-visible Clay element bound to the
                                                  // same showBeamDebugRays bool; sharing one hover bool
                                                  // between two elements would fight over it.
-    // Sized 11, not 9 — flare_glow_gain/flare_streak_gain (flare architecture overhaul) added two
-    // more PhotoParam rows; per [[feedback_cloud_slider_arrays]], all three hover/dragging arrays
-    // must grow together with any new slider id.
-    bool hovPhotoMinus[33] = {}; // 15 existing photometry params + 2 trail sliders (Trail decay/gain)
-                                 // + flare-mitigation tilt + the four dark-sky mags (2026-09-08)
-                                 // + 1 flare-mitigation tilt (idx 17) + the five point-model
-                                 // sliders (idx 22-26, 2026-09-23)
-    bool hovPhotoPlus[33] = {};
-    bool draggingPhoto[33] = {};
+    // Sized 35, not 33 — the highest Photometry idx in use is 34 ("Glare near range (km)";
+    // "Glare near gain" is 33, added after the [33] resize and never followed up). While it was
+    // [33] an idx-33/34 write landed in the NEXT array's [0] (hovPhotoMinus[33] -> hovPhotoPlus[0],
+    // hovPhotoPlus[33] -> draggingPhoto[0], draggingPhoto[33] -> hovCloudMinus[0]), i.e. the
+    // near-glare rows' hover flags fought the first rows' and their drag lock could grab the wrong
+    // slider — same class of silent OOB as [[feedback_cloud_slider_arrays]], found and corrected
+    // 2026-09-26. Per that memory, all three arrays grow together with any new slider id.
+    // idx map: 0-10 the original photometry params + Trail decay/gain, 11-18 dark-sky mags + MW
+    // fades, 19/20 trail sliders, 21 flare-mitigation tilt, 22-26 the point model, 27 zoom
+    // aperture, 28-32 glare, 33/34 glare near.
+    bool hovPhotoMinus[35] = {};
+    bool hovPhotoPlus[35] = {};
+    bool draggingPhoto[35] = {};
     bool hovCloudMinus[112] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
-                                 // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25)
+                                 // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),
+                                 // idx 110/111 the satellite ocean-glint gain/floor (2026-09-26, a
+                                 // reuse of the last free slots — the Sound tab's are 99-108)
     bool hovCloudPlus[112] = {};
     bool draggingCloud[112] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
@@ -4124,8 +4160,9 @@ private:
         const char *fmt;
         int idx;
     };
-    // marksPreset: an edit sets the graphics preset to Custom (every tab but Sound). Slot idx 99+
-    // are the Sound tab's.
+    // marksPreset: an edit sets the graphics preset to Custom (every tab but Sound). Slot idx 99-108
+    // are the Sound tab's (ambience); 110/111 are the satellite ocean-glint pair added 2026-09-26 and
+    // rendered from the Ocean tab.
     void buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, CloudSlider *sliders, int count,
                               bool marksPreset = true);
     // Collapsible category grouping on top of buildCloudSliderRows. A section owns no slider
