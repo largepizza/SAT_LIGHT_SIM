@@ -128,7 +128,12 @@ void cullCloudLightsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos, float 
 // Takes the evaluation point (`p`/`h`) and `sampleDayness` (caller's own per-sample geographic
 // day/night gate) — same signature shape the retired function used, still cloud-only (fog no
 // longer carries a beam term at all, removed with the second design).
-vec3 beamCloudLighting(vec3 p, float h, vec3 dir, vec3 obsPos, float sampleDayness) {
+// odTop: the sample's optical depth up to its column's cloud top, VERTICALLY (clouds v2: sigma x
+// (topH - h)). A beam comes down from its satellite and enters a cloud through the top, so light
+// deep inside has crossed that cloud: exp(-od) plus a multiple-scattering tail, along the beam's own
+// slant. Without it every sample inside the beam's cylinder got the same light however deep it sat,
+// and a lit cloud read as one flat slab (2026-09-28).
+vec3 beamCloudLighting(vec3 p, float h, vec3 dir, vec3 obsPos, float sampleDayness, float odTop) {
     vec3 beamLit = vec3(0.0);
     if ((cloud.dbgDisableMask & 128u) != 0u || cloud.beamSkyGlowGain <= 0.0 || beamLightCount == 0u)
         return beamLit;
@@ -172,7 +177,9 @@ vec3 beamCloudLighting(vec3 p, float h, vec3 dir, vec3 obsPos, float sampleDayne
         // sun/moon terms already use, so looking up along a beam reads as a brighter forward-
         // scattered shaft — now genuinely toward where the light is actually coming from.
         float ph = phaseCloud(dot(dir, beamLights[bli].dirToSource));
-        mag += vec3(1.0, 0.97, 0.92) * (g * hFadeBeam * ph);
+        float od = odTop / max(dot(normalize(p), dirS), 0.15);
+        float tr = exp(-od) + 0.35 * exp(-od * 0.2);
+        mag += vec3(1.0, 0.97, 0.92) * (g * hFadeBeam * ph * tr);
     }
 
     beamLit = mag * cloud.beamSkyGlowGain * (1.0 - sampleDayness) * kBeamCloudGlowScale;

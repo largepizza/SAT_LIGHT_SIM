@@ -131,6 +131,22 @@ vec3 cv2Drift(vec3 v)
 }
 vec3 cv2WeatherDir(vec3 d) { return cv2Drift(d); }
 
+// Tropopause (cloud-top scale): ~16 km in the tropics, ~9 km at the poles; the type table's tops are
+// written for the mid-latitudes (scale 1.0 at ~11 km). A function of latitude only, so it is computed
+// here (the weather cube's alpha used to store it and now carries the ground height).
+float cv2Tropo(vec3 wd)
+{
+    float latAbs = abs(asin(clamp(wd.z, -1.0, 1.0))) * (180.0 / PI);
+    return mix(1.35, 0.8, smoothstep(15.0, 65.0, latAbs));
+}
+
+// The ground under a column, smoothed over ~20 km (the weather cube's alpha: DEM height / 8 km,
+// baked per mip). Read at the EARTH-FIXED direction: the map drifts, the terrain does not.
+float cv2Ground(vec3 dirE)
+{
+    return textureLod(cv2WeatherTex, dirE, 1.5).a * 8000.0;
+}
+
 struct CV2Field {
     float sigma;     // extinction (1/m)
     float hf;        // height fraction within this column's cloud (0 base .. 1 top)
@@ -201,18 +217,25 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM)
 
     CV2Type ty     = cv2TypeAt(w.g);
     float   strat  = 1.0 - ty.look.z;                  // 1 = the stratiform field, 0 = the cells
-    float   tropo  = w.a + 0.5;
+    float   tropo  = cv2Tropo(wd);
     float   topMax = ty.alt.x + (ty.alt.y - ty.alt.x) * tropo;
     // Nimbostratus: a stratiform deck where the map says it rains thickens by up to 3.5 km (its
     // base is already darkened by the precipitation loading below).
     topMax += w.b * strat * 3500.0;
+    // Bases follow the (smoothed) terrain: a convective base is the condensation level, about the
+    // same height above the ground everywhere; decks follow it less (they hug and bank against
+    // slopes). With every base above sea level the Tibetan plateau and the Andes stood inside the
+    // cloud, and every ridge cut through it. Tops rise with the base, but not past the tropopause.
+    float lift   = cv2Ground(q.dirE) * mix(0.6, 0.9, ty.look.z);
+    float topCap = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo;
+    topMax = min(topMax + lift, max(topCap, ty.alt.x + lift + 500.0));
 
     // A deck is not a slab: its thickness follows the closed cells and a km-scale Perlin field, and
     // a thicker part hangs lower (an overcast seen from below was one flat, featureless plane).
     // Closed-cell rims (cl.b) fade out with the footprint: from orbit they read as cracked ice.
     float rimAmt  = 0.25 * (1.0 - smoothstep(0.5, 2.5, cv2Lod(fpM, cv2.anchorCell.w)));
     float deckVar = clamp((ce.a - 0.5) * 3.0 + (cl.b - 0.5) * rimAmt * 4.0, -1.0, 1.0);
-    float base    = ty.alt.x + (cl.a - 0.5) * 2.0 * ty.alt.w - strat * 150.0 * deckVar;
+    float base    = ty.alt.x + lift + (cl.a - 0.5) * 2.0 * ty.alt.w - strat * 150.0 * deckVar;
     // The base is bumped in 3D by the lobes below, by up to ~2.2 x baseAmp: a deck's underside is
     // lumpy (rolls, pouches), a cumulus base nearly flat (the condensation level).
     float baseAmp = mix(40.0, 220.0, strat) * cv2.storm.w;
@@ -341,7 +364,6 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM)
 
     if (detailAmt >= 0.0) {
         float df = 0.45;   // the detail's mean (inverted-Worley fBm), when it is not fetched
-        float amt = 1.0;
 #ifdef CV2_DETAIL_BINDING
         if (detailAmt > 0.0) {
             vec3  dist = (vec3(s.a, s.g, s.b) - vec3(0.5, 0.45, 0.45)) * 0.35;
@@ -353,14 +375,19 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM)
                                       cv2Lod(fpM, cv2.anchorStormDetail.w));
                 dn = mix(dn, dn2, deep);
             }
-            df  = dn.r * 0.55 + dn.g * 0.45;   // inverted Worley: high in the lumps
-            amt = detailAmt;
+            // Mostly the coarse octave: the fine one (~125 m cells) made every dense cumulus
+            // surface a uniform popcorn grain.
+            // Faded with distance TOWARD THE MEAN (the value used where it is not fetched), at full
+            // strength. It used to fade the erosion itself toward none, then switch to the mean at
+            // full strength where detailAmt reached 0: a band of uneroded, denser cloud just inside
+            // that distance, seen from above as a ring (~220 km out, 143 km up).
+            df = mix(0.45, dn.r * 0.75 + dn.g * 0.25, detailAmt);
         }
 #endif
         // Base: bite the lumps (torn, wispy). Higher up: bite the cracks, keep the lumps (billows).
         // Deep convection keeps storm.y of it: its large towers read best with little erosion.
         float billow = ty.shape.z * smoothstep(0.05, 0.4, hf);
-        float erode  = mix(df, 1.0 - df, billow) * ty.shape.y * cv2.look.z * amt * mix(1.0, cv2.storm.y, deep);
+        float erode  = mix(df, 1.0 - df, billow) * ty.shape.y * cv2.look.z * mix(1.0, cv2.storm.y, deep);
         // Erosion shapes the SURFACE. Deep inside (d high) only form.z of it applies: at full
         // strength it punched holes through the interior, and from inside a cloud the sky showed.
         erode *= mix(1.0, cv2.form.z, smoothstep(0.35, 0.85, d));
@@ -398,15 +425,20 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM)
 float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out float deckMid)
 {
     hfMid = 0.0; topMid = 0.0; deckMid = 0.0;
-    if (q.h < 2800.0 || q.h > 7200.0) return 0.0;
+    if (q.h < 2800.0 || q.h > 12000.0) return 0.0;
+    float gl  = cv2Ground(q.dirE) * 0.8;                                  // follows the terrain
+    if (q.h < 2800.0 + gl || q.h > 7200.0 + gl) return 0.0;
     vec4  w   = textureLod(cv2WeatherTex, cv2WeatherDir(q.dirE), 1.0);   // mid decks are broad
     float cov = clamp((w.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
     if (cov <= 0.0) return 0.0;
     vec4  cl  = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
                            cv2Lod(fpM, cv2.anchorCluster.w));
-    float regime = smoothstep(0.5, 0.68, cl.a + 0.15 * (cov - 0.5)) * cv2.misc.w;
+    // Fades in with the coverage: the source map is a JPEG, and in clear areas its 8x8 blocks
+    // (~40 km) sit just above or below the clear threshold. A full altostratus sheet wherever the
+    // coverage was above 0 drew those blocks as straight-edged translucent rectangles.
+    float regime = smoothstep(0.5, 0.68, cl.a + 0.15 * (cov - 0.5)) * cv2.misc.w * smoothstep(0.0, 0.35, cov);
     if (regime <= 0.0) return 0.0;
-    float base  = 3000.0 + 2600.0 * cl.r;
+    float base  = 3000.0 + gl + 2600.0 * cl.r;
     float thick = mix(1200.0, 450.0, cl.r);
     float zm    = (q.h - base) / thick;
     if (zm <= 0.0 || zm >= 1.0) return 0.0;
@@ -443,18 +475,27 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     hfH = 0.0; topH = 0.0;
     if (cv2.high.x <= 0.0 || q.h < 5500.0 || q.h > 14500.0) return 0.0;
     vec3  wd     = cv2Drift(q.dirE);
-    vec4  wc     = textureLod(cv2WeatherTex, wd, 2.0);
-    float tropTop = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * (wc.a + 0.5);
+    float tropTop = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(wd);
     float base0  = 0.74 * tropTop;
     if (q.h < base0 - 700.0 || q.h > base0 + 2400.0) return 0.0;
+    vec4  wc     = textureLod(cv2WeatherTex, wd, 2.0);
+    // Cirrus lives with the weather systems: in the jet ahead of fronts and in the outflow of deep
+    // convection; the subtropical highs are mostly free of it. The regime therefore follows the map's
+    // coverage over the surrounding ~150 km (mip 4) as much as its own noise. On the noise alone the
+    // high layer covered the globe uniformly, and from orbit it was an even field of splotches.
+    vec4  wb     = textureLod(cv2WeatherTex, wd, 4.0);
+    float span   = max(cv2.cover.y - cv2.cover.x, 1e-3);
+    float covL   = clamp((wc.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
+    float covS   = clamp((wb.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
+    float sys    = max(covS, 0.7 * covL);
     vec4  cl     = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w
                               + vec3(0.41, 0.17, 0.69), cv2Lod(fpM, cv2.anchorCluster.w));
-    float covRaw = clamp(wc.r * cv2.look.x, 0.0, 1.0);
     // The baked Perlin fBm is narrow: 0.50 +- 0.057 (1-99%: 0.37-0.63, measured by replicating the
     // bake). Thresholds are set against that spread; the first cut used 0.5-0.7 and drew no cirrus.
-    // Above 1 the amount widens the regime instead (2 = cirrus over most of the sky).
+    // A clear system shifts it by ~-1 sd (~13% of the area has some cirrus), a cloudy one by ~+1.2 sd
+    // (~85%). Above 1 the amount widens the regime instead (2 = cirrus over most of the sky).
     float widen  = 0.06 * max(cv2.high.x - 1.0, 0.0);
-    float regime = smoothstep(0.51 - widen, 0.57 - widen, cl.a + 0.1 * (covRaw - 0.25)) * min(cv2.high.x, 1.0);
+    float regime = smoothstep(0.51 - widen, 0.57 - widen, cl.a + 0.12 * (sys - 0.45)) * min(cv2.high.x, 1.0);
     if (regime <= 0.0) return 0.0;
     float zb     = base0 + (cl.r - 0.5) * 1200.0;
     float thick  = mix(500.0, 1600.0, regime);
@@ -469,23 +510,35 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
                      lat * R_EARTH * cv2.high.w + (cl.a - 0.5) * 12.0,
                      q.h * cv2.high.w);
     float lod = cv2Lod(fpM, cv2.high.w);
+    // Bundles: the same volume read 4x coarser (swaths ~30 km across and a few hundred km long; the
+    // CPU keeps the along-wind period's count around the equator a multiple of 4, so no seam).
+    // Streaks come in bundles that converge and part, not as an even comb: at one scale, thresholded,
+    // they read as regular sand ripples. From orbit, where the fibres are far below a pixel, the
+    // bundles are what shows: long bands along the jet.
+    vec4  sb     = textureLod(cv2ShapeTex, cc * 0.25 + vec3(0.13, 0.47, 0.29), max(lod - 2.0, 0.0));
+    float bundle = smoothstep(0.43, 0.6, sb.a);
+    cc.y += (sb.g - 0.45) * 1.2;                          // streaks crowd together and fan apart
     vec4  s   = textureLod(cv2ShapeTex, cc, lod);
     vec4  s2  = textureLod(cv2ShapeTex, cc * 3.0 + vec3(0.31, 0.73, 0.17), lod + 1.585);
     float strat = 1.0 - smoothstep(0.3, 0.55, wc.g);
     float ccK   = smoothstep(0.5, 0.7, cl.g) * (1.0 - strat) * 0.8;
 
     float fibN = (s.a - 0.5) * 0.6 + (s2.a - 0.5) * 0.4;      // ~0 +- 0.04
-    float ci   = clamp((fibN - mix(0.07, -0.01, regime)) / 0.06, 0.0, 1.0);
+    float lo   = mix(0.06, -0.02, regime);
+    float ci   = smoothstep(lo, lo + 0.07, fibN) * mix(0.2, 1.0, bundle);
     // Hair: a 9x finer read (still an integer multiple of the along-wind period, so no seam) combs
     // each streak into fibres; without it they were smooth ribbons, like lenticular strands.
     vec4  s3   = textureLod(cv2ShapeTex, cc * 9.0 + vec3(0.57, 0.11, 0.83), lod + 3.17);
     ci *= mix(1.0, mix(0.3, 1.4, clamp((s3.a - 0.5) / 0.12 + 0.5, 0.0, 1.0)), 1.0 - smoothstep(1.0, 3.0, lod));
-    float cs   = regime * mix(0.6, 1.0, clamp(fibN / 0.08 + 0.5, 0.0, 1.0));
+    float cs   = regime * mix(0.6, 1.0, clamp(fibN / 0.08 + 0.5, 0.0, 1.0)) * mix(0.6, 1.0, bundle);
     float cu   = clamp((s2.g - mix(0.75, 0.55, regime)) * 5.0, 0.0, 1.0);
-    // Fibres and cloudlets far below a pixel become the haze of their coverage (as the low cells do).
+    // Fibres and cloudlets far below a pixel become the haze of their coverage (as the low cells
+    // do) — in their bundles, so from orbit the high layer is banded, not an even veil.
     float far = smoothstep(1.5, 4.0, lod);
-    ci = mix(ci, regime * 0.3, far);
-    cu = mix(cu, regime * 0.25, far);
+    // Mostly a soft veil at a distance: a stretched noise is parallel streaks at every scale, and
+    // thresholded far away it read as evenly spaced ripples from orbit.
+    ci = mix(ci, regime * mix(0.2, 0.45, bundle), far);
+    cu = mix(cu, regime * 0.25 * bundle, far);
     float prof = smoothstep(0.0, 0.25, z) * (1.0 - smoothstep(0.55, 1.0, z));
     float d    = prof * mix(mix(ci, cs, strat), cu, ccK);
     hfH  = z;
@@ -511,7 +564,7 @@ float cv2AnvilSigma(CV2Pos q, float fpM, out float hfA, out float topA)
     float cov    = clamp((wc.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
     float stormA = smoothstep(0.62, 0.88, wc.g) * smoothstep(0.35, 0.8, cov);
     if (stormA <= 0.0) return 0.0;
-    float top    = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * (wc.a + 0.5) - 250.0;
+    float top    = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(wd) - 250.0;
     if (q.h > top || q.h < top - 3600.0) return 0.0;
     vec4  cl     = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
                               cv2Lod(fpM, cv2.anchorCluster.w));
@@ -567,11 +620,33 @@ const vec3 CV2_N_WATER = vec3(1.3314, 1.3350, 1.3403);
 
 float cv2Sq(float x) { return x * x; }
 
+// Crystal habits, per region (the cluster field, tens of km): which ice optics a patch of cirrus can
+// show at all. A halo needs crystals of the right shape; sundogs and the arcs need plates falling
+// flat, which calm air allows and turbulence scrambles. Real skies show a 22 degree halo in maybe a
+// third of cirrostratus, sundogs less often, the circumzenithal arc and parhelic circle rarely and the
+// 46 degree halo very rarely. The first cut drew every arc on every cirrus, which made the rare
+// look commonplace. x = 22 deg halo, y = sundogs (flat plates), z = circumzenithal arc + parhelic
+// circle (very well aligned plates), w = 46 deg halo. Evaluated once per RAY (the march caches it).
+vec4 cv2IceHabit(CV2Pos q)
+{
+    vec3  m = cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w;
+    float a = textureLod(cv2MesoTex, m + vec3(0.73, 0.29, 0.11), 1.0).a;
+    float b = textureLod(cv2MesoTex, m + vec3(0.17, 0.83, 0.47), 1.0).a;
+    float c = textureLod(cv2MesoTex, m * 2.0 + vec3(0.61, 0.07, 0.35), 1.0).a;
+    // fBm 0.50 +- 0.057: P(> 0.53) ~ 30%, P(> 0.565) ~ 13%, P(> 0.6) ~ 4%
+    float halo = smoothstep(0.51, 0.55, a) * mix(0.35, 1.0, smoothstep(0.44, 0.56, c));
+    float dogs = smoothstep(0.545, 0.585, b) * mix(0.5, 1.0, smoothstep(0.44, 0.56, c));
+    float arcs = smoothstep(0.545, 0.585, b) * smoothstep(0.53, 0.58, c);
+    float h46  = smoothstep(0.585, 0.615, a);
+    return vec4(halo, dogs, arcs, h46);
+}
+
 // Ice crystals: the 22 and 46 degree halos (randomly oriented hexagonal prisms: minimum deviation of
 // the 60 and 90 degree prisms), and from plates falling flat the sundogs (at the light's elevation,
 // through the effective index n' = sqrt(n^2 - sin^2 e) / cos e — 22 deg out at the horizon, 36 at
 // 40 deg, none above ~61), the parhelic circle and the circumzenithal arc (only below 32 deg).
-vec3 cv2IceOptics(vec3 v, vec3 s)
+// hab: cv2IceHabit's weights for this region.
+vec3 cv2IceOptics(vec3 v, vec3 s, vec4 hab)
 {
     float a = acos(clamp(dot(v, s), -1.0, 1.0));
     vec3  D22 = 2.0 * asin(CV2_N_ICE * 0.5) - radians(60.0);
@@ -597,7 +672,7 @@ vec3 cv2IceOptics(vec3 v, vec3 s)
     vec3  cza = step(cz2, vec3(1.0)) * exp(-(vec3(ev) - hZ) * (vec3(ev) - hZ) / cv2Sq(radians(0.6)))
               * (1.0 - smoothstep(radians(40.0), radians(80.0), daz)) * smoothstep(-0.02, 0.1, se);
     float up = smoothstep(-0.03, 0.02, se);          // plates need the light above the horizon
-    return 4.0 * h22 + 0.7 * h46 + up * (12.0 * dogs + vec3(circle) + 3.0 * cza);
+    return 4.0 * hab.x * h22 + 0.7 * hab.w * h46 + up * (12.0 * hab.y * dogs + hab.z * (vec3(circle) + 3.0 * cza));
 }
 
 // Rain drops: the primary bow (one internal reflection, 42.3 deg red .. 41.0 blue from the antisolar

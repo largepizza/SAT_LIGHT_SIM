@@ -12,6 +12,7 @@
 
 #define POINT_STYLE_BINDING 11 // pointStyleBuf, descSet (shared with sat_flare.comp)
 #include "point_style.glsl"
+#include "cloud_occlusion.glsl"
 
 layout(location = 0) in vec3  fragColor;
 layout(location = 1) in float fragIntensity;
@@ -77,15 +78,14 @@ void main() {
         vec2 cloudUV = gl_FragCoord.xy / pc.screenSizePx;
         vec4 cloudA  = texture(cloudTargetA, cloudUV);
         vec4 cloudB  = texture(cloudTargetB, cloudUV);
-        float tCloudOcclude = cloudA.a;
         float cloudBlock    = dot(cloudB.rgb, vec3(1.0 / 3.0));
         // Two-tier response, mirroring the two ways sat_sky.frag already treats cloud opacity:
         // a hard gate for genuinely opaque cloud (same tCloudOcclude convention that hides the moon
         // disc), and a smooth power-curve dim otherwise (same shape the Milky Way/sun disc use), so
         // satellites join the same existing visual language instead of a new one.
-        float cloudHardOcclude = (tCloudOcclude >= 0.0 && tCloudOcclude < fragRangeM) ? 0.0 : 1.0;
+        // Both only for cloud NEARER than the satellite (include/cloud_occlusion.glsl).
         const float kSatCloudSuppressPower = 2.0;
-        cloudVis = cloudHardOcclude * pow(clamp(cloudBlock, 0.0, 1.0), kSatCloudSuppressPower);
+        cloudVis = cloudPointVisibility(cloudA.a, cloudBlock, fragRangeM, kSatCloudSuppressPower);
     }
 
     // ── Terrain occlusion ─────────────────────────────────────────────────────

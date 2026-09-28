@@ -2173,6 +2173,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         GpuCloudParams cp{};
         cp.coverage = cloudCoverage;
         cp.cloudsV2 = 1.0f; // unused since v1's march was deleted (2026-09-27); a UBO slot to reuse
+        cp.exposureScale = exp2f(cv2ExposureEV);
+        cp.highlightRolloff = std::clamp(cv2HighlightRolloff, 0.0f, 1.0f);
+        cp.whiteBalance = std::clamp(cv2WhiteBalance, 0.0f, 1.0f);
         cp.density = cloudDensity;
         cp.driftRate = cloudDriftRate;
         cp.sunGain = cloudSunGain;
@@ -3720,7 +3723,7 @@ void SatelliteSim::updateSelectedSkyDir()
 float SatelliteSim::skyExposure() const
 {
     const float dayness = glm::clamp((sunDirENU.w + 0.2f) / 1.2f, 0.0f, 1.0f);
-    return glm::mix(10.0f, 1.8f, powf(dayness, 0.4f));
+    return glm::mix(10.0f, 1.8f, powf(dayness, 0.4f)) * exp2f(cv2ExposureEV);
 }
 
 void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)

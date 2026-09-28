@@ -44,6 +44,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_DETAIL_BINDING  4
 #define CV2_MESO_BINDING    5
 #include "clouds_v2.glsl"
+#include "atmosphere.glsl"
 
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // half-res, metres (kNoSurfaceT = sky)
 layout(set = 0, binding = 7) uniform sampler2D earthNightTex;
@@ -77,14 +78,32 @@ vec3 rayDirAt(vec2 texel, ivec2 size, float tanHalfFov, mat3 camToENU) {
 
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 
+// Transmittance of the sunlight reaching p along d (assumed not blocked by the Earth): Rayleigh and
+// Mie columns by the Chapman function (include/atmosphere.glsl), which handles the tangent point
+// exactly, plus ozone. A 12-step midpoint rule along a grazing path (~1000 km) stepped over the dense
+// air at the tangent point and found it nearly clear: cloud lit by the setting Sun stayed bright
+// orange hundreds of km past the terminator (seen from orbit). Ozone (the Chappuis band) takes the
+// orange and yellow out of long paths; without it twilight light is too orange, where real twilight
+// cloud goes pink.
+vec3 sunTransmit(vec3 p, vec3 d, vec3 BETA_R, float BETA_M) {
+    float r = length(p), c = dot(p, d) / r;
+    float odR = atmColumnInf(r, c, H_R) * H_R;
+    float odM = atmColumnInf(r, c, H_M) * H_M;
+    // Ozone as a thin shell at 25 km: vertical optical depth (680/550/440 nm, 300 DU) times the
+    // secant where the ray crosses the shell.
+    const float rO = R_EARTH + 25000.0;
+    float sin2 = (r / rO) * (r / rO) * (1.0 - c * c);
+    float sec  = inversesqrt(max(1.0 - sin2, 1e-3));
+    float nX   = (r <= rO) ? 1.0 : ((c < 0.0 && sin2 < 1.0) ? 2.0 : 0.0);   // above it: 0 or 2 crossings
+    vec3  odO  = vec3(0.019, 0.027, 0.0016) * min(sec, 30.0) * nX;
+    return exp(-(BETA_R * odR + BETA_M * 1.1 * odM + odO));
+}
+
 // The Sun's colour arriving at a point, through the atmosphere, 0 in the Earth's shadow.
 vec3 sunColorAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
     vec2 tSE = raySphere(p, sunDir, R_EARTH);
     if (tSE.x > 0.0 && tSE.y > 0.0) return vec3(0.0);
-    vec2 tSA = raySphere(p, sunDir, R_ATMOS);
-    if (tSA.y <= 0.0) return vec3(SUN_INTENSITY);
-    vec2 od = optDepth(p, sunDir, tSA.y);
-    return SUN_INTENSITY * exp(-(BETA_R * od.x + BETA_M * 1.1 * od.y));
+    return SUN_INTENSITY * sunTransmit(p, sunDir, BETA_R, BETA_M);
 }
 
 // Zenith sky radiance at a point: v1's skyAmbientBase (single-scattering integral up the local
@@ -106,9 +125,7 @@ vec3 skyZenithAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
         odR += dR; odM += dM;
         vec2 tSE = raySphere(sp, sunDir, R_EARTH);
         if (tSE.x > 0.0 && tSE.y > 0.0) continue;
-        vec2 tSun = raySphere(sp, sunDir, R_ATMOS);
-        vec2 sOD  = (tSun.y > 0.0) ? optDepth(sp, sunDir, tSun.y) : vec2(0.0);
-        vec3 att  = exp(-(BETA_R * (odR + sOD.x) + BETA_M * 1.1 * (odM + sOD.y)));
+        vec3 att  = exp(-(BETA_R * odR + BETA_M * 1.1 * odM)) * sunTransmit(sp, sunDir, BETA_R, BETA_M);
         accR += att * dR;
         accM += dot(att, vec3(1.0 / 3.0)) * dM;
     }
@@ -205,10 +222,17 @@ void main()
     float og = cv2.rain.y;
     // Ice: a narrow forward (diffraction) peak on a broad, low lobe. One wide lobe (g 0.75) whited
     // out 30 degrees around the Sun and buried the 22 degree halo and the sundogs in it.
-    vec3  phIceSun   = vec3(0.45 * cv2HG(cosSun, 0.93) + 0.55 * cv2HG(cosSun, 0.3))  + og * cv2IceOptics(dir, sunDir);
-    vec3  phIceMoon  = vec3(0.45 * cv2HG(cosMoon, 0.93) + 0.55 * cv2HG(cosMoon, 0.3)) + og * cv2IceOptics(dir, moonDir);
-    vec3  phRainSun  = vec3(0.85 * cv2HG(cosSun, 0.8))  + og * 0.5 * cv2RainOptics(dir, sunDir);
-    vec3  phRainMoon = vec3(0.85 * cv2HG(cosMoon, 0.8)) + og * 0.5 * cv2RainOptics(dir, moonDir);
+    // The optics are added at the ray's first ice sample, with that region's crystal habit
+    // (cv2IceHabit: most cirrus shows no halo at all).
+    vec3  phIceSun   = vec3(0.45 * cv2HG(cosSun, 0.93) + 0.55 * cv2HG(cosSun, 0.3));
+    vec3  phIceMoon  = vec3(0.45 * cv2HG(cosMoon, 0.93) + 0.55 * cv2HG(cosMoon, 0.3));
+    bool  iceHabitSet = og <= 0.0;
+    // Rain: drops are millimetres, so their forward light is a diffraction spike well under a degree
+    // wide plus a broad refracted lobe. One HG(0.8) (~20 deg) lit shafts toward the Sun as white walls.
+    vec3  phRainSun  = vec3(0.3 * cv2HG(cosSun, 0.97) + 0.55 * cv2HG(cosSun, 0.35))
+                     + og * 0.5 * cv2RainOptics(dir, sunDir);
+    vec3  phRainMoon = vec3(0.3 * cv2HG(cosMoon, 0.97) + 0.55 * cv2HG(cosMoon, 0.35))
+                     + og * 0.5 * cv2RainOptics(dir, moonDir);
     vec3  moonKey  = kMoonColor * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y;
 
     int   nL    = int(cv2.light.y);
@@ -229,6 +253,8 @@ void main()
     float T = 1.0;
     float dAcc = 0.0, wAcc = 0.0, tHalf = -1.0;
     float odRain = 0.0;                               // debug view 5
+    vec4  odLayer = vec4(0.0);                        // debug view 7: low, mid, anvil, high
+    bool  dbgLayers = int(cv2.shell.z + 0.5) == 7;
 
     // Per-ray lighting caches, refreshed every 25 km along the ray (the Sun's elevation and the
     // sky's colour change across a long horizon ray).
@@ -287,6 +313,13 @@ void main()
             empty = 0;
             odPath += f.sigma * stepF;
             odRain += f.sigma * f.rain * stepF;
+            if (dbgLayers) {
+                float hX, tX, dX;
+                float sm = cv2MidSigma(p, fp, hX, tX, dX);
+                float sa = cv2AnvilSigma(p, fp, hX, tX);
+                float sh = cv2HighSigma(p, fp, hX, tX);
+                odLayer += vec4(max(f.sigma - sm - sa - sh, 0.0), sm, sa, sh) * stepF * T;
+            }
 
             vec3  pW   = eye + rel;                        // world point, ENU about the observer
             vec3  up   = normalize(pW);
@@ -335,6 +368,12 @@ void main()
                 }
                 float powder = 1.0 - cv2.look2.z * exp(-f.sigma * 300.0) * (0.5 - 0.5 * cosK);
                 vec3 pSSv = vec3(pSS);
+                if (f.thin > 0.0 && !iceHabitSet) {
+                    vec4 hab = cv2IceHabit(p);
+                    phIceSun  += og * cv2IceOptics(dir, sunDir, hab);
+                    phIceMoon += og * cv2IceOptics(dir, moonDir, hab);
+                    iceHabitSet = true;
+                }
                 if (f.thin > 0.0 || f.rain > 0.0) {
                     pSSv = mix(pSSv, moonIsKey ? phIceMoon : phIceSun, f.thin);
                     pSSv = mix(pSSv, moonIsKey ? phRainMoon : phRainSun, f.rain);
@@ -369,7 +408,7 @@ void main()
                     nightS += (cr / max(lum, 0.001)) * cityBrightness(lum) * smoothstep(0.45, 0.0, f.hf)
                             * (1.0 - dayness) * kCityUpwellStrength * cloud.ambientGain;
                 }
-                nightS += beamCloudLighting(pW, p.h, dir, eye, dayness);
+                nightS += beamCloudLighting(pW, p.h, dir, eye, dayness, f.sigma * max(f.topH - p.h, 0.0));
             }
 
             vec3  S     = keyS + ambS + bounceS + nightS;
@@ -424,9 +463,7 @@ void main()
                 oR += dR; oM += dM;
                 vec2 tSE = raySphere(ap, sunDir, R_EARTH);
                 if (tSE.x > 0.0 && tSE.y > 0.0) continue;
-                vec2 tSun = raySphere(ap, sunDir, R_ATMOS);
-                vec2 sOD  = (tSun.y > 0.0) ? optDepth(ap, sunDir, tSun.y) : vec2(0.0);
-                vec3 at   = exp(-(BETA_R * (oR + sOD.x) + BETA_M * 1.1 * (oM + sOD.y)));
+                vec3 at   = exp(-(BETA_R * oR + BETA_M * 1.1 * oM)) * sunTransmit(ap, sunDir, BETA_R, BETA_M);
                 aR += at * dR;
                 aM += dot(at, vec3(1.0 / 3.0)) * dM;
             }
@@ -446,6 +483,8 @@ void main()
     else if (dbg == 2) outRgb = vec3(1.0 - T) * 0.05;
     else if (dbg == 3) outRgb = vec3(fract(meanT / 50000.0)) * 0.05;
     else if (dbg == 5) outRgb = vec3(1.0 - exp(-odRain), 0.0, (wAcc > 1e-4) ? 0.3 : 0.0) * 0.05;
+    // 7: which layer: red = low (incl. rain), green = mid, blue = anvil, white = high.
+    else if (dbg == 7) outRgb = (vec3(1.0) - exp(-odLayer.xyz) + vec3(0.6) * (1.0 - exp(-odLayer.w))) * 0.05;
     float Tout = (dbg != 0) ? 0.0 : T;
 
     imageStore(outColor, q, vec4(outRgb, Tout));

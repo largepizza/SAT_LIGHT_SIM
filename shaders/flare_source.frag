@@ -1,4 +1,5 @@
 #version 450
+#include "cloud_occlusion.glsl"
 
 // ── flare_source.frag ──────────────────────────────────────────────────────────
 // Soft circular falloff per point — the blur/streak compute passes (flare_blur.comp) add the rest
@@ -42,12 +43,10 @@ void main() {
     vec2 uv = gl_FragCoord.xy / pc.screenSizePx;
     vec4 cloudA = texture(cloudTargetA, uv);
     vec4 cloudB = texture(cloudTargetB, uv);
-    float tCloudOcclude = cloudA.a;
     float cloudBlockV   = dot(cloudB.rgb, vec3(1.0 / 3.0));
     // Opaque cloud / terrain hide the source only when NEARER than it (the unified-depth rule,
     // include/depth.glsl) — from orbit, a satellite in front of the Earth keeps its glow.
-    float cloudHardOcclude = (tCloudOcclude >= 0.0 && tCloudOcclude < fragRangeM) ? 0.0 : 1.0;
-    float cloudVis = cloudHardOcclude * clamp(cloudBlockV, 0.0, 1.0);
+    float cloudVis = cloudPointVisibility(cloudA.a, cloudBlockV, fragRangeM, 1.0);
 
     float terrainVis = (texture(sceneDepthTex, uv).r < fragRangeM) ? 0.0 : 1.0;
 

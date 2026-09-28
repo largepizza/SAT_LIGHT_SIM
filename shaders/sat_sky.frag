@@ -1772,11 +1772,46 @@ void main() {
     // them: the bilinear tap.
     cloudARgb = cloudACenter.rgb;
     cloudBRgb = cloudBCenter.rgb;
+    // ...except where a SURFACE edge crosses the half-res grid (a ridge against the sky, a cloud
+    // cut by a mountain): there the bilinear tap mixes a texel marched to the terrain with one
+    // marched to the sky, and the cloud's edge along the ridge came out in half-res stair-steps.
+    // Joint-bilateral: each of the four texels is weighted by how well its depth (the shared
+    // half-res scene depth) matches this full-resolution pixel's surface.
+    {
+        ivec2 hs = textureSize(cloudTargetA, 0);
+        vec2  hp = cloudUV * vec2(hs) - 0.5;
+        ivec2 i0 = ivec2(floor(hp));
+        vec2  fr = hp - vec2(i0);
+        float lF = log(max(tSurface > 0.0 ? tSurface : kNoSurfaceT, 1.0));
+        ivec2 tp[4] = ivec2[4](i0, i0 + ivec2(1, 0), i0 + ivec2(0, 1), i0 + ivec2(1, 1));
+        float lD[4];
+        float dMin = 1e9, dMax = -1e9;
+        for (int k = 0; k < 4; ++k) {
+            tp[k] = clamp(tp[k], ivec2(0), hs - 1);
+            lD[k] = log(max(texelFetch(sceneDepthTex, tp[k], 0).r, 1.0));
+            dMin = min(dMin, lD[k]); dMax = max(dMax, lD[k]);
+        }
+        if (dMax - dMin > 0.1) {
+            float bw[4] = float[4]((1.0 - fr.x) * (1.0 - fr.y), fr.x * (1.0 - fr.y),
+                                   (1.0 - fr.x) * fr.y, fr.x * fr.y);
+            vec3  sa = vec3(0.0), sb = vec3(0.0);
+            float sw = 0.0;
+            for (int k = 0; k < 4; ++k) {
+                float w = bw[k] * exp(-abs(lD[k] - lF) * 6.0) + 1e-5;
+                sa += w * texelFetch(cloudTargetA, tp[k], 0).rgb;
+                sb += w * texelFetch(cloudTargetB, tp[k], 0).rgb;
+                sw += w;
+            }
+            cloudARgb = sa / sw;
+            cloudBRgb = sb / sw;
+        }
+    }
 #endif
     vec4  cloudA         = vec4(cloudARgb, cloudACenter.a);
     vec4  cloudB         = vec4(cloudBRgb, cloudBCenter.a);
 #endif
-    float tCloudOcclude  = cloudA.a;
+    // Target A's alpha is a signed distance in km (include/cloud_occlusion.glsl): >= 0 opaque.
+    float tCloudOcclude  = (cloudA.a >= 0.0) ? cloudA.a * 1000.0 : -1.0;
     // cloudB.a used to carry tEnterCombined, the fused entry distance this shader compared
     // against tSurface to suppress the whole composite. Every volumetric layer is now clamped to
     // the shared scene depth inside cloud_march.comp instead, so there is nothing to test here.
@@ -3156,6 +3191,9 @@ void main() {
     // ── Auto-exposure tone mapping ─────────────────────────────────────────────
     float dayness  = clamp((sunDirENU.w + 0.2) / 1.2, 0.0, 1.0);
     float exposure = mix(EXPOSURE_NIGHT, EXPOSURE_DAY, pow(dayness, 0.4));
+#ifndef SKY_ENV
+    exposure *= cloud.exposureScale;              // "Exposure (EV)"; SatelliteSim::skyExposure() mirrors it
+#endif
 #ifdef SKY_ENV
     // HDR out: keep the radiance; the display-space terms below accumulate separately and are
     // divided back by the exposure they were tuned against (linear at their small values).
@@ -3163,7 +3201,29 @@ void main() {
     color = vec3(0.0);
     float nightAmt = 1.0 - clamp(dayness * 5.0, 0.0, 1.0);
 #else
-    color = vec3(1.0) - exp(-exposure * color);
+    // "Highlight roll-off" blends toward 1 - 1/(1 + x + x^2/2): equal to 1 - exp(-x) to second
+    // order (same toe and midtones) but with a long shoulder — at x = 4 it is 0.92 where the old
+    // curve is 0.98 — so sunlit cloud and the sky around the Sun keep their gradations.
+#ifndef SKY_ENV
+    // "White balance": chromatic adaptation to the sunlight arriving at the observer (the Chapman
+    // column, as the clouds are lit). A 15-degree Sun is cream-yellow and everything it lights read
+    // as beige; an eye or a camera adapts to its illuminant. Luminance-preserving, faded out as the
+    // Sun sets (twilight keeps its colour).
+    if (cloud.whiteBalance > 0.0) {
+        float rW = R_EARTH + max(obsEffH, 0.0);
+        float cW = sunDirENU.z;
+        vec3  sunW = exp(-(BETA_R * (atmColumnInf(rW, cW, H_R) * H_R)
+                          + BETA_M * 1.1 * (atmColumnInf(rW, cW, H_M) * H_M)));
+        vec3  wb = sunW / max(dot(sunW, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+        float k  = cloud.whiteBalance * smoothstep(0.0, 0.12, cW);
+        color /= mix(vec3(1.0), clamp(wb, vec3(0.2), vec3(3.0)), k);
+    }
+#endif
+    {
+        vec3 xe = exposure * color;
+        color = mix(vec3(1.0) - exp(-xe), vec3(1.0) - 1.0 / (vec3(1.0) + xe + 0.5 * xe * xe),
+                    cloud.highlightRolloff);
+    }
 
     // ── Night ambient floor ────────────────────────────────────────────────────
     float nightAmt = 1.0 - clamp(dayness * 5.0, 0.0, 1.0);

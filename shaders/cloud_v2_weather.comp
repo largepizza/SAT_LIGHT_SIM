@@ -8,7 +8,9 @@
 //   G  cloud type     0..1 over the type table in clouds_v2.glsl, in order of vertical
 //                     development: stratus, stratocumulus, cumulus, congestus, cumulonimbus
 //   B  precipitation  0..1 (deep, bright cloud; darkens bases, and later drives rain/lightning)
-//   A  tropopause     cloud-top scale over latitude, stored as (scale - 0.5) / 1.0
+//   A  ground         the DEM height / 8 km, smoothed at this mip's scale (cloud bases follow the
+//                     terrain). Read at the EARTH-FIXED direction, unlike the rest (the map drifts).
+//                     Was the tropopause, a function of latitude only (now clouds_v2.glsl cv2Tropo).
 //
 // The type is CLASSIFIED, since the imagery carries no type: broken, high-variance brightness is
 // convective (cumulus fields), smooth bright fields are stratiform decks, very bright convective
@@ -23,6 +25,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(set = 0, binding = 0) uniform sampler2D earthCloudsTex;   // equirect, R8, full mip chain
 layout(set = 0, binding = 1) uniform sampler2D earthSpecTex;     // equirect ocean mask (1 = water)
 layout(rgba8, set = 0, binding = 2) writeonly uniform image2DArray outWeather;
+layout(set = 0, binding = 3) uniform sampler2D earthElevTex;     // equirect R8 DEM (terrain.glsl encoding)
 
 layout(push_constant) uniform PC { int faceSize; float srcLod; } pc;
 
@@ -102,9 +105,15 @@ void main()
 
     float precip = clamp(deep * smoothstep(0.55, 0.9, t) + deep * (1.0 - conv) * 0.35, 0.0, 1.0);
 
-    // Tropopause: ~16 km in the tropics, ~9 km at the poles. The type table's tops are written for
-    // the mid-latitudes (scale 1.0 at ~11 km).
-    float tropo = mix(1.35, 0.8, smoothstep(15.0, 65.0, latAbs));
+    // Ground height (terrain.glsl's encoding: 15/255 is sea level, 255/255 ~8.5 km above it), a 2x2
+    // supersample at this mip's scale (the DEM's 2.7 km texels, ~2 mips finer than the source map's).
+    float gnd = 0.0;
+    for (int k = 0; k < 4; ++k) {
+        vec2 o = (vec2(k & 1, k >> 1) - 0.5) * 0.5 * texel;
+        float v = textureLod(earthElevTex, equirectUV(normalize(d + tx * o.x + ty * o.y)), pc.srcLod + 1.0).r;
+        gnd += max(0.0, v * 9000.0 - 15.0 / 255.0 * 9000.0);
+    }
+    gnd *= 0.25;
 
-    imageStore(outWeather, id, vec4(cov, t, precip, tropo - 0.5));
+    imageStore(outWeather, id, vec4(cov, t, precip, clamp(gnd / 8000.0, 0.0, 1.0)));
 }

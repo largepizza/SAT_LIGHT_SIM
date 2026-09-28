@@ -115,10 +115,17 @@ void main()
         // squares. So the box widens when the reprojection barely moves, and is tight in motion.
         vec4 slack = (mx - mn) * mix(1.0, 0.1, smoothstep(0.3, 2.0, motionPx)) + vec4(1e-4);
         vec4 hc = clamp(hist, mn - slack, mx + slack);
-        // The other three pixels of the block also take a smaller share of the interpolated new
-        // samples. Without it the one pixel refreshed each frame stood out from the three that
-        // were not, and noisy (shaded, grazing) surfaces showed a 2x2 dot grid.
-        outC = isNew ? mix(hc, nc, wNew) : mix(hc, spatial, wNew * 0.15);
+        // The other three pixels of the block also take a share of the interpolated new samples.
+        // Without it the one pixel refreshed each frame stood out from the three that were not,
+        // and noisy (shaded, grazing) surfaces showed a 2x2 dot grid. In motion the shares
+        // converge: the refreshed pixel took 35% of one noisy sample while its neighbours took 5%
+        // of the smooth estimate, and a pan or a fly-through drew the 2x2 lattice as a cross-hatch
+        // over every cloud (harness_runs/cloud_v2_x, x_pan). So in motion all four take nearly the
+        // same weight, and the refreshed pixel's own sample is pulled halfway to the estimate.
+        float mk    = smoothstep(0.5, 4.0, motionPx);
+        vec4  fresh = isNew ? mix(nc, spatial, 0.5 * mk) : spatial;
+        float w     = isNew ? wNew : wNew * mix(0.15, 0.85, mk);
+        outC = mix(hc, fresh, w);
     } else {
         outC = isNew ? nc : spatial;
     }

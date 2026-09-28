@@ -1,4 +1,4 @@
-# python tools/harness/find_cloud_spots.py [ISO time]
+# python tools/harness/find_cloud_spots.py [ISO time] [drift rate, rad/s — default 6.5e-6]
 # Cloudy benchmark spots for a fixed sim time: samples the 8K cloud map with the same longitude
 # drift the shaders use (cloudPhase = fmod(cloudDriftRate * simT, 2pi), map lon = lon + phase).
 # Local solar hour uses the sim's clock offset (no GMST term: ~UTC + 5.3 h at lon 0, checked
@@ -12,7 +12,10 @@ j2000 = datetime.datetime(2000, 1, 1, 12, 0, 0)
 simT = (t - j2000).total_seconds()
 # sanity: the documented start epoch
 assert abs((datetime.datetime(2036, 6, 21) - j2000).total_seconds() - 1150891200) < 1
-phase = math.fmod(6.5e-6 * simT, 2 * math.pi)
+# SatelliteSim::cloudDriftPhase(): rate x (t - 2036-06-21) + the default offset, which puts the
+# default rate's map where rate x (t - J2000) put it. Pass the settings file's clouds.drift_rate.
+RATE = float(sys.argv[2]) if len(sys.argv) > 2 else 6.5e-6
+phase = math.fmod(RATE * (simT - 1150891200) + 3.8022001485, 2 * math.pi)
 print(f'simT {simT:.0f}  phase {math.degrees(phase):.1f} deg')
 
 W, H = 1440, 720

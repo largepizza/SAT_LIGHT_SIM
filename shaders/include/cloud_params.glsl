@@ -414,7 +414,9 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // 1 = v2 draws the low/mid clouds (cloud_march.comp reads the v2 resolve instead of cloudMarchCS,
     // sat_sky.frag skips flat layer 0, the beam march and ground shadow use the v2 field).
     float cloudsV2;
-    float cloudsV2Pad0;
-    float cloudsV2Pad1;
-    float cloudsV2Pad2;
+    float exposureScale;     // 2^(Exposure EV): multiplies the sky's auto exposure (1 = unchanged)
+    float highlightRolloff;  // 0 = the tonemap 1 - exp(-x); 1 = 1 - 1/(1 + x + x^2/2): the same
+                             // toe and midtones, a far longer shoulder (sunlit cloud keeps its shading)
+    float whiteBalance;      // 0..1: chromatic adaptation to the sunlight at the observer (a low Sun
+                             // is yellow; an eye or camera adapts, so the scene reads white, not beige)
 } cloud;

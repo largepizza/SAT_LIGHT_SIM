@@ -1483,9 +1483,9 @@ struct GpuCloudParams
     // of running cloudMarchCS, sat_sky.frag skips flat layer 0, beam_self_march.comp and the ground
     // shadow use the v2 field. The pads are std140's rounding, load-bearing like the ones above.
     float cloudsV2;
-    float cloudsV2Pad0;
-    float cloudsV2Pad1;
-    float cloudsV2Pad2;
+    float exposureScale;     // 2^(cv2ExposureEV)
+    float highlightRolloff;  // cv2HighlightRolloff (sat_sky.frag's tonemap shoulder)
+    float whiteBalance;      // cv2WhiteBalance (sat_sky.frag, before the tonemap)
 };
 static_assert(sizeof(GpuCloudParams) == 720, "GpuCloudParams layout mismatch");
 
@@ -2750,6 +2750,9 @@ private:
     float cv2RainAmount = 1.0f;        // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
     float cv2RainStreaks = 1.0f;       // falling-rain streaks when the observer stands in rain
+    float cv2ExposureEV = 0.0f;        // exposure compensation (stops) on the sky's auto exposure
+    float cv2HighlightRolloff = 0.5f;  // 0 = the old tonemap; 1 = a long highlight shoulder
+    float cv2WhiteBalance = 0.6f;      // 0..1: adapt to the sunlight's colour at the observer
     float cv2DetailLodStartM = 20000.0f; // detail erosion fades from here to 4x
     float cv2ShapePeriodM = 7000.0f;   // tiling periods of the noise volumes
     float cv2DetailPeriodM = 1800.0f;
@@ -4113,7 +4116,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 160;
+    static constexpr int kCloudSliderSlots = 164;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

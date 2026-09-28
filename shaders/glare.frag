@@ -5,6 +5,7 @@
 // nearer than the satellite hide it, the cloud transmittance dims it (one value for the sprite).
 
 #include "glare.glsl"
+#include "cloud_occlusion.glsl"
 
 layout(location = 0) in vec3  gColor;
 layout(location = 1) in float gStrength;
@@ -24,7 +25,7 @@ void main()
 
     vec4  cA = textureLod(cloudTargetA, gSrc.xy, 0.0);
     vec4  cB = textureLod(cloudTargetB, gSrc.xy, 0.0);
-    float vis = (cA.a >= 0.0 && cA.a < gSrc.z) ? 0.0 : clamp(dot(cB.rgb, vec3(1.0 / 3.0)), 0.0, 1.0);
+    float vis = cloudPointVisibility(cA.a, dot(cB.rgb, vec3(1.0 / 3.0)), gSrc.z, 1.0);
     if (textureLod(sceneDepthTex, gSrc.xy, 0.0).r < gSrc.z) vis = 0.0;
     if (vis <= 0.001) discard;
 

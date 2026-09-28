@@ -280,7 +280,8 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
 
         VkDescriptorSetLayout bl = makeSetLayout(dev, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                                       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+                                                       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
         VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 8};
         VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pli.setLayoutCount = 1;
@@ -291,7 +292,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         vkCreatePipelineLayout(dev, &pli, nullptr, &pl);
         VkPipeline pipe = makeComputePipeline(ctx, "shaders/cloud_v2_weather.comp.spv", pl);
 
-        VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * kCv2WeatherMips},
+        VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * kCv2WeatherMips},
                                       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kCv2WeatherMips}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = kCv2WeatherMips;
@@ -306,6 +307,11 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo specInfo{earthSpecSampler ? earthSpecSampler : noiseSampler,
                                        earthSpecView ? earthSpecView : noiseTexView,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        // The DEM (ground height in the alpha: cloud bases follow the terrain). Without it the noise
+        // texture stands in, which reads as low hills — acceptable for a missing-asset fallback.
+        VkDescriptorImageInfo elevInfo{earthElevSampler ? earthElevSampler : noiseSampler,
+                                       earthElevView ? earthElevView : noiseTexView,
                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
         std::vector<VkImageView> mipViews(kCv2WeatherMips);
@@ -327,11 +333,12 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             ai.pSetLayouts = &bl;
             vkAllocateDescriptorSets(dev, &ai, &set);
             VkDescriptorImageInfo outInfo{VK_NULL_HANDLE, mipViews[m], VK_IMAGE_LAYOUT_GENERAL};
-            VkWriteDescriptorSet w[3] = {
+            VkWriteDescriptorSet w[4] = {
                 imageWrite(set, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudsInfo),
                 imageWrite(set, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &specInfo),
-                imageWrite(set, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outInfo)};
-            vkUpdateDescriptorSets(dev, 3, w, 0, nullptr);
+                imageWrite(set, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outInfo),
+                imageWrite(set, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo)};
+            vkUpdateDescriptorSets(dev, 4, w, 0, nullptr);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &set, 0, nullptr);
             struct
             {
@@ -673,7 +680,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     {
         const double twoPiR = glm::two_pi<double>() * R;
         const double along = (double)cv2ShapePeriodM * std::clamp((double)cv2CirrusStretch, 1.0, 40.0);
-        const double n = std::max(1.0, std::round(twoPiR / along));
+        // A multiple of 4: the bundle read (clouds_v2.glsl) is 4x coarser and must not seam either.
+        const double n = std::max(4.0, std::round(twoPiR / along / 4.0) * 4.0);
         const double pu = twoPiR / n;
         p.high = glm::vec4(cv2HighAmount, (float)(1.0 / pu), (float)fracPos(-(double)cv2CirrusWindMps * simT / pu),
                            (float)(1.0 / (double)cv2ShapePeriodM));

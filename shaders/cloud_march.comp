@@ -1348,7 +1348,9 @@ float rainStreaks(vec3 d, float t)
         float ci    = floor(x);
         float h     = fract(sin(ci * 12.9898 + fk * 78.233) * 43758.5453);
         float h2    = fract(h * 91.7 + 0.31);
-        float y     = el * (5.0 + 5.0 * fk) + t * (2.2 - 0.5 * fk) * (0.8 + 0.4 * h) + h2 * 10.0;
+        // Rain falls at ~9 m/s: a few metres away that is well over 100 deg/s across the view
+        // (the first cut fell at ~25 deg/s, like snow). Nearer layers faster.
+        float y     = el * (5.0 + 5.0 * fk) + t * (10.0 - 2.8 * fk) * (0.8 + 0.4 * h) + h2 * 10.0;
         float seg   = fract(y);
         float len   = 0.25 - 0.06 * fk;
         float streak = smoothstep(0.0, 0.04, seg) * (1.0 - smoothstep(len, len + 0.04, seg));
@@ -1778,6 +1780,10 @@ void main() {
         }
     }
 
-    imageStore(targetA, coord, vec4(B_total, tCloudOcclude));
+    // Alpha: a signed distance in KILOMETRES (include/cloud_occlusion.glsl) — this is RGBA16F, and
+    // in metres every cloud past 65.5 km was +inf.
+    float occKm = (tCloudOcclude >= 0.0) ? tCloudOcclude * 0.001
+                : -((tCloudMeanT < kNoSurfaceT) ? tCloudMeanT * 0.001 : 60000.0);
+    imageStore(targetA, coord, vec4(B_total, occKm));
     imageStore(targetB, coord, vec4(A_total, terrainSunT));
 }

@@ -4670,6 +4670,10 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
     };
 
     CloudSlider secLighting[] = {
+        // Scene-wide (the sky's tonemap), here beside the cloud lighting they are tuned against.
+        {"Exposure (EV)", &cv2ExposureEV, -3.0f, 3.0f, 0.05f, "%+.2f", 158},
+        {"Highlight roll-off", &cv2HighlightRolloff, 0.0f, 1.0f, 0.05f, "%.2f", 159},
+        {"White balance", &cv2WhiteBalance, 0.0f, 1.0f, 0.05f, "%.2f", 160},
         {"Sun gain", &cv2SunGain, 0.0f, 4.0f, 0.05f, "%.2f", 124},
         {"Moon gain", &cv2MoonGain, 0.0f, 8.0f, 0.1f, "%.2f", 125},
         {"Sky ambient", &cv2AmbientGain, 0.0f, 8.0f, 0.05f, "%.2f", 126},
@@ -6233,6 +6237,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2RainAmount = c.value("rain_amount", cv2RainAmount);
         cv2OpticsGain = c.value("optics_gain", cv2OpticsGain);
         cv2RainStreaks = c.value("rain_streaks", cv2RainStreaks);
+        cv2ExposureEV = c.value("exposure_ev", cv2ExposureEV);
+        cv2HighlightRolloff = c.value("highlight_rolloff", cv2HighlightRolloff);
+        cv2WhiteBalance = c.value("white_balance", cv2WhiteBalance);
     }
 
     if (schemaMatches && j.contains("clouds"))
@@ -6605,7 +6612,10 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cirrus_wind_mps", cv2CirrusWindMps},
         {"rain_amount", cv2RainAmount},
         {"optics_gain", cv2OpticsGain},
-        {"rain_streaks", cv2RainStreaks}};
+        {"rain_streaks", cv2RainStreaks},
+        {"exposure_ev", cv2ExposureEV},
+        {"highlight_rolloff", cv2HighlightRolloff},
+        {"white_balance", cv2WhiteBalance}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)
