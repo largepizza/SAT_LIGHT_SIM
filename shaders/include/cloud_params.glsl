@@ -410,4 +410,11 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
                              // it drops faint entries where the gain dims the spectacular ones too
     float oceanGlintPad0;    // std140 rounds this block up to a 16-byte multiple while C++ would pack
     float oceanGlintPad1;    // it at 696, so the trailing two are LOAD-BEARING — do not reuse.
+    // -- Clouds v2 switch (704 -> 720), .plans/CLOUDS_V2_PLAN.md ------------------------------------
+    // 1 = v2 draws the low/mid clouds (cloud_march.comp reads the v2 resolve instead of cloudMarchCS,
+    // sat_sky.frag skips flat layer 0, the beam march and ground shadow use the v2 field).
+    float cloudsV2;
+    float cloudsV2Pad0;
+    float cloudsV2Pad1;
+    float cloudsV2Pad2;
 } cloud;

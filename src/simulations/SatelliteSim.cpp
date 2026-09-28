@@ -473,6 +473,9 @@ void SatelliteSim::init(VulkanContext &ctx)
     Log::line("init: Earth textures (decode + upload)");
     createGlowResources(ctx);
     Log::line("init: Earth textures done");
+    Log::line("init: clouds v2 bakes");
+    bootStatus("Clouds v2");
+    createCloudsV2(ctx); // needs the Earth textures, cloudParamsBuf, sceneDepth, terrainFrameBuf
     // Constellations are built BEFORE the descriptor sets (lighting overhaul Phase 1): the
     // per-satellite buffers are sized to the real satellite count rather than MAX_SATELLITES, so
     // they can't exist until initConstellation() has run. initConstellation() needs earthElevCpu
@@ -523,6 +526,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     createBeamSelfMarchDescriptors(ctx); // needs cloudParamsBuf/earthClouds/cloudNoise/cloudWarpNoise
                                          // (createGlowResources above) and reflectBeamsBuf (createBuffers)
     createBeamSelfMarchPipeline(ctx);
+    writeCloudsV2ConsumerDescriptors(ctx); // cloud_march 15-20 + beam_self_march 5-8, both sets exist now
     createSkyBgPipeline(ctx);
     createSkyLowResResources(ctx); // resolution scaling — needs skyBgPipeLayout from just above
     createDrawPipeline(ctx);
@@ -737,6 +741,12 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     depthWrites[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, planetDescSet, 4, 0, 1,
                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
     vkUpdateDescriptorSets(ctx.device, 6, depthWrites, 0, nullptr);
+
+    // Clouds v2: its screen-sized images, and every set that points at them (or at the scene depth
+    // just recreated above).
+    destroyCloudsV2Targets(ctx.device);
+    createCloudsV2Targets(ctx);
+    writeCloudsV2ConsumerDescriptors(ctx);
 
     // ── Flare/corona render-to-texture pipeline (flare architecture overhaul) — flareExtent
     // derives from ctx.swapExtent, same destroy/recreate/patch dance as the targets above.
@@ -2162,6 +2172,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
         GpuCloudParams cp{};
         cp.coverage = cloudCoverage;
+        cp.cloudsV2 = cloudsV2Enabled ? 1.0f : 0.0f;
         cp.density = cloudDensity;
         cp.driftRate = cloudDriftRate;
         cp.sunGain = cloudSunGain;
@@ -2751,6 +2762,11 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
         uint32_t halfW = (ctx.swapExtent.width + 1) / 2;
         uint32_t halfH = (ctx.swapExtent.height + 1) / 2;
+
+        // Clouds v2 (.plans/CLOUDS_V2_PLAN.md): its sparse march + temporal resolve, whose result
+        // this dispatch composites in place of cloudMarchCS while cloudsV2Enabled is set. Inside
+        // this timestamp bucket, so the "cloud_march" figure is v1-or-v2 plus everything else here.
+        recordCloudsV2(cmd, ctx, cpc);
 
         // Pre-dispatch: both targets are left in SHADER_READ_ONLY_OPTIMAL after the previous
         // frame's post-dispatch barrier below (or by createCloudMarchResources on the first frame
@@ -5692,6 +5708,7 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyDescriptorPool(device, orbitDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, orbitDescLayout, nullptr);
     // ── Cloud march pipeline (C15-perf) ────────────────────────────────────────
+    destroyCloudsV2(device);
     vkDestroyPipeline(device, cloudMarchPipeline, nullptr);
     vkDestroyPipelineLayout(device, cloudMarchPipeLayout, nullptr);
     vkDestroyDescriptorPool(device, cloudMarchDescPool, nullptr);
@@ -7883,7 +7900,7 @@ void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
 // textures) — see init() ordering.
 void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[15] = {};
+    VkDescriptorSetLayoutBinding bindings[21] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -7903,15 +7920,20 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     // texelFetch — this set's dispatch grid and that image are the same half-swapExtent size.
     bindings[13] = {13, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // sceneDepthTex
     bindings[14] = {14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};         // beamCloudLightBuf
+    // 15-20: clouds v2 (CloudV2Params, weather cube, shape, meso, resolved colour, resolved depth) —
+    // written by writeCloudsV2ConsumerDescriptors.
+    bindings[15] = {15, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    for (uint32_t b = 16; b <= 20; ++b)
+        bindings[b] = {b, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 15;
+    li.bindingCount = 21;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &cloudMarchDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 14},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -8274,22 +8296,28 @@ void SatelliteSim::createSceneDepthPipeline(VulkanContext &ctx)
 // set — see that shader's header, still applicable, for why this isn't built on any shared grid).
 void SatelliteSim::createBeamSelfMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[5] = {};
+    VkDescriptorSetLayoutBinding bindings[9] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[3] = {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[4] = {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    // 5-8: clouds v2 (CloudV2Params, weather cube, shape, meso) — written by
+    // writeCloudsV2ConsumerDescriptors once this set exists.
+    bindings[5] = {5, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[6] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[7] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[8] = {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 5;
+    li.bindingCount = 9;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &beamSelfMarchDescLayout);
 
     VkDescriptorPoolSize ps[3] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 3;
     pi.pPoolSizes = ps;

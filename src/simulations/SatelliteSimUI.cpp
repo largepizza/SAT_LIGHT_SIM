@@ -4628,6 +4628,37 @@ void SatelliteSim::buildCloudSliderSections(const UIInput &inp, UIRenderer &ui,
 // clouds too dark at sunset" should find every relevant knob in one place.
 void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
 {
+    // ── Clouds v2 (.plans/CLOUDS_V2_PLAN.md) — the new renderer, beside v1 until it replaces it.
+    // The sliders below are v1's; v2's tunables are in settings.json's "clouds_v2" block (harness:
+    // set clouds_v2.<key>) until its own section settles.
+    CLAY(CLAY_ID("CloudsV2Row"), {.layout = {
+                                      .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                      .padding = {4, 4, 4, 4},
+                                      .childGap = 8,
+                                      .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                      .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Volumetric clouds v2 (experimental)"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
+        CLAY(CLAY_ID("CloudsV2Spacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+        Clay_Color chkBg = cloudsV2Enabled ? Pal::btnAccent : (hovCloudsV2 ? Pal::btnHover : Pal::btnIdle);
+        CLAY(CLAY_ID("CloudsV2Chk"), {.layout = {
+                                          .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                      .backgroundColor = chkBg,
+                                      .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovCloudsV2);
+            sndClick(n, inp.lmbPressed);
+            hovCloudsV2 = n;
+            if (n && inp.lmbPressed)
+                cloudsV2Enabled = !cloudsV2Enabled;
+            CLAY_TEXT(cloudsV2Enabled ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+        }
+    }
+
     // Bulk / layer geometry — how much cloud there is and where the deck sits.
     CloudSlider secCoverage[] = {
         {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
@@ -6159,6 +6190,37 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         }
     }
 
+    // Clouds v2 (.plans/CLOUDS_V2_PLAN.md). Not schema-gated: a new section, and "enabled" is a
+    // choice between renderers, not a graphics-tuning value a schema bump should reset.
+    if (j.contains("clouds_v2"))
+    {
+        auto &c = j["clouds_v2"];
+        cloudsV2Enabled = c.value("enabled", cloudsV2Enabled);
+        cv2Coverage = c.value("coverage", cv2Coverage);
+        cv2Density = c.value("density", cv2Density);
+        cv2Detail = c.value("detail", cv2Detail);
+        cv2AmbientGain = c.value("ambient_gain", cv2AmbientGain);
+        cv2SunGain = c.value("sun_gain", cv2SunGain);
+        cv2BounceGain = c.value("bounce_gain", cv2BounceGain);
+        cv2Powder = c.value("powder", cv2Powder);
+        cv2HistoryWeight = c.value("history_weight", cv2HistoryWeight);
+        cv2LightLenM = c.value("light_len_m", cv2LightLenM);
+        cv2LightSteps = c.value("light_steps", cv2LightSteps);
+        cv2StepBaseM = c.value("step_base_m", cv2StepBaseM);
+        cv2StepGrowth = c.value("step_growth", cv2StepGrowth);
+        cv2StepMaxM = c.value("step_max_m", cv2StepMaxM);
+        cv2MaxDistKm = c.value("max_dist_km", cv2MaxDistKm);
+        cv2DetailLodStartM = c.value("detail_lod_start_m", cv2DetailLodStartM);
+        cv2ShapePeriodM = c.value("shape_period_m", cv2ShapePeriodM);
+        cv2DetailPeriodM = c.value("detail_period_m", cv2DetailPeriodM);
+        cv2CellPeriodM = c.value("cell_period_m", cv2CellPeriodM);
+        cv2ClusterPeriodM = c.value("cluster_period_m", cv2ClusterPeriodM);
+        cv2WindMps = c.value("wind_mps", cv2WindMps);
+        cv2EdgeSharpness = c.value("edge_sharpness", cv2EdgeSharpness);
+        cv2WeatherWarpKm = c.value("weather_warp_km", cv2WeatherWarpKm);
+        cv2DebugView = c.value("debug_view", cv2DebugView);
+    }
+
     if (schemaMatches && j.contains("clouds"))
     {
         auto &c = j["clouds"];
@@ -6516,6 +6578,31 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"atmos_mie_gain", atmosMieGain},
         {"atmos_term_strength", atmosTermStrength},
         {"atmos_term_width", atmosTermWidth}};
+    j["clouds_v2"] = {
+        {"enabled", cloudsV2Enabled},
+        {"coverage", cv2Coverage},
+        {"density", cv2Density},
+        {"detail", cv2Detail},
+        {"ambient_gain", cv2AmbientGain},
+        {"sun_gain", cv2SunGain},
+        {"bounce_gain", cv2BounceGain},
+        {"powder", cv2Powder},
+        {"history_weight", cv2HistoryWeight},
+        {"light_len_m", cv2LightLenM},
+        {"light_steps", cv2LightSteps},
+        {"step_base_m", cv2StepBaseM},
+        {"step_growth", cv2StepGrowth},
+        {"step_max_m", cv2StepMaxM},
+        {"max_dist_km", cv2MaxDistKm},
+        {"detail_lod_start_m", cv2DetailLodStartM},
+        {"shape_period_m", cv2ShapePeriodM},
+        {"detail_period_m", cv2DetailPeriodM},
+        {"cell_period_m", cv2CellPeriodM},
+        {"cluster_period_m", cv2ClusterPeriodM},
+        {"wind_mps", cv2WindMps},
+        {"edge_sharpness", cv2EdgeSharpness},
+        {"weather_warp_km", cv2WeatherWarpKm},
+        {"debug_view", cv2DebugView}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

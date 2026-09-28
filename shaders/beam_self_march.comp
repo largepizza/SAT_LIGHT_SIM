@@ -72,6 +72,14 @@ layout(set = 0, binding = 3) uniform sampler3D cloudWarpNoiseTex;
 // parameters, not bound by name, so unused functions in this header need no matching bindings).
 #include "terrain.glsl"
 
+// Clouds v2 (.plans/CLOUDS_V2_PLAN.md): with cloud.cloudsV2 set the beam is occluded by the SAME
+// field the clouds are drawn from — clouds_v2.glsl's cv2Field, without detail — not by a copy.
+#define CV2_PARAMS_BINDING  5
+#define CV2_WEATHER_BINDING 6
+#define CV2_SHAPE_BINDING   7
+#define CV2_MESO_BINDING    8
+#include "clouds_v2.glsl"
+
 layout(push_constant) uniform PC {
     vec4  obsECEFDir; // xyz = observer ECEF unit direction (w unused here)
     float obsEffH;    // observer effective height above local terrain (m) — same value
@@ -193,7 +201,36 @@ void main() {
     float absorbWeight = 0.0;
     bool  foundBlock   = false;
 
-    if (cloud.layers[0].enabled > 0.5) {
+    if (cloud.cloudsV2 > 0.5) {
+        // Down the beam from the satellite, the way its light travels, through the shell's first
+        // segment (above the ground hit). Local = ENU about the Earth's centre, like obsPos.
+        blockAltM = cv2.shell.y;
+        vec2 s0, s1;
+        if (cv2ShellSegments(satLocal, rayDirLocal, s0, s1) > 0) {
+            float a = s0.x, b = min(s0.y, groundHit.x);
+            if (b > a) {
+                const int kMaxSteps = 96;
+                int   n  = clamp(int(ceil((b - a) / 200.0)), 1, kMaxSteps);
+                float ds = (b - a) / float(n);
+                float eyeH = obsPos.z - R_EARTH;
+                mat3  enuToEcef = mat3(enuX, enuY, enuZ);
+                for (int i = 0; i < n; ++i) {
+                    vec3   rel = satLocal + rayDirLocal * (a + (float(i) + 0.5) * ds) - obsPos;
+                    CV2Pos q   = cv2Pos(rel, eyeH, enuToEcef);
+                    float  sg  = cv2Field(q, 0.0, 60.0).sigma;
+                    if (sg <= 0.0) continue;
+                    float stepT    = exp(-sg * ds);
+                    float absorbed = T * (1.0 - stepT);
+                    altWeighted  += q.h * absorbed;
+                    absorbWeight += absorbed;
+                    T *= stepT;
+                    if (!foundBlock && T < 0.5) { blockAltM = q.h; foundBlock = true; }
+                    if (T < 0.02) break;
+                }
+                if (!foundBlock && absorbWeight > 0.0) blockAltM = altWeighted / absorbWeight;
+            }
+        }
+    } else if (cloud.layers[0].enabled > 0.5) {
         // The ground endpoint (groundECEF, the actual ray/Earth intersection — see above) is
         // always below cloud base by construction (raySphere against R_EARTH exactly); the
         // satellite endpoint is always far above cloudTopAlt (LEO altitudes are tens of km+ above

@@ -8,6 +8,7 @@ build-win-ci/
 build-linux-release/
 build-macos-release/
 .logs/
+.refs/
 
 # Per-developer CMake configuration (SDK paths, generator choice, toolchain overrides).
 # This is where machine-specific values belong — CMakePresets.json is committed and must

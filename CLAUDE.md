@@ -375,6 +375,26 @@ cloud occlusion march — see "Subsystem: Reflect-Orbital Beam Cloud Occlusion" 
 
 ---
 
+## Subsystem: Clouds v2 (2026-09-27, experimental, beside v1)
+
+Design log and status: `.plans/CLOUDS_V2_PLAN.md`. Toggle: Clouds tab "Volumetric clouds v2" /
+`clouds_v2.enabled` (default off); every v2 tunable is in settings.json's `clouds_v2` block.
+- **One field** (`shaders/include/clouds_v2.glsl`, `cv2Field`) serves the view march, its light march,
+  the ground shadow (`cloudGroundShadowV2`, cloud_march.comp) and beam occlusion (beam_self_march.comp).
+  Weather cube (baked from the 8K map: coverage, classified type, precipitation, tropopause) x
+  mesoscale fields on the sea-level sphere x 3D shape noise x detail erosion; 5 cloud types
+  (`cv2Types`, SatelliteSim.h). Metric coordinates anchored at the observer's sea-level point (CPU
+  double), like terrain detail — never an absolute ECEF position in float.
+- **Passes** (inside the `cloud_march` timestamp bucket, `recordCloudsV2`): `cloud_v2_march.comp`
+  marches one pixel per 2x2 half-res block per frame; `cloud_v2_resolve.comp` reprojects history
+  (exact: rotation about a known eye + the eye's ECEF delta) and clamps; the result is copied to
+  history. cloud_march.comp reads it in place of `cloudMarchCS` when `GpuCloudParams::cloudsV2`
+  is set; sat_sky.frag then skips flat layer 0 and its 3x3 cloud blur.
+- **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
+- Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
+  samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
+- All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
+
 ## Subsystem: Automation harness (2026-09-25)
 
 User guide and command reference: **docs/HARNESS.md** (keep its table in step with

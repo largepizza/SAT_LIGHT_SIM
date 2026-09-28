@@ -590,6 +590,41 @@ struct CloudMarchPC
 }; // total: 128 bytes.
 static_assert(sizeof(CloudMarchPC) == 128, "CloudMarchPC layout mismatch");
 
+// ── Clouds v2 UBO (shaders/include/clouds_v2.glsl, CloudV2Params, std140) ─────────────────────
+// .plans/CLOUDS_V2_PLAN.md. Every member is a vec4/mat4, so std140 and C++ agree by construction;
+// the offsetof asserts below catch a reordering on this side. Keep the two in the same order.
+struct GpuCloudV2Type
+{
+    glm::vec4 alt;   // x base (m), y top at full presence (m), z top fraction at zero presence, w base variation (m)
+    glm::vec4 shape; // x extinction at density 1 (1/m), y erosion, z billow, w anvil
+    glm::vec4 look;  // x multiple-scattering brightness, y ambient, z convective, w precipitation loading
+};
+static constexpr int kCloudV2Types = 5;
+struct GpuCloudV2Params
+{
+    glm::mat4 prevSkyView;
+    glm::vec4 prevObs;       // xyz previous observer ECEF unit vector, w previous tan(fovY/2)
+    glm::vec4 obsDelta;      // xyz eye(now) - eye(prev), ECEF m; w previous aspect
+    glm::vec4 anchorShape;   // xyz frac(anchor / period), w 1 / period
+    glm::vec4 anchorDetail;
+    glm::vec4 anchorCluster;
+    glm::vec4 anchorCell;
+    glm::vec4 frame;         // x frame index, y history valid, zw this frame's pixel in each 2x2
+    glm::vec4 march;         // x base step, y growth per m, z max step, w max distance
+    glm::vec4 light;         // x light length, y light steps, z MS extinction ratio, w MS contribution ratio
+    glm::vec4 look;          // x coverage, y density, z detail, w ambient
+    glm::vec4 look2;         // x ground bounce, y sun gain, z powder, w new-sample weight
+    glm::vec4 phase;         // x/y forward g/weight, z/w backward g/weight
+    glm::vec4 shell;         // x lowest base, y highest top, z debug view, w detail LOD start (m)
+    glm::vec4 extra;         // x edge sharpness, y weather-lookup warp (rad)
+    GpuCloudV2Type types[kCloudV2Types];
+};
+static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, shell) == 256, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, types) == 288, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types, "GpuCloudV2Params layout");
+
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
 // the idealized targetENU (retired same day once beam_self_march.comp made per-beam values real).
@@ -1432,8 +1467,16 @@ struct GpuCloudParams
     float oceanGlintMinFlux; // minimum effectFlare (an OceanGlintBuf entry's .w) that draws at all
     float oceanGlintPad0;
     float oceanGlintPad1;
+    // -- Clouds v2 switch (704 -> 720), .plans/CLOUDS_V2_PLAN.md ------------------------------------
+    // 1 = v2 draws the low/mid clouds: cloud_march.comp reads cloud_v2_resolve.comp's result instead
+    // of running cloudMarchCS, sat_sky.frag skips flat layer 0, beam_self_march.comp and the ground
+    // shadow use the v2 field. The pads are std140's rounding, load-bearing like the ones above.
+    float cloudsV2;
+    float cloudsV2Pad0;
+    float cloudsV2Pad1;
+    float cloudsV2Pad2;
 };
-static_assert(sizeof(GpuCloudParams) == 704, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 720, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -2653,6 +2696,76 @@ private:
     VkDeviceMemory cloudMarchTargetBMem = VK_NULL_HANDLE;
     VkImageView cloudMarchTargetBView = VK_NULL_HANDLE;
     VkSampler cloudMarchSampler = VK_NULL_HANDLE; // shared by both targets; resolution-independent
+
+    // ── Clouds v2 (SatelliteSimCloudsV2.cpp, .plans/CLOUDS_V2_PLAN.md) ──────────────────────────
+    // Settings (persisted under "clouds_v2"; harness: set clouds_v2.<key> <value>).
+    bool  cloudsV2Enabled = false;     // v1 stays the default until v2 replaces it (phase 7)
+    float cv2Coverage = 1.0f;          // x the weather map's coverage
+    float cv2Density = 1.0f;           // x every type's extinction
+    float cv2Detail = 1.0f;            // erosion detail strength
+    float cv2AmbientGain = 2.0f;       // sky light (zenith radiance x this)
+    float cv2SunGain = 1.0f;
+    float cv2BounceGain = 1.0f;        // light reflected up from the ground
+    float cv2Powder = 0.3f;
+    float cv2HistoryWeight = 0.25f;    // weight of a new sample over its reprojected history
+    float cv2LightLenM = 2500.0f;      // light-march length
+    int   cv2LightSteps = 6;
+    float cv2StepBaseM = 60.0f;        // step at the eye ...
+    float cv2StepGrowth = 0.006f;      // ... growing by this per metre of distance ...
+    float cv2StepMaxM = 1200.0f;       // ... capped here (and at 0.4% of the distance beyond)
+    float cv2MaxDistKm = 600.0f;
+    float cv2DetailLodStartM = 20000.0f; // detail erosion fades from here to 4x
+    float cv2ShapePeriodM = 7000.0f;   // tiling periods of the noise volumes
+    float cv2DetailPeriodM = 1800.0f;
+    float cv2CellPeriodM = 32000.0f;
+    float cv2ClusterPeriodM = 256000.0f;
+    float cv2WindMps = 8.0f;           // noise advection (the weather map itself is static until phase 5)
+    float cv2EdgeSharpness = 3.0f;     // density gain after erosion (clamped at 1): harder surfaces
+    float cv2WeatherWarpKm = 7.0f;     // mesoscale warp of the weather lookup (hides its 5 km texels)
+    int   cv2DebugView = 0;            // not persisted: 1 iterations, 2 opacity, 3 depth zebra
+    GpuCloudV2Type cv2Types[kCloudV2Types] = {
+        // alt: base, top, top frac at 0 presence, base var | shape: ext, erosion, billow, anvil | look: ms, amb, conv, precip
+        {{400.0f, 1300.0f, 1.0f, 150.0f}, {0.030f, 0.35f, 0.3f, 0.0f}, {1.0f, 1.0f, 0.0f, 0.5f}},  // stratus
+        {{900.0f, 2200.0f, 0.75f, 250.0f}, {0.040f, 0.55f, 0.6f, 0.0f}, {1.0f, 1.0f, 0.5f, 0.5f}},  // stratocumulus
+        {{1000.0f, 3200.0f, 0.3f, 300.0f}, {0.050f, 0.75f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f, 0.5f}},  // cumulus
+        {{1000.0f, 7000.0f, 0.2f, 300.0f}, {0.060f, 0.8f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f, 1.0f}},   // congestus
+        {{900.0f, 11500.0f, 0.3f, 300.0f}, {0.080f, 0.7f, 0.9f, 1.0f}, {1.0f, 0.9f, 0.9f, 2.0f}}};  // cumulonimbus
+
+    // Frame-to-frame state for the temporal resolve.
+    uint32_t cv2Frame = 0;
+    bool cv2HistoryValid = false;
+    glm::mat4 cv2PrevSkyView{1.0f};
+    glm::vec3 cv2PrevObsDir{0.0f, 0.0f, 1.0f};
+    glm::dvec3 cv2PrevEye{0.0};
+    float cv2PrevTanHalf = 1.0f, cv2PrevAspect = 1.0f;
+    double cv2PrevSimT = 0.0;
+    uint64_t cv2SettingsHash = 0;      // a change drops the history
+
+    // Resources. Static: the bakes, the UBO, samplers. Swapchain-sized: the quarter-grid samples
+    // and the half-grid resolved/history images.
+    VkImage cv2WeatherImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2WeatherMem = VK_NULL_HANDLE;
+    VkImageView cv2WeatherView = VK_NULL_HANDLE;
+    VkImage cv2ShapeImg = VK_NULL_HANDLE, cv2DetailImg = VK_NULL_HANDLE, cv2MesoImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2ShapeMem = VK_NULL_HANDLE, cv2DetailMem = VK_NULL_HANDLE, cv2MesoMem = VK_NULL_HANDLE;
+    VkImageView cv2ShapeView = VK_NULL_HANDLE, cv2DetailView = VK_NULL_HANDLE, cv2MesoView = VK_NULL_HANDLE;
+    VkSampler cv2RepeatSampler = VK_NULL_HANDLE; // trilinear REPEAT (noise) — also the weather cube
+    VkSampler cv2ClampSampler = VK_NULL_HANDLE;  // bilinear CLAMP (screen targets)
+    VkBuffer cv2ParamsBuf = VK_NULL_HANDLE;
+    VkDeviceMemory cv2ParamsMem = VK_NULL_HANDLE;
+    void *cv2ParamsMapped = nullptr;
+    VkImage cv2NewImg = VK_NULL_HANDLE, cv2NewDepthImg = VK_NULL_HANDLE;
+    VkImage cv2ResolvedImg = VK_NULL_HANDLE, cv2ResolvedDepthImg = VK_NULL_HANDLE, cv2HistoryImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2NewMem = VK_NULL_HANDLE, cv2NewDepthMem = VK_NULL_HANDLE;
+    VkDeviceMemory cv2ResolvedMem = VK_NULL_HANDLE, cv2ResolvedDepthMem = VK_NULL_HANDLE, cv2HistoryMem = VK_NULL_HANDLE;
+    VkImageView cv2NewView = VK_NULL_HANDLE, cv2NewDepthView = VK_NULL_HANDLE;
+    VkImageView cv2ResolvedView = VK_NULL_HANDLE, cv2ResolvedDepthView = VK_NULL_HANDLE, cv2HistoryView = VK_NULL_HANDLE;
+    uint32_t cv2HalfW = 0, cv2HalfH = 0, cv2QuarterW = 0, cv2QuarterH = 0;
+    VkDescriptorSetLayout cv2MarchDescLayout = VK_NULL_HANDLE, cv2ResolveDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool cv2DescPool = VK_NULL_HANDLE;
+    VkDescriptorSet cv2MarchDescSet = VK_NULL_HANDLE, cv2ResolveDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout cv2MarchPipeLayout = VK_NULL_HANDLE, cv2ResolvePipeLayout = VK_NULL_HANDLE;
+    VkPipeline cv2MarchPipeline = VK_NULL_HANDLE, cv2ResolvePipeline = VK_NULL_HANDLE;
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;
@@ -4015,6 +4128,7 @@ private:
     // a cinematic that didn't exist in their version — see loadSettings().
     bool playIntroOnStartup = true;
     bool hovPlayIntroStartup = false;
+    bool hovCloudsV2 = false;
     bool hovRootFollowMusic = false;
     bool hovSatOcclusionChk = false, hovEnvReflChk = false, hovSharpReflChk = false;
 
@@ -4054,6 +4168,14 @@ private:
     void createCloudMarchDescriptors(VulkanContext &ctx);
     void createCloudMarchPipeline(VulkanContext &ctx);
     void createSceneDepthResources(VulkanContext &ctx);
+    // ── Clouds v2 (SatelliteSimCloudsV2.cpp, .plans/CLOUDS_V2_PLAN.md) ──
+    void createCloudsV2(VulkanContext &ctx);        // bakes + UBO + pipelines + targets (after createGlowResources)
+    void createCloudsV2Targets(VulkanContext &ctx); // swapchain-sized images + their descriptor writes
+    void destroyCloudsV2Targets(VkDevice device);
+    void destroyCloudsV2(VkDevice device);
+    void writeCloudsV2ConsumerDescriptors(VulkanContext &ctx); // cloud_march / beam_self_march bindings
+    void recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc);
+    void fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cpc);
     void createSceneDepthDescriptors(VulkanContext &ctx);
     void createSceneDepthPipeline(VulkanContext &ctx);
     void writeSceneDepthSeedDescriptors(VulkanContext &ctx);

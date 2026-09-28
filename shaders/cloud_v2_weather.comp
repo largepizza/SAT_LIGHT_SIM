@@ -1,0 +1,110 @@
+#version 450
+
+// Clouds v2 (.plans/CLOUDS_V2_PLAN.md): bakes the WEATHER CUBE from the real-Earth 8K cloud map,
+// once at init, one dispatch per mip level. A cube, not the equirect source, so the march never
+// pays an atan/asin per sample, and there is no longitude seam and no pinching at the poles.
+//
+//   R  coverage       the map's brightness (thin cloud reads grey, deep cloud white)
+//   G  cloud type     0..1 over the type table in clouds_v2.glsl, in order of vertical
+//                     development: stratus, stratocumulus, cumulus, congestus, cumulonimbus
+//   B  precipitation  0..1 (deep, bright cloud; darkens bases, and later drives rain/lightning)
+//   A  tropopause     cloud-top scale over latitude, stored as (scale - 0.5) / 1.0
+//
+// The type is CLASSIFIED, since the imagery carries no type: broken, high-variance brightness is
+// convective (cumulus fields), smooth bright fields are stratiform decks, very bright convective
+// cloud is deep (congestus/Cb) and more so in the tropics, and smooth cloud over cold ocean is
+// stratus. Rough by construction, and why a type is always interpolated rather than switched.
+//
+// Face orientation is Vulkan's cube-map rule (spec, "Cube Map Face Selection"), inverted:
+//   +X (1,-b,-a)  -X (-1,-b,a)  +Y (a,1,b)  -Y (a,-1,-b)  +Z (a,-b,1)  -Z (-a,-b,-1),  a,b in [-1,1].
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D earthCloudsTex;   // equirect, R8, full mip chain
+layout(set = 0, binding = 1) uniform sampler2D earthSpecTex;     // equirect ocean mask (1 = water)
+layout(rgba8, set = 0, binding = 2) writeonly uniform image2DArray outWeather;
+
+layout(push_constant) uniform PC { int faceSize; float srcLod; } pc;
+
+const float PI = 3.14159265359;
+
+vec3 faceDir(int face, vec2 st)
+{
+    float a = st.x * 2.0 - 1.0, b = st.y * 2.0 - 1.0;
+    vec3 d;
+    if      (face == 0) d = vec3( 1.0, -b, -a);
+    else if (face == 1) d = vec3(-1.0, -b,  a);
+    else if (face == 2) d = vec3(  a, 1.0,  b);
+    else if (face == 3) d = vec3(  a,-1.0, -b);
+    else if (face == 4) d = vec3(  a, -b, 1.0);
+    else                d = vec3( -a, -b,-1.0);
+    return normalize(d);
+}
+
+// Same equirect convention as cloud_march.comp / sat_sky.frag (pUVGeo): u from -180 deg, v from the north pole.
+vec2 equirectUV(vec3 d)
+{
+    float lon = atan(d.y, d.x);
+    float lat = asin(clamp(d.z, -1.0, 1.0));
+    return vec2((lon + PI) / (2.0 * PI), (0.5 * PI - lat) / PI);
+}
+
+void main()
+{
+    ivec3 id = ivec3(gl_GlobalInvocationID);
+    if (id.x >= pc.faceSize || id.y >= pc.faceSize || id.z >= 6) return;
+
+    vec2 st = (vec2(id.xy) + 0.5) / float(pc.faceSize);
+    vec3 d  = faceDir(id.z, st);
+
+    // Tangent frame for neighbourhood taps, ~one output texel apart.
+    vec3  up    = abs(d.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3  tx    = normalize(cross(up, d));
+    vec3  ty    = cross(d, tx);
+    float texel = 2.0 / float(pc.faceSize);   // angular size of one output texel (rad, ~at face centre)
+
+    // Coverage: a 2x2 supersample at the matching source mip.
+    float cov = 0.0;
+    for (int k = 0; k < 4; ++k) {
+        vec2 o = (vec2(k & 1, k >> 1) - 0.5) * 0.5 * texel;
+        cov += textureLod(earthCloudsTex, equirectUV(normalize(d + tx * o.x + ty * o.y)), pc.srcLod).r;
+    }
+    cov *= 0.25;
+
+    // Neighbourhood statistics over ~8 texels (~40 km at the full-resolution level): the standard
+    // deviation separates broken (convective) fields from smooth (stratiform) ones.
+    float m1 = 0.0, m2 = 0.0;
+    const int kRing = 12;
+    for (int k = 0; k < kRing; ++k) {
+        float ang = float(k) * (2.0 * PI / float(kRing));
+        float r   = (k & 1) == 0 ? 4.0 : 8.0;
+        vec3  q   = normalize(d + (tx * cos(ang) + ty * sin(ang)) * r * texel);
+        float v   = textureLod(earthCloudsTex, equirectUV(q), pc.srcLod + 1.0).r;
+        m1 += v; m2 += v * v;
+    }
+    m1 /= float(kRing); m2 /= float(kRing);
+    float sd = sqrt(max(m2 - m1 * m1, 0.0));
+
+    float latAbs  = abs(asin(clamp(d.z, -1.0, 1.0))) * (180.0 / PI);
+    float ocean   = textureLod(earthSpecTex, equirectUV(d), pc.srcLod + 2.0).r;
+    float tropics = 1.0 - smoothstep(18.0, 32.0, latAbs);
+    float polar   = smoothstep(50.0, 70.0, latAbs);
+
+    float conv = smoothstep(0.06, 0.2, sd);                 // broken field
+    float deep = smoothstep(0.55, 0.9, cov);                // bright = thick/tall
+
+    float t = 0.25;                                          // stratocumulus by default
+    t += conv * 0.28;                                        // -> cumulus
+    t += deep * conv * (0.22 + 0.25 * tropics);              // -> congestus / cumulonimbus
+    t += deep * tropics * 0.12 * (1.0 - ocean * 0.5);        // tropical land convection
+    t -= (1.0 - conv) * ocean * (0.12 + 0.12 * polar);       // smooth cloud over cold sea -> stratus
+    t  = clamp(t, 0.0, 1.0);
+
+    float precip = clamp(deep * smoothstep(0.55, 0.9, t) + deep * (1.0 - conv) * 0.35, 0.0, 1.0);
+
+    // Tropopause: ~16 km in the tropics, ~9 km at the poles. The type table's tops are written for
+    // the mid-latitudes (scale 1.0 at ~11 km).
+    float tropo = mix(1.35, 0.8, smoothstep(15.0, 65.0, latAbs));
+
+    imageStore(outWeather, id, vec4(cov, t, precip, tropo - 0.5));
+}

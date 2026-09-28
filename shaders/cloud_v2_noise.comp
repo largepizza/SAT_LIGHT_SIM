@@ -1,0 +1,154 @@
+#version 450
+
+// Clouds v2 (.plans/CLOUDS_V2_PLAN.md): bakes the three tiling 3D noise volumes the v2 cloud field
+// samples, once at init. One shader, three modes (push constant):
+//
+//   mode 0  SHAPE   (sampled in metres, one period = CloudV2Params.anchorShape.w⁻¹)
+//     R = Perlin-Worley (Perlin fBm lifted by an inverted-Worley fBm: billowy macro shape)
+//     G = inverted-Worley fBm, 4/8/16 cells
+//     B = inverted-Worley fBm, 8/16/32 cells
+//     A = Perlin fBm, 4..32 cells (distortion source for the detail lookup)
+//   mode 1  DETAIL  (one period ~2 km)
+//     R = inverted-Worley fBm, 4/8/16 cells     G = inverted-Worley fBm, 16/32/64 cells
+//     B, A = Perlin fBm at two seeds (curl-like distortion)
+//   mode 2  MESO    (sampled on the sea-level sphere, so constant along a vertical)
+//     R = cluster field: Perlin-Worley at 4 cells       (cloud-system clustering)
+//     G = cumulus cells: inverted-Worley blobs, 16 + 32 cells
+//     B = closed cells: Worley F2-F1 edges at 8 cells  (stratocumulus cells with clear rims)
+//     A = Perlin fBm, 4..32 cells                      (stratiform decks, holes)
+//
+// EVERY cell count is a power of two, and cells wrap with a bitmask, never `%`. The v1 bake learned
+// the hard way (CLOUD_SEAM_BUG.md) that a non-power-of-two count wrapped with `%` on a negative
+// operand puts a seam at the volume edge; the mask cannot.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+layout(rgba8, set = 0, binding = 0) writeonly uniform image3D outTex;
+layout(push_constant) uniform PC { int mode; int seed; } pc;
+
+uvec3 hashU(uvec3 v)
+{
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    v ^= v >> 16u;
+    v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+    return v;
+}
+vec3 hash3(ivec3 c, int n)
+{
+    uvec3 w = uvec3(c & ivec3(n - 1)) + uvec3(uint(pc.seed) * 0x9E37u, uint(pc.seed) * 0x85EBu, uint(pc.seed) * 0xC2B2u);
+    return vec3(hashU(w)) * (1.0 / 4294967296.0);
+}
+
+float perlinTile(vec3 uvw, int n)
+{
+    vec3  p = uvw * float(n);
+    ivec3 i = ivec3(floor(p));
+    vec3  f = fract(p);
+    vec3  u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float v[8];
+    for (int k = 0; k < 8; ++k) {
+        ivec3 o = ivec3(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        vec3  g = normalize(hash3(i + o, n) * 2.0 - 1.0);
+        v[k] = dot(g, f - vec3(o));
+    }
+    return mix(mix(mix(v[0], v[1], u.x), mix(v[2], v[3], u.x), u.y),
+               mix(mix(v[4], v[5], u.x), mix(v[6], v[7], u.x), u.y), u.z);
+}
+
+float perlinFbm(vec3 uvw, int n0, int octaves)
+{
+    float s = 0.0, a = 1.0, norm = 0.0;
+    int n = n0;
+    for (int o = 0; o < octaves; ++o) {
+        s += (perlinTile(uvw, n) * 0.5 + 0.5) * a;
+        norm += a; a *= 0.5; n *= 2;
+    }
+    return s / norm;
+}
+
+// F1 and F2 of a tiling Worley field with n cells per axis (distances in cell units).
+vec2 worleyTile(vec3 uvw, int n)
+{
+    vec3  p = uvw * float(n);
+    ivec3 i = ivec3(floor(p));
+    float f1 = 9.0, f2 = 9.0;
+    for (int dz = -1; dz <= 1; ++dz)
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+        ivec3 c = i + ivec3(dx, dy, dz);
+        float d = length(p - (vec3(c) + hash3(c, n)));
+        if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) { f2 = d; }
+    }
+    return vec2(f1, f2);
+}
+
+// Inverted Worley fBm: high AT the feature points (blobs), weights 0.625/0.25/0.125.
+float worleyFbm(vec3 uvw, int n0)
+{
+    return (1.0 - clamp(worleyTile(uvw, n0).x,     0.0, 1.0)) * 0.625
+         + (1.0 - clamp(worleyTile(uvw, n0 * 2).x, 0.0, 1.0)) * 0.25
+         + (1.0 - clamp(worleyTile(uvw, n0 * 4).x, 0.0, 1.0)) * 0.125;
+}
+
+float remap01(float v, float lo, float hi) { return clamp((v - lo) / max(hi - lo, 1e-6), 0.0, 1.0); }
+
+// Cumulus cells: a blob per Worley point with its own radius, and about a third of the points
+// empty. One blob of one size per cell reads as a lattice from altitude (a jittered grid is nearly
+// regular); real fields vary in size and leave gaps.
+float blobField(vec3 uvw, int n, float keep)
+{
+    vec3  p = uvw * float(n);
+    ivec3 i = ivec3(floor(p));
+    float v = 0.0;
+    for (int dz = -1; dz <= 1; ++dz)
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+        ivec3 c = i + ivec3(dx, dy, dz);
+        vec3  h = hash3(c, n);
+        vec3  h2 = hash3(c + ivec3(71, 13, 37), n);
+        if (h2.x > keep) continue;
+        float r = mix(0.45, 1.0, h2.y * h2.y);
+        float d = length(p - (vec3(c) + h)) / r;
+        // A dome, not a plateau: the cloud's top height follows this value, so a flat plateau
+        // gave flat tops and a steep rim gave vertical walls. Peaks vary so towers differ.
+        float dome = clamp(1.0 - d * d, 0.0, 1.0);
+        v = max(v, dome * sqrt(dome) * mix(0.55, 1.0, h2.z));
+    }
+    return v;
+}
+
+void main()
+{
+    ivec3 size  = imageSize(outTex);
+    ivec3 coord = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(coord, size))) return;
+    vec3 uvw = (vec3(coord) + 0.5) / vec3(size);
+
+    vec4 o;
+    if (pc.mode == 0) {
+        float pln = perlinFbm(uvw, 4, 4);
+        float wlo = worleyFbm(uvw, 4);
+        // Perlin lifted by Worley: the Nubis Perlin-Worley. Output spans [wlo, 1] (billowy floor).
+        float pw  = mix(wlo, 1.0, pln);
+        o = vec4(pw, wlo, worleyFbm(uvw, 8), perlinFbm(uvw + vec3(0.37, 0.11, 0.73), 4, 4));
+    } else if (pc.mode == 1) {
+        o = vec4(worleyFbm(uvw, 4), worleyFbm(uvw, 16),
+                 perlinFbm(uvw, 4, 3), perlinFbm(uvw + vec3(0.53, 0.29, 0.07), 4, 3));
+    } else {
+        float cluster = mix(worleyFbm(uvw, 4), 1.0, perlinFbm(uvw, 4, 3));
+        // Cumulus cells: rounded blobs. 1 - F1 reaches 1 only AT a feature point, so squash it into
+        // a plateau with a soft rim, then add a finer octave for size variety.
+        float c16 = blobField(uvw, 16, 0.7);
+        float c32 = blobField(uvw + vec3(0.21, 0.63, 0.44), 32, 0.55);
+        float cells = clamp(max(c16, c32 * 0.8), 0.0, 1.0);
+        // Warped (by a periodic Perlin field, so it still tiles): unwarped Voronoi rims are straight
+        // lines, which read as a grid of polygons from altitude.
+        vec3  wv = vec3(perlinFbm(uvw + vec3(0.11, 0.41, 0.83), 4, 3),
+                        perlinFbm(uvw + vec3(0.67, 0.23, 0.05), 4, 3),
+                        perlinFbm(uvw + vec3(0.39, 0.91, 0.57), 4, 3)) - 0.5;
+        vec2  f8 = worleyTile(uvw + wv * 0.18, 8);
+        float closed = smoothstep(0.02, 0.22, f8.y - f8.x);   // 0 on the cell rims, 1 inside
+        o = vec4(cluster, cells, closed, perlinFbm(uvw + vec3(0.19, 0.77, 0.31), 4, 4));
+    }
+    imageStore(outTex, coord, clamp(o, 0.0, 1.0));
+}

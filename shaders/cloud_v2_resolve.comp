@@ -1,0 +1,101 @@
+#version 450
+
+// ── Clouds v2: temporal resolve (.plans/CLOUDS_V2_PLAN.md, phase 2) ──────────────────────────────
+// Half resolution. cloud_v2_march.comp marched one pixel of each 2x2 block this frame; this pass
+// produces every pixel:
+//   this frame's pixel   the new sample blended over the reprojected, clamped history
+//   the other three      the reprojected history, clamped to the 3x3 neighbourhood of new samples
+//   no valid history     a bilinear upsample of the new samples (first frame, after a jump, off-screen)
+//
+// Reprojection is exact geometry, not motion vectors: the camera is a rotation about a known eye.
+// A pixel's point is its ray at the block's mean cloud distance (a sky pixel is a direction at
+// infinity), moved into the previous frame's frame by the eye's displacement (ECEF metres, formed
+// in double on the CPU) and projected with the previous rotation and field of view. Clouds are
+// translucent, so one distance per pixel is an approximation; the neighbourhood clamp absorbs it.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(push_constant) uniform PC {        // == CloudMarchPC
+    mat4  skyView;
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;
+} pc;
+
+#include "common.glsl"
+#define CV2_PARAMS_ONLY
+#define CV2_PARAMS_BINDING 0
+#include "clouds_v2.glsl"
+
+layout(set = 0, binding = 1) uniform sampler2D newColorTex;    // quarter grid, linear/clamp
+layout(set = 0, binding = 2) uniform sampler2D newDepthTex;    // quarter grid (texelFetch)
+layout(set = 0, binding = 3) uniform sampler2D histColorTex;   // half grid, last frame's result
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D outColor;
+layout(set = 0, binding = 5, rg32f)   uniform writeonly image2D outDepth;
+
+void enuOf(vec3 up, out mat3 m)
+{
+    vec3 z = normalize(up);
+    vec3 x = normalize(cross(vec3(0.0, 0.0, 1.0), z));
+    m = mat3(x, cross(z, x), z);
+}
+
+void main()
+{
+    ivec2 halfSize = imageSize(outColor);
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    if (c.x >= halfSize.x || c.y >= halfSize.y) return;
+
+    ivec2 qs  = textureSize(newColorTex, 0);
+    ivec2 off = ivec2(cv2.frame.zw);
+    ivec2 b   = min(c >> 1, qs - 1);
+    bool  isNew = all(equal(c & 1, off));
+
+    vec4 nc = texelFetch(newColorTex, b, 0);
+    vec2 nd = texelFetch(newDepthTex, b, 0).xy;
+
+    vec4 mn = nc, mx = nc;
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+        vec4 s = texelFetch(newColorTex, clamp(b + ivec2(dx, dy), ivec2(0), qs - 1), 0);
+        mn = min(mn, s); mx = max(mx, s);
+    }
+
+    // Where this pixel sits among the new samples (sample q sits at half pixel 2q + off).
+    vec2 uvQ     = ((vec2(c) - vec2(off)) * 0.5 + 0.5) / vec2(qs);
+    vec4 spatial = textureLod(newColorTex, uvQ, 0.0);
+
+    // Reproject.
+    float tanHalf = tan(pc.fovYRad * 0.5);
+    vec2  ndcNow  = ((vec2(c) + 0.5) / vec2(halfSize)) * 2.0 - 1.0;
+    vec3  dirENU  = normalize(mat3(transpose(pc.skyView))
+                              * vec3(ndcNow.x * tanHalf * pc.aspect, -ndcNow.y * tanHalf, -1.0));
+    mat3 mNow, mPrev;
+    enuOf(pc.obsECEFDir.xyz, mNow);
+    enuOf(cv2.prevObs.xyz, mPrev);
+    vec3 vE = mNow * dirENU;
+    if (nd.x > 0.0) vE = vE * nd.x + cv2.obsDelta.xyz;       // the point, from the previous eye
+    vec3 cam = mat3(cv2.prevSkyView) * (transpose(mPrev) * vE);
+    bool valid = cv2.frame.y > 0.5 && cam.z < 0.0;
+    vec2 ndcPrev = vec2(cam.x / (-cam.z) / (cv2.prevObs.w * cv2.obsDelta.w),
+                        -cam.y / (-cam.z) / cv2.prevObs.w);
+    vec2 uvPrev = ndcPrev * 0.5 + 0.5;
+    valid = valid && all(greaterThanEqual(uvPrev, vec2(0.0))) && all(lessThanEqual(uvPrev, vec2(1.0)));
+
+    vec4 outC;
+    if (valid) {
+        vec4 hist = textureLod(histColorTex, uvPrev, 0.0);
+        // A little slack on the box: the clamp is against samples up to two pixels away.
+        vec4 slack = (mx - mn) * 0.1 + vec4(1e-4);
+        vec4 hc = clamp(hist, mn - slack, mx + slack);
+        outC = isNew ? mix(hc, nc, cv2.look2.w) : hc;
+    } else {
+        outC = isNew ? nc : spatial;
+    }
+    imageStore(outColor, c, outC);
+    imageStore(outDepth, c, vec4(nd, 0.0, 0.0));
+}
