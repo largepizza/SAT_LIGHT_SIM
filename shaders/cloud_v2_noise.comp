@@ -112,7 +112,10 @@ float blobField(vec3 uvw, int n, float keep)
         // A dome, not a plateau: the cloud's top height follows this value, so a flat plateau
         // gave flat tops and a steep rim gave vertical walls. Peaks vary so towers differ.
         float dome = clamp(1.0 - d * d, 0.0, 1.0);
-        v = max(v, dome * sqrt(dome) * mix(0.55, 1.0, h2.z));
+        dome *= sqrt(dome) * mix(0.5, 0.95, h2.z);
+        // A soft union, not max(): max() creased every junction into a straight Voronoi edge, and
+        // the field thresholded into polygons. Overlapping blobs merge into one rounded cloud.
+        v = v + dome - v * dome;
     }
     return v;
 }
@@ -136,16 +139,26 @@ void main()
                  perlinFbm(uvw, 4, 3), perlinFbm(uvw + vec3(0.53, 0.29, 0.07), 4, 3));
     } else {
         float cluster = mix(worleyFbm(uvw, 4), 1.0, perlinFbm(uvw, 4, 3));
-        // Cumulus cells: rounded blobs. 1 - F1 reaches 1 only AT a feature point, so squash it into
-        // a plateau with a soft rim, then add a finer octave for size variety.
-        float c16 = blobField(uvw, 16, 0.7);
-        float c32 = blobField(uvw + vec3(0.21, 0.63, 0.44), 32, 0.55);
-        float cells = clamp(max(c16, c32 * 0.8), 0.0, 1.0);
-        // Warped (by a periodic Perlin field, so it still tiles): unwarped Voronoi rims are straight
+        // Warp (by a periodic Perlin field, so it still tiles): unwarped Voronoi rims are straight
         // lines, which read as a grid of polygons from altitude.
         vec3  wv = vec3(perlinFbm(uvw + vec3(0.11, 0.41, 0.83), 4, 3),
                         perlinFbm(uvw + vec3(0.67, 0.23, 0.05), 4, 3),
                         perlinFbm(uvw + vec3(0.39, 0.91, 0.57), 4, 3)) - 0.5;
+        vec3  wf = vec3(perlinFbm(uvw + vec3(0.83, 0.17, 0.29), 16, 2),
+                        perlinFbm(uvw + vec3(0.05, 0.59, 0.71), 16, 2),
+                        perlinFbm(uvw + vec3(0.47, 0.35, 0.13), 16, 2)) - 0.5;
+        // Cumulus cells: rounded blobs of three sizes (a few large, many small: real fields are
+        // closer to a power law than to one size), in warped space so they are not circles, and
+        // clumped by a Perlin field so the gaps between them vary. One or two sizes of round blobs
+        // read as a Voronoi pattern from altitude.
+        vec3  cw  = uvw + wv * 0.035 + wf * 0.012;
+        float c8  = blobField(cw + vec3(0.57, 0.08, 0.91), 8, 0.3);
+        float c16 = blobField(cw, 16, 0.6);
+        float c32 = blobField(cw + vec3(0.21, 0.63, 0.44), 32, 0.5);
+        float clump = perlinFbm(uvw + vec3(0.29, 0.52, 0.66), 8, 3);
+        float cells = (c8 + c16 * 0.9 - c8 * c16 * 0.9);
+        cells = cells + c32 * 0.7 - cells * c32 * 0.7;
+        cells = clamp(cells * mix(0.6, 1.2, clump), 0.0, 1.0);
         vec2  f8 = worleyTile(uvw + wv * 0.18, 8);
         float closed = smoothstep(0.02, 0.22, f8.y - f8.x);   // 0 on the cell rims, 1 inside
         o = vec4(cluster, cells, closed, perlinFbm(uvw + vec3(0.19, 0.77, 0.31), 4, 4));

@@ -618,12 +618,23 @@ struct GpuCloudV2Params
     glm::vec4 shell;         // x lowest base, y highest top, z debug view, w detail LOD start (m)
     glm::vec4 extra;         // x edge sharpness, y weather-lookup warp (rad)
     GpuCloudV2Type types[kCloudV2Types];
+    glm::vec4 cover;         // x map value = clear, y map value = overcast, zw cos/sin of the map's drift
+    glm::vec4 form;          // x wobble, y lean (m/m), z interior erosion kept, w column-edge softness
+    glm::vec4 misc;          // x march budget (iterations), y moon key-light gain, z full rate (0/1), w mid-layer amount
+    glm::vec4 storm;         // x storm feature scale, y storm erosion kept, z anvil amount, w deck base roughness
+    glm::vec4 anchorStorm;   // the shape volume at period x storm scale (deep convection's lobes)
+    glm::vec4 anchorStormDetail; // the detail volume at period x storm scale
+    glm::vec4 motion;        // x the noise volumes' relative slide since last frame (m)
+    glm::vec4 high;          // x amount, y 1/along-wind period, z along-wind offset (periods), w 1/across period
+    glm::vec4 high2;         // x high-layer density
+    glm::vec4 rain;          // x rain amount, y optics strength, z rain streaks at the eye
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, shell) == 256, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, types) == 288, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, cover) == 288 + 48 * kCloudV2Types, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 160, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -2698,22 +2709,47 @@ private:
     VkSampler cloudMarchSampler = VK_NULL_HANDLE; // shared by both targets; resolution-independent
 
     // ── Clouds v2 (SatelliteSimCloudsV2.cpp, .plans/CLOUDS_V2_PLAN.md) ──────────────────────────
-    // Settings (persisted under "clouds_v2"; harness: set clouds_v2.<key> <value>).
-    bool  cloudsV2Enabled = false;     // v1 stays the default until v2 replaces it (phase 7)
-    float cv2Coverage = 1.0f;          // x the weather map's coverage
+    // Settings (persisted under "clouds_v2"; harness: set clouds_v2.<key> <value>; Clouds tab).
+    // The only volumetric cloud renderer since 2026-09-27 (v1's cloudMarchCS was deleted).
+    float cv2Coverage = 1.0f;          // x the weather map's brightness before the remap below
+    float cv2CoverClear = 0.12f;       // map brightness that is clear sky ...
+    float cv2CoverFull = 0.6f;         // ... and that is overcast (thin cloud is grey in the imagery)
     float cv2Density = 1.0f;           // x every type's extinction
     float cv2Detail = 1.0f;            // erosion detail strength
+    float cv2Wobble = 0.35f;           // 3D noise on a column's edge (fraction of the span): bulges, turrets
+    float cv2Lean = 0.15f;             // horizontal shift of a tower per metre of height
+    float cv2InteriorErosion = 0.25f;  // share of the erosion that applies deep inside a cloud
+    float cv2ColumnEdge = 4.0f;        // 1 / the column edge's softness (fraction of the span)
     float cv2AmbientGain = 2.0f;       // sky light (zenith radiance x this)
     float cv2SunGain = 1.0f;
+    float cv2MoonGain = 1.0f;          // x the terrain's moonlight (cloud.moonGain) as the night key light
     float cv2BounceGain = 1.0f;        // light reflected up from the ground
     float cv2Powder = 0.3f;
-    float cv2HistoryWeight = 0.25f;    // weight of a new sample over its reprojected history
+    float cv2MsExtinction = 0.35f;     // multiple scattering: extinction ratio per octave ...
+    float cv2MsStrength = 0.5f;        // ... and contribution ratio per octave
+    float cv2PhaseG = 0.8f;            // forward-scattering lobe (silver lining)
+    float cv2HistoryWeight = 0.1f;     // weight of a new sample over its reprojected history (still view;
+                                       // the resolve raises it toward 0.35 with motion)
     float cv2LightLenM = 2500.0f;      // light-march length
-    int   cv2LightSteps = 6;
+    float cv2LightSteps = 6.0f;
     float cv2StepBaseM = 60.0f;        // step at the eye ...
-    float cv2StepGrowth = 0.006f;      // ... growing by this per metre of distance ...
-    float cv2StepMaxM = 1200.0f;       // ... capped here (and at 0.4% of the distance beyond)
+    float cv2StepGrowth = 0.01f;       // ... growing by this per metre of distance ...
+    float cv2StepMaxM = 1200.0f;       // ... capped here (and at 1.2% of the distance beyond)
+    float cv2MaxIters = 400.0f;        // march budget per ray (what is left is filled, not dropped)
     float cv2MaxDistKm = 600.0f;
+    float cv2FullRateAboveKm = 30.0f;  // above this eye altitude every pixel is marched every frame
+    float cv2MidAmount = 1.0f;         // the mid-level layer (altocumulus / altostratus), 0 = off
+    float cv2StormScale = 2.0f;        // deep convection's lobes and erosion are this much larger
+    float cv2StormDetail = 0.5f;       // share of the erosion kept on deep convection
+    float cv2Anvil = 1.0f;             // the cumulonimbus anvil layer, 0 = off
+    float cv2BaseRoughness = 1.0f;     // bumps on cloud bases (decks most), x the default amplitude
+    float cv2HighAmount = 1.0f;        // the high layer (cirrus / cirrostratus / cirrocumulus), 0 = off
+    float cv2HighDensity = 1.0f;       // x its extinction
+    float cv2CirrusStretch = 8.0f;     // cirrus fibres are this much longer along the wind than across
+    float cv2CirrusWindMps = 30.0f;    // the jet: cirrus moves this fast eastward over the map
+    float cv2RainAmount = 1.0f;        // rain shafts under precipitating cloud, 0 = none
+    float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
+    float cv2RainStreaks = 1.0f;       // falling-rain streaks when the observer stands in rain
     float cv2DetailLodStartM = 20000.0f; // detail erosion fades from here to 4x
     float cv2ShapePeriodM = 7000.0f;   // tiling periods of the noise volumes
     float cv2DetailPeriodM = 1800.0f;
@@ -2722,23 +2758,25 @@ private:
     float cv2WindMps = 8.0f;           // noise advection (the weather map itself is static until phase 5)
     float cv2EdgeSharpness = 3.0f;     // density gain after erosion (clamped at 1): harder surfaces
     float cv2WeatherWarpKm = 7.0f;     // mesoscale warp of the weather lookup (hides its 5 km texels)
-    int   cv2DebugView = 0;            // not persisted: 1 iterations, 2 opacity, 3 depth zebra
+    int   cv2DebugView = 0;            // 1 iterations, 2 opacity, 3 depth zebra, 4 weather at shell entry
     GpuCloudV2Type cv2Types[kCloudV2Types] = {
-        // alt: base, top, top frac at 0 presence, base var | shape: ext, erosion, billow, anvil | look: ms, amb, conv, precip
+        // alt: base, top, flatness (0 dome, 1 deck), base var | shape: ext, erosion, billow, anvil | look: ms, amb, conv, precip
         {{400.0f, 1300.0f, 1.0f, 150.0f}, {0.030f, 0.35f, 0.3f, 0.0f}, {1.0f, 1.0f, 0.0f, 0.5f}},  // stratus
-        {{900.0f, 2200.0f, 0.75f, 250.0f}, {0.040f, 0.55f, 0.6f, 0.0f}, {1.0f, 1.0f, 0.5f, 0.5f}},  // stratocumulus
-        {{1000.0f, 3200.0f, 0.3f, 300.0f}, {0.050f, 0.75f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f, 0.5f}},  // cumulus
-        {{1000.0f, 7000.0f, 0.2f, 300.0f}, {0.060f, 0.8f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f, 1.0f}},   // congestus
-        {{900.0f, 11500.0f, 0.3f, 300.0f}, {0.080f, 0.7f, 0.9f, 1.0f}, {1.0f, 0.9f, 0.9f, 2.0f}}};  // cumulonimbus
+        {{900.0f, 2200.0f, 0.7f, 250.0f}, {0.040f, 0.55f, 0.6f, 0.0f}, {1.0f, 1.0f, 0.5f, 0.5f}},  // stratocumulus
+        {{1000.0f, 3200.0f, 0.0f, 300.0f}, {0.050f, 0.75f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f, 0.5f}},  // cumulus
+        {{1000.0f, 7000.0f, 0.0f, 300.0f}, {0.060f, 0.8f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f, 1.0f}},   // congestus
+        {{900.0f, 11500.0f, 0.15f, 300.0f}, {0.080f, 0.7f, 0.9f, 1.0f}, {1.0f, 0.9f, 0.9f, 2.0f}}};  // cumulonimbus
 
     // Frame-to-frame state for the temporal resolve.
     uint32_t cv2Frame = 0;
+    bool cv2FullRateNow = false;       // this frame's march covers every half-res pixel
     bool cv2HistoryValid = false;
     glm::mat4 cv2PrevSkyView{1.0f};
     glm::vec3 cv2PrevObsDir{0.0f, 0.0f, 1.0f};
     glm::dvec3 cv2PrevEye{0.0};
     float cv2PrevTanHalf = 1.0f, cv2PrevAspect = 1.0f;
     double cv2PrevSimT = 0.0;
+    double cv2PrevDrift = 0.0;          // the map drift angle last frame (rad)
     uint64_t cv2SettingsHash = 0;      // a change drops the history
 
     // Resources. Static: the bakes, the UBO, samplers. Swapchain-sized: the quarter-grid samples
@@ -3370,6 +3408,12 @@ private:
     float cloudBaseAltM = 6000.0f; // layer 0 shell altitude (low cloud / stratus)
     float cloudTopAltM = 15000.0f; // layer 1 shell altitude (high cirrus)
     float cloudDriftRate = 6.5e-06f;
+    // The map's drift phase = rate x (t - kCloudDriftEpochS) + this offset (session state, never
+    // saved). The default puts the default rate's map exactly where rate x (t - J2000) did.
+    static constexpr double kCloudDriftEpochS = 1150891200.0;   // 2036-06-21 00:00 UTC, the start epoch
+    static constexpr double kCloudDriftPhaseDefault = 3.8022001485; // fmod(float(6.5e-6) x 1150891200, 2pi)
+    double cloudDriftPhaseOffset = kCloudDriftPhaseDefault;
+    double cloudDriftPhase() const;
     float cloudSunGain = 1.1f;       // near-horizon/sunset sun-gain endpoint — blended toward
                                      // cloudSunGainZenith by sun elevation (see cloud_march.comp)
     float cloudSunGainZenith = 1.0f; // sun-gain endpoint when the sun is near zenith (midday)
@@ -4067,13 +4111,16 @@ private:
     bool hovPhotoMinus[35] = {};
     bool hovPhotoPlus[35] = {};
     bool draggingPhoto[35] = {};
-    bool hovCloudMinus[112] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
+    // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
+    // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
+    static constexpr int kCloudSliderSlots = 160;
+    bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),
                                  // idx 110/111 the satellite ocean-glint gain/floor (2026-09-26, a
                                  // reuse of the last free slots — the Sound tab's are 99-108)
-    bool hovCloudPlus[112] = {};
-    bool draggingCloud[112] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
+    bool hovCloudPlus[kCloudSliderSlots] = {};
+    bool draggingCloud[kCloudSliderSlots] = {}; // MUST stay sized to match hovCloudMinus/Plus — see
                                  // feedback_cloud_slider_arrays memory: this one was missed once
                                  // already and the out-of-bounds write corrupted the window-chrome
                                  // state declared right below, breaking the settings window.
@@ -4128,7 +4175,6 @@ private:
     // a cinematic that didn't exist in their version — see loadSettings().
     bool playIntroOnStartup = true;
     bool hovPlayIntroStartup = false;
-    bool hovCloudsV2 = false;
     bool hovRootFollowMusic = false;
     bool hovSatOcclusionChk = false, hovEnvReflChk = false, hovSharpReflChk = false;
 
@@ -4398,12 +4444,10 @@ static constexpr float kIntroObserverLonDeg = -121.400291f;
 static constexpr float kIntroStartAzDeg = -61.32f;
 static constexpr float kIntroStartElDeg = 20.8f;
 static constexpr float kIntroStartFovDeg = 70.0f;
-// Cloud drift rate forced for the duration of intro playback. This is a POSITION constant as much
-// as a speed one: cloudPhase = fmod(cloudDriftRate * simTime, 2pi) and the intro always starts at
-// the same fixed epoch, so this value picks which part of the cloud noise field sits over the
-// vantage above on frame 1. Retuned when cloud-noise changes left the intro opening under solid
-// overcast. Applied in updateIntroCinematic's one-time init block, overriding the settings.json
-// value (see cloudDriftRate's own default for the non-intro case).
+// The intro's cloud layout, as a rate: the map sat at phase kIntroCloudDriftRate x (time since
+// J2000) when the intro was tuned (a clear patch over the vantage). updateIntroCinematic's one-time
+// init turns it into this session's cloudDriftPhaseOffset. It used to FORCE cloudDriftRate to this
+// value, which settings.json then saved: every intro silently changed the player's drift rate.
 static constexpr float kIntroCloudDriftRate = 6.55e-6f;
 
 // ── UC3 intro cinematic beat sheet (RELEASE_v1_1_PLAN.md) ─────────────────────

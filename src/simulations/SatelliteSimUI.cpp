@@ -4461,12 +4461,14 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
     // silently corrupts a neighboring slider's display text — reported as "Opacity scale has a
     // bugged display, can't see what value is selected." Must stay >= (highest idx in use) + 1,
     // same as hovCloudMinus/hovCloudPlus/draggingCloud above.
-    static char cloudBufs[112][16];
+    static char cloudBufs[kCloudSliderSlots][16];
 
     for (int si = 0; si < count; ++si)
     {
         CloudSlider &cs = sliders[si];
         int ci = cs.idx;
+        if (ci < 0 || ci >= kCloudSliderSlots)
+            continue; // an id past the shared arrays would write into their neighbours
         snprintf(cloudBufs[ci], sizeof(cloudBufs[ci]), cs.fmt, *cs.val);
         Clay_String valStr{false, (int32_t)strlen(cloudBufs[ci]), cloudBufs[ci]};
         float t = glm::clamp((*cs.val - cs.vmin) / (cs.vmax - cs.vmin), 0.0f, 1.0f);
@@ -4628,94 +4630,62 @@ void SatelliteSim::buildCloudSliderSections(const UIInput &inp, UIRenderer &ui,
 // clouds too dark at sunset" should find every relevant knob in one place.
 void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
 {
-    // ── Clouds v2 (.plans/CLOUDS_V2_PLAN.md) — the new renderer, beside v1 until it replaces it.
-    // The sliders below are v1's; v2's tunables are in settings.json's "clouds_v2" block (harness:
-    // set clouds_v2.<key>) until its own section settles.
-    CLAY(CLAY_ID("CloudsV2Row"), {.layout = {
-                                      .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                      .padding = {4, 4, 4, 4},
-                                      .childGap = 8,
-                                      .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                      .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Volumetric clouds v2 (experimental)"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
-        CLAY(CLAY_ID("CloudsV2Spacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-        Clay_Color chkBg = cloudsV2Enabled ? Pal::btnAccent : (hovCloudsV2 ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("CloudsV2Chk"), {.layout = {
-                                          .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                      .backgroundColor = chkBg,
-                                      .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovCloudsV2);
-            sndClick(n, inp.lmbPressed);
-            hovCloudsV2 = n;
-            if (n && inp.lmbPressed)
-                cloudsV2Enabled = !cloudsV2Enabled;
-            CLAY_TEXT(cloudsV2Enabled ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-        }
-    }
+    // The volumetric clouds (clouds v2, .plans/CLOUDS_V2_PLAN.md — the only volumetric cloud
+    // renderer since 2026-09-27; v1's cloudMarchCS and its sliders were deleted). Every slider here
+    // is also a settings.json key under "clouds_v2", so the harness can sweep it: set clouds_v2.<key>.
+    //
+    // Slot ids: the v2 sliders use 112-151 (kCloudSliderSlots); the ids v1's deleted sliders held
+    // (2, 7-9, 16, 17, 34, 50, 61, 71-77) are free again.
 
-    // Bulk / layer geometry — how much cloud there is and where the deck sits.
+    // How much cloud there is, and where: the real map, remapped, and how it moves.
     CloudSlider secCoverage[] = {
-        {"Coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
-        {"Density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
-        {"L0 alt (m)", &cloudBaseAltM, 100.0f, 6000.0f, 100.0f, "%.0f", 2},
-        {"L1 alt (m)", &cloudTopAltM, 4000.0f, 15000.0f, 250.0f, "%.0f", 3},
-        {"Base variance", &cloudBaseVariance, 0.0f, 1.0f, 0.05f, "%.2f", 34},
-        {"Drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
-        // `density` alone can't push a saturated cloud column past full opacity (per-sample
-        // density is clamped to [0,1] before extinction is derived from it). This boosts
-        // extinction only once a ray has already accumulated real depth (see cloudMarchCS's
-        // coreBoost comment) — thin edges/wisps are unaffected, so pushing this high solidifies
-        // genuinely thick decks (city lights at night, the sun disc, should fully disappear
-        // under one) without flattening cloud silhouettes into hard-edged blobs. Wider range than
-        // a flat multiplier would tolerate, precisely because edges no longer pay for it.
-        {"Opacity scale", &cloudOpacityScale, 0.2f, 15.0f, 0.2f, "%.1f", 61},
+        {"Map coverage gain", &cv2Coverage, 0.0f, 2.0f, 0.05f, "%.2f", 112},
+        {"Map clear below", &cv2CoverClear, 0.0f, 0.6f, 0.01f, "%.2f", 113},
+        {"Map overcast above", &cv2CoverFull, 0.1f, 1.0f, 0.01f, "%.2f", 114},
+        {"Density", &cv2Density, 0.1f, 4.0f, 0.05f, "%.2f", 115},
+        {"Weather warp (km)", &cv2WeatherWarpKm, 0.0f, 30.0f, 0.5f, "%.1f", 116},
+        {"Mid layer (Ac/As)", &cv2MidAmount, 0.0f, 2.0f, 0.05f, "%.2f", 146},
+        {"High layer (Ci/Cs/Cc)", &cv2HighAmount, 0.0f, 2.0f, 0.05f, "%.2f", 151},
+        {"High layer density", &cv2HighDensity, 0.0f, 4.0f, 0.05f, "%.2f", 152},
+        {"Cirrus stretch", &cv2CirrusStretch, 1.0f, 30.0f, 0.5f, "%.1f", 153},
+        {"Cirrus wind (m/s)", &cv2CirrusWindMps, 0.0f, 80.0f, 1.0f, "%.0f", 154},
+        {"Rain", &cv2RainAmount, 0.0f, 3.0f, 0.05f, "%.2f", 155},
+        {"Rain streaks", &cv2RainStreaks, 0.0f, 3.0f, 0.05f, "%.2f", 157},
+        {"Map drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
+        {"Wind (m/s)", &cv2WindMps, 0.0f, 40.0f, 0.5f, "%.1f", 117},
     };
 
-    // Silhouette / noise detail — what an individual cloud looks like up close.
+    // What one cloud looks like: its column, its surface, its lumps.
     CloudSlider secShape[] = {
-        {"Erosion (edge)", &cloudErosionEdge, 0.0f, 1.0f, 0.05f, "%.2f", 35},
-        {"Erosion (core)", &cloudErosionCore, 0.0f, 1.0f, 0.05f, "%.2f", 36},
-        {"Erosion billow", &cloudErosionBillow, 0.0f, 1.0f, 0.05f, "%.2f", 68},
-        {"Billow height", &cloudErosionBillowH, 0.0f, 1.0f, 0.05f, "%.2f", 69},
-        {"Erosion freq", &cloudErosionFreq, 0.5f, 6.0f, 0.1f, "%.2f", 70},
-        {"Surface carve", &cloudSurfaceCarve, 0.0f, 1.0f, 0.05f, "%.2f", 67},
-        // Domain-warp shear. The noise field folds (pinched/banded/"wavy chip" clouds) once
-        // strength * 2 * freq / 480 exceeds ~1 — see cloud_params.glsl. Strength is how far
-        // cloud structure is displaced; frequency is how fast that displacement varies. Want
-        // big movement without pinching? Raise strength AND lower frequency.
-        {"Warp strength", &cloudWarpStrength, 0.0f, 64.0f, 1.0f, "%.0f", 65},
-        {"Warp frequency", &cloudWarpFreq, 0.5f, 12.0f, 0.25f, "%.2f", 66},
+        {"Erosion detail", &cv2Detail, 0.0f, 2.0f, 0.05f, "%.2f", 118},
+        {"Edge sharpness", &cv2EdgeSharpness, 1.0f, 8.0f, 0.1f, "%.1f", 119},
+        {"Lobes (3D)", &cv2Wobble, 0.0f, 1.0f, 0.01f, "%.2f", 120},
+        {"Tower lean", &cv2Lean, 0.0f, 1.0f, 0.01f, "%.2f", 121},
+        {"Surface hardness", &cv2ColumnEdge, 0.5f, 16.0f, 0.25f, "%.2f", 122},
+        {"Interior erosion", &cv2InteriorErosion, 0.0f, 1.0f, 0.05f, "%.2f", 123},
+        {"Base roughness", &cv2BaseRoughness, 0.0f, 3.0f, 0.05f, "%.2f", 150},
+        {"Storm feature size", &cv2StormScale, 0.5f, 4.0f, 0.05f, "%.2f", 147},
+        {"Storm erosion", &cv2StormDetail, 0.0f, 1.5f, 0.05f, "%.2f", 148},
+        {"Anvils", &cv2Anvil, 0.0f, 2.0f, 0.05f, "%.2f", 149},
     };
 
-    // Direct sun + ambient response, including the twilight-band falloff that governs how clouds
-    // colour through sunset. Shadowing/self-occlusion is its own section below.
     CloudSlider secLighting[] = {
-        {"Sun gain (horizon)", &cloudSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 5},
-        {"Sun gain (zenith)", &cloudSunGainZenith, 0.0f, 8.0f, 0.1f, "%.2f", 37},
-        {"Sun gain elev band", &sunGainElevBand, 0.02f, 1.0f, 0.01f, "%.2f", 47},
-        {"Ambient", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
-        {"Twilight ambient", &cloudTwilightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
-        {"Twilight band hi", &twilightBandHi, -0.1f, 0.8f, 0.01f, "%.2f", 48},
-        {"Twilight band lo", &twilightBandLo, -0.9f, 0.0f, 0.01f, "%.2f", 49},
-        {"HG g", &cloudHgG, 0.0f, 0.99f, 0.05f, "%.2f", 7},
-        {"Multi-scatter", &cloudMultiScatter, 0.0f, 1.0f, 0.05f, "%.2f", 71},
+        {"Sun gain", &cv2SunGain, 0.0f, 4.0f, 0.05f, "%.2f", 124},
+        {"Moon gain", &cv2MoonGain, 0.0f, 8.0f, 0.1f, "%.2f", 125},
+        {"Sky ambient", &cv2AmbientGain, 0.0f, 8.0f, 0.05f, "%.2f", 126},
+        {"Ground bounce", &cv2BounceGain, 0.0f, 4.0f, 0.05f, "%.2f", 127},
+        {"City up-light", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
+        {"Powder", &cv2Powder, 0.0f, 1.0f, 0.05f, "%.2f", 128},
+        {"Multi-scatter reach", &cv2MsExtinction, 0.05f, 0.9f, 0.01f, "%.2f", 129},
+        {"Multi-scatter strength", &cv2MsStrength, 0.0f, 1.0f, 0.01f, "%.2f", 130},
+        {"Optics (halos, rainbows)", &cv2OpticsGain, 0.0f, 3.0f, 0.05f, "%.2f", 156},
+        {"Forward scatter g", &cv2PhaseG, 0.0f, 0.95f, 0.01f, "%.2f", 131},
+        {"Light march (m)", &cv2LightLenM, 250.0f, 8000.0f, 50.0f, "%.0f", 132},
+        {"Light steps", &cv2LightSteps, 1.0f, 12.0f, 1.0f, "%.0f", 133},
     };
 
-    // Self-shadowing and the shadow clouds cast down onto terrain/ocean/city lights.
+    // The shadow clouds cast on the ground, and how city lights diffuse through cloud.
     CloudSlider secShadow[] = {
-        {"Shadow max dist (m)", &cloudShadowMaxDistM, 1000.0f, 6000000.0f, 1000.0f, "%.0f", 16},
-        {"Shadow cone len", &cloudConeLenScale, 0.25f, 4.0f, 0.25f, "%.2f", 74},
-        {"Shadow floor", &cloudShadowFloorT, 0.0f, 0.3f, 0.01f, "%.3f", 72},
-        {"Sunset shadow", &cloudGrazeShadow, 0.0f, 1.0f, 0.05f, "%.2f", 73},
-        {"Vert shade gain", &cloudVertShadeGain, 0.0f, 1.0f, 0.05f, "%.2f", 75},
-        {"Density AO", &cloudDensityAO, 0.0f, 1.0f, 0.05f, "%.2f", 76},
-        {"Density AO power", &cloudAOPower, 0.05f, 4.0f, 0.05f, "%.2f", 77},
         // A correct opacity value still looks wrong if what leaks through a hazy/thin cloud is a
         // pixel-sharp copy of the raw city-lights texture — real light diffuses through cloud
         // droplets. Blends earthNightTex/cityNightDetailTex toward this mip LOD as local cloud
@@ -4723,35 +4693,65 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"City light blur LOD", &cityLightBlurLod, 0.0f, 20.0f, 0.5f, "%.1f", 62},
     };
 
-    // The flat 2D cloud paste that the volumetric march crossfades into with distance, plus the
-    // crossfade range itself — these only matter together, so they share a section.
-    CloudSlider secDistance[] = {
-        {"Render dist (m)", &cloudMaxRenderDistM, 20000.0f, 800000.0f, 10000.0f, "%.0f", 17},
-        {"Cloud 3D fade start (m)", &cloudDistFadeStartM, 5000.0f, 800000.0f, 5000.0f, "%.0f", 53},
-        {"Cloud 3D fade end (m)", &cloudDistFadeEndM, 10000.0f, 2000000.0f, 10000.0f, "%.0f", 54},
-        {"Coverage mip", &coverageMipLod, 0.0f, 6.0f, 0.25f, "%.2f", 50},
-        {"Flat coverage scale", &flatCoverageScale, 0.1f, 2.0f, 0.01f, "%.2f", 51},
-        {"Flat sun gain scale", &flatSunGainScale, 0.1f, 10.0f, 0.05f, "%.2f", 52},
-        {"2D density scale", &flatDensityScale, 0.1f, 8.0f, 0.1f, "%.2f", 78},
-        // Flat-layer-only Rayleigh multiplier, stacked on the global "Rayleigh gain" in the
-        // Atmospheric scattering section. The flat paste and the volumetric march respond to
-        // Rayleigh completely differently (closed-form double multiply vs. per-step transmittance
-        // accumulation), so this is what closes the hue/depth step across the crossfade above.
-        {"2D Rayleigh gain", &flatRayleighGain, 0.0f, 4.0f, 0.05f, "%.2f", 79},
-        // The flat layer's share of the twilight sky ambient, on top of the shared "Twilight
-        // ambient" slider in the Lighting section — so that one still moves both paths together
-        // and this only sets the ratio between them. 0 = flat clouds go dark through twilight the
-        // way they did before this term existed.
-        {"2D twilight ambient", &flatTwilightAmbientGain, 0.0f, 4.0f, 0.05f, "%.2f", 80},
+    // The march's sample budget: the knobs that trade image quality against GPU cost.
+    CloudSlider secQuality[] = {
+        {"Step at eye (m)", &cv2StepBaseM, 10.0f, 400.0f, 5.0f, "%.0f", 134},
+        {"Step growth", &cv2StepGrowth, 0.002f, 0.05f, 0.001f, "%.3f", 135},
+        {"Step max (m)", &cv2StepMaxM, 200.0f, 4000.0f, 50.0f, "%.0f", 136},
+        {"March budget", &cv2MaxIters, 64.0f, 1024.0f, 16.0f, "%.0f", 137},
+        {"Max distance (km)", &cv2MaxDistKm, 50.0f, 1500.0f, 10.0f, "%.0f", 138},
+        {"Detail fade start (m)", &cv2DetailLodStartM, 2000.0f, 100000.0f, 1000.0f, "%.0f", 139},
+        {"History weight", &cv2HistoryWeight, 0.05f, 1.0f, 0.01f, "%.2f", 140},
+        {"Full rate above (km)", &cv2FullRateAboveKm, 0.0f, 400.0f, 1.0f, "%.0f", 145},
     };
 
+    // Tiling periods of the noise volumes (no rebake: they are read at these scales).
+    CloudSlider secNoise[] = {
+        {"Shape period (m)", &cv2ShapePeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 141},
+        {"Detail period (m)", &cv2DetailPeriodM, 200.0f, 8000.0f, 50.0f, "%.0f", 142},
+        {"Cell period (m)", &cv2CellPeriodM, 4000.0f, 128000.0f, 1000.0f, "%.0f", 143},
+        {"Cluster period (m)", &cv2ClusterPeriodM, 32000.0f, 1024000.0f, 8000.0f, "%.0f", 144},
+    };
+
+    // Cirrus: its own thin volumetric shell (cirrusMarchCS, cloud_march.comp) and flat far layer.
+    // Still the older cloud model, so it keeps its own knobs until it moves into the v2 field.
     CloudSlider secCirrus[] = {
+        {"Cirrus coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
+        {"Cirrus density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
+        {"Cirrus altitude (m)", &cloudTopAltM, 4000.0f, 15000.0f, 250.0f, "%.0f", 3},
+        {"Cirrus sun (horizon)", &cloudSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 5},
+        {"Cirrus sun (zenith)", &cloudSunGainZenith, 0.0f, 8.0f, 0.1f, "%.2f", 37},
         {"Cirrus wind (deg)", &cloudCirrusWindDeg, 0.0f, 360.0f, 5.0f, "%.0f", 10},
         {"Cirrus stretch", &cloudCirrusStretch, 1.0f, 10.0f, 0.5f, "%.1f", 11},
+        {"Cirrus erosion (edge)", &cloudErosionEdge, 0.0f, 1.0f, 0.05f, "%.2f", 35},
+        {"Cirrus erosion (core)", &cloudErosionCore, 0.0f, 1.0f, 0.05f, "%.2f", 36},
+        {"Cirrus billow", &cloudErosionBillow, 0.0f, 1.0f, 0.05f, "%.2f", 68},
+        {"Cirrus billow height", &cloudErosionBillowH, 0.0f, 1.0f, 0.05f, "%.2f", 69},
+        {"Cirrus erosion freq", &cloudErosionFreq, 0.5f, 6.0f, 0.1f, "%.2f", 70},
+        {"Cirrus surface carve", &cloudSurfaceCarve, 0.0f, 1.0f, 0.05f, "%.2f", 67},
+        // Domain-warp shear. The noise field folds (pinched/banded/"wavy chip" clouds) once
+        // strength * 2 * freq / 480 exceeds ~1 — see cloud_params.glsl.
+        {"Cirrus warp strength", &cloudWarpStrength, 0.0f, 64.0f, 1.0f, "%.0f", 65},
+        {"Cirrus warp frequency", &cloudWarpFreq, 0.5f, 12.0f, 0.25f, "%.2f", 66},
+        {"Cirrus 3D fade start (m)", &cloudDistFadeStartM, 5000.0f, 800000.0f, 5000.0f, "%.0f", 53},
+        {"Cirrus 3D fade end (m)", &cloudDistFadeEndM, 10000.0f, 2000000.0f, 10000.0f, "%.0f", 54},
     };
 
-    // C11 ground fog layer (fogMarchCS, cloud_march.comp) — real volumetric mist shell with
-    // sun/beam godrays. First-pass defaults, expect retuning once seen in-app.
+    // The flat 2D layers: cirrus's far field, the high layers, and the low deck's stand-in when the
+    // volumetric march is knocked out (Planetarium / Potato).
+    CloudSlider secFlat[] = {
+        {"Flat coverage scale", &flatCoverageScale, 0.1f, 2.0f, 0.01f, "%.2f", 51},
+        {"Flat sun gain scale", &flatSunGainScale, 0.1f, 10.0f, 0.05f, "%.2f", 52},
+        {"Flat density scale", &flatDensityScale, 0.1f, 8.0f, 0.1f, "%.2f", 78},
+        {"Flat sun elev band", &sunGainElevBand, 0.02f, 1.0f, 0.01f, "%.2f", 47},
+        {"Flat Rayleigh gain", &flatRayleighGain, 0.0f, 4.0f, 0.05f, "%.2f", 79},
+        {"Twilight ambient", &cloudTwilightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
+        {"Flat twilight ambient", &flatTwilightAmbientGain, 0.0f, 4.0f, 0.05f, "%.2f", 80},
+        {"Twilight band hi", &twilightBandHi, -0.1f, 0.8f, 0.01f, "%.2f", 48},
+        {"Twilight band lo", &twilightBandLo, -0.9f, 0.0f, 0.01f, "%.2f", 49},
+    };
+
+    // C11 ground fog layer (fogMarchCS, cloud_march.comp).
     CloudSlider secFog[] = {
         {"Fog top altitude (m)", &fogTopAltM, 50.0f, 200000.0f, 50.0f, "%.0f", 55},
         {"Fog density", &fogDensity, 0.0f, 10.0f, 0.1f, "%.1f", 56},
@@ -4762,38 +4762,29 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
     // Atmospheric scattering strength — scales the physical Rayleigh/Mie coefficients shared
     // by the sky atmosphere, clouds, cirrus, fog, terrain ambient, ocean reflection, and moon/
     // sun attenuation (see common.glsl's BETA_R_BASE/BETA_M_BASE and cloud_params.glsl's
-    // atmosRayleighGain/atmosMieGain). 1.0 = original hardcoded behavior. Rayleigh gain
-    // controls how much red/orange the horizon and sunsets pick up; Mie gain controls how
-    // much wavelength-neutral haze dilutes that color back toward white/grey. Not cloud-specific,
+    // atmosRayleighGain/atmosMieGain). 1.0 = original hardcoded behavior. Not cloud-specific,
     // but it lives here because it is tuned against the cloud/sunset look more than anything else.
     CloudSlider secAtmos[] = {
         {"Rayleigh gain", &atmosRayleighGain, 0.0f, 3.0f, 0.05f, "%.2f", 63},
         {"Mie/haze gain", &atmosMieGain, 0.0f, 3.0f, 0.05f, "%.2f", 64},
         // Orbital terminator gate — artistic suppression of scattered sunlight past the
-        // terminator, inert below 40 km observer altitude. Strength 0 is an exact A/B against the
-        // previous look. Width is the rolloff half-width in sin(sun elevation): 0.08 puts solar
-        // zenith 92 about 23x down, 0.035 is effectively a hard cliff. See cloud_params.glsl.
+        // terminator, inert below 40 km observer altitude. See cloud_params.glsl.
         {"Terminator cut", &atmosTermStrength, 0.0f, 1.0f, 0.05f, "%.2f", 81},
         {"Terminator width", &atmosTermWidth, 0.01f, 0.40f, 0.005f, "%.3f", 82},
     };
 
-    // Sample budgets — the only two knobs here that trade image quality directly against GPU cost.
-    CloudSlider secQuality[] = {
-        {"March steps", &cloudMarchSteps, 4.0f, 1024.0f, 4.0f, "%.0f", 8},
-        {"Light steps", &cloudLightSteps, 1.0f, 16.0f, 1.0f, "%.0f", 9},
-    };
-
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
-        CLOUD_SEC("Coverage & layers", secCoverage),
-        CLOUD_SEC("Shape & noise", secShape),
+        CLOUD_SEC("Coverage & weather", secCoverage),
+        CLOUD_SEC("Shape", secShape),
         CLOUD_SEC("Lighting", secLighting),
-        CLOUD_SEC("Shadowing & AO", secShadow),
-        CLOUD_SEC("Distance & 2D falloff", secDistance),
+        CLOUD_SEC("Shadows & city light", secShadow),
+        CLOUD_SEC("Quality / performance", secQuality),
+        CLOUD_SEC("Noise scales", secNoise),
         CLOUD_SEC("Cirrus", secCirrus),
+        CLOUD_SEC("Flat layers", secFlat),
         CLOUD_SEC("Ground fog", secFog),
         CLOUD_SEC("Atmospheric scattering", secAtmos),
-        CLOUD_SEC("Quality / performance", secQuality),
     };
 #undef CLOUD_SEC
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])));
@@ -5063,7 +5054,6 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
         {"Storm strength", &stormStrength, 0.0f, 1.0f, 0.05f, "%.2f", 25},
         {"Aurora gain", &auroraGain, 0.0f, 0.1f, 0.001f, "%.3f", 26},
         {"Aurora ground gain", &auroraGroundGain, 0.0f, 0.1f, 0.001f, "%.3f", 27},
-        {"Aurora cloud gain", &auroraCloudGain, 0.0f, 0.1f, 0.001f, "%.3f", 28},
         {"Coverage freq", &auroraCoverageFreq, 0.05f, 2.0f, 0.05f, "%.2f", 29},
         {"Coverage az freq", &auroraCoverageAzFreq, 0.0f, 6.0f, 0.1f, "%.1f", 30},
         {"Coverage drift", &auroraCoverageDriftRate, 0.0f, 0.002f, 0.00002f, "%.1e", 31},
@@ -5774,7 +5764,7 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
     {
         uint32_t mask;
         float renderScale;
-        float cloudCoverage, cloudMarchSteps, cloudLightSteps;
+        float cloudCoverage, cv2MaxIters, cv2LightSteps, cv2StepGrowth;
         float viewSamplesMin, viewSamplesMax, lightSamples;
         float oceanSeaOctaves, oceanDetailOctaves, oceanReflSamples;
         float terrainFadeStartM, terrainFadeEndM;
@@ -5800,7 +5790,7 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         v = {kBitTerrain | kBitOceanRefl | kBitAirglowRed | kBitAurora | kBitBeams | kBitCloudShadow |
                  kBitBeamBlock | kBitFog | kBitSceneDepth | kBitBeamRayLoop |
                  kBitCirrusMarch | kBitCloudMarch | kBitSkyGlowLoop | kBitMinimalSky,
-             1.0f, 0.0f, 64.0f, 2.0f, 6.0f, 20.0f, 2.0f, 3.0f, 5.0f, 3.0f, 50000.0f, 100000.0f, 5000.0f, 10000.0f};
+             1.0f, 0.0f, 160.0f, 3.0f, 0.025f, 6.0f, 20.0f, 2.0f, 3.0f, 5.0f, 3.0f, 50000.0f, 100000.0f, 5000.0f, 10000.0f};
         break;
     case GraphicsPreset::Planetarium:
         // v1.0 experience: flat textured Earth (cloudCoverage 0 — no cloud layer at all), terrain
@@ -5821,7 +5811,7 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // is 0 at this tier so they march nothing but still cost a dispatch + the sample below).
         v = {kBitTerrain | kBitOceanRefl | kBitAirglowRed | kBitAurora | kBitBeams | kBitCloudShadow |
                  kBitBeamBlock | kBitFog | kBitLiteSky | kBitCloudMarch | kBitCirrusMarch,
-             1.0f, 0.0f, 64.0f, 2.0f, 4.0f, 10.0f, 2.0f, 3.0f, 5.0f, 3.0f, 50000.0f, 100000.0f, 5000.0f, 10000.0f};
+             1.0f, 0.0f, 160.0f, 3.0f, 0.025f, 4.0f, 10.0f, 2.0f, 3.0f, 5.0f, 3.0f, 50000.0f, 100000.0f, 5000.0f, 10000.0f};
         break;
     case GraphicsPreset::Low:
         // Terrain stays on (a bare sea-level sphere with no relief reads as more "wrong" than
@@ -5834,7 +5824,7 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // ocean quality" directive — those sliders are effectively free relative to everything else
         // this tier turns down.
         v = {kBitAurora | kBitBeams | kBitFog,
-             0.7f, 1.0f, 64.0f, 4.0f, 6.0f, 64.0f, 2.0f, 3.0f, 5.0f, 6.0f, 50000.0f, 300000.0f, 5000.0f, 50000.0f};
+             0.7f, 1.0f, 200.0f, 3.0f, 0.02f, 6.0f, 64.0f, 2.0f, 3.0f, 5.0f, 6.0f, 50000.0f, 300000.0f, 5000.0f, 50000.0f};
         break;
     case GraphicsPreset::Medium:
         // Nothing disabled outright — volumetric clouds and aurora both run, at reduced step
@@ -5843,7 +5833,7 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // with everything else — measured cost of those three sliders is negligible, so there is
         // no real budget to save by tightening them at this tier.
         v = {0u,
-             0.85f, 1.0f, 128.0f, 10.0f, 6.0f, 96.0f, 2.0f, 3.0f, 5.0f, 6.0f, 50000.0f, 600000.0f, 80000.0f, 200000.0f};
+             0.85f, 1.0f, 300.0f, 4.0f, 0.015f, 6.0f, 96.0f, 2.0f, 3.0f, 5.0f, 6.0f, 50000.0f, 600000.0f, 80000.0f, 200000.0f};
         break;
     case GraphicsPreset::High:
         // The compiled-in class member defaults, verbatim — "today's tuned values." Re-synced
@@ -5852,13 +5842,13 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // cloud-fade distances below moved with them). If you change a default in
         // SatelliteSim.h that appears in PresetValues, change it here in the same edit.
         v = {0u,
-             1.0f, 1.0f, 220.0f, 13.0f, 6.5f, 160.0f, 2.4f, 3.0f, 5.0f, 6.0f,
+             1.0f, 1.0f, 400.0f, 6.0f, 0.01f, 6.5f, 160.0f, 2.4f, 3.0f, 5.0f, 6.0f,
              50000.0f, 900000.0f, 150000.0f, 400000.0f};
         break;
     case GraphicsPreset::Ultra:
         // Uncapped for showcase/screenshots — pushed to each slider's UI-exposed ceiling.
         v = {0u,
-             1.0f, 1.0f, 512.0f, 16.0f, 16.0f, 256.0f, 4.0f, 3.0f, 5.0f, 6.0f,
+             1.0f, 1.0f, 640.0f, 8.0f, 0.008f, 16.0f, 256.0f, 4.0f, 3.0f, 5.0f, 6.0f,
              900000.0f, 3600000.0f, 400000.0f, 900000.0f};
         break;
     default:
@@ -5868,8 +5858,9 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
     debugDisableMask = v.mask;
     renderScale = v.renderScale;
     cloudCoverage = v.cloudCoverage;
-    cloudMarchSteps = v.cloudMarchSteps;
-    cloudLightSteps = v.cloudLightSteps;
+    cv2MaxIters = v.cv2MaxIters;
+    cv2LightSteps = v.cv2LightSteps;
+    cv2StepGrowth = v.cv2StepGrowth;
     viewSamplesMin = v.viewSamplesMin;
     viewSamplesMax = v.viewSamplesMax;
     lightSamples = v.lightSamples;
@@ -6195,7 +6186,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
     if (j.contains("clouds_v2"))
     {
         auto &c = j["clouds_v2"];
-        cloudsV2Enabled = c.value("enabled", cloudsV2Enabled);
         cv2Coverage = c.value("coverage", cv2Coverage);
         cv2Density = c.value("density", cv2Density);
         cv2Detail = c.value("detail", cv2Detail);
@@ -6219,6 +6209,30 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2EdgeSharpness = c.value("edge_sharpness", cv2EdgeSharpness);
         cv2WeatherWarpKm = c.value("weather_warp_km", cv2WeatherWarpKm);
         cv2DebugView = c.value("debug_view", cv2DebugView);
+        cv2CoverClear = c.value("cover_clear", cv2CoverClear);
+        cv2CoverFull = c.value("cover_full", cv2CoverFull);
+        cv2Wobble = c.value("wobble", cv2Wobble);
+        cv2Lean = c.value("lean", cv2Lean);
+        cv2InteriorErosion = c.value("interior_erosion", cv2InteriorErosion);
+        cv2ColumnEdge = c.value("column_edge", cv2ColumnEdge);
+        cv2MoonGain = c.value("moon_gain", cv2MoonGain);
+        cv2MsExtinction = c.value("ms_extinction", cv2MsExtinction);
+        cv2MsStrength = c.value("ms_strength", cv2MsStrength);
+        cv2PhaseG = c.value("phase_g", cv2PhaseG);
+        cv2MaxIters = c.value("max_iters", cv2MaxIters);
+        cv2FullRateAboveKm = c.value("full_rate_above_km", cv2FullRateAboveKm);
+        cv2MidAmount = c.value("mid_amount", cv2MidAmount);
+        cv2StormScale = c.value("storm_scale", cv2StormScale);
+        cv2StormDetail = c.value("storm_erosion", cv2StormDetail);
+        cv2Anvil = c.value("anvil", cv2Anvil);
+        cv2BaseRoughness = c.value("base_roughness", cv2BaseRoughness);
+        cv2HighAmount = c.value("high_amount", cv2HighAmount);
+        cv2HighDensity = c.value("high_density", cv2HighDensity);
+        cv2CirrusStretch = c.value("cirrus_stretch", cv2CirrusStretch);
+        cv2CirrusWindMps = c.value("cirrus_wind_mps", cv2CirrusWindMps);
+        cv2RainAmount = c.value("rain_amount", cv2RainAmount);
+        cv2OpticsGain = c.value("optics_gain", cv2OpticsGain);
+        cv2RainStreaks = c.value("rain_streaks", cv2RainStreaks);
     }
 
     if (schemaMatches && j.contains("clouds"))
@@ -6226,7 +6240,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         auto &c = j["clouds"];
         cloudCoverage = c.value("coverage", cloudCoverage);
         cloudDensity = c.value("density", cloudDensity);
-        cloudBaseAltM = c.value("base_alt_m", cloudBaseAltM);
         cloudTopAltM = c.value("top_alt_m", cloudTopAltM);
         cloudDriftRate = c.value("drift_rate", cloudDriftRate);
         cloudSunGain = c.value("sun_gain", cloudSunGain);
@@ -6238,7 +6251,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         sunGainElevBand = c.value("sun_gain_elev_band", sunGainElevBand);
         twilightBandHi = c.value("twilight_band_hi", twilightBandHi);
         twilightBandLo = c.value("twilight_band_lo", twilightBandLo);
-        coverageMipLod = c.value("coverage_mip_lod", coverageMipLod);
         flatCoverageScale = c.value("flat_coverage_scale", flatCoverageScale);
         flatSunGainScale = c.value("flat_sun_gain_scale", flatSunGainScale);
         cloudDistFadeStartM = c.value("cloud_dist_fade_start_m", cloudDistFadeStartM);
@@ -6253,7 +6265,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         terrainMaterialStrength = c.value("terrain_material_strength", terrainMaterialStrength);
         terrainErosionStrength = c.value("terrain_erosion_strength", terrainErosionStrength);
         terrainErosionBranch = c.value("terrain_erosion_branch", terrainErosionBranch);
-        cloudBaseVariance = c.value("cloud_base_variance", cloudBaseVariance);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
         // Satellite ocean-glint gain/floor (Ocean tab's "Ocean flare refl"/"Flare refl floor",
@@ -6261,9 +6272,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         // airglow/zodiacal/ocean-MW block below.
         oceanGlintGain = c.value("ocean_glint_gain", oceanGlintGain);
         oceanGlintMinFlux = c.value("ocean_glint_min_flux", oceanGlintMinFlux);
-        cloudHgG = c.value("hg_g", cloudHgG);
-        cloudMarchSteps = c.value("march_steps", cloudMarchSteps);
-        cloudLightSteps = c.value("light_steps", cloudLightSteps);
         cloudCirrusWindDeg = c.value("cirrus_wind_deg", cloudCirrusWindDeg);
         cloudCirrusStretch = c.value("cirrus_stretch", cloudCirrusStretch);
         airglowGain = c.value("airglow_gain", airglowGain);
@@ -6275,8 +6283,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         zodiacalGain = c.value("zodiacal_gain", zodiacalGain);
         oceanMwReflGain = c.value("ocean_mw_refl_gain", oceanMwReflGain);
         zodiacalWidthDeg = c.value("zodiacal_width_deg", zodiacalWidthDeg);
-        cloudShadowMaxDistM = c.value("shadow_max_dist_m", cloudShadowMaxDistM);
-        cloudMaxRenderDistM = c.value("max_render_dist_m", cloudMaxRenderDistM);
         viewSamplesMin = c.value("view_samples_min", viewSamplesMin);
         viewSamplesMax = c.value("view_samples_max", viewSamplesMax);
         lightSamples = c.value("light_samples", lightSamples);
@@ -6287,7 +6293,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormStrength = c.value("storm_strength", stormStrength);
         auroraGain = c.value("aurora_gain", auroraGain);
         auroraGroundGain = c.value("aurora_ground_gain", auroraGroundGain);
-        auroraCloudGain = c.value("aurora_cloud_gain", auroraCloudGain);
         auroraCoverageFreq = c.value("aurora_coverage_freq", auroraCoverageFreq);
         auroraCoverageAzFreq = c.value("aurora_coverage_az_freq", auroraCoverageAzFreq);
         auroraCoverageDriftRate = c.value("aurora_coverage_drift_rate", auroraCoverageDriftRate);
@@ -6313,7 +6318,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         fogDensity = c.value("fog_density", fogDensity);
         fogCoverage = c.value("fog_coverage", fogCoverage);
         fogSunGain = c.value("fog_sun_gain", fogSunGain);
-        cloudOpacityScale = c.value("cloud_opacity_scale", cloudOpacityScale);
         cityLightBlurLod = c.value("city_light_blur_lod", cityLightBlurLod);
         cloudWarpStrength = c.value("cloud_warp_strength", cloudWarpStrength);
         cloudWarpFreq = c.value("cloud_warp_freq", cloudWarpFreq);
@@ -6321,13 +6325,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cloudErosionBillow = c.value("cloud_erosion_billow", cloudErosionBillow);
         cloudErosionBillowH = c.value("cloud_erosion_billow_h", cloudErosionBillowH);
         cloudErosionFreq = c.value("cloud_erosion_freq", cloudErosionFreq);
-        cloudMultiScatter = c.value("cloud_multi_scatter", cloudMultiScatter);
-        cloudShadowFloorT = c.value("cloud_shadow_floor_t", cloudShadowFloorT);
-        cloudGrazeShadow = c.value("cloud_graze_shadow", cloudGrazeShadow);
-        cloudConeLenScale = c.value("cloud_cone_len_scale", cloudConeLenScale);
-        cloudVertShadeGain = c.value("cloud_vert_shade_gain", cloudVertShadeGain);
-        cloudDensityAO = c.value("cloud_density_ao", cloudDensityAO);
-        cloudAOPower = c.value("cloud_ao_power", cloudAOPower);
         flatDensityScale = c.value("cloud_flat_density_scale", flatDensityScale);
         flatRayleighGain = c.value("cloud_flat_rayleigh_gain", flatRayleighGain);
         flatTwilightAmbientGain =
@@ -6479,7 +6476,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     j["clouds"] = {
         {"coverage", cloudCoverage},
         {"density", cloudDensity},
-        {"base_alt_m", cloudBaseAltM},
         {"top_alt_m", cloudTopAltM},
         {"drift_rate", cloudDriftRate},
         {"sun_gain", cloudSunGain},
@@ -6489,7 +6485,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sun_gain_elev_band", sunGainElevBand},
         {"twilight_band_hi", twilightBandHi},
         {"twilight_band_lo", twilightBandLo},
-        {"coverage_mip_lod", coverageMipLod},
         {"flat_coverage_scale", flatCoverageScale},
         {"flat_sun_gain_scale", flatSunGainScale},
         {"cloud_dist_fade_start_m", cloudDistFadeStartM},
@@ -6504,12 +6499,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"terrain_material_strength", terrainMaterialStrength},
         {"terrain_erosion_strength", terrainErosionStrength},
         {"terrain_erosion_branch", terrainErosionBranch},
-        {"cloud_base_variance", cloudBaseVariance},
         {"cloud_erosion_edge", cloudErosionEdge},
         {"cloud_erosion_core", cloudErosionCore},
-        {"hg_g", cloudHgG},
-        {"march_steps", cloudMarchSteps},
-        {"light_steps", cloudLightSteps},
         {"cirrus_wind_deg", cloudCirrusWindDeg},
         {"cirrus_stretch", cloudCirrusStretch},
         {"airglow_gain", airglowGain},
@@ -6523,8 +6514,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ocean_glint_gain", oceanGlintGain},
         {"ocean_glint_min_flux", oceanGlintMinFlux},
         {"zodiacal_width_deg", zodiacalWidthDeg},
-        {"shadow_max_dist_m", cloudShadowMaxDistM},
-        {"max_render_dist_m", cloudMaxRenderDistM},
         {"view_samples_min", viewSamplesMin},
         {"view_samples_max", viewSamplesMax},
         {"light_samples", lightSamples},
@@ -6535,7 +6524,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_strength", stormStrength},
         {"aurora_gain", auroraGain},
         {"aurora_ground_gain", auroraGroundGain},
-        {"aurora_cloud_gain", auroraCloudGain},
         {"aurora_coverage_freq", auroraCoverageFreq},
         {"aurora_coverage_az_freq", auroraCoverageAzFreq},
         {"aurora_coverage_drift_rate", auroraCoverageDriftRate},
@@ -6556,7 +6544,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"fog_density", fogDensity},
         {"fog_coverage", fogCoverage},
         {"fog_sun_gain", fogSunGain},
-        {"cloud_opacity_scale", cloudOpacityScale},
         {"city_light_blur_lod", cityLightBlurLod},
         {"cloud_warp_strength", cloudWarpStrength},
         {"cloud_warp_freq", cloudWarpFreq},
@@ -6564,13 +6551,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cloud_erosion_billow", cloudErosionBillow},
         {"cloud_erosion_billow_h", cloudErosionBillowH},
         {"cloud_erosion_freq", cloudErosionFreq},
-        {"cloud_multi_scatter", cloudMultiScatter},
-        {"cloud_shadow_floor_t", cloudShadowFloorT},
-        {"cloud_graze_shadow", cloudGrazeShadow},
-        {"cloud_cone_len_scale", cloudConeLenScale},
-        {"cloud_vert_shade_gain", cloudVertShadeGain},
-        {"cloud_density_ao", cloudDensityAO},
-        {"cloud_ao_power", cloudAOPower},
         {"cloud_flat_density_scale", flatDensityScale},
         {"cloud_flat_rayleigh_gain", flatRayleighGain},
         {"cloud_flat_twilight_ambient_gain", flatTwilightAmbientGain},
@@ -6579,7 +6559,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"atmos_term_strength", atmosTermStrength},
         {"atmos_term_width", atmosTermWidth}};
     j["clouds_v2"] = {
-        {"enabled", cloudsV2Enabled},
         {"coverage", cv2Coverage},
         {"density", cv2Density},
         {"detail", cv2Detail},
@@ -6602,7 +6581,31 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"wind_mps", cv2WindMps},
         {"edge_sharpness", cv2EdgeSharpness},
         {"weather_warp_km", cv2WeatherWarpKm},
-        {"debug_view", cv2DebugView}};
+        {"debug_view", cv2DebugView},
+        {"cover_clear", cv2CoverClear},
+        {"cover_full", cv2CoverFull},
+        {"wobble", cv2Wobble},
+        {"lean", cv2Lean},
+        {"interior_erosion", cv2InteriorErosion},
+        {"column_edge", cv2ColumnEdge},
+        {"moon_gain", cv2MoonGain},
+        {"ms_extinction", cv2MsExtinction},
+        {"ms_strength", cv2MsStrength},
+        {"phase_g", cv2PhaseG},
+        {"max_iters", cv2MaxIters},
+        {"full_rate_above_km", cv2FullRateAboveKm},
+        {"mid_amount", cv2MidAmount},
+        {"storm_scale", cv2StormScale},
+        {"storm_erosion", cv2StormDetail},
+        {"anvil", cv2Anvil},
+        {"base_roughness", cv2BaseRoughness},
+        {"high_amount", cv2HighAmount},
+        {"high_density", cv2HighDensity},
+        {"cirrus_stretch", cv2CirrusStretch},
+        {"cirrus_wind_mps", cv2CirrusWindMps},
+        {"rain_amount", cv2RainAmount},
+        {"optics_gain", cv2OpticsGain},
+        {"rain_streaks", cv2RainStreaks}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)
@@ -6732,16 +6735,16 @@ nlohmann::json SatelliteSim::buildPerfSnapshotJson(float cpuDt)
         // of those fixed-size passes rises sharply as this drops, and two snapshots at different
         // render scales are not comparable even at identical resolution/viewpoint.
         {"render_scale", renderScale},
-        {"cloud_march_steps", cloudMarchSteps},
-        {"cloud_light_steps", cloudLightSteps},
-        {"cloud_coverage", cloudCoverage},
+        {"cloud_march_budget", cv2MaxIters},
+        {"cloud_light_steps", cv2LightSteps},
+        {"cloud_step_growth", cv2StepGrowth},
+        {"cloud_coverage", cv2Coverage},
         // The three that actually bound cloud_march's cost, added while tuning the sun
         // self-shadow cone (CLOUD_PERF_PLAN.md Tier 3): without shadow_max_dist_m in particular,
         // two captures at the same viewpoint and the same light-step count were indistinguishable
         // in the log even though the shadow range between them had been changed deliberately —
         // which is the whole reason the capture was taken.
-        {"cloud_shadow_max_dist_m", cloudShadowMaxDistM},
-        {"cloud_max_render_dist_m", cloudMaxRenderDistM},
+        {"cloud_max_dist_km", cv2MaxDistKm},
         {"cloud_dist_fade_end_m", cloudDistFadeEndM},
         {"view_samples_min", viewSamplesMin},
         {"view_samples_max", viewSamplesMax},

@@ -1767,22 +1767,11 @@ void main() {
     cloudARgb = cloudACenter.rgb;
     cloudBRgb = cloudBCenter.rgb;
 #else
-    if (cloud.cloudsV2 > 0.5) {
-        // Clouds v2's temporal resolve already anti-aliases its silhouettes (each half-res pixel
-        // accumulates jittered samples), so the blur would only soften them: the bilinear tap.
-        cloudARgb = cloudACenter.rgb;
-        cloudBRgb = cloudBCenter.rgb;
-    } else {
-        vec2 cloudTexel = 1.0 / vec2(textureSize(cloudTargetA, 0));
-        for (int sy = -1; sy <= 1; ++sy)
-            for (int sx = -1; sx <= 1; ++sx) {
-                vec2 uv = cloudUV + vec2(sx, sy) * cloudTexel;
-                cloudARgb += texture(cloudTargetA, uv).rgb;
-                cloudBRgb += texture(cloudTargetB, uv).rgb;
-            }
-        cloudARgb *= (1.0 / 9.0);
-        cloudBRgb *= (1.0 / 9.0);
-    }
+    // The clouds' temporal resolve (cloud_v2_resolve.comp) already anti-aliases their silhouettes
+    // (each half-res pixel accumulates jittered samples), so v1's 3x3 blur here would only soften
+    // them: the bilinear tap.
+    cloudARgb = cloudACenter.rgb;
+    cloudBRgb = cloudBCenter.rgb;
 #endif
     vec4  cloudA         = vec4(cloudARgb, cloudACenter.a);
     vec4  cloudB         = vec4(cloudBRgb, cloudBCenter.a);
@@ -3089,9 +3078,9 @@ void main() {
 #endif
         if (cloud.layers[li].enabled < 0.5) continue;
 #ifndef SKY_ENV
-        // Clouds v2 draws the low/mid clouds volumetrically at every distance, so no flat stand-in —
-        // unless its march is knocked out (Planetarium/Potato), which leaves the flat layer as before.
-        if (li == 0 && cloud.cloudsV2 > 0.5 && (cloud.dbgDisableMask & 32768u) == 0u) continue;
+        // The volumetric clouds draw the low/mid clouds at every distance, so no flat stand-in —
+        // unless their march is knocked out (Planetarium/Potato), which leaves the flat layer.
+        if (li == 0 && (cloud.dbgDisableMask & 32768u) == 0u) continue;
 #endif
         // The 3D->2D weight used to be computed here from observer altitude alone — one value for
         // the entire screen. It now lives inside evalCloudLayer, which knows this ray's own

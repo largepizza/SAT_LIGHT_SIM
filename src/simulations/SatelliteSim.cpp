@@ -2172,7 +2172,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
         GpuCloudParams cp{};
         cp.coverage = cloudCoverage;
-        cp.cloudsV2 = cloudsV2Enabled ? 1.0f : 0.0f;
+        cp.cloudsV2 = 1.0f; // unused since v1's march was deleted (2026-09-27); a UBO slot to reuse
         cp.density = cloudDensity;
         cp.driftRate = cloudDriftRate;
         cp.sunGain = cloudSunGain;
@@ -2315,8 +2315,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.mwBasisRow0 = glm::vec4(mwRow0, 1.0f); // .w = milky way gain (fixed; no longer user-tunable)
         cp.mwBasisRow1 = glm::vec4(mwRow1, 0.0f);
         cp.mwBasisRow2 = glm::vec4(mwRow2, 0.0f);
-        cp.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
-                                    glm::two_pi<double>());
+        cp.cloudPhase = (float)cloudDriftPhase();
         // Layer 0: low cloud / stratus shell. alphaMax was a flat, hardcoded 0.80 ceiling from the
         // layer system's original session-14 introduction — completely independent of
         // cloudOpacityScale (that only reaches the VOLUMETRIC march in cloud_march.comp), and this
@@ -2328,7 +2327,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // NOT scale by it — cirrus is meant to stay thin/translucent, not become a solid deck.
         cp.layers[0] = {cloudBaseAltM, 1.0f, glm::min(1.0f, 0.80f * cloudOpacityScale), 0.0f, 1.0f, 1.0f, 1.0f, 0.0f};
         // Layer 1: high cirrus shell
-        cp.layers[1] = {cloudTopAltM, 2.0f, 0.15f, 2.0f, 0.5f, 0.4f, 1.0f, 0.0f};
+        // Off while the volumetric high layer draws the cirrus (clouds v2): this switches off both the
+        // flat paste and cirrusMarchCS. Kept as the stand-in when the volumetric march is knocked out
+        // (Planetarium / Potato) or the high layer is off.
+        {
+            const bool v2High = cv2HighAmount > 0.0f && (debugDisableMask & 32768u) == 0u;
+            cp.layers[1] = {cloudTopAltM, 2.0f, 0.15f, 2.0f, 0.5f, 0.4f, v2High ? 0.0f : 1.0f, 0.0f};
+        }
         // Layers 2-3: unused
         cp.layers[2] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
         cp.layers[3] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
@@ -2692,8 +2697,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         bmPc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
         bmPc.obsEffH = std::max(obsTerrainH, obsHeightOffset);
         bmPc.waveTime = (float)(simSecInDay * 1.0);
-        bmPc.cloudPhase = (float)fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay),
-                                      glm::two_pi<double>());
+        bmPc.cloudPhase = (float)cloudDriftPhase();
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, beamSelfMarchPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -2763,9 +2767,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         uint32_t halfW = (ctx.swapExtent.width + 1) / 2;
         uint32_t halfH = (ctx.swapExtent.height + 1) / 2;
 
-        // Clouds v2 (.plans/CLOUDS_V2_PLAN.md): its sparse march + temporal resolve, whose result
-        // this dispatch composites in place of cloudMarchCS while cloudsV2Enabled is set. Inside
-        // this timestamp bucket, so the "cloud_march" figure is v1-or-v2 plus everything else here.
+        // The volumetric clouds (clouds v2, .plans/CLOUDS_V2_PLAN.md): the sparse march + temporal
+        // resolve, whose result this dispatch composites. Inside this timestamp bucket, so the
+        // "cloud_march" figure is the clouds plus everything else here (cirrus, fog, aurora, beams).
         recordCloudsV2(cmd, ctx, cpc);
 
         // Pre-dispatch: both targets are left in SHADER_READ_ONLY_OPTIMAL after the previous
@@ -4423,7 +4427,9 @@ void SatelliteSim::updateFollow(float dt)
     if (camera.captured)
         followAimLock = false;
     const glm::vec3 upF = obsDir;
-    if (followAimLock)
+    // A zero offset puts the camera AT the satellite: there is no direction to aim along, and
+    // normalize(0) made the elevation NaN — a NaN camera, and every pass drew black.
+    if (followAimLock && glm::length(P - followObsEcef) > 0.01)
     {
         const glm::dvec3 toSat = glm::normalize(P - followObsEcef);
         const glm::vec3 d = glm::vec3(toSat);
@@ -6224,15 +6230,19 @@ void SatelliteSim::updateIntroCinematic(float dt)
         timePaused = false;
         timeDir = 1.0f;
 
-        // Cloud drift is not just a speed — cloudPhase is fmod(cloudDriftRate * simTime, 2pi),
-        // and the intro always starts at the same fixed epoch, so this rate alone decides WHERE
-        // the cloud noise pattern sits over the California vantage on frame 1. Later cloud-noise
-        // changes moved that pattern so the intro opened socked in under overcast, hiding the
-        // satellites the whole cinematic is framed around. Pinned to the rate that puts a clear
-        // patch overhead. Forced here (not just changed as the compiled default) for the same
-        // reason as timeScaleIdx above: settings.json would otherwise restore the player's own
-        // saved rate and put the overcast back.
-        cloudDriftRate = kIntroCloudDriftRate;
+        // Where the cloud map sits over the California vantage on frame 1: the layout the intro
+        // was tuned on (a clear patch overhead — under overcast the satellites the cinematic is
+        // framed around are hidden). That layout was the phase kIntroCloudDriftRate x simTime.
+        // Until 2026-09-28 the intro FORCED that rate, and settings.json then saved it: every
+        // intro rewrote the player's drift rate, and since the phase was rate x the time since
+        // J2000, that 0.8% change moved the whole map by tens of radians. Now the intro sets only
+        // this session's phase offset, and the map keeps drifting at the player's rate from there.
+        {
+            const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            cloudDriftPhaseOffset = std::fmod((double)kIntroCloudDriftRate * t
+                                              - (double)cloudDriftRate * (t - kCloudDriftEpochS),
+                                              glm::two_pi<double>());
+        }
 
         float sL = obsDir.z;
         float cLH = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);
@@ -12630,4 +12640,18 @@ void SatelliteSim::updatePositions(double t, float dt)
     visibleCount = activeSatCount;
     gpuSatCount = activeSatCount;
     loopMs = 0.0f;
+}
+
+// The cloud map's longitude drift (radians, [0, 2pi)): every consumer — the flat layers, cirrus, the
+// volumetric clouds, beam occlusion, the ambience's cloud driver — reads this one value. Measured
+// from the sim's start epoch plus an offset, NOT rate x the time since J2000: that product is ~7500
+// rad, so the slightest change of the rate (the slider, or the intro's old forced rate) threw the
+// whole map to an unrelated longitude. kCloudDriftPhaseDefault keeps the default rate's positions
+// exactly where they were.
+double SatelliteSim::cloudDriftPhase() const
+{
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double ph = std::fmod((double)cloudDriftRate * (t - kCloudDriftEpochS) + cloudDriftPhaseOffset,
+                                glm::two_pi<double>());
+    return ph < 0.0 ? ph + glm::two_pi<double>() : ph;
 }

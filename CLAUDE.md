@@ -384,25 +384,113 @@ cloud occlusion march — see "Subsystem: Reflect-Orbital Beam Cloud Occlusion" 
 
 ---
 
-## Subsystem: Clouds v2 (2026-09-27, experimental, beside v1)
+## Subsystem: Clouds v2 — the volumetric clouds (2026-09-27; v1 deleted the same day)
 
-Design log and status: `.plans/CLOUDS_V2_PLAN.md`. Toggle: Clouds tab "Volumetric clouds v2" /
-`clouds_v2.enabled` (default off); every v2 tunable is in settings.json's `clouds_v2` block.
+Design log and status: `.plans/CLOUDS_V2_PLAN.md`. The only volumetric cloud renderer: v1's
+`cloudMarchCS`, its ground shadow, its copy in `beam_self_march.comp` and its sliders are gone (there
+is no toggle). Every tunable is a Clouds-tab slider AND a settings.json key under `clouds_v2`, so the
+harness can sweep it (`set clouds_v2.<key>`). Cirrus (`cirrusMarchCS`), fog and the flat 2D layers are
+still the older model and keep their own sliders ("Cirrus", "Flat layers" sections) — the old cirrus
+only as the stand-in when the volumetric march is knocked out (see HIGH LAYER below).
 - **One field** (`shaders/include/clouds_v2.glsl`, `cv2Field`) serves the view march, its light march,
   the ground shadow (`cloudGroundShadowV2`, cloud_march.comp) and beam occlusion (beam_self_march.comp).
   Weather cube (baked from the 8K map: coverage, classified type, precipitation, tropopause) x
   mesoscale fields on the sea-level sphere x 3D shape noise x detail erosion; 5 cloud types
   (`cv2Types`, SatelliteSim.h). Metric coordinates anchored at the observer's sea-level point (CPU
   double), like terrain detail — never an absolute ECEF position in float.
+- **The map drifts** (~16 deg of longitude per 12 h), and every consumer reads ONE phase:
+  `SatelliteSim::cloudDriftPhase()` = rate x (t - 2036-06-21) + `cloudDriftPhaseOffset` (session state;
+  the default keeps the default rate's map exactly where rate x (t - J2000) put it). It used to be rate x
+  the time since J2000 (~7500 rad), so any change of the rate threw the map to an unrelated longitude —
+  and the intro FORCED its own rate (6.55e-6), which settings.json then saved: every intro silently moved
+  the player's clouds. The intro now sets only the session offset. **The whole field is read in the
+  drifted frame** (`cv2Drift`: the weather cube AND the noise volumes, anchors rotated on the CPU), so the
+  clouds move with the map as one body, and the resolve reprojects that motion exactly (`extra.zw` = the
+  drift since last frame, `obsDelta` = Rz(d) eye - prevEye + the shape wind's shift); `motion.x` is the
+  volumes' relative slide it cannot follow, which raises the new-sample weight. A `time sun` jump moves
+  the clouds — pick benchmark spots at a fixed time: `python tools/harness/find_cloud_spots.py <ISO time>`
+  (assumes the default rate; a harness run from a user settings file should `set clouds.drift_rate
+  0.0000065`).
+- **Coverage** is the map's brightness remapped (`cover.xy`: clear below 0.12, overcast above 0.6);
+  the raw value used as a fraction never let anywhere close over.
+- **The shape is a 3D margin, not a heightfield** (2026-09-27): cloud exists where
+  `m = e(x,y) + lobes(x,y,z) - g(z) - gBase(h) > 0`. `e` = how far inside the thresholded 2D field;
+  `lobes` = inverted-Worley 1.75 km / 875 m / 440 m octaves in the SAME units as `e`, so they move the
+  side surface sideways (cauliflower lobes, overhangs), faded with the footprint and damped near the
+  base; `g(z)` = the strength needed to reach height z (convective z^1.2: small cells low mounds, cores
+  towers; decks flat with a lumpy top, `alt.z` = flatness); `gBase` curls the base up toward the edge.
+  **Why:** v1 and the first v2 cuts extruded a 2D presence under a height, and a heightfield cannot
+  bulge: every cloud, down to the smallest puff, was a flat-bottomed can with vertical sides (the
+  "cola can"). Noise on the TOP height moves a steep wall almost not at all — it has to be in `e`'s
+  units. Deep types also read the cells two mips coarser (wider towers). Erosion is reduced deep inside
+  (`form.z`) — full-strength erosion holed the interior and the sky showed from inside a cloud.
+- **Decks** (2026-09-28): a deck's thickness follows the closed cells and a km-scale Perlin field
+  (`deckVar`, `zTop`), a thicker part hangs lower, and every base is bumped in 3D by the lobes (`hbE`,
+  `baseAmp` = 40 m cumulus .. 220 m stratus x `storm.w` "Base roughness"): from below an overcast is seen
+  by the light it transmits, so its thickness is its texture. `CV2Field.deck/topH` let the march shadow
+  a deck lit at a grazing angle by the path to its top (tens of km, far past the light march) — without
+  it the terminator band glowed red from orbit.
+- **Deep convection**: lobes and erosion storm.x ("Storm feature size", 2x) larger via second anchors
+  (`anchorStorm`, `anchorStormDetail` — never scale an anchored coordinate: frac(a)/k pops when the
+  observer crosses a period), erosion kept storm.y; **anvils** (`cv2AnvilSigma`, storm.z "Anvils"): an
+  ice shield under the tropopause where the weather cube read ~30 km coarse and 25 km upwind says deep
+  convection, 3 km thick at the core, flat domed lid, frayed outline; the Cb towers overshoot it by
+  250 m. Straighter-walled deep towers (0.9 z^1.8) were tried and extruded vertical flutes: reverted.
+- **Cells** (`cloud_v2_noise.comp` mode 2): three sizes of blobs (8/16/32 per period) in warped space,
+  merged by a SOFT UNION and clumped by Perlin — max() of one or two sizes thresholded into Voronoi
+  polygons from altitude.
+- **Genera so far:** the low system's 5-type table (stratus .. cumulonimbus); nimbostratus = a
+  stratiform deck thickened by up to 3.5 km where the map rains; a MID LAYER (`cv2MidSigma`, 2.8-7 km,
+  `misc.w`, "Mid layer (Ac/As)"): altocumulus cloudlets in a thin lens where the low cloud is broken,
+  translucent altostratus where it is stratiform, only where the map has cloud and a mid-level regime
+  field (cluster Perlin) allows. **HIGH LAYER** (`cv2HighSigma`, 2026-09-28, `high`/`high2`, sliders
+  "High layer (Ci/Cs/Cc)", density, "Cirrus stretch", "Cirrus wind"): at ~0.74 of the tropopause,
+  cirrus streaks (the shape volume read with the along-wind coordinate = drifted longitude x R at a
+  period that divides the equator an integer number of times — no antimeridian seam — stretched,
+  meandered, sheared with height for fall streaks, combed by a 9x read), cirrostratus veils where the
+  map is stratiform, cirrocumulus patches. Its samples are lit cheaply (`CV2Field.thin`: no light
+  march, no ambient probe — it spans the whole sky). It replaces `cirrusMarchCS` and flat layer 1:
+  `layers[1].enabled` is 0 while it is on and the march isn't knocked out. **The baked Perlin fBm is
+  0.50 +- 0.057** (measured by replicating the bake in numpy): thresholds on it must be set against
+  that spread — the first cut of the high layer used 0.5-0.7 and drew nothing.
+  `cv2Field` = low + mid + anvil + high, so every consumer (march, light march, ground shadow, beams)
+  sees them all.
+- **Rain + optics** (2026-09-28, `.plans/ATMOS_OPTICS_AND_STORMS.md`): rain shafts are cv2FieldLow's
+  below-base branch (`CV2Field.rain`; the shell floor is 0 m while Rain > 0); rain at the eye drives a
+  streak overlay in cloud_march.comp (after the resolve, so it animates). Halos / sundogs / parhelic
+  circle / circumzenithal arc (`cv2IceOptics`) and the bows (`cv2RainOptics`) are Snell's-law positions
+  per colour channel added to the single-scatter phase of ice (`thin`) and rain samples, per RAY in the
+  march, for the Sun or the Moon. Debug views 5 (rain optical depth) and 6 (rain at the eye, streak
+  mask).
 - **Passes** (inside the `cloud_march` timestamp bucket, `recordCloudsV2`): `cloud_v2_march.comp`
   marches one pixel per 2x2 half-res block per frame; `cloud_v2_resolve.comp` reprojects history
-  (exact: rotation about a known eye + the eye's ECEF delta) and clamps; the result is copied to
-  history. cloud_march.comp reads it in place of `cloudMarchCS` when `GpuCloudParams::cloudsV2`
-  is set; sat_sky.frag then skips flat layer 0 and its 3x3 cloud blur.
+  (exact: rotation about a known eye + the eye's ECEF delta), clamps, and blends at `look2.w` (0.1)
+  rising to 0.35 with reprojection motion; the clamp box WIDENS for a still view (a tight box against
+  the quarter-grid neighbours made blocky 2x2 squares in far cloud); the result is copied to history
+  and cloud_march.comp composites it. **Full rate from altitude** (`misc.z`, `cv2FullRateNow`, above
+  `full_rate_above_km` = 30): every half-res pixel is marched every frame — from orbit the sparse
+  march's history is invalidated by motion and the fallback was a 1/8-resolution upsample (the
+  "pixelated mess" from space). The march targets are half-res sized for this; sparse frames fill
+  their quarter-size top-left. Riding the ISS at 1x is clean (harness_runs/cloud_v2_o). sat_sky.frag skips flat layer 0 (unless the march is knocked out, bit 32768) and the
+  3x3 cloud blur.
+- **Jitter per VISIT, not per frame**: a sparse pixel is marched every 4th frame, and 4 x 0.618
+  stepped its golden-ratio offset by ~0.47 per visit, so each pixel of a 2x2 block kept its own two
+  clusters of offsets and its own bias — far clouds (long steps) showed 2x2 squares.
+- **The march**: steps grow with distance FROM THE SHELL ENTRY (and the max distance is measured from
+  there — from orbit the Earth is further than the limit); the switch from coarse to fine steps lands
+  on a jittered lattice (without it a flat deck top drew contour rings around the nadir). A ray that runs out of budget (`misc.x`,
+  presets 160-640) is FILLED with the path's mean extinction and the cloud's mean colour, not left
+  transparent (that was the horizon "seeing through" the clouds).
+- **Key light**: the Sun, or at night the Moon through the same light march (`misc.y` x `moonGain`);
+  sky ambient is occluded by the cloud above and by the sample's own density (detail on shaded sides).
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
+- The Clouds tab's slider slots: `kCloudSliderSlots` (160) sizes all four per-slider arrays and
+  `cloudBufs`; v2 uses 112-157. The ids v1's deleted sliders held (2, 7-9, 16, 17, 34, 50, 61, 71-77)
+  are free. Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
+  shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.
 
 ## Subsystem: Automation harness (2026-09-25)
 

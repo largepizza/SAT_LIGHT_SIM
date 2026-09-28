@@ -437,7 +437,7 @@ void SatelliteSim::computeAmbienceContext(float dt)
         {
             const double twoPi = 2.0 * glm::pi<double>();
             double u = (lon + glm::pi<double>()) / twoPi +
-                       std::fmod((double)cloudDriftRate * (simDayJ2000 * 86400.0 + simSecInDay), twoPi) / twoPi;
+                       cloudDriftPhase() / twoPi;
             u -= std::floor(u);
             const double v = (0.5 * glm::pi<double>() - lat) / glm::pi<double>();
             const double fx = u * earthCloudsCpuW - 0.5, fy = v * earthCloudsCpuH - 0.5;

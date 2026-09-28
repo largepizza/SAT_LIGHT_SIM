@@ -115,12 +115,45 @@ vec3 skyZenithAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
     return SUN_INTENSITY * (phaseR(cosUp) * BETA_R * accR + vec3(phaseM(cosUp) * BETA_M * accM));
 }
 
+// Light-march geometry: a geometric series of nL steps summing to light.x.
+const float kLightRatio = 1.6;
+const vec3  kMoonColor  = vec3(0.92, 0.95, 1.0);
+
+// Optical depth from a cloud sample toward a light: the light march (the first two samples with
+// detail — the lumps that make cauliflower) plus one long coarse sample, the far side of a tower.
+float lightOD(vec3 rel, vec3 ldir, float eyeH, mat3 enuToEcef, int nL, float lSeg0, float jitter,
+              float detailAmt, float fp)
+{
+    float od = 0.0, s = 0.0, lSeg = lSeg0;
+    for (int k = 0; k < nL; ++k) {
+        float sm = s + lSeg * (0.5 + (jitter - 0.5) * 0.5);
+        // The view sample's footprint, not the step's: a longer footprint would turn the gaps
+        // between cells into haze and shadow everything.
+        CV2Field lf = cv2Field(cv2Pos(rel + ldir * sm, eyeH, enuToEcef), k < 2 ? detailAmt : 0.0, fp);
+        od += lf.sigma * lSeg;
+        s += lSeg; lSeg *= kLightRatio;
+    }
+    CV2Field ff = cv2Field(cv2Pos(rel + ldir * (cv2.light.x * 1.6), eyeH, enuToEcef), 0.0, fp);
+    return od + ff.sigma * cv2.light.x * 0.8;
+}
+
+// Multiple scattering (Wrenninge octaves): each octave sees a fraction of the optical depth.
+float msOctaves(float od)
+{
+    float ms = 0.0, a = 1.0, b = 1.0;
+    for (int k = 1; k <= 2; ++k) { a *= cv2.light.z; b *= cv2.light.w; ms += b * exp(-od * a); }
+    return ms;
+}
+
 void main()
 {
-    ivec2 qSize    = imageSize(outColor);
+    // Sparse: one pixel per 2x2 block, written to the quarter-size top-left of the targets.
+    // Full rate (cv2.misc.z, from altitude): every half-res pixel, written in place.
+    bool  full     = cv2.misc.z > 0.5;
     ivec2 halfSize = textureSize(sceneDepthTex, 0);
+    ivec2 qSize    = full ? halfSize : (halfSize + 1) / 2;
     ivec2 q        = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 pix      = min(q * 2 + ivec2(cv2.frame.zw), halfSize - 1);
+    ivec2 pix      = full ? min(q, halfSize - 1) : min(q * 2 + ivec2(cv2.frame.zw), halfSize - 1);
 
     float tanHalfFov = tan(pc.fovYRad * 0.5);
     mat3  camToENU   = mat3(transpose(pc.skyView));
@@ -132,10 +165,11 @@ void main()
     vec3  eye  = vec3(0.0, 0.0, R_EARTH + eyeH);
     vec3  sunDir = normalize(pc.sunDirENU.xyz);
 
-    // Beam-light tile cull. This workgroup owns half-res pixels [wg*32, wg*32+32); its cone is
-    // computed from those corners (the shared cull only needs an axis and a half-angle).
+    // Beam-light tile cull. This workgroup owns half-res pixels [wg*32, wg*32+32) (16 at full
+    // rate); its cone is computed from those corners (the cull only needs an axis and a half-angle).
     {
-        vec2 tMin = vec2(gl_WorkGroupID.xy) * 32.0, tMax = tMin + 32.0;
+        float tile = full ? 16.0 : 32.0;
+        vec2 tMin = vec2(gl_WorkGroupID.xy) * tile, tMax = tMin + tile;
         vec3 d00 = rayDirAt(tMin, halfSize, tanHalfFov, camToENU);
         vec3 d10 = rayDirAt(vec2(tMax.x, tMin.y), halfSize, tanHalfFov, camToENU);
         vec3 d01 = rayDirAt(vec2(tMin.x, tMax.y), halfSize, tanHalfFov, camToENU);
@@ -161,41 +195,68 @@ void main()
     float cosSun = dot(dir, sunDir);
     float phSS   = cv2.phase.y * cv2HG(cosSun, cv2.phase.x) + cv2.phase.w * cv2HG(cosSun, cv2.phase.z);
     float phMS   = 0.85 * cv2HG(cosSun, 0.2) + 0.15 * cv2HG(cosSun, -0.4);
-    vec3  moonDir = normalize(pc.moonDirENU.xyz);
-    float phMoon  = phaseCloud(dot(dir, moonDir));
+    vec3  moonDir  = normalize(pc.moonDirENU.xyz);
+    float cosMoon  = dot(dir, moonDir);
+    float phMoonSS = cv2.phase.y * cv2HG(cosMoon, cv2.phase.x) + cv2.phase.w * cv2HG(cosMoon, cv2.phase.z);
+    float phMoonMS = 0.85 * cv2HG(cosMoon, 0.2) + 0.15 * cv2HG(cosMoon, -0.4);
+    // Per-ray phases of ice (the high layer: a forward lobe + halos, sundogs, parhelic circle,
+    // circumzenithal arc) and rain (a forward lobe + the bows), for either key light. Per RAY, so
+    // the optics are as sharp as a pixel. (.plans/ATMOS_OPTICS_AND_STORMS.md)
+    float og = cv2.rain.y;
+    // Ice: a narrow forward (diffraction) peak on a broad, low lobe. One wide lobe (g 0.75) whited
+    // out 30 degrees around the Sun and buried the 22 degree halo and the sundogs in it.
+    vec3  phIceSun   = vec3(0.45 * cv2HG(cosSun, 0.93) + 0.55 * cv2HG(cosSun, 0.3))  + og * cv2IceOptics(dir, sunDir);
+    vec3  phIceMoon  = vec3(0.45 * cv2HG(cosMoon, 0.93) + 0.55 * cv2HG(cosMoon, 0.3)) + og * cv2IceOptics(dir, moonDir);
+    vec3  phRainSun  = vec3(0.85 * cv2HG(cosSun, 0.8))  + og * 0.5 * cv2RainOptics(dir, sunDir);
+    vec3  phRainMoon = vec3(0.85 * cv2HG(cosMoon, 0.8)) + og * 0.5 * cv2RainOptics(dir, moonDir);
+    vec3  moonKey  = kMoonColor * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y;
 
-    // Light-march geometry: a geometric series of nL steps summing to light.x.
-    const float kLightRatio = 1.6;
     int   nL    = int(cv2.light.y);
     float lSeg0 = cv2.light.x * (kLightRatio - 1.0) / max(pow(kLightRatio, float(nL)) - 1.0, 1e-4);
 
     // Spatially IGN, temporally a golden-ratio sequence per pixel: IGN alone, read on one pixel of
     // each 2x2 block per frame, is correlated between neighbours and left a screen-door pattern.
-    float jitter = fract(ign(vec2(pix)) + 0.6180340 * cv2.frame.x);
+    // The sequence advances per VISIT of this pixel, not per frame: a sparse pixel is marched every
+    // fourth frame, and 4 x 0.618 stepped the offset by ~0.47 per visit, so each pixel of a 2x2
+    // block sat on its own two clusters of offsets for hundreds of frames. Each slot kept its own
+    // sampling bias, and far clouds (long steps) broke into 2x2 squares.
+    float visit  = full ? cv2.frame.x : floor(cv2.frame.x * 0.25);
+    float jitter = fract(ign(vec2(pix)) + 0.6180340 * visit);
     // Angular size of one half-res pixel: a sample at distance t stands for t * pixAng metres.
     float pixAng = 2.0 * tanHalfFov / float(halfSize.y);
 
     vec3  L = vec3(0.0);
     float T = 1.0;
     float dAcc = 0.0, wAcc = 0.0, tHalf = -1.0;
+    float odRain = 0.0;                               // debug view 5
 
     // Per-ray lighting caches, refreshed every 25 km along the ray (the Sun's elevation and the
     // sky's colour change across a long horizon ray).
     vec3  sunCol = vec3(0.0), skyZen = vec3(0.0);
     float cacheT = -1e30;
 
-    int iters = 0;
-    const int kMaxIters = 320;
+    int   iters = 0;
+    int   kMaxIters = int(cv2.misc.x);
+    float pathLen = 0.0, odPath = 0.0, remLen = 0.0;   // for filling what the budget leaves
+    // The distance limit is measured from where the ray enters the shell, not from the eye: from
+    // orbit the Earth itself is further than the limit, and the far half of the clouds was cut off.
+    float tLimit = seg[0].x + cv2.march.w;
     for (int si = 0; si < nSeg; ++si) {
         float t    = seg[si].x;
-        float tEnd = min(min(seg[si].y, tScene), cv2.march.w);
+        float tEnd = min(min(seg[si].y, tScene), tLimit);
         if (t >= tEnd) continue;
+        if (iters >= kMaxIters) { remLen += tEnd - t; continue; }
         bool fine = false;
         int  empty = 0;
-        t += (cv2.march.x + cv2.march.y * t) * jitter;
+        t += (cv2.march.x + cv2.march.y * (t - seg[0].x)) * jitter;
         while (t < tEnd && iters < kMaxIters && T > 0.01) {
             ++iters;
-            float stepF = min(cv2.march.x + cv2.march.y * t, max(cv2.march.z, t * 0.004));
+            // Steps grow with distance (the noise is read at the pixel footprint there anyway, so
+            // shorter steps would only resample the same mip). 0.6% growth ran a horizon ray out of
+            // its budget ~50 km out, and a broken field there came out half transparent. Measured
+            // from the shell entry, like the limit (from orbit the eye is hundreds of km away).
+            float tr    = t - seg[0].x;
+            float stepF = min(cv2.march.x + cv2.march.y * tr, max(cv2.march.z, tr * 0.012));
             // ...and at most kMaxVertStep of altitude per step, measured against the vertical AT
             // THE SAMPLE (not the observer's). From orbit a distance-grown step crossed a 900 m
             // stratus deck in one stride and drew it as scattered dots.
@@ -207,18 +268,25 @@ void main()
             float fp = t * pixAng;
             if (!fine) {
                 CV2Field c = cv2Field(p, -1.0, fp);
-                if (c.sigma > 0.0) { fine = true; empty = 0; t = max(seg[si].x, t - 2.0 * stepF); continue; }
+                // Back two steps and on to a JITTERED fine lattice: the start jitter covers only the
+                // first (shortest) step, so without this every fine sample sat on the coarse grid and
+                // a flat, sharp deck top drew contour rings around the nadir.
+                if (c.sigma > 0.0) { fine = true; empty = 0; t = max(seg[si].x, t - (2.0 - jitter) * stepF); continue; }
                 t += 2.0 * stepF;
+                pathLen += 2.0 * stepF;
                 continue;
             }
             float detailAmt = 1.0 - smoothstep(cv2.shell.w, cv2.shell.w * 4.0, t);
             CV2Field f = cv2Field(p, detailAmt, fp);
+            pathLen += stepF;
             if (f.sigma <= 0.0) {
                 if (++empty > 5) fine = false;
                 t += stepF;
                 continue;
             }
             empty = 0;
+            odPath += f.sigma * stepF;
+            odRain += f.sigma * f.rain * stepF;
 
             vec3  pW   = eye + rel;                        // world point, ENU about the observer
             vec3  up   = normalize(pW);
@@ -233,45 +301,66 @@ void main()
             float horizS = -sqrt(max(1.0 - (R_EARTH / rP) * (R_EARTH / rP), 0.0));
             float sunVis = smoothstep(horizS - 0.004, horizS + 0.004, sunUp);
 
-            // ── Sun: light march ──
-            vec3 sunS = vec3(0.0);
-            if (sunVis > 0.0 && dot(sunCol, sunCol) > 0.0) {
-                float od = 0.0, s = 0.0, lSeg = lSeg0;
-                for (int k = 0; k < nL; ++k) {
-                    float sm = s + lSeg * (0.5 + (jitter - 0.5) * 0.5);
-                    // The view sample's footprint, not the step's: a longer footprint would turn
-                    // the gaps between cells into haze and shadow everything.
-                    CV2Field lf = cv2Field(cv2Pos(rel + sunDir * sm, eyeH, enuToEcef), k < 2 ? detailAmt : 0.0, fp);
-                    od += lf.sigma * lSeg;
-                    s += lSeg; lSeg *= kLightRatio;
-                }
-                // One long coarse sample: the tower's far side, at 1.6x the march length.
-                CV2Field ff = cv2Field(cv2Pos(rel + sunDir * (cv2.light.x * 1.6), eyeH, enuToEcef), 0.0, fp);
-                od += ff.sigma * cv2.light.x * 0.8;
+            float dayness = clamp((sunUp + 0.2) / 0.5, 0.0, 1.0);
+            float nightK  = 1.0 - min(dayness * 3.0, 1.0);
 
-                float ms = 0.0, a = 1.0, b = 1.0;
-                for (int k = 1; k <= 2; ++k) { a *= cv2.light.z; b *= cv2.light.w; ms += b * exp(-od * a); }
-                float powder = 1.0 - cv2.look2.z * exp(-f.sigma * 300.0) * (0.5 - 0.5 * cosSun);
-                sunS = sunCol * sunVis * cv2.look2.y * powder
-                     * (phSS * exp(-od) + phMS * ms * f.msBright);
+            // ── Key light: the Sun by day; at night the Moon, through the SAME light march. v1 and
+            // the first v2 lit night cloud with a flat moon term: black bases, grey tops, no form. ──
+            vec3  keyCol = vec3(0.0);
+            vec3  keyDir = sunDir;
+            float pSS = phSS, pMS = phMS, cosK = cosSun;
+            bool  moonIsKey = false;
+            if (sunVis > 0.0 && dot(sunCol, sunCol) > 0.0) {
+                keyCol = sunCol * sunVis * cv2.look2.y;
+            } else if (nightK > 0.0) {
+                float moonUp = dot(up, moonDir);
+                keyCol = moonKey * nightK * smoothstep(-0.05, 0.1, moonUp);
+                keyDir = moonDir; pSS = phMoonSS; pMS = phMoonMS; cosK = cosMoon; moonIsKey = true;
+            }
+            // The high layer is optically thin ice: a light march through it buys nothing, and it
+            // spans the whole sky, so every sample there paid seven field evaluations. Its
+            // self-shadow is its own density over a few hundred metres; its sky light is unoccluded.
+            bool thin = f.thin > 0.5;
+            vec3 keyS = vec3(0.0);
+            if (dot(keyCol, keyCol) > 0.0) {
+                float od = thin ? f.sigma * 400.0
+                                : lightOD(rel, keyDir, eyeH, enuToEcef, nL, lSeg0, jitter, detailAmt, fp);
+                // A deck lit at a grazing angle is shadowed by the rest of the deck, tens of km
+                // beyond the light march: the path to the deck's top along the light. Without it
+                // a deck's interior was lit through a few km of cloud, and the whole band along the
+                // terminator glowed red from orbit instead of fading to black.
+                if (f.deck > 0.0) {
+                    float odDeck = f.sigma * max(f.topH - p.h, 0.0) / max(dot(up, keyDir), 0.03);
+                    od = max(od, odDeck * f.deck * 0.5);
+                }
+                float powder = 1.0 - cv2.look2.z * exp(-f.sigma * 300.0) * (0.5 - 0.5 * cosK);
+                vec3 pSSv = vec3(pSS);
+                if (f.thin > 0.0 || f.rain > 0.0) {
+                    pSSv = mix(pSSv, moonIsKey ? phIceMoon : phIceSun, f.thin);
+                    pSSv = mix(pSSv, moonIsKey ? phRainMoon : phRainSun, f.rain);
+                }
+                keyS = keyCol * powder * (pSSv * exp(-od) + pMS * msOctaves(od) * f.msBright);
             }
 
-            // ── Sky light from above, occluded by the cloud 250 m up ──
-            CV2Field fu  = cv2Field(cv2Pos(rel + up * 250.0, eyeH, enuToEcef), 0.0, fp);
-            float ambVis = exp(-fu.sigma * 250.0) * mix(0.55, 1.0, f.hf);
-            vec3  ambS   = skyZen * ambVis * f.ambient * cv2.look.w;
+            // ── Sky light from above, occluded by the cloud 250 m up, and by the sample's own
+            // density: deep inside a cloud less sky reaches it than at its surface. Without that
+            // the shaded side of a cloud was one flat grey, whatever the surface did. ──
+            float ambVis = 1.0;
+            if (!thin) {
+                CV2Field fu = cv2Field(cv2Pos(rel + up * 250.0, eyeH, enuToEcef), 0.0, fp);
+                ambVis = exp(-fu.sigma * 250.0) * mix(0.55, 1.0, f.hf) * mix(1.0, exp(-f.sigma * 150.0), 0.5);
+            }
+            // The night sky: the moonlit sky's share of the moon, for the cloud's shaded side.
+            vec3  skyAmb = skyZen * cv2.look.w + moonKey * nightK * 0.03 * max(dot(up, moonDir), 0.0);
+            vec3  ambS   = skyAmb * ambVis * f.ambient;
 
-            // ── Ground bounce, from below ──
-            vec3 bounceS = sunCol * sunVis * max(sunUp, 0.0) * 0.15 * cv2.look2.x
+            // ── Ground bounce from below: the key light, reflected by the ground under the cloud ──
+            vec3 bounceS = keyCol * max(dot(up, keyDir), 0.0) * 0.15 * cv2.look2.x
                          * (1.0 - f.hf) * (1.0 - f.hf);
 
-            // ── Night: moon, city up-light, beams ──
-            float dayness = clamp((sunUp + 0.2) / 0.5, 0.0, 1.0);
-            vec3  nightS  = vec3(0.0);
+            // ── Night: city up-light, beams ──
+            vec3 nightS = vec3(0.0);
             if (dayness < 0.9) {
-                float moonUp = max(0.0, dot(up, moonDir));
-                nightS += vec3(0.92, 0.95, 1.0) * moonUp * pc.moonDirENU.w * ambVis * phMoon
-                        * cloud.moonGain * (1.0 - min(dayness * 3.0, 1.0));
                 if (f.hf < 0.45) {
                     vec3  dE  = p.dirE;
                     vec2  uv  = vec2((atan(dE.y, dE.x) + PI) / (2.0 * PI), (0.5 * PI - asin(clamp(dE.z, -1.0, 1.0))) / PI);
@@ -283,7 +372,7 @@ void main()
                 nightS += beamCloudLighting(pW, p.h, dir, eye, dayness);
             }
 
-            vec3  S     = sunS + ambS + bounceS + nightS;
+            vec3  S     = keyS + ambS + bounceS + nightS;
             float Tstep = exp(-f.sigma * stepF);
             float w     = T * (1.0 - Tstep);
             L    += w * S;
@@ -293,6 +382,19 @@ void main()
             if (tHalf < 0.0 && T < 0.5) tHalf = t;
             t += stepF;
         }
+        if (iters >= kMaxIters && t < tEnd) remLen += tEnd - t;
+    }
+
+    // What the budget left unmarched (long horizon rays through a broken field) is filled with the
+    // path's mean extinction and the cloud's mean colour so far, instead of being left transparent:
+    // a ray that ran out used to draw the horizon through the clouds in front of it.
+    if (remLen > 0.0 && T > 0.01 && wAcc > 1e-4 && pathLen > 0.0) {
+        float Trem = exp(-odPath / pathLen * remLen);
+        float w    = T * (1.0 - Trem);
+        L    += w * (L / wAcc);
+        dAcc += w * (dAcc / wAcc + remLen * 0.5);
+        wAcc += w;
+        T    *= Trem;
     }
 
     float meanT = (wAcc > 1e-4) ? dAcc / wAcc : 0.0;
@@ -338,11 +440,12 @@ void main()
     int dbg = int(cv2.shell.z + 0.5);
     if (dbg == 4 && nSeg > 0) {
         CV2Pos pe = cv2Pos(dir * seg[0].x, eyeH, enuToEcef);
-        outRgb = textureLod(cv2WeatherTex, pe.dirE, 0.0).rgb * 0.05;
+        outRgb = textureLod(cv2WeatherTex, cv2WeatherDir(pe.dirE), 0.0).rgb * 0.05;
     }
     if (dbg == 1) outRgb = mix(vec3(0.0, 0.2, 1.0), vec3(1.0, 0.1, 0.0), float(iters) / float(kMaxIters)) * 0.05;
     else if (dbg == 2) outRgb = vec3(1.0 - T) * 0.05;
     else if (dbg == 3) outRgb = vec3(fract(meanT / 50000.0)) * 0.05;
+    else if (dbg == 5) outRgb = vec3(1.0 - exp(-odRain), 0.0, (wAcc > 1e-4) ? 0.3 : 0.0) * 0.05;
     float Tout = (dbg != 0) ? 0.0 : T;
 
     imageStore(outColor, q, vec4(outRgb, Tout));

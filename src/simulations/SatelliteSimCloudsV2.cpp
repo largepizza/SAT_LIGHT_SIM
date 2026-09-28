@@ -447,8 +447,10 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
         ctx.createImage(w, h, fmt, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | extra, img, mem);
         view = makeView(dev, img, VK_IMAGE_VIEW_TYPE_2D, fmt, 0, 1, 1);
     };
-    make(cv2QuarterW, cv2QuarterH, VK_FORMAT_R16G16B16A16_SFLOAT, 0, cv2NewImg, cv2NewMem, cv2NewView);
-    make(cv2QuarterW, cv2QuarterH, VK_FORMAT_R32G32_SFLOAT, 0, cv2NewDepthImg, cv2NewDepthMem, cv2NewDepthView);
+    // The march's own targets are half-res sized: a sparse frame fills only their quarter-size
+    // top-left region, a full-rate frame (from altitude, see fillCloudsV2Params) all of it.
+    make(cv2HalfW, cv2HalfH, VK_FORMAT_R16G16B16A16_SFLOAT, 0, cv2NewImg, cv2NewMem, cv2NewView);
+    make(cv2HalfW, cv2HalfH, VK_FORMAT_R32G32_SFLOAT, 0, cv2NewDepthImg, cv2NewDepthMem, cv2NewDepthView);
     make(cv2HalfW, cv2HalfH, VK_FORMAT_R16G16B16A16_SFLOAT,
          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, // copied from; cleared at creation
          cv2ResolvedImg, cv2ResolvedMem, cv2ResolvedView);
@@ -598,10 +600,14 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         std::memcpy(&b, &v, 4);
         h = (h ^ b) * 1099511628211ull;
     };
-    for (float v : {cv2Coverage, cv2Density, cv2Detail, cv2AmbientGain, cv2SunGain, cv2BounceGain, cv2Powder,
-                    cv2LightLenM, (float)cv2LightSteps, cv2StepBaseM, cv2StepGrowth, cv2StepMaxM, cv2MaxDistKm,
-                    cv2ShapePeriodM, cv2DetailPeriodM, cv2CellPeriodM, cv2ClusterPeriodM, (float)cv2DebugView,
-                    cv2EdgeSharpness, cv2WeatherWarpKm})
+    for (float v : {cv2Coverage, cv2CoverClear, cv2CoverFull, cv2Density, cv2Detail, cv2Wobble, cv2Lean,
+                    cv2InteriorErosion, cv2ColumnEdge, cv2AmbientGain, cv2SunGain, cv2MoonGain, cv2BounceGain,
+                    cv2Powder, cv2MsExtinction, cv2MsStrength, cv2PhaseG, cv2LightLenM, cv2LightSteps,
+                    cv2StepBaseM, cv2StepGrowth, cv2StepMaxM, cv2MaxIters, cv2MaxDistKm, cv2ShapePeriodM,
+                    cv2DetailPeriodM, cv2CellPeriodM, cv2ClusterPeriodM, (float)cv2DebugView, cv2EdgeSharpness,
+                    cv2WeatherWarpKm, cv2FullRateAboveKm, cv2MidAmount, cv2StormScale, cv2StormDetail,
+                    cv2Anvil, cv2BaseRoughness, cv2HighAmount, cv2HighDensity, cv2CirrusStretch,
+                    cv2RainAmount, cv2OpticsGain})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -611,18 +617,43 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             mix(t.look[k]);
         }
 
-    bool valid = cv2HistoryValid && cloudsV2Enabled && h == cv2SettingsHash &&
+    bool valid = cv2HistoryValid && h == cv2SettingsHash &&
                  glm::length(eye - cv2PrevEye) < 20000.0 && std::abs(simT - cv2PrevSimT) < 600.0;
+
+    // The map's longitude drift: the same angle v1's flat layer (layer 0, driftMult 1) and the
+    // ambience's cloud driver read, so the volumetric clouds sit where the map puts them. EVERY part
+    // of the field is read in the drifted frame (the weather cube and the noise volumes alike), so
+    // the clouds move with the map as one body, and the resolve can reproject that motion exactly:
+    // a point p now shows what Rz(drift - prevDrift) p showed last frame. Until 2026-09-28 only the
+    // camera was reprojected; under time warp the one-in-four refreshed pixel of each 2x2 block
+    // disagreed with its three stale neighbours and far clouds broke into 2x2 squares.
+    const double drift = cloudDriftPhase();
+    const double cD = std::cos(drift), sD = std::sin(drift);
+    auto rotD = [&](const glm::dvec3 &v, double c, double s)
+    { return glm::dvec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z); };
+    const double dDrift = drift - cv2PrevDrift;
+    const double cDD = std::cos(dDrift), sDD = std::sin(dDrift);
+    const glm::dvec3 windDir = glm::normalize(glm::dvec3(0.83, 0.52, 0.19));
+    const double dSimT = simT - cv2PrevSimT;
 
     p.prevSkyView = cv2PrevSkyView;
     p.prevObs = glm::vec4(cv2PrevObsDir, cv2PrevTanHalf);
-    p.obsDelta = glm::vec4(glm::vec3(eye - cv2PrevEye), cv2PrevAspect);
+    // The eye's displacement relative to the moving clouds. A cloud point p now showed its content
+    // at Rz(dDrift) p + Rz(-prevDrift) w dt last frame (the noise is read at Rz(drift) p + w t), so
+    // the resolve turns the eye-relative point by dDrift and adds this: Rz(dDrift) eye - prevEye
+    // plus the wind's shift, taken at 0.9 of the shape wind (the cells, which place the clouds, move
+    // at 0.85 of it, the lobes at 1.0).
+    const glm::dvec3 windShift = rotD(windDir * ((double)cv2WindMps * 0.9 * dSimT),
+                                      std::cos(-cv2PrevDrift), std::sin(-cv2PrevDrift));
+    p.obsDelta = glm::vec4(glm::vec3(rotD(eye, cDD, sDD) - cv2PrevEye + windShift), cv2PrevAspect);
+    // What is left unreprojected: the volumes' relative slide (detail 1.6, cluster 0.6 of the wind).
+    p.motion = glm::vec4((float)std::abs((double)cv2WindMps * 0.7 * dSimT), 0.0f, 0.0f, 0.0f);
 
-    // Noise anchors: the observer's SEA-LEVEL point (what the shaders measure from) plus the wind,
-    // in periods, reduced in double. Each volume drifts at its own rate, so the shape moves through
-    // the cells and the detail through the shape: the clouds evolve instead of sliding as one.
-    const glm::dvec3 sea = up * R;
-    const glm::dvec3 windDir = glm::normalize(glm::dvec3(0.83, 0.52, 0.19));
+    // Noise anchors: the observer's SEA-LEVEL point (what the shaders measure from), turned into
+    // the drifted frame, plus a small wind, in periods, reduced in double. Each volume moves at its
+    // own rate, so the shape moves through the cells and the detail through the shape: the clouds
+    // evolve on top of the drift instead of sliding as one.
+    const glm::dvec3 sea = rotD(up * R, cD, sD);
     auto anchor = [&](double periodM, double windMul)
     {
         const glm::dvec3 a = (sea + windDir * ((double)cv2WindMps * windMul * simT)) / periodM;
@@ -632,15 +663,33 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.anchorDetail = anchor(cv2DetailPeriodM, 1.6);
     p.anchorCluster = anchor(cv2ClusterPeriodM, 0.6);
     p.anchorCell = anchor(cv2CellPeriodM, 0.85);
+    const double stormScale = std::clamp((double)cv2StormScale, 0.25, 8.0);
+    p.anchorStorm = anchor(cv2ShapePeriodM * stormScale, 1.0);
+    p.anchorStormDetail = anchor(cv2DetailPeriodM * stormScale, 1.6);
+    p.storm = glm::vec4((float)stormScale, cv2StormDetail, cv2Anvil, cv2BaseRoughness);
+    // The high layer's streak coordinates: along the wind = the drifted longitude x R, with a period
+    // that divides the equator an integer number of times (no seam at the antimeridian), stretched;
+    // across it = latitude x R at the shape period. The jet moves the fibres east over the map.
+    {
+        const double twoPiR = glm::two_pi<double>() * R;
+        const double along = (double)cv2ShapePeriodM * std::clamp((double)cv2CirrusStretch, 1.0, 40.0);
+        const double n = std::max(1.0, std::round(twoPiR / along));
+        const double pu = twoPiR / n;
+        p.high = glm::vec4(cv2HighAmount, (float)(1.0 / pu), (float)fracPos(-(double)cv2CirrusWindMps * simT / pu),
+                           (float)(1.0 / (double)cv2ShapePeriodM));
+        p.high2 = glm::vec4(cv2HighDensity, 0.0f, 0.0f, 0.0f);
+    }
+    p.rain = glm::vec4(cv2RainAmount, cv2OpticsGain, cv2RainStreaks, 0.0f);
 
     static const int kOffsets[4][2] = {{0, 0}, {1, 1}, {1, 0}, {0, 1}};
     const int *o = kOffsets[cv2Frame & 3u];
     p.frame = glm::vec4((float)(cv2Frame & 0xFFFFu), valid ? 1.0f : 0.0f, (float)o[0], (float)o[1]);
     p.march = glm::vec4(cv2StepBaseM, cv2StepGrowth, cv2StepMaxM, cv2MaxDistKm * 1000.0f);
-    p.light = glm::vec4(cv2LightLenM, (float)std::clamp(cv2LightSteps, 1, 12), 0.35f, 0.5f);
+    p.light = glm::vec4(cv2LightLenM, std::round(std::clamp(cv2LightSteps, 1.0f, 12.0f)), cv2MsExtinction,
+                        cv2MsStrength);
     p.look = glm::vec4(cv2Coverage, cv2Density, cv2Detail, cv2AmbientGain);
     p.look2 = glm::vec4(cv2BounceGain, cv2SunGain, cv2Powder, cv2HistoryWeight);
-    p.phase = glm::vec4(0.8f, 0.6f, -0.25f, 0.4f);
+    p.phase = glm::vec4(cv2PhaseG, 0.6f, -0.25f, 0.4f);
 
     float lo = 1e9f, hi = 0.0f;
     for (int i = 0; i < kCloudV2Types; ++i)
@@ -649,12 +698,22 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         lo = std::min(lo, cv2Types[i].alt.x - cv2Types[i].alt.w);
         hi = std::max(hi, cv2Types[i].alt.x + (cv2Types[i].alt.y - cv2Types[i].alt.x) * 1.35f);
     }
-    p.shell = glm::vec4(std::max(lo, 0.0f), hi, (float)cv2DebugView, cv2DetailLodStartM);
-    p.extra = glm::vec4(cv2EdgeSharpness, cv2WeatherWarpKm * 1000.0f / (float)R, 0.0f, 0.0f);
+    // Rain falls to the ground: with it on, the shell reaches sea level.
+    p.shell = glm::vec4(cv2RainAmount > 0.0f ? 0.0f : std::max(lo, 0.0f), hi, (float)cv2DebugView, cv2DetailLodStartM);
+    // zw: cos/sin of the drift since last frame (the resolve turns a cloud point by it).
+    p.extra = glm::vec4(cv2EdgeSharpness, cv2WeatherWarpKm * 1000.0f / (float)R, (float)cDD, (float)sDD);
+    p.cover = glm::vec4(cv2CoverClear, std::max(cv2CoverFull, cv2CoverClear + 0.01f), (float)cD, (float)sD);
+    p.form = glm::vec4(cv2Wobble, cv2Lean, cv2InteriorErosion, std::max(cv2ColumnEdge, 0.5f));
+    // Full rate: from altitude every half-res pixel is marched every frame. The sparse 1-in-4
+    // march relies on history, which a moving orbital camera keeps invalidating; the fallback was a
+    // 1/8-resolution upsample (the "pixelated mess" from space). Up there a ray crosses only a thin
+    // shell, so marching all of them is cheap.
+    cv2FullRateNow = eyeH > (double)cv2FullRateAboveKm * 1000.0;
+    p.misc = glm::vec4(std::round(std::clamp(cv2MaxIters, 32.0f, 1024.0f)), cv2MoonGain,
+                       cv2FullRateNow ? 1.0f : 0.0f, cv2MidAmount);
     std::memcpy(cv2ParamsMapped, &p, sizeof(p));
 
-    // This frame becomes the next frame's "previous" (only when v2 actually drew it).
-    if (cloudsV2Enabled)
+    // This frame becomes the next frame's "previous".
     {
         cv2PrevSkyView = cpc.skyView;
         cv2PrevObsDir = glm::vec3(up);
@@ -662,19 +721,18 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         cv2PrevTanHalf = tanHalf;
         cv2PrevAspect = cpc.aspect;
         cv2PrevSimT = simT;
+        cv2PrevDrift = drift;
         cv2SettingsHash = h;
         cv2HistoryValid = true;
         ++cv2Frame;
     }
-    else
-        cv2HistoryValid = false;
     (void)ctx;
 }
 
 void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc)
 {
     fillCloudsV2Params(ctx, cpc);
-    if (!cloudsV2Enabled || !cv2MarchPipeline)
+    if (!cv2MarchPipeline)
         return;
 
     // scene_depth.comp wrote terrainFrameBuf (the eye height) this frame.
@@ -684,7 +742,8 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeLayout, 0, 1, &cv2MarchDescSet, 0, nullptr);
     vkCmdPushConstants(cmd, cv2MarchPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
-    vkCmdDispatch(cmd, (cv2QuarterW + 15) / 16, (cv2QuarterH + 15) / 16, 1);
+    const uint32_t gw = cv2FullRateNow ? cv2HalfW : cv2QuarterW, gh = cv2FullRateNow ? cv2HalfH : cv2QuarterH;
+    vkCmdDispatch(cmd, (gw + 15) / 16, (gh + 15) / 16, 1);
 
     memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
