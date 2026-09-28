@@ -57,3 +57,10 @@ satlight_log.txt
 /harness_runs/
 /harness_live/
 /tools/harness/iclg/
+
+# ── User screenshots ──────────────────────────────────────────────────────────
+# The app writes user screenshots next to the exe; the build keeps that path a link to this
+# directory (cmake/EnsureScreenshotDir.cmake) so wiping the build tree — release.bat does
+# `rmdir /s /q build-win-release` — no longer takes the images with it. The published images in
+# docs/screenshots/ (README) are separate and stay tracked.
+/screenshots/

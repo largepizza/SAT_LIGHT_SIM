@@ -51,6 +51,11 @@ foreach(dir shaders assets satellite_models)
     endif()
     file(COPY "${RUNTIME_DIR}/${dir}" DESTINATION "${STAGE}")
 endforeach()
+# Keep this a whitelist, and keep screenshots/ out of it. In a dev build tree <exe dir>/screenshots
+# is a junction/symlink to the source tree's screenshots/ (cmake/EnsureScreenshotDir.cmake), so
+# copying it — or copying RUNTIME_DIR wholesale — would follow that link and ship the developer's
+# own screenshots inside the release archive. A portable install creates its own real screenshots/
+# next to the exe on the first capture, which is exactly the behaviour we want to ship.
 
 foreach(f data/constellations.json
           data/constellations.schema.json

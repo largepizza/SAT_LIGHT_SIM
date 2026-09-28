@@ -101,6 +101,15 @@ those files, so changing one (e.g. regenerating an icon with `tools/make_icons.p
 Without it, nothing relinks, nothing copies, and the exe keeps loading the old file that is already
 sitting next to it — the change just silently "does not take".
 
+**Screenshots survive the build tree.** The app writes user screenshots to `<exe dir>/screenshots`,
+and that is inside the build tree (`build-win-release/Release/screenshots` for the `windows-release`
+preset) — which `release.bat` deletes outright (`rmdir /s /q build-win-release`) before every release
+build, taking the images with it. `sat_ensure_screenshot_dir()` (`cmake/EnsureScreenshotDir.cmake`),
+an always-run target that the exe depends on, keeps that path a link instead — a directory junction on
+Windows, a symlink elsewhere — pointing at the source tree's `screenshots/` (gitignored; the published
+`docs/screenshots/` images are separate). Reconfiguring recreates the link, and a pre-existing real
+`screenshots/` directory is migrated into it rather than lost.
+
 **Launch the app only through the automation harness** (`tools/harness/run.py` / `live.py`,
 docs/HARNESS.md) — never interactively (no `run` skill, no bare exe). A harness run is scripted,
 exits on its own, runs muted in its own user-data folder (it cannot touch the user's

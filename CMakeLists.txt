@@ -444,11 +444,36 @@ function(sat_sync_runtime_sources tgt)
     endif()
 endfunction()
 
+# ── Screenshots outlive the build tree ────────────────────────────────────────────────────────
+# The app writes user screenshots to <exe dir>/screenshots (SatelliteSim::requestScreenshot) — i.e.
+# inside the build tree: build-win-release/Release/screenshots for the windows-release preset.
+# release.bat deletes build-win-release/ outright before every release build (`rmdir /s /q`), and a
+# hand "delete the build dir and reconfigure" does the same, so screenshots taken to test a build
+# died with it. This keeps that path a *link* to the source-tree screenshots/ directory instead, and
+# recreates the link whenever the build tree is regenerated.
+#
+# A custom target with no OUTPUT file is never "up to date", so the script runs on every build and
+# repairs the link if it was deleted — while a normal build costs it only one file read (it prints
+# nothing unless it actually does something). It runs BEFORE the exe target (add_dependencies) and
+# pre-creates the output directory, so the POST_BUILD copies and the linker always have somewhere to
+# write. cmake/EnsureScreenshotDir.cmake holds the rationale and the migration behaviour.
+function(sat_ensure_screenshot_dir tgt)
+    add_custom_target(${tgt}_screenshots
+        COMMAND ${CMAKE_COMMAND}
+            -DRUNTIME_DIR=$<TARGET_FILE_DIR:${tgt}>
+            -DSHOT_DIR=${CMAKE_CURRENT_SOURCE_DIR}/screenshots
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EnsureScreenshotDir.cmake
+        VERBATIM)
+    add_dependencies(${tgt} ${tgt}_screenshots)
+endfunction()
+
 sat_copy_runtime_files(SatLightSim)
 sat_sync_runtime_sources(SatLightSim)
+sat_ensure_screenshot_dir(SatLightSim)
 if(SAT_BUILD_FRESH_TARGET)
     sat_copy_runtime_files(SatLightSimFresh)
     sat_sync_runtime_sources(SatLightSimFresh)
+    sat_ensure_screenshot_dir(SatLightSimFresh)
 endif()
 
 # ── Release packaging ─────────────────────────────────────────────────────────
