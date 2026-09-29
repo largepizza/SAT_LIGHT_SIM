@@ -362,36 +362,59 @@ float cityRoadLight(vec2 uv, vec3 pC, float foot) {
     return e;
 }
 
+// Lamp colours (luminance ~1): high-pressure sodium, warm-white LED (4000 K), cool LED (5000 K) and
+// metal halide; neon for the rare commercial signs.
+const vec3 kLampSodium = vec3(1.28, 0.90, 0.42);
+const vec3 kLampLedW   = vec3(1.04, 0.99, 0.90);
+const vec3 kLampLedC   = vec3(0.90, 0.98, 1.14);
+const vec3 kLampHalide = vec3(1.02, 1.00, 0.96);
+vec3 cityLampColor(float h, float ledP) {
+    if (h < 1.0 - ledP) return kLampSodium;
+    float t = (h - (1.0 - ledP)) / max(ledP, 1e-3);
+    return t < 0.55 ? kLampLedW : (t < 0.85 ? kLampLedC : kLampHalide);
+}
+vec3 cityLampMean(float ledP) {
+    return (1.0 - ledP) * kLampSodium + ledP * (0.55 * kLampLedW + 0.30 * kLampLedC + 0.15 * kLampHalide);
+}
+
 // One street direction at coordinate x (base spacing 1; every `stride`-th line can exist, each dropped
 // with probability `drop` by the hash of its index, every artN-th of the BASE lines an arterial that
-// always exists), along-coordinate y. Returns lamp light (resolved posts) mixed toward lines by tL, in
-// "weight x 1/m^2 per base-unit^2" before the caller's normalisation. sgPoolU / sgHeadU / sgLineU:
-// sigmas in base units; postU / postArtU: post spacing in base units.
-float cityStreetDir(float x, float y, float sgPoolU, float sgHeadU, float postU, float postArtU,
-                    float stride, float drop, float artN, int salt, float tL) {
-    float n0 = floor(x + 0.5), e = 0.0;
+// always exists), along-coordinate y. Returns the coloured lamp light (resolved posts) mixed toward
+// lines by tL, in "weight x 1/m^2 per base-unit^2" before the caller's normalisation. sgPoolU / sgHeadU:
+// sigmas in base units; postU / postArtU: post spacing in base units. ledP: the share of LED posts
+// (cores and arterials whiter — the user, 2026-09-29); signP: neon signs among arterial posts.
+vec3 cityStreetDir(float x, float y, float sgPoolU, float sgHeadU, float postU, float postArtU,
+                   float stride, float drop, float artN, int salt, float tL, float ledP, float signP) {
+    float n0 = floor(x + 0.5);
+    vec3  e  = vec3(0.0);
     for (int j = -1; j <= 1; ++j) {
         float ni  = n0 + float(j);
         bool  art = mod(ni, artN) < 0.5;
         if (!art && (mod(ni, stride) > 0.5 || tdRand3(ivec3(int(ni), salt, 0)).x * 0.5 + 0.5 < drop)) continue;
-        float w  = art ? kCityArtBoost : 1.0;
-        float ps = art ? postArtU : postU;
-        float dx = x - ni;
-        // Lines: light per unit length w / ps, spread over the pool sigma.
-        float eL = (w / ps) * cityG1(dx, sgPoolU);
-        float eP = 0.0;
+        float w   = art ? kCityArtBoost : 1.0;
+        float ps  = art ? postArtU : postU;
+        float lp  = art ? min(1.0, ledP + 0.25) : ledP;
+        float dx  = x - ni;
+        // Lines: light per unit length w / ps, spread over the pool sigma, in the street's mean colour.
+        vec3  eL  = (w / ps) * cityG1(dx, sgPoolU) * cityLampMean(lp);
+        vec3  eP  = vec3(0.0);
         if (tL < 1.0) {
-            float m = floor(y / ps + 0.5) * ps;
-            float pool = 0.0, head = 0.0;
+            float m  = floor(y / ps + 0.5) * ps;
             float mi = floor(y / ps + 0.5);
+            vec3  pool = vec3(0.0), head = vec3(0.0);
             for (int k = -2; k <= 2; ++k) {
                 float dy = y - m - float(k) * ps;
                 float r2 = dx * dx + dy * dy;
-                // Each post its own: 0.5-1.5x, one in ten dark (mean 1 over the lot: / 0.9).
+                // Each post its own: 0.5-1.5x, one in ten dark (mean 1: / 0.9), its own lamp type;
+                // on arterials, now and then a neon sign.
                 vec3  ph = tdRand3(ivec3(int(ni), int(mi) + k, salt + 17));
+                vec3  ph2 = tdRand3(ivec3(int(ni), int(mi) + k, salt + 29)) * 0.5 + 0.5;
                 float pw = (ph.x > -0.8) ? (1.0 + 0.5 * ph.y) / 0.9 : 0.0;
-                pool += pw * exp(-0.5 * r2 / (sgPoolU * sgPoolU));
-                head += pw * exp(-0.5 * r2 / (sgHeadU * sgHeadU));
+                vec3  c  = cityLampColor(ph2.x, lp);
+                if (art && ph2.y < signP)
+                    c = (ph2.z < 0.33) ? vec3(2.2, 0.35, 0.45) : (ph2.z < 0.66 ? vec3(0.35, 0.8, 2.1) : vec3(0.6, 1.8, 0.8));
+                pool += pw * c * exp(-0.5 * r2 / (sgPoolU * sgPoolU));
+                head += pw * c * exp(-0.5 * r2 / (sgHeadU * sgHeadU));
             }
             eP = w * 0.15915494 * ((1.0 - kCityHeadShare) * pool / (sgPoolU * sgPoolU)
                                    + kCityHeadShare * head / (sgHeadU * sgHeadU));
@@ -430,6 +453,7 @@ struct CityLayout {
     vec3  r1, r2;   // district hashes
     float dSeam;    // metres to the projection's face seam
     float voidN;    // < ~-0.45: a dark void / park
+    float lum;      // the night map's light (base removed) at the pixel, set by the caller
     vec3  rel;      // metres from the anchor cell origin (ECEF)
 };
 
@@ -440,21 +464,34 @@ int cityLineKind(float ni, float stride, float drop, float artN, int salt) {
     return 1;
 }
 
-// The layout at a terrain hit: q (terrain_detail.glsl's q).
-CityLayout cityLayout(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ) {
-    CityLayout L;
+// The world-fixed 2D frame the city and farm layouts live in: the erosion's face projection (drop the
+// dominant axis of up), anchored in 4096-m cells (2 anchor cells: the index is (anchor + offset) / 2,
+// formed as integers — the anchor's low bit carried into the float part — so it stays world-fixed). p2
+// = metres from the district-anchor origin dAnc * 4096. Any lattice whose cell divides 4096 m is exact.
+void cityFrame(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, out vec2 p2, out ivec2 dAnc, out int f,
+               out vec3 rel, out vec3 aup) {
     vec3  offS = tdSphereOffset(q);
-    vec3  rel  = cloud.terrainAnchorRel.xyz + offS.x * enuX + offS.y * enuY + offS.z * enuZ;
-    vec3  up   = tdUpECEF(q, enuX, enuY, enuZ);
-    vec3  aup  = abs(up);
-    int   f    = (aup.x > aup.y && aup.x > aup.z) ? 0 : (aup.y > aup.z ? 1 : 2);
+    rel  = cloud.terrainAnchorRel.xyz + offS.x * enuX + offS.y * enuY + offS.z * enuZ;
+    aup  = abs(tdUpECEF(q, enuX, enuY, enuZ));
+    f    = (aup.x > aup.y && aup.x > aup.z) ? 0 : (aup.y > aup.z ? 1 : 2);
     ivec2 ax   = tdFaceAxes(f);
     ivec3 anchor = ivec3(cloud.terrainAnchorCell.xyz);
     ivec2 anc2 = ivec2(anchor[ax.x], anchor[ax.y]);
-    // Districts are 2 anchor cells (4096 m): the district index is (anchor + offset) / 2, formed as
-    // integers (the anchor's low bit carried into the float part) so it stays world-fixed.
-    vec2  p2   = vec2(rel[ax.x], rel[ax.y]) + vec2(anc2 & 1) * kCityDistrictM;
-    ivec2 dAnc = anc2 >> 1;
+    p2   = vec2(rel[ax.x], rel[ax.y]) + vec2(anc2 & 1) * kCityDistrictM;
+    dAnc = anc2 >> 1;
+}
+
+// The layout at a terrain hit: q (terrain_detail.glsl's q).
+CityLayout cityLayout(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ) {
+    CityLayout L;
+    vec2  p2;
+    ivec2 dAnc;
+    int   f;
+    vec3  rel, aup;
+    cityFrame(q, enuX, enuY, enuZ, p2, dAnc, f, rel, aup);
+    ivec2 ax   = tdFaceAxes(f);
+    ivec3 anchor = ivec3(cloud.terrainAnchorCell.xyz);
+    ivec2 anc2 = ivec2(anchor[ax.x], anchor[ax.y]);
     const float kD = 2.0 * kCityDistrictM;
 
     // Districts: jittered Voronoi.
@@ -521,8 +558,11 @@ CityLayout cityLayout(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ) {
     // (256/512-m cells with a narrow edge read as ink spots.)
     L.voidN = cityValue2(p2, dAnc, 1024.0, 4441 + f) * 0.7 + cityValue2(p2, dAnc, 512.0, 4443 + f) * 0.3;
     L.rel = rel;
+    L.lum = 0.0;
     return L;
 }
+
+float cityLumAt(CityLayout L) { return L.lum; }
 
 // The night pattern: lamp light at the layout, the pixel footprint (m) and the ground's up-facing
 // (nUp). Returns an RGB multiplier for the night map's lights.
@@ -540,23 +580,67 @@ vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp) {
     // lines of one base unit). Normalises the grid to mean 1.
     float linesW = kCityArtBoost / (artN * postArtU)
                  + (1.0 - 1.0 / artN) * (1.0 - drop) / stride / postU;
-    float eGrid  = 1.0;
+    // Lamp types: white LED dominates city cores (and arterials, +0.25 in cityStreetDir), sodium the
+    // suburbs; a regional bias (some cities converted, some not).
+    float ledP   = clamp(mix(0.25, 0.85, L.dens) + 0.3 * tdRand3(ivec3(L.id1 >> 2, 4129 + L.f)).y, 0.05, 0.95);
+    vec3  meanC  = cityLampMean(ledP);
+    vec3  eGridC = meanC;
     if (tU < 1.0) {
-        float eg = cityStreetDir(u.x, u.y, sgPool, sgHead, postU, postArtU, stride, drop, artN, L.saltX, tL)
-                 + cityStreetDir(u.y, u.x, sgPool, sgHead, postU, postArtU, stride, drop, artN, L.saltY, tL);
-        eGrid = mix(eg / (2.0 * linesW), 1.0, tU);
+        vec3 eg = cityStreetDir(u.x, u.y, sgPool, sgHead, postU, postArtU, stride, drop, artN, L.saltX, tL, ledP, 0.04)
+                + cityStreetDir(u.y, u.x, sgPool, sgHead, postU, postArtU, stride, drop, artN, L.saltY, tL, ledP, 0.04);
+        eGridC = mix(eg / (2.0 * linesW), meanC, tU);
+        // Traffic lights where two arterials cross: four heads at the corners, cycling green / amber / red
+        // with sim time (each intersection its own phase). Small and dim: only seen close up.
+        vec2 ni = floor(u + 0.5);
+        if (tL < 1.0 && mod(ni.x, artN) < 0.5 && mod(ni.y, artN) < 0.5) {
+            float ph  = fract(pc.waveTime / 60.0 + tdRand3(ivec3(ivec2(ni), 5003 + L.f)).x);
+            vec3  sig = ph < 0.45 ? vec3(0.2, 2.4, 0.9) : (ph < 0.5 ? vec3(2.2, 1.4, 0.1) : vec3(2.6, 0.15, 0.1));
+            vec3  sigX = ph < 0.45 ? vec3(2.6, 0.15, 0.1) : (ph < 0.5 ? vec3(2.6, 0.15, 0.1) : vec3(0.2, 2.4, 0.9));
+            float sgT = sgHead;
+            for (int c = 0; c < 4; ++c) {
+                vec2  cr = vec2((c & 1) == 0 ? -1.0 : 1.0, (c & 2) == 0 ? -1.0 : 1.0) * (14.0 / sp);
+                vec2  d  = u - ni - cr;
+                float g  = exp(-0.5 * dot(d, d) / (sgT * sgT)) * 0.15915494 / (sgT * sgT);
+                eGridC  += ((c == 0 || c == 3) ? sig : sigX) * g * (0.004 / (2.0 * linesW));
+            }
+        }
     }
     // Lit windows and lots between the streets: a faint glow varying per block.
     vec3  bh    = tdRand3(ivec3(ivec2(floor(u)), 911 + L.f));
     float block = mix(0.2 + 1.6 * (bh.x * 0.5 + 0.5) * (bh.y * 0.5 + 0.5) * 2.0, 1.0, smoothstep(0.25, 0.7, sgPool));
-    float eCity = 0.06 * block + 0.94 * eGrid;
+    vec3  eCityC = 0.06 * block * meanC + 0.94 * eGridC;
+    // Countryside (the map's faintest lights): farmsteads and hamlets as scattered lights, not street
+    // grids. A jittered light on a 512-m lattice (it must divide the 4096-m district anchor, or the
+    // lights jump when the observer crosses an anchor cell), present with probability 0.45.
+    float rural = 1.0 - smoothstep(0.002, 0.012, cityLumAt(L));
+    if (rural > 0.0) {
+        vec2  fc = L.p2 / 512.0;
+        vec2  fi = floor(fc);
+        float sgF = sqrt(64.0 + fh) / 512.0;
+        float eF  = 1.0;
+        if (sgF < 0.35) {
+            eF = 0.0;
+            for (int k = 0; k < 9; ++k) {
+                ivec2 o  = ivec2(k % 3 - 1, k / 3 - 1);
+                vec3  r  = tdRand3(ivec3(L.dAnc * 8 + ivec2(fi) + o, 6601 + L.f));
+                if (r.z * 0.5 + 0.5 > 0.45) continue;
+                vec2  pp = fi + vec2(o) + 0.5 + 0.4 * r.xy;
+                vec2  d  = fc - pp;
+                eF += exp(-0.5 * dot(d, d) / (sgF * sgF)) * 0.15915494 / (sgF * sgF);
+            }
+            eF = mix(eF / 0.45, 1.0, smoothstep(0.2, 0.35, sgF));
+        }
+        eCityC = mix(eCityC, eF * kLampSodium, rural);
+    }
+    float eCity = 1.0;   // (the colour carries the pattern from here: eCityC)
 
     // The real major roads are added below; district borders are no longer roads (the grids run
     // through them), only the projection's face seam is (its grid jumps).
     float sgA  = sqrt(25.0 + 0.25 * foot * foot);
     float eArt = mix(1860.0 * cityG1(L.dSeam, sgA), 1.0, smoothstep(300.0, 700.0, sgA));
-    float e    = mix(eCity, eArt, 0.015);
-    e += cloud.cityRoadsStrength * cityRoadLight(uv, L.rel, foot) * (1.0 - smoothstep(150.0, 350.0, foot));
+    vec3  eC   = mix(eCityC, vec3(eArt) * meanC, 0.015);
+    eC += cloud.cityRoadsStrength * cityRoadLight(uv, L.rel, foot) * (1.0 - smoothstep(150.0, 350.0, foot)) * kLampLedW;
+    float e    = 1.0;
     // Steep ground carries few streets.
     e *= mix(0.3, 1.0, smoothstep(0.75, 0.9, nUp));
     // Macro structure (mean ~1): a city from 5-20 km is bright commercial strips along its arterials
@@ -575,9 +659,10 @@ vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp) {
     // read as streets in the dark. The mean ramps to 1 by the footprint the caller stops at (400 m —
     // it has to be complete below a LEO pixel, ~470 m, or orbit views changed: 15% of a Europe frame).
     e *= mix(0.12, 1.0, smoothstep(40.0, 350.0, foot));
-    // Lamp colour, shared across ~8 km: sodium mostly, white LED in places.
-    vec3 tint = (tdRand3(ivec3(L.id1 >> 1, 4129 + L.f)).y > -0.5) ? vec3(1.25, 0.93, 0.52) : vec3(0.92, 0.98, 1.12);
-    return e * mix(vec3(1.0), tint, 0.6 * (1.0 - smoothstep(200.0, 350.0, foot)));
+    // The lamps' colour fades to neutral (the map's own colour) with the pattern.
+    float tc = 0.75 * (1.0 - smoothstep(200.0, 350.0, foot));
+    vec3  lum3 = vec3(dot(eC, vec3(0.2126, 0.7152, 0.0722)));
+    return e * mix(lum3, eC, tc);
 }
 
 // ── Day: the same layout as albedo (cities phase 2) ────────────────────────────────────────────
@@ -663,15 +748,34 @@ vec3 cityDayAlbedo(CityLayout L, float foot) {
     float pPaved = mix(0.1, 0.5, dens), pBare = 0.1;
     vec3  yard = (lh2.z < pPaved) ? paved : (lh2.z < pPaved + pBare ? bare : lawn);
     vec3  yardMean = pPaved * paved + pBare * bare + (1.0 - pPaved - pBare) * lawn;
-    // Tree canopy (16 m / 8 m value noise), in yards only; dense in suburbs, sparse in cores.
+    // Trees: individual crowns (a jittered tree per 8-m cell, radius 2.5-6.5 m, each its own shade,
+    // darker toward its edge), present with a probability from the yard density x a 64-m clustering
+    // field. Two octaves of value noise at fixed 16/8 m were blobs of one size: the user saw the
+    // repetition. Expected cover past a ~4-m footprint.
     vec3  treeC = vec3(0.035, 0.06, 0.025);
-    float thr   = mix(-0.3, 0.2, dens);          // canopy ~70% of yards in suburbs, ~30% in cores
-    float tFrac = clamp((0.55 - thr) / 1.1, 0.0, 1.0);           // expected canopy share (the noise's spread)
-    float tTree = smoothstep(4.0, 10.0, foot);
+    float pTree = mix(0.55, 0.22, dens);
+    float tFrac = clamp(pTree * 0.95, 0.0, 1.0);                 // expected canopy share
+    float tTree = smoothstep(3.0, 8.0, foot);
     float canopy = tFrac;
+    vec3  crownC = treeC;
     if (tTree < 1.0) {
-        float v = 0.65 * cityValue2(L.p2, L.dAnc, 16.0, 9151 + L.f) + 0.35 * cityValue2(L.p2, L.dAnc, 8.0, 9153 + L.f);
-        canopy = mix(smoothstep(thr, thr + 0.12, v), tFrac, tTree);
+        float clus = smoothstep(-0.45, 0.35, cityValue2(L.p2, L.dAnc, 64.0, 9155 + L.f)) * 1.6;
+        vec2  tc = L.p2 / 8.0;
+        vec2  ti = floor(tc);
+        float cov = 0.0, shade = 0.0;
+        for (int k = 0; k < 9; ++k) {
+            ivec2 o = ivec2(k % 3 - 1, k / 3 - 1);
+            vec3  r = tdRand3(ivec3(L.dAnc * 512 + ivec2(ti) + o, 9151 + L.f));
+            vec3  r2 = tdRand3(ivec3(L.dAnc * 512 + ivec2(ti) + o, 9153 + L.f)) * 0.5 + 0.5;
+            if (r2.x > pTree * clus) continue;
+            vec2  pp  = (ti + vec2(o) + 0.5 + 0.45 * r.xy) * 8.0;
+            float rad = 2.5 + 4.0 * r2.y;
+            float d   = length(L.p2 - pp);
+            float c   = clamp((rad - d) / max(foot, 0.3) + 0.5, 0.0, 1.0);
+            if (c > cov) { cov = c; shade = (0.7 + 0.6 * r2.z) * (0.72 + 0.28 * sqrt(max(0.0, 1.0 - (d / rad) * (d / rad)))); }
+        }
+        canopy = mix(cov, tFrac, tTree);
+        crownC = mix(treeC * shade, treeC, tTree);
     }
     // Lots resolve only below ~half a lot per pixel; past that, their mean.
     float mBaseM = mix(mBase, mix(0.30, 0.12, dens), 0.0) + 0.06;
@@ -682,11 +786,11 @@ vec3 cityDayAlbedo(CityLayout L, float foot) {
     vec3  groundMean = mix(yardMean, treeC, tFrac);
     vec3  lotMean    = mix(groundMean, roofMean, roofShare);
     float tLot = smoothstep(0.25, 0.6, max(Fl.x, Fl.y));
-    vec3  ground = mix(yard, treeC, canopy);
+    vec3  ground = mix(yard, crownC, canopy);
     vec3  lot  = mix(mix(ground, roofC, roofCov), lotMean, tLot);
     // Parks where the voids are: lawn and trees.
     float park  = 1.0 - smoothstep(-0.65, -0.25, L.voidN);
-    vec3  parkC = mix(lawn, treeC, mix(canopy, tFrac, tLot));
+    vec3  parkC = mix(lawn, crownC, mix(canopy, tFrac, tLot));
     vec3  parkM = mix(lawn, treeC, tFrac);
     lot = mix(lot, parkC, park);
     vec3  lotAvg = mix(lotMean, parkM, park);
@@ -696,6 +800,111 @@ vec3 cityDayAlbedo(CityLayout L, float foot) {
     // Past the street spacing everything is its mean: ratio exactly 1.
     float tU = smoothstep(0.35 * L.stride, 0.7 * L.stride, Fu);
     return mix(alb / max(mean, vec3(1e-3)), vec3(1.0), tU);
+}
+
+// ── Farmland (cities phase 2 follow-up, the user: rural areas should be more farmy) ──────────────
+// Fields as a RATIO to their own expected mean x the day map, like the city albedo (seamless, orbit
+// unchanged). Two regional styles: a surveyed GRID (the Americas: 1024-m sections split into 1-4 fields,
+// gravel roads on the section lines, centre-pivot circles in dry regions) and a PATCHWORK (elsewhere:
+// warped Voronoi fields of ~256 m with hedgerows where it is green). The crop palette leans green or
+// dry with the day map.
+vec3 farmCrop(float h, float green) {
+    // green crop, dark green, fallow grass, yellow grain, stubble, bare soil
+    float g = 0.25 + 0.35 * green;
+    if (h < g * 0.6)  return vec3(0.060, 0.100, 0.035);
+    if (h < g)        return vec3(0.040, 0.070, 0.030);
+    if (h < g + 0.12) return vec3(0.090, 0.100, 0.050);
+    if (h < g + 0.12 + 0.35 * (1.0 - g)) return vec3(0.220, 0.190, 0.090);
+    if (h < 0.90)     return vec3(0.260, 0.230, 0.150);
+    return vec3(0.130, 0.100, 0.070);
+}
+vec3 farmCropMean(float green) {
+    float g = 0.25 + 0.35 * green;
+    float y = 0.35 * (1.0 - g);
+    return g * 0.6 * vec3(0.060, 0.100, 0.035) + g * 0.4 * vec3(0.040, 0.070, 0.030) + 0.12 * vec3(0.090, 0.100, 0.050)
+         + y * vec3(0.220, 0.190, 0.090) + max(0.90 - g - 0.12 - y, 0.0) * vec3(0.260, 0.230, 0.150)
+         + 0.10 * vec3(0.130, 0.100, 0.070);
+}
+
+vec3 farmDayAlbedo(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lonDeg, float green, float dry, float foot) {
+    vec2  p2;
+    ivec2 dAnc;
+    int   f;
+    vec3  rel, aup;
+    cityFrame(q, enuX, enuY, enuZ, p2, dAnc, f, rel, aup);
+    ivec2 big  = dAnc >> 5;                                           // ~130-km areas share a style
+    vec3  rA   = tdRand3(ivec3(big, 7101 + f));
+    bool  gridStyle = (lonDeg < -30.0) ? (rA.z > -0.6) : (rA.z > 0.7);
+    const vec3 kGravel = vec3(0.20, 0.18, 0.15), kHedge = vec3(0.03, 0.055, 0.025);
+    vec3  meanC = farmCropMean(green);
+    vec3  alb;
+    vec3  mean;
+    if (gridStyle) {
+        float ang = rA.x * 0.35;                                      // nearly the same over the area
+        vec2  cs  = vec2(cos(ang), sin(ang));
+        vec2  dp  = p2 - vec2(big * 32 - dAnc) * 4096.0;
+        vec2  u   = vec2(dot(dp, cs), dot(dp, vec2(-cs.y, cs.x))) / 1024.0;   // sections
+        vec2  si  = floor(u), sf = u - si;
+        vec3  sh  = tdRand3(ivec3(ivec2(si) + big * 256, 7103 + f)) * 0.5 + 0.5;
+        vec2  nF  = vec2(sh.x < 0.35 ? 1.0 : 2.0, sh.y < 0.35 ? 1.0 : 2.0);
+        vec2  fi  = floor(sf * nF), ff = sf * nF - fi;
+        vec3  fh  = tdRand3(ivec3(ivec2(si * 2.0 + fi) + big * 512, 7105 + f)) * 0.5 + 0.5;
+        vec3  crop = farmCrop(fh.x, green);
+        float Fu  = foot / 1024.0;
+        // Centre pivots in dry regions: a green circle in the field, bare corners.
+        if (dry > 0.0 && fh.y < 0.7 * dry * dry) {
+            vec2  fsz = 1.0 / nF;
+            float r   = 0.47 * min(fsz.x, fsz.y);
+            float d   = length((ff - 0.5) * fsz);
+            float inC = clamp((r - d) / max(Fu, 1e-4) + 0.5, 0.0, 1.0);
+            crop = mix(vec3(0.15, 0.12, 0.085), vec3(0.055, 0.10, 0.035), inC);
+        }
+        // Gravel roads on the section lines (10 m).
+        float w    = 10.0 / 1024.0;
+        float road = max(cityBoxCover(sf.x - 0.5 * w, w, Fu) + cityBoxCover(sf.x - 1.0 + 0.5 * w, w, Fu),
+                         cityBoxCover(sf.y - 0.5 * w, w, Fu) + cityBoxCover(sf.y - 1.0 + 0.5 * w, w, Fu));
+        float tF   = smoothstep(0.15, 0.4, Fu * max(nF.x, nF.y));    // fields unresolved -> mean
+        alb  = mix(mix(crop, meanC, tF), kGravel, road * (1.0 - tF));
+        mean = mix(meanC, kGravel, 2.0 * w * (1.0 - tF));
+    } else {
+        // Patchwork: Voronoi fields on a 256-m lattice, stretched ~2.2:1 along an area's own direction
+        // (European fields are strips, not the pentagons an isotropic Voronoi draws), warped, hedgerows
+        // (3 m) where it is green. The stretch is a linear map of the anchored coordinate: still exact.
+        float ang = rA.x * 3.1416;
+        vec2  cs  = vec2(cos(ang), sin(ang));
+        // Measured from the ~130-km area's origin (fixed as the observer moves: a rotated lattice anchored
+        // at the district origin would jump whenever the district anchor changes).
+        vec2  dpA = p2 - vec2(big * 32 - dAnc) * 4096.0;
+        vec2  pr  = vec2(dot(dpA, cs), dot(dpA, vec2(-cs.y, cs.x)));
+        vec2  c  = pr / vec2(420.0, 190.0);
+        c += 0.25 * vec2(sin(c.y * 0.9 + rA.x * 5.0), sin(c.x * 0.8 + rA.y * 5.0));
+        vec2  ci = floor(c);
+        float d1 = 1e9, d2 = 1e9;
+        vec2  c1 = vec2(0.0), c2 = vec2(0.0);
+        vec3  h1 = vec3(0.0);
+        for (int k = 0; k < 9; ++k) {
+            ivec2 o = ivec2(k % 3 - 1, k / 3 - 1);
+            vec3  r = tdRand3(ivec3(ivec2(ci) + o + big * 4096, 7107 + f));
+            vec2  cc = ci + vec2(o) + 0.5 + 0.42 * r.xy;
+            float d  = dot(c - cc, c - cc);
+            if (d < d1) { d2 = d1; c2 = c1; d1 = d; c1 = cc; h1 = r; }
+            else if (d < d2) { d2 = d; c2 = cc; }
+        }
+        // Metres to the boundary: the bisector is a line in both spaces; its metric normal is the stretched
+        // direction's, mapped.
+        vec2  nS   = normalize(c2 - c1);
+        vec2  tM   = normalize(vec2(-nS.y, nS.x) * vec2(420.0, 190.0));
+        float edge = abs(dot((c - 0.5 * (c1 + c2)) * vec2(420.0, 190.0), vec2(-tM.y, tM.x)));
+        vec3  crop = farmCrop(h1.z * 0.5 + 0.5, green);
+        float Fu   = foot / 190.0;
+        float tF   = smoothstep(0.15, 0.4, Fu);
+        float hw   = mix(1.0, 3.0, green);                             // hedge / track width (m)
+        vec3  bnd  = mix(kGravel, kHedge, green);
+        float hcov = clamp((0.5 * hw - edge) / max(foot, 0.3) + 0.5, 0.0, 1.0) * (1.0 - tF);
+        alb  = mix(mix(crop, meanC, tF), bnd, hcov);
+        mean = mix(meanC, bnd, (hw / 280.0) * 2.2 * (1.0 - tF));
+    }
+    return alb / max(mean, vec3(1e-3));
 }
 
 // ── Milky Way surface-brightness anchors ─────────────────────────────────────────────────────
@@ -2979,9 +3188,38 @@ void main() {
             cFoot = pixAngle * cT / max(abs(dot(dir, shadingN)), 0.2);
             if (cFoot < 400.0) {   // past it both patterns are uniform: orbit sees the maps as before
                 cityL   = cityLayout(cQ, enuX, enuY, enuZ);
+                cityL.lum = cityLum;
                 cityLOk = true;
                 float presence = smoothstep(0.002, 0.03, cityLum) * cloud.cityLightsStrength;
                 dayColor *= mix(vec3(1.0), clamp(cityDayAlbedo(cityL, cFoot), vec3(0.0), vec3(4.0)), presence);
+            }
+        }
+
+        // ── Farmland (rural, where the day map is cultivated: not forest, desert, snow, steep, city) ──
+        if (cityLand && cloud.cityLightsStrength > 0.0 && tdEnabled()) {
+            float fT    = tHit > 0.0 ? tHit : tSeaLvl;
+            float fFoot = pixAngle * fT / max(abs(dot(dir, shadingN)), 0.2);
+            if (fFoot < 400.0) {
+                vec3  dm    = textureLod(earthDayTex, uvSurf, 1.0).rgb;
+                float lumD  = dot(dm, vec3(0.2126, 0.7152, 0.0722));
+                float vegD  = (dm.g - dm.r) / (dm.g + dm.r + 1e-3);
+                float mxD   = max(dm.r, max(dm.g, dm.b));
+                float satD  = (mxD - min(dm.r, min(dm.g, dm.b))) / max(mxD, 1e-3);
+                float forest = 1.0 - smoothstep(0.03, 0.055, lumD);        // dark green = forest
+                float desert = smoothstep(0.22, 0.34, lumD) * (1.0 - smoothstep(-0.02, 0.06, vegD));
+                float snowD  = smoothstep(0.40, 0.62, lumD) * (1.0 - smoothstep(0.10, 0.28, satD));
+                float flatG  = smoothstep(0.93, 0.98, dot(shadingN, normalize(hitPt)));
+                float cityP  = smoothstep(0.001, 0.02, cityLum);
+                float high   = 1.0 - smoothstep(2500.0, 3500.0, tHit > 0.0 ? terrainH0 : 0.0);
+                float farm   = (1.0 - forest) * (1.0 - 0.8 * desert) * (1.0 - snowD) * flatG * (1.0 - cityP) * high;
+                if (farm > 0.01) {
+                    vec3  fQ    = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
+                    float green = smoothstep(-0.02, 0.12, vegD);
+                    float dry   = smoothstep(0.1, 0.25, lumD) * (1.0 - green);
+                    vec3  fr = farmDayAlbedo(fQ, enuX, enuY, enuZ, uvSurf.x * 360.0 - 180.0, green, dry, fFoot);
+                    float tFade = 1.0 - smoothstep(200.0, 350.0, fFoot);    // unchanged past 350 m (orbit)
+                    dayColor *= mix(vec3(1.0), clamp(fr, vec3(0.0), vec3(4.0)), farm * tFade * cloud.cityLightsStrength);
+                }
             }
         }
 

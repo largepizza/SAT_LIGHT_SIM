@@ -1,0 +1,117 @@
+# Rural farmland + night variety (.plans/CITIES_PLAN.md): rural views by day on / off, rural and city
+# night views, orbit invariance, cost.
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds_v2.dust_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+# iowa1
+observer lat=41.5 lon=-94.5 agl=1000
+time sun 45 rising
+camera az=45 el=-25 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture r_iowa1
+set clouds.city_lights_strength 0
+wait settle
+capture r_iowa1_off
+# iowa5
+observer lat=41.5 lon=-94.5 agl=5000
+time sun 45 rising
+camera az=45 el=-30 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture r_iowa5
+set clouds.city_lights_strength 0
+wait settle
+capture r_iowa5_off
+# kansas3
+observer lat=37.5 lon=-101.0 agl=3000
+time sun 45 rising
+camera az=45 el=-30 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture r_kansas3
+set clouds.city_lights_strength 0
+wait settle
+capture r_kansas3_off
+# beauce2
+observer lat=48.30 lon=1.70 agl=2000
+time sun 45 rising
+camera az=45 el=-25 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture r_beauce2
+set clouds.city_lights_strength 0
+wait settle
+capture r_beauce2_off
+# england15
+observer lat=52.0 lon=-1.5 agl=1500
+time sun 45 rising
+camera az=45 el=-25 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture r_england15
+set clouds.city_lights_strength 0
+wait settle
+capture r_england15_off
+# punjab2
+observer lat=29.8 lon=75.4 agl=2000
+time sun 45 rising
+camera az=45 el=-25 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture r_punjab2
+set clouds.city_lights_strength 0
+wait settle
+capture r_punjab2_off
+# blackforest2
+observer lat=48.2 lon=8.2 agl=2000
+time sun 45 rising
+camera az=45 el=-20 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture r_blackforest2
+set clouds.city_lights_strength 0
+wait settle
+capture r_blackforest2_off
+# europe_leo
+observer lat=47.0 lon=8.0 alt=400000
+time sun 45 rising
+camera az=0 el=-50 fov=50
+set clouds.city_lights_strength 1
+wait settle
+capture r_europe_leo
+set clouds.city_lights_strength 0
+wait settle
+capture r_europe_leo_off
+set clouds.city_lights_strength 1
+# night: Iowa farmsteads, LA lamp colours close up
+observer lat=41.5 lon=-94.5 agl=2000
+time sun midnight
+camera az=45 el=-20 fov=60
+wait settle
+capture rn_iowa
+observer lat=34.05 lon=-118.35 agl=600
+time sun midnight
+camera az=90 el=-25 fov=60
+wait settle
+capture rn_la06
+# cost: Iowa from 1 km by day
+observer lat=41.5 lon=-94.5 agl=1000
+time sun 45 rising
+camera az=45 el=-25 fov=60
+set clouds.city_lights_strength 1
+wait settle 10
+perf frames=120 name=iowa_on0
+set clouds.city_lights_strength 0
+wait settle 10
+perf frames=120 name=iowa_off0
+set clouds.city_lights_strength 1
+wait settle 10
+perf frames=120 name=iowa_on1
+set clouds.city_lights_strength 0
+wait settle 10
+perf frames=120 name=iowa_off1
+set clouds.city_lights_strength 1

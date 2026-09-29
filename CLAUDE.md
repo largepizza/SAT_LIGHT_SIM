@@ -3787,6 +3787,21 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   step aside inside cities. First cuts: equal lots / centred square roofs / grey yards / no trees read
   as a board game; a density-only chance of big buildings made half of LA warehouses. +0.55 ms at LA
   from 2 km. Harness: `scripts/city_day.satcmd`.
+  **Follow-up (2026-09-29, user review):** trees are individual CROWNS (a jittered tree per 8-m cell,
+  2.5-6.5 m, own shade, darker edge, clustered by a 64-m field) — two octaves of value noise were
+  same-sized blobs the user saw repeating. Night lamps each have their own type (`cityLampColor`:
+  sodium / warm LED / cool LED / halide; LED share 0.25 suburbs .. 0.85 cores, +0.25 on arterials, a
+  regional bias), rare neon signs on arterials, traffic lights at arterial crossings cycling with
+  `pc.waveTime`; the faintest-lit countryside draws farmsteads (512-m lattice) not street grids.
+  **Farmland** (`farmDayAlbedo`, same ratio-to-mean scheme, stops at a 350-m footprint so orbit is
+  bit-identical): where the day map is cultivated (not dark forest, desert, snow, steep, a city, >3 km
+  up). Style per ~130-km area: GRID in the Americas (1024-m sections split into 1-4 fields, 10-m gravel
+  roads, centre pivots with probability ~dryness^2) or PATCHWORK elsewhere (Voronoi fields stretched
+  2.2:1 along the area's direction, hedgerows where green). EVERY rotated lattice is measured from the
+  AREA origin (`big * 32 - dAnc`, fixed), never the district origin — that would jump as the observer
+  moves; unrotated lattices must divide 4096 m. `cityFrame()` is the shared world-fixed 2D frame.
+  +0.35 ms in rural Iowa. Harness: `scripts/rural.satcmd` (rural points: pick them from the night map —
+  the first "Iowa" and "Punjab" points were Ames and Ludhiana).
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the
