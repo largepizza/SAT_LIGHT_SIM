@@ -1667,6 +1667,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 a.scratch["simRate"] = timePaused ? 0.0 : (double)kTimeScales[timeScaleIdx] * timeDir;
                 a.scratch["pausedBefore"] = timePaused;
                 a.scratch["captured"] = 0;
+                a.scratch["cmSum"] = 0.0;
+                a.scratch["totSum"] = 0.0;
+                a.scratch["nT"] = 0;
                 harnessFixedDtOverride_ = (float)(1.0 / fps);
                 timePaused = true; // the path owns the clock
                 harnessTrack_ = 0;
@@ -1680,11 +1683,22 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 harnessFixedDtOverride_ = 0.0f;
                 timePaused = a.scratch["pausedBefore"].get<bool>();
                 r["frames"] = nF;
+                // The GPU cost while moving (perf measures a still view): the mean over the frames after
+                // the first three (the timings lag a frame; the first frames still run the still view's rate).
+                if (a.scratch["nT"].get<int>() > 0)
+                    r["gpu_ms_mean"] = {{"cloud_march", a.scratch["cmSum"].get<double>() / a.scratch["nT"].get<int>()},
+                                        {"total", a.scratch["totSum"].get<double>() / a.scratch["nT"].get<int>()}};
                 if (!rec.empty())
                     r["pattern"] = harnessRunner_->capturePath(rec + "_%05d", ".png");
                 r["message"] = "played " + std::to_string(nF) + " frames" +
                                (rec.empty() ? std::string() : " -> captures/" + rec + "_#####.png");
                 return Status::Done;
+            }
+            if (i >= 3)
+            {
+                a.scratch["cmSum"] = a.scratch["cmSum"].get<double>() + gpuMsRaw[3];
+                a.scratch["totSum"] = a.scratch["totSum"].get<double>() + gpuMsRawTotal;
+                a.scratch["nT"] = a.scratch["nT"].get<int>() + 1;
             }
             const double fps = a.scratch["fps"];
             const double tp = harnessPath_.front().t + i / fps;
@@ -1835,7 +1849,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 const float *e = f + i * 12;
                 uint32_t id;
                 std::memcpy(&id, &e[8], 4);
-                list.push_back({{"id", id}, {"intensity", e[3]}, {"cloud_to_ground", e[7] > 0.5f},
+                list.push_back({{"id", id}, {"intensity", e[3]}, {"cloud_to_ground", e[7] > 0.5f && e[7] < 1.5f}, {"sprite", e[7] > 1.5f},
                                 {"age_s", e[10]}, {"dist_km", e[11] / 1000.0f},
                                 {"enu_m", {e[0], e[1], e[2] - (float)(6371000.0)}}});
             }

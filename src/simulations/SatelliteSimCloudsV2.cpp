@@ -76,15 +76,15 @@ void memoryBarrier(VkCommandBuffer cmd, VkAccessFlags srcA, VkAccessFlags dstA,
 // wg: the workgroup size as specialization constants 0/1 (a shader declaring local_size_x_id /
 // local_size_y_id); null = the shader's own.
 VkPipeline makeComputePipeline(VulkanContext &ctx, const char *spv, VkPipelineLayout layout,
-                               const uint32_t *wg = nullptr)
+                               const uint32_t *wg = nullptr, uint32_t nSpec = 2)
 {
     VkShaderModule mod = ctx.loadShader(spv);
     VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = mod;
     stage.pName = "main";
-    VkSpecializationMapEntry wgMap[2] = {{0, 0, 4}, {1, 4, 4}};
-    VkSpecializationInfo wgSpec{2, wgMap, 8, wg};
+    VkSpecializationMapEntry wgMap[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
+    VkSpecializationInfo wgSpec{nSpec, wgMap, nSpec * 4u, wg};
     if (wg)
         stage.pSpecializationInfo = &wgSpec;
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
@@ -176,6 +176,79 @@ void genMips3D(VkCommandBuffer cmd, VkImage img, uint32_t size, uint32_t mips)
 // ─── createCloudsV2 ───────────────────────────────────────────────────────────────────────────────
 // After createGlowResources (needs the Earth textures, beamCloudLightBuf, terrainFrameBuf and the
 // scene depth image). Bakes run once here with one-shot command buffers.
+
+// A 64x64 tileable blue-noise tile by void and cluster (Ulichney 1993): 8-bit ranks, row-major. The
+// march's ray jitter in fast flight: its error sits at high spatial frequencies, which the resolve's 3x3
+// motion filter removes (white noise leaves clumps; IGN's smooth diagonals lined the steps up into bands).
+static std::vector<uint8_t> makeBlueNoise64()
+{
+    const int N = 64, NN = N * N;
+    std::vector<float> ker(NN);
+    for (int y = 0; y < N; ++y)
+        for (int x = 0; x < N; ++x)
+        {
+            const int dx = std::min(x, N - x), dy = std::min(y, N - y);
+            ker[y * N + x] = std::exp(-(float)(dx * dx + dy * dy) / (2.0f * 1.5f * 1.5f));
+        }
+    auto splat = [&](std::vector<float> &E, int p, float s) {
+        const int px = p % N, py = p / N;
+        for (int y = 0; y < N; ++y)
+        {
+            const float *kr = &ker[((y - py + N) & (N - 1)) * N];
+            float *er = &E[y * N];
+            for (int x = 0; x < N; ++x)
+                er[x] += s * kr[(x - px + N) & (N - 1)];
+        }
+    };
+    auto extreme = [&](const std::vector<float> &E, const std::vector<uint8_t> &b, uint8_t want, bool mx) {
+        int best = -1;
+        for (int i = 0; i < NN; ++i)
+            if (b[i] == want && (best < 0 || (mx ? E[i] > E[best] : E[i] < E[best])))
+                best = i;
+        return best;
+    };
+    // The initial pattern: a tenth of the cells, then relaxed until the tightest cluster IS the largest void.
+    std::vector<uint8_t> bits(NN, 0);
+    std::vector<float> E(NN, 0.0f);
+    uint32_t rng = 0x9E3779B9u;
+    int ones = 0;
+    while (ones < NN / 10)
+    {
+        rng = rng * 1664525u + 1013904223u;
+        const int p = (int)((rng >> 8) % (uint32_t)NN);
+        if (bits[p]) continue;
+        bits[p] = 1; splat(E, p, 1.0f); ++ones;
+    }
+    for (int it = 0; it < NN; ++it)
+    {
+        const int c = extreme(E, bits, 1, true);
+        bits[c] = 0; splat(E, c, -1.0f);
+        const int v = extreme(E, bits, 0, false);
+        bits[v] = 1; splat(E, v, 1.0f);
+        if (v == c) break;
+    }
+    std::vector<int> rank(NN, 0);
+    {   // Ranks below the initial count: remove the tightest cluster, one at a time.
+        std::vector<uint8_t> b = bits;
+        std::vector<float> e = E;
+        for (int r = ones - 1; r >= 0; --r)
+        {
+            const int c = extreme(e, b, 1, true);
+            rank[c] = r; b[c] = 0; splat(e, c, -1.0f);
+        }
+    }
+    // Ranks above it: fill the largest void, one at a time.
+    for (int r = ones; r < NN; ++r)
+    {
+        const int v = extreme(E, bits, 0, false);
+        rank[v] = r; bits[v] = 1; splat(E, v, 1.0f);
+    }
+    std::vector<uint8_t> out(NN);
+    for (int i = 0; i < NN; ++i)
+        out[i] = (uint8_t)((rank[i] * 256) / NN);
+    return out;
+}
+
 void SatelliteSim::createCloudsV2(VulkanContext &ctx)
 {
     VkDevice dev = ctx.device;
@@ -385,6 +458,19 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                      cv2FlashBuf, cv2FlashMem);
     vkMapMemory(dev, cv2FlashMem, 0, kCv2FlashBufBytes, 0, &cv2FlashMapped);
     std::memset(cv2FlashMapped, 0, kCv2FlashBufBytes);
+    ctx.createBuffer(16 + 8 * kCv2MaxTiles, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT
+                                                 | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, cv2TileBuf, cv2TileMem);
+    {
+        const std::vector<uint8_t> bn = makeBlueNoise64();
+        ctx.createBuffer(bn.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         cv2BlueNoiseBuf, cv2BlueNoiseMem);
+        void *m = nullptr;
+        vkMapMemory(dev, cv2BlueNoiseMem, 0, bn.size(), 0, &m);
+        std::memcpy(m, bn.data(), bn.size());
+        vkUnmapMemory(dev, cv2BlueNoiseMem);
+    }
     {
         VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         ci.imageType = VK_IMAGE_TYPE_3D;
@@ -436,12 +522,16 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // cloud_v2_march.comp: 0 CloudParams, 1 CloudV2Params, 2 weather, 3 shape, 4 detail, 5 meso,
     // 6 sceneDepth, 7 earthNight, 8 terrainFrame, 9 beamCloudLights, 10 outColor, 11 outDepth,
     // 12 the lightning flash list (cloud_v2_lightning.comp, same set), 13 the light volume (storage: the
-    // bake, cloud_v2_lightvol.comp), 14 the light volume (sampled: the march's godrays)
-    cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX});
-    // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth
-    cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG});
+    // bake, cloud_v2_lightvol.comp), 14 the light volume (sampled: the march's godrays), 15 the blue-noise
+    // tile (the ray jitter in fast flight); the adaptive rate: 16 last frame's resolved depth, 17/18 pass B's full-rate
+    // targets, 19 the tile list
+    cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX, SSBO,
+                                             TEX, IMG, IMG, SSBO});
+    // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth,
+    // 6/7 the full-rate tiles' color/depth, 8 the tile list
+    cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO});
     {
-        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 10}, {SSBO, 3}, {IMG, 5}};
+        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 13}, {SSBO, 6}, {IMG, 7}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = 2;
         pi.poolSizeCount = 4;
@@ -468,6 +558,10 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         vkCreatePipelineLayout(dev, &pli, nullptr, i == 0 ? &cv2MarchPipeLayout : &cv2ResolvePipeLayout);
     }
     cv2MarchPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout, cv2MarchWg);
+    {
+        const uint32_t specB[3] = {cv2MarchWg[0], cv2MarchWg[1], 1u};
+        cv2MarchPassBPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout, specB, 3);
+    }
     cv2ResolvePipeline = makeComputePipeline(ctx, "shaders/cloud_v2_resolve.comp.spv", cv2ResolvePipeLayout);
     cv2LightningPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout);
     cv2LightVolPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightvol.comp.spv", cv2MarchPipeLayout);
@@ -486,9 +580,14 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         VkDescriptorBufferInfo terr{terrainFrameBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo beams{beamCloudLightBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo flashes{cv2FlashBuf, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo blueNoise{cv2BlueNoiseBuf, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo tiles{cv2TileBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorImageInfo lvOut{VK_NULL_HANDLE, cv2LightVolView, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo lvIn{cv2ClampSampler, cv2LightVolView, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet w[] = {
+            bufferWrite(cv2MarchDescSet, 15, SSBO, &blueNoise),
+            bufferWrite(cv2MarchDescSet, 19, SSBO, &tiles),
+            bufferWrite(cv2ResolveDescSet, 8, SSBO, &tiles),
             imageWrite(cv2MarchDescSet, 13, IMG, &lvOut),
             imageWrite(cv2MarchDescSet, 14, TEX, &lvIn),
             bufferWrite(cv2MarchDescSet, 0, UBO, &cpInfo),
@@ -535,9 +634,11 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
          cv2ResolvedDepthImg, cv2ResolvedDepthMem, cv2ResolvedDepthView);
     make(cv2HalfW, cv2HalfH, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT,
          cv2HistoryImg, cv2HistoryMem, cv2HistoryView);
+    make(cv2HalfW, cv2HalfH, VK_FORMAT_R16G16B16A16_SFLOAT, 0, cv2FullImg, cv2FullMem, cv2FullView);
+    make(cv2HalfW, cv2HalfH, VK_FORMAT_R32G32_SFLOAT, 0, cv2FullDepthImg, cv2FullDepthMem, cv2FullDepthView);
 
     VkCommandBuffer cmd = ctx.beginOneTimeCommands();
-    for (VkImage img : {cv2NewImg, cv2NewDepthImg, cv2ResolvedImg, cv2ResolvedDepthImg, cv2HistoryImg})
+    for (VkImage img : {cv2NewImg, cv2NewDepthImg, cv2ResolvedImg, cv2ResolvedDepthImg, cv2HistoryImg, cv2FullImg, cv2FullDepthImg})
         ctx.imageBarrier(cmd, img, 0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
                          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -559,6 +660,11 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
     VkDescriptorImageInfo histIn{cv2ClampSampler, cv2HistoryView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo resOut{VK_NULL_HANDLE, cv2ResolvedView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo resDepthOut{VK_NULL_HANDLE, cv2ResolvedDepthView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo resDepthIn{cv2ClampSampler, cv2ResolvedDepthView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo fullOut{VK_NULL_HANDLE, cv2FullView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo fullDepthOut{VK_NULL_HANDLE, cv2FullDepthView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo fullIn{cv2ClampSampler, cv2FullView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo fullDepthIn{cv2ClampSampler, cv2FullDepthView, VK_IMAGE_LAYOUT_GENERAL};
     const VkDescriptorType TEX = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, IMG = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     VkWriteDescriptorSet w[] = {
         imageWrite(cv2MarchDescSet, 6, TEX, &depthInfo),
@@ -568,17 +674,25 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
         imageWrite(cv2ResolveDescSet, 2, TEX, &newDepthIn),
         imageWrite(cv2ResolveDescSet, 3, TEX, &histIn),
         imageWrite(cv2ResolveDescSet, 4, IMG, &resOut),
-        imageWrite(cv2ResolveDescSet, 5, IMG, &resDepthOut)};
+        imageWrite(cv2ResolveDescSet, 5, IMG, &resDepthOut),
+        imageWrite(cv2MarchDescSet, 16, TEX, &resDepthIn),
+        imageWrite(cv2MarchDescSet, 17, IMG, &fullOut),
+        imageWrite(cv2MarchDescSet, 18, IMG, &fullDepthOut),
+        imageWrite(cv2ResolveDescSet, 6, TEX, &fullIn),
+        imageWrite(cv2ResolveDescSet, 7, TEX, &fullDepthIn)};
     vkUpdateDescriptorSets(dev, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
     cv2HistoryValid = false;
 }
 
 void SatelliteSim::destroyCloudsV2Targets(VkDevice device)
 {
-    VkImageView *views[] = {&cv2NewView, &cv2NewDepthView, &cv2ResolvedView, &cv2ResolvedDepthView, &cv2HistoryView};
-    VkImage *imgs[] = {&cv2NewImg, &cv2NewDepthImg, &cv2ResolvedImg, &cv2ResolvedDepthImg, &cv2HistoryImg};
-    VkDeviceMemory *mems[] = {&cv2NewMem, &cv2NewDepthMem, &cv2ResolvedMem, &cv2ResolvedDepthMem, &cv2HistoryMem};
-    for (int i = 0; i < 5; ++i)
+    VkImageView *views[] = {&cv2NewView, &cv2NewDepthView, &cv2ResolvedView, &cv2ResolvedDepthView, &cv2HistoryView,
+                            &cv2FullView, &cv2FullDepthView};
+    VkImage *imgs[] = {&cv2NewImg, &cv2NewDepthImg, &cv2ResolvedImg, &cv2ResolvedDepthImg, &cv2HistoryImg,
+                       &cv2FullImg, &cv2FullDepthImg};
+    VkDeviceMemory *mems[] = {&cv2NewMem, &cv2NewDepthMem, &cv2ResolvedMem, &cv2ResolvedDepthMem, &cv2HistoryMem,
+                              &cv2FullMem, &cv2FullDepthMem};
+    for (int i = 0; i < 7; ++i)
     {
         if (*views[i]) vkDestroyImageView(device, *views[i], nullptr);
         if (*imgs[i]) vkDestroyImage(device, *imgs[i], nullptr);
@@ -654,6 +768,20 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     };
     swap(cv2MarchPipeline, marchSpv.empty() ? "shaders/cloud_v2_march.comp.spv" : marchSpv.c_str(), cv2MarchPipeLayout,
          cv2MarchWg);
+    {
+        const uint32_t specB[3] = {cv2MarchWg[0], cv2MarchWg[1], 1u};
+        try
+        {
+            VkPipeline np = makeComputePipeline(ctx, marchSpv.empty() ? "shaders/cloud_v2_march.comp.spv" : marchSpv.c_str(),
+                                                cv2MarchPipeLayout, specB, 3);
+            if (cv2MarchPassBPipeline) vkDestroyPipeline(ctx.device, cv2MarchPassBPipeline, nullptr);
+            cv2MarchPassBPipeline = np;
+        }
+        catch (const std::exception &e)
+        {
+            err += std::string(e.what()) + "; ";
+        }
+    }
     swap(cv2ResolvePipeline, "shaders/cloud_v2_resolve.comp.spv", cv2ResolvePipeLayout, nullptr);
     swap(cv2LightningPipeline, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cv2LightVolPipeline, "shaders/cloud_v2_lightvol.comp.spv", cv2MarchPipeLayout, nullptr);
@@ -669,6 +797,11 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     if (cv2MarchPipeline) vkDestroyPipeline(device, cv2MarchPipeline, nullptr);
     if (cv2ResolvePipeline) vkDestroyPipeline(device, cv2ResolvePipeline, nullptr);
     if (cv2LightningPipeline) vkDestroyPipeline(device, cv2LightningPipeline, nullptr);
+    if (cv2MarchPassBPipeline) vkDestroyPipeline(device, cv2MarchPassBPipeline, nullptr);
+    cv2MarchPassBPipeline = VK_NULL_HANDLE;
+    if (cv2TileBuf) vkDestroyBuffer(device, cv2TileBuf, nullptr);
+    if (cv2TileMem) vkFreeMemory(device, cv2TileMem, nullptr);
+    cv2TileBuf = VK_NULL_HANDLE; cv2TileMem = VK_NULL_HANDLE;
     if (cv2LightVolPipeline) vkDestroyPipeline(device, cv2LightVolPipeline, nullptr);
     cv2LightVolPipeline = VK_NULL_HANDLE;
     if (cv2LightVolView) vkDestroyImageView(device, cv2LightVolView, nullptr);
@@ -690,6 +823,9 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     if (cv2FlashBuf) vkDestroyBuffer(device, cv2FlashBuf, nullptr);
     if (cv2FlashMem) vkFreeMemory(device, cv2FlashMem, nullptr);
     cv2FlashBuf = VK_NULL_HANDLE; cv2FlashMem = VK_NULL_HANDLE;
+    if (cv2BlueNoiseBuf) vkDestroyBuffer(device, cv2BlueNoiseBuf, nullptr);
+    if (cv2BlueNoiseMem) vkFreeMemory(device, cv2BlueNoiseMem, nullptr);
+    cv2BlueNoiseBuf = VK_NULL_HANDLE; cv2BlueNoiseMem = VK_NULL_HANDLE;
     if (cv2MarchPipeLayout) vkDestroyPipelineLayout(device, cv2MarchPipeLayout, nullptr);
     if (cv2ResolvePipeLayout) vkDestroyPipelineLayout(device, cv2ResolvePipeLayout, nullptr);
     if (cv2DescPool) vkDestroyDescriptorPool(device, cv2DescPool, nullptr);
@@ -790,7 +926,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CloudSunRayleigh, cv2TwilightSky, cv2FlowWarp, cv2FlowPeriodKm, cv2LayerSpread,
                     cv2TopHeavy, cv2TowerTop, cv2CirrusFieldKm, cv2CirrusFlow, cv2BaseFlatness,
                     cv2CbColumns, cv2CbSpacingKm, cv2CbRadiusKm, cv2CbCumulusTopKm, cv2CbWaist, cv2CbFlare,
-                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate})
+                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -894,7 +1030,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const double cellM = std::clamp((double)cv2CbSpacingKm, 8.0, 120.0) * 1000.0;
         p.anchorCol = anchor(cellM * 64.0, 0.85);
         p.column = glm::vec4(std::max(cv2CbColumns, 0.0f), (float)cellM,
-                             std::clamp(cv2CbRadiusKm, 1.0f, 12.0f) * 1000.0f,
+                             std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f,
                              std::clamp(cv2CbCumulusTopKm, 2.0f, 12.0f) * 1000.0f);
         p.column2 = glm::vec4(std::clamp(cv2CbWaist, 0.2f, 1.5f), std::clamp(cv2CbFlare, 0.5f, 3.0f),
                               std::clamp(cv2CbHeadDriftKm, 0.0f, 30.0f) * 1000.0f, std::clamp(cv2CbLobes, 0.0f, 1.5f));
@@ -904,7 +1040,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // The weather cube's mip 0 texels are ~5 km: the reach picks the mip whose texels are that wide
         // (fractional: the hardware blends two mips by one constant, so no spatial steps).
         p.column3 = glm::vec4(std::clamp(std::log2(std::max(cv2CbCumulusReachKm, 1.0f) / 5.0f), 0.0f, 6.0f),
-                              0.0f, 0.0f, 0.0f);
+                              0.0f, std::clamp(cv2CbCumulusVar, 0.0f, 0.8f), std::clamp(cv2CbFill, 0.02f, 1.0f));
     }
     p.column3.y = std::max(cv2LightLodFootprintM, 0.0f);   // light LOD (cloud_v2_march.comp)
     // Lightning: its schedule runs on SIM time (deterministic, reversible), wrapped where a float still
@@ -913,6 +1049,11 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // km away), sea level to 16 km, four of its 32 levels per frame.
     p.lightVol = glm::vec4((float)((cv2Frame % (kCv2LightVolZ / kCv2LightVolLevelsPerFrame)) * kCv2LightVolLevelsPerFrame),
                            std::clamp(cv2GodrayRangeKm, 50.0f, 1500.0f) * 1000.0f, 16000.0f, std::max(cv2Godrays, 0.0f));
+    // z: fast motion — the eye moved over 150 m since the last frame (any WASD: ~500 km/s normally),
+    // so the history cannot help and the march switches its ray jitter from IGN to per-pixel white
+    // noise (cloud_v2_march.comp).
+    p.misc2 = glm::vec4(std::clamp(cv2LightningSprites, 0.0f, 1.0f), 1.0f,
+                        glm::length(eye - cv2PrevEye) > 150.0 ? 1.0f : 0.0f, 0.0f);
     p.lightning = glm::vec4(std::max(cv2LightningRate, 0.0f), std::max(cv2LightningGlow, 0.0f),
                             std::max(cv2LightningBolt, 0.0f), (float)std::fmod((double)simDayJ2000 * 86400.0 + simSecInDay, 100000.0));
 
@@ -963,8 +1104,21 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // half-res pixels, alternating each frame (every stale pixel's four neighbours are fresh: the
     // resolve's estimate for it), at about half the cost.
     cv2HalfRateNow = cv2FullRateNow && cv2HalfRateMoving > 0.5f;
+    // The adaptive rate ("dynamic sampling"): where the march would run at full rate because the view
+    // moves, it runs the sparse grid (pass A) and only the tiles whose clouds show parallax, or whose
+    // history comes from off screen, at full rate (pass B). A pan reprojects exactly: only the uncovered
+    // edge goes full. Not with no history or in fast flight (> 150 m a frame: everything has parallax).
+    {
+        const uint32_t tiles = ((cv2HalfW + 31) / 32) * ((cv2HalfH + 31) / 32);
+        cv2AdaptiveNow = cv2FullRateNow && !cv2HalfRateNow && cv2AdaptiveRate > 0.5f && valid &&
+                         glm::length(eye - cv2PrevEye) <= 150.0 && cv2MarchWg[0] == 16 && cv2MarchWg[1] == 16 &&
+                         tiles <= kCv2MaxTiles && cv2MarchPassBPipeline != VK_NULL_HANDLE;
+        if (cv2AdaptiveNow)
+            cv2FullRateNow = false;
+    }
+    p.misc2.w = std::max(cv2AdaptiveParallaxPx, 0.05f);
     p.misc = glm::vec4(std::round(std::clamp(cv2MaxIters, 32.0f, 1024.0f)), cv2MoonGain,
-                       cv2HalfRateNow ? 2.0f : (cv2FullRateNow ? 1.0f : 0.0f), cv2MidAmount);
+                       cv2AdaptiveNow ? 3.0f : cv2HalfRateNow ? 2.0f : (cv2FullRateNow ? 1.0f : 0.0f), cv2MidAmount);
     std::memcpy(cv2ParamsMapped, &p, sizeof(p));
 
     // This frame becomes the next frame's "previous".
@@ -1102,10 +1256,28 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     }
+    if (cv2AdaptiveNow)
+    {
+        // Pass A lists its full-rate tiles: clear the flags and the indirect args {pad, 0, 1, 1}.
+        vkCmdFillBuffer(cmd, cv2TileBuf, 16, 8 * kCv2MaxTiles, 0);
+        const uint32_t hdr[4] = {0u, 0u, 1u, 1u};
+        vkCmdUpdateBuffer(cmd, cv2TileBuf, 0, sizeof(hdr), hdr);
+        memoryBarrier(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeline);
     const uint32_t gw = cv2HalfRateNow ? (cv2HalfW + 1) / 2 : cv2FullRateNow ? cv2HalfW : cv2QuarterW;
     const uint32_t gh = cv2FullRateNow ? cv2HalfH : cv2QuarterH;
     vkCmdDispatch(cmd, (gw + cv2MarchWg[0] - 1) / cv2MarchWg[0], (gh + cv2MarchWg[1] - 1) / cv2MarchWg[1], 1);
+    if (cv2AdaptiveNow)
+    {
+        // Pass B: 4 workgroups (16x16) per listed 32x32 tile, dispatched from the args pass A counted.
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPassBPipeline);
+        vkCmdDispatchIndirect(cmd, cv2TileBuf, 4);
+    }
 
     memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);

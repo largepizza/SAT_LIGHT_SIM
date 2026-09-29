@@ -59,7 +59,7 @@ void main()
         float Rb     = cv2.column.z;
         float reachF = Rb * 1.3 * max(cv2.column2.y, 1.0) + cv2.column2.z + Rb * 0.6
                      + 0.25 * cv2.form.y * max(cv2.types[4].alt.y - cv2.types[4].alt.x, 0.0);
-        float cellM  = max(cv2.column.y, reachF / 1.2), cellA = cellM / R_EARTH, limE = 1.22 * cellM;
+        float cellM  = max(cv2.column.y, reachF / 1.12), cellA = cellM / R_EARTH, limE = 1.12 * cellM;
 
         vec3  wdO = cv2Drift(enuZ);
         vec3  aw  = abs(wdO);
@@ -82,7 +82,8 @@ void main()
         for (int idx = int(li); idx < side * side; idx += 256) {
             ivec2 ci = c0 + ivec2(idx % side - K, idx / side - K);
             uvec3 hv = cv2Pcg3(uvec3(uvec2(ci + 8192), faceId));
-            vec2  ca = (vec2(ci) + 0.25 + 0.5 * vec2(hv.xy & 0xFFFFu) / 65535.0) * cellA;
+            if (float(hv.z >> 16u) / 65535.0 > cv2.column3.w) continue;   // no tower in this cell (Cb fill)
+            vec2  ca = (vec2(ci) + 0.15 + 0.7 * vec2(hv.xy & 0xFFFFu) / 65535.0) * cellA;
             float edgeM = (0.7853982 - max(abs(ca.x), abs(ca.y))) * R_EARTH;
             if (edgeM < limE) continue;
             vec3  cDir = normalize(ax + tan(ca.x) * e1 + tan(ca.y) * e2);
@@ -151,6 +152,27 @@ void main()
                     cv2Flashes[slot].b = vec4(bPos, cg ? 1.0 : 0.0);
                     cv2Flashes[slot].c = vec4(uintBitsToFloat(cellH ^ (uint(int(s) + 1000000) * 0x2545F491u)),
                                               uintBitsToFloat(ph.z), age, length(aPos - eye));
+                }
+                // Now and then a strong ground stroke sets off a RED SPRITE: the field it leaves breaks
+                // down the thin air 50-90 km up a few ms later — a red head with violet tendrils hanging
+                // under it, gone in ~0.1 s (a real one lasts tens of ms; stretched a little to be seen).
+                // Kind 2 in the list; silent (the thunder reader skips it).
+                if (cg && cv2.misc2.x > 0.0) {
+                    uvec3 sh = cv2Pcg3(fh ^ uvec3(0xA511E9B3u, 0x63D83595u, 0x2C1B3C6Du));
+                    float sAge = age - 0.004;
+                    if (float(sh.x & 0xFFFFu) / 65535.0 < cv2.misc2.x && sAge >= 0.0 && sAge < 0.3) {
+                        float Is  = smoothstep(0.0, 0.012, sAge) * exp(-sAge / 0.07);
+                        vec2  sj  = vec2(float(sh.y & 0xFFFFu), float(sh.y >> 16u)) / 65535.0 - 0.5;
+                        vec3  sD  = normalize(up + (t1 * sj.x + t2 * sj.y) * (30000.0 / R_EARTH));
+                        vec3  sP  = (ecefToEnu * cv2UndriftL(sD)) * (R_EARTH + 75000.0);
+                        uint  s2  = atomicAdd(sFlashN, 1u);
+                        if (s2 < kCv2FlashMax) {
+                            cv2Flashes[s2].a = vec4(sP, Is);
+                            cv2Flashes[s2].b = vec4(sP, 2.0);
+                            cv2Flashes[s2].c = vec4(uintBitsToFloat(sh.z ^ 0x5B17E5u), uintBitsToFloat(sh.z),
+                                                    sAge, length(sP - eye));
+                        }
+                    }
                 }
             }
         }

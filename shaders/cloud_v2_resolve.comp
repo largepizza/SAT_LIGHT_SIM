@@ -37,6 +37,27 @@ layout(set = 0, binding = 2) uniform sampler2D newDepthTex;    // quarter grid (
 layout(set = 0, binding = 3) uniform sampler2D histColorTex;   // half grid, last frame's result
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D outColor;
 layout(set = 0, binding = 5, rg32f)   uniform writeonly image2D outDepth;
+// Adaptive rate (misc.z = 3): tiles of 32x32 half-res pixels listed by the march's pass A were marched
+// at full rate into these (pass B); the rest are the sparse grid, which pass B also kept complete.
+layout(set = 0, binding = 6) uniform sampler2D fullColorTex;
+layout(set = 0, binding = 7) uniform sampler2D fullDepthTex;
+layout(std430, set = 0, binding = 8) readonly buffer TileBuf { uint tPad, tDispX, tDispY, tDispZ; uint tList[4096]; uint tFlag[4096]; };
+
+ivec2 gHalf, gQs;
+bool  gAdaptive = false;
+bool tileFull(ivec2 p)
+{
+    if (!gAdaptive) return false;
+    p = clamp(p, ivec2(0), gHalf - 1);
+    return tFlag[(p.x >> 5) + (p.y >> 5) * ((gHalf.x + 31) / 32)] != 0u;
+}
+// This frame's sample for pixel p in adaptive mode: its own full-rate ray in a listed tile, else its
+// block's sparse-grid sample.
+vec4 freshAt(ivec2 p)
+{
+    p = clamp(p, ivec2(0), gHalf - 1);
+    return tileFull(p) ? texelFetch(fullColorTex, p, 0) : texelFetch(newColorTex, min(p >> 1, gQs - 1), 0);
+}
 
 void enuOf(vec3 up, out mat3 m)
 {
@@ -58,13 +79,20 @@ void main()
     bool  full  = rate == 1;
     bool  halfR = rate == 2;
     ivec2 qs    = (full || halfR) ? halfSize : (halfSize + 1) / 2;
-    ivec2 off   = (rate == 0) ? ivec2(cv2.frame.zw) : ivec2(0);
+    ivec2 off   = (rate == 0 || rate == 3) ? ivec2(cv2.frame.zw) : ivec2(0);
     ivec2 b     = (full || halfR) ? c : min(c >> 1, qs - 1);
     int   par   = int(cv2.frame.x) & 1;
     bool  isNew = full || (halfR ? ((c.x + c.y + par) & 1) == 0 : all(equal(c & 1, off)));
+    gHalf = halfSize; gQs = qs; gAdaptive = rate == 3;
+    bool  tFull = tileFull(c);             // adaptive: this pixel was marched at full rate
 
     vec4 nc = texelFetch(newColorTex, b, 0);
     vec2 nd = texelFetch(newDepthTex, b, 0).xy;
+    if (tFull) {
+        isNew = true;
+        nc = texelFetch(fullColorTex, c, 0);
+        nd = texelFetch(fullDepthTex, c, 0).xy;
+    }
 
     // The clamp box: the 3x3 of new samples around this pixel (at half rate only this frame's: the
     // others are two frames old).
@@ -73,15 +101,36 @@ void main()
     for (int dx = -1; dx <= 1; ++dx) {
         ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
         if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
-        vec4 s = texelFetch(newColorTex, pq, 0);
+        vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
         mn = min(mn, s); mx = max(mx, s);
     }
 
     // Where this pixel sits among the new samples (sample q sits at half pixel 2q + off), in the
     // targets' own texels, kept inside the filled region. At half rate: its four neighbours' mean
     // (their depth too: its own is two frames old).
+    // At full rate, a 3x3 tent of this frame's samples: what the pixel falls back to where the history
+    // cannot help (fast flight — WASD moves ~500 km/s, ~17 km a frame — or a jump). A single ray's
+    // start jitter is interleaved gradient noise, whose diagonal stripes the history normally averages
+    // away; alone, they drew corduroy over every cloud and the clouds lost their form (user, 2026-09-29).
+    vec4 blur = nc;
+    if (tFull) {
+        blur = nc * 4.0;
+        [[dont_unroll]] for (int k = 0; k < 8; ++k) {
+            ivec2 o = ivec2(k < 3 ? k - 1 : (k < 5 ? (k == 3 ? -1 : 1) : k - 6), k < 3 ? -1 : (k < 5 ? 0 : 1));
+            blur += ((o.x == 0 || o.y == 0) ? 2.0 : 1.0) * freshAt(c + o);
+        }
+        blur *= 1.0 / 16.0;
+    } else if (full) {
+        blur = nc * 4.0;
+        [[dont_unroll]] for (int k = 0; k < 8; ++k) {
+            ivec2 o = ivec2(k < 3 ? k - 1 : (k < 5 ? (k == 3 ? -1 : 1) : k - 6), k < 3 ? -1 : (k < 5 ? 0 : 1));
+            float wk = (o.x == 0 || o.y == 0) ? 2.0 : 1.0;
+            blur += wk * texelFetch(newColorTex, clamp(c + o, ivec2(0), qs - 1), 0);
+        }
+        blur *= 1.0 / 16.0;
+    }
     vec4 spatial;
-    if (full) spatial = nc;
+    if (full || tFull) spatial = nc;
     else if (halfR) {
         // A fresh pixel's smooth estimate: itself and its four diagonal neighbours (fresh too), which
         // motion pulls it halfway toward, as the sparse grid's bilinear estimate does (below). Its raw
@@ -168,10 +217,17 @@ void main()
         float mk    = smoothstep(0.5, 4.0, motionPx);
         vec4  fresh = isNew ? mix(nc, spatial, 0.5 * mk) : spatial;
         float w     = isNew ? wNew : wNew * mix(0.15, 0.85, mk);
+        // Past ~16 px of parallax a frame the history is someone else's cloud: lean on this frame,
+        // filtered (the corduroy otherwise, see blur).
+        float mf = smoothstep(6.0, 24.0, motionPx);
+        fresh = mix(fresh, blur, 0.8 * mf);
+        w     = mix(w, 0.7, mf);
         outC = mix(hc, fresh, w);
     } else {
-        outC = isNew ? nc : spatial;
+        outC = isNew ? mix(nc, blur, 0.8) : spatial;
     }
+    if (int(cv2.shell.z + 0.5) == 11 && tFull)          // debug view 11: the adaptive rate's full-rate tiles
+        outC.rgb = outC.rgb * vec3(1.3, 0.7, 0.7) + vec3(0.05, 0.0, 0.0);
     imageStore(outColor, c, outC);
     imageStore(outDepth, c, vec4(nd, 0.0, 0.0));
 }

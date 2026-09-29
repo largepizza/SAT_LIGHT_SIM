@@ -57,6 +57,18 @@ layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define BEAM_CLOUD_LIGHTS_BINDING 9
 #include "beam_cloud_lights.glsl"
 layout(set = 0, binding = 10, rgba16f) uniform writeonly image2D outColor;
+// Adaptive rate (misc.z = 3): pass A (this shader, kPassB = 0) marches the sparse grid but first votes per
+// workgroup tile (32x32 half-res pixels): a tile whose clouds move by more than misc2.w px of parallax a
+// frame, or whose history comes from off screen, is listed in TileBuf and skipped; pass B (kPassB = 1,
+// dispatched indirectly, 4 workgroups per listed tile) marches those tiles at full rate into the full
+// targets, and writes their sparse-grid samples too, so the quarter grid stays complete for the resolve.
+layout(constant_id = 2) const int kPassB = 0;
+layout(set = 0, binding = 16) uniform sampler2D prevResDepthTex;               // last frame's resolved depth (m)
+layout(set = 0, binding = 17, rgba16f) uniform writeonly image2D outFullColor;
+layout(set = 0, binding = 18, rg32f)   uniform writeonly image2D outFullDepth;
+layout(std430, set = 0, binding = 19) buffer TileBuf { uint tPad, tDispX, tDispY, tDispZ; uint tList[4096]; uint tFlag[4096]; };
+shared uint sTileVote;
+layout(std430, set = 0, binding = 15) readonly buffer BlueNoise { uint cv2BlueNoise[1024]; };   // 64x64, 8-bit ranks
 layout(set = 0, binding = 14) uniform sampler3D lightVolTex;   // sun transmittance (cloud_v2_lightvol.comp)
 layout(set = 0, binding = 11, rg32f)   uniform writeonly image2D outDepth;
 
@@ -368,11 +380,19 @@ void main()
     // the targets); 1 full (every half-res pixel, in place); 2 half (a checkerboard alternating each
     // frame, in place: "Half rate while moving").
     int   rate     = int(cv2.misc.z + 0.5);
-    bool  full     = rate == 1;
-    bool  halfR    = rate == 2;
+    bool  passB    = kPassB != 0;
+    bool  full     = rate == 1 || passB;
+    bool  halfR    = rate == 2 && !passB;
     ivec2 halfSize = textureSize(sceneDepthTex, 0);
     ivec2 qSize    = full ? halfSize : halfR ? ivec2((halfSize.x + 1) / 2, halfSize.y) : (halfSize + 1) / 2;
     ivec2 q        = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 tileO    = ivec2(0);
+    if (passB) {
+        uint  tileId = tList[gl_WorkGroupID.x >> 2u], sub = gl_WorkGroupID.x & 3u;
+        int   tilesX = (halfSize.x + 31) / 32;
+        tileO = ivec2(int(tileId) % tilesX, int(tileId) / tilesX) * 32 + ivec2(int(sub & 1u), int(sub >> 1u)) * 16;
+        q     = tileO + ivec2(gl_LocalInvocationID.xy);
+    }
     ivec2 pix      = full ? min(q, halfSize - 1)
                    : halfR ? min(ivec2(q.x * 2 + ((q.y + int(cv2.frame.x)) & 1), q.y), halfSize - 1)
                            : min(q * 2 + ivec2(cv2.frame.zw), halfSize - 1);
@@ -388,11 +408,38 @@ void main()
     vec3  eye  = vec3(0.0, 0.0, R_EARTH + eyeH);
     vec3  sunDir = normalize(pc.sunDirENU.xyz);
 
+    // Adaptive rate, pass A: this workgroup's tile votes (every thread reaches both barriers; the
+    // decision is uniform, so a listed tile's whole workgroup returns together).
+    if (rate == 3 && !passB) {
+        if (gl_LocalInvocationIndex == 0u) sTileVote = 0u;
+        barrier();
+        float d  = texelFetch(prevResDepthTex, pix, 0).x;
+        float pa = 2.0 * tanHalfFov / float(halfSize.y);
+        bool  vote = d > 0.0 && (length(cv2.obsDelta.xyz) + cv2.motion.x) / (d * pa) > cv2.misc2.w;
+        // History from off screen (a turn uncovers the edge): the rotation-only reprojection.
+        vec3  dE  = enuToEcef * rayDirAt(vec2(pix) + 0.5, halfSize, tanHalfFov, camToENU);
+        vec3  pz  = normalize(cv2.prevObs.xyz);
+        vec3  px  = normalize(cross(vec3(0.0, 0.0, 1.0), pz));
+        vec3  cI  = mat3(cv2.prevSkyView) * (transpose(mat3(px, cross(pz, px), pz)) * dE);
+        vec2  uvP = vec2(cI.x / (-cI.z) / (cv2.prevObs.w * cv2.obsDelta.w), -cI.y / (-cI.z) / cv2.prevObs.w) * 0.5 + 0.5;
+        vote = vote || cI.z >= 0.0 || any(lessThan(uvP, vec2(-0.01))) || any(greaterThan(uvP, vec2(1.01)));
+        if (vote && q.x < qSize.x && q.y < qSize.y) atomicOr(sTileVote, 1u);
+        barrier();
+        if (sTileVote != 0u) {
+            if (gl_LocalInvocationIndex == 0u) {
+                uint tileId = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x;
+                uint i = atomicAdd(tDispX, 4u) >> 2u;
+                tList[i] = tileId;
+                tFlag[tileId] = 1u;
+            }
+            return;
+        }
+    }
     // Beam-light tile cull. This workgroup owns half-res pixels [wg*32, wg*32+32) (16 at full
     // rate); its cone is computed from those corners (the cull only needs an axis and a half-angle).
     {
         vec2 tile = vec2(gl_WorkGroupSize.xy) * (full ? vec2(1.0) : halfR ? vec2(2.0, 1.0) : vec2(2.0));
-        vec2 tMin = vec2(gl_WorkGroupID.xy) * tile, tMax = tMin + tile;
+        vec2 tMin = passB ? vec2(tileO) : vec2(gl_WorkGroupID.xy) * tile, tMax = tMin + tile;
         vec3 d00 = rayDirAt(tMin, halfSize, tanHalfFov, camToENU);
         vec3 d10 = rayDirAt(vec2(tMax.x, tMin.y), halfSize, tanHalfFov, camToENU);
         vec3 d01 = rayDirAt(vec2(tMin.x, tMax.y), halfSize, tanHalfFov, camToENU);
@@ -405,7 +452,7 @@ void main()
     }
     // The rain rate at the eye, for the host (the rain ambience): the same field and scale
     // cloud_march.comp's streaks use.
-    if (gl_GlobalInvocationID.x == 0u && gl_GlobalInvocationID.y == 0u) {
+    if (!passB && gl_GlobalInvocationID.x == 0u && gl_GlobalInvocationID.y == 0u) {
         float rr = 0.0;
         if (cv2.rain.x > 0.0 && eyeH < 6000.0) {
             CV2Field fe = cv2FieldLow(cv2Pos(vec3(0.0), eyeH, enuToEcef), -1.0, 1.0);
@@ -471,6 +518,16 @@ void main()
     // sampling bias, and far clouds (long steps) broke into 2x2 squares.
     float visit  = full ? cv2.frame.x : floor(cv2.frame.x * (halfR ? 0.5 : 0.25));
     float jitter = fract(ign(vec2(pix)) + 0.6180340 * visit);
+    // Fast flight (the eye moved > 150 m this frame; WASD is ~500 km/s): no history to average IGN's
+    // structure away, and its smooth diagonal gradient kept neighbouring rays in step, so the march's
+    // steps lined up into bands across every cloud top (corduroy, "clouds lose their form"). Blue noise
+    // (a 64x64 void-and-cluster tile, a golden-ratio step per frame) leaves only fine grain, at the high
+    // frequencies the resolve's 3x3 motion filter removes; white noise left clumps.
+    if (cv2.misc2.z > 0.5) {
+        uint  bi = uint(pix.x & 63) + 64u * uint(pix.y & 63);
+        float bn = (float((cv2BlueNoise[bi >> 2u] >> (8u * (bi & 3u))) & 0xFFu) + 0.5) / 256.0;
+        jitter = fract(bn + 0.6180340 * cv2.frame.x);
+    }
     // Angular size of one half-res pixel: a sample at distance t stands for t * pixAng metres.
     float pixAng = 2.0 * tanHalfFov / float(halfSize.y);
 
@@ -874,8 +931,19 @@ void main()
     }
     // 7: which layer: red = low (incl. rain), green = mid, blue = anvil + Cb columns, white = high.
     else if (dbg == 7) outRgb = (vec3(1.0) - exp(-odLayer.xyz) + vec3(0.6) * (1.0 - exp(-odLayer.w))) * 0.05;
-    float Tout = (dbg != 0) ? 0.0 : T * godT;
+    float Tout = (dbg != 0 && dbg != 11) ? 0.0 : T * godT;   // 11: an overlay (the resolve tints full-rate tiles)
 
-    imageStore(outColor, outPix, vec4(outRgb, Tout));
-    imageStore(outDepth, outPix, vec4(meanT, (T < 0.1 && tHalf > 0.0) ? tHalf : -1.0, 0.0, 0.0));
+    vec4 oD = vec4(meanT, (T < 0.1 && tHalf > 0.0) ? tHalf : -1.0, 0.0, 0.0);
+    if (passB) {
+        // The full targets, and this tile's sparse-grid samples (the quarter grid stays complete).
+        imageStore(outFullColor, pix, vec4(outRgb, Tout));
+        imageStore(outFullDepth, pix, oD);
+        if (all(equal(pix & 1, ivec2(cv2.frame.zw)))) {
+            imageStore(outColor, pix >> 1, vec4(outRgb, Tout));
+            imageStore(outDepth, pix >> 1, oD);
+        }
+    } else {
+        imageStore(outColor, outPix, vec4(outRgb, Tout));
+        imageStore(outDepth, outPix, oD);
+    }
 }

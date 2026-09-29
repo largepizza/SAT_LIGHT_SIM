@@ -750,6 +750,43 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (the mirrors' and env probes' clouds, SKY_LITE) and Potato's deck show the evolving map the volumetric
   clouds are built from (the Earth-fixed direction turned by the layer's drift into the cube's frame, one
   mip coarser than the equirect's). The mesh shaders' `earth_env.glsl` fallback keeps the 2D map.
+- **User feedback round (2026-09-29, after the sprint):**
+  **Lightning** toned down (glow x2, bolts x60 in `lightningCS`; were x5 / x150). **Red sprites** (easter
+  egg, "Lightning sprites (chance)" `lightning_sprites` 0.05, slot 191, `misc2.x`): a ground stroke may
+  set off a sprite ~75 km up (flash list kind 2, `spriteCS` in cloud_march.comp: a red head, 5-8
+  splayed, kinked tendrils to ~50 km shading to violet, ~0.1 s); thunder and the harness skip/label it.
+  **Cb columns**: "Cb fill" (`cb_fill` 0.5, slot 189, `column3.w`) — the share of lattice cells holding a
+  tower at all (the user's sparsity ~0 put one in every cell: an even grid of columns); centres jitter
+  over 0.15-0.85 of a cell (was 0.25-0.75), so the 2x2 search is exact to 0.65 cell and the 3x3 to 1.15
+  (`limM` 0.62 / 1.12, cell >= reach / 1.12) — this MOVES every tower again; "Cb tower radius" reaches
+  20 km. `cloud_v2_lightning.comp` applies the same fill and jitter. "Storm cumulus variation"
+  (`cb_cumulus_variation` 0.3, slot 190, `column3.z`): the storm cumulus top varies +- that fraction by
+  region (the cluster Perlin). **Motion**: WASD moves ~0.08 rad/s of arc (~510 km/s, boost ~3200 km/s),
+  i.e. ~17 km a frame, so the history is useless and a frame is one march — whose IGN start jitter lined
+  neighbouring rays' steps up into corduroy bands ("clouds lose all form"; a 550 m/s harness path shows
+  nothing wrong). When the eye moves > 150 m in a frame (`misc2.z`) the march jitters from a 64x64
+  void-and-cluster BLUE-NOISE tile (`makeBlueNoise64`, built at init, march binding 15, SSBO) + a golden
+  step per frame, and the resolve blends toward a 3x3 tent of this frame's samples as the parallax passes
+  6-24 px (or with no valid history). White noise was tried first: clumpier. Harness:
+  harness_runs/motion2 (fastG = before, fastG4 = after, paths at the real walking speed).
+- **Adaptive rate / dynamic sampling (2026-09-29, `cv2AdaptiveRate`, "Adaptive rate while moving (0/1)",
+  key `adaptive_rate`, slot 192, default ON; "Adaptive parallax (px)" `adaptive_parallax_px` 1.0, slot 193,
+  `misc2.w`; rate `misc.z` = 3):** where the march used to go full rate because the view moved, it runs the
+  sparse grid (pass A, `cloud_v2_march.comp`) and marches at full rate only the 32x32 half-res tiles whose
+  clouds show more than that parallax a frame (|eye delta| + the volumes' slide over last frame's resolved
+  depth, march binding 16) or whose history comes from off screen (a pan's uncovered edge). Pass A votes
+  per workgroup and a listed tile returns before marching (`TileBuf`, binding 19: indirect args + tile
+  list + flags, reset by fill/update each frame); pass B (`cv2MarchPassBPipeline`, the same shader with
+  spec constant 2 = 1, `vkCmdDispatchIndirect`, 4 workgroups per tile) marches them into `cv2FullImg` /
+  `cv2FullDepthImg` (bindings 17/18) AND writes their sparse-grid samples, so the quarter grid stays
+  complete; the resolve (bindings 6-8) takes a listed tile's pixels as fresh (`tileFull`, `freshAt`).
+  Why tiles and two passes: skipping pixels inside a full-rate dispatch saves nothing (a warp costs its
+  slowest lane). Not used without history, in fast flight (> 150 m a frame: full rate + blue noise) or
+  with a workgroup size other than 16x16. Measured (harness `path play`, now reporting `gpu_ms_mean`):
+  anvils from 31 km flying 16.2 -> 8.9 ms, panning 23.6 -> 8.6; 7.5 km panning 12.0 -> 6.7; images match
+  full rate (mean |diff| < 1/255, <= 0.2% of pixels past 12, no tile seams at 8x). At 550 m/s nothing
+  passes 1 px (the deck below is ~0.5-1 px): sparse + history equals full rate there. Debug view 11 tints
+  the full-rate tiles red (an overlay; the march keeps its transmittance for it).
 - **Light volume + godrays (2026-09-29, EXPERIMENTAL, off by default):** `cloud_v2_lightvol.comp` bakes a
   camera-centred 128 x 128 x 32 R16F volume of sun transmittance (march set bindings 13 storage / 14
   sampled; +-"God ray range" `godray_range_km` 400 about the eye, sea level to 16 km, gnomonic columns; 4 of
@@ -820,9 +857,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
-- The Clouds tab's slider slots: `kCloudSliderSlots` (189) sizes all four per-slider arrays and
+- The Clouds tab's slider slots: `kCloudSliderSlots` (194) sizes all four per-slider arrays and
   `cloudBufs`; v2 uses 112-188 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
-  sliders: 77. Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
+  sliders: 77 (slots 189-193: Cb fill, cumulus variation, sprites, adaptive rate, adaptive parallax). Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
   shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.
 
 ## Subsystem: Automation harness (2026-09-25)

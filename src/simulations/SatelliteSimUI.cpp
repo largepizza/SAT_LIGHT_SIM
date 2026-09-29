@@ -4672,18 +4672,21 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Anvils", &cv2Anvil, 0.0f, 2.0f, 0.05f, "%.2f", 149},
         {"Cb columns (0 = old cores)", &cv2CbColumns, 0.0f, 2.0f, 0.05f, "%.2f", 164},
         {"Cb spacing (km)", &cv2CbSpacingKm, 8.0f, 120.0f, 1.0f, "%.0f", 165},
-        {"Cb tower radius (km)", &cv2CbRadiusKm, 1.0f, 12.0f, 0.25f, "%.2f", 166},
+        {"Cb tower radius (km)", &cv2CbRadiusKm, 1.0f, 20.0f, 0.25f, "%.2f", 166},
         {"Storm cumulus top (km)", &cv2CbCumulusTopKm, 2.0f, 12.0f, 0.25f, "%.2f", 167},
         {"Cb waist (x radius)", &cv2CbWaist, 0.2f, 1.5f, 0.05f, "%.2f", 168},
         {"Cb head flare (x radius)", &cv2CbFlare, 0.5f, 3.0f, 0.05f, "%.2f", 169},
         {"Cb head drift (km)", &cv2CbHeadDriftKm, 0.0f, 30.0f, 0.5f, "%.1f", 170},
         {"Cb lobes", &cv2CbLobes, 0.0f, 1.5f, 0.05f, "%.2f", 171},
         {"Cb sparsity", &cv2CbSparsity, 0.0f, 1.0f, 0.05f, "%.2f", 172},
+        {"Cb fill (share of cells)", &cv2CbFill, 0.05f, 1.0f, 0.05f, "%.2f", 189},
+        {"Storm cumulus variation", &cv2CbCumulusVar, 0.0f, 0.8f, 0.05f, "%.2f", 190},
         {"Cb overshoot (km)", &cv2CbOvershootKm, 0.0f, 3.0f, 0.05f, "%.2f", 173},
         {"Storm cumulus reach (km)", &cv2CbCumulusReachKm, 5.0f, 160.0f, 1.0f, "%.0f", 177},
         {"Lightning (flashes/min/tower)", &cv2LightningRate, 0.0f, 30.0f, 0.5f, "%.1f", 179},
         {"Lightning glow", &cv2LightningGlow, 0.0f, 5.0f, 0.05f, "%.2f", 180},
         {"Lightning bolts", &cv2LightningBolt, 0.0f, 5.0f, 0.05f, "%.2f", 181},
+        {"Lightning sprites (chance)", &cv2LightningSprites, 0.0f, 1.0f, 0.02f, "%.2f", 191},
         {"God rays", &cv2Godrays, 0.0f, 3.0f, 0.05f, "%.2f", 187},
         {"God ray range (km)", &cv2GodrayRangeKm, 50.0f, 1500.0f, 10.0f, "%.0f", 188},
         {"Weather evolution wind (m/s)", &cv2EvoWindMps, 0.0f, 40.0f, 0.5f, "%.1f", 182},
@@ -4742,6 +4745,8 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Full rate above (km)", &cv2FullRateAboveKm, 0.0f, 400.0f, 1.0f, "%.0f", 145},
         {"Sparse when still (0/1)", &cv2SparseWhenStill, 0.0f, 1.0f, 1.0f, "%.0f", 176},
         {"Half rate while moving (0/1)", &cv2HalfRateMoving, 0.0f, 1.0f, 1.0f, "%.0f", 186},
+        {"Adaptive rate while moving (0/1)", &cv2AdaptiveRate, 0.0f, 1.0f, 1.0f, "%.0f", 192},
+        {"Adaptive parallax (px)", &cv2AdaptiveParallaxPx, 0.1f, 8.0f, 0.1f, "%.1f", 193},
     };
 
     // Tiling periods of the noise volumes (no rebake: they are read at these scales).
@@ -6252,11 +6257,16 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2LightningRate = c.value("lightning_rate", cv2LightningRate);
         cv2LightningGlow = c.value("lightning_glow", cv2LightningGlow);
         cv2LightningBolt = c.value("lightning_bolt", cv2LightningBolt);
+        cv2LightningSprites = c.value("lightning_sprites", cv2LightningSprites);
+        cv2CbFill = c.value("cb_fill", cv2CbFill);
+        cv2CbCumulusVar = c.value("cb_cumulus_variation", cv2CbCumulusVar);
         cv2EvoWindMps = c.value("evo_wind_mps", cv2EvoWindMps);
         cv2EvoGrowth = c.value("evo_growth", cv2EvoGrowth);
         cv2EvoWindowH = c.value("evo_window_h", cv2EvoWindowH);
         cv2EvoDiurnal = c.value("evo_diurnal", cv2EvoDiurnal);
         cv2HalfRateMoving = c.value("half_rate_moving", cv2HalfRateMoving);
+        cv2AdaptiveRate = c.value("adaptive_rate", cv2AdaptiveRate);
+        cv2AdaptiveParallaxPx = c.value("adaptive_parallax_px", cv2AdaptiveParallaxPx);
         cv2Godrays = c.value("godrays", cv2Godrays);
         cv2GodrayRangeKm = c.value("godray_range_km", cv2GodrayRangeKm);
         cv2StepBaseM = c.value("step_base_m", cv2StepBaseM);
@@ -6671,11 +6681,16 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"lightning_rate", cv2LightningRate},
         {"lightning_glow", cv2LightningGlow},
         {"lightning_bolt", cv2LightningBolt},
+        {"lightning_sprites", cv2LightningSprites},
+        {"cb_fill", cv2CbFill},
+        {"cb_cumulus_variation", cv2CbCumulusVar},
         {"evo_wind_mps", cv2EvoWindMps},
         {"evo_growth", cv2EvoGrowth},
         {"evo_window_h", cv2EvoWindowH},
         {"evo_diurnal", cv2EvoDiurnal},
         {"half_rate_moving", cv2HalfRateMoving},
+        {"adaptive_rate", cv2AdaptiveRate},
+        {"adaptive_parallax_px", cv2AdaptiveParallaxPx},
         {"godrays", cv2Godrays},
         {"godray_range_km", cv2GodrayRangeKm},
         {"step_base_m", cv2StepBaseM},

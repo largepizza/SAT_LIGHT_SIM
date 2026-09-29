@@ -94,11 +94,14 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
                           // sparsity (0 = every candidate in a storm, 1 = only the strongest cores),
                           // w overshooting top: how far a tower's dome rises above the anvil lid (m)
     vec4  column3;        // x weather mip for the storm cumulus reach (log2 of reach / 5 km texels),
-                          // y light LOD footprint (m, 0 = off; cloud_v2_march.comp), zw free
+                          // y light LOD footprint (m, 0 = off; cloud_v2_march.comp), z the storm cumulus
+                          // top's regional variation (+- fraction), w Cb fill (share of lattice cells with a tower)
     vec4  lightning;      // x flashes per minute of a full-strength tower (0 = off), y the glow in the
                           // cloud, z the cloud-to-ground channels, w sim time (s, wrapped at 1e5)
     vec4  lightVol;       // the light volume (cloud_v2_lightvol.comp): x the first level baked this frame,
                           // y its half-extent (m), z its top (m), w the godrays' strength (0 = off)
+    vec4  misc2;          // x red-sprite chance per ground stroke (0 = none), y sprite brightness,
+                          // z 1 = the eye moved too far this frame for history (decorrelated ray jitter), w free
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -358,7 +361,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM)
         float trB = cv2Tropo(wd);
         float cgT = cv2.types[3].alt.x + (cv2.types[3].alt.y - cv2.types[3].alt.x) * trB;
         float stT = cv2.types[1].alt.x + (cv2.types[1].alt.y - cv2.types[1].alt.x) * trB + 3500.0;
-        if (q.h > max(max(cgT, stT), cv2.column.w) + cv2Ground(q.dirE) * 0.9 + 50.0) return f;
+        if (q.h > max(max(cgT, stT), cv2.column.w * (1.0 + cv2.column3.z)) + cv2Ground(q.dirE) * 0.9 + 50.0) return f;
     }
     float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
 
@@ -442,7 +445,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM)
                 if (textureLod(cv2WeatherTex, wdF, cv2.column3.x).g > lo - 0.01)
                     wS = max(wS, smoothstep(lo, lo + 0.25, cv2WeatherBilinear(wdF, cv2.column3.x).g) * min(ty.look.z * 2.0, 1.0));
             }
-        topMax = mix(topMax, cv2.column.w + lift, wS);
+        // Its height varies by region (the cluster Perlin, ~+-2 sd -> +-"Storm cumulus variation"): one
+        // flat target made every storm's cumulus field the same height (user, 2026-09-29).
+        float cwT = cv2.column.w * (1.0 + cv2.column3.z * clamp((cl.a - 0.5) * 8.8, -1.0, 1.0));
+        topMax = mix(topMax, cwT + lift, wS);
     }
 
     // A deck is not a slab: its thickness follows the closed cells and a km-scale Perlin field, and
@@ -984,7 +990,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     // span, not the local one): a cell that varied with position would scramble the lattice.
     float reachFull = Rb * 1.3 * max(cv2.column2.y, 1.0) + cv2.column2.z + Rb * 0.6
                     + 0.25 * cv2.form.y * max(cv2.types[4].alt.y - cv2.types[4].alt.x, 0.0);
-    float cellM  = max(cv2.column.y, reachFull / 1.2);
+    float cellM  = max(cv2.column.y, reachFull / 1.12);
     vec3  eastW  = vec3(-wd.y, wd.x, 0.0) * inversesqrt(max(dot(wd.xy, wd.xy), 1e-6));
     float lift   = cv2Ground(q.dirE) * 0.9;
     float base   = cv2.types[4].alt.x + lift;
@@ -1010,8 +1016,8 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     ivec2 dn = ivec2(fr.x < 0.5 ? -1 : 1, fr.y < 0.5 ? -1 : 1);
     uint  faceId = uint(fc * 2) + ((dot(wd, ax) < 0.0) ? 1u : 0u);
     // How far from its axis a tower (and the anvil hang it drives) reaches: its widest head, blown
-    // downwind, lobes and lean. The 2x2 search is exact to 0.75 of a cell; past that, 3x3 (exact to
-    // 1.25). With 12 km towers and a 2.6x flare the heads reached ~45 km on 36 km cells and were cut
+    // downwind, lobes and lean. The 2x2 search is exact to 0.65 of a cell; past that, 3x3 (exact to
+    // 1.15). With 12 km towers and a 2.6x flare the heads reached ~45 km on 36 km cells and were cut
     // along the lattice's cell faces (user snaps 1 and 3, pass 15): straight seams through storms.
     float reachM = Rb * 1.3 * max(cv2.column2.y, 1.0) + cv2.column2.z + Rb * 0.6
                  + 0.25 * cv2.form.y * max(top - base, 0.0);
@@ -1020,8 +1026,8 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     // no head drift, no anvil hang there — the 8-cell search always suffices.
     if (q.h < base + 0.5 * (lidB - base))
         reachM = Rb * 1.3 * 1.6 + 0.25 * cv2.form.y * max(top - base, 0.0);
-    bool  wide   = reachM > 0.72 * cellM;
-    float limM   = wide ? 1.22 * cellM : 0.72 * cellM;   // anything beyond is not searched: taper to 0
+    bool  wide   = reachM > 0.62 * cellM;
+    float limM   = wide ? 1.12 * cellM : 0.62 * cellM;   // anything beyond is not searched: taper to 0
     int   nK     = wide ? 9 : 4;
     float lid    = top - 250.0;                          // the anvil's lid (cv2AnvilSigma)
     float hc     = lid - 1800.0;                         // a head rounds off from here to 300 m under the lid
@@ -1034,7 +1040,12 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
                          : ivec2((k & 1) != 0 ? dn.x : 0, (k & 2) != 0 ? dn.y : 0);
         ivec2 ci = c0 + off;
         uvec3 hv = cv2Pcg3(uvec3(uvec2(ci + 8192), faceId));
-        vec2  ca = (vec2(ci) + 0.25 + 0.5 * vec2(hv.xy & 0xFFFFu) / 65535.0) * cellA;   // the centre's angles
+        // Only "Cb fill" of the cells hold a tower (the rest are the storm's cumulus): with a tower in
+        // every cell a storm was peppered with an even grid of columns (user, 2026-09-29).
+        if (float(hv.z >> 16u) / 65535.0 > cv2.column3.w) continue;
+        // The centre, jittered over 0.15..0.85 of its cell (0.25..0.75 read as a grid): the 2x2 search is
+        // exact to 0.65 of a cell and the 3x3 to 1.15, hence limM's 0.62 / 1.12 and the cell >= reach/1.12.
+        vec2  ca = (vec2(ci) + 0.15 + 0.7 * vec2(hv.xy & 0xFFFFu) / 65535.0) * cellA;   // the centre's angles
         float edgeM = (0.7853982 - max(abs(ca.x), abs(ca.y))) * R_EARTH;              // to the face's edge
         if (edgeM < limM) continue;
         vec3  cDir = normalize(ax + tan(ca.x) * e1 + tan(ca.y) * e2);

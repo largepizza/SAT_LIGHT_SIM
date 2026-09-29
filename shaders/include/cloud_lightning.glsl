@@ -12,7 +12,8 @@
 const uint kCv2FlashMax = 32u;
 struct CV2Flash {
     vec4 a;   // xyz the light's centre (observer ENU about the Earth's centre, like obsPos), w intensity now
-    vec4 b;   // xyz a cloud-to-ground stroke's ground end (= a.xyz in cloud), w 1 = cloud-to-ground
+    vec4 b;   // xyz a cloud-to-ground stroke's ground end (= a.xyz in cloud), w 1 = cloud-to-ground,
+              // 2 = a red sprite (a.xyz its centre ~75 km up)
     vec4 c;   // x id (uint bits), y the stroke's shape seed (uint bits), z age (s), w distance from the eye (m)
 };
 layout(std430, set = 0, binding = CV2_FLASH_BINDING)

@@ -638,9 +638,11 @@ struct GpuCloudV2Params
     glm::vec4 column;        // x Cb column amount, y lattice cell (m), z base radius (m), w storm cumulus top (m)
     glm::vec4 column2;       // x waist, y head flare (x base radius), z head drift (m), w lobe strength
     glm::vec4 anvil2;        // x anvil thickness (m), y anvil hang (m), z tower sparsity, w overshoot above the lid (m)
-    glm::vec4 column3;       // x weather mip for the storm cumulus reach, y light LOD footprint (m), zw free
+    glm::vec4 column3;       // x weather mip for the storm cumulus reach, y light LOD footprint (m), z cumulus
+                             // top variation, w Cb fill
     glm::vec4 lightning;     // x flashes / min / tower, y cloud glow gain, z bolt gain, w sim time (s, wrapped)
     glm::vec4 lightVol;      // x first level baked this frame, y half-extent (m), z top (m), w godrays
+    glm::vec4 misc2;         // x red-sprite chance per ground stroke, y sprite brightness, z fast motion (0/1), w free
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -648,7 +650,7 @@ static_assert(offsetof(GpuCloudV2Params, shell) == 256, "GpuCloudV2Params layout
 static_assert(offsetof(GpuCloudV2Params, types) == 288, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, cover) == 288 + 48 * kCloudV2Types, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, anchorMid) == 288 + 48 * kCloudV2Types + 176, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 352, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 368, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -2750,10 +2752,13 @@ private:
     float cv2LightningRate = 3.0f;        // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
     float cv2LightningGlow = 1.0f;        // the flash's light in the cloud
     float cv2LightningBolt = 1.0f;        // the cloud-to-ground channels
+    float cv2LightningSprites = 0.05f;    // chance a ground stroke sets off a red sprite 50-90 km up (0 = never)
     float cv2EvoWindMps = 8.0f;           // the weather map's evolution: its advecting wind (m/s); 0 = static
     float cv2EvoGrowth = 0.12f;           // ... and how much its coverage grows and decays (0 = none)
     float cv2EvoWindowH = 3.0f;           // ... each advected copy's window (h): the displacement's bound
     float cv2EvoDiurnal = 0.6f;           // afternoon convection over land (0 = none)
+    float cv2AdaptiveRate = 1.0f;         // 1 = while moving, full rate only in tiles whose clouds show parallax (dynamic sampling)
+    float cv2AdaptiveParallaxPx = 1.0f;   // ... past this many half-res pixels a frame (or history from off screen)
     float cv2HalfRateMoving = 0.0f;       // 1 = where the march would run at full rate, half (a checkerboard)
     float cv2Godrays = 0.0f;              // EXPERIMENTAL: the sky dims by the share of its airlight in cloud shadow (the light volume); 0 = off (and no bake)
     float cv2GodrayRangeKm = 400.0f;      // the light volume's half-extent about the eye (km)
@@ -2838,6 +2843,8 @@ private:
     float cv2CbHeadDriftKm = 6.0f;     // how far downwind the head is blown
     float cv2CbLobes = 0.55f;          // cauliflower lobes on the tower (fraction of its radius)
     float cv2CbSparsity = 0.35f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
+    float cv2CbFill = 0.5f;            // share of lattice cells holding a tower at all (1 = every cell: a grid)
+    float cv2CbCumulusVar = 0.3f;      // the storm cumulus top's regional variation (+- fraction of it)
     float cv2CbCumulusReachKm = 10.0f;  // how far from a storm the low cloud takes the storm cumulus top
     float cv2CbOvershootKm = 0.8f;     // a tower's overshooting dome above the anvil lid (every tower meets it)
     float cv2AnvilThickKm = 2.2f;      // the anvil shield's thickness over the storm's core
@@ -2863,6 +2870,7 @@ private:
     uint32_t cv2Frame = 0;
     bool cv2FullRateNow = false;       // this frame's march covers every half-res pixel
     bool cv2HalfRateNow = false;       // ... or, "Half rate while moving", half of them (a checkerboard)
+    bool cv2AdaptiveNow = false;       // ... or the adaptive rate: sparse, with full-rate tiles where the parallax is large
     bool cv2HistoryValid = false;
     glm::mat4 cv2PrevSkyView{1.0f};
     glm::vec3 cv2PrevObsDir{0.0f, 0.0f, 1.0f};
@@ -2921,6 +2929,15 @@ private:
     VkDescriptorSet cv2MarchDescSet = VK_NULL_HANDLE, cv2ResolveDescSet = VK_NULL_HANDLE;
     VkPipelineLayout cv2MarchPipeLayout = VK_NULL_HANDLE, cv2ResolvePipeLayout = VK_NULL_HANDLE;
     VkPipeline cv2MarchPipeline = VK_NULL_HANDLE, cv2ResolvePipeline = VK_NULL_HANDLE;
+    VkPipeline cv2MarchPassBPipeline = VK_NULL_HANDLE;   // the adaptive rate's full-rate tiles (spec constant 2)
+    // Adaptive rate: the tiles pass A listed (header {pad, dispatch x, y, z}, 4096 tile ids, 4096 flags),
+    // and pass B's full-rate targets.
+    VkBuffer cv2TileBuf = VK_NULL_HANDLE;
+    VkDeviceMemory cv2TileMem = VK_NULL_HANDLE;
+    static constexpr uint32_t kCv2MaxTiles = 4096;
+    VkImage cv2FullImg = VK_NULL_HANDLE, cv2FullDepthImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2FullMem = VK_NULL_HANDLE, cv2FullDepthMem = VK_NULL_HANDLE;
+    VkImageView cv2FullView = VK_NULL_HANDLE, cv2FullDepthView = VK_NULL_HANDLE;
     // Lightning (include/cloud_lightning.glsl): cloud_v2_lightning.comp writes this frame's flashes
     // into cv2FlashBuf (host-visible: the host reads them back next frame for thunder), bound as
     // binding 12 of the march set and 21 of cloud_march's.
@@ -2935,6 +2952,8 @@ private:
     VkBuffer cv2FlashBuf = VK_NULL_HANDLE;
     VkDeviceMemory cv2FlashMem = VK_NULL_HANDLE;
     void *cv2FlashMapped = nullptr;
+    VkBuffer cv2BlueNoiseBuf = VK_NULL_HANDLE;   // 64x64 blue-noise tile (march binding 15)
+    VkDeviceMemory cv2BlueNoiseMem = VK_NULL_HANDLE;
     static constexpr uint32_t kCv2FlashMax = 32;             // == kCv2FlashMax in cloud_lightning.glsl
     static constexpr VkDeviceSize kCv2FlashBufBytes = 16 + kCv2FlashMax * 48;
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
@@ -4258,7 +4277,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 189;
+    static constexpr int kCloudSliderSlots = 194;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

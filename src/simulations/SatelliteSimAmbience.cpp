@@ -663,6 +663,8 @@ void SatelliteSim::updateThunder()
         if (seen)
             continue;
         thunderSeen_.push_back({id, now});
+        if (e[7] > 1.5f)   // a red sprite (cloud_lightning.glsl): silent
+            continue;
         const float distM = e[11];
         if (distM > 30000.0f)
             continue;
