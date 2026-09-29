@@ -3752,23 +3752,28 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   `terrainPad0`, slot 57; on for Medium and up). Cost +0.27 ms on an Alpine meadow at 2 m (in-app
   A/B). Harness: `scripts/terrain_materials.satcmd`.
 - **Procedural city lights (2026-09-29, `.plans/CITIES_PLAN.md` phase 1).** `cityLightPattern()` in
-  sat_sky.frag MULTIPLIES the night map's lights (after the blue base is removed) on land at night:
-  jittered-Voronoi districts of 4096 m (2 anchor cells, integer-anchored, on the erosion's face
-  projection; an arterial runs along the face seam) each with a street grid (angle shared over ~16 km,
-  spacing 90-240 m by the map's brightness at the district centre, organic warps, suburban drop-outs,
-  every 6th-8th street an arterial), lamps along the streets merging analytically into lines and then
-  a uniform glow as the footprint grows; macro brightness from commercial strips along the arterials,
-  soft dark voids and a 2-km value noise; sodium / LED tint over ~8 km; plus the REAL major roads
-  (`cityRoadLight`: Natural Earth 10m, 647k segments baked by `tools/make_city_roads.py` into
-  `assets/textures/city_roads.bin`, sky binding 28 storage buffer, a 0.25-degree lat/lon cell list;
-  distances in the anchor cell's frame, where a float ECEF endpoint minus the 2048-m-multiple cell
-  origin is exact). The mean ramps from 0.12 of the map close up (the old tiled detail texture averaged
-  ~0.1 of it: a city core at the night exposure is otherwise a lit sheet) to 1 at a 350-m footprint,
-  and the pattern stops at 400 m, so ORBIT IS BIT-IDENTICAL (checked: Europe from 400 km). Also on land
-  at sea level (`waterPx == 0`, most of the LA basin). Knobs: "City street lights"
+  sat_sky.frag MULTIPLIES the night map's lights (after the blue base is removed) on land at night.
+  Layout: jittered-Voronoi districts of 4096 m (2 anchor cells, integer-anchored, on the erosion's face
+  projection; an arterial runs along the face seam), but ONE street grid per region of 4x4 districts
+  (angle, base spacing 90-120 m, phase and arterial interval measured from the region's origin), so
+  streets run straight through district borders — districts differ only in which streets exist
+  (suburbs every other street and more drop-outs); a fifth of districts lay out their own grid
+  (T-junctions, organic warps). Light is LAMP POSTS, not glowing streets (user, 2026-09-29): posts
+  every 35 m (30 on arterials, 3.5x brighter), each a pool on the road (sigma 6 m) + a small head
+  (1.2 m, 30%), per-post brightness 0.5-1.5x and one in ten dark; they stay separate dots until the
+  pool is wider than ~0.4 of the spacing, then merge into lines, then a uniform glow (normalised to the
+  expected lamp density, mean 1). Macro: commercial strips along arterials, soft dark voids, a 2-km
+  value noise; sodium / LED tint over ~8 km. The REAL major roads (`cityRoadLight`: Natural Earth 10m,
+  647k segments baked by `tools/make_city_roads.py` into `assets/textures/city_roads.bin`, sky binding
+  28 storage buffer, a 0.25-degree lat/lon cell list; distances in the anchor cell's frame, where a
+  float ECEF endpoint minus the 2048-m-multiple cell origin is exact) are dotted the same way (posts
+  every 40 m). The mean ramps from 0.12 of the map close up (the old tiled detail texture averaged ~0.1
+  of it: a city core at the night exposure is otherwise a lit sheet) to 1 at a 350-m footprint, and
+  the pattern stops at 400 m, so ORBIT IS BIT-IDENTICAL (checked: Europe from 400 km). Also on land at
+  sea level (`waterPx == 0`, most of the LA basin). Knobs: "City street lights"
   (`clouds.city_lights_strength`, slot 58; 0 = the old detail texture) and "Major road lights"
   (`clouds.city_roads_strength`, slot 77), in the UBO where `oceanGlintPad0/1` were (renamed in place).
-  Cost +0.7 ms over LA from 10 km (in-app A/B). Harness: `scripts/city_lights.satcmd`.
+  Cost +0.8 ms over LA from 10 km (in-app A/B). Harness: `scripts/city_lights.satcmd`.
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the
