@@ -385,7 +385,8 @@ vec3 cityLampMean(float ledP) {
 // sigmas in base units; postU / postArtU: post spacing in base units. ledP: the share of LED posts
 // (cores and arterials whiter — the user, 2026-09-29); signP: neon signs among arterial posts.
 vec3 cityStreetDir(float x, float y, float sgPoolU, float sgHeadU, float postU, float postArtU,
-                   float keepE, float keepO, float artN, int salt, float tL, float ledP, float signP) {
+                   float keepE, float keepO, float artN, int salt, float tL, float ledP, float signP,
+                   inout vec3 poolOut) {
     float n0 = floor(x + 0.5);
     vec3  e  = vec3(0.0);
     for (int j = -1; j <= 1; ++j) {
@@ -417,8 +418,10 @@ vec3 cityStreetDir(float x, float y, float sgPoolU, float sgHeadU, float postU, 
                 pool += pw * c * exp(-0.5 * r2 / (sgPoolU * sgPoolU));
                 head += pw * c * exp(-0.5 * r2 / (sgHeadU * sgHeadU));
             }
-            eP = w * 0.15915494 * ((1.0 - kCityHeadShare) * pool / (sgPoolU * sgPoolU)
-                                   + kCityHeadShare * head / (sgHeadU * sgHeadU));
+            // The heads are the lights seen; the pools are light ON the ground (the caller lights the
+            // albedo with them, so the street and its texture show in each pool).
+            eP = w * 0.15915494 * kCityHeadShare * head / (sgHeadU * sgHeadU);
+            poolOut += (1.0 - tL) * w * 0.15915494 * (1.0 - kCityHeadShare) * pool / (sgPoolU * sgPoolU);
         }
         e += mix(eP, eL, tL);
     }
@@ -608,12 +611,14 @@ vec3 cityGlitterColor(float h, float ledP) {
 // One glitter level: cells of C = 8 * 2^k m (a divisor of the 4096-m anchor: world-fixed), a point in a
 // share `kGlitP` of them.
 const float kGlitP = 0.4;
-vec3 cityGlitterLevel(vec2 p2, ivec2 dAnc, int f, int k, float foot, float ledP, float twinkle) {
+vec3 cityGlitterLevel(vec2 p2, ivec2 dAnc, int f, int k, float foot, float ledP, float twinkle, float pres) {
     float C   = 8.0 * float(1 << k);
     int   per = 512 >> k;
     vec2  x   = p2 / C;
     vec2  xi  = floor(x);
-    float sg  = sqrt(1.0 + 0.36 * foot * foot) / C;    // ~a pixel (0.6 footprint), in cells
+    // A small source (0.3 m: porch lights, windows, signs) drawn at ~a pixel (0.6 footprint), in cells.
+    // 1 m made bokeh discs close up.
+    float sg  = sqrt(0.09 + 0.36 * foot * foot) / C;
     vec3  e   = vec3(0.0);
     // The 2x2 cells nearest x (a point is at most ~0.3 cell wide at the chosen level): half the hashes of
     // a 3x3 (performance matters: the night pattern is on every city pixel).
@@ -622,32 +627,44 @@ vec3 cityGlitterLevel(vec2 p2, ivec2 dAnc, int f, int k, float foot, float ledP,
         ivec2 o  = o0 + ivec2(n & 1, n >> 1);
         ivec2 ci = dAnc * per + ivec2(xi) + o;
         vec3  r  = tdRand3(ivec3(ci, 3701 + 17 * k + f));
-        if (r.z * 0.5 + 0.5 > kGlitP) continue;
+        if (r.z * 0.5 + 0.5 > pres) continue;
         vec3  r2 = tdRand3(ivec3(ci, 3703 + 17 * k + f)) * 0.5 + 0.5;
         vec2  d  = x - (xi + vec2(o) + 0.5 + 0.45 * r.xy);
         float w  = exp(1.3 * (r2.x * 2.0 - 1.0)) / 1.45;             // lognormal-ish, mean ~1
         // Scintillation at a distance (each point its own rate and phase; mean 1).
         w *= 1.0 + twinkle * 0.45 * sin(pc.waveTime * (5.0 + 5.0 * r2.y) + 6.2832 * r2.z);
-        e += w * cityGlitterColor(fract(r2.y * 7.31 + r2.z * 3.17), ledP)
-           * exp(-0.5 * dot(d, d) / (sg * sg)) * (0.15915494 / (sg * sg));
+        // A point-spread like the stars' and satellites': a tight core plus a halo (twice as wide) whose
+        // share grows with the point's brightness, so the brightest pop instead of every point being the
+        // same flat disc (the user: "look good, but are flat").
+        float hs  = 0.08 + 0.3 * smoothstep(0.8, 3.0, w);
+        float r2d = dot(d, d);
+        float g   = (1.0 - hs) * exp(-0.5 * r2d / (sg * sg)) / (sg * sg)
+                  + hs * exp(-0.125 * r2d / (sg * sg)) / (4.0 * sg * sg);
+        e += w * cityGlitterColor(fract(r2.y * 7.31 + r2.z * 3.17), ledP) * g * 0.15915494;
     }
     return e / kGlitP;
 }
 
-vec3 cityGlitter(vec2 p2, ivec2 dAnc, int f, float foot, float ledP) {
-    float lvl  = clamp(log2(max(foot * 4.0, 8.0) / 8.0), 0.0, 7.99);   // cell ~4 footprints
+// dens01 = the map's light as a fraction of a full core: it sets how many cells hold a point (a sparse
+// suburb is fewer points at the same brightness, not dimmer ones — the edges of a city stay crisp instead
+// of the map's 5-km blobs). The result is normalised to mean 1 for the caller's map multiply.
+vec3 cityGlitter(vec2 p2, ivec2 dAnc, int f, float foot, float ledP, float dens01) {
+    float lvl  = clamp(log2(max(foot * 4.0, 8.0) / 8.0), 0.0, 8.99);   // cell ~4 footprints, up to 4 km
     int   k0   = int(floor(lvl));
     float fr   = lvl - float(k0);
     float tw   = smoothstep(15.0, 80.0, foot);
-    vec3  a    = cityGlitterLevel(p2, dAnc, f, k0, foot, ledP, tw);
+    float sd   = clamp(dens01, 0.04, 1.0);
+    float pres = kGlitP * sd;
+    vec3  a    = cityGlitterLevel(p2, dAnc, f, k0, foot, ledP, tw, pres);
     if (fr > 0.02)
-        a = mix(a, cityGlitterLevel(p2, dAnc, f, k0 + 1, foot, ledP, tw), smoothstep(0.0, 1.0, fr));
-    return a;
+        a = mix(a, cityGlitterLevel(p2, dAnc, f, k0 + 1, foot, ledP, tw, pres), smoothstep(0.0, 1.0, fr));
+    return a / sd;
 }
 
 // The street posts of one grid (close up: all streets that exist; far: arterials only), normalised to
 // mean 1, and the commercial-strip macro of that grid.
-vec3 cityNightGrid(CityGrid g, CityLayout L, float foot, float ledP, vec3 meanC, bool artOnly, out float strip) {
+vec3 cityNightGrid(CityGrid g, CityLayout L, float foot, float ledP, vec3 meanC, bool artOnly, out float strip,
+                   out vec3 poolG) {
     vec2  u = g.u;
     float sp = g.sp, artN = g.artN;
     float fh     = 0.25 * foot * foot;
@@ -658,9 +675,11 @@ vec3 cityNightGrid(CityGrid g, CityLayout L, float foot, float ledP, vec3 meanC,
     float kE = artOnly ? 0.0 : L.keepE, kO = artOnly ? 0.0 : L.keepO;
     float linesW = kCityArtBoost / (artN * postArtU)
                  + (1.0 - 1.0 / artN) * 0.5 * (kE + kO) / postU;
-    vec3 eg = cityStreetDir(u.x, u.y, sgPool, sgHead, postU, postArtU, kE, kO, artN, g.saltX, tL, ledP, 0.04)
-            + cityStreetDir(u.y, u.x, sgPool, sgHead, postU, postArtU, kE, kO, artN, g.saltY, tL, ledP, 0.04);
+    vec3 pl = vec3(0.0);
+    vec3 eg = cityStreetDir(u.x, u.y, sgPool, sgHead, postU, postArtU, kE, kO, artN, g.saltX, tL, ledP, 0.04, pl)
+            + cityStreetDir(u.y, u.x, sgPool, sgHead, postU, postArtU, kE, kO, artN, g.saltY, tL, ledP, 0.04, pl);
     vec3 eG = eg / (2.0 * linesW);
+    poolG   = pl / (2.0 * linesW);
     // Traffic lights where two arterials cross, cycling with sim time. Close up only.
     vec2 ni = floor(u + 0.5);
     if (tL < 1.0 && mod(ni.x, artN) < 0.5 && mod(ni.y, artN) < 0.5) {
@@ -683,7 +702,7 @@ float farmsteadLights(vec2 p2, ivec2 dAnc, int f, float foot);
 
 // The night pattern: the lights at the layout, the pixel footprint (m) and the ground's up-facing
 // (nUp). Returns an RGB multiplier for the night map's lights (mean ~1 in luminance).
-vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp) {
+vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp, out vec3 poolM) {
     // Lamp types: white LED dominates city cores, sodium the suburbs; a regional bias from a 4-km
     // value noise (continuous).
     float ledP  = clamp(mix(0.25, 0.85, L.dens) + 0.35 * cityValue2(L.p2, L.dAnc, 4096.0, 4129 + L.f), 0.05, 0.95);
@@ -693,11 +712,14 @@ vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp) {
     // this faint the borders do not read).
     bool  artOnly = foot > 10.0;
     float strip;
-    vec3  eS = cityNightGrid(L.g, L, foot, ledP, meanC, artOnly, strip);
-    vec3  eG = cityGlitter(L.p2, L.dAnc, L.f, foot, ledP);
-    // Close: posts 55%, glitter (porch lights, windows, lots) 45%. Far: arterials 15%, glitter 85%.
+    vec3  pS;
+    vec3  eS = cityNightGrid(L.g, L, foot, ledP, meanC, artOnly, strip, pS);
+    vec3  eG = cityGlitter(L.p2, L.dAnc, L.f, foot, ledP, L.lum / 0.25);
+    // Close: posts 55% (heads here, their pools lit onto the ground below), glitter (porch lights, windows,
+    // lots) 45%. Far: arterials 15%, glitter 85%.
     float near = 1.0 - smoothstep(4.0, 10.0, foot);
-    vec3  eCityC = mix(0.15 * eS + 0.85 * eG, 0.55 * eS + 0.45 * eG, near);
+    vec3  eCityC = mix(0.15 * eS + 0.85 * eG, 0.7 * eS + 0.3 * eG, near);
+    poolM = 0.7 * pS * near;
     // Countryside (the map's faintest lights): farmsteads, not a city.
     float rural = 1.0 - smoothstep(0.002, 0.012, L.lum);
     if (rural > 0.0)
@@ -720,10 +742,22 @@ vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp) {
     // in cores); the mean ramps to 1 by the footprint the caller stops at (400 m: complete below a LEO
     // pixel, ~470 m, or orbit views changed).
     e *= mix(0.12, 1.0, smoothstep(40.0, 350.0, foot));
-    // The glitter becomes the map's smooth glow only in the last stretch before the hand-off.
-    float tG = smoothstep(260.0, 380.0, foot);
-    vec3  lum3 = vec3(dot(eC, vec3(0.2126, 0.7152, 0.0722)));
-    return e * mix(eC, mix(lum3, vec3(1.0), 1.0), tG);
+    // No fade to the map any more: the glitter continues at every distance (cityLightFar past 400 m).
+    poolM *= e;
+    return e * eC;
+}
+
+// Past a 400-m footprint (high altitude, orbit): the glitter alone on the frame — no street layout —
+// so a city is a field of points to the horizon and from orbit, not the map's 5-km blobs.
+vec3 cityLightFar(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float foot, float lum, float nUp) {
+    vec2  p2;
+    ivec2 dAnc;
+    int   f;
+    vec3  rel, aup;
+    cityFrame(q, enuX, enuY, enuZ, p2, dAnc, f, rel, aup);
+    float dens = smoothstep(0.004, 0.12, lum);
+    float ledP = clamp(mix(0.25, 0.85, dens) + 0.35 * cityValue2(p2, dAnc, 4096.0, 4129 + f), 0.05, 0.95);
+    return cityGlitter(p2, dAnc, f, foot, ledP, lum / 0.25) * mix(0.04, 1.0, smoothstep(0.86, 0.96, nUp));
 }
 
 // ── Day: the same layout as albedo (cities phase 2) ────────────────────────────────────────────
@@ -3326,11 +3360,14 @@ void main() {
         bool  cityLand   = tHit > 0.0 || (waterPx == 0 && tSeaLvl > 0.0);
         CityLayout cityL;
         bool  cityLOk    = false;
+        bool  cityFar    = false;
         float cFoot      = 1e9;
+        vec3  cQ         = vec3(0.0);
         if (cityLand && cloud.cityLightsStrength > 0.0 && cityLum > 1e-5 && tdEnabled()) {
             float cT = tHit > 0.0 ? tHit : tSeaLvl;
-            vec3  cQ = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
+            cQ    = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
             cFoot = pixAngle * cT / max(abs(dot(dir, shadingN)), 0.2);
+            cityFar = cFoot >= 400.0;
             if (cFoot < 400.0) {   // past it both patterns are uniform: orbit sees the maps as before
                 cityL   = cityLayout(cQ, enuX, enuY, enuZ, cityLum, cFoot < 150.0);
                 cityLOk = true;
@@ -3615,12 +3652,27 @@ void main() {
         // (measured on the map, 2026-09-29). A plain subtraction, no knee: it is linear above the
         // base, so subtracting after the texture filter is ~subtracting before it — a knee on the
         // filtered value drew every 5 km texel as a hard-edged square from orbit.
-        // The procedural street lights on the same layout (computed above, with the day albedo).
-        if (cityLOk && twilightFrac < 1.0) {
-            vec3 pat = cityLightPattern(cityL, uvSurf, cFoot, dot(shadingN, normalize(hitPt)));
-            cityLights *= mix(vec3(1.0), pat, cloud.cityLightsStrength);
+        // The procedural lights on the same layout (computed above, with the day albedo): the lamps'
+        // heads and the glitter are emission; the lamps' POOLS light the ground's own albedo (the city
+        // layout, the ground textures) and follow its shading normal (terrain relief, detail, micro bump).
+        vec3 cityPool = vec3(0.0);
+        if (twilightFrac < 1.0) {
+            float cNUp = dot(shadingN, normalize(hitPt));
+            if (cityLOk) {
+                vec3 poolM;
+                vec3 pat = cityLightPattern(cityL, uvSurf, cFoot, cNUp, poolM);
+                cityPool = cityLights * poolM * cloud.cityLightsStrength;
+                cityLights *= mix(vec3(1.0), pat, cloud.cityLightsStrength);
+            } else if (cityFar) {
+                vec3 pat = cityLightFar(cQ, enuX, enuY, enuZ, cFoot, cityLum, cNUp);
+                cityLights *= mix(vec3(1.0), pat, cloud.cityLightsStrength);
+            }
         }
-        vec3 tNight     = cityLights * (0.12 * (1.0 - twilightFrac));       // city lights: emissive only, never the surface
+        // Pools on the albedo: relative to a mid grey (0.12), x the face's up-facing (the lamps are
+        // overhead: relief and bumps shade), x the detail AO.
+        vec3  poolAlb  = clamp(dayColor / 0.12, vec3(0.0), vec3(4.0));
+        float poolLamb = pow(clamp(dot(shadingN, normalize(hitPt)), 0.0, 1.0), 1.5);
+        vec3 tNight     = (cityLights + cityPool * poolAlb * poolLamb * terrainAO) * (0.12 * (1.0 - twilightFrac));
         // Farmsteads in farmland (a floor: the night map is ~0 over real farmland — 0.0006 in rural Iowa —
         // so its own lights never showed). Equivalent to a map value of 0.004; faded out before orbital
         // footprints like every other pattern (orbit unchanged).

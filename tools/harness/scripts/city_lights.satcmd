@@ -67,6 +67,17 @@ time sun midnight
 camera az=260 el=-7 fov=60
 wait settle
 capture c_sandia
+# close: pools of lamp light on the ground's albedo and relief
+observer lat=34.05 lon=-118.33 agl=150
+time sun midnight
+camera az=90 el=-40 fov=60
+wait settle
+capture c_la150
+observer lat=34.12 lon=-118.33 agl=60
+time sun midnight
+camera az=180 el=-15 fov=60
+wait settle
+capture c_hills60
 set clouds.city_lights_strength 1
 # cost: LA from 10 km
 observer lat=33.95 lon=-118.45 alt=10000

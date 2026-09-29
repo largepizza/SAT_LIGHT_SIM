@@ -3829,6 +3829,15 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   blur lit the Sandias). Roads: the cell list is 0.125 degrees (43 MB; 0.25 put ~40 segments in an LA
   cell: 0.47 ms -> 0.2). Cost now +1.1 ms at LA 10 km by night (pattern 0.9, roads 0.2), +0.8 by day,
   +0.5 rural. Harness: `scripts/city_lights.satcmd` (incl. Mount Wilson / Sandia Crest low angles).
+  **Night v3 (2026-09-29):** the glitter continues at EVERY distance (`cityLightFar`: frame + glitter
+  only, past a 400-m footprint; lattice levels to 4-km cells) — the smooth 5-km map read as blobs, so
+  orbit views of cities CHANGED on purpose (fields of points); the day side is still orbit-identical.
+  Glitter density follows the map (`dens01` = lum / 0.25 sets how many cells hold a point: a suburb is
+  fewer points at the same brightness, city edges stay crisp). Points are 0.3-m sources with a star-like
+  point-spread (tight core + a 2x halo whose share grows with brightness — the user found uniform discs
+  "flat"). Street posts split into HEADS (emission) and POOLS: the pools light the final ground albedo
+  (city layout, textures, fields) x the shading normal's up-facing (relief, detail, micro bump) x AO,
+  so the street and its texture show in each pool. Close up: posts 70%, glitter 30%.
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the
