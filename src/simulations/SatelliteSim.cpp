@@ -2280,10 +2280,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.flatSunGainScale = flatSunGainScale;
         cp.cloudDistFadeStartM = cloudDistFadeStartM;
         cp.cloudDistFadeEndM = cloudDistFadeEndM;
-        cp.fogTopAltM = fogTopAltM; // C11
-        cp.fogDensity = fogDensity;
-        cp.fogCoverage = fogCoverage;
-        cp.fogSunGain = fogSunGain;
+        cp.fogTopAltM = 0.0f;   // v1's fog, retired 2026-09-29 (cv2FogDust); fields unread
+        cp.fogDensity = 0.0f;
+        cp.fogCoverage = 0.0f;
+        cp.fogSunGain = 0.0f;
         cp.terrainDistFadeStartM = terrainDistFadeStartM;
         cp.terrainDistFadeEndM = terrainDistFadeEndM;
         // Procedural terrain detail: anchor the noise lattice at the observer's sea-level point, in

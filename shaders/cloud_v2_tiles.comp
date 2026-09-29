@@ -1,0 +1,69 @@
+#version 450
+// ── Clouds v2: the adaptive rate's tile classification (2026-09-29) ─────────────────────────────────
+// One workgroup per 32x32 half-res tile (the march's pass A tiles), one thread per 2x2 block (its sparse-
+// grid pixel this frame). A tile is marched at full rate (pass B) when its clouds move by more than
+// cv2.misc2.w px of parallax a frame — the eye's displacement plus the volumes' slide, over last frame's
+// resolved depth — or its history comes from off screen (the edge a turn uncovers). Listed tiles go into
+// TileBuf (indirect args for pass B: 4 workgroups each) and flagged for the march and the resolve.
+// This used to be a vote inside the march itself; that code, however small, flipped cloud_v2_march.comp
+// from 128 registers to ~224 (+19% at full rate). Same descriptor set and push constants as the march.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.comp)
+    mat4  skyView;
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;
+} pc;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_ONLY
+#define CV2_PARAMS_BINDING 1
+#include "clouds_v2.glsl"
+layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;       // for the half-res size
+layout(set = 0, binding = 16) uniform sampler2D prevResDepthTex;    // last frame's resolved depth (m)
+layout(std430, set = 0, binding = 19) buffer TileBuf { uint tPad, tDispX, tDispY, tDispZ; uint tList[4096]; uint tFlag[4096]; };
+
+shared uint sVote;
+
+void main()
+{
+    if (gl_LocalInvocationIndex == 0u) sVote = 0u;
+    barrier();
+
+    ivec2 halfSize = textureSize(sceneDepthTex, 0);
+    ivec2 qSize    = (halfSize + 1) / 2;
+    ivec2 q        = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 pix      = min(q * 2 + ivec2(cv2.frame.zw), halfSize - 1);
+    if (q.x < qSize.x && q.y < qSize.y) {
+        float tanHalf = tan(pc.fovYRad * 0.5);
+        float pa      = 2.0 * tanHalf / float(halfSize.y);
+        float d       = texelFetch(prevResDepthTex, pix, 0).x;
+        bool  vote    = d > 0.0 && (length(cv2.obsDelta.xyz) + cv2.motion.x) / (d * pa) > cv2.misc2.w;
+        // History from off screen: the rotation-only reprojection of this pixel's ray.
+        vec2  ndc  = ((vec2(pix) + 0.5) / vec2(halfSize)) * 2.0 - 1.0;
+        vec3  dENU = normalize(mat3(transpose(pc.skyView)) * vec3(ndc.x * tanHalf * pc.aspect, -ndc.y * tanHalf, -1.0));
+        vec3  nz   = normalize(pc.obsECEFDir.xyz);
+        vec3  nx   = normalize(cross(vec3(0.0, 0.0, 1.0), nz));
+        vec3  dE   = mat3(nx, cross(nz, nx), nz) * dENU;
+        vec3  pz   = normalize(cv2.prevObs.xyz);
+        vec3  px   = normalize(cross(vec3(0.0, 0.0, 1.0), pz));
+        vec3  cI   = mat3(cv2.prevSkyView) * (transpose(mat3(px, cross(pz, px), pz)) * dE);
+        vec2  uvP  = vec2(cI.x / (-cI.z) / (cv2.prevObs.w * cv2.obsDelta.w), -cI.y / (-cI.z) / cv2.prevObs.w) * 0.5 + 0.5;
+        vote = vote || cI.z >= 0.0 || any(lessThan(uvP, vec2(0.0))) || any(greaterThan(uvP, vec2(1.0)));   // no margin: a pan uncovers ~2 px a frame
+        if (vote) atomicOr(sVote, 1u);
+    }
+    barrier();
+    if (gl_LocalInvocationIndex == 0u && sVote != 0u) {
+        uint tileId = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x;
+        uint i = atomicAdd(tDispX, 4u) >> 2u;
+        tList[i] = tileId;
+        tFlag[tileId] = 1u;
+    }
+}

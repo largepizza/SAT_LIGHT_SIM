@@ -226,7 +226,7 @@ void main()
     } else {
         outC = isNew ? mix(nc, blur, 0.8) : spatial;
     }
-    if (int(cv2.shell.z + 0.5) == 11 && tFull)          // debug view 11: the adaptive rate's full-rate tiles
+    if (cv2.fog2.z > 0.5 && tFull)          // debug view 11 (fog2.z): the adaptive rate's full-rate tiles
         outC.rgb = outC.rgb * vec3(1.3, 0.7, 0.7) + vec3(0.05, 0.0, 0.0);
     imageStore(outColor, c, outC);
     imageStore(outDepth, c, vec4(nd, 0.0, 0.0));

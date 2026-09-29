@@ -562,6 +562,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         const uint32_t specB[3] = {cv2MarchWg[0], cv2MarchWg[1], 1u};
         cv2MarchPassBPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout, specB, 3);
     }
+    cv2TilesPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout);
     cv2ResolvePipeline = makeComputePipeline(ctx, "shaders/cloud_v2_resolve.comp.spv", cv2ResolvePipeLayout);
     cv2LightningPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout);
     cv2LightVolPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightvol.comp.spv", cv2MarchPipeLayout);
@@ -783,6 +784,7 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
         }
     }
     swap(cv2ResolvePipeline, "shaders/cloud_v2_resolve.comp.spv", cv2ResolvePipeLayout, nullptr);
+    swap(cv2TilesPipeline, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cv2LightningPipeline, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cv2LightVolPipeline, "shaders/cloud_v2_lightvol.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cloudMarchPipeline, "shaders/cloud_march.comp.spv", cloudMarchPipeLayout, nullptr);   // the composite
@@ -799,6 +801,8 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     if (cv2LightningPipeline) vkDestroyPipeline(device, cv2LightningPipeline, nullptr);
     if (cv2MarchPassBPipeline) vkDestroyPipeline(device, cv2MarchPassBPipeline, nullptr);
     cv2MarchPassBPipeline = VK_NULL_HANDLE;
+    if (cv2TilesPipeline) vkDestroyPipeline(device, cv2TilesPipeline, nullptr);
+    cv2TilesPipeline = VK_NULL_HANDLE;
     if (cv2TileBuf) vkDestroyBuffer(device, cv2TileBuf, nullptr);
     if (cv2TileMem) vkFreeMemory(device, cv2TileMem, nullptr);
     cv2TileBuf = VK_NULL_HANDLE; cv2TileMem = VK_NULL_HANDLE;
@@ -926,7 +930,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CloudSunRayleigh, cv2TwilightSky, cv2FlowWarp, cv2FlowPeriodKm, cv2LayerSpread,
                     cv2TopHeavy, cv2TowerTop, cv2CirrusFieldKm, cv2CirrusFlow, cv2BaseFlatness,
                     cv2CbColumns, cv2CbSpacingKm, cv2CbRadiusKm, cv2CbCumulusTopKm, cv2CbWaist, cv2CbFlare,
-                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar})
+                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
+                    cv2DustHeightM, cv2DustDensity, (float)(debugDisableMask & 2048u)})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -1075,7 +1080,21 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         hi = std::max(hi, cv2Types[i].alt.x + (cv2Types[i].alt.y - cv2Types[i].alt.x) * 1.35f);
     }
     // Rain falls to the ground: with it on, the shell reaches sea level.
-    p.shell = glm::vec4(cv2RainAmount > 0.0f ? 0.0f : std::max(lo, 0.0f), hi, (float)cv2DebugView, cv2DetailLodStartM);
+    // Fog and dust (cv2FogDust); knockout bit 2048 (the old "fog layer" bit, which the Low / Planetarium /
+    // Potato presets set) switches them off.
+    const bool fogOff = (debugDisableMask & 2048u) != 0u;
+    p.fog  = glm::vec4(fogOff ? 0.0f : std::max(cv2FogAmount, 0.0f), std::max(cv2FogDepthM, 20.0f),
+                       std::max(cv2FogDensity, 0.0f), fogOff ? 0.0f : std::max(cv2DustAmount, 0.0f));
+    p.fog2 = glm::vec4(std::max(cv2DustHeightM, 100.0f), std::max(cv2DustDensity, 0.0f), cv2DebugView == 11 ? 1.0f : 0.0f, 0.0f);
+    {   // The Sun, Earth-fixed (the sim's rotation angle kOmegaEarth t, as the weather bake uses).
+        const double g = std::fmod(satphot::kOmegaEarth * simT, 6.283185307179586);
+        const glm::dvec3 si = glm::dvec3(sunDirECI);
+        p.sunE = glm::vec4(glm::vec3(glm::normalize(glm::dvec3(si.x * std::cos(g) + si.y * std::sin(g),
+                                                               -si.x * std::sin(g) + si.y * std::cos(g), si.z))), 0.0f);
+    }
+    const bool lowFloor = cv2RainAmount > 0.0f || p.fog.x > 0.0f || p.fog.w > 0.0f;   // they reach the ground
+    p.shell = glm::vec4(lowFloor ? 0.0f : std::max(lo, 0.0f), hi, cv2DebugView == 11 ? 0.0f : (float)cv2DebugView,
+                        cv2DetailLodStartM);
     // zw: cos/sin of the drift since last frame (the resolve turns a cloud point by it).
     p.extra = glm::vec4(cv2EdgeSharpness, cv2WeatherWarpKm * 1000.0f / (float)R, (float)cDD, (float)sDD);
     p.cover = glm::vec4(cv2CoverClear, std::max(cv2CoverFull, cv2CoverClear + 0.01f), (float)cD, (float)sD);
@@ -1112,7 +1131,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const uint32_t tiles = ((cv2HalfW + 31) / 32) * ((cv2HalfH + 31) / 32);
         cv2AdaptiveNow = cv2FullRateNow && !cv2HalfRateNow && cv2AdaptiveRate > 0.5f && valid &&
                          glm::length(eye - cv2PrevEye) <= 150.0 && cv2MarchWg[0] == 16 && cv2MarchWg[1] == 16 &&
-                         tiles <= kCv2MaxTiles && cv2MarchPassBPipeline != VK_NULL_HANDLE;
+                         tiles <= kCv2MaxTiles && cv2MarchPassBPipeline != VK_NULL_HANDLE && cv2TilesPipeline != VK_NULL_HANDLE;
         if (cv2AdaptiveNow)
             cv2FullRateNow = false;
     }
@@ -1264,6 +1283,11 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         vkCmdUpdateBuffer(cmd, cv2TileBuf, 0, sizeof(hdr), hdr);
         memoryBarrier(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
                       VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        // The tile classification: one 16x16 workgroup per 32x32 tile (the sparse grid's dispatch).
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2TilesPipeline);
+        vkCmdDispatch(cmd, (cv2QuarterW + 15) / 16, (cv2QuarterH + 15) / 16, 1);
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeline);
     const uint32_t gw = cv2HalfRateNow ? (cv2HalfW + 1) / 2 : cv2FullRateNow ? cv2HalfW : cv2QuarterW;

@@ -446,6 +446,9 @@ json SatelliteSim::harnessStateJson()
     if (selectedPlanetIndex >= 0)
         sel["planet"] = kPlanetNames[selectedPlanetIndex];
     j["selection"] = sel;
+    // The v2 march's rate this frame: sparse (1 pixel in 4), full, half (checkerboard) or adaptive.
+    j["clouds_v2"] = {{"rate", cv2AdaptiveNow ? "adaptive" : cv2HalfRateNow ? "half" : cv2FullRateNow ? "full" : "sparse"},
+                      {"still_frames", cv2StillFrames}, {"history_valid", cv2HistoryValid}};
 
     static const char *kBucketKeys[8] = {"scene_depth", "beam_cloud_block", "orbit_compute", "cloud_march",
                                          "flare_compute", "sky_background_draw", "satellite_star_draw", "ui_overlay"};

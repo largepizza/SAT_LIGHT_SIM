@@ -93,7 +93,7 @@ static constexpr DebugToggleEntry kDebugToggles[] = {
     {256u, "Cloud shadow (per-pixel)", "cloud_shadow_per_pixel"},
     {512u, "Beam self-march dispatch", "beam_self_march_dispatch"},
     {1024u, "Scene depth pass", "scene_depth_pass"},
-    {2048u, "Fog layer (C11)", "fog_layer"},
+    {2048u, "Fog + dust (clouds v2)", "fog_layer"},
     {4096u, "Satellite point cloud occlusion", "sat_point_cloud_occlusion"},
     {8192u, "Beam pointing rays (per-pixel)", "beam_pointing_rays"},
     {16384u, "Cirrus march", "cirrus_march"},
@@ -4807,12 +4807,15 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Twilight band lo", &twilightBandLo, -0.9f, 0.0f, 0.01f, "%.2f", 49},
     };
 
-    // C11 ground fog layer (fogMarchCS, cloud_march.comp).
+    // Fog + dust: layers of the v2 field (cv2FogDust, clouds_v2.glsl), driven by the weather cube.
+    // (v1's ground fog shell, fogMarchCS, was retired 2026-09-29.)
     CloudSlider secFog[] = {
-        {"Fog top altitude (m)", &fogTopAltM, 50.0f, 200000.0f, 50.0f, "%.0f", 55},
-        {"Fog density", &fogDensity, 0.0f, 10.0f, 0.1f, "%.1f", 56},
-        {"Fog coverage", &fogCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 57},
-        {"Fog sun gain", &fogSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 58},
+        {"Fog amount", &cv2FogAmount, 0.0f, 2.0f, 0.05f, "%.2f", 194},
+        {"Fog depth (m)", &cv2FogDepthM, 20.0f, 1500.0f, 10.0f, "%.0f", 195},
+        {"Fog density (1/m)", &cv2FogDensity, 0.0f, 0.1f, 0.001f, "%.3f", 196},
+        {"Dust amount", &cv2DustAmount, 0.0f, 3.0f, 0.05f, "%.2f", 197},
+        {"Dust height (m)", &cv2DustHeightM, 100.0f, 6000.0f, 50.0f, "%.0f", 198},
+        {"Dust density (1/m)", &cv2DustDensity, 0.0f, 0.002f, 0.00001f, "%.5f", 199},
     };
 
     // Atmospheric scattering strength — scales the physical Rayleigh/Mie coefficients shared
@@ -4840,7 +4843,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         CLOUD_SEC("Cirrus (high layer)", secHigh),
         CLOUD_SEC("Legacy cirrus (march knocked out only)", secCirrus),
         CLOUD_SEC("Flat layers", secFlat),
-        CLOUD_SEC("Ground fog", secFog),
+        CLOUD_SEC("Fog & dust", secFog),
         CLOUD_SEC("Atmospheric scattering", secAtmos),
     };
 #undef CLOUD_SEC
@@ -6266,6 +6269,12 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2EvoDiurnal = c.value("evo_diurnal", cv2EvoDiurnal);
         cv2HalfRateMoving = c.value("half_rate_moving", cv2HalfRateMoving);
         cv2AdaptiveRate = c.value("adaptive_rate", cv2AdaptiveRate);
+        cv2FogAmount = c.value("fog_amount", cv2FogAmount);
+        cv2FogDepthM = c.value("fog_depth_m", cv2FogDepthM);
+        cv2FogDensity = c.value("fog_density", cv2FogDensity);
+        cv2DustAmount = c.value("dust_amount", cv2DustAmount);
+        cv2DustHeightM = c.value("dust_height_m", cv2DustHeightM);
+        cv2DustDensity = c.value("dust_density", cv2DustDensity);
         cv2AdaptiveParallaxPx = c.value("adaptive_parallax_px", cv2AdaptiveParallaxPx);
         cv2Godrays = c.value("godrays", cv2Godrays);
         cv2GodrayRangeKm = c.value("godray_range_km", cv2GodrayRangeKm);
@@ -6422,10 +6431,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         beamClusterDirThresholdDeg = c.value("beam_cluster_dir_threshold_deg", beamClusterDirThresholdDeg);
         beamClusterFadeInS = c.value("beam_cluster_fade_in_s", beamClusterFadeInS);
         beamClusterFadeOutS = c.value("beam_cluster_fade_out_s", beamClusterFadeOutS);
-        fogTopAltM = c.value("fog_top_alt_m", fogTopAltM);
-        fogDensity = c.value("fog_density", fogDensity);
-        fogCoverage = c.value("fog_coverage", fogCoverage);
-        fogSunGain = c.value("fog_sun_gain", fogSunGain);
         cityLightBlurLod = c.value("city_light_blur_lod", cityLightBlurLod);
         cloudWarpStrength = c.value("cloud_warp_strength", cloudWarpStrength);
         cloudWarpFreq = c.value("cloud_warp_freq", cloudWarpFreq);
@@ -6648,10 +6653,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"beam_cluster_dir_threshold_deg", beamClusterDirThresholdDeg},
         {"beam_cluster_fade_in_s", beamClusterFadeInS},
         {"beam_cluster_fade_out_s", beamClusterFadeOutS},
-        {"fog_top_alt_m", fogTopAltM},
-        {"fog_density", fogDensity},
-        {"fog_coverage", fogCoverage},
-        {"fog_sun_gain", fogSunGain},
         {"city_light_blur_lod", cityLightBlurLod},
         {"cloud_warp_strength", cloudWarpStrength},
         {"cloud_warp_freq", cloudWarpFreq},
@@ -6690,6 +6691,12 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"evo_diurnal", cv2EvoDiurnal},
         {"half_rate_moving", cv2HalfRateMoving},
         {"adaptive_rate", cv2AdaptiveRate},
+        {"fog_amount", cv2FogAmount},
+        {"fog_depth_m", cv2FogDepthM},
+        {"fog_density", cv2FogDensity},
+        {"dust_amount", cv2DustAmount},
+        {"dust_height_m", cv2DustHeightM},
+        {"dust_density", cv2DustDensity},
         {"adaptive_parallax_px", cv2AdaptiveParallaxPx},
         {"godrays", cv2Godrays},
         {"godray_range_km", cv2GodrayRangeKm},

@@ -389,8 +389,8 @@ cloud occlusion march — see "Subsystem: Reflect-Orbital Beam Cloud Occlusion" 
 Design log and status: `.plans/CLOUDS_V2_PLAN.md`. The only volumetric cloud renderer: v1's
 `cloudMarchCS`, its ground shadow, its copy in `beam_self_march.comp` and its sliders are gone (there
 is no toggle). Every tunable is a Clouds-tab slider AND a settings.json key under `clouds_v2`, so the
-harness can sweep it (`set clouds_v2.<key>`). Cirrus (`cirrusMarchCS`), fog and the flat 2D layers are
-still the older model and keep their own sliders ("Cirrus", "Flat layers" sections) — the old cirrus
+harness can sweep it (`set clouds_v2.<key>`). Cirrus (`cirrusMarchCS`) and the flat 2D layers are
+still the older model (v1's ground fog was retired 2026-09-29 for the v2 fog + dust, below) and keep their own sliders ("Cirrus", "Flat layers" sections) — the old cirrus
 only as the stand-in when the volumetric march is knocked out (see HIGH LAYER below).
 - **One field** (`shaders/include/clouds_v2.glsl`, `cv2Field`) serves the view march, its light march,
   the ground shadow (`cloudGroundShadowV2`, cloud_march.comp) and beam occlusion (beam_self_march.comp).
@@ -774,19 +774,42 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   `misc2.w`; rate `misc.z` = 3):** where the march used to go full rate because the view moved, it runs the
   sparse grid (pass A, `cloud_v2_march.comp`) and marches at full rate only the 32x32 half-res tiles whose
   clouds show more than that parallax a frame (|eye delta| + the volumes' slide over last frame's resolved
-  depth, march binding 16) or whose history comes from off screen (a pan's uncovered edge). Pass A votes
-  per workgroup and a listed tile returns before marching (`TileBuf`, binding 19: indirect args + tile
-  list + flags, reset by fill/update each frame); pass B (`cv2MarchPassBPipeline`, the same shader with
+  depth, march binding 16) or whose history comes from off screen (a pan's uncovered edge). A classify pass
+  (`cloud_v2_tiles.comp`, one 16x16 workgroup per 32x32 tile, same set) lists them (`TileBuf`, binding 19:
+  indirect args + tile list + flags, reset by fill/update each frame) and pass A returns on a listed tile; pass B (`cv2MarchPassBPipeline`, the same shader with
   spec constant 2 = 1, `vkCmdDispatchIndirect`, 4 workgroups per tile) marches them into `cv2FullImg` /
   `cv2FullDepthImg` (bindings 17/18) AND writes their sparse-grid samples, so the quarter grid stays
   complete; the resolve (bindings 6-8) takes a listed tile's pixels as fresh (`tileFull`, `freshAt`).
   Why tiles and two passes: skipping pixels inside a full-rate dispatch saves nothing (a warp costs its
   slowest lane). Not used without history, in fast flight (> 150 m a frame: full rate + blue noise) or
-  with a workgroup size other than 16x16. Measured (harness `path play`, now reporting `gpu_ms_mean`):
-  anvils from 31 km flying 16.2 -> 8.9 ms, panning 23.6 -> 8.6; 7.5 km panning 12.0 -> 6.7; images match
-  full rate (mean |diff| < 1/255, <= 0.2% of pixels past 12, no tile seams at 8x). At 550 m/s nothing
-  passes 1 px (the deck below is ~0.5-1 px): sparse + history equals full rate there. Debug view 11 tints
-  the full-rate tiles red (an overlay; the march keeps its transmittance for it).
+  with a workgroup size other than 16x16. **The vote was first inside the march, and it (together with a
+  one-line `dbg != 11` exemption) flipped the march to ~224 registers: +19% at full rate** — it is its own
+  pass for that reason, and debug view 11 reaches only the resolve (`fog2.z`; the march sees view 0). The
+  off-screen test has NO margin: a pan uncovers ~2 half-res px a frame, and a 1% margin (~10 px) meant
+  no edge tile ever voted. Measured at 128 registers (harness `path play` reports `gpu_ms_mean`): storm
+  views flying / panning 20.2 -> 9.5 ms, 22.5 -> 7.9-10.6; light views ~equal — there the frame is set by
+  the longest (horizon) rays, so sparse and full cost about the same (a still anvil view: 6.0 vs 6.2 ms).
+  Images match full rate (mean |diff| < 1/255, <= 0.2% of pixels past 12, no tile seams at 8x). At 550 m/s
+  nothing passes 1 px (the deck below is ~0.5-1 px). Debug view 11 tints the full-rate tiles red. Harness
+  `state` reports the rate (`clouds_v2.rate`: sparse / full / half / adaptive).
+- **Fog + dust (2026-09-29, replaced v1's `fogMarchCS`, a global 1.4 km noise haze):** `cv2FogDust`
+  (clouds_v2.glsl), driven by the weather cube. FOG over the SMOOTHED ground (`cv2Ground`, ~15 km), so
+  valleys fill deeper and ridges stand out: radiation fog on clear-to-broken nights in valleys (ground
+  below its ~80 km mean) and on low ground by the sea, burning off by ~12 deg of Sun; sea / advection fog
+  on the coast and at sea under a stratiform regime, day or night; light mist in rain; patchy on the
+  cluster field; its top undulates with the low shape noise (a flat sheet read as a painted plane). DUST
+  over dry land (the map clear over ~80 km, not sea, not rain) in plumes on the coarse cluster field,
+  falling off with height; tan albedo, forward phase, a diffuse multiple-scattering term (without it a
+  dusty sky read as a grey veil). **Not part of `cv2Field`:** any addition to the main march loop — even an
+  unused `CV2Field::dust` member — flipped the march to ~224 registers. They get a 20-step march of their
+  own AFTER the clouds' (u^2 spacing through their band, cut at the scene depth and 150 km), lit cheaply
+  (the key light at the band's middle x the map's cover overhead x the path to the fog's top; sky zenith;
+  Moon and city light at night), composited by distance around the clouds' mean depth. Cost ~0 at the
+  benchmark views. Settings (section "Fog & dust", slots 194-199): `fog_amount` 0.6, `fog_depth_m` 250,
+  `fog_density` 0.012, `dust_amount` 0.5, `dust_height_m` 1500, `dust_density` 0.00025. Knockout bit 2048
+  (was "fog layer"; the Low / Planetarium / Potato presets set it) switches both off. Harness scenes:
+  harness_runs/fogdust (Po valley at sunrise from 2.5 km is the reference look). Not yet: fog in the light
+  march / ground shadow / beams, wind-driven dust storms (needs a wind field).
 - **Light volume + godrays (2026-09-29, EXPERIMENTAL, off by default):** `cloud_v2_lightvol.comp` bakes a
   camera-centred 128 x 128 x 32 R16F volume of sun transmittance (march set bindings 13 storage / 14
   sampled; +-"God ray range" `godray_range_km` 400 about the eye, sea level to 16 km, gnomonic columns; 4 of
@@ -857,9 +880,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
-- The Clouds tab's slider slots: `kCloudSliderSlots` (194) sizes all four per-slider arrays and
-  `cloudBufs`; v2 uses 112-188 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
-  sliders: 77 (slots 189-193: Cb fill, cumulus variation, sprites, adaptive rate, adaptive parallax). Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
+- The Clouds tab's slider slots: `kCloudSliderSlots` (200) sizes all four per-slider arrays and
+  `cloudBufs`; v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
+  sliders: 77, 55-58 (v1 fog). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
+  parallax, fog x3, dust x3.) Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
   shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.
 
 ## Subsystem: Automation harness (2026-09-25)
@@ -3062,7 +3086,7 @@ volumetric term and `sat_sky.frag`'s ground-spot term), 256=cloud shadow (per-pi
 `cloud_march.comp`), 512=`beam_self_march.comp` DISPATCH itself (producer-side; repurposed
 2026-08-09 from the now-retired `beam_cloud_block.comp`'s identical bit), 1024=scene depth pass
 DISPATCH itself (producer-side — the big one: skipping it reverts the entire shared-depth
-architecture to pre-unification occlusion behaviour), 2048=fog layer (C11), 4096=satellite point
+architecture to pre-unification occlusion behaviour), 2048=fog + dust (clouds v2; was v1's fog layer), 4096=satellite point
 cloud occlusion (`sat_point.frag` — added 2026-08-09 to isolate a reported perf question, see
 `BEAM_CLOUD_PLAN.md`; ruled out as the cause, kept as a real diagnostic),
 8192=Reflect-Orbital beam POINTING-RAY loop (`cloud_march.comp`'s per-pixel loop in `main()`),

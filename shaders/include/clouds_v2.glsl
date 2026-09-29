@@ -102,6 +102,11 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
                           // y its half-extent (m), z its top (m), w the godrays' strength (0 = off)
     vec4  misc2;          // x red-sprite chance per ground stroke (0 = none), y sprite brightness,
                           // z 1 = the eye moved too far this frame for history (decorrelated ray jitter), w free
+    vec4  fog;            // fog + dust (cv2FogDust): x fog amount (0 = none), y fog depth (m above the
+                          // smoothed ground), z fog extinction (1/m), w dust amount (0 = none)
+    vec4  fog2;           // x dust scale height (m), y dust extinction (1/m), z debug view 11 (the resolve's
+                          // adaptive-tile overlay; the march then sees view 0), w free
+    vec4  sunE;           // xyz the Sun's direction, Earth-fixed (fog's burn-off), w free
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -1240,6 +1245,67 @@ vec4 gCv2Dbg     = vec4(0.0);
 
 // THE cloud field: the low system (stratus .. cumulonimbus, nimbostratus), the mid layer, the anvils
 // and the high layer (cirrus family).
+// ── Fog and dust (2026-09-29; replaced v1's fogMarchCS, a global 1.4 km noise haze) ──────────────
+// Both follow the weather cube. They are NOT layers of cv2Field: every addition to the march's main loop
+// (even an unused struct member) flipped cloud_v2_march.comp to ~224 registers, +19%; the march gives them
+// a short march of their own after the clouds' (its state is dead by then), composited by distance.
+// FOG: a layer over the SMOOTHED ground (cv2Ground, ~15 km): valleys below it fill deeper, ridges stand
+// out of it. Radiation fog under a clear sky at night in valleys and low ground (it forms through the
+// night and burns off as the Sun climbs past ~17 deg), advection / sea fog near water under a stratiform
+// regime, and mist in rain; patchy on the cluster field. Lit like a cloud deck.
+// DUST: over dry land (the map clear over ~80 km, not rain, not sea), in plumes on the coarse cluster
+// field, falling off with height (scale height fog2.x). Returns the fog's extinction; dustS the dust's.
+float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out float fogHf)
+{
+    dustS = 0.0; fogTopH = 0.0; fogHf = 0.0;
+    if (cv2.fog.x <= 0.0 && cv2.fog.w <= 0.0) return 0.0;
+    float gF  = cv2Ground(q.dirE);
+    float agl = q.h - gF;
+    float topMax = max((cv2.fog.x > 0.0) ? 1.6 * cv2.fog.y : 0.0, (cv2.fog.w > 0.0) ? 4.0 * cv2.fog2.x : 0.0);
+    if (agl > topMax) return 0.0;
+    vec3  wF   = cv2FlowWeatherDirAt(q);
+    vec4  w1   = textureLod(cv2WeatherTex, wF, 1.0);
+    vec4  w4   = textureLod(cv2WeatherTex, wF, 4.0);
+    float span = max(cv2.cover.y - cv2.cover.x, 1e-3);
+    float cov1 = clamp((w1.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
+    float cov4 = clamp((w4.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
+    float sea  = 1.0 - smoothstep(5.0, 60.0, gF);                  // the coast and the sea
+    float sig  = 0.0;
+    if (cv2.fog.x > 0.0 && agl < 1.6 * cv2.fog.y) {
+        vec4  cl    = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
+                                 cv2Lod(fpM, cv2.anchorCluster.w));
+        float sunS  = dot(q.dirE, cv2.sunE.xyz);                   // sin of the Sun's elevation here
+        float night = 1.0 - smoothstep(0.0, 0.2, sunS);            // burns off by ~12 deg of Sun
+        float gC    = textureLod(cv2WeatherTex, q.dirE, 3.5).a * 8000.0;   // the ground over ~80 km
+        float valley = smoothstep(20.0, 400.0, gC - gF);          // lower than its surroundings: cold air pools
+        float strat = cov1 * (1.0 - smoothstep(0.35, 0.55, w1.g));  // an overcast, stratiform regime
+        // Radiation fog: a clear or broken night sky cools the ground; it pools in valleys (and on low
+        // ground by the sea). Sea / advection fog: the marine layer, on the coast and at sea under a
+        // stratiform regime, day or night. Mist in rain. (The first cut also made fog under ANY stratiform
+        // regime inland: the Sahara at noon under fog patches, the Po plain white at 15 deg of Sun.)
+        float rad   = night * (1.0 - smoothstep(0.3, 0.8, cov1)) * max(valley, 0.5 * sea);
+        float pot   = max(max(rad, sea * strat), 0.4 * w1.b) * cv2.fog.x;
+        // Patches on the cluster field (the baked Perlin is 0.50 +- 0.057: x 8.8 spans +-1 over 2 sd).
+        float n01   = clamp(0.5 + 0.5 * ((cl.a - 0.5) * 8.8 + 0.5 * (cl.r - 0.5) * 4.4), 0.0, 1.0);
+        float pres  = smoothstep(0.3, 0.7, pot * (0.4 + 1.2 * n01));
+        // Its top undulates with the low cloud's shape noise (~2 km): a flat sheet read as a painted plane.
+        float sN    = textureLod(cv2ShapeTex, cv2.anchorShape.xyz + cv2Drift(q.rSeaE) * cv2.anchorShape.w,
+                                 cv2Lod(fpM, cv2.anchorShape.w)).r;
+        float top   = cv2.fog.y * (0.5 + pres) * (0.6 + 0.8 * sN);
+        sig     = cv2.fog.z * pres * (1.0 - smoothstep(0.55 * top, top, agl));
+        fogTopH = gF + top;
+        fogHf   = clamp(agl / max(top, 1.0), 0.0, 1.0);
+    }
+    if (cv2.fog.w > 0.0) {
+        vec4  clC   = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
+                                 cv2Lod(fpM, cv2.anchorCluster.w) + 2.0);
+        float dry   = (1.0 - smoothstep(0.02, 0.25, cov4)) * (1.0 - sea) * (1.0 - clamp(w1.b * 3.0, 0.0, 1.0));
+        float plume = smoothstep(0.47, 0.6, clC.a);
+        dustS = cv2.fog2.y * cv2.fog.w * dry * (0.3 + 0.7 * plume) * exp(-max(agl, 0.0) / cv2.fog2.x);
+    }
+    return sig;
+}
+
 CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
 {
     gCv2FlowSet = false;
