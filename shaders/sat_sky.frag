@@ -132,7 +132,7 @@ struct GroundBeam {
     vec2  groundHitXY;    // observer-relative ENU horizontal position of the REAL landing spot
     float invFootprintSq; // 1 / footprintR^2
     float invCoreSq;      // 1 / coreR^2
-    float cutoffSq;       // (footprintR * 4)^2 — the loop's first and cheapest reject
+    float cutoffSq;       // (footprintR * 1.1)^2 — the loop's first and cheapest reject (the spot is a disk)
     float weight;         // intensity * rangeFade * elevFade * shadowAtten
     float intensity;      // CPU-side top-K ranking only; deliberately unread here
     float pad0;
@@ -3072,14 +3072,16 @@ void main() {
                 float w = groundBeams[bi].weight;
                 if (w <= 0.0) continue;
 
-                // Tight bright "hotspot" core (the mirror's own true physical size) on top of the
-                // soft halo (the full sun-disk-broadened extent around it) — C12 follow-up #18/#34,
-                // and an isotropic circle rather than #35's reverted ellipse (follow-up #43).
-                // Reciprocals come precomputed so this is two multiplies and two exps.
-                float footprint = exp(-0.5 * d2 * groundBeams[bi].invFootprintSq);
-                float core      = exp(-0.5 * d2 * groundBeams[bi].invCoreSq);
+                // The spot is the Sun's limb-darkened DISK seen in the mirror (radius = the footprint,
+                // edge blurred over the mirror's width), with the same total energy as the Gaussian of
+                // sigma = footprint (plus a mirror-sized hotspot) it replaces (2026-09-28): that drew a
+                // glow ~4x the real spot, cut off hard at 4 sigma — the blobby, sharp-edged beams.
+                float rho2 = d2 * groundBeams[bi].invFootprintSq;
+                float soft = max(inversesqrt(groundBeams[bi].invCoreSq) * sqrt(groundBeams[bi].invFootprintSq), 0.02);
+                float disk = (1.0 - smoothstep(1.0 - soft, 1.0 + soft, sqrt(rho2)))
+                           * (0.4 + 0.6 * sqrt(max(1.0 - rho2, 0.0))) * 1.25;
 
-                surfColor += vec3(kBeamGroundScale * w * (footprint + core * 2.0) * skyGlowNorm);
+                surfColor += vec3(kBeamGroundScale * w * 2.0 * disk * skyGlowNorm);
             }
         }
 #endif
@@ -3367,7 +3369,11 @@ void main() {
                           * (tSurface > 0.0 ? 0.0 : 1.0) // blocked by terrain/ocean
                           * (moonDiscHit ? 0.0 : 1.0)    // blocked by the Moon's own opaque disc
                           * pow(clamp(cloudBlock, 0.0, 1.0), kMWCloudSuppressPower);
+#ifndef SKY_ENV
+        color += mwColor * visibility * cloud.exposureScale;   // the global exposure (SatelliteSim.h)
+#else
         color += mwColor * visibility;
+#endif
 #ifdef SKY_ENV
         // The stars, under the same gates as the Milky Way bar the dark-sky one (the main view's stars
         // are the point model's alone). A reflection's pixels are the screen's; elsewhere this
@@ -3509,7 +3515,7 @@ void main() {
                              * pow(clamp(cloudBlock, 0.0, 1.0), kZodCloudSuppressPower)
                              * darkSkyVis(zodObjMag, zodSkyBgMag);
 
-        color += zodCol * zodShape * cloud.eclipticPoleENU.w * visibilityZod;
+        color += zodCol * zodShape * cloud.eclipticPoleENU.w * visibilityZod * cloud.exposureScale;
     }
 #endif
 

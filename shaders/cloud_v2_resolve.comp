@@ -81,6 +81,10 @@ void main()
     enuOf(pc.obsECEFDir.xyz, mNow);
     enuOf(cv2.prevObs.xyz, mPrev);
     vec3 vE = mNow * dirENU;
+    // The same ray as a direction at infinity: a rotation of the view moves it exactly as it moves
+    // the cloud, so only the difference between the two (PARALLAX, from the eye's translation) and the
+    // clouds' own evolution make history unreliable.
+    vec3 camInf = mat3(cv2.prevSkyView) * (transpose(mPrev) * vE);
     // The point, from the previous eye, where the clouds were: they drift with the map, so the
     // point that shows this cloud now showed it at Rz(drift delta) p last frame (obsDelta already
     // holds Rz(delta) eye - prevEye). Without it, time warp tore far clouds into 2x2 squares.
@@ -102,8 +106,12 @@ void main()
         // New-sample weight: look2.w for a still view (low: an exponential blend at weight a keeps
         // sqrt(a / (2 - a)) of the per-sample noise — 38% at 0.25, which showed as grain on
         // sharp-edged surfaces), rising with the reprojection's motion so a moving view doesn't smear.
-        vec2  uvNow    = (vec2(c) + 0.5) / vec2(halfSize);
-        float motionPx = length((uvPrev - uvNow) * vec2(halfSize));
+        // Parallax, not total motion: a pan reprojects exactly (the rotation is known), and raising
+        // the new-sample weight during a pan swapped the accumulated image for the quarter-grid's
+        // single noisy samples — a knitted texture over every cloud (cloud_v2_z, z_pan).
+        vec2  uvInf    = vec2(camInf.x / (-camInf.z) / (cv2.prevObs.w * cv2.obsDelta.w),
+                              -camInf.y / (-camInf.z) / cv2.prevObs.w) * 0.5 + 0.5;
+        float motionPx = (camInf.z < 0.0) ? length((uvPrev - uvInf) * vec2(halfSize)) : 8.0;
         // Plus the evolution the reprojection cannot follow (the noise volumes sliding against each
         // other — km per second under time warp), in pixels at this cloud's distance.
         if (nd.x > 0.0)

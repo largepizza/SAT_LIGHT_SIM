@@ -614,7 +614,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2DetailPeriodM, cv2CellPeriodM, cv2ClusterPeriodM, (float)cv2DebugView, cv2EdgeSharpness,
                     cv2WeatherWarpKm, cv2FullRateAboveKm, cv2MidAmount, cv2StormScale, cv2StormDetail,
                     cv2Anvil, cv2BaseRoughness, cv2HighAmount, cv2HighDensity, cv2CirrusStretch,
-                    cv2RainAmount, cv2OpticsGain})
+                    cv2RainAmount, cv2OpticsGain, cv2CirrusPeriodM, cv2MidPeriodM, cv2MidDensity,
+                    cv2CloudSunRayleigh, cv2TwilightSky})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -679,15 +680,25 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // across it = latitude x R at the shape period. The jet moves the fibres east over the map.
     {
         const double twoPiR = glm::two_pi<double>() * R;
-        const double along = (double)cv2ShapePeriodM * std::clamp((double)cv2CirrusStretch, 1.0, 40.0);
+        // Its own period (cv2CirrusPeriodM): it used to be the cumulus shape period, so enlarging the
+        // cumulus lobes turned the fibres into blobs.
+        const double cirrusP = std::clamp((double)cv2CirrusPeriodM, 500.0, 60000.0);
+        const double along = cirrusP * std::clamp((double)cv2CirrusStretch, 1.0, 40.0);
         // A multiple of 4: the bundle read (clouds_v2.glsl) is 4x coarser and must not seam either.
         const double n = std::max(4.0, std::round(twoPiR / along / 4.0) * 4.0);
         const double pu = twoPiR / n;
         p.high = glm::vec4(cv2HighAmount, (float)(1.0 / pu), (float)fracPos(-(double)cv2CirrusWindMps * simT / pu),
-                           (float)(1.0 / (double)cv2ShapePeriodM));
+                           (float)(1.0 / cirrusP));
         p.high2 = glm::vec4(cv2HighDensity, 0.0f, 0.0f, 0.0f);
     }
-    p.rain = glm::vec4(cv2RainAmount, cv2OpticsGain, cv2RainStreaks, 0.0f);
+    p.rain = glm::vec4(cv2RainAmount, cv2OpticsGain, cv2RainStreaks, cv2WindMps); // w: the streaks' wind
+    // w: a beam's intensity (sat_orbit.comp: 1361 x area x F x cos x beamGain) back to its reflecting
+    // area, so the shaders can light with the physical irradiance (area / the spot's area, in Suns).
+    p.beam = glm::vec4(std::max(cv2BeamShafts, 0.0f), std::max(cv2BeamHaze, 0.0f), std::max(cv2BeamLight, 0.0f),
+                       beamGain > 0.0f ? 1.0f / (1361.0f * beamGain) : 0.0f);
+    p.anchorMid = anchor(std::clamp((double)cv2MidPeriodM, 500.0, 60000.0), 1.0);
+    p.atmo = glm::vec4(std::max(cv2CloudSunRayleigh, 0.0f), std::max(cv2TwilightSky, 0.0f),
+                       std::max(cv2MidDensity, 0.0f), 0.0f);
 
     static const int kOffsets[4][2] = {{0, 0}, {1, 1}, {1, 0}, {0, 1}};
     const int *o = kOffsets[cv2Frame & 3u];

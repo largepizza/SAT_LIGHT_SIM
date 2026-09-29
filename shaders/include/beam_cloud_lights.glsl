@@ -57,6 +57,11 @@ layout(std430, set = 0, binding = BEAM_CLOUD_LIGHTS_BINDING) readonly buffer Bea
 // because cullCloudLightsForTile below must use the identical value; if the two ever disagree the
 // cull stops being conservative and beam glow pops on a 16x16-texel grid.
 const float kBeamCutoffSigma = 4.0;
+// Clouds v2 (2026-09-28): a beam is a DISK of footprintRadM (the Sun's cone through the mirror), not a
+// Gaussian of that sigma: nothing reaches past ~1.1 radii. The 4-sigma Gaussian lit ~16x the area,
+// drew a wide glow cut off hard at 4 sigma (the "blobby, sharp-edged" beams), and put ~4x as many
+// beams in each tile's list.
+const float kBeamDiskCut = 1.1;
 
 // ── Per-tile cloud-light culling (2026-08-10) ────────────────────────────────────────────────────
 // beamCloudLighting() is called from cloudMarchCS's innermost loop — once per in-cloud SAMPLE, so
@@ -69,8 +74,9 @@ const float kBeamCutoffSigma = 4.0;
 // can reach any ray in this tile, and the per-sample loop walks that shared list instead. The cost
 // of the test moves from (lights x samples x texels) to (lights / 256) per workgroup.
 //
-// CONSERVATISM. beamCloudLighting accepts a sample when its perpendicular distance to the light's
-// infinite line (posENU, dirToSource) is within footprintRadM * kBeamCutoffSigma. Every sample lies
+// CONSERVATISM. The per-sample test (cloud_v2_march.comp: beamLightCloud, beamShafts; v1's
+// beamCloudLighting is deleted) accepts a sample when its perpendicular distance to the light's
+// infinite line (posENU, dirToSource) is within footprintRadM * kBeamDiskCut. Every sample lies
 // on this tile's view rays somewhere inside the cloud shell, so the tile test is the minimum of
 // that same perpendicular distance over the tile-centre ray restricted to [0, tRangeMax], widened
 // by tRangeMax * tileHalfAngle to cover rays at the tile's edge. tRangeMax is the tile-centre ray's
@@ -95,8 +101,7 @@ void cullCloudLightsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos, float 
     }
     barrier();
 
-    if ((cloud.dbgDisableMask & 128u) == 0u && cloud.beamSkyGlowGain > 0.0
-        && (cloud.dbgDisableMask & 131072u) == 0u) {
+    if ((cloud.dbgDisableMask & 128u) == 0u && (cloud.dbgDisableMask & 131072u) == 0u) {
         vec2  shellT    = raySphere(obsPos, cAxis, shellTopR);
         float tRangeMax = max(shellT.y, 0.0) * kTileRangeMargin;
         float slack     = tRangeMax * tileHalfAngle;
@@ -114,7 +119,7 @@ void cullCloudLightsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos, float 
             t = clamp(t, 0.0, tRangeMax);
             vec3  toP  = cAxis * t - lp;           // P(t) - lightWorldPos, small-magnitude by construction
             vec3  perp = toP - dirS * dot(toP, dirS);
-            float cutoff = max(beamLights[bli].footprintRadM, 100.0) * kBeamCutoffSigma + slack;
+            float cutoff = max(beamLights[bli].footprintRadM, 100.0) * kBeamDiskCut + slack;
             if (dot(perp, perp) > cutoff * cutoff) continue;
 
             uint slot = atomicAdd(sTileLightCount, 1u);
@@ -123,67 +128,6 @@ void cullCloudLightsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos, float 
         }
     }
     barrier();
-}
-
-// Takes the evaluation point (`p`/`h`) and `sampleDayness` (caller's own per-sample geographic
-// day/night gate) — same signature shape the retired function used, still cloud-only (fog no
-// longer carries a beam term at all, removed with the second design).
-// odTop: the sample's optical depth up to its column's cloud top, VERTICALLY (clouds v2: sigma x
-// (topH - h)). A beam comes down from its satellite and enters a cloud through the top, so light
-// deep inside has crossed that cloud: exp(-od) plus a multiple-scattering tail, along the beam's own
-// slant. Without it every sample inside the beam's cylinder got the same light however deep it sat,
-// and a lit cloud read as one flat slab (2026-09-28).
-vec3 beamCloudLighting(vec3 p, float h, vec3 dir, vec3 obsPos, float sampleDayness, float odTop) {
-    vec3 beamLit = vec3(0.0);
-    if ((cloud.dbgDisableMask & 128u) != 0u || cloud.beamSkyGlowGain <= 0.0 || beamLightCount == 0u)
-        return beamLit;
-
-    const float kBeamCloudGlowScale = 1e-6;
-    const float kCloudFeatherM = 500.0; // soft edge width for the height cutoff below
-    // 2026-08-10: walk the workgroup's culled list, not all beamLightCount entries. Overflow past
-    // kTileCloudLightMax (or bit 131072) falls back to the full scan, which is exactly the old
-    // behaviour — slow on a pathological tile, never wrong.
-    bool lightOverflow = (sTileLightOverflow != 0u);
-    uint iterCount = lightOverflow ? min(beamLightCount, kMaxCloudBeamLights)
-                                   : min(sTileLightCount, kTileCloudLightMax);
-    vec3 mag = vec3(0.0);
-    for (uint li = 0u; li < iterCount; ++li) {
-        uint bli = lightOverflow ? li : sTileLightIdx[li];
-        // 2026-08-09 (in-app finding: cloud bottoms near a busy target read as uniformly lit,
-        // independent of illumination/density sliders): this used to be a HORIZONTAL-only
-        // distance from the sample to the light's ground point, with brightness gated purely
-        // on/off by the height cutoff below — i.e. no real falloff from a source position at
-        // all, just a flat disc. Replaced with true 3D perpendicular distance from the sample to
-        // the light's actual LINE (posENU + dirToSource) — the same point-to-line shape
-        // beam_self_march.comp/the debug ray already use elsewhere, just applied here for the
-        // first time. Samples near where the beam actually crosses the shell now read brighter
-        // than samples merely near the ground point at any height, which is what actually
-        // produces a top-bright/bottom-dark gradient instead of a wash.
-        vec3  lightWorldPos = obsPos + beamLights[bli].posENU;
-        vec3  toP  = p - lightWorldPos;
-        vec3  dirS = beamLights[bli].dirToSource;
-        vec3  perp = toP - dirS * dot(toP, dirS);
-        float distSq = dot(perp, perp);
-        float radius = max(beamLights[bli].footprintRadM, 100.0);
-        float cutoff = radius * kBeamCutoffSigma; // same sigma cullCloudLightsForTile bounds against
-        if (distSq > cutoff * cutoff) continue;
-        float g = beamLights[bli].intensity * exp(-distSq / (2.0 * radius * radius));
-        float hCut = smoothstep(beamLights[bli].blockAltM - kCloudFeatherM,
-                                  beamLights[bli].blockAltM, h);
-        float hFadeBeam = mix(1.0, hCut, beamLights[bli].blockOpacity);
-        // Directional shading using THIS beam's own real direction (2026-08-09) — not a shared
-        // local-zenith approximation, since an oblique beam's true source direction can differ
-        // substantially from straight up. Reuses the same phaseCloud() Henyey-Greenstein lobe the
-        // sun/moon terms already use, so looking up along a beam reads as a brighter forward-
-        // scattered shaft — now genuinely toward where the light is actually coming from.
-        float ph = phaseCloud(dot(dir, beamLights[bli].dirToSource));
-        float od = odTop / max(dot(normalize(p), dirS), 0.15);
-        float tr = exp(-od) + 0.35 * exp(-od * 0.2);
-        mag += vec3(1.0, 0.97, 0.92) * (g * hFadeBeam * ph * tr);
-    }
-
-    beamLit = mag * cloud.beamSkyGlowGain * (1.0 - sampleDayness) * kBeamCloudGlowScale;
-    return beamLit;
 }
 
 #endif // SATLIGHTSIM_BEAM_CLOUD_LIGHTS_GLSL

@@ -1495,6 +1495,16 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         if (count > 0)
             std::memcpy(beamsLocal, rbMapped->entries, (size_t)count * sizeof(GpuReflectBeam));
         const GpuReflectBeam *beamsIn = beamsLocal;
+        // Converged beams per target site this frame (the harness `beams` command goes to the busiest).
+        std::fill(std::begin(beamSiteConverged), std::end(beamSiteConverged), 0);
+        std::fill(std::begin(beamSiteDirEcef), std::end(beamSiteDirEcef), glm::dvec3(0.0));
+        for (int s = 0; s < count; ++s)
+        {
+            const int ti = (int)beamsIn[s].targetIdx;
+            if (ti >= 0 && ti < reflectorTargetCount && beamsIn[s].intensity > 0.0f &&
+                beamsIn[s].aimErrorRad <= glm::radians(10.0f))
+                ++beamSiteConverged[ti];
+        }
         float nearest = -1.0f;
         float nearestBlockOpacity = 0.0f; // C11/C12 follow-up #47: blockOpacity of whichever
                                           // entry produced `nearest`, so beamProximityGlow below
@@ -1876,7 +1886,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                         gb.groundHitY = hitENU.y;
                         gb.invFootprintSq = 1.0f / (footprintR * footprintR);
                         gb.invCoreSq = 1.0f / (coreR * coreR);
-                        gb.cutoffSq = (footprintR * 4.0f) * (footprintR * 4.0f);
+                        // The spot is a disk now (sat_sky.frag): nothing past its soft edge.
+                        gb.cutoffSq = (footprintR * 1.1f) * (footprintR * 1.1f);
                         gb.weight = intensity * rangeFade * elevFade * shadowAtten;
                     }
                     // else: weight/cutoffSq stay 0, so the shader's own reject drops it. This is
@@ -1932,6 +1943,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                         // every existing cluster entirely: identity is declared, not searched for.
                         int ti = (int)beamsIn[s].targetIdx;
                         bool asCluster = converged && ti >= 0 && ti < reflectorTargetCount;
+                        if (asCluster)
+                            beamSiteDirEcef[ti] += dEcef; // harness `beams look=up`
                         TrackedBeamLight *pool;
                         int slot;
                         if (asCluster)
@@ -2173,7 +2186,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         GpuCloudParams cp{};
         cp.coverage = cloudCoverage;
         cp.cloudsV2 = 1.0f; // unused since v1's march was deleted (2026-09-27); a UBO slot to reuse
-        cp.exposureScale = exp2f(cv2ExposureEV);
+        cp.exposureScale = exp2f(globalExposureEV());
         cp.highlightRolloff = std::clamp(cv2HighlightRolloff, 0.0f, 1.0f);
         cp.whiteBalance = std::clamp(cv2WhiteBalance, 0.0f, 1.0f);
         cp.density = cloudDensity;
@@ -3723,7 +3736,7 @@ void SatelliteSim::updateSelectedSkyDir()
 float SatelliteSim::skyExposure() const
 {
     const float dayness = glm::clamp((sunDirENU.w + 0.2f) / 1.2f, 0.0f, 1.0f);
-    return glm::mix(10.0f, 1.8f, powf(dayness, 0.4f)) * exp2f(cv2ExposureEV);
+    return glm::mix(10.0f, 1.8f, powf(dayness, 0.4f)) * exp2f(globalExposureEV());
 }
 
 void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)
@@ -6188,6 +6201,10 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyBuffer(device, planetBuf, nullptr);
     vkFreeMemory(device, planetMem, nullptr);
 
+    if (meterImg) { vkDestroyImage(device, meterImg, nullptr); vkFreeMemory(device, meterImgMem, nullptr); }
+    if (meterBuf) { vkDestroyBuffer(device, meterBuf, nullptr); vkFreeMemory(device, meterBufMem, nullptr); }
+    meterImg = VK_NULL_HANDLE; meterBuf = VK_NULL_HANDLE;
+
     // UC6: screenshot staging buffer, if a capture happened this run (recreated per-capture, so
     // this is the only place it's torn down for real).
     if (screenshotStagingBuf != VK_NULL_HANDLE)
@@ -6408,6 +6425,47 @@ float SatelliteSim::cpuTerrainHeightM(float latDeg, float lonDeg) const
 // command buffer is ended.
 void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image)
 {
+    // ── The exposure meter (every frame): the frame as displayed, its central 60% (most HUD panels
+    // sit outside it), blitted down to 64x36 into a linear RGBA8 image (the blit decodes sRGB) and
+    // copied to the host; readExposureMeter() reads it after the next fence. ──
+    if (ctx.screenshotSupported && cv2AutoExposure > 0.0f)
+    {
+        if (!meterImg)
+        {
+            ctx.createImage(kMeterW, kMeterH, VK_FORMAT_R8G8B8A8_UNORM,
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, meterImg, meterImgMem);
+            ctx.createBuffer((VkDeviceSize)kMeterW * kMeterH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                             meterBuf, meterBufMem);
+        }
+        ctx.imageBarrier(cmd, image, VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        ctx.imageBarrier(cmd, meterImg, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        const int32_t W = (int32_t)ctx.swapExtent.width, Hh = (int32_t)ctx.swapExtent.height;
+        VkImageBlit blit{};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.srcOffsets[0] = {W / 5, Hh / 5, 0};
+        blit.srcOffsets[1] = {W - W / 5, Hh - Hh / 5, 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.dstOffsets[1] = {(int32_t)kMeterW, (int32_t)kMeterH, 1};
+        vkCmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, meterImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &blit, ctx.bestBlitFilter(ctx.swapFormat));
+        ctx.imageBarrier(cmd, image, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        ctx.imageBarrier(cmd, meterImg, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {kMeterW, kMeterH, 1};
+        vkCmdCopyImageToBuffer(cmd, meterImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, meterBuf, 1, &region);
+        meterPending = true;
+    }
+
     if (!screenshotRequested)
         return;
     screenshotRequested = false; // consume — this is the one frame it's true for
@@ -6458,8 +6516,54 @@ void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx,
 // UC6. Called once per frame right after App waits on the frame fence — the same point
 // ctx.resolveTimestamps() already reads back the previous frame's GPU-written data, so the copy
 // recorded last frame's recordScreenshotCopy is guaranteed complete by the time this runs.
+// The auto exposure's controller. The reading is the frame AS DISPLAYED (post-tonemap, with the
+// current auto offset in it), so this is a closed loop: step the offset toward a mean luminance of
+// kTarget, harder when more than a few percent of the frame is clipped white, only darker than the
+// hand-tuned exposure (<= 0) and only by day; at night it eases back to 0.
+void SatelliteSim::readExposureMeter()
+{
+    const double now = glfwGetTime();
+    const float dt = (float)std::clamp(now - meterLastT, 0.0, 0.25);
+    meterLastT = now;
+    if (!meterPending || !meterBufMem || !ctx_)
+    {
+        if (cv2AutoExposure <= 0.0f)
+            autoExposureEV = 0.0f;
+        return;
+    }
+    meterPending = false;
+    void *mapped = nullptr;
+    if (vkMapMemory(ctx_->device, meterBufMem, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS || !mapped)
+        return;
+    const uint8_t *px = (const uint8_t *)mapped;
+    double sum = 0.0;
+    int clipped = 0;
+    const int n = (int)(kMeterW * kMeterH);
+    for (int i = 0; i < n; ++i)
+    {
+        const float r = px[i * 4] / 255.0f, g = px[i * 4 + 1] / 255.0f, b = px[i * 4 + 2] / 255.0f;
+        sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        if (std::max(r, std::max(g, b)) > 0.96f)
+            ++clipped;
+    }
+    vkUnmapMemory(ctx_->device, meterBufMem);
+    meterMeanLum = (float)(sum / n);
+    meterClipFrac = (float)clipped / (float)n;
+
+    // Daylight at the observer (the sky's own dayness ramp): full control above ~6 deg of Sun.
+    const float day = glm::smoothstep(-0.03f, 0.1f, sunDirENU.w);
+    constexpr float kTarget = 0.32f;   // linear mean of the displayed frame (~0.6 in sRGB)
+    float err = log2f(kTarget / std::max(meterMeanLum, 1e-3f)) - 4.0f * std::max(meterClipFrac - 0.04f, 0.0f);
+    const float lo = -3.0f * std::clamp(cv2AutoExposure, 0.0f, 1.0f);
+    float want = std::clamp(autoExposureEV + err, lo, 0.0f) * day;
+    // ~1 s to adapt (darkening, like an eye stepping into daylight), a little slower back.
+    const float tau = want < autoExposureEV ? 0.8f : 1.6f;
+    autoExposureEV += (want - autoExposureEV) * (1.0f - expf(-dt / tau));
+}
+
 void SatelliteSim::finalizeScreenshot()
 {
+    readExposureMeter();
     if (!screenshotCopyPending)
         return;
     screenshotCopyPending = false;

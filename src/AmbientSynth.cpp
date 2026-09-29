@@ -1859,6 +1859,111 @@ private:
     Pink pinkL_, pinkR_;
     float roarPrev_ = 0.0f, washPrev_ = 0.0f, crashPrev_ = 0.0f;
 };
+
+// ── rain ─────────────────────────────────────────────────────────────────────────────────────────
+// Rain around the listener (2026-09-28; driven by the cloud field's rain rate at the eye). Three parts:
+//   hiss    the sum of countless distant impacts: white noise through a broad band-pass (2-6 kHz),
+//           whose centre drops a little and whose level rises with the intensity
+//   rumble  heavy rain only: pink noise low-passed (~500 Hz), the roar of a downpour on everything
+//   drops   individual near impacts: a Poisson stream of short decaying noise ticks, each through its
+//           own resonance (1.2-6 kHz), level (heavy-tailed) and pan; the rate follows the intensity
+// `intensity` 0..1 (a drizzle .. a cumulonimbus core), slowly gusting (+-20%) on its own.
+const AmbientSynth::ParamDef kRainParams[] = {
+    {"level", 1.0f}, {"intensity", 0.5f}, {"drops", 1.0f}, {"hiss_hz", 3500.0f}, {"rumble", 1.0f}, {"width", 0.8f},
+};
+enum
+{
+    kRLevel,
+    kRIntensity,
+    kRDrops,
+    kRHissHz,
+    kRRumble,
+    kRWidth
+};
+
+class RainSynth final : public AmbientSynth
+{
+public:
+    RainSynth(uint32_t sr, uint32_t seed)
+        : AmbientSynth("rain", kRainParams, (int)(sizeof(kRainParams) / sizeof(kRainParams[0])), sr, seed)
+    {
+    }
+
+protected:
+    static constexpr int kDrops = 12;
+    struct Drop
+    {
+        Svf f;
+        float env = 0.0f, decay = 0.0f, gl = 0.0f, gr = 0.0f;
+    };
+
+    void block(float *out, uint32_t n) override
+    {
+        const float bt = (float)n / sr_;
+        const float gust = 0.8f + 0.4f * gust_.tick(bt, 0.15f, rng_);
+        const float I = std::clamp(p_[kRIntensity] * gust, 0.0f, 1.2f);
+        const float hz = p_[kRHissHz] * (1.1f - 0.25f * std::min(I, 1.0f));
+        hissL_.set(hz, 0.55f, sr_);
+        hissR_.set(hz * 1.07f, 0.55f, sr_);
+        rumL_.set(420.0f + 200.0f * I, 0.6f, sr_);
+        rumR_.set(450.0f + 200.0f * I, 0.6f, sr_);
+        hpL_.set(60.0f, 0.7f, sr_);
+        hpR_.set(60.0f, 0.7f, sr_);
+        const float hiss = 0.25f * sqrtf(I);
+        const float rumble = p_[kRRumble] * 0.6f * I * I;
+        const float rate = p_[kRDrops] * (6.0f + 260.0f * I) / sr_; // impacts per sample
+        const float w = std::clamp(p_[kRWidth], 0.0f, 1.0f);
+        const float lvl = p_[kRLevel];
+
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            const float x = (float)(i + 1) / (float)n;
+            const float hissG = hissPrev_ + (hiss - hissPrev_) * x;
+            const float rumG = rumPrev_ + (rumble - rumPrev_) * x;
+            if (uni() < rate)
+            {
+                Drop &d = drops_[next_];
+                next_ = (next_ + 1) % kDrops;
+                d.f.set(1200.0f * powf(5.0f, uni()), 4.0f + 6.0f * uni(), sr_);
+                const float a = 0.15f + 0.85f * powf(uni(), 3.0f); // mostly faint, a few close
+                d.env = a;
+                d.decay = expf(-1.0f / (sr_ * (0.002f + 0.006f * uni())));
+                panGains(bip() * 0.9f, d.gl, d.gr);
+            }
+            const float wc = bip();
+            const float nl = wc * (1.0f - w) + bip() * w;
+            const float nr = wc * (1.0f - w) + bip() * w;
+            hissL_.tick(nl);
+            hissR_.tick(nr);
+            rumL_.tick(pinkL_.tick(nl));
+            rumR_.tick(pinkR_.tick(nr));
+            float dl = 0.0f, dr = 0.0f;
+            for (Drop &d : drops_)
+            {
+                if (d.env < 1e-4f)
+                    continue;
+                d.f.tick(wc * d.env);
+                d.env *= d.decay;
+                dl += d.f.band() * d.gl;
+                dr += d.f.band() * d.gr;
+            }
+            hpL_.tick(hissL_.band() * hissG + rumL_.lp * rumG + dl * 0.8f);
+            hpR_.tick(hissR_.band() * hissG + rumR_.lp * rumG + dr * 0.8f);
+            out[2 * i] = hpL_.hp * lvl;
+            out[2 * i + 1] = hpR_.hp * lvl;
+        }
+        hissPrev_ = hiss;
+        rumPrev_ = rumble;
+    }
+
+private:
+    Drop drops_[kDrops];
+    int next_ = 0;
+    Drift gust_;
+    Svf hissL_, hissR_, rumL_, rumR_, hpL_, hpR_;
+    Pink pinkL_, pinkR_;
+    float hissPrev_ = 0.0f, rumPrev_ = 0.0f;
+};
 } // namespace
 
 // ── AmbientSynth base ────────────────────────────────────────────────────────────────────────────
@@ -1902,12 +2007,14 @@ std::unique_ptr<AmbientSynth> AmbientSynth::create(const std::string &kind, uint
         return std::make_unique<PadSynth>(sampleRate, seed);
     if (kind == "bass")
         return std::make_unique<BassSynth>(sampleRate, seed);
+    if (kind == "rain")
+        return std::make_unique<RainSynth>(sampleRate, seed);
     return nullptr;
 }
 
 std::vector<std::string> AmbientSynth::kinds()
 {
-    return {"wind", "hum", "drone", "beeps", "disk", "chorus", "surf", "saw", "pad", "bass"};
+    return {"wind", "hum", "drone", "beeps", "disk", "chorus", "surf", "saw", "pad", "bass", "rain"};
 }
 
 int AmbientSynth::paramIndex(const std::string &name) const

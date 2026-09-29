@@ -628,13 +628,18 @@ struct GpuCloudV2Params
     glm::vec4 high;          // x amount, y 1/along-wind period, z along-wind offset (periods), w 1/across period
     glm::vec4 high2;         // x high-layer density
     glm::vec4 rain;          // x rain amount, y optics strength, z rain streaks at the eye
+    glm::vec4 beam;          // x beam shaft gain (0 = the old drawn line), y beam haze, z beam light on
+                             // cloud, w 1 / (1361 x beamGain): a beam's intensity -> reflecting area (m^2)
+    glm::vec4 anchorMid;     // the shape volume at the mid layer's own period
+    glm::vec4 atmo;          // x cloud sunlight Rayleigh gain, y twilight sky light, z mid-layer density
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, shell) == 256, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, types) == 288, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, cover) == 288 + 48 * kCloudV2Types, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 160, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, anchorMid) == 288 + 48 * kCloudV2Types + 176, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 208, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -2753,6 +2758,41 @@ private:
     float cv2ExposureEV = 0.0f;        // exposure compensation (stops) on the sky's auto exposure
     float cv2HighlightRolloff = 0.5f;  // 0 = the old tonemap; 1 = a long highlight shoulder
     float cv2WhiteBalance = 0.6f;      // 0..1: adapt to the sunlight's colour at the observer
+    float cv2BeamShafts = 1.0f;        // beams as light in the volumetric march (0 = the old drawn line)
+    float cv2AutoExposure = 1.0f;      // 0..1: how far the metered auto exposure may darken a bright day
+    // ── Global exposure (2026-09-28) ──
+    // The scene is an HDR composite: the sky is tonemapped from radiance, and the post-tonemap terms
+    // (satellites, stars, planets, the Milky Way, zodiacal light) carry their own photometry. ONE
+    // exposure offset in stops now applies to all of them: the user's Exposure (EV) plus the metered
+    // auto exposure. The sky multiplies its radiance by 2^EV; the point sources shift the point style's
+    // reference and limit magnitudes by 2.5 log10(2^EV) (brighter exposure = fainter stars show); the
+    // Milky Way / zodiacal light scale with it. Auto exposure only DARKENS, and only by day: the night
+    // exposures were tuned by hand and stay put.
+    float autoExposureEV = 0.0f;       // runtime: the metered offset (<= 0), eased
+    float globalExposureEV() const { return cv2ExposureEV + autoExposureEV; }
+    float exposureGainMag() const { return 2.5f * 0.30103f * globalExposureEV(); }
+    // The meter: the frame's central 60%, blitted to 64x36 (linear RGBA8), copied to the host and read
+    // after the next fence (finalizeScreenshot).
+    static constexpr uint32_t kMeterW = 64, kMeterH = 36;
+    VkImage meterImg = VK_NULL_HANDLE;
+    VkDeviceMemory meterImgMem = VK_NULL_HANDLE;
+    VkBuffer meterBuf = VK_NULL_HANDLE;
+    VkDeviceMemory meterBufMem = VK_NULL_HANDLE;
+    bool meterPending = false;
+    double meterLastT = 0.0;
+    float meterMeanLum = 0.0f, meterClipFrac = 0.0f;   // last reading (harness `state`)
+    void readExposureMeter();
+    float cv2BeamHaze = 1.0f;          // aerosol (haze, dust) in the beams' air scattering, x
+    float cv2BeamLight = 30.0f;        // beam light on cloud, x the physical irradiance (the night view's
+                                       // moon is ~2400x physical; 1 = beams dim beside it)
+    // Per-layer scales, so tuning the cumulus does not move the cirrus or the altocumulus (all three
+    // used to read the shape volume at cv2ShapePeriodM).
+    float cv2CirrusPeriodM = 7000.0f;  // cirrus fibre spacing across the wind (along it: x stretch)
+    float cv2MidPeriodM = 7000.0f;     // altocumulus cloudlets
+    float cv2MidDensity = 1.0f;        // x the mid layer's extinction (the low system keeps "Density")
+    float cv2CloudSunRayleigh = 1.0f;  // Rayleigh on the sunlight reaching cloud, x physical (the sky's own
+                                       // gain no longer reddens every low-sun cloud)
+    float cv2TwilightSky = 2.0f;       // extra sky light on cloud while the Sun is low or just set at it
     float cv2DetailLodStartM = 20000.0f; // detail erosion fades from here to 4x
     float cv2ShapePeriodM = 7000.0f;   // tiling periods of the noise volumes
     float cv2DetailPeriodM = 1800.0f;
@@ -3101,13 +3141,14 @@ private:
     {
         int altM = -1, aglM = -1, groundM = -1, latDeg = -1, lonDeg = -1, sunElDeg = -1, oceanNear = -1, oceanWide = -1,
             urban = -1, beam = -1, aurora = -1, wind = -1, cloud = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
-            forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, glareN = -1, glareSum = -1, beamSite = -1, musicGap = -1;
+            forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, glareN = -1, glareSum = -1, beamSite = -1, musicGap = -1, rain = -1;
     } ambD_;
     glm::dvec3 ambPrevCamEcef{0.0}; // wind rush: the camera's last position (ECEF, m)
     bool ambPrevValid = false;
     float ambSpeedEased = 0.0f;     // m/s, eased over ~0.3 s
     float ambSpeedRaw[3] = {};      // the last three raw speeds (median-of-3: one-frame spikes out)
     float ambCloudEased = -1.0f;    // sky coverage over the listener, eased over ~1.5 s (-1 = unset)
+    float ambRainEased = 0.0f;      // the rain rate at the eye (cloud_v2_march.comp -> terrainFrame.w), eased ~2 s
     // The glare pad (layer beam_glare, synth "pad"): the flares GLARING ON SCREEN, from the host copy
     // of the bright-flare list (glareReadBuf) — `glare_n` is how many (each counts in full once it is
     // 0.4 past the glare threshold, partially below, so the count never steps), `glare_sum` their
@@ -3205,8 +3246,8 @@ private:
         float d = std::min(kEyePupilMm * zoomMagnification(), std::max(zoomApertureMaxMm, kEyePupilMm));
         return 5.0f * log10f(d / kEyePupilMm);
     }
-    float pointEffRefMag() const { return pointRefMag + opticsGainMag(); }
-    float pointEffLimitMag() const { return pointLimitMag + opticsGainMag(); }
+    float pointEffRefMag() const { return pointRefMag + opticsGainMag() + exposureGainMag(); }
+    float pointEffLimitMag() const { return pointLimitMag + opticsGainMag() + exposureGainMag(); }
     // CPU mirror of point_style.glsl's pointPsf(): x = peak, y = sigma (px).
     glm::vec2 pointPsf(float mag) const
     {
@@ -3925,6 +3966,8 @@ private:
     // whatever reason. Consumed by updatePositions() in place of the bare kEarthRadius constant
     // when converting reflectorTargetsECEF to a real ECI position.
     float reflectorTargetsRadiusM[kNumReflectorTargets]{};
+    int beamSiteConverged[kNumReflectorTargets]{}; // converged beams per site, last beam readback (harness `beams`)
+    glm::dvec3 beamSiteDirEcef[kNumReflectorTargets]{}; // their summed ground->satellite directions (ECEF)
     // Per-site local ENU frame (2026-08-12), computed once alongside the radius above and never
     // changed after — a target site is fixed in ECEF, so its own local East/North/Up frame is too.
     // Used ONLY by the cloud-light build's direction bucketing: quantizing a beam's approach

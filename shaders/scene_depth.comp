@@ -91,9 +91,11 @@ void main() {
     // this frame's value.
     const bool quarter = pc.quarterPass > 0.5;
     if (quarter && coord == ivec2(0))
-        terrainFrame = vec4(observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir),
-                            observerEffHeightDetailed(earthElevTex, earthSpecTex, vec4(pc.obsECEFDir.xyz, 0.0)),
-                            0.0, 0.0);
+        // .xyz only: .w is the rain rate at the eye, written by cloud_v2_march.comp (read on the host
+        // for the rain ambience).
+        terrainFrame.xyz = vec3(observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir),
+                                observerEffHeightDetailed(earthElevTex, earthSpecTex, vec4(pc.obsECEFDir.xyz, 0.0)),
+                                0.0);
 
     // Knockout: fill with "nothing anywhere". Every consumer's operation is min()/>= against this,
     // so a uniform kNoSurfaceT reproduces the pre-unification behaviour (volumetrics and beams

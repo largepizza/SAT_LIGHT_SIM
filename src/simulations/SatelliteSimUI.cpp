@@ -4645,6 +4645,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Density", &cv2Density, 0.1f, 4.0f, 0.05f, "%.2f", 115},
         {"Weather warp (km)", &cv2WeatherWarpKm, 0.0f, 30.0f, 0.5f, "%.1f", 116},
         {"Mid layer (Ac/As)", &cv2MidAmount, 0.0f, 2.0f, 0.05f, "%.2f", 146},
+        {"Mid layer density", &cv2MidDensity, 0.0f, 4.0f, 0.05f, "%.2f", 8},
         {"High layer (Ci/Cs/Cc)", &cv2HighAmount, 0.0f, 2.0f, 0.05f, "%.2f", 151},
         {"High layer density", &cv2HighDensity, 0.0f, 4.0f, 0.05f, "%.2f", 152},
         {"Cirrus stretch", &cv2CirrusStretch, 1.0f, 30.0f, 0.5f, "%.1f", 153},
@@ -4673,7 +4674,13 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         // Scene-wide (the sky's tonemap), here beside the cloud lighting they are tuned against.
         {"Exposure (EV)", &cv2ExposureEV, -3.0f, 3.0f, 0.05f, "%+.2f", 158},
         {"Highlight roll-off", &cv2HighlightRolloff, 0.0f, 1.0f, 0.05f, "%.2f", 159},
+        {"Auto exposure (day)", &cv2AutoExposure, 0.0f, 1.0f, 0.05f, "%.2f", 163},
         {"White balance", &cv2WhiteBalance, 0.0f, 1.0f, 0.05f, "%.2f", 160},
+        {"Beam shafts (0 = drawn line)", &cv2BeamShafts, 0.0f, 4.0f, 0.05f, "%.2f", 161},
+        {"Beam haze / dust", &cv2BeamHaze, 0.0f, 10.0f, 0.1f, "%.1f", 162},
+        {"Beam light on cloud", &cv2BeamLight, 0.0f, 300.0f, 1.0f, "%.0f", 17},
+        {"Cloud sunlight Rayleigh", &cv2CloudSunRayleigh, 0.0f, 3.0f, 0.05f, "%.2f", 9},
+        {"Twilight sky light", &cv2TwilightSky, 0.0f, 8.0f, 0.1f, "%.1f", 16},
         {"Sun gain", &cv2SunGain, 0.0f, 4.0f, 0.05f, "%.2f", 124},
         {"Moon gain", &cv2MoonGain, 0.0f, 8.0f, 0.1f, "%.2f", 125},
         {"Sky ambient", &cv2AmbientGain, 0.0f, 8.0f, 0.05f, "%.2f", 126},
@@ -4711,7 +4718,9 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
 
     // Tiling periods of the noise volumes (no rebake: they are read at these scales).
     CloudSlider secNoise[] = {
-        {"Shape period (m)", &cv2ShapePeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 141},
+        {"Shape period (m) - low cloud", &cv2ShapePeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 141},
+        {"Mid layer period (m)", &cv2MidPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 7},
+        {"Cirrus period (m)", &cv2CirrusPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 2},
         {"Detail period (m)", &cv2DetailPeriodM, 200.0f, 8000.0f, 50.0f, "%.0f", 142},
         {"Cell period (m)", &cv2CellPeriodM, 4000.0f, 128000.0f, 1000.0f, "%.0f", 143},
         {"Cluster period (m)", &cv2ClusterPeriodM, 32000.0f, 1024000.0f, 8000.0f, "%.0f", 144},
@@ -6240,6 +6249,15 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2ExposureEV = c.value("exposure_ev", cv2ExposureEV);
         cv2HighlightRolloff = c.value("highlight_rolloff", cv2HighlightRolloff);
         cv2WhiteBalance = c.value("white_balance", cv2WhiteBalance);
+        cv2BeamShafts = c.value("beam_shafts", cv2BeamShafts);
+        cv2BeamHaze = c.value("beam_haze", cv2BeamHaze);
+        cv2BeamLight = c.value("beam_light", cv2BeamLight);
+        cv2CirrusPeriodM = c.value("cirrus_period_m", cv2CirrusPeriodM);
+        cv2MidPeriodM = c.value("mid_period_m", cv2MidPeriodM);
+        cv2MidDensity = c.value("mid_density", cv2MidDensity);
+        cv2CloudSunRayleigh = c.value("cloud_sun_rayleigh", cv2CloudSunRayleigh);
+        cv2TwilightSky = c.value("twilight_sky", cv2TwilightSky);
+        cv2AutoExposure = c.value("auto_exposure", cv2AutoExposure);
     }
 
     if (schemaMatches && j.contains("clouds"))
@@ -6615,7 +6633,16 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"rain_streaks", cv2RainStreaks},
         {"exposure_ev", cv2ExposureEV},
         {"highlight_rolloff", cv2HighlightRolloff},
-        {"white_balance", cv2WhiteBalance}};
+        {"white_balance", cv2WhiteBalance},
+        {"beam_shafts", cv2BeamShafts},
+        {"beam_haze", cv2BeamHaze},
+        {"beam_light", cv2BeamLight},
+        {"cirrus_period_m", cv2CirrusPeriodM},
+        {"mid_period_m", cv2MidPeriodM},
+        {"mid_density", cv2MidDensity},
+        {"cloud_sun_rayleigh", cv2CloudSunRayleigh},
+        {"twilight_sky", cv2TwilightSky},
+        {"auto_exposure", cv2AutoExposure}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

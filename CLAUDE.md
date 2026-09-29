@@ -471,9 +471,67 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the along-wind period count a multiple of 4). On noise alone it covered the globe in even splotches.
 - **Debug view 7**: per-layer optical depth (red low incl. rain, green mid, blue anvil, white high) — the
   first thing to look at when a cloud artifact has an unknown owner.
-- **Motion** (`cloud_v2_resolve.comp`): in motion all four pixels of a 2x2 block take nearly the same update
-  (the refreshed one's raw sample pulled halfway to the interpolated estimate). Otherwise a pan draws the
-  sparse lattice as a cross-hatch. Check motion with `path play record=` (a settled `capture` hides it).
+- **Motion** (`cloud_v2_resolve.comp`): the new-sample weight and the clamp box follow PARALLAX (the
+  reprojection at the cloud's depth vs at infinity) plus the clouds' own evolution — not total pixel motion.
+  A rotation reprojects exactly; raising the weight during a pan swapped the accumulated image for the
+  quarter grid's noisy samples (a knitted cross-hatch). In parallax all four pixels of a 2x2 block take
+  nearly the same update. Check motion with `path play record=` (a settled `capture` hides it).
+- **Far field (orbit)**: a fractal presence from the cluster Perlin at 1x and 4x (3-90 km, `fz`), thresholded
+  to the map's coverage (area ~ cov), replaces the sub-pixel cells' uniform haze as the cells stop resolving
+  (`farK`), and clusters the near field a little (0.08) so orbit and ground agree on where the holes are.
+  Before it, clouds from space were the map's warped 5-10 km blobs.
+- **Beams as LIGHT** (2026-09-28, `.plans/BEAMS_V2_PLAN.md`, `cv2.beam`: "Beam shafts" x, 0 = the old drawn
+  line; "Beam haze / dust" y): `beamLightCloud` lights cloud samples like the Moon does (3-step march toward
+  the satellite, the cloud phase lobes, ice/rain optics); `beamShafts` integrates each culled beam's Gaussian
+  column across the view ray in closed form (air + aerosol scattering at the closest point, phase at the
+  angle to the beam, occluded by the ray's clouds through transmittance checkpoints `tq`) inside the march,
+  so the resolve anti-aliases it. Verified in pass 10 (harness_runs/cloud_v2_p10b, _p10c: Anchorage, 133-214 beams, clear and cloudy). **Pass 10 (2026-09-28):** a beam is a DISK (`beamDisk`: the Sun's
+  limb-darkened disk seen in the mirror, radius = `footprintRadM`, edge blurred over ~the mirror's width),
+  not a Gaussian of that sigma cut at 4 sigma — that lit ~16x the area, drew a glow ~4x the spot ending in
+  a hard circle ("blobby, sharp-edged beams"), and crowded ~4x the beams into each tile (`kBeamDiskCut`
+  1.1 in the cull). The ground spot (sat_sky.frag, same total energy) follows. Light is PHYSICAL: mean
+  irradiance = reflecting area / disk area in Suns (`beam.w` = 1/(1361 beamGain) undoes sat_orbit.comp's
+  intensity), x `beam.z` "Beam light on cloud" (30: the night view's moon is ~2400x physical, so 1 reads
+  dim beside it); v1's `beamSkyGlowGain` no longer applies. `beamLightCloud` sums the lights first and
+  marches occlusion ONCE along their mean direction: three field samples per beam per cloud sample cost
+  350 ms frames over Anchorage (the user's profile; 3-4 ms after). Harness framing: `beams` / `beams go`
+  (the site where beams converge NOW — a guessed time and site framed none three times), coverage forced to
+  0 / up for clear / cloudy nights (harness_runs/cloud_v2_p10b.satcmd).
+- **Rain streaks** (cloud_march.comp `rainStreaks`): each (column, fall cycle) is its own drop (position,
+  length, presence hashed from both). A layer's drops all fall along one world direction F (fall speed +
+  0.4 x the wind, gusting slowly), so the streaks are laid out around F's vanishing point (columns of
+  constant angle about F): great circles, which project to straight lines. The first cut used azimuth
+  columns with an azimuth-dependent slant — streaks curved across the view. Density and brightness follow
+  the rain rate (`fe.sigma / 0.0012`, it used to saturate at half that) in ~6 s bursts (`rainBurst`).
+  `cloud_v2_march.comp` writes the same rate into `terrainFrame.w` (scene_depth.comp writes only .xyz);
+  the host reads it for the `rain` ambience driver (synth `rain`, layer `rain`).
+- **Per-layer scales (pass 10):** the shape period ("Shape period (m) - low cloud") no longer sets the
+  cirrus fibres (`cv2CirrusPeriodM`, "Cirrus period") or the altocumulus (`anchorMid`, "Mid layer
+  period"); the mid layer has its own density (`atmo.z`) and the anvils only "Anvils" (neither reads
+  "Density" any more). "Storm feature size" is still a multiple of the low shape period; the rain
+  curtains still read it.
+- **Anvils are fed by their towers (pass 10):** the weather at ~10 km (mip 1) at the point and 12/25/40 km
+  upwind, Cb-typed and covered; it read one 30 km-blurred texel 25 km upwind, so only storm regions hundreds
+  of km across had one and it did not sit on its towers.
+- **Cloud sunlight vs the sky (pass 10):** the key light's Rayleigh is its own (`atmo.x` "Cloud sunlight
+  Rayleigh", x physical), not the sky's `atmosRayleighGain`; "Twilight sky light" (`atmo.y`) boosts the sky
+  ambient from ~7 deg below a sample's horizon to ~14 deg above it (the zenith alone under-counts the dome;
+  past the terminator its ozone blue turns the last red light purple). Ice is DELTA-SCALED: the forward
+  peak (0.45) is not extinction (`sigma x (1 - 0.45 thin)`, phase = the broad lobe, optics / 0.55) —
+  full extinction dimmed the clouds under cirrus as if the peak were lost (dark bands from orbit) — and
+  the high layer is lit from below by the cloud under it (albedo from the map's coverage).
+- **Sky light through cloud (pass 10b):** the ambient at a sample is the DIFFUSE transmission of the cloud
+  above it, 1 / (1 + 0.11 tau) (two-stream, g ~0.85; tau from the probe 250 m up or the column to the top),
+  plus light from below (the ground and horizon sky, 0.35 x (1 - hf)). It was exp(-sigma x 250 m): ~0 inside
+  cumulus, so every large cloud's lower part was one flat dark grey under a hard line (user report, near sunset).
+- **Beam shafts are a ray-cylinder intersection (pass 10b):** the stretch of the view ray inside each beam's
+  column (clipped to the eye, the scene depth, the ground point and 60 km), with the air integrated along it;
+  the column's edge widens to 1.5 pixel footprints (energy kept). The closest-point chord it replaced turned
+  with the camera when standing inside a beam (billboarding). The light cull reaches 60 km, not the cloud top.
+  Debug view 8: r the tile's lights, g the beams a ray's interval found, b the shaft radiance (log).
+- **Soft ground contact (pass 10):** the march fades extinction over the last max(40 m, 3 pixel
+  footprints) before the half-res scene depth: dense cloud meeting a slope ended on a hard,
+  stair-stepped line.
 - **Rain + optics** (2026-09-28, `.plans/ATMOS_OPTICS_AND_STORMS.md`): rain shafts are cv2FieldLow's
   below-base branch (`CV2Field.rain`; the shell floor is 0 m while Rain > 0); rain at the eye drives a
   streak overlay in cloud_march.comp (after the resolve, so it animates). Halos / sundogs / parhelic
@@ -485,10 +543,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   The sun path to every cloud sample is the Chapman column (`sunTransmit`, include/atmosphere.glsl) plus
   ozone: a 12-step midpoint rule along a grazing path misses the tangent point's dense air.
 - **Tonemap controls** (Clouds tab, lighting section; `clouds_v2.exposure_ev / highlight_rolloff /
-  white_balance`, UBO `exposureScale / highlightRolloff / whiteBalance`, the old cloudsV2 pads):
-  Exposure (EV) scales the auto exposure (`skyExposure()` mirrors it); Highlight roll-off blends the tonemap
-  toward 1 - 1/(1 + x + x^2/2) (same toe, long shoulder); White balance adapts to the sunlight's colour at
-  the observer (a low Sun is yellow; without it every cloud read beige).
+  white_balance / auto_exposure`, UBO `exposureScale / highlightRolloff / whiteBalance`, the old cloudsV2
+  pads): **one GLOBAL exposure** (`globalExposureEV()` = Exposure (EV) + the metered auto offset) scales the
+  sky's radiance, the point sources (the point style's ref/limit magnitudes shift by `exposureGainMag()`,
+  like the zoom gain) and the Milky Way / zodiacal light; `skyExposure()` mirrors it. **Auto exposure**
+  meters the displayed frame (`recordScreenshotCopy`: the central 60% blitted to 64x36, read next frame in
+  `readExposureMeter`), steps toward a linear mean of 0.32 and harder when > 4% clips, only DARKENS (to
+  -3 EV x "Auto exposure (day)") and only by day. Harness `state` reports it under `exposure`. Highlight
+  roll-off blends the tonemap toward 1 - 1/(1 + x + x^2/2) (same toe, long shoulder); White balance adapts
+  to the sunlight's colour at the observer (a low Sun is yellow; without it every cloud read beige).
+- **Rainbows are done** (user-approved 2026-09-28): they show at storms on the terminator (low Sun behind
+  the observer); a harness run that does not frame one is a location problem, not a render one.
 - **Target A's alpha is a signed distance in KILOMETRES** (`include/cloud_occlusion.glsl`): >= 0 opaque
   cloud, < 0 the mean distance of translucent cloud. In metres an RGBA16F alpha was +inf past 65.5 km, so
   from orbit clouds dimmed every satellite in front of them. Point sources use `cloudPointVisibility()`.
@@ -520,8 +585,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
 - The Clouds tab's slider slots: `kCloudSliderSlots` (164) sizes all four per-slider arrays and
-  `cloudBufs`; v2 uses 112-160. The ids v1's deleted sliders held (2, 7-9, 16, 17, 34, 50, 61, 71-77)
-  are free. Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
+  `cloudBufs`; v2 uses 112-163 and (pass 10) 2, 7, 8, 9, 16, 17. Still free from v1's deleted sliders:
+  34, 50, 61, 71-77. Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
   shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.
 
 ## Subsystem: Automation harness (2026-09-25)
@@ -693,6 +758,11 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   consonant. The first cut's FSK beeps (2.4 kHz, squared-off) and disk clicks + fan noise read as
   brash and as audio glitches; they were replaced by the two drones.
 - **Groups** (`"group"`: wind water nature city space machines) each have a gain on the Sound tab.
+- **Rain (2026-09-28):** driver `rain` = the cloud field's rain rate at the eye (cloud_v2_march.comp ->
+  `terrainFrame.w` -> `terrainFrameMapped[3]`, eased 2 s) — the value the on-screen streaks use; layer
+  `rain` (group water) plays synth `rain`: a band-passed hiss, a low rumble for heavy rain and a Poisson
+  stream of drop ticks (each its own resonance, level and pan), all scaled by `intensity`. Not yet
+  loudness-calibrated against the -24 LUFS convention.
 - **Glare is answered by the MUSIC while a track plays (2026-09-27, the user's design).** Tuning a
   synth to the soundtrack in real time never fit its rhythm and harmony, so the composer wrote an
   **upwell stem** per track (`assets/sound/music/<track>_upwell.mp3` — a separate layer, not a remix:

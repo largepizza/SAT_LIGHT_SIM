@@ -189,7 +189,7 @@ json patchFor(const std::string &dotted, const json &value)
 const char *kHelp =
     "wait <frames> | wait seconds <s> | wait settle [frames]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
-    "observer lat= lon= [agl=|alt=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
+    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; "
@@ -399,6 +399,10 @@ json SatelliteSim::harnessStateJson()
                    {"tracking", trackActive}};
     const glm::vec3 sun(sunDirENU), moon(moonDirENU);
     j["sun"] = {{"az_deg", azDegOf(sun)}, {"el_deg", elDegOf(sun)}};
+    // The global exposure (SatelliteSim.h): the user's EV, the metered auto offset and the meter's
+    // last reading of the displayed frame (linear mean, fraction clipped white).
+    j["exposure"] = {{"ev", cv2ExposureEV}, {"auto_ev", autoExposureEV}, {"global_ev", globalExposureEV()},
+                     {"meter_mean", meterMeanLum}, {"meter_clip", meterClipFrac}};
     j["moon"] = {{"az_deg", azDegOf(moon)}, {"el_deg", elDegOf(moon)}, {"illum", moonDirENU.w}};
 
     json ko = json::array();
@@ -500,7 +504,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         const std::string &name;
         ~Refresh()
         {
-            if (name == "time" || name == "observer" || name == "follow")
+            if (name == "time" || name == "observer" || name == "follow" || name == "beams")
             {
                 s->obsTerrainH = s->cpuTerrainHeightM(s->obsLatDeg, s->obsLonDeg);
                 s->updatePositions((double)s->simDayJ2000 * 86400.0 + s->simSecInDay, 0.0f);
@@ -735,6 +739,112 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         char buf[128];
         snprintf(buf, sizeof(buf), "%.4f, %.4f  alt %.0f m, agl %.0f m  (terrain %.0f m)", obsLatDeg, obsLonDeg,
                  eyeAsl, eyeAsl - obsTerrainH, obsTerrainH);
+        r["message"] = buf;
+        return Status::Done;
+    }
+
+    // ── beams ───────────────────────────────────────────────────────────────────
+    // Where the Reflect-Orbital beams are landing NOW (converged beams per target site, from the last
+    // beam readback; sat_orbit.comp builds beams only for satellites above the OBSERVER's horizon, so stand
+    // within ~2000 km of the region first). `beams` lists the busiest sites; `beams go [rank=1]
+    // [dist_km=0] [bearing=270] [alt=|agl=2] [look=site|up|none]` puts the observer dist_km from the
+    // rank-th busiest site along `bearing` (degrees from north, measured FROM the site) and aims at the
+    // site's ground point (site) or up the converged beams toward their satellites (up). Guessing a time
+    // and a site framed no beams in two passes: which site the mirrors serve depends on the hour.
+    if (n == "beams")
+    {
+        std::vector<int> order;
+        for (int i = 0; i < reflectorTargetCount; ++i)
+            if (beamSiteConverged[i] > 0)
+                order.push_back(i);
+        std::sort(order.begin(), order.end(),
+                  [&](int x, int y) { return beamSiteConverged[x] > beamSiteConverged[y]; });
+        auto latLonOf = [&](const glm::dvec3 &u, double &la, double &lo)
+        {
+            la = glm::degrees(std::asin(std::clamp(u.z, -1.0, 1.0)));
+            lo = glm::degrees(std::atan2(u.y, u.x));
+        };
+        nlohmann::json list = nlohmann::json::array();
+        for (size_t k = 0; k < order.size() && k < 10; ++k)
+        {
+            double la, lo;
+            latLonOf(glm::dvec3(reflectorTargetsECEF[order[k]]), la, lo);
+            list.push_back({{"site", order[k]}, {"converged", beamSiteConverged[order[k]]}, {"lat", la}, {"lon", lo}});
+        }
+        r["sites"] = list;
+        const std::string sub = lower(pos(0));
+        if (sub.empty() || sub == "list")
+        {
+            r["message"] = std::to_string(order.size()) + " sites with converged beams" +
+                           (order.empty() ? std::string() : ", busiest " + list[0].dump());
+            return Status::Done;
+        }
+        if (sub != "go")
+            fail("beams: unknown subcommand '" + sub + "' (list, go)");
+        const int rank = std::max(1, (int)c.num("rank", 1.0));
+        if ((int)order.size() < rank)
+            fail("beams go: only " + std::to_string(order.size()) + " sites have converged beams now");
+        const int ti = order[rank - 1];
+        const glm::dvec3 site = glm::normalize(glm::dvec3(reflectorTargetsECEF[ti]));
+        double sLat, sLon;
+        latLonOf(site, sLat, sLon);
+        // Destination dist_km from the site along the bearing (great circle).
+        const double dAng = c.num("dist_km", 0.0) * 1000.0 / 6371000.0, brg = glm::radians(c.num("bearing", 270.0));
+        const double p1 = glm::radians(sLat), l1 = glm::radians(sLon);
+        const double p2 = std::asin(std::sin(p1) * std::cos(dAng) + std::cos(p1) * std::sin(dAng) * std::cos(brg));
+        const double l2 = l1 + std::atan2(std::sin(brg) * std::sin(dAng) * std::cos(p1),
+                                          std::cos(dAng) - std::sin(p1) * std::sin(p2));
+        if (followActive)
+            stopFollow();
+        obsDir = {(float)(std::cos(p2) * std::cos(l2)), (float)(std::cos(p2) * std::sin(l2)), (float)std::sin(p2)};
+        obsLatDeg = (float)glm::degrees(p2);
+        obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+        obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
+        if (c.has("alt"))
+            obsHeightOffset = std::max(0.0f, (float)c.num("alt", 0.0));
+        else
+            obsHeightOffset = obsTerrainH + (float)c.num("agl", 2.0); // the CPU's ground: approximate
+        trailClearPending = true;
+        // Aim, in the new observer's ENU frame.
+        const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+        const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), up));
+        const glm::dvec3 north = glm::cross(up, east);
+        const std::string look = lower(c.str("look", "site"));
+        glm::dvec3 dE(0.0);
+        if (look == "site")
+        {
+            const double eyeR = 6371000.0 + std::max((double)obsHeightOffset, (double)obsTerrainH) + 2.0;
+            dE = site * (double)reflectorTargetsRadiusM[ti] - up * eyeR;
+        }
+        else if (look == "up")
+            dE = beamSiteDirEcef[ti];
+        else if (look != "none")
+            fail("beams go: look must be site, up or none");
+        if (look != "none")
+        {
+            if (glm::length(dE) < 1e-9)
+                fail("beams go: no beam direction for that site");
+            dE = glm::normalize(dE);
+            const glm::vec3 d((float)glm::dot(dE, east), (float)glm::dot(dE, north), (float)glm::dot(dE, up));
+            harnessTrack_ = 0;
+            stopTrack();
+            aimCameraAzEl(azDegOf(d), elDegOf(d));
+        }
+        else
+            aimCameraAzEl(camera.azDeg, camera.elDeg);
+        r["site"] = ti;
+        r["converged"] = beamSiteConverged[ti];
+        r["site_lat"] = sLat;
+        r["site_lon"] = sLon;
+        r["lat_deg"] = obsLatDeg;
+        r["lon_deg"] = obsLonDeg;
+        r["alt_m"] = obsHeightOffset;
+        r["az_deg"] = camera.azDeg;
+        r["el_deg"] = camera.elDeg;
+        char buf[200];
+        snprintf(buf, sizeof(buf), "site %d (%.3f, %.3f), %d converged beams; observer %.4f, %.4f alt %.0f m; az %.1f el %.1f",
+                 ti, sLat, sLon, beamSiteConverged[ti], obsLatDeg, obsLonDeg, obsHeightOffset, camera.azDeg,
+                 camera.elDeg);
         r["message"] = buf;
         return Status::Done;
     }

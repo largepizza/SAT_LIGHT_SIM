@@ -48,7 +48,9 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // half-res, metres (kNoSurfaceT = sky)
 layout(set = 0, binding = 7) uniform sampler2D earthNightTex;
-layout(std430, set = 0, binding = 8) readonly buffer TerrainFrame { vec4 terrainFrame; };
+// x the observer's ground (scene_depth.comp); w written here: the rain rate at the eye (0..1), which
+// the host reads a frame later for the rain ambience (terrainFrameMapped[3]).
+layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define BEAM_CLOUD_LIGHTS_BINDING 9
 #include "beam_cloud_lights.glsl"
 layout(set = 0, binding = 10, rgba16f) uniform writeonly image2D outColor;
@@ -147,7 +149,7 @@ float lightOD(vec3 rel, vec3 ldir, float eyeH, mat3 enuToEcef, int nL, float lSe
         // The view sample's footprint, not the step's: a longer footprint would turn the gaps
         // between cells into haze and shadow everything.
         CV2Field lf = cv2Field(cv2Pos(rel + ldir * sm, eyeH, enuToEcef), k < 2 ? detailAmt : 0.0, fp);
-        od += lf.sigma * lSeg;
+        od += lf.sigma * (1.0 - 0.45 * lf.thin) * lSeg;   // ice delta-scaled (see the march)
         s += lSeg; lSeg *= kLightRatio;
     }
     CV2Field ff = cv2Field(cv2Pos(rel + ldir * (cv2.light.x * 1.6), eyeH, enuToEcef), 0.0, fp);
@@ -160,6 +162,173 @@ float msOctaves(float od)
     float ms = 0.0, a = 1.0, b = 1.0;
     for (int k = 1; k <= 2; ++k) { a *= cv2.light.z; b *= cv2.light.w; ms += b * exp(-od * a); }
     return ms;
+}
+
+
+// ── Reflect-Orbital beams as LIGHT (.plans/BEAMS_V2_PLAN.md) ──────────────────────────────────────
+// A beam is a column of sunlight a few km wide (the Sun's 0.53 deg spread over the mirror's range),
+// reflected down from a satellite. It lights a cloud the way the Moon does — through the same light
+// path, phase lobes and optics (a halo in ice, a "beam-bow" in rain opposite the satellite) — and it is
+// visible in clear air only by what scatters it: air a little, aerosol (haze, dust) far more, so a
+// shaft glows low down and in dusty air and fades above ~15 km. Both come from the tile's culled
+// cloud-light list (one entry per cluster of converged beams).
+
+// A beam's footprint across its axis: the Sun's limb-darkened disk (u = 0.6) seen in the mirror,
+// radius R = the Sun's cone at this range, its edge blurred over the mirror's width. Normalised to a
+// MEAN of 1 over the disk (peak 1.25). Until 2026-09-28 a Gaussian of sigma = the footprint, cut at
+// 4 sigma: a glow ~4x too wide around a very bright core, ending in a hard circle ("blobby beams with
+// sharp blob edges"), and every beam reached ~16x the area it lights (the cost).
+float beamDisk(float d2, float R)
+{
+    float soft = max(0.02 * R, 40.0);
+    float edge = 1.0 - smoothstep(R - soft, R + soft, sqrt(d2));
+    return edge * (0.4 + 0.6 * sqrt(max(1.0 - d2 / (R * R), 0.0))) * 1.25;
+}
+
+// A beam's MEAN irradiance over its disk, in Suns: its reflecting area (intensity x beam.w) spread over
+// the disk. A 55 m mirror at 600 km: ~1.4e-4 Sun (~60 full moons); dozens converge on one site.
+float beamIrradiance(uint bli, float R)
+{
+    return beamLights[bli].intensity * cv2.beam.w / (PI * R * R);
+}
+
+// The beams' light at a cloud sample. The lights are summed first (irradiance, its mean direction and
+// the cloud phase), then ONE occlusion march toward the satellites along that mean direction: the
+// beams converged on a site come from within a few degrees of each other. The first cut marched
+// three field samples PER BEAM: dozens of beams over a busy site cost dozens x 3 field evaluations
+// per cloud sample (350 ms frames over Anchorage).
+vec3 beamLightCloud(vec3 pW, vec3 rel, float h, vec3 dir, float eyeH, mat3 enuToEcef, CV2Field f,
+                    float fp, float dayness, float og, vec4 hab, vec3 eye)
+{
+    if ((cloud.dbgDisableMask & 128u) != 0u || cv2.beam.z <= 0.0 || beamLightCount == 0u)
+        return vec3(0.0);
+    bool ovf = (sTileLightOverflow != 0u);
+    uint n = ovf ? min(beamLightCount, kMaxCloudBeamLights) : min(sTileLightCount, kTileCloudLightMax);
+    float Esum = 0.0, phSum = 0.0;
+    vec3  dSum = vec3(0.0);
+    for (uint li = 0u; li < n; ++li) {
+        uint  bli  = ovf ? li : sTileLightIdx[li];
+        vec3  dirS = beamLights[bli].dirToSource;
+        vec3  toP  = pW - (eye + beamLights[bli].posENU);
+        vec3  perp = toP - dirS * dot(toP, dirS);
+        float R    = max(beamLights[bli].footprintRadM, 100.0);
+        float d2   = dot(perp, perp);
+        if (d2 > R * R * (kBeamDiskCut * kBeamDiskCut)) continue;
+        float E = beamIrradiance(bli, R) * beamDisk(d2, R)
+                * mix(1.0, smoothstep(beamLights[bli].blockAltM - 500.0, beamLights[bli].blockAltM, h),
+                      beamLights[bli].blockOpacity);
+        if (E <= 0.0) continue;
+        float cosB = dot(dir, dirS);
+        Esum  += E;
+        dSum  += E * dirS;
+        phSum += E * (cv2.phase.y * cv2HG(cosB, cv2.phase.x) + cv2.phase.w * cv2HG(cosB, cv2.phase.z));
+    }
+    if (Esum <= 0.0) return vec3(0.0);
+    vec3  dirS = normalize(dSum);
+    // The cloud between this sample and the satellites: three coarse steps up the beam (150, 450,
+    // 1350 m), with the depth to the column's top as a floor (a deck lit from above).
+    float od = 0.0, s = 0.0, sg = 150.0;
+    if (f.thin > 0.5) od = f.sigma * (1.0 - 0.45 * f.thin) * 400.0;
+    else {
+        for (int k = 0; k < 3; ++k) {
+            CV2Field lf = cv2Field(cv2Pos(rel + dirS * (s + sg * 0.5), eyeH, enuToEcef), 0.0, fp);
+            od += lf.sigma * (1.0 - 0.45 * lf.thin) * sg;
+            s += sg; sg *= 3.0;
+        }
+        od = max(od, 0.5 * f.sigma * max(f.topH - h, 0.0) / max(dot(normalize(pW), dirS), 0.15));
+    }
+    float cosB = dot(dir, dirS);
+    vec3  ph   = vec3(phSum / Esum);
+    if (f.thin > 0.0)   // ice, delta-scaled (see the march)
+        ph = mix(ph, vec3(cv2HG(cosB, 0.3)) + og * cv2IceOptics(dir, dirS, hab) / 0.55, f.thin);
+    if (f.rain > 0.0)
+        ph = mix(ph, vec3(0.3 * cv2HG(cosB, 0.97) + 0.55 * cv2HG(cosB, 0.35)) + og * 0.5 * cv2RainOptics(dir, dirS), f.rain);
+    float pMS = 0.85 * cv2HG(cosB, 0.2) + 0.15 * cv2HG(cosB, -0.4);
+    return Esum * (ph * exp(-od) + pMS * msOctaves(od) * f.msBright)
+         * SUN_INTENSITY * cv2.beam.z * vec3(1.0, 0.97, 0.92) * (1.0 - dayness);
+}
+
+// The cloud transmittance along this ray at distance t, from the march's checkpoints (where T fell
+// below 0.8 / 0.5 / 0.2 / 0.05).
+float cv2TAt(float t, vec4 tq)
+{
+    if (t < tq.x) return 1.0;
+    if (t < tq.y) return mix(0.8, 0.5, clamp((t - tq.x) / max(tq.y - tq.x, 1.0), 0.0, 1.0));
+    if (t < tq.z) return mix(0.5, 0.2, clamp((t - tq.y) / max(tq.z - tq.y, 1.0), 0.0, 1.0));
+    if (t < tq.w) return mix(0.2, 0.05, clamp((t - tq.z) / max(tq.w - tq.z, 1.0), 0.0, 1.0));
+    return 0.05;
+}
+
+// The air's density integrated along a straight segment from altitude h0 to h1 (length len), for a
+// scale height H: exact for an altitude linear along the segment.
+float beamColumn(float h0, float h1, float len, float H)
+{
+    float a = exp(-max(h0, 0.0) / H), c = exp(-max(h1, 0.0) / H);
+    float dh = (h1 - h0) / H;
+    return abs(dh) < 1e-3 ? len * 0.5 * (a + c) : len * (a - c) / dh;
+}
+
+// The shafts in clear air, per view ray: the stretch of the ray INSIDE each beam's column (a ray -
+// cylinder intersection, clipped to the eye, the scene depth, the beam's ground point and ~60 km of
+// altitude), times the air's and the aerosol's density integrated along that stretch, their phase at
+// the angle to the beam (a bright aureole looking up a beam, faint from the side), the air's
+// extinction to the eye and the cloud's transmittance there. The column's edge is widened to ~1.5
+// pixel footprints (energy kept), so a beam narrower than a pixel is not a jagged line.
+// The first cut evaluated everything at the closest point of the view ray to the beam's axis, with
+// the chord 2 sqrt(R^2 - d^2) / sin(angle): standing INSIDE a beam, that chord and point depend only on
+// the view angle, so the shaft turned with the camera like a billboard.
+int gShaftHits = 0;   // debug view 8: beams this ray's interval found
+vec3 beamShafts(vec3 eye, vec3 dir, float tMax, vec4 tq, vec3 sunDir, vec3 BETA_R, float BETA_M, float pixAng)
+{
+    bool ovf = (sTileLightOverflow != 0u);
+    uint n = ovf ? min(beamLightCount, kMaxCloudBeamLights) : min(sTileLightCount, kTileCloudLightMax);
+    vec3 acc = vec3(0.0);
+    for (uint li = 0u; li < n; ++li) {
+        uint  bli = ovf ? li : sTileLightIdx[li];
+        vec3  lp  = beamLights[bli].posENU;       // the beam's ground point, observer-relative
+        vec3  S   = beamLights[bli].dirToSource;
+        float R   = max(beamLights[bli].footprintRadM, 100.0);
+        // Distance from the axis along the ray: |t a + c0|, a = dir - S b, c0 = -lp + S (lp . S).
+        float b   = dot(dir, S);
+        float eL  = dot(lp, S);
+        vec3  a   = dir - S * b;
+        vec3  c0  = -lp + S * eL;
+        float A   = dot(a, a), B = dot(a, c0), C = dot(c0, c0);
+        float tC  = (A > 1e-8) ? max(-B / A, 0.0) : 0.0;
+        float d2  = (A > 1e-8) ? max(C - B * B / A, 0.0) : C;
+        float Ro  = R + max(max(0.02 * R, 40.0), 1.5 * tC * pixAng);
+        if (d2 > Ro * Ro) continue;
+        float t0 = 0.0, t1 = tMax;
+        if (A > 1e-8) {
+            float hw = sqrt((Ro * Ro - d2) / A);
+            t0 = max(-B / A - hw, 0.0);
+            t1 = min(-B / A + hw, tMax);
+        }
+        // Above the ground point only (s = t b - eL >= 0), and below ~60 km of altitude.
+        float sTop = 60000.0 / max(dot(S, normalize(eye + lp)), 0.1);
+        if (b > 1e-6)       { t0 = max(t0, eL / b); t1 = min(t1, (sTop + eL) / b); }
+        else if (b < -1e-6) { t1 = min(t1, eL / b); t0 = max(t0, (sTop + eL) / b); }
+        else if (eL > 0.0) continue;
+        t1 = min(t1, t0 + 80000.0);
+        if (t1 <= t0) continue;
+        ++gShaftHits;
+        float h0  = length(eye + dir * t0) - R_EARTH;
+        float h1  = length(eye + dir * t1) - R_EARTH;
+        float tm  = 0.5 * (t0 + t1);
+        vec3  X   = eye + dir * tm;
+        float h   = length(X) - R_EARTH;
+        float lit = mix(1.0, smoothstep(beamLights[bli].blockAltM - 500.0, beamLights[bli].blockAltM, h),
+                        beamLights[bli].blockOpacity);
+        float dayP = clamp((dot(normalize(X), sunDir) + 0.2) / 0.5, 0.0, 1.0);
+        float len  = t1 - t0;
+        vec3  sc   = BETA_R * beamColumn(h0, h1, len, H_R) * phaseR(b)
+                   + vec3(BETA_M * cv2.beam.y * beamColumn(h0, h1, len, H_M) * phaseM(b));
+        vec3  tAir = exp(-(BETA_R * (atmColumn(eye, dir, tm, H_R) * H_R)
+                          + BETA_M * 1.1 * (atmColumn(eye, dir, tm, H_M) * H_M)));
+        // (R / Ro)^2: the widened column carries the beam's own power.
+        acc += beamIrradiance(bli, R) * (R * R) / (Ro * Ro) * sc * lit * (1.0 - dayP) * tAir * cv2TAt(tm, tq);
+    }
+    return acc * vec3(1.0, 0.97, 0.92) * SUN_INTENSITY * cv2.beam.x * cv2.beam.z;
 }
 
 void main()
@@ -193,7 +362,19 @@ void main()
         vec3 d11 = rayDirAt(tMax, halfSize, tanHalfFov, camToENU);
         vec3 ax  = normalize(d00 + d10 + d01 + d11);
         float ch = min(min(dot(ax, d00), dot(ax, d10)), min(dot(ax, d01), dot(ax, d11)));
-        cullCloudLightsForTile(ax, acos(clamp(ch, -1.0, 1.0)), eye, R_EARTH + cv2.shell.y);
+        // Up to 60 km, not the cloud shell's top: the shafts (beamShafts) reach that high, and a beam
+        // seen above ~15 km was culled away in whole tiles.
+        cullCloudLightsForTile(ax, acos(clamp(ch, -1.0, 1.0)), eye, R_EARTH + max(cv2.shell.y, 60000.0));
+    }
+    // The rain rate at the eye, for the host (the rain ambience): the same field and scale
+    // cloud_march.comp's streaks use.
+    if (gl_GlobalInvocationID.x == 0u && gl_GlobalInvocationID.y == 0u) {
+        float rr = 0.0;
+        if (cv2.rain.x > 0.0 && eyeH < 6000.0) {
+            CV2Field fe = cv2FieldLow(cv2Pos(vec3(0.0), eyeH, enuToEcef), -1.0, 1.0);
+            rr = fe.rain * clamp(fe.sigma / 0.0012, 0.0, 1.0);
+        }
+        terrainFrame.w = rr;
     }
     if (q.x >= qSize.x || q.y >= qSize.y) return;
 
@@ -224,9 +405,16 @@ void main()
     // out 30 degrees around the Sun and buried the 22 degree halo and the sundogs in it.
     // The optics are added at the ray's first ice sample, with that region's crystal habit
     // (cv2IceHabit: most cirrus shows no halo at all).
-    vec3  phIceSun   = vec3(0.45 * cv2HG(cosSun, 0.93) + 0.55 * cv2HG(cosSun, 0.3));
-    vec3  phIceMoon  = vec3(0.45 * cv2HG(cosMoon, 0.93) + 0.55 * cv2HG(cosMoon, 0.3));
+    // DELTA-SCALED (2026-09-28): the narrow forward peak (0.45 of the ice's scattering) is light that
+    // carries on almost undeviated, so it is taken out of the extinction (sigma x (1 - 0.45 thin)) and
+    // the phase is the broad lobe alone (renormalised; the optics / 0.55 likewise). Full extinction plus
+    // the peak in the phase dimmed whatever lay behind the cirrus as if the peak were lost: from orbit
+    // the high layer cut dark bands through the bright clouds under it.
+    vec3  phIceSun   = vec3(cv2HG(cosSun, 0.3));
+    vec3  phIceMoon  = vec3(cv2HG(cosMoon, 0.3));
     bool  iceHabitSet = og <= 0.0;
+    vec4  habRay = vec4(0.0);                         // the region's crystal habit (beams reuse it)
+    vec4  tq = vec4(1e30);                            // where T fell below 0.8 / 0.5 / 0.2 / 0.05
     // Rain: drops are millimetres, so their forward light is a diffraction spike well under a degree
     // wide plus a broad refracted lobe. One HG(0.8) (~20 deg) lit shafts toward the Sun as white walls.
     vec3  phRainSun  = vec3(0.3 * cv2HG(cosSun, 0.97) + 0.55 * cv2HG(cosSun, 0.35))
@@ -311,6 +499,13 @@ void main()
                 continue;
             }
             empty = 0;
+            // Ice: the forward peak is not extinction (delta scaling, see phIceSun).
+            f.sigma *= 1.0 - 0.45 * f.thin;
+            // Soft contact with the ground: the last few pixel footprints before the surface thin out.
+            // The march stops at the half-res scene depth, so a dense cloud meeting a slope ended on a
+            // hard line that the half-res grid stair-stepped (and real cloud thins against the ground).
+            if (tScene < kNoSurfaceT)
+                f.sigma *= smoothstep(0.0, clamp(3.0 * fp, 40.0, 600.0), tScene - t);
             odPath += f.sigma * stepF;
             odRain += f.sigma * f.rain * stepF;
             if (dbgLayers) {
@@ -325,7 +520,10 @@ void main()
             vec3  up   = normalize(pW);
             float sunUp = dot(up, sunDir);
             if (t - cacheT > 25000.0) {
-                sunCol = sunColorAt(pW, sunDir, BETA_R, BETA_M);
+                // The key light's own Rayleigh (cv2.atmo.x x physical): the sky's gain, turned up for
+                // the ground view's sunsets, reddened every low-Sun cloud with it (from orbit, where no
+                // white balance applies, the whole terminator band read dark yellow-orange).
+                sunCol = sunColorAt(pW, sunDir, BETA_R_BASE * cv2.atmo.x, BETA_M);
                 skyZen = skyZenithAt(normalize(pW) * (R_EARTH + clamp(p.h, 0.0, 60000.0)), sunDir, BETA_R, BETA_M);
                 cacheT = t;
             }
@@ -354,6 +552,12 @@ void main()
             // spans the whole sky, so every sample there paid seven field evaluations. Its
             // self-shadow is its own density over a few hundred metres; its sky light is unoccluded.
             bool thin = f.thin > 0.5;
+            if (f.thin > 0.0 && !iceHabitSet) {
+                habRay = cv2IceHabit(p);
+                phIceSun  += og * cv2IceOptics(dir, sunDir, habRay) / 0.55;
+                phIceMoon += og * cv2IceOptics(dir, moonDir, habRay) / 0.55;
+                iceHabitSet = true;
+            }
             vec3 keyS = vec3(0.0);
             if (dot(keyCol, keyCol) > 0.0) {
                 float od = thin ? f.sigma * 400.0
@@ -368,12 +572,6 @@ void main()
                 }
                 float powder = 1.0 - cv2.look2.z * exp(-f.sigma * 300.0) * (0.5 - 0.5 * cosK);
                 vec3 pSSv = vec3(pSS);
-                if (f.thin > 0.0 && !iceHabitSet) {
-                    vec4 hab = cv2IceHabit(p);
-                    phIceSun  += og * cv2IceOptics(dir, sunDir, hab);
-                    phIceMoon += og * cv2IceOptics(dir, moonDir, hab);
-                    iceHabitSet = true;
-                }
                 if (f.thin > 0.0 || f.rain > 0.0) {
                     pSSv = mix(pSSv, moonIsKey ? phIceMoon : phIceSun, f.thin);
                     pSSv = mix(pSSv, moonIsKey ? phRainMoon : phRainSun, f.rain);
@@ -381,21 +579,49 @@ void main()
                 keyS = keyCol * powder * (pSSv * exp(-od) + pMS * msOctaves(od) * f.msBright);
             }
 
-            // ── Sky light from above, occluded by the cloud 250 m up, and by the sample's own
-            // density: deep inside a cloud less sky reaches it than at its surface. Without that
-            // the shaded side of a cloud was one flat grey, whatever the surface did. ──
-            float ambVis = 1.0;
+            // ── Sky light from above, through the cloud above the sample, plus light from below. ──
+            // Through the cloud: DIFFUSE transmission of its optical depth (two-stream, conservative
+            // scattering, g ~0.85: 1 / (1 + 0.75 (1 - g) tau)), tau from the probe 250 m up or the
+            // column to the top, whichever is deeper. From below: the ground and the horizon sky (the
+            // lower hemisphere), which the cloud above does not shade — what lights a cumulus base.
+            // Until 2026-09-28 it was exp(-sigma_up x 250 m), a straight-line Beer's law: inside a
+            // cumulus (sigma ~0.03-0.05 /m) that is ~0, so everything more than ~250 m under the top
+            // surface went black and the bases of every large cloud were one flat dark grey, cut off
+            // from the sky-lit tops by a hard line (worst near sunset, when the key light is gone from
+            // the bases and the twilight boost lifts only the tops).
+            float ambVis = 1.0, ambLow = 0.0;
             if (!thin) {
                 CV2Field fu = cv2Field(cv2Pos(rel + up * 250.0, eyeH, enuToEcef), 0.0, fp);
-                ambVis = exp(-fu.sigma * 250.0) * mix(0.55, 1.0, f.hf) * mix(1.0, exp(-f.sigma * 150.0), 0.5);
+                float tauUp = max(fu.sigma * 250.0, 0.6 * f.sigma * max(f.topH - p.h, 0.0));
+                ambVis = mix(0.7, 1.0, f.hf) / (1.0 + 0.11 * tauUp) * mix(1.0, exp(-f.sigma * 150.0), 0.3);
+                ambLow = 0.35 * (1.0 - f.hf);
             }
+            ambVis += ambLow;
             // The night sky: the moonlit sky's share of the moon, for the cloud's shaded side.
-            vec3  skyAmb = skyZen * cv2.look.w + moonKey * nightK * 0.03 * max(dot(up, moonDir), 0.0);
+            // Twilight (cv2.atmo.y): with the Sun low or just set at the sample, the zenith alone badly
+            // under-counts the sky that lights a cloud (the bright dome toward the Sun, the whole lit
+            // upper atmosphere). Boosted from ~7 deg below the sample's horizon to ~14 deg above it,
+            // it whitens the orange of the grazing sunlight, and past the terminator the zenith's colour
+            // (blue, the ozone's Chappuis band) turns the last red light purple before night.
+            float twi = smoothstep(horizS - 0.12, horizS, sunUp)
+                      * (1.0 - smoothstep(horizS + 0.05, horizS + 0.25, sunUp));
+            vec3  skyAmb = skyZen * cv2.look.w * (1.0 + cv2.atmo.y * twi)
+                         + moonKey * nightK * 0.03 * max(dot(up, moonDir), 0.0);
             vec3  ambS   = skyAmb * ambVis * f.ambient;
 
             // ── Ground bounce from below: the key light, reflected by the ground under the cloud ──
             vec3 bounceS = keyCol * max(dot(up, keyDir), 0.0) * 0.15 * cv2.look2.x
                          * (1.0 - f.hf) * (1.0 - f.hf);
+            // Ice high above other cloud is lit from below by it: the clouds under cirrus reflect
+            // 60-80% of the light. Without it cirrus seen from orbit at a backscattering angle was lit
+            // only by its weak phase there, and read dark orange over white cloud. The albedo below is
+            // the map's coverage over ~20 km (mip 2); the Sun must reach down there too.
+            if (f.thin > 0.0) {
+                float covB = clamp((textureLod(cv2WeatherTex, cv2Drift(p.dirE), 2.0).r * cv2.look.x - cv2.cover.x)
+                                   / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
+                bounceS += keyCol * max(dot(up, keyDir), 0.0) * (0.08 + 0.6 * covB) * 0.25 * cv2.look2.x
+                         * smoothstep(-0.03, 0.02, dot(up, keyDir)) * f.thin;
+            }
 
             // ── Night: city up-light, beams ──
             vec3 nightS = vec3(0.0);
@@ -408,7 +634,7 @@ void main()
                     nightS += (cr / max(lum, 0.001)) * cityBrightness(lum) * smoothstep(0.45, 0.0, f.hf)
                             * (1.0 - dayness) * kCityUpwellStrength * cloud.ambientGain;
                 }
-                nightS += beamCloudLighting(pW, p.h, dir, eye, dayness, f.sigma * max(f.topH - p.h, 0.0));
+                nightS += beamLightCloud(pW, rel, p.h, dir, eyeH, enuToEcef, f, fp, dayness, og, habRay, eye);
             }
 
             vec3  S     = keyS + ambS + bounceS + nightS;
@@ -419,6 +645,10 @@ void main()
             dAcc += w * t;
             T    *= Tstep;
             if (tHalf < 0.0 && T < 0.5) tHalf = t;
+            if (tq.x > 1e29 && T < 0.8)  tq.x = t;
+            if (tq.y > 1e29 && T < 0.5)  tq.y = t;
+            if (tq.z > 1e29 && T < 0.2)  tq.z = t;
+            if (tq.w > 1e29 && T < 0.05) tq.w = t;
             t += stepF;
         }
         if (iters >= kMaxIters && t < tEnd) remLen += tEnd - t;
@@ -471,6 +701,14 @@ void main()
         }
         outRgb = attn * L + air * (1.0 - attn) * (1.0 - T);
     }
+    // The beams in clear air, occluded by this ray's clouds through the transmittance checkpoints —
+    // inside the march, so the temporal resolve anti-aliases them like cloud (the drawn line it
+    // replaces was cut at the cloud's mean distance in half-res steps).
+    vec3 shaftRgb = vec3(0.0);
+    if (cv2.beam.x > 0.0 && cloud.showBeamDebugRays != 0u && (cloud.dbgDisableMask & 128u) == 0u
+        && cv2.beam.z > 0.0 && beamLightCount > 0u)
+        shaftRgb = beamShafts(eye, dir, tScene, tq, sunDir, BETA_R, BETA_M, pixAng);
+    outRgb += shaftRgb;
 
     // Debug views (cv2.shell.z): 1 = march iterations, 2 = transmittance, 3 = mean depth / 50 km,
     // 4 = the weather cube where the ray enters the shell (r coverage, g type, b precipitation).
@@ -483,6 +721,15 @@ void main()
     else if (dbg == 2) outRgb = vec3(1.0 - T) * 0.05;
     else if (dbg == 3) outRgb = vec3(fract(meanT / 50000.0)) * 0.05;
     else if (dbg == 5) outRgb = vec3(1.0 - exp(-odRain), 0.0, (wAcc > 1e-4) ? 0.3 : 0.0) * 0.05;
+    // 8: the beam shafts — r the tile's light count / 64 (1 = overflow, all lights), g the beams this
+    // ray's interval found / 8, b the shaft radiance (log scale), plus a faint grey when any light exists.
+    else if (dbg == 8) {
+        float nL = (sTileLightOverflow != 0u) ? 1.0 : float(sTileLightCount) / 64.0;
+        float lum = dot(shaftRgb, vec3(0.33));
+        outRgb = vec3(nL, float(gShaftHits) / 8.0,
+                      clamp((log2(max(lum, 1e-12)) + 30.0) / 30.0, 0.0, 1.0)) * 0.05
+               + ((beamLightCount > 0u) ? vec3(0.004) : vec3(0.0));
+    }
     // 7: which layer: red = low (incl. rain), green = mid, blue = anvil, white = high.
     else if (dbg == 7) outRgb = (vec3(1.0) - exp(-odLayer.xyz) + vec3(0.6) * (1.0 - exp(-odLayer.w))) * 0.05;
     float Tout = (dbg != 0) ? 0.0 : T;

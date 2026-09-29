@@ -150,6 +150,7 @@ void SatelliteSim::initAmbience()
     ambD_.glareSum = a.registerDriver("glare_sum");
     ambD_.beamSite = a.registerDriver("beam_site");
     ambD_.musicGap = a.registerDriver("music_gap");
+    ambD_.rain = a.registerDriver("rain");
 
     std::string err;
     if (!a.load(kAmbiencePath, err))
@@ -456,6 +457,15 @@ void SatelliteSim::computeAmbienceContext(float dt)
                             ? raw
                             : ambCloudEased + (raw - ambCloudEased) * (1.0f - expf(-dt / 1.5f));
         a.set(ambD_.cloud, std::clamp(ambCloudEased, 0.0f, 1.0f));
+    }
+
+    // ── Rain: the cloud field's rain rate at the eye (0 drizzle-free .. 1 a Cb core), written by
+    // cloud_v2_march.comp into terrainFrame.w and read back a frame later. The same value drives the
+    // streaks, so what you hear is what falls on screen. ──
+    {
+        const float raw = terrainFrameMapped ? std::clamp(terrainFrameMapped[3], 0.0f, 1.0f) : 0.0f;
+        ambRainEased += (raw - ambRainEased) * (dt > 0.0f ? 1.0f - expf(-dt / 2.0f) : 1.0f);
+        a.set(ambD_.rain, ambRainEased);
     }
 
     // ── Satellite shells ─────────────────────────────────────────────────────────────────────

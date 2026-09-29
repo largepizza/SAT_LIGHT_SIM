@@ -1284,7 +1284,7 @@ void cullBeamsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos) {
 
     // Uniform across the workgroup (push constants only), so the barriers above and below stay in
     // uniform control flow while the scan itself is skipped when beams aren't drawn at all.
-    if (cloud.showBeamDebugRays != 0u && (cloud.dbgDisableMask & 8192u) == 0u
+    if (cloud.showBeamDebugRays != 0u && (cloud.dbgDisableMask & 8192u) == 0u && cv2.beam.x <= 0.0
         && (cloud.dbgDisableMask & 131072u) == 0u) {
         uint activeCount = min(beamCount, BEAM_MAX_ACTIVE);
         for (uint bi = gl_LocalInvocationIndex; bi < activeCount; bi += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
@@ -1337,27 +1337,63 @@ void cullBeamsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos) {
 // Falling rain around the eye, as streaks in direction space: columns in azimuth (slanted by the
 // wind), segments sliding down in elevation, three depth layers (near: few, wide, fast; far: many,
 // thin, slow). Composited after the resolve, so it animates instead of smearing through history.
-float rainStreaks(vec3 d, float t)
+// Falling rain at the eye, in direction space: three depths of drops. Each (column, fall cycle) is
+// its OWN drop — its lateral place in the column, length, brightness and whether it exists at all are
+// hashed from both — so no two drops share a track. (The first cut fixed each column's drop at one
+// place: every drop retraced the same straight line, and the lines were plain to see.) Their direction
+// is the wind's (see the geometry note below); density and brightness follow the rain rate, in bursts.
+// wind: m/s toward east (the clouds' stand-in wind); rate: 0..1.
+float rainHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+// The rain's own variability: showers come in bursts (a value noise over ~6 s, on top of the rain
+// field's rate at the eye). 0.35..1.
+float rainBurst(float t)
 {
-    float az = atan(d.y, d.x), el = asin(clamp(d.z, -1.0, 1.0));
+    float i = floor(t / 6.0), f = fract(t / 6.0);
+    return mix(0.35, 1.0, mix(rainHash(vec2(i, 7.1)), rainHash(vec2(i + 1.0, 7.1)), f * f * (3.0 - 2.0 * f)));
+}
+
+// GEOMETRY (2026-09-28): every drop of a depth layer falls along the same world direction F (down at
+// its fall speed, blown by the wind), so seen from the eye each drop's path is a great circle through
+// F's vanishing point - and a great circle projects to a STRAIGHT line on screen. The streaks live in
+// (phi around F, theta from F): columns of constant phi, drops sliding toward theta = 0. The first
+// cut laid columns out in azimuth/elevation with a slant that depended on the azimuth: the streaks
+// curved across the view, and bent the wrong way where the slant flipped sign.
+float rainStreaks(vec3 d, float t, float wind, float rate)
+{
     float m = 0.0;
     for (int k = 0; k < 3; ++k) {
         float fk    = float(k);
-        float cols  = 260.0 * pow(2.2, fk);
-        float x     = (az + el * 0.08) * (cols / (2.0 * PI));
+        float vFall = 9.0 - 2.5 * fk;                         // big near drops fall fastest
+        // Gusts: slow (tens of seconds), so the whole pattern leans and straightens without jumping.
+        // The clouds' wind is the wind aloft; at the ground ~40% of it.
+        vec2  W  = 0.4 * vec2(wind * (1.0 + 0.35 * sin(t * 0.21 + fk * 1.7) + 0.15 * sin(t * 0.53 + fk)),
+                              wind * 0.25 * sin(t * 0.13 + fk * 2.1));
+        vec3  F  = normalize(vec3(W, -vFall));
+        vec3  e1 = normalize(cross(vec3(1.0, 0.0, 0.0), F));
+        vec3  e2 = cross(F, e1);
+        float cth = clamp(dot(d, F), -1.0, 1.0);
+        float sth = sqrt(max(1.0 - cth * cth, 0.0));
+        float th  = acos(cth);                                // 0 at the vanishing point below
+        float ph  = atan(dot(d, e2), dot(d, e1));
+        float cols  = 190.0 * pow(2.1, fk);
+        float x     = (ph + fk * 0.37) * (cols / (2.0 * PI));
         float ci    = floor(x);
-        float h     = fract(sin(ci * 12.9898 + fk * 78.233) * 43758.5453);
-        float h2    = fract(h * 91.7 + 0.31);
-        // Rain falls at ~9 m/s: a few metres away that is well over 100 deg/s across the view
-        // (the first cut fell at ~25 deg/s, like snow). Nearer layers faster.
-        float y     = el * (5.0 + 5.0 * fk) + t * (10.0 - 2.8 * fk) * (0.8 + 0.4 * h) + h2 * 10.0;
+        float hc    = rainHash(vec2(ci, fk));
+        float y     = th * (5.0 + 5.0 * fk) + t * (10.0 - 2.8 * fk) * (0.8 + 0.4 * hc) + hc * 10.0;
+        float cyc   = floor(y);
         float seg   = fract(y);
-        float len   = 0.25 - 0.06 * fk;
+        vec3  hd    = vec3(rainHash(vec2(ci, cyc + fk * 57.0)), rainHash(vec2(cyc, ci + 3.1)),
+                           rainHash(vec2(ci + cyc, fk + 9.7)));
+        if (hd.x > mix(0.04, 0.75, rate)) continue;          // no drop in this column this cycle
+        float len    = (0.12 + 0.18 * hd.z) * (1.0 - 0.2 * fk);
         float streak = smoothstep(0.0, 0.04, seg) * (1.0 - smoothstep(len, len + 0.04, seg));
-        float width = 1.0 - smoothstep(0.03, 0.12, abs(fract(x) - (0.3 + 0.4 * h2)));
-        m += streak * width * step(0.35, h) * (1.0 - 0.3 * fk);
+        // Columns converge toward the vanishing points (sin theta): keep their width in pixels.
+        float wHalf  = 0.08 / max(sth, 0.15);
+        float width  = 1.0 - smoothstep(0.3 * wHalf, wHalf, abs(fract(x) - (0.2 + 0.6 * hd.y)));
+        m += streak * width * (0.6 + 0.4 * hd.z) * (1.0 - 0.3 * fk) * smoothstep(0.1, 0.35, sth);
     }
-    return m * (1.0 - smoothstep(0.6, 0.9, abs(d.z)));
+    return m * mix(0.45, 1.0, rate);
 }
 
 void main() {
@@ -1428,14 +1464,16 @@ void main() {
     // the cloud they fall from (its own radiance), over whatever the ray shows.
     if (cv2.rain.z > 0.0 && cv2.rain.x > 0.0 && obsEffH < 6000.0) {
         CV2Field fe = cv2FieldLow(cv2Pos(vec3(0.0), obsEffH, mat3(enuX, enuY, enuZ)), -1.0, 1.0);
-        float rainEye = fe.rain * clamp(fe.sigma / 0.0006, 0.0, 1.0);
+        // The rain rate (fe.sigma is rate x curtain x 0.0012: a light shower ~0.2, a Cb core ~1) in
+        // bursts. It used to saturate at half that, so every shower looked the same.
+        float rainEye = fe.rain * clamp(fe.sigma / 0.0012, 0.0, 1.0) * rainBurst(pc.waveTime);
         if (rainEye > 0.0) {
             vec3 lit = rc.rgb / max(1.0 - rc.a, 0.25) + vec3(0.003);
-            B_total += lit * rainStreaks(dir, pc.waveTime) * rainEye * cv2.rain.z * 0.9;
+            B_total += lit * rainStreaks(dir, pc.waveTime, cv2.rain.w, rainEye) * rainEye * cv2.rain.z * 0.9;
         }
         // Debug view 6: red = rain at the eye, green = the streak mask.
         if (int(cv2.shell.z + 0.5) == 6)
-            B_total = vec3(rainEye, rainStreaks(dir, pc.waveTime), 0.0) * 0.05;
+            B_total = vec3(rainEye, rainStreaks(dir, pc.waveTime, cv2.rain.w, rainEye), 0.0) * 0.05;
     }
 
     // Ground fog (C11 follow-up #47) — nearest volumetric layer to a ground-level observer, so it
@@ -1514,7 +1552,9 @@ void main() {
     // taken so far AND unreachable by every graphics preset (Planetarium sets bit 128 and still
     // pays for this in full), which makes it the prime suspect for the several-ms floor the
     // cloud_march bucket keeps even at Planetarium with cloudCoverage=0.
-    if (cloud.showBeamDebugRays != 0u && (cloud.dbgDisableMask & 8192u) == 0u) {
+    // The drawn pointing ray: only while the volumetric shafts are off (cv2.beam.x, "Beam shafts"):
+    // cloud_v2_march.comp integrates the beams as light instead (.plans/BEAMS_V2_PLAN.md).
+    if (cloud.showBeamDebugRays != 0u && (cloud.dbgDisableMask & 8192u) == 0u && cv2.beam.x <= 0.0) {
         // Thin off-white/yellow line (2026-08-06 user request; previously a 2500 m green tube,
         // itself already thinned from 15000 m in C12 follow-up #13). kDebugRayMinAngRad keeps a
         // distant ray from thinning below roughly one half-res pixel and breaking up into an
