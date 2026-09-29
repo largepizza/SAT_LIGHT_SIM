@@ -618,7 +618,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CloudSunRayleigh, cv2TwilightSky, cv2FlowWarp, cv2FlowPeriodKm, cv2LayerSpread,
                     cv2TopHeavy, cv2TowerTop, cv2CirrusFieldKm, cv2CirrusFlow, cv2BaseFlatness,
                     cv2CbColumns, cv2CbSpacingKm, cv2CbRadiusKm, cv2CbCumulusTopKm, cv2CbWaist, cv2CbFlare,
-                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbSparsity, cv2CbFullFrac, cv2AnvilThickKm, cv2AnvilHangKm})
+                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -728,7 +728,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                               std::clamp(cv2CbHeadDriftKm, 0.0f, 30.0f) * 1000.0f, std::clamp(cv2CbLobes, 0.0f, 1.5f));
         p.anvil2 = glm::vec4(std::clamp(cv2AnvilThickKm, 0.3f, 6.0f) * 1000.0f,
                              std::clamp(cv2AnvilHangKm, 0.0f, 6.0f) * 1000.0f,
-                             std::clamp(cv2CbSparsity, 0.0f, 1.0f), std::clamp(cv2CbFullFrac, 0.0f, 1.0f));
+                             std::clamp(cv2CbSparsity, 0.0f, 1.0f), std::clamp(cv2CbOvershootKm, 0.0f, 3.0f) * 1000.0f);
     }
 
     static const int kOffsets[4][2] = {{0, 0}, {1, 1}, {1, 0}, {0, 1}};
@@ -758,7 +758,22 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // march relies on history, which a moving orbital camera keeps invalidating; the fallback was a
     // 1/8-resolution upsample (the "pixelated mess" from space). Up there a ray crosses only a thin
     // shell, so marching all of them is cheap.
-    cv2FullRateNow = eyeH > (double)cv2FullRateAboveKm * 1000.0;
+    // ...but only while the view MOVES (pass 19): a still view's sparse march converges on the same
+    // image through the history, at ~1/3 of the cost (storm views: 14 FPS overlooking anvils). Any
+    // camera turn past a third of a half-res pixel, eye motion, zoom, time warp or history loss
+    // switches back at once; sparse resumes after 8 still frames.
+    {
+        float dRot = 0.0f;
+        for (int c = 0; c < 3; ++c)
+            for (int r = 0; r < 3; ++r)
+                dRot = std::max(dRot, std::abs(cpc.skyView[c][r] - cv2PrevSkyView[c][r]));
+        const float pixAng = 2.0f * tanHalf / (float)std::max(cv2HalfH, 1u);
+        const bool moving = !valid || dRot > 0.3f * pixAng || glm::length(eye - cv2PrevEye) > 1.0 ||
+                            std::abs(simT - cv2PrevSimT) > 0.5 || std::abs(tanHalf - cv2PrevTanHalf) > 1e-5f;
+        cv2StillFrames = moving ? 0 : std::min(cv2StillFrames + 1, 1000);
+    }
+    cv2FullRateNow = eyeH > (double)cv2FullRateAboveKm * 1000.0 &&
+                     !(cv2SparseWhenStill > 0.5f && cv2StillFrames >= 8);
     p.misc = glm::vec4(std::round(std::clamp(cv2MaxIters, 32.0f, 1024.0f)), cv2MoonGain,
                        cv2FullRateNow ? 1.0f : 0.0f, cv2MidAmount);
     std::memcpy(cv2ParamsMapped, &p, sizeof(p));

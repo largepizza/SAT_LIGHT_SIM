@@ -637,7 +637,7 @@ struct GpuCloudV2Params
     glm::vec4 anchorCol;     // the Cb column lattice: xyz frac(sea point / period), w 1 / period (64 cells)
     glm::vec4 column;        // x Cb column amount, y lattice cell (m), z base radius (m), w storm cumulus top (m)
     glm::vec4 column2;       // x waist, y head flare (x base radius), z head drift (m), w lobe strength
-    glm::vec4 anvil2;        // x anvil thickness (m), y anvil hang (m), z tower sparsity, w full-height fraction
+    glm::vec4 anvil2;        // x anvil thickness (m), y anvil hang (m), z tower sparsity, w overshoot above the lid (m)
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -2749,6 +2749,8 @@ private:
     float cv2MaxIters = 400.0f;        // march budget per ray (what is left is filled, not dropped)
     float cv2MaxDistKm = 600.0f;
     float cv2FullRateAboveKm = 30.0f;  // above this eye altitude every pixel is marched every frame
+    float cv2SparseWhenStill = 1.0f;   // > 0.5: while the view is still, march 1 pixel in 4 (history fills in)
+    int   cv2StillFrames = 0;          // consecutive frames with no camera / eye / time-warp motion
     float cv2MidAmount = 1.0f;         // the mid-level layer (altocumulus / altostratus), 0 = off
     float cv2StormScale = 4.0f;        // deep convection's lobes and erosion are this much larger
     float cv2StormDetail = 1.5f;       // share of the erosion kept on deep convection
@@ -2822,7 +2824,7 @@ private:
     float cv2CbHeadDriftKm = 6.0f;     // how far downwind the head is blown
     float cv2CbLobes = 0.55f;          // cauliflower lobes on the tower (fraction of its radius)
     float cv2CbSparsity = 0.35f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
-    float cv2CbFullFrac = 0.75f;       // fraction of towers that reach the anvil (the rest stop at 45-80%)
+    float cv2CbOvershootKm = 0.8f;     // a tower's overshooting dome above the anvil lid (every tower meets it)
     float cv2AnvilThickKm = 2.2f;      // the anvil shield's thickness over the storm's core
     float cv2AnvilHangKm = 1.2f;       // how much lower it hangs around a tower's head (the mushroom)
     float cv2DetailLodStartM = 13000.0f; // detail erosion fades from here to 4x
@@ -4191,7 +4193,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 176;
+    static constexpr int kCloudSliderSlots = 177;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

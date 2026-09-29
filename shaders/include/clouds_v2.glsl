@@ -92,7 +92,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
                           // downwind (m), w lobe strength (fraction of the radius)
     vec4  anvil2;         // x anvil thickness (m), y anvil hang around a tower's head (m), z tower
                           // sparsity (0 = every candidate in a storm, 1 = only the strongest cores),
-                          // w fraction of towers reaching the anvil
+                          // w overshooting top: how far a tower's dome rises above the anvil lid (m)
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -161,8 +161,11 @@ float cv2Tropo(vec3 wd)
 
 // The ground under a column, smoothed over ~20 km (the weather cube's alpha: DEM height / 8 km,
 // baked per mip). Read at the EARTH-FIXED direction: the map drifts, the terrain does not.
+bool  gCv2GroundSet = false;   // cv2Field reads the ground once per sample for every layer
+float gCv2Ground    = 0.0;
 float cv2Ground(vec3 dirE)
 {
+    if (gCv2GroundSet) return gCv2Ground;
     return textureLod(cv2WeatherTex, dirE, 1.5).a * 8000.0;
 }
 
@@ -181,7 +184,10 @@ struct CV2Field {
 void cv2Add(inout CV2Field f, float s, float hf, float topH, float deck)
 {
     if (f.sigma <= 0.0) { f.hf = hf; f.msBright = 1.0; f.ambient = 1.0; f.topH = topH; f.deck = deck; f.thin = 0.0; f.rain = 0.0; }
-    else                { f.topH = max(f.topH, topH); f.deck = max(f.deck, deck); }
+    // The deck flag by density share: with max(), a thin anvil sheet crossing a dense tower gave the
+    // whole sample the deck's path-to-top shadow at the tower's density — a black band across the
+    // tower at the anvil's height (user snap 2, pass 18).
+    else                { f.topH = max(f.topH, topH); f.deck = (f.deck * f.sigma + deck * s) / max(f.sigma + s, 1e-9); }
     f.sigma += s;
 }
 
@@ -222,6 +228,45 @@ vec4 cv2WeatherSmooth(vec3 d)
             : (axis.y != 0.0) ? vec3(uv.x, axis.y, uv.y)
                               : vec3(uv.x, uv.y, axis.z);
     return textureLod(cv2WeatherTex, ds, 0.0);
+}
+
+// The shape volume at an integer mip, C1-smooth (the same remap as cv2WeatherSmooth, one fetch). At
+// its finest mip (150 m texels at the storm scale) a threshold cutting through linear filtering drew
+// the texel lattice on a lit anvil wall as a regular waffle of cubes (user snap 2, pass 17).
+vec4 cv2ShapeSmooth(vec3 uvw, float lod)
+{
+    float l  = floor(lod + 0.5);
+    vec3  sz = vec3(textureSize(cv2ShapeTex, int(l)));
+    vec3  t  = uvw * sz - 0.5;
+    vec3  i  = floor(t), f = t - i;
+    f = f * f * (3.0 - 2.0 * f);
+    return textureLod(cv2ShapeTex, (i + f + 0.5) / sz, l);
+}
+
+// The weather cube at an integer mip, bilinear in FLOAT (C1: smoothstep weights) from four texel-centre
+// fetches. Hardware filtering blends with 8-bit sub-texel weights, so a mip-3 read (~40 km texels)
+// moves in ~150 m steps; a tower's 11 km radius scaled by it came out as vertical flutes every few
+// hundred metres up the whole wall (user snaps, pass 18). The four texels stay on this face (clamped):
+// towers already fade out near cube-face edges.
+vec4 cv2WeatherBilinear(vec3 d, float lod)
+{
+    vec3  a  = abs(d);
+    float sz = float(textureSize(cv2WeatherTex, int(lod)).x);
+    vec2 uv; int fc;
+    if (a.x >= a.y && a.x >= a.z)      { uv = d.yz / a.x; fc = 0; }
+    else if (a.y >= a.z)               { uv = d.xz / a.y; fc = 1; }
+    else                               { uv = d.xy / a.z; fc = 2; }
+    float sg = (fc == 0) ? sign(d.x) : ((fc == 1) ? sign(d.y) : sign(d.z));
+    vec2 t = (uv * 0.5 + 0.5) * sz - 0.5;
+    vec2 i = clamp(floor(t), vec2(0.0), vec2(sz - 2.0)), f = clamp(t - i, 0.0, 1.0);
+    f = f * f * (3.0 - 2.0 * f);
+    vec4 r[4];
+    for (int k = 0; k < 4; ++k) {
+        vec2 c  = ((i + vec2(k & 1, k >> 1) + 0.5) / sz) * 2.0 - 1.0;
+        vec3 ds = (fc == 0) ? vec3(sg, c.x, c.y) : ((fc == 1) ? vec3(c.x, sg, c.y) : vec3(c.x, c.y, sg));
+        r[k] = textureLod(cv2WeatherTex, ds, lod);
+    }
+    return mix(mix(r[0], r[1], f.x), mix(r[2], r[3], f.x), f.y);
 }
 
 float cv2MesoSmoothG(vec3 uvw, float lod)
@@ -359,7 +404,20 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM)
     // the full span was a mountain sloping up into the anvil: a margin field thresholded per height
     // cannot narrow and flare again (user snap 4, pass 14).
     bool colOn = cv2.column.x > 0.0;
-    if (colOn) topMax = min(topMax, mix(topMax, cv2.column.w + lift, smoothstep(0.5, 0.75, w.g)));
+    // A TARGET, not a ceiling: as min() it only ever lowered the tops, and the storm regions' type
+    // (mostly congestus) already topped out below it, so the slider did nothing upward (user, pass 19).
+    // Near a storm, not only in it: convective cells within ~80 km of one (the weather's type at mip 4,
+    // float-bilinear: this scales kilometres of height) take the storm cumulus top too, so cumulus
+    // is taller on average around storms (user, pass 20). Decks keep their own tops.
+    if (colOn) {
+        float wS = smoothstep(0.5, 0.75, w.g);
+        // (The map types only a storm's core as Cb, and the towers cover that; the cloud around it is
+        // typed stratocumulus, so the threshold is well below the Cb class, and stratocumulus rises
+        // halfway. At the Cb threshold the slider changed 0.2% of a storm view, pass 20.)
+        if (ty.look.z > 0.01 && wS < 1.0)
+            wS = max(wS, smoothstep(0.3, 0.6, cv2WeatherBilinear(wdF, 4.0).g) * min(ty.look.z * 2.0, 1.0));
+        topMax = mix(topMax, cv2.column.w + lift, wS);
+    }
 
     // A deck is not a slab: its thickness follows the closed cells and a km-scale Perlin field, and
     // a thicker part hangs lower (an overcast seen from below was one flat, featureless plane).
@@ -697,8 +755,13 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     float regime = smoothstep(0.5, 0.68, cl.a + 0.15 * (covM - 0.5)) * cv2.misc.w * smoothstep(0.0, 0.35, covM)
                  * mix(1.0, 0.55, cv2.flow.y * smoothstep(0.75, 1.0, cov));
     if (regime <= 0.0) return 0.0;
-    float base  = 3000.0 + gl + 2600.0 * cl.r;
-    float thick = mix(1200.0, 450.0, cl.r);
+    // The baked Perlin is 0.50 +- 0.057: read raw, the base spanned ~300 m, and the layer was one flat
+    // sheet at ~4.5 km around the planet — seen edge-on from near its height, a dead-straight line
+    // across every storm, with the towers below it seen dimmed through it (user snap 1, pass 17).
+    // Stretched to +-2 sigma it ranges 3-5.6 km over the cluster scale.
+    float cr    = clamp(0.5 + (cl.r - 0.5) * 4.4, 0.0, 1.0);
+    float base  = 3000.0 + gl + 2600.0 * cr;
+    float thick = mix(1200.0, 450.0, cr);
     float zm    = (q.h - base) / thick;
     if (zm <= 0.0 || zm >= 1.0) return 0.0;
     float strat = 1.0 - smoothstep(0.3, 0.55, w.g);                 // stratiform below -> As
@@ -857,16 +920,17 @@ struct CV2Col {
     float hf;      // height fraction within the column
     float topH;    // the column's top (m)
     float near;    // 0..1: under a full-height column's head (the anvil thickens and hangs lower there)
+    float storm;   // 0..1: the storm strength here (~40 km smooth); the mid layer gives way to it
 };
 
 CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
 {
-    CV2Col o; o.sigma = 0.0; o.hf = 0.0; o.topH = 0.0; o.near = 0.0;
+    CV2Col o; o.sigma = 0.0; o.hf = 0.0; o.topH = 0.0; o.near = 0.0; o.storm = 0.0;
     if (cv2.column.x <= 0.0 || q.h < 400.0) return o;
     vec3  wd    = cv2Drift(q.dirE);
     float tropo = cv2Tropo(wd);
     float top   = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo;
-    if (q.h > top + 400.0) return o;
+    if (q.h > top - 50.0 + cv2.anvil2.w) return o;
     // Coarse gate: no cumulonimbus within ~20 km (weather mip 2), no columns.
     vec3 sP    = cv2Drift(q.seaProjE);
     vec3 flowD = cv2FlowDisp(wd, sP);
@@ -874,77 +938,172 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     // The storm strength here, ~40 km smooth (mip 3): one read per sample. It varies slowly across a
     // tower, so a column fades as a whole at a storm's edge. (Reading it at each candidate centre cost
     // up to eight scattered cube fetches per sample; storm views went 10 -> 29 ms.)
-    vec4  wk  = textureLod(cv2WeatherTex, wdF, 3.0);
+    vec4  wk  = cv2WeatherBilinear(wdF, 3.0);
     if (wk.g < 0.55) return o;
     float ck  = clamp((wk.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
     float strW = smoothstep(0.6, 0.8, wk.g) * smoothstep(0.15, 0.45, ck);
+    o.storm = strW;
     if (strW <= 0.02) return o;
 
-    float cellM  = cv2.column.y;
     float Rb     = cv2.column.z;
+    // The lattice cell is at least a tower's full reach / 1.2, so the 3x3 search covers every part of
+    // every tower. "Cb spacing" is a minimum: 12 km towers flared 2.6x reach ~55 km, and on the user's
+    // 20 km cells everything past 1.22 cells (25 km) was dropped — heads and the anvil's hang cut off
+    // on arcs around each candidate (user snap 1, pass 17). Uniforms only (the tropopause's maximum
+    // span, not the local one): a cell that varied with position would scramble the lattice.
+    float reachFull = Rb * 1.3 * max(cv2.column2.y, 1.0) + cv2.column2.z + Rb * 0.6
+                    + 0.25 * cv2.form.y * max(cv2.types[4].alt.y - cv2.types[4].alt.x, 0.0);
+    float cellM  = max(cv2.column.y, reachFull / 1.2);
     vec3  eastW  = vec3(-wd.y, wd.x, 0.0) * inversesqrt(max(dot(wd.xy, wd.xy), 1e-6));
     float lift   = cv2Ground(q.dirE) * 0.9;
     float base   = cv2.types[4].alt.x + lift;
     float hb     = q.h - base;
     if (hb < -300.0) return o;
 
-    vec3  u  = (cv2.anchorCol.xyz + sP * cv2.anchorCol.w) * 64.0;   // in lattice cells
-    vec3  cf = floor(u), fr = u - cf;
-    ivec3 c0 = ivec3(cf);
-    ivec3 dn = ivec3(fr.x < 0.5 ? -1 : 1, fr.y < 0.5 ? -1 : 1, fr.z < 0.5 ? -1 : 1);
-    float best = -1e9, bestZeta = 0.0, bestTop = 0.0, bestCap = 0.0;
+    // The lattice is 2D, on an equal-angle cube map of the drifted sphere: every candidate lies on the
+    // sphere, so a 2x2 (3x3) search does what the 3D lattice's 2x2x2 (3x3x3) did, most of whose
+    // candidates were then rejected as off the sphere — and the search runs on every sample of a storm
+    // region, the light march's included (towers at near-zero density cost MORE than dense ones: 74 ms).
+    // Towers cannot straddle a cube-face edge (a point searches only its own face), so those whose
+    // reach crosses one fade out: a tower-free band along the twelve edges, never a cut.
+    vec3  aw = abs(wd);
+    int   fc = (aw.x >= aw.y && aw.x >= aw.z) ? 0 : ((aw.y >= aw.z) ? 1 : 2);
+    vec3  ax = (fc == 0) ? vec3(sign(wd.x), 0.0, 0.0) : ((fc == 1) ? vec3(0.0, sign(wd.y), 0.0) : vec3(0.0, 0.0, sign(wd.z)));
+    vec3  e1 = (fc == 0) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3  e2 = (fc == 2) ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
+    float mj = dot(wd, ax);
+    float cellA = cellM / R_EARTH;                      // a lattice cell, in radians of the face's angles
+    vec2  u  = vec2(atan(dot(wd, e1) / mj), atan(dot(wd, e2) / mj)) / cellA;
+    vec2  cf = floor(u), fr = u - cf;
+    ivec2 c0 = ivec2(cf);
+    ivec2 dn = ivec2(fr.x < 0.5 ? -1 : 1, fr.y < 0.5 ? -1 : 1);
+    uint  faceId = uint(fc * 2) + ((dot(wd, ax) < 0.0) ? 1u : 0u);
+    // How far from its axis a tower (and the anvil hang it drives) reaches: its widest head, blown
+    // downwind, lobes and lean. The 2x2 search is exact to 0.75 of a cell; past that, 3x3 (exact to
+    // 1.25). With 12 km towers and a 2.6x flare the heads reached ~45 km on 36 km cells and were cut
+    // along the lattice's cell faces (user snaps 1 and 3, pass 15): straight seams through storms.
+    float reachM = Rb * 1.3 * max(cv2.column2.y, 1.0) + cv2.column2.z + Rb * 0.6
+                 + 0.25 * cv2.form.y * max(top - base, 0.0);
+    float lidB   = top - 250.0;
+    // Below mid-height only the body (base radius, lean, lobes) can reach a point: no flared head,
+    // no head drift, no anvil hang there — the 8-cell search always suffices.
+    if (q.h < base + 0.5 * (lidB - base))
+        reachM = Rb * 1.3 * 1.6 + 0.25 * cv2.form.y * max(top - base, 0.0);
+    bool  wide   = reachM > 0.72 * cellM;
+    float limM   = wide ? 1.22 * cellM : 0.72 * cellM;   // anything beyond is not searched: taper to 0
+    int   nK     = wide ? 9 : 4;
+    float lid    = top - 250.0;                          // the anvil's lid (cv2AnvilSigma)
+    float hc     = lid - 1800.0;                         // a head rounds off from here to 300 m under the lid
+    float osM    = cv2.anvil2.w;                         // overshooting top above the lid (m)
+    bool  inAnvil = q.h > lid - cv2.anvil2.x * 1.2 - 600.0 - cv2.anvil2.y;   // where the hang can reach
+    float best = -1e9, bestZeta = 0.0, bestTop = 0.0, bestCap = 0.0, bestRc = 1.0;
     float near = 0.0;
-    for (int k = 0; k < 8; ++k) {
-        ivec3 ci = c0 + ivec3((k & 1) != 0 ? dn.x : 0, (k & 2) != 0 ? dn.y : 0, (k & 4) != 0 ? dn.z : 0);
-        uvec3 hv = cv2Pcg3(uvec3(ci & 63));
-        vec3  hj = vec3(hv & 0xFFFFu) / 65535.0;
-        vec3  cc = vec3(ci) + 0.25 + 0.5 * hj;
-        vec3  dv = (u - cc) * cellM;                     // this point minus the centre (m)
-        float rad = dot(dv, wd);                         // the centre's height off the sphere, negated
-        if (abs(rad) > 0.45 * cellM) continue;
-        vec3  dh = dv - wd * rad;                        // horizontal offset from the axis at the base
+    for (int k = 0; k < nK; ++k) {
+        ivec2 off = wide ? ivec2(k % 3 - 1, k / 3 - 1)
+                         : ivec2((k & 1) != 0 ? dn.x : 0, (k & 2) != 0 ? dn.y : 0);
+        ivec2 ci = c0 + off;
+        uvec3 hv = cv2Pcg3(uvec3(uvec2(ci + 8192), faceId));
+        vec2  ca = (vec2(ci) + 0.25 + 0.5 * vec2(hv.xy & 0xFFFFu) / 65535.0) * cellA;   // the centre's angles
+        float edgeM = (0.7853982 - max(abs(ca.x), abs(ca.y))) * R_EARTH;              // to the face's edge
+        if (edgeM < limM) continue;
+        vec3  cDir = normalize(ax + tan(ca.x) * e1 + tan(ca.y) * e2);
+        vec3  dv = (wd - cDir) * R_EARTH;                // this point minus the centre, on the sphere (m)
+        vec3  dh = dv - wd * dot(dv, wd);                // horizontal offset from the axis at the base
         float hS = float(hv.x >> 16u) / 65535.0;         // size
-        float hT = float(hv.y >> 16u) / 65535.0;         // top: most reach the tropopause
-        float hP = float(hv.z >> 16u) / 65535.0;         // presence
-        // Beyond any tower's reach (head, lean, lobes) and the anvil's hang footprint: skip.
-        if (dot(dh, dh) > cv2SqC(2.0 * Rb * max(cv2.column2.y, 1.0) + cv2.column2.z + 10000.0)) continue;
-        float str = strW * smoothstep(0.0, 0.25, strW - cv2.anvil2.z * hP);   // sparser at a storm's edge
+        float hP = float(hv.z & 0xFFFFu) / 65535.0;      // presence
+        float hO = float(hv.y >> 16u) / 65535.0;         // overshoot
+        float dhL = length(dh);
+        if (dhL > limM) continue;
+        float str = strW * smoothstep(0.0, 0.25, strW - cv2.anvil2.z * hP)   // sparser at a storm's edge
+                  * smoothstep(limM, 1.3 * limM, edgeM);                            // the face-edge band
         if (str <= 0.02) continue;
-        float Rc   = Rb * mix(0.7, 1.3, hS) * mix(0.7, 1.0, smoothstep(0.0, 0.5, str));
-        float full = step(1.0 - cv2.anvil2.w, hT) * smoothstep(0.1, 0.35, str);   // reaches the anvil
-        float topC = mix(base + (top - base) * mix(0.45, 0.8, hT), top + 250.0, full);
-        float zeta = hb / max(topC - base, 1000.0);
-        if (zeta > 1.02) continue;
+        // A weaker tower is SHORTER, not thinner: its top sinks from under the anvil (full strength)
+        // to its base (at the 0.02 cutoff), so at a storm's edge towers settle into the cumulus as
+        // short, wide mounds. Floored at 0.7 of its radius at full height it vanished at the cutoff (a
+        // flat crescent wall, pass 18); shrunk in radius instead it stood as a thin straw (user, pass 19).
+        // Only the ones reaching the anvil get the waist, the flared head and the dome.
+        float hK   = smoothstep(0.02, 0.6, str);
+        float topC = base + (lid - 300.0 - base) * hK;   // this tower's top
+        float full = smoothstep(0.8, 1.0, hK);
+        if (q.h > ((full > 0.0) ? lid + osM + 200.0 : topC + 200.0)) continue;
+        float Rc   = Rb * mix(0.7, 1.3, hS) * mix(0.8, 1.0, smoothstep(0.1, 0.6, str));
+        float fl   = smoothstep(0.1, 0.35, str) * full;  // only anvil-reaching towers flare
+        float zeta = hb / max(topC - base, 300.0);
         // Lean downwind with height, and the head blown further downwind under the lid.
-        vec3  dhz  = dh - eastW * (0.25 * max(hb, 0.0) * cv2.form.y + cv2.column2.z * full * smoothstep(0.55, 1.0, zeta));
+        // (Head drift for anvil-reaching towers only: a short tower's zeta passes 0.55 below the
+        // search's mid-height switch, and its drifted top was cut along a horizontal seam, pass 20.)
+        vec3  dhz  = dh - eastW * (0.25 * max(hb, 0.0) * cv2.form.y + cv2.column2.z * smoothstep(0.55, 1.0, zeta) * full);
         float d    = length(dhz);
-        // The profile: a wide flat base (the inflow), a waist through the middle, a flare under the
-        // lid, a low dome on top (overshooting top). Short towers: the waist, then a rounded head.
-        float rW   = Rc * cv2.column2.x;
+        // The profile: a wide flat base (the inflow), a waist through the middle, a head flaring under
+        // the lid that closes over INSIDE the anvil (by hc + 500 m), and a small overshooting dome over
+        // the core. The head used to close over the last 5% of the span, right at the lid: a plate tens
+        // of km wide and ~500 m high standing above the anvil — flat enough that the march steps drew
+        // contour rings on it, and from orbit every tower was its own dome on the shield (user snaps 3-4).
+        float rW   = Rc * mix(1.0, cv2.column2.x, full);
         float r    = mix(Rc, rW, smoothstep(0.03, 0.5, zeta));
-        r += (Rc * cv2.column2.y - rW) * smoothstep(0.62, 0.94, zeta) * full;
-        float zc   = mix(0.72, 0.95, full);
-        float cap  = clamp((zeta - zc) / (1.0 - zc), 0.0, 1.0);
-        r *= sqrt(max(1.0 - cap * cap, 0.0));
+        r += (Rc * cv2.column2.y - rW) * smoothstep(0.62, 0.94, zeta) * fl;
+        // The head rounds off over 1.5 km and stays 300 m inside the anvil: only the anvil's own lid,
+        // lit as a deck, shows from above. A head closing over 500 m at the lid stood proud of it as a
+        // flat plate tens of km wide: contour rings from the march steps, a moat around it, and dark
+        // from orbit (a grazing Sun's light-march ray skims through a plate; user snaps 1, 3 and 4).
+        float rnd  = min(1500.0, 0.6 * max(topC - base, 1.0));   // the top rounds off over this
+        float zh   = (q.h - (topC - rnd)) / rnd;
+        r *= sqrt(max(1.0 - cv2SqC(max(zh, 0.0)), 0.0));
+        // Only the stronger cores overshoot (about a third), each to its own height: with every tower
+        // doming through, the shield from orbit was an even grid of dots (user snap 4, pass 16).
+        float osS  = smoothstep(0.6, 0.9, hO) * mix(0.5, 1.0, smoothstep(0.3, 0.8, str));
+        float osT  = osM * osS;
+        // The dome's apex: 400 m inside the anvil unless this tower overshoots. It sat exactly AT the
+        // lid for every tower, so from above each one showed a dense 4-5 km disc in the anvil's soft
+        // lid, on the lattice (user snap 3, pass 17).
+        float apex = mix(lid - 300.0, lid + osT, smoothstep(0.0, 0.3, osS));
+        float zo   = (q.h - (apex - 1000.0)) / 1000.0;
+        float rOs  = 0.35 * Rc * sqrt(max(1.0 - zo * zo, 0.0)) * step(0.0, zo) * full;
+        r = max(r, rOs);
         r *= 0.9 + 0.1 * smoothstep(0.0, 0.04, zeta);       // the base's rim curls up
+        float cap  = smoothstep(0.0, 1.0, zo);
         float mC   = (r - d) / Rc;
-        if (mC > best) { best = mC; bestZeta = zeta; bestTop = topC; bestCap = cap; }
-        // Under the head: the anvil thickens toward the column (a wide, downwind-stretched footprint).
-        vec3  dn2  = dh - eastW * ((cv2.column2.z + 4000.0) * full);
-        float al   = dot(dn2, eastW);
-        float ac   = length(dn2 - eastW * al);
-        near = max(near, full * str * exp(-(al * al) / (16.0 * Rc * Rc) - (ac * ac) / (4.0 * Rc * Rc)));
+        // ITS top over THIS point (the dome's surface here, else the head's): with the apex, every
+        // anvil sample in a dome's footprint was shaded as if under the whole dome (dark craters with
+        // bright rims from orbit, user snap 3, pass 17; lid + osM for every tower made dark pits).
+        float topL = max(topC, (full > 0.0) ? (apex - 1000.0) + 1000.0 * sqrt(max(1.0 - cv2SqC(d / max(0.35 * Rc, 1.0)), 0.0)) : 0.0);
+        if (mC > best) { best = mC; bestZeta = zeta; bestTop = topL; bestCap = cap; bestRc = Rc; }   // ITS top: lid + osM shaded every tower's patch of anvil as if under 800 m more cloud (dark pits)
+        // Under the head: the anvil thickens toward the column (a wide, downwind-stretched footprint),
+        // tapered to zero before the search's limit (or it too would be cut along the lattice).
+        if (inAnvil) {
+            vec3  dn2  = dh - eastW * (cv2.column2.z + 4000.0);
+            float al   = dot(dn2, eastW);
+            float ac   = length(dn2 - eastW * al);
+            // Sized to fall to ~1% by the search's limit: at 4 radii along the wind it was ~48 km for
+            // a 12 km tower, and a 3.6 km hang dropped to nothing over the last few km before limM —
+            // a cliff in the anvil's underside (user snap 1, pass 17).
+            float sa2  = cv2SqC(min(4.0 * Rc, max(limM - cv2.column2.z - 4000.0, 0.3 * limM) / 2.2));
+            float sc2  = cv2SqC(min(2.0 * Rc, limM / 2.2));
+            near = max(near, fl * str * exp(-(al * al) / sa2 - (ac * ac) / sc2)
+                             * (1.0 - smoothstep(0.7 * limM, limM, dhL)));
+        }
     }
     o.near = near;
-    if (best < -0.6) return o;
     float fpFade = mix(1.0, 0.3, smoothstep(300.0, 2000.0, fpM));
-    vec4  s  = textureLod(cv2ShapeTex, cv2.anchorStorm.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w,
-                          cv2Lod(fpM, cv2.anchorStorm.w));
-    float lobes = (s.g * 0.6 + s.b * 0.25 + s.a * 0.15) - 0.47;
     // Cauliflower all the way up; flatter at the base (the condensation level).
-    float A  = cv2.column2.w * fpFade * mix(0.25, 1.0, smoothstep(0.0, 0.12, bestZeta)) * (1.0 - 0.75 * bestCap);
+    // A head's top under the anvil is smooth: its lobes and erosion fade out over its last ~1.2 km. Under
+    // the anvil's thin lid (300 m) the lumps and the cracks between them showed through as a cell
+    // pattern over the whole shield (user snap 3, pass 17). Sinking the heads 900 m hid them too, but
+    // rays then crossed 600 m more anvil before stopping: +15 ms from above.
+    float headTop = smoothstep(lid - 1500.0, lid - 500.0, q.h) * (1.0 - bestCap);
+    float A  = cv2.column2.w * fpFade * mix(0.25, 1.0, smoothstep(0.0, 0.12, bestZeta)) * (1.0 - 0.75 * bestCap)
+             * (1.0 - 0.85 * headTop);
+    // Before the fetches: the lobes add at most ~0.75 x 2A in practice (the low layer's bound). A fixed
+    // -0.6 fetched the storm noise through a shell 0.6 radii deep around every tower (7 km at 12 km).
+    if (best + A * 1.5 <= 0.0) return o;
+    vec4  s  = cv2ShapeSmooth(cv2.anchorStorm.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w,
+                              cv2Lod(fpM, cv2.anchorStorm.w));
+    float lobes = (s.g * 0.6 + s.b * 0.25 + s.a * 0.15) - 0.47;
     float m  = best + A * lobes * 2.0;
-    float Ph = clamp(m * 5.0, 0.0, 1.0) * smoothstep(0.0, 120.0, hb + 150.0 * lobes);
+    // The surface ramps in over ~300 m whatever the tower's size (x the radius, 0.2 of it: 2.4 km of
+    // thin fog around a 12 km tower, which every ray marched through lit sample by sample before it
+    // turned opaque — the towers cost ~20 ms inside a storm, and at any density).
+    float Ph = clamp(m * bestRc / 300.0, 0.0, 1.0) * smoothstep(0.0, 120.0, hb + 150.0 * lobes);
     if (Ph <= 0.0) return o;
     float d  = Ph * mix(0.75, 1.0, s.r);
     if (detailAmt >= 0.0) {
@@ -957,7 +1116,8 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         }
 #endif
         // Bite the cracks between the lumps, on the surface (deep inside, form.z of it).
-        float erode = (1.0 - df) * 0.5 * cv2.look.z * cv2.storm.y * mix(1.0, cv2.form.z, smoothstep(0.35, 0.85, d));
+        float erode = (1.0 - df) * 0.5 * cv2.look.z * cv2.storm.y * mix(1.0, cv2.form.z, smoothstep(0.35, 0.85, d))
+                    * (1.0 - headTop);
         d = clamp((d - erode) / max(1.0 - erode, 1e-3), 0.0, 1.0);
         if (d <= 0.0) return o;
     }
@@ -968,16 +1128,21 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     return o;
 }
 
-float cv2AnvilSigma(CV2Pos q, float fpM, float colNear, out float hfA, out float topA)
+// presA: 0..1, how much anvil shield this column holds (its outline strength, height-independent):
+// the high layer gives way to it (the anvil IS the high cloud around a storm).
+float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out float hfA, out float topA, out float presA)
 {
-    hfA = 0.0; topA = 0.0;
+    hfA = 0.0; topA = 0.0; presA = 0.0;
     if (cv2.storm.z <= 0.0 || q.h < 5000.0) return 0.0;
     vec3  wd     = cv2Drift(q.dirE);
     float top    = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(wd) - 250.0;
     // Around a column's head the shield hangs lower (the mushroom's underside): up to 1.2 km more.
     // (3 km, and the 3 km shield, swallowed the towers: from the side a shield on short stubs.)
     float hang   = cv2.anvil2.y * colNear;
-    if (q.h > top || q.h < top - cv2.anvil2.x * 1.2 - 600.0 - hang) return 0.0;
+    // The shield's band; below it, down through the cirrus layer's band, only its PRESENCE is wanted
+    // (the high layer gives way under an anvil, cv2Field).
+    bool  inBand = q.h <= top && q.h >= top - cv2.anvil2.x * 1.2 - 600.0 - hang;
+    if (q.h > top || (!inBand && (!wantPres || q.h < 0.66 * (top + 250.0)))) return 0.0;
     // Fed by the towers: the weather read at ~10 km (mip 1), where it is cumulonimbus and well covered,
     // here and 12 / 25 / 40 km upwind (the outflow is blown downwind, so a point downwind of a core is
     // under its anvil). The first cut read one 30 km-blurred texel 25 km upwind: only a storm region
@@ -999,12 +1164,13 @@ float cv2AnvilSigma(CV2Pos q, float fpM, float colNear, out float hfA, out float
                               cv2Lod(fpM, cv2.anchorCluster.w));
     float a0     = stormA + (cl.a - 0.5) * 0.7;
     if (a0 <= -0.15) return 0.0;                        // the finer fray below adds at most ~0.2
-    vec4  sh     = textureLod(cv2ShapeTex, cv2.anchorStorm.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w,
-                              cv2Lod(fpM, cv2.anchorStorm.w));
+    vec4  sh     = cv2ShapeSmooth(cv2.anchorStorm.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w,
+                                  cv2Lod(fpM, cv2.anchorStorm.w));
     // The outline frayed at the storm-lobe scale too: on the cluster Perlin alone it was a smooth
     // ellipse, one weather texel's blur.
     float a      = a0 + (sh.b - 0.45) * 0.45;
-    if (a <= 0.05) return 0.0;
+    presA = smoothstep(0.05, 0.35, a);
+    if (a <= 0.05 || !inBand) return 0.0;
     float thick  = cv2.anvil2.x * clamp(a, 0.0, 1.0) + hang; // thickest over the storm, thin at its edge
     float za     = (q.h - (top - thick)) / thick;
     if (za <= -0.2) return 0.0;
@@ -1012,10 +1178,16 @@ float cv2AnvilSigma(CV2Pos q, float fpM, float colNear, out float hfA, out float
     // The lid is flat but not blank: low domes of the storm-lobe scale, highest over the core
     // (overshooting tops), ~ +-8% of the thickness.
     float lid    = 1.0 - smoothstep(0.93, 1.0, za - (sh.g - 0.45) * 0.3 * a);
-    float edge   = smoothstep(0.05, 0.35, a);
+    float edge   = presA;
     hfA  = clamp(za, 0.0, 1.0);
     topA = top;
     return edge * under * lid * mix(0.6, 1.0, sh.r) * 0.01 * cv2.storm.z;   // "Anvils" is its density
+}
+
+float cv2AnvilSigma(CV2Pos q, float fpM, float colNear, out float hfA, out float topA)
+{
+    float presA;
+    return cv2AnvilSigmaP(q, fpM, colNear, false, hfA, topA, presA);
 }
 
 // THE cloud field: the low system (stratus .. cumulonimbus, nimbostratus), the mid layer, the anvils
@@ -1025,20 +1197,43 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     gCv2FlowSet = false;
     gCv2FlowD   = cv2FlowDisp(cv2Drift(q.dirE), vec3(0.0));
     gCv2FlowSet = true;
+    gCv2GroundSet = false;
+    gCv2Ground    = cv2Ground(q.dirE);
+    gCv2GroundSet = true;
     CV2Field f = cv2FieldLow(q, detailAmt, fpM);
+    CV2Col col = cv2ColumnSigma(q, detailAmt, fpM);
     float hfX, topX, deckX;
     float sm = cv2MidSigma(q, fpM, hfX, topX, deckX);
+    // The mid layer (a thin Ac/As lens) gives way over a storm: drawn through it, it sliced every
+    // tower with a flat plate at ~6 km, seen edge-on as a hard line across the storm (user snap 1,
+    // pass 17). Only where the towers are drawn (the storm's strength is read for them).
+    // Wherever towers can stand (a weak storm-edge tower cut by a mid-layer belt, pass 20).
+    if (cv2.column.x > 0.0) sm *= 1.0 - smoothstep(0.0, 0.15, col.storm);
     if (sm > 0.0) cv2Add(f, sm, hfX, topX, deckX);
-    CV2Col col = cv2ColumnSigma(q, detailAmt, fpM);
+    float hfH, topHh;
+    float sh = cv2HighSigma(q, fpM, hfH, topHh);
+    float presA;
+    float sa = cv2AnvilSigmaP(q, fpM, col.near, false, hfX, topX, presA);
     if (col.sigma > 0.0) cv2Add(f, col.sigma, col.hf, col.topH, 0.0);
-    float sa = cv2AnvilSigma(q, fpM, col.near, hfX, topX);
+    if (sh > 0.0 && cv2.storm.z > 0.0) {
+        // Where the storms that feed anvils are (the anvil's own test, one ~20 km read): running the
+        // anvil's evaluation through the whole cirrus band cost ~10 ms from orbit.
+        vec4  wa = textureLod(cv2WeatherTex, cv2FlowWeatherDirAt(q), 2.0);
+        float ca = clamp((wa.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
+        presA = max(presA, smoothstep(0.65, 0.85, wa.g) * smoothstep(0.25, 0.6, ca));
+    }
     if (sa > 0.0) cv2Add(f, sa, hfX, topX, 1.0);
-    float sh = cv2HighSigma(q, fpM, hfX, topX);
+    // The anvil is the high cloud around a storm: the cirrus layer (0.69-0.93 of the tropopause, the
+    // anvil ~0.7-0.98) gives way to it, and continues outward from its edge. Both drawn, cirrus sheets
+    // cut straight through the anvils' sides (user snap 3, pass 15).
+    sh *= 1.0 - presA;
+    hfX = hfH; topX = topHh;
     if (sh > 0.0) {
         cv2Add(f, sh, hfX, topX, 0.0);
         f.thin = sh / f.sigma;
     }
     gCv2FlowSet = false;
+    gCv2GroundSet = false;
     return f;
 }
 

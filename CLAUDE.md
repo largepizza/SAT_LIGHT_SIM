@@ -598,7 +598,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   around a tower's head (`near`). A margin field thresholded per height cannot narrow and flare again, so
   the old Cb was a mountain sloping up into a floating anvil. Every shape constant is a setting (sliders
   164-175: `cb_columns`, `cb_spacing_km`, `cb_radius_km`, `cb_cumulus_top_km`, `cb_waist`, `cb_flare`,
-  `cb_head_drift_km`, `cb_lobes`, `cb_sparsity`, `cb_full_frac`, `anvil_thick_km`, `anvil_hang_km`),
+  `cb_head_drift_km`, `cb_lobes`, `cb_sparsity`, `cb_overshoot_km`, `anvil_thick_km`, `anvil_hang_km`),
   so one harness launch can sweep configurations with `set`. Column strength is read once per sample
   from weather mip 3; a read at each candidate centre (up to 8 scattered cube fetches) took storm views
   from 10 to 29 ms. **The flow is evaluated once per field sample** (`gCv2FlowSet`/`gCv2FlowD`, set by
@@ -609,6 +609,69 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   blue patches in golden haze. It now also takes the sky pass's orbital terminator gate, so the two
   agree above 40 km. "Storm feature size" goes to 12. Open: the dome tips seen from above have
   pits/rings; a thin anvil (< 1.5 km) streaks horizontally at grazing views.
+- **Pass 16 (2026-09-29, the user's fourth batch, 12 km towers):** the tower lattice is **2D on an
+  equal-angle cube map** of the drifted sphere (2x2 search, 3x3 once a tower's reach passes 0.72 cell;
+  only the upper half of a tower can need it). The 3D lattice (pass 15) cut big towers along cell faces
+  (grid seams) and rejected most candidates as off the sphere; the 2D one cannot straddle a cube-face
+  edge, so towers whose reach crosses one fade out (a tower-free band, never a cut); `anchorCol` is
+  unused. **Every tower meets the anvil**; its head rounds off over 1.5 km and stays 300 m INSIDE the
+  anvil, and only about a third of towers push an overshooting dome through (`cb_overshoot_km`, 0.8,
+  replaced `cb_full_frac`). Heads closing at the lid stood above it as flat plates tens of km wide:
+  march-step contour rings, a moat, and from orbit dark "tumours" (a grazing Sun's light-march ray skims
+  a plate; decks avoid that through the path-to-top term, towers do not). Tower edges ramp over a fixed
+  ~300 m (0.2 x the radius was 2.4 km of fog around a 12 km tower). The cirrus layer (0.69-0.93 of the
+  tropopause) gives way over storms (one weather read), since it cut through anvil sides. The march's
+  sun-colour cache is kept at fixed 800 m levels and interpolated. The ground height is read once per
+  field sample (`gCv2GroundSet`). **Perf is open:** with the user's 12 km towers, 3.6 km anvil hang and
+  3.3 km anvil, storm views are ~34-41 ms of cloud march vs ~16-29 ms with towers off. Towers at 0.3
+  density cost the same, so it is not the volume, but no per-sample cut tried moved it (3D -> 2D lattice,
+  fewer fetches). Also open: the concentric rings looking down from inside the anvil (user snap 1), not
+  the sun-colour cache.
+- **Pass 17 (2026-09-29, the user's fifth batch, 1920x1009):** the tower lattice's cell is at least
+  (full reach)/1.2 (`reachFull`, uniforms only), so the 3x3 search covers whole towers: 12 km towers
+  flared 2.6x reach ~55 km, and on 20 km cells everything past 25 km was dropped (heads and hang cut
+  on arcs). "Cb spacing" is now a minimum, and the change MOVES every tower (a snapshot framing a
+  storm shows a different one). The hang footprint fits the search. A non-overshooting tower's dome
+  apex sits 300 m inside the anvil (it was AT the lid for every tower); the column reports its local
+  top (the dome's surface over the point — the apex made dark craters via the deck/ambient terms); a
+  head's lobes and erosion fade over its last ~1.2 km (their lumps showed through the thin lid as a
+  cell pattern). The mid layer's altitude reads the Perlin stretched to +-2 sigma (raw it was one flat
+  sheet at ~4.5 km, a dead-straight line across storms seen from near its height) and gives way over
+  storms (`CV2Col.storm`). Tried and REVERTED: sinking heads 900 m (+15 ms from above), joining
+  towers and anvil by max (thinner storm, +30-50%), a light-march od cutoff + probe skip + opaque-ray
+  stride (all three together SLOWER, ~13 ms). Measured (harness = in-app within ~10%): the user's
+  pass-16 exe 33 / 64 / 42 ms cloud march at the three snaps; pass 17 30 / 85 / 55. Open: a
+  waffle-grid texture on lit anvil walls (not the shape texels: a C1-smooth fetch did not change it),
+  floating anvil fragments far from towers, and the storm cost.
+- **Pass 18 (2026-09-29):** the corrugated tower walls ("waffle") were the tower strength read from
+  weather mip 3 (~40 km texels) by hardware filtering, whose 8-bit sub-texel weights step every ~150 m;
+  it scales an 11 km radius, so the wall moved in steps: vertical flutes up the whole tower. Now
+  `cv2WeatherBilinear` (four texel-centre fetches blended in float, C1). A tower's radius goes to ZERO as the storm
+  strength fades (sqrt(smoothstep(0.02, 0.5, str))): floored at 0.7 of its radius it vanished at full
+  density where the strength crossed the 0.02 cutoff — a flat vertical crescent wall ~10 km wide, which
+  the march drew with flutes and rings (the rest of the "waffle"). `cv2Add` weights the deck flag
+  by density share (max() gave a tower crossed by a thin anvil the deck's path-to-top shadow at the
+  tower's density: a black band). Open: wood-grain contour rings on smooth tower surfaces (the pass-14
+  "contour ripples", obvious with low lobes); the mid layer's base seen from just below it draws a dark
+  grazing band across storms behind it.
+- **Pass 19 (2026-09-29):** a weaker tower is SHORTER, not thinner: its top (`topC`) sinks from under
+  the anvil at full strength to its base at the 0.02 cutoff, its radius stays >= 0.8, and only towers
+  reaching the anvil (`full`) get the waist, flared head and overshoot dome (shrunk in radius, storm-edge
+  towers stood as thin "straws"). "Storm cumulus top" is a TARGET for the storm regions' low tops
+  (`mix`, not `min`: the congestus type already topped out below it, so raising it did nothing).
+  **Full rate only while moving** (`cv2SparseWhenStill`, slot 176, key `sparse_when_still`, default
+  on): after 8 frames with no camera turn (> 0.3 half-res px), eye motion, zoom, time warp or history
+  loss, the march goes back to 1 pixel in 4 even above `full_rate_above_km`; the history converges on
+  the same image. Measured at 1920x1009 overlooking anvils: 16 ms still vs 44 ms full rate; a settings
+  change takes ~4x longer to reconverge (grain for a few seconds at history weight 0.05).
+- **Pass 20 (2026-09-29):** "Storm cumulus top" reaches the cloud AROUND a storm: the weather map
+  types only a storm's core as Cb (which the towers cover) and the cloud around it as stratocumulus,
+  so keyed on the Cb class the slider changed 0.2% of a storm view. Low cloud now takes it by storm
+  proximity (weather type at mip 4, float-bilinear, 0.3-0.6), fully for cells, half for
+  stratocumulus: 26% of the view moves between 2 and 7 km. The mid layer gives way wherever towers can
+  stand (`col.storm` 0-0.15): a mid-layer sheet cut a weak storm-edge tower as a horizontal belt.
+  Head drift applies to anvil-reaching towers only. The lumpy "fields" beside towers seen from altitude
+  were the mid layer (debug view 7 green), not cumulus.
 - **Soft ground contact (pass 10):** the march fades extinction over the last max(40 m, 3 pixel
   footprints) before the half-res scene depth: dense cloud meeting a slope ended on a hard,
   stair-stepped line.
@@ -664,8 +727,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
-- The Clouds tab's slider slots: `kCloudSliderSlots` (176) sizes all four per-slider arrays and
-  `cloudBufs`; v2 uses 112-175 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
+- The Clouds tab's slider slots: `kCloudSliderSlots` (177) sizes all four per-slider arrays and
+  `cloudBufs`; v2 uses 112-176 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: 77. Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
   shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.
 

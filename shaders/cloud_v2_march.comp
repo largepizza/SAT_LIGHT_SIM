@@ -457,7 +457,8 @@ void main()
     // Per-ray lighting caches, refreshed every 25 km along the ray (the Sun's elevation and the
     // sky's colour change across a long horizon ray).
     vec3  sunCol = vec3(0.0), skyZen = vec3(0.0);
-    float cacheT = -1e30, cacheH = -1e30;
+    vec3  sunColA = vec3(0.0), sunColB = vec3(0.0), skyZenA = vec3(0.0), skyZenB = vec3(0.0);
+    float cacheT = -1e30, cacheLvl = -1e30;
 
     int   iters = 0;
     int   kMaxIters = int(cv2.misc.x);
@@ -534,13 +535,27 @@ void main()
             // Refreshed by distance alone, a ray from inside the anvil (12 km, near-white sunlight) lit
             // the cumulus 10 km below it with that colour — the same clouds went from gold to white as the
             // observer climbed 1 km into the anvil at sunset (user snaps 9-10, pass 13).
-            if (t - cacheT > 25000.0 || abs(p.h - cacheH) > 800.0) {
+            // Cached at FIXED 800 m altitude levels and interpolated between the two around the sample:
+            // refreshed by distance from the last refresh instead, the colour stepped at a different
+            // depth on every ray, and looking down through the anvil drew rings around the nadir
+            // (user snap 1, pass 15).
+            float hLvl = floor(clamp(p.h, 0.0, 60000.0) / 800.0);
+            if (t - cacheT > 25000.0 || hLvl != cacheLvl) {
                 // The key light's own Rayleigh (cv2.atmo.x x physical): the sky's gain, turned up for
                 // the ground view's sunsets, reddened every low-Sun cloud with it (from orbit, where no
                 // white balance applies, the whole terminator band read dark yellow-orange).
-                sunCol = sunColorAt(pW, sunDir, BETA_R_BASE * cv2.atmo.x, BETA_M);
-                skyZen = skyZenithAt(normalize(pW) * (R_EARTH + clamp(p.h, 0.0, 60000.0)), sunDir, BETA_R, BETA_M);
-                cacheT = t; cacheH = p.h;
+                vec3 upW = normalize(pW);
+                vec3 pA  = upW * (R_EARTH + hLvl * 800.0), pB = upW * (R_EARTH + hLvl * 800.0 + 800.0);
+                sunColA = sunColorAt(pA, sunDir, BETA_R_BASE * cv2.atmo.x, BETA_M);
+                sunColB = sunColorAt(pB, sunDir, BETA_R_BASE * cv2.atmo.x, BETA_M);
+                skyZenA = skyZenithAt(pA, sunDir, BETA_R, BETA_M);
+                skyZenB = skyZenithAt(pB, sunDir, BETA_R, BETA_M);
+                cacheT = t; cacheLvl = hLvl;
+            }
+            {
+                float fh = clamp(clamp(p.h, 0.0, 60000.0) / 800.0 - hLvl, 0.0, 1.0);
+                sunCol = mix(sunColA, sunColB, fh);
+                skyZen = mix(skyZenA, skyZenB, fh);
             }
             // Earth's shadow at THIS sample (the cached colour is for a point up to 25 km back).
             float rP     = R_EARTH + p.h;

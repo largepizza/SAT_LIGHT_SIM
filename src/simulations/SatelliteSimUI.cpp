@@ -4679,7 +4679,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Cb head drift (km)", &cv2CbHeadDriftKm, 0.0f, 30.0f, 0.5f, "%.1f", 170},
         {"Cb lobes", &cv2CbLobes, 0.0f, 1.5f, 0.05f, "%.2f", 171},
         {"Cb sparsity", &cv2CbSparsity, 0.0f, 1.0f, 0.05f, "%.2f", 172},
-        {"Cb reaching anvil", &cv2CbFullFrac, 0.0f, 1.0f, 0.05f, "%.2f", 173},
+        {"Cb overshoot (km)", &cv2CbOvershootKm, 0.0f, 3.0f, 0.05f, "%.2f", 173},
         {"Anvil thickness (km)", &cv2AnvilThickKm, 0.3f, 6.0f, 0.1f, "%.1f", 174},
         {"Anvil hang (km)", &cv2AnvilHangKm, 0.0f, 6.0f, 0.1f, "%.1f", 175},
     };
@@ -4729,6 +4729,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Detail fade start (m)", &cv2DetailLodStartM, 2000.0f, 100000.0f, 1000.0f, "%.0f", 139},
         {"History weight", &cv2HistoryWeight, 0.05f, 1.0f, 0.01f, "%.2f", 140},
         {"Full rate above (km)", &cv2FullRateAboveKm, 0.0f, 400.0f, 1.0f, "%.0f", 145},
+        {"Sparse when still (0/1)", &cv2SparseWhenStill, 0.0f, 1.0f, 1.0f, "%.0f", 176},
     };
 
     // Tiling periods of the noise volumes (no rebake: they are read at these scales).
@@ -6260,6 +6261,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2PhaseG = c.value("phase_g", cv2PhaseG);
         cv2MaxIters = c.value("max_iters", cv2MaxIters);
         cv2FullRateAboveKm = c.value("full_rate_above_km", cv2FullRateAboveKm);
+        cv2SparseWhenStill = c.value("sparse_when_still", cv2SparseWhenStill);
         cv2MidAmount = c.value("mid_amount", cv2MidAmount);
         cv2StormScale = c.value("storm_scale", cv2StormScale);
         cv2StormDetail = c.value("storm_erosion", cv2StormDetail);
@@ -6301,7 +6303,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CbHeadDriftKm = c.value("cb_head_drift_km", cv2CbHeadDriftKm);
         cv2CbLobes = c.value("cb_lobes", cv2CbLobes);
         cv2CbSparsity = c.value("cb_sparsity", cv2CbSparsity);
-        cv2CbFullFrac = c.value("cb_full_frac", cv2CbFullFrac);
+        cv2CbOvershootKm = c.value("cb_overshoot_km", cv2CbOvershootKm);
         cv2AnvilThickKm = c.value("anvil_thick_km", cv2AnvilThickKm);
         cv2AnvilHangKm = c.value("anvil_hang_km", cv2AnvilHangKm);
         cv2AutoExposure = c.value("auto_exposure", cv2AutoExposure);
@@ -6666,6 +6668,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"phase_g", cv2PhaseG},
         {"max_iters", cv2MaxIters},
         {"full_rate_above_km", cv2FullRateAboveKm},
+        {"sparse_when_still", cv2SparseWhenStill},
         {"mid_amount", cv2MidAmount},
         {"storm_scale", cv2StormScale},
         {"storm_erosion", cv2StormDetail},
@@ -6707,7 +6710,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cb_head_drift_km", cv2CbHeadDriftKm},
         {"cb_lobes", cv2CbLobes},
         {"cb_sparsity", cv2CbSparsity},
-        {"cb_full_frac", cv2CbFullFrac},
+        {"cb_overshoot_km", cv2CbOvershootKm},
         {"anvil_thick_km", cv2AnvilThickKm},
         {"anvil_hang_km", cv2AnvilHangKm},
         {"auto_exposure", cv2AutoExposure}};

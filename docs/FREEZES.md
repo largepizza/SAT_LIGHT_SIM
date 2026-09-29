@@ -215,6 +215,19 @@ blanks after the reset (a lost write, not a torn line). Not yet cross-checked wi
 recorder. It is the first time two freezes have stopped at the same line, which makes that texture
 upload (the largest single image, near GCN's limit) the step to watch next.
 
+**Third, 2026-09-29 05:14Z (`harness_runs/cloud_v2_p16m`), the same line again:** `boot: Earth
+elevation (1074 ms)`, then nothing. With the earlier ones (09-27 23:53 and 09-28 02:37 at `Earth
+elevation`; 09-26 entry 9 and 09-27 22:48 at `City detail`, the upload just before it), every boot freeze
+on record stopped in the ~1 s stretch of large texture uploads (City detail -> Earth elevation, 1.0-1.9 s
+after launch). None stopped in the heavier GPU work later in boot (Clouds v2 noise bakes 2.3 s,
+pipelines 1.1 s, satellite meshes 1.4 s; `cloud_v2_p16l` timings). That fits the assessment above (the
+first uploads after the GPU wakes) and narrows it: the Earth elevation step is `stbi_load` of the
+14999x7500 PNG, a 112 MB host-visible staging buffer, a CPU pass over all 112 M pixels, then ONE
+one-time command buffer that copies it and builds 14 mip levels by `vkCmdBlitImage` (odd width, R8,
+linear) and waits. Candidate mitigations, untested because each test is a launch that may freeze the
+machine: upload in bands through a small staging buffer, split the copy and the mip chain into separate
+submits, build the mips in a compute pass or ship them pre-baked on disk.
+
 ## Out of scope: the records before this repository (2026-09-26)
 
 `crashes.py --history` reads `Microsoft-Windows-Kernel-WHEA/Errors`, which keeps fatal records far
