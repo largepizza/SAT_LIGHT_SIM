@@ -3774,6 +3774,19 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   (`clouds.city_lights_strength`, slot 58; 0 = the old detail texture) and "Major road lights"
   (`clouds.city_roads_strength`, slot 77), in the UBO where `oceanGlintPad0/1` were (renamed in place).
   Cost +0.8 ms over LA from 10 km (in-app A/B). Harness: `scripts/city_lights.satcmd`.
+  **Day side (phase 2, 2026-09-29):** the same layout (`cityLayout()`, a `CityLayout` struct computed
+  ONCE per pixel before the material block and reused by the night) drives `cityDayAlbedo()`: asphalt
+  streets (12 m, arterials 24 m, exact box-filter coverage `cityBoxCover`), each base block split into
+  2-4 lots per side, roofs with their own margins and offsets from a palette (muted terracotta in
+  "warm" regions), commercial blocks (1-2 big flat-roofed buildings) along the arterials — where the
+  night's bright strips are — houses between, yards lawn / paved / bare, a tree canopy (16 m / 8 m value
+  noise, ~70% of suburban yards, ~30% in cores), parks in the voids. It returns a RATIO to the
+  pattern's own expected mean that multiplies the day map (like the terrain textures), converging to
+  exactly 1 once unresolved, so the hand-off is seamless and orbit stays bit-identical. Weighted by the
+  city presence (the night map's lights); the tiled city day texture and the natural close-up textures
+  step aside inside cities. First cuts: equal lots / centred square roofs / grey yards / no trees read
+  as a board game; a density-only chance of big buildings made half of LA warehouses. +0.55 ms at LA
+  from 2 km. Harness: `scripts/city_day.satcmd`.
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the

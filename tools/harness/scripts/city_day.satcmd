@@ -1,0 +1,90 @@
+# Procedural cities phase 2 (.plans/CITIES_PLAN.md): the day side of the layout, on / off, then a night
+# regression view and the cost.
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds_v2.dust_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+# la05
+observer lat=34.05 lon=-118.30 agl=500
+time sun 40 rising
+camera az=90 el=-25 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture d_la05
+set clouds.city_lights_strength 0
+wait settle
+capture d_la05_off
+# la2
+observer lat=34.05 lon=-118.35 agl=2000
+time sun 40 rising
+camera az=90 el=-15 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture d_la2
+set clouds.city_lights_strength 0
+wait settle
+capture d_la2_off
+# la10
+observer lat=33.95 lon=-118.45 alt=10000
+time sun 40 rising
+camera az=60 el=-25 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture d_la10
+set clouds.city_lights_strength 0
+wait settle
+capture d_la10_off
+# paris5
+observer lat=48.80 lon=2.25 alt=5000
+time sun 40 rising
+camera az=45 el=-25 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture d_paris5
+set clouds.city_lights_strength 0
+wait settle
+capture d_paris5_off
+# phoenix
+observer lat=33.45 lon=-112.00 agl=800
+time sun 40 rising
+camera az=90 el=-25 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture d_phoenix
+set clouds.city_lights_strength 0
+wait settle
+capture d_phoenix_off
+# europe_leo
+observer lat=47.0 lon=8.0 alt=400000
+time sun 40 rising
+camera az=0 el=-50 fov=50
+set clouds.city_lights_strength 1
+wait settle
+capture d_europe_leo
+set clouds.city_lights_strength 0
+wait settle
+capture d_europe_leo_off
+set clouds.city_lights_strength 1
+# night regression (compare with city_lights.satcmd c_la2)
+observer lat=34.05 lon=-118.35 agl=2000
+time sun midnight
+camera az=90 el=-15 fov=60
+wait settle
+capture n_la2
+# cost: LA from 2 km by day
+time sun 40 rising
+set clouds.city_lights_strength 1
+wait settle 10
+perf frames=120 name=day_la2_on0
+set clouds.city_lights_strength 0
+wait settle 10
+perf frames=120 name=day_la2_off0
+set clouds.city_lights_strength 1
+wait settle 10
+perf frames=120 name=day_la2_on1
+set clouds.city_lights_strength 0
+wait settle 10
+perf frames=120 name=day_la2_off1
+set clouds.city_lights_strength 1
