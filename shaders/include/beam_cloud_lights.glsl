@@ -61,7 +61,7 @@ const float kBeamCutoffSigma = 4.0;
 // Gaussian of that sigma: nothing reaches past ~1.1 radii. The 4-sigma Gaussian lit ~16x the area,
 // drew a wide glow cut off hard at 4 sigma (the "blobby, sharp-edged" beams), and put ~4x as many
 // beams in each tile's list.
-const float kBeamDiskCut = 1.1;
+const float kBeamDiskCut = 1.15;
 
 // ── Per-tile cloud-light culling (2026-08-10) ────────────────────────────────────────────────────
 // beamCloudLighting() is called from cloudMarchCS's innermost loop — once per in-cloud SAMPLE, so

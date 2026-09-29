@@ -82,6 +82,31 @@ vec2 worleyTile(vec3 uvw, int n)
     return vec2(f1, f2);
 }
 
+// SMOOTH F1 (an exponential smooth-min over the 27 neighbours, width 1/k cells): the plain F1 has a
+// V-shaped crease wherever two cells meet, and the erosion that carves the cracks between the lumps
+// drew those creases as a network of dark veins over storm tops (user, 2026-09-28).
+float worleySmoothF1(vec3 uvw, int n, float k)
+{
+    vec3  p = uvw * float(n);
+    ivec3 i = ivec3(floor(p));
+    float s = 0.0;
+    for (int dz = -1; dz <= 1; ++dz)
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+        ivec3 c = i + ivec3(dx, dy, dz);
+        s += exp(-k * length(p - (vec3(c) + hash3(c, n))));
+    }
+    return -log(max(s, 1e-30)) / k;
+}
+
+float worleyFbmSmooth(vec3 uvw, int n0)
+{
+    const float k = 10.0;
+    return (1.0 - clamp(worleySmoothF1(uvw, n0, k),     0.0, 1.0)) * 0.625
+         + (1.0 - clamp(worleySmoothF1(uvw, n0 * 2, k), 0.0, 1.0)) * 0.25
+         + (1.0 - clamp(worleySmoothF1(uvw, n0 * 4, k), 0.0, 1.0)) * 0.125;
+}
+
 // Inverted Worley fBm: high AT the feature points (blobs), weights 0.625/0.25/0.125.
 float worleyFbm(vec3 uvw, int n0)
 {
@@ -135,7 +160,8 @@ void main()
         float pw  = mix(wlo, 1.0, pln);
         o = vec4(pw, wlo, worleyFbm(uvw, 8), perlinFbm(uvw + vec3(0.37, 0.11, 0.73), 4, 4));
     } else if (pc.mode == 1) {
-        o = vec4(worleyFbm(uvw, 4), worleyFbm(uvw, 16),
+        // The erosion detail: smooth F1 (the cracks it carves are rounded, not creased).
+        o = vec4(worleyFbmSmooth(uvw, 4), worleyFbmSmooth(uvw, 16),
                  perlinFbm(uvw, 4, 3), perlinFbm(uvw + vec3(0.53, 0.29, 0.07), 4, 3));
     } else {
         float cluster = mix(worleyFbm(uvw, 4), 1.0, perlinFbm(uvw, 4, 3));

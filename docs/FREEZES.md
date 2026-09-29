@@ -206,6 +206,15 @@ Punit. Some records carry only the last two. Intel publishes the decoder: **`icl
 ([github.com/intel/crashlog](https://github.com/intel/crashlog), `iclg-windows.zip`), whose built-in
 collateral includes TGP. See *Decoding the CrashLog* below.
 
+**2026-09-29 (UTC), two freezes at the same boot step.** Both were harness launches after the 30 s gate
+(`harness_runs/cloud_v2_p14d`, 03:25Z, and `cloud_v2_p15b`, 04:14Z). Both logs end on
+`init: texture: assets/textures/earth_elevation.png`, then `boot: Earth elevation (1069 / 1085 ms)`. So
+the last thing logged was the 14999x7500 R8 DEM upload plus the loading frame presented after it. No
+script command had run. A satcmd file written seconds before the second launch came back as
+blanks after the reset (a lost write, not a torn line). Not yet cross-checked with `crashes.py` or a
+recorder. It is the first time two freezes have stopped at the same line, which makes that texture
+upload (the largest single image, near GCN's limit) the step to watch next.
+
 ## Out of scope: the records before this repository (2026-09-26)
 
 `crashes.py --history` reads `Microsoft-Windows-Kernel-WHEA/Errors`, which keeps fatal records far

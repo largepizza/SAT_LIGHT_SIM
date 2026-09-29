@@ -3077,9 +3077,9 @@ void main() {
                 // sigma = footprint (plus a mirror-sized hotspot) it replaces (2026-09-28): that drew a
                 // glow ~4x the real spot, cut off hard at 4 sigma — the blobby, sharp-edged beams.
                 float rho2 = d2 * groundBeams[bi].invFootprintSq;
-                float soft = max(inversesqrt(groundBeams[bi].invCoreSq) * sqrt(groundBeams[bi].invFootprintSq), 0.02);
-                float disk = (1.0 - smoothstep(1.0 - soft, 1.0 + soft, sqrt(rho2)))
-                           * (0.4 + 0.6 * sqrt(max(1.0 - rho2, 0.0))) * 1.25;
+                // Pass 13: the soft dome of cloud_v2_march.comp's beamDisk (same energy): the 2%-edged
+                // disk read as huge, hard-edged spotlights.
+                float disk = (1.0 - smoothstep(0.25, 1.15, sqrt(rho2))) * 1.885;
 
                 surfColor += vec3(kBeamGroundScale * w * 2.0 * disk * skyGlowNorm);
             }
@@ -3217,8 +3217,12 @@ void main() {
         vec3  sunW = exp(-(BETA_R * (atmColumnInf(rW, cW, H_R) * H_R)
                           + BETA_M * 1.1 * (atmColumnInf(rW, cW, H_M) * H_M)));
         vec3  wb = sunW / max(dot(sunW, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
-        float k  = cloud.whiteBalance * smoothstep(0.0, 0.12, cW);
-        color /= mix(vec3(1.0), clamp(wb, vec3(0.2), vec3(3.0)), k);
+        // Backed off near the horizon (from 11.5 deg down to 1 deg): at a grazing Sun its colour at the
+        // eye swings with a kilometre of altitude, and dividing the frame by it (up to x5) flipped the
+        // same clouds from gold to white as the observer climbed 1 km near sunset (user snaps 9-10,
+        // pass 13). The low Sun's colour is the look; adaptation is for a Sun well up.
+        float k  = cloud.whiteBalance * smoothstep(0.02, 0.2, cW);
+        color /= mix(vec3(1.0), clamp(wb, vec3(0.4), vec3(2.5)), k);
     }
 #endif
     {

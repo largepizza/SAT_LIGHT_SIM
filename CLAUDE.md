@@ -529,6 +529,86 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the column's edge widens to 1.5 pixel footprints (energy kept). The closest-point chord it replaced turned
   with the camera when standing inside a beam (billboarding). The light cull reaches 60 km, not the cloud top.
   Debug view 8: r the tile's lights, g the beams a ray's interval found, b the shaft radiance (log).
+- **Pass 11 (2026-09-28):** the user's cloud settings are the compiled defaults (clouds_v2 only; the presets' 
+  max_iters/light_steps/step_growth and the perf-heavy full_rate_above_km 0 were left out). **Flow** (anchorFlow, 
+  flow.x, sliders "Flow warp" / "Flow scale"): the mesoscale reads, and half as much the weather lookup, are 
+  displaced by a smooth 2-component field (the Perlin channel at 6000 km, coarse mip) so systems bend into curves; 
+  the shear must stay < 1 (0.07 of a 2400 km period folded the low field into combed brush strokes). **Layer 
+  spread** (flow.y): the mid layer keys on the weather over ~80 km (mip 4), not only the low cloud under it, and 
+  cirrus less on the low systems. **Storm veins**: the erosion detail volume uses a smooth-min F1 (no creases) and 
+  deep convection bites 70% fewer cracks. **Beam lines** (atmo.w, 0.25) draw each beam's own streak beside the 
+  shafts, Rayleigh-blue and 1-20 km; shafts write their weighted distance as depth so the resolve reprojects them 
+  at the right parallax while walking.
+- **Pass 12 (2026-09-28):** **Convective profile** (`cv2FieldLow`, "Top-heavy" `flow.z`, "Tower top" `flow.w`,
+  0 = the pass-11 cones for A/B): each CELL is one cloud — its top T from the cell-scale strength (the cells
+  2 mips coarser, 4 for deep types) at most "Tower top" of the span, and a required strength parabolic about
+  its widest point high up (a narrower stem, a round dome; no flat stretch, which extruded the 2D field into
+  vertical walls), capped by the cells' own dome (smooth min) so dense fields keep turrets instead of mesas;
+  convective lobes 2.5x, faded in from the cell edge. It was `e - z^1.2` with each column's own top: a cone
+  per cell, and strong cores cut flat at the type's top. Tried and dropped: normalising e by the cell's peak
+  (dense fields became slabs). Weak cells now have a minimum height (0.25 of the span): fair-weather fields
+  draw as fields of puffs where the old shape drew a few dots. **Flow**: the early out read the map at the
+  UNflowed point at mip 4 while the lookup moved up to ~200 km, cutting clouds along 80 km texel edges; it now
+  reads the flowed point (`cv2FlowDisp`, fixed mip), and the mid/high/anvil layers read the same flowed map
+  (`cv2FlowWeatherDirAt`). **Beam cloud light**: only beams landing within ~1 footprint of their site (the
+  line's perpendicular miss) feed its light, fading out as they leave; slewing beams get none (a departing
+  mirror dragged the site's light out, then it snapped back).
+- **Pass 13 (2026-09-28):** **The flow is ANALYTIC** (`cv2FlowDisp`: the curl of eight smooth waves on the
+  drifted sphere, float, divergence-free; `anchorFlow` = x its slow evolution phase, w 1/period). It was the
+  RGBA8 mesoscale volume's Perlin channel at a coarse mip, and hardware filtering has 8-bit sub-texel weights:
+  at ~375 km texels the displacement stepped every ~1.5 km, shifting the clouds by hundreds of metres per step
+  — blocks with straight seams on the texture grid, anchored at the observer, worse with the warp (and the
+  v1 distortion had the same). Never read a displacement (or anything multiplied up by a large factor) from a
+  hardware-filtered 8-bit texture; the DEM hit the same limit. **Cirrus** (section "Cirrus (high layer)"; the
+  old "Cirrus" section is v1, drawn only with the march knocked out, now labelled legacy): its regime noise is
+  read at its own field size (`high2.y`, "Cirrus field size", 1200 km, two octaves) on a frame displaced by the
+  low flow x `high2.z` ("Cirrus flow", 1.5); it was the cluster-scale noise (splotches) and ignored the flow.
+  **Cb columns**: strong deep cores (`deepCol`) run the full span up to the anvil (capped at "Tower top" the
+  anvil floated free) with a concave profile — wide base, a waist (0.55 + 0.2 x Top-heavy), a flare under the
+  lid, flat top. Every deep cell at full height cost 56 ms inside a storm; cores only, ~the old cost.
+  **Snapshots carry the view**: `view` (obs_dir, height, camera, cloud drift phase/rate) and the full
+  `settings`; harness `snapshot <profile_log.jsonl> [index=]` restores one exactly — the user's way to hand
+  over a location (lat/lon + time alone framed other clouds: the drift phase is session state).
+- **Pass 14 (2026-09-28, the user's snapshots):** **The weather-lookup warp folded the map**: its third
+  component was the closed-cell RIM field (`ce.b`, a near step) x 7 km, so the lookup jumped ~4 km across
+  every Voronoi rim and storms extruded the folds into planar walls and fins; now smooth Perlin only. The
+  weather cube (`cv2WeatherSmooth`) and the coarse cell reads (`cv2MesoSmoothG`) are read C1-smooth (the
+  fractional texel coordinate smoothstep-remapped before one fetch): linear filtering of 5 km texels / a
+  4-16 texel mip is flat facets with straight creases. Deep cells use the coarse cells only (the fine
+  cells' edges were grooves up a 10 km column); a Cb's head reads a wider, downwind-displaced cell field
+  above its waist (`headW`, the mushroom overhang); shallow cells get no stem narrowing (`tallC`) and
+  "Base flatness" (`high2.w`, 0.8) damps the lobes and the erosion at convective bases (mammatus look).
+  **Flow**: bends only the weather map (full flow) and the cluster field — never the cells (any warp
+  stretches every field read through it by its shear); "Flow warp" capped at 0.1. **Ground shadow**
+  (`cloudGroundShadowV2`): starts 10 m up (on the sea the start point straddled the 0 m shell floor in
+  float rounding: rings and lines of shadow around the nadir), reads the field at the step's footprint,
+  jittered. **Sun-colour cache** in the march refreshes on 800 m of altitude too (from inside the anvil
+  a ray lit the cumulus 10 km below with the 12 km sunlight: clouds flipped gold to white with 1 km of
+  eye altitude). **Night side**: the cloud's sky ambient fades over the Sun's first ~5 deg below the
+  sample's horizon (`skyDusk`; skyZenithAt's six midpoints over-counted twilight). **Beam spots**: a
+  soft dome (1 - smoothstep(0.25R, 1.15R), x 1.885 = same energy) on the ground and on cloud.
+  White balance backs off below ~11 deg of Sun. Open: fine contour ripples on smooth storm domes
+  (not the march steps, anvil, mid/high layers or the light march; present before this pass).
+- **Pass 15 (2026-09-28, the user's third batch):** **Cumulonimbus is three layers**: the low layer's
+  storm regions stop at "Storm cumulus top" (`column.w`, no full-span deep cores while "Cb columns" > 0);
+  `cv2ColumnSigma` draws discrete towers on a jittered 3D lattice (`anchorCol`, 64 cells per period so the
+  cell hash is stable; a centre is kept within 0.45 cell of the sea-level sphere, and the 2x2x2
+  neighbourhood is exact to 0.75 cell), each with its own axis and a concave radius profile: wide base,
+  waist, head flare under the lid, blown downwind, with storm-scale lobes. `cv2AnvilSigma` hangs lower
+  around a tower's head (`near`). A margin field thresholded per height cannot narrow and flare again, so
+  the old Cb was a mountain sloping up into a floating anvil. Every shape constant is a setting (sliders
+  164-175: `cb_columns`, `cb_spacing_km`, `cb_radius_km`, `cb_cumulus_top_km`, `cb_waist`, `cb_flare`,
+  `cb_head_drift_km`, `cb_lobes`, `cb_sparsity`, `cb_full_frac`, `anvil_thick_km`, `anvil_hang_km`),
+  so one harness launch can sweep configurations with `set`. Column strength is read once per sample
+  from weather mip 3; a read at each candidate centre (up to 8 scattered cube fetches) took storm views
+  from 10 to 29 ms. **The flow is evaluated once per field sample** (`gCv2FlowSet`/`gCv2FlowD`, set by
+  `cv2Field`): low, mid, anvil, high and columns each paid the eight waves. Columns cost ~1.5 ms in a
+  storm view. **Cloud airlight** (`cloud_v2_march.comp`): the path's in-scatter was weighted by
+  (1 - attn) as well as (1 - T), counting extinction twice (inherited from v1's camPathInscatter). A
+  cloud got a fraction of the haze beside it, and past the terminator from 15-60 km it read as dark
+  blue patches in golden haze. It now also takes the sky pass's orbital terminator gate, so the two
+  agree above 40 km. "Storm feature size" goes to 12. Open: the dome tips seen from above have
+  pits/rings; a thin anvil (< 1.5 km) streaks horizontally at grazing views.
 - **Soft ground contact (pass 10):** the march fades extinction over the last max(40 m, 3 pixel
   footprints) before the half-res scene depth: dense cloud meeting a slope ended on a hard,
   stair-stepped line.
@@ -584,9 +664,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
-- The Clouds tab's slider slots: `kCloudSliderSlots` (164) sizes all four per-slider arrays and
-  `cloudBufs`; v2 uses 112-163 and (pass 10) 2, 7, 8, 9, 16, 17. Still free from v1's deleted sliders:
-  34, 50, 61, 71-77. Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
+- The Clouds tab's slider slots: `kCloudSliderSlots` (176) sizes all four per-slider arrays and
+  `cloudBufs`; v2 uses 112-175 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
+  sliders: 77. Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
   shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.
 
 ## Subsystem: Automation harness (2026-09-25)

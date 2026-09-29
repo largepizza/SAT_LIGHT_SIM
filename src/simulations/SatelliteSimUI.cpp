@@ -4644,12 +4644,14 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Map overcast above", &cv2CoverFull, 0.1f, 1.0f, 0.01f, "%.2f", 114},
         {"Density", &cv2Density, 0.1f, 4.0f, 0.05f, "%.2f", 115},
         {"Weather warp (km)", &cv2WeatherWarpKm, 0.0f, 30.0f, 0.5f, "%.1f", 116},
+        {"Flow warp (curved systems)", &cv2FlowWarp, 0.0f, 0.1f, 0.005f, "%.3f", 50},
+        {"Flow scale (km)", &cv2FlowPeriodKm, 400.0f, 8000.0f, 100.0f, "%.0f", 61},
+        {"Layer spread (mid/high)", &cv2LayerSpread, 0.0f, 1.0f, 0.05f, "%.2f", 71},
+        {"Top-heavy (cumulus)", &cv2TopHeavy, 0.0f, 2.0f, 0.05f, "%.2f", 72},
+        {"Tower top (0 = old cones)", &cv2TowerTop, 0.0f, 0.95f, 0.01f, "%.2f", 73},
+        {"Base flatness (cumulus)", &cv2BaseFlatness, 0.0f, 1.0f, 0.05f, "%.2f", 76},
         {"Mid layer (Ac/As)", &cv2MidAmount, 0.0f, 2.0f, 0.05f, "%.2f", 146},
         {"Mid layer density", &cv2MidDensity, 0.0f, 4.0f, 0.05f, "%.2f", 8},
-        {"High layer (Ci/Cs/Cc)", &cv2HighAmount, 0.0f, 2.0f, 0.05f, "%.2f", 151},
-        {"High layer density", &cv2HighDensity, 0.0f, 4.0f, 0.05f, "%.2f", 152},
-        {"Cirrus stretch", &cv2CirrusStretch, 1.0f, 30.0f, 0.5f, "%.1f", 153},
-        {"Cirrus wind (m/s)", &cv2CirrusWindMps, 0.0f, 80.0f, 1.0f, "%.0f", 154},
         {"Rain", &cv2RainAmount, 0.0f, 3.0f, 0.05f, "%.2f", 155},
         {"Rain streaks", &cv2RainStreaks, 0.0f, 3.0f, 0.05f, "%.2f", 157},
         {"Map drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
@@ -4665,9 +4667,21 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Surface hardness", &cv2ColumnEdge, 0.5f, 16.0f, 0.25f, "%.2f", 122},
         {"Interior erosion", &cv2InteriorErosion, 0.0f, 1.0f, 0.05f, "%.2f", 123},
         {"Base roughness", &cv2BaseRoughness, 0.0f, 3.0f, 0.05f, "%.2f", 150},
-        {"Storm feature size", &cv2StormScale, 0.5f, 4.0f, 0.05f, "%.2f", 147},
+        {"Storm feature size", &cv2StormScale, 0.5f, 12.0f, 0.1f, "%.2f", 147},
         {"Storm erosion", &cv2StormDetail, 0.0f, 1.5f, 0.05f, "%.2f", 148},
         {"Anvils", &cv2Anvil, 0.0f, 2.0f, 0.05f, "%.2f", 149},
+        {"Cb columns (0 = old cores)", &cv2CbColumns, 0.0f, 2.0f, 0.05f, "%.2f", 164},
+        {"Cb spacing (km)", &cv2CbSpacingKm, 8.0f, 120.0f, 1.0f, "%.0f", 165},
+        {"Cb tower radius (km)", &cv2CbRadiusKm, 1.0f, 12.0f, 0.25f, "%.2f", 166},
+        {"Storm cumulus top (km)", &cv2CbCumulusTopKm, 2.0f, 12.0f, 0.25f, "%.2f", 167},
+        {"Cb waist (x radius)", &cv2CbWaist, 0.2f, 1.5f, 0.05f, "%.2f", 168},
+        {"Cb head flare (x radius)", &cv2CbFlare, 0.5f, 3.0f, 0.05f, "%.2f", 169},
+        {"Cb head drift (km)", &cv2CbHeadDriftKm, 0.0f, 30.0f, 0.5f, "%.1f", 170},
+        {"Cb lobes", &cv2CbLobes, 0.0f, 1.5f, 0.05f, "%.2f", 171},
+        {"Cb sparsity", &cv2CbSparsity, 0.0f, 1.0f, 0.05f, "%.2f", 172},
+        {"Cb reaching anvil", &cv2CbFullFrac, 0.0f, 1.0f, 0.05f, "%.2f", 173},
+        {"Anvil thickness (km)", &cv2AnvilThickKm, 0.3f, 6.0f, 0.1f, "%.1f", 174},
+        {"Anvil hang (km)", &cv2AnvilHangKm, 0.0f, 6.0f, 0.1f, "%.1f", 175},
     };
 
     CloudSlider secLighting[] = {
@@ -4679,6 +4693,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Beam shafts (0 = drawn line)", &cv2BeamShafts, 0.0f, 4.0f, 0.05f, "%.2f", 161},
         {"Beam haze / dust", &cv2BeamHaze, 0.0f, 10.0f, 0.1f, "%.1f", 162},
         {"Beam light on cloud", &cv2BeamLight, 0.0f, 300.0f, 1.0f, "%.0f", 17},
+        {"Beam lines (per beam)", &cv2BeamLines, 0.0f, 2.0f, 0.05f, "%.2f", 34},
         {"Cloud sunlight Rayleigh", &cv2CloudSunRayleigh, 0.0f, 3.0f, 0.05f, "%.2f", 9},
         {"Twilight sky light", &cv2TwilightSky, 0.0f, 8.0f, 0.1f, "%.1f", 16},
         {"Sun gain", &cv2SunGain, 0.0f, 4.0f, 0.05f, "%.2f", 124},
@@ -4720,14 +4735,24 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
     CloudSlider secNoise[] = {
         {"Shape period (m) - low cloud", &cv2ShapePeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 141},
         {"Mid layer period (m)", &cv2MidPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 7},
-        {"Cirrus period (m)", &cv2CirrusPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 2},
         {"Detail period (m)", &cv2DetailPeriodM, 200.0f, 8000.0f, 50.0f, "%.0f", 142},
         {"Cell period (m)", &cv2CellPeriodM, 4000.0f, 128000.0f, 1000.0f, "%.0f", 143},
         {"Cluster period (m)", &cv2ClusterPeriodM, 32000.0f, 1024000.0f, 8000.0f, "%.0f", 144},
     };
 
-    // Cirrus: its own thin volumetric shell (cirrusMarchCS, cloud_march.comp) and flat far layer.
-    // Still the older cloud model, so it keeps its own knobs until it moves into the v2 field.
+    // Cirrus: the v2 high layer (cv2HighSigma) — what is drawn.
+    CloudSlider secHigh[] = {
+        {"High layer amount (Ci/Cs/Cc)", &cv2HighAmount, 0.0f, 2.0f, 0.05f, "%.2f", 151},
+        {"High layer density", &cv2HighDensity, 0.0f, 4.0f, 0.05f, "%.2f", 152},
+        {"Cirrus field size (km)", &cv2CirrusFieldKm, 100.0f, 5000.0f, 50.0f, "%.0f", 74},
+        {"Cirrus flow (x low flow)", &cv2CirrusFlow, 0.0f, 4.0f, 0.05f, "%.2f", 75},
+        {"Cirrus stretch", &cv2CirrusStretch, 1.0f, 30.0f, 0.5f, "%.1f", 153},
+        {"Cirrus wind (m/s)", &cv2CirrusWindMps, 0.0f, 80.0f, 1.0f, "%.0f", 154},
+        {"Cirrus fibre period (m)", &cv2CirrusPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 2},
+    };
+
+    // The v1 cirrus (cirrusMarchCS, cloud_march.comp): drawn ONLY when the volumetric march is knocked
+    // out (Planetarium / Potato); the v2 high layer above replaces it otherwise.
     CloudSlider secCirrus[] = {
         {"Cirrus coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
         {"Cirrus density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
@@ -4794,7 +4819,8 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         CLOUD_SEC("Shadows & city light", secShadow),
         CLOUD_SEC("Quality / performance", secQuality),
         CLOUD_SEC("Noise scales", secNoise),
-        CLOUD_SEC("Cirrus", secCirrus),
+        CLOUD_SEC("Cirrus (high layer)", secHigh),
+        CLOUD_SEC("Legacy cirrus (march knocked out only)", secCirrus),
         CLOUD_SEC("Flat layers", secFlat),
         CLOUD_SEC("Ground fog", secFog),
         CLOUD_SEC("Atmospheric scattering", secAtmos),
@@ -6257,6 +6283,27 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2MidDensity = c.value("mid_density", cv2MidDensity);
         cv2CloudSunRayleigh = c.value("cloud_sun_rayleigh", cv2CloudSunRayleigh);
         cv2TwilightSky = c.value("twilight_sky", cv2TwilightSky);
+        cv2BeamLines = c.value("beam_lines", cv2BeamLines);
+        cv2FlowWarp = c.value("flow_warp", cv2FlowWarp);
+        cv2FlowPeriodKm = c.value("flow_period_km", cv2FlowPeriodKm);
+        cv2LayerSpread = c.value("layer_spread", cv2LayerSpread);
+        cv2TopHeavy = c.value("top_heavy", cv2TopHeavy);
+        cv2TowerTop = c.value("tower_top", cv2TowerTop);
+        cv2CirrusFieldKm = c.value("cirrus_field_km", cv2CirrusFieldKm);
+        cv2CirrusFlow = c.value("cirrus_flow", cv2CirrusFlow);
+        cv2BaseFlatness = c.value("base_flatness", cv2BaseFlatness);
+        cv2CbColumns = c.value("cb_columns", cv2CbColumns);
+        cv2CbSpacingKm = c.value("cb_spacing_km", cv2CbSpacingKm);
+        cv2CbRadiusKm = c.value("cb_radius_km", cv2CbRadiusKm);
+        cv2CbCumulusTopKm = c.value("cb_cumulus_top_km", cv2CbCumulusTopKm);
+        cv2CbWaist = c.value("cb_waist", cv2CbWaist);
+        cv2CbFlare = c.value("cb_flare", cv2CbFlare);
+        cv2CbHeadDriftKm = c.value("cb_head_drift_km", cv2CbHeadDriftKm);
+        cv2CbLobes = c.value("cb_lobes", cv2CbLobes);
+        cv2CbSparsity = c.value("cb_sparsity", cv2CbSparsity);
+        cv2CbFullFrac = c.value("cb_full_frac", cv2CbFullFrac);
+        cv2AnvilThickKm = c.value("anvil_thick_km", cv2AnvilThickKm);
+        cv2AnvilHangKm = c.value("anvil_hang_km", cv2AnvilHangKm);
         cv2AutoExposure = c.value("auto_exposure", cv2AutoExposure);
     }
 
@@ -6642,6 +6689,27 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"mid_density", cv2MidDensity},
         {"cloud_sun_rayleigh", cv2CloudSunRayleigh},
         {"twilight_sky", cv2TwilightSky},
+        {"beam_lines", cv2BeamLines},
+        {"flow_warp", cv2FlowWarp},
+        {"flow_period_km", cv2FlowPeriodKm},
+        {"layer_spread", cv2LayerSpread},
+        {"top_heavy", cv2TopHeavy},
+        {"tower_top", cv2TowerTop},
+        {"cirrus_field_km", cv2CirrusFieldKm},
+        {"cirrus_flow", cv2CirrusFlow},
+        {"base_flatness", cv2BaseFlatness},
+        {"cb_columns", cv2CbColumns},
+        {"cb_spacing_km", cv2CbSpacingKm},
+        {"cb_radius_km", cv2CbRadiusKm},
+        {"cb_cumulus_top_km", cv2CbCumulusTopKm},
+        {"cb_waist", cv2CbWaist},
+        {"cb_flare", cv2CbFlare},
+        {"cb_head_drift_km", cv2CbHeadDriftKm},
+        {"cb_lobes", cv2CbLobes},
+        {"cb_sparsity", cv2CbSparsity},
+        {"cb_full_frac", cv2CbFullFrac},
+        {"anvil_thick_km", cv2AnvilThickKm},
+        {"anvil_hang_km", cv2AnvilHangKm},
         {"auto_exposure", cv2AutoExposure}};
 
     nlohmann::json kbArr = nlohmann::json::array();
@@ -6743,6 +6811,20 @@ nlohmann::json SatelliteSim::buildPerfSnapshotJson(float cpuDt)
             {"day_j2000", simDayJ2000},
             {"sec_in_day", simSecInDay}};
     }
+
+    // Everything the harness `snapshot` command needs to reproduce this exact view (2026-09-28):
+    // lat/lon/time alone did not — the cloud map's drift phase is session state (the intro sets it),
+    // and the look depends on every setting. obs_dir is the ECEF unit vector itself (lat/lon round).
+    j["view"] = {
+        {"obs_dir", {obsDir.x, obsDir.y, obsDir.z}},
+        {"height_offset_m", obsHeightOffset},
+        {"az_deg", camera.azDeg},
+        {"el_deg", camera.elDeg},
+        {"fov_y_deg", camera.fovYDeg},
+        {"cloud_drift_phase", cloudDriftPhase()},
+        {"cloud_drift_rate", cloudDriftRate},
+        {"following", followActive}};
+    j["settings"] = buildSettingsJson();
 
     j["time_scale"] = {
         {"idx", timeScaleIdx},

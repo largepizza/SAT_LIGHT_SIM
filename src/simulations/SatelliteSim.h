@@ -631,7 +631,13 @@ struct GpuCloudV2Params
     glm::vec4 beam;          // x beam shaft gain (0 = the old drawn line), y beam haze, z beam light on
                              // cloud, w 1 / (1361 x beamGain): a beam's intensity -> reflecting area (m^2)
     glm::vec4 anchorMid;     // the shape volume at the mid layer's own period
-    glm::vec4 atmo;          // x cloud sunlight Rayleigh gain, y twilight sky light, z mid-layer density
+    glm::vec4 atmo;          // x cloud sunlight Rayleigh gain, y twilight sky light, z mid-layer density, w beam lines
+    glm::vec4 anchorFlow;    // the mesoscale volume at the flow period (the large swirls that bend the noise)
+    glm::vec4 flow;          // x flow warp (m of displacement per unit of the normalised field), y layer spread
+    glm::vec4 anchorCol;     // the Cb column lattice: xyz frac(sea point / period), w 1 / period (64 cells)
+    glm::vec4 column;        // x Cb column amount, y lattice cell (m), z base radius (m), w storm cumulus top (m)
+    glm::vec4 column2;       // x waist, y head flare (x base radius), z head drift (m), w lobe strength
+    glm::vec4 anvil2;        // x anvil thickness (m), y anvil hang (m), z tower sparsity, w full-height fraction
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -639,7 +645,7 @@ static_assert(offsetof(GpuCloudV2Params, shell) == 256, "GpuCloudV2Params layout
 static_assert(offsetof(GpuCloudV2Params, types) == 288, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, cover) == 288 + 48 * kCloudV2Types, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, anchorMid) == 288 + 48 * kCloudV2Types + 176, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 208, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 304, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -2716,41 +2722,44 @@ private:
     // ── Clouds v2 (SatelliteSimCloudsV2.cpp, .plans/CLOUDS_V2_PLAN.md) ──────────────────────────
     // Settings (persisted under "clouds_v2"; harness: set clouds_v2.<key> <value>; Clouds tab).
     // The only volumetric cloud renderer since 2026-09-27 (v1's cloudMarchCS was deleted).
-    float cv2Coverage = 1.0f;          // x the weather map's brightness before the remap below
+    float cv2Coverage = 0.84f;          // x the weather map's brightness before the remap below
     float cv2CoverClear = 0.12f;       // map brightness that is clear sky ...
-    float cv2CoverFull = 0.6f;         // ... and that is overcast (thin cloud is grey in the imagery)
-    float cv2Density = 1.0f;           // x every type's extinction
-    float cv2Detail = 1.0f;            // erosion detail strength
-    float cv2Wobble = 0.35f;           // 3D noise on a column's edge (fraction of the span): bulges, turrets
+    float cv2CoverFull = 0.54f;         // ... and that is overcast (thin cloud is grey in the imagery)
+    float cv2Density = 1.1f;           // x every type's extinction
+    float cv2Detail = 0.15f;            // erosion detail strength
+    float cv2Wobble = 0.32f;           // 3D noise on a column's edge (fraction of the span): bulges, turrets
     float cv2Lean = 0.15f;             // horizontal shift of a tower per metre of height
     float cv2InteriorErosion = 0.25f;  // share of the erosion that applies deep inside a cloud
     float cv2ColumnEdge = 4.0f;        // 1 / the column edge's softness (fraction of the span)
     float cv2AmbientGain = 2.0f;       // sky light (zenith radiance x this)
     float cv2SunGain = 1.0f;
     float cv2MoonGain = 1.0f;          // x the terrain's moonlight (cloud.moonGain) as the night key light
-    float cv2BounceGain = 1.0f;        // light reflected up from the ground
-    float cv2Powder = 0.3f;
-    float cv2MsExtinction = 0.35f;     // multiple scattering: extinction ratio per octave ...
-    float cv2MsStrength = 0.5f;        // ... and contribution ratio per octave
-    float cv2PhaseG = 0.8f;            // forward-scattering lobe (silver lining)
-    float cv2HistoryWeight = 0.1f;     // weight of a new sample over its reprojected history (still view;
+    float cv2BounceGain = 2.2f;        // light reflected up from the ground
+    float cv2Powder = 0.29f;
+    float cv2MsExtinction = 0.12f;     // multiple scattering: extinction ratio per octave ...
+    float cv2MsStrength = 0.43f;        // ... and contribution ratio per octave
+    float cv2PhaseG = 0.57f;            // forward-scattering lobe (silver lining)
+    float cv2HistoryWeight = 0.05f;     // weight of a new sample over its reprojected history (still view;
                                        // the resolve raises it toward 0.35 with motion)
     float cv2LightLenM = 2500.0f;      // light-march length
     float cv2LightSteps = 6.0f;
     float cv2StepBaseM = 60.0f;        // step at the eye ...
     float cv2StepGrowth = 0.01f;       // ... growing by this per metre of distance ...
-    float cv2StepMaxM = 1200.0f;       // ... capped here (and at 1.2% of the distance beyond)
+    float cv2StepMaxM = 1500.0f;       // ... capped here (and at 1.2% of the distance beyond)
     float cv2MaxIters = 400.0f;        // march budget per ray (what is left is filled, not dropped)
     float cv2MaxDistKm = 600.0f;
     float cv2FullRateAboveKm = 30.0f;  // above this eye altitude every pixel is marched every frame
     float cv2MidAmount = 1.0f;         // the mid-level layer (altocumulus / altostratus), 0 = off
-    float cv2StormScale = 2.0f;        // deep convection's lobes and erosion are this much larger
-    float cv2StormDetail = 0.5f;       // share of the erosion kept on deep convection
-    float cv2Anvil = 1.0f;             // the cumulonimbus anvil layer, 0 = off
-    float cv2BaseRoughness = 1.0f;     // bumps on cloud bases (decks most), x the default amplitude
+    float cv2StormScale = 4.0f;        // deep convection's lobes and erosion are this much larger
+    float cv2StormDetail = 1.5f;       // share of the erosion kept on deep convection
+    float cv2Anvil = 2.0f;             // the cumulonimbus anvil layer, 0 = off
+    float cv2BaseRoughness = 0.0f;     // bumps on cloud bases (decks most), x the default amplitude
     float cv2HighAmount = 1.0f;        // the high layer (cirrus / cirrostratus / cirrocumulus), 0 = off
-    float cv2HighDensity = 1.0f;       // x its extinction
-    float cv2CirrusStretch = 8.0f;     // cirrus fibres are this much longer along the wind than across
+    float cv2HighDensity = 0.11f;       // x its extinction
+    float cv2CirrusStretch = 15.0f;     // cirrus fibres are this much longer along the wind than across
+    float cv2CirrusFieldKm = 1200.0f;  // cirrus regions: the size of the areas the high layer covers (was the
+                                       // ~cluster scale: splotches)
+    float cv2CirrusFlow = 1.5f;        // the flow warp at cirrus level, x the low cloud's (the jet bends more)
     float cv2CirrusWindMps = 30.0f;    // the jet: cirrus moves this fast eastward over the map
     float cv2RainAmount = 1.0f;        // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
@@ -2782,24 +2791,47 @@ private:
     double meterLastT = 0.0;
     float meterMeanLum = 0.0f, meterClipFrac = 0.0f;   // last reading (harness `state`)
     void readExposureMeter();
-    float cv2BeamHaze = 1.0f;          // aerosol (haze, dust) in the beams' air scattering, x
-    float cv2BeamLight = 30.0f;        // beam light on cloud, x the physical irradiance (the night view's
+    float cv2BeamHaze = 1.6f;          // aerosol (haze, dust) in the beams' air scattering, x
+    float cv2BeamLight = 32.0f;        // beam light on cloud, x the physical irradiance (the night view's
                                        // moon is ~2400x physical; 1 = beams dim beside it)
     // Per-layer scales, so tuning the cumulus does not move the cirrus or the altocumulus (all three
     // used to read the shape volume at cv2ShapePeriodM).
-    float cv2CirrusPeriodM = 7000.0f;  // cirrus fibre spacing across the wind (along it: x stretch)
-    float cv2MidPeriodM = 7000.0f;     // altocumulus cloudlets
-    float cv2MidDensity = 1.0f;        // x the mid layer's extinction (the low system keeps "Density")
-    float cv2CloudSunRayleigh = 1.0f;  // Rayleigh on the sunlight reaching cloud, x physical (the sky's own
+    float cv2CirrusPeriodM = 11000.0f;  // cirrus fibre spacing across the wind (along it: x stretch)
+    float cv2MidPeriodM = 5300.0f;     // altocumulus cloudlets
+    float cv2MidDensity = 1.3f;        // x the mid layer's extinction (the low system keeps "Density")
+    float cv2CloudSunRayleigh = 0.61f;  // Rayleigh on the sunlight reaching cloud, x physical (the sky's own
                                        // gain no longer reddens every low-sun cloud)
-    float cv2TwilightSky = 2.0f;       // extra sky light on cloud while the Sun is low or just set at it
-    float cv2DetailLodStartM = 20000.0f; // detail erosion fades from here to 4x
-    float cv2ShapePeriodM = 7000.0f;   // tiling periods of the noise volumes
+    float cv2TwilightSky = 0.0f;       // extra sky light on cloud while the Sun is low or just set at it
+    float cv2BeamLines = 0.25f;        // each beam's own faint streak beside the shafts (the shafts cluster converged beams)
+    float cv2FlowWarp = 0.025f;        // the flow field's displacement, as a fraction of its period (curved systems)
+    float cv2FlowPeriodKm = 6000.0f;   // the flow field's scale (swirls of about half this)
+    float cv2LayerSpread = 0.7f;       // 0: mid/high cloud only over the low cloud; 1: spread around whole systems
+    // Convective shape (pass 12): each cell is one cloud with a vertical profile — a narrower base,
+    // widest high up, a domed top under the cell's own height — instead of a cone per column.
+    float cv2TopHeavy = 1.0f;          // how much narrower the base is than the body (0 = straight sides)
+    float cv2TowerTop = 0.85f;         // the tallest cell's top, as a fraction of its type's span (headroom)
+    float cv2BaseFlatness = 0.8f;      // cumulus bases: how flat (the 3D lobes damped near the base)
+    // Cumulonimbus as three layers (pass 15): the cumulus field capped at cv2CbCumulusTopKm, discrete
+    // concave towers on a lattice (cv2ColumnSigma), and the anvil hanging lower around their heads.
+    float cv2CbColumns = 1.0f;         // Cb column density (0 = the pass-14 deep cores in the low layer)
+    float cv2CbSpacingKm = 30.0f;      // lattice cell: about one tower per cell where storms are strong
+    float cv2CbRadiusKm = 5.0f;        // a tower's base radius (waist ~0.7x, head ~1.6x)
+    float cv2CbCumulusTopKm = 5.5f;    // the low (cumulus/congestus) field's top in storm regions
+    float cv2CbWaist = 0.7f;           // a tower's waist, x its base radius
+    float cv2CbFlare = 1.6f;           // its head under the anvil, x its base radius
+    float cv2CbHeadDriftKm = 6.0f;     // how far downwind the head is blown
+    float cv2CbLobes = 0.55f;          // cauliflower lobes on the tower (fraction of its radius)
+    float cv2CbSparsity = 0.35f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
+    float cv2CbFullFrac = 0.75f;       // fraction of towers that reach the anvil (the rest stop at 45-80%)
+    float cv2AnvilThickKm = 2.2f;      // the anvil shield's thickness over the storm's core
+    float cv2AnvilHangKm = 1.2f;       // how much lower it hangs around a tower's head (the mushroom)
+    float cv2DetailLodStartM = 13000.0f; // detail erosion fades from here to 4x
+    float cv2ShapePeriodM = 1900.0f;   // tiling periods of the noise volumes
     float cv2DetailPeriodM = 1800.0f;
     float cv2CellPeriodM = 32000.0f;
     float cv2ClusterPeriodM = 256000.0f;
     float cv2WindMps = 8.0f;           // noise advection (the weather map itself is static until phase 5)
-    float cv2EdgeSharpness = 3.0f;     // density gain after erosion (clamped at 1): harder surfaces
+    float cv2EdgeSharpness = 1.0f;     // density gain after erosion (clamped at 1): harder surfaces
     float cv2WeatherWarpKm = 7.0f;     // mesoscale warp of the weather lookup (hides its 5 km texels)
     int   cv2DebugView = 0;            // 1 iterations, 2 opacity, 3 depth zebra, 4 weather at shell entry
     GpuCloudV2Type cv2Types[kCloudV2Types] = {
@@ -4159,7 +4191,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 164;
+    static constexpr int kCloudSliderSlots = 176;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

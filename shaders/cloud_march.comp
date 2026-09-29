@@ -127,13 +127,23 @@ layout(set = 0, binding = 20) uniform sampler2D cv2ResolvedDepthTex;  // x mean 
 float cloudGroundShadowV2(vec3 groundENU, vec3 sunDir, vec3 obsPos, mat3 enuToEcef, float jitter)
 {
     vec2 s0, s1;
+    // Start 10 m up: the ground point (obsPos + t dir, +-0.5 m of float rounding at R_EARTH) sits ON
+    // the shell floor over the sea (0 m while rain is on), so whether it was inside the shell flipped
+    // pixel to pixel in rounding patterns — rings and straight lines of shadow on the sea around the
+    // nadir (user snapshot from 7.7 km, pass 13).
+    groundENU += normalize(groundENU) * 10.0;
     if (cv2ShellSegments(groundENU, sunDir, s0, s1) == 0) return 1.0;
     const int kSteps = 24;
     float len = s0.y - s0.x, ds = len / float(kSteps), od = 0.0;
     float eyeH = obsPos.z - R_EARTH;
+    // Read at a footprint of the step, jittered: at a low Sun the path through the shell is 100+ km,
+    // and 24 fixed midpoints reading 2 km cells at a 60 m footprint aliased into concentric rings of
+    // shadow on the sea around the nadir (user snapshot from 7.7 km at sunset, pass 13). At the step's
+    // footprint the cells average into their coverage (the field's sub-pixel haze), as the view does.
+    float fpS = max(60.0, ds * 0.5);
     for (int i = 0; i < kSteps; ++i) {
-        vec3 rel = groundENU + sunDir * (s0.x + (float(i) + 0.5) * ds) - obsPos;
-        od += cv2Field(cv2Pos(rel, eyeH, enuToEcef), 0.0, 60.0).sigma * ds;
+        vec3 rel = groundENU + sunDir * (s0.x + (float(i) + jitter) * ds) - obsPos;
+        od += cv2Field(cv2Pos(rel, eyeH, enuToEcef), 0.0, fpS).sigma * ds;
         if (od > 8.0) break;
     }
     return exp(-od);
@@ -1284,7 +1294,7 @@ void cullBeamsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos) {
 
     // Uniform across the workgroup (push constants only), so the barriers above and below stay in
     // uniform control flow while the scan itself is skipped when beams aren't drawn at all.
-    if (cloud.showBeamDebugRays != 0u && (cloud.dbgDisableMask & 8192u) == 0u && cv2.beam.x <= 0.0
+    if (cloud.showBeamDebugRays != 0u && (cloud.dbgDisableMask & 8192u) == 0u && (cv2.beam.x <= 0.0 || cv2.atmo.w > 0.0)
         && (cloud.dbgDisableMask & 131072u) == 0u) {
         uint activeCount = min(beamCount, BEAM_MAX_ACTIVE);
         for (uint bi = gl_LocalInvocationIndex; bi < activeCount; bi += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
@@ -1552,9 +1562,9 @@ void main() {
     // taken so far AND unreachable by every graphics preset (Planetarium sets bit 128 and still
     // pays for this in full), which makes it the prime suspect for the several-ms floor the
     // cloud_march bucket keeps even at Planetarium with cloudCoverage=0.
-    // The drawn pointing ray: only while the volumetric shafts are off (cv2.beam.x, "Beam shafts"):
-    // cloud_v2_march.comp integrates the beams as light instead (.plans/BEAMS_V2_PLAN.md).
-    if (cloud.showBeamDebugRays != 0u && (cloud.dbgDisableMask & 8192u) == 0u && cv2.beam.x <= 0.0) {
+    // The drawn pointing ray: the beam itself while the volumetric shafts are off (cv2.beam.x, "Beam
+    // shafts"), and each beam's own faint streak beside them ("Beam lines", cv2.atmo.w; 2026-09-28).
+    if (cloud.showBeamDebugRays != 0u && (cloud.dbgDisableMask & 8192u) == 0u && (cv2.beam.x <= 0.0 || cv2.atmo.w > 0.0)) {
         // Thin off-white/yellow line (2026-08-06 user request; previously a 2500 m green tube,
         // itself already thinned from 15000 m in C12 follow-up #13). kDebugRayMinAngRad keeps a
         // distant ray from thinning below roughly one half-res pixel and breaking up into an
@@ -1592,8 +1602,15 @@ void main() {
         // modelled atmosphere (R_ATMOS - R_EARTH); kDebugRayFadeBotM is where it reaches full
         // strength. kDebugRayFadeExp > 1 keeps the brightening weighted toward the low end
         // instead of ramping linearly across the whole 100 km.
-        const float kDebugRayFadeTopM = 50000.0;
-        const float kDebugRayFadeBotM = 8000.0;
+        // With the volumetric shafts on (cv2.beam.x > 0) the lines are their companion, not the beam:
+        // each beam's own streak (the shafts cluster converged beams into one light), faint ("Beam
+        // lines", cv2.atmo.w), Rayleigh-blue like the shafts' air scattering, and confined low in the
+        // air where there is air to scatter (1-20 km, not 8-50 km).
+        bool  shaftsOn          = cv2.beam.x > 0.0;
+        float kDebugRayFadeTopM = shaftsOn ? 20000.0 : 50000.0;
+        float kDebugRayFadeBotM = shaftsOn ? 1000.0 : 8000.0;
+        float lineGain          = shaftsOn ? cv2.atmo.w : 1.0;
+        vec3  lineColor         = shaftsOn ? vec3(0.29, 0.55, 1.0) * (0.004 * 0.93 / 0.55) : kDebugRayColor;
         const float kDebugRayFadeExp  = 2.0;
         // Trace to the ACTUAL ground intersection instead of a fixed length (C12 follow-up #13 —
         // user report: rays "terminate once they get enough into the atmosphere" instead of
@@ -1769,7 +1786,7 @@ void main() {
             float intensityScale = beams[bi].intensity * kDebugRayIntensityScale;
             // preFade is aimFade * rangeFade, both computed once per workgroup in cullBeamsForTile
             // (2026-08-10) — same product, same order of multiplication as before.
-            B_total += kDebugRayColor * (kDebugRayScale * intensityScale * proximity * fade * cloudGate
+            B_total += lineColor * (lineGain * kDebugRayScale * intensityScale * proximity * fade * cloudGate
                                         * beamPhysicsFade * preFade * beamRayExtinction);
         }
     }

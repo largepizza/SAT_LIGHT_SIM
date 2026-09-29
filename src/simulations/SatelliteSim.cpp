@@ -1887,7 +1887,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                         gb.invFootprintSq = 1.0f / (footprintR * footprintR);
                         gb.invCoreSq = 1.0f / (coreR * coreR);
                         // The spot is a disk now (sat_sky.frag): nothing past its soft edge.
-                        gb.cutoffSq = (footprintR * 1.1f) * (footprintR * 1.1f);
+                        gb.cutoffSq = (footprintR * 1.15f) * (footprintR * 1.15f);
                         gb.weight = intensity * rangeFade * elevFade * shadowAtten;
                     }
                     // else: weight/cutoffSq stay 0, so the shader's own reject drops it. This is
@@ -1932,6 +1932,23 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                         const float kConvergedAimErrorRad = glm::radians(10.0f); // matches
                                                                                  // cloud_march.comp's kDebugRayAimMaxRad, same underlying question
                         bool converged = beamsIn[s].aimErrorRad <= kConvergedAimErrorRad;
+
+                        // 2026-09-28 (pass 12, user): only a beam that actually LANDS on its site
+                        // lights cloud. 10 deg of mirror error puts the spot tens of km off the site,
+                        // and those beams were still averaged into the site's cluster: a departing
+                        // mirror dragged the site's light outward, then crossed the threshold and the
+                        // light snapped back ("rubber-banding"). The weight is the beam line's miss
+                        // distance from the site (perpendicular, so a site's elevation does not
+                        // count) in footprint radii: full inside half a radius, gone past 1.5. And a
+                        // slewing beam gets no light of its own any more (the individuals pool
+                        // stays empty): a sweeping patch of light on cloud read as an artifact.
+                        glm::vec3 toSite = tE - sE;
+                        glm::vec3 missV = toSite - rDir * glm::dot(toSite, rDir);
+                        float missR = glm::length(missV) / std::max(beamsIn[s].footprintRadM, 100.0f);
+                        float onSite = 1.0f - glm::smoothstep(0.5f, 1.5f, missR);
+                        if (!converged || onSite <= 0.0f)
+                            continue;
+                        intensity *= onSite;
 
                         // Geometry into Earth-fixed ECEF once, here — everything downstream (the
                         // direction bucket, the accumulators, the stored state) works in that

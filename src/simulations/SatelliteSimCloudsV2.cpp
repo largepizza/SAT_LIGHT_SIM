@@ -615,7 +615,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2WeatherWarpKm, cv2FullRateAboveKm, cv2MidAmount, cv2StormScale, cv2StormDetail,
                     cv2Anvil, cv2BaseRoughness, cv2HighAmount, cv2HighDensity, cv2CirrusStretch,
                     cv2RainAmount, cv2OpticsGain, cv2CirrusPeriodM, cv2MidPeriodM, cv2MidDensity,
-                    cv2CloudSunRayleigh, cv2TwilightSky})
+                    cv2CloudSunRayleigh, cv2TwilightSky, cv2FlowWarp, cv2FlowPeriodKm, cv2LayerSpread,
+                    cv2TopHeavy, cv2TowerTop, cv2CirrusFieldKm, cv2CirrusFlow, cv2BaseFlatness,
+                    cv2CbColumns, cv2CbSpacingKm, cv2CbRadiusKm, cv2CbCumulusTopKm, cv2CbWaist, cv2CbFlare,
+                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbSparsity, cv2CbFullFrac, cv2AnvilThickKm, cv2AnvilHangKm})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -671,7 +674,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.anchorDetail = anchor(cv2DetailPeriodM, 1.6);
     p.anchorCluster = anchor(cv2ClusterPeriodM, 0.6);
     p.anchorCell = anchor(cv2CellPeriodM, 0.85);
-    const double stormScale = std::clamp((double)cv2StormScale, 0.25, 8.0);
+    const double stormScale = std::clamp((double)cv2StormScale, 0.25, 16.0);
     p.anchorStorm = anchor(cv2ShapePeriodM * stormScale, 1.0);
     p.anchorStormDetail = anchor(cv2DetailPeriodM * stormScale, 1.6);
     p.storm = glm::vec4((float)stormScale, cv2StormDetail, cv2Anvil, cv2BaseRoughness);
@@ -689,7 +692,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const double pu = twoPiR / n;
         p.high = glm::vec4(cv2HighAmount, (float)(1.0 / pu), (float)fracPos(-(double)cv2CirrusWindMps * simT / pu),
                            (float)(1.0 / cirrusP));
-        p.high2 = glm::vec4(cv2HighDensity, 0.0f, 0.0f, 0.0f);
+        p.high2 = glm::vec4(cv2HighDensity,
+                            (float)(1.0 / (std::clamp((double)cv2CirrusFieldKm, 50.0, 8000.0) * 1000.0)),
+                            std::clamp(cv2CirrusFlow, 0.0f, 4.0f), std::clamp(cv2BaseFlatness, 0.0f, 1.0f));
     }
     p.rain = glm::vec4(cv2RainAmount, cv2OpticsGain, cv2RainStreaks, cv2WindMps); // w: the streaks' wind
     // w: a beam's intensity (sat_orbit.comp: 1361 x area x F x cos x beamGain) back to its reflecting
@@ -698,7 +703,33 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                        beamGain > 0.0f ? 1.0f / (1361.0f * beamGain) : 0.0f);
     p.anchorMid = anchor(std::clamp((double)cv2MidPeriodM, 500.0, 60000.0), 1.0);
     p.atmo = glm::vec4(std::max(cv2CloudSunRayleigh, 0.0f), std::max(cv2TwilightSky, 0.0f),
-                       std::max(cv2MidDensity, 0.0f), 0.0f);
+                       std::max(cv2MidDensity, 0.0f), std::max(cv2BeamLines, 0.0f));
+    {
+        const double flowP = std::clamp((double)cv2FlowPeriodKm, 200.0, 20000.0) * 1000.0;
+        // The analytic flow (cv2FlowDisp): x = its slow evolution phase (cycles; the waves move about
+        // as fast as 0.3 x the wind over the period), w = 1 / period. Not an observer-anchored frac —
+        // the field is evaluated on the drifted sphere directly.
+        p.anchorFlow = glm::vec4((float)fracPos((double)cv2WindMps * 0.3 * simT / flowP), 0.0f, 0.0f,
+                                 (float)(1.0 / flowP));
+        p.flow = glm::vec4((float)(std::clamp((double)cv2FlowWarp, 0.0, 0.1) * flowP),
+                           std::clamp(cv2LayerSpread, 0.0f, 1.0f),
+                           std::clamp(cv2TopHeavy, 0.0f, 2.0f), (cv2TowerTop <= 0.0f ? 0.0f : std::clamp(cv2TowerTop, 0.3f, 0.95f)));
+    }
+
+    {
+        // The Cb column lattice: 64 cells per period, so a cell's id mod 64 (its hash) is stable as the
+        // observer moves; carried with the cells (0.85 of the wind), like the field they rise from.
+        const double cellM = std::clamp((double)cv2CbSpacingKm, 8.0, 120.0) * 1000.0;
+        p.anchorCol = anchor(cellM * 64.0, 0.85);
+        p.column = glm::vec4(std::max(cv2CbColumns, 0.0f), (float)cellM,
+                             std::clamp(cv2CbRadiusKm, 1.0f, 12.0f) * 1000.0f,
+                             std::clamp(cv2CbCumulusTopKm, 2.0f, 12.0f) * 1000.0f);
+        p.column2 = glm::vec4(std::clamp(cv2CbWaist, 0.2f, 1.5f), std::clamp(cv2CbFlare, 0.5f, 3.0f),
+                              std::clamp(cv2CbHeadDriftKm, 0.0f, 30.0f) * 1000.0f, std::clamp(cv2CbLobes, 0.0f, 1.5f));
+        p.anvil2 = glm::vec4(std::clamp(cv2AnvilThickKm, 0.3f, 6.0f) * 1000.0f,
+                             std::clamp(cv2AnvilHangKm, 0.0f, 6.0f) * 1000.0f,
+                             std::clamp(cv2CbSparsity, 0.0f, 1.0f), std::clamp(cv2CbFullFrac, 0.0f, 1.0f));
+    }
 
     static const int kOffsets[4][2] = {{0, 0}, {1, 1}, {1, 0}, {0, 1}};
     const int *o = kOffsets[cv2Frame & 3u];

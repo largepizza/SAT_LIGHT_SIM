@@ -189,7 +189,7 @@ json patchFor(const std::string &dotted, const json &value)
 const char *kHelp =
     "wait <frames> | wait seconds <s> | wait settle [frames]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
-    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
+    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [drift=intro|default]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; "
@@ -739,6 +739,117 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         char buf[128];
         snprintf(buf, sizeof(buf), "%.4f, %.4f  alt %.0f m, agl %.0f m  (terrain %.0f m)", obsLatDeg, obsLonDeg,
                  eyeAsl, eyeAsl - obsTerrainH, obsTerrainH);
+        r["message"] = buf;
+        return Status::Done;
+    }
+
+    // ── snapshot ────────────────────────────────────────────────────────────────
+    // `snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [drift=intro|default]`: reproduce the
+    // view of a perf snapshot (Settings -> Display -> Save Snapshot) — the user's way to hand a location
+    // over with parity. Applies the record's settings (unless settings=off), sim time (paused), the
+    // exact observer direction and height, the camera, and the cloud map's drift PHASE, which is session
+    // state (the intro sets it) and was why lat/lon + time alone framed different clouds. index counts
+    // from the end when negative (-1 = the last record). Records written before 2026-09-28 carry no
+    // settings or phase: pass the user's settings.json to run.py, and the phase is reconstructed as a
+    // session that played the intro (drift=intro, the default: its offset depends on when the intro ran
+    // only at 5e-8 rad/s, ~300 m per 10 minutes) or the compiled default (drift=default).
+    if (n == "snapshot")
+    {
+        std::ifstream in(pos(0));
+        if (pos(0).empty() || !in)
+            fail("snapshot: cannot open '" + pos(0) + "' (a perf_profiles/profile_log.jsonl)");
+        std::vector<json> recs;
+        for (std::string line; std::getline(in, line);)
+        {
+            if (line.find_first_not_of(" \t\r") == std::string::npos)
+                continue;
+            json rec = json::parse(line, nullptr, false);
+            if (!rec.is_discarded() && rec.value("record_kind", std::string("snapshot")) == "snapshot")
+                recs.push_back(std::move(rec));
+        }
+        if (recs.empty())
+            fail("snapshot: no snapshot records in '" + pos(0) + "'");
+        int idx = (int)c.num("index", -1.0);
+        if (idx < 0)
+            idx += (int)recs.size();
+        if (idx < 0 || idx >= (int)recs.size())
+            fail("snapshot: index out of range (" + std::to_string(recs.size()) + " records)");
+        const json &rec = recs[idx];
+
+        if (lower(c.str("settings", "on")) != "off" && rec.contains("settings"))
+        {
+            applySettingsJson(rec["settings"], true);
+            // A patch that names display.play_intro_on_startup re-arms the intro, which then flies the
+            // camera off (and resets the drift offset): a harness run never plays it.
+            showIntro = false;
+        }
+
+        if (followActive)
+            stopFollow();
+        const json &st = rec.at("sim_time");
+        simDayJ2000 = st.at("day_j2000").get<int64_t>();
+        simSecInDay = st.at("sec_in_day").get<double>();
+        timePaused = true;
+        trailClearPending = true;
+
+        const bool hasView = rec.contains("view");
+        const json &ob = rec.at("observer");
+        if (hasView)
+        {
+            const json &d = rec["view"]["obs_dir"];
+            obsDir = glm::normalize(glm::vec3(d[0].get<float>(), d[1].get<float>(), d[2].get<float>()));
+        }
+        else
+        {
+            const float la = glm::radians(ob.at("lat_deg").get<float>());
+            const float lo = glm::radians(ob.at("lon_deg").get<float>());
+            obsDir = {cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)};
+        }
+        obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
+        obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+        obsHeightOffset = ob.at("height_offset_m").get<float>();
+        const json &cam = rec.at("camera");
+        camera.fovYDeg = cam.at("fov_y_deg").get<float>();
+        aimCameraAzEl(cam.at("az_deg").get<float>(), cam.at("el_deg").get<float>());
+
+        const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        double phase;
+        std::string driftSrc;
+        if (hasView && rec["view"].contains("cloud_drift_phase"))
+        {
+            cloudDriftRate = rec["view"].value("cloud_drift_rate", cloudDriftRate);
+            phase = rec["view"]["cloud_drift_phase"].get<double>();
+            driftSrc = "recorded";
+        }
+        else if (lower(c.str("drift", "intro")) == "default")
+        {
+            phase = (double)cloudDriftRate * (t - kCloudDriftEpochS) + kCloudDriftPhaseDefault;
+            driftSrc = "default offset (reconstructed)";
+        }
+        else
+        {
+            // The intro's offset, as if it ran at the snapshot's own time (see SatelliteSim.cpp's intro).
+            phase = (double)kIntroCloudDriftRate * t;
+            driftSrc = "intro offset (reconstructed)";
+        }
+        cloudDriftPhaseOffset = std::fmod(phase - (double)cloudDriftRate * (t - kCloudDriftEpochS),
+                                          glm::two_pi<double>());
+
+        obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
+        updatePositions(t, 0.0f);
+        r["index"] = idx;
+        r["records"] = recs.size();
+        r["utc"] = isoFromJ2000(t);
+        r["lat_deg"] = obsLatDeg;
+        r["lon_deg"] = obsLonDeg;
+        r["alt_m"] = obsHeightOffset;
+        r["cloud_drift_phase"] = cloudDriftPhase();
+        r["drift_source"] = driftSrc;
+        r["settings_applied"] = rec.contains("settings") && lower(c.str("settings", "on")) != "off";
+        char buf[256];
+        snprintf(buf, sizeof(buf), "snapshot %d/%d: %s  %.4f, %.4f  alt %.0f m  (drift %s%s)", idx,
+                 (int)recs.size(), isoFromJ2000(t).c_str(), obsLatDeg, obsLonDeg, obsHeightOffset,
+                 driftSrc.c_str(), rec.contains("settings") ? ", settings applied" : ", no settings in record");
         r["message"] = buf;
         return Status::Done;
     }
