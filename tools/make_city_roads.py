@@ -33,7 +33,7 @@ OUT = os.path.join(REPO, "assets", "textures", "city_roads.bin")
 URL = "https://naciscdn.org/naturalearth/10m/cultural/ne_10m_roads.zip"
 
 R_EARTH = 6371000.0          # common.glsl
-GRID_DEG = 0.25
+GRID_DEG = 0.125       # 0.25 put ~40 segments in an LA cell: 0.47 ms of road light per frame (2026-09-29)
 K_REACH_M = 2000.0
 CLASS_OF = {"Major Highway": 2, "Beltway": 2, "Bypass": 2, "Secondary Highway": 1, "Road": 0, "Unknown": 0}
 WIDTH_OF = {0: 12.0, 1: 18.0, 2: 30.0}

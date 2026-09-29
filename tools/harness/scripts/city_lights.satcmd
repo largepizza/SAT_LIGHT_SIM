@@ -55,6 +55,18 @@ capture c_europe_leo
 set clouds.city_lights_strength 0
 wait settle
 capture c_europe_leo_off
+# low-angle views like the user's reference photos: LA from Mount Wilson, Albuquerque from Sandia Crest
+set clouds.city_lights_strength 1
+observer lat=34.20 lon=-118.08 agl=300
+time sun midnight
+camera az=225 el=-6 fov=60
+wait settle
+capture c_wilson
+observer lat=35.21 lon=-106.46 agl=100
+time sun midnight
+camera az=260 el=-7 fov=60
+wait settle
+capture c_sandia
 set clouds.city_lights_strength 1
 # cost: LA from 10 km
 observer lat=33.95 lon=-118.45 alt=10000

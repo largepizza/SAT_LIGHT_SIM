@@ -3815,8 +3815,20 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   Farms keep ~0.5 km back from shores and off water-tinted map texels (a lavender field band at Big Sur).
   **Beaches** (`beachAt`): sand 40-140 m wide on low (< ~6 m above the water level), gentle shores, from
   the height function's own shoreline (hand-filtered water map near the observer + `tdShoreOffset`), wet
-  near the water; the close-up sand texture there. Cost now ~+1.6 ms at LA 10 km by night (two grids
-  in border bands), +0.8 by day, +0.5 rural. Harness: `scripts/quickwins.satcmd`.
+  near the water; the close-up sand texture there. Harness: `scripts/quickwins.satcmd`.
+  **Night v2 — points, not lines (2026-09-29, the user's reference photos).** Averaging an unresolved
+  light over its pixel is right in energy but wrong on screen: a real light saturates its own pixel and
+  a distant city GLITTERS; the posts-to-lines-to-uniform filtering made far cities flat yellow and the
+  street grids too distinct. Now `cityGlitter()`: a world-fixed lattice of 8 m x 2^k cells tracking the
+  footprint (cell ~4 footprints, two levels cross-faded, 2x2 nearest cells), a point in 40% of cells
+  carrying the cell's light (lognormal weight, mean 1) drawn at ~a pixel, coloured sodium / LED mostly
+  and 14% signage (green, blue, red, violet), with a slow sim-time scintillation past ~15 m a pixel.
+  Street posts only close up (< ~10 m a pixel: 55% posts, 45% glitter); beyond, arterials only (15%, the
+  reference's streaks) + glitter 85%. The night's two-grid border cross-fade is GONE (it doubled the
+  cost there; with the streets this faint the borders do not read). Steep ground is 4% lit (the map's
+  blur lit the Sandias). Roads: the cell list is 0.125 degrees (43 MB; 0.25 put ~40 segments in an LA
+  cell: 0.47 ms -> 0.2). Cost now +1.1 ms at LA 10 km by night (pattern 0.9, roads 0.2), +0.8 by day,
+  +0.5 rural. Harness: `scripts/city_lights.satcmd` (incl. Mount Wilson / Sandia Crest low angles).
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the
