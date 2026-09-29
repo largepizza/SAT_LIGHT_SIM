@@ -213,6 +213,21 @@ License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
          free software, consistent with the NonCommercial term.
 
 --------------------------------------------------------------------
+Terrain material textures (close-up ground)
+--------------------------------------------------------------------
+File:    terrain_materials.rgba8 (baked by tools/make_terrain_materials.py)
+Source:  ambientCG (https://ambientcg.com): Grass004, Ground037, Rock051,
+         Snow010A, Ground054, Ground109
+License: Creative Commons CC0 1.0 Universal (public domain dedication)
+
+--------------------------------------------------------------------
+Water map (lake levels + shoreline distance)
+--------------------------------------------------------------------
+Files:   earth_water_sdf.r8, earth_water_level.r8 (baked by
+         tools/make_water_map.py from 8k_earth_specular_map.png and
+         earth_elevation.png — see those entries)
+
+--------------------------------------------------------------------
 Music
 --------------------------------------------------------------------
 Files:   assets/sound/music/*

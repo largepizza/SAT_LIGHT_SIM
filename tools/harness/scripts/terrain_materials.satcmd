@@ -1,0 +1,84 @@
+# Terrain v2 P3 (.plans/TERRAIN_V2_PLAN.md): close-up material textures, each view on / off + perf.
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds_v2.dust_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+# meadow
+observer lat=46.62 lon=7.95 agl=2
+time sun 35 rising
+camera az=200 el=-15 fov=60
+set clouds.terrain_texture_strength 1
+wait settle
+capture t_meadow
+set clouds.terrain_texture_strength 0
+wait settle
+capture t_meadow_off
+# granite
+observer lat=37.74 lon=-119.60 agl=5
+time sun 40 rising
+camera az=270 el=-10 fov=60
+set clouds.terrain_texture_strength 1
+wait settle
+capture t_granite
+set clouds.terrain_texture_strength 0
+wait settle
+capture t_granite_off
+# glacier
+observer lat=46.50 lon=8.03 agl=3
+time sun 30 rising
+camera az=180 el=-15 fov=60
+set clouds.terrain_texture_strength 1
+wait settle
+capture t_glacier
+set clouds.terrain_texture_strength 0
+wait settle
+capture t_glacier_off
+# sahara
+observer lat=24.0 lon=10.0 agl=2
+time sun 30 rising
+camera az=90 el=-15 fov=60
+set clouds.terrain_texture_strength 1
+wait settle
+capture t_sahara
+set clouds.terrain_texture_strength 0
+wait settle
+capture t_sahara_off
+# plains
+observer lat=38.5 lon=-100.0 agl=2
+time sun 30 rising
+camera az=90 el=-15 fov=60
+set clouds.terrain_texture_strength 1
+wait settle
+capture t_plains
+set clouds.terrain_texture_strength 0
+wait settle
+capture t_plains_off
+# congo
+observer lat=0.5 lon=20.0 agl=2
+time sun 50 rising
+camera az=90 el=-20 fov=60
+set clouds.terrain_texture_strength 1
+wait settle
+capture t_congo
+set clouds.terrain_texture_strength 0
+wait settle
+capture t_congo_off
+# cost, in one app: meadow on/off/on/off
+observer lat=46.62 lon=7.95 agl=2
+time sun 35 rising
+camera az=200 el=-15 fov=60
+set clouds.terrain_texture_strength 1
+wait settle 10
+perf frames=120 name=meadow_on0
+set clouds.terrain_texture_strength 0
+wait settle 10
+perf frames=120 name=meadow_off0
+set clouds.terrain_texture_strength 1
+wait settle 10
+perf frames=120 name=meadow_on1
+set clouds.terrain_texture_strength 0
+wait settle 10
+perf frames=120 name=meadow_off1
+set clouds.terrain_texture_strength 1

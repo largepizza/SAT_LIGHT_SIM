@@ -58,15 +58,49 @@ vec2 posToUV(vec3 pECEF) {
 // — an undocumented mismatch that let beams clip through hills the test could not see. If you
 // pass anything other than 0.0 here, be explicit about why.
 //
-// The mask only applies where the DEM itself is near sea level (kWaterMaskMaxM): it also marks
-// INLAND lakes, and forcing those to 0 m dug a sea-level pit with cliff walls into every lake above
-// sea level — Lake Thun, Lake Powell, Titicaca (found with the automation harness, 2026-09-25).
-// Ocean texels' compression noise is 34-140 m, so 160 m still catches all of it.
+// ── Water (terrain v2 P2, tools/make_water_map.py) ─────────────────────────────────────────────
+// The "specular" binding is the WATER MAP, R8G8: R = a smoothed signed distance to the shore
+// (0.5 + d / (2 kShoreSdfMaxM), d > 0 in water — so `r > 0.5` is still "water" for every consumer of
+// the old binary mask, and the filtered field draws a smooth shoreline where the filtered binary mask
+// drew its 5 km staircase); G = the level of the nearest water body, in DEM units (15 = sea level).
+// Each lake takes the DEM's value over it (the DEM stores its flat surface).
+//
+// A water texel's height is its body's LEVEL (0 for the sea): the flat surface the march hits. Land
+// meets it exactly at the shoreline: within kShoreBankM of it, land is lifted to at least the level
+// (a bank, no wall of water standing above a dip), and within kShoreRampM it is capped by a ramp
+// rising kShoreSlope per metre from the shore (the DEM's 35-m land baseline was a step at every
+// coast). The cap lets go between kShoreRampM and twice that: everywhere it applied, a mountain
+// rising from a lake was flattened to 0.25 m/m for kilometres.
+//
+// G = 0 means the map was not baked (the plain mask, SatelliteSim.cpp's fallback): then the old rule,
+// water only where the DEM itself is near sea level (kWaterMaskMaxM) — it marks INLAND lakes too,
+// and forcing those to 0 m dug a sea-level pit into every lake above sea level.
 const float kWaterMaskMaxM = 160.0;
+const float kShoreSdfMaxM  = 4.0 * PI * R_EARTH / 4096.0;  // 4 mask texels (~19.5 km) = full scale
+const float kShoreSlope    = 0.25;                          // m of land per m from the shore
+const float kShoreBankM    = 3000.0;
+const float kShoreRampM    = 1500.0;
+const float kTdWaterMark   = -1.0e4;                        // hMip3 on water (terrain_detail.glsl)
+
+// Height of the ground (or water surface) given the DEM height and the water map texel(s) wm.
+// dOff (metres) moves the shoreline: terrain_detail.glsl's coves and headlands (tdShoreOffset).
+float waterAdjustHeight(float hDem, vec2 wm, float dOff, out bool water) {
+    if (wm.g < 14.5 / 255.0) {                     // not baked: the old mask rule
+        water = hDem < kWaterMaskMaxM && wm.r > 0.5;
+        return water ? 0.0 : hDem;
+    }
+    float level = max(0.0, wm.g * kElevRange - kElevOffset);
+    float d     = (wm.r - 0.5) * 2.0 * kShoreSdfMaxM + dOff;   // metres, > 0 in water
+    water = d > 0.0;
+    if (water) return level;
+    float land = mix(max(hDem, level), hDem, smoothstep(0.0, kShoreBankM, -d));
+    return min(land, level - kShoreSlope * d + 1.0e4 * smoothstep(kShoreRampM, 2.0 * kShoreRampM, -d));
+}
+
 float terrainHeightAtUV(sampler2D elevTex, sampler2D specTex, vec2 uv, float lod) {
     float h = max(0.0, textureLod(elevTex, uv, lod).r * kElevRange - kElevOffset);
-    if (h < kWaterMaskMaxM && textureLod(specTex, uv, lod).r > 0.5) return 0.0; // sea — see above
-    return h;
+    bool water;
+    return waterAdjustHeight(h, textureLod(specTex, uv, lod).rg, 0.0, water);
 }
 
 float terrainHeightAtDir(sampler2D elevTex, sampler2D specTex, vec3 dirECEF) {

@@ -196,6 +196,25 @@ float tdDemBilinear(sampler2D elevTex, ivec2 base, vec2 f, ivec2 sz) {
 // angle math — the exact path everywhere measured +1 ms in the depth pass). The choice depends on q
 // alone, so every pass makes the same one for the same point.
 const float kTdExactDemM = 4000.0;
+
+// Coves and headlands (terrain v2 P2): the water map's shore is a ~5 km-smooth curve, so from the
+// ground a coast was one long clean line. One octave of the detail's value noise (1024 m cells, the
+// same integer-anchored lattice, salted so it is not the terrain's own octave) moves the
+// shoreline by up to kTdShoreNoiseM. Only near a shore (the noise is not paid elsewhere), only with
+// the detail on (the anchor is the main observer's), and inside tdDemAt, so every pass sees one coast.
+const float kTdShoreNoiseM = 700.0;
+float tdShoreOffset(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 wm) {
+    if (!tdEnabled() || wm.g < 14.5 / 255.0) return 0.0;
+    float d = (wm.r - 0.5) * 2.0 * kShoreSdfMaxM;
+    if (abs(d) > 1.6 * kTdShoreNoiseM) return 0.0;
+    vec3  off    = tdSphereOffset(q);
+    vec3  rel    = cloud.terrainAnchorRel.xyz + off.x * enuX + off.y * enuY + off.z * enuZ;
+    ivec3 anchor = ivec3(cloud.terrainAnchorCell.xyz);
+    const ivec3 kSalt = ivec3(7919, 104729, 1299709);
+    // One octave: a second (256 m) cost Geneva / Big Sur 0.3-0.4 ms more (in-app A/B, knockout water_map).
+    float n = tdNoised(rel / 1024.0, (anchor << 1) + kSalt).x;
+    return n * kTdShoreNoiseM;
+}
 void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
              out float h0, out float hMip3) {
     ivec2 sz = textureSize(elevTex, 0);
@@ -211,7 +230,29 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
         h0 = max(0.0, textureLod(elevTex, uv, 0.0).r * kElevRange - kElevOffset);
     }
     hMip3 = max(0.0, textureLod(elevTex, uv, 3.0).r * kElevRange - kElevOffset);
-    if (h0 < kWaterMaskMaxM && textureLod(specTex, uv, 0.0).r > 0.5) { h0 = 0.0; hMip3 = 0.0; } // sea (terrain.glsl)
+    // The water map (terrain.glsl waterAdjustHeight): a water texel is its body's flat level (0 = sea),
+    // marked by hMip3 = kTdWaterMark so the detail stays off it (tdAmp0) and a hit can tell it from
+    // land. It only changes anything within a few km of a shore, so a coarse probe first: mip 2 of the
+    // distance field is 0 only where every texel around is > ~15 km from water (the land side is 0
+    // only at the field's full scale) — the old mask was fetched only below 160 m, and fetching the
+    // map on every height evaluation cost up to ~1.7 ms at ground level in the Alps.
+    if ((cloud.dbgDisableMask & 4194304u) == 0u && textureLod(specTex, uv, 2.0).r > 0.0) {   // knockout "water_map"
+        vec2 wm = textureLod(specTex, uv, 0.0).rg;
+        // Near the observer AND the shore, filtered by hand like the DEM: hardware filtering's 8-bit
+        // weights step the shoreline every ~20 m.
+        if (abs(wm.r - 0.5) * 2.0 * kShoreSdfMaxM < kShoreBankM && dot(q.xy, q.xy) < kTdExactDemM * kTdExactDemM) {
+            ivec2 wsz = textureSize(specTex, 0);
+            vec2  tw  = uv * vec2(wsz) - 0.5;
+            vec2  fl  = floor(tw), f = tw - fl;
+            int   x0  = ((int(fl.x) % wsz.x) + wsz.x) % wsz.x, x1 = (x0 + 1) % wsz.x;
+            int   y0  = clamp(int(fl.y), 0, wsz.y - 1), y1 = clamp(int(fl.y) + 1, 0, wsz.y - 1);
+            wm = mix(mix(texelFetch(specTex, ivec2(x0, y0), 0).rg, texelFetch(specTex, ivec2(x1, y0), 0).rg, f.x),
+                     mix(texelFetch(specTex, ivec2(x0, y1), 0).rg, texelFetch(specTex, ivec2(x1, y1), 0).rg, f.x), f.y);
+        }
+        bool water;
+        h0 = waterAdjustHeight(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wm), water);
+        if (water) hMip3 = kTdWaterMark;
+    }
 }
 
 // Roughness from the DEM around a point: SIGNED relief against the ~21 km mean (mip 3) — ridges and
@@ -224,8 +265,9 @@ float tdRoughness(float h0, float hMip3) {
                  0.06, 1.0);
 }
 
-// The octave-0 amplitude at a point (0 on the sea, fading in over the first 80 m of land).
+// The octave-0 amplitude at a point (0 on water, fading in over the first 80 m of land).
 float tdAmp0(float h0, float hMip3) {
+    if (hMip3 <= kTdWaterMark) return 0.0;   // water: a flat surface at its level (tdDemAt)
     return cloud.terrainDetailAmpM * cloud.terrainDetailStrength * tdRoughness(h0, hMip3) * smoothstep(0.0, 80.0, h0);
 }
 

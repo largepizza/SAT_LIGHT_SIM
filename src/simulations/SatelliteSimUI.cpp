@@ -110,6 +110,9 @@ static constexpr DebugToggleEntry kDebugToggles[] = {
     {1048576u, "Satellite part occlusion", "sat_part_occlusion"},
     // Phase 4c satellite meshes in the main view (SatMeshRenderer scene pass + composite).
     {2097152u, "Satellite meshes", "sat_meshes"},
+    // Terrain v2 P2: the water map in the shared height function (terrain_detail.glsl tdDemAt) —
+    // lake levels, the shore ramp and coves. Off = no water work at all (the DEM's own 0 m is sea).
+    {4194304u, "Water map (lakes + shores)", "water_map"},
 };
 static constexpr int kDebugToggleCount = (int)(sizeof(kDebugToggles) / sizeof(kDebugToggles[0]));
 int debugToggleTableSize() { return kDebugToggleCount; }
@@ -4904,6 +4907,13 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         // Erosion octaves (tdErosion): gullies that run downhill and branch.
         {"Erosion strength", &terrainErosionStrength, 0.0f, 1.5f, 0.05f, "%.2f", 97},
         {"Erosion branching", &terrainErosionBranch, 0.0f, 3.0f, 0.1f, "%.1f", 98},
+        // Terrain v2 P1 lighting: the sky dome's light on the ground (x the zenith integral's 0.4) and
+        // the moonless night sky's (a fraction of the full Moon overhead) on the day albedo.
+        {"Terrain sky light", &terrainSkyLight, 0.0f, 4.0f, 0.05f, "%.2f", 55},
+        {"Night sky light", &terrainNightSkyLight, 0.0f, 0.5f, 0.005f, "%.3f", 56},
+        // Terrain v2 P3: close-up material textures (grass, forest floor, rock, snow, sand, dirt) within
+        // a few metres per pixel. 0 = the procedural mottle alone.
+        {"Close-up textures", &terrainTextureStrength, 0.0f, 1.0f, 0.05f, "%.2f", 57},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -5940,6 +5950,7 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         terrainDetailStrength = detail ? 1.0f : 0.0f;
         terrainShadowStrength = detail ? 1.0f : 0.0f;
         terrainMaterialStrength = detail ? 1.0f : 0.0f;
+        terrainTextureStrength = detail ? 1.0f : 0.0f;   // terrain v2 P3 close-up textures
     }
     graphicsPreset = p;
 
@@ -6382,6 +6393,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         terrainMaterialStrength = c.value("terrain_material_strength", terrainMaterialStrength);
         terrainErosionStrength = c.value("terrain_erosion_strength", terrainErosionStrength);
         terrainErosionBranch = c.value("terrain_erosion_branch", terrainErosionBranch);
+        terrainSkyLight = c.value("terrain_sky_light", terrainSkyLight);
+        terrainNightSkyLight = c.value("terrain_night_sky_light", terrainNightSkyLight);
+        terrainTextureStrength = c.value("terrain_texture_strength", terrainTextureStrength);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
         // Satellite ocean-glint gain/floor (Ocean tab's "Ocean flare refl"/"Flare refl floor",
@@ -6612,6 +6626,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"terrain_material_strength", terrainMaterialStrength},
         {"terrain_erosion_strength", terrainErosionStrength},
         {"terrain_erosion_branch", terrainErosionBranch},
+        {"terrain_sky_light", terrainSkyLight},
+        {"terrain_night_sky_light", terrainNightSkyLight},
+        {"terrain_texture_strength", terrainTextureStrength},
         {"cloud_erosion_edge", cloudErosionEdge},
         {"cloud_erosion_core", cloudErosionCore},
         {"cirrus_wind_deg", cloudCirrusWindDeg},

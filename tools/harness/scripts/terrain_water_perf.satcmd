@@ -1,0 +1,72 @@
+# Terrain v2 P2 cost: each view timed with the water map on / off / on / off (knockout water_map),
+# interleaved in one app (run-to-run noise is 5-10%).
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+observer lat=36.20 lon=-121.72 agl=1500
+time sun 25 setting
+camera az=150 el=-15 fov=60
+wait settle
+knockout none
+wait settle 10
+perf frames=120 name=bigsur_air_on0
+knockout +water_map
+wait settle 10
+perf frames=120 name=bigsur_air_off0
+knockout none
+wait settle 10
+perf frames=120 name=bigsur_air_on1
+knockout +water_map
+wait settle 10
+perf frames=120 name=bigsur_air_off1
+knockout none
+observer lat=36.27 lon=-121.82 agl=30
+camera az=160 el=-2 fov=60
+wait settle
+knockout none
+wait settle 10
+perf frames=120 name=bigsur_ground_on0
+knockout +water_map
+wait settle 10
+perf frames=120 name=bigsur_ground_off0
+knockout none
+wait settle 10
+perf frames=120 name=bigsur_ground_on1
+knockout +water_map
+wait settle 10
+perf frames=120 name=bigsur_ground_off1
+knockout none
+observer lat=46.49 lon=6.74 agl=300
+camera az=235 el=-6 fov=60
+wait settle
+knockout none
+wait settle 10
+perf frames=120 name=geneva_on0
+knockout +water_map
+wait settle 10
+perf frames=120 name=geneva_off0
+knockout none
+wait settle 10
+perf frames=120 name=geneva_on1
+knockout +water_map
+wait settle 10
+perf frames=120 name=geneva_off1
+knockout none
+observer lat=46.75 lon=7.70 agl=0
+camera az=140 el=3 fov=50
+wait settle
+knockout none
+wait settle 10
+perf frames=120 name=alps_ground_on0
+knockout +water_map
+wait settle 10
+perf frames=120 name=alps_ground_off0
+knockout none
+wait settle 10
+perf frames=120 name=alps_ground_on1
+knockout +water_map
+wait settle 10
+perf frames=120 name=alps_ground_off1
+knockout none

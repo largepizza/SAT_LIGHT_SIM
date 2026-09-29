@@ -194,7 +194,7 @@ has access to is answerable. Current margins:
 | `pointSizeRange[1]` | 64 (with `largePoints`) | up to 1024 | glare sprites (`glare.vert`) clamp to it — smaller on weak parts |
 | `maxComputeSharedMemorySize` | 16 KB | ~5.2 KB | tile-cull lists — comfortable |
 | `maxPerStageDescriptorStorageBuffers` | 4 | **11** | `sat_orbit.comp`'s set (the check said 6, for `sat_sky.frag`, long after this set passed it — corrected 2026-09-23 with the occlusion buffers); MoltenVK is the realistic place to hit it, since it maps SSBOs + UBOs + vertex buffers into Metal's 31 per-stage buffer slots |
-| `maxPerStageDescriptorSampledImages` | 16 | 15 | `sat_sky.frag` — one binding from the floor |
+| `maxPerStageDescriptorSampledImages` / `Samplers` | 16 | **16** | `sat_sky.frag` — AT the floor since terrain v2 P3's material array (binding 27, 2026-09-29): a new sky texture must merge into an existing one (e.g. the two city detail maps into an array) |
 | `maxPerStageDescriptorStorageImages` | 4 | 2 | `sat_sky.frag`'s Phase 4c mesh targets (imageLoad) — added as storage images precisely because the sampled-image budget above had one slot left |
 
 **The push-constant gate in `pickPhysicalDevice()` read 144 until 2026-09-08** — the pre-trim
@@ -882,7 +882,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
 - The Clouds tab's slider slots: `kCloudSliderSlots` (200) sizes all four per-slider arrays and
   `cloudBufs`; v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
-  sliders: 77, 55-58 (v1 fog). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
+  sliders: 77, 58 (55/56/57 went to terrain v2's "Terrain sky light" / "Night sky light" / "Close-up textures", Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
   parallax, fog x3, dust x3.) Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
   shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.
 
@@ -3094,6 +3094,7 @@ cloud occlusion (`sat_point.frag` — added 2026-08-09 to isolate a reported per
 65536=`sat_sky.frag`'s 64-bin satellite sky-glow loop, 131072=**beam tile cull OFF** (not a feature
 knockout — an optimization A/B; see "Beam pointing-ray tile culling" below), 1048576=satellite
 part occlusion (`sat_orbit.comp`, geometry-model types; via `GpuSatTypeHeader::occlusionOn`),
+4194304=the water map in the shared height function (terrain v2 P2, `tdDemAt`; also the cost A/B),
 262144=**Potato sky** (swap `skyBgPipeline` → `skyBgMinimalPipeline`), 524288=**SKY_LITE sky**
 (swap → `skyBgLitePipeline`) — see "Subsystem: Weak-Hardware Sky Tiers". These last two are
 pipeline swaps, not in-shader branches; they're set by the Potato / Planetarium presets and are
@@ -3513,9 +3514,9 @@ Read it at the start of any terrain-related session before making changes.
   under "Subsystem: GPU Orbital Pipeline → Push constants" and the "Push-constant relief" block in
   `GpuCloudParams`. Both point pipeline layouts (`drawPipeLayout`, `starPipeLayout`) use
   `sizeof(PointDrawPC)`; `skyBgPipeLayout` uses `sizeof(SatDrawPC)`.
-- Sky descriptor set has 27 bindings (0-26; 26 = terrainFrameBuf, the observer's detailed ground height
+- Sky descriptor set has 28 bindings (0-27; 27 = the terrain material array, terrain v2 P3; 26 = terrainFrameBuf, the observer's detailed ground height
   from scene_depth.comp, 2026-09-25). Before that it had 26 (0-25; 22/23 the mesh targets, 24 the env star grid, 25 the
-  sharp-reflection G-buffer — the last two read only by the SKY_ENV / SKY_REFL variants). The original 22 (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds (since 2026-09-29 the v2 weather CUBE), cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h. **As of 2026-08-10 its entries are `GpuGroundBeam` (32 bytes), not raw `GpuReflectBeam`** — a pre-solved record, see "Beam ground-spot CPU hoist" below
+  sharp-reflection G-buffer — the last two read only by the SKY_ENV / SKY_REFL variants). The original 22 (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec (the R8G8 water map since terrain v2 P2), earthClouds (since 2026-09-29 the v2 weather CUBE), cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h. **As of 2026-08-10 its entries are `GpuGroundBeam` (32 bytes), not raw `GpuReflectBeam`** — a pre-solved record, see "Beam ground-spot CPU hoist" below
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
 - `sat_sky.frag` ground path: terrain march step count is path-length-adaptive as of session 29
   (`kN` scales with this ray's own `tExit`, clamped to a user-tuned [64,164] range — the old
@@ -3699,6 +3700,57 @@ terrain_detail.glsl first; invariants and the reasons behind them:
 - **Known limits**: the ground within ~20 m is soft (it would need real texture maps); silhouettes
   are not antialiased; value noise shapes; the DEM itself is 2.67 km / 8-bit (the Everest region is a
   smooth plateau in it); SKY_LITE and SKY_ENV draw the plain DEM (`tdEnabled()`).
+- **Night and ambient light (terrain v2 P1, 2026-09-29, `.plans/TERRAIN_V2_PLAN.md`):** the night map
+  is a Black Marble composite with a BLUE base under every texel (land sRGB ~(12,13,25)); used as the
+  terrain's emission it out-shone full-moon ground and made the night side a flat blue 5 km texture.
+  The terrain now takes only the LIGHTS from it (`cityLights` = night map - linear (0.006, 0.006,
+  0.0132), a plain subtraction — a knee on the filtered value drew every texel as a hard square from
+  orbit), and the night surface is the day albedo lit by the Moon, the moonlit sky (0.15 of the direct
+  Moon) and the moonless night sky ("Night sky light", `clouds.terrain_night_sky_light`, 0.25 of the
+  full Moon overhead: the relief reads, dark). The sky ambient takes a sky-view factor (0.5 + 0.5 n.up)
+  and a gain ("Terrain sky light", `clouds.terrain_sky_light`, 1). Both ride in `terrainErosion.zw`.
+  Only the terrain emission changed: the dome, ambience and cloud city glow read the night map with
+  their own response curves; Potato (`sat_sky_minimal.frag`) still draws the raw night map. Harness:
+  `debugview nightsky` / `citylights`, `scripts/terrain_night.satcmd`. **`clouds.coverage` is the
+  retired v1's — clear the volumetric clouds with `clouds_v2.coverage 0`** (a night LA view "without
+  lights" was an overcast).
+- **Water: lakes at their own level, shores from a distance field (terrain v2 P2, 2026-09-29).**
+  Binding 6 ("earthSpecTex" everywhere) is now the WATER MAP, R8G8, baked by
+  `tools/make_water_map.py` (scipy) into `assets/textures/earth_water_sdf.r8` + `earth_water_level.r8`
+  and interleaved at load: R = a smoothed signed distance to the shore (0.5 + d / 2 x 19.5 km, d > 0
+  in water — `r > 0.5` is still "water" for every old consumer), G = the level of the NEAREST water
+  body in DEM units (each connected body's median DEM over its interior; the DEM is flat over a lake).
+  The shared height function (terrain.glsl `waterAdjustHeight`, called from `tdDemAt`): a water texel
+  is its body's flat level, marked `hMip3 = kTdWaterMark` (tdAmp0 0 there, and a hit tests it); land
+  within 3 km is banked up to at least the level and within 1.5-3 km capped by a 0.25 m/m ramp from
+  the shore (the DEM's 35-m land baseline was a step at every coast; the cap must let go, or it
+  flattens mountains rising from lakes); `tdShoreOffset` moves the shoreline by one octave of
+  anchored 1024-m value noise (+-700 m: coves, headlands, sea stacks at Big Sur). `sat_sky.frag`: a
+  hit on a lake takes the ocean path at that level (`tSeaLvl` = the hit, `waterLevelM`), and a ray
+  that fell through to the sea sphere re-tests water at that point with `tdDemAt` (`waterPx`) —
+  most sea pixels come that way, and the raw map lacks the coves. Before this, water was drawn only
+  where the DEM was < 160 m, at sea level: Superior, Victoria, Titicaca, Baikal were blue LAND.
+  **Cost**: the map is fetched only where its mip 2 is non-zero (within ~15 km of water); in-app A/B
+  (knockout bit 4194304 `water_map`, `scripts/terrain_water_perf.satcmd`): Geneva +0.5 ms, Big Sur
+  from 1.5 km +0.7 ms, inland 0. The first cut fetched it on every height evaluation (+1.7 ms in the
+  Alps) and a second noise octave cost +0.3-0.4 ms. The source mask's last row was all water (a
+  3600-m "lake" round the South Pole) — the bake copies the row above. Re-run the bake after editing
+  the mask or the DEM. Harness scene: `scripts/terrain_water.satcmd`.
+- **Close-up material textures (terrain v2 P3, 2026-09-29).** Sky binding 27 (`terrainMatTex`,
+  `sampler2DArray`, the stage's 16th and last sampled image): six CC0 ambientCG sets (grass, forest
+  floor, rock, snow, sand, dirt) baked by `tools/make_terrain_materials.py` into
+  `assets/textures/terrain_materials.rgba8` (raw, "SLTA"; mips box-filtered at load by
+  `createTerrainMaterials`, a 1x1 neutral array without the file). Layer 2m = the albedo as a linear
+  RATIO to the set's own mean x 0.4 + height; 2m+1 = normal XY + roughness + AO. In the hit block
+  (after tdMicroBump): the day map picks the material (green = grass, dark green = forest floor,
+  bright unvegetated = sand, else dirt; steep = rock; its white = snow), the two strongest are sampled
+  biplanar in ECEF on the anchored lattice at 4-m tiles (2048 is a multiple, so world-fixed) with an
+  explicit LOD from the footprint (no derivatives in the divergent branch), blended by height, and a
+  16-m read of the main one multiplied in against tiling; the ratio multiplies the day colour (so the
+  hue at distance is unchanged), the normal perturbs the shading normal, AO joins terrainAO. Fades in
+  below 0.6-3 m per pixel. "Close-up textures" (`clouds.terrain_texture_strength`, the old
+  `terrainPad0`, slot 57; on for Medium and up). Cost +0.27 ms on an Alpine meadow at 2 m (in-app
+  A/B). Harness: `scripts/terrain_materials.satcmd`.
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the

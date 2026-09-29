@@ -297,7 +297,8 @@ a hue per term.
 | `--split` | per view, the biggest down-column jumps (where a column breaks) |
 | `--hue [--ref name.png]` | the beauty frame's own RGB down the column |
 
-Gains: the light terms and `skyambraw` x100, `nightmap` x20, and `day`/`albedo`, `gates`, `factors`,
+Gains: the light terms (incl. `nightsky`, the night sky + moonlit sky on the albedo) and `skyambraw`
+x100, `nightmap` and `citylights` (the night map with its blue base removed) x20, and `day`/`albedo`, `gates`, `factors`,
 `aofactors`, `geodot`, `sunvis`, `suntint` raw. Only pixels the terrain march claimed (`tHit > 0`) are
 overridden, so sky rows show the ordinary sky in every view - check `geodot`'s B (`tHit/4000`) or
 `probe` first. A run folder holds one capture per view NAME: a per-time-step `*_sunvis` script such as

@@ -1,0 +1,75 @@
+# Terrain v2 P2 (.plans/TERRAIN_V2_PLAN.md): lakes at their own level, smooth shorelines.
+# Clouds off (clouds_v2.coverage 0), fixed date, each view settles then captures.
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+
+# 1. Lake Geneva (DEM level ~635 m) from the Lavaux vineyards, 300 m up, looking SW over the water
+observer lat=46.49 lon=6.74 agl=300
+time sun 35 setting
+camera az=235 el=-6 fov=60
+wait settle
+state w1
+capture w1_geneva
+debugview normals
+wait settle
+capture w1_geneva_normals
+debugview off
+
+# 2. Lake Tahoe from the east shore, 200 m up, looking west
+observer lat=39.10 lon=-119.93 agl=200
+time sun 30 rising
+camera az=270 el=-5 fov=60
+wait settle
+capture w2_tahoe
+
+# 3. Titicaca from 3 km above its western shore, looking east
+observer lat=-15.85 lon=-70.05 agl=3000
+time sun 40 rising
+camera az=90 el=-12 fov=60
+wait settle
+capture w3_titicaca
+
+# 4. Big Sur from the water's edge looking south (golden view 8)
+observer lat=36.27 lon=-121.82 agl=30
+time sun 20 setting
+camera az=160 el=-2 fov=60
+wait settle
+capture w4_bigsur
+
+# 5. Ligurian coast from 5 km, looking down the shoreline (the pixelated coast)
+observer lat=44.30 lon=8.60 alt=5000
+time sun 40 rising
+camera az=60 el=-20 fov=60
+wait settle
+capture w5_liguria
+
+# 6. Chicago shore of Lake Michigan from 30 km
+observer lat=41.60 lon=-87.90 alt=30000
+time sun 40 rising
+camera az=20 el=-30 fov=60
+wait settle
+capture w6_michigan
+
+# 7. The Great Lakes from LEO
+observer lat=40.0 lon=-85.0 alt=400000
+time sun 40 rising
+camera az=0 el=-50 fov=50
+wait settle
+capture w7_great_lakes_leo
+
+# 8. Big Sur from 1.5 km looking along the coast (coves), then perf there and in the Alps
+observer lat=36.20 lon=-121.72 agl=1500
+time set 2036-06-21T12:00:00Z
+time sun 25 setting
+camera az=150 el=-15 fov=60
+wait settle
+capture w8_bigsur_air
+perf frames=120 name=bigsur_air
+observer lat=46.75 lon=7.70 agl=0
+time sun 25 rising
+camera az=140 el=3 fov=50
+wait settle
+perf frames=120 name=alps_ground

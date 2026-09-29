@@ -1,0 +1,26 @@
+# Terrain v2 P1: daylight sky light in cloud shadow. Broken cloud over the Amazon at a FIXED time
+# (find_cloud_spots.py 2036-06-21T12:00:00, broken_day -1,-72; the map drifts, so no `time sun`).
+# Exposure pinned (auto exposure off) so the three sky-light values compare.
+preset High
+set clouds_v2.auto_exposure 0
+set clouds_v2.fog_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+observer lat=-1.0 lon=-72.0 agl=600
+camera az=90 el=-40 fov=60
+wait settle
+state s
+debugview aofactors
+wait settle
+capture s_aofactors
+debugview off
+set clouds.terrain_sky_light 1
+wait settle
+capture s_sky1
+set clouds.terrain_sky_light 2
+wait settle
+capture s_sky2
+set clouds.terrain_sky_light 3
+wait settle
+capture s_sky3
+set clouds.terrain_sky_light 1

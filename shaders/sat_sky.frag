@@ -253,6 +253,44 @@ layout(location = 0) out vec4 outColor;
 #include "darksky.glsl"   // dark-sky exposure gate (Milky Way / zodiacal)
 #include "depth.glsl"     // unified scene depth (gl_FragDepth)
 
+// ── Close-up terrain materials (terrain v2 P3, binding 27) ─────────────────────────────────────
+// tools/make_terrain_materials.py: two layers per material — 2m: albedo as a linear RATIO to the
+// material's own mean x 0.4 (the day map stays the colour, the texture adds its structure) + height;
+// 2m+1: normal XY (GL) + roughness + AO. Order = kTmGrass .. kTmDirt (keep in step with the tool).
+// The 16th and last sampled image of this stage (the guaranteed floor).
+layout(set = 0, binding = 27) uniform sampler2DArray terrainMatTex;
+const int kTmGrass = 0, kTmForest = 1, kTmRock = 2, kTmSnow = 3, kTmSand = 4, kTmDirt = 5;
+const float kTmTileM = 4.0;   // metres per texture repeat; divides the 2048-m anchor cell (world-fixed)
+
+// One material, biplanar in ECEF on the anchored lattice (p = anchorRel + the ECEF offset, in tiles):
+// the two projections along n's two largest axes, weighted by |n| on them. Explicit LOD from the
+// footprint (derivatives are undefined in this divergent branch). out: ratio rgb + height (a),
+// and the normal's tangential perturbation in ECEF (xyz) + AO (w).
+void tmSample(int m, vec3 p, vec3 n, float lod, out vec4 alb, out vec4 nrm) {
+    vec3  an = abs(n);
+    ivec3 ma = (an.x > an.y && an.x > an.z) ? ivec3(0, 1, 2) : (an.y > an.z) ? ivec3(1, 2, 0) : ivec3(2, 0, 1);
+    ivec3 mi = (an.x < an.y && an.x < an.z) ? ivec3(0, 1, 2) : (an.y < an.z) ? ivec3(1, 2, 0) : ivec3(2, 0, 1);
+    ivec3 me = ivec3(3) - mi - ma;
+    vec2  uvA = vec2(p[ma.y], p[ma.z]), uvB = vec2(p[me.y], p[me.z]);
+    vec2  w   = clamp((vec2(an[ma.x], an[me.x]) - 0.5773) / (1.0 - 0.5773), 0.0, 1.0);
+    w = w * w * w * w;
+    w /= max(w.x + w.y, 1e-4);
+    float la = float(2 * m), ln = float(2 * m + 1);
+    vec4  aA = textureLod(terrainMatTex, vec3(uvA, la), lod), aB = textureLod(terrainMatTex, vec3(uvB, la), lod);
+    vec4  nA = textureLod(terrainMatTex, vec3(uvA, ln), lod), nB = textureLod(terrainMatTex, vec3(uvB, ln), lod);
+    alb = aA * w.x + aB * w.y;
+    alb.rgb *= 2.5;                                   // ratio x 0.4 -> ratio
+    // Tangent normal -> ECEF: the texture's x/y run along the projection's two axes; mirrored faces
+    // (n negative on the projection axis) flip x so the relief keeps its handedness.
+    vec2  tA = nA.xy * 2.0 - 1.0, tB = nB.xy * 2.0 - 1.0;
+    tA.x *= sign(n[ma.x] + 1e-6);
+    tB.x *= sign(n[me.x] + 1e-6);
+    vec3  dA = vec3(0.0), dB = vec3(0.0);
+    dA[ma.y] = tA.x; dA[ma.z] = tA.y;
+    dB[me.y] = tB.x; dB[me.z] = tB.y;
+    nrm = vec4(dA * w.x + dB * w.y, nA.w * w.x + nB.w * w.y);
+}
+
 // ── Milky Way surface-brightness anchors ─────────────────────────────────────────────────────
 // File scope, not block-local, because TWO places gate this panorama on them: the direct sky view
 // and the ocean sky-reflection. Two copies would be free to drift and the symptom — a reflection
@@ -1568,6 +1606,13 @@ void main() {
     // Beyond that angle no terrain on Earth is geometrically reachable from any altitude.
     float tHit      = -1.0;
     float tSeaLvl   = (tBase.x > 0.0) ? tBase.x : -1.0;
+    // Terrain v2 P2: a LAKE hit (the march met a water body's flat surface above sea level, see
+    // terrain.glsl waterAdjustHeight) takes the ocean path at its own level: tSeaLvl becomes the
+    // hit's distance and the wave code measures heights from waterLevelM instead of sea level.
+    float waterLevelM = 0.0;
+    // Is the surface pixel water? 1 / 0 once the march decided (its shoreline has the coves the
+    // raw map lacks, tdShoreOffset), -1 = not known here (no march): the water map's own test.
+    int   waterPx = -1;
     vec2  hitUV     = vec2(0.0);
     vec3  terrainNorm = vec3(0.0, 0.0, 1.0); // overwritten on terrain hit
 
@@ -1585,6 +1630,9 @@ void main() {
     terrainDet.h = 0.0; terrainDet.grad = vec3(0.0); terrainDet.rough = 0.0; terrainDet.amp = 0.0;
     terrainDet.hEro = 0.0; terrainDet.hC3 = 0.0;
     float    terrainH0     = 0.0;   // DEM height at the hit
+    vec3     tmRatio       = vec3(1.0); // close-up material albedo ratio (terrain v2 P3), 1 = none
+    float    tmAO          = 1.0;
+    float    tmFade        = 0.0;
     vec3     terrainQ      = vec3(0.0); // hit, observer-relative (terrain_detail.glsl's q)
     vec3     terrainUpE    = vec3(0.0, 0.0, 1.0);
     float    pixAngle      = pc.fovYRad / max(cloud.skyScreenH, 1.0);
@@ -1665,8 +1713,15 @@ void main() {
                 // disagree, and land cannot read 0 here — the DEM's land baseline (16/255) is 35 m
                 // above the sea baseline, and the water mask only forces a sea height below
                 // kWaterMaskMaxM (tdDemAt, terrain.glsl).
-                if (terrainH0 <= 0.0) {
-                    tHit = -1.0;   // sea, not terrain: the pixel is ocean (waves), see above
+                bool hitWater = hMip3 <= kTdWaterMark;   // tdDemAt's water mark
+                waterPx = hitWater ? 1 : 0;
+                if (hitWater && terrainH0 > 0.0) {
+                    // A lake: its surface is the flat level the march hit. Water, not terrain.
+                    tSeaLvl     = tHit;
+                    waterLevelM = terrainH0;
+                    tHit        = -1.0;
+                } else if (terrainH0 <= 0.0 || hitWater) {
+                    tHit = -1.0;   // sea (or land at exactly sea level), not terrain: see above
                 } else {
                     // Normal: the DEM gradient over +-1 texel (bilinear central differences are
                     // continuous — the old +-0.69-texel offsets, written for a 21600-wide DEM, gave a
@@ -1703,8 +1758,77 @@ void main() {
                         nECEF = normalize(nECEF - tdMicroBump(terrainQ, nECEF, enuX, enuY, enuZ,
                                                               tdShadeLodM(tHit, pixAngle), terrainDet.rough, snowS));
                     }
+                    // ── Close-up materials (terrain v2 P3) ─────────────────────────────────────────
+                    // Within a few metres per pixel, texture sets take over the ground's structure: the
+                    // day map (5 km texels) picks WHAT the ground is — green = grass (dark green =
+                    // forest floor), bright and unvegetated = sand, else dirt; steep = rock; its white =
+                    // snow — and the texture's ratio to its own mean multiplies the map's colour, so the
+                    // hue at a distance is unchanged. The two strongest materials are sampled, blended
+                    // by their height maps (rock pokes through grass instead of a cross-fade).
+                    float tmFoot = pixAngle * tHit / max(abs(dot(dir, vec3(dot(nECEF, enuX), dot(nECEF, enuY), dot(nECEF, enuZ)))), 0.25);
+                    tmFade = cloud.terrainTextureStrength * cloud.terrainMaterialStrength
+                           * (1.0 - smoothstep(0.6, 3.0, pixAngle * tHit));
+                    if (tdEnabled() && tmFade > 0.001) {
+                        vec3  dayT  = textureLod(earthDayTex, hitUV, 0.0).rgb;
+                        float lumT  = dot(dayT, vec3(0.2126, 0.7152, 0.0722));
+                        float mxT   = max(dayT.r, max(dayT.g, dayT.b));
+                        float satT  = (mxT - min(dayT.r, min(dayT.g, dayT.b))) / max(mxT, 1e-3);
+                        float snowT = smoothstep(0.40, 0.62, lumT) * (1.0 - smoothstep(0.10, 0.28, satT));
+                        float nUpT  = dot(nECEF, terrainUpE);
+                        float steep = smoothstep(0.28, 0.55, 1.0 - nUpT);
+                        float veg   = smoothstep(0.0, 0.10, (dayT.g - dayT.r) / (dayT.g + dayT.r + 1e-3));
+                        float dark  = 1.0 - smoothstep(0.035, 0.09, lumT);
+                        float sand  = (1.0 - veg) * smoothstep(0.22, 0.40, lumT);
+                        float wT[6];
+                        wT[kTmGrass]  = veg * (1.0 - dark);
+                        wT[kTmForest] = veg * dark;
+                        wT[kTmSand]   = sand;
+                        wT[kTmDirt]   = (1.0 - veg) * (1.0 - sand);
+                        wT[kTmRock]   = 0.0;
+                        wT[kTmSnow]   = 0.0;
+                        for (int i = 0; i < 6; ++i) wT[i] *= (1.0 - steep) * (1.0 - snowT);
+                        wT[kTmRock] = steep;
+                        wT[kTmSnow] = snowT * (1.0 - steep);
+                        int m0 = 0, m1 = 1;
+                        if (wT[1] > wT[0]) { m0 = 1; m1 = 0; }
+                        for (int i = 2; i < 6; ++i) {
+                            if (wT[i] > wT[m0]) { m1 = m0; m0 = i; }
+                            else if (wT[i] > wT[m1]) { m1 = i; }
+                        }
+                        float w0 = wT[m0], w1 = wT[m1];
+                        vec3  offE = terrainQ.x * enuX + terrainQ.y * enuY + terrainQ.z * enuZ;
+                        vec3  pT   = (cloud.terrainAnchorRel.xyz + offE) / kTmTileM;
+                        float lodT = log2(max(tmFoot / (kTmTileM / 1024.0), 1.0));
+                        vec4  a0, n0, a1, n1;
+                        tmSample(m0, pT, nECEF, lodT, a0, n0);
+                        tmSample(m1, pT, nECEF, lodT, a1, n1);
+                        // Height blend: the material standing higher (its height + its weight) wins,
+                        // over a narrow band.
+                        float b1 = (w1 > 0.02) ? smoothstep(-0.12, 0.12, (a1.a + w1) - (a0.a + w0)) : 0.0;
+                        vec4  aT = mix(a0, a1, b1);
+                        vec4  nT = mix(n0, n1, b1);
+                        // A second read of the main material at 4x the tile, multiplied in, breaks the
+                        // 4-m repeat (its mean ratio is 1, so the colour is kept).
+                        vec4  aF, nF;
+                        tmSample(m0, pT * 0.25, nECEF, max(lodT - 2.0, 0.0), aF, nF);
+                        tmRatio = aT.rgb * mix(vec3(1.0), sqrt(max(aF.rgb, vec3(0.0))), 0.6);
+                        tmAO    = nT.w;
+                        vec3 dn = nT.xyz - nECEF * dot(nT.xyz, nECEF);   // tangential only
+                        nECEF   = normalize(nECEF + dn * (0.9 * tmFade));
+                    } else {
+                        tmFade = 0.0;
+                    }
                     terrainNorm = normalize(vec3(dot(nECEF, enuX), dot(nECEF, enuY), dot(nECEF, enuZ)));
                 }
+            }
+            // A ray that passed the march and met the sea sphere: water or land by the MARCH's own
+            // shoreline (tdShoreOffset's coves), not the raw map's — landing on the sea level is
+            // step-size luck (see above), so most sea pixels come this way. One height evaluation.
+            if (tHit < 0.0 && waterPx < 0 && tSeaLvl > 0.0) {
+                vec3  qs = vec3(0.0, 0.0, hEye) + tSeaLvl * dir;
+                float hs0, hs3;
+                tdDemAt(earthElevTex, earthSpecTex, qs, enuX, enuY, enuZ, hs0, hs3);
+                waterPx = (hs3 <= kTdWaterMark) ? 1 : 0;
             }
         }
     }
@@ -2463,6 +2587,11 @@ void main() {
                 terrainAO = mix(1.0, 0.68 + 0.32 * smoothstep(-0.9, 0.6, dn), ms * terrainDet.rough);
             }
         }
+        // Close-up material textures (terrain v2 P3, computed with the shading normal above).
+        if (tmFade > 0.0) {
+            dayColor  *= mix(vec3(1.0), clamp(tmRatio, vec3(0.0), vec3(3.0)), tmFade);
+            terrainAO *= mix(1.0, tmAO, tmFade);
+        }
 
         // ── The Sun's shadow line at this hit point, and the colour of the light on it ────────
         // Two things come out of this block, and they are one geometric fact seen twice:
@@ -2633,9 +2762,28 @@ void main() {
         // than the sky ambient. That was the grey slab of 2026-09-25.
         vec3 tDirectSun = dayColor * sunSpecTint * (sunLit * mix(0.15, 1.0, terrainShadow) + bounceK)
                         * cloudShadowT * dayFrac * sunDiscVis;
-        vec3 tSkyAmb    = dayColor * skyAmbientTerrain * 0.4 * twilightFrac; // sky ambient fill (blue day, orange dusk)
-        vec3 tNight     = nightColor * (0.12 * (1.0 - twilightFrac));        // city lights: emissive only, never the surface
-        vec3 surfColor  = (tDirectSun + tSkyAmb) * terrainAO  // terrainAO darkens only the map/sky-lit surface
+        // Sky view (terrain v2 P1): the share of the sky dome a face sees, 1 flat, 1/2 vertical. The
+        // zenith integral above is the light of a horizontal face; x "Terrain sky light"
+        // (cloud.terrainErosion.w) scales it toward the hemisphere's real irradiance — at 0.4 the
+        // ground in cloud shadow was near-black by day.
+        float skyView   = 0.5 + 0.5 * dot(shadingN, hitUp);
+        vec3 tSkyAmb    = dayColor * skyAmbientTerrain * (0.4 * cloud.terrainErosion.w * skyView) * twilightFrac;
+        // City lights only (terrain v2 P1). The night map is a Black Marble composite with a BLUE
+        // base under every texel (land sRGB ~(12,13,25), ocean ~(5,7,22)); x 0.12 that base out-shone
+        // full-moon terrain, so the whole night ground was a flat blue 5 km texture. Subtracting the
+        // base (linear 0.006, blue x 2.2) zeroes ~99% of texels and keeps ~all of the lights' energy
+        // (measured on the map, 2026-09-29). A plain subtraction, no knee: it is linear above the
+        // base, so subtracting after the texture filter is ~subtracting before it — a knee on the
+        // filtered value drew every 5 km texel as a hard-edged square from orbit.
+        vec3 cityLights = max(nightColor - vec3(0.006, 0.006, 0.0132), vec3(0.0));
+        vec3 tNight     = cityLights * (0.12 * (1.0 - twilightFrac));       // city lights: emissive only, never the surface
+        // Night light ON the albedo (terrain v2 P1): the moonlit sky (moonlight scattered by the air —
+        // ~0.15 of the direct Moon on a flat face, like the Sun's diffuse share) and the moonless
+        // night sky (starlight + airglow), "Night sky light" (cloud.terrainErosion.z) as a fraction of
+        // the full Moon overhead. Slightly cool, never the old blue. Both are negligible by day.
+        float moonSkyK  = 0.15 * moonDirENU.w * smoothstep(-0.05, 0.3, geoMoonDot);
+        vec3 tNightSky  = dayColor * vec3(0.88, 0.93, 1.0) * (cloud.moonGain * (moonSkyK + cloud.terrainErosion.z) * skyView);
+        vec3 surfColor  = (tDirectSun + tSkyAmb + tNightSky) * terrainAO  // terrainAO darkens only the map/sky-lit surface
                         + tNight
                         + moonContribTerrain
                         + auroraContribTerrain;
@@ -2685,6 +2833,8 @@ void main() {
             else if (dv == 20) dbg = vec3(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)), terrainAO, cloudShadowT);
             else if (dv == 21) dbg = vec3(clamp((sunDir.z + 0.2) / 1.2, 0.0, 1.0), sunDir.z, dot(normalize(hitPt), sunDir));
             else if (dv == 22) dbg = nightColor * 20.0;          // the city-lights map itself here
+            else if (dv == 25) dbg = tNightSky * 100.0;          // night sky + moonlit sky on the albedo
+            else if (dv == 26) dbg = cityLights * 20.0;          // the night map with its base removed
             else if (dv == 23) dbg = vec3(geoSunDot, sunDot, tHit / 4000.0);
             // 24: the Sun's shadow line at this hit point. R = sunDiscVis (0 = the Sun's disc is
             // below this point's own horizon, so no direct sun reaches it), G = geoSunDot + dipSin
@@ -2702,7 +2852,7 @@ void main() {
         // getNormal: central differences on seaMapDetail (5 octaves).
         // getSeaColor: kSeaBase refraction + atmosphere reflection + specular.
         float oceanMask = textureGrad(earthSpecTex, uvSurf, uvd_dx, uvd_dy).r;
-        if (oceanMask > 0.5 && tHit < 0.0) {
+        if ((waterPx >= 0 ? waterPx == 1 : oceanMask > 0.5) && tHit < 0.0) {
             vec3  surfUp  = normalize(hitPt);
             float dist    = tSeaLvl;
             float seaTime = 1.0 + pc.waveTime * kSeaSpeed;
@@ -2710,7 +2860,7 @@ void main() {
             
 
             // Altitude fade: full 3D waves at low altitude, smooth specular from orbit.
-            float altFade = 1.0 - smoothstep(3000.0, 8000.0, obsEffH);
+            float altFade = 1.0 - smoothstep(3000.0, 8000.0, obsEffH - waterLevelM);
 
             // Wave UV strategy:
             //   posM = hitPt.xy (ENU East/North metres from observer nadir) — always small,
@@ -2741,15 +2891,15 @@ void main() {
                 // catastrophic cancellation in length(p)-R_EARTH at sea level (float
                 // ULP at 6.37 M m is 0.76 m, which quantises 1.5 m waves into ~2 steps).
                 vec3  plo = obsPos + tm * dir;
-                float hm  = seaMap(plo.xy + obsPhase, obsEffH + 2.0 + tm * dir.z, seaTime);
+                float hm  = seaMap(plo.xy + obsPhase, obsEffH + 2.0 - waterLevelM + tm * dir.z, seaTime);
                 vec3  phi = obsPos + tx * dir;
-                float hx  = seaMap(phi.xy + obsPhase, obsEffH + 2.0 + tx * dir.z, seaTime);
+                float hx  = seaMap(phi.xy + obsPhase, obsEffH + 2.0 - waterLevelM + tx * dir.z, seaTime);
 
                 if (hx < 0.0) {
                     for (int i = 0; i < 8; i++) {
                         float tmid = mix(tm, tx, hm / (hm - hx));
                         vec3  pm   = obsPos + tmid * dir;
-                        float hmid = seaMap(pm.xy + obsPhase, obsEffH + 2.0 + tmid * dir.z, seaTime);
+                        float hmid = seaMap(pm.xy + obsPhase, obsEffH + 2.0 - waterLevelM + tmid * dir.z, seaTime);
                         if (hmid < 0.0) { tx = tmid; hx = hmid; }
                         else             { tm = tmid; hm = hmid; }
                         if (abs(hmid) < 0.001) break;
@@ -2763,7 +2913,7 @@ void main() {
             }
 
             // Same precision fix: obsEffH + 2 + dist*dir.z instead of length(hitPt)-R_EARTH.
-            float pHeight = obsEffH + 2.0 + dist * dir.z;
+            float pHeight = obsEffH + 2.0 - waterLevelM + dist * dir.z;
             vec3  viewDir = normalize(-dir);
 
             // ── getNormal (central differences on seaMapDetail) ───────────────

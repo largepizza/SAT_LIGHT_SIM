@@ -1,0 +1,73 @@
+# Terrain v2 P1 (.plans/TERRAIN_V2_PLAN.md): night ground + daylight sky light.
+# Night: the city lights with the night map's blue base removed, the day albedo lit by the Moon, the
+# moonlit sky and the moonless night sky ("Night sky light"). Day: the sky light in cloud shadow.
+# NOTE clouds_v2.coverage is the volumetric clouds' coverage (clouds.coverage is the retired v1's).
+preset High
+set clouds_v2.coverage 0
+time set 2036-06-21T12:00:00Z
+time pause
+
+# 1. Dark site, moonless (2036-06-21: 8% Moon, down): Tibet from 1.5 km, night sky light sweep
+observer lat=31.0 lon=88.0 agl=1500
+time sun midnight
+camera az=0 el=-12 fov=60
+wait settle
+state n1
+set clouds.terrain_night_sky_light 0
+wait settle
+capture n1_tibet_nsl0
+set clouds.terrain_night_sky_light 0.1
+wait settle
+capture n1_tibet_nsl010
+set clouds.terrain_night_sky_light 0.25
+wait settle
+capture n1_tibet_nsl025
+set clouds.terrain_night_sky_light 0.5
+wait settle
+capture n1_tibet_nsl050
+set clouds.terrain_night_sky_light 0.25
+
+# 2. Los Angeles from 2 km over downtown, looking east
+observer lat=34.05 lon=-118.35 agl=2000
+time sun midnight
+camera az=90 el=-15 fov=60
+wait settle
+capture n2_la
+
+# 3. Europe at night from LEO
+observer lat=47.0 lon=8.0 alt=400000
+time sun midnight
+camera az=0 el=-50 fov=50
+wait settle
+capture n3_europe_leo
+
+# 4. Full Moon (2036-07-03), Alps from 3 km
+time set 2036-07-03T12:00:00Z
+observer lat=46.40 lon=7.60 agl=3000
+time sun midnight
+camera az=80 el=-10 fov=60
+wait settle
+state n4
+capture n4_alps_fullmoon
+debugview moon
+wait settle
+capture n4_alps_dvmoon
+debugview nightsky
+wait settle
+capture n4_alps_dvnightsky
+debugview off
+
+# 5. Day: broken cloud over the Congo from 800 m, sky light 1 / 2 / 3
+time set 2036-06-21T12:00:00Z
+set clouds_v2.coverage 0.45
+observer lat=0.5 lon=20.0 agl=800
+time sun 60 rising
+camera az=90 el=-25 fov=60
+wait settle
+capture d5_congo_sky1
+set clouds.terrain_sky_light 2
+wait settle
+capture d5_congo_sky2
+set clouds.terrain_sky_light 3
+wait settle
+capture d5_congo_sky3

@@ -55,6 +55,8 @@ VIEWS = {
     "nightmap":  (20.0, ("mapR", "mapG", "mapB")),
     "geodot":    (1.0, ("geoSunDot", "sunDot", "tHitX4000")),
     "sunvis":    (1.0, ("sunDiscVis", "marginOverHorizon", "dipSin")),
+    "nightsky":  (100.0, ("nightSkyR", "nightSkyG", "nightSkyB")),
+    "citylights": (20.0, ("lightsR", "lightsG", "lightsB")),
 }
 
 

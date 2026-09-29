@@ -2312,8 +2312,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cp.terrainDetailErode = terrainDetailErode;
             cp.terrainShadowStrength = terrainShadowStrength;
             cp.terrainMaterialStrength = terrainMaterialStrength;
+            cp.terrainTextureStrength = terrainTextureStrength;
             cp.terrainDebugView = (float)terrainDebugView;
-            cp.terrainErosion = glm::vec4(terrainErosionStrength, terrainErosionBranch, 0.0f, 0.0f);
+            cp.terrainErosion = glm::vec4(terrainErosionStrength, terrainErosionBranch, terrainNightSkyLight, terrainSkyLight);
         }
         cp.cloudOpacityScale = cloudOpacityScale;
         cp.cityLightBlurLod = cityLightBlurLod;
@@ -6003,6 +6004,18 @@ void SatelliteSim::cleanup(VkDevice device)
         vkFreeMemory(device, earthSpecMem, nullptr);
         earthSpecMem = VK_NULL_HANDLE;
     }
+    if (terrainMatSampler)
+        vkDestroySampler(device, terrainMatSampler, nullptr);
+    if (terrainMatView)
+        vkDestroyImageView(device, terrainMatView, nullptr);
+    if (terrainMatImg)
+        vkDestroyImage(device, terrainMatImg, nullptr);
+    if (terrainMatMem)
+        vkFreeMemory(device, terrainMatMem, nullptr);
+    terrainMatSampler = VK_NULL_HANDLE;
+    terrainMatView = VK_NULL_HANDLE;
+    terrainMatImg = VK_NULL_HANDLE;
+    terrainMatMem = VK_NULL_HANDLE;
     if (earthCloudsSampler)
     {
         vkDestroySampler(device, earthCloudsSampler, nullptr);
@@ -8514,6 +8527,175 @@ void SatelliteSim::createBeamSelfMarchPipeline(VulkanContext &ctx)
     vkDestroyShaderModule(ctx.device, mod, nullptr);
 }
 
+// ─── createTerrainMaterials ───────────────────────────────────────────────────
+// The close-up terrain material array (terrain v2 P3, sky binding 27): assets/textures/
+// terrain_materials.rgba8 from tools/make_terrain_materials.py — "SLTA", uint32 width, height, layers,
+// then the layers' RGBA8 rows. Raw bytes like the DEM (no decoding at launch, docs/FREEZES.md); the mip
+// chain is box-filtered here (VulkanContext's blit mips are single-layer). Without the file, a 1x1
+// array of neutral texels (ratio 0.4 = the mean, flat normal), so the shader path is unchanged.
+void SatelliteSim::createTerrainMaterials(VulkanContext &ctx)
+{
+    bootStatus("Terrain materials");
+    uint32_t w = 1, h = 1, layers = 12;
+    std::vector<unsigned char> data;
+    {
+        const char *path = "assets/textures/terrain_materials.rgba8";
+        Log::line(std::string("init: texture: ") + path);
+        FILE *f = std::fopen(path, "rb");
+        if (f)
+        {
+            char magic[4];
+            uint32_t hdr[3];
+            if (std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "SLTA", 4) == 0 &&
+                std::fread(hdr, 4, 3, f) == 3 && hdr[0] > 0 && hdr[0] <= 8192 && hdr[1] > 0 &&
+                hdr[1] <= 8192 && hdr[2] > 0 && hdr[2] <= 64)
+            {
+                const size_t bytes = (size_t)hdr[0] * hdr[1] * hdr[2] * 4;
+                data.resize(bytes);
+                if (std::fread(data.data(), 1, bytes, f) == bytes)
+                {
+                    w = hdr[0];
+                    h = hdr[1];
+                    layers = hdr[2];
+                }
+                else
+                    data.clear();
+            }
+            std::fclose(f);
+        }
+        if (data.empty())
+        {
+            Log::line("init: terrain materials missing (tools/make_terrain_materials.py): neutral placeholder");
+            w = h = 1;
+            data.resize((size_t)layers * 4);
+            for (uint32_t l = 0; l < layers; ++l)
+            {
+                const bool normalLayer = (l & 1u) != 0;
+                unsigned char *t = &data[(size_t)l * 4];
+                t[0] = normalLayer ? 128 : 102;
+                t[1] = normalLayer ? 128 : 102;
+                t[2] = normalLayer ? 204 : 102;
+                t[3] = normalLayer ? 255 : 128;
+            }
+        }
+    }
+    // Mip chain, box-filtered per layer; each level holds all layers, as the copy expects.
+    uint32_t mips = 1;
+    while ((w >> mips) > 0 || (h >> mips) > 0)
+        ++mips;
+    std::vector<std::vector<unsigned char>> levels(mips);
+    levels[0] = std::move(data);
+    for (uint32_t m = 1; m < mips; ++m)
+    {
+        const uint32_t pw = std::max(1u, w >> (m - 1)), ph = std::max(1u, h >> (m - 1));
+        const uint32_t cw = std::max(1u, w >> m), ch = std::max(1u, h >> m);
+        levels[m].resize((size_t)cw * ch * layers * 4);
+        for (uint32_t l = 0; l < layers; ++l)
+        {
+            const unsigned char *src = &levels[m - 1][(size_t)l * pw * ph * 4];
+            unsigned char *dst = &levels[m][(size_t)l * cw * ch * 4];
+            for (uint32_t y = 0; y < ch; ++y)
+                for (uint32_t x = 0; x < cw; ++x)
+                {
+                    const uint32_t x0 = std::min(2 * x, pw - 1), x1 = std::min(2 * x + 1, pw - 1);
+                    const uint32_t y0 = std::min(2 * y, ph - 1), y1 = std::min(2 * y + 1, ph - 1);
+                    for (uint32_t c = 0; c < 4; ++c)
+                    {
+                        const uint32_t sum = src[(y0 * pw + x0) * 4 + c] + src[(y0 * pw + x1) * 4 + c] +
+                                             src[(y1 * pw + x0) * 4 + c] + src[(y1 * pw + x1) * 4 + c];
+                        dst[(y * cw + x) * 4 + c] = (unsigned char)((sum + 2) / 4);
+                    }
+                }
+        }
+    }
+    VkDeviceSize total = 0;
+    for (auto &lv : levels)
+        total += lv.size();
+
+    VkBuffer stageBuf;
+    VkDeviceMemory stageMem;
+    ctx.createBuffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stageBuf, stageMem);
+    std::vector<VkBufferImageCopy> regions(mips);
+    {
+        void *mapped;
+        vkMapMemory(ctx.device, stageMem, 0, total, 0, &mapped);
+        VkDeviceSize off = 0;
+        for (uint32_t m = 0; m < mips; ++m)
+        {
+            std::memcpy((unsigned char *)mapped + off, levels[m].data(), levels[m].size());
+            regions[m] = {};
+            regions[m].bufferOffset = off;
+            regions[m].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, layers};
+            regions[m].imageExtent = {std::max(1u, w >> m), std::max(1u, h >> m), 1};
+            off += levels[m].size();
+        }
+        vkUnmapMemory(ctx.device, stageMem);
+    }
+    levels.clear();
+
+    VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ici.extent = {w, h, 1};
+    ici.mipLevels = mips;
+    ici.arrayLayers = layers;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    vkCreateImage(ctx.device, &ici, nullptr, &terrainMatImg);
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(ctx.device, terrainMatImg, &req);
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = ctx.findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    vkAllocateMemory(ctx.device, &mai, nullptr, &terrainMatMem);
+    vkBindImageMemory(ctx.device, terrainMatImg, terrainMatMem, 0);
+
+    VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = terrainMatImg;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, layers};
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &b);
+    vkCmdCopyBufferToImage(cmd, stageBuf, terrainMatImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mips, regions.data());
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &b);
+    ctx.endOneTimeCommands(cmd);
+    vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+    vkFreeMemory(ctx.device, stageMem, nullptr);
+
+    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vci.image = terrainMatImg;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, layers};
+    vkCreateImageView(ctx.device, &vci, nullptr, &terrainMatView);
+
+    VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sci.magFilter = VK_FILTER_LINEAR;
+    sci.minFilter = VK_FILTER_LINEAR;
+    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sci.maxLod = (float)mips;
+    vkCreateSampler(ctx.device, &sci, nullptr, &terrainMatSampler);
+    Log::line("init: terrain materials " + std::to_string(w) + "x" + std::to_string(h) + " x" +
+              std::to_string(layers) + " layers, " + std::to_string(mips) + " mips");
+}
+
 // ─── readRawR8 ────────────────────────────────────────────────────────────────
 // Reads a single-channel texture pre-decoded by tools/make_raw_textures.py: one or more files, each a
 // 16-byte header ("SLR8", uint32 width, uint32 total height, uint32 first row, little-endian) and its
@@ -9246,21 +9428,34 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         }
     }
 
-    // ── Load earth specular map (binding 6): 8K R8_UNORM ocean mask ──────────────
+    // ── Load the water map (binding 6): 8K R8G8_UNORM (terrain v2 P2) ─────────────
+    // R = the shoreline distance field (> 0.5 = water, like the old binary mask it replaces), G = the
+    // level of the nearest water body in DEM units. Baked by tools/make_water_map.py from the old mask
+    // + the DEM; see terrain.glsl (tdWaterAt). Without the baked files, the old mask (R) with G = 0,
+    // which the shaders read as "no level data" (water only where the DEM is near sea level, as before).
     {
-        // Pre-decoded like the elevation map (readRawR8); the PNG is the source and the fallback.
         bootStatus("Ocean map");
         int w = 0, h = 0;
-        std::vector<unsigned char> rawSpec;
+        std::vector<unsigned char> rawSpec, rawLevel;
         unsigned char *pixels = nullptr;
         bool pixelsFromStb = false;
-        if (readRawR8({"assets/textures/8k_earth_specular_map.r8"}, w, h, rawSpec))
+        int lw = 0, lh = 0;
+        const bool baked = readRawR8({"assets/textures/earth_water_sdf.r8"}, w, h, rawSpec) &&
+                           readRawR8({"assets/textures/earth_water_level.r8"}, lw, lh, rawLevel) && lw == w && lh == h;
+        if (baked)
         {
+            pixels = rawSpec.data();
+        }
+        else if (readRawR8({"assets/textures/8k_earth_specular_map.r8"}, w, h, rawSpec))
+        {
+            Log::line("init: water map: no baked earth_water_*.r8 (tools/make_water_map.py), using the plain mask");
+            rawLevel.clear();
             pixels = rawSpec.data();
         }
         else
         {
             Log::line("init: texture: assets/textures/8k_earth_specular_map.png (no pre-decoded .r8)");
+            rawLevel.clear();
             int ch;
             pixels = stbi_load("assets/textures/8k_earth_specular_map.png", &w, &h, &ch, 1);
             pixelsFromStb = true;
@@ -9268,7 +9463,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         if (pixels)
         {
             earthSpecMips = (uint32_t)std::floor(std::log2((float)std::max(w, h))) + 1;
-            VkDeviceSize imgBytes = (VkDeviceSize)w * h;
+            VkDeviceSize imgBytes = (VkDeviceSize)w * h * 2;
 
             VkBuffer stageBuf;
             VkDeviceMemory stageMem;
@@ -9278,15 +9473,25 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
                              stageBuf, stageMem);
             void *mapped;
             vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
-            memcpy(mapped, pixels, (size_t)imgBytes);
+            {
+                unsigned char *dst = (unsigned char *)mapped;
+                const size_t n = (size_t)w * h;
+                const bool haveLevel = rawLevel.size() == n;
+                for (size_t i = 0; i < n; ++i)
+                {
+                    dst[2 * i] = pixels[i];
+                    dst[2 * i + 1] = haveLevel ? rawLevel[i] : 0;
+                }
+            }
             vkUnmapMemory(ctx.device, stageMem);
             if (pixelsFromStb)
                 stbi_image_free(pixels);
             pixels = nullptr;
             rawSpec = {};
+            rawLevel = {};
 
             ctx.createImage((uint32_t)w, (uint32_t)h,
-                            VK_FORMAT_R8_UNORM,
+                            VK_FORMAT_R8G8_UNORM,
                             VK_IMAGE_USAGE_SAMPLED_BIT |
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
@@ -9309,7 +9514,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
             region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
             vkCmdCopyBufferToImage(cmd, stageBuf, earthSpecImg,
                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-            ctx.generateMipmaps(cmd, earthSpecImg, VK_FORMAT_R8_UNORM,
+            ctx.generateMipmaps(cmd, earthSpecImg, VK_FORMAT_R8G8_UNORM,
                                 (uint32_t)w, (uint32_t)h, earthSpecMips);
             ctx.endOneTimeCommands(cmd);
             vkDestroyBuffer(ctx.device, stageBuf, nullptr);
@@ -9318,7 +9523,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
             VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
             vci.image = earthSpecImg;
             vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            vci.format = VK_FORMAT_R8_UNORM;
+            vci.format = VK_FORMAT_R8G8_UNORM;
             vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, earthSpecMips, 0, 1};
             vkCreateImageView(ctx.device, &vci, nullptr, &earthSpecView);
 
@@ -9337,6 +9542,8 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
             fprintf(stderr, "Warning: could not load 8k_earth_specular_map.png; ocean shader disabled\n");
         }
     }
+
+    createTerrainMaterials(ctx);
 
     // ── Load earth cloud map (binding 7): 8K R8_UNORM grayscale coverage ─────────
     {
@@ -9446,7 +9653,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     }
 
     // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=beamGlowDomeBuf, 19=sceneDepthTex, 20=oceanGlintBuf, 21=groundBeamsBuf
-    VkDescriptorSetLayoutBinding bindings[27] = {};
+    VkDescriptorSetLayoutBinding bindings[28] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -9493,14 +9700,17 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     bindings[25] = {25, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     // 26: terrainFrameBuf — the observer's ground height with terrain detail, from scene_depth.comp.
     bindings[26] = {26, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // 27: the close-up terrain material array (terrain v2 P3) — sat_sky.frag's 16th and LAST sampled
+    // image (the guaranteed per-stage floor; CLAUDE.md hardware table).
+    bindings[27] = {27, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 27;
+    li.bindingCount = 28;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 15},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3},
     };
@@ -9546,7 +9756,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     VkDescriptorBufferInfo oceanGlintInfo{oceanGlintBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo groundBeamsInfo{groundBeamsBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[22] = {};
+    VkWriteDescriptorSet writes[23] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = skyDescSet;
     writes[0].dstBinding = 0;
@@ -9680,7 +9890,14 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     writes[21].descriptorCount = 1;
     writes[21].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[21].pBufferInfo = &groundBeamsInfo;
-    vkUpdateDescriptorSets(ctx.device, 22, writes, 0, nullptr);
+    VkDescriptorImageInfo terrainMatImgInfo{terrainMatSampler, terrainMatView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    writes[22].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[22].dstSet = skyDescSet;
+    writes[22].dstBinding = 27;
+    writes[22].descriptorCount = 1;
+    writes[22].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[22].pImageInfo = &terrainMatImgInfo;
+    vkUpdateDescriptorSets(ctx.device, 23, writes, 0, nullptr);
     createStarEnvBuffer(ctx);
 }
 

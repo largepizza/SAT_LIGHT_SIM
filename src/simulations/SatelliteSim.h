@@ -1485,9 +1485,9 @@ struct GpuCloudParams
     float terrainShadowStrength;
     float terrainMaterialStrength;
     float terrainDebugView;
-    float terrainPad0;
+    float terrainTextureStrength; // close-up material textures (terrain v2 P3, sat_sky.frag), 0 = off
     glm::vec4 terrainObsTexel; // xy = integer, zw = fraction of the observer's DEM texel coordinate
-    glm::vec4 terrainErosion;  // x = strength, y = branching (terrain_detail.glsl tdErosion)
+    glm::vec4 terrainErosion;  // x = strength, y = branching (tdErosion); z = night sky light, w = sky light (terrain v2)
     // ── Satellite ocean-glint reflection (688 -> 704) — see cloud_params.glsl ────────────────
     // The mirror-flare glints sat_flare.comp appends to OceanGlintBuf and sat_sky.frag composites
     // onto the sea surface. 2 fields + 2 pads: std140 rounds the block up to a 16-byte multiple
@@ -2526,7 +2526,7 @@ private:
     //
     // kDebugToggleSlots sizes hovDebugToggle[] and the accumulators below; the static_assert in
     // startKnockoutSweep() keeps it honest.
-    static constexpr int kDebugToggleSlots = 20;
+    static constexpr int kDebugToggleSlots = 21;
     static constexpr int kSweepSettleFrames = 6;  // discard after a mask change — covers the
                                                   // one-frame-stale timestamp readback plus a
                                                   // little driver/clock hysteresis
@@ -2679,6 +2679,14 @@ private:
     VkImageView earthSpecView = VK_NULL_HANDLE;
     VkSampler earthSpecSampler = VK_NULL_HANDLE;
     uint32_t earthSpecMips = 1;
+    // Close-up terrain materials (terrain v2 P3, sky binding 27): RGBA8 2D array, two layers per
+    // material (albedo ratio + height; normal XY + roughness + AO), baked by
+    // tools/make_terrain_materials.py into assets/textures/terrain_materials.rgba8.
+    VkImage terrainMatImg = VK_NULL_HANDLE;
+    VkDeviceMemory terrainMatMem = VK_NULL_HANDLE;
+    VkImageView terrainMatView = VK_NULL_HANDLE;
+    VkSampler terrainMatSampler = VK_NULL_HANDLE;
+    void createTerrainMaterials(VulkanContext &ctx);
     // Earth cloud map (binding 7): 8K R8_UNORM grayscale cloud coverage map.
     VkImage earthCloudsImg = VK_NULL_HANDLE;
     VkDeviceMemory earthCloudsMem = VK_NULL_HANDLE;
@@ -3634,6 +3642,9 @@ private:
     float terrainMaterialStrength = 1.0f;
     float terrainErosionStrength = 0.6f; // erosion octaves (tdErosion): fraction of the detail amplitude
     float terrainErosionBranch = 1.0f;   // how much each erosion octave follows the gullies before it
+    float terrainSkyLight = 1.0f;        // x the terrain's sky ambient (zenith integral x 0.4) — terrain v2 P1
+    float terrainTextureStrength = 1.0f; // close-up material textures (terrain v2 P3)
+    float terrainNightSkyLight = 0.25f;  // moonless night sky on the day albedo, fraction of the full Moon overhead
     int terrainDebugView = 0; // harness `debugview` only; not persisted
     // Cloud opacity scale (see GpuCloudParams::cloudOpacityScale) — multiplies the volumetric
     // cloud march's extinction-per-metre constant directly (and, since this same value also
