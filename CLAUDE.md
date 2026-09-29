@@ -3802,6 +3802,21 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   moves; unrotated lattices must divide 4096 m. `cityFrame()` is the shared world-fixed 2D frame.
   +0.35 ms in rural Iowa. Harness: `scripts/rural.satcmd` (rural points: pick them from the night map —
   the first "Iowa" and "Punjab" points were Ames and Ludhiana).
+  **Continuity + transition (2026-09-29, user review 3):** nothing in the layout may jump at a district
+  border any more. Density is the night map AT THE PIXEL (it was sampled per district), street existence
+  is hashed per REGION with even/odd keep probabilities falling with density (no stride switch), lamp-type
+  and terracotta biases come from a 4-km value noise (not per-region hashes). Where two DIFFERENT grids
+  meet (another region, or an independent district: `CityLayout::differ`) the NIGHT evaluates both grids
+  (`cityNightGrid`) and cross-fades them over 80 m (lights add); the DAY does not (an 80-m blend of two
+  street grids read as a ghosted double exposure) — it draws a 14-m road along the border instead.
+  Low-density blocks become crop fields (`cityFieldP`, up to 80%), and the farm pass cross-fades with the
+  same city-presence curve, so cities thin into farmland. Farmland at night gets a farmstead FLOOR
+  (`farmsteadLights` x a map-equivalent 0.004, faded out by a 350-m footprint): the map is ~0 there.
+  Farms keep ~0.5 km back from shores and off water-tinted map texels (a lavender field band at Big Sur).
+  **Beaches** (`beachAt`): sand 40-140 m wide on low (< ~6 m above the water level), gentle shores, from
+  the height function's own shoreline (hand-filtered water map near the observer + `tdShoreOffset`), wet
+  near the water; the close-up sand texture there. Cost now ~+1.6 ms at LA 10 km by night (two grids
+  in border bands), +0.8 by day, +0.5 rural. Harness: `scripts/quickwins.satcmd`.
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the

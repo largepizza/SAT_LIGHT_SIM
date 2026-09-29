@@ -1,0 +1,79 @@
+# Beaches, the city-to-farm transition, farmsteads at night, and candidate views for the daylight
+# sky-light check (.plans/TERRAIN_V2_PLAN.md, .plans/CITIES_PLAN.md).
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds_v2.dust_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+# beaches
+observer lat=34.01 lon=-118.50 agl=150
+time sun 40 rising
+camera az=150 el=-20 fov=60
+wait settle
+capture q_santamonica
+observer lat=35.50 lon=-75.47 agl=300
+time sun 40 rising
+camera az=180 el=-25 fov=60
+wait settle
+capture q_outerbanks
+observer lat=36.20 lon=-121.72 agl=300
+time sun 40 rising
+camera az=150 el=-20 fov=60
+wait settle
+capture q_bigsur
+# the city -> farm transition, by day
+observer lat=34.05 lon=-117.35 agl=4000
+time sun 40 rising
+camera az=90 el=-30 fov=60
+wait settle
+capture q_la_edge
+observer lat=33.35 lon=-111.65 agl=3000
+time sun 40 rising
+camera az=90 el=-30 fov=60
+wait settle
+capture q_phoenix_edge
+observer lat=48.80 lon=2.70 agl=3000
+time sun 40 rising
+camera az=90 el=-30 fov=60
+wait settle
+capture q_paris_edge
+# night: farmsteads, the Paris edge
+observer lat=41.5 lon=-94.5 agl=1500
+time sun midnight
+camera az=45 el=-20 fov=60
+wait settle
+capture q_iowa_night
+observer lat=48.80 lon=2.70 agl=3000
+time sun midnight
+camera az=270 el=-25 fov=60
+wait settle
+capture q_paris_night
+# sky-light candidates (clouds on, fixed time, auto exposure off): the cloud-shadow factor view
+set clouds_v2.coverage 0.84
+set clouds_v2.auto_exposure 0
+time set 2036-06-21T12:00:00Z
+observer lat=10.0 lon=-84.0 agl=1500
+camera az=90 el=-35 fov=60
+wait settle
+capture q_sky_a_ao
+debugview aofactors
+wait settle
+capture q_sky_a_dv
+debugview off
+observer lat=-1.0 lon=-60.0 agl=1500
+camera az=90 el=-35 fov=60
+wait settle
+capture q_sky_b_ao
+debugview aofactors
+wait settle
+capture q_sky_b_dv
+debugview off
+observer lat=44.0 lon=-99.0 agl=1500
+camera az=90 el=-35 fov=60
+wait settle
+capture q_sky_c_ao
+debugview aofactors
+wait settle
+capture q_sky_c_dv
+debugview off
