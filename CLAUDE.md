@@ -880,7 +880,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
-- The Clouds tab's slider slots: `kCloudSliderSlots` (200) sizes all four per-slider arrays and
+- The Clouds tab's slider slots: `kCloudSliderSlots` (201; slot 200 = "City light sprites") sizes all four per-slider arrays and
   `cloudBufs`; v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
   parallax, fog x3, dust x3.) Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
@@ -3838,6 +3838,22 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   "flat"). Street posts split into HEADS (emission) and POOLS: the pools light the final ground albedo
   (city layout, textures, fields) x the shading normal's up-facing (relief, detail, micro bump) x AO,
   so the street and its texture show in each pool. Close up: posts 70%, glitter 30%.
+  **City light sprites (2026-09-29, EXPERIMENT, `city_sprites.comp`, "City light sprites"
+  `clouds.city_sprite_gain` 1, slot 200):** the nearest lights drawn as SATELLITE POINT SPRITES. After
+  sat_flare.comp, two dispatches (64-m cells to 8 km, weight 6; 256-m cells 6-8 km .. 32 km, weight 16,
+  cross-faded) put a light in a cell with a probability that follows the night map, a few metres above
+  the DEM, and APPEND a finished `GpuSatVisible` to the compact list (effectFlare = weight at 1 km,
+  1/r^2, the air, scintillation with sim time; capped at 8, under the glare threshold). The point, bloom
+  and glare draws show them with no new pipeline. `kCitySpriteMax` (65536) extra slots are reserved in
+  `satVisibleBuf` / `satVisibleIdxBuf`. A city record is tagged: its slot's index is 0xFFFFFFFF (picking
+  skips it) and `meshPx = -1` (the trail pass skips it: `sat_point.vert` reads PointDrawPC to
+  `manualTerrainTest`). The post-flare barrier now covers `satListBuf` for INDIRECT_COMMAND_READ,
+  because the vertex count grows after the post-orbit barrier. **Why:** at grazing angles the ground
+  glitter is smeared into horizontal streaks by the projection; a sprite stays a round, crisp point on
+  top, and that depth was what "flat" was missing (harness_runs/city_sprites3, Mount Wilson crop). Cost
+  within noise at LA 2 km. The sprites ADD to the glitter; they do not take its energy. Handing the
+  near glitter's light to the sprites is the next step if they are kept. Harness:
+  `scripts/city_sprites.satcmd`.
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the

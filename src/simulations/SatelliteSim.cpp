@@ -2912,6 +2912,49 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // Phase 1b: one invocation per VISIBLE satellite — sat_orbit.comp wrote the group count.
     vkCmdDispatchIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, dispatchX));
 
+    // City lights as satellite point sprites (city_sprites.comp): appended to the finished list.
+    if (citySpriteGain > 0.0f && cityLightsStrength > 0.0f)
+    {
+        if (citySpritePipeline == VK_NULL_HANDLE)
+            createCitySprites(ctx);
+        VkBufferMemoryBarrier cb[2] = {};
+        for (int i = 0; i < 2; ++i)
+        {
+            cb[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            cb[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+            cb[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            cb[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            cb[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            cb[i].size = VK_WHOLE_SIZE;
+        }
+        cb[0].buffer = satVisibleBuf;
+        cb[1].buffer = satListBuf;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                             nullptr, 2, cb, 0, nullptr);
+        CitySpritePC cpc{};
+        cpc.obsECEFDir = glm::vec4(glm::vec3(obsDir), 0.0f);
+        cpc.simTime = (float)std::fmod(simSecInDay, 3600.0);
+        cpc.gain = citySpriteGain * cityLightsStrength;
+        cpc.nightF = 1.0f - glm::smoothstep(-0.105f, 0.02f, sunDirENU.w);
+        cpc.capacity = std::max<uint32_t>(activeSatCount, 1u) + kCitySpriteMax;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, citySpritePipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, citySpritePipeLayout, 0, 1, &citySpriteDescSet, 0,
+                                nullptr);
+        // Two levels: 64-m cells to 8 km, then 256-m cells (the brighter lights) from 6-8 km to 32 km,
+        // cross-faded. Both only append (atomic slots), so they need no barrier between them.
+        for (int lv = 0; lv < 2; ++lv)
+        {
+            cpc.cellM = lv == 0 ? 64.0f : 256.0f;
+            cpc.halfCells = 125;
+            cpc.radiusM = cpc.cellM * (float)cpc.halfCells;
+            cpc.innerM = lv == 0 ? 0.0f : 8000.0f;
+            cpc.weight = lv == 0 ? 6.0f : 16.0f;
+            vkCmdPushConstants(cmd, citySpritePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
+            const uint32_t groups = (uint32_t)(2 * cpc.halfCells + 15) / 16;
+            vkCmdDispatch(cmd, groups, groups, 1);
+        }
+    }
+
     // Barrier: sat_flare.comp writes satVisibleBuf → vertex shader reads it (and, when a satellite
     // is selected, the tiny per-frame pick-tracking copy just below also reads it via transfer).
     // satListBuf too: sat_flare.comp wrote its `selected` record, which the per-frame header copy
@@ -2927,12 +2970,19 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         bmb[0].offset = 0;
         bmb[0].size = VK_WHOLE_SIZE;
         bmb[1] = bmb[0];
-        bmb[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        // + INDIRECT_COMMAND_READ: city_sprites.comp raises the draw's vertex count after the
+        // post-orbit barrier that used to cover it.
+        bmb[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
         bmb[1].buffer = satListBuf;
+        VkBufferMemoryBarrier bIdx = bmb[0];
+        bIdx.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        bIdx.buffer = satVisibleIdxBuf;
+        VkBufferMemoryBarrier all3[3] = {bmb[0], bmb[1], bIdx};
         vkCmdPipelineBarrier(cmd,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             0, 0, nullptr, 2, bmb, 0, nullptr);
+                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                 VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                             0, 0, nullptr, 3, all3, 0, nullptr);
     }
 
     // ── Flare/corona render-to-texture pipeline (flare architecture overhaul) ────────────────
@@ -4605,7 +4655,8 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
 
     VulkanContext &ctx = *ctx_;
     const uint32_t listCount = std::min(
-        static_cast<const GpuSatListHeader *>(pickedVisibleMapped)->count, activeSatCount);
+        static_cast<const GpuSatListHeader *>(pickedVisibleMapped)->count,
+        std::max<uint32_t>(activeSatCount, 1u) + kCitySpriteMax);
     if (listCount == 0)
         return -1;
     const VkDeviceSize recBytes = (VkDeviceSize)listCount * sizeof(GpuSatVisible);
@@ -4638,7 +4689,7 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
     for (uint32_t i = 0; i < listCount; ++i)
     {
         const GpuSatVisible &v = entries[i];
-        if (v.flareIntensity <= 0.0f)
+        if (v.flareIntensity <= 0.0f || slotSatIdx[i] == 0xFFFFFFFFu) // city lights (city_sprites.comp)
             continue;
         float sx, sy;
         if (!projectSkyDirToScreen(v.skyDir, screenW, screenH, sx, sy))
@@ -6004,6 +6055,18 @@ void SatelliteSim::cleanup(VkDevice device)
         vkFreeMemory(device, earthSpecMem, nullptr);
         earthSpecMem = VK_NULL_HANDLE;
     }
+    if (citySpritePipeline)
+        vkDestroyPipeline(device, citySpritePipeline, nullptr);
+    if (citySpritePipeLayout)
+        vkDestroyPipelineLayout(device, citySpritePipeLayout, nullptr);
+    if (citySpriteDescPool)
+        vkDestroyDescriptorPool(device, citySpriteDescPool, nullptr);
+    if (citySpriteDescLayout)
+        vkDestroyDescriptorSetLayout(device, citySpriteDescLayout, nullptr);
+    citySpritePipeline = VK_NULL_HANDLE;
+    citySpritePipeLayout = VK_NULL_HANDLE;
+    citySpriteDescPool = VK_NULL_HANDLE;
+    citySpriteDescLayout = VK_NULL_HANDLE;
     if (cityRoadsBuf)
         vkDestroyBuffer(device, cityRoadsBuf, nullptr);
     if (cityRoadsMem)
@@ -7029,13 +7092,14 @@ void SatelliteSim::createSatBuffers(VulkanContext &ctx)
     // satVisibleBuf: device-local compact visible list. sat_orbit.comp appends pre-photometry
     // records, sat_flare.comp finishes them in place, the point/flare/trail vertex shaders read
     // them. Sized for the worst case (every satellite visible), though typically ~5-10% is used.
-    ctx.createBuffer(sizeof(GpuSatVisible) * satN,
+    // + kCitySpriteMax: city_sprites.comp appends city lights after the satellites.
+    ctx.createBuffer(sizeof(GpuSatVisible) * (satN + kCitySpriteMax),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                      satVisibleBuf, satVisibleMem);
 
     // satVisibleIdxBuf: satellite index of each compact slot (picking + selection tracking).
-    ctx.createBuffer(sizeof(uint32_t) * satN,
+    ctx.createBuffer(sizeof(uint32_t) * (satN + kCitySpriteMax),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                      satVisibleIdxBuf, satVisibleIdxMem);
@@ -8531,6 +8595,85 @@ void SatelliteSim::createBeamSelfMarchPipeline(VulkanContext &ctx)
         throw std::runtime_error("SatelliteSim: failed to create beam_self_march compute pipeline");
 
     vkDestroyShaderModule(ctx.device, mod, nullptr);
+}
+
+// ─── createCitySprites ─────────────────────────────────────────────────────────
+// city_sprites.comp (.plans/CITIES_PLAN.md): the brightest city lights near the observer appended to
+// the satellites' compact visible list, so the satellite point / bloom / glare draws show them. Created
+// lazily on the first frame (every buffer and texture it binds exists by then; none are recreated).
+void SatelliteSim::createCitySprites(VulkanContext &ctx)
+{
+    VkDescriptorSetLayoutBinding b[9] = {
+        {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {8, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = 9;
+    li.pBindings = b;
+    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &citySpriteDescLayout);
+    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+                                  {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2}};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.poolSizeCount = 3;
+    pi.pPoolSizes = ps;
+    pi.maxSets = 1;
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &citySpriteDescPool);
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = citySpriteDescPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &citySpriteDescLayout;
+    vkAllocateDescriptorSets(ctx.device, &ai, &citySpriteDescSet);
+
+    VkDescriptorBufferInfo vis{satVisibleBuf, 0, VK_WHOLE_SIZE}, idx{satVisibleIdxBuf, 0, VK_WHOLE_SIZE},
+        lst{satListBuf, 0, VK_WHOLE_SIZE}, cp{cloudParamsBuf, 0, sizeof(GpuCloudParams)},
+        tf{terrainFrameBuf, 0, VK_WHOLE_SIZE}, pst{pointStyleBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorImageInfo elev{earthElevSampler ? earthElevSampler : noiseSampler, earthElevView ? earthElevView : noiseTexView,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo spec{earthSpecSampler ? earthSpecSampler : noiseSampler, earthSpecView ? earthSpecView : noiseTexView,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo night{earthNightSampler, earthNightView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w[9] = {};
+    auto buf = [&](int i, uint32_t bnd, VkDescriptorType t, const VkDescriptorBufferInfo *bi) {
+        w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, citySpriteDescSet, bnd, 0, 1, t, nullptr, bi, nullptr};
+    };
+    auto img = [&](int i, uint32_t bnd, const VkDescriptorImageInfo *ii) {
+        w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, citySpriteDescSet, bnd, 0, 1,
+                VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, ii, nullptr, nullptr};
+    };
+    buf(0, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &vis);
+    buf(1, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &idx);
+    buf(2, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &lst);
+    img(3, 3, &elev);
+    img(4, 4, &spec);
+    img(5, 5, &night);
+    buf(6, 6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &cp);
+    buf(7, 7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &tf);
+    buf(8, 8, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &pst);
+    vkUpdateDescriptorSets(ctx.device, 9, w, 0, nullptr);
+
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CitySpritePC)};
+    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &citySpriteDescLayout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
+    vkCreatePipelineLayout(ctx.device, &pli, nullptr, &citySpritePipeLayout);
+    VkShaderModule mod = ctx.loadShader("shaders/city_sprites.comp.spv");
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod,
+                "main", nullptr};
+    ci.layout = citySpritePipeLayout;
+    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &citySpritePipeline) != VK_SUCCESS)
+        throw std::runtime_error("SatelliteSim: failed to create city sprite pipeline");
+    vkDestroyShaderModule(ctx.device, mod, nullptr);
+    Log::line("init: city sprites pipeline");
 }
 
 // ─── createCityRoads ──────────────────────────────────────────────────────────

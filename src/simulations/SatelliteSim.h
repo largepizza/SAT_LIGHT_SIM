@@ -1221,6 +1221,17 @@ static constexpr int kNumCloudLayers = 4;
 // Matches the layout(binding=9) uniform CloudParams block in sat_sky.frag.
 // Global tunables + per-layer descriptors.  cloudPhase is CPU-computed each frame.
 // std140 layout: 96-byte global section (6×vec4) + 4 × 32-byte layer = 224 bytes.
+// city_sprites.comp push constants (48 bytes).
+struct CitySpritePC {
+    glm::vec4 obsECEFDir;
+    float simTime, gain, nightF;
+    uint32_t capacity;
+    float radiusM, cellM;
+    int32_t halfCells;
+    float innerM, weight, pad0, pad1, pad2;
+};
+static_assert(sizeof(CitySpritePC) == 64, "CitySpritePC must match city_sprites.comp");
+
 struct GpuCloudParams
 {
     // Global controls — shared across all layers
@@ -2693,6 +2704,15 @@ private:
     VkBuffer cityRoadsBuf = VK_NULL_HANDLE;
     VkDeviceMemory cityRoadsMem = VK_NULL_HANDLE;
     void createCityRoads(VulkanContext &ctx);
+    // City lights as satellite point sprites (city_sprites.comp, .plans/CITIES_PLAN.md): appended to
+    // the compact visible list after sat_flare.comp; kCitySpriteMax extra slots are reserved there.
+    static constexpr uint32_t kCitySpriteMax = 65536;
+    VkDescriptorSetLayout citySpriteDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool citySpriteDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet citySpriteDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout citySpritePipeLayout = VK_NULL_HANDLE;
+    VkPipeline citySpritePipeline = VK_NULL_HANDLE;
+    void createCitySprites(VulkanContext &ctx);
     // Earth cloud map (binding 7): 8K R8_UNORM grayscale cloud coverage map.
     VkImage earthCloudsImg = VK_NULL_HANDLE;
     VkDeviceMemory earthCloudsMem = VK_NULL_HANDLE;
@@ -3652,6 +3672,7 @@ private:
     float terrainTextureStrength = 1.0f; // close-up material textures (terrain v2 P3)
     float cityLightsStrength = 1.0f;     // procedural city street lights (.plans/CITIES_PLAN.md)
     float cityRoadsStrength = 1.0f;      // the major roads' share of them
+    float citySpriteGain = 1.0f;         // city lights as satellite point sprites (0 = off)
     float terrainNightSkyLight = 0.25f;  // moonless night sky on the day albedo, fraction of the full Moon overhead
     int terrainDebugView = 0; // harness `debugview` only; not persisted
     // Cloud opacity scale (see GpuCloudParams::cloudOpacityScale) — multiplies the volumetric
@@ -4304,7 +4325,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 200;
+    static constexpr int kCloudSliderSlots = 201;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

@@ -1,0 +1,158 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : require // [[dont_unroll]] in terrain_detail.glsl
+
+// ── city_sprites.comp — city lights as satellite point sprites (.plans/CITIES_PLAN.md) ────────────
+// An experiment (the user, 2026-09-29): the brightest city lights near the observer drawn by the SAME
+// point pipeline as the satellites — their point-spread (point_style.glsl), their bloom (flare source)
+// — and twinkling. Runs right after sat_flare.comp and APPENDS finished records to its compact visible
+// list (satVisibleBuf), so sat_point.vert / flare_source.vert / glare.vert draw them with no new
+// pipeline. Each record is tagged (meshPx = -1: the trail pass skips it) and its slot's satellite index
+// is 0xFFFFFFFF (picking and selection skip it).
+//
+// One thread per cell of a lattice (64 m to 8 km, then 256 m to 32 km — two dispatches, cross-faded;
+// both divide the 4096-m anchor: world-fixed) in a square of cells around the observer; a cell holds a light with a probability that follows the night map's
+// brightness there (a suburb is fewer lights, not dimmer ones — as the shader glitter). The light sits a
+// few metres above the ground (DEM + the water map; the terrain detail is left out: a few metres), its
+// brightness falls as 1/r^2 and with the air, and it scintillates with sim time — more near the horizon.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+struct SatVisible {
+    vec3  skyDir;         // unit vector in local ENU
+    float flareIntensity; // effectFlare (0.008 = mag 6)
+    uint  color;          // packUnorm4x8
+    float angularSize;    // sprite size (px)
+    float rangeM;         // metres (the unified depth)
+    float meshPx;         // -1 = a city light (the trail pass skips it)
+};
+layout(set = 0, binding = 0) buffer SatVisibleBuf { SatVisible satellites[]; };
+layout(set = 0, binding = 1) buffer SatVisibleIdxBuf { uint visibleSatIdx[]; };
+layout(set = 0, binding = 2) buffer SatListBuf {
+    uint listCount;
+    uint dispatchX, dispatchY, dispatchZ;
+    uint drawVertexCount, drawInstanceCount, drawFirstVertex, drawFirstInstance;
+};
+layout(set = 0, binding = 3) uniform sampler2D earthElevTex;
+layout(set = 0, binding = 4) uniform sampler2D earthSpecTex;
+layout(set = 0, binding = 5) uniform sampler2D earthNightTex;
+#define CLOUD_PARAMS_BINDING 6
+#include "cloud_params.glsl"
+layout(set = 0, binding = 7, std430) readonly buffer TerrainFrame { vec4 terrainFrame; };
+#define POINT_STYLE_BINDING 8
+#include "point_style.glsl"
+
+#include "common.glsl"
+#include "terrain.glsl"
+#include "terrain_detail.glsl"
+
+layout(push_constant) uniform PC {
+    vec4  obsECEFDir;   // xyz = the observer's up (ECEF), w = unused (the ground comes from terrainFrame)
+    float simTime;      // sim seconds (the twinkle)
+    float gain;         // "City light sprites" (0 = off; the pass is not dispatched)
+    float nightF;       // 1 at night .. 0 by day (the Sun at the observer)
+    uint  capacity;     // satVisibleBuf's length
+    float radiusM;      // square half-size of the lattice around the observer
+    float cellM;        // lattice cell (divides 4096)
+    int   halfCells;    // cells per half side
+    float innerM;       // 0 = none; else the lights fade IN over 0.75..1 x this (the finer level's reach)
+    float weight;       // brightness per light (a coarser level's lights stand for the brighter ones)
+    float pad0, pad1, pad2;
+} pc;
+
+// Lamp colours (as sat_sky.frag's cityLampColor / cityGlitterColor).
+vec3 lampColor(float h, float ledP) {
+    if (h < 0.86) {
+        float t = h / 0.86;
+        if (t < 1.0 - ledP) return vec3(1.28, 0.90, 0.42);                  // sodium
+        float u = (t - (1.0 - ledP)) / max(ledP, 1e-3);
+        return u < 0.55 ? vec3(1.04, 0.99, 0.90) : (u < 0.85 ? vec3(0.90, 0.98, 1.14) : vec3(1.02, 1.0, 0.96));
+    }
+    float c = (h - 0.86) / 0.14;
+    if (c < 0.25) return vec3(0.45, 1.75, 0.95);
+    if (c < 0.50) return vec3(0.55, 0.85, 2.00);
+    if (c < 0.75) return vec3(2.10, 0.50, 0.45);
+    return vec3(1.55, 0.60, 1.70);
+}
+
+void main() {
+    if (pc.gain <= 0.0 || pc.nightF <= 0.0) return;
+    ivec2 cellOff = ivec2(gl_GlobalInvocationID.xy) - pc.halfCells;
+    if (any(greaterThanEqual(abs(cellOff), ivec2(pc.halfCells)))) return;
+
+    vec3 enuX, enuY, enuZ;
+    enuBasis(pc.obsECEFDir.xyz, enuX, enuY, enuZ);
+    float hEye = terrainFrame.x + 2.0;
+
+    // The observer's frame (sat_sky.frag's cityFrame at q = 0): the face and the district anchor.
+    vec3  aupO  = abs(enuZ);
+    int   f     = (aupO.x > aupO.y && aupO.x > aupO.z) ? 0 : (aupO.y > aupO.z ? 1 : 2);
+    ivec2 ax    = tdFaceAxes(f);
+    ivec3 anchor = ivec3(cloud.terrainAnchorCell.xyz);
+    ivec2 anc2  = ivec2(anchor[ax.x], anchor[ax.y]);
+    ivec2 dAnc  = anc2 >> 1;
+    vec2  p2O   = vec2(cloud.terrainAnchorRel[ax.x], cloud.terrainAnchorRel[ax.y]) + vec2(anc2 & 1) * 2048.0;
+    int   per   = int(4096.0 / pc.cellM + 0.5);
+    ivec2 cellO = ivec2(floor(p2O / pc.cellM));
+    ivec2 cell  = cellO + cellOff;
+    ivec2 cellG = dAnc * per + cell;                                   // the world-fixed cell index
+
+    vec3 r  = tdRand3(ivec3(cellG, 8801 + f));
+    vec3 r2 = tdRand3(ivec3(cellG, 8803 + f)) * 0.5 + 0.5;
+    vec2 p2 = (vec2(cell) + 0.5 + 0.42 * r.xy) * pc.cellM;              // the light, district frame
+
+    // Back to 3D: the two face coordinates, the third from the sea-level sphere; then observer ENU.
+    vec3  rel;
+    rel[ax.x] = p2.x - float(anc2.x & 1) * 2048.0;
+    rel[ax.y] = p2.y - float(anc2.y & 1) * 2048.0;
+    float wx  = float(anchor[ax.x]) * 2048.0 + rel[ax.x];
+    float wy  = float(anchor[ax.y]) * 2048.0 + rel[ax.y];
+    float wf  = sqrt(max(R_EARTH * R_EARTH - wx * wx - wy * wy, 0.0)) * (anchor[f] < 0 ? -1.0 : 1.0);
+    rel[f]    = wf - float(anchor[f]) * 2048.0;
+    vec3  off = rel - cloud.terrainAnchorRel.xyz;                       // from the observer's sea point
+    vec3  q   = vec3(dot(off, enuX), dot(off, enuY), dot(off, enuZ));
+
+    // The night map's light here (base removed): cities only; its density sets the occupancy.
+    vec2  uv  = tdUV(q, enuX, enuY, enuZ);
+    vec3  nm  = max(textureLod(earthNightTex, uv, 0.0).rgb - vec3(0.006, 0.006, 0.0132), vec3(0.0));
+    float lum = dot(nm, vec3(0.2126, 0.7152, 0.0722));
+    if (lum < 0.003) return;
+    float dens01 = clamp(lum / 0.25, 0.04, 1.0);
+    if (r.z * 0.5 + 0.5 > 0.35 * dens01) return;
+
+    // The ground (DEM + water, no detail) and the lamp a few metres above it.
+    float h0, hMip3;
+    tdDemAt(earthElevTex, earthSpecTex, q, enuX, enuY, enuZ, h0, hMip3);
+    if (hMip3 <= kTdWaterMark) return;                                  // on water: none
+    vec3  up   = normalize(vec3(q.xy, R_EARTH + q.z));                // q is on the sea-level sphere
+    vec3  lamp = q + up * (h0 + 6.0 + 20.0 * r2.z * r2.z);              // posts .. tall buildings
+    vec3  v    = lamp - vec3(0.0, 0.0, hEye);
+    float range = length(v);
+    if (range > pc.radiusM || range < 30.0) return;
+    // Soft edges: out over the last quarter of the reach; in (a coarser level) where the finer one fades.
+    float fade = 1.0 - smoothstep(0.75 * pc.radiusM, pc.radiusM, range);
+    if (pc.innerM > 0.0) fade *= smoothstep(0.75 * pc.innerM, pc.innerM, range);
+    if (fade <= 0.0) return;
+    vec3  dir  = v / range;
+
+    // Brightness: pc.weight x its own weight = effectFlare at 1 km (6 = mag ~-1.2), 1/r^2, the air (~40 km visibility),
+    // scintillation (stronger low in the sky), the night fade. Capped below the glare threshold
+    // (effectFlare ~11.5): these twinkle and bloom, they do not grow spikes.
+    float w      = exp(1.3 * (r2.x * 2.0 - 1.0)) / 1.45;
+    float lowSky = 1.0 - smoothstep(-0.05, 0.25, dir.z);
+    float tw     = 1.0 + (0.25 + 0.35 * lowSky) * sin(pc.simTime * (6.0 + 6.0 * r2.y) + 6.2832 * r2.z)
+                       * smoothstep(300.0, 2000.0, range);
+    float flare  = pc.weight * w * tw * fade * (1.0e6 / (range * range)) * exp(-range / 40000.0) * pc.gain * pc.nightF;
+    flare = min(flare, 8.0);
+    vec2  psf = pointPsf(satFlareToMag(flare));
+    if (psf.x <= 0.0) return;
+
+    float ledP = clamp(mix(0.25, 0.85, smoothstep(0.004, 0.12, lum)), 0.05, 0.95);
+    vec3  c    = lampColor(fract(r2.y * 7.31 + r2.z * 3.17), ledP);
+    c /= max(c.r, max(c.g, c.b));
+
+    uint slot = atomicAdd(listCount, 1u);
+    if (slot >= pc.capacity) return;
+    satellites[slot] = SatVisible(dir, flare, packUnorm4x8(vec4(c, 1.0)), pointSpriteSizePx(psf.y), range * 0.995, -1.0);
+    visibleSatIdx[slot] = 0xFFFFFFFFu;
+    atomicMax(drawVertexCount, slot + 1u);
+}

@@ -26,6 +26,11 @@ layout(push_constant) uniform PC {
     mat4  skyView;
     float fovYRad;
     float aspect;
+    float waveTime, noTwinkle;       // (unread) offsets 72/76
+    vec4  moonDirENU, obsECEFDir;    // (unread) 80, 96
+    vec2  screenSizePx;              // (unread) 112
+    uint  debugDisableMask;          // (unread) 120
+    float manualTerrainTest;         // 124: 1 on the trail draws only
 } pc;
 
 layout(location = 0) out vec3  fragColor;
@@ -41,8 +46,9 @@ void main() {
     // In camera space: +X=right, +Y=up, -Z=forward (satellite in front → cam.z < 0).
     vec3 cam = (pc.skyView * vec4(sat.skyDir, 0.0)).xyz;
 
-    // Invisible (below horizon / shadow / below threshold): clip before rasterization.
-    if (sat.flareIntensity <= 0.0) {
+    // Invisible (below horizon / shadow / below threshold): clip before rasterization. City lights
+    // (city_sprites.comp, meshPx = -1) stay out of the trails: they would streak with the camera.
+    if (sat.flareIntensity <= 0.0 || (pc.manualTerrainTest > 0.5 && sat.meshPx < -0.5)) {
         gl_Position  = vec4(0.0, 0.0, 2.0, 1.0);
         gl_PointSize = 0.001;
         fragColor     = vec3(0.0);

@@ -1,0 +1,53 @@
+# City lights as satellite point sprites (city_sprites.comp): sprites off / on at low views, then cost.
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds_v2.dust_amount 0
+set clouds.city_lights_strength 1
+time set 2036-06-21T12:00:00Z
+time pause
+# LA from Mount Wilson (the user's reference angle)
+observer lat=34.20 lon=-118.08 agl=300
+time sun midnight
+camera az=205 el=-4 fov=50
+set clouds.city_sprite_gain 0
+wait settle
+capture s_wilson_off
+set clouds.city_sprite_gain 1
+wait settle
+capture s_wilson_on
+state s_wilson_state
+# LA street level-ish
+observer lat=34.05 lon=-118.30 agl=40
+camera az=90 el=-2 fov=60
+set clouds.city_sprite_gain 0
+wait settle
+capture s_street_off
+set clouds.city_sprite_gain 1
+wait settle
+capture s_street_on
+# LA 2 km
+observer lat=34.05 lon=-118.35 agl=2000
+camera az=90 el=-15 fov=60
+set clouds.city_sprite_gain 0
+wait settle
+capture s_la2_off
+set clouds.city_sprite_gain 1
+wait settle
+capture s_la2_on
+perf frames=120 name=la2_on0
+set clouds.city_sprite_gain 0
+perf frames=120 name=la2_off0
+set clouds.city_sprite_gain 1
+perf frames=120 name=la2_on1
+set clouds.city_sprite_gain 0
+perf frames=120 name=la2_off1
+# Albuquerque from Sandia Crest
+observer lat=35.21 lon=-106.45 agl=50
+camera az=250 el=-5 fov=50
+set clouds.city_sprite_gain 0
+wait settle
+capture s_sandia_off
+set clouds.city_sprite_gain 1
+wait settle
+capture s_sandia_on

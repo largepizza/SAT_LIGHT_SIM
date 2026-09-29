@@ -4918,6 +4918,8 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         // has lights, and the major roads. 0 = the old tiled night detail texture.
         {"City street lights", &cityLightsStrength, 0.0f, 1.0f, 0.05f, "%.2f", 58},
         {"Major road lights", &cityRoadsStrength, 0.0f, 2.0f, 0.05f, "%.2f", 77},
+        // City lights as satellite point sprites (city_sprites.comp): twinkling, blooming points.
+        {"City light sprites", &citySpriteGain, 0.0f, 4.0f, 0.05f, "%.2f", 200},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -6402,6 +6404,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         terrainTextureStrength = c.value("terrain_texture_strength", terrainTextureStrength);
         cityLightsStrength = c.value("city_lights_strength", cityLightsStrength);
         cityRoadsStrength = c.value("city_roads_strength", cityRoadsStrength);
+        citySpriteGain = c.value("city_sprite_gain", citySpriteGain);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
         // Satellite ocean-glint gain/floor (Ocean tab's "Ocean flare refl"/"Flare refl floor",
@@ -6637,6 +6640,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"terrain_texture_strength", terrainTextureStrength},
         {"city_lights_strength", cityLightsStrength},
         {"city_roads_strength", cityRoadsStrength},
+        {"city_sprite_gain", citySpriteGain},
         {"cloud_erosion_edge", cloudErosionEdge},
         {"cloud_erosion_core", cloudErosionCore},
         {"cirrus_wind_deg", cloudCirrusWindDeg},
