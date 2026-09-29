@@ -3502,6 +3502,14 @@ Read it at the start of any terrain-related session before making changes.
   fallback; satellites/stars depth-tested against terrain (gl_FragDepth — since Phase 4 the unified log-distance
   encoding, see "Unified scene depth"; originally close terrain → [0, 0.5),
   sky → 1.0)
+- **The atmosphere loop starts where the ray ENTERS the atmosphere** (`tStart`, 2026-09-29), not at the eye:
+  from orbit nearly every N_VIEW step fell in the vacuum above R_ATMOS (zero density, but each still paid the
+  city-glow fetch, the trig and the airglow noise) while the few left in the air undersampled it. Knockout
+  sweep at 2000 km: the loop was 13 of the sky pass's 16.6 ms. Sky pass 420 km 6.9 -> 3.3 ms, 2000 km
+  16.5 -> 4.9, 10000 km 5.2 -> 2.3; images within ~1/255 (harness_runs/impostor). Every other atmosphere
+  integral (cloud airlight, airglow red, godrays) already started at the entry. The same measurement showed
+  a far-field cloud impostor is not worth building: the cloud march gets CHEAPER with altitude (10 ms at
+  420 km, 8.5 at 2000, 4 at 10000, 2 at GEO), and at LEO a pixel is only ~1-2 km, finer than a globe-wide bake.
 - Ocean wave material: specular map (binding 6) gates UBO-tunable-octave noise wave normals +
   Blinn-Phong sun glint (exp=300) + Schlick Fresnel on sea-level sphere hits
 - **Volumetric clouds (C7+C8):** shell march with full C8 lighting:

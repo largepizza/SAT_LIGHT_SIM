@@ -1837,6 +1837,11 @@ void main() {
     // this clamp, segLen would go negative and the whole loop below would march backward from
     // the observer instead of contributing nothing, corrupting the sky colour along that ray.
     float tEnd   = max(0.0, (tSurface > 0.0) ? min(tAtmos.y, tSurface) : tAtmos.y);
+    // The march starts where the ray ENTERS the atmosphere (0 from inside it). It started at the eye:
+    // from orbit nearly every step fell in the vacuum above R_ATMOS (zero density, but each one still
+    // paid the city-glow fetch, the trig and the airglow noise), and the few left in the air
+    // undersampled it. From 2000 km this loop was 13 of the sky pass's 16.6 ms (harness_runs/impostor).
+    float tStart = clamp(tAtmos.x, 0.0, tEnd);
 
     // Adaptive N_VIEW (perf follow-up, session 24 round 2): a FIXED sample count over segLen =
     // tEnd/N_VIEW badly serves this loop, because tEnd itself varies enormously with viewing
@@ -1860,8 +1865,8 @@ void main() {
     float viewSamplesMax = max(viewSamplesMin, cloud.viewSamplesMax);
     float targetStepLen  = kAtmosRefTEnd / viewSamplesMin;
     int   N_VIEW = dbgSkipAtmosphere() ? 0
-                 : int(clamp(ceil(tEnd / targetStepLen), viewSamplesMin, viewSamplesMax));
-    float segLen = tEnd / float(N_VIEW);
+                 : int(clamp(ceil((tEnd - tStart) / targetStepLen), viewSamplesMin, viewSamplesMax));
+    float segLen = (tEnd - tStart) / float(N_VIEW);
     float cosA   = dot(dir, sunDir);
     float pR     = phaseR(cosA);
     float pM     = phaseM(cosA);
@@ -1897,7 +1902,7 @@ void main() {
     //     computed by calling optDepth along the sun direction.
     //   - Phase functions pR/pM: angular weighting of how much scatter points toward the camera.
     for (int i = 0; i < N_VIEW; ++i) {
-        vec3  sp  = obsPos + dir * ((float(i) + 0.5) * segLen);  // midpoint of this atmosphere step
+        vec3  sp  = obsPos + dir * (tStart + (float(i) + 0.5) * segLen);  // midpoint of this atmosphere step
         float len = length(sp);
         if (len < R_EARTH) sp *= R_EARTH / len;  // clamp underground samples to Earth surface
         float h = max(0.0, length(sp) - R_EARTH);  // altitude above sea level (metres)
