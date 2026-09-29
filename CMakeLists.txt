@@ -189,6 +189,16 @@ target_include_directories(SoundTool PRIVATE src ${miniaudio_SOURCE_DIR})
 target_link_libraries(SoundTool PRIVATE nlohmann_json::nlohmann_json Threads::Threads)
 sat_strict_warnings(SoundTool)
 
+# UploadStress (docs/FREEZES.md): the machine-freeze reproducer for the GPU half of the launch —
+# SatelliteSim's texture upload path (staging buffer, image + mip blits, submit + wait idle) in a
+# loop, with a fresh Vulkan device per cycle by default. No window, no shaders. Not part of ALL:
+#   cmake --build build --config Release --target UploadStress
+#   build/Release/UploadStress.exe [--set dem|launch] [--device cycle|once] [--gap S] [--minutes M]
+add_executable(UploadStress EXCLUDE_FROM_ALL tools/upload_stress/main.cpp)
+target_include_directories(UploadStress PRIVATE ${stb_SOURCE_DIR})
+target_link_libraries(UploadStress PRIVATE Vulkan::Vulkan)
+sat_strict_warnings(UploadStress)
+
 # Photometric accuracy gate (benchmarking milestone M11):
 #   cmake --build <build-dir> [--config Release] --target accuracy-gate
 # Builds SatModelTool and runs cmake/AccuracyGate.cmake — the one list of model selftests and

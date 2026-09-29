@@ -51,6 +51,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstring>
 #include <cctype>
 #include <cmath>
 #include <filesystem>
@@ -577,6 +578,7 @@ void SatelliteSim::updateAmbience(float dt)
     for (size_t g = 0; g < Ambience::groupNames().size() && g < 6; ++g)
         ambience_->setGroupGain(Ambience::groupNames()[g], ambGroupGain[g]);
     ambience_->update(dt, audio_);
+    updateThunder();
 
     // The playing track's upwell stem: its gain is the table's "music_upwell" map of the glare on
     // screen, slewed linearly (up over fade_in_s, down over fade_out_s, full scale). Moving between
@@ -626,6 +628,78 @@ void SatelliteSim::updateAmbience(float dt)
                                   : std::clamp(target, musicAltFade - step, musicAltFade + step);
         audio_->setMusicFade(musicAltFade);
     }
+}
+
+// ── Thunder ────────────────────────────────────────────────────────────────────────────────────────
+// The lightning flash list (cloud_v2_lightning.comp, host-visible; this is the previous frame's) is
+// read for flashes not seen before; each within 30 km is heard at its distance / 343 m/s after it
+// started, in SIM time (paused, nothing arrives; at 1 min/s it rolls in almost at once), as one roll
+// of the "thunder" layer's synth. One roll starts per frame (the synth takes its parameters once per
+// block); a crowd of arrivals queues. Reversed or jumped time drops the queue.
+void SatelliteSim::updateThunder()
+{
+    if (!ambience_ || !cv2FlashMapped)
+        return;
+    const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    if (now < thunderLastSimS_ - 1.0 || now > thunderLastSimS_ + 120.0)
+    {
+        thunderPending_.clear();
+        thunderSeen_.clear();
+    }
+    thunderLastSimS_ = now;
+
+    const uint32_t *hdr = (const uint32_t *)cv2FlashMapped;
+    const float *f = (const float *)((const char *)cv2FlashMapped + 16);
+    const uint32_t n = std::min(hdr[0], kCv2FlashMax);
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const float *e = f + i * 12;
+        uint32_t id;
+        std::memcpy(&id, &e[8], 4);
+        bool seen = false;
+        for (auto &s : thunderSeen_)
+            if (s.first == id)
+                seen = true;
+        if (seen)
+            continue;
+        thunderSeen_.push_back({id, now});
+        const float distM = e[11];
+        if (distM > 30000.0f)
+            continue;
+        // Bearing from the listener (x east, y north in the observer's ENU frame) against the
+        // camera's heading: +1 = right.
+        const float bearing = atan2f(e[0], e[1]);
+        const float rel = bearing - glm::radians(camera.azDeg);
+        const bool cg = e[7] > 0.5f;
+        thunderPending_.push_back({now - (double)e[10] + distM / 343.0, distM / 1000.0f, cg ? 1.0f : 0.55f, sinf(rel)});
+    }
+    // Forget flashes long over (their ids recur only in another time slot).
+    thunderSeen_.erase(std::remove_if(thunderSeen_.begin(), thunderSeen_.end(),
+                                      [&](const std::pair<uint32_t, double> &s) { return now - s.second > 10.0; }),
+                       thunderSeen_.end());
+
+    const int li = ambience_->layerIndex("thunder");
+    const int v = (li >= 0) ? ambience_->layerVoice(li) : -1;
+    AmbientSynth *syn = (audio_ && v >= 0) ? audio_->voiceSynth(v) : nullptr;
+    for (size_t i = 0; i < thunderPending_.size(); ++i)
+    {
+        if (thunderPending_[i].arriveS > now)
+            continue;
+        const ThunderEvent ev = thunderPending_[i];
+        thunderPending_.erase(thunderPending_.begin() + (long)i);
+        if (syn)
+        {
+            syn->setParam(syn->paramIndex("distance_km"), ev.distKm);
+            syn->setParam(syn->paramIndex("energy"), ev.energy);
+            syn->setParam(syn->paramIndex("pan"), ev.pan);
+            thunderTrigger_ += 1.0f;
+            syn->setParam(syn->paramIndex("trigger"), thunderTrigger_);
+            ++thunderRolls_;
+        }
+        break;   // one per frame
+    }
+    if (thunderPending_.size() > 64)
+        thunderPending_.erase(thunderPending_.begin(), thunderPending_.end() - 64);
 }
 
 // ── Tonality ──────────────────────────────────────────────────────────────────────────────────────

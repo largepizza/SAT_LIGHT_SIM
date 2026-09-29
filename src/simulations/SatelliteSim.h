@@ -638,6 +638,9 @@ struct GpuCloudV2Params
     glm::vec4 column;        // x Cb column amount, y lattice cell (m), z base radius (m), w storm cumulus top (m)
     glm::vec4 column2;       // x waist, y head flare (x base radius), z head drift (m), w lobe strength
     glm::vec4 anvil2;        // x anvil thickness (m), y anvil hang (m), z tower sparsity, w overshoot above the lid (m)
+    glm::vec4 column3;       // x weather mip for the storm cumulus reach, y light LOD footprint (m), zw free
+    glm::vec4 lightning;     // x flashes / min / tower, y cloud glow gain, z bolt gain, w sim time (s, wrapped)
+    glm::vec4 lightVol;      // x first level baked this frame, y half-extent (m), z top (m), w godrays
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -645,7 +648,7 @@ static_assert(offsetof(GpuCloudV2Params, shell) == 256, "GpuCloudV2Params layout
 static_assert(offsetof(GpuCloudV2Params, types) == 288, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, cover) == 288 + 48 * kCloudV2Types, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, anchorMid) == 288 + 48 * kCloudV2Types + 176, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 304, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 352, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -2743,6 +2746,17 @@ private:
                                        // the resolve raises it toward 0.35 with motion)
     float cv2LightLenM = 2500.0f;      // light-march length
     float cv2LightSteps = 6.0f;
+    float cv2LightLodFootprintM = 40.0f;  // past this pixel footprint (m) a 2-step light march; 0 = off
+    float cv2LightningRate = 3.0f;        // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
+    float cv2LightningGlow = 1.0f;        // the flash's light in the cloud
+    float cv2LightningBolt = 1.0f;        // the cloud-to-ground channels
+    float cv2EvoWindMps = 8.0f;           // the weather map's evolution: its advecting wind (m/s); 0 = static
+    float cv2EvoGrowth = 0.12f;           // ... and how much its coverage grows and decays (0 = none)
+    float cv2EvoWindowH = 3.0f;           // ... each advected copy's window (h): the displacement's bound
+    float cv2EvoDiurnal = 0.6f;           // afternoon convection over land (0 = none)
+    float cv2HalfRateMoving = 0.0f;       // 1 = where the march would run at full rate, half (a checkerboard)
+    float cv2Godrays = 0.0f;              // EXPERIMENTAL: the sky dims by the share of its airlight in cloud shadow (the light volume); 0 = off (and no bake)
+    float cv2GodrayRangeKm = 400.0f;      // the light volume's half-extent about the eye (km)
     float cv2StepBaseM = 60.0f;        // step at the eye ...
     float cv2StepGrowth = 0.01f;       // ... growing by this per metre of distance ...
     float cv2StepMaxM = 1500.0f;       // ... capped here (and at 1.2% of the distance beyond)
@@ -2824,6 +2838,7 @@ private:
     float cv2CbHeadDriftKm = 6.0f;     // how far downwind the head is blown
     float cv2CbLobes = 0.55f;          // cauliflower lobes on the tower (fraction of its radius)
     float cv2CbSparsity = 0.35f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
+    float cv2CbCumulusReachKm = 10.0f;  // how far from a storm the low cloud takes the storm cumulus top
     float cv2CbOvershootKm = 0.8f;     // a tower's overshooting dome above the anvil lid (every tower meets it)
     float cv2AnvilThickKm = 2.2f;      // the anvil shield's thickness over the storm's core
     float cv2AnvilHangKm = 1.2f;       // how much lower it hangs around a tower's head (the mushroom)
@@ -2847,6 +2862,7 @@ private:
     // Frame-to-frame state for the temporal resolve.
     uint32_t cv2Frame = 0;
     bool cv2FullRateNow = false;       // this frame's march covers every half-res pixel
+    bool cv2HalfRateNow = false;       // ... or, "Half rate while moving", half of them (a checkerboard)
     bool cv2HistoryValid = false;
     glm::mat4 cv2PrevSkyView{1.0f};
     glm::vec3 cv2PrevObsDir{0.0f, 0.0f, 1.0f};
@@ -2859,6 +2875,30 @@ private:
     // Resources. Static: the bakes, the UBO, samplers. Swapchain-sized: the quarter-grid samples
     // and the half-grid resolved/history images.
     VkImage cv2WeatherImg = VK_NULL_HANDLE;
+    // Weather EVOLUTION (cloud_v2_weather.comp, decision A): the bake's pipeline and per-mip sets stay
+    // alive, and recordWeatherEvolution re-bakes one face per frame (all mips) as sim time moves.
+    struct GpuWeatherPC
+    {
+        int32_t faceSize;
+        float srcLod;
+        int32_t face;          // -1 = all six
+        float pad;
+        glm::vec4 evo0;        // the two advected copies' ages (s) and weights
+        glm::vec4 evo1;        // x wind (m/s), y growth, z sim time (s, wrapped), w unused
+        glm::vec4 evo2;        // xyz the Sun three hours ago (map frame), w afternoon land convection
+    };
+    static_assert(sizeof(GpuWeatherPC) == 64, "GpuWeatherPC == cloud_v2_weather.comp's PC");
+    GpuWeatherPC weatherEvoPC(int face, uint32_t mip) const;
+    void recordWeatherEvolution(VkCommandBuffer cmd);
+    VkDescriptorSetLayout cv2WxSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout cv2WxPipeLayout = VK_NULL_HANDLE;
+    VkPipeline cv2WxPipeline = VK_NULL_HANDLE;
+    VkDescriptorPool cv2WxPool = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> cv2WxSets;
+    std::vector<VkImageView> cv2WxMipViews;
+    double cv2WxBakedT[6] = {};        // sim time each face was last baked at
+    uint64_t cv2WxHash = 0;            // the evolution settings the faces were baked with
+    uint32_t cv2WxRebakes = 0;         // faces re-baked so far (harness state)
     VkDeviceMemory cv2WeatherMem = VK_NULL_HANDLE;
     VkImageView cv2WeatherView = VK_NULL_HANDLE;
     VkImage cv2ShapeImg = VK_NULL_HANDLE, cv2DetailImg = VK_NULL_HANDLE, cv2MesoImg = VK_NULL_HANDLE;
@@ -2881,6 +2921,22 @@ private:
     VkDescriptorSet cv2MarchDescSet = VK_NULL_HANDLE, cv2ResolveDescSet = VK_NULL_HANDLE;
     VkPipelineLayout cv2MarchPipeLayout = VK_NULL_HANDLE, cv2ResolvePipeLayout = VK_NULL_HANDLE;
     VkPipeline cv2MarchPipeline = VK_NULL_HANDLE, cv2ResolvePipeline = VK_NULL_HANDLE;
+    // Lightning (include/cloud_lightning.glsl): cloud_v2_lightning.comp writes this frame's flashes
+    // into cv2FlashBuf (host-visible: the host reads them back next frame for thunder), bound as
+    // binding 12 of the march set and 21 of cloud_march's.
+    VkPipeline cv2LightningPipeline = VK_NULL_HANDLE;
+    // The LIGHT VOLUME (cloud_v2_lightvol.comp): sun transmittance about the eye, 128 x 128 x 32, four
+    // levels baked per frame; march set bindings 13 (storage, the bake) and 14 (sampled, the godrays).
+    VkPipeline cv2LightVolPipeline = VK_NULL_HANDLE;
+    VkImage cv2LightVolImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2LightVolMem = VK_NULL_HANDLE;
+    VkImageView cv2LightVolView = VK_NULL_HANDLE;
+    static constexpr uint32_t kCv2LightVolXY = 128, kCv2LightVolZ = 32, kCv2LightVolLevelsPerFrame = 4;
+    VkBuffer cv2FlashBuf = VK_NULL_HANDLE;
+    VkDeviceMemory cv2FlashMem = VK_NULL_HANDLE;
+    void *cv2FlashMapped = nullptr;
+    static constexpr uint32_t kCv2FlashMax = 32;             // == kCv2FlashMax in cloud_lightning.glsl
+    static constexpr VkDeviceSize kCv2FlashBufBytes = 16 + kCv2FlashMax * 48;
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;
@@ -3171,6 +3227,15 @@ private:
     // The sim's side: the context drivers, computed each frame from the CAMERA (in follow mode the
     // camera, not the parked telescope — ambience is what the listener hears).
     Ambience *ambience_ = nullptr;
+    // Thunder (updateThunder): each lightning flash within 30 km of the listener, heard at its distance
+    // / 343 m/s after it (sim time), as a roll of the "thunder" layer's synth.
+    struct ThunderEvent { double arriveS; float distKm, energy, pan; };
+    std::vector<ThunderEvent> thunderPending_;
+    std::vector<std::pair<uint32_t, double>> thunderSeen_;   // flash id, sim time first seen
+    double thunderLastSimS_ = 0.0;
+    float thunderTrigger_ = 0.0f;
+    uint32_t thunderRolls_ = 0;                               // triggered so far (harness `lightning`)
+    void updateThunder();
     struct AmbienceDrivers
     {
         int altM = -1, aglM = -1, groundM = -1, latDeg = -1, lonDeg = -1, sunElDeg = -1, oceanNear = -1, oceanWide = -1,
@@ -4193,7 +4258,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 177;
+    static constexpr int kCloudSliderSlots = 189;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),
@@ -4299,6 +4364,12 @@ private:
     void createCloudsV2Targets(VulkanContext &ctx); // swapchain-sized images + their descriptor writes
     void destroyCloudsV2Targets(VkDevice device);
     void destroyCloudsV2(VkDevice device);
+    // harness `shaders reload [march=<spv>]`; "" = ok, stats = the driver's statistics for the march
+    std::string reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
+                                      uint32_t wgX = 0, uint32_t wgY = 0);
+    // The march's workgroup size (specialization constants): it bounds the driver's registers per
+    // thread (65536 / the group's threads), i.e. the march's occupancy. Harness `shaders reload wg=`.
+    uint32_t cv2MarchWg[2] = {16, 16};
     void writeCloudsV2ConsumerDescriptors(VulkanContext &ctx); // cloud_march / beam_self_march bindings
     void recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc);
     void fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cpc);

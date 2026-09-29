@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 
 // ── beam_self_march.comp ──────────────────────────────────────────────────────
 // Per-BEAM cloud occlusion, replacing beam_cloud_block.comp's per-TARGET vertical-column

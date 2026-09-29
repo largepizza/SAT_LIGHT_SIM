@@ -121,6 +121,64 @@ layout(set = 0, binding = 13) uniform sampler2D sceneDepthTex;
 #include "clouds_v2.glsl"
 layout(set = 0, binding = 19) uniform sampler2D cv2ResolvedTex;       // rgb radiance, a transmittance
 layout(set = 0, binding = 20) uniform sampler2D cv2ResolvedDepthTex;  // x mean distance, y occlusion distance
+// Lightning: this frame's flashes (cloud_v2_lightning.comp), drawn here, after the temporal resolve.
+#define CV2_FLASH_BINDING 21
+#include "cloud_lightning.glsl"
+
+// The lightning over this ray: the cloud lit from inside around each flash (at the resolved cloud's
+// mean depth, by its opacity) and the channels of cloud-to-ground strokes (hidden by terrain, and by
+// the cloud when behind it). Radiance in the composite's units (B, as the resolved cloud's).
+vec3 lightningCS(vec3 obsPos, vec3 dir, float tCloud, float cloudT, float tScene, float pixAng)
+{
+    vec3 L = vec3(0.0);
+    uint n = min(cv2FlashCount, kCv2FlashMax);
+    if (n == 0u || cv2.lightning.x <= 0.0) return L;
+    bool  cloudHere = cloudT < 0.98 && tCloud < 1e20;
+    vec3  P = obsPos + dir * (cloudHere ? tCloud : 0.0);
+    for (uint i = 0u; i < n; ++i) {
+        CV2Flash fl = cv2Flashes[i];
+        float I = fl.a.w;
+        if (I <= 0.0) continue;
+        if (cloudHere) {
+            float r = length(P - fl.a.xyz);
+            L += vec3(0.80, 0.86, 1.0) * (I * cv2FlashGlow(r) * (1.0 - cloudT) * cv2.lightning.y * 5.0);
+        }
+        if (fl.b.w > 0.5 && cv2.lightning.z > 0.0) {
+            // The channel: a polyline from the cloud base to the ground, against this ray.
+            uint seed = floatBitsToUint(fl.c.y);
+            vec3 top = fl.a.xyz - obsPos, gnd = fl.b.xyz - obsPos;
+            vec3 q0  = cv2BoltPoint(top, gnd, seed, 0);
+            float glow = 0.0;
+            const int kBr = kCv2BoltSeg / 3;
+            int  kb = 3 + int(seed % uint(kCv2BoltSeg / 2));   // where the branch leaves the channel
+            for (int k = 1; k <= kCv2BoltSeg + kBr; ++k) {
+                // The main channel, then the branch (restarting at its root, dimmer).
+                bool br = k > kCv2BoltSeg;
+                if (k == kCv2BoltSeg + 1) q0 = cv2BoltPoint(top, gnd, seed, kb);
+                vec3  q1 = br ? cv2BoltBranchPoint(top, gnd, seed, kb, k - kCv2BoltSeg)
+                              : cv2BoltPoint(top, gnd, seed, k);
+                vec3  u  = q1 - q0;
+                float a  = dot(u, u), b = dot(u, dir), d0 = dot(u, q0), e = dot(dir, q0);
+                float sg = clamp((b * e - d0) / max(a - b * b, 1e-3), 0.0, 1.0);
+                float tR = max(dot(q0 + u * sg, dir), 0.0);
+                sg = clamp(dot(dir * tR - q0, u) / max(a, 1e-3), 0.0, 1.0);
+                float dd = length(q0 + u * sg - dir * tR);
+                q0 = q1;
+                if (tR > tScene) continue;
+                // A channel a few metres across: sub-pixel far away, so its energy is spread over the
+                // pixel's footprint (dimmer per pixel, never thinner than a pixel). No halo: occluded by
+                // a rain curtain's transmittance it drew the curtain's march banding as stripes; the
+                // cloud's glow (above) is the flash's spread light.
+                float w   = max(tR * pixAng * 0.6, 3.0);
+                float occ = (cloudHere && tR > tCloud) ? cloudT : 1.0;
+                glow += exp(-(dd * dd) / (w * w)) * (4.0 / w) * occ
+                      * exp(-tR / 120000.0) * (br ? 0.35 : 1.0);
+            }
+            L += vec3(0.85, 0.88, 1.0) * (I * glow * cv2.lightning.z * 150.0);
+        }
+    }
+    return L;
+}
 
 // Sun transmittance through the v2 field from a ground point (ENU about the Earth's centre, as
 // obsPos). Same job and step count as cloudGroundShadow, on the field the clouds are drawn from.
@@ -1469,6 +1527,7 @@ void main() {
 
     vec3  A_total = A_cirrus * A_cloud;
     vec3  B_total = B_cirrus * A_cloud + B_cloud;
+    B_total += lightningCS(obsPos, dir, tCloudMeanT, rc.a, tScene, 2.0 * tanHalfFov / float(size.y));
 
     // Rain at the eye: the same field at the observer (cv2FieldLow's rain branch). Streaks lit like
     // the cloud they fall from (its own radiance), over whatever the ray shows.

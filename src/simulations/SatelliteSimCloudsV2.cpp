@@ -73,16 +73,25 @@ void memoryBarrier(VkCommandBuffer cmd, VkAccessFlags srcA, VkAccessFlags dstA,
     vkCmdPipelineBarrier(cmd, srcS, dstS, 0, 1, &mb, 0, nullptr, 0, nullptr);
 }
 
-VkPipeline makeComputePipeline(VulkanContext &ctx, const char *spv, VkPipelineLayout layout)
+// wg: the workgroup size as specialization constants 0/1 (a shader declaring local_size_x_id /
+// local_size_y_id); null = the shader's own.
+VkPipeline makeComputePipeline(VulkanContext &ctx, const char *spv, VkPipelineLayout layout,
+                               const uint32_t *wg = nullptr)
 {
     VkShaderModule mod = ctx.loadShader(spv);
     VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = mod;
     stage.pName = "main";
+    VkSpecializationMapEntry wgMap[2] = {{0, 0, 4}, {1, 4, 4}};
+    VkSpecializationInfo wgSpec{2, wgMap, 8, wg};
+    if (wg)
+        stage.pSpecializationInfo = &wgSpec;
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = stage;
     ci.layout = layout;
+    if (ctx.pipelineStatsSupported)
+        ci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
     VkPipeline p = VK_NULL_HANDLE;
     if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &p) != VK_SUCCESS)
         throw std::runtime_error(std::string("clouds v2: failed to create pipeline ") + spv);
@@ -282,7 +291,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                                        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
-        VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 8};
+        VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GpuWeatherPC)};
         VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pli.setLayoutCount = 1;
         pli.pSetLayouts = &bl;
@@ -340,26 +349,29 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                 imageWrite(set, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo)};
             vkUpdateDescriptorSets(dev, 4, w, 0, nullptr);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &set, 0, nullptr);
-            struct
-            {
-                int32_t faceSize;
-                float srcLod;
-            } pcv{(int32_t)(kCv2WeatherFace >> m), srcLod0 + (float)m};
-            vkCmdPushConstants(cmd, pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, &pcv);
+            cv2WxSets.push_back(set);
+            GpuWeatherPC pcv = weatherEvoPC(-1, m);
+            vkCmdPushConstants(cmd, pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pcv), &pcv);
             uint32_t g = std::max(1u, ((kCv2WeatherFace >> m) + 7) / 8);
             vkCmdDispatch(cmd, g, g, 6);
         }
+        (void)srcLod0;
         transitionAll(cmd, cv2WeatherImg, kCv2WeatherMips, 6, VK_IMAGE_LAYOUT_GENERAL,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                       VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         ctx.endOneTimeCommands(cmd);
-        for (VkImageView v : mipViews)
-            vkDestroyImageView(dev, v, nullptr);
-        vkDestroyPipeline(dev, pipe, nullptr);
-        vkDestroyPipelineLayout(dev, pl, nullptr);
-        vkDestroyDescriptorPool(dev, pool, nullptr);
-        vkDestroyDescriptorSetLayout(dev, bl, nullptr);
+        // Kept for the evolution's re-bakes (recordWeatherEvolution); destroyed with the rest.
+        cv2WxMipViews = mipViews;
+        cv2WxPipeline = pipe;
+        cv2WxPipeLayout = pl;
+        cv2WxPool = pool;
+        cv2WxSetLayout = bl;
+        const double t0 = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        for (double &b : cv2WxBakedT)
+            b = t0;
+        cv2WxHash = std::hash<float>{}(cv2EvoWindMps) ^ (std::hash<float>{}(cv2EvoGrowth) * 31u)
+                  ^ (std::hash<float>{}(cv2EvoWindowH) * 131u) ^ (std::hash<float>{}(cv2EvoDiurnal) * 1031u);
     }
 
     // ── UBO ──
@@ -368,18 +380,68 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                      cv2ParamsBuf, cv2ParamsMem);
     vkMapMemory(dev, cv2ParamsMem, 0, sizeof(GpuCloudV2Params), 0, &cv2ParamsMapped);
     std::memset(cv2ParamsMapped, 0, sizeof(GpuCloudV2Params));
+    ctx.createBuffer(kCv2FlashBufBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     cv2FlashBuf, cv2FlashMem);
+    vkMapMemory(dev, cv2FlashMem, 0, kCv2FlashBufBytes, 0, &cv2FlashMapped);
+    std::memset(cv2FlashMapped, 0, kCv2FlashBufBytes);
+    {
+        VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ci.imageType = VK_IMAGE_TYPE_3D;
+        ci.format = VK_FORMAT_R16_SFLOAT;
+        ci.extent = {kCv2LightVolXY, kCv2LightVolXY, kCv2LightVolZ};
+        ci.mipLevels = 1;
+        ci.arrayLayers = 1;
+        ci.samples = VK_SAMPLE_COUNT_1_BIT;
+        ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(dev, &ci, nullptr, &cv2LightVolImg) != VK_SUCCESS)
+            throw std::runtime_error("clouds v2: light volume vkCreateImage failed");
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(dev, cv2LightVolImg, &req);
+        VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        mai.allocationSize = req.size;
+        mai.memoryTypeIndex = ctx.findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        vkAllocateMemory(dev, &mai, nullptr, &cv2LightVolMem);
+        vkBindImageMemory(dev, cv2LightVolImg, cv2LightVolMem, 0);
+        cv2LightVolView = makeView(dev, cv2LightVolImg, VK_IMAGE_VIEW_TYPE_3D, VK_FORMAT_R16_SFLOAT, 0, 1, 1);
+        // GENERAL for good (written by the bake, sampled by the march), cleared to full transmittance so
+        // the levels not yet baked shadow nothing.
+        VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = cv2LightVolImg;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                             0, nullptr, 1, &b);
+        VkClearColorValue one{};
+        one.float32[0] = 1.0f;
+        vkCmdClearColorImage(cmd, cv2LightVolImg, VK_IMAGE_LAYOUT_GENERAL, &one, 1, &b.subresourceRange);
+        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
+                             0, nullptr, 1, &b);
+        ctx.endOneTimeCommands(cmd);
+    }
 
     // ── Pass layouts, sets, pipelines ──
     using T = VkDescriptorType;
     const T UBO = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, TEX = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             SSBO = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, IMG = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     // cloud_v2_march.comp: 0 CloudParams, 1 CloudV2Params, 2 weather, 3 shape, 4 detail, 5 meso,
-    // 6 sceneDepth, 7 earthNight, 8 terrainFrame, 9 beamCloudLights, 10 outColor, 11 outDepth
-    cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG});
+    // 6 sceneDepth, 7 earthNight, 8 terrainFrame, 9 beamCloudLights, 10 outColor, 11 outDepth,
+    // 12 the lightning flash list (cloud_v2_lightning.comp, same set), 13 the light volume (storage: the
+    // bake, cloud_v2_lightvol.comp), 14 the light volume (sampled: the march's godrays)
+    cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX});
     // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth
     cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG});
     {
-        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 9}, {SSBO, 2}, {IMG, 4}};
+        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 10}, {SSBO, 3}, {IMG, 5}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = 2;
         pi.poolSizeCount = 4;
@@ -405,8 +467,10 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         pli.pPushConstantRanges = &pcr;
         vkCreatePipelineLayout(dev, &pli, nullptr, i == 0 ? &cv2MarchPipeLayout : &cv2ResolvePipeLayout);
     }
-    cv2MarchPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout);
+    cv2MarchPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout, cv2MarchWg);
     cv2ResolvePipeline = makeComputePipeline(ctx, "shaders/cloud_v2_resolve.comp.spv", cv2ResolvePipeLayout);
+    cv2LightningPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout);
+    cv2LightVolPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightvol.comp.spv", cv2MarchPipeLayout);
 
     // Static descriptors of the march set (the screen-sized ones are written by the targets).
     {
@@ -421,7 +485,12 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorBufferInfo terr{terrainFrameBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo beams{beamCloudLightBuf, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo flashes{cv2FlashBuf, 0, VK_WHOLE_SIZE};
+        VkDescriptorImageInfo lvOut{VK_NULL_HANDLE, cv2LightVolView, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo lvIn{cv2ClampSampler, cv2LightVolView, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet w[] = {
+            imageWrite(cv2MarchDescSet, 13, IMG, &lvOut),
+            imageWrite(cv2MarchDescSet, 14, TEX, &lvIn),
             bufferWrite(cv2MarchDescSet, 0, UBO, &cpInfo),
             bufferWrite(cv2MarchDescSet, 1, UBO, &v2Info),
             imageWrite(cv2MarchDescSet, 2, TEX, &weather),
@@ -431,6 +500,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             imageWrite(cv2MarchDescSet, 7, TEX, &night),
             bufferWrite(cv2MarchDescSet, 8, SSBO, &terr),
             bufferWrite(cv2MarchDescSet, 9, SSBO, &beams),
+            bufferWrite(cv2MarchDescSet, 12, SSBO, &flashes),
             bufferWrite(cv2ResolveDescSet, 0, UBO, &v2Info)};
         vkUpdateDescriptorSets(dev, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
     }
@@ -519,11 +589,107 @@ void SatelliteSim::destroyCloudsV2Targets(VkDevice device)
     }
 }
 
+// The driver's statistics for a compute pipeline ("Register Count 128, ..."), or "" when the device
+// has no VK_KHR_pipeline_executable_properties.
+static std::string pipelineStatsLine(VulkanContext &ctx, VkPipeline p)
+{
+    if (!ctx.pipelineStatsSupported || !p) return "";
+    auto getProps = (PFN_vkGetPipelineExecutablePropertiesKHR)vkGetDeviceProcAddr(
+        ctx.device, "vkGetPipelineExecutablePropertiesKHR");
+    auto getStats = (PFN_vkGetPipelineExecutableStatisticsKHR)vkGetDeviceProcAddr(
+        ctx.device, "vkGetPipelineExecutableStatisticsKHR");
+    if (!getProps || !getStats) return "";
+    VkPipelineInfoKHR pi{VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR};
+    pi.pipeline = p;
+    uint32_t ne = 0;
+    getProps(ctx.device, &pi, &ne, nullptr);
+    std::string out;
+    for (uint32_t e = 0; e < ne; ++e)
+    {
+        VkPipelineExecutableInfoKHR ei{VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR};
+        ei.pipeline = p;
+        ei.executableIndex = e;
+        uint32_t ns = 0;
+        getStats(ctx.device, &ei, &ns, nullptr);
+        std::vector<VkPipelineExecutableStatisticKHR> st(ns, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR});
+        getStats(ctx.device, &ei, &ns, st.data());
+        for (auto &s : st)
+        {
+            char buf[160];
+            switch (s.format)
+            {
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_BOOL32_KHR: snprintf(buf, sizeof(buf), "%s %d", s.name, (int)s.value.b32); break;
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR: snprintf(buf, sizeof(buf), "%s %lld", s.name, (long long)s.value.i64); break;
+            case VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR: snprintf(buf, sizeof(buf), "%s %llu", s.name, (unsigned long long)s.value.u64); break;
+            default: snprintf(buf, sizeof(buf), "%s %.3g", s.name, s.value.f64); break;
+            }
+            out += std::string(out.empty() ? "" : ", ") + buf;
+        }
+    }
+    return out;
+}
+
+// Harness `shaders reload`: rebuild the march and resolve pipelines from the SPVs now on disk, so a
+// shader iteration costs a rebuild instead of an app launch (launches are what freeze this machine,
+// docs/FREEZES.md). Same layouts, so descriptors and push constants carry over. Returns what failed.
+// marchSpv overrides the march's file (an A/B against another build in one batch); stats receives the
+// driver's statistics for the new march pipeline.
+std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
+                                                uint32_t wgX, uint32_t wgY)
+{
+    if (wgX && wgY) { cv2MarchWg[0] = wgX; cv2MarchWg[1] = wgY; }
+    vkDeviceWaitIdle(ctx.device);
+    std::string err;
+    auto swap = [&](VkPipeline &p, const char *spv, VkPipelineLayout layout, const uint32_t *wg) {
+        try
+        {
+            VkPipeline np = makeComputePipeline(ctx, spv, layout, wg);
+            if (p) vkDestroyPipeline(ctx.device, p, nullptr);
+            p = np;
+        }
+        catch (const std::exception &e)
+        {
+            err += std::string(e.what()) + "; ";
+        }
+    };
+    swap(cv2MarchPipeline, marchSpv.empty() ? "shaders/cloud_v2_march.comp.spv" : marchSpv.c_str(), cv2MarchPipeLayout,
+         cv2MarchWg);
+    swap(cv2ResolvePipeline, "shaders/cloud_v2_resolve.comp.spv", cv2ResolvePipeLayout, nullptr);
+    swap(cv2LightningPipeline, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout, nullptr);
+    swap(cv2LightVolPipeline, "shaders/cloud_v2_lightvol.comp.spv", cv2MarchPipeLayout, nullptr);
+    swap(cloudMarchPipeline, "shaders/cloud_march.comp.spv", cloudMarchPipeLayout, nullptr);   // the composite
+    cv2HistoryValid = false;
+    stats = pipelineStatsLine(ctx, cv2MarchPipeline);
+    return err;
+}
+
 void SatelliteSim::destroyCloudsV2(VkDevice device)
 {
     destroyCloudsV2Targets(device);
     if (cv2MarchPipeline) vkDestroyPipeline(device, cv2MarchPipeline, nullptr);
     if (cv2ResolvePipeline) vkDestroyPipeline(device, cv2ResolvePipeline, nullptr);
+    if (cv2LightningPipeline) vkDestroyPipeline(device, cv2LightningPipeline, nullptr);
+    if (cv2LightVolPipeline) vkDestroyPipeline(device, cv2LightVolPipeline, nullptr);
+    cv2LightVolPipeline = VK_NULL_HANDLE;
+    if (cv2LightVolView) vkDestroyImageView(device, cv2LightVolView, nullptr);
+    if (cv2LightVolImg) vkDestroyImage(device, cv2LightVolImg, nullptr);
+    if (cv2LightVolMem) vkFreeMemory(device, cv2LightVolMem, nullptr);
+    cv2LightVolView = VK_NULL_HANDLE; cv2LightVolImg = VK_NULL_HANDLE; cv2LightVolMem = VK_NULL_HANDLE;
+    for (VkImageView v : cv2WxMipViews)
+        vkDestroyImageView(device, v, nullptr);
+    cv2WxMipViews.clear();
+    cv2WxSets.clear();
+    if (cv2WxPipeline) vkDestroyPipeline(device, cv2WxPipeline, nullptr);
+    if (cv2WxPipeLayout) vkDestroyPipelineLayout(device, cv2WxPipeLayout, nullptr);
+    if (cv2WxPool) vkDestroyDescriptorPool(device, cv2WxPool, nullptr);
+    if (cv2WxSetLayout) vkDestroyDescriptorSetLayout(device, cv2WxSetLayout, nullptr);
+    cv2WxPipeline = VK_NULL_HANDLE; cv2WxPipeLayout = VK_NULL_HANDLE; cv2WxPool = VK_NULL_HANDLE;
+    cv2WxSetLayout = VK_NULL_HANDLE;
+    cv2LightningPipeline = VK_NULL_HANDLE;
+    if (cv2FlashMem) { vkUnmapMemory(device, cv2FlashMem); cv2FlashMapped = nullptr; }
+    if (cv2FlashBuf) vkDestroyBuffer(device, cv2FlashBuf, nullptr);
+    if (cv2FlashMem) vkFreeMemory(device, cv2FlashMem, nullptr);
+    cv2FlashBuf = VK_NULL_HANDLE; cv2FlashMem = VK_NULL_HANDLE;
     if (cv2MarchPipeLayout) vkDestroyPipelineLayout(device, cv2MarchPipeLayout, nullptr);
     if (cv2ResolvePipeLayout) vkDestroyPipelineLayout(device, cv2ResolvePipeLayout, nullptr);
     if (cv2DescPool) vkDestroyDescriptorPool(device, cv2DescPool, nullptr);
@@ -566,7 +732,13 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo meso{cv2RepeatSampler, cv2MesoView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo res{cv2ClampSampler, cv2ResolvedView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo resDepth{cv2ClampSampler, cv2ResolvedDepthView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorBufferInfo flashes{cv2FlashBuf, 0, VK_WHOLE_SIZE};
+    // The sky set's binding 7 (sat_sky.frag's flat layers, its SKY_ENV / SKY_LITE variants and Potato):
+    // the weather cube, so every flat stand-in shows the same evolving map as the volumetric clouds.
+    VkDescriptorImageInfo weatherCube{cv2RepeatSampler, cv2WeatherView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet w[] = {
+        imageWrite(skyDescSet, 7, TEX, &weatherCube),
+        bufferWrite(cloudMarchDescSet, 21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &flashes),
         bufferWrite(cloudMarchDescSet, 15, UBO, &v2Info),
         imageWrite(cloudMarchDescSet, 16, TEX, &weather),
         imageWrite(cloudMarchDescSet, 17, TEX, &shape),
@@ -618,7 +790,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CloudSunRayleigh, cv2TwilightSky, cv2FlowWarp, cv2FlowPeriodKm, cv2LayerSpread,
                     cv2TopHeavy, cv2TowerTop, cv2CirrusFieldKm, cv2CirrusFlow, cv2BaseFlatness,
                     cv2CbColumns, cv2CbSpacingKm, cv2CbRadiusKm, cv2CbCumulusTopKm, cv2CbWaist, cv2CbFlare,
-                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm})
+                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -729,7 +901,20 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         p.anvil2 = glm::vec4(std::clamp(cv2AnvilThickKm, 0.3f, 6.0f) * 1000.0f,
                              std::clamp(cv2AnvilHangKm, 0.0f, 6.0f) * 1000.0f,
                              std::clamp(cv2CbSparsity, 0.0f, 1.0f), std::clamp(cv2CbOvershootKm, 0.0f, 3.0f) * 1000.0f);
+        // The weather cube's mip 0 texels are ~5 km: the reach picks the mip whose texels are that wide
+        // (fractional: the hardware blends two mips by one constant, so no spatial steps).
+        p.column3 = glm::vec4(std::clamp(std::log2(std::max(cv2CbCumulusReachKm, 1.0f) / 5.0f), 0.0f, 6.0f),
+                              0.0f, 0.0f, 0.0f);
     }
+    p.column3.y = std::max(cv2LightLodFootprintM, 0.0f);   // light LOD (cloud_v2_march.comp)
+    // Lightning: its schedule runs on SIM time (deterministic, reversible), wrapped where a float still
+    // resolves ~10 ms (a flash in progress at the wrap is cut; once per ~28 h of sim time).
+    // The light volume: +-"God ray range" about the eye (a low Sun's shafts come from storms hundreds of
+    // km away), sea level to 16 km, four of its 32 levels per frame.
+    p.lightVol = glm::vec4((float)((cv2Frame % (kCv2LightVolZ / kCv2LightVolLevelsPerFrame)) * kCv2LightVolLevelsPerFrame),
+                           std::clamp(cv2GodrayRangeKm, 50.0f, 1500.0f) * 1000.0f, 16000.0f, std::max(cv2Godrays, 0.0f));
+    p.lightning = glm::vec4(std::max(cv2LightningRate, 0.0f), std::max(cv2LightningGlow, 0.0f),
+                            std::max(cv2LightningBolt, 0.0f), (float)std::fmod((double)simDayJ2000 * 86400.0 + simSecInDay, 100000.0));
 
     static const int kOffsets[4][2] = {{0, 0}, {1, 1}, {1, 0}, {0, 1}};
     const int *o = kOffsets[cv2Frame & 3u];
@@ -774,8 +959,12 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     }
     cv2FullRateNow = eyeH > (double)cv2FullRateAboveKm * 1000.0 &&
                      !(cv2SparseWhenStill > 0.5f && cv2StillFrames >= 8);
+    // "Half rate while moving": where it would run at full rate the march takes a checkerboard of the
+    // half-res pixels, alternating each frame (every stale pixel's four neighbours are fresh: the
+    // resolve's estimate for it), at about half the cost.
+    cv2HalfRateNow = cv2FullRateNow && cv2HalfRateMoving > 0.5f;
     p.misc = glm::vec4(std::round(std::clamp(cv2MaxIters, 32.0f, 1024.0f)), cv2MoonGain,
-                       cv2FullRateNow ? 1.0f : 0.0f, cv2MidAmount);
+                       cv2HalfRateNow ? 2.0f : (cv2FullRateNow ? 1.0f : 0.0f), cv2MidAmount);
     std::memcpy(cv2ParamsMapped, &p, sizeof(p));
 
     // This frame becomes the next frame's "previous".
@@ -794,9 +983,102 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     (void)ctx;
 }
 
+// The weather bake's push constants for one face (-1: all six) at one mip, at the current sim time.
+// Two copies of the map advected over windows of P, offset by P/2, each weighted sin^2 of its own
+// phase (0 at its reset, the two summing to 1): the flow-map double-phase trick (decision A).
+SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) const
+{
+    GpuWeatherPC pc{};
+    pc.faceSize = (int32_t)(kCv2WeatherFace >> mip);
+    pc.srcLod = 1.0f + (float)mip;   // the 8192-wide source's texels are ~half a face texel's at mip 0
+    pc.face = face;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double P = std::max((double)cv2EvoWindowH, 0.1) * 3600.0;
+    const double ph0 = t / P - std::floor(t / P), ph1 = ph0 + 0.5 - std::floor(ph0 + 0.5);
+    const float w0 = (float)(std::sin(3.14159265358979 * ph0) * std::sin(3.14159265358979 * ph0));
+    if (cv2EvoWindMps > 0.0f)
+        pc.evo0 = glm::vec4((float)(ph0 * P), (float)(ph1 * P), w0, 1.0f - w0);
+    else
+        pc.evo0 = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);   // the static map
+    pc.evo1 = glm::vec4(std::max(cv2EvoWindMps, 0.0f), std::max(cv2EvoGrowth, 0.0f),
+                        (float)std::fmod(t, 1.0e6), 0.0f);
+    // The Sun three hours ago, Earth-fixed (the sim's rotation angle, no GMST offset: kOmegaEarth t;
+    // 3 h back it stood 45 deg further east), then into the map's (drifted) frame as cv2Drift turns it.
+    const double g = std::fmod(satphot::kOmegaEarth * t, 6.283185307179586) - 3.0 * 3600.0 * satphot::kOmegaEarth;
+    const glm::dvec3 si = glm::dvec3(sunDirECI);
+    const glm::dvec3 se(si.x * std::cos(g) + si.y * std::sin(g), -si.x * std::sin(g) + si.y * std::cos(g), si.z);
+    const double dr = cloudDriftPhase();
+    const glm::dvec3 sm(se.x * std::cos(dr) - se.y * std::sin(dr), se.x * std::sin(dr) + se.y * std::cos(dr), se.z);
+    pc.evo2 = glm::vec4(glm::vec3(glm::normalize(sm)), std::max(cv2EvoDiurnal, 0.0f));
+    return pc;
+}
+
+// One face of the weather cube per frame, all its mips, re-baked when sim time has moved on enough to
+// show (the evolution at 1x is metres per frame; in time warp every frame) or the settings changed.
+// The face is taken out of SHADER_READ_ONLY for the writes and returned before the passes read it.
+void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
+{
+    if (!cv2WxPipeline || cv2WxSets.size() != kCv2WeatherMips)
+        return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const uint64_t h = std::hash<float>{}(cv2EvoWindMps) ^ (std::hash<float>{}(cv2EvoGrowth) * 31u)
+                     ^ (std::hash<float>{}(cv2EvoWindowH) * 131u) ^ (std::hash<float>{}(cv2EvoDiurnal) * 1031u);
+    const bool evolving = cv2EvoWindMps > 0.0f || cv2EvoGrowth > 0.0f || cv2EvoDiurnal > 0.0f;
+    if (h != cv2WxHash)
+    {
+        for (double &b : cv2WxBakedT)
+            b = -1e30;   // every face stale: re-bake with the new settings (off: back to the static map)
+        cv2WxHash = h;
+    }
+    // A face is due once it is this much sim time behind (a few km of wind drift at most).
+    const double due = evolving ? std::clamp(300.0 / std::max((double)cv2EvoWindMps, 1.0), 5.0, 120.0) : 1e30;
+    int face = -1;
+    double worst = 0.0;
+    for (int f = 0; f < 6; ++f)
+    {
+        const double lag = std::fabs(t - cv2WxBakedT[f]);
+        if ((cv2WxBakedT[f] < -1e29 || lag > due) && lag > worst)
+        {
+            worst = lag;
+            face = f;
+        }
+    }
+    if (face < 0)
+        return;
+    cv2WxBakedT[face] = t;
+    ++cv2WxRebakes;
+
+    auto faceBarrier = [&](VkImageLayout from, VkImageLayout to, VkAccessFlags sa, VkAccessFlags da) {
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.oldLayout = from;
+        b.newLayout = to;
+        b.srcAccessMask = sa;
+        b.dstAccessMask = da;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = cv2WeatherImg;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kCv2WeatherMips, (uint32_t)face, 1};
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &b);
+    };
+    faceBarrier(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2WxPipeline);
+    for (uint32_t m = 0; m < kCv2WeatherMips; ++m)
+    {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2WxPipeLayout, 0, 1, &cv2WxSets[m], 0, nullptr);
+        GpuWeatherPC pcv = weatherEvoPC(face, m);
+        vkCmdPushConstants(cmd, cv2WxPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pcv), &pcv);
+        uint32_t g = std::max(1u, ((kCv2WeatherFace >> m) + 7) / 8);
+        vkCmdDispatch(cmd, g, g, 1);
+    }
+    faceBarrier(VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT);
+}
+
 void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc)
 {
     fillCloudsV2Params(ctx, cpc);
+    recordWeatherEvolution(cmd);
     if (!cv2MarchPipeline)
         return;
 
@@ -804,11 +1086,26 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeLayout, 0, 1, &cv2MarchDescSet, 0, nullptr);
     vkCmdPushConstants(cmd, cv2MarchPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
-    const uint32_t gw = cv2FullRateNow ? cv2HalfW : cv2QuarterW, gh = cv2FullRateNow ? cv2HalfH : cv2QuarterH;
-    vkCmdDispatch(cmd, (gw + 15) / 16, (gh + 15) / 16, 1);
+    // This frame's lightning flashes (one workgroup): cloud_march.comp draws them after the resolve.
+    if (cv2LightningPipeline)
+    {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightningPipeline);
+        vkCmdDispatch(cmd, 1, 1, 1);
+    }
+    // Four levels of the light volume (the godrays read it in the march, after this barrier).
+    if (cv2LightVolPipeline && cv2Godrays > 0.0f)
+    {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightVolPipeline);
+        vkCmdDispatch(cmd, kCv2LightVolXY / 8, kCv2LightVolXY / 8, kCv2LightVolLevelsPerFrame / 4);
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    }
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeline);
+    const uint32_t gw = cv2HalfRateNow ? (cv2HalfW + 1) / 2 : cv2FullRateNow ? cv2HalfW : cv2QuarterW;
+    const uint32_t gh = cv2FullRateNow ? cv2HalfH : cv2QuarterH;
+    vkCmdDispatch(cmd, (gw + cv2MarchWg[0] - 1) / cv2MarchWg[0], (gh + cv2MarchWg[1] - 1) / cv2MarchWg[1], 1);
 
     memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);

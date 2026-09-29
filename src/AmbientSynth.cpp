@@ -1964,6 +1964,133 @@ private:
     Pink pinkL_, pinkR_;
     float hissPrev_ = 0.0f, rumPrev_ = 0.0f;
 };
+
+// ── thunder ─────────────────────────────────────────────────────────────────────────────────────────
+// One roll of thunder per trigger (the sim schedules it at the flash's distance / 343 m/s, from the
+// lightning flash list; SatelliteSimAmbience.cpp). A roll is low-passed noise under an envelope of
+// overlapping "peals" — each a swell and decay as the sound from another stretch of the channel
+// arrives — that thin out over the roll; close strikes open with a crack. Distance does most of the
+// work, as it does outdoors: it lowers the cutoff (the air takes the highs), slows the onset (the
+// channel is kilometres long, so the sound arrives smeared), lengthens the roll and lowers the level.
+// Params (all snap): trigger (a counter: any change starts a roll), distance_km, energy (a ground
+// strike ~1, in cloud ~0.5), pan.
+const AmbientSynth::ParamDef kThunderParams[] = {
+    {"level", 1.0f}, {"trigger", 0.0f, true}, {"distance_km", 5.0f, true}, {"energy", 1.0f, true}, {"pan", 0.0f, true},
+};
+enum
+{
+    kTLevel,
+    kTTrigger,
+    kTDist,
+    kTEnergy,
+    kTPan,
+};
+
+class ThunderSynth final : public AmbientSynth
+{
+public:
+    ThunderSynth(uint32_t sr, uint32_t seed)
+        : AmbientSynth("thunder", kThunderParams, (int)(sizeof(kThunderParams) / sizeof(kThunderParams[0])), sr, seed)
+    {
+    }
+
+protected:
+    static constexpr int kRolls = 6;
+    struct Roll
+    {
+        bool on = false;
+        float t = 0.0f, dur = 0.0f, rise = 0.0f, gain = 0.0f, gl = 0.0f, gr = 0.0f;
+        float crack = 0.0f, peal = 0.0f, pealTarget = 0.0f, pealRate = 0.0f, pealDecay = 0.0f, base = 0.0f;
+        Svf lpL, lpR, crHp;
+        Brown brL, brR;
+    };
+
+    void start()
+    {
+        Roll &r = rolls_[next_];
+        next_ = (next_ + 1) % kRolls;
+        const float d = std::clamp(p_[kTDist], 0.1f, 40.0f);
+        const float e = std::clamp(p_[kTEnergy], 0.0f, 2.0f);
+        r = Roll{};
+        r.on = true;
+        r.dur = std::min(4.0f + 0.9f * d + 2.0f * uni(), 18.0f);
+        r.rise = 0.02f + 0.07f * d;
+        r.gain = e * 1.6f / (1.0f + d / 2.5f);
+        const float fc = std::clamp(3000.0f / (1.0f + d / 0.7f), 70.0f, 3000.0f);
+        r.lpL.set(fc, 0.6f, sr_);
+        r.lpR.set(fc * 1.04f, 0.6f, sr_);
+        r.crHp.set(900.0f, 0.7f, sr_);
+        r.crack = e * std::clamp(1.0f - d / 2.5f, 0.0f, 1.0f);
+        r.pealRate = 0.8f + 0.8f * uni();
+        r.pealDecay = expf(-1.0f / (sr_ * (0.35f + 0.5f * uni())));
+        r.base = 0.15f;
+        attack_ = 1.0f - expf(-1.0f / (sr_ * 0.05f));
+        panGains(std::clamp(p_[kTPan], -1.0f, 1.0f) * 0.8f, r.gl, r.gr);
+    }
+
+    void block(float *out, uint32_t n) override
+    {
+        if (p_[kTTrigger] != lastTrig_)
+        {
+            lastTrig_ = p_[kTTrigger];
+            start();
+        }
+        const float lvl = p_[kTLevel];
+        const float dt = 1.0f / sr_;
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            float l = 0.0f, rr = 0.0f;
+            for (Roll &r : rolls_)
+            {
+                if (!r.on)
+                    continue;
+                r.t += dt;
+                if (r.t > r.dur)
+                {
+                    r.on = false;
+                    continue;
+                }
+                // Peals: a Poisson stream thinning out over the roll, each a swell (~50 ms attack: an
+                // instant jump clicked) and a slow decay.
+                const float rate = r.pealRate * expf(-r.t / (0.4f * r.dur));
+                if (uni() < rate * dt)
+                    r.pealTarget += 0.25f + 2.0f * uni() * uni() * uni();
+                r.pealTarget *= r.pealDecay;
+                r.peal += (r.pealTarget - r.peal) * attack_;
+                const float onset = std::min(r.t / r.rise, 1.0f);
+                const float fade = 1.0f - smooth01((r.t - 0.55f * r.dur) / (0.45f * r.dur));
+                const float env = (r.peal + r.base * expf(-r.t / (0.2f * r.dur))) * onset * onset * fade;
+                const float wl = bip(), wr = bip();
+                r.lpL.tick(r.brL.tick(wl) * 2.0f + wl * 0.3f);
+                r.lpR.tick(r.brR.tick(wr) * 2.0f + wr * 0.3f);
+                float o = 0.0f;
+                if (r.crack > 0.0f && r.t < 0.25f)
+                {
+                    r.crHp.tick(bip());
+                    o = r.crHp.hp * r.crack * expf(-r.t / 0.05f) * 1.5f;
+                }
+                // Scaled so a strike 1 km away rolls at ~-24 LUFS (the ambience convention), -35 at 15 km.
+                l += (r.lpL.lp * env * 0.24f + o * 0.07f) * r.gain * r.gl;
+                rr += (r.lpR.lp * env * 0.24f + o * 0.07f) * r.gain * r.gr;
+            }
+            // A soft limit: the loudest peals of a close strike stacked past full scale.
+            out[2 * i] = softLimit(l * lvl);
+            out[2 * i + 1] = softLimit(rr * lvl);
+        }
+    }
+    static float smooth01(float x)
+    {
+        x = std::clamp(x, 0.0f, 1.0f);
+        return x * x * (3.0f - 2.0f * x);
+    }
+    static float softLimit(float x) { return x / (1.0f + fabsf(x) * 0.5f); }
+
+private:
+    float attack_ = 0.0005f;   // the peals' swell (set from the rate in start())
+    Roll rolls_[kRolls];
+    int next_ = 0;
+    float lastTrig_ = 0.0f;
+};
 } // namespace
 
 // ── AmbientSynth base ────────────────────────────────────────────────────────────────────────────
@@ -2009,12 +2136,14 @@ std::unique_ptr<AmbientSynth> AmbientSynth::create(const std::string &kind, uint
         return std::make_unique<BassSynth>(sampleRate, seed);
     if (kind == "rain")
         return std::make_unique<RainSynth>(sampleRate, seed);
+    if (kind == "thunder")
+        return std::make_unique<ThunderSynth>(sampleRate, seed);
     return nullptr;
 }
 
 std::vector<std::string> AmbientSynth::kinds()
 {
-    return {"wind", "hum", "drone", "beeps", "disk", "chorus", "surf", "saw", "pad", "bass", "rain"};
+    return {"wind", "hum", "drone", "beeps", "disk", "chorus", "surf", "saw", "pad", "bass", "rain", "thunder"};
 }
 
 int AmbientSynth::paramIndex(const std::string &name) const

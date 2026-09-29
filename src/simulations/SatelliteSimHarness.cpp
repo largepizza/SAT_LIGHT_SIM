@@ -193,7 +193,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -1817,6 +1817,53 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         snprintf(buf, sizeof(buf), "seed %s, hit %.0f m (%d steps) / from eye %.0f m (%d steps)",
                  v[0].w > 0.5f ? "SKY" : std::to_string((int)v[0].z).c_str(), v[1].x, (int)v[1].y, v[1].z, (int)v[1].w);
         r["message"] = buf;
+        return Status::Done;
+    }
+
+    // ── lightning: the flashes in progress (the previous frame's list, cloud_lightning.glsl) ──
+    if (n == "lightning")
+    {
+        json list = json::array();
+        uint32_t cnt = 0;
+        if (cv2FlashMapped)
+        {
+            const uint32_t *hdr = (const uint32_t *)cv2FlashMapped;
+            const float *f = (const float *)((const char *)cv2FlashMapped + 16);
+            cnt = std::min(hdr[0], kCv2FlashMax);
+            for (uint32_t i = 0; i < cnt; ++i)
+            {
+                const float *e = f + i * 12;
+                uint32_t id;
+                std::memcpy(&id, &e[8], 4);
+                list.push_back({{"id", id}, {"intensity", e[3]}, {"cloud_to_ground", e[7] > 0.5f},
+                                {"age_s", e[10]}, {"dist_km", e[11] / 1000.0f},
+                                {"enu_m", {e[0], e[1], e[2] - (float)(6371000.0)}}});
+            }
+        }
+        r["count"] = cnt;
+        r["flashes"] = list;
+        r["thunder_pending"] = thunderPending_.size();
+        r["thunder_rolls"] = thunderRolls_;
+        r["message"] = std::to_string(cnt) + " flash(es) in progress";
+        return Status::Done;
+    }
+
+    // ── shader hot reload (clouds v2 march + resolve) ───────────────────────────
+    if (n == "shaders")
+    {
+        if (lower(pos(0)) != "reload" || !ctx_)
+            fail("shaders reload [march=<spv path>]");
+        std::string stats;
+        uint32_t wgX = 0, wgY = 0;
+        const std::string wg = c.str("wg");
+        if (!wg.empty() && sscanf(wg.c_str(), "%ux%u", &wgX, &wgY) != 2)
+            fail("shaders reload: wg=<X>x<Y>");
+        const std::string err = reloadCloudsV2Shaders(*ctx_, c.str("march"), stats, wgX, wgY);
+        if (!err.empty())
+            fail("shaders reload: " + err);
+        r["stats"] = stats;
+        r["message"] = "reloaded cloud_v2_march (wg " + std::to_string(cv2MarchWg[0]) + "x" + std::to_string(cv2MarchWg[1])
+                     + ") / cloud_v2_resolve / cloud_v2_lightning / cloud_march" + (stats.empty() ? std::string() : ": " + stats);
         return Status::Done;
     }
 

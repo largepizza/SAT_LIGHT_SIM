@@ -4680,6 +4680,16 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Cb lobes", &cv2CbLobes, 0.0f, 1.5f, 0.05f, "%.2f", 171},
         {"Cb sparsity", &cv2CbSparsity, 0.0f, 1.0f, 0.05f, "%.2f", 172},
         {"Cb overshoot (km)", &cv2CbOvershootKm, 0.0f, 3.0f, 0.05f, "%.2f", 173},
+        {"Storm cumulus reach (km)", &cv2CbCumulusReachKm, 5.0f, 160.0f, 1.0f, "%.0f", 177},
+        {"Lightning (flashes/min/tower)", &cv2LightningRate, 0.0f, 30.0f, 0.5f, "%.1f", 179},
+        {"Lightning glow", &cv2LightningGlow, 0.0f, 5.0f, 0.05f, "%.2f", 180},
+        {"Lightning bolts", &cv2LightningBolt, 0.0f, 5.0f, 0.05f, "%.2f", 181},
+        {"God rays", &cv2Godrays, 0.0f, 3.0f, 0.05f, "%.2f", 187},
+        {"God ray range (km)", &cv2GodrayRangeKm, 50.0f, 1500.0f, 10.0f, "%.0f", 188},
+        {"Weather evolution wind (m/s)", &cv2EvoWindMps, 0.0f, 40.0f, 0.5f, "%.1f", 182},
+        {"Weather growth / decay", &cv2EvoGrowth, 0.0f, 0.5f, 0.01f, "%.2f", 183},
+        {"Weather evolution window (h)", &cv2EvoWindowH, 0.25f, 24.0f, 0.25f, "%.2f", 184},
+        {"Afternoon land convection", &cv2EvoDiurnal, 0.0f, 1.5f, 0.05f, "%.2f", 185},
         {"Anvil thickness (km)", &cv2AnvilThickKm, 0.3f, 6.0f, 0.1f, "%.1f", 174},
         {"Anvil hang (km)", &cv2AnvilHangKm, 0.0f, 6.0f, 0.1f, "%.1f", 175},
     };
@@ -4708,6 +4718,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Forward scatter g", &cv2PhaseG, 0.0f, 0.95f, 0.01f, "%.2f", 131},
         {"Light march (m)", &cv2LightLenM, 250.0f, 8000.0f, 50.0f, "%.0f", 132},
         {"Light steps", &cv2LightSteps, 1.0f, 12.0f, 1.0f, "%.0f", 133},
+        {"Light LOD footprint (m)", &cv2LightLodFootprintM, 0.0f, 200.0f, 5.0f, "%.0f", 178},
     };
 
     // The shadow clouds cast on the ground, and how city lights diffuse through cloud.
@@ -4730,6 +4741,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"History weight", &cv2HistoryWeight, 0.05f, 1.0f, 0.01f, "%.2f", 140},
         {"Full rate above (km)", &cv2FullRateAboveKm, 0.0f, 400.0f, 1.0f, "%.0f", 145},
         {"Sparse when still (0/1)", &cv2SparseWhenStill, 0.0f, 1.0f, 1.0f, "%.0f", 176},
+        {"Half rate while moving (0/1)", &cv2HalfRateMoving, 0.0f, 1.0f, 1.0f, "%.0f", 186},
     };
 
     // Tiling periods of the noise volumes (no rebake: they are read at these scales).
@@ -6236,6 +6248,17 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2HistoryWeight = c.value("history_weight", cv2HistoryWeight);
         cv2LightLenM = c.value("light_len_m", cv2LightLenM);
         cv2LightSteps = c.value("light_steps", cv2LightSteps);
+        cv2LightLodFootprintM = c.value("light_lod_footprint_m", cv2LightLodFootprintM);
+        cv2LightningRate = c.value("lightning_rate", cv2LightningRate);
+        cv2LightningGlow = c.value("lightning_glow", cv2LightningGlow);
+        cv2LightningBolt = c.value("lightning_bolt", cv2LightningBolt);
+        cv2EvoWindMps = c.value("evo_wind_mps", cv2EvoWindMps);
+        cv2EvoGrowth = c.value("evo_growth", cv2EvoGrowth);
+        cv2EvoWindowH = c.value("evo_window_h", cv2EvoWindowH);
+        cv2EvoDiurnal = c.value("evo_diurnal", cv2EvoDiurnal);
+        cv2HalfRateMoving = c.value("half_rate_moving", cv2HalfRateMoving);
+        cv2Godrays = c.value("godrays", cv2Godrays);
+        cv2GodrayRangeKm = c.value("godray_range_km", cv2GodrayRangeKm);
         cv2StepBaseM = c.value("step_base_m", cv2StepBaseM);
         cv2StepGrowth = c.value("step_growth", cv2StepGrowth);
         cv2StepMaxM = c.value("step_max_m", cv2StepMaxM);
@@ -6304,6 +6327,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CbLobes = c.value("cb_lobes", cv2CbLobes);
         cv2CbSparsity = c.value("cb_sparsity", cv2CbSparsity);
         cv2CbOvershootKm = c.value("cb_overshoot_km", cv2CbOvershootKm);
+        cv2CbCumulusReachKm = c.value("cb_cumulus_reach_km", cv2CbCumulusReachKm);
         cv2AnvilThickKm = c.value("anvil_thick_km", cv2AnvilThickKm);
         cv2AnvilHangKm = c.value("anvil_hang_km", cv2AnvilHangKm);
         cv2AutoExposure = c.value("auto_exposure", cv2AutoExposure);
@@ -6643,6 +6667,17 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"history_weight", cv2HistoryWeight},
         {"light_len_m", cv2LightLenM},
         {"light_steps", cv2LightSteps},
+        {"light_lod_footprint_m", cv2LightLodFootprintM},
+        {"lightning_rate", cv2LightningRate},
+        {"lightning_glow", cv2LightningGlow},
+        {"lightning_bolt", cv2LightningBolt},
+        {"evo_wind_mps", cv2EvoWindMps},
+        {"evo_growth", cv2EvoGrowth},
+        {"evo_window_h", cv2EvoWindowH},
+        {"evo_diurnal", cv2EvoDiurnal},
+        {"half_rate_moving", cv2HalfRateMoving},
+        {"godrays", cv2Godrays},
+        {"godray_range_km", cv2GodrayRangeKm},
         {"step_base_m", cv2StepBaseM},
         {"step_growth", cv2StepGrowth},
         {"step_max_m", cv2StepMaxM},
@@ -6711,6 +6746,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cb_lobes", cv2CbLobes},
         {"cb_sparsity", cv2CbSparsity},
         {"cb_overshoot_km", cv2CbOvershootKm},
+        {"cb_cumulus_reach_km", cv2CbCumulusReachKm},
         {"anvil_thick_km", cv2AnvilThickKm},
         {"anvil_hang_km", cv2AnvilHangKm},
         {"auto_exposure", cv2AutoExposure}};

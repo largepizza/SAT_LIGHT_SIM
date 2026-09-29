@@ -1,0 +1,69 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// ── Clouds v2: the LIGHT VOLUME (2026-09-29, .plans/CLOUDS_V2_PLAN.md §6 / phase 3) ────────────────
+// A camera-centred 3D texture of sun transmittance through the cloud field: 128 x 128 columns over
+// +-cv2.lightVol.y (m) of the observer's tangent plane (gnomonic: a column's centre is the sphere point
+// under (x, y, R)) by 32 levels from sea level to cv2.lightVol.z. Each voxel marches toward the Sun in
+// 16 growing steps (150 m .. ~127 km in all: a low Sun's shadows come from far clouds), stopping above
+// the shell or once opaque. Time-sliced: 4 of the 32 levels per frame (cv2.lightVol.x = the first),
+// always about the current eye — at any speed the lag of a level is under a voxel. Its first consumer
+// is the godrays in cloud_v2_march.comp (the air in a cloud's shadow loses its sunlight).
+// Same descriptor set and push constants as the march.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 4) in;
+
+layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.comp)
+    mat4  skyView;
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;
+} pc;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_BINDING  1
+#define CV2_WEATHER_BINDING 2
+#define CV2_SHAPE_BINDING   3
+#define CV2_MESO_BINDING    5
+#include "clouds_v2.glsl"
+layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
+layout(r16f, set = 0, binding = 13) uniform writeonly image3D lightVolOut;
+
+void main()
+{
+    ivec3 sz = imageSize(lightVolOut);
+    ivec3 v  = ivec3(gl_GlobalInvocationID.xy, gl_GlobalInvocationID.z + int(cv2.lightVol.x));
+    if (any(greaterThanEqual(v, sz))) return;
+
+    vec3  sunDir = normalize(pc.sunDirENU.xyz);
+    vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+    vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+    vec3  enuY = cross(enuZ, enuX);
+    mat3  enuToEcef = mat3(enuX, enuY, enuZ);
+    float eyeH = terrainFrame.x + 2.0;
+    vec3  eye  = vec3(0.0, 0.0, R_EARTH + eyeH);
+
+    // The voxel's centre: the column (x, y) on the tangent plane, at height h.
+    vec2  xy  = ((vec2(v.xy) + 0.5) / vec2(sz.xy) - 0.5) * (2.0 * cv2.lightVol.y);
+    float h   = (float(v.z) + 0.5) / float(sz.z) * cv2.lightVol.z;
+    vec3  ap  = normalize(vec3(xy / R_EARTH, 1.0)) * (R_EARTH + h);
+
+    float od = 0.0;
+    if (dot(normalize(ap), sunDir) > -0.35) {        // not deep in the Earth's shadow
+        float s = 0.0, seg = 150.0;
+        [[dont_unroll]] for (int k = 0; k < 16; ++k) {
+            vec3  q  = ap + sunDir * (s + 0.5 * seg);
+            float qh = length(q) - R_EARTH;
+            if (qh > cv2.shell.y + 500.0 || qh < -200.0) break;   // above every cloud, or into the ground
+            // The step's own length as the footprint: a long step averages the field it spans.
+            od += cv2Field(cv2Pos(q - eye, eyeH, enuToEcef), 0.0, seg * 0.5).sigma * seg;
+            if (od > 6.0) break;
+            s += seg; seg *= 1.45;
+        }
+    }
+    imageStore(lightVolOut, v, vec4(exp(-od), 0.0, 0.0, 0.0));
+}

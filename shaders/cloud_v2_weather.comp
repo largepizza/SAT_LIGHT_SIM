@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 
 // Clouds v2 (.plans/CLOUDS_V2_PLAN.md): bakes the WEATHER CUBE from the real-Earth 8K cloud map,
 // once at init, one dispatch per mip level. A cube, not the equirect source, so the march never
@@ -27,9 +28,48 @@ layout(set = 0, binding = 1) uniform sampler2D earthSpecTex;     // equirect oce
 layout(rgba8, set = 0, binding = 2) writeonly uniform image2DArray outWeather;
 layout(set = 0, binding = 3) uniform sampler2D earthElevTex;     // equirect R8 DEM (terrain.glsl encoding)
 
-layout(push_constant) uniform PC { int faceSize; float srcLod; } pc;
+// face: -1 = all six (the dispatch's z), else only that one (the incremental re-bake).
+// EVOLUTION (decision A, .plans/CLOUDS_V2_PLAN.md; 2026-09-29): the map is read through two copies
+// advected by a slow curl wind (evo1.x m/s), each over its own window of sim time — evo0.xy their ages
+// (s), evo0.zw their weights (sin^2, 0 at each copy's reset) — so the map moves locally and never drifts
+// from itself (a displacement of at most wind x the window), and its coverage grows and decays under a
+// smooth field (evo1.y, sim time evo1.z). SatelliteSim re-bakes one face per frame as sim time moves.
+// evo2: xyz the Sun's direction three hours ago in the map's frame, w "Afternoon land convection".
+layout(push_constant) uniform PC { int faceSize; float srcLod; int face; float pad; vec4 evo0; vec4 evo1; vec4 evo2; } pc;
 
 const float PI = 3.14159265359;
+const float R_EARTH_W = 6371000.0;
+
+// The evolution's wind: the curl of eight smooth waves (~4000 km) on the unit sphere, unit rms,
+// slowly turning (a day's period). The same construction as cv2FlowDisp, its own constants.
+vec3 evoWind(vec3 d)
+{
+    const vec3 kd[8] = vec3[8](vec3( 0.31, -0.72,  0.62), vec3(-0.66,  0.52,  0.54), vec3( 0.84,  0.27, -0.47),
+                               vec3( 0.12,  0.97,  0.21), vec3(-0.41, -0.33, -0.85), vec3( 0.58, -0.61, -0.54),
+                               vec3(-0.93,  0.08,  0.36), vec3( 0.26,  0.44,  0.86));
+    const float ks[8] = float[8](1.0, 1.19, 0.83, 1.37, 0.71, 1.08, 0.92, 1.26);
+    const float ph[8] = float[8](1.1, 3.7, 0.4, 5.2, 2.6, 4.4, 0.9, 3.0);
+    float k0 = 2.0 * PI * R_EARTH_W / 4.0e6;
+    float tp = pc.evo1.z * (2.0 * PI / 86400.0);
+    vec3  g  = vec3(0.0);
+    [[unroll]] for (int i = 0; i < 8; ++i) {
+        vec3 kv = normalize(kd[i]) * (k0 * ks[i]);
+        g += kv * cos(dot(kv, d) + ph[i] + tp * (0.5 + 0.1 * float(i))) / ks[i];
+    }
+    return cross(d, g) / (k0 * 2.0);
+}
+// Growth and decay: a smooth field (~1500 km) whose waves drift through their phases over 10-30 h.
+float evoGrowth(vec3 d)
+{
+    const vec3 kd[6] = vec3[6](vec3( 0.73,  0.21, -0.65), vec3(-0.25,  0.91,  0.33), vec3( 0.47, -0.58,  0.66),
+                               vec3(-0.81, -0.44, -0.39), vec3( 0.05, -0.29, -0.96), vec3(-0.52,  0.63,  0.58));
+    const float T[6] = float[6](36000.0, 52000.0, 71000.0, 45000.0, 98000.0, 63000.0);
+    float k1 = 2.0 * PI * R_EARTH_W / 1.5e6;
+    float g  = 0.0;
+    [[unroll]] for (int i = 0; i < 6; ++i)
+        g += cos(dot(normalize(kd[i]) * k1, d) + float(i) * 1.7 + pc.evo1.z * (2.0 * PI / T[i]));
+    return g / 1.73;                                     // ~unit rms
+}
 
 vec3 faceDir(int face, vec2 st)
 {
@@ -55,6 +95,7 @@ vec2 equirectUV(vec3 d)
 void main()
 {
     ivec3 id = ivec3(gl_GlobalInvocationID);
+    if (pc.face >= 0) id.z = pc.face;
     if (id.x >= pc.faceSize || id.y >= pc.faceSize || id.z >= 6) return;
 
     vec2 st = (vec2(id.xy) + 0.5) / float(pc.faceSize);
@@ -67,33 +108,52 @@ void main()
     float texel = 2.0 / float(pc.faceSize);   // angular size of one output texel (rad, ~at face centre)
 
     // Coverage: a 2x2 supersample at the matching source mip.
-    float cov = 0.0;
-    for (int k = 0; k < 4; ++k) {
-        vec2 o = (vec2(k & 1, k >> 1) - 0.5) * 0.5 * texel;
-        cov += textureLod(earthCloudsTex, equirectUV(normalize(d + tx * o.x + ty * o.y)), pc.srcLod).r;
-    }
-    cov *= 0.25;
-
-    // Neighbourhood statistics over ~8 texels (~40 km at the full-resolution level): the standard
-    // deviation separates broken (convective) fields from smooth (stratiform) ones.
-    float m1 = 0.0, m2 = 0.0;
+    // The map's coverage and, over ~8 texels (~40 km at the full-resolution level), its standard
+    // deviation, which separates broken (convective) fields from smooth (stratiform) ones — read through
+    // the two advected copies and blended.
+    float cov = 0.0, m1 = 0.0, m2 = 0.0;
     const int kRing = 12;
-    for (int k = 0; k < kRing; ++k) {
-        float ang = float(k) * (2.0 * PI / float(kRing));
-        float r   = (k & 1) == 0 ? 4.0 : 8.0;
-        vec3  q   = normalize(d + (tx * cos(ang) + ty * sin(ang)) * r * texel);
-        float v   = textureLod(earthCloudsTex, equirectUV(q), pc.srcLod + 1.0).r;
-        m1 += v; m2 += v * v;
+    vec3 wv = (pc.evo1.x > 0.0) ? evoWind(d) * (pc.evo1.x / R_EARTH_W) : vec3(0.0);
+    for (int c = 0; c < 2; ++c) {
+        float w = (c == 0) ? pc.evo0.z : pc.evo0.w;
+        if (w < 1e-3) continue;
+        vec3  dc = normalize(d - wv * ((c == 0) ? pc.evo0.x : pc.evo0.y));   // back along the wind
+        float cc = 0.0;
+        for (int k = 0; k < 4; ++k) {
+            vec2 o = (vec2(k & 1, k >> 1) - 0.5) * 0.5 * texel;
+            cc += textureLod(earthCloudsTex, equirectUV(normalize(dc + tx * o.x + ty * o.y)), pc.srcLod).r;
+        }
+        float a1 = 0.0, a2 = 0.0;
+        for (int k = 0; k < kRing; ++k) {
+            float ang = float(k) * (2.0 * PI / float(kRing));
+            float r   = (k & 1) == 0 ? 4.0 : 8.0;
+            vec3  q   = normalize(dc + (tx * cos(ang) + ty * sin(ang)) * r * texel);
+            float v   = textureLod(earthCloudsTex, equirectUV(q), pc.srcLod + 1.0).r;
+            a1 += v; a2 += v * v;
+        }
+        cov += w * cc * 0.25;
+        m1  += w * a1 / float(kRing);
+        m2  += w * a2 / float(kRing);
     }
-    m1 /= float(kRing); m2 /= float(kRing);
     float sd = sqrt(max(m2 - m1 * m1, 0.0));
+    // Systems strengthen and weaken: clear air clouds over where the field rises, overcast thins where it
+    // falls (the types below follow the new coverage, so storms grow and decay with it).
+    if (pc.evo1.y > 0.0) cov = clamp(cov + pc.evo1.y * evoGrowth(d), 0.0, 1.0);
 
     float latAbs  = abs(asin(clamp(d.z, -1.0, 1.0))) * (180.0 / PI);
     float ocean   = textureLod(earthSpecTex, equirectUV(d), pc.srcLod + 2.0).r;
     float tropics = 1.0 - smoothstep(18.0, 32.0, latAbs);
     float polar   = smoothstep(50.0, 70.0, latAbs);
 
-    float conv = smoothstep(0.06, 0.2, sd);                 // broken field
+    // Afternoon convection over land: the ground heats under the Sun of the last few hours (its height
+    // three hours ago here), and where the map has moisture nearby (its local mean cover) cumulus builds
+    // into congestus and storms through the afternoon, dying back after dark. The map is one moment's
+    // clouds everywhere; this is the diurnal cycle it cannot carry.
+    float heat = (pc.evo2.w > 0.0) ? smoothstep(0.15, 0.85, dot(d, pc.evo2.xyz)) : 0.0;
+    float aft  = pc.evo2.w * heat * (1.0 - ocean) * smoothstep(0.05, 0.3, m1);
+    cov = clamp(cov + 0.2 * aft, 0.0, 1.0);
+
+    float conv = max(smoothstep(0.06, 0.2, sd), 0.8 * aft);  // broken field (afternoon convection is)
     float deep = smoothstep(0.55, 0.9, cov);                // bright = thick/tall
 
     float t = 0.25;                                          // stratocumulus by default
@@ -101,6 +161,7 @@ void main()
     t += deep * conv * (0.22 + 0.25 * tropics);              // -> congestus / cumulonimbus
     t += deep * tropics * 0.12 * (1.0 - ocean * 0.5);        // tropical land convection
     t -= (1.0 - conv) * ocean * (0.12 + 0.12 * polar);       // smooth cloud over cold sea -> stratus
+    t += 0.3 * aft * (0.5 + 0.5 * tropics);                  // afternoon: towering cumulus, storms
     t  = clamp(t, 0.0, 1.0);
 
     float precip = clamp(deep * smoothstep(0.55, 0.9, t) + deep * (1.0 - conv) * 0.35, 0.0, 1.0);

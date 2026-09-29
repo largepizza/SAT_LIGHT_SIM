@@ -90,7 +90,10 @@ layout(set = 0, binding = 3) uniform sampler2D earthDayTex;
 layout(set = 0, binding = 4) uniform sampler2D earthNightTex;
 layout(set = 0, binding = 5) uniform sampler2D earthElevTex;
 layout(set = 0, binding = 6) uniform sampler2D earthSpecTex;
-layout(set = 0, binding = 7) uniform sampler2D earthCloudsTex;
+// The clouds v2 WEATHER CUBE (cloud_v2_weather.comp; r = the map's brightness, evolved over sim time),
+// in the map's drifted frame: the flat layers (the mirrors' and probes' clouds, the fallback tiers) show
+// the same, evolving map the volumetric clouds are built from. It was the static 8K equirect map.
+layout(set = 0, binding = 7) uniform samplerCube earthCloudsCube;
 
 // City day/night detail textures (bindings 14/15): small tileable maps, REPEAT in both U and V.
 // Blended onto dayColor/nightColor near cities (bright earthNightTex pixels) within a fixed
@@ -1113,10 +1116,12 @@ void evalCloudLayer(
     float cLon   = atan(cECEF.y, cECEF.x);
     float cLat   = asin(clamp(cECEF.z / cL, -1.0, 1.0));
 
-    // Earth-fixed UV with per-layer longitude drift
-    vec2  uv    = vec2(fract((cLon + PI) / (2.0*PI) + cloudPhase * driftMult / (2.0*PI)),
-                       (0.5*PI - cLat) / PI);
-    float raw   = textureLod(earthCloudsTex, uv, mipLod).r;
+    // The map at this Earth-fixed direction, turned by the per-layer longitude drift into the weather
+    // cube's (drifted) frame. The cube's mip 0 is the equirect map's mip 1 (5 km texels).
+    float dph   = cloudPhase * driftMult;
+    vec3  dE    = cECEF / cL;
+    vec3  dMap  = vec3(dE.x * cos(dph) - dE.y * sin(dph), dE.x * sin(dph) + dE.y * cos(dph), dE.z);
+    float raw   = textureLod(earthCloudsCube, dMap, max(mipLod - 1.0, 0.0)).r;
     float alpha = clamp((raw - (1.0 - coverage)) * density, 0.0, alphaMax);
     if (alpha <= 0.0) return;
 

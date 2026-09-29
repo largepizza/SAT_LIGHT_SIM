@@ -21,7 +21,10 @@
 // (shape-aware: one cheap sample 250 m up); ground bounce from below; moon, city up-light and the
 // Reflect-Orbital beam lights (the v1 list, tile cull and function) at night.
 
-layout(local_size_x = 16, local_size_y = 16) in;
+// The workgroup size is a specialization constant (ids 0/1, default 16 x 16; SatelliteSim::cv2MarchWg):
+// it bounds the registers the driver may give a thread (65536 per SM / the group's threads), which is
+// this shader's occupancy (perf sprint 2026-09-29).
+layout(local_size_x_id = 0, local_size_y_id = 1, local_size_x = 16, local_size_y = 16) in;
 
 layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
     mat4  skyView;
@@ -54,13 +57,14 @@ layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define BEAM_CLOUD_LIGHTS_BINDING 9
 #include "beam_cloud_lights.glsl"
 layout(set = 0, binding = 10, rgba16f) uniform writeonly image2D outColor;
+layout(set = 0, binding = 14) uniform sampler3D lightVolTex;   // sun transmittance (cloud_v2_lightvol.comp)
 layout(set = 0, binding = 11, rg32f)   uniform writeonly image2D outDepth;
 
 const int N_LIGHT = 12;
 vec2 optDepth(vec3 p, vec3 d, float segTotal) {
     float sLen = segTotal / float(N_LIGHT);
     float odR = 0.0, odM = 0.0;
-    for (int i = 0; i < N_LIGHT; ++i) {
+    [[dont_unroll]] for (int i = 0; i < N_LIGHT; ++i) {
         float h = max(0.0, length(p + d * (float(i) + 0.5) * sLen) - R_EARTH);
         odR += exp(-h / H_R);
         odM += exp(-h / H_M);
@@ -120,7 +124,7 @@ vec3 skyZenithAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
     float cosUp = dot(zen, sunDir);
     float odR = 0.0, odM = 0.0, accM = 0.0;
     vec3  accR = vec3(0.0);
-    for (int i = 0; i < N_Z; ++i) {
+    [[dont_unroll]] for (int i = 0; i < N_Z; ++i) {
         vec3  sp = p + zen * ((float(i) + 0.5) * seg);
         float h  = max(0.0, length(sp) - R_EARTH);
         float dR = exp(-h / H_R) * seg, dM = exp(-h / H_M) * seg;
@@ -139,23 +143,40 @@ const float kLightRatio = 1.6;
 const vec3  kMoonColor  = vec3(0.92, 0.95, 1.0);
 
 // Optical depth from a cloud sample toward a light: the light march (the first two samples with
-// detail — the lumps that make cauliflower) plus one long coarse sample, the far side of a tower.
-float lightOD(vec3 rel, vec3 ldir, float eyeH, mat3 enuToEcef, int nL, float lSeg0, float jitter,
-              float detailAmt, float fp)
+// detail — the lumps that make cauliflower) plus one long coarse sample, the far side of a tower;
+// and the sky-light probe 250 m up (sigUp). ONE call site of cv2Field for all of them: the field is
+// inlined at every call, and five copies of it in this shader (coarse, fine, light, far, probe) cost
+// registers and instruction cache on every sample (perf sprint, 2026-09-29). wantLight = false runs
+// the probe alone.
+void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL, float lSeg0,
+                float jitter, float detailAmt, float fp, bool wantLight, out float od, out float sigUp,
+                bool wantBeam, vec3 bdir, out float odBeam, bool lod)
 {
-    float od = 0.0, s = 0.0, lSeg = lSeg0;
-    for (int k = 0; k < nL; ++k) {
+    od = 0.0; sigUp = 0.0; odBeam = 0.0;
+    float s = 0.0, lSeg = lSeg0, sb = 0.0, sg = 150.0;
+    for (int k = wantLight ? 0 : nL + 1; k <= (wantBeam ? nL + 4 : nL + 1); ++k) {
         // Jittered over the WHOLE segment: at +-25% of it the optical depth to the light came in
         // steps across a smooth surface, and the big smooth storm domes showed contour ripples (pass 13).
-        float sm = s + lSeg * jitter;
+        // Light LOD: two steps spanning the same length (the loop's bounds stay uniform).
+        if (lod && k >= 2 && k < nL) continue;
+        vec3  off = (k < nL) ? ldir * (s + lSeg * jitter)
+                  : (k == nL) ? ldir * (cv2.light.x * 1.6)
+                  : (k == nL + 1) ? up * 250.0 : bdir * (sb + sg * 0.5);
         // The view sample's footprint, not the step's: a longer footprint would turn the gaps
         // between cells into haze and shadow everything.
-        CV2Field lf = cv2Field(cv2Pos(rel + ldir * sm, eyeH, enuToEcef), k < 2 ? detailAmt : 0.0, fp);
-        od += lf.sigma * (1.0 - 0.45 * lf.thin) * lSeg;   // ice delta-scaled (see the march)
-        s += lSeg; lSeg *= kLightRatio;
+        CV2Field lf = cv2Field(cv2Pos(rel + off, eyeH, enuToEcef), k < 2 ? detailAmt : 0.0, fp);
+        if (k < nL) {
+            od += lf.sigma * (1.0 - 0.45 * lf.thin) * lSeg;   // ice delta-scaled (see the march)
+            s += lSeg; lSeg = (lod && k == 0) ? cv2.light.x - lSeg : lSeg * kLightRatio;
+        } else if (k == nL) {
+            od += lf.sigma * cv2.light.x * 0.8;
+        } else if (k == nL + 1) {
+            sigUp = lf.sigma;
+        } else {
+            odBeam += lf.sigma * (1.0 - 0.45 * lf.thin) * sg;
+            sb += sg; sg *= 3.0;
+        }
     }
-    CV2Field ff = cv2Field(cv2Pos(rel + ldir * (cv2.light.x * 1.6), eyeH, enuToEcef), 0.0, fp);
-    return od + ff.sigma * cv2.light.x * 0.8;
 }
 
 // Multiple scattering (Wrenninge octaves): each octave sees a fraction of the optical depth.
@@ -201,14 +222,15 @@ float beamIrradiance(uint bli, float R)
 // beams converged on a site come from within a few degrees of each other. The first cut marched
 // three field samples PER BEAM: dozens of beams over a busy site cost dozens x 3 field evaluations
 // per cloud sample (350 ms frames over Anchorage).
-vec3 beamLightCloud(vec3 pW, vec3 rel, float h, vec3 dir, float eyeH, mat3 enuToEcef, CV2Field f,
-                    float fp, float dayness, float og, vec4 hab, vec3 eye)
+// Split in two around the occlusion march (it runs in lightAmbOD, the shader's one field call site for
+// lighting): beamGather sums the lights, beamFinish shades with the optical depth marched along dirS.
+bool beamGather(vec3 pW, float h, vec3 dir, vec3 eye, out float Esum, out vec3 dirSOut, out float phSum)
 {
+    Esum = 0.0; phSum = 0.0; dirSOut = vec3(0.0, 0.0, 1.0);
     if ((cloud.dbgDisableMask & 128u) != 0u || cv2.beam.z <= 0.0 || beamLightCount == 0u)
-        return vec3(0.0);
+        return false;
     bool ovf = (sTileLightOverflow != 0u);
     uint n = ovf ? min(beamLightCount, kMaxCloudBeamLights) : min(sTileLightCount, kTileCloudLightMax);
-    float Esum = 0.0, phSum = 0.0;
     vec3  dSum = vec3(0.0);
     for (uint li = 0u; li < n; ++li) {
         uint  bli  = ovf ? li : sTileLightIdx[li];
@@ -227,20 +249,19 @@ vec3 beamLightCloud(vec3 pW, vec3 rel, float h, vec3 dir, float eyeH, mat3 enuTo
         dSum  += E * dirS;
         phSum += E * (cv2.phase.y * cv2HG(cosB, cv2.phase.x) + cv2.phase.w * cv2HG(cosB, cv2.phase.z));
     }
-    if (Esum <= 0.0) return vec3(0.0);
-    vec3  dirS = normalize(dSum);
-    // The cloud between this sample and the satellites: three coarse steps up the beam (150, 450,
-    // 1350 m), with the depth to the column's top as a floor (a deck lit from above).
-    float od = 0.0, s = 0.0, sg = 150.0;
+    if (Esum <= 0.0) return false;
+    dirSOut = normalize(dSum);
+    return true;
+}
+
+// odMarch: the cloud between this sample and the satellites, three coarse steps up the beam (150, 450,
+// 1350 m, lightAmbOD), with the depth to the column's top as a floor (a deck lit from above).
+vec3 beamFinish(vec3 pW, float h, vec3 dir, CV2Field f, float dayness, float og, vec4 hab,
+                float Esum, vec3 dirS, float phSum, float odMarch)
+{
+    float od;
     if (f.thin > 0.5) od = f.sigma * (1.0 - 0.45 * f.thin) * 400.0;
-    else {
-        for (int k = 0; k < 3; ++k) {
-            CV2Field lf = cv2Field(cv2Pos(rel + dirS * (s + sg * 0.5), eyeH, enuToEcef), 0.0, fp);
-            od += lf.sigma * (1.0 - 0.45 * lf.thin) * sg;
-            s += sg; sg *= 3.0;
-        }
-        od = max(od, 0.5 * f.sigma * max(f.topH - h, 0.0) / max(dot(normalize(pW), dirS), 0.15));
-    }
+    else od = max(odMarch, 0.5 * f.sigma * max(f.topH - h, 0.0) / max(dot(normalize(pW), dirS), 0.15));
     float cosB = dot(dir, dirS);
     vec3  ph   = vec3(phSum / Esum);
     if (f.thin > 0.0)   // ice, delta-scaled (see the march)
@@ -343,13 +364,19 @@ vec3 beamShafts(vec3 eye, vec3 dir, float tMax, vec4 tq, vec3 sunDir, vec3 BETA_
 
 void main()
 {
-    // Sparse: one pixel per 2x2 block, written to the quarter-size top-left of the targets.
-    // Full rate (cv2.misc.z, from altitude): every half-res pixel, written in place.
-    bool  full     = cv2.misc.z > 0.5;
+    // cv2.misc.z, the rate: 0 sparse (one pixel per 2x2 block, written to the quarter-size top-left of
+    // the targets); 1 full (every half-res pixel, in place); 2 half (a checkerboard alternating each
+    // frame, in place: "Half rate while moving").
+    int   rate     = int(cv2.misc.z + 0.5);
+    bool  full     = rate == 1;
+    bool  halfR    = rate == 2;
     ivec2 halfSize = textureSize(sceneDepthTex, 0);
-    ivec2 qSize    = full ? halfSize : (halfSize + 1) / 2;
+    ivec2 qSize    = full ? halfSize : halfR ? ivec2((halfSize.x + 1) / 2, halfSize.y) : (halfSize + 1) / 2;
     ivec2 q        = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 pix      = full ? min(q, halfSize - 1) : min(q * 2 + ivec2(cv2.frame.zw), halfSize - 1);
+    ivec2 pix      = full ? min(q, halfSize - 1)
+                   : halfR ? min(ivec2(q.x * 2 + ((q.y + int(cv2.frame.x)) & 1), q.y), halfSize - 1)
+                           : min(q * 2 + ivec2(cv2.frame.zw), halfSize - 1);
+    ivec2 outPix   = halfR ? pix : q;
 
     float tanHalfFov = tan(pc.fovYRad * 0.5);
     mat3  camToENU   = mat3(transpose(pc.skyView));
@@ -364,7 +391,7 @@ void main()
     // Beam-light tile cull. This workgroup owns half-res pixels [wg*32, wg*32+32) (16 at full
     // rate); its cone is computed from those corners (the cull only needs an axis and a half-angle).
     {
-        float tile = full ? 16.0 : 32.0;
+        vec2 tile = vec2(gl_WorkGroupSize.xy) * (full ? vec2(1.0) : halfR ? vec2(2.0, 1.0) : vec2(2.0));
         vec2 tMin = vec2(gl_WorkGroupID.xy) * tile, tMax = tMin + tile;
         vec3 d00 = rayDirAt(tMin, halfSize, tanHalfFov, camToENU);
         vec3 d10 = rayDirAt(vec2(tMax.x, tMin.y), halfSize, tanHalfFov, camToENU);
@@ -442,7 +469,7 @@ void main()
     // fourth frame, and 4 x 0.618 stepped the offset by ~0.47 per visit, so each pixel of a 2x2
     // block sat on its own two clusters of offsets for hundreds of frames. Each slot kept its own
     // sampling bias, and far clouds (long steps) broke into 2x2 squares.
-    float visit  = full ? cv2.frame.x : floor(cv2.frame.x * 0.25);
+    float visit  = full ? cv2.frame.x : floor(cv2.frame.x * (halfR ? 0.5 : 0.25));
     float jitter = fract(ign(vec2(pix)) + 0.6180340 * visit);
     // Angular size of one half-res pixel: a sample at distance t stands for t * pixAng metres.
     float pixAng = 2.0 * tanHalfFov / float(halfSize.y);
@@ -486,30 +513,41 @@ void main()
             // THE SAMPLE (not the observer's). From orbit a distance-grown step crossed a 900 m
             // stratus deck in one stride and drew it as scattered dots.
             const float kMaxVertStep = 200.0;
-            float dz = abs(dot(dir, normalize(eye + dir * t)));
+            float dzS = dot(dir, normalize(eye + dir * t));
+            float dz  = abs(dzS);
             stepF = min(stepF, kMaxVertStep / max(dz, 0.01));
             vec3  rel   = dir * t;
             CV2Pos p    = cv2Pos(rel, eyeH, enuToEcef);
             float fp = t * pixAng;
-            if (!fine) {
-                CV2Field c = cv2Field(p, -1.0, fp);
+            float detailAmt = 1.0 - smoothstep(cv2.shell.w, cv2.shell.w * 4.0, t);
+            // One call for the coarse (no erosion, the upper bound) and the fine sample.
+            gCv2DbgWant = dbgLayers && fine;
+            CV2Field f = cv2Field(p, fine ? detailAmt : -1.0, fp);
+            gCv2DbgWant = false;
+            // Thin ice alone (the cirrus veil, lit without a light march): shaded at the coarse step
+            // itself, as one sample of two steps, instead of dropping into fine steps. The high layer
+            // spans the sky and its fine steps were a large share of the march from altitude (perf
+            // sprint 2026-09-29). Its density has no erosion, so the coarse read is its fine one.
+            bool coarseThin = !fine && f.sigma > 0.0 && f.thin > 0.9;
+            if (!fine && !coarseThin) {
                 // Back two steps and on to a JITTERED fine lattice: the start jitter covers only the
                 // first (shortest) step, so without this every fine sample sat on the coarse grid and
                 // a flat, sharp deck top drew contour rings around the nadir.
-                if (c.sigma > 0.0) { fine = true; empty = 0; t = max(seg[si].x, t - (2.0 - jitter) * stepF); continue; }
+                if (f.sigma > 0.0) { fine = true; empty = 0; t = max(seg[si].x, t - (2.0 - jitter) * stepF); continue; }
                 t += 2.0 * stepF;
                 pathLen += 2.0 * stepF;
                 continue;
             }
-            float detailAmt = 1.0 - smoothstep(cv2.shell.w, cv2.shell.w * 4.0, t);
-            CV2Field f = cv2Field(p, detailAmt, fp);
-            pathLen += stepF;
-            if (f.sigma <= 0.0) {
-                if (++empty > 5) fine = false;
-                t += stepF;
-                continue;
+            if (coarseThin) pathLen += 2.0 * stepF;
+            else {
+                pathLen += stepF;
+                if (f.sigma <= 0.0) {
+                    if (++empty > 5) fine = false;
+                    t += stepF;
+                    continue;
+                }
+                empty = 0;
             }
-            empty = 0;
             // Ice: the forward peak is not extinction (delta scaling, see phIceSun).
             f.sigma *= 1.0 - 0.45 * f.thin;
             // Soft contact with the ground: the last few pixel footprints before the surface thin out.
@@ -519,14 +557,7 @@ void main()
                 f.sigma *= smoothstep(0.0, clamp(3.0 * fp, 40.0, 600.0), tScene - t);
             odPath += f.sigma * stepF;
             odRain += f.sigma * f.rain * stepF;
-            if (dbgLayers) {
-                float hX, tX, dX;
-                float sm = cv2MidSigma(p, fp, hX, tX, dX);
-                CV2Col cX = cv2ColumnSigma(p, detailAmt, fp);
-                float sa = cv2AnvilSigma(p, fp, cX.near, hX, tX) + cX.sigma;   // blue: anvils + Cb columns
-                float sh = cv2HighSigma(p, fp, hX, tX);
-                odLayer += vec4(max(f.sigma - sm - sa - sh, 0.0), sm, sa, sh) * stepF * T;
-            }
+            if (dbgLayers) odLayer += gCv2Dbg * stepF * T;   // low, mid, anvil + Cb columns, high
 
             vec3  pW   = eye + rel;                        // world point, ENU about the observer
             vec3  up   = normalize(pW);
@@ -545,11 +576,13 @@ void main()
                 // the ground view's sunsets, reddened every low-Sun cloud with it (from orbit, where no
                 // white balance applies, the whole terminator band read dark yellow-orange).
                 vec3 upW = normalize(pW);
-                vec3 pA  = upW * (R_EARTH + hLvl * 800.0), pB = upW * (R_EARTH + hLvl * 800.0 + 800.0);
-                sunColA = sunColorAt(pA, sunDir, BETA_R_BASE * cv2.atmo.x, BETA_M);
-                sunColB = sunColorAt(pB, sunDir, BETA_R_BASE * cv2.atmo.x, BETA_M);
-                skyZenA = skyZenithAt(pA, sunDir, BETA_R, BETA_M);
-                skyZenB = skyZenithAt(pB, sunDir, BETA_R, BETA_M);
+                // One inlined copy of each (a loop over the two levels): code size is this shader's cost.
+                [[dont_unroll]] for (int lv = 0; lv < 2; ++lv) {
+                    vec3 pL  = upW * (R_EARTH + hLvl * 800.0 + float(lv) * 800.0);
+                    vec3 sc  = sunColorAt(pL, sunDir, BETA_R_BASE * cv2.atmo.x, BETA_M);
+                    vec3 sz  = skyZenithAt(pL, sunDir, BETA_R, BETA_M);
+                    if (lv == 0) { sunColA = sc; skyZenA = sz; } else { sunColB = sc; skyZenB = sz; }
+                }
                 cacheT = t; cacheLvl = hLvl;
             }
             {
@@ -589,9 +622,21 @@ void main()
                 iceHabitSet = true;
             }
             vec3 keyS = vec3(0.0);
-            if (dot(keyCol, keyCol) > 0.0) {
-                float od = thin ? f.sigma * 400.0
-                                : lightOD(rel, keyDir, eyeH, enuToEcef, nL, lSeg0, jitter, detailAmt, fp);
+            bool  wantL = dot(keyCol, keyCol) > 0.0;
+            float odL = 0.0, sigUp = 0.0, odB = 0.0;
+            float bE = 0.0, bPh = 0.0;
+            vec3  bDir = vec3(0.0, 0.0, 1.0);
+            bool  wantB = dayness < 0.9 && beamGather(pW, p.h, dir, eye, bE, bDir, bPh);
+            // Light LOD (cv2.column3.y, "Light LOD footprint", m; 0 = off): a sample the ray sees
+            // through little of (T < 0.5), or whose pixel footprint is past the setting, gets a 2-step
+            // light march over the same length, its first step kept (the surface's self-shadowing):
+            // ~10% of the march (perf sprint 2026-09-29).
+            bool lodL = cv2.column3.y > 0.0 && nL > 2 && (T < 0.5 || fp > cv2.column3.y);
+            if (!thin)
+                lightAmbOD(rel, keyDir, up, eyeH, enuToEcef, nL, lSeg0,
+                           jitter, detailAmt, fp, wantL, odL, sigUp, wantB, bDir, odB, lodL);
+            if (wantL) {
+                float od = thin ? f.sigma * 400.0 : odL;
                 // A deck lit at a grazing angle is shadowed by the rest of the deck, tens of km
                 // beyond the light march: the path to the deck's top along the light. Without it
                 // a deck's interior was lit through a few km of cloud, and the whole band along the
@@ -621,8 +666,7 @@ void main()
             // the bases and the twilight boost lifts only the tops).
             float ambVis = 1.0, ambLow = 0.0;
             if (!thin) {
-                CV2Field fu = cv2Field(cv2Pos(rel + up * 250.0, eyeH, enuToEcef), 0.0, fp);
-                float tauUp = max(fu.sigma * 250.0, 0.6 * f.sigma * max(f.topH - p.h, 0.0));
+                float tauUp = max(sigUp * 250.0, 0.6 * f.sigma * max(f.topH - p.h, 0.0));
                 ambVis = mix(0.7, 1.0, f.hf) / (1.0 + 0.11 * tauUp) * mix(1.0, exp(-f.sigma * 150.0), 0.3);
                 ambLow = 0.35 * (1.0 - f.hf);
             }
@@ -670,11 +714,13 @@ void main()
                     nightS += (cr / max(lum, 0.001)) * cityBrightness(lum) * smoothstep(0.45, 0.0, f.hf)
                             * (1.0 - dayness) * kCityUpwellStrength * cloud.ambientGain;
                 }
-                nightS += beamLightCloud(pW, rel, p.h, dir, eyeH, enuToEcef, f, fp, dayness, og, habRay, eye);
+                if (wantB) nightS += beamFinish(pW, p.h, dir, f, dayness, og, habRay, bE, bDir, bPh, odB);
             }
 
             vec3  S     = keyS + ambS + bounceS + nightS;
-            float Tstep = exp(-f.sigma * stepF);
+            // Thin ice (the cirrus veil): one sample stands for two steps.
+            float stepW = (f.thin > 0.9) ? 2.0 * stepF : stepF;
+            float Tstep = exp(-f.sigma * stepW);
             float w     = T * (1.0 - Tstep);
             L    += w * S;
             wAcc += w;
@@ -685,7 +731,7 @@ void main()
             if (tq.y > 1e29 && T < 0.5)  tq.y = t;
             if (tq.z > 1e29 && T < 0.2)  tq.z = t;
             if (tq.w > 1e29 && T < 0.05) tq.w = t;
-            t += stepF;
+            t += stepW;
         }
         if (iters >= kMaxIters && t < tEnd) remLen += tEnd - t;
     }
@@ -749,6 +795,48 @@ void main()
         // carries its own air, scaled by T.
         outRgb = attn * L + air * (1.0 - T);
     }
+    // ── Godrays: the air in the clouds' shadows loses its sunlight (the light volume). The share of
+    // the ray's airlight that is in shadow (each stretch's single scattering, weighted by the ray's own
+    // transmittance there, over the airlight out to where it leaves the atmosphere) dims the sky behind
+    // this pixel: the pixel's transmittance is scaled by it, so the composite (sky x T + cloud) takes
+    // the light back in proportion. Subtracting it instead (negative radiance from the march's own air
+    // model, which does not match the sky pass's) overshot to black under an anvil at sunset.
+    // Sky pixels only: scaling T dims whatever is behind, and a surface already has its own cloud shadow
+    // (the whole sea darkened under a storm at sunset).
+    float godT = 1.0;
+    if (cv2.lightVol.w > 0.0 && pc.sunDirENU.w > -0.2 && eyeH < 60000.0 && tScene >= kNoSurfaceT) {
+        const int kGod = 16, kTail = 4;
+        vec2  tAtm = raySphere(eye, dir, R_ATMOS);
+        float tEnd = min(tScene, max(tAtm.y, 0.0));
+        float tG   = min(tEnd, 250000.0);
+        if (tq.w < 1e29) { tG = min(tG, tq.w); tEnd = min(tEnd, tq.w); }   // past an opaque cloud nothing shows
+        float pR = phaseR(cosSun), pM = phaseM(cosSun);
+        float oR = 0.0, oM = 0.0, shad = 0.0, tot = 0.0;
+        vec2  lvS = vec2(textureSize(lightVolTex, 0).xy);
+        [[dont_unroll]] for (int i = 0; i < kGod + kTail; ++i) {
+            bool  tail = i >= kGod;
+            float t0 = tail ? tG : 0.0, t1 = tail ? tEnd : tG;
+            float sg = (t1 - t0) / float(tail ? kTail : kGod);
+            if (sg <= 0.0) continue;
+            float tt = t0 + (float(tail ? i - kGod : i) + jitter) * sg;
+            vec3  ap = eye + dir * tt;
+            float ah = max(0.0, length(ap) - R_EARTH);
+            float dR = exp(-ah / H_R) * sg, dM = exp(-ah / H_M) * sg;
+            oR += dR; oM += dM;
+            vec2  tSE = raySphere(ap, sunDir, R_EARTH);
+            if (tSE.x > 0.0 && tSE.y > 0.0) continue;             // in the Earth's shadow: no airlight
+            vec3  at  = exp(-(BETA_R * oR + BETA_M * 1.1 * oM)) * sunTransmit(ap, sunDir, BETA_R, BETA_M);
+            float inS = dot(pR * BETA_R * at * dR + pM * BETA_M * at * dM, vec3(1.0 / 3.0)) * cv2TAt(tt, tq);
+            tot += inS;
+            if (tail || ah >= cv2.lightVol.z) continue;             // outside the volume: unshadowed
+            vec3  u   = normalize(ap);
+            vec3  uvw = vec3(u.xy / max(u.z, 0.05) * (R_EARTH / (2.0 * cv2.lightVol.y)) + 0.5, ah / cv2.lightVol.z);
+            if (any(lessThan(uvw.xy, 0.5 / lvS)) || any(greaterThan(uvw.xy, 1.0 - 0.5 / lvS))) continue;
+            shad += inS * (1.0 - textureLod(lightVolTex, uvw, 0.0).r);
+        }
+        godT = 1.0 - clamp(cv2.lightVol.w * shad / max(tot, 1e-12), 0.0, 0.9);
+    }
+
     // The beams in clear air, occluded by this ray's clouds through the transmittance checkpoints —
     // inside the march, so the temporal resolve anti-aliases them like cloud (the drawn line it
     // replaces was cut at the cloud's mean distance in half-res steps).
@@ -772,6 +860,8 @@ void main()
     if (dbg == 1) outRgb = mix(vec3(0.0, 0.2, 1.0), vec3(1.0, 0.1, 0.0), float(iters) / float(kMaxIters)) * 0.05;
     else if (dbg == 2) outRgb = vec3(1.0 - T) * 0.05;
     else if (dbg == 3) outRgb = vec3(fract(meanT / 50000.0)) * 0.05;
+    // 10: the godrays' shadowed share of the airlight (1 - godT), x4.
+    else if (dbg == 10) outRgb = vec3(clamp((1.0 - godT) * 4.0, 0.0, 1.0)) * 0.05;
     else if (dbg == 5) outRgb = vec3(1.0 - exp(-odRain), 0.0, (wAcc > 1e-4) ? 0.3 : 0.0) * 0.05;
     // 8: the beam shafts — r the tile's light count / 64 (1 = overflow, all lights), g the beams this
     // ray's interval found / 8, b the shaft radiance (log scale), plus a faint grey when any light exists.
@@ -784,8 +874,8 @@ void main()
     }
     // 7: which layer: red = low (incl. rain), green = mid, blue = anvil + Cb columns, white = high.
     else if (dbg == 7) outRgb = (vec3(1.0) - exp(-odLayer.xyz) + vec3(0.6) * (1.0 - exp(-odLayer.w))) * 0.05;
-    float Tout = (dbg != 0) ? 0.0 : T;
+    float Tout = (dbg != 0) ? 0.0 : T * godT;
 
-    imageStore(outColor, q, vec4(outRgb, Tout));
-    imageStore(outDepth, q, vec4(meanT, (T < 0.1 && tHalf > 0.0) ? tHalf : -1.0, 0.0, 0.0));
+    imageStore(outColor, outPix, vec4(outRgb, Tout));
+    imageStore(outDepth, outPix, vec4(meanT, (T < 0.1 && tHalf > 0.0) ? tHalf : -1.0, 0.0, 0.0));
 }

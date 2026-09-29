@@ -8034,7 +8034,7 @@ void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
 // textures) — see init() ordering.
 void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[21] = {};
+    VkDescriptorSetLayoutBinding bindings[22] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -8059,9 +8059,11 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     bindings[15] = {15, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     for (uint32_t b = 16; b <= 20; ++b)
         bindings[b] = {b, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    // 21: the lightning flash list (cloud_v2_lightning.comp), also written by writeCloudsV2ConsumerDescriptors.
+    bindings[21] = {21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 21;
+    li.bindingCount = 22;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &cloudMarchDescLayout);
 
@@ -8069,7 +8071,7 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 14},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}};
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 4;
     pi.pPoolSizes = ps;
@@ -8510,6 +8512,69 @@ void SatelliteSim::createBeamSelfMarchPipeline(VulkanContext &ctx)
         throw std::runtime_error("SatelliteSim: failed to create beam_self_march compute pipeline");
 
     vkDestroyShaderModule(ctx.device, mod, nullptr);
+}
+
+// ─── readRawR8 ────────────────────────────────────────────────────────────────
+// Reads a single-channel texture pre-decoded by tools/make_raw_textures.py: one or more files, each a
+// 16-byte header ("SLR8", uint32 width, uint32 total height, uint32 first row, little-endian) and its
+// rows, top to bottom, in order. Large maps are split so each file stays under GitHub's 100 MB limit.
+// Why pre-decoded: stb_image decoding these PNGs froze the development machine within a few decodes,
+// with no Vulkan involved (docs/FREEZES.md, 2026-09-29). Returns false (out empty) if any file is
+// missing or does not continue where the previous one stopped; the caller then falls back to the PNG.
+static bool readRawR8(const std::vector<std::string> &paths, int &w, int &h, std::vector<unsigned char> &out)
+{
+    out.clear();
+    for (size_t part = 0; part < paths.size(); ++part)
+    {
+        Log::line("init: texture: " + paths[part]);
+        FILE *f = std::fopen(paths[part].c_str(), "rb");
+        if (!f)
+        {
+            out.clear();
+            return false;
+        }
+        char magic[4];
+        uint32_t hdr[3]; // width, total height, first row
+        bool ok = std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "SLR8", 4) == 0 &&
+                  std::fread(hdr, 4, 3, f) == 3 && hdr[0] > 0 && hdr[1] > 0 && hdr[2] < hdr[1];
+        if (ok && part == 0)
+        {
+            w = (int)hdr[0];
+            h = (int)hdr[1];
+            out.reserve((size_t)w * h);
+        }
+        ok = ok && w == (int)hdr[0] && h == (int)hdr[1] && (size_t)hdr[2] * w == out.size();
+        if (ok)
+        {
+            // The rest of the file is this part's rows.
+            const long start = std::ftell(f);
+            std::fseek(f, 0, SEEK_END);
+            const long end = std::ftell(f);
+            std::fseek(f, start, SEEK_SET);
+            const size_t bytes = end > start ? (size_t)(end - start) : 0;
+            ok = bytes > 0 && bytes % (size_t)w == 0 && out.size() + bytes <= (size_t)w * h;
+            if (ok)
+            {
+                const size_t at = out.size();
+                out.resize(at + bytes);
+                ok = std::fread(out.data() + at, 1, bytes, f) == bytes;
+            }
+        }
+        std::fclose(f);
+        if (!ok)
+        {
+            Log::line("WARN: " + paths[part] + " is malformed; falling back to the PNG");
+            out.clear();
+            return false;
+        }
+    }
+    if (out.size() != (size_t)w * h)
+    {
+        Log::line("WARN: pre-decoded texture is incomplete; falling back to the PNG");
+        out.clear();
+        return false;
+    }
+    return true;
 }
 
 // ─── createSkyBgPipeline ──────────────────────────────────────────────────────
@@ -8984,9 +9049,9 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
             VkSampler *sampler;
             uint32_t *mips;
         } detailTexes[2] = {
-            {"assets/textures/city_day_detail.png", &cityDayDetailImg, &cityDayDetailMem,
+            {"assets/textures/city_day_detail.jpg", &cityDayDetailImg, &cityDayDetailMem,
              &cityDayDetailView, &cityDayDetailSampler, &cityDayDetailMips},
-            {"assets/textures/city_night_detail.png", &cityNightDetailImg, &cityNightDetailMem,
+            {"assets/textures/city_night_detail.jpg", &cityNightDetailImg, &cityNightDetailMem,
              &cityNightDetailView, &cityNightDetailSampler, &cityNightDetailMips},
         };
         for (auto &t : detailTexes)
@@ -9062,13 +9127,28 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         }
     }
 
-    // ── Load earth elevation map (binding 5): 14999×7500 greyscale-stored-as-RGB8 -> R8_UNORM ,
-    //    sea level = 15 (the value oceanMaskCpu tests for; older notes here said 21600×10800)
+    // ── Load earth elevation map (binding 5): 14999×7500 R8_UNORM, sea level = 15 (the value
+    //    oceanMaskCpu tests for; older notes here said 21600×10800).
+    //    Read PRE-DECODED from earth_elevation_0/1.r8 (readRawR8, tools/make_raw_textures.py); the PNG
+    //    is the source and the fallback when the halves are missing.
     {
-        Log::line("init: texture: assets/textures/earth_elevation.png");
         bootStatus("Earth elevation");
-        int w, h, ch;
-        unsigned char *pixels = stbi_load("assets/textures/earth_elevation.png", &w, &h, &ch, 1);
+        int w = 0, h = 0;
+        std::vector<unsigned char> rawElev;
+        readRawR8({"assets/textures/earth_elevation_0.r8", "assets/textures/earth_elevation_1.r8"}, w, h, rawElev);
+        unsigned char *pixels = nullptr;
+        bool pixelsFromStb = false;
+        if (rawElev.size() == (size_t)w * h && !rawElev.empty())
+        {
+            pixels = rawElev.data();
+        }
+        else
+        {
+            Log::line("init: texture: assets/textures/earth_elevation.png (no pre-decoded .r8 halves)");
+            int ch;
+            pixels = stbi_load("assets/textures/earth_elevation.png", &w, &h, &ch, 1);
+            pixelsFromStb = true;
+        }
         if (pixels)
         {
             earthElevMips = (uint32_t)std::floor(std::log2((float)std::max(w, h))) + 1;
@@ -9108,7 +9188,10 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
                 if (pixels[i] <= 15)
                     oceanMaskCpu[i >> 6] |= 1ull << (i & 63);
 
-            stbi_image_free(pixels);
+            if (pixelsFromStb)
+                stbi_image_free(pixels);
+            pixels = nullptr;
+            rawElev = {};
 
             ctx.createImage((uint32_t)w, (uint32_t)h,
                             VK_FORMAT_R8_UNORM,
@@ -9165,10 +9248,23 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 
     // ── Load earth specular map (binding 6): 8K R8_UNORM ocean mask ──────────────
     {
-        Log::line("init: texture: assets/textures/8k_earth_specular_map.png");
+        // Pre-decoded like the elevation map (readRawR8); the PNG is the source and the fallback.
         bootStatus("Ocean map");
-        int w, h, ch;
-        unsigned char *pixels = stbi_load("assets/textures/8k_earth_specular_map.png", &w, &h, &ch, 1);
+        int w = 0, h = 0;
+        std::vector<unsigned char> rawSpec;
+        unsigned char *pixels = nullptr;
+        bool pixelsFromStb = false;
+        if (readRawR8({"assets/textures/8k_earth_specular_map.r8"}, w, h, rawSpec))
+        {
+            pixels = rawSpec.data();
+        }
+        else
+        {
+            Log::line("init: texture: assets/textures/8k_earth_specular_map.png (no pre-decoded .r8)");
+            int ch;
+            pixels = stbi_load("assets/textures/8k_earth_specular_map.png", &w, &h, &ch, 1);
+            pixelsFromStb = true;
+        }
         if (pixels)
         {
             earthSpecMips = (uint32_t)std::floor(std::log2((float)std::max(w, h))) + 1;
@@ -9184,7 +9280,10 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
             vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
             memcpy(mapped, pixels, (size_t)imgBytes);
             vkUnmapMemory(ctx.device, stageMem);
-            stbi_image_free(pixels);
+            if (pixelsFromStb)
+                stbi_image_free(pixels);
+            pixels = nullptr;
+            rawSpec = {};
 
             ctx.createImage((uint32_t)w, (uint32_t)h,
                             VK_FORMAT_R8_UNORM,

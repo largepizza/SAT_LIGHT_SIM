@@ -67,7 +67,7 @@ const float kFlareGhostGain  = 0.55;   // reflected ghost / bokeh artifact brigh
 layout(set = 0, binding = 3)  uniform sampler2D earthDayTex;
 layout(set = 0, binding = 4)  uniform sampler2D earthNightTex;
 layout(set = 0, binding = 5)  uniform sampler2D earthElevTex;
-layout(set = 0, binding = 6)  uniform sampler2D earthSpecTex;layout(set = 0, binding = 7)  uniform sampler2D earthCloudsTex;
+layout(set = 0, binding = 6)  uniform sampler2D earthSpecTex;layout(set = 0, binding = 7)  uniform samplerCube earthCloudsCube;   // the v2 weather cube (sat_sky.frag)
 layout(set = 0, binding = 1)  uniform sampler2D noiseTex;            // RGBA white noise, REPEAT
 layout(set = 0, binding = 2)  uniform sampler2D moonTex;            // lunar albedo, equirect-ish
 layout(set = 0, binding = 14) uniform sampler2D cityDayDetailTex;
@@ -210,9 +210,10 @@ vec3 flatClouds(vec3 color, vec3 obsPos, vec3 dir, float tGround,
     vec3  cECEF  = hitENU.x * enuX + hitENU.y * enuY + hitENU.z * enuZ;
     // Slow longitude drift so the deck isn't frozen to the ground. pc.gmst is Earth's rotation
     // angle (advances with sim time), so this is a genuine cloud-vs-terrain relative motion.
-    vec2  uv = posToUV(cECEF);
-    uv.x = fract(uv.x + pc.gmst * kCloudDriftRate);
-    float raw   = texture(earthCloudsTex, uv).r;
+    // (Its own drift, 2 pi x gmst x kCloudDriftRate of longitude, into the weather cube's frame.)
+    float dph = 6.2831853 * pc.gmst * kCloudDriftRate;
+    vec3  dE  = normalize(cECEF);
+    float raw = texture(earthCloudsCube, vec3(dE.x * cos(dph) - dE.y * sin(dph), dE.x * sin(dph) + dE.y * cos(dph), dE.z)).r;
     float alpha = clamp((raw - (1.0 - kCloudCoverage)) * kCloudDensity, 0.0, kCloudAlphaMax);
     if (alpha <= 0.0) return color;
 

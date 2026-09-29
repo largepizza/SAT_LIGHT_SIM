@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_control_flow_attributes : enable
 
 // ── Clouds v2: temporal resolve (.plans/CLOUDS_V2_PLAN.md, phase 2) ──────────────────────────────
 // Half resolution. cloud_v2_march.comp marched one pixel of each 2x2 block this frame; this pass
@@ -50,27 +51,61 @@ void main()
     ivec2 c = ivec2(gl_GlobalInvocationID.xy);
     if (c.x >= halfSize.x || c.y >= halfSize.y) return;
 
-    // The new samples: a quarter grid in the targets' top-left (sparse), or every pixel (full rate).
-    bool  full = cv2.misc.z > 0.5;
-    ivec2 qs   = full ? halfSize : (halfSize + 1) / 2;
-    ivec2 off  = full ? ivec2(0) : ivec2(cv2.frame.zw);
-    ivec2 b    = full ? c : min(c >> 1, qs - 1);
-    bool  isNew = full || all(equal(c & 1, off));
+    // The new samples: a quarter grid in the targets' top-left (sparse, rate 0), every pixel (full,
+    // 1), or a checkerboard in place alternating each frame (half, 2: the march's "Half rate while
+    // moving" — every stale pixel's four neighbours are this frame's).
+    int   rate  = int(cv2.misc.z + 0.5);
+    bool  full  = rate == 1;
+    bool  halfR = rate == 2;
+    ivec2 qs    = (full || halfR) ? halfSize : (halfSize + 1) / 2;
+    ivec2 off   = (rate == 0) ? ivec2(cv2.frame.zw) : ivec2(0);
+    ivec2 b     = (full || halfR) ? c : min(c >> 1, qs - 1);
+    int   par   = int(cv2.frame.x) & 1;
+    bool  isNew = full || (halfR ? ((c.x + c.y + par) & 1) == 0 : all(equal(c & 1, off)));
 
     vec4 nc = texelFetch(newColorTex, b, 0);
     vec2 nd = texelFetch(newDepthTex, b, 0).xy;
 
-    vec4 mn = nc, mx = nc;
+    // The clamp box: the 3x3 of new samples around this pixel (at half rate only this frame's: the
+    // others are two frames old).
+    vec4 mn = vec4(1e30), mx = vec4(-1e30);
     for (int dy = -1; dy <= 1; ++dy)
     for (int dx = -1; dx <= 1; ++dx) {
-        vec4 s = texelFetch(newColorTex, clamp(b + ivec2(dx, dy), ivec2(0), qs - 1), 0);
+        ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
+        if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
+        vec4 s = texelFetch(newColorTex, pq, 0);
         mn = min(mn, s); mx = max(mx, s);
     }
 
     // Where this pixel sits among the new samples (sample q sits at half pixel 2q + off), in the
-    // targets' own texels, kept inside the filled region.
-    vec2 posQ    = clamp((vec2(c) - vec2(off)) * 0.5 + 0.5, vec2(0.5), vec2(qs) - 0.5);
-    vec4 spatial = full ? nc : textureLod(newColorTex, posQ / vec2(textureSize(newColorTex, 0)), 0.0);
+    // targets' own texels, kept inside the filled region. At half rate: its four neighbours' mean
+    // (their depth too: its own is two frames old).
+    vec4 spatial;
+    if (full) spatial = nc;
+    else if (halfR) {
+        // A fresh pixel's smooth estimate: itself and its four diagonal neighbours (fresh too), which
+        // motion pulls it halfway toward, as the sparse grid's bilinear estimate does (below). Its raw
+        // single sample left the surfaces grainy in motion.
+        if (isNew) {
+            spatial = 0.5 * nc + 0.125 * (texelFetch(newColorTex, clamp(c + ivec2(1, 1), ivec2(0), qs - 1), 0)
+                                        + texelFetch(newColorTex, clamp(c + ivec2(-1, 1), ivec2(0), qs - 1), 0)
+                                        + texelFetch(newColorTex, clamp(c + ivec2(1, -1), ivec2(0), qs - 1), 0)
+                                        + texelFetch(newColorTex, clamp(c + ivec2(-1, -1), ivec2(0), qs - 1), 0));
+        } else {
+            ivec2 n0 = clamp(c + ivec2(1, 0), ivec2(0), qs - 1), n1 = clamp(c - ivec2(1, 0), ivec2(0), qs - 1);
+            ivec2 n2 = clamp(c + ivec2(0, 1), ivec2(0), qs - 1), n3 = clamp(c - ivec2(0, 1), ivec2(0), qs - 1);
+            spatial = 0.25 * (texelFetch(newColorTex, n0, 0) + texelFetch(newColorTex, n1, 0)
+                            + texelFetch(newColorTex, n2, 0) + texelFetch(newColorTex, n3, 0));
+            vec2 d0 = texelFetch(newDepthTex, n0, 0).xy, d1 = texelFetch(newDepthTex, n1, 0).xy;
+            vec2 d2 = texelFetch(newDepthTex, n2, 0).xy, d3 = texelFetch(newDepthTex, n3, 0).xy;
+            float wd = float(d0.x > 0.0) + float(d1.x > 0.0) + float(d2.x > 0.0) + float(d3.x > 0.0);
+            nd = vec2(wd > 0.0 ? (max(d0.x, 0.0) + max(d1.x, 0.0) + max(d2.x, 0.0) + max(d3.x, 0.0)) / wd : 0.0,
+                      max(max(d0.y, d1.y), max(d2.y, d3.y)));
+        }
+    } else {
+        vec2 posQ = clamp((vec2(c) - vec2(off)) * 0.5 + 0.5, vec2(0.5), vec2(qs) - 0.5);
+        spatial = textureLod(newColorTex, posQ / vec2(textureSize(newColorTex, 0)), 0.0);
+    }
 
     // Reproject.
     float tanHalf = tan(pc.fovYRad * 0.5);

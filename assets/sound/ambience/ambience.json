@@ -69,6 +69,16 @@
       "when": { "rain": [0.01, 0.08], "agl_m": [1500, 150] }
     },
     {
+      "id": "thunder",
+      "group": "water",
+      "synth": "thunder",
+      "gain": 0.9,
+      "fade_in_s": 0.5,
+      "fade_out_s": 3.0,
+      "_note": "Thunder: silent until the sim triggers a roll, at each lightning flash within 30 km, its distance / 343 m/s after the flash (SatelliteSimAmbience.cpp updateThunder, from the flash list cloud_v2_lightning.comp writes). Not heard from high altitude.",
+      "when": { "agl_m": [25000, 12000] }
+    },
+    {
       "id": "wind_desert",
       "group": "wind",
       "synth": "wind",

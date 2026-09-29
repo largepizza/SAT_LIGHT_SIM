@@ -670,8 +670,101 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   proximity (weather type at mip 4, float-bilinear, 0.3-0.6), fully for cells, half for
   stratocumulus: 26% of the view moves between 2 and 7 km. The mid layer gives way wherever towers can
   stand (`col.storm` 0-0.15): a mid-layer sheet cut a weak storm-edge tower as a horizontal belt.
-  Head drift applies to anvil-reaching towers only. The lumpy "fields" beside towers seen from altitude
+  "Storm cumulus reach (km)" (`cb_cumulus_reach_km`, 10, slot 177, `column3.x` = the weather mip whose texels
+  are that wide) sets how far; the storm threshold falls with the mip (0.62 - 0.06 x mip), since a fine mip sees
+  the core undiluted and at 0.3 it caught plain cumulus everywhere. Head drift applies to anvil-reaching towers only. The lumpy "fields" beside towers seen from altitude
   were the mid layer (debug view 7 green), not cumulus.
+- **Perf sprint (2026-09-29, overnight):** the storm views' cloud march is ~62-67% cheaper at full rate
+  (the user's 68 ms overlook: 22.5 ms), images within noise of before (`harness_runs/perf_sprint/`:
+  `baseline.json` vs `cp1.json`, captures `cap_ref` / `cap_e14`). **What governs this shader's speed:**
+  (1) every call site inlines the whole field (~60 KB of GPU code each): the light march, far sample,
+  sky probe and beam occlusion now share ONE call (`lightAmbOD`), and the coarse and fine view samples
+  another — 459 KB -> 220 KB, -45%; (2) NVIDIA gives it either 128 registers (small spill) or ~227 (no
+  spill), and 227 is 20-60% SLOWER. Trivial edits flip it — a per-sample loop bound, three debug
+  counters, values cached in globals — so check `shaders reload`'s Register Count (harness,
+  docs/HARNESS.md) before timing any variant, and A/B variants interleaved in ONE live app (run-to-run
+  noise is 5-10%). A smaller workgroup forcing fewer registers spills and loses (32x32: 2.4x slower).
+  Kept: the one call site; **light LOD** (`cv2LightLodFootprintM`, "Light LOD footprint (m)", slot 178,
+  key `light_lod_footprint_m`, 40, 0 = off: behind T < 0.5 or past that pixel footprint, 2 light steps
+  over the same length with the first kept — dropping the first step flattened the towers' self-shadow);
+  cirrus shaded at COARSE steps (a thin-ice sample stands for two steps and never drops the march into
+  fine steps: they were a large share of the steps from altitude); the low field's altitude bound (no
+  low cloud tops past the congestus top / "Storm cumulus top" + the ground's lift); `[[dont_unroll]]` on
+  the field's small loops. **"Half rate while moving"** (`cv2HalfRateMoving`, slot 186, key
+  `half_rate_moving`, default OFF): where the march would run at full rate it takes a checkerboard of the
+  half-res pixels, alternating each frame (`cv2.misc.z` = 2; the resolve estimates a stale pixel from its
+  four fresh neighbours and pulls a fresh one toward its diagonals in motion): -25% of the cloud bucket
+  in storm views, but visibly grainier in motion than full rate (harness_runs/perf_sprint/motionb_c.png) —
+  the user's to judge. Tried and dropped: a per-tile tower list (lists of dozens of towers from
+  altitude: slower), a shared-memory tile cache of the lattice (slower), a lighting context caching the
+  view sample's coarse reads in globals (the register flip), reusing the far sample / probe every other
+  lit sample (0%), one call site for view + light (234 registers: +60%). Remaining cost: the towers'
+  candidate search (~35% of the rest), mostly coarse steps through broken cumulus out to max distance.
+  **From orbit (420 km, ~13-14 ms full rate) the cost is spread over the layers** — each off: Cb
+  columns -3.5 ms, mid -2.6, anvil -2.0, high -2.0, light steps 1 -1.8, max_iters 80 -2.3
+  (`harness_runs/orbit_lod/attrI.json`). Tried and dropped: skipping the empty shell above a
+  conservative per-column ceiling (tropopause top + overshoot, ground-lifted low tops) — 0% (the
+  steps are inside the cloud, not above it); a vertical step cap growing with the footprint (200 -> up
+  to 500 m) — -0.4%. An orbit LOD needs a cheaper field (an impostor), not fewer steps.
+- **Lightning + thunder (2026-09-29, `include/cloud_lightning.glsl`):** `cloud_v2_lightning.comp` (one
+  workgroup, before the march, same set and push constants) walks the Cb tower lattice around the observer
+  out to the cloud tops' horizon and, for every anvil-reaching tower (strength at its centre > ~0.4),
+  evaluates a flash schedule hashed from the cell and a 2 s slot of SIM time (`lightning.w`): a start in
+  the slot, 0.25-0.85 s, 1-4 return strokes over a fading glow, a quarter of the strongest towers' flashes
+  cloud-to-ground. Deterministic and reversible; `cv2FlashBuf` (32 flashes, host-visible) holds them.
+  They are drawn in `cloud_march.comp` AFTER the resolve (`lightningCS`): a flash lasts a few frames and
+  the history (weight 0.05, sparse 1-in-4) would swallow it. The cloud glows around each flash at the
+  resolved cloud's mean depth, by its opacity (`cv2FlashGlow`: in-cloud diffusion, ~5 km, then the
+  inverse square); a cloud-to-ground channel is a random-walk polyline with one branch
+  (`cv2BoltPoint`), energy spread over the pixel footprint, hidden by terrain and by cloud in front. A
+  halo around the channel was dropped: occluded by a rain curtain's transmittance it drew the curtain's
+  march banding as stripes. Settings: "Lightning (flashes/min/tower)" `lightning_rate` 3 (0 = off),
+  "Lightning glow" `lightning_glow`, "Lightning bolts" `lightning_bolt` (slots 179-181). Cost ~0-0.3 ms.
+  **Thunder** (`SatelliteSim::updateThunder`, SatelliteSimAmbience.cpp): the host reads the list back,
+  and each new flash within 30 km rolls the `thunder` layer's synth (AmbientSynth `thunder`: low-passed
+  noise under swelling peals, a crack under ~2.5 km; distance lowers the cutoff, slows the onset,
+  lengthens the roll and the level) at its distance / 343 m/s after the flash, in sim time. Harness:
+  `lightning` lists the flashes and the thunder queue; with time paused a flash stays frozen, so `time
+  add 0.25` steps through one (harness_runs/perf_sprint/ltest*.satcmd). How it looks and sounds is the
+  user's to judge.
+- **Weather evolution (2026-09-29, decision A):** the weather cube is re-baked as sim time moves
+  (`SatelliteSim::recordWeatherEvolution`, one face per frame with all its mips, once it lags by ~300 m of
+  wind drift or the settings change; the bake's pipeline and per-mip sets are kept, `cv2Wx*`). The bake
+  (`cloud_v2_weather.comp`) reads the map through TWO copies advected by a slow curl wind (`evoWind`,
+  ~4000 km, turning over a day), each over its own window P offset by P/2 and weighted sin^2 of its phase
+  (0 at its reset): the flow-map double-phase trick, so the map moves locally and never drifts from itself
+  (displacement <= wind x P); and its coverage grows and decays under a smooth field (`evoGrowth`, ~1500 km,
+  10-30 h), so the types it classifies — storms included — strengthen and weaken. Everything downstream
+  (towers, anvils, lightning) follows. Settings: "Weather evolution wind (m/s)" `evo_wind_mps` 8 (0 =
+  the static map, exactly as before), "Weather growth / decay" `evo_growth` 0.12, "Weather evolution
+  window (h)" `evo_window_h` 3 (slots 182-184). Cost: a face bake is ~0.1 ms (not measurable at 1 h/s).
+  With it on, a snapshot's moment shows the map moved up to ~86 km and re-shaded: an older snapshot frames
+  a slightly different storm. The rigid drift (`cloudDriftPhase`) is unchanged and on top.
+  **Afternoon land convection** (`evo2`, "Afternoon land convection" `evo_diurnal` 0.6, slot 185): the
+  bake raises coverage (+0.2) and pushes the type toward congestus / Cb (+0.3) over land where the Sun of
+  THREE HOURS AGO stood high (the ground heats through the afternoon; `weatherEvoPC` turns the sim's
+  Sun back 45 deg and into the map frame) and the map has cloud nearby (its moisture proxy): continental
+  afternoon storms, dying back after dark — the one-moment map carries no diurnal cycle of its own.
+  **The flat stand-ins read the same cube**: the sky set's binding 7 is the weather cube (a `samplerCube`
+  written by `writeCloudsV2ConsumerDescriptors`), not the 8K equirect map, so `sat_sky.frag`'s flat layers
+  (the mirrors' and env probes' clouds, SKY_LITE) and Potato's deck show the evolving map the volumetric
+  clouds are built from (the Earth-fixed direction turned by the layer's drift into the cube's frame, one
+  mip coarser than the equirect's). The mesh shaders' `earth_env.glsl` fallback keeps the 2D map.
+- **Light volume + godrays (2026-09-29, EXPERIMENTAL, off by default):** `cloud_v2_lightvol.comp` bakes a
+  camera-centred 128 x 128 x 32 R16F volume of sun transmittance (march set bindings 13 storage / 14
+  sampled; +-"God ray range" `godray_range_km` 400 about the eye, sea level to 16 km, gnomonic columns; 4 of
+  its 32 levels per frame, each voxel 16 growing steps toward the Sun, ~127 km) — the plan's phase-3 light
+  volume, so far feeding only the godrays. "God rays" (`godrays`, 0 = off and no bake, slot 187; range slot
+  188): for SKY pixels the march scales its output transmittance by the share of the ray's single-scattered
+  airlight that lies in cloud shadow (16 samples + a 4-sample tail to the atmosphere's exit), so the
+  composite dims the sky by it. Two first cuts failed: SUBTRACTING the shadowed airlight (negative radiance
+  from the march's air model, which does not match the sky pass's) overshot to black under an anvil at
+  sunset; scaling T on surface pixels darkened the sea, which already has its own cloud shadow. As it
+  stands the effect is subtle (a low Sun's airlight comes mostly from beyond the volume) and unjudged —
+  real shafts need a dedicated jittered sub-march over the volume's reach — NOT the sky pass's N_VIEW
+  loop, whose ~10 km steps (100 km / viewSamplesMin) are far coarser than a shaft, and which would take
+  `sat_sky.frag`'s 16th and last sampled-image slot besides. Ground shadows and beam shadowing
+  could read the same volume later.
 - **Soft ground contact (pass 10):** the march fades extinction over the last max(40 m, 3 pixel
   footprints) before the half-res scene depth: dense cloud meeting a slope ended on a hard,
   stair-stepped line.
@@ -727,8 +820,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
-- The Clouds tab's slider slots: `kCloudSliderSlots` (177) sizes all four per-slider arrays and
-  `cloudBufs`; v2 uses 112-176 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
+- The Clouds tab's slider slots: `kCloudSliderSlots` (189) sizes all four per-slider arrays and
+  `cloudBufs`; v2 uses 112-188 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: 77. Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
   shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.
 
@@ -877,7 +970,7 @@ Location- and context-aware ambience on its own bus under the music (Settings �
 
 | File | Role |
 |---|---|
-| `src/AmbientSynth.h/.cpp` | procedural voices as miniaudio data sources: `wind`, `surf`, `hum` (noise through resonances), `drone` (harmonic wavetable + phaser + whine + compressor cycle + soft status motifs), `pad` (the glare chorus: up to twelve hollow odd-harmonic voices placed on a ladder of chord/scale/tension roles from pitch-class masks, per-voice pitch warp, a bloom when a voice joins, an FDN reverb), `bass` (the beam-site pedal: a beating pair on 2× the root, its fifth, a sub, drive, a slow downward sag and throb), and the unused-by-default `saw` (the first beam sound, which read as an FPV drone), `chorus` (procedural VLF chorus / whistlers / sferics, flanged — replaced by the recorded `vlf_earth` loop), `beeps` (FSK bursts) and `disk` (seek clicks). Params are atomics set by the main thread, eased per 64-frame block on the audio thread (a `snap` param — a mask — is not eased); seeded xorshift, so a render is deterministic |
+| `src/AmbientSynth.h/.cpp` | procedural voices as miniaudio data sources: `wind`, `surf`, `hum` (noise through resonances), `drone` (harmonic wavetable + phaser + whine + compressor cycle + soft status motifs), `pad` (the glare chorus: up to twelve hollow odd-harmonic voices placed on a ladder of chord/scale/tension roles from pitch-class masks, per-voice pitch warp, a bloom when a voice joins, an FDN reverb), `bass` (the beam-site pedal: a beating pair on 2× the root, its fifth, a sub, drive, a slow downward sag and throb), and the unused-by-default `saw` (the first beam sound, which read as an FPV drone), `chorus` (procedural VLF chorus / whistlers / sferics, flanged — replaced by the recorded `vlf_earth` loop), `beeps` (FSK bursts) and `disk` (seek clicks). `rain` and `thunder` (rolls triggered by the lightning flashes, see *Clouds v2*). Params are atomics set by the main thread, eased per 64-frame block on the audio thread (a `snap` param — a mask — is not eased); seeded xorshift, so a render is deterministic |
 | `src/MusicAnalysis.h/.cpp` | the soundtrack's key: per track, the tuning and a tuning CURVE over time, chroma, key (Krumhansl-Kessler), pitch set, a chord timeline; analysed on a worker thread at startup and cached per track in `<user data>/music_analysis/` (see *Tonality* below) |
 | `src/AudioSystem.h/.cpp` | the ambience group, voices (sample loop or synth) with per-voice gain, one-shots with pan, the music PLAYER (see below), and **offline mode** |
 | `src/simulations/Ambience.h/.cpp` | the layer table: `assets/sound/ambience/ambience.json` → per-layer target gain from named drivers, eased over `fade_s`, voices created lazily, events scheduled |
@@ -3361,7 +3454,7 @@ Read it at the start of any terrain-related session before making changes.
   `sizeof(PointDrawPC)`; `skyBgPipeLayout` uses `sizeof(SatDrawPC)`.
 - Sky descriptor set has 27 bindings (0-26; 26 = terrainFrameBuf, the observer's detailed ground height
   from scene_depth.comp, 2026-09-25). Before that it had 26 (0-25; 22/23 the mesh targets, 24 the env star grid, 25 the
-  sharp-reflection G-buffer — the last two read only by the SKY_ENV / SKY_REFL variants). The original 22 (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds, cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h. **As of 2026-08-10 its entries are `GpuGroundBeam` (32 bytes), not raw `GpuReflectBeam`** — a pre-solved record, see "Beam ground-spot CPU hoist" below
+  sharp-reflection G-buffer — the last two read only by the SKY_ENV / SKY_REFL variants). The original 22 (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec, earthClouds (since 2026-09-29 the v2 weather CUBE), cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h. **As of 2026-08-10 its entries are `GpuGroundBeam` (32 bytes), not raw `GpuReflectBeam`** — a pre-solved record, see "Beam ground-spot CPU hoist" below
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
 - `sat_sky.frag` ground path: terrain march step count is path-length-adaptive as of session 29
   (`kN` scales with this ray's own `tExit`, clamped to a user-tuned [64,164] range — the old
@@ -3545,6 +3638,13 @@ terrain_detail.glsl first; invariants and the reasons behind them:
 ### Elevation texture encoding — READ THIS BEFORE TOUCHING TERRAIN CODE
 
 **File:** `assets/textures/earth_elevation.png` (R8_UNORM, 14999×7500 — ~2.67 km/texel; older notes said 21600×10800 — land-only DEM)
+
+**The app does not decode this PNG (2026-09-29).** It reads `earth_elevation_0.r8` / `_1.r8` (raw rows,
+split under GitHub's 100 MB limit) and `8k_earth_specular_map.r8` through `readRawR8`; the city detail
+maps are JPGs. stb_image decoding these PNGs froze the development machine within a few decodes with no
+Vulkan involved (docs/FREEZES.md; `UploadStress --decode-only` reproduces it). The PNGs stay the source:
+after editing one, run `python tools/make_raw_textures.py` (byte-exact, verified). The PNG path remains
+only as a logged fallback when a `.r8` is missing.
 
 **This is NOT ETOPO1 and has NO bathymetry / below-sea-level data.** Do not assume
 pixel=0 means sea level — it does not. The actual encoding is:

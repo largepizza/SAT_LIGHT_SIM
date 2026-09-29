@@ -511,7 +511,26 @@ void VulkanContext::createDevice()
                 deviceExts.push_back("VK_KHR_portability_subset");
                 break;
             }
+        // Optional: the compiled pipelines' statistics (register counts) for shader profiling.
+        for (auto &e : exts)
+            if (strcmp(e.extensionName, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME) == 0)
+            {
+                VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pf{
+                    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+                VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+                f2.pNext = &pf;
+                vkGetPhysicalDeviceFeatures2(physicalDevice, &f2);
+                if (pf.pipelineExecutableInfo)
+                {
+                    deviceExts.push_back(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+                    pipelineStatsSupported = true;
+                }
+                break;
+            }
     }
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pipeExecFeat{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+    pipeExecFeat.pipelineExecutableInfo = VK_TRUE;
 
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     ci.queueCreateInfoCount = (uint32_t)qCIs.size();
@@ -519,6 +538,8 @@ void VulkanContext::createDevice()
     ci.enabledExtensionCount = (uint32_t)deviceExts.size();
     ci.ppEnabledExtensionNames = deviceExts.data();
     ci.pEnabledFeatures = &features;
+    if (pipelineStatsSupported)
+        ci.pNext = &pipeExecFeat;
     if (VALIDATION)
     {
         ci.enabledLayerCount = (uint32_t)VALIDATION_LAYERS.size();

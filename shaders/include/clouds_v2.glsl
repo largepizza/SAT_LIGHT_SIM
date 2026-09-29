@@ -93,6 +93,12 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  anvil2;         // x anvil thickness (m), y anvil hang around a tower's head (m), z tower
                           // sparsity (0 = every candidate in a storm, 1 = only the strongest cores),
                           // w overshooting top: how far a tower's dome rises above the anvil lid (m)
+    vec4  column3;        // x weather mip for the storm cumulus reach (log2 of reach / 5 km texels),
+                          // y light LOD footprint (m, 0 = off; cloud_v2_march.comp), zw free
+    vec4  lightning;      // x flashes per minute of a full-strength tower (0 = off), y the glow in the
+                          // cloud, z the cloud-to-ground channels, w sim time (s, wrapped at 1e5)
+    vec4  lightVol;       // the light volume (cloud_v2_lightvol.comp): x the first level baked this frame,
+                          // y its half-extent (m), z its top (m), w the godrays' strength (0 = off)
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -261,7 +267,10 @@ vec4 cv2WeatherBilinear(vec3 d, float lod)
     vec2 i = clamp(floor(t), vec2(0.0), vec2(sz - 2.0)), f = clamp(t - i, 0.0, 1.0);
     f = f * f * (3.0 - 2.0 * f);
     vec4 r[4];
-    for (int k = 0; k < 4; ++k) {
+    // Not unrolled (nor the field's other fixed loops): the march inlines the field at every call
+    // site, and its binary (225 KB) overflows the GPU's instruction cache — code size is the cost
+    // that matters in this shader (perf sprint 2026-09-29, `shaders reload` reports Binary Size).
+    [[dont_unroll]] for (int k = 0; k < 4; ++k) {
         vec2 c  = ((i + vec2(k & 1, k >> 1) + 0.5) / sz) * 2.0 - 1.0;
         vec3 ds = (fc == 0) ? vec3(sg, c.x, c.y) : ((fc == 1) ? vec3(c.x, sg, c.y) : vec3(c.x, c.y, sg));
         r[k] = textureLod(cv2WeatherTex, ds, lod);
@@ -304,7 +313,7 @@ vec3 cv2FlowDisp(vec3 wd, vec3 sP)
     const float ph[8] = float[8](0.3, 2.1, 4.4, 1.7, 5.6, 3.2, 0.9, 2.7);
     float k0 = 6.2831853 * R_EARTH * cv2.anchorFlow.w;
     vec3  g  = vec3(0.0);
-    for (int i = 0; i < 8; ++i) {
+    [[dont_unroll]] for (int i = 0; i < 8; ++i) {
         vec3 kv = normalize(kd[i]) * (k0 * ks[i]);
         g += kv * cos(dot(kv, wd) + ph[i] + cv2.anchorFlow.x * 6.2831853) / ks[i];   // grad of sin / k
     }
@@ -341,6 +350,16 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM)
     // The map drifts in longitude exactly as v1's flat layer and the ambience driver read it
     // (cloudPhase x driftMult, rotated about the pole on the CPU into cover.zw).
     vec3  wd      = cv2Drift(q.dirE);
+    // With the Cb columns on, no low cloud tops out above the congestus top or "Storm cumulus top"
+    // (below: topMax, and the storm regions' mix toward column.w), plus the ground's lift: the cirrus
+    // and anvil bands sit above that, and their samples paid the weather, cluster and cell reads before
+    // the height test at the end (perf sprint 2026-09-29).
+    if (cv2.column.x > 0.0) {
+        float trB = cv2Tropo(wd);
+        float cgT = cv2.types[3].alt.x + (cv2.types[3].alt.y - cv2.types[3].alt.x) * trB;
+        float stT = cv2.types[1].alt.x + (cv2.types[1].alt.y - cv2.types[1].alt.x) * trB + 3500.0;
+        if (q.h > max(max(cgT, stT), cv2.column.w) + cv2Ground(q.dirE) * 0.9 + 50.0) return f;
+    }
     float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
 
     // The noise volumes are read in the same drifted frame.
@@ -406,7 +425,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM)
     bool colOn = cv2.column.x > 0.0;
     // A TARGET, not a ceiling: as min() it only ever lowered the tops, and the storm regions' type
     // (mostly congestus) already topped out below it, so the slider did nothing upward (user, pass 19).
-    // Near a storm, not only in it: convective cells within ~80 km of one (the weather's type at mip 4,
+    // Near a storm, not only in it: convective cells within "Storm cumulus reach" of one (the weather's type at a mip,
     // float-bilinear: this scales kilometres of height) take the storm cumulus top too, so cumulus
     // is taller on average around storms (user, pass 20). Decks keep their own tops.
     if (colOn) {
@@ -415,7 +434,14 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM)
         // typed stratocumulus, so the threshold is well below the Cb class, and stratocumulus rises
         // halfway. At the Cb threshold the slider changed 0.2% of a storm view, pass 20.)
         if (ty.look.z > 0.01 && wS < 1.0)
-            wS = max(wS, smoothstep(0.3, 0.6, cv2WeatherBilinear(wdF, 4.0).g) * min(ty.look.z * 2.0, 1.0));
+            {
+                // The storm threshold follows the reach: a fine mip sees the storm core undiluted (at
+                // 0.3 it caught plain cumulus everywhere), a coarse one averages it down.
+                float lo = 0.62 - 0.06 * cv2.column3.x;
+                // The same one-fetch gate as the towers' strength read (within ~1% of it).
+                if (textureLod(cv2WeatherTex, wdF, cv2.column3.x).g > lo - 0.01)
+                    wS = max(wS, smoothstep(lo, lo + 0.25, cv2WeatherBilinear(wdF, cv2.column3.x).g) * min(ty.look.z * 2.0, 1.0));
+            }
         topMax = mix(topMax, cv2.column.w + lift, wS);
     }
 
@@ -938,6 +964,11 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     // The storm strength here, ~40 km smooth (mip 3): one read per sample. It varies slowly across a
     // tower, so a column fades as a whole at a storm's edge. (Reading it at each candidate centre cost
     // up to eight scattered cube fetches per sample; storm views went 10 -> 29 ms.)
+    // One hardware-filtered fetch first: away from storms (most samples, the light march's included)
+    // the four-fetch float read below was half of a calm view's whole cloud cost (perf sprint
+    // 2026-09-29). Hardware filtering is within ~1% of the float read (8-bit sub-texel weights), so
+    // with a 0.01 margin the gate never rejects a sample the exact read would keep.
+    if (textureLod(cv2WeatherTex, wdF, 3.0).g < 0.54) return o;
     vec4  wk  = cv2WeatherBilinear(wdF, 3.0);
     if (wk.g < 0.55) return o;
     float ck  = clamp((wk.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
@@ -1151,7 +1182,7 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     float span   = max(cv2.cover.y - cv2.cover.x, 1e-3);
     float stormA = 0.0;
     vec3  wF     = cv2FlowWeatherDirAt(q);                    // the towers' (flowed) map
-    for (int k = 0; k < 4; ++k) {
+    [[dont_unroll]] for (int k = 0; k < 4; ++k) {
         float off  = (k == 0) ? 0.0 : (k == 1) ? 12000.0 : (k == 2) ? 25000.0 : 40000.0;
         float fall = (k == 0) ? 1.0 : (k == 1) ? 0.95 : (k == 2) ? 0.85 : 0.65;
         vec4  wk   = textureLod(cv2WeatherTex, wF - eastW * (off / R_EARTH), 1.0);
@@ -1190,6 +1221,12 @@ float cv2AnvilSigma(CV2Pos q, float fpM, float colNear, out float hfA, out float
     return cv2AnvilSigmaP(q, fpM, colNear, false, hfA, topA, presA);
 }
 
+// Debug view 7: when gCv2DbgWant is set, cv2Field records the density each layer added (low incl.
+// rain, mid, anvil + Cb columns, high) in gCv2Dbg. The march used to call the layer functions a second
+// time for it: every extra inlined copy of the field costs every sample registers (perf sprint).
+bool gCv2DbgWant = false;
+vec4 gCv2Dbg     = vec4(0.0);
+
 // THE cloud field: the low system (stratus .. cumulonimbus, nimbostratus), the mid layer, the anvils
 // and the high layer (cirrus family).
 CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
@@ -1201,6 +1238,7 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     gCv2Ground    = cv2Ground(q.dirE);
     gCv2GroundSet = true;
     CV2Field f = cv2FieldLow(q, detailAmt, fpM);
+    float dbgLow = f.sigma;
     CV2Col col = cv2ColumnSigma(q, detailAmt, fpM);
     float hfX, topX, deckX;
     float sm = cv2MidSigma(q, fpM, hfX, topX, deckX);
@@ -1232,6 +1270,8 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
         cv2Add(f, sh, hfX, topX, 0.0);
         f.thin = sh / f.sigma;
     }
+    if (gCv2DbgWant)
+        gCv2Dbg = vec4(dbgLow, max(sm, 0.0), max(sa, 0.0) + max(col.sigma, 0.0), max(sh, 0.0));
     gCv2FlowSet = false;
     gCv2GroundSet = false;
     return f;

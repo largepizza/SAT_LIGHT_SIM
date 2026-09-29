@@ -66,6 +66,10 @@ struct VulkanContext {
     // an unsupported usage bit is invalid and would fail swapchain creation outright. Simulations
     // must gate screenshot capture on this rather than assuming the copy will always succeed.
     bool                     screenshotSupported = false;
+    // VK_KHR_pipeline_executable_properties, when the device offers it: the driver's own statistics
+    // for a compiled pipeline (registers, spills, ...). Pipelines created with
+    // VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR can be queried (harness `shaders reload`).
+    bool                     pipelineStatsSupported = false;
 
     // ── Render pass & framebuffers ─────────────────────────────────────────
     VkRenderPass                renderPass = VK_NULL_HANDLE;
