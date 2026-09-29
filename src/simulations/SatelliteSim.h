@@ -1491,12 +1491,13 @@ struct GpuCloudParams
     // ── Satellite ocean-glint reflection (688 -> 704) — see cloud_params.glsl ────────────────
     // The mirror-flare glints sat_flare.comp appends to OceanGlintBuf and sat_sky.frag composites
     // onto the sea surface. 2 fields + 2 pads: std140 rounds the block up to a 16-byte multiple
-    // while C++ would pack it at 696, so oceanGlintPad0/1 are LOAD-BEARING — do not reuse them,
-    // same rule as pad21 above.
+    // while C++ would pack it at 696, so the two fields after the pair keep it 16-byte padded. They
+    // were pads (oceanGlintPad0/1) until the procedural city lights claimed them IN PLACE (2026-09-29):
+    // renamed, same position, every offset unchanged — keep them exactly here.
     float oceanGlintGain;    // multiplier on the whole glint contribution (0 = no flare glints at all)
     float oceanGlintMinFlux; // minimum effectFlare (an OceanGlintBuf entry's .w) that draws at all
-    float oceanGlintPad0;
-    float oceanGlintPad1;
+    float cityLightsStrength; // procedural city street lights (.plans/CITIES_PLAN.md), 0 = the old detail texture
+    float cityRoadsStrength;  // the major roads (sky binding 28), x their share of the lights
     // -- Clouds v2 switch (704 -> 720), .plans/CLOUDS_V2_PLAN.md ------------------------------------
     // 1 = v2 draws the low/mid clouds: cloud_march.comp reads cloud_v2_resolve.comp's result instead
     // of running cloudMarchCS, sat_sky.frag skips flat layer 0, beam_self_march.comp and the ground
@@ -2687,6 +2688,11 @@ private:
     VkImageView terrainMatView = VK_NULL_HANDLE;
     VkSampler terrainMatSampler = VK_NULL_HANDLE;
     void createTerrainMaterials(VulkanContext &ctx);
+    // Major roads for the procedural city lights (.plans/CITIES_PLAN.md, sky binding 28): one uint
+    // storage buffer baked by tools/make_city_roads.py (header, lat/lon cell lists, float ECEF segments).
+    VkBuffer cityRoadsBuf = VK_NULL_HANDLE;
+    VkDeviceMemory cityRoadsMem = VK_NULL_HANDLE;
+    void createCityRoads(VulkanContext &ctx);
     // Earth cloud map (binding 7): 8K R8_UNORM grayscale cloud coverage map.
     VkImage earthCloudsImg = VK_NULL_HANDLE;
     VkDeviceMemory earthCloudsMem = VK_NULL_HANDLE;
@@ -3644,6 +3650,8 @@ private:
     float terrainErosionBranch = 1.0f;   // how much each erosion octave follows the gullies before it
     float terrainSkyLight = 1.0f;        // x the terrain's sky ambient (zenith integral x 0.4) — terrain v2 P1
     float terrainTextureStrength = 1.0f; // close-up material textures (terrain v2 P3)
+    float cityLightsStrength = 1.0f;     // procedural city street lights (.plans/CITIES_PLAN.md)
+    float cityRoadsStrength = 1.0f;      // the major roads' share of them
     float terrainNightSkyLight = 0.25f;  // moonless night sky on the day albedo, fraction of the full Moon overhead
     int terrainDebugView = 0; // harness `debugview` only; not persisted
     // Cloud opacity scale (see GpuCloudParams::cloudOpacityScale) — multiplies the volumetric

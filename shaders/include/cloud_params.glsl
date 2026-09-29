@@ -408,8 +408,10 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     float oceanGlintMinFlux; // minimum effectFlare (an OceanGlintBuf entry's .w) that draws at all —
                              // the surgical control for "mild satellites light up the water": raising
                              // it drops faint entries where the gain dims the spectacular ones too
-    float oceanGlintPad0;    // std140 rounds this block up to a 16-byte multiple while C++ would pack
-    float oceanGlintPad1;    // it at 696, so the trailing two are LOAD-BEARING — do not reuse.
+    // Two floats keep the gain/floor pair 16-byte padded (C++ would pack at 696); they were pads until
+    // the procedural city lights claimed them in place (2026-09-29, .plans/CITIES_PLAN.md).
+    float cityLightsStrength; // procedural street lights, 0 = the old city night detail texture
+    float cityRoadsStrength;  // the major roads (sky binding 28), x their share of the lights
     // -- Clouds v2 switch (704 -> 720), .plans/CLOUDS_V2_PLAN.md ------------------------------------
     // 1 = v2 draws the low/mid clouds (cloud_march.comp reads the v2 resolve instead of cloudMarchCS,
     // sat_sky.frag skips flat layer 0, the beam march and ground shadow use the v2 field).

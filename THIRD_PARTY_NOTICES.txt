@@ -221,6 +221,14 @@ Source:  ambientCG (https://ambientcg.com): Grass004, Ground037, Rock051,
 License: Creative Commons CC0 1.0 Universal (public domain dedication)
 
 --------------------------------------------------------------------
+Major roads (procedural city lights)
+--------------------------------------------------------------------
+File:    city_roads.bin (baked by tools/make_city_roads.py)
+Source:  Natural Earth, 1:10m Cultural Vectors, Roads
+         (https://www.naturalearthdata.com)
+License: Public domain
+
+--------------------------------------------------------------------
 Water map (lake levels + shoreline distance)
 --------------------------------------------------------------------
 Files:   earth_water_sdf.r8, earth_water_level.r8 (baked by

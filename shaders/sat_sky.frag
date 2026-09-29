@@ -291,6 +291,211 @@ void tmSample(int m, vec3 p, vec3 n, float lod, out vec4 alb, out vec4 nrm) {
     nrm = vec4(dA * w.x + dB * w.y, nA.w * w.x + nB.w * w.y);
 }
 
+// ── Procedural city lights (.plans/CITIES_PLAN.md, phase 1) ────────────────────────────────────
+// The night map (5 km texels) says WHERE the lights are and how bright; this says how they are laid
+// out: a street grid per district, lamps along the streets, arterials on the district borders, and
+// the real major roads (Natural Earth, binding 28). The result is a MULTIPLIER with mean 1 over any
+// area much larger than a block, so from orbit the night map is unchanged, and every feature is
+// filtered analytically to the pixel footprint (lamps merge into lines, lines into a uniform glow):
+// no aliasing, and no cost once it is uniform.
+layout(std430, set = 0, binding = 28) readonly buffer CityRoadsBuf { uint roadWords[]; };
+
+const float kCityDistrictM = 2048.0;   // district cell = the anchor cell (world-fixed, exact)
+const float kCityLampM     = 3.0;      // a lamp's own glow radius (sigma, metres)
+const float kCityLampStep  = 0.25;     // lamps per block side: every quarter block along a street
+
+float cityG1(float d, float sg) { return exp(-0.5 * d * d / (sg * sg)) * (0.39894228 / sg); }
+
+// Distance (metres) from pC to the major roads near uv, as the summed filtered line light.
+// Everything is taken in the anchor CELL's frame: a stored float ECEF endpoint minus the cell origin
+// (a multiple of 2048 m, exact in float) is exact, so the lines are world-fixed.
+float cityRoadLight(vec2 uv, vec3 pC, float foot) {
+    uint W = roadWords[1], H = roadWords[2];
+    if (W == 0u) return 0.0;
+    uvec2 c   = uvec2(clamp(uv * vec2(float(W), float(H)), vec2(0.0), vec2(float(W) - 1.0, float(H) - 1.0)));
+    uint cell = c.y * W + c.x;
+    uint offBase = 4u, idxBase = 4u + W * H + 1u, segBase = idxBase + roadWords[4u + W * H];
+    uint i0 = roadWords[offBase + cell], i1 = min(roadWords[offBase + cell + 1u], i0 + 64u);
+    vec3  org = vec3(cloud.terrainAnchorCell.xyz) * kTdBaseCellM;
+    float e = 0.0;
+    for (uint i = i0; i < i1; ++i) {
+        uint  sg = segBase + roadWords[idxBase + i] * 8u;
+        vec3  a  = vec3(uintBitsToFloat(roadWords[sg]), uintBitsToFloat(roadWords[sg + 1u]),
+                        uintBitsToFloat(roadWords[sg + 2u])) - org;
+        vec3  b  = vec3(uintBitsToFloat(roadWords[sg + 4u]), uintBitsToFloat(roadWords[sg + 5u]),
+                        uintBitsToFloat(roadWords[sg + 6u])) - org;
+        float cls = uintBitsToFloat(roadWords[sg + 3u]);
+        float wid = uintBitsToFloat(roadWords[sg + 7u]);
+        vec3  ab = b - a;
+        float t  = clamp(dot(pC - a, ab) / max(dot(ab, ab), 1.0), 0.0, 1.0);
+        float d  = length(pC - (a + t * ab));
+        float sgm = sqrt(0.25 * wid * wid + 0.25 * foot * foot);
+        if (d > 4.0 * sgm) continue;
+        // Light per metre of road, in "area units" (x the metres over which it counts as the city's
+        // mean): major highways the brightest.
+        float k = (cls > 1.5) ? 700.0 : (cls > 0.5 ? 450.0 : 250.0);
+        e = max(e, k * cityG1(d, sgm));
+    }
+    return e;
+}
+
+// Street lines of one direction at coordinate x (street spacing 1, sigma sg): the three nearest
+// streets, each dropped with probability `drop` per street (hash of its index), every `artN`-th an
+// arterial (x kArt brighter, wider). Mean over x: ~1/2 (the drop is compensated).
+float cityStreetLines(float x, float sg, float drop, float artN, int salt) {
+    float n = floor(x + 0.5), e = 0.0;
+    for (int j = -1; j <= 1; ++j) {
+        float ni   = n + float(j);
+        float keep = step(drop, tdRand3(ivec3(int(ni), salt, 0)).x * 0.5 + 0.5);
+        float art  = (mod(ni, artN) < 0.5) ? 5.0 : 1.0;
+        float sgj  = art > 1.0 ? max(sg, 0.05) : sg;
+        e += keep * art * cityG1(x - ni, sgj);
+    }
+    // mean per direction: (1 - drop) * (1 + 4/artN) streets' worth -> normalise to 1/2
+    return e * 0.5 / max((1.0 - drop) * (1.0 + 4.0 / artN), 0.05);
+}
+
+// World-fixed 2D value noise on a lattice of `cellM` metres (a divisor of the 4096-m district, so the
+// lattice index is exact from the district anchor): C1-smooth bilinear of hashed corners, in [-1, 1].
+float cityValue2(vec2 p2, ivec2 dAnc, float cellM, int salt) {
+    int   per = int(4096.0 / cellM + 0.5);
+    vec2  x   = p2 / cellM;
+    vec2  fl  = floor(x), fr = x - fl;
+    ivec2 i   = dAnc * per + ivec2(fl);
+    vec2  w   = fr * fr * (3.0 - 2.0 * fr);
+    float a = tdRand3(ivec3(i, salt)).x, b = tdRand3(ivec3(i + ivec2(1, 0), salt)).x;
+    float c = tdRand3(ivec3(i + ivec2(0, 1), salt)).x, d = tdRand3(ivec3(i + ivec2(1, 1), salt)).x;
+    return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
+}
+
+// The pattern at a terrain hit: q (terrain_detail.glsl's q), the pixel footprint (m) and the ground's
+// up-facing (nUp). Returns an RGB multiplier for the lights.
+vec3 cityLightPattern(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, float foot, float nUp) {
+    vec3  offS = tdSphereOffset(q);
+    vec3  rel  = cloud.terrainAnchorRel.xyz + offS.x * enuX + offS.y * enuY + offS.z * enuZ;
+    vec3  up   = tdUpECEF(q, enuX, enuY, enuZ);
+    vec3  aup  = abs(up);
+    int   f    = (aup.x > aup.y && aup.x > aup.z) ? 0 : (aup.y > aup.z ? 1 : 2);
+    ivec2 ax   = tdFaceAxes(f);
+    ivec3 anchor = ivec3(cloud.terrainAnchorCell.xyz);
+    ivec2 anc2 = ivec2(anchor[ax.x], anchor[ax.y]);
+    // Districts are 2 anchor cells (4096 m): the district index is (anchor + offset) / 2, formed as
+    // integers (the anchor's low bit carried into the float part) so it stays world-fixed.
+    vec2  p2   = vec2(rel[ax.x], rel[ax.y]) + vec2(anc2 & 1) * kCityDistrictM;
+    ivec2 dAnc = anc2 >> 1;
+    const float kD = 2.0 * kCityDistrictM;
+
+    // Districts: jittered Voronoi.
+    vec2  cf = floor(p2 / kD);
+    float d1 = 1e9, d2 = 1e9;
+    vec2  c1 = vec2(0.0), c2 = vec2(0.0);
+    vec3  r1 = vec3(0.0);
+    ivec2 id1 = ivec2(0);
+    for (int k = 0; k < 9; ++k) {
+        vec2  o  = vec2(float(k % 3 - 1), float(k / 3 - 1));
+        ivec2 id = dAnc + ivec2(cf + o);
+        vec3  r  = tdRand3(ivec3(id, 7717 + f));
+        vec2  cc = (cf + o + 0.5 + 0.38 * r.xy) * kD;
+        float d  = dot(p2 - cc, p2 - cc);
+        if (d < d1) { d2 = d1; c2 = c1; d1 = d; c1 = cc; r1 = r; id1 = id; }
+        else if (d < d2) { d2 = d; c2 = cc; }
+    }
+    float db = abs(dot(p2 - 0.5 * (c1 + c2), normalize(c2 - c1)));
+    float a2 = (f == 0) ? max(aup.y, aup.z) : (f == 1 ? max(aup.x, aup.z) : max(aup.x, aup.y));
+    db = min(db, (aup[f] - a2) * R_EARTH * 0.7071);
+    vec3  r2 = tdRand3(ivec3(id1, 3301 + f));        // more per-district choices
+
+    // The district's density from the night map at its centre (suburbs coarser, sparser).
+    vec3  cE   = vec3(0.0);
+    cE[ax.x] = c1.x - float(anc2.x & 1) * kCityDistrictM;
+    cE[ax.y] = c1.y - float(anc2.y & 1) * kCityDistrictM;
+    cE[f] = rel[f];
+    vec2  uvC  = dirToUV(normalize(vec3(anchor) * kTdBaseCellM + cE));
+    vec3  nC   = max(textureLod(earthNightTex, uvC, 1.0).rgb - vec3(0.006, 0.006, 0.0132), vec3(0.0));
+    float dens = smoothstep(0.004, 0.12, dot(nC, vec3(0.2126, 0.7152, 0.0722)));
+    float sp   = mix(240.0, 90.0, dens) * (0.85 + 0.3 * (r1.z * 0.5 + 0.5));   // street spacing (m)
+    // Grid orientation is shared across ~16 km (a city keeps its grid for tens of km: neighbouring
+    // districts differing wildly read as a patchwork), a few degrees of jitter per district, and a
+    // fifth of districts on their own.
+    vec3  rReg = tdRand3(ivec3(id1 >> 2, 6089 + f));
+    float ang  = (rReg.x * 0.5 + 0.5) * 1.5708 + 0.06 * r1.x;
+    if (r2.z > 0.6) ang = (r1.x * 0.5 + 0.5) * 1.5708;
+    vec2  cs   = vec2(cos(ang), sin(ang));
+    vec2  dp   = p2 - c1;
+    vec2  u    = vec2(dot(dp, cs), dot(dp, vec2(-cs.y, cs.x))) / sp + r2.xy * 17.3;
+    // Organic districts (about a third, more in suburbs): the grid bends gently.
+    float organic = step(0.35 + 0.3 * dens, r2.z * 0.5 + 0.5);
+    u += organic * 0.35 * vec2(sin(u.y * 0.21 + r2.x * 6.0), sin(u.x * 0.17 + r2.y * 6.0));
+    float drop = mix(0.35, 0.05, dens);                         // suburbs: dead ends, gaps
+    float artN = 6.0 + floor(3.0 * (r2.x * 0.5 + 0.5));         // every 6th-8th street an arterial
+
+    float sgM  = sqrt(kCityLampM * kCityLampM + 0.25 * foot * foot);
+    float sg   = sgM / sp;
+    float eGrid = 1.0;
+    float tU   = smoothstep(0.3, 0.6, sg);        // lines -> uniform
+    if (tU < 1.0) {
+        float eL = cityStreetLines(u.x, sg, drop, artN, 101 + id1.x * 7 + id1.y * 131)
+                 + cityStreetLines(u.y, sg, drop, artN, 202 + id1.x * 13 + id1.y * 71);
+        float tL = smoothstep(0.07, 0.16, sg);   // lamps -> lines
+        float eP = 0.0;
+        if (tL < 1.0) {                          // lamps along the nearest street of each direction
+            const float A = 0.5 * kCityLampStep;
+            for (int dir = 0; dir < 2; ++dir) {
+                float x  = u[dir], yv = u[1 - dir];
+                float ni = floor(x + 0.5);
+                int   salt = dir == 0 ? 101 + id1.x * 7 + id1.y * 131 : 202 + id1.x * 13 + id1.y * 71;
+                float keep = step(drop, tdRand3(ivec3(int(ni), salt, 0)).x * 0.5 + 0.5);
+                float art  = (mod(ni, artN) < 0.5) ? 5.0 : 1.0;
+                float dx = x - ni;
+                float m  = floor(yv / kCityLampStep + 0.5) * kCityLampStep;
+                float el = 0.0;
+                for (int j = -1; j <= 1; ++j) {
+                    float dy = yv - m - float(j) * kCityLampStep;
+                    el += exp(-0.5 * (dx * dx + dy * dy) / (sg * sg));
+                }
+                eP += keep * art * A * el * (0.15915494 / (sg * sg));
+            }
+            eP /= max((1.0 - drop) * (1.0 + 4.0 / artN), 0.05);
+        }
+        eGrid = mix(mix(eP, eL, tL), 1.0, tU);
+    }
+    // Lit windows and lots between the streets: a faint glow varying per block.
+    vec3  bh    = tdRand3(ivec3(ivec2(floor(u)), 911 + f));
+    float block = mix(0.2 + 1.6 * (bh.x * 0.5 + 0.5) * (bh.y * 0.5 + 0.5) * 2.0, 1.0, smoothstep(0.25, 0.7, sg));
+    float eCity = 0.06 * block + 0.94 * eGrid;
+
+    // District borders: a faint road (they are where two grids meet), and the real major roads.
+    float sgA  = sqrt(25.0 + 0.25 * foot * foot);
+    float eArt = mix(1860.0 * cityG1(db, sgA), 1.0, smoothstep(300.0, 700.0, sgA));
+    float e    = mix(eCity, eArt, 0.015);
+    e += cloud.cityRoadsStrength * cityRoadLight(uv, rel, foot) * (1.0 - smoothstep(150.0, 350.0, foot));
+    // Steep ground carries few streets.
+    e *= mix(0.3, 1.0, smoothstep(0.75, 0.9, nUp));
+    // Macro structure (mean ~1): a city from 5-20 km is bright commercial strips along its arterials
+    // and dimmer residential between — the street scale alone averages to an even grey mesh. The strip
+    // is the distance to the district's own arterial streets (every artN-th), plus a mild 2-km value
+    // noise; faded out before the hand-off to the map. (Per-district levels and a 512-m noise were tried
+    // first: a hard-edged patchwork and camouflage blotches.)
+    vec2  artD  = abs(u - artN * floor(u / artN + 0.5)) * sp;          // metres to the nearest arterial
+    float strip = exp(-0.5 * pow(min(artD.x, artD.y) / 220.0, 2.0));
+    // Dark voids (parks, hillsides, rail yards): soft irregular patches, dim rather than black, over
+    // ~15% of the area. (256/512-m cells with a narrow edge read as ink spots.)
+    float voidN = cityValue2(p2, dAnc, 1024.0, 4441 + f) * 0.7 + cityValue2(p2, dAnc, 512.0, 4443 + f) * 0.3;
+    float lit   = mix(0.12, 1.0, smoothstep(-0.65, -0.25, voidN));
+    float macro = (0.25 + 2.6 * strip) / 1.55 * lit / 0.88 * exp(0.7 * cityValue2(p2, dAnc, 2048.0, 5557 + f)) / 1.1;
+    e *= mix(macro, 1.0, smoothstep(200.0, 350.0, foot));
+    // Close up a city is mostly dark between its lights; from far the lights blur into the map's own
+    // brightness. The map's city cores, at the night exposure, are a lit sheet: the old detail texture
+    // this replaces averaged ~0.1 of the map there (measured, harness cdbg 2026-09-29), which is what
+    // read as streets in the dark. The mean ramps to 1 by the footprint the caller stops at (400 m —
+    // it has to be complete below a LEO pixel, ~470 m, or orbit views changed: 15% of a Europe frame).
+    e *= mix(0.12, 1.0, smoothstep(40.0, 350.0, foot));
+    // Lamp colour per district: sodium or white LED, luminance ~1.
+    // Lamp colour, shared across ~8 km: sodium mostly, white LED in places.
+    vec3 tint = (tdRand3(ivec3(id1 >> 1, 4129 + f)).y > -0.5) ? vec3(1.25, 0.93, 0.52) : vec3(0.92, 0.98, 1.12);
+    return e * mix(vec3(1.0), tint, 0.6 * (1.0 - smoothstep(200.0, 350.0, foot)));
+}
+
 // ── Milky Way surface-brightness anchors ─────────────────────────────────────────────────────
 // File scope, not block-local, because TWO places gate this panorama on them: the direct sky view
 // and the ocean sky-reflection. Two copies would be free to drift and the symptom — a reflection
@@ -2548,7 +2753,7 @@ void main() {
                         nightDetail = mix(nightDetail, nightDetailBlur, localCloudOpacity);
                     }
                     dayColor   = mix(dayColor,   dayDetail,   cityMask);
-                    nightColor = mix(nightColor, nightDetail, cityMask);
+                    nightColor = mix(nightColor, nightDetail, cityMask * (1.0 - cloud.cityLightsStrength));
                 }
             }
         }
@@ -2776,6 +2981,20 @@ void main() {
         // base, so subtracting after the texture filter is ~subtracting before it — a knee on the
         // filtered value drew every 5 km texel as a hard-edged square from orbit.
         vec3 cityLights = max(nightColor - vec3(0.006, 0.006, 0.0132), vec3(0.0));
+        // Procedural street layout (.plans/CITIES_PLAN.md) on land, where there are lights at night.
+        // Also on land AT sea level (the march's hit voided to the sea path, waterPx 0): much of a coastal
+        // basin like LA's is DEM 0-35 m, and without it those areas showed the raw map as a flat sheet.
+        bool  cityLand = tHit > 0.0 || (waterPx == 0 && tSeaLvl > 0.0);
+        if (cityLand && cloud.cityLightsStrength > 0.0 && twilightFrac < 1.0
+            && dot(cityLights, vec3(1.0)) > 1e-5 && tdEnabled()) {
+            float cT    = tHit > 0.0 ? tHit : tSeaLvl;
+            vec3  cQ    = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
+            float cFoot = pixAngle * cT / max(abs(dot(dir, shadingN)), 0.2);
+            if (cFoot < 400.0) {   // past it the pattern is uniform (mean 1): orbit sees the map as before
+                vec3 pat = cityLightPattern(cQ, enuX, enuY, enuZ, uvSurf, cFoot, dot(shadingN, normalize(hitPt)));
+                cityLights *= mix(vec3(1.0), pat, cloud.cityLightsStrength);
+            }
+        }
         vec3 tNight     = cityLights * (0.12 * (1.0 - twilightFrac));       // city lights: emissive only, never the surface
         // Night light ON the albedo (terrain v2 P1): the moonlit sky (moonlight scattered by the air —
         // ~0.15 of the direct Moon on a flat face, like the Sun's diffuse share) and the moonless

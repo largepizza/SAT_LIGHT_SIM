@@ -4914,6 +4914,10 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         // Terrain v2 P3: close-up material textures (grass, forest floor, rock, snow, sand, dirt) within
         // a few metres per pixel. 0 = the procedural mottle alone.
         {"Close-up textures", &terrainTextureStrength, 0.0f, 1.0f, 0.05f, "%.2f", 57},
+        // Procedural city lights (.plans/CITIES_PLAN.md): street grids generated where the night map
+        // has lights, and the major roads. 0 = the old tiled night detail texture.
+        {"City street lights", &cityLightsStrength, 0.0f, 1.0f, 0.05f, "%.2f", 58},
+        {"Major road lights", &cityRoadsStrength, 0.0f, 2.0f, 0.05f, "%.2f", 77},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -6396,6 +6400,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         terrainSkyLight = c.value("terrain_sky_light", terrainSkyLight);
         terrainNightSkyLight = c.value("terrain_night_sky_light", terrainNightSkyLight);
         terrainTextureStrength = c.value("terrain_texture_strength", terrainTextureStrength);
+        cityLightsStrength = c.value("city_lights_strength", cityLightsStrength);
+        cityRoadsStrength = c.value("city_roads_strength", cityRoadsStrength);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
         // Satellite ocean-glint gain/floor (Ocean tab's "Ocean flare refl"/"Flare refl floor",
@@ -6629,6 +6635,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"terrain_sky_light", terrainSkyLight},
         {"terrain_night_sky_light", terrainNightSkyLight},
         {"terrain_texture_strength", terrainTextureStrength},
+        {"city_lights_strength", cityLightsStrength},
+        {"city_roads_strength", cityRoadsStrength},
         {"cloud_erosion_edge", cloudErosionEdge},
         {"cloud_erosion_core", cloudErosionCore},
         {"cirrus_wind_deg", cloudCirrusWindDeg},

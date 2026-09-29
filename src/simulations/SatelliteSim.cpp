@@ -2243,8 +2243,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // sat_sky.frag). The two pads are pure std140 rounding — see GpuCloudParams' tail comment.
         cp.oceanGlintGain = oceanGlintGain;
         cp.oceanGlintMinFlux = oceanGlintMinFlux;
-        cp.oceanGlintPad0 = 0.0f;
-        cp.oceanGlintPad1 = 0.0f;
+        cp.cityLightsStrength = cityLightsStrength;
+        cp.cityRoadsStrength = cityRoadsStrength;
         cp.cloudShadowRangeM = cloudShadowRangeM;
         // sat_sky.frag's render target: the low-res prepass extent when renderScale<1 (recordPrePass
         // draws the sky there and recordDraw's Pass 1 is skipped), else the full swap extent. The
@@ -6004,6 +6004,12 @@ void SatelliteSim::cleanup(VkDevice device)
         vkFreeMemory(device, earthSpecMem, nullptr);
         earthSpecMem = VK_NULL_HANDLE;
     }
+    if (cityRoadsBuf)
+        vkDestroyBuffer(device, cityRoadsBuf, nullptr);
+    if (cityRoadsMem)
+        vkFreeMemory(device, cityRoadsMem, nullptr);
+    cityRoadsBuf = VK_NULL_HANDLE;
+    cityRoadsMem = VK_NULL_HANDLE;
     if (terrainMatSampler)
         vkDestroySampler(device, terrainMatSampler, nullptr);
     if (terrainMatView)
@@ -8527,6 +8533,59 @@ void SatelliteSim::createBeamSelfMarchPipeline(VulkanContext &ctx)
     vkDestroyShaderModule(ctx.device, mod, nullptr);
 }
 
+// ─── createCityRoads ──────────────────────────────────────────────────────────
+// The major-road network for the procedural city lights (.plans/CITIES_PLAN.md): assets/textures/
+// city_roads.bin from tools/make_city_roads.py, uploaded as-is into one device-local storage buffer
+// (sky binding 28; sat_sky.frag reads it as uint words — the layout is in the tool's header). Without
+// the file, a 16-byte header with an empty grid, which the shader reads as "no roads".
+void SatelliteSim::createCityRoads(VulkanContext &ctx)
+{
+    bootStatus("Roads");
+    std::vector<uint32_t> words;
+    {
+        const char *path = "assets/textures/city_roads.bin";
+        Log::line(std::string("init: data: ") + path);
+        FILE *f = std::fopen(path, "rb");
+        if (f)
+        {
+            std::fseek(f, 0, SEEK_END);
+            const long len = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            if (len >= 16 && len % 4 == 0)
+            {
+                words.resize((size_t)len / 4);
+                if (std::fread(words.data(), 4, words.size(), f) != words.size() || words[0] != 0x44524C53u)
+                    words.clear();
+            }
+            std::fclose(f);
+        }
+        if (words.empty())
+        {
+            Log::line("init: city roads missing (tools/make_city_roads.py): none");
+            words = {0x44524C53u, 0u, 0u, 0u};
+        }
+    }
+    const VkDeviceSize bytes = (VkDeviceSize)words.size() * 4;
+    VkBuffer stageBuf;
+    VkDeviceMemory stageMem;
+    ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stageBuf, stageMem);
+    void *mapped;
+    vkMapMemory(ctx.device, stageMem, 0, bytes, 0, &mapped);
+    std::memcpy(mapped, words.data(), (size_t)bytes);
+    vkUnmapMemory(ctx.device, stageMem);
+    ctx.createBuffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, cityRoadsBuf, cityRoadsMem);
+    VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+    VkBufferCopy cp{0, 0, bytes};
+    vkCmdCopyBuffer(cmd, stageBuf, cityRoadsBuf, 1, &cp);
+    ctx.endOneTimeCommands(cmd);
+    vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+    vkFreeMemory(ctx.device, stageMem, nullptr);
+    Log::line("init: city roads " + std::to_string(words.size() > 3 ? words[3] : 0) + " segments, " +
+              std::to_string(bytes / 1000000) + " MB");
+}
+
 // ─── createTerrainMaterials ───────────────────────────────────────────────────
 // The close-up terrain material array (terrain v2 P3, sky binding 27): assets/textures/
 // terrain_materials.rgba8 from tools/make_terrain_materials.py — "SLTA", uint32 width, height, layers,
@@ -9544,6 +9603,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     }
 
     createTerrainMaterials(ctx);
+    createCityRoads(ctx);
 
     // ── Load earth cloud map (binding 7): 8K R8_UNORM grayscale coverage ─────────
     {
@@ -9653,7 +9713,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     }
 
     // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=beamGlowDomeBuf, 19=sceneDepthTex, 20=oceanGlintBuf, 21=groundBeamsBuf
-    VkDescriptorSetLayoutBinding bindings[28] = {};
+    VkDescriptorSetLayoutBinding bindings[29] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -9703,13 +9763,15 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // 27: the close-up terrain material array (terrain v2 P3) — sat_sky.frag's 16th and LAST sampled
     // image (the guaranteed per-stage floor; CLAUDE.md hardware table).
     bindings[27] = {27, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // 28: the major roads for the procedural city lights (createCityRoads, .plans/CITIES_PLAN.md).
+    bindings[28] = {28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 28;
+    li.bindingCount = 29;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3},
@@ -9756,7 +9818,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     VkDescriptorBufferInfo oceanGlintInfo{oceanGlintBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo groundBeamsInfo{groundBeamsBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[23] = {};
+    VkWriteDescriptorSet writes[24] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = skyDescSet;
     writes[0].dstBinding = 0;
@@ -9897,7 +9959,14 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     writes[22].descriptorCount = 1;
     writes[22].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[22].pImageInfo = &terrainMatImgInfo;
-    vkUpdateDescriptorSets(ctx.device, 23, writes, 0, nullptr);
+    VkDescriptorBufferInfo cityRoadsInfo{cityRoadsBuf, 0, VK_WHOLE_SIZE};
+    writes[23].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[23].dstSet = skyDescSet;
+    writes[23].dstBinding = 28;
+    writes[23].descriptorCount = 1;
+    writes[23].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[23].pBufferInfo = &cityRoadsInfo;
+    vkUpdateDescriptorSets(ctx.device, 24, writes, 0, nullptr);
     createStarEnvBuffer(ctx);
 }
 

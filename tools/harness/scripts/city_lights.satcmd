@@ -1,0 +1,75 @@
+# Procedural city lights (.plans/CITIES_PLAN.md phase 1): night views, pattern on / off, then cost.
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds_v2.dust_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+# la2
+observer lat=34.05 lon=-118.35 agl=2000
+time sun midnight
+camera az=90 el=-15 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture c_la2
+set clouds.city_lights_strength 0
+wait settle
+capture c_la2_off
+# la10
+observer lat=33.95 lon=-118.45 alt=10000
+time sun midnight
+camera az=60 el=-25 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture c_la10
+set clouds.city_lights_strength 0
+wait settle
+capture c_la10_off
+# la40
+observer lat=33.8 lon=-118.6 alt=40000
+time sun midnight
+camera az=50 el=-35 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture c_la40
+set clouds.city_lights_strength 0
+wait settle
+capture c_la40_off
+# paris5
+observer lat=48.80 lon=2.25 alt=5000
+time sun midnight
+camera az=45 el=-25 fov=60
+set clouds.city_lights_strength 1
+wait settle
+capture c_paris5
+set clouds.city_lights_strength 0
+wait settle
+capture c_paris5_off
+# europe_leo
+observer lat=47.0 lon=8.0 alt=400000
+time sun midnight
+camera az=0 el=-50 fov=50
+set clouds.city_lights_strength 1
+wait settle
+capture c_europe_leo
+set clouds.city_lights_strength 0
+wait settle
+capture c_europe_leo_off
+set clouds.city_lights_strength 1
+# cost: LA from 10 km
+observer lat=33.95 lon=-118.45 alt=10000
+time sun midnight
+camera az=60 el=-25 fov=60
+set clouds.city_lights_strength 1
+wait settle 10
+perf frames=120 name=la10_on0
+set clouds.city_lights_strength 0
+wait settle 10
+perf frames=120 name=la10_off0
+set clouds.city_lights_strength 1
+wait settle 10
+perf frames=120 name=la10_on1
+set clouds.city_lights_strength 0
+wait settle 10
+perf frames=120 name=la10_off1
+set clouds.city_lights_strength 1

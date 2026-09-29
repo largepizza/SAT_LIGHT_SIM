@@ -882,7 +882,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
 - The Clouds tab's slider slots: `kCloudSliderSlots` (200) sizes all four per-slider arrays and
   `cloudBufs`; v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
-  sliders: 77, 58 (55/56/57 went to terrain v2's "Terrain sky light" / "Night sky light" / "Close-up textures", Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
+  sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
   parallax, fog x3, dust x3.) Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
   shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.
 
@@ -3514,7 +3514,7 @@ Read it at the start of any terrain-related session before making changes.
   under "Subsystem: GPU Orbital Pipeline → Push constants" and the "Push-constant relief" block in
   `GpuCloudParams`. Both point pipeline layouts (`drawPipeLayout`, `starPipeLayout`) use
   `sizeof(PointDrawPC)`; `skyBgPipeLayout` uses `sizeof(SatDrawPC)`.
-- Sky descriptor set has 28 bindings (0-27; 27 = the terrain material array, terrain v2 P3; 26 = terrainFrameBuf, the observer's detailed ground height
+- Sky descriptor set has 29 bindings (0-28; 28 = the major-roads storage buffer for the city lights; 27 = the terrain material array, terrain v2 P3; 26 = terrainFrameBuf, the observer's detailed ground height
   from scene_depth.comp, 2026-09-25). Before that it had 26 (0-25; 22/23 the mesh targets, 24 the env star grid, 25 the
   sharp-reflection G-buffer — the last two read only by the SKY_ENV / SKY_REFL variants). The original 22 (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec (the R8G8 water map since terrain v2 P2), earthClouds (since 2026-09-29 the v2 weather CUBE), cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h. **As of 2026-08-10 its entries are `GpuGroundBeam` (32 bytes), not raw `GpuReflectBeam`** — a pre-solved record, see "Beam ground-spot CPU hoist" below
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
@@ -3751,6 +3751,24 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   below 0.6-3 m per pixel. "Close-up textures" (`clouds.terrain_texture_strength`, the old
   `terrainPad0`, slot 57; on for Medium and up). Cost +0.27 ms on an Alpine meadow at 2 m (in-app
   A/B). Harness: `scripts/terrain_materials.satcmd`.
+- **Procedural city lights (2026-09-29, `.plans/CITIES_PLAN.md` phase 1).** `cityLightPattern()` in
+  sat_sky.frag MULTIPLIES the night map's lights (after the blue base is removed) on land at night:
+  jittered-Voronoi districts of 4096 m (2 anchor cells, integer-anchored, on the erosion's face
+  projection; an arterial runs along the face seam) each with a street grid (angle shared over ~16 km,
+  spacing 90-240 m by the map's brightness at the district centre, organic warps, suburban drop-outs,
+  every 6th-8th street an arterial), lamps along the streets merging analytically into lines and then
+  a uniform glow as the footprint grows; macro brightness from commercial strips along the arterials,
+  soft dark voids and a 2-km value noise; sodium / LED tint over ~8 km; plus the REAL major roads
+  (`cityRoadLight`: Natural Earth 10m, 647k segments baked by `tools/make_city_roads.py` into
+  `assets/textures/city_roads.bin`, sky binding 28 storage buffer, a 0.25-degree lat/lon cell list;
+  distances in the anchor cell's frame, where a float ECEF endpoint minus the 2048-m-multiple cell
+  origin is exact). The mean ramps from 0.12 of the map close up (the old tiled detail texture averaged
+  ~0.1 of it: a city core at the night exposure is otherwise a lit sheet) to 1 at a 350-m footprint,
+  and the pattern stops at 400 m, so ORBIT IS BIT-IDENTICAL (checked: Europe from 400 km). Also on land
+  at sea level (`waterPx == 0`, most of the LA basin). Knobs: "City street lights"
+  (`clouds.city_lights_strength`, slot 58; 0 = the old detail texture) and "Major road lights"
+  (`clouds.city_roads_strength`, slot 77), in the UBO where `oceanGlintPad0/1` were (renamed in place).
+  Cost +0.7 ms over LA from 10 km (in-app A/B). Harness: `scripts/city_lights.satcmd`.
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the
