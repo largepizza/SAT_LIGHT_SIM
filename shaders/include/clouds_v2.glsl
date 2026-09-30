@@ -68,7 +68,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  anchorStorm;    // the shape volume at period x storm scale
     vec4  anchorStormDetail; // the detail volume at period x storm scale
     vec4  motion;         // x how far the noise volumes slid against each other since last frame (m):
-                          // the evolution the resolve cannot reproject; yzw unused
+                          // the evolution the resolve cannot reproject; y the new-sample weight in motion ("History weight moving"), zw unused
     vec4  high;           // the high layer: x amount, y 1/along-wind period (m^-1, divides the equator),
                           // z along-wind offset (periods, the jet), w 1/across-wind period (m^-1)
     vec4  high2;          // x high-layer density, y 1 / cirrus field size (m^-1), z cirrus flow (x the low
@@ -1255,13 +1255,39 @@ vec4 gCv2Dbg     = vec4(0.0);
 // regime, and mist in rain; patchy on the cluster field. Lit like a cloud deck.
 // DUST: over dry land (the map clear over ~80 km, not rain, not sea), in plumes on the coarse cluster
 // field, falling off with height (scale height fog2.x). Returns the fog's extinction; dustS the dust's.
-float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out float fogHf)
+// A smooth value noise on the unit sphere's direction (float is fine at these ~200-1000 km scales).
+float cv2DirNoise(vec3 p)
 {
-    dustS = 0.0; fogTopH = 0.0; fogHf = 0.0;
-    if (cv2.fog.x <= 0.0 && cv2.fog.w <= 0.0) return 0.0;
+    vec3  i = floor(p), f = p - i;
+    vec3  u = f * f * (3.0 - 2.0 * f);
+    float a[8];
+    for (int k = 0; k < 8; ++k) {
+        uvec3 c = uvec3(ivec3(i) + ivec3(k & 1, (k >> 1) & 1, k >> 2));
+        uint  h = c.x * 73856093u ^ c.y * 19349663u ^ c.z * 83492791u;
+        h = (h ^ (h >> 16)) * 0x7feb352du;
+        h = (h ^ (h >> 15)) * 0x846ca68bu;
+        a[k] = float((h ^ (h >> 16)) & 0xFFFFu) / 65535.0;
+    }
+    return mix(mix(mix(a[0], a[1], u.x), mix(a[2], a[3], u.x), u.y),
+               mix(mix(a[4], a[5], u.x), mix(a[6], a[7], u.x), u.y), u.z);
+}
+
+// ICE FOG / DIAMOND DUST (2026-09-29, user review): over the ice sheets (Antarctica, Greenland's high
+// interior, the high Arctic's land) under a clear sky, a thin haze of ice crystals in the lowest few
+// hundred metres (scale height kIceFogH), patchy on the cluster field. It carries the ice optics (halos,
+// sundogs, arcs, pillars: the fog march in cloud_v2_march.comp). fog2.w = amount, sunE.w = its
+// extinction at the ground (1/m). iceS = its extinction here; the caller integrates its height profile.
+const float kIceFogH = 250.0;
+
+float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out float fogHf, out float dustAgl,
+                 out float iceS)
+{
+    dustS = 0.0; fogTopH = 0.0; fogHf = 0.0; dustAgl = 0.0; iceS = 0.0;
+    if (cv2.fog.x <= 0.0 && cv2.fog.w <= 0.0 && cv2.fog2.w <= 0.0) return 0.0;
     float gF  = cv2Ground(q.dirE);
     float agl = q.h - gF;
-    float topMax = max((cv2.fog.x > 0.0) ? 1.6 * cv2.fog.y : 0.0, (cv2.fog.w > 0.0) ? 4.0 * cv2.fog2.x : 0.0);
+    float topMax = max(max((cv2.fog.x > 0.0) ? 1.6 * cv2.fog.y : 0.0, (cv2.fog.w > 0.0) ? 4.0 * cv2.fog2.x : 0.0),
+                       (cv2.fog2.w > 0.0) ? 6.0 * kIceFogH : 0.0);
     if (agl > topMax) return 0.0;
     vec3  wF   = cv2FlowWeatherDirAt(q);
     vec4  w1   = textureLod(cv2WeatherTex, wF, 1.0);
@@ -1300,8 +1326,27 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
         vec4  clC   = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
                                  cv2Lod(fpM, cv2.anchorCluster.w) + 2.0);
         float dry   = (1.0 - smoothstep(0.02, 0.25, cov4)) * (1.0 - sea) * (1.0 - clamp(w1.b * 3.0, 0.0, 1.0));
-        float plume = smoothstep(0.47, 0.6, clC.a);
-        dustS = cv2.fog2.y * cv2.fog.w * dry * (0.3 + 0.7 * plume) * exp(-max(agl, 0.0) / cv2.fog2.x);
+        float plume = smoothstep(0.49, 0.62, clC.a);
+        // Regions (~300-1000 km): dry land is not all dusty at once — a dust event covers a region and
+        // leaves the next clear. Before this the whole dry continent sat at one level (user snapshot 9).
+        float reg   = 0.65 * cv2DirNoise(q.dirE * 9.0) + 0.35 * cv2DirNoise(q.dirE * 27.0 + 7.3);
+        float region = smoothstep(0.45, 0.72, reg);
+        dustAgl = max(agl, 0.0);
+        dustS = cv2.fog2.y * cv2.fog.w * dry * region * (0.08 + 0.92 * plume) * exp(-dustAgl / cv2.fog2.x);
+    }
+    if (cv2.fog2.w > 0.0) {
+        float latD = degrees(asin(clamp(q.dirE.z, -1.0, 1.0)));
+        float ice  = max(1.0 - smoothstep(-72.0, -63.0, latD),                                  // Antarctica
+                     max(smoothstep(62.0, 70.0, latD) * smoothstep(800.0, 1600.0, gF),          // Greenland
+                         smoothstep(70.0, 78.0, latD) * (1.0 - sea)));                            // high Arctic land
+        if (ice > 0.0) {
+            float clear = 1.0 - smoothstep(0.25, 0.7, cov1);
+            vec4  clI   = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
+                                     cv2Lod(fpM, cv2.anchorCluster.w) + 1.0);
+            float patchI = smoothstep(0.46, 0.58, clI.a);
+            dustAgl = max(agl, 0.0);
+            iceS = cv2.sunE.w * cv2.fog2.w * ice * clear * (0.2 + 0.8 * patchI) * exp(-dustAgl / kIceFogH);
+        }
     }
     return sig;
 }
@@ -1420,6 +1465,19 @@ vec3 cv2IceOptics(vec3 v, vec3 s, vec4 hab)
               * (1.0 - smoothstep(radians(40.0), radians(80.0), daz)) * smoothstep(-0.02, 0.1, se);
     float up = smoothstep(-0.03, 0.02, se);          // plates need the light above the horizon
     return 4.0 * hab.x * h22 + 0.7 * hab.w * h46 + up * (12.0 * hab.y * dogs + hab.z * (vec3(circle) + 3.0 * cza));
+}
+
+// The sun pillar: plate crystals near the ground, drifting almost level, make a vertical streak above
+// (and below) a low Sun, diamond dust's signature. v, s in the observer's ENU.
+float cv2PillarOptics(vec3 v, vec3 s)
+{
+    float e   = asin(clamp(s.z, -1.0, 1.0));
+    float ev  = asin(clamp(v.z, -1.0, 1.0));
+    float daz = abs(atan(v.y, v.x) - atan(s.y, s.x));
+    daz = min(daz, 2.0 * PI - daz) * cos(ev);
+    float wide = exp(-cv2Sq(daz / radians(0.7)));
+    float vert = (ev > e) ? exp(-(ev - e) / radians(6.0)) : exp(-(e - ev) / radians(3.0));
+    return 6.0 * wide * vert * (1.0 - smoothstep(0.08, 0.4, s.z)) * smoothstep(-0.06, 0.0, s.z);
 }
 
 // Rain drops: the primary bow (one internal reflection, 42.3 deg red .. 41.0 blue from the antisolar

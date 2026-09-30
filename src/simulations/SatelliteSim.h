@@ -1228,7 +1228,7 @@ struct CitySpritePC {
     uint32_t capacity;
     float radiusM, cellM;
     int32_t halfCells;
-    float innerM, weight, pad0, pad1, pad2;
+    float innerM, weight, twinkleRate, pad1, pad2;
 };
 static_assert(sizeof(CitySpritePC) == 64, "CitySpritePC must match city_sprites.comp");
 
@@ -1517,8 +1517,9 @@ struct GpuCloudParams
     float exposureScale;     // 2^(cv2ExposureEV)
     float highlightRolloff;  // cv2HighlightRolloff (sat_sky.frag's tonemap shoulder)
     float whiteBalance;      // cv2WhiteBalance (sat_sky.frag, before the tonemap)
+    glm::vec4 cityParams;    // x twinkle rate, y ground glitter share under the sprites, z sprite reach (m)
 };
-static_assert(sizeof(GpuCloudParams) == 720, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 736, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -2706,7 +2707,8 @@ private:
     void createCityRoads(VulkanContext &ctx);
     // City lights as satellite point sprites (city_sprites.comp, .plans/CITIES_PLAN.md): appended to
     // the compact visible list after sat_flare.comp; kCitySpriteMax extra slots are reserved there.
-    static constexpr uint32_t kCitySpriteMax = 65536;
+    static constexpr uint32_t kCitySpriteMax = 131072;
+    static constexpr int kCitySpriteLevels = 7;          // 64 m .. 4096 m cells, reach 8 .. 512 km
     VkDescriptorSetLayout citySpriteDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool citySpriteDescPool = VK_NULL_HANDLE;
     VkDescriptorSet citySpriteDescSet = VK_NULL_HANDLE;
@@ -2781,6 +2783,7 @@ private:
     float cv2MsExtinction = 0.12f;     // multiple scattering: extinction ratio per octave ...
     float cv2MsStrength = 0.43f;        // ... and contribution ratio per octave
     float cv2PhaseG = 0.57f;            // forward-scattering lobe (silver lining)
+    float cv2HistoryWeightMoving = 0.7f; // the same weight once the view moves (parallax past ~2 half-res px)
     float cv2HistoryWeight = 0.05f;     // weight of a new sample over its reprojected history (still view;
                                        // the resolve raises it toward 0.35 with motion)
     float cv2LightLenM = 2500.0f;      // light-march length
@@ -2799,6 +2802,8 @@ private:
     float cv2FogDensity = 0.012f;         // ... its extinction (1/m; ~300 m visibility)
     float cv2DustAmount = 0.5f;           // dust over dry land (0 = none)
     float cv2DustHeightM = 1500.0f;       // ... its scale height (m)
+    float cv2IceFogAmount = 1.0f;         // ice fog / diamond dust over the ice sheets (0 = none), with ice optics
+    float cv2IceFogDensity = 0.0002f;     // ... its extinction at the ground (1/m; ~20 km visibility)
     float cv2DustDensity = 0.00025f;      // ... its extinction at the ground in a full plume (1/m; ~15 km visibility)
     float cv2AdaptiveRate = 1.0f;         // 1 = while moving, full rate only in tiles whose clouds show parallax (dynamic sampling)
     float cv2AdaptiveParallaxPx = 1.0f;   // ... past this many half-res pixels a frame (or history from off screen)
@@ -3673,6 +3678,8 @@ private:
     float cityLightsStrength = 1.0f;     // procedural city street lights (.plans/CITIES_PLAN.md)
     float cityRoadsStrength = 1.0f;      // the major roads' share of them
     float citySpriteGain = 1.0f;         // city lights as satellite point sprites (0 = off)
+    float citySpriteGround = 0.35f;      // the ground glitter's share kept where the sprites carry the light
+    float cityTwinkleRate = 1.0f;        // glitter + sprite scintillation rate (1 = 0.5-1.2 rad/s)
     float terrainNightSkyLight = 0.25f;  // moonless night sky on the day albedo, fraction of the full Moon overhead
     int terrainDebugView = 0; // harness `debugview` only; not persisted
     // Cloud opacity scale (see GpuCloudParams::cloudOpacityScale) — multiplies the volumetric
@@ -3902,6 +3909,7 @@ private:
     std::string screenshotPath; // full output path, built at request time
     float screenshotToastTimer = 0.0f;
     char screenshotToastText[160] = {};
+    bool snapshotKeyPending = false;   // KB_SAVE_SNAPSHOT: saved in buildUI, which has the frame's dt
     // PNG encoding (stbi_write_png) is genuinely slow in an unoptimized Debug build — easily
     // tens of seconds at 1080p+, which reads as "the game froze" since finalizeScreenshot() used
     // to run it synchronously on the main thread. Moved to a detached background thread: the main
@@ -4056,7 +4064,8 @@ private:
         KB_TOGGLE_CURSOR = 16, // event — UC5: gamepad virtual-cursor mode toggle (default: Menu/Start)
         KB_TOGGLE_TRAILS = 17, // event — long-exposure trail on/off (default: F; Select Satellite
                                // moved off F to T to free this up — see keybindings init)
-        KB_COUNT = 18,
+        KB_SAVE_SNAPSHOT = 18, // event — Settings -> Display "Save Snapshot" (perf_profiles/profile_log.jsonl)
+        KB_COUNT = 19,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
@@ -4325,7 +4334,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 201;
+    static constexpr int kCloudSliderSlots = 206;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

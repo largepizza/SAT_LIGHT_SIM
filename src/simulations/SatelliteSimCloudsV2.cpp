@@ -971,7 +971,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                                       std::cos(-cv2PrevDrift), std::sin(-cv2PrevDrift));
     p.obsDelta = glm::vec4(glm::vec3(rotD(eye, cDD, sDD) - cv2PrevEye + windShift), cv2PrevAspect);
     // What is left unreprojected: the volumes' relative slide (detail 1.6, cluster 0.6 of the wind).
-    p.motion = glm::vec4((float)std::abs((double)cv2WindMps * 0.7 * dSimT), 0.0f, 0.0f, 0.0f);
+    p.motion = glm::vec4((float)std::abs((double)cv2WindMps * 0.7 * dSimT), cv2HistoryWeightMoving, 0.0f, 0.0f);
 
     // Noise anchors: the observer's SEA-LEVEL point (what the shaders measure from), turned into
     // the drifted frame, plus a small wind, in periods, reduced in double. Each volume moves at its
@@ -1085,14 +1085,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     const bool fogOff = (debugDisableMask & 2048u) != 0u;
     p.fog  = glm::vec4(fogOff ? 0.0f : std::max(cv2FogAmount, 0.0f), std::max(cv2FogDepthM, 20.0f),
                        std::max(cv2FogDensity, 0.0f), fogOff ? 0.0f : std::max(cv2DustAmount, 0.0f));
-    p.fog2 = glm::vec4(std::max(cv2DustHeightM, 100.0f), std::max(cv2DustDensity, 0.0f), cv2DebugView == 11 ? 1.0f : 0.0f, 0.0f);
+    p.fog2 = glm::vec4(std::max(cv2DustHeightM, 100.0f), std::max(cv2DustDensity, 0.0f), cv2DebugView == 11 ? 1.0f : 0.0f,
+                       fogOff ? 0.0f : std::max(cv2IceFogAmount, 0.0f));
     {   // The Sun, Earth-fixed (the sim's rotation angle kOmegaEarth t, as the weather bake uses).
         const double g = std::fmod(satphot::kOmegaEarth * simT, 6.283185307179586);
         const glm::dvec3 si = glm::dvec3(sunDirECI);
         p.sunE = glm::vec4(glm::vec3(glm::normalize(glm::dvec3(si.x * std::cos(g) + si.y * std::sin(g),
-                                                               -si.x * std::sin(g) + si.y * std::cos(g), si.z))), 0.0f);
+                                                               -si.x * std::sin(g) + si.y * std::cos(g), si.z))),
+                           std::max(cv2IceFogDensity, 0.0f));   // w: the ice fog's extinction
     }
-    const bool lowFloor = cv2RainAmount > 0.0f || p.fog.x > 0.0f || p.fog.w > 0.0f;   // they reach the ground
+    const bool lowFloor = cv2RainAmount > 0.0f || p.fog.x > 0.0f || p.fog.w > 0.0f || p.fog2.w > 0.0f;   // they reach the ground
     p.shell = glm::vec4(lowFloor ? 0.0f : std::max(lo, 0.0f), hi, cv2DebugView == 11 ? 0.0f : (float)cv2DebugView,
                         cv2DetailLodStartM);
     // zw: cos/sin of the drift since last frame (the resolve turns a cloud point by it).

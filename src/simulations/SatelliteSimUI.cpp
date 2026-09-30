@@ -454,6 +454,12 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // camera/observer/settings they change. A no-op outside a harness run.
     harnessUi_ = &ui;
     harnessTick();
+    if (snapshotKeyPending) {       // KB_SAVE_SNAPSHOT (default F9)
+        snapshotKeyPending = false;
+        savePerfSnapshot(ui.input().dt);
+        snprintf(screenshotToastText, sizeof(screenshotToastText), "Snapshot saved (perf_profiles/profile_log.jsonl)");
+        screenshotToastTimer = 2.5f;
+    }
 
     // Track (the selection panel's toggle) re-aims at the selection here, before the look block below:
     // it reads obsFacing/obsDir, and that block is where this frame's look input is dropped while the
@@ -4745,6 +4751,9 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Max distance (km)", &cv2MaxDistKm, 50.0f, 1500.0f, 10.0f, "%.0f", 138},
         {"Detail fade start (m)", &cv2DetailLodStartM, 2000.0f, 100000.0f, 1000.0f, "%.0f", 139},
         {"History weight", &cv2HistoryWeight, 0.05f, 1.0f, 0.01f, "%.2f", 140},
+        // The new-sample weight once the view moves (parallax): high, so small clouds don't ghost; the
+        // still weight above stays low, so a still view has no checkerboard flicker.
+        {"History weight moving", &cv2HistoryWeightMoving, 0.05f, 1.0f, 0.01f, "%.2f", 203},
         {"Full rate above (km)", &cv2FullRateAboveKm, 0.0f, 400.0f, 1.0f, "%.0f", 145},
         {"Sparse when still (0/1)", &cv2SparseWhenStill, 0.0f, 1.0f, 1.0f, "%.0f", 176},
         {"Half rate while moving (0/1)", &cv2HalfRateMoving, 0.0f, 1.0f, 1.0f, "%.0f", 186},
@@ -4819,6 +4828,9 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Dust amount", &cv2DustAmount, 0.0f, 3.0f, 0.05f, "%.2f", 197},
         {"Dust height (m)", &cv2DustHeightM, 100.0f, 6000.0f, 50.0f, "%.0f", 198},
         {"Dust density (1/m)", &cv2DustDensity, 0.0f, 0.002f, 0.00001f, "%.5f", 199},
+        // Diamond dust over the ice sheets, with the ice optics (halos, sundogs, pillars).
+        {"Ice fog amount", &cv2IceFogAmount, 0.0f, 3.0f, 0.05f, "%.2f", 204},
+        {"Ice fog density (1/m)", &cv2IceFogDensity, 0.0f, 0.003f, 0.00001f, "%.5f", 205},
     };
 
     // Atmospheric scattering strength — scales the physical Rayleigh/Mie coefficients shared
@@ -4920,6 +4932,9 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Major road lights", &cityRoadsStrength, 0.0f, 2.0f, 0.05f, "%.2f", 77},
         // City lights as satellite point sprites (city_sprites.comp): twinkling, blooming points.
         {"City light sprites", &citySpriteGain, 0.0f, 4.0f, 0.05f, "%.2f", 200},
+        // Where the sprites carry the far lights, the share of the ground's own glitter kept under them.
+        {"Ground glitter under sprites", &citySpriteGround, 0.0f, 1.0f, 0.05f, "%.2f", 202},
+        {"City light twinkle rate", &cityTwinkleRate, 0.0f, 4.0f, 0.05f, "%.2f", 201},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -5418,6 +5433,7 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         {keybindings[KB_REVERSE].action, KB_REVERSE},
         {keybindings[KB_TOGGLE_UI].action, KB_TOGGLE_UI},
         {keybindings[KB_SCREENSHOT].action, KB_SCREENSHOT},
+        {keybindings[KB_SAVE_SNAPSHOT].action, KB_SAVE_SNAPSHOT},
         {keybindings[KB_TOGGLE_CURSOR].action, KB_TOGGLE_CURSOR},
     };
     struct AnalogRow
@@ -6271,6 +6287,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2BounceGain = c.value("bounce_gain", cv2BounceGain);
         cv2Powder = c.value("powder", cv2Powder);
         cv2HistoryWeight = c.value("history_weight", cv2HistoryWeight);
+        cv2HistoryWeightMoving = c.value("history_weight_moving", cv2HistoryWeightMoving);
         cv2LightLenM = c.value("light_len_m", cv2LightLenM);
         cv2LightSteps = c.value("light_steps", cv2LightSteps);
         cv2LightLodFootprintM = c.value("light_lod_footprint_m", cv2LightLodFootprintM);
@@ -6292,6 +6309,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2DustAmount = c.value("dust_amount", cv2DustAmount);
         cv2DustHeightM = c.value("dust_height_m", cv2DustHeightM);
         cv2DustDensity = c.value("dust_density", cv2DustDensity);
+        cv2IceFogAmount = c.value("ice_fog_amount", cv2IceFogAmount);
+        cv2IceFogDensity = c.value("ice_fog_density", cv2IceFogDensity);
         cv2AdaptiveParallaxPx = c.value("adaptive_parallax_px", cv2AdaptiveParallaxPx);
         cv2Godrays = c.value("godrays", cv2Godrays);
         cv2GodrayRangeKm = c.value("godray_range_km", cv2GodrayRangeKm);
@@ -6405,6 +6424,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cityLightsStrength = c.value("city_lights_strength", cityLightsStrength);
         cityRoadsStrength = c.value("city_roads_strength", cityRoadsStrength);
         citySpriteGain = c.value("city_sprite_gain", citySpriteGain);
+        citySpriteGround = c.value("city_sprite_ground", citySpriteGround);
+        cityTwinkleRate = c.value("city_twinkle_rate", cityTwinkleRate);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
         // Satellite ocean-glint gain/floor (Ocean tab's "Ocean flare refl"/"Flare refl floor",
@@ -6641,6 +6662,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"city_lights_strength", cityLightsStrength},
         {"city_roads_strength", cityRoadsStrength},
         {"city_sprite_gain", citySpriteGain},
+        {"city_sprite_ground", citySpriteGround},
+        {"city_twinkle_rate", cityTwinkleRate},
         {"cloud_erosion_edge", cloudErosionEdge},
         {"cloud_erosion_core", cloudErosionCore},
         {"cirrus_wind_deg", cloudCirrusWindDeg},
@@ -6705,6 +6728,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"bounce_gain", cv2BounceGain},
         {"powder", cv2Powder},
         {"history_weight", cv2HistoryWeight},
+        {"history_weight_moving", cv2HistoryWeightMoving},
         {"light_len_m", cv2LightLenM},
         {"light_steps", cv2LightSteps},
         {"light_lod_footprint_m", cv2LightLodFootprintM},
@@ -6726,6 +6750,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"dust_amount", cv2DustAmount},
         {"dust_height_m", cv2DustHeightM},
         {"dust_density", cv2DustDensity},
+        {"ice_fog_amount", cv2IceFogAmount},
+        {"ice_fog_density", cv2IceFogDensity},
         {"adaptive_parallax_px", cv2AdaptiveParallaxPx},
         {"godrays", cv2Godrays},
         {"godray_range_km", cv2GodrayRangeKm},

@@ -96,14 +96,18 @@ void main()
 
     // The clamp box: the 3x3 of new samples around this pixel (at half rate only this frame's: the
     // others are two frames old).
-    vec4 mn = vec4(1e30), mx = vec4(-1e30);
+    vec4 mn = vec4(1e30), mx = vec4(-1e30), m1 = vec4(0.0), m2 = vec4(0.0);
+    float nBox = 0.0;
     for (int dy = -1; dy <= 1; ++dy)
     for (int dx = -1; dx <= 1; ++dx) {
         ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
         if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
         vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
         mn = min(mn, s); mx = max(mx, s);
+        m1 += s; m2 += s * s; nBox += 1.0;
     }
+    m1 /= max(nBox, 1.0);
+    vec4 sdBox = sqrt(max(m2 / max(nBox, 1.0) - m1 * m1, vec4(0.0)));
 
     // Where this pixel sits among the new samples (sample q sits at half pixel 2q + off), in the
     // targets' own texels, kept inside the filled region. At half rate: its four neighbours' mean
@@ -200,13 +204,22 @@ void main()
         // other — km per second under time warp), in pixels at this cloud's distance.
         if (nd.x > 0.0)
             motionPx = max(motionPx, cv2.motion.x / (nd.x * 2.0 * tanHalf / float(halfSize.y)));
-        float wNew     = mix(cv2.look2.w, max(cv2.look2.w, 0.35), smoothstep(0.5, 4.0, motionPx));
+        // Still: look2.w ("History weight", low: the history averages the quarter grid's noise away —
+        // at 1 each pixel alternated between its own ray and its neighbours' estimate, a checkerboard
+        // flicker). Moving: motion.y ("History weight moving"), reached from a quarter pixel of parallax:
+        // a fixed 0.35 from 0.5-4 px left small clouds ghosting behind themselves (user snapshot 4).
+        float wNew     = mix(cv2.look2.w, max(cv2.look2.w, cv2.motion.y), smoothstep(0.25, 2.0, motionPx));
         // A little slack on the box: the clamp is against samples up to two pixels away.
         // A still view has nothing to reject, and the box (from the quarter-grid samples around
         // this pixel, not its own rays) pulled every far pixel toward its neighbours: blocky 2x2
         // squares. So the box widens when the reprojection barely moves, and is tight in motion.
         vec4 slack = (mx - mn) * mix(1.0, 0.1, smoothstep(0.3, 2.0, motionPx)) + vec4(1e-4);
-        vec4 hc = clamp(hist, mn - slack, mx + slack);
+        // In motion the box is the neighbourhood's mean +- 1.25 sd (variance clipping), inside min/max:
+        // a small cloud next to clear sky made a min/max box spanning both, so its ghost passed.
+        float mv  = smoothstep(0.5, 3.0, motionPx);
+        vec4  bLo = mix(mn - slack, max(mn, m1 - 1.25 * sdBox), mv);
+        vec4  bHi = mix(mx + slack, min(mx, m1 + 1.25 * sdBox + vec4(1e-4)), mv);
+        vec4 hc = clamp(hist, bLo, bHi);
         // The other three pixels of the block also take a share of the interpolated new samples.
         // Without it the one pixel refreshed each frame stood out from the three that were not,
         // and noisy (shaded, grazing) surfaces showed a 2x2 dot grid. In motion the shares

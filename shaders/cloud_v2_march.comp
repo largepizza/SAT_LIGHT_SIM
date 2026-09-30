@@ -786,11 +786,16 @@ void main()
     // band's middle, dimmed by the map's cover overhead and by the path to the fog's top (dust: its
     // scale height); the sky's zenith light; city light and the Moon at night. Composited by distance:
     // the part nearer than the clouds' mean depth in front of them, the rest behind.
-    if (cv2.fog.x > 0.0 || cv2.fog.w > 0.0) {
-        float band = max((cv2.fog.x > 0.0) ? 1.6 * cv2.fog.y : 0.0, (cv2.fog.w > 0.0) ? 4.0 * cv2.fog2.x : 0.0) + 5000.0;
+    if (cv2.fog.x > 0.0 || cv2.fog.w > 0.0 || cv2.fog2.w > 0.0) {
+        float band = max(max((cv2.fog.x > 0.0) ? 1.6 * cv2.fog.y : 0.0, (cv2.fog.w > 0.0) ? 4.0 * cv2.fog2.x : 0.0),
+                         (cv2.fog2.w > 0.0) ? 6.0 * kIceFogH : 0.0) + 5000.0;
         vec2  tbS  = raySphere(eye, dir, R_EARTH + band);
         float ta   = max(tbS.x, 0.0);
-        float tb   = min(min(tbS.y, tScene), ta + 150000.0);
+        float tb   = min(tbS.y, tScene);
+        // At most 150 km of it: from the eye inside the band, the far end beyond; from above, the part
+        // nearest the ground (the dense end).
+        if (tbS.x > 0.0) ta = max(ta, tb - 150000.0);
+        else             tb = min(tb, ta + 150000.0);
         if (tb > ta) {
             float mcT  = (wAcc > 1e-4) ? dAcc / wAcc : 1e30;
             vec3  pm   = eye + dir * (0.5 * (ta + tb));
@@ -804,30 +809,68 @@ void main()
             float nightF = 1.0 - smoothstep(-0.1, 0.05, sUpF);
             vec3  moonF  = moonKey * nightF * smoothstep(-0.05, 0.1, dot(normalize(pm), moonDir));
             float phD  = 0.85 * cv2HG(cosSun, 0.65) + 0.15 * cv2HG(cosSun, -0.2);
+            // Diamond dust: the ice's broad lobe plus its optics with a halo-rich habit (low plate and
+            // column crystals: the 22 degree halo, sundogs, the arcs, the pillar), for the Sun or Moon.
+            vec3  phI  = vec3(cv2HG(cosSun, 0.3)), phIM = vec3(cv2HG(cosMoon, 0.3));
+            if (cv2.fog2.w > 0.0) {
+                const vec4 habDD = vec4(1.0, 0.8, 0.5, 0.25);
+                float ogI = max(og, 0.5);
+                phI  += ogI * (cv2IceOptics(dir, sunDir, habDD) / 0.55 + cv2PillarOptics(dir, sunDir));
+                phIM += ogI * (cv2IceOptics(dir, moonDir, habDD) / 0.55 + cv2PillarOptics(dir, moonDir));
+            }
             vec3  L1 = vec3(0.0), L2 = vec3(0.0);
             float T1 = 1.0, T2 = 1.0, dF = 0.0, wF = 0.0;
             const int kFog = 20;
             float span = tb - ta;
+            // Steps crowd toward the eye from inside the band (u^2), toward the far end (the ground) when
+            // the eye is above it: looking down from altitude, u^2 put the coarse steps in the dense air at
+            // the bottom — concentric bands around the nadir (user snapshot 8).
+            bool  above = tbS.x > 0.0;
+            // Dust is mostly a terrestrial effect: seen from above it fades (user snapshot 1: a dusty veil
+            // over the whole view from 290 km).
+            float dustEye = mix(1.0, 0.25, smoothstep(15000.0, 80000.0, eyeH));
+            float dH = max(cv2.fog2.x, 1.0);
             [[dont_unroll]] for (int i = 0; i < kFog; ++i) {
                 float u0 = float(i) / float(kFog), u1 = float(i + 1) / float(kFog);
                 float uj = mix(u0, u1, jitter);
-                float tS = ta + span * uj * uj;
-                float dt = span * (u1 * u1 - u0 * u0);
+                float g0 = above ? 1.0 - (1.0 - u0) * (1.0 - u0) : u0 * u0;
+                float g1 = above ? 1.0 - (1.0 - u1) * (1.0 - u1) : u1 * u1;
+                float gj = above ? 1.0 - (1.0 - uj) * (1.0 - uj) : uj * uj;
+                float tS = ta + span * gj;
+                float dt = span * (g1 - g0);
                 CV2Pos pp = cv2Pos(dir * tS, eyeH, enuToEcef);
-                float ds, ftH, fhf;
-                float sf = cv2FogDust(pp, tS * pixAng, ds, ftH, fhf);
-                float sg = sf + ds;
+                float ds, ftH, fhf, dAgl, si;
+                float sf = cv2FogDust(pp, tS * pixAng, ds, ftH, fhf, dAgl, si);
+                if (ds > 0.0 || si > 0.0) {
+                    // The dust's exponential height profile integrated exactly over the step (the rest of
+                    // its field is smooth over a step): a sample at one height per step drew the step
+                    // pattern as rings on the ground.
+                    float gnd = pp.h - dAgl;                             // the ground under the sample
+                    float a0  = max(length(eye + dir * (ta + span * g0)) - R_EARTH - gnd, 0.0);
+                    float a1  = max(length(eye + dir * (ta + span * g1)) - R_EARTH - gnd, 0.0);
+                    float amp = ds * exp(dAgl / dH);
+                    float mean = abs(a1 - a0) > 1.0 ? dH * abs(exp(-a0 / dH) - exp(-a1 / dH)) / abs(a1 - a0)
+                                                    : exp(-0.5 * (a0 + a1) / dH);
+                    ds = amp * mean * dustEye;
+                    float ampI  = si * exp(dAgl / kIceFogH);
+                    float meanI = abs(a1 - a0) > 1.0 ? kIceFogH * abs(exp(-a0 / kIceFogH) - exp(-a1 / kIceFogH)) / abs(a1 - a0)
+                                                     : exp(-0.5 * (a0 + a1) / kIceFogH);
+                    si = ampI * meanI;
+                }
+                float sg = sf + ds + si;
                 if (sg <= 0.0) continue;
                 float covA = clamp((textureLod(cv2WeatherTex, cv2FlowWeatherDirAt(pp), 2.0).r * cv2.look.x - cv2.cover.x)
                                    / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
-                float od   = (sf * max(ftH - pp.h, 0.0) + ds * cv2.fog2.x) / max(sUpF, 0.04);
-                float fs   = sf / sg;                              // the fog's share (the rest is dust)
-                vec3  alb  = mix(vec3(0.93, 0.76, 0.55), vec3(1.0), fs);
+                float od   = (sf * max(ftH - pp.h, 0.0) + ds * cv2.fog2.x + si * kIceFogH) / max(sUpF, 0.04);
+                float fs   = sf / sg;                              // the fog's share
+                float fi   = si / sg;                              // the ice fog's
+                float fd   = max(1.0 - fs - fi, 0.0);              // the dust's
+                vec3  alb  = mix(vec3(1.0), vec3(0.93, 0.76, 0.55), fd);
                 // Dust's own multiple scattering: a hazy sky stays pale even away from the Sun (single
                 // scattering alone drew a grey veil over the whole sky, 1/(4 pi) of the diffuse light).
-                vec3  S    = sunF * (1.0 - 0.8 * covA) * (mix(phD, phSS, fs) * exp(-od) + phMS * msOctaves(od) * fs
-                                                          + 0.9 * (1.0 - fs))
-                           + moonF * (phMoonSS * exp(-od) + phMoonMS * 0.5 * fs)
+                vec3  S    = sunF * (1.0 - 0.8 * covA) * ((vec3(fd * phD + fs * phSS) + fi * phI) * exp(-od)
+                                                          + phMS * msOctaves(od) * fs + 0.9 * fd + 0.3 * fi)
+                           + moonF * ((vec3(phMoonSS * (1.0 - fi)) + fi * phIM) * exp(-od) + phMoonMS * 0.5 * fs)
                            + skyF * mix(0.9, 0.5, covA);
                 if (nightF > 0.0 && fs > 0.0) {                    // city light glowing in the fog
                     vec3  dE  = pp.dirE;

@@ -421,4 +421,9 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
                              // toe and midtones, a far longer shoulder (sunlit cloud keeps its shading)
     float whiteBalance;      // 0..1: chromatic adaptation to the sunlight at the observer (a low Sun
                              // is yellow; an eye or camera adapts, so the scene reads white, not beige)
+    // -- City lights (720 -> 736, 2026-09-29 user review): x twinkle rate (rad/s scale of the glitter's
+    // scintillation, 1 = the default), y the share of the ground glitter kept where the city light
+    // sprites carry the light (city_sprites.comp; 1 = no hand-off), z the sprites' reach (m, 0 = off),
+    // w unused.
+    vec4  cityParams;
 } cloud;

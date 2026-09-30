@@ -448,8 +448,9 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Screenshot", GLFW_KEY_F12, -1, false, false},                                      // KB_SCREENSHOT (event) — no standard gamepad "capture" button to default to
         {"Toggle Cursor", GLFW_KEY_C, GLFW_GAMEPAD_BUTTON_START, false, false},              // KB_TOGGLE_CURSOR (event) — UC5: gamepad virtual-cursor mode; no meaningful effect for KBM (mouse is always a free cursor), kept rebindable/listed for consistency
         {"Star Trails", GLFW_KEY_F, GLFW_GAMEPAD_BUTTON_X, false, false},                    // KB_TOGGLE_TRAILS (event) — long-exposure trail on/off
+        {"Save Snapshot", GLFW_KEY_F9, -1, false, false},                                    // KB_SAVE_SNAPSHOT (event) — how the user hands over a location
     };
-    static_assert(KB_COUNT == 18, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 19, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -2245,6 +2246,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.oceanGlintMinFlux = oceanGlintMinFlux;
         cp.cityLightsStrength = cityLightsStrength;
         cp.cityRoadsStrength = cityRoadsStrength;
+        {
+            // The ground glitter hands its light to the city light sprites where they are drawn (the
+            // gain the dispatch below uses: off above 40 km).
+            const float sprOn = citySpriteGain * cityLightsStrength
+                              * (1.0f - glm::smoothstep(20000.0f, 40000.0f, (float)obsHeightOffset));
+            const float reach = sprOn > 0.0f ? 64.0f * float(1 << (kCitySpriteLevels - 1)) * 125.0f : 0.0f;
+            cp.cityParams = glm::vec4(cityTwinkleRate, glm::mix(1.0f, citySpriteGround, std::min(sprOn, 1.0f)), reach, 0.0f);
+        }
         cp.cloudShadowRangeM = cloudShadowRangeM;
         // sat_sky.frag's render target: the low-res prepass extent when renderScale<1 (recordPrePass
         // draws the sky there and recordDraw's Pass 1 is skipped), else the full swap extent. The
@@ -2934,21 +2943,26 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         CitySpritePC cpc{};
         cpc.obsECEFDir = glm::vec4(glm::vec3(obsDir), 0.0f);
         cpc.simTime = (float)std::fmod(simSecInDay, 3600.0);
-        cpc.gain = citySpriteGain * cityLightsStrength;
+        // Points for the view from the ground and aircraft: gone by 40 km up (from orbit the ground's
+        // own glitter carries the cities).
+        const float eyeAltM = (float)obsHeightOffset;
+        cpc.gain = citySpriteGain * cityLightsStrength * (1.0f - glm::smoothstep(20000.0f, 40000.0f, eyeAltM));
         cpc.nightF = 1.0f - glm::smoothstep(-0.105f, 0.02f, sunDirENU.w);
         cpc.capacity = std::max<uint32_t>(activeSatCount, 1u) + kCitySpriteMax;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, citySpritePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, citySpritePipeLayout, 0, 1, &citySpriteDescSet, 0,
                                 nullptr);
-        // Two levels: 64-m cells to 8 km, then 256-m cells (the brighter lights) from 6-8 km to 32 km,
-        // cross-faded. Both only append (atomic slots), so they need no barrier between them.
-        for (int lv = 0; lv < 2; ++lv)
+        // Levels of cells growing with distance: 64 m to 8 km, 128 m to 16 km, ... 4096 m to 512 km, each
+        // cross-faded in over the last quarter of the one before — one on-screen density to the horizon.
+        // All only append (atomic slots), near levels first, so a full list drops the farthest lights.
+        cpc.twinkleRate = cityTwinkleRate;
+        for (int lv = 0; lv < kCitySpriteLevels; ++lv)
         {
-            cpc.cellM = lv == 0 ? 64.0f : 256.0f;
+            cpc.cellM = 64.0f * float(1 << lv);
             cpc.halfCells = 125;
             cpc.radiusM = cpc.cellM * (float)cpc.halfCells;
-            cpc.innerM = lv == 0 ? 0.0f : 8000.0f;
-            cpc.weight = lv == 0 ? 6.0f : 16.0f;
+            cpc.innerM = lv == 0 ? 0.0f : 0.5f * cpc.radiusM;
+            cpc.weight = 8.0f;
             vkCmdPushConstants(cmd, citySpritePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
             const uint32_t groups = (uint32_t)(2 * cpc.halfCells + 15) / 16;
             vkCmdDispatch(cmd, groups, groups, 1);
@@ -6888,6 +6902,9 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
     }
     case KB_SCREENSHOT:
         requestScreenshot();
+        break;
+    case KB_SAVE_SNAPSHOT:
+        snapshotKeyPending = true;
         break;
     case KB_TOGGLE_CURSOR:
         // UC5: effective activation also requires uiVisible && !showIntro (see pollGamepad's

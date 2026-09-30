@@ -697,8 +697,18 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
     bool armed = false;
     float prevGap = 0.0;        // the TRUE gap at tPrev, when it was computed (regula falsi)
     bool  prevGapValid = false;
+    bool  atExit = false;
     for (int i = 0; i < maxSteps; ++i) {
-        if (t > tExit) break;
+        // A step that would pass tExit lands ON it once, so a crossing in the last step is bracketed.
+        // The step floor (1.5-5% of t, for grazing rays) is ~1 km at 70 km: over low land a steep ray's
+        // last step jumped from above the ground to beyond the sea sphere and the march reported a MISS
+        // — flat, unlit sea-level land in rings about the nadir, wherever the jump happened to straddle
+        // it (user snapshots 2 and 8).
+        if (t > tExit) {
+            if (atExit || tPrev >= tExit) break;
+            t = tExit;
+            atExit = true;
+        }
         stepsUsed = i + 1;
         vec3  q    = vec3(0.0, 0.0, hEye) + t * dir;
         float rayH = tdAltitude(q);

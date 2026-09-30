@@ -272,9 +272,12 @@ void tmSample(int m, vec3 p, vec3 n, float lod, out vec4 alb, out vec4 nrm) {
     ivec3 mi = (an.x < an.y && an.x < an.z) ? ivec3(0, 1, 2) : (an.y < an.z) ? ivec3(1, 2, 0) : ivec3(2, 0, 1);
     ivec3 me = ivec3(3) - mi - ma;
     vec2  uvA = vec2(p[ma.y], p[ma.z]), uvB = vec2(p[me.y], p[me.z]);
-    vec2  w   = clamp((vec2(an[ma.x], an[me.x]) - 0.5773) / (1.0 - 0.5773), 0.0, 1.0);
+    // The +0.02 floor: near the cube diagonal (|n.x| ~ |n.y| ~ |n.z| ~ 0.58, e.g. central Japan) both
+    // weights were ~0 and the clamped normalisation returned ~0: black material blobs and flat, oddly
+    // lit relief (user snapshot 7). With the floor they tend to an even blend there.
+    vec2  w   = clamp((vec2(an[ma.x], an[me.x]) - 0.5773) / (1.0 - 0.5773), 0.0, 1.0) + 0.02;
     w = w * w * w * w;
-    w /= max(w.x + w.y, 1e-4);
+    w /= (w.x + w.y);
     float la = float(2 * m), ln = float(2 * m + 1);
     vec4  aA = textureLod(terrainMatTex, vec3(uvA, la), lod), aB = textureLod(terrainMatTex, vec3(uvB, la), lod);
     vec4  nA = textureLod(terrainMatTex, vec3(uvA, ln), lod), nB = textureLod(terrainMatTex, vec3(uvB, ln), lod);
@@ -598,10 +601,13 @@ float cityFieldP(float dens) { return 0.8 * (1.0 - smoothstep(0.03, 0.4, dens));
 // points. Street posts exist only close up (sparser grids); from ~10 m a pixel only the arterials remain,
 // as faint lines of posts (the reference shows main roads as streaks).
 
-// Glitter colours: mostly sodium and white LED, a share of coloured signage / lit windows.
-vec3 cityGlitterColor(float h, float ledP) {
-    if (h < 0.86) return cityLampColor(h / 0.86, ledP);
-    float c = (h - 0.86) / 0.14;
+// Glitter colours: mostly sodium and white LED, a share of coloured signage / lit windows / traffic
+// lights. colP (0..1) scales that share: close up only — at a distance each point stands for a whole
+// cell of lights, and a coloured one became a giant green or red beacon (user review, 2026-09-29).
+vec3 cityGlitterColor(float h, float ledP, float colP) {
+    float lampEnd = 1.0 - 0.14 * colP;
+    if (h < lampEnd) return cityLampColor(h / max(lampEnd, 1e-3), ledP);
+    float c = (h - lampEnd) / max(0.14 * colP, 1e-4);
     if (c < 0.25) return vec3(0.45, 1.75, 0.95);       // green
     if (c < 0.50) return vec3(0.55, 0.85, 2.00);       // blue
     if (c < 0.75) return vec3(2.10, 0.50, 0.45);       // red
@@ -632,15 +638,22 @@ vec3 cityGlitterLevel(vec2 p2, ivec2 dAnc, int f, int k, float foot, float ledP,
         vec2  d  = x - (xi + vec2(o) + 0.5 + 0.45 * r.xy);
         float w  = exp(1.3 * (r2.x * 2.0 - 1.0)) / 1.45;             // lognormal-ish, mean ~1
         // Scintillation at a distance (each point its own rate and phase; mean 1).
-        w *= 1.0 + twinkle * 0.45 * sin(pc.waveTime * (5.0 + 5.0 * r2.y) + 6.2832 * r2.z);
+        // cloud.cityParams.x = "City light twinkle rate" (1 = 0.5-1 rad/s: a period of 6-12 s; the first cut
+        // ran 10x that and read as flicker).
+        w *= 1.0 + twinkle * 0.45 * sin(pc.waveTime * cloud.cityParams.x * (0.5 + 0.5 * r2.y) + 6.2832 * r2.z);
         // A point-spread like the stars' and satellites': a tight core plus a halo (twice as wide) whose
         // share grows with the point's brightness, so the brightest pop instead of every point being the
         // same flat disc (the user: "look good, but are flat").
         float hs  = 0.08 + 0.3 * smoothstep(0.8, 3.0, w);
         float r2d = dot(d, d);
-        float g   = (1.0 - hs) * exp(-0.5 * r2d / (sg * sg)) / (sg * sg)
-                  + hs * exp(-0.125 * r2d / (sg * sg)) / (4.0 * sg * sg);
-        e += w * cityGlitterColor(fract(r2.y * 7.31 + r2.z * 3.17), ledP) * g * 0.15915494;
+        // Windowed to zero at 0.55 cells: a point outside the 2x2 cells chosen is at least that far, so
+        // nothing is cut where the choice switches. Unwindowed, the halos' tails ended on the cells'
+        // centre lines: a crosshatch over sparse cities seen from orbit (user snapshot 5).
+        float g   = ((1.0 - hs) * exp(-0.5 * r2d / (sg * sg)) / (sg * sg)
+                  + hs * exp(-0.125 * r2d / (sg * sg)) / (4.0 * sg * sg))
+                  * (1.0 - smoothstep(0.1225, 0.3025, r2d));
+        e += w * cityGlitterColor(fract(r2.y * 7.31 + r2.z * 3.17), ledP, 1.0 - smoothstep(4.0, 16.0, foot))
+           * g * 0.15915494;
     }
     return e / kGlitP;
 }
@@ -718,10 +731,15 @@ vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp, out vec3 poo
     // Close: posts 55% (heads here, their pools lit onto the ground below), glitter (porch lights, windows,
     // lots) 45%. Far: arterials 15%, glitter 85%.
     float near = 1.0 - smoothstep(4.0, 10.0, foot);
-    vec3  eCityC = mix(0.15 * eS + 0.85 * eG, 0.7 * eS + 0.3 * eG, near);
+    // The arterials' share fades out past ~40 m a pixel: there their posts are a uniform glow, which
+    // drew a milky veil over the glitter (user snapshot 5, a zoomed view from orbit).
+    float artS = 0.15 * (1.0 - smoothstep(40.0, 150.0, foot));
+    vec3  eCityC = mix(artS * eS + (1.0 - artS) * eG, 0.7 * eS + 0.3 * eG, near);
     poolM = 0.7 * pS * near;
     // Countryside (the map's faintest lights): farmsteads, not a city.
-    float rural = 1.0 - smoothstep(0.002, 0.012, L.lum);
+    // Only while they resolve: past ~50 m a pixel the farmstead pattern is a smooth glow, and at a town's
+    // faint fringe it drew a sodium ring around the points (user snapshot 5); the glitter thins by itself.
+    float rural = (1.0 - smoothstep(0.002, 0.012, L.lum)) * (1.0 - smoothstep(30.0, 80.0, foot));
     if (rural > 0.0)
         eCityC = mix(eCityC, farmsteadLights(L.p2, L.dAnc, L.f, foot) * kLampSodium, rural);
     // The real major roads (dotted) and the projection's face seam.
@@ -2631,6 +2649,28 @@ void main() {
         }
     }
 
+#ifndef SKY_ENV
+    // Past the march's range (no march: waterPx -1) land sat on the SEA-LEVEL sphere, so its air column
+    // was the whole atmosphere down to 0 m: from orbit the Tibetan plateau inside the march range was
+    // clear and the same plateau past it was buried under 4-5 km more of the densest air — a hazy white
+    // disc edge around the observer (user snapshot 1). Land there sits at its DEM height (two fixed-point
+    // re-intersections; the relief is sub-pixel at those distances).
+    if (tHit < 0.0 && waterPx < 0 && tSeaLvl > 0.0 && tdEnabled()) {
+        vec3 eyeL = vec3(0.0, 0.0, R_EARTH + obsEffH + 2.0);
+        float tL  = tSeaLvl;
+        for (int it = 0; it < 2; ++it) {
+            vec3  pL = eyeL + dir * tL;
+            vec3  pE = pL.x * enuX + pL.y * enuY + pL.z * enuZ;
+            vec2  uvL = dirToUV(normalize(pE));
+            if (textureLod(earthSpecTex, uvL, 0.0).r > 0.5) break;           // water: the ocean path's
+            float hL = terrainHeightAtUV(earthElevTex, earthSpecTex, uvL, 0.0);
+            if (hL <= 0.0) break;
+            vec2  tS = raySphere(eyeL, dir, R_EARTH + hL);
+            if (tS.x > 0.0) tL = tS.x; else break;
+        }
+        tSeaLvl = tL;
+    }
+#endif
     // Effective surface distance: terrain if found, else sea level
     float tSurface = (tHit > 0.0) ? tHit : tSeaLvl;
 
@@ -3357,7 +3397,11 @@ void main() {
         // lights; the day albedo is weighted by how much (city presence).
         vec3  cityLights = max(nightColor - vec3(0.006, 0.006, 0.0132), vec3(0.0));
         float cityLum    = dot(cityLights, vec3(0.2126, 0.7152, 0.0722));
-        bool  cityLand   = tHit > 0.0 || (waterPx == 0 && tSeaLvl > 0.0);
+        // Past the terrain-detail range there is no march (waterPx -1): the water map decides. Without it
+        // the city pattern stopped on an arc around the observer and the far side showed the raw map's
+        // 5-km texels (user snapshot 5, Tokyo from 527 km).
+        bool  cityLand   = tHit > 0.0 || (tSeaLvl > 0.0 && (waterPx == 0
+                         || (waterPx < 0 && textureLod(earthSpecTex, uvSurf, 0.0).r <= 0.5)));
         CityLayout cityL;
         bool  cityLOk    = false;
         bool  cityFar    = false;
@@ -3372,6 +3416,12 @@ void main() {
                 cityL   = cityLayout(cQ, enuX, enuY, enuZ, cityLum, cFoot < 150.0);
                 cityLOk = true;
                 float presence = smoothstep(0.002, 0.03, cityLum) * cloud.cityLightsStrength;
+                // The city's base is the map's BRIGHTNESS, not its hue: its 5-km texels take the sea's blue
+                // along a coast and the fields' green inland, and every roof and street inherited it (user
+                // snapshot 6, a blue Tokyo). Faded with the pattern, so the unresolved hue is unchanged.
+                float cFade = 1.0 - smoothstep(200.0, 380.0, cFoot);
+                float dLum  = dot(dayColor, vec3(0.2126, 0.7152, 0.0722));
+                dayColor = mix(dayColor, dLum * vec3(1.03, 1.0, 0.95), 0.85 * presence * cFade);
                 dayColor *= mix(vec3(1.0), clamp(cityDayAlbedo(cityL, cFoot), vec3(0.0), vec3(4.0)), presence);
             }
         }
@@ -3398,8 +3448,14 @@ void main() {
                 // Big Sur drew lavender fields) — keep ~0.5 km back from the shore and off water-tinted texels.
                 float shoreD = -(textureLod(earthSpecTex, uvSurf, 0.0).r - 0.5) * 2.0 * kShoreSdfMaxM;
                 float bluish = smoothstep(0.0, 0.04, dm.b - max(dm.r, dm.g));
+                // Settled land only: farms go with towns. The night map's lights averaged over ~160 km
+                // (mip 5; its blue base removed) are 0.005-0.05 across the farm belts (Iowa, Punjab, France,
+                // Ukraine, the pampas) and 0 over the outback, the Amazon and the Congo, which the colour
+                // test alone drew as fields (user review, 2026-09-29).
+                vec3  nSet   = max(textureLod(earthNightTex, uvSurf, 5.0).rgb - vec3(0.006, 0.006, 0.0132), vec3(0.0));
+                float settled = smoothstep(0.0015, 0.008, dot(nSet, vec3(0.2126, 0.7152, 0.0722)));
                 float farm   = (1.0 - forest) * (1.0 - 0.8 * desert) * (1.0 - snowD) * flatG * (1.0 - cityP) * high
-                             * smoothstep(300.0, 800.0, shoreD) * (1.0 - bluish);
+                             * smoothstep(300.0, 800.0, shoreD) * (1.0 - bluish) * settled;
                 if (farm > 0.01) {
                     vec3  fQ    = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
                     float green = smoothstep(-0.02, 0.12, vegD);
@@ -3667,10 +3723,18 @@ void main() {
                 vec3 pat = cityLightFar(cQ, enuX, enuY, enuZ, cFoot, cityLum, cNUp);
                 cityLights *= mix(vec3(1.0), pat, cloud.cityLightsStrength);
             }
+            // Where the city light sprites carry the lights (city_sprites.comp, cloud.cityParams.z = their
+            // reach), the ground keeps only a share of its glitter (cityParams.y): the sprites are the
+            // points, the ground the glow under them. Not near the eye (the sprites start at ~2 km).
+            if (cloud.cityParams.z > 0.0) {
+                float sprW = smoothstep(1500.0, 3000.0, tSurface) * (1.0 - smoothstep(0.75 * cloud.cityParams.z, cloud.cityParams.z, tSurface));
+                cityLights *= mix(1.0, cloud.cityParams.y, sprW);
+            }
         }
         // Pools on the albedo: relative to a mid grey (0.12), x the face's up-facing (the lamps are
-        // overhead: relief and bumps shade), x the detail AO.
-        vec3  poolAlb  = clamp(dayColor / 0.12, vec3(0.0), vec3(4.0));
+        // overhead: relief and bumps shade), x the detail AO. Its BRIGHTNESS only: the lamps' colour is
+        // the lamps', and the map's green made whole suburbs glow green at night (user snapshot 10).
+        vec3  poolAlb  = vec3(clamp(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)) / 0.12, 0.0, 4.0));
         float poolLamb = pow(clamp(dot(shadingN, normalize(hitPt)), 0.0, 1.0), 1.5);
         vec3 tNight     = (cityLights + cityPool * poolAlb * poolLamb * terrainAO) * (0.12 * (1.0 - twilightFrac));
         // Farmsteads in farmland (a floor: the night map is ~0 over real farmland — 0.0006 in rural Iowa —

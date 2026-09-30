@@ -417,6 +417,9 @@ json SatelliteSim::harnessStateJson()
         ko.push_back("potato_sky");
     if (debugDisableMask & 524288u)
         ko.push_back("lite_sky");
+    // The compact visible list's length (last frame's header): satellites + stars' share + city light
+    // sprites (city_sprites.comp appends after sat_flare.comp).
+    j["satellites"] = {{"visible_count", visibleCount}, {"active_count", activeSatCount}};
     j["render"] = {{"preset", kGraphicsPresetNames[(int)graphicsPreset]},
                    {"knockout_mask", debugDisableMask},
                    {"knockouts", ko},

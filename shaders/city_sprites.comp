@@ -9,11 +9,15 @@
 // pipeline. Each record is tagged (meshPx = -1: the trail pass skips it) and its slot's satellite index
 // is 0xFFFFFFFF (picking and selection skip it).
 //
-// One thread per cell of a lattice (64 m to 8 km, then 256 m to 32 km — two dispatches, cross-faded;
-// both divide the 4096-m anchor: world-fixed) in a square of cells around the observer; a cell holds a light with a probability that follows the night map's
-// brightness there (a suburb is fewer lights, not dimmer ones — as the shader glitter). The light sits a
-// few metres above the ground (DEM + the water map; the terrain detail is left out: a few metres), its
-// brightness falls as 1/r^2 and with the air, and it scintillates with sim time — more near the horizon.
+// Levels of a lattice whose cell grows with distance (level k: 64 x 2^k m cells out to 8 x 2^k km, each
+// cross-faded in over the last quarter of the level before; every cell size divides the 4096-m anchor:
+// world-fixed), so the points keep roughly one density ON SCREEN out to the horizon — the purpose (user
+// review, 2026-09-29): far city light from the ground is where the surface can only draw the map's blobs,
+// and points are what this renderer draws cheaply. A cell holds a light with a probability that follows the
+// night map's brightness there (a suburb is fewer lights, not dimmer ones — as the shader glitter), and
+// the light stands for its cell's share (x cell area), so a level's points carry the same light per area.
+// The light sits a few metres above the ground (DEM + the water map; the terrain detail is left out: a
+// few metres), its brightness falls as 1/r^2 and with the air along its slant path, and it scintillates.
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
@@ -55,8 +59,9 @@ layout(push_constant) uniform PC {
     float cellM;        // lattice cell (divides 4096)
     int   halfCells;    // cells per half side
     float innerM;       // 0 = none; else the lights fade IN over 0.75..1 x this (the finer level's reach)
-    float weight;       // brightness per light (a coarser level's lights stand for the brighter ones)
-    float pad0, pad1, pad2;
+    float weight;       // effectFlare at 1 km of an average light (x the cell's area / 64^2 m^2)
+    float twinkleRate;  // "City light twinkle rate" (1 = 0.6-1.2 rad/s)
+    float pad1, pad2;
 } pc;
 
 // Lamp colours (as sat_sky.frag's cityLampColor / cityGlitterColor).
@@ -117,7 +122,7 @@ void main() {
     float lum = dot(nm, vec3(0.2126, 0.7152, 0.0722));
     if (lum < 0.003) return;
     float dens01 = clamp(lum / 0.25, 0.04, 1.0);
-    if (r.z * 0.5 + 0.5 > 0.35 * dens01) return;
+    if (r.z * 0.5 + 0.5 > 0.6 * dens01) return;
 
     // The ground (DEM + water, no detail) and the lamp a few metres above it.
     float h0, hMip3;
@@ -133,21 +138,35 @@ void main() {
     if (pc.innerM > 0.0) fade *= smoothstep(0.75 * pc.innerM, pc.innerM, range);
     if (fade <= 0.0) return;
     vec3  dir  = v / range;
+    // Below the sea-level horizon: hidden (the depth test would hide it too, but it would take a slot).
+    float hL   = h0 + 6.0;
+    float dHz  = sqrt(2.0 * R_EARTH * max(hEye, 0.0)) + sqrt(2.0 * R_EARTH * max(hL, 0.0));
+    if (length(lamp.xy) > dHz * 1.02 + 500.0) return;
 
     // Brightness: pc.weight x its own weight = effectFlare at 1 km (6 = mag ~-1.2), 1/r^2, the air (~40 km visibility),
     // scintillation (stronger low in the sky), the night fade. Capped below the glare threshold
     // (effectFlare ~11.5): these twinkle and bloom, they do not grow spikes.
     float w      = exp(1.3 * (r2.x * 2.0 - 1.0)) / 1.45;
     float lowSky = 1.0 - smoothstep(-0.05, 0.25, dir.z);
-    float tw     = 1.0 + (0.25 + 0.35 * lowSky) * sin(pc.simTime * (6.0 + 6.0 * r2.y) + 6.2832 * r2.z)
+    float tw     = 1.0 + (0.25 + 0.35 * lowSky) * sin(pc.simTime * pc.twinkleRate * (0.6 + 0.6 * r2.y) + 6.2832 * r2.z)
                        * smoothstep(300.0, 2000.0, range);
-    float flare  = pc.weight * w * tw * fade * (1.0e6 / (range * range)) * exp(-range / 40000.0) * pc.gain * pc.nightF;
+    // The air along the slant path, as sea-level air (8 km scale height; ~40 km visibility at sea level):
+    // a horizontal path keeps the full 1/40 km, a path climbing to the eye far less.
+    float dz     = hEye - hL;
+    float airM   = abs(dz) > 1.0 ? range * 8000.0 * abs(exp(-hL / 8000.0) - exp(-hEye / 8000.0)) / abs(dz)
+                                 : range * exp(-hL / 8000.0);
+    float cellA  = (pc.cellM / 64.0) * (pc.cellM / 64.0);
+    float flare  = pc.weight * cellA * w * tw * fade * (1.0e6 / (range * range)) * exp(-airM / 40000.0)
+                 * pc.gain * pc.nightF;
     flare = min(flare, 8.0);
     vec2  psf = pointPsf(satFlareToMag(flare));
     if (psf.x <= 0.0) return;
 
-    float ledP = clamp(mix(0.25, 0.85, smoothstep(0.004, 0.12, lum)), 0.05, 0.95);
-    vec3  c    = lampColor(fract(r2.y * 7.31 + r2.z * 3.17), ledP);
+    // Warmer than the ground's mix: at a distance sodium and warm LED carry (the cool LEDs of a dense
+    // core read as a blue-white field of points otherwise).
+    float ledP = clamp(mix(0.15, 0.55, smoothstep(0.004, 0.12, lum)), 0.05, 0.95);
+    // Lamp colours only: a sprite stands for many lights, and a coloured one read as a beacon.
+    vec3  c    = lampColor(0.86 * fract(r2.y * 7.31 + r2.z * 3.17), ledP);
     c /= max(c.r, max(c.g, c.b));
 
     uint slot = atomicAdd(listCount, 1u);

@@ -792,6 +792,24 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   Images match full rate (mean |diff| < 1/255, <= 0.2% of pixels past 12, no tile seams at 8x). At 550 m/s
   nothing passes 1 px (the deck below is ~0.5-1 px). Debug view 11 tints the full-rate tiles red. Harness
   `state` reports the rate (`clouds_v2.rate`: sparse / full / half / adaptive).
+- **Fog/dust/ice fog review (2026-09-29, the user's snapshots):** dust is patchy by REGION
+  (`cv2DirNoise`, an analytic value noise on the direction at ~300-1000 km: a dust event covers a region,
+  the next stays clear; the whole dry continent sat at one level) with a lower plume floor, and fades
+  seen from above (x0.25 by 80 km of eye altitude: mostly terrestrial). Its exponential height profile
+  (and the ice fog's) is integrated EXACTLY over each march step (a sample at one height per step drew
+  the step pattern as rings on the ground from 70 km), steps crowd at the far (ground) end when the eye
+  is above the band, and the 150-km cap keeps the ground end from above. **Ice fog / diamond dust**
+  ("Ice fog amount" `ice_fog_amount` 1, slot 204, `fog2.w`; "Ice fog density (1/m)" `ice_fog_density`
+  0.0002, slot 205, `sunE.w`): over Antarctica, Greenland's high interior and the high Arctic's land
+  under a clear sky, scale height 250 m, patchy; lit with the ice optics at a halo-rich habit (22/46
+  degree halos, sundogs, parhelic circle, CZA) plus a sun pillar (`cv2PillarOptics`), Sun or Moon.
+  Knockout 2048 switches it off with the fog. Harness: observer lat=-78, `camera look sun`.
+- **History weight moving** ("History weight moving" `history_weight_moving` 0.7, slot 203,
+  `motion.y`): the resolve's new-sample weight once the view has parallax (from a quarter half-res
+  pixel), with a variance clamp (mean +- 1.25 sd) in motion. "History weight" (0.05) stays the still
+  view's: at 1 each pixel alternated between its own ray and its neighbours' estimate (a checkerboard
+  flicker), and the fixed 0.35 ceiling in motion let small clouds ghost (user snapshot 4). How it moves
+  is the user's to judge; a harness path over 150 m a frame is the fast-flight mode, not this.
 - **Fog + dust (2026-09-29, replaced v1's `fogMarchCS`, a global 1.4 km noise haze):** `cv2FogDust`
   (clouds_v2.glsl), driven by the weather cube. FOG over the SMOOTHED ground (`cv2Ground`, ~15 km), so
   valleys fill deeper and ridges stand out: radiation fog on clear-to-broken nights in valleys (ground
@@ -880,8 +898,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
-- The Clouds tab's slider slots: `kCloudSliderSlots` (201; slot 200 = "City light sprites") sizes all four per-slider arrays and
-  `cloudBufs`; v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
+- The Clouds tab's slider slots: `kCloudSliderSlots` (206) sizes all four per-slider arrays and
+  `cloudBufs` (206 since the 2026-09-29 review: 200-205 city sprites, twinkle, ground share, history
+  moving, ice fog x2); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
   parallax, fog x3, dust x3.) Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
   shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.
@@ -3622,6 +3641,14 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   EARLY and counts near misses of a crest as hits. Each set's binding 7 samples the OTHER image (so
   neither is read in the layout it is being written in). The first cuts (full-res march from the eye;
   an envelope depth) cost 10-25 ms at ground level; measured with `perf` + `debugview steps`.
+- **A step past the exit lands ON it** (`atExit`, 2026-09-29): the step floor (1.5-5% of t) is ~1 km at
+  70 km, and over low land a steep ray's last step jumped from above the ground to past the sea sphere:
+  a MISS, drawn as flat sea-level land in rings about the nadir (user snapshots 2, 8 — found with
+  `probe`: "from eye -1 m (34 steps)" alternating with hits). The loop now clamps once to tExit, so the
+  crossing is bracketed. Shared with the depth passes.
+- **Past the march's range, land sits at its DEM height** (sat_sky.frag, two re-intersections of the
+  sphere R + h): on the sea sphere its air column was the whole atmosphere to 0 m — from orbit the
+  Tibetan plateau was clear inside the range and white-veiled past it (user snapshot 1's disc).
 - **Out of budget is not a miss**: the march finishes on a coarse-octave tail. Returning -1 made the
   depth say "sky" and the sky pass skip the pixel — holes through distant hills (found with `probe`).
 - **The observer's ground includes the detail** (`observerEffHeightDetailed`), computed once by
@@ -3736,6 +3763,9 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   Alps) and a second noise octave cost +0.3-0.4 ms. The source mask's last row was all water (a
   3600-m "lake" round the South Pole) — the bake copies the row above. Re-run the bake after editing
   the mask or the DEM. Harness scene: `scripts/terrain_water.satcmd`.
+- **The biplanar weights have a floor** (`tmSample`, +0.02): near the cube diagonal (|n| components all
+  ~0.58, central Japan) both were ~0 and the clamped normalisation returned black material blobs and
+  flat-lit relief (user snapshot 7).
 - **Close-up material textures (terrain v2 P3, 2026-09-29).** Sky binding 27 (`terrainMatTex`,
   `sampler2DArray`, the stage's 16th and last sampled image): six CC0 ambientCG sets (grass, forest
   floor, rock, snow, sand, dirt) baked by `tools/make_terrain_materials.py` into
@@ -3838,22 +3868,36 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   "flat"). Street posts split into HEADS (emission) and POOLS: the pools light the final ground albedo
   (city layout, textures, fields) x the shading normal's up-facing (relief, detail, micro bump) x AO,
   so the street and its texture show in each pool. Close up: posts 70%, glitter 30%.
-  **City light sprites (2026-09-29, EXPERIMENT, `city_sprites.comp`, "City light sprites"
-  `clouds.city_sprite_gain` 1, slot 200):** the nearest lights drawn as SATELLITE POINT SPRITES. After
-  sat_flare.comp, two dispatches (64-m cells to 8 km, weight 6; 256-m cells 6-8 km .. 32 km, weight 16,
-  cross-faded) put a light in a cell with a probability that follows the night map, a few metres above
-  the DEM, and APPEND a finished `GpuSatVisible` to the compact list (effectFlare = weight at 1 km,
-  1/r^2, the air, scintillation with sim time; capped at 8, under the glare threshold). The point, bloom
-  and glare draws show them with no new pipeline. `kCitySpriteMax` (65536) extra slots are reserved in
-  `satVisibleBuf` / `satVisibleIdxBuf`. A city record is tagged: its slot's index is 0xFFFFFFFF (picking
-  skips it) and `meshPx = -1` (the trail pass skips it: `sat_point.vert` reads PointDrawPC to
-  `manualTerrainTest`). The post-flare barrier now covers `satListBuf` for INDIRECT_COMMAND_READ,
-  because the vertex count grows after the post-orbit barrier. **Why:** at grazing angles the ground
-  glitter is smeared into horizontal streaks by the projection; a sprite stays a round, crisp point on
-  top, and that depth was what "flat" was missing (harness_runs/city_sprites3, Mount Wilson crop). Cost
-  within noise at LA 2 km. The sprites ADD to the glitter; they do not take its energy. Handing the
-  near glitter's light to the sprites is the next step if they are kept. Harness:
-  `scripts/city_sprites.satcmd`.
+  **City light sprites (2026-09-29, `city_sprites.comp`, "City light sprites" `clouds.city_sprite_gain`
+  1, slot 200):** FAR city lights drawn as SATELLITE POINT SPRITES, so the horizon seen from the ground
+  and aircraft is a packed field of crisp points where the surface can only draw the map's blobs (the
+  user's intent). After sat_flare.comp, `kCitySpriteLevels` (7) dispatches of a lattice whose cell grows
+  with distance (64 m x 2^k cells out to 8 km x 2^k, each cross-faded in over the last quarter of the
+  level before: roughly one density ON SCREEN to 512 km) put a light in a cell with probability 0.6 x
+  the night map's density, a few metres above the DEM (below the sea-level horizon: none), and APPEND a
+  finished `GpuSatVisible` to the compact list: effectFlare = 8 x the cell's area / 64^2 at 1 km, 1/r^2,
+  the air along the SLANT path (8 km scale height, 40 km sea-level visibility), scintillation, lamp
+  colours only (a coloured sprite read as a beacon), warmer than the ground's mix; capped at 8 (no glare
+  spikes); gone by 20-40 km of eye altitude. The point, bloom and glare draws show them with no new
+  pipeline. `kCitySpriteMax` (131072) extra slots in `satVisibleBuf` / `satVisibleIdxBuf`, near levels
+  first. A city record: slot index 0xFFFFFFFF (picking skips it), `meshPx = -1` (the trail pass skips
+  it: `sat_point.vert` reads PointDrawPC to `manualTerrainTest`). The post-flare barrier covers
+  `satListBuf` for INDIRECT_COMMAND_READ (the vertex count grows after the post-orbit barrier). Where the
+  sprites carry the light (2-3 km .. their reach, `cloud.cityParams.z`) the ground glitter keeps
+  "Ground glitter under sprites" (`city_sprite_ground` 0.35, slot 202, `cityParams.y`). **Fog hides
+  them** (point cloud occlusion: an LA radiation fog of optical depth ~3 counts as opaque while the
+  brighter ground glitter still shows through) — test them with `clouds_v2.fog_amount 0`. Harness
+  `state` reports `satellites.visible_count` (the list with them: +36k over LA from 2 km). Cost ~0.
+  **User review (2026-09-29, snapshots in harness_runs/fb10):** twinkle 10x slower and a slider ("City
+  light twinkle rate" `city_twinkle_rate` 1, slot 201, `cityParams.x`: 0.5-1 rad/s x it); the coloured
+  glitter share (signs, traffic lights) only below a 4-16 m footprint; lamp pools light the albedo's
+  BRIGHTNESS, not its hue (green suburbs); the city's day base is the map's brightness, not its hue (a
+  blue coastal Tokyo); past the march range land is tested by the water map (the city pattern stopped
+  on an arc from orbit); the glitter's point-spread is windowed to 0.55 cells (a crosshatch on the 2x2
+  choice's switch lines), the arterials' share fades past 40 m a pixel (a milky veil), farmsteads only
+  below 30-80 m a pixel (sodium rings round towns from orbit). Farmland needs SETTLED land: the night
+  map at mip 5 (~160 km, base removed) 0.0015-0.008 — 0.005-0.05 over farm belts, 0 over the outback,
+  the Amazon, the Congo, which the colour test alone drew as fields.
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the
