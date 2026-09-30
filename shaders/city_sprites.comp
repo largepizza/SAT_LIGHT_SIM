@@ -129,6 +129,8 @@ void main() {
     float h0, hMip3;
     tdDemAt(earthElevTex, earthSpecTex, q, enuX, enuY, enuZ, h0, hMip3);
     if (hMip3 <= kTdWaterMark) return;                                  // on water: none
+    // Not above the city's contour or ~4.5 km (terrain.glsl, the surface's own rule).
+    if (fract(r2.x * 7.13 + r2.y * 3.7) > cityTerrainLimit(earthElevTex, uv, h0, smoothstep(0.004, 0.12, lum))) return;
     vec3  up   = normalize(vec3(q.xy, R_EARTH + q.z));                // q is on the sea-level sphere
     vec3  lamp = q + up * (h0 + 6.0 + 20.0 * r2.z * r2.z);              // posts .. tall buildings
     vec3  v    = lamp - vec3(0.0, 0.0, hEye);

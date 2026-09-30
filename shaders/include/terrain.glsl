@@ -97,6 +97,19 @@ float waterAdjustHeight(float hDem, vec2 wm, float dOff, out bool water) {
     return min(land, level - kShoreSlope * d + 1.0e4 * smoothstep(kShoreRampM, 2.0 * kShoreRampM, -d));
 }
 
+// Where city lights may stand (2026-09-30, the user: lights should follow the terrain's contours, with
+// altitudes and slopes they never reach). hLoc = the ground (DEM + water, tdDemAt's h0), dens01 = the
+// night map's density there. A city fills its valley floor and lower slopes: its lights end at a CONTOUR
+// a few hundred metres above the ~40 km mean ground (higher where the map is brighter, wobbled +-90 m so
+// the edge is not one level), instead of the night map's 5-km blur spilling up every mountainside; and
+// none above ~4.5 km. sat_sky.frag (the surface) and city_sprites.comp (the far points) share it.
+float cityTerrainLimit(sampler2D elevTex, vec2 uv, float hLoc, float dens01) {
+    float hM  = max(0.0, textureLod(elevTex, uv, 4.5).r * kElevRange - kElevOffset);
+    float wob = 90.0 * sin(uv.x * 4100.0 + 1.3) * sin(uv.y * 2900.0 + 0.7);
+    float thr = 150.0 + 330.0 * dens01 + wob;
+    return (1.0 - smoothstep(thr, thr + 120.0, hLoc - hM)) * (1.0 - smoothstep(4200.0, 4900.0, hLoc));
+}
+
 float terrainHeightAtUV(sampler2D elevTex, sampler2D specTex, vec2 uv, float lod) {
     float h = max(0.0, textureLod(elevTex, uv, lod).r * kElevRange - kElevOffset);
     bool water;

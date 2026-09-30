@@ -371,13 +371,19 @@ const vec3 kLampSodium = vec3(1.28, 0.90, 0.42);
 const vec3 kLampLedW   = vec3(1.04, 0.99, 0.90);
 const vec3 kLampLedC   = vec3(0.90, 0.98, 1.14);
 const vec3 kLampHalide = vec3(1.02, 1.00, 0.96);
+// gCityCool: the cool-white share of the LEDs, gCitySign: the coloured-sign multiplier — the pixel's city
+// style (set by cityLightPattern / cityLightFar before any lamp is drawn; 2026-09-30 regional styles).
+float gCityCool = 0.3;
+float gCitySign = 1.0;
 vec3 cityLampColor(float h, float ledP) {
     if (h < 1.0 - ledP) return kLampSodium;
     float t = (h - (1.0 - ledP)) / max(ledP, 1e-3);
-    return t < 0.55 ? kLampLedW : (t < 0.85 ? kLampLedC : kLampHalide);
+    float wS = 0.85 * (1.0 - gCityCool);
+    return t < wS ? kLampLedW : (t < 0.85 ? kLampLedC : kLampHalide);
 }
 vec3 cityLampMean(float ledP) {
-    return (1.0 - ledP) * kLampSodium + ledP * (0.55 * kLampLedW + 0.30 * kLampLedC + 0.15 * kLampHalide);
+    float wS = 0.85 * (1.0 - gCityCool);
+    return (1.0 - ledP) * kLampSodium + ledP * (wS * kLampLedW + (0.85 - wS) * kLampLedC + 0.15 * kLampHalide);
 }
 
 // One street direction at coordinate x (base spacing 1; an even line exists with probability keepE, an
@@ -446,11 +452,98 @@ float cityValue2(vec2 p2, ivec2 dAnc, float cellM, int salt) {
 
 // ── The city layout, shared by the night lights and the day albedo ──────────────────────────────
 // One district's street grid.
+// ── Regional city styles (2026-09-30, the user: "procedural regional variants for cities") ─────────
+// Nine styles, weighted by where on Earth a point is (soft continental boxes, their borders wobbled by a
+// few degrees so they never run along a parallel): 0 North America + Oceania, 1 Latin America,
+// 2 Mediterranean Europe, 3 Northern Europe, 4 Middle East / North Africa / Central Asia, 5 Sub-Saharan
+// Africa, 6 South + Southeast Asia, 7 East Asia, 8 Russia / post-Soviet.
+// GEOMETRY (street spacing, block aspect, alignment to north, organic warp, patchwork, lots, block
+// shapes) is one style per 16-km REGION, drawn from the weights at the region's centre, so a grid never
+// changes inside a region (the region borders are already where grids change). COLOUR and LIGHTING
+// (roofs, yards, trees, lamps, signs) blend continuously per pixel from the weights there.
+const int kCityStyleN = 9;
+// geo:  x base street spacing (m), y its random range (m), z block aspect (y spacing / x), w P(grid on N)
+// geo2: x organic warp, y P(independent district grid), z lots per block side (base), w P(perimeter block)
+// geo3: x P(slab rows, dense), y large-commercial multiplier, zw unused
+// roof: x terracotta, y light flat (whitewash / beige concrete), z blue-green metal, w slate / dark tile
+//       (shares; the rest is the generic mix: concrete, membrane, white, shingle, metal)
+// grnd: x bare-earth redness, y P(bare yard), z paved bias, w tree multiplier
+// lamp: x LED share bias, y cool share of the LEDs, z coloured-sign multiplier, w unused
+const vec4 kCsGeo[9]  = vec4[9](vec4(115.0, 45.0, 1.8, 0.85), vec4(95.0, 20.0, 1.0, 0.5),  vec4(70.0, 30.0, 1.2, 0.05),
+                                vec4(85.0, 35.0, 1.3, 0.05),  vec4(80.0, 35.0, 1.1, 0.2),  vec4(60.0, 25.0, 1.1, 0.2),
+                                vec4(55.0, 20.0, 1.0, 0.1),   vec4(75.0, 25.0, 1.2, 0.55), vec4(190.0, 70.0, 1.3, 0.3));
+const vec4 kCsGeo2[9] = vec4[9](vec4(0.05, 0.3, 2.0, 0.0),   vec4(0.1, 0.35, 3.0, 0.1),   vec4(0.55, 0.75, 3.0, 0.55),
+                                vec4(0.35, 0.6, 2.0, 0.45),  vec4(0.45, 0.6, 3.0, 0.3),   vec4(0.7, 0.8, 3.0, 0.0),
+                                vec4(0.8, 0.85, 3.0, 0.05),  vec4(0.15, 0.4, 3.0, 0.1),   vec4(0.1, 0.3, 1.0, 0.1));
+const vec4 kCsGeo3[9] = vec4[9](vec4(0.0, 1.0, 0.0, 0.0),    vec4(0.0, 0.8, 0.0, 0.0),    vec4(0.05, 0.7, 0.0, 0.0),
+                                vec4(0.15, 0.9, 0.0, 0.0),   vec4(0.05, 0.8, 0.0, 0.0),   vec4(0.0, 0.5, 0.0, 0.0),
+                                vec4(0.05, 0.7, 0.0, 0.0),   vec4(0.35, 1.1, 0.0, 0.0),   vec4(0.7, 0.8, 0.0, 0.0));
+const vec4 kCsRoof[9] = vec4[9](vec4(0.03, 0.02, 0.02, 0.05), vec4(0.45, 0.2, 0.05, 0.0),  vec4(0.6, 0.15, 0.0, 0.0),
+                                vec4(0.2, 0.0, 0.05, 0.4),    vec4(0.05, 0.7, 0.0, 0.0),   vec4(0.15, 0.2, 0.05, 0.0),
+                                vec4(0.1, 0.5, 0.1, 0.05),    vec4(0.02, 0.35, 0.3, 0.15), vec4(0.02, 0.15, 0.1, 0.2));
+const vec4 kCsGrnd[9] = vec4[9](vec4(0.0, 0.05, -0.05, 1.2), vec4(0.3, 0.2, 0.1, 0.8),    vec4(0.2, 0.25, 0.25, 0.6),
+                                vec4(0.0, 0.03, 0.0, 1.1),    vec4(0.1, 0.55, 0.2, 0.2),   vec4(1.0, 0.6, -0.05, 0.8),
+                                vec4(0.6, 0.45, 0.05, 0.7),   vec4(0.0, 0.1, 0.35, 0.5),   vec4(0.0, 0.1, 0.05, 1.0));
+const vec4 kCsLamp[9] = vec4[9](vec4(0.05, 0.3, 1.0, 0.0),   vec4(-0.25, 0.3, 0.8, 0.0),  vec4(0.0, 0.25, 0.7, 0.0),
+                                vec4(0.1, 0.4, 0.6, 0.0),    vec4(0.0, 0.5, 1.2, 0.0),    vec4(-0.2, 0.3, 0.6, 0.0),
+                                vec4(0.0, 0.5, 1.3, 0.0),    vec4(0.2, 0.75, 2.5, 0.0),   vec4(-0.2, 0.3, 0.5, 0.0));
+
+// A soft lat/lon box (degrees): b = (lat0, lat1, lon0, lon1), s = edge half-width.
+float cityBox(float lat, float lon, vec4 b, float s) {
+    return smoothstep(b.x - s, b.x + s, lat) * (1.0 - smoothstep(b.y - s, b.y + s, lat))
+         * smoothstep(b.z - s, b.z + s, lon) * (1.0 - smoothstep(b.w - s, b.w + s, lon));
+}
+// The style weights at an ECEF up direction (sum 1).
+void cityStyleWeights(vec3 upE, out float w[9]) {
+    // A few degrees of wobble so no border runs along a parallel or meridian.
+    float lat = degrees(asin(clamp(upE.z, -1.0, 1.0)))
+              + 2.5 * sin(3.1 * upE.x + 4.3 * upE.y + 1.1) + 1.5 * sin(7.9 * upE.y - 5.3 * upE.z);
+    float lon = degrees(atan(upE.y, upE.x))
+              + 3.0 * sin(2.7 * upE.z + 5.1 * upE.x + 0.4) + 1.5 * sin(8.3 * upE.x + 6.1 * upE.z);
+    const float s = 3.0;
+    w[0] = cityBox(lat, lon, vec4(24.0, 72.0, -170.0, -52.0), s) + cityBox(lat, lon, vec4(-48.0, -9.0, 112.0, 180.0), s);
+    w[1] = cityBox(lat, lon, vec4(-56.0, 24.0, -118.0, -34.0), s);
+    w[2] = cityBox(lat, lon, vec4(34.0, 46.5, -10.0, 42.0), s);
+    w[3] = cityBox(lat, lon, vec4(46.5, 72.0, -25.0, 30.0), s) + 0.5 * cityBox(lat, lon, vec4(46.5, 60.0, 30.0, 42.0), s);
+    w[4] = cityBox(lat, lon, vec4(12.0, 34.0, -18.0, 62.0), s) + cityBox(lat, lon, vec4(34.0, 46.0, 42.0, 75.0), s);
+    w[5] = cityBox(lat, lon, vec4(-36.0, 12.0, -20.0, 52.0), s);
+    w[6] = cityBox(lat, lon, vec4(5.0, 34.0, 62.0, 97.0), s) + 0.6 * cityBox(lat, lon, vec4(-11.0, 21.0, 95.0, 130.0), s);
+    w[7] = cityBox(lat, lon, vec4(21.0, 46.0, 97.0, 146.0), s) + 0.4 * cityBox(lat, lon, vec4(-11.0, 21.0, 95.0, 130.0), s);
+    w[8] = cityBox(lat, lon, vec4(46.0, 75.0, 42.0, 180.0), s) + 0.5 * cityBox(lat, lon, vec4(46.5, 60.0, 30.0, 42.0), s);
+    float sum = 0.0;
+    for (int i = 0; i < kCityStyleN; ++i) sum += w[i];
+    if (sum < 1e-3) {   // elsewhere (islands, the far north): a neutral mix
+        for (int i = 0; i < kCityStyleN; ++i) w[i] = 1.0 / float(kCityStyleN);
+        return;
+    }
+    for (int i = 0; i < kCityStyleN; ++i) w[i] /= sum;
+}
+// One style for a whole region: drawn from its centre's weights by the region's hash u in [0, 1).
+int cityStylePick(float w[9], float u) {
+    float a = 0.0;
+    for (int i = 0; i < kCityStyleN; ++i) { a += w[i]; if (u < a) return i; }
+    return kCityStyleN - 1;
+}
+// The up direction at the centre of region regId on face f (sgn = the sign of the face axis): the face
+// frame's absolute coordinates are dAnc x 4096 + p2, and a region is 4 x 4 districts of 4096 m.
+vec3 cityRegionUp(ivec2 regId, int f, float sgn) {
+    ivec2 ax = tdFaceAxes(f);
+    vec2  A  = (vec2(regId * 4) + 2.0) * 4096.0;
+    vec3  c  = vec3(0.0);
+    c[ax.x] = A.x;
+    c[ax.y] = A.y;
+    c[f]    = sgn * sqrt(max(R_EARTH * R_EARTH - dot(A, A), 0.0));
+    return normalize(c);
+}
+
 struct CityGrid {
     vec2  u;        // street-grid coordinates (base spacing 1)
     float sp;       // base street spacing (m)
     float artN;     // every artN-th base line is an arterial
     int   saltX, saltY;
+    // The region's style (2026-09-30): the odd lines kept in x / y (rectangular blocks: the y odd lines go),
+    // lots per block side, and the shares of perimeter blocks, slab rows and large commercial buildings.
+    float oddX, oddY, lots, perimP, slabP, bigM;
 };
 
 struct CityLayout {
@@ -468,6 +561,8 @@ struct CityLayout {
     float voidN;    // < ~-0.45: a dark void / park
     float lum;      // the night map's light (base removed) at the pixel
     vec3  rel;      // metres from the anchor cell origin (ECEF)
+    vec4  roof, grnd, lamp;   // the style's colours at the pixel (kCsRoof / kCsGrnd / kCsLamp, blended)
+    float distH;              // the district's hash in [0, 1): whole districts share a block shape
 };
 const float kCityBlendM = 80.0;
 
@@ -498,20 +593,35 @@ void cityFrame(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, out vec2 p2, out ivec2 d
 // measured from the region's origin, so streets run straight through district borders; a fifth of the
 // districts lay out their own (independent) grid. Street existence is hashed per REGION (per district
 // for independent ones), so it does not change at a border.
-CityGrid cityGridOf(ivec2 id, vec2 cc, vec3 r, vec3 rB, vec2 p2, ivec2 dAnc, int f, float dens, out bool indep, out ivec2 regId) {
+CityGrid cityGridOf(ivec2 id, vec2 cc, vec3 r, vec3 rB, vec2 p2, ivec2 dAnc, int f, float sgn, float dens,
+                    out bool indep, out ivec2 regId) {
     const float kD = 2.0 * kCityDistrictM;
     regId = id >> 2;
     vec3  rReg  = tdRand3(ivec3(regId, 6089 + f));
     vec3  rReg2 = tdRand3(ivec3(regId, 6091 + f));
-    indep = rB.z > 0.6;
+    vec3  rReg3 = tdRand3(ivec3(regId, 6101 + f)) * 0.5 + 0.5;
+    // The region's style, from the weights at its centre (constant over the region).
+    vec3  upC = cityRegionUp(regId, f, sgn);
+    float wR[9];
+    cityStyleWeights(upC, wR);
+    int   st  = cityStylePick(wR, rReg3.x);
+    vec4  geo = kCsGeo[st], geo2 = kCsGeo2[st], geo3 = kCsGeo3[st];
+    indep = (rB.z * 0.5 + 0.5) < geo2.y;
     float ang   = (rReg.x * 0.5 + 0.5) * 1.5708;
-    float sp    = 90.0 + 30.0 * (rReg.y * 0.5 + 0.5);                  // base street spacing (m)
+    // Surveyed grids run north-south (the American survey system, many Chinese and colonial plans): the
+    // angle of north at the region's centre in the face frame, +-3 degrees.
+    if (rReg3.y < geo.w) {
+        vec3  nC = normalize(vec3(0.0, 0.0, 1.0) - upC * upC.z);
+        ivec2 ax = tdFaceAxes(f);
+        ang = atan(nC[ax.y], nC[ax.x]) + (rReg3.z - 0.5) * 0.1;
+    }
+    float sp    = geo.x + geo.y * (rReg.y * 0.5 + 0.5);                  // base street spacing (m)
     vec2  org   = vec2(regId * 4 - dAnc) * kD;                          // region origin, p2 frame (exact)
     vec2  phase = rReg2.xy * 13.7;
     float artN  = 6.0 + floor(3.0 * (rReg.z * 0.5 + 0.5));              // every 6th-8th base line
     if (indep) {
         ang   = (r.x * 0.5 + 0.5) * 1.5708;
-        sp    = 90.0 + 40.0 * (r.z * 0.5 + 0.5);
+        sp    = geo.x + (geo.y + 10.0) * (r.z * 0.5 + 0.5);
         org   = cc;
         phase = rB.xy * 17.3;
         artN  = 6.0 + floor(3.0 * (rB.x * 0.5 + 0.5));
@@ -520,10 +630,14 @@ CityGrid cityGridOf(ivec2 id, vec2 cc, vec3 r, vec3 rB, vec2 p2, ivec2 dAnc, int
     vec2  dp = p2 - org;
     CityGrid g;
     g.u  = vec2(dot(dp, cs), dot(dp, vec2(-cs.y, cs.x))) / sp + phase;
-    // Independent suburbs bend gently (organic layouts).
-    if (indep && dens < 0.6)
-        g.u += 0.35 * vec2(sin(g.u.y * 0.21 + rB.x * 6.0), sin(g.u.x * 0.17 + rB.y * 6.0));
+    // Organic layouts bend (old towns, informal settlements; independent suburbs everywhere a little).
+    float warp = max(geo2.x * mix(1.0, 0.5, dens), (indep && dens < 0.6) ? 0.35 : 0.0);
+    if (warp > 0.0)
+        g.u += warp * vec2(sin(g.u.y * 0.21 + rB.x * 6.0), sin(g.u.x * 0.17 + rB.y * 6.0));
     g.sp = sp; g.artN = artN;
+    g.oddX = 1.0;
+    g.oddY = 1.0 - smoothstep(1.3, 1.7, geo.z);        // long blocks: the odd y lines go
+    g.lots = geo2.z; g.perimP = geo2.w; g.slabP = geo3.x; g.bigM = geo3.y;
     g.saltX = 101 + (indep ? id.x * 7 + id.y * 131 : regId.x * 7 + regId.y * 131);
     g.saltY = 202 + (indep ? id.x * 13 + id.y * 71 : regId.x * 13 + regId.y * 71);
     return g;
@@ -540,6 +654,16 @@ CityLayout cityLayout(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lum, bool n
     cityFrame(q, enuX, enuY, enuZ, p2, dAnc, f, rel, aup);
     const float kD = 2.0 * kCityDistrictM;
     float dens = smoothstep(0.004, 0.12, lum);
+    vec3  upS  = tdUpECEF(q, enuX, enuY, enuZ);
+    float sgn  = upS[f] < 0.0 ? -1.0 : 1.0;
+    {
+        float wP[9];
+        cityStyleWeights(normalize(upS), wP);
+        L.roof = vec4(0.0); L.grnd = vec4(0.0); L.lamp = vec4(0.0);
+        for (int i = 0; i < kCityStyleN; ++i) {
+            L.roof += wP[i] * kCsRoof[i]; L.grnd += wP[i] * kCsGrnd[i]; L.lamp += wP[i] * kCsLamp[i];
+        }
+    }
 
     // Districts: jittered Voronoi, the nearest two.
     vec2  cf = floor(p2 / kD);
@@ -558,7 +682,8 @@ CityLayout cityLayout(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lum, bool n
     }
     bool  ind1, ind2;
     ivec2 reg1, reg2;
-    L.g  = cityGridOf(id1, c1, r1, tdRand3(ivec3(id1, 3301 + f)), p2, dAnc, f, dens, ind1, reg1);
+    L.g  = cityGridOf(id1, c1, r1, tdRand3(ivec3(id1, 3301 + f)), p2, dAnc, f, sgn, dens, ind1, reg1);
+    L.distH = tdRand3(ivec3(id1, 3307 + f)).x * 0.5 + 0.5;
     L.w2 = 0.0;
     L.g2 = L.g;
     L.differ = false;
@@ -566,7 +691,7 @@ CityLayout cityLayout(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lum, bool n
     L.db = db;
     // The neighbour's grid is only needed for the day's border road, which only shows close up.
     if (needBorder && db < kCityBlendM) {
-        CityGrid g2 = cityGridOf(id2, c2, r2, tdRand3(ivec3(id2, 3301 + f)), p2, dAnc, f, dens, ind2, reg2);
+        CityGrid g2 = cityGridOf(id2, c2, r2, tdRand3(ivec3(id2, 3301 + f)), p2, dAnc, f, sgn, dens, ind2, reg2);
         if (ind1 || ind2 || reg1 != reg2) {
             L.g2 = g2;
             L.w2 = 0.5 * (1.0 - smoothstep(0.0, kCityBlendM, db));
@@ -605,9 +730,10 @@ float cityFieldP(float dens) { return 0.8 * (1.0 - smoothstep(0.03, 0.4, dens));
 // lights. colP (0..1) scales that share: close up only — at a distance each point stands for a whole
 // cell of lights, and a coloured one became a giant green or red beacon (user review, 2026-09-29).
 vec3 cityGlitterColor(float h, float ledP, float colP) {
-    float lampEnd = 1.0 - 0.14 * colP;
+    float cs = min(0.14 * colP * gCitySign, 0.4);
+    float lampEnd = 1.0 - cs;
     if (h < lampEnd) return cityLampColor(h / max(lampEnd, 1e-3), ledP);
-    float c = (h - lampEnd) / max(0.14 * colP, 1e-4);
+    float c = (h - lampEnd) / max(cs, 1e-4);
     if (c < 0.25) return vec3(0.45, 1.75, 0.95);       // green
     if (c < 0.50) return vec3(0.55, 0.85, 2.00);       // blue
     if (c < 0.75) return vec3(2.10, 0.50, 0.45);       // red
@@ -703,8 +829,8 @@ vec3 cityNightGrid(CityGrid g, CityLayout L, float foot, float ledP, vec3 meanC,
     float linesW = kCityArtBoost / (artN * postArtU)
                  + (1.0 - 1.0 / artN) * 0.5 * (kE + kO) / postU;
     vec3 pl = vec3(0.0);
-    vec3 eg = cityStreetDir(u.x, u.y, sgPool, sgHead, postU, postArtU, kE, kO, artN, g.saltX, tL, ledP, 0.04, pl)
-            + cityStreetDir(u.y, u.x, sgPool, sgHead, postU, postArtU, kE, kO, artN, g.saltY, tL, ledP, 0.04, pl);
+    vec3 eg = cityStreetDir(u.x, u.y, sgPool, sgHead, postU, postArtU, kE, kO * g.oddX, artN, g.saltX, tL, ledP, 0.04 * gCitySign, pl)
+            + cityStreetDir(u.y, u.x, sgPool, sgHead, postU, postArtU, kE, kO * g.oddY, artN, g.saltY, tL, ledP, 0.04 * gCitySign, pl);
     vec3 eG = eg / (2.0 * linesW);
     poolG   = pl / (2.0 * linesW);
     // Traffic lights where two arterials cross, cycling with sim time. Close up only.
@@ -730,7 +856,9 @@ vec3 cityNightGrid(CityGrid g, CityLayout L, float foot, float ledP, vec3 meanC,
 vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp, out vec3 poolM) {
     // Lamp types: white LED dominates city cores, sodium the suburbs; a regional bias from a 4-km
     // value noise (continuous).
-    float ledP  = clamp(mix(0.25, 0.85, L.dens) + 0.35 * cityValue2(L.p2, L.dAnc, 4096.0, 4129 + L.f), 0.05, 0.95);
+    gCityCool = clamp(L.lamp.y, 0.0, 1.0);
+    gCitySign = L.lamp.z;
+    float ledP  = clamp(mix(0.25, 0.85, L.dens) + L.lamp.x + 0.35 * cityValue2(L.p2, L.dAnc, 4096.0, 4129 + L.f), 0.05, 0.95);
     vec3  meanC = cityLampMean(ledP);
     // Street posts only close up; from ~10 m a pixel, the arterials alone (faint streaks). One grid —
     // the night no longer cross-fades two at a border (it doubled its cost there, and with the streets
@@ -782,7 +910,13 @@ vec3 cityLightFar(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float foot, float lum
     vec3  rel, aup;
     cityFrame(q, enuX, enuY, enuZ, p2, dAnc, f, rel, aup);
     float dens = smoothstep(0.004, 0.12, lum);
-    float ledP = clamp(mix(0.25, 0.85, dens) + 0.35 * cityValue2(p2, dAnc, 4096.0, 4129 + f), 0.05, 0.95);
+    float wP[9];
+    cityStyleWeights(normalize(tdUpECEF(q, enuX, enuY, enuZ)), wP);
+    vec4  lampS = vec4(0.0);
+    for (int i = 0; i < kCityStyleN; ++i) lampS += wP[i] * kCsLamp[i];
+    gCityCool = clamp(lampS.y, 0.0, 1.0);
+    gCitySign = lampS.z;
+    float ledP = clamp(mix(0.25, 0.85, dens) + lampS.x + 0.35 * cityValue2(p2, dAnc, 4096.0, 4129 + f), 0.05, 0.95);
     return cityGlitter(p2, dAnc, f, foot, ledP, lum / 0.25) * mix(0.04, 1.0, smoothstep(0.86, 0.96, nUp));
 }
 
@@ -792,7 +926,7 @@ vec3 cityLightFar(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float foot, float lum
 // the near layout's voids are (the same field, so they line up), large bright roof zones (warehouses,
 // industry), and a mottle whose finest octave follows the footprint (the grain of unresolved blocks).
 // A RATIO with mean ~1 over a city, each octave faded out before it aliases.
-vec3 cityDayFar(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float foot, float lum) {
+vec3 cityDayFar(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float foot, float lum, float grey) {
     vec2  p2;
     ivec2 dAnc;
     int   f;
@@ -818,12 +952,12 @@ vec3 cityDayFar(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float foot, float lum) 
     m += 0.22 * mix(g0, g1, kf) * CDF_W(c0);
     #undef CDF_W
     float bright = exp(m) / 1.03;                                      // E[exp(m)] ~ 1.03
-    vec3  parkR  = vec3(0.55, 0.80, 0.50);                             // lawn and trees against the city grey
+    vec3  parkR  = vec3(0.42, 0.58, 0.36);                             // lawn and trees against the city grey (darker: 2026-09-30)
     vec3  indR   = vec3(1.55, 1.55, 1.50);                             // large flat roofs
     vec3  r      = mix(mix(vec3(1.0), indR, ind), parkR, park) * bright;
     // Divide by the pattern's expected mean (park share ~0.18, industrial ~0.08 at full density).
     vec3  meanR  = 1.0 + 0.18 * wPark * (parkR - 1.0) + 0.08 * mix(0.4, 1.0, dens) * wInd * (indR - 1.0);
-    return r / meanR;
+    return r / mix(meanR, vec3(dot(meanR, vec3(0.2126, 0.7152, 0.0722))), clamp(grey, 0.0, 1.0));   // see cityDayAlbedo
 }
 
 // ── Day: the same layout as albedo (cities phase 2) ────────────────────────────────────────────
@@ -834,6 +968,25 @@ float cityBoxCover(float x, float w, float F) {
     return max(0.0, min(x + 0.5 * F, 0.5 * w) - max(x - 0.5 * F, -0.5 * w)) / F;
 }
 
+// Roof palette by style share (2026-09-30): rm = (terracotta, light flat, blue-green metal, slate) shares,
+// the rest the generic mix below. Terracotta varies per roof in hue.
+const vec3 kRoofTerra = vec3(0.26, 0.15, 0.10), kRoofLight = vec3(0.40, 0.37, 0.31);
+const vec3 kRoofBlue  = vec3(0.09, 0.16, 0.21), kRoofSlate = vec3(0.065, 0.07, 0.08);
+vec3 cityRoof(float h, float warm);
+vec3 cityRoofMean(float warm);
+vec3 cityRoofS(float h, vec4 rm) {
+    float a = rm.x;
+    if (h < a) return kRoofTerra * mix(0.85, 1.2, fract(h * 37.0));
+    a += rm.y; if (h < a) return kRoofLight * mix(0.85, 1.1, fract(h * 29.0));
+    a += rm.z; if (h < a) return mix(kRoofBlue, vec3(0.08, 0.17, 0.12), step(0.6, fract(h * 23.0)));
+    a += rm.w; if (h < a) return kRoofSlate;
+    return cityRoof((h - a) / max(1.0 - a, 1e-3), 0.0);
+}
+vec3 cityRoofSMean(vec4 rm) {
+    float rest = max(1.0 - rm.x - rm.y - rm.z - rm.w, 0.0);
+    return rm.x * kRoofTerra * 1.025 + rm.y * kRoofLight * 0.975 + rm.z * (0.6 * kRoofBlue + 0.4 * vec3(0.08, 0.17, 0.12))
+         + rm.w * kRoofSlate + rest * cityRoofMean(0.0);
+}
 // Roof palette (linear albedo), in the order of the hash thresholds below.
 vec3 cityRoof(float h, float warm) {
     if (h < 0.24) return vec3(0.19, 0.19, 0.185);                      // concrete / gravel
@@ -871,7 +1024,7 @@ void cityDayGrid(CityGrid g, CityLayout L, float foot, float warm, out vec3 albO
         int   salt = d == 0 ? g.saltX : g.saltY;
         for (int j = -1; j <= 1; ++j) {
             float ni = n0 + float(j);
-            int   k  = cityLineKind(ni, L.keepE, L.keepO, g.artN, salt);
+            int   k  = cityLineKind(ni, L.keepE, L.keepO * (d == 0 ? g.oddX : g.oddY), g.artN, salt);
             if (k == 0) continue;
             c = max(c, cityBoxCover(x - ni, k == 2 ? wArt : wRes, Fu));
         }
@@ -886,10 +1039,22 @@ void cityDayGrid(CityGrid g, CityLayout L, float foot, float warm, out vec3 albO
     vec2  bi   = floor(u + 0.5 * vec2(wRes));                  // base block (offset past the street)
     vec3  bh   = tdRand3(ivec3(ivec2(bi), 7337 + L.f)) * 0.5 + 0.5;
     vec2  artD = abs(bi + 0.5 - g.artN * floor((bi + 0.5) / g.artN + 0.5));   // blocks to the nearest arterial
-    float pBig = min(artD.x, artD.y) < 1.0 ? mix(0.35, 0.8, dens) : 0.06 * dens;
+    float pBig = (min(artD.x, artD.y) < 1.0 ? mix(0.35, 0.8, dens) : 0.06 * dens) * g.bigM;
     bool  big  = bh.z < pBig;
+    // Block shapes by style (2026-09-30): a PERIMETER block (European courtyard block: one building
+    // around the block edge, a court inside) or SLAB rows (post-Soviet microdistricts: long parallel
+    // slabs in open ground), in the denser parts; else lots.
+    // By DISTRICT (whole neighbourhoods of courtyard blocks or of slabs; scattered single rings read as
+    // picture frames), one block in six an exception.
+    float bs    = tdRand3(ivec3(ivec2(bi), 7339 + L.f)).x * 0.5 + 0.5;
+    float pPer  = big ? 0.0 : g.perimP * smoothstep(0.25, 0.75, dens);
+    float pSlab = big ? 0.0 : g.slabP * smoothstep(0.15, 0.6, dens);
+    int   bMode = L.distH < pPer ? 1 : (L.distH < pPer + pSlab ? 2 : 0);
+    if (bs < 0.16) bMode = 0;
+    float lb    = g.lots;
     vec2  nLot = big ? vec2(1.0 + floor(bh.x * 1.99), 1.0 + floor(bh.y * 1.99))
-                     : vec2(2.0 + floor(bh.x * 2.99), 2.0 + floor(bh.y * 2.99));
+                     : vec2(lb + floor(bh.x * 2.99), lb + floor(bh.y * 2.99));
+    if (bMode != 0) nLot = vec2(1.0);
     vec2  lu   = (u - bi) * nLot;
     vec2  li   = floor(lu), lf = lu - li;
     vec3  lh   = tdRand3(ivec3(ivec2(bi * 4.0 + li), 7331 + L.f)) * 0.5 + 0.5;
@@ -900,16 +1065,32 @@ void cityDayGrid(CityGrid g, CityLayout L, float foot, float warm, out vec3 albO
     vec2  Fl   = Fu * nLot;                                     // footprint in lot units
     float roofCov = cityBoxCover(lf.x - 0.5 - off.x, 1.0 - 2.0 * mar.x, Fl.x)
                   * cityBoxCover(lf.y - 0.5 - off.y, 1.0 - 2.0 * mar.y, Fl.y);
+    if (bMode == 1) {
+        // A ring of building ~14 m deep inside a 4% setback; the court is paved or green.
+        float dep = clamp(14.0 / g.sp, 0.08, 0.3);
+        float outer = cityBoxCover(lf.x - 0.5, 0.92, Fl.x) * cityBoxCover(lf.y - 0.5, 0.92, Fl.y);
+        float inner = cityBoxCover(lf.x - 0.5, 0.92 - 2.0 * dep, Fl.x) * cityBoxCover(lf.y - 0.5, 0.92 - 2.0 * dep, Fl.y);
+        roofCov = max(outer - inner, 0.0);
+    } else if (bMode == 2) {
+        // 2-3 slabs ~14 m thick along the block's longer side, 80% of its length.
+        float ns = 2.0 + floor(bh.x * 1.99);
+        float th = clamp(14.0 / g.sp, 0.04, 0.3);
+        float xs = lf.x * ns;
+        roofCov = cityBoxCover((fract(xs) - 0.5) / ns, th, Fl.x) * cityBoxCover(lf.y - 0.5, 0.8, Fl.y);
+    }
     // Large buildings are flat commercial roofs (concrete, membrane, white, metal): never terracotta.
-    vec3  roofC = big ? cityRoof(lh.x < 0.5 ? lh.x * 1.04 : 0.84 + 0.16 * lh.x, 0.0) : cityRoof(lh.x, warm);
-    vec3  lawn = vec3(0.065, 0.095, 0.042), paved = vec3(0.15, 0.15, 0.14), bare = vec3(0.19, 0.15, 0.11);
-    float pPaved = mix(0.1, 0.5, dens), pBare = 0.1;
+    vec4  rmS   = L.roof * vec4(mix(0.4, 1.6, warm), 1.0, 1.0, 1.0);
+    vec3  roofC = big ? cityRoof(lh.x < 0.5 ? lh.x * 1.04 : 0.84 + 0.16 * lh.x, 0.0) : cityRoofS(lh.x, rmS);
+    vec3  lawn = vec3(0.065, 0.095, 0.042), paved = vec3(0.15, 0.15, 0.14);
+    // Bare ground: grey-brown, redder in the tropics' laterite (style grnd.x).
+    vec3  bare = mix(vec3(0.19, 0.15, 0.11), vec3(0.24, 0.13, 0.08), clamp(L.grnd.x, 0.0, 1.0));
+    float pPaved = clamp(mix(0.1, 0.5, dens) + L.grnd.z, 0.0, 0.8), pBare = clamp(L.grnd.y, 0.0, 0.9 - pPaved);
     vec3  yard = (lh2.z < pPaved) ? paved : (lh2.z < pPaved + pBare ? bare : lawn);
     vec3  yardMean = pPaved * paved + pBare * bare + (1.0 - pPaved - pBare) * lawn;
     // Trees: individual crowns (a jittered tree per 8-m cell, radius 2.5-6.5 m, each its own shade,
     // darker toward its edge), clustered by a 64-m field. Expected cover past a ~4-m footprint.
     vec3  treeC = vec3(0.035, 0.06, 0.025);
-    float pTree = mix(0.55, 0.22, dens);
+    float pTree = clamp(mix(0.55, 0.22, dens) * L.grnd.w, 0.0, 0.95);
     float tFrac = clamp(pTree * 0.95, 0.0, 1.0);
     float tTree = smoothstep(3.0, 8.0, foot);
     float canopy = tFrac;
@@ -936,7 +1117,13 @@ void cityDayGrid(CityGrid g, CityLayout L, float foot, float warm, out vec3 albO
     float roofShareS = (1.0 - 2.0 * (mix(0.30, 0.12, dens) + 0.06));
     float roofShareB = (1.0 - 2.0 * (0.06 + 0.018));
     float roofShare  = mix(roofShareS * roofShareS, roofShareB * roofShareB, 0.25 * dens);
-    vec3  roofMean   = cityRoofMean(warm);
+    {   // the block shapes' shares (their mean coverage: a ring ~0.57, slabs ~2.5 x the thickness x 0.8)
+        float dep = clamp(14.0 / g.sp, 0.08, 0.3), th = clamp(14.0 / g.sp, 0.04, 0.3);
+        float cPer = 0.8464 - (0.92 - 2.0 * dep) * (0.92 - 2.0 * dep), cSlab = 2.5 * th * 0.8;
+        float qPer = g.perimP * smoothstep(0.25, 0.75, dens), qSlab = g.slabP * smoothstep(0.15, 0.6, dens);
+        roofShare = mix(roofShare, cPer, qPer) * (1.0 - qSlab) + cSlab * qSlab;
+    }
+    vec3  roofMean   = mix(cityRoofSMean(L.roof * vec4(1.0, 1.0, 1.0, 1.0)), cityRoofMean(0.0), 0.08 * dens);
     vec3  groundMean = mix(yardMean, treeC, tFrac);
     vec3  lotMean    = mix(groundMean, roofMean, roofShare);
     float tLot = smoothstep(0.25, 0.6, max(Fl.x, Fl.y));
@@ -970,9 +1157,9 @@ void cityDayGrid(CityGrid g, CityLayout L, float foot, float warm, out vec3 albO
 
 // The day albedo at the layout as a RATIO to the pattern's own mean (so it multiplies the day map and
 // converges to exactly it as the footprint grows: a seamless hand-off, orbit unchanged).
-vec3 cityDayAlbedo(CityLayout L, float foot) {
-    // Terracotta regions, from a 4-km value noise (continuous across region borders).
-    float warm = smoothstep(-0.2, 0.4, cityValue2(L.p2, L.dAnc, 4096.0, 8123 + L.f));
+vec3 cityDayAlbedo(CityLayout L, float foot, float grey) {
+    // Terracotta varies by a 4-km value noise around the style's share (continuous across region borders).
+    float warm = smoothstep(-0.6, 0.6, cityValue2(L.p2, L.dAnc, 4096.0, 8123 + L.f));
     vec3  a1, m1;
     cityDayGrid(L.g, L, foot, warm, a1, m1);
     // Where two different grids meet, a road runs along the border (surfaces cannot cross-fade: an
@@ -981,7 +1168,12 @@ vec3 cityDayAlbedo(CityLayout L, float foot) {
         float road = cityBoxCover(L.db, 14.0, foot) * (1.0 - smoothstep(60.0, 150.0, foot));
         a1 = mix(a1, vec3(0.065, 0.065, 0.07), road);
     }
-    return a1 / max(m1, vec3(1e-3));
+    // grey: the share of the caller's base that was turned to the map's brightness. There the pattern keeps
+    // its own colours (a ratio to its mean's LUMINANCE): per channel, the lawn-green mean turned neutral
+    // asphalt magenta on the grey base (purple streets, 2026-09-30). Where the base keeps the map's hue,
+    // per channel, so it converges to exactly the map.
+    float lm = dot(m1, vec3(0.2126, 0.7152, 0.0722));
+    return a1 / max(mix(m1, vec3(lm), clamp(grey, 0.0, 1.0)), vec3(1e-3));
 }
 
 // Beaches (terrain v2 P3 follow-up): sand along LOW, GENTLE shores, 40-140 m wide, varying along the
@@ -3673,6 +3865,13 @@ void main() {
         // lights; the day albedo is weighted by how much (city presence).
         vec3  cityLights = max(nightColor - vec3(0.006, 0.006, 0.0132), vec3(0.0));
         float cityLum    = dot(cityLights, vec3(0.2126, 0.7152, 0.0722));
+        // Terrain: lights and built-up land end at a contour above the valley floor and below ~4.5 km
+        // (terrain.glsl cityTerrainLimit, shared with the city light sprites).
+        if (cityLum > 1e-5) {
+            float cTerrK = cityTerrainLimit(earthElevTex, uvSurf, tHit > 0.0 ? terrainH0 : 0.0, smoothstep(0.004, 0.12, cityLum));
+            cityLights *= cTerrK;
+            cityLum    *= cTerrK;
+        }
         // Past the terrain-detail range there is no march (waterPx -1): the water map decides. Without it
         // the city pattern stopped on an arc around the observer and the far side showed the raw map's
         // 5-km texels (user snapshot 5, Tokyo from 527 km).
@@ -3698,7 +3897,7 @@ void main() {
                 float cFade = 1.0 - smoothstep(200.0, 380.0, cFoot);
                 float dLum  = dot(dayColor, vec3(0.2126, 0.7152, 0.0722));
                 dayColor = mix(dayColor, dLum * vec3(1.03, 1.0, 0.95), 0.85 * presence * cFade);
-                dayColor *= mix(vec3(1.0), clamp(cityDayAlbedo(cityL, cFoot), vec3(0.0), vec3(4.0)), presence);
+                dayColor *= mix(vec3(1.0), clamp(cityDayAlbedo(cityL, cFoot, 0.85 * cFade), vec3(0.0), vec3(4.0)), presence);
             }
             // Review 7: past the layout, the far day pattern (to a ~4-km footprint: from LEO too).
             if (cFoot > 80.0 && cFoot < 4000.0) {
@@ -3706,7 +3905,7 @@ void main() {
                 float wFar = smoothstep(80.0, 200.0, cFoot) * (1.0 - smoothstep(2000.0, 4000.0, cFoot));
                 float dLum = dot(dayColor, vec3(0.2126, 0.7152, 0.0722));
                 dayColor = mix(dayColor, dLum * vec3(1.03, 1.0, 0.95), 0.6 * presence * wFar);
-                dayColor *= mix(vec3(1.0), cityDayFar(cQ, enuX, enuY, enuZ, cFoot, cityLum), presence * wFar);
+                dayColor *= mix(vec3(1.0), cityDayFar(cQ, enuX, enuY, enuZ, cFoot, cityLum, 0.6), presence * wFar);
             }
         }
 

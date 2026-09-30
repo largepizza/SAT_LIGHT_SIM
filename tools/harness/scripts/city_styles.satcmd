@@ -1,0 +1,161 @@
+# 2026-09-30 regional city styles + terrain-following limit: day and night per region
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds_v2.dust_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+observer lat=33.45 lon=-112.07 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_phoenix scale=0.5
+observer lat=41.88 lon=-87.7 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_chicago scale=0.5
+observer lat=19.4 lon=-99.15 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_mexico scale=0.5
+observer lat=-23.55 lon=-46.65 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_saopaulo scale=0.5
+observer lat=41.89 lon=12.49 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_rome scale=0.5
+observer lat=48.86 lon=2.35 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_paris scale=0.5
+observer lat=52.52 lon=13.4 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_berlin scale=0.5
+observer lat=30.05 lon=31.25 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_cairo scale=0.5
+observer lat=35.7 lon=51.4 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_tehran scale=0.5
+observer lat=6.52 lon=3.37 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_lagos scale=0.5
+observer lat=-1.29 lon=36.82 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_nairobi scale=0.5
+observer lat=28.63 lon=77.22 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_delhi scale=0.5
+observer lat=23.78 lon=90.4 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_dhaka scale=0.5
+observer lat=39.9 lon=116.4 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_beijing scale=0.5
+observer lat=35.68 lon=139.7 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_tokyo scale=0.5
+observer lat=55.75 lon=37.62 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_moscow scale=0.5
+observer lat=55.03 lon=82.92 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+capture d_novosibirsk scale=0.5
+observer lat=33.45 lon=-112.07 agl=3000
+time sun -20
+camera az=45 el=-20 fov=60
+wait settle
+capture n_phoenix scale=0.5
+observer lat=41.89 lon=12.49 agl=3000
+time sun -20
+camera az=45 el=-20 fov=60
+wait settle
+capture n_rome scale=0.5
+observer lat=30.05 lon=31.25 agl=3000
+time sun -20
+camera az=45 el=-20 fov=60
+wait settle
+capture n_cairo scale=0.5
+observer lat=28.63 lon=77.22 agl=3000
+time sun -20
+camera az=45 el=-20 fov=60
+wait settle
+capture n_delhi scale=0.5
+observer lat=35.68 lon=139.7 agl=3000
+time sun -20
+camera az=45 el=-20 fov=60
+wait settle
+capture n_tokyo scale=0.5
+observer lat=55.75 lon=37.62 agl=3000
+time sun -20
+camera az=45 el=-20 fov=60
+wait settle
+capture n_moscow scale=0.5
+observer lat=19.4 lon=-99.15 agl=3000
+time sun -20
+camera az=45 el=-20 fov=60
+wait settle
+capture n_mexico scale=0.5
+observer lat=-16.5 lon=-68.15 agl=2500
+time sun -20
+camera az=90 el=-10 fov=60
+wait settle
+capture m_lapaz scale=0.5
+observer lat=39.74 lon=-105.1 agl=2500
+time sun -20
+camera az=270 el=-10 fov=60
+wait settle
+capture m_denver scale=0.5
+observer lat=-22.93 lon=-43.25 agl=2500
+time sun -20
+camera az=180 el=-10 fov=60
+wait settle
+capture m_rio scale=0.5
+observer lat=22.3 lon=114.17 agl=2500
+time sun -20
+camera az=180 el=-10 fov=60
+wait settle
+capture m_hongkong scale=0.5
+observer lat=40.76 lon=-111.95 agl=2500
+time sun -20
+camera az=90 el=-10 fov=60
+wait settle
+capture m_slc scale=0.5
+observer lat=39.90 lon=116.40 agl=1500
+time sun 35 rising
+camera az=45 el=-35 fov=60
+wait settle
+perf frames=60 name=beijing_day
+time sun -20
+wait settle
+perf frames=60 name=beijing_night
+quit
