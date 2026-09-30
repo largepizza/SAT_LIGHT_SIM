@@ -2330,6 +2330,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             };
             const uint32_t hi = (skyTaaFrame++ % 8u) + 1u;
             cp.taaJitter = skyTaaWanted() ? glm::vec4(halton(hi, 2) - 0.5f, halton(hi, 3) - 0.5f, 0.0f, 0.0f) : glm::vec4(0.0f);
+            const double altG = followActive ? followRadiusM - 6371000.0 : (double)obsHeightOffset;
+            cp.taaJitter.z = orbitGrade * glm::smoothstep(30000.0f, 300000.0f, (float)altG);
         }
         cp.cloudTwilightAmbientGain = cloudTwilightAmbientGain;
         cp.cloudBaseVariance = cloudBaseVariance;
@@ -6732,13 +6734,15 @@ void SatelliteSim::readExposureMeter()
     if (vkMapMemory(ctx_->device, meterBufMem, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS || !mapped)
         return;
     const uint8_t *px = (const uint8_t *)mapped;
-    double sum = 0.0;
-    int clipped = 0;
+    double sum = 0.0, sumLit = 0.0;
+    int clipped = 0, lit = 0;
     const int n = (int)(kMeterW * kMeterH);
     for (int i = 0; i < n; ++i)
     {
         const float r = px[i * 4] / 255.0f, g = px[i * 4 + 1] / 255.0f, b = px[i * 4 + 2] / 255.0f;
-        sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        const float l = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+        sum += l;
+        if (l > 0.08f) { sumLit += l; ++lit; }
         if (std::max(r, std::max(g, b)) > 0.96f)
             ++clipped;
     }
@@ -6747,10 +6751,29 @@ void SatelliteSim::readExposureMeter()
     meterClipFrac = (float)clipped / (float)n;
 
     // Daylight at the observer (the sky's own dayness ramp): full control above ~6 deg of Sun.
-    const float day = glm::smoothstep(-0.03f, 0.1f, sunDirENU.w);
+    float day = glm::smoothstep(-0.03f, 0.1f, sunDirENU.w);
     constexpr float kTarget = 0.32f;   // linear mean of the displayed frame (~0.6 in sRGB)
     float err = log2f(kTarget / std::max(meterMeanLum, 1e-3f)) - 4.0f * std::max(meterClipFrac - 0.04f, 0.0f);
-    const float lo = -3.0f * std::clamp(cv2AutoExposure, 0.0f, 1.0f);
+    float lo = -3.0f * std::clamp(cv2AutoExposure, 0.0f, 1.0f);
+    // From space (2026-09-30, the Artemis II photos): a SPOT meter on the lit Earth. The whole-frame mean
+    // counted black space, so a small bright Earth never darkened: the clouds sat in the tonemap's
+    // shoulder and the dark navy sea read sky-cyan (cloud : ocean 2:1 on screen, 10:1 in the photos).
+    // Above ~100 km the mean is taken over the lit pixels only, toward the photos' 0.42 (their lit-Earth
+    // mean in these units), clipping counted against them, and the gate is lit Earth in view — the Sun at
+    // the observer's own nadir says nothing about a crescent seen from 70,000 km.
+    {
+        const double altM = followActive ? followRadiusM - 6371000.0 : (double)obsHeightOffset;
+        const float sw = glm::smoothstep(100000.0f, 1500000.0f, (float)altM);
+        if (sw > 0.0f && lit > n / 200)
+        {
+            const float litMean = (float)(sumLit / lit);
+            const float litClip = (float)clipped / (float)lit;
+            const float errS = log2f(0.42f / std::max(litMean, 1e-3f)) - 4.0f * std::max(litClip - 0.02f, 0.0f);
+            err = err + (errS - err) * sw;
+            lo = lo + (-5.0f * std::clamp(cv2AutoExposure, 0.0f, 1.0f) - lo) * sw;
+            day = day + (1.0f - day) * sw;
+        }
+    }
     float want = std::clamp(autoExposureEV + err, lo, 0.0f) * day;
     // ~1 s to adapt (darkening, like an eye stepping into daylight), a little slower back.
     const float tau = want < autoExposureEV ? 0.8f : 1.6f;

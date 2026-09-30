@@ -3929,6 +3929,7 @@ private:
     float lightSamples = 2.4f;               // N_LIGHT: optDepth sun-side sub-march count
     float oceanSeaOctaves = 3.0f;            // seaMap() octave count (height-trace geometry)
     float oceanDetailOctaves = 5.0f;         // seaMapDetail() octave count (wave normal)
+    float orbitGrade = 1.0f;                // orbit colour grade (Atmosphere tab, slot 219; the Artemis II photos)
     float auroraSheetGain = 1.0f;           // aurora sheets (Atmosphere tab, slots 215-218): strength, 0 = off
     float auroraSheetSpacingDeg = 0.3f;     // colatitude between sheets
     float auroraSheetCrisp = 0.5f;          // share of crisp (thin) sheets
@@ -4433,7 +4434,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 219;
+    static constexpr int kCloudSliderSlots = 220;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

@@ -5251,6 +5251,8 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
         {"Sheet spacing (deg)", &auroraSheetSpacingDeg, 0.05f, 1.5f, 0.01f, "%.2f", 216},
         {"Crisp sheets (share)", &auroraSheetCrisp, 0.0f, 1.0f, 0.05f, "%.2f", 217},
         {"Sheet folds", &auroraSheetFold, 0.0f, 2.0f, 0.05f, "%.2f", 218},
+        // 2026-09-30: the look of the Earth from space, fitted to the Artemis II photographs.
+        {"Orbit colour grade", &orbitGrade, 0.0f, 1.0f, 0.05f, "%.2f", 219},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
@@ -6555,6 +6557,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         oceanGlintGain = c.value("ocean_glint_gain", oceanGlintGain);
         oceanSeaStateGain = c.value("ocean_sea_state", oceanSeaStateGain);
         auroraSheetGain = c.value("aurora_sheets", auroraSheetGain);
+        orbitGrade = c.value("orbit_grade", orbitGrade);
         auroraSheetSpacingDeg = c.value("aurora_sheet_spacing_deg", auroraSheetSpacingDeg);
         auroraSheetCrisp = c.value("aurora_sheet_crisp", auroraSheetCrisp);
         auroraSheetFold = c.value("aurora_sheet_fold", auroraSheetFold);
@@ -6813,6 +6816,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ocean_glint_gain", oceanGlintGain},
         {"ocean_sea_state", oceanSeaStateGain},
         {"aurora_sheets", auroraSheetGain},
+        {"orbit_grade", orbitGrade},
         {"aurora_sheet_spacing_deg", auroraSheetSpacingDeg},
         {"aurora_sheet_crisp", auroraSheetCrisp},
         {"aurora_sheet_fold", auroraSheetFold},

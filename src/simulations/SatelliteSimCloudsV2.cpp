@@ -1265,7 +1265,10 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
         b.dstAccessMask = da;
         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         b.image = cv2WeatherImg;
-        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kCv2WeatherMips, (uint32_t)face, 1};
+        // ALL six faces: the storage views (cv2WxSets) span the whole cube, and a descriptor's layout must
+        // hold for every subresource it can reach — with only the baked face in GENERAL the validation layer
+        // flagged every rebake (2026-09-30). The other faces are not written; the transition is ~free.
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kCv2WeatherMips, 0, 6};
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
                              0, nullptr, 0, nullptr, 1, &b);
     };
