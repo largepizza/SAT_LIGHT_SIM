@@ -1584,6 +1584,30 @@ void main() {
     // grid (radiance, transmittance; mean distance, occlusion distance).
     vec4  rc = texelFetch(cv2ResolvedTex, coord, 0);
     vec2  rd = texelFetch(cv2ResolvedDepthTex, coord, 0).xy;
+    // Review 9: an ISOLATED cloud texel (at most one of its 8 neighbours holds comparable cloud) is a
+    // sub-pixel wisp or a shaded cloud side the sparse march catches on some frames: along far cloud edges
+    // over the sea they were dark 2x2 specks that flickered (user snapshot). Replaced by its 3x3 tent — a
+    // soft, faint dot. Cloud bodies and continuous edges have neighbours and are untouched.
+    {
+        float oc = 1.0 - rc.a;
+        if (oc > 0.02) {
+            ivec2 rs = textureSize(cv2ResolvedTex, 0);
+            vec4  tent = rc * 4.0;
+            float cnt = 0.0, oLo = oc;
+            for (int k = 0; k < 9; ++k) {
+                ivec2 o = ivec2(k % 3 - 1, k / 3 - 1);
+                if (o == ivec2(0)) continue;
+                vec4 nb = texelFetch(cv2ResolvedTex, clamp(coord + o, ivec2(0), rs - 1), 0);
+                tent += float((2 - abs(o.x)) * (2 - abs(o.y))) * nb;
+                cnt  += step(0.5 * oc, 1.0 - nb.a);
+                oLo   = min(oLo, 1.0 - nb.a);
+            }
+            // ... and an EDGE texel (the opacity drops sharply across it) leans 60% on the tent: the
+            // half-res silhouette's lone dark (shaded-wisp) texels flickered as the sparse march caught them.
+            float kE = max(1.0 - smoothstep(1.0, 3.0, cnt), 0.6 * smoothstep(0.3, 0.8, oc - oLo));
+            rc = mix(rc, tent * (1.0 / 16.0), kE);
+        }
+    }
     vec3  A_cloud       = vec3(rc.a);
     vec3  B_cloud       = rc.rgb;
     float tCloudOcclude = rd.y;
@@ -1956,7 +1980,11 @@ void main() {
         if (shadowFade > 0.001) {
             vec3  hitENU  = obsPos + tScene * dir;
             vec3  hitECEF = hitENU.x * enuX + hitENU.y * enuY + hitENU.z * enuZ;
-            float jitter  = textureLod(noiseTex, vec2(gl_GlobalInvocationID.xy) * (1.0/128.0), 0.0).b;
+            // A 2x2 ORDERED offset (review 9), not white noise: sat_sky.frag's [1 2 1] tent averages the four
+            // offsets exactly, so the shadow is smooth; white noise left a grain of hit-or-miss cells on water
+            // under broken cloud (user snapshots), a 4x4 Bayer tile a faint grid.
+            ivec2 bq = ivec2(gl_GlobalInvocationID.xy) & 1;
+            float jitter  = (float(bq.x * 2 + (bq.x ^ bq.y)) + 0.5) * 0.25;
             float gs = cloudGroundShadowV2(hitENU, sunDir, obsPos, mat3(enuX, enuY, enuZ), jitter);
             terrainSunT = mix(1.0, gs, shadowFade);
         }

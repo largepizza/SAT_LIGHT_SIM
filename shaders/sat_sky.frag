@@ -2610,6 +2610,15 @@ void main() {
             tHit = terrainMarchDetailed(earthElevTex, earthSpecTex, hEye, dir, enuX, enuY, enuZ,
                                         tSeed, tExit, pixAngle, kTerrainMaxSteps, 1.0, false,
                                         kTdCoarseOctaves, terrainSteps);
+            // Review 9: a ray that ends ON the sea sphere over LAND is a terrain hit there. Land can read
+            // 0 m (the Lena delta: DEM 0 where the water map says land), and whether the march landed on the
+            // sphere or passed it was step-size luck — terrain shading on some pixels, the flat sea-level
+            // land path on others: rings about the nadir and a z-fighting boundary (user snapshot).
+            if (tHit < 0.0 && tSeaLvl > 0.0 && tSeaLvl <= tExit + 1.0) {
+                float hs0, hs3;
+                tdDemAt(earthElevTex, earthSpecTex, vec3(0.0, 0.0, hEye) + tSeaLvl * dir, enuX, enuY, enuZ, hs0, hs3);
+                if (hs3 > kTdWaterMark) tHit = tSeaLvl;
+            }
             if (tHit > 0.0) {
                 terrainQ = vec3(0.0, 0.0, hEye) + tHit * dir;
                 vec3 phE = terrainQ.x * enuX + terrainQ.y * enuY + (R_EARTH + terrainQ.z) * enuZ;
@@ -2642,8 +2651,8 @@ void main() {
                     tSeaLvl     = tHit;
                     waterLevelM = terrainH0;
                     tHit        = -1.0;
-                } else if (terrainH0 <= 0.0 || hitWater) {
-                    tHit = -1.0;   // sea (or land at exactly sea level), not terrain: see above
+                } else if (hitWater) {
+                    tHit = -1.0;   // sea, not terrain: see above. Land at 0 m stays terrain (review 9)
                 } else {
                     // Normal: the DEM gradient over +-1 texel (bilinear central differences are
                     // continuous — the old +-0.69-texel offsets, written for a 21600-wide DEM, gave a
@@ -2966,16 +2975,21 @@ void main() {
         vec4 ga = textureGather(cloudTargetA, cloudUV, 3);
         vec4 da = abs(ga);
         float dn = 1e9;
-        for (int k = 0; k < 4; ++k) if (da[k] < 50000.0) dn = min(dn, da[k]);
+        for (int k = 0; k < 4; ++k) if (da[k] < 50000.0 && da[k] > 0.001) dn = min(dn, da[k]);
         if (dn < 1e8) tCloudFrontM = dn * 1000.0;
         // The air's split (review 8b): the four texels' distances weighted by their bilinear share and
         // opacity, as the composite blends their (A, B) — at an edge the air follows the cloud that is there.
         vec4  gT = textureGather(cloudTargetB, cloudUV, 1);
         vec2  fq = fract(cloudUV * vec2(textureSize(cloudTargetA, 0)) - 0.5);
         vec4  wq = vec4((1.0 - fq.x) * fq.y, fq.x * fq.y, fq.x * (1.0 - fq.y), (1.0 - fq.x) * (1.0 - fq.y))
-                 * clamp(1.0 - gT, 0.0, 1.0) * vec4(lessThan(da, vec4(50000.0)));
+                 * clamp(1.0 - gT, 0.0, 1.0) * vec4(lessThan(da, vec4(50000.0))) * vec4(greaterThan(da, vec4(0.001)));
+        // (> 1 m: at an edge the resolve can blend history's cloud into a texel whose own sample found none,
+        //  T < 1 with a distance of 0 — counted, it put the air's split at the eye: a dark flickering speck.)
         float ws = wq.x + wq.y + wq.z + wq.w;
-        if (ws > 1e-4) tAirFrontM = dot(wq, da) / ws * 1000.0;
+        // Fallback: the nearest real cloud of the four, else none (review 9). It was the pixel's FILTERED
+        // alpha, which at an edge blends a cloud's distance with the no-cloud marker and can land near 0 km:
+        // no air in front, a dark 2x2 speck along every cloud edge over the sea (user snapshot).
+        tAirFrontM = (ws > 1e-6) ? dot(wq, da) / ws * 1000.0 : ((dn < 1e8) ? dn * 1000.0 : 1e12);
     }
 #endif
     vec3  accumAirglow = vec3(0.0); // green + sodium bands (C15) — ride these same samples
@@ -3443,12 +3457,17 @@ void main() {
         float cloudShadowT = cloudBCenter.a;   // centre tap — already sampled above, don't re-fetch
 #ifndef SKY_ENV
         {
-            vec2 shadowTexel = kShadowBlurSpread / vec2(textureSize(cloudTargetB, 0));
+            // Review 9: a [1 2 1] tent at 1-texel spacing — it averages cloud_march.comp's 2x2 ordered
+            // shadow offsets EXACTLY at any sub-texel position (a period-2 pattern under [1 2 1] (x) the
+            // bilinear weights sums evenly), where 9 even taps at 1.7 left the pattern as a faint grid.
+            vec2 shadowTexel = 1.0 / vec2(textureSize(cloudTargetB, 0));
+            cloudShadowT *= 4.0;
             for (int sy = -1; sy <= 1; ++sy)
                 for (int sx = -1; sx <= 1; ++sx)
                     if ((sx | sy) != 0)
-                        cloudShadowT += texture(cloudTargetB, cloudUV + vec2(sx, sy) * shadowTexel).a;
-            cloudShadowT *= (1.0 / 9.0);
+                        cloudShadowT += float((2 - abs(sx)) * (2 - abs(sy)))
+                                      * texture(cloudTargetB, cloudUV + vec2(sx, sy) * shadowTexel).a;
+            cloudShadowT *= (1.0 / 16.0);
         }
 #endif
         directSun *= cloudShadowT;
@@ -4066,14 +4085,11 @@ void main() {
             //   An observer-geographic phase offset (modulo first-octave wave period ≈ 39.3 m)
             //   is added so the pattern is approximately Earth-fixed without accumulating
             //   large absolute coordinates. Derived entirely from enuZ (observer ECEF unit vec).
-            vec2 obsPhase = vec2(0.0);
-            if (altFade > 0.01) {
-                const float wvScale = 2.0 * PI / kSeaFreq;
-                float oLat  = asin(clamp(enuZ.z, -1.0, 1.0));
-                float oLon  = atan(enuZ.y, enuZ.x);
-                obsPhase.x  = fract(oLon * R_EARTH * cos(oLat) / wvScale) * wvScale;
-                obsPhase.y  = fract(oLat * R_EARTH           / wvScale) * wvScale;
-            }
+            // Review 9: the city texture's world-fixed offset (the observer's cumulative east/north motion,
+            // CPU double from obsDir) — the same translation every nearby surface gets. The old phase (the
+            // observer's float lat/lon x R, wrapped to the FIRST octave's period only) left the other octaves
+            // sliding against the terrain as the observer moved, and stepped ~1 m with float precision.
+            vec2 obsPhase = vec2(cloud.pad1, cloud.pad2);
             vec2 posM = hitPt.xy + obsPhase;
 
             // ── heightMapTracing (low altitude only) ──────────────────────────

@@ -788,8 +788,11 @@ void main()
             }
 
             vec3  S     = keyS + ambS + bounceS + nightS;
-            // Thin ice (the cirrus veil): one sample stands for two steps.
-            float stepW = (f.thin > 0.9) ? 2.0 * stepF : stepF;
+            // Thin ice (the cirrus veil): one sample stands for two steps — where a pixel spans > 60 m (the
+            // perf win is from altitude). Near the eye, inside or just above the layer (review 9: 9 km at
+            // 62 N), two-step samples caught its fibres on some frames and missed them on others: crisp
+            // flickering specks over the low clouds' edges.
+            float stepW = (f.thin > 0.9 && fp > 60.0) ? 2.0 * stepF : stepF;
             float Tstep = exp(-f.sigma * stepW);
             float w     = T * (1.0 - Tstep);
             L    += w * S;

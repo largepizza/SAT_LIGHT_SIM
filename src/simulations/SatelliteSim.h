@@ -2684,6 +2684,7 @@ private:
     double cityOffsetEastM = 0.0;
     double cityOffsetNorthM = 0.0;
     bool cityOffsetInit = false;
+    glm::dvec3 cityPrevObsDir = glm::dvec3(0.0, 0.0, 1.0);
     double cityPrevObsLatRad = 0.0;
     double cityPrevObsLonRad = 0.0;
     // City day/night detail textures (bindings 14/15): small tileable high-frequency maps,

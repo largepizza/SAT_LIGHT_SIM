@@ -2205,26 +2205,27 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // bases snapped to a grid, but re-deriving the basis at each snap silently rotated the axes a
     // little, not just translated them, causing a visible pop at every snap instead of the
     // intended seamless tile-period jump).
+    // Review 9: from obsDir itself (the vector every world anchor derives from), the step projected on the
+    // previous frame's east/north in double. It was the difference of FLOAT degrees (~1 m quantization a
+    // step): the ocean waves, which now use it too, jumped against the terrain while moving.
     {
-        double latRad = (double)glm::radians(obsLatDeg);
-        double lonRad = (double)glm::radians(obsLonDeg);
+        const glm::dvec3 d = glm::normalize(glm::dvec3(obsDir));
         if (!cityOffsetInit)
         {
-            cityPrevObsLatRad = latRad;
-            cityPrevObsLonRad = lonRad;
+            cityPrevObsDir = d;
             cityOffsetInit = true;
         }
-        double dLat = latRad - cityPrevObsLatRad;
-        double dLon = lonRad - cityPrevObsLonRad;
-        if (dLon > glm::pi<double>())
-            dLon -= glm::two_pi<double>(); // antimeridian wrap guard
-        if (dLon < -glm::pi<double>())
-            dLon += glm::two_pi<double>();
-        double cosLat = std::max(0.05, cos(latRad)); // guards the /cosLat below near the poles
-        cityOffsetNorthM += dLat * (double)kEarthRadius;
-        cityOffsetEastM += dLon * (double)kEarthRadius * cosLat;
-        cityPrevObsLatRad = latRad;
-        cityPrevObsLonRad = lonRad;
+        const glm::dvec3 up = cityPrevObsDir;
+        glm::dvec3 east = glm::cross(glm::dvec3(0.0, 0.0, 1.0), up);
+        east = glm::length(east) > 1e-9 ? glm::normalize(east) : glm::dvec3(1.0, 0.0, 0.0);
+        const glm::dvec3 north = glm::cross(up, east);
+        const glm::dvec3 step = (d - up) * (double)kEarthRadius;
+        if (glm::length(step) < 200000.0) // a jump (Go to, harness observer) is not a displacement
+        {
+            cityOffsetEastM += glm::dot(step, east);
+            cityOffsetNorthM += glm::dot(step, north);
+        }
+        cityPrevObsDir = d;
     }
 
     if (cloudParamsMapped)

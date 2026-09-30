@@ -1006,6 +1006,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sun ray into the Earth met no cloud: a hard line along the ground terminator). The far field has a
   16-km octave. Harness note: with `auto_exposure` on, frames after `wait settle` still drift in
   brightness — set `clouds_v2.auto_exposure 0` before measuring flicker.
+- **Review 9:** the air split's distance ignores texels with a 0 distance (resolve-blended edges) and
+  falls back to the nearest real cloud (not the filtered alpha); the resolve clamps history in MEAN-COLOUR
+  space (rgb / opacity, `cv2ToMean`); cloud_march.comp replaces an isolated cloud texel by its 3x3 tent
+  and leans edge texels 60% on it; a thin (cirrus) sample stands for two steps only past a 60 m pixel.
+  The flickering specks along cloud edges seen from 9 km at 62 N were LOW cloud glimpsed through gaps at
+  the edges of the high layer (which the eye is inside there), in its shadow: reduced ~40%, not gone
+  (high layer off removes them). **Ground shadow:** a 2x2 ORDERED start offset (was white noise: grain)
+  with sat_sky.frag's shadow blur a [1 2 1] tent at 1 texel, which averages a period-2 pattern exactly.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -4082,6 +4090,14 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   Fresnel sky reflection and sun glint in the terrain lighting). Replaced a stretched Voronoi patchwork.
   "Ground pattern range (m/px)" (`clouds.ground_pattern_range_m` 800, slot 212, UBO `groundPatternFootM`
   = v1's unread shadowMaxDistM renamed): the farms fade over 0.55-0.9 of it (was a fixed 400).
+- **Land at 0 m is terrain (review 9):** a march that ends on the sea sphere over LAND (the water map's
+  test at that point) is a terrain hit there, and only water voids a hit (`hitWater`). Land can read 0 m
+  (the Lena delta: DEM 0, the water map land), and whether the march landed on the sphere or passed it was
+  step luck — terrain shading or the flat sea-level land path: rings about the nadir and z-fighting.
+- **Ocean waves ride the world offset (review 9):** `seaMap` reads hitPt.xy + (cloud.pad1, pad2), the
+  observer's cumulative east/north motion (CPU double, now from obsDir projected on the previous frame's
+  east/north; it was the difference of float degrees, ~1 m steps). The old phase (float lat/lon x R,
+  wrapped to the first octave's period only) let the other octaves slide against the terrain.
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the

@@ -59,6 +59,13 @@ vec4 freshAt(ivec2 p)
     return tileFull(p) ? texelFetch(fullColorTex, p, 0) : texelFetch(newColorTex, min(p >> 1, gQs - 1), 0);
 }
 
+// Review 9: the clamp works on the cloud's MEAN COLOUR (rgb / opacity) and its transmittance, not on the
+// premultiplied colour and T independently. Clamped separately an edge texel's history could keep a low T
+// with a darkened rgb — an opaque, unlit patch: dark flickering 2x2 specks along cloud edges over the sea
+// (review 9, once the march's own airlight, which used to dominate both, moved to the sky pass).
+vec4 cv2ToMean(vec4 v)   { return vec4(v.rgb / max(1.0 - v.a, 0.02), v.a); }
+vec4 cv2FromMean(vec4 v) { return vec4(v.rgb * max(1.0 - v.a, 0.02), v.a); }
+
 void enuOf(vec3 up, out mat3 m)
 {
     vec3 z = normalize(up);
@@ -103,9 +110,10 @@ void main()
         ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
         if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
         vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
+        if ((dx == 0) != (dy == 0)) ax += s;   // the four axial neighbours (the sparse grid's smoothing)
+        s = cv2ToMean(s);
         mn = min(mn, s); mx = max(mx, s);
         m1 += s; m2 += s * s; nBox += 1.0;
-        if ((dx == 0) != (dy == 0)) ax += s;   // the four axial neighbours (the sparse grid's smoothing)
     }
     m1 /= max(nBox, 1.0);
     vec4 sdBox = sqrt(max(m2 / max(nBox, 1.0) - m1 * m1, vec4(0.0)));
@@ -226,7 +234,7 @@ void main()
         float mv  = smoothstep(0.5, 3.0, motionPx);
         vec4  bLo = mix(mn - slack, max(mn, m1 - 1.25 * sdBox), mv);
         vec4  bHi = mix(mx + slack, min(mx, m1 + 1.25 * sdBox + vec4(1e-4)), mv);
-        vec4 hc = clamp(hist, bLo, bHi);
+        vec4 hc = cv2FromMean(clamp(cv2ToMean(hist), bLo, bHi));
         // The other three pixels of the block also take a share of the interpolated new samples.
         // Without it the one pixel refreshed each frame stood out from the three that were not,
         // and noisy (shaded, grazing) surfaces showed a 2x2 dot grid. In motion the shares
