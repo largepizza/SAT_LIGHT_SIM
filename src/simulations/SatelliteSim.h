@@ -2373,6 +2373,12 @@ private:
     float obsLonDeg = -67.0f;                         // display cache — derived from obsDir
     float obsTerrainH = 0.0f;                         // terrain elevation at observer lat/lon (m)
     float obsHeightOffset = 0.0f;                     // user-controlled height above terrain (m, Q/E/Z)
+    // The eye's distance from the Earth's centre, as the shaders place it: max(ground, height offset)
+    // + 2 m (observerEffHeight). The satellites' ENU frame (obsECI) and every CPU evaluator use this;
+    // until review 7 they used R + ground + offset, a different eye by the ground height, so over
+    // mountains the beams and satellites sat ~km off the drawn scene and jumped as the ground changed.
+    float obsEyeRadiusM(float heightOffset) const { return (float)satphot::kEarthRadiusM + std::max(obsTerrainH, heightOffset) + 2.0f; }
+    float obsEyeRadiusM() const { return obsEyeRadiusM(obsHeightOffset); }
     // 2026-08-09 (in-app finding: beam/cloud-glow ground spots visibly "drag" behind the observer
     // while moving): satENU/reflectDirENU/targetENU read back from reflectBeamsBuf each frame are
     // expressed in the East/North/Up basis at whatever obsDir PRODUCED them (beam_self_march.comp's
@@ -2384,6 +2390,7 @@ private:
     // Defaulted to match obsDir/0 so the very first frame's correction is a no-op.
     glm::vec3 lastBeamObsDir = {0.1527f, -0.3596f, -0.9205f};
     float lastBeamObsEffH = 0.0f;
+    double lastBeamObsRadius = 0.0; // the obsECI radius the beams were measured from (0 = none yet)
     // Persistent cloud-light pools (2026-08-12) — see TrackedBeamLight's own comment for the whole
     // design. Two pools with independently reserved eviction budgets, exactly as the previous
     // per-frame build had, so a busy target's summed intensity can never starve lone transiting

@@ -1424,7 +1424,7 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                 traceNowTickY[0] = traceNowTickY[1] = y;
             }
         }
-        const float obsRadius = (float)satphot::kEarthRadiusM + obsTerrainH + obsHeightOffset;
+        const float obsRadius = obsEyeRadiusM();
         observerMoved = glm::length(glm::dvec3(obsDir) - traceSetup.obsDirEcef) > 1e-7 ||
                         std::abs((double)obsRadius - traceSetup.obsRadiusM) > 1.0;
     }

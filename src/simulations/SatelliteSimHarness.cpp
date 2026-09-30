@@ -597,7 +597,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // the Sun stands at the requested elevation for THIS observer, from the same Sun and
             // observer formulas updatePositions uses.
             const glm::dvec3 od = glm::dvec3(obsDir);
-            const double rObs = satphot::kEarthRadiusM + obsTerrainH + obsHeightOffset;
+            const double rObs = (double)obsEyeRadiusM();
             auto sunEl = [&](double tt)
             {
                 const glm::dvec3 up = glm::normalize(observerEciAt(od, rObs, tt));

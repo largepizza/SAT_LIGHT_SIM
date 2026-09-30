@@ -511,7 +511,8 @@ void main()
     // sampling bias, and far clouds (long steps) broke into 2x2 squares.
     float visit  = full ? cv2.frame.x : floor(cv2.frame.x * (halfR ? 0.5 : 0.25));
     float jitter = fract(ign(vec2(pix)) + 0.6180340 * visit);
-    // Fast flight (the eye moved > 150 m this frame; WASD is ~500 km/s): no history to average IGN's
+    // Any eye motion (> 1 m a frame; > 150 m until review 7, when a slow strafe's moving history weight
+    // showed IGN as a dotted honeycomb on lit tops). Fast flight: no history to average IGN's
     // structure away, and its smooth diagonal gradient kept neighbouring rays in step, so the march's
     // steps lined up into bands across every cloud top (corduroy, "clouds lose their form"). Blue noise
     // (a 64x64 void-and-cluster tile, a golden-ratio step per frame) leaves only fine grain, at the high
@@ -954,20 +955,41 @@ void main()
             float termSpace = clamp((eyeH - 40000.0) / 60000.0, 0.0, 1.0)
                             * clamp(cloud.atmosTermStrength, 0.0, 1.0);
             float termW     = max(1e-4, cloud.atmosTermWidth);
-            vec3  aR = vec3(0.0);
+            vec3  aR = vec3(0.0), sR = vec3(0.0);
+            float sM = 0.0;
             for (int i = 0; i < kAir; ++i) {
                 vec3  ap = e0 + dir * ((float(i) + 0.5) * sg);
                 float ah = max(0.0, length(ap) - R_EARTH);
                 float dR = exp(-ah / H_R) * sg, dM = exp(-ah / H_M) * sg;
                 oR += dR; oM += dM;
                 vec2 tSE = raySphere(ap, sunDir, R_EARTH);
-                if (tSE.x > 0.0 && tSE.y > 0.0) continue;
+                if (tSE.x > 0.0 && tSE.y > 0.0) {
+                    vec3 ae = exp(-(BETA_R * oR + BETA_M * 1.1 * oM));
+                    sR += ae * dR; sM += dot(ae, vec3(1.0 / 3.0)) * dM;
+                    continue;
+                }
                 vec3 at   = exp(-(BETA_R * oR + BETA_M * 1.1 * oM)) * sunTransmit(ap, sunDir, BETA_R, BETA_M);
                 float gT  = mix(1.0, smoothstep(-termW, termW, dot(normalize(ap), sunDir)), termSpace);
                 aR += at * dR * gT;
                 aM += dot(at, vec3(1.0 / 3.0)) * dM * gT;
             }
             air = SUN_INTENSITY * (pR * BETA_R * aR + vec3(pM * BETA_M * aM));
+            // Review 7: air in the Earth's SHADOW is lit by the twilight sky (the blue-grey of the Earth's
+            // shadow), which single scattering leaves black. Looking away from a just-set Sun, the air in
+            // front of a distant deck is in shadow, and the far clouds along the horizon were a near-black
+            // band (user snapshot 2: 18 against the clear horizon's ~70). Isotropic in-scatter of about
+            // half the zenith sky's radiance (the lower half-sphere is dark), shadowed stretches only, so a
+            // sunlit path (every day view) is unchanged. The zenith faded as the ambient is (skyDusk). sat_sky.frag
+            // adds the same to the whole ray, so a cloud and the clear horizon beside it agree; off from orbit
+            // (the terminator gate owns the twilight air there).
+            if (sM > 0.0) {
+                vec3  pm  = e0 + dir * (0.5 * span);
+                vec3  upM = normalize(pm);
+                float hS  = -sqrt(max(1.0 - (R_EARTH / length(pm)) * (R_EARTH / length(pm)), 0.0));
+                float su  = dot(upM, sunDir);
+                vec3  sky = skyZenithAt(pm, sunDir, BETA_R, BETA_M) * smoothstep(hS - 0.09, hS + 0.04, su);
+                air += (1.0 - termSpace) * 0.5 * sky * (BETA_R * sR + vec3(BETA_M * sM));
+            }
         }
         // air is already the path's integrated in-scatter (each step attenuated to the eye). v1
         // weighted it by (1 - attn) as well, which counted the extinction twice: a cloud got a

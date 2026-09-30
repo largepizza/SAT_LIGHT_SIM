@@ -976,6 +976,20 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   of cloud distance (a near cloud's resolved distance is noisy and moved the split through the dense low
   air; from above most of the glow is below it anyway). Still-frame flicker 1.2% -> 0.27% of pixels
   (0.19% without the term).
+- **Review 7:** **Shadowed air is sky-lit.** Air in the Earth's shadow gets isotropic in-scatter of
+  half the zenith sky's radiance (faded as the clouds' sky ambient, `skyDusk`), in the march's airlight
+  (shadowed steps, `sR`/`sM`) and in sat_sky.frag's loop (`shR`/`shM`, `skyZenithSky` at the shadowed
+  stretch's mean point), off from orbit (x (1 - terminator gate)). Single scattering left it black:
+  facing away from a just-set Sun, the far clouds along the horizon were a near-black band (user
+  snapshot: 18 against ~70 for the clear horizon; now ~40, the clear horizon 65 -> 84). What remains is
+  real: those clouds hide the still-sunlit air beyond them. Day views unchanged (mean |diff| 0.05).
+  **Motion grain:** the march's blue-noise jitter now switches on at 1 m of eye motion a frame (was
+  150 m): with a moving history weight of 0.7-1.0, IGN's regular structure showed as a dotted
+  honeycomb on lit tops during a slow strafe. The resolve, as the moving weight rises, gives the
+  refreshed sparse pixel the smoothing its three interpolated neighbours have (half its four axial
+  neighbours) and the same weight (`mk` also from `wNew`); full-rate pixels lean toward their 3x3 tent
+  by 0.4 x mk x w. At "History weight moving" 1 in sparse tiles the image is still single-frame rays:
+  grain, no longer a checker.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -1331,6 +1345,8 @@ Location- and context-aware ambience on its own bus under the music (Settings �
 ("Move speed (x height per s)", Controls tab, slot 210, `camera.move_speed_per_height`, default 1) x the
 height above the ground per second, never below 3 m/s and never above the old 0.08 rad/s (~510 km/s, so
 orbit is unchanged); boost and fine scale it the same way. A fixed 510 km/s crossed a cloud in a frame.
+Q/E follow the same setting (review 7): `moveSpeedPerHeight` x (10 m/s + 0.5 x the height above the
+ground), boost x10, fine x0.1 — it was 100 m/s + 0.5 x the height above SEA LEVEL.
 
 ### `KeyBinding` struct
 ```cpp
@@ -2657,7 +2673,16 @@ shorter fixed `kTrackedLightGeomEaseS`.
    `GpuReflectBeam`.** std430 rounds the GLSL struct up to its 16-byte alignment; C++ does not,
    because `glm::vec3` is 4-aligned. The pre-`targetIdx` total agreed at 64 only by luck. Same
    silent-permutation hazard as `GpuCloudParams`, and the `static_assert` only catches a size change.
-3. **Nothing in the readback loop may depend on scan order again.** The `std::sort` by `debugPad`
+3. **Nothing in the readback loop may depend on scan order again.**
+4. **The raw per-beam positions are rebased RIGIDLY (review 7):** `satENU`/`targetENU` are positions
+   relative to last frame's EYE, so `rebasePos` adds the eye's own move (double, `lastBeamObsRadius`)
+   to the basis turn; `rebase` (rotation only) is right for `reflectDirENU` alone. Rotation-only
+   positions lagged the observer's per-frame displacement — ~2 km a frame flying at the height-scaled
+   speed from 116 km, and the ground spots visibly swung while strafing.
+5. **One eye for satellites and shaders:** `obsECI` (and every CPU evaluator: trace, selection
+   readout, harness Sun search) uses `obsEyeRadiusM()` = R + max(ground, height offset) + 2 m, the
+   shaders' `observerEffHeight`. It was R + ground + offset: over the Sierra a ~3 km different eye, so
+   beams landed km off the drawn scene and jumped as the CPU ground under the observer changed. The `std::sort` by `debugPad`
    that used to enforce determinism is deleted — the partition is order-independent now (sums and a
    max), `groundTopK` ranks on intensity, and `nearest`/the opacity diagnostics are commutative.
 
@@ -4027,6 +4052,12 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   towns; now they are dots on screen, sprites or not. The fog's city glow is linear in the lights (a
   full core at 0.2), not `cityBrightness` (saturated by a small town: a tan fog slab over Denver read as
   a dust storm).
+  **Review 7 (day at distance):** the tiled city day texture (`cityDayDetailTex`) comes back on the
+  day side where the procedural streets stop resolving (weight 1 - strength x (1 - smoothstep(30, 120 m
+  footprint))); it was off at every distance with "City street lights" on, and the procedural pattern
+  averages to the map by design, so from an aircraft or 40 km a city was the map's smooth 5-km texels.
+  `cityDayFar` adds km-scale structure over 80 m .. 4 km footprints (parks on the near layout's void
+  field, bright roof zones, a mottle following the footprint; a ratio of mean ~1).
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the

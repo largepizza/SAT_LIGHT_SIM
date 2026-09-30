@@ -1055,11 +1055,12 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // km away), sea level to 16 km, four of its 32 levels per frame.
     p.lightVol = glm::vec4((float)((cv2Frame % (kCv2LightVolZ / kCv2LightVolLevelsPerFrame)) * kCv2LightVolLevelsPerFrame),
                            std::clamp(cv2GodrayRangeKm, 50.0f, 1500.0f) * 1000.0f, 16000.0f, std::max(cv2Godrays, 0.0f));
-    // z: fast motion — the eye moved over 150 m since the last frame (any WASD: ~500 km/s normally),
-    // so the history cannot help and the march switches its ray jitter from IGN to per-pixel white
-    // noise (cloud_v2_march.comp).
+    // z: the eye moved (over 1 m since the last frame): the march switches its ray jitter from IGN to
+    // blue noise (cloud_v2_march.comp). It was over 150 m (fast flight) until review 7: at a walking or
+    // hover speed the moving history weight (0.7, the user's 1.0) let IGN's regular structure through as
+    // a dotted honeycomb over lit cloud tops (user snapshot 4).
     p.misc2 = glm::vec4(std::clamp(cv2LightningSprites, 0.0f, 1.0f), 1.0f,
-                        glm::length(eye - cv2PrevEye) > 150.0 ? 1.0f : 0.0f, 0.0f);
+                        glm::length(eye - cv2PrevEye) > 1.0 ? 1.0f : 0.0f, 0.0f);
     p.lightning = glm::vec4(std::max(cv2LightningRate, 0.0f), std::max(cv2LightningGlow, 0.0f),
                             std::max(cv2LightningBolt, 0.0f), (float)std::fmod((double)simDayJ2000 * 86400.0 + simSecInDay, 100000.0));
 

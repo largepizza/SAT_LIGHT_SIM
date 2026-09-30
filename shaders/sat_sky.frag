@@ -786,6 +786,46 @@ vec3 cityLightFar(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float foot, float lum
     return cityGlitter(p2, dAnc, f, foot, ledP, lum / 0.25) * mix(0.04, 1.0, smoothstep(0.86, 0.96, nUp));
 }
 
+// Review 7: the DAY side past the street layout (the user: "night lights reach the horizon, the day
+// texture cuts off early"). Everything in the near layout averages to the map by a ~400-m footprint, so
+// past it a city was the map's 5-km texels. This keeps what a city looks like from far away: parks where
+// the near layout's voids are (the same field, so they line up), large bright roof zones (warehouses,
+// industry), and a mottle whose finest octave follows the footprint (the grain of unresolved blocks).
+// A RATIO with mean ~1 over a city, each octave faded out before it aliases.
+vec3 cityDayFar(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float foot, float lum) {
+    vec2  p2;
+    ivec2 dAnc;
+    int   f;
+    vec3  rel, aup;
+    cityFrame(q, enuX, enuY, enuZ, p2, dAnc, f, rel, aup);
+    float dens = smoothstep(0.004, 0.12, lum);
+    // Octave weight: full while the cell spans > 2 pixels, gone at 1.
+    #define CDF_W(cell) (1.0 - smoothstep(1.0, 2.0, foot * 2.0 / (cell)))
+    float wPark = CDF_W(1024.0);
+    float park  = (1.0 - smoothstep(-0.65, -0.25, cityValue2(p2, dAnc, 1024.0, 4441 + f))) * wPark;
+    float wInd  = CDF_W(2048.0);
+    float ind   = smoothstep(0.35, 0.6, cityValue2(p2, dAnc, 2048.0, 5881 + f)) * mix(0.4, 1.0, dens) * wInd;
+    // Mottle: 4-km .. 512-m octaves, then two levels at the footprint (64 m x 2^k, cross-faded).
+    float m = 0.20 * cityValue2(p2, dAnc, 4096.0, 5903 + f) * CDF_W(4096.0)
+            + 0.20 * cityValue2(p2, dAnc, 2048.0, 5907 + f) * wInd
+            + 0.18 * cityValue2(p2, dAnc, 1024.0, 5911 + f) * wPark
+            + 0.16 * cityValue2(p2, dAnc, 512.0, 5913 + f) * CDF_W(512.0);
+    float lk  = clamp(log2(max(foot, 32.0) * 3.0 / 64.0), 0.0, 5.0);
+    float k0  = floor(lk), kf = lk - k0;
+    float c0  = 64.0 * exp2(k0);
+    float g0  = cityValue2(p2, dAnc, c0, 5921 + f + int(k0));
+    float g1  = cityValue2(p2, dAnc, c0 * 2.0, 5921 + f + int(k0) + 1);
+    m += 0.22 * mix(g0, g1, kf) * CDF_W(c0);
+    #undef CDF_W
+    float bright = exp(m) / 1.03;                                      // E[exp(m)] ~ 1.03
+    vec3  parkR  = vec3(0.55, 0.80, 0.50);                             // lawn and trees against the city grey
+    vec3  indR   = vec3(1.55, 1.55, 1.50);                             // large flat roofs
+    vec3  r      = mix(mix(vec3(1.0), indR, ind), parkR, park) * bright;
+    // Divide by the pattern's expected mean (park share ~0.18, industrial ~0.08 at full density).
+    vec3  meanR  = 1.0 + 0.18 * wPark * (parkR - 1.0) + 0.08 * mix(0.4, 1.0, dens) * wInd * (indR - 1.0);
+    return r / meanR;
+}
+
 // ── Day: the same layout as albedo (cities phase 2) ────────────────────────────────────────────
 // Box-filter overlap of the interval [-w/2, w/2] with a box of width F centred at x: the exact
 // coverage of a stripe (a street) by a pixel, continuous at any footprint.
@@ -1253,6 +1293,33 @@ vec2 optDepth(vec3 p, vec3 d, float segTotal) {
         odM += exp(-h / H_M);  // Mie density (exponential profile, scale height H_M)
     }
     return vec2(odR, odM) * sLen;  // summed densities x step length -> optical depth units
+}
+
+// Zenith sky radiance at a point (review 7): the light that reaches air in the Earth's shadow — the
+// march's skyZenithAt, with this pass's optDepth for the sun path. Four steps: it lights the shadowed
+// stretch of a ray, whose total is small.
+vec3 skyZenithSky(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
+    vec3 zen = normalize(p);
+    vec2 tSA = raySphere(p, zen, R_ATMOS);
+    if (tSA.y <= 0.0) return vec3(0.0);
+    float seg = tSA.y * 0.25;
+    float odR = 0.0, odM = 0.0, accM = 0.0;
+    vec3  accR = vec3(0.0);
+    for (int i = 0; i < 4; ++i) {
+        vec3  sp = p + zen * ((float(i) + 0.5) * seg);
+        float h  = max(0.0, length(sp) - R_EARTH);
+        float dR = exp(-h / H_R) * seg, dM = exp(-h / H_M) * seg;
+        odR += dR; odM += dM;
+        vec2 tSE = raySphere(sp, sunDir, R_EARTH);
+        if (tSE.x > 0.0 && tSE.y > 0.0) continue;
+        vec2 tS  = raySphere(sp, sunDir, R_ATMOS);
+        vec2 so  = (tS.y > 0.0) ? optDepth(sp, sunDir, tS.y) : vec2(0.0);
+        vec3 att = exp(-(BETA_R * (odR + so.x) + BETA_M * 1.1 * (odM + so.y)));
+        accR += att * dR;
+        accM += dot(att, vec3(1.0 / 3.0)) * dM;
+    }
+    float cu = dot(zen, sunDir);
+    return SUN_INTENSITY * (phaseR(cu) * BETA_R * accR + vec3(phaseM(cu) * BETA_M * accM));
 }
 
 // (rotateZ lived here — dead since the cloud march moved to cloud_march.comp, removed in the
@@ -2843,6 +2910,8 @@ void main() {
     }
 #endif
     vec3  accumAirglow = vec3(0.0); // green + sodium bands (C15) — ride these same samples
+    vec3  shR = vec3(0.0);          // review 7: the in-shadow air, attenuated to the eye (Rayleigh, Mie,
+    float shM = 0.0, shT = 0.0, shD = 0.0; //   and its density-weighted distance)
     float odR_cam = 0.0;
     float odM_cam = 0.0;
 
@@ -2967,7 +3036,14 @@ void main() {
         // If the sun-ray from this point has TWO positive intersections with R_EARTH, the sun
         // is behind Earth from here → no direct sunlight → no in-scatter contribution.
         vec2 tSunEarth = raySphere(sp, sunDir, R_EARTH);
-        if (tSunEarth.x > 0.0 && tSunEarth.y > 0.0) continue;
+        if (tSunEarth.x > 0.0 && tSunEarth.y > 0.0) {
+            // Review 7: shadowed air, lit by the twilight sky below (see shadowSky after the loop).
+            vec3 aC = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
+            shR += aC * densR; shM += dot(aC, vec3(1.0 / 3.0)) * densM;
+            shT += densR * (tStart + (float(i) + 0.5) * segLen);
+            shD += densR;
+            continue;
+        }
 
         // Compute sun-side optical depth from this sample to the atmosphere boundary.
         vec2 tSun  = raySphere(sp, sunDir, R_ATMOS);
@@ -3008,6 +3084,21 @@ void main() {
     }
 
     vec3 color = SUN_INTENSITY * (pR * BETA_R * accumR + vec3(pM * BETA_M * accumM));
+    // Review 7: air in the Earth's shadow is lit by the twilight sky (the blue-grey of the Earth's shadow);
+    // single scattering left it black, so at a low Sun the horizon on the side away from it was a dark band
+    // (user snapshot 2). Isotropic in-scatter of half the zenith sky's radiance (the lower half-sphere is
+    // dark), from the zenith sky over the shadowed stretch's mean point, faded like the clouds' sky ambient
+    // over the first ~5 deg of the Sun's depression there. cloud_v2_march.comp adds the same to the air in
+    // front of a cloud. Ground and aircraft only: from orbit the terminator gate owns the twilight air.
+    if (shD > 0.0 && atmTermSpace < 1.0) {
+        vec3  pm  = obsPos + dir * (shT / shD);
+        float rm  = max(length(pm), R_EARTH);
+        pm *= rm / length(pm);
+        float hS  = -sqrt(max(1.0 - (R_EARTH / rm) * (R_EARTH / rm), 0.0));
+        float su  = dot(pm / rm, sunDir);
+        vec3  sky = skyZenithSky(pm, sunDir, BETA_R, BETA_M) * smoothstep(hS - 0.09, hS + 0.04, su);
+        color += (1.0 - atmTermSpace) * 0.5 * sky * (BETA_R * shR + vec3(BETA_M * shM));
+    }
 
     // City light-pollution glow dome, composited once here (see accumCity comment in the loop
     // above). nightFactor fades it out through the day — cheap local gate rather than reusing
@@ -3408,7 +3499,15 @@ void main() {
                         vec3 nightDetailBlur = textureLod(cityNightDetailTex, detailUV, cloud.cityLightBlurLod).rgb;
                         nightDetail = mix(nightDetail, nightDetailBlur, localCloudOpacity);
                     }
-                    dayColor   = mix(dayColor,   dayDetail,   cityMask * (1.0 - cloud.cityLightsStrength));
+                    // Review 7: the day side keeps the texture where the procedural streets no longer resolve
+                    // (lots average out below ~20 m a pixel, streets by ~100 m: over 30-120 m). Switched off
+                    // at every distance whenever
+                    // "City street lights" was on, a city seen from an aircraft or the stratosphere was the
+                    // map's smooth 5-km texels — the procedural pattern averages to them by design (user:
+                    // "the day textures cut off early"; at 40 km over Beijing the cities were invisible).
+                    float dFoot  = pixAngle * tSurface / max(abs(dot(dir, shadingN)), 0.2);
+                    float dayTex = 1.0 - cloud.cityLightsStrength * (1.0 - smoothstep(30.0, 120.0, dFoot));
+                    dayColor   = mix(dayColor,   dayDetail,   cityMask * clamp(dayTex, 0.0, 1.0));
                     nightColor = mix(nightColor, nightDetail, cityMask * (1.0 - cloud.cityLightsStrength));
                 }
             }
@@ -3446,6 +3545,14 @@ void main() {
                 float dLum  = dot(dayColor, vec3(0.2126, 0.7152, 0.0722));
                 dayColor = mix(dayColor, dLum * vec3(1.03, 1.0, 0.95), 0.85 * presence * cFade);
                 dayColor *= mix(vec3(1.0), clamp(cityDayAlbedo(cityL, cFoot), vec3(0.0), vec3(4.0)), presence);
+            }
+            // Review 7: past the layout, the far day pattern (to a ~4-km footprint: from LEO too).
+            if (cFoot > 80.0 && cFoot < 4000.0) {
+                float presence = smoothstep(0.002, 0.03, cityLum) * cloud.cityLightsStrength;
+                float wFar = smoothstep(80.0, 200.0, cFoot) * (1.0 - smoothstep(2000.0, 4000.0, cFoot));
+                float dLum = dot(dayColor, vec3(0.2126, 0.7152, 0.0722));
+                dayColor = mix(dayColor, dLum * vec3(1.03, 1.0, 0.95), 0.6 * presence * wFar);
+                dayColor *= mix(vec3(1.0), cityDayFar(cQ, enuX, enuY, enuZ, cFoot, cityLum), presence * wFar);
             }
         }
 

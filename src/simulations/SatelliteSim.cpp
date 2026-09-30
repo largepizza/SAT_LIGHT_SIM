@@ -1274,9 +1274,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // second, capped at the orbital speed above. A fixed ~510 km/s crossed a cloud in a frame —
         // nothing small could be approached, and the clouds' history was useless in motion (every
         // frame a new view). Boost and fine scale it the same way.
+        const float moveGround = (terrainFrameMapped && (debugDisableMask & 1024u) == 0) ? terrainFrameMapped[1] : obsTerrainH;
+        const float moveAgl = std::max(obsHeightOffset - moveGround, 2.0f);
         {
-            const float ground = (terrainFrameMapped && (debugDisableMask & 1024u) == 0) ? terrainFrameMapped[1] : obsTerrainH;
-            const float agl = std::max(obsHeightOffset - ground, 2.0f);
+            const float agl = moveAgl;
             const float nearRad = std::max(moveSpeedPerHeight, 0.01f) * agl / 6371000.0f;   // rad/s
             speed *= std::min(1.0f, std::max(nearRad, 3.0f / 6371000.0f) / 0.08f);
         }
@@ -1318,7 +1319,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             // which reads as getting "stuck" in the terrain. The constant floor term keeps
             // low-altitude vertical moves at a brisk fixed speed while the proportional term still
             // scales the rate up for fast LEO-altitude traversal (where it dominates anyway).
-            float rate = 100.0f + obsHeightOffset * 0.5f;
+            // Review 7: the height above the GROUND (not sea level) and "Move speed", like WASD: 100 m/s
+            // at the ground was a metre-scale jump a frame beside a cloud or a ridge. The constant term
+            // keeps the climb out of the ground from crawling (10 m/s at 1x).
+            float rate = std::max(moveSpeedPerHeight, 0.01f) * (10.0f + moveAgl * 0.5f);
             if (boost)
                 rate *= 10.0f;
             if (fine)
@@ -1549,8 +1553,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // tolerance every CPU aggregation in this loop already has); beam_self_march.comp's own
         // push-constant fill later this frame computes the identical obsEffH the same way.
         GpuBeamCloudLights cloudLights{};
-        float obsEffHForLights = std::max(obsTerrainH, obsHeightOffset);
-        glm::vec3 obsPosLocalForLights(0.0f, 0.0f, kEarthRadius + obsEffHForLights + 2.0f);
+        glm::vec3 obsPosLocalForLights(0.0f, 0.0f, followActive ? (float)followRadiusM : obsEyeRadiusM());
 
         TopK groundTopK;
 
@@ -1577,6 +1580,21 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         {
             glm::vec3 worldish = v.x * oldEnuX + v.y * oldEnuY + v.z * oldEnuZ;
             return glm::vec3(glm::dot(worldish, newEnuX), glm::dot(worldish, newEnuY), glm::dot(worldish, newEnuZ));
+        };
+        // Review 7: satENU/targetENU are POSITIONS relative to last frame's eye, so they also need the
+        // eye's own move, not just the basis turn (rebase above is right for the direction reflectDirENU
+        // only). Flying at the height-scaled speed from 116 km the eye moves ~2 km a frame, and the ground
+        // spots and cloud lights lagged by that. In double: the eye's ECEF is ~6.4e6 m.
+        const double newEyeR = followActive ? followRadiusM : (double)obsEyeRadiusM();
+        const double oldEyeR = lastBeamObsRadius > 0.0 ? lastBeamObsRadius : newEyeR;
+        const glm::dvec3 eyeShift = glm::dvec3(glm::normalize(lastBeamObsDir)) * oldEyeR -
+                                    glm::dvec3(glm::normalize(obsDir)) * newEyeR;
+        auto rebasePos = [&](const glm::vec3 &v)
+        {
+            glm::dvec3 w = glm::dvec3(v.x) * glm::dvec3(oldEnuX) + glm::dvec3(v.y) * glm::dvec3(oldEnuY) +
+                           glm::dvec3(v.z) * glm::dvec3(oldEnuZ) + eyeShift;
+            return glm::vec3((float)glm::dot(w, glm::dvec3(newEnuX)), (float)glm::dot(w, glm::dvec3(newEnuY)),
+                             (float)glm::dot(w, glm::dvec3(newEnuZ)));
         };
 
         // ── Ambience: the beam-site hum's driver (layer beam_site_hum, `beam_site`) ─────────────
@@ -1791,8 +1809,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             // "getting farther from the beam" even while staying right next to its line. Same
             // formula as cloud_march.comp's own obsToBeamDist, simplified: these vectors are
             // already observer-relative (origin = observer), so no obsPos subtraction is needed.
-            glm::vec3 tE = rebase(beamsIn[s].targetENU);
-            glm::vec3 sE = rebase(beamsIn[s].satENU);
+            glm::vec3 tE = rebasePos(beamsIn[s].targetENU);
+            glm::vec3 sE = rebasePos(beamsIn[s].satENU);
             float slantRangeM = glm::length(sE - tE);
             glm::vec3 dirUp = (slantRangeM > 1.0f) ? (sE - tE) / slantRangeM : glm::vec3(0, 0, 1);
             float t = glm::clamp(-glm::dot(tE, dirUp), 0.0f, slantRangeM);
@@ -2745,6 +2763,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // gate) so toggling that debug bit can never leave this cache stale.
     lastBeamObsDir = obsDir;
     lastBeamObsEffH = std::max(obsTerrainH, obsHeightOffset);
+    lastBeamObsRadius = followActive ? followRadiusM : (double)obsEyeRadiusM();
 
     if ((debugDisableMask & 512u) == 0u)
     {
@@ -3598,8 +3617,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
     // (updateFollow sets it from the flight offset), so pointing the marker and the "from you" preset
     // at it would put the marker on the camera and aim the observer view from wherever the player is
     // flying. followSavedObsDir/Height hold the ground observer (saved on startFollow).
-    const double obsRadius = (double)kEarthRadius + (double)obsTerrainH +
-                             (double)(followActive ? followSavedHeight : obsHeightOffset);
+    const double obsRadius = (double)obsEyeRadiusM(followActive ? followSavedHeight : obsHeightOffset);
     const glm::dvec3 obsEcef = glm::normalize(glm::dvec3(followActive ? followSavedObsDir : obsDir)) * obsRadius;
     const glm::dvec3 toObs = glm::normalize(obsEcef - P);
 
@@ -3821,7 +3839,7 @@ void SatelliteSim::updateSelectedSkyDir()
         obs = glm::dvec3(ct * followObsEcef.x - st * followObsEcef.y, st * followObsEcef.x + ct * followObsEcef.y,
                          followObsEcef.z);
     else
-        obs = observerEciAt(glm::dvec3(obsDir), (double)kEarthRadius + obsTerrainH + obsHeightOffset, t);
+        obs = observerEciAt(glm::dvec3(obsDir), (double)obsEyeRadiusM(), t);
     const glm::dvec3 rel = sat - obs;
     const double range = glm::length(rel);
     if (range < 1e-6)
@@ -4103,7 +4121,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
 
     // Observer (double). In follow mode followObsEcef is authoritative; otherwise obsDir + radius.
     const double obsRadius = followActive ? followRadiusM
-                                          : (double)kEarthRadius + (double)obsTerrainH + (double)obsHeightOffset;
+                                          : (double)obsEyeRadiusM();
     const glm::dvec3 obsEcef = followActive ? followObsEcef : glm::normalize(glm::dvec3(obsDir)) * obsRadius;
     const glm::dvec3 obsEci(ct * obsEcef.x - st * obsEcef.y, st * obsEcef.x + ct * obsEcef.y, obsEcef.z);
 
@@ -4938,7 +4956,7 @@ bool SatelliteSim::traceStale() const
     const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
     if (tNow > traceT1 || tNow < traceT0)
         return true; // the pass is over (or time ran backwards past it)
-    const float obsRadius = kEarthRadius + obsTerrainH + obsHeightOffset;
+    const float obsRadius = obsEyeRadiusM();
     const SatelliteType &type = satTypes[satOrbits[selectedSatIndex].typeIdx];
     return glm::length(glm::dvec3(obsDir) - traceSetup.obsDirEcef) > 1e-7 ||
            std::abs((double)obsRadius - traceSetup.obsRadiusM) > 1.0 ||
@@ -4996,7 +5014,7 @@ void SatelliteSim::computeSelectedTrace()
     s.occlusion = satOcclusionActive() && !type.occlusion.occluders.empty();
     s.orbit = orbitElemsOf(orb);
     s.obsDirEcef = glm::dvec3(obsDir);
-    s.obsRadiusM = (double)(float)(kEarthRadius + obsTerrainH + obsHeightOffset); // as updatePositions()
+    s.obsRadiusM = (double)obsEyeRadiusM(); // as updatePositions()
     s.flareTiltRad = (double)glm::radians(flareMitigationTiltDeg);
     s.extinctionK = extinctionCoeff;
     s.groundSite = attUsesGroundSite(type.groups);
@@ -5192,7 +5210,7 @@ void SatelliteSim::startBulkExport()
 
     BulkExportSpec &sp = job->spec;
     sp.obsDirEcef = glm::dvec3(obsDir);
-    sp.obsRadiusM = (double)(float)(kEarthRadius + obsTerrainH + obsHeightOffset); // as updatePositions()
+    sp.obsRadiusM = (double)obsEyeRadiusM(); // as updatePositions()
     sp.t0 = (double)simDayJ2000 * 86400.0 + simSecInDay;
     sp.t1 = sp.t0 + kBulkWindowDays[bulkWindowIdx] * 86400.0;
     sp.cadenceS = kBulkCadenceS[bulkCadenceIdx];
@@ -13201,7 +13219,7 @@ void SatelliteSim::updatePositions(double t, float dt)
     float cosLon = cosf(theta), sinLon = sinf(theta);
 
     // Follow mode (Phase 4e) sets the radius directly (followObsEcef is authoritative there).
-    float obsRadius = followActive ? (float)followRadiusM : kEarthRadius + obsTerrainH + obsHeightOffset;
+    float obsRadius = followActive ? (float)followRadiusM : obsEyeRadiusM();
     // Shared with the CPU photometric evaluator (SatPhotometry) so both place the observer alike.
     obsECI = glm::vec3(observerEciAt(glm::dvec3(obsDir), (double)obsRadius, t));
 

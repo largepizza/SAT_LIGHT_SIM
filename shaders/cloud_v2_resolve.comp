@@ -96,7 +96,7 @@ void main()
 
     // The clamp box: the 3x3 of new samples around this pixel (at half rate only this frame's: the
     // others are two frames old).
-    vec4 mn = vec4(1e30), mx = vec4(-1e30), m1 = vec4(0.0), m2 = vec4(0.0);
+    vec4 mn = vec4(1e30), mx = vec4(-1e30), m1 = vec4(0.0), m2 = vec4(0.0), ax = vec4(0.0);
     float nBox = 0.0;
     for (int dy = -1; dy <= 1; ++dy)
     for (int dx = -1; dx <= 1; ++dx) {
@@ -105,6 +105,7 @@ void main()
         vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
         mn = min(mn, s); mx = max(mx, s);
         m1 += s; m2 += s * s; nBox += 1.0;
+        if ((dx == 0) != (dy == 0)) ax += s;   // the four axial neighbours (the sparse grid's smoothing)
     }
     m1 /= max(nBox, 1.0);
     vec4 sdBox = sqrt(max(m2 / max(nBox, 1.0) - m1 * m1, vec4(0.0)));
@@ -155,6 +156,12 @@ void main()
             nd = vec2(wd > 0.0 ? (max(d0.x, 0.0) + max(d1.x, 0.0) + max(d2.x, 0.0) + max(d3.x, 0.0)) / wd : 0.0,
                       max(max(d0.y, d1.y), max(d2.y, d3.y)));
         }
+    } else if (isNew) {
+        // Review 7: the refreshed pixel's own ray, pulled halfway to its four axial neighbours — about the
+        // noise of the three interpolated pixels of its block (a raw ray has ~1.4-2x theirs). Taken in
+        // motion (below); raw beside smooth, moving to another pixel of the block each frame, was a 2x2
+        // checkerboard once "History weight moving" let this frame through.
+        spatial = mix(nc, 0.25 * ax, 0.5);
     } else {
         vec2 posQ = clamp((vec2(c) - vec2(off)) * 0.5 + 0.5, vec2(0.5), vec2(qs) - 0.5);
         spatial = textureLod(newColorTex, posQ / vec2(textureSize(newColorTex, 0)), 0.0);
@@ -227,13 +234,18 @@ void main()
         // of the smooth estimate, and a pan or a fly-through drew the 2x2 lattice as a cross-hatch
         // over every cloud (harness_runs/cloud_v2_x, x_pan). So in motion all four take nearly the
         // same weight, and the refreshed pixel's own sample is pulled halfway to the estimate.
-        float mk    = smoothstep(0.5, 4.0, motionPx);
-        vec4  fresh = isNew ? mix(nc, spatial, 0.5 * mk) : spatial;
+        // Review 7: the four also converge as the moving weight rises. At "History weight moving" 1 and a
+        // slow move (1-2 px), the refreshed pixel took all of this frame and its three neighbours ~15%: one
+        // pixel in four jumped each frame, a checkerboard "even moving slowly" (user snapshot 4).
+        float mk    = max(smoothstep(0.5, 4.0, motionPx), smoothstep(0.25, 0.9, wNew));
+        vec4  fresh = isNew ? mix(nc, spatial, (halfR ? 0.5 : 1.0) * mk) : spatial;
         float w     = isNew ? wNew : wNew * mix(0.15, 0.85, mk);
         // Past ~16 px of parallax a frame the history is someone else's cloud: lean on this frame,
         // filtered (the corduroy otherwise, see blur).
         float mf = smoothstep(6.0, 24.0, motionPx);
-        fresh = mix(fresh, blur, 0.8 * mf);
+        // Review 7: a full-rate pixel in motion leans on the tent by how much of this frame it takes (the
+        // single ray's jitter grain; blur is the pixel itself on the sparse grid, where the axial mix does it).
+        fresh = mix(fresh, blur, max(0.8 * mf, (full || tFull) ? 0.4 * mk * w : 0.0));
         w     = mix(w, 0.7, mf);
         outC = mix(hc, fresh, w);
     } else {
