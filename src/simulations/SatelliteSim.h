@@ -2828,9 +2828,10 @@ private:
     float cv2SparseWhenStill = 1.0f;   // > 0.5: while the view is still, march 1 pixel in 4 (history fills in)
     int   cv2StillFrames = 0;          // consecutive frames with no camera / eye / time-warp motion
     float cv2MidAmount = 1.0f;         // the mid-level layer (altocumulus / altostratus), 0 = off
-    float cv2StormScale = 4.0f;        // deep convection's lobes and erosion are this much larger
+    float cv2StormScale = 12.0f;        // deep convection's lobes and erosion are this much larger
     float cv2StormDetail = 1.5f;       // share of the erosion kept on deep convection
-    float cv2Anvil = 2.0f;             // the cumulonimbus anvil layer, 0 = off
+    float cv2Anvil = 0.0f;             // the map-fed anvil shield, 0 = off (review 5: the towers' flared heads are
+                                       // the anvils; the map-fed shield read as a lumpy grey sheet)
     float cv2BaseRoughness = 0.0f;     // bumps on cloud bases (decks most), x the default amplitude
     float cv2HighAmount = 1.0f;        // the high layer (cirrus / cirrostratus / cirrocumulus), 0 = off
     float cv2HighDensity = 0.11f;       // x its extinction
@@ -2842,6 +2843,8 @@ private:
     float cv2RainAmount = 1.0f;        // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
     float cv2RainStreaks = 1.0f;       // falling-rain streaks when the observer stands in rain
+    float cv2DropDistM = 128.0f;       // ... drawn out to this distance (m; each doubling is one more lattice layer)
+    float cv2SnowWind = 1.0f;          // snow's drift x this (blizzards: flakes driven sideways, streaking)
     float cv2ExposureEV = 0.0f;        // exposure compensation (stops) on the sky's auto exposure
     float cv2HighlightRolloff = 0.5f;  // 0 = the old tonemap; 1 = a long highlight shoulder
     float cv2WhiteBalance = 0.6f;      // 0..1: adapt to the sunlight's colour at the observer
@@ -2891,21 +2894,22 @@ private:
     float cv2BaseFlatness = 0.8f;      // cumulus bases: how flat (the 3D lobes damped near the base)
     // Cumulonimbus as three layers (pass 15): the cumulus field capped at cv2CbCumulusTopKm, discrete
     // concave towers on a lattice (cv2ColumnSigma), and the anvil hanging lower around their heads.
-    float cv2CbColumns = 1.0f;         // Cb column density (0 = the pass-14 deep cores in the low layer)
+    float cv2CbColumns = 1.5f;         // Cb column density (0 = the pass-14 deep cores in the low layer)
     float cv2CbSpacingKm = 30.0f;      // lattice cell: about one tower per cell where storms are strong
-    float cv2CbRadiusKm = 5.0f;        // a tower's base radius (waist ~0.7x, head ~1.6x)
+    float cv2CbRadiusKm = 15.0f;        // a tower's base radius (waist ~0.7x, head ~1.6x)
     float cv2CbCumulusTopKm = 5.5f;    // the low (cumulus/congestus) field's top in storm regions
-    float cv2CbWaist = 1.0f;           // a tower's waist, x its base radius (1 = none: <1 read as smokestacks)
-    float cv2CbFlare = 1.3f;           // its head under the anvil, x its base radius
+    float cv2CbWaist = 0.7f;           // a tower's waist, x its base radius (1 = none: <1 read as smokestacks)
+    float cv2CbFlare = 1.6f;           // its head under the anvil, x its base radius
     float cv2CbHeadDriftKm = 6.0f;     // how far downwind the head is blown
-    float cv2CbLobes = 0.55f;          // cauliflower lobes on the tower (fraction of its radius)
+    float cv2CbLobes = 0.18f;          // cauliflower lobes on the tower (fraction of its radius)
+    float cv2CbHeadLobes = 0.12f;      // ... and on its flared head (the anvil): smoother reads as the anvil
     float cv2CbSparsity = 0.35f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
-    float cv2CbFill = 0.5f;            // share of 3x3 lattice blocks holding a storm cell (a dominant tower + a flanking line)
-    float cv2CbCumulusVar = 0.3f;      // the storm cumulus top's regional variation (+- fraction of it)
-    float cv2CbCumulusReachKm = 10.0f;  // how far from a storm the low cloud takes the storm cumulus top
+    float cv2CbFill = 0.57f;            // share of 3x3 lattice blocks holding a storm cell (a dominant tower + a flanking line)
+    float cv2CbCumulusVar = 0.8f;      // the storm cumulus top's regional variation (+- fraction of it)
+    float cv2CbCumulusReachKm = 10.0f;  // how far beyond a tower's edge the low cloud takes the storm cumulus top
     float cv2CbOvershootKm = 0.8f;     // a tower's overshooting dome above the anvil lid (every tower meets it)
-    float cv2AnvilThickKm = 2.2f;      // the anvil shield's thickness over the storm's core
-    float cv2AnvilHangKm = 0.6f;       // how much lower it hangs around a tower's head (the mushroom)
+    float cv2AnvilThickKm = 0.95f;      // the anvil shield's thickness over the storm's core
+    float cv2AnvilHangKm = 2.4f;       // how much lower it hangs around a tower's head (the mushroom)
     float cv2DetailLodStartM = 13000.0f; // detail erosion fades from here to 4x
     float cv2ShapePeriodM = 1900.0f;   // tiling periods of the noise volumes
     float cv2DetailPeriodM = 1800.0f;
@@ -4363,7 +4367,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 207;
+    static constexpr int kCloudSliderSlots = 210;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

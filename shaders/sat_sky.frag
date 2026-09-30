@@ -2824,6 +2824,12 @@ void main() {
     vec3  accumR  = vec3(0.0);
     float accumM  = 0.0;
     float accumCity = 0.0;
+    // The city glow's share IN FRONT of the clouds (review 5): the composite multiplies the whole
+    // sky by the cloud's transmittance, and the cloud march's own airlight has no city glow, so at
+    // night every cloud erased the glowing air between it and the eye — the clouds along the horizon
+    // were a black band in front of the glow, darker than the ground under them (snapshot 6).
+    float accumCityFront = 0.0;
+    float tCloudFrontM   = abs(cloudA.a) * 1000.0;
     vec3  accumAirglow = vec3(0.0); // green + sodium bands (C15) — ride these same samples
     float odR_cam = 0.0;
     float odM_cam = 0.0;
@@ -2897,6 +2903,8 @@ void main() {
             float spLum     = dot(textureLod(earthNightTex, spUV, 4.0).rgb, vec3(0.2126, 0.7152, 0.0722));
             vec3  attnCam   = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             accumCity += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0));
+            accumCityFront += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0))
+                            * (1.0 - smoothstep(0.9 * tCloudFrontM, 1.1 * tCloudFrontM, tStart + (float(i) + 0.5) * segLen));
         }
 #else
         {
@@ -2909,6 +2917,8 @@ void main() {
             float spLum     = dot(textureLod(earthNightTex, spUV, 4.0).rgb, vec3(0.2126, 0.7152, 0.0722));
             vec3  attnCam   = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             accumCity += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0));
+            accumCityFront += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0))
+                            * (1.0 - smoothstep(0.9 * tCloudFrontM, 1.1 * tCloudFrontM, tStart + (float(i) + 0.5) * segLen));
 
             // Airglow (C15): green (96km) + sodium (90km) bands both fall inside this loop's
             // own altitude range (h spans 0..~100km along an open-sky ray), so they ride these
@@ -2992,6 +3002,7 @@ void main() {
     // any later-computed day/night variable, since none exists yet at this point in main().
     float nightFactor = 1.0 - smoothstep(-0.05, 0.1, sunDirENU.w);
     color += accumCity * vec3(1.0, 0.72, 0.42) * nightFactor * kNightGlowScale;
+    vec3 cityGlowFront = accumCityFront * vec3(1.0, 0.72, 0.42) * nightFactor * kNightGlowScale;
 
     // C12 follow-up #41: replaced the directional (azimuth-sector-dome-based) wash from #39/#40
     // with a simple non-directional "sky is brighter near an active beam" term. The directional
@@ -4299,7 +4310,7 @@ void main() {
     // auroraMarchCS, with its own cloud-suppression already applied there using the local cloud
     // opacity. No separate aurora term needed here; it is terrain-occluded at march time along
     // with everything else in the composite.
-    color = color * cloudB.rgb + cloudA.rgb;
+    color = color * cloudB.rgb + cloudA.rgb + cityGlowFront * (vec3(1.0) - cloudB.rgb);
 #ifdef SKY_ENV
     // From orbit the curtains are in front of every cloud deck: added on top.
     color += envAurora(obsPos, dir, tSurface, enuX, enuY, enuZ, sunDirECEF);

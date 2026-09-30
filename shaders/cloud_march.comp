@@ -1436,13 +1436,18 @@ vec3 rainDrops(vec3 dirE, float rate, float wind, float tScene, float pixAng, ve
     float snowP = dust ? 1.0 : 1.0 - smoothstep(-1.0, 2.5, cv2.precip.x);   // sleet between: some drops, some flakes
     float prob  = 0.85 * pow(clamp(rate, 0.0, 1.0), 0.8);
     float Lr = 0.0, Ls = 0.0;
-    for (int k = 0; k < 5; ++k) {
+    // Layers out to "Drop distance" (precip.w; review 5: five layers ended at 32 m, and past a few metres
+    // the rain had no depth). Each layer's cells grow with its depth, so every layer puts about the same
+    // number of drops on screen; the far ones are fainter (a drop's energy spread over its pixel).
+    float snowW = mix(1.0, cv2.precip.z, snowP);          // "Snow wind" (blizzards): x the flakes' drift
+    int   nLay  = clamp(int(log2(max(cv2.precip.w, 2.0) * 0.5)) + 1, 1, 9);
+    for (int k = 0; k < nLay; ++k) {
         float r  = 2.0 * float(1 << k);
         if (r > tScene) break;
         float c  = 0.14 * r;
         // The layer's motion: rain ~8 m/s (snow ~1), the ground wind ~40% of the wind aloft, gusting.
-        float v  = dust ? 0.3 : mix(8.0 - 0.5 * float(k), 1.1, snowP);
-        float wg = 0.4 * wind * (1.0 + 0.35 * sin(t * 0.21 + float(k) * 1.7));
+        float v  = dust ? 0.3 : mix(8.0 - 0.5 * float(min(k, 4)), 1.1, snowP);
+        float wg = 0.4 * wind * snowW * (1.0 + 0.35 * sin(t * 0.21 + float(k) * 1.7));
         vec3  F  = normalize(vec3(wg, 0.0, -v));
         float sV = v * t / c, sW = wg * t / c;
         vec3  qf = vec3(-fract(sW), 0.0, fract(sV));
@@ -1456,9 +1461,10 @@ vec3 rainDrops(vec3 dirE, float rate, float wind, float tScene, float pixAng, ve
             vec3  h2 = tdRand3(cl + qi + ivec3(131, 7, 7919 * k + 3)) * 0.5 + 0.5;
             bool  flake = h2.z < snowP;
             vec3  ctr = (vec3(cl) + 0.2 + 0.6 * vec3(h.yz, h2.x) - qf) * c - eyeR;
-            float len = flake ? 0.01 : min(v / 25.0, 0.6 * c);
-            if (flake)                                                 // flakes flutter as they fall
-                ctr.xy += 0.25 * c * vec2(sin(t * (1.1 + h2.y) + 6.28 * h.y), cos(t * (0.9 + h.z) + 6.28 * h2.x));
+            // A flake is a dot, drawn out into a short streak once a blizzard drives it (> 4 m/s).
+            float len = flake ? 0.01 + 0.02 * max(length(vec2(wg, v)) - 4.0, 0.0) : min(v / 25.0, 0.6 * c);
+            if (flake)                                                 // flakes flutter as they fall (more in a gale)
+                ctr.xy += 0.25 * min(sqrt(max(snowW, 1.0)), 1.2) * c * vec2(sin(t * (1.1 + h2.y) + 6.28 * h.y), cos(t * (0.9 + h.z) + 6.28 * h2.x));
             vec3  q0 = ctr - F * (0.5 * len), u = F * len;
             float a  = dot(u, u), bb = dot(u, dR), d0 = dot(u, q0), e = dot(dR, q0);
             float sg = clamp((bb * e - d0) / max(a - bb * bb, 1e-9), 0.0, 1.0);
@@ -1469,7 +1475,11 @@ vec3 rainDrops(vec3 dirE, float rate, float wind, float tScene, float pixAng, ve
             float rad = dust ? 0.0003 : (flake ? 0.004 : 0.0012);
             float w  = max(tR * pixAng * 0.7, rad);
             float core = exp(-(dd * dd) / (w * w));
-            float g  = core * sqrt(rad / w) * (0.6 + 0.4 * h2.y);
+            // One drop's energy over the footprint is rad / w (to the 0.5 here until review 5, and past
+            // ~30 m the drops vanished). But each layer draws about the same number of drops on screen
+            // while a real shower has ~r^3 more drops in each deeper layer: a far lattice drop stands for
+            // a clump of them, and carries more light: rad / w to the 0.25.
+            float g  = core * pow(rad / w, 0.25) * (0.6 + 0.4 * h2.y);
             if (!dust) { if (flake) Ls += g; else Lr += g; }
             if (sunT > 0.01) {
                 vec3 hv = normalize(sR - dR);                          // the mirror's half vector
@@ -1565,7 +1575,7 @@ void main() {
     // Rain at the eye: the same field at the observer (cv2FieldLow's rain branch). Streaks lit like
     // the cloud they fall from (its own radiance), over whatever the ray shows.
     if (cv2.rain.z > 0.0 && cv2.rain.x > 0.0 && obsEffH < 6000.0) {
-        CV2Field fe = cv2FieldLow(cv2Pos(vec3(0.0), obsEffH, mat3(enuX, enuY, enuZ)), -1.0, 1.0);
+        CV2Field fe = cv2FieldLow(cv2Pos(vec3(0.0), obsEffH, mat3(enuX, enuY, enuZ)), -1.0, 1.0, 0.0);
         // The rain rate (fe.sigma is rate x curtain x 0.0012: a light shower ~0.2, a Cb core ~1) in
         // bursts. It used to saturate at half that, so every shower looked the same.
         float rainEye = fe.rain * clamp(fe.sigma / 0.0012, 0.0, 1.0) * rainBurst(cv2.precip.y);

@@ -520,7 +520,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   tumbling in every orientation, only their glints (rate = the ice fog's density / 5e-5). The eye's Sun
   transmittance (a 24-step march) and ice fog density are computed once per frame by
   cloud_v2_lightning.comp (thread 1) into the flash buffer's header (`cv2EyeSunT`, `cv2EyeIceS`: the old
-  pads). Cost ~0.3 ms in diamond dust, a few ops per drop otherwise.
+  pads). Cost ~0.3 ms in diamond dust, a few ops per drop otherwise. **Review 5:** layers out to "Drop
+  distance (m)" (`drop_distance_m` 128, slot 208, `precip.w`; one layer per doubling, 2..512 m, up to 9;
+  +~0.2 ms at 128, +0.3 at 512 in a snow view) — five layers ended at 32 m. A drop's brightness is
+  (rad / w)^0.25, not ^0.5: each layer draws about the same number of drops on screen while a real shower
+  has ~r^3 more per deeper layer, so a far lattice drop stands for a clump. "Snow wind (blizzard)"
+  (`snow_wind` 1, slot 209, `precip.z`): x the flakes' drift (by snow share), more flutter (capped so a
+  flake stays in the tested cells), and a flake over 4 m/s draws out into a short streak. **Snow shafts
+  show no rainbow** (cloud_v2_march.comp, per ray): below freezing ~500 m up (the eye's temperature,
+  6.5 C/km), the rain phase's bows give way to faint ice optics (sundogs, a weak 22 degree halo, a pillar
+  under a low Sun) — a snow shower's big aggregates scatter broadly; only its few plates make optics.
 - **Per-layer scales (pass 10):** the shape period ("Shape period (m) - low cloud") no longer sets the
   cirrus fibres (`cv2CirrusPeriodM`, "Cirrus period") or the altocumulus (`anchorMid`, "Mid layer
   period"); the mid layer has its own density (`atmo.z`) and the anvils only "Anvils" (neither reads
@@ -692,6 +701,21 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   waist 1.0 (none), flare 1.3, anvil hang 0.6 km — the waist, flare and hang around EVERY tower made an
   even forest of mushroom-capped smokestacks (user snapshot 7, review 3). The lattice moved again (the
   flare sets the cell). Open: the dominant tower's walls up close are still near-vertical.
+- **Storms as clusters, not map regions (review 5, 2026-09-29):** the map types regions hundreds to
+  thousands of km across as Cb. (1) The low layer's storm cumulus ("Storm cumulus top") now rises only
+  within "Storm cumulus reach" (km, `column3.x` in METRES, 0-60) of a tower's edge — `CV2Col.prox`, from
+  the column search, which cv2Field now runs BEFORE cv2FieldLow (`stormProx` argument; 0 for the eye's
+  rain) — and away from towers a Cb-typed region is capped at the cumulus type's top. Taken over the whole
+  region it was a continent-wide 5-7 km floor with the towers standing in it (user snapshots 1-2). The
+  proximity is computed at every height (below the Cb base too: `colH`), or the low tops would step there.
+  (2) The towers' flared heads ARE the anvils: the user tuned a "perfect anvil" with the map-fed shield
+  OFF, and those settings are the defaults (radius 15 km, flare 1.6, waist 0.7, lobes 0.18, columns 1.5,
+  storm feature size 12, fill 0.57, cumulus variation 0.8, anvil thickness 0.95 / hang 2.4 km, `anvil` 0):
+  a 15 km tower sets ~42 km lattice cells, so storms stand ~125 km apart. (3) "Cb head lobes"
+  (`cb_head_lobes`, slot 207, `motion.z`): the head (zeta 0.5-0.75 up, anvil-reaching towers) has its
+  own lobe strength. (4) The map-fed shield (`cv2AnvilSigmaP`, still available) is smooth: fray 0.15
+  (was 0.45), a soft edge (presence 0-0.6, squared), a gentler underside — it was lumpy and grey
+  (snapshot 5). A separate storm layer not rooted in the map (hurricanes) is a possible later step.
 - **Pass 20 (2026-09-29):** "Storm cumulus top" reaches the cloud AROUND a storm: the weather map
   types only a storm's core as Cb (which the towers cover) and the cloud around it as stratocumulus,
   so keyed on the Cb class the slider changed 0.2% of a storm view. Low cloud now takes it by storm
@@ -937,6 +961,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   transparent (that was the horizon "seeing through" the clouds).
 - **Key light**: the Sun, or at night the Moon through the same light march (`misc.y` x `moonGain`);
   sky ambient is occluded by the cloud above and by the sample's own density (detail on shaded sides).
+  **Night (review 5):** the ambient carries the terrain's moonless "Night sky light" (`terrainErosion.z`,
+  x 0.2 onto the moonlit-sky scale), ungated like the terrain's; and `sat_sky.frag` keeps the city glow's
+  in-scatter IN FRONT of the clouds (`accumCityFront`, up to the cloud's distance from `cloudA.a`) out of
+  the cloud's attenuation: `color * A + B + cityGlowFront * (1 - A)`. The composite multiplied the whole
+  night sky by the cloud's transmittance, and the march's airlight has no city glow, so the clouds along a
+  night horizon were a black, stair-edged band darker than the ground under them (snapshot 6: band 24 ->
+  38, ground 37).
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -952,9 +983,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
-- The Clouds tab's slider slots: `kCloudSliderSlots` (207) sizes all four per-slider arrays and
-  `cloudBufs` (207 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
-  moving, ice fog x2, sprite start); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
+- The Clouds tab's slider slots: `kCloudSliderSlots` (210) sizes all four per-slider arrays and
+  `cloudBufs` (210 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
+  moving, ice fog x2, sprite start; 207-209 Cb head lobes, drop distance, snow wind); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
   parallax, fog x3, dust x3.) Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
   shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.

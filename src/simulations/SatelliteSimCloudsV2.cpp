@@ -930,7 +930,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CloudSunRayleigh, cv2TwilightSky, cv2FlowWarp, cv2FlowPeriodKm, cv2LayerSpread,
                     cv2TopHeavy, cv2TowerTop, cv2CirrusFieldKm, cv2CirrusFlow, cv2BaseFlatness,
                     cv2CbColumns, cv2CbSpacingKm, cv2CbRadiusKm, cv2CbCumulusTopKm, cv2CbWaist, cv2CbFlare,
-                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
+                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbHeadLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
                     cv2DustHeightM, cv2DustDensity, (float)(debugDisableMask & 2048u)})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
@@ -971,7 +971,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                                       std::cos(-cv2PrevDrift), std::sin(-cv2PrevDrift));
     p.obsDelta = glm::vec4(glm::vec3(rotD(eye, cDD, sDD) - cv2PrevEye + windShift), cv2PrevAspect);
     // What is left unreprojected: the volumes' relative slide (detail 1.6, cluster 0.6 of the wind).
-    p.motion = glm::vec4((float)std::abs((double)cv2WindMps * 0.7 * dSimT), cv2HistoryWeightMoving, 0.0f, 0.0f);
+    p.motion = glm::vec4((float)std::abs((double)cv2WindMps * 0.7 * dSimT), cv2HistoryWeightMoving,
+                         std::clamp(cv2CbHeadLobes, 0.0f, 1.5f), 0.0f);
 
     // Noise anchors: the observer's SEA-LEVEL point (what the shaders measure from), turned into
     // the drifted frame, plus a small wind, in periods, reduced in double. Each volume moves at its
@@ -1042,9 +1043,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         p.anvil2 = glm::vec4(std::clamp(cv2AnvilThickKm, 0.3f, 6.0f) * 1000.0f,
                              std::clamp(cv2AnvilHangKm, 0.0f, 6.0f) * 1000.0f,
                              std::clamp(cv2CbSparsity, 0.0f, 1.0f), std::clamp(cv2CbOvershootKm, 0.0f, 3.0f) * 1000.0f);
-        // The weather cube's mip 0 texels are ~5 km: the reach picks the mip whose texels are that wide
-        // (fractional: the hardware blends two mips by one constant, so no spatial steps).
-        p.column3 = glm::vec4(std::clamp(std::log2(std::max(cv2CbCumulusReachKm, 1.0f) / 5.0f), 0.0f, 6.0f),
+        // The storm cumulus rises within this distance of a tower's edge (review 5: it was a weather mip,
+        // the map's storm REGION, which drew a continent-wide 5-7 km cumulus floor).
+        p.column3 = glm::vec4(std::clamp(cv2CbCumulusReachKm, 0.0f, 60.0f) * 1000.0f,
                               0.0f, std::clamp(cv2CbCumulusVar, 0.0f, 0.8f), std::clamp(cv2CbFill, 0.02f, 1.0f));
     }
     p.column3.y = std::max(cv2LightLodFootprintM, 0.0f);   // light LOD (cloud_v2_march.comp)
@@ -1118,7 +1119,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const double season = (sunDec / glm::radians(23.44)) * (latD >= 0.0 ? 1.0 : -1.0);   // +1 local midsummer
         const double tC = -18.0 + 45.0 * std::pow(std::cos(lat), 1.5) + 0.35 * std::abs(latD) * season - 0.0065 * eyeAsl;
         // y: sim time wrapped to 600 s in double (the drops' fall; a float time of day steps every 8 ms).
-        p.precip = glm::vec4((float)tC, (float)std::fmod(simSecInDay, 600.0), 0.0f, 0.0f);
+        // z "Snow wind" (x the flakes' drift: blizzards), w "Drop distance" (m: the lattice's last layer).
+        p.precip = glm::vec4((float)tC, (float)std::fmod(simSecInDay, 600.0), std::clamp(cv2SnowWind, 0.0f, 8.0f),
+                             std::clamp(cv2DropDistM, 8.0f, 512.0f));
         cv2EyeTempC = (float)tC;
     }
     const bool lowFloor = cv2RainAmount > 0.0f || p.fog.x > 0.0f || p.fog.w > 0.0f || p.fog2.w > 0.0f;   // they reach the ground

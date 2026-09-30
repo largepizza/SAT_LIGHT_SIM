@@ -4810,11 +4810,12 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Cb head flare (x radius)", &cv2CbFlare, 0.5f, 3.0f, 0.05f, "%.2f", 169},
         {"Cb head drift (km)", &cv2CbHeadDriftKm, 0.0f, 30.0f, 0.5f, "%.1f", 170},
         {"Cb lobes", &cv2CbLobes, 0.0f, 1.5f, 0.05f, "%.2f", 171},
+        {"Cb head lobes", &cv2CbHeadLobes, 0.0f, 1.5f, 0.02f, "%.2f", 207},
         {"Cb sparsity", &cv2CbSparsity, 0.0f, 1.0f, 0.05f, "%.2f", 172},
         {"Cb overshoot (km)", &cv2CbOvershootKm, 0.0f, 3.0f, 0.05f, "%.2f", 173},
         {"Storm cumulus top (km)", &cv2CbCumulusTopKm, 2.0f, 12.0f, 0.25f, "%.2f", 167},
         {"Storm cumulus variation", &cv2CbCumulusVar, 0.0f, 0.8f, 0.05f, "%.2f", 190},
-        {"Storm cumulus reach (km)", &cv2CbCumulusReachKm, 5.0f, 160.0f, 1.0f, "%.0f", 177},
+        {"Storm cumulus reach (km)", &cv2CbCumulusReachKm, 0.0f, 60.0f, 1.0f, "%.0f", 177},
         {"Storm feature size", &cv2StormScale, 0.5f, 12.0f, 0.1f, "%.2f", 147},
         {"Storm erosion", &cv2StormDetail, 0.0f, 1.5f, 0.05f, "%.2f", 148},
         {"Anvils", &cv2Anvil, 0.0f, 2.0f, 0.05f, "%.2f", 149},
@@ -4832,6 +4833,8 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
     CloudSlider secRain[] = {
         {"Rain", &cv2RainAmount, 0.0f, 3.0f, 0.05f, "%.2f", 155},
         {"Drops at the eye (rain/snow)", &cv2RainStreaks, 0.0f, 3.0f, 0.05f, "%.2f", 157},
+        {"Drop distance (m)", &cv2DropDistM, 8.0f, 512.0f, 8.0f, "%.0f", 208},
+        {"Snow wind (blizzard)", &cv2SnowWind, 0.0f, 8.0f, 0.1f, "%.1f", 209},
     };
 
     CloudSlider secEvo[] = {
@@ -6411,6 +6414,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2RainAmount = c.value("rain_amount", cv2RainAmount);
         cv2OpticsGain = c.value("optics_gain", cv2OpticsGain);
         cv2RainStreaks = c.value("rain_streaks", cv2RainStreaks);
+        cv2DropDistM = c.value("drop_distance_m", cv2DropDistM);
+        cv2SnowWind = c.value("snow_wind", cv2SnowWind);
         cv2ExposureEV = c.value("exposure_ev", cv2ExposureEV);
         cv2HighlightRolloff = c.value("highlight_rolloff", cv2HighlightRolloff);
         cv2WhiteBalance = c.value("white_balance", cv2WhiteBalance);
@@ -6439,6 +6444,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CbFlare = c.value("cb_flare", cv2CbFlare);
         cv2CbHeadDriftKm = c.value("cb_head_drift_km", cv2CbHeadDriftKm);
         cv2CbLobes = c.value("cb_lobes", cv2CbLobes);
+        cv2CbHeadLobes = c.value("cb_head_lobes", cv2CbHeadLobes);
         cv2CbSparsity = c.value("cb_sparsity", cv2CbSparsity);
         cv2CbOvershootKm = c.value("cb_overshoot_km", cv2CbOvershootKm);
         cv2CbCumulusReachKm = c.value("cb_cumulus_reach_km", cv2CbCumulusReachKm);
@@ -6854,6 +6860,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"rain_amount", cv2RainAmount},
         {"optics_gain", cv2OpticsGain},
         {"rain_streaks", cv2RainStreaks},
+        {"drop_distance_m", cv2DropDistM},
+        {"snow_wind", cv2SnowWind},
         {"exposure_ev", cv2ExposureEV},
         {"highlight_rolloff", cv2HighlightRolloff},
         {"white_balance", cv2WhiteBalance},
@@ -6882,6 +6890,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cb_flare", cv2CbFlare},
         {"cb_head_drift_km", cv2CbHeadDriftKm},
         {"cb_lobes", cv2CbLobes},
+        {"cb_head_lobes", cv2CbHeadLobes},
         {"cb_sparsity", cv2CbSparsity},
         {"cb_overshoot_km", cv2CbOvershootKm},
         {"cb_cumulus_reach_km", cv2CbCumulusReachKm},

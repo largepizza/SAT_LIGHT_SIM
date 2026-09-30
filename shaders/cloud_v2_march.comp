@@ -430,7 +430,7 @@ void main()
     if (!passB && gl_GlobalInvocationID.x == 0u && gl_GlobalInvocationID.y == 0u) {
         float rr = 0.0;
         if (cv2.rain.x > 0.0 && eyeH < 6000.0) {
-            CV2Field fe = cv2FieldLow(cv2Pos(vec3(0.0), eyeH, enuToEcef), -1.0, 1.0);
+            CV2Field fe = cv2FieldLow(cv2Pos(vec3(0.0), eyeH, enuToEcef), -1.0, 1.0, 0.0);
             rr = fe.rain * clamp(fe.sigma / 0.0012, 0.0, 1.0);
         }
         terrainFrame.w = rr;
@@ -480,6 +480,22 @@ void main()
                      + og * 0.5 * cv2RainOptics(dir, sunDir);
     vec3  phRainMoon = vec3(0.3 * cv2HG(cosMoon, 0.97) + 0.55 * cv2HG(cosMoon, 0.35))
                      + og * 0.5 * cv2RainOptics(dir, moonDir);
+    // SNOW shafts (review 5: "snow produces rainbows"): a bow needs liquid drops. Where the shafts'
+    // air (~500 m up; the eye's temperature, 6.5 C/km) is below freezing they are snow, and a snow shower
+    // in sunshine shows no bow: its big aggregates scatter broadly, and the few plate crystals falling
+    // with it give faint sundogs, a weak 22 degree halo and a pillar under a low Sun. Per ray (one
+    // temperature for the view): the eye's rain lattice uses the same model (cv2.precip.x).
+    float liqR = smoothstep(-1.0, 3.0, cv2.precip.x + 0.0065 * (eyeH - 500.0));
+    if (liqR < 1.0) {
+        vec4 habSnow = vec4(0.2, 0.35, 0.0, 0.0);
+        [[dont_unroll]] for (int li = 0; li < 2; ++li) {
+            vec3  sL  = (li == 0) ? sunDir : moonDir;
+            float cS  = (li == 0) ? cosSun : cosMoon;
+            vec3  phS = vec3(0.3 * cv2HG(cS, 0.97) + 0.55 * cv2HG(cS, 0.35))
+                      + og * (0.25 * cv2IceOptics(dir, sL, habSnow) + 0.15 * cv2PillarOptics(dir, sL));
+            if (li == 0) phRainSun = mix(phS, phRainSun, liqR); else phRainMoon = mix(phS, phRainMoon, liqR);
+        }
+    }
     vec3  moonKey  = kMoonColor * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y;
 
     int   nL    = int(cv2.light.y);
@@ -726,8 +742,16 @@ void main()
             // sky was already black (user snaps from 69 km, pass 13). Faded over the first ~5 deg of
             // the Sun's depression, so a cloud is no brighter than the sky drawn around it.
             float skyDusk = smoothstep(horizS - 0.09, horizS + 0.04, sunUp);
+            // + the moonless night sky (starlight, airglow): the terrain's "Night sky light"
+            // (terrainErosion.z, a fraction of the full Moon overhead) on the moonlit sky's scale (0.03
+            // here is the terrain's 0.15). Without it a night cloud was lit by the Moon alone, and on a
+            // moonless night the clouds along the horizon were a black band in front of the airglow, darker
+            // than the ground under them (review 5, snapshot 6). Ungated, like the terrain's (negligible by
+            // day): gated by night it missed the twilight gap, where the sky light has faded (skyDusk)
+            // and the night has not begun.
             vec3  skyAmb = skyZen * skyDusk * cv2.look.w * (1.0 + cv2.atmo.y * twi)
-                         + moonKey * nightK * 0.03 * max(dot(up, moonDir), 0.0);
+                         + moonKey * nightK * 0.03 * max(dot(up, moonDir), 0.0)
+                         + kMoonColor * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z);
             vec3  ambS   = skyAmb * ambVis * f.ambient;
 
             // ── Ground bounce from below: the key light, reflected by the ground under the cloud ──
