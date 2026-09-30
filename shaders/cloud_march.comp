@@ -707,6 +707,17 @@ float auroraSheetIndexAt(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, out float alt
     return auroraSheetIndex(colat, az, pc.waveTime);
 }
 
+// erf, |error| < 1.3e-4 (Winitzki).
+float auroraErf(float x) {
+    float x2 = x * x;
+    float a  = 0.147;
+    return sign(x) * sqrt(1.0 - exp(-x2 * (1.2732395 + a * x2) / (1.0 + a * x2)));
+}
+// The per-ray march offset in [0, 1) (review 11): every ray at one elevation stepped the same positions, so
+// the sheets' folds (and the volume's steps) drew HORIZONTAL bands; a per-pixel, per-frame offset turns them
+// into noise the sky TAA averages away. Interleaved gradient noise, stepped by the TAA's Halton phase.
+float gAurJitter = 0.5;
+
 vec3 auroraMarchSegment(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
                          vec3 sunDirECEF, float segEnter, float segExit) {
     const float kAuroraMaxStepM = 15000.0;
@@ -721,32 +732,46 @@ vec3 auroraMarchSegment(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
     float sPrev = 0.0, azPrev = 0.0, hPrev = 0.0, oPrev = 0.0;
     bool  havePrev = false;
     for (int i = 0; i < N; ++i) {
-        vec3 ap = obsPos + dir * (segEnter + (float(i) + 0.5) * step);
+        vec3 ap = obsPos + dir * (segEnter + (float(i) + gAurJitter) * step);
         accum += auroraCurtainSample(ap, enuX, enuY, enuZ, sunDirECEF, pc.waveTime, cloud.stormStrength);
         if (!wantS) continue;
         // The index is carried across every sample (dropping it where the mask is 0 cut the sheets in
         // whole-step chunks along the oval's edge: a staircase); the mask fades linearly across a crossing.
         float S = auroraSheetIndex(gAurColat, gAurAz, pc.waveTime);
         if (havePrev && max(oPrev, gAurOvalN) > 0.001) {
+            // Each sheet n is integrated EXACTLY over this step with S linear in t (review 11): the path length
+            // through a Gaussian sheet over [S0, S1] is step / |dS| x sigma sqrt(pi/2) |erf(b) - erf(a)|, which
+            // tends to step x G(S - n) where the ray runs along the sheet. The first cut credited a whole
+            // Gaussian (sigma sqrt(2 pi) / rate, capped at TWO STEPS) to the step holding a crossing and nothing
+            // otherwise: where a ray grazed a fold, whether a sample landed past it flipped with the elevation,
+            // and the fold drew as stacked bright zigzags (the user's horizontal banding).
             float dS  = S - sPrev;
-            float rate = abs(dS) / step;                           // S per metre along the ray
             float lo = min(sPrev, S), hi = max(sPrev, S);
-            float n0 = ceil(lo);
+            const float kSigMax = 0.28;
+            // Candidates within 1.2 sigma of the fuzziest width of this step's S range, faded out from 0.6 of that
+            // (continuous; a fuzzy sheet's far tail is dropped, a little narrower. 3 sigma cost +0.7 ms in a storm).
+            const float kReach = 1.2 * kSigMax;
+            float n0 = ceil(lo - kReach);
+            float n1 = floor(hi + kReach);
             float dAz = gAurAz - azPrev;
             dAz -= 6.2831853 * floor(dAz / 6.2831853 + 0.5);
-            // Up to 4 crossings in one step (a far, oblique ray); more is a haze of sheets, counted as such.
-            int   nc = int(clamp(floor(hi) - n0 + 1.0, 0.0, 4.0));
-            float extra = max(floor(hi) - n0 + 1.0 - 4.0, 0.0);
+            // Up to 4 sheets per step (a far, oblique ray); more is a haze of sheets, counted as such.
+            int   nc = int(clamp(n1 - n0 + 1.0, 0.0, 4.0));
+            float extra = max(n1 - n0 + 1.0 - 4.0, 0.0);
+            float tPrevS = segEnter + (float(i) - 1.0 + gAurJitter) * step;
             for (int k = 0; k < nc; ++k) {
                 float n  = n0 + float(k);
-                float f  = (abs(dS) > 1e-6) ? (n - sPrev) / dS : 0.5;
+                bool  cross = (n >= lo && n <= hi && abs(dS) > 1e-6);
+                float dOut  = max(lo - n, n - hi);                          // > 0: the sheet lies outside this step
+                // Where along the step the sheet sits: its crossing, else the nearer end (a sheet whose Gaussian
+                // tail reaches into this step, or a fold the ray grazes).
+                float f  = cross ? (n - sPrev) / dS : (abs(n - sPrev) < abs(n - S) ? 0.0 : 1.0);
                 float h  = mix(hPrev, gAurAlt, f);
                 float az = azPrev + dAz * f;
-                // Two regula-falsi steps on the exact index: linear interpolation over a 15-km step drew each
-                // sheet's lower border as a chain of straight segments (a staircase along the edge).
-                {
+                if (cross) {
+                    // Two regula-falsi steps on the exact index: linear interpolation over a 15-km step drew each
+                    // sheet's lower border as a chain of straight segments (a staircase along the edge).
                     float fa = 0.0, fb = 1.0, ga = sPrev - n, gb = S - n;
-                    float tPrevS = segEnter + (float(i) - 0.5) * step;
                     for (int it = 0; it < 2; ++it) {
                         float Si = auroraSheetIndexAt(obsPos + dir * (tPrevS + f * step), enuX, enuY, enuZ, h, az);
                         float gi = Si - n;
@@ -759,9 +784,15 @@ vec3 auroraMarchSegment(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
                 // The sheet's width: crisp or fuzzy per sheet and per ~500-km stretch of the oval.
                 vec3  hs = tdRandCM(n);
                 float crispF = smoothstep(-0.3, 0.3, sin(az * 5.0 + hs.y * 3.0 + 0.3 * n) + 2.0 * cloud.auroraSheets.z - 1.0);
-                float sig = mix(0.28, 0.03, crispF);
-                // Path length through the sheet, capped at two steps (a ray running along a sheet).
-                float Lp = min(sig * 2.5066 / max(rate, 1e-9), 2.0 * step);
+                float sig = mix(kSigMax, 0.03, crispF);
+                float a = (sPrev - n) / (sig * 1.4142136), b = (S - n) / (sig * 1.4142136);
+                float Lp;
+                if (abs(b - a) > 1e-3)
+                    Lp = step * sig * 1.2533141 * abs(auroraErf(b) - auroraErf(a)) / abs(dS);
+                else
+                    Lp = step * exp(-a * a);
+                Lp *= 1.0 - smoothstep(0.6 * kReach, kReach, dOut);
+                if (Lp < 1e-4 * step) continue;
                 sheets += auroraSheetLight(n, h, az, pc.waveTime, oN) * Lp * (1.0 + extra / 4.0);
             }
         }
@@ -882,6 +913,10 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
     // The real (unpadded) shell starts behind terrain — nothing emissive is visible on this ray.
     if (realEnter >= tScene) return vec3(0.0);
 
+    {
+        float ign = fract(52.9829189 * fract(dot(vec2(gl_GlobalInvocationID.xy), vec2(0.06711056, 0.00583715))));
+        gAurJitter = fract(ign + 1.6180340 * (cloud.taaJitter.x + 0.5) + 2.4142136 * (cloud.taaJitter.y + 0.5));
+    }
     vec3 accumAurora = vec3(0.0);
     if (nearValid) accumAurora += auroraMarchSegment(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, atEnter, atExit);
     if (farValid)  accumAurora += auroraMarchSegment(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, farEnter, farExit);

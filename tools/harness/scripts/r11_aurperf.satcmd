@@ -1,0 +1,20 @@
+preset High
+set clouds_v2.fog_amount 0
+set clouds_v2.coverage 0
+set clouds.storm_strength 1
+time set 2036-12-21T12:00:00Z
+time pause
+observer lat=67.25 lon=-150.18 agl=2
+time sun midnight
+camera az=0 el=20 fov=80
+set clouds.aurora_sheets 0
+wait settle
+perf frames=90 name=aur_off
+set clouds.aurora_sheets 1
+wait settle
+perf frames=90 name=aur_on
+capture v_aurora2
+camera az=0 el=12 fov=30
+wait settle
+capture v_tele2
+quit

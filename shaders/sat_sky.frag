@@ -5004,11 +5004,16 @@ void main() {
     // the navy sea read sky-cyan under a milky veil. Fitting the photographs' values to the sim's gives
     // y = 1.16 x^2.2 (display-linear) almost exactly; with a 30% desaturation the sea is their muted navy.
     // cloud.taaJitter.z = "Orbit colour grade" x the altitude ramp (30 -> 300 km), 0 on the ground.
+    // Review 11: only where the ground (or the limb, for a ray that misses it) is SUNLIT. The curve was fitted
+    // to the day side; applied at night its x^2.2 crushed city light, moonlit cloud, airglow and aurora ~10x
+    // (the night side from orbit read nearly black; the user's report). Faded over -6 .. +3 deg of Sun there.
     if (cloud.taaJitter.z > 0.0) {
+        vec3  pG   = obsPos + dir * ((tSurface > 0.0) ? tSurface : max(-dot(obsPos, dir), 0.0));
+        float dayG = smoothstep(-0.10, 0.05, dot(normalize(pG), sunDir));
         vec3  g  = min(1.16 * pow(max(color, vec3(0.0)), vec3(2.2)), vec3(1.0));
         float lg = dot(g, vec3(0.2126, 0.7152, 0.0722));
         g = mix(vec3(lg), g, 0.7);
-        color = mix(color, g, cloud.taaJitter.z);
+        color = mix(color, g, cloud.taaJitter.z * dayG);
     }
 
     // ── Night ambient floor ────────────────────────────────────────────────────

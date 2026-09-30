@@ -90,7 +90,7 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 |---|---|
 | `wait <frames>` | wait N frames |
 | `wait seconds <s>` | wait wall-clock seconds |
-| `wait settle [frames]` (or `settle`) | hold sim time and run 40 (or N) frames at a 0.5 s step, so eased values converge: sky glare, the dark-sky dome, mesh fades, beam-light fades, environment probes. Use before every capture that follows a change |
+| `wait settle [frames]` (or `settle`) | hold sim time and run 40 (or N) frames at a 0.5 s step, so eased values converge: sky glare, the dark-sky dome, mesh fades, beam-light fades, environment probes. The sky TAA restarts with it. **From orbit, add `wait 90` after it before a capture:** a settled capture from 400 km draws the clouds' edges in ~5-km blocks, which 90 ordinary frames clear (review 11; not the settle length — 120 settle frames or holding the march at full rate left them) Use before every capture that follows a change |
 | `time set <ISO>` | e.g. `2036-06-21T04:00:00Z`. **The sim clock is not real UTC** (no GMST term), so prefer `time sun` |
 | `time sun <el> [rising\|setting]` | the time nearest now (within 12 h) when the Sun is at `<el>` degrees for this observer. `time sun noon` / `time sun midnight` |
 | `time add <s>`, `time j2000 <s>` | relative / absolute (seconds since J2000) |

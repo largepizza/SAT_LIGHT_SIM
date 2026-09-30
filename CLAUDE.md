@@ -943,6 +943,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   observer's nadir (the night-side crescent blew out). (2) **Orbit colour grade** after the tonemap
   (`sat_sky.frag`, `cloud.taaJitter.z` = "Orbit colour grade" x a 30 -> 300 km ramp, slot 219, key
   `clouds.orbit_grade`): y = 1.16 x^2.2 display-linear (fitted to the photos' values) + 30% desaturation.
+  **Only on the sunlit Earth** (review 11): weighted per pixel by the Sun at the surface point (the tangent point for
+  a ray that misses), over -6 .. +3 deg; on the night side its x^2.2 crushed city light, moonlit cloud, airglow and
+  aurora ~10x (the night side from orbit read nearly black).
   The Mie and Rayleigh gains had NO effect on the veil from 70,000 km — do not chase it there.
 - **Rainbows are done** (user-approved 2026-09-28): they show at storms on the terminator (low Sun behind
   the observer); a harness run that does not frame one is a location problem, not a render one.
@@ -3835,7 +3838,13 @@ Read it at the start of any terrain-related session before making changes.
   sheets fold into curls). Each ray crossing is integrated EXACTLY: emission x sigma sqrt(2 pi) / |dS/dt|
   (the path length through a Gaussian sheet, capped at two steps), so edge-on curtains are crisp ribbons at
   any resolution with no sampling noise; crossings are found between the volume march's own samples and
-  refined by two regula-falsi steps on the exact index. Crisp or fuzzy per sheet and per ~500 km of oval;
+  refined by two regula-falsi steps on the exact index. **Review 11:** each sheet is integrated over each STEP
+  with S linear in t (erf of both ends; candidates within 1.2 sigma of the step's S range, faded at the edge), and
+  the march start is jittered per pixel and per frame (IGN + the TAA's Halton phase, `gAurJitter`). The first cut
+  credited a whole Gaussian (capped at two steps) to the step holding a crossing and nothing otherwise: where a ray
+  grazed a fold, detection flipped with the elevation, drawing stacked horizontal zigzags (user report). Without
+  the jitter soft bands remain (piecewise-linear S). Cost +0.55 ms in a Coldfoot storm view (the first cut +0.21;
+  3-sigma candidates +0.9). Crisp or fuzzy per sheet and per ~500 km of oval;
   a sharp lower border (pink N2 edge), rays (field-aligned striations: from the ground they converge on the
   magnetic zenith as a corona), red tops. The index is carried across EVERY sample (dropping it where the
   oval mask was 0 cut the sheets in whole-step chunks: a staircase). Folds finer than the 15-km steps alias
