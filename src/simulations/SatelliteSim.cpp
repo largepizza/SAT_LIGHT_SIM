@@ -2247,12 +2247,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.cityLightsStrength = cityLightsStrength;
         cp.cityRoadsStrength = cityRoadsStrength;
         {
-            // The ground glitter hands its light to the city light sprites where they are drawn (the
-            // gain the dispatch below uses: off above 40 km).
-            const float sprOn = citySpriteGain * cityLightsStrength
-                              * (1.0f - glm::smoothstep(20000.0f, 40000.0f, (float)obsHeightOffset));
-            const float reach = sprOn > 0.0f ? 64.0f * float(1 << (kCitySpriteLevels - 1)) * 125.0f : 0.0f;
-            cp.cityParams = glm::vec4(cityTwinkleRate, glm::mix(1.0f, citySpriteGround, std::min(sprOn, 1.0f)), reach, 0.0f);
+            // The ground glitter hands its light to the city light sprites where they are drawn: past a
+            // ground footprint of citySpriteStartFootM, out to their reach (the gain the dispatch below
+            // uses: off by 150 km up).
+            const float sprOn = citySpriteGainAt();
+            const float reach = sprOn > 0.0f ? 64.0f * float(1 << (kCitySpriteLevels - 1)) * 250.0f : 0.0f;
+            cp.cityParams = glm::vec4(cityTwinkleRate, glm::mix(1.0f, citySpriteGround, std::min(sprOn, 1.0f)), reach,
+                                      citySpriteStartFootM);
         }
         cp.cloudShadowRangeM = cloudShadowRangeM;
         // sat_sky.frag's render target: the low-res prepass extent when renderScale<1 (recordPrePass
@@ -2943,25 +2944,38 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         CitySpritePC cpc{};
         cpc.obsECEFDir = glm::vec4(glm::vec3(obsDir), 0.0f);
         cpc.simTime = (float)std::fmod(simSecInDay, 3600.0);
-        // Points for the view from the ground and aircraft: gone by 40 km up (from orbit the ground's
-        // own glitter carries the cities).
-        const float eyeAltM = (float)obsHeightOffset;
-        cpc.gain = citySpriteGain * cityLightsStrength * (1.0f - glm::smoothstep(20000.0f, 40000.0f, eyeAltM));
+        // Points for the FAR lights, seen from the ground, aircraft and the stratosphere: gone by 150 km up
+        // (from orbit the ground's own glitter carries the cities).
+        cpc.gain = citySpriteGainAt();
         cpc.nightF = 1.0f - glm::smoothstep(-0.105f, 0.02f, sunDirENU.w);
         cpc.capacity = std::max<uint32_t>(activeSatCount, 1u) + kCitySpriteMax;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, citySpritePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, citySpritePipeLayout, 0, 1, &citySpriteDescSet, 0,
                                 nullptr);
-        // Levels of cells growing with distance: 64 m to 8 km, 128 m to 16 km, ... 4096 m to 512 km, each
-        // cross-faded in over the last quarter of the one before — one on-screen density to the horizon.
+        // Levels of cells growing with distance: 64 m to 8 km, 128 m to 16 km, ... 4096 m to 1024 km (the
+        // last twice as wide: no cell may exceed the 4096-m anchor), each cross-faded in over the last
+        // quarter of the one before — one on-screen density to the horizon. Only past a ground footprint of
+        // citySpriteStartFootM (the user: the sprites are for the far lights; near, they read as floating
+        // lanterns), tested per light; levels ending inside 1.5x the nearest range that can qualify are
+        // skipped.
         // All only append (atomic slots), near levels first, so a full list drops the farthest lights.
         cpc.twinkleRate = cityTwinkleRate;
+        cpc.pixAng = cityPixAng(ctx);
+        cpc.startFootM = citySpriteStartFootM;
+        const float startM = citySpriteMinRangeM(ctx);
+        float prevR = 0.0f;
+        bool prevOn = false;
         for (int lv = 0; lv < kCitySpriteLevels; ++lv)
         {
             cpc.cellM = 64.0f * float(1 << lv);
-            cpc.halfCells = 125;
+            cpc.halfCells = lv == kCitySpriteLevels - 1 ? 250 : 125;
             cpc.radiusM = cpc.cellM * (float)cpc.halfCells;
-            cpc.innerM = lv == 0 ? 0.0f : 0.5f * cpc.radiusM;
+            const bool on = cpc.radiusM >= 1.5f * startM;
+            cpc.innerM = prevOn ? prevR : 0.0f;
+            prevR = cpc.radiusM;
+            prevOn = on;
+            if (!on)
+                continue;
             cpc.weight = 8.0f;
             vkCmdPushConstants(cmd, citySpritePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
             const uint32_t groups = (uint32_t)(2 * cpc.halfCells + 15) / 16;
@@ -3212,7 +3226,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         PointDrawPC tpc = buildPointDrawPC(ctx); // screenSizePx == ctx.swapExtent == trailAccumExtent
         // This offscreen render pass has no depth attachment — see sat_point.frag/star_point.frag's
         // own terrain-occlusion comment. ppc below inherits this via its `= tpc` copy.
-        tpc.manualTerrainTest = 1.0f;
+        tpc.manualTerrainTest = 2.0f;   // 2 = the trail pass (the vertex shader skips city lights)
 
         VkRenderPassBeginInfo trbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         trbi.renderPass = trailAccumRenderPass;

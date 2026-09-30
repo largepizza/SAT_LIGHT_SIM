@@ -1326,24 +1326,25 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
         vec4  clC   = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
                                  cv2Lod(fpM, cv2.anchorCluster.w) + 2.0);
         float dry   = (1.0 - smoothstep(0.02, 0.25, cov4)) * (1.0 - sea) * (1.0 - clamp(w1.b * 3.0, 0.0, 1.0));
-        float plume = smoothstep(0.49, 0.62, clC.a);
-        // Regions (~300-1000 km): dry land is not all dusty at once — a dust event covers a region and
-        // leaves the next clear. Before this the whole dry continent sat at one level (user snapshot 9).
-        float reg   = 0.65 * cv2DirNoise(q.dirE * 9.0) + 0.35 * cv2DirNoise(q.dirE * 27.0 + 7.3);
-        float region = smoothstep(0.45, 0.72, reg);
+        float plume = smoothstep(0.42, 0.68, clC.a);
+        // Regions (~500-1500 km): dry land is not all equally dusty — but a GENTLE variation. A uniform
+        // level read as one flat veil (user snapshot 9), and hard-edged regions times hard-edged plumes
+        // read as distinct blobs scattered over the land (user review 2, snapshot 2).
+        float reg   = 0.7 * cv2DirNoise(q.dirE * 5.0) + 0.3 * cv2DirNoise(q.dirE * 15.0 + 7.3);
+        float region = 0.3 + 0.7 * smoothstep(0.3, 0.8, reg);
         dustAgl = max(agl, 0.0);
-        dustS = cv2.fog2.y * cv2.fog.w * dry * region * (0.08 + 0.92 * plume) * exp(-dustAgl / cv2.fog2.x);
+        dustS = cv2.fog2.y * cv2.fog.w * dry * region * (0.35 + 0.65 * plume) * exp(-dustAgl / cv2.fog2.x);
     }
     if (cv2.fog2.w > 0.0) {
         float latD = degrees(asin(clamp(q.dirE.z, -1.0, 1.0)));
-        float ice  = max(1.0 - smoothstep(-72.0, -63.0, latD),                                  // Antarctica
+        float ice  = max((1.0 - smoothstep(-72.0, -63.0, latD)) * (1.0 - sea),                   // Antarctica (not the sea)
                      max(smoothstep(62.0, 70.0, latD) * smoothstep(800.0, 1600.0, gF),          // Greenland
                          smoothstep(70.0, 78.0, latD) * (1.0 - sea)));                            // high Arctic land
         if (ice > 0.0) {
             float clear = 1.0 - smoothstep(0.25, 0.7, cov1);
             vec4  clI   = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
                                      cv2Lod(fpM, cv2.anchorCluster.w) + 1.0);
-            float patchI = smoothstep(0.46, 0.58, clI.a);
+            float patchI = smoothstep(0.40, 0.64, clI.a);
             dustAgl = max(agl, 0.0);
             iceS = cv2.sunE.w * cv2.fog2.w * ice * clear * (0.2 + 0.8 * patchI) * exp(-dustAgl / kIceFogH);
         }

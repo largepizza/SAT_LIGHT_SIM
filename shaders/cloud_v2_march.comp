@@ -877,7 +877,11 @@ void main()
                     vec2  uv  = vec2((atan(dE.y, dE.x) + PI) / (2.0 * PI), (0.5 * PI - asin(clamp(dE.z, -1.0, 1.0))) / PI);
                     vec3  cr  = textureLod(earthNightTex, uv, 3.0).rgb;
                     float lum = dot(cr, vec3(0.2126, 0.7152, 0.0722));
-                    S += (cr / max(lum, 0.001)) * cityBrightness(lum) * nightF * fs * kCityUpwellStrength * cloud.ambientGain;
+                    // In proportion to the lights (a full core at ~0.2): cityBrightness saturates by a small
+                    // town, so any fog patch near a city glowed at full strength — from altitude a bright tan
+                    // slab over Denver read as a dust storm (user review 2, snapshot 2).
+                    float cb  = clamp(max(lum - kNightFloor, 0.0) / 0.2, 0.0, 1.0);
+                    S += (cr / max(lum, 0.001)) * cb * nightF * fs * kCityUpwellStrength * cloud.ambientGain;
                 }
                 S *= alb;
                 float Ts = exp(-sg * dt);

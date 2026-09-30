@@ -1228,7 +1228,7 @@ struct CitySpritePC {
     uint32_t capacity;
     float radiusM, cellM;
     int32_t halfCells;
-    float innerM, weight, twinkleRate, pad1, pad2;
+    float innerM, weight, twinkleRate, pixAng, startFootM;
 };
 static_assert(sizeof(CitySpritePC) == 64, "CitySpritePC must match city_sprites.comp");
 
@@ -1517,7 +1517,7 @@ struct GpuCloudParams
     float exposureScale;     // 2^(cv2ExposureEV)
     float highlightRolloff;  // cv2HighlightRolloff (sat_sky.frag's tonemap shoulder)
     float whiteBalance;      // cv2WhiteBalance (sat_sky.frag, before the tonemap)
-    glm::vec4 cityParams;    // x twinkle rate, y ground glitter share under the sprites, z sprite reach (m)
+    glm::vec4 cityParams;    // x twinkle rate, y ground glitter share under the sprites, z sprite reach (m), w sprite start (ground m per pixel)
 };
 static_assert(sizeof(GpuCloudParams) == 736, "GpuCloudParams layout mismatch");
 
@@ -2708,7 +2708,8 @@ private:
     // City lights as satellite point sprites (city_sprites.comp, .plans/CITIES_PLAN.md): appended to
     // the compact visible list after sat_flare.comp; kCitySpriteMax extra slots are reserved there.
     static constexpr uint32_t kCitySpriteMax = 131072;
-    static constexpr int kCitySpriteLevels = 7;          // 64 m .. 4096 m cells, reach 8 .. 512 km
+    static constexpr int kCitySpriteLevels = 7;          // 64 m .. 4096 m cells, reach 8 .. 1024 km (the last
+                                                         // level is twice as wide: 4096 m is the anchor)
     VkDescriptorSetLayout citySpriteDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool citySpriteDescPool = VK_NULL_HANDLE;
     VkDescriptorSet citySpriteDescSet = VK_NULL_HANDLE;
@@ -3678,8 +3679,28 @@ private:
     float cityLightsStrength = 1.0f;     // procedural city street lights (.plans/CITIES_PLAN.md)
     float cityRoadsStrength = 1.0f;      // the major roads' share of them
     float citySpriteGain = 1.0f;         // city lights as satellite point sprites (0 = off)
-    float citySpriteGround = 0.35f;      // the ground glitter's share kept where the sprites carry the light
+    float citySpriteGround = 0.6f;       // the ground glitter's share kept where the sprites carry the light
     float cityTwinkleRate = 1.0f;        // glitter + sprite scintillation rate (1 = 0.5-1.2 rad/s)
+    float citySpriteStartFootM = 25.0f;  // sprites begin where a pixel spans this much ground (m): far only
+    // The city light sprites take over where a pixel spans citySpriteStartFootM of ground (the ground's
+    // own footprint, stretched at grazing angles — where its glitter points smear into blobs); nearer
+    // lights are the ground's glitter alone: up close a point sprite read as a floating lantern (user
+    // review 2). The view's radians per pixel, and the nearest range that can qualify (the grazing
+    // stretch is capped at 5x, as the ground's footprint).
+    float cityPixAng(const VulkanContext &c) const
+    {
+        return glm::radians(camera.fovYDeg) / std::max(1.0f, (float)c.swapExtent.height);
+    }
+    float citySpriteMinRangeM(const VulkanContext &c) const
+    {
+        return glm::clamp(citySpriteStartFootM / std::max(5.0f * cityPixAng(c), 1e-6f), 500.0f, 400000.0f);
+    }
+    // The sprites' gain after the eye-altitude fade (off by 150 km: from orbit the ground's glitter).
+    float citySpriteGainAt() const
+    {
+        return citySpriteGain * cityLightsStrength
+             * (1.0f - glm::smoothstep(100000.0f, 150000.0f, (float)obsHeightOffset));
+    }
     float terrainNightSkyLight = 0.25f;  // moonless night sky on the day albedo, fraction of the full Moon overhead
     int terrainDebugView = 0; // harness `debugview` only; not persisted
     // Cloud opacity scale (see GpuCloudParams::cloudOpacityScale) — multiplies the volumetric
@@ -4334,7 +4355,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 206;
+    static constexpr int kCloudSliderSlots = 207;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

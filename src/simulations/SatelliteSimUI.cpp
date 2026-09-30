@@ -4750,7 +4750,10 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"March budget", &cv2MaxIters, 64.0f, 1024.0f, 16.0f, "%.0f", 137},
         {"Max distance (km)", &cv2MaxDistKm, 50.0f, 1500.0f, 10.0f, "%.0f", 138},
         {"Detail fade start (m)", &cv2DetailLodStartM, 2000.0f, 100000.0f, 1000.0f, "%.0f", 139},
-        {"History weight", &cv2HistoryWeight, 0.05f, 1.0f, 0.01f, "%.2f", 140},
+        // Still view only, capped at 0.15: the sparse march refreshes a pixel every 4th frame, and a high
+        // weight swaps it between its own ray and its neighbours' estimate each frame — a woven checker
+        // over every cloud at 0.3 and up (user review 2, snapshots 4 and 6 at 1.0). Motion has its own.
+        {"History weight", &cv2HistoryWeight, 0.02f, 0.15f, 0.01f, "%.2f", 140},
         // The new-sample weight once the view moves (parallax): high, so small clouds don't ghost; the
         // still weight above stays low, so a still view has no checkerboard flicker.
         {"History weight moving", &cv2HistoryWeightMoving, 0.05f, 1.0f, 0.01f, "%.2f", 203},
@@ -4935,6 +4938,8 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         // Where the sprites carry the far lights, the share of the ground's own glitter kept under them.
         {"Ground glitter under sprites", &citySpriteGround, 0.0f, 1.0f, 0.05f, "%.2f", 202},
         {"City light twinkle rate", &cityTwinkleRate, 0.0f, 4.0f, 0.05f, "%.2f", 201},
+        // Sprites only past the range where a pixel spans this much ground: lower = nearer.
+        {"City sprites from (m/px)", &citySpriteStartFootM, 2.0f, 200.0f, 1.0f, "%.0f", 206},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -6286,7 +6291,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SunGain = c.value("sun_gain", cv2SunGain);
         cv2BounceGain = c.value("bounce_gain", cv2BounceGain);
         cv2Powder = c.value("powder", cv2Powder);
-        cv2HistoryWeight = c.value("history_weight", cv2HistoryWeight);
+        cv2HistoryWeight = std::clamp(c.value("history_weight", cv2HistoryWeight), 0.02f, 0.15f);
         cv2HistoryWeightMoving = c.value("history_weight_moving", cv2HistoryWeightMoving);
         cv2LightLenM = c.value("light_len_m", cv2LightLenM);
         cv2LightSteps = c.value("light_steps", cv2LightSteps);
@@ -6426,6 +6431,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         citySpriteGain = c.value("city_sprite_gain", citySpriteGain);
         citySpriteGround = c.value("city_sprite_ground", citySpriteGround);
         cityTwinkleRate = c.value("city_twinkle_rate", cityTwinkleRate);
+        citySpriteStartFootM = c.value("city_sprite_start_footprint_m", citySpriteStartFootM);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
         // Satellite ocean-glint gain/floor (Ocean tab's "Ocean flare refl"/"Flare refl floor",
@@ -6664,6 +6670,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"city_sprite_gain", citySpriteGain},
         {"city_sprite_ground", citySpriteGround},
         {"city_twinkle_rate", cityTwinkleRate},
+        {"city_sprite_start_footprint_m", citySpriteStartFootM},
         {"cloud_erosion_edge", cloudErosionEdge},
         {"cloud_erosion_core", cloudErosionCore},
         {"cirrus_wind_deg", cloudCirrusWindDeg},

@@ -30,7 +30,7 @@ layout(push_constant) uniform PC {
     vec4  moonDirENU, obsECEFDir;    // (unread) 80, 96
     vec2  screenSizePx;              // (unread) 112
     uint  debugDisableMask;          // (unread) 120
-    float manualTerrainTest;         // 124: 1 on the trail draws only
+    float manualTerrainTest;         // 124: 2 on the trail draws, 1 on the live draw at renderScale < 1
 } pc;
 
 layout(location = 0) out vec3  fragColor;
@@ -48,7 +48,7 @@ void main() {
 
     // Invisible (below horizon / shadow / below threshold): clip before rasterization. City lights
     // (city_sprites.comp, meshPx = -1) stay out of the trails: they would streak with the camera.
-    if (sat.flareIntensity <= 0.0 || (pc.manualTerrainTest > 0.5 && sat.meshPx < -0.5)) {
+    if (sat.flareIntensity <= 0.0 || (pc.manualTerrainTest > 1.5 && sat.meshPx < -0.5)) {
         gl_Position  = vec4(0.0, 0.0, 2.0, 1.0);
         gl_PointSize = 0.001;
         fragColor     = vec3(0.0);
@@ -83,7 +83,10 @@ void main() {
     gl_PointSize = sat.angularSize;  // sized by compute shader already
 
     fragColor     = unpackUnorm4x8(sat.color).rgb;
-    fragRangeM    = sat.rangeM;
+    // A city light (city_sprites.comp) stands a few metres above the ground it lies on; against the
+    // half-res, filtered scene depth of the manual test (renderScale < 1: the Medium preset) the ground
+    // around it read nearer and hid most of them. 5% of the range: only real relief in front hides one.
+    fragRangeM    = sat.meshPx < -0.5 ? 0.95 * sat.rangeM : sat.rangeM;
     fragIntensity = sat.flareIntensity;
     fragAngSize   = sat.angularSize;
 }

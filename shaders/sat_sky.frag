@@ -617,14 +617,27 @@ vec3 cityGlitterColor(float h, float ledP, float colP) {
 // One glitter level: cells of C = 8 * 2^k m (a divisor of the 4096-m anchor: world-fixed), a point in a
 // share `kGlitP` of them.
 const float kGlitP = 0.4;
+// The view for the glitter's point shape (set by the caller): the ray in ECEF and the pixel's footprint
+// ACROSS the view (m, unstretched). A pixel's ground footprint is long along the view's ground direction
+// and ~pixAngle x t across it; a round point of the stretched size drew as a wide horizontal smear on
+// screen at grazing angles — the "gigantic yellow blobs" of distant towns (user review 2, snapshot 3).
+vec3  gCityViewE  = vec3(0.0, 0.0, 1.0);
+float gCityFootX  = 1e9;
 vec3 cityGlitterLevel(vec2 p2, ivec2 dAnc, int f, int k, float foot, float ledP, float twinkle, float pres) {
     float C   = 8.0 * float(1 << k);
     int   per = 512 >> k;
     vec2  x   = p2 / C;
     vec2  xi  = floor(x);
     // A small source (0.3 m: porch lights, windows, signs) drawn at ~a pixel (0.6 footprint), in cells.
-    // 1 m made bokeh discs close up.
-    float sg  = sqrt(0.09 + 0.36 * foot * foot) / C;
+    // 1 m made bokeh discs close up. Anisotropic: sgA along the view's ground direction vA (the stretched
+    // footprint), sgX across it (the unstretched one), so a far point is a dot on screen, not a smear.
+    ivec2 fax = tdFaceAxes(f);
+    vec2  v2  = vec2(gCityViewE[fax.x], gCityViewE[fax.y]);
+    float lv2 = length(v2);
+    vec2  vA  = lv2 > 1e-3 ? v2 / lv2 : vec2(1.0, 0.0);
+    float sgA = sqrt(0.09 + 0.36 * foot * foot) / C;
+    float fX  = min(gCityFootX, foot);
+    float sgX = sqrt(0.09 + 0.36 * fX * fX) / C;
     vec3  e   = vec3(0.0);
     // The 2x2 cells nearest x (a point is at most ~0.3 cell wide at the chosen level): half the hashes of
     // a 3x3 (performance matters: the night pattern is on every city pixel).
@@ -646,11 +659,12 @@ vec3 cityGlitterLevel(vec2 p2, ivec2 dAnc, int f, int k, float foot, float ledP,
         // same flat disc (the user: "look good, but are flat").
         float hs  = 0.08 + 0.3 * smoothstep(0.8, 3.0, w);
         float r2d = dot(d, d);
+        vec2  dv  = vec2(dot(d, vA), dot(d, vec2(-vA.y, vA.x)));
+        float q2  = dv.x * dv.x / (sgA * sgA) + dv.y * dv.y / (sgX * sgX);
         // Windowed to zero at 0.55 cells: a point outside the 2x2 cells chosen is at least that far, so
         // nothing is cut where the choice switches. Unwindowed, the halos' tails ended on the cells'
         // centre lines: a crosshatch over sparse cities seen from orbit (user snapshot 5).
-        float g   = ((1.0 - hs) * exp(-0.5 * r2d / (sg * sg)) / (sg * sg)
-                  + hs * exp(-0.125 * r2d / (sg * sg)) / (4.0 * sg * sg))
+        float g   = ((1.0 - hs) * exp(-0.5 * q2) + hs * 0.25 * exp(-0.125 * q2)) / (sgA * sgX)
                   * (1.0 - smoothstep(0.1225, 0.3025, r2d));
         e += w * cityGlitterColor(fract(r2.y * 7.31 + r2.z * 3.17), ledP, 1.0 - smoothstep(4.0, 16.0, foot))
            * g * 0.15915494;
@@ -711,8 +725,6 @@ vec3 cityNightGrid(CityGrid g, CityLayout L, float foot, float ledP, vec3 meanC,
     return eG;
 }
 
-float farmsteadLights(vec2 p2, ivec2 dAnc, int f, float foot);
-
 // The night pattern: the lights at the layout, the pixel footprint (m) and the ground's up-facing
 // (nUp). Returns an RGB multiplier for the night map's lights (mean ~1 in luminance).
 vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp, out vec3 poolM) {
@@ -736,12 +748,8 @@ vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp, out vec3 poo
     float artS = 0.15 * (1.0 - smoothstep(40.0, 150.0, foot));
     vec3  eCityC = mix(artS * eS + (1.0 - artS) * eG, 0.7 * eS + 0.3 * eG, near);
     poolM = 0.7 * pS * near;
-    // Countryside (the map's faintest lights): farmsteads, not a city.
-    // Only while they resolve: past ~50 m a pixel the farmstead pattern is a smooth glow, and at a town's
-    // faint fringe it drew a sodium ring around the points (user snapshot 5); the glitter thins by itself.
-    float rural = (1.0 - smoothstep(0.002, 0.012, L.lum)) * (1.0 - smoothstep(30.0, 80.0, foot));
-    if (rural > 0.0)
-        eCityC = mix(eCityC, farmsteadLights(L.p2, L.dAnc, L.f, foot) * kLampSodium, rural);
+    // No farmstead lights (user review 2): a scatter of lit farms read as everyone running floodlights
+    // at once; the countryside is dark, and the glitter thins out by itself at a town's fringe.
     // The real major roads (dotted) and the projection's face seam.
     float fh   = 0.25 * foot * foot;
     float sgA  = sqrt(25.0 + fh);
@@ -934,26 +942,6 @@ vec3 cityDayAlbedo(CityLayout L, float foot) {
         a1 = mix(a1, vec3(0.065, 0.065, 0.07), road);
     }
     return a1 / max(m1, vec3(1e-3));
-}
-
-// Farmsteads: a jittered light on a 512-m lattice (it divides the 4096-m anchor: world-fixed), present
-// with probability 0.45; mean 1 over its area, filtered to the footprint. Used by the city pattern's
-// faintest (rural) end and by the farmland light floor.
-float farmsteadLights(vec2 p2, ivec2 dAnc, int f, float foot) {
-    vec2  fc = p2 / 512.0;
-    vec2  fi = floor(fc);
-    float sgF = sqrt(64.0 + 0.25 * foot * foot) / 512.0;
-    if (sgF >= 0.35) return 1.0;
-    float eF = 0.0;
-    for (int k = 0; k < 9; ++k) {
-        ivec2 o  = ivec2(k % 3 - 1, k / 3 - 1);
-        vec3  r  = tdRand3(ivec3(dAnc * 8 + ivec2(fi) + o, 6601 + f));
-        if (r.z * 0.5 + 0.5 > 0.45) continue;
-        vec2  pp = fi + vec2(o) + 0.5 + 0.4 * r.xy;
-        vec2  d  = fc - pp;
-        eF += exp(-0.5 * dot(d, d) / (sgF * sgF)) * 0.15915494 / (sgF * sgF);
-    }
-    return mix(eF / 0.45, 1.0, smoothstep(0.2, 0.35, sgF));
 }
 
 // Beaches (terrain v2 P3 follow-up): sand along LOW, GENTLE shores, 40-140 m wide, varying along the
@@ -3427,8 +3415,6 @@ void main() {
         }
 
         // ── Farmland (rural, where the day map is cultivated: not forest, desert, snow, steep, city) ──
-        float farmW = 0.0, farmFoot = 1e9;
-        vec3  farmQ = vec3(0.0);
         if (cityLand && cloud.cityLightsStrength > 0.0 && tdEnabled()) {
             float fT    = tHit > 0.0 ? tHit : tSeaLvl;
             float fFoot = pixAngle * fT / max(abs(dot(dir, shadingN)), 0.2);
@@ -3463,9 +3449,6 @@ void main() {
                     vec3  fr = farmDayAlbedo(fQ, enuX, enuY, enuZ, uvSurf.x * 360.0 - 180.0, green, dry, fFoot);
                     float tFade = 1.0 - smoothstep(200.0, 350.0, fFoot);    // unchanged past 350 m (orbit)
                     dayColor *= mix(vec3(1.0), clamp(fr, vec3(0.0), vec3(4.0)), farm * tFade * cloud.cityLightsStrength);
-                    farmW = farm * cloud.cityLightsStrength;
-                    farmFoot = fFoot;
-                    farmQ = fQ;
                 }
             }
         }
@@ -3714,6 +3697,16 @@ void main() {
         vec3 cityPool = vec3(0.0);
         if (twilightFrac < 1.0) {
             float cNUp = dot(shadingN, normalize(hitPt));
+            // The procedural lights take the map's BRIGHTNESS only; their colour is the lamps'. The map's
+            // blue base is not uniform, so its subtraction leaves pure-blue (or red) residue at a city's
+            // faint fringe, and the fringe's sparse glitter multiplies each point ~25x: vivid blue and red
+            // dots around every town from orbit (user review 2, snapshot 2).
+            if (cityLOk || cityFar) {
+                gCityViewE = enuX * dir.x + enuY * dir.y + enuZ * dir.z;
+                gCityFootX = pixAngle * (tHit > 0.0 ? tHit : tSeaLvl);
+            }
+            if (cityLOk || cityFar)
+                cityLights = mix(cityLights, vec3(dot(cityLights, vec3(0.2126, 0.7152, 0.0722))), cloud.cityLightsStrength);
             if (cityLOk) {
                 vec3 poolM;
                 vec3 pat = cityLightPattern(cityL, uvSurf, cFoot, cNUp, poolM);
@@ -3725,9 +3718,11 @@ void main() {
             }
             // Where the city light sprites carry the lights (city_sprites.comp, cloud.cityParams.z = their
             // reach), the ground keeps only a share of its glitter (cityParams.y): the sprites are the
-            // points, the ground the glow under them. Not near the eye (the sprites start at ~2 km).
+            // points, the ground the glow under them. Only past the sprites' start footprint (cityParams.w,
+            // m per pixel; city_sprites.comp tests the same footprint per light).
             if (cloud.cityParams.z > 0.0) {
-                float sprW = smoothstep(1500.0, 3000.0, tSurface) * (1.0 - smoothstep(0.75 * cloud.cityParams.z, cloud.cityParams.z, tSurface));
+                float sprW = smoothstep(0.75 * cloud.cityParams.w, cloud.cityParams.w, cFoot)
+                           * (1.0 - smoothstep(0.75 * cloud.cityParams.z, cloud.cityParams.z, tSurface));
                 cityLights *= mix(1.0, cloud.cityParams.y, sprW);
             }
         }
@@ -3737,18 +3732,6 @@ void main() {
         vec3  poolAlb  = vec3(clamp(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)) / 0.12, 0.0, 4.0));
         float poolLamb = pow(clamp(dot(shadingN, normalize(hitPt)), 0.0, 1.0), 1.5);
         vec3 tNight     = (cityLights + cityPool * poolAlb * poolLamb * terrainAO) * (0.12 * (1.0 - twilightFrac));
-        // Farmsteads in farmland (a floor: the night map is ~0 over real farmland — 0.0006 in rural Iowa —
-        // so its own lights never showed). Equivalent to a map value of 0.004; faded out before orbital
-        // footprints like every other pattern (orbit unchanged).
-        if (farmW > 0.0 && twilightFrac < 1.0 && farmFoot < 350.0) {
-            vec2  fp2;
-            ivec2 fdA;
-            int   ff;
-            vec3  frl, fau;
-            cityFrame(farmQ, enuX, enuY, enuZ, fp2, fdA, ff, frl, fau);
-            tNight += kLampSodium * (farmsteadLights(fp2, fdA, ff, farmFoot) * 0.004 * 0.12)
-                    * farmW * (1.0 - twilightFrac) * (1.0 - smoothstep(150.0, 350.0, farmFoot));
-        }
         // Night light ON the albedo (terrain v2 P1): the moonlit sky (moonlight scattered by the air —
         // ~0.15 of the direct Moon on a flat face, like the Sun's diffuse share) and the moonless
         // night sky (starlight + airglow), "Night sky light" (cloud.terrainErosion.z) as a fraction of

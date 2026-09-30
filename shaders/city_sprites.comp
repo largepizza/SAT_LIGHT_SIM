@@ -61,7 +61,8 @@ layout(push_constant) uniform PC {
     float innerM;       // 0 = none; else the lights fade IN over 0.75..1 x this (the finer level's reach)
     float weight;       // effectFlare at 1 km of an average light (x the cell's area / 64^2 m^2)
     float twinkleRate;  // "City light twinkle rate" (1 = 0.6-1.2 rad/s)
-    float pad1, pad2;
+    float pixAng;       // the view's radians per pixel
+    float startFootM;   // "City sprites from (m/px)": lights only where a pixel spans more ground than this
 } pc;
 
 // Lamp colours (as sat_sky.frag's cityLampColor / cityGlitterColor).
@@ -138,6 +139,12 @@ void main() {
     if (pc.innerM > 0.0) fade *= smoothstep(0.75 * pc.innerM, pc.innerM, range);
     if (fade <= 0.0) return;
     vec3  dir  = v / range;
+    // Far lights only: where a pixel spans more than startFootM of ground (sat_sky.frag's footprint,
+    // stretched at grazing angles, capped at 5x), fading in over the last quarter. Nearer, the ground's
+    // glitter draws them; a sprite there read as a floating lantern (user review 2).
+    float footG = pc.pixAng * range / max(abs(dot(dir, up)), 0.2);
+    fade *= smoothstep(0.75 * pc.startFootM, pc.startFootM, footG);
+    if (fade <= 0.0) return;
     // Below the sea-level horizon: hidden (the depth test would hide it too, but it would take a slot).
     float hL   = h0 + 6.0;
     float dHz  = sqrt(2.0 * R_EARTH * max(hEye, 0.0)) + sqrt(2.0 * R_EARTH * max(hL, 0.0));
