@@ -945,63 +945,12 @@ void main()
         float span = max(meanT - t0, 0.001);
         vec2 odC  = optDepth(e0, dir, span);
         vec3 attn = exp(-(BETA_R * odC.x + BETA_M * 1.1 * odC.y));
-        vec3 air  = vec3(0.0);
-        {
-            const int kAir = 8;
-            float sg = span / float(kAir);
-            float pR = phaseR(cosSun), pM = phaseM(cosSun);
-            float oR = 0.0, oM = 0.0, aM = 0.0;
-            // sat_sky.frag's orbital terminator gate, the same weights: from above 40 km the sky
-            // pass suppresses the twilight air over night-side ground, so the air in front of a
-            // cloud must be suppressed alike or the cloud and the haze around it disagree.
-            float termSpace = clamp((eyeH - 40000.0) / 60000.0, 0.0, 1.0)
-                            * clamp(cloud.atmosTermStrength, 0.0, 1.0);
-            float termW     = max(1e-4, cloud.atmosTermWidth);
-            vec3  aR = vec3(0.0), sR = vec3(0.0);
-            float sM = 0.0;
-            for (int i = 0; i < kAir; ++i) {
-                vec3  ap = e0 + dir * ((float(i) + 0.5) * sg);
-                float ah = max(0.0, length(ap) - R_EARTH);
-                float dR = exp(-ah / H_R) * sg, dM = exp(-ah / H_M) * sg;
-                oR += dR; oM += dM;
-                vec2 tSE = raySphere(ap, sunDir, R_EARTH);
-                if (tSE.x > 0.0 && tSE.y > 0.0) {
-                    vec3 ae = exp(-(BETA_R * oR + BETA_M * 1.1 * oM));
-                    sR += ae * dR; sM += dot(ae, vec3(1.0 / 3.0)) * dM;
-                    continue;
-                }
-                vec3 at   = exp(-(BETA_R * oR + BETA_M * 1.1 * oM)) * sunTransmit(ap, sunDir, BETA_R, BETA_M);
-                float gT  = mix(1.0, smoothstep(-termW, termW, dot(normalize(ap), sunDir)), termSpace);
-                aR += at * dR * gT;
-                aM += dot(at, vec3(1.0 / 3.0)) * dM * gT;
-            }
-            air = SUN_INTENSITY * (pR * BETA_R * aR + vec3(pM * BETA_M * aM));
-            // Review 7: air in the Earth's SHADOW is lit by the twilight sky (the blue-grey of the Earth's
-            // shadow), which single scattering leaves black. Looking away from a just-set Sun, the air in
-            // front of a distant deck is in shadow, and the far clouds along the horizon were a near-black
-            // band (user snapshot 2: 18 against the clear horizon's ~70). Isotropic in-scatter of about
-            // half the zenith sky's radiance (the lower half-sphere is dark), shadowed stretches only, so a
-            // sunlit path (every day view) is unchanged. The zenith faded as the ambient is (skyDusk). sat_sky.frag
-            // adds the same to the whole ray, so a cloud and the clear horizon beside it agree; off from orbit
-            // (the terminator gate owns the twilight air there).
-            if (sM > 0.0) {
-                vec3  pm  = e0 + dir * (0.5 * span);
-                vec3  upM = normalize(pm);
-                float hS  = -sqrt(max(1.0 - (R_EARTH / length(pm)) * (R_EARTH / length(pm)), 0.0));
-                float su  = dot(upM, sunDir);
-                vec3  sky = skyZenithAt(pm, sunDir, BETA_R, BETA_M) * smoothstep(hS - 0.09, hS + 0.04, su);
-                air += (1.0 - termSpace) * 0.5 * sky * (BETA_R * sR + vec3(BETA_M * sM));
-            }
-        }
-        // air is already the path's integrated in-scatter (each step attenuated to the eye). v1
-        // weighted it by (1 - attn) as well, which counted the extinction twice: a cloud got a
-        // fraction of the haze the sky pass puts on the ground beside it, and at twilight it read
-        // as its own dark blue ambient under a golden haze. (1 - T): the sky behind already
-        // carries its own air, scaled by T.
-        // Review 8: past 40-150 km the sky pass supplies the air in front of the cloud (sat_sky.frag
-        // airFront, from its own atmosphere loop), so a far cloud gets the same haze as the clear horizon.
-        air *= 1.0 - smoothstep(40000.0, 150000.0, meanT);
-        outRgb = attn * L + air * (1.0 - T);
+        // The air IN FRONT of the cloud is the sky pass's (review 8b: sat_sky.frag airFront, from its own
+        // atmosphere loop, composited as airFront x (1 - T)): one atmosphere for the cloud and the clear sky
+        // beside it. This march's 8-step airlight read far darker than the sky's at a grazing Sun (distant
+        // clouds were dark silhouettes on the horizon), and a split between the two by distance (review 8)
+        // disagreed at cloud edges: dark specks and flicker along every silhouette.
+        outRgb = attn * L;
     }
     // ── Godrays: the air in the clouds' shadows loses its sunlight (the light volume). The share of
     // the ray's airlight that is in shadow (each stretch's single scattering, weighted by the ray's own

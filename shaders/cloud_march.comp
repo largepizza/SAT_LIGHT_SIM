@@ -319,6 +319,15 @@ float cloudGroundShadowV2(vec3 groundENU, vec3 sunDir, vec3 obsPos, mat3 enuToEc
     // pixel to pixel in rounding patterns — rings and straight lines of shadow on the sea around the
     // nadir (user snapshot from 7.7 km, pass 13).
     groundENU += normalize(groundENU) * 10.0;
+    // Past the terminator (review 8b) the sun ray points into the Earth and met no cloud: the shadow jumped
+    // from a grazing path's full shadow to none, a hard straight line along the ground terminator while the
+    // sea's own twilight fade still lit it. March along the horizon there instead (the light is fading out
+    // through dayFrac anyway), so the shadow continues across the terminator.
+    {
+        vec3  upG = normalize(groundENU);
+        float su  = dot(upG, sunDir);
+        if (su < 0.002) sunDir = normalize(sunDir + upG * (0.002 - su));
+    }
     if (cv2ShellSegments(groundENU, sunDir, s0, s1) == 0) return 1.0;
     // Two stretches (review 3): 20 steps through the lowest 3.5 km above the ground, where decks and
     // stratus live, then 12 through the rest of the shell. 24 even steps over the whole shell were
@@ -339,7 +348,10 @@ float cloudGroundShadowV2(vec3 groundENU, vec3 sunDir, vec3 obsPos, mat3 enuToEc
         // and fixed midpoints reading 2 km cells at a 60 m footprint aliased into concentric rings of
         // shadow on the sea around the nadir (user snapshot from 7.7 km at sunset, pass 13). At the step's
         // footprint the cells average into their coverage (the field's sub-pixel haze), as the view does.
-        float fpS = max(60.0, ds * 0.5);
+        // At most 3 km (review 8b): near the terminator the upper 12 steps are tens of km long, and at half
+        // that footprint the weather map is a mip whose texels are squares hundreds of km across — shadows
+        // with straight, perpendicular edges over the sea at sunset (user snapshot).
+        float fpS = clamp(ds * 0.5, 60.0, 3000.0);
         vec3  rel = groundENU + sunDir * (a0 + (fi + jitter) * ds) - obsPos;
         // Rain curtains at 15% (review 8): at this footprint they are their mean (0.45) over the map's whole
         // rain area, and a low Sun's path runs tens of km through them under the cloud bases — from 180 km

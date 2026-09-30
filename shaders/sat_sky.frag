@@ -2960,6 +2960,7 @@ void main() {
     // cloud's distance with the no-cloud value (-60000 km) at every cloud edge, a distance that changed
     // every frame with the march's jitter — a black flicker along cloud edges at night (review 6).
     float tCloudFrontM   = abs(cloudA.a) * 1000.0;
+    float tAirFrontM     = tCloudFrontM;
 #ifndef SKY_ENV
     {
         vec4 ga = textureGather(cloudTargetA, cloudUV, 3);
@@ -2967,6 +2968,14 @@ void main() {
         float dn = 1e9;
         for (int k = 0; k < 4; ++k) if (da[k] < 50000.0) dn = min(dn, da[k]);
         if (dn < 1e8) tCloudFrontM = dn * 1000.0;
+        // The air's split (review 8b): the four texels' distances weighted by their bilinear share and
+        // opacity, as the composite blends their (A, B) — at an edge the air follows the cloud that is there.
+        vec4  gT = textureGather(cloudTargetB, cloudUV, 1);
+        vec2  fq = fract(cloudUV * vec2(textureSize(cloudTargetA, 0)) - 0.5);
+        vec4  wq = vec4((1.0 - fq.x) * fq.y, fq.x * fq.y, fq.x * (1.0 - fq.y), (1.0 - fq.x) * (1.0 - fq.y))
+                 * clamp(1.0 - gT, 0.0, 1.0) * vec4(lessThan(da, vec4(50000.0)));
+        float ws = wq.x + wq.y + wq.z + wq.w;
+        if (ws > 1e-4) tAirFrontM = dot(wq, da) / ws * 1000.0;
     }
 #endif
     vec3  accumAirglow = vec3(0.0); // green + sodium bands (C15) — ride these same samples
@@ -3107,7 +3116,7 @@ void main() {
             // Review 7: shadowed air, lit by the twilight sky below (see shadowSky after the loop).
             vec3 aC = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             shR += aC * densR; shM += dot(aC, vec3(1.0 / 3.0)) * densM;
-            float fwS = 1.0 - smoothstep(0.9 * tCloudFrontM, 1.1 * tCloudFrontM, tStart + (float(i) + 0.5) * segLen);
+            float fwS = clamp((tAirFrontM - tStart - float(i) * segLen) / segLen, 0.0, 1.0);   // share of the step in front
             shRF += aC * densR * fwS; shMF += dot(aC, vec3(1.0 / 3.0)) * densM * fwS;
             shT += densR * (tStart + (float(i) + 0.5) * segLen);
             shD += densR;
@@ -3150,7 +3159,7 @@ void main() {
         // the exact opposite of what they exist to do.
         accumR += attn * densR * atmTermW8;                  // Rayleigh: wavelength-dependent (blue sky)
         accumM += dot(attn, vec3(1.0 / 3.0)) * densM * atmTermW8; // Mie: wavelength-neutral (white haze/corona)
-        float fwC = 1.0 - smoothstep(0.9 * tCloudFrontM, 1.1 * tCloudFrontM, tStart + (float(i) + 0.5) * segLen);
+        float fwC = clamp((tAirFrontM - tStart - float(i) * segLen) / segLen, 0.0, 1.0);   // share of the step in front
         accumRF += attn * densR * atmTermW8 * fwC;
         accumMF += dot(attn, vec3(1.0 / 3.0)) * densM * atmTermW8 * fwC;
     }
@@ -3173,10 +3182,8 @@ void main() {
         color += (1.0 - atmTermSpace) * 0.5 * sky * (BETA_R * shR + vec3(BETA_M * shM));
         skyShadowF = (1.0 - atmTermSpace) * 0.5 * sky * (BETA_R * shRF + vec3(BETA_M * shMF));
     }
-    // The air in front of the clouds, for DISTANT clouds only (the march keeps its own airlight for near
-    // ones, with the same 40-150 km crossover on its mean cloud depth).
-    vec3 airFront = (SUN_INTENSITY * (pR * BETA_R * accumRF + vec3(pM * BETA_M * accumMF)) + skyShadowF)
-                  * smoothstep(40000.0, 150000.0, tCloudFrontM);
+    // The air in front of the clouds, at every distance (the march has none of its own since review 8b).
+    vec3 airFront = SUN_INTENSITY * (pR * BETA_R * accumRF + vec3(pM * BETA_M * accumMF)) + skyShadowF;
 
     // City light-pollution glow dome, composited once here (see accumCity comment in the loop
     // above). nightFactor fades it out through the day — cheap local gate rather than reusing

@@ -990,6 +990,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   neighbours) and the same weight (`mk` also from `wNew`); full-rate pixels lean toward their 3x3 tent
   by 0.4 x mk x w. At "History weight moving" 1 in sparse tiles the image is still single-frame rays:
   grain, no longer a checker.
+- **Review 8/8b:** **The air in front of every cloud is the sky pass's** (`airFront` in sat_sky.frag,
+  accumulated in its atmosphere loop up to `tAirFrontM` — the four half-res texels' distances weighted
+  by bilinear share x opacity, each step by its covered fraction — and composited x (1 - A)); the march
+  outputs `attn * L` only. Its own 8-step airlight read far darker than the sky's at a grazing Sun
+  (horizon clouds were dark silhouettes 100-600 km out), and a distance split between the two (review 8)
+  disagreed at cloud edges: dark 2x2 specks and flicker along silhouettes. **Blue-noise jitter always**
+  (per visit): the history's residual of IGN was a fine crosshatch over still clouds. **"History weight
+  moving" <= 0.5** (default 0.4; load clamps): at 1.0 motion showed the quarter grid's raw rays.
+  **Low bases over plateaus:** the regional ground (weather alpha mip 4, ~80 km, never above the local)
+  lifts in full, only the relief above it at 0.6-0.9 — over Tibet the decks sat inside the plateau (a
+  clear disc with a ring rim from orbit). **Ground shadow** (`cloudGroundShadowV2`): the field without
+  the far-field substitution (`gCv2NoFar`), rain curtains at 15%, read footprint <= 3 km (coarser, the
+  weather mips drew straight-edged squares), and past the terminator it marches along the horizon (the
+  sun ray into the Earth met no cloud: a hard line along the ground terminator). The far field has a
+  16-km octave. Harness note: with `auto_exposure` on, frames after `wait settle` still drift in
+  brightness — set `clouds_v2.auto_exposure 0` before measuring flicker.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -1005,7 +1021,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
-- The Clouds tab's slider slots: `kCloudSliderSlots` (212) sizes all four per-slider arrays and
+- The Clouds tab's slider slots: `kCloudSliderSlots` (213; 212 = ground pattern range) sizes all four per-slider arrays and
   `cloudBufs` (212 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
   moving, ice fog x2, sprite start; 207-209 Cb head lobes, drop distance, snow wind; 210 move speed (Controls tab), 211 erosion size); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
@@ -4058,6 +4074,14 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   averages to the map by design, so from an aircraft or 40 km a city was the map's smooth 5-km texels.
   `cityDayFar` adds km-scale structure over 80 m .. 4 km footprints (parks on the near layout's void
   field, bright roof zones, a mottle following the footprint; a ratio of mean ~1).
+  **Farms (review 8, `farmDayAlbedo`):** rectangular fields from a recursive split of blocks
+  (`farmRects`), styles per ~130-km area by region: GRID (the Americas, Australia, some steppe: mile
+  sections, quarters, gravel roads, centre pivots where dry, crop rows), STRIPS (Europe, Africa, the Middle
+  East, dry Asia: 300-700 m blocks split into strips, orientation per 2-km cell with a track on its edge),
+  PADDIES (monsoon Asia where green: small bunded plots, a regional share flooded; `farmWet` adds a
+  Fresnel sky reflection and sun glint in the terrain lighting). Replaced a stretched Voronoi patchwork.
+  "Ground pattern range (m/px)" (`clouds.ground_pattern_range_m` 800, slot 212, UBO `groundPatternFootM`
+  = v1's unread shadowMaxDistM renamed): the farms fade over 0.55-0.9 of it (was a fixed 400).
 - Pre-existing bugs fixed on the way: the water mask forced INLAND lakes to sea level (pits under
   Lake Thun, Powell, Titicaca — now only where the DEM is < 160 m, `kWaterMaskMaxM`); terrain normals
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the

@@ -432,7 +432,12 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // same height above the ground everywhere; decks follow it less (they hug and bank against
     // slopes). With every base above sea level the Tibetan plateau and the Andes stood inside the
     // cloud, and every ridge cut through it. Tops rise with the base, but not past the tropopause.
-    float lift   = cv2Ground(q.dirE) * mix(0.6, 0.9, ty.look.z);
+    // Review 8b: the REGIONAL ground (~80 km, mip 4, never above the local) lifts in full; only the relief
+    // above it banks at 0.6-0.9. A plateau is the ground its boundary layer rides on: at 0.6-0.9 of its
+    // 5 km the decks over Tibet sat inside the plateau and were cut away (a clear disc with a ring rim).
+    float gF     = cv2Ground(q.dirE);
+    float gC     = min(gF, textureLod(cv2WeatherTex, q.dirE, 4.0).a * 8000.0);
+    float lift   = gC + (gF - gC) * mix(0.6, 0.9, ty.look.z);
     float topCap = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo;
     topMax = min(topMax + lift, max(topCap, ty.alt.x + lift + 500.0));
     // With the Cb COLUMN layer on (cv2ColumnSigma) the towers and their heads are that layer's: here a
