@@ -119,7 +119,7 @@ knockout +terrain_march
 wait settle 5
 capture noterrain
 knockout none
-wait settle 5
+wait settle 20
 capture back
 """)
     cap = os.path.join(out, "captures")

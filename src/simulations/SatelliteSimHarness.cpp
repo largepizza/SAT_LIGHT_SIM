@@ -550,6 +550,10 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 const int frames = arg.empty() ? 40 : (int)parseNum(arg, "wait settle");
                 harnessSettleSavedPaused_ = timePaused;
                 timePaused = true;
+                // The sky TAA restarts with the settle (history and jitter phase): a settled capture then
+                // depends on the settle alone, not on how many frames ran before it (boot length varies).
+                skyTaaHistValid = false;
+                skyTaaFrame = 0;
                 harnessSettleFrames_ = std::max(1, frames);
                 a.scratch["frames"] = harnessSettleFrames_;
                 return Status::Pending;
