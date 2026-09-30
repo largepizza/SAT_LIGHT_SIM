@@ -44,7 +44,7 @@ Constellations* · *GPU Orbital Pipeline* (two-dispatch pattern, buffers, `Gpu*`
 constants) · *TargetedReflector / Mirror Ground Targets* · *Reflect-Orbital Beam Cloud Occlusion* ·
 *GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22).
 
-**Rendering** — *UIRenderer / Clay* (icon atlas, the fixed-bitmap font, manual hit-testing) ·
+**Rendering** — *UIRenderer / Clay* (icon atlas, the fixed-bitmap font, manual hit-testing) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
 *Photometry / Shader Constants* (lobe model, bloom and glare) · *Light Pollution Dome* · *Atmospheric
 Extinction* · *Sky Glow SSBO* · *Planets* · *Cloud Shadows* · *Resolution Scaling* · *Weak-Hardware
 Sky Tiers (Potato / SKY_LITE)*. The mesh renderer, model viewer and environment probes are
@@ -60,7 +60,7 @@ Development: Earth / Terrain Rendering* (read **Elevation texture encoding** bef
 code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
-`imgtools.py`, `selftest.py` — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
+`imgtools.py`, `selftest.py`, `gc.py` — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
 validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
@@ -933,6 +933,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   -3 EV x "Auto exposure (day)") and only by day. Harness `state` reports it under `exposure`. Highlight
   roll-off blends the tonemap toward 1 - 1/(1 + x + x^2/2) (same toe, long shoulder); White balance adapts
   to the sunlight's colour at the observer (a low Sun is yellow; without it every cloud read beige).
+- **The Earth from space vs the Artemis II photographs (2026-09-30, `harness_runs/artemis_ref/`, Wikimedia
+  Commons JPGs).** Measured: in the photos sunlit cloud is ~10x the open sea in linear light; the sim showed
+  ~2.5x (a sky-cyan sea under a milky veil). The raw sea surface was right (debug view 43: navy); the cause
+  was exposure + tonemap. (1) **Auto exposure spot-meters the lit Earth from altitude** (`readExposureMeter`,
+  100 -> 1500 km ramp): the mean over pixels brighter than 0.08 (the whole-frame mean counted black space, so
+  a small bright Earth never darkened) toward 0.42 (the photos' lit-Earth mean in the meter's units), clip
+  counted against the lit pixels, down to -5 EV, gated by lit Earth in view instead of the Sun at the
+  observer's nadir (the night-side crescent blew out). (2) **Orbit colour grade** after the tonemap
+  (`sat_sky.frag`, `cloud.taaJitter.z` = "Orbit colour grade" x a 30 -> 300 km ramp, slot 219, key
+  `clouds.orbit_grade`): y = 1.16 x^2.2 display-linear (fitted to the photos' values) + 30% desaturation.
+  The Mie and Rayleigh gains had NO effect on the veil from 70,000 km — do not chase it there.
 - **Rainbows are done** (user-approved 2026-09-28): they show at storms on the terminator (low Sun behind
   the observer); a harness run that does not frame one is a location problem, not a render one.
 - **Target A's alpha is a signed distance in KILOMETRES** (`include/cloud_occlusion.glsl`): >= 0 opaque
@@ -1014,6 +1025,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the edges of the high layer (which the eye is inside there), in its shadow: reduced ~40%, not gone
   (high layer off removes them). **Ground shadow:** a 2x2 ORDERED start offset (was white noise: grain)
   with sat_sky.frag's shadow blur a [1 2 1] tent at 1 texel, which averages a period-2 pattern exactly.
+- **Review 10 (2026-09-30):** a texel with cloud but NO distance (the resolve blended history's cloud into a
+  texel whose own sample found none) takes its neighbours' opacity-weighted distance (cloud_march.comp);
+  an OPAQUE texel stores max(tHalf, mean distance) — along a grazing path through a cirrus veil the half
+  point landed IN the veil (~20 km) in front of a cumulus at ~55 km, and the sky pass split the air there
+  (every point source is 100+ km away, so their occlusion is unchanged). The cirrus shadow on lower cloud is
+  delta-scaled harder in the light march (`1 - 0.8 thin`, g ~0.8: real cirrus barely dims what is under it),
+  and seen from INSIDE the high layer (view footprint 4-20 m) the fibres give way to the layer's mean haze.
+  Specks along cumulus edges seen from inside cirrus (user snapshot, 9 km at 62 N) are reduced, not gone:
+  debug views 46-49 (harness `debugview cloudairsplit|cloudtrans|cloudrad|cloudalpha`) show where the air
+  split steps. Tried and reverted: w^2-weighted mean distance, a dark-outlier despeckle in cloud_march.comp
+  (both global, neither measurably helped here).
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -1029,7 +1051,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
-- The Clouds tab's slider slots: `kCloudSliderSlots` (213; 212 = ground pattern range) sizes all four per-slider arrays and
+- The Clouds tab's slider slots: `kCloudSliderSlots` (221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
   `cloudBufs` (212 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
   moving, ice fog x2, sprite start; 207-209 Cb head lobes, drop distance, snow wind; 210 move speed (Controls tab), 211 erosion size); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
@@ -3074,6 +3096,30 @@ struct GpuGlowBuf {
 
 ---
 
+## Subsystem: The Moon as a body (2026-09-30)
+
+`updatePositions` computes the Moon's geocentric ECI position (the Keplerian two-body ellipse, AU -> m) and
+from it, per frame: the TOPOCENTRIC direction (`moonDirENU`, up to ~1 deg of parallax from the ground, far
+more in deep space), the true angular radius x "Moon size (x real)" (`moonSizeScale`, slot 220, key
+`clouds.moon_size`; the old disc was a fixed 3x at infinity), the Earth-centred position in the observer's ENU
+(km) and the eclipse state — all into `cloud.moonCenter` / `cloud.moonMisc` (UBO 784 -> 816).
+- **Tidally locked**: the texture frame's z axis points at the EARTH'S CENTRE (it pointed at the observer, so
+  the face never turned); the far side (from space) is the near-side image flattened toward its mean.
+- **Lunar eclipses** per surface point: the Earth's disc against the Sun's (seen from that point, with the
+  Sun's 0.15-deg parallax from the Moon), penumbra -> umbra, and the umbra's red refracted light.
+- **Solar eclipses**: near the Moon the Sun disc takes its TRUE radius (it is drawn ~2x large for the glare
+  otherwise) and is hidden where the Moon is; glare, halo and the sky dim with the Sun the observer sees
+  (`moonMisc.x`, CPU `discOverlapFrac`); a corona at totality; the Moon's shadow on the ground per pixel
+  (`moonSunVisible` on directSun) and uniformly on the clouds' key light (per-sample would risk the v2 march's
+  register cliff). An annular eclipse falls out of the geometry.
+- **The Moon writes its distance into the unified depth**, so stars and planets behind it are depth-occluded
+  and satellites (nearer) draw in front; star_point.vert's cull takes the real radius from
+  `PointDrawPC::moonDirENU.w`.
+- The ephemeris has no evection/variation (a few degrees off the real Moon), so eclipses are the SIM's, not the
+  real dates: harness `eclipse solar|lunar` finds the next one (`SatelliteSim::findEclipse`, hourly scan +
+  golden section) and places the observer. `scripts/moon.satcmd`. SKY_ENV probes use the main observer's
+  `moonCenter`, so the Moon's face in reflections is approximate.
+
 ## Subsystem: Planets
 
 See `PLANETS_PLAN.md` for the session log and forward-looking next-steps list (in-app QA still
@@ -3352,6 +3398,31 @@ used, so brightness is comparable. The march phase is jittered off `noiseTex` be
 half-res texels can map to ground points kilometres apart at grazing angles.
 
 ---
+
+## Subsystem: Sky TAA — temporal anti-aliasing of the background (2026-09-30)
+
+The user asked for terrain anti-aliasing; silhouettes, detail normals, far textures and city glitter all
+aliased because the sky pass shades one ray per pixel. At renderScale 1 with the full sky shader
+(`skyTaaWanted`; Potato/Lite and renderScale < 1 keep their paths), `recordPrePass` → `recordSkyTaa`:
+1. `sat_sky.frag -DSKY_TAA` (`sat_sky_taa.frag.spv`) renders the background offscreen with a Halton (2,3)
+   sub-pixel jitter (`cloud.taaJitter.xy`, applied to the ray via the interpolated direction's screen
+   derivatives) into RGBA16F + its unified depth as an R32F colour (no depth attachment).
+2. `sky_taa.comp` reprojects the previous RESOLVED frame exactly (camera rotation + the eye's motion at each
+   pixel's depth, both from the CPU in double, in this frame's ENU; sky by rotation alone), samples it
+   Catmull-Rom, rejects disocclusion against the RANGE of the 2x2 history depths (against one texel it
+   rejected every silhouette pixel every frame — no anti-aliasing at all), variance-clips it in YCoCg (the
+   3x3 of this frame) and blends (`display.sky_taa_weight` 0.1 still, `_moving` 0.35 past ~4 px of motion).
+   Ping-pong histories in GENERAL layout.
+3. The result is blitted into the swapchain; the main pass (renderPassLoad) opens with `taa_depth_restore.frag`
+   writing the depth back (colour writes off), so stars, planets and satellites draw over it unjittered and
+   occluded. Display tab "Temporal AA (terrain, sky, sea)", `display.sky_taa`. Cost +1.1 ms still, +0.8 panning
+   (1600x900). The half-res cloud composite rides in it, so cloud edges are averaged on screen too.
+- **The swapchain now has TRANSFER_DST usage** (`swapTransferDstSupported`): the renderScale < 1 prepass had
+  been blitting into images without it. **The main pass's three variants share ONE dependency list**
+  (`mainPassDependencies`): compatibility includes dependencies, and every draw of a load or boot frame was
+  invalid against the framebuffers and pipelines made with ctx.renderPass (validation layer, 2026-09-30).
+- Run with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` after touching any of this; the harness run's
+  `app_stdout.txt` holds the messages. `scripts/sky_taa.satcmd` (set `display.sky_taa` with `true`/`false`).
 
 ## Subsystem: Resolution Scaling
 
@@ -3758,6 +3829,22 @@ Read it at the start of any terrain-related session before making changes.
     binds (a straight-down path through the ~200km shell is already ~14 steps at the target
     resolution). See `TERRAIN_PLAN.md` session 29 log for the full four-round history (step cap →
     pre-filters → noise bake → resolution move) and the specific approximations each step accepted.
+- **Aurora sheets (2026-09-30, `cloud_march.comp` auroraSheetIndex / auroraSheetLight, in
+  auroraMarchSegment).** Thin emissive curtains over the diffuse volume: the level sets S = n of an index
+  field (colatitude / spacing + a sum of travelling waves; where its gradient across the oval passes 1 the
+  sheets fold into curls). Each ray crossing is integrated EXACTLY: emission x sigma sqrt(2 pi) / |dS/dt|
+  (the path length through a Gaussian sheet, capped at two steps), so edge-on curtains are crisp ribbons at
+  any resolution with no sampling noise; crossings are found between the volume march's own samples and
+  refined by two regula-falsi steps on the exact index. Crisp or fuzzy per sheet and per ~500 km of oval;
+  a sharp lower border (pink N2 edge), rays (field-aligned striations: from the ground they converge on the
+  magnetic zenith as a corona), red tops. The index is carried across EVERY sample (dropping it where the
+  oval mask was 0 cut the sheets in whole-step chunks: a staircase). Folds finer than the 15-km steps alias
+  (a crossing and its return inside one step are missed): the 71x wave does not scale with "Sheet folds",
+  capped at 2. Cost +0.55 ms of cloud march in a storm. Settings (Atmosphere tab, aurora): "Curtain sheets"
+  `clouds.aurora_sheets` 1, "Sheet spacing (deg)" 0.3, "Crisp sheets (share)" 0.5, "Sheet folds" 1 (slots
+  215-218, UBO `auroraSheets`). The aurora's light on the ground (terrain and sea) was REMOVED the same day
+  (the user: green and bad); `auroraContribTerrain` stays as a zero term. Test from a DARK site (Coldfoot,
+  67.25 N 150.18 W, December): Fairbanks' skyglow gates the aurora out. `scripts/aurora_sheets.satcmd`.
 - **Next:** C14 (Anvil) remains not started — deferred repeatedly in favor of C15/C16 per the
   2026-07-12 session — and can be picked up whenever; it has no dependency on C15/C16. Otherwise
   Phase E is complete (C13, C15, C16 done); C9/C11/C12 and noise-repetition cleanup are next in
@@ -4090,6 +4177,25 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   Fresnel sky reflection and sun glint in the terrain lighting). Replaced a stretched Voronoi patchwork.
   "Ground pattern range (m/px)" (`clouds.ground_pattern_range_m` 800, slot 212, UBO `groundPatternFootM`
   = v1's unread shadowMaxDistM renamed): the farms fade over 0.55-0.9 of it (was a fixed 400).
+- **Regional city styles (2026-09-30, sat_sky.frag `cityStyleWeights`, `kCs*` tables).** Nine styles by
+  soft continental boxes with wobbled borders: 0 North America + Oceania, 1 Latin America, 2 Mediterranean
+  Europe, 3 Northern Europe, 4 Middle East / N Africa / Central Asia, 5 Sub-Saharan Africa, 6 South + SE Asia,
+  7 East Asia, 8 post-Soviet. GEOMETRY is one style per 16-km region, drawn from the weights at the region's
+  CENTRE (`cityRegionUp`: the face frame's absolute coordinates are dAnc x 4096 + p2), so a grid never changes
+  inside a region: street spacing and range, long blocks (the odd y lines dropped: `CityGrid::oddY`), grids on
+  local north (US survey, Chinese plans: the angle of north at the region centre in the face frame), organic
+  warp, patchwork share, lots per side, PERIMETER courtyard blocks and SLAB rows — by DISTRICT (`distH`;
+  scattered single rings read as picture frames). COLOUR blends per pixel: roof shares (terracotta, light flat,
+  blue-green metal, slate + the generic mix, `cityRoofS`), bare / paved / trees, lamp LED share and cool-white
+  share (`gCityCool`), coloured-sign multiplier (`gCitySign`). **The day ratio is taken against the pattern
+  mean's LUMINANCE where the base is greyed** (`cityDayAlbedo(..., grey)`, `cityDayFar(..., grey)`): per
+  channel, the lawn-green mean turned neutral asphalt magenta on the grey base (purple streets at ground level).
+  `scripts/city_styles.satcmd`.
+- **Terrain-following city limits (2026-09-30, terrain.glsl `cityTerrainLimit`).** Lights and built-up land end
+  at a CONTOUR 150-480 m (brighter cores higher, wobbled +-90 m) above the ~40 km mean ground (DEM mip 4.5), and
+  none above ~4.5 km, besides the old slope cut; shared by sat_sky.frag (surface: `cityLights` and `cityLum`
+  scaled before the layout) and city_sprites.comp (the far points). Rio's peaks and the ranges behind Hong Kong
+  and Salt Lake City go dark; the night map's 5-km blur no longer climbs mountainsides.
 - **Land at 0 m is terrain (review 9):** a march that ends on the sea sphere over LAND (the water map's
   test at that point) is a terrain hit there, and only water voids a hit (`hitWater`). Land can read 0 m
   (the Lena delta: DEM 0, the water map land), and whether the march landed on the sphere or passed it was
@@ -4158,6 +4264,37 @@ normals` repaints **0.00 %** of open water at 60 m AGL afterwards, the beauty di
 bit-identical to the pre-fix baselines, v6/v7 ≈0 %, v8 1.68 % confined to the seaward wedge below the
 horizon (that wedge *is* ocean), and v5's 32.6 % was a moved *date* from splitting the script rather than
 the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
+
+### The sea (2026-09-30) — `sat_sky.frag` seaHeight / oceanSeaState / shoreSignedDist
+
+- **The wave field is EXACTLY periodic** over (kSeaPeriodX, kSeaPeriodY) = (28571.4, 21428.6) m: the noise
+  lattice hashed mod `kSeaCells` (1200), ridges every 6 cells, an INTEGER octave matrix [2 1; -1 2] and integer
+  per-octave scales (`kSeaOctA`), arguments reduced mod kSeaCells per octave. The CPU wraps the observer's world
+  offset (cityOffsetEast/NorthM, double) into one period (`cloud.oceanState.xy`): seamless, and small at any
+  distance flown. Review 9 had fed the waves the unbounded float offset: after a long flight the octave
+  arguments (~12x the offset) lost their fraction and the texture broke up (the user's report).
+- **Sea state** (`oceanSeaState`, "Sea state from weather" `clouds.ocean_sea_state` 1, slot 213): the wave
+  amplitude as a multiple of the old fixed sea from the weather cube (~40 km: storm = cover x convective type
+  + rain), the westerly belts and a slow regional wind; choppiness follows. **Whitecaps** ("Whitecaps"
+  `clouds.ocean_whitecaps` 1, slot 214): crest foam near (the crest values run ~0.35-0.8, top 5% ~0.7), the mean
+  foam fraction (~Monahan) as albedo far, lit as a white diffuser (sun + 0.9 x the sky reflection).
+- **Shore** (`shoreSignedDist`, the height function's own waterline): waves shoal to 0.4 over 150 m, breaker
+  lines roll in, and the waterline is anti-aliased half from each side (the sea toward wet sand, the beach
+  toward a dark water albedo) over a pixel footprint.
+- **The wave trace steps to the FIRST crossing** (5 coarse steps, then 6 secant) — the secant alone converged on
+  back faces behind crests. **Below-horizon reflections** (a steep facet mirrors the next wave, not the sky) take
+  0.2 x the horizon's light (`reflWaterK`). **The sky-reflection march uses u^2 spacing**: 6 uniform samples over
+  a ~1000-km grazing path made the extinction far too high and the reflected horizon tan (streaks on every
+  steep face — the "tan patches" were pre-existing). The on-screen clouds are composited into the reflection,
+  leaning back to the clear march by the cloud's distance (the target lacks the air in front of it).
+- **The satellite ocean-glint loop is skipped when its result is zero** (day, or above ~8 km): 512 entries x two
+  texture fetches per ocean pixel cost 6 ms of the sky pass from orbit (the `water_map` knockout "saved" it only
+  because it turns the sea into cheaper terrain).
+- Debug views 40-45 (harness `debugview oceanrefl|oceanfresnel|oceanstate|oceansurf|oceannormal|oceanshore`).
+- **Water map from Natural Earth 10 m** (`tools/make_water_map.py`, 2026-09-30): land + lakes rasterised at 16K
+  between 60 S and 72 N, the distance field averaged down to the 8K texels (sub-texel zero crossing; ~1 km vs
+  the 5-km mask's ~2.5 km). Outside the band the 8K mask (ice shelves). Reads the .r8 copies, never the PNGs.
+- `scripts/ocean_v2.satcmd` (long travel + beach + sea state + aurora ground).
 
 ### Satellite ocean-glint gain / floor (2026-09-26) — `sat_sky.frag`, `OceanGlintBuf`
 

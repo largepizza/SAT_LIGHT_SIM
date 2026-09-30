@@ -116,6 +116,9 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `state [name]` | the full state as the command result (and a file if named); `clouds_v2.rate` is the march's rate this frame (sparse / full / half / adaptive); `satellites.visible_count` the compact visible list's length (satellites + city light sprites) |
 | `probe <x> <y>` | what the terrain algorithm does for one pixel's ray (`terrain_probe.comp`, the same functions the renderer uses): the seed from the shared depth, the seeded march and a march from the eye (distance, steps), the DEM/detail/roughness at the hit, and a 64-sample `profile_t_rayalt_dem_H` (t, ray altitude, DEM, DEM + detail) along the ray. Pixel coordinates are the capture PNG's |
 | `debugview <off\|normals\|detail\|steps\|albedo\|shadow\|rough\|elevzebra\|distzebra\|erosion>` | replace terrain pixels with a debug channel: normals, detail height / amplitude, march steps (blue few .. red the budget), albedo, sun shadow x Lambert, roughness/rock/snow as R/G/B, zebra stripes every 25 m of elevation / 100 m of hit distance (broken or jagged stripes = height or convergence jitter), and the erosion octaves alone (grey = none, bright ridge / dark gully relative to their bound, blue = too gentle a slope for any). Not persisted |
+| `debugview <oceanrefl\|oceanfresnel\|oceanstate\|oceansurf\|oceannormal\|oceanshore>` (40-45) | the SEA's channels (2026-09-30): the sky reflection x0.05, fresnel / below-horizon reflection factor / reflection strength, sea state /2 / crest / detail blend, the surface before the Moon and glints, the wave normal, the shore distance (r land side, g water side, /100 m). Written raw into the swapchain: a capture's sRGB value^2.2 reads the number |
+| `debugview <cloudairsplit\|cloudtrans\|cloudrad\|cloudalpha>` (46-49) | the cloud COMPOSITE in sat_sky.frag: the air split distance (/100 km; the haze in front of a cloud is split there), the cloud transmittance, its radiance x20 (saturates on lit cloud), the raw alpha (r opaque distance, g translucent mean distance, /100 km). Specks and stair-steps along cloud edges show up in 46 when they are the air split's |
+| `eclipse <solar\|lunar>` | the SIM's next eclipse (its two-body Moon is a few degrees off the real one, so not the real dates): sets the time, puts the observer under the Moon (lunar) or where the Sun -> Moon axis meets the Earth (solar), aims at the Moon; reports the Sun fraction the observer sees. `tools/harness/scripts/moon.satcmd` |
 | `perf [frames=60] [name=]` | average raw GPU timestamp buckets and CPU buckets over N frames, plus the GPU total and wall frame-time distributions. `name=` also appends it to the run's perf log |
 | `shaders reload [march=<spv>] [wg=<X>x<Y>]` | rebuild the clouds v2 march and resolve pipelines from the SPVs on disk (after `cmake --build build --config Release --target CompileShaders` and a copy of the two SPVs into `build/Release/shaders/` — the full build's post-build copy fails while the app holds files open) and drop the cloud history. A shader iteration without an app launch: use it with one `live.py` app. `march=` loads another SPV (path relative to the exe) so variants interleave in one batch; `wg=` sets the march's workgroup size (specialization constants, default 16x16), which bounds the registers the driver may give a thread. Reports the driver's statistics (`VK_KHR_pipeline_executable_properties`: Register Count, Binary Size, Local Memory Size (spills; the high 32 bits are junk)). **Check Register Count before timing a variant**: NVIDIA gives this shader either 128 or ~227 registers and the second is 20-60% slower (the 2026-09-29 perf sprint: `harness_runs/perf_sprint/`, the scripts `ab.sh`, `attr.sh`, `mk.sh` there) |
 | `lightning` | the lightning flashes in progress (the previous frame's list, `cloud_v2_lightning.comp`): each one's id, intensity, cloud-to-ground or not, `sprite` (a red sprite, kind 2), age, distance and observer-relative position, plus the thunder queue (`thunder_pending`, `thunder_rolls`). Flashes follow sim time, so with time paused one stays frozen: `time add 0.25` steps through a flash |
@@ -362,6 +365,15 @@ script's first command, so scripts are unaffected.
 - `satlight_log.txt` has one `boot: <step> (<ms since launch>)` line per step: the launch's cost
   per step.
 - `run.py --boot-screen off` is the old white-window launch, for comparison.
+
+## Cleaning up run folders
+
+`python tools/harness/gc.py` (dry run by default; `--apply` deletes) removes run folders from `harness_runs/`
+and `harness_live/run_*` older than `--keep-days` (7) unless they are PINNED (`gc.py --keep <run>` writes a
+`KEEP` file), REFERENCED by name from CLAUDE.md, docs/, .plans/ or the agent memory folder (a note citing
+`harness_runs/cloud_v2_p10b` keeps that evidence), or the live app's current folder. `--slim` also thins the
+`path play record=` frame sequences of kept runs older than `--slim-days` (1) to every 30th frame — most of
+the space. Pin a run you will want to compare against later before it ages out.
 
 ## Launch spacing (read this before scripting many runs)
 
