@@ -435,4 +435,7 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // auroraSheetsAdd): x strength (0 = off, the volume alone), y spacing between sheets (degrees of colatitude),
     // z share of crisp sheets (0 all fuzzy .. 1 all crisp), w fold amount (curls and spirals; 0 = straight arcs).
     vec4  auroraSheets;
+    // -- Sky TAA (768 -> 784, 2026-09-30): xy the sub-pixel jitter of this frame's sky pass (pixels), read
+    // only by sat_sky.frag -DSKY_TAA; zw unused.
+    vec4  taaJitter;
 } cloud;

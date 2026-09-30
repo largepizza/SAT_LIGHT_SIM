@@ -616,6 +616,11 @@ void VulkanContext::createSwapchain(GLFWwindow *window)
     screenshotSupported = (sc.caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
     if (screenshotSupported)
         ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    // The background prepasses (renderScale < 1, sky TAA) BLIT into the swapchain image: TRANSFER_DST.
+    // It was never requested (the validation layer, 2026-09-30); without support those paths stay off.
+    swapTransferDstSupported = (sc.caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0;
+    if (swapTransferDstSupported)
+        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     uint32_t qfams[] = {graphicsFamily, computeFamily};
     if (graphicsFamily != computeFamily)
     {
@@ -676,6 +681,35 @@ VkFormat VulkanContext::findDepthFormat()
 }
 
 // ─── Render pass ──────────────────────────────────────────────────────────────
+// The main pass's three variants (clear, load, boot) share ONE dependency list: render pass compatibility
+// (the framebuffers and every pipeline are made against ctx.renderPass) includes the dependencies, and the
+// variants had one each — the validation layer reported every draw of a load or boot frame (2026-09-30).
+// compute -> fragment reads; a prepass's blit -> the colour attachment; the previous colour output.
+static void mainPassDependencies(VkSubpassDependency deps[3])
+{
+    deps[0] = {};
+    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[0].dstSubpass = 0;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    deps[1] = {};
+    deps[1].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[1].dstSubpass = 0;
+    deps[1].srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    deps[1].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    deps[1].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[2] = {};
+    deps[2].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[2].dstSubpass = 0;
+    deps[2].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[2].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[2].srcAccessMask = 0;
+    deps[2].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+}
+
 void VulkanContext::createRenderPass()
 {
     depthFormat = findDepthFormat();
@@ -709,14 +743,8 @@ void VulkanContext::createRenderPass()
     sub.pColorAttachments = &colorRef;
     sub.pDepthStencilAttachment = &depthRef;
 
-    // Subpass dependency: ensure compute finishes before fragment reads
-    VkSubpassDependency dep{};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dep.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    dep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    VkSubpassDependency deps[3];
+    mainPassDependencies(deps);
 
     VkAttachmentDescription attachments[] = {color, depth};
     VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
@@ -724,8 +752,8 @@ void VulkanContext::createRenderPass()
     ci.pAttachments = attachments;
     ci.subpassCount = 1;
     ci.pSubpasses = &sub;
-    ci.dependencyCount = 1;
-    ci.pDependencies = &dep;
+    ci.dependencyCount = 3;
+    ci.pDependencies = deps;
 
     if (vkCreateRenderPass(device, &ci, nullptr, &renderPass) != VK_SUCCESS)
         throw std::runtime_error("vkCreateRenderPass failed.");
@@ -789,14 +817,18 @@ void VulkanContext::createRenderPassLoad()
     deps[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     deps[1].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
+    VkSubpassDependency depsAll[3];
+    mainPassDependencies(depsAll);   // the shared list (deps above are its first two)
+    (void)deps;
+
     VkAttachmentDescription attachments[] = {color, depth};
     VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
     ci.attachmentCount = 2;
     ci.pAttachments = attachments;
     ci.subpassCount = 1;
     ci.pSubpasses = &sub;
-    ci.dependencyCount = 2;
-    ci.pDependencies = deps;
+    ci.dependencyCount = 3;
+    ci.pDependencies = depsAll;
 
     if (vkCreateRenderPass(device, &ci, nullptr, &renderPassLoad) != VK_SUCCESS)
         throw std::runtime_error("vkCreateRenderPass (load variant) failed.");
@@ -850,13 +882,8 @@ void VulkanContext::createRenderPassBoot()
     sub.pColorAttachments = &colorRef;
     sub.pDepthStencilAttachment = &depthRef;
 
-    VkSubpassDependency dep{};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.srcAccessMask = 0;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    VkSubpassDependency deps[3];
+    mainPassDependencies(deps);
 
     VkAttachmentDescription attachments[] = {color, depth};
     VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
@@ -864,8 +891,8 @@ void VulkanContext::createRenderPassBoot()
     ci.pAttachments = attachments;
     ci.subpassCount = 1;
     ci.pSubpasses = &sub;
-    ci.dependencyCount = 1;
-    ci.pDependencies = &dep;
+    ci.dependencyCount = 3;
+    ci.pDependencies = deps;
 
     if (vkCreateRenderPass(device, &ci, nullptr, &renderPassBoot) != VK_SUCCESS)
         throw std::runtime_error("vkCreateRenderPass (boot variant) failed.");

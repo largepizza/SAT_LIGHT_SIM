@@ -1,0 +1,126 @@
+#version 450
+// Temporal anti-aliasing of the sky / terrain / ocean background (2026-09-30, the user: "terrain anti
+// aliasing"). sat_sky.frag -DSKY_TAA renders the background each frame with a sub-pixel jitter (a Halton
+// (2,3) sequence, cloud.taaJitter) into an RGBA16F colour + an R32F copy of its unified depth; this pass
+// reprojects the previous RESOLVED frame into this one and blends:
+//   - reprojection is exact for a static world: the pixel's ray (unjittered), its distance from the depth,
+//     the eye's motion since last frame and last frame's camera (both in THIS frame's ENU, from the CPU in
+//     double); sky pixels (depth 1) reproject by rotation alone
+//   - history is sampled with a 9-tap Catmull-Rom (bilinear alone blurs a little more every frame)
+//   - rejected where last frame's depth at the reprojected point disagrees (a surface uncovered)
+//   - clamped to the 3x3 neighbourhood of this frame's samples in YCoCg (variance clip), so anything that
+//     moves on its own — waves, clouds, beams, twinkling lights — cannot ghost
+// The resolved frame is blitted into the swapchain; the main pass restores the depth from the R32F copy
+// (taa_depth_restore.frag), so stars, planets and satellites are drawn over it sharp and occluded.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D curColor;    // this frame, jittered
+layout(set = 0, binding = 1) uniform sampler2D curDepth;    // this frame's unified depth (log)
+layout(set = 0, binding = 2) uniform sampler2D histColor;   // last frame's resolved colour (linear filter)
+layout(set = 0, binding = 3) uniform sampler2D histDepth;   // last frame's depth (nearest)
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D outColor;
+layout(set = 0, binding = 5, r32f)    uniform writeonly image2D outDepth;
+
+layout(push_constant) uniform PC {
+    vec4 c2e0, c2e1, c2e2;   // camera -> ENU (this frame), rows
+    vec4 e2p0, e2p1, e2p2;   // this frame's ENU -> last frame's camera, rows
+    vec4 eyeDelta;           // xyz: this eye - last eye, in this frame's ENU (m); w: 1 = history valid
+    vec4 cam;                // x tan(fovY/2), y aspect, z new-sample weight when still, w weight in motion
+} pc;
+
+const float kDepthNearM = 0.01;
+const float kDepthFarM  = 1.0e9;
+float distanceFromDepth(float d) { return kDepthNearM * exp2(d * log2(kDepthFarM / kDepthNearM)); }
+float depthFromDistance(float t) {
+    return clamp(log2(max(t, kDepthNearM) / kDepthNearM) / log2(kDepthFarM / kDepthNearM), 0.0, 0.99999);
+}
+
+vec3 toYCoCg(vec3 c) { return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b); }
+vec3 fromYCoCg(vec3 y) { return vec3(y.x + y.y - y.z, y.x + y.z, y.x - y.y - y.z); }
+
+// Catmull-Rom history sample from 9 bilinear taps (the standard form, weights exact at any position).
+vec3 sampleHistory(vec2 uv, vec2 size) {
+    vec2 sp  = uv * size;
+    vec2 tp1 = floor(sp - 0.5) + 0.5;
+    vec2 f   = sp - tp1;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 tp0 = (tp1 - 1.0) / size, tp3 = (tp1 + 2.0) / size, tp12 = (tp1 + w2 / w12) / size;
+    vec3 r = vec3(0.0);
+    r += textureLod(histColor, vec2(tp0.x,  tp0.y),  0.0).rgb * w0.x  * w0.y;
+    r += textureLod(histColor, vec2(tp12.x, tp0.y),  0.0).rgb * w12.x * w0.y;
+    r += textureLod(histColor, vec2(tp3.x,  tp0.y),  0.0).rgb * w3.x  * w0.y;
+    r += textureLod(histColor, vec2(tp0.x,  tp12.y), 0.0).rgb * w0.x  * w12.y;
+    r += textureLod(histColor, vec2(tp12.x, tp12.y), 0.0).rgb * w12.x * w12.y;
+    r += textureLod(histColor, vec2(tp3.x,  tp12.y), 0.0).rgb * w3.x  * w12.y;
+    r += textureLod(histColor, vec2(tp0.x,  tp3.y),  0.0).rgb * w0.x  * w3.y;
+    r += textureLod(histColor, vec2(tp12.x, tp3.y),  0.0).rgb * w12.x * w3.y;
+    r += textureLod(histColor, vec2(tp3.x,  tp3.y),  0.0).rgb * w3.x  * w3.y;
+    return max(r, vec3(0.0));
+}
+
+void main() {
+    ivec2 sz = textureSize(curColor, 0);
+    ivec2 p  = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= sz.x || p.y >= sz.y) return;
+    vec2  size = vec2(sz);
+    vec3  cur  = texelFetch(curColor, p, 0).rgb;
+    float d    = texelFetch(curDepth, p, 0).r;
+
+    // The neighbourhood of this frame's samples (YCoCg mean and deviation).
+    vec3 m1 = vec3(0.0), m2 = vec3(0.0);
+    for (int k = 0; k < 9; ++k) {
+        ivec2 q = clamp(p + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), sz - 1);
+        vec3  y = toYCoCg(texelFetch(curColor, q, 0).rgb);
+        m1 += y; m2 += y * y;
+    }
+    m1 /= 9.0; m2 /= 9.0;
+    vec3 sd = sqrt(max(m2 - m1 * m1, vec3(0.0)));
+
+    vec3 res = cur;
+    if (pc.eyeDelta.w > 0.5) {
+        // This pixel's (unjittered) ray in ENU.
+        vec2  ndc = (vec2(p) + 0.5) / size * 2.0 - 1.0;
+        vec3  cd  = vec3(ndc.x * pc.cam.x * pc.cam.y, -ndc.y * pc.cam.x, -1.0);
+        vec3  dir = normalize(vec3(dot(pc.c2e0.xyz, cd), dot(pc.c2e1.xyz, cd), dot(pc.c2e2.xyz, cd)));
+        bool  sky = d >= 0.99998;
+        vec3  P   = sky ? dir : dir * distanceFromDepth(d) + pc.eyeDelta.xyz;   // from last frame's eye
+        vec3  pcv = vec3(dot(pc.e2p0.xyz, P), dot(pc.e2p1.xyz, P), dot(pc.e2p2.xyz, P));
+        bool  ok  = pcv.z < -1e-6;
+        vec2  uvP = vec2(0.0);
+        if (ok) {
+            vec2 ndcP = vec2(pcv.x / (-pcv.z * pc.cam.x * pc.cam.y), -pcv.y / (-pcv.z * pc.cam.x));
+            uvP = ndcP * 0.5 + 0.5;
+            ok  = all(greaterThanEqual(uvP, vec2(0.0))) && all(lessThanEqual(uvP, vec2(1.0)));
+        }
+        if (ok) {
+            // Disocclusion: the depth this point should have, against the RANGE of last frame's depths in the
+            // 2x2 texels around where it was. At a silhouette the jittered samples alternate sky and ground, so
+            // a test against one texel rejected every edge pixel every frame (no anti-aliasing at all); a
+            // surface newly uncovered fits none of them.
+            vec4  dH  = textureGather(histDepth, uvP, 0);
+            float dE  = sky ? 1.0 : depthFromDistance(length(P));
+            float lo4 = min(min(dH.x, dH.y), min(dH.z, dH.w)), hi4 = max(max(dH.x, dH.y), max(dH.z, dH.w));
+            if (dE < lo4 - 0.004 || dE > hi4 + 0.004) ok = false;
+        }
+        if (ok) {
+            vec3  h  = toYCoCg(sampleHistory(uvP, size));
+            // Variance clip toward the mean (a box of 1.25 sd): a colour history cannot hold does not ghost.
+            vec3  lo = m1 - 1.25 * sd, hi = m1 + 1.25 * sd;
+            vec3  c  = 0.5 * (lo + hi), e = 0.5 * (hi - lo) + 1e-5;
+            vec3  v  = h - c;
+            vec3  a  = abs(v / e);
+            float mx = max(a.x, max(a.y, a.z));
+            if (mx > 1.0) h = c + v / mx;
+            // Motion (in pixels) raises the new sample's weight: a moving view keeps its detail.
+            float mv = length((uvP - (vec2(p) + 0.5) / size) * size);
+            float w  = mix(pc.cam.z, pc.cam.w, smoothstep(0.5, 4.0, mv));
+            res = fromYCoCg(mix(h, toYCoCg(cur), w));
+        }
+    }
+    imageStore(outColor, p, vec4(max(res, vec3(0.0)), 1.0));
+    imageStore(outDepth, p, vec4(d, 0.0, 0.0, 0.0));
+}

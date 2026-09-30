@@ -242,6 +242,11 @@ layout(set = 0, binding = 25, rgba32ui) uniform readonly uimage2D reflGbuf; // S
 #endif
 
 layout(location = 0) out vec4 outColor;
+#ifdef SKY_TAA
+// Sky TAA (sky_taa.comp): the unified depth as a colour, for the resolve's reprojection and the main
+// pass's depth restore (the offscreen pass has no depth attachment).
+layout(location = 1) out float outDepthCopy;
+#endif
 
 // PI, R_EARTH, R_ATMOS, BETA_R/H_R, BETA_M/H_M/G_MIE, SUN_INTENSITY, kCloudHorizFreq/kCloudColFreq,
 // raySphere, rotateZ, remap, phaseR/phaseM/phaseCloud and the scene-depth sentinels all live in
@@ -2703,6 +2708,11 @@ void main() {
     vec3 dir    = vec3(dot(reflEcef, enuX), dot(reflEcef, enuY), dot(reflEcef, enuZ));
 #else
     vec3 dir    = normalize(enuDir);
+#ifdef SKY_TAA
+    // Sub-pixel jitter (cloud.taaJitter.xy, pixels): the interpolated ray moves linearly across the screen,
+    // so its screen derivatives are exact.
+    dir = normalize(enuDir + dFdx(enuDir) * cloud.taaJitter.x + dFdy(enuDir) * cloud.taaJitter.y);
+#endif
 #endif
     vec3 sunDir = normalize(sunDirENU.xyz);
 
@@ -5386,5 +5396,8 @@ void main() {
     if (tOcclude < 0.0 && tCloudOcclude >= 0.0) tOcclude = tCloudOcclude;
     if (meshHit) tOcclude = (tOcclude >= 0.0) ? min(tOcclude, tMesh) : tMesh;
     gl_FragDepth = (tOcclude >= 0.0) ? sceneDepthFromDistance(tOcclude) : 1.0;
+#ifdef SKY_TAA
+    outDepthCopy = (tOcclude >= 0.0) ? sceneDepthFromDistance(tOcclude) : 1.0;
+#endif
 #endif
 }

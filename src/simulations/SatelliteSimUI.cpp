@@ -3497,6 +3497,35 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         }
     }
 
+    // ── Temporal AA of the background (2026-09-30: sky_taa.comp) ─────────────────────────
+    CLAY(CLAY_ID("SkyTaaRow"), {.layout = {
+                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                    .padding = {4, 4, 4, 4},
+                                    .childGap = 8,
+                                    .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Temporal AA (terrain, sky, sea)"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
+        CLAY(CLAY_ID("SkyTaaSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+        Clay_Color chkBg = skyTaaEnabled ? Pal::btnAccent : (hovSkyTaa ? Pal::btnHover : Pal::btnIdle);
+        CLAY(CLAY_ID("SkyTaaChk"), {.layout = {
+                                        .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
+                                        .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                    .backgroundColor = chkBg,
+                                    .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovSkyTaa);
+            sndClick(n, inp.lmbPressed);
+            hovSkyTaa = n;
+            if (n && inp.lmbPressed)
+                skyTaaEnabled = !skyTaaEnabled;
+            CLAY_TEXT(skyTaaEnabled ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+        }
+    }
+
     // ── UI Scale ──────────────────────────────────────────────────
     CLAY(CLAY_ID("UiScaleRow"), {.layout = {
                                      .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
@@ -6186,6 +6215,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         {
             uiScale = d.value("ui_scale", uiScale);
             renderScale = d.value("render_scale", renderScale);
+            skyTaaEnabled = d.value("sky_taa", skyTaaEnabled);
+            skyTaaWeightStill = std::clamp(d.value("sky_taa_weight", skyTaaWeightStill), 0.02f, 1.0f);
+            skyTaaWeightMoving = std::clamp(d.value("sky_taa_weight_moving", skyTaaWeightMoving), 0.02f, 1.0f);
             int fpsCapVal = d.value("fps_cap_mode", (int)fpsCapMode);
             fpsCapMode = (fpsCapVal >= 0 && fpsCapVal <= 4) ? (FpsCapMode)fpsCapVal : FpsCapMode::VSync;
             // UC1: default to Custom (NOT a device-seeded preset) when the key is simply absent —
@@ -6676,6 +6708,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     j["display"] = {
         {"ui_scale", uiScale},
         {"render_scale", renderScale},
+        {"sky_taa", skyTaaEnabled},
+        {"sky_taa_weight", skyTaaWeightStill},
+        {"sky_taa_weight_moving", skyTaaWeightMoving},
         {"fps_cap_mode", (int)fpsCapMode},
         {"graphics_preset", (int)graphicsPreset},
         {"show_advanced_settings", showAdvancedSettings},

@@ -1527,8 +1527,9 @@ struct GpuCloudParams
     glm::vec4 cityParams;    // x twinkle rate, y ground glitter share under the sprites, z sprite reach (m), w sprite start (ground m per pixel)
     glm::vec4 oceanState;    // xy world offset wrapped into the wave period (m), z sea state from weather, w whitecaps (736 -> 752)
     glm::vec4 auroraSheets;  // x strength, y spacing (deg), z crisp share, w folds (752 -> 768)
+    glm::vec4 taaJitter;     // xy sky TAA jitter (pixels), zw unused (768 -> 784)
 };
-static_assert(sizeof(GpuCloudParams) == 768, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 784, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -1692,7 +1693,11 @@ public:
     SatDrawPC buildSkyDrawPC(VulkanContext &ctx);     // sky background (recordPrePass + recordDraw Pass 1)
     PointDrawPC buildPointDrawPC(VulkanContext &ctx); // satellite / star / planet / trail point draws
     void recordPrePass(VkCommandBuffer cmd, VulkanContext &ctx, float dt, uint32_t imgIdx) override;
-    VkRenderPass activeRenderPass(VulkanContext &ctx) override { return renderScale < 0.999f ? ctx.renderPassLoad : ctx.renderPass; }
+    // renderPassLoad when the background was drawn before the pass (renderScale < 1, or the sky TAA path).
+    VkRenderPass activeRenderPass(VulkanContext &ctx) override
+    {
+        return (renderScale < 0.999f || skyTaaUsedThisFrame) ? ctx.renderPassLoad : ctx.renderPass;
+    }
     void recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt) override;
     void buildUI(float dt, UIRenderer &ui) override;
     void setAudio(AudioSystem *audio) override;
@@ -2687,6 +2692,47 @@ private:
     double cityOffsetNorthM = 0.0;
     bool cityOffsetInit = false;
     glm::dvec3 cityPrevObsDir = glm::dvec3(0.0, 0.0, 1.0);
+    // ── Sky TAA (2026-09-30): the background's temporal anti-aliasing (sky_taa.comp; SatelliteSim.cpp
+    // "Sky TAA"). Display tab "Temporal AA (background)", display.sky_taa.
+    struct SkyTaaPC
+    {
+        glm::vec4 c2e[3];   // camera -> ENU rows (this frame)
+        glm::vec4 e2p[3];   // this frame's ENU -> last frame's camera, rows
+        glm::vec4 eyeDelta; // xyz this eye - last eye (this ENU, m), w history valid
+        glm::vec4 cam;      // tan(fovY/2), aspect, new-sample weight still / moving
+    };
+    static_assert(sizeof(SkyTaaPC) == 128, "SkyTaaPC must be exactly 128 bytes");
+    bool skyTaaEnabled = true;
+    float skyTaaWeightStill = 0.1f;
+    float skyTaaWeightMoving = 0.35f;
+    bool skyTaaUsedThisFrame = false;
+    bool skyTaaHistValid = false;
+    int skyTaaHist = 0;
+    uint32_t skyTaaFrame = 0;
+    glm::mat4 skyTaaPrevView{1.0f};
+    glm::dvec3 skyTaaPrevObsDir{0.0, 0.0, 1.0};
+    double skyTaaPrevEyeR = 0.0;
+    float skyTaaPrevTanHF = 0.0f, skyTaaPrevAspect = 0.0f;
+    VkImage skyTaaColorImg = VK_NULL_HANDLE, skyTaaDepthImg = VK_NULL_HANDLE;
+    VkDeviceMemory skyTaaColorMem = VK_NULL_HANDLE, skyTaaDepthMem = VK_NULL_HANDLE;
+    VkImageView skyTaaColorView = VK_NULL_HANDLE, skyTaaDepthView = VK_NULL_HANDLE;
+    VkImage skyTaaHistColorImg[2] = {}, skyTaaHistDepthImg[2] = {};
+    VkDeviceMemory skyTaaHistColorMem[2] = {}, skyTaaHistDepthMem[2] = {};
+    VkImageView skyTaaHistColorView[2] = {}, skyTaaHistDepthView[2] = {};
+    VkRenderPass skyTaaRenderPass = VK_NULL_HANDLE;
+    VkFramebuffer skyTaaFramebuffer = VK_NULL_HANDLE;
+    VkPipeline skyTaaPipeline = VK_NULL_HANDLE;
+    VkSampler skyTaaLinearSampler = VK_NULL_HANDLE, skyTaaNearestSampler = VK_NULL_HANDLE;
+    VkDescriptorPool skyTaaPool = VK_NULL_HANDLE;
+    VkDescriptorSetLayout skyTaaResolveLayout = VK_NULL_HANDLE, skyTaaRestoreLayout = VK_NULL_HANDLE;
+    VkPipelineLayout skyTaaResolvePipeLayout = VK_NULL_HANDLE, skyTaaRestorePipeLayout = VK_NULL_HANDLE;
+    VkPipeline skyTaaResolvePipeline = VK_NULL_HANDLE, skyTaaRestorePipeline = VK_NULL_HANDLE;
+    VkDescriptorSet skyTaaResolveSet[2] = {}, skyTaaRestoreSet = VK_NULL_HANDLE;
+    bool skyTaaWanted() const;
+    void createSkyTaaResources(VulkanContext &ctx);
+    void destroySkyTaaResources(VkDevice device);
+    bool recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_t imgIdx);
+    bool hovSkyTaa = false;
     double cityPrevObsLatRad = 0.0;
     double cityPrevObsLonRad = 0.0;
     // City day/night detail textures (bindings 14/15): small tileable high-frequency maps,

@@ -530,6 +530,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     writeCloudsV2ConsumerDescriptors(ctx); // cloud_march 15-20 + beam_self_march 5-8, both sets exist now
     createSkyBgPipeline(ctx);
     createSkyLowResResources(ctx); // resolution scaling — needs skyBgPipeLayout from just above
+    createSkyTaaResources(ctx);    // the background's TAA (same layout)
     createDrawPipeline(ctx);
     // Flare/corona render-to-texture pipeline (flare architecture overhaul) — needs descLayout
     // (createDescriptors above, for flareSourcePipeLayout's reused descriptor set) and
@@ -633,6 +634,8 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     // destroy+recreate treatment as skyBgPipeline just above.
     destroySkyLowResResources(ctx.device);
     createSkyLowResResources(ctx);
+    destroySkyTaaResources(ctx.device);
+    createSkyTaaResources(ctx);
 
     vkDestroyPipeline(ctx.device, drawPipeline, nullptr);
     drawPipeline = VK_NULL_HANDLE;
@@ -2317,6 +2320,17 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                       oceanSeaStateGain, oceanWhitecapGain);
         }
         cp.auroraSheets = glm::vec4(auroraSheetGain, auroraSheetSpacingDeg, auroraSheetCrisp, auroraSheetFold);
+        {
+            // Sky TAA jitter: Halton (2, 3), 8 samples, in pixels about the centre. Only the -DSKY_TAA
+            // variant reads it; decided with the same test recordPrePass uses this frame.
+            auto halton = [](uint32_t i, uint32_t b) {
+                float f = 1.0f, r = 0.0f;
+                while (i > 0) { f /= (float)b; r += f * (float)(i % b); i /= b; }
+                return r;
+            };
+            const uint32_t hi = (skyTaaFrame++ % 8u) + 1u;
+            cp.taaJitter = skyTaaWanted() ? glm::vec4(halton(hi, 2) - 0.5f, halton(hi, 3) - 0.5f, 0.0f, 0.0f) : glm::vec4(0.0f);
+        }
         cp.cloudTwilightAmbientGain = cloudTwilightAmbientGain;
         cp.cloudBaseVariance = cloudBaseVariance;
         cp.cloudErosionEdge = cloudErosionEdge;
@@ -5481,7 +5495,14 @@ PointDrawPC SatelliteSim::buildPointDrawPC(VulkanContext &ctx)
 void SatelliteSim::recordPrePass(VkCommandBuffer cmd, VulkanContext &ctx, float /*dt*/, uint32_t imgIdx)
 {
     if (renderScale >= 0.999f)
-        return; // full-res: Pass 1 draws inline in recordDraw as before, nothing to pre-render here
+    {
+        // Full-res: the TAA path renders the background here (and returns true); otherwise Pass 1
+        // draws inline in recordDraw as before.
+        recordSkyTaa(cmd, ctx, imgIdx);
+        return;
+    }
+    skyTaaUsedThisFrame = false;
+    skyTaaHistValid = false;
 
     SatDrawPC pc = buildSkyDrawPC(ctx); // low-res target size rides in the CloudParams UBO (skyScreenW/H)
 
@@ -5543,7 +5564,15 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
     // frame's swapchain image by recordPrePass, before this render pass even began. See
     // SatelliteSim.h's resolution-scaling member comment for the full design and the accepted
     // depth-occlusion tradeoff.
-    if (renderScale >= 0.999f)
+    if (skyTaaUsedThisFrame)
+    {
+        // Sky TAA: the background is already in the swapchain (recordPrePass); restore its depth for
+        // the point draws below (colour writes off). The sky timestamp was written in the prepass.
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyTaaRestorePipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyTaaRestorePipeLayout, 0, 1, &skyTaaRestoreSet, 0, nullptr);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+    }
+    else if (renderScale >= 0.999f)
     {
         if (!dbgEnv("SATLIGHTSIM_SKIP_SKYBG")) // diagnostic: drop the fullscreen sky/ground draw
         {
@@ -5894,6 +5923,7 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyPipeline(device, skyBgMinimalPipeline, nullptr);
     vkDestroyPipeline(device, skyBgLitePipeline, nullptr);
     destroySkyLowResResources(device);
+    destroySkyTaaResources(device);
     vkDestroyPipeline(device, drawPipeline, nullptr);
     vkDestroyPipelineLayout(device, compPipeLayout, nullptr);
     vkDestroyPipelineLayout(device, skyBgPipeLayout, nullptr);
@@ -10432,6 +10462,443 @@ void SatelliteSim::destroySkyLowResResources(VkDevice device)
     skyLowResColorImg = VK_NULL_HANDLE;
     skyLowResColorMem = VK_NULL_HANDLE;
     skyLowResRenderPass = VK_NULL_HANDLE;
+}
+
+
+// ─── Sky TAA (2026-09-30): temporal anti-aliasing of the background ──────────────────────────────
+// sat_sky.frag -DSKY_TAA renders the sky/terrain/ocean background offscreen with a sub-pixel jitter
+// (RGBA16F colour + its unified depth as R32F), sky_taa.comp resolves it against the reprojected history
+// (ping-pong RGBA16F/R32F pairs, GENERAL layout), the result is blitted into the swapchain, and the main
+// pass opens with taa_depth_restore.frag writing the depth back — so stars, planets and satellites draw
+// over it unjittered and occluded as before. Swapchain-size dependent: recreated on resize. Used only at
+// renderScale 1 with the full sky shader (skyTaaWanted); otherwise the inline draw as before.
+bool SatelliteSim::skyTaaWanted() const
+{
+    return skyTaaEnabled && renderScale >= 0.999f && skyTaaPipeline != VK_NULL_HANDLE &&
+           ctx_ && ctx_->swapTransferDstSupported &&
+           (debugDisableMask & (262144u | 524288u)) == 0u;
+}
+
+void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
+{
+    const uint32_t W = ctx.swapExtent.width, H = ctx.swapExtent.height;
+    auto makeView = [&](VkImage img, VkFormat fmt) {
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = img;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = fmt;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkImageView v = VK_NULL_HANDLE;
+        vkCreateImageView(ctx.device, &vci, nullptr, &v);
+        return v;
+    };
+    // ── Images ───────────────────────────────────────────────────────────────────────────────
+    ctx.createImage(W, H, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    skyTaaColorImg, skyTaaColorMem);
+    ctx.createImage(W, H, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    skyTaaDepthImg, skyTaaDepthMem);
+    skyTaaColorView = makeView(skyTaaColorImg, VK_FORMAT_R16G16B16A16_SFLOAT);
+    skyTaaDepthView = makeView(skyTaaDepthImg, VK_FORMAT_R32_SFLOAT);
+    for (int k = 0; k < 2; ++k)
+    {
+        ctx.createImage(W, H, VK_FORMAT_R16G16B16A16_SFLOAT,
+                        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                        skyTaaHistColorImg[k], skyTaaHistColorMem[k]);
+        ctx.createImage(W, H, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                        skyTaaHistDepthImg[k], skyTaaHistDepthMem[k]);
+        skyTaaHistColorView[k] = makeView(skyTaaHistColorImg[k], VK_FORMAT_R16G16B16A16_SFLOAT);
+        skyTaaHistDepthView[k] = makeView(skyTaaHistDepthImg[k], VK_FORMAT_R32_SFLOAT);
+    }
+    {   // History images live in GENERAL (storage writes, sampled reads, blit source).
+        VkCommandBuffer c = ctx.beginOneTimeCommands();
+        for (int k = 0; k < 2; ++k)
+        {
+            ctx.imageBarrier(c, skyTaaHistColorImg[k], 0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+            ctx.imageBarrier(c, skyTaaHistDepthImg[k], 0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        }
+        ctx.endOneTimeCommands(c);
+    }
+
+    // ── Render pass: colour + depth copy, overwritten whole -> SHADER_READ_ONLY ──────────────
+    VkAttachmentDescription att[2] = {};
+    const VkFormat fmts[2] = {VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32_SFLOAT};
+    for (int i = 0; i < 2; ++i)
+    {
+        att[i].format = fmts[i];
+        att[i].samples = VK_SAMPLE_COUNT_1_BIT;
+        att[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        att[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        att[i].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    VkAttachmentReference refs[2] = {{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}, {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}};
+    VkSubpassDescription sub{};
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 2;
+    sub.pColorAttachments = refs;
+    VkSubpassDependency deps[2] = {};
+    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL; // the compute passes before it (cloud targets, depth)
+    deps[0].dstSubpass = 0;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    deps[1].srcSubpass = 0;                   // -> the resolve and the main pass's depth restore
+    deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[1].dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    VkRenderPassCreateInfo rpci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+    rpci.attachmentCount = 2;
+    rpci.pAttachments = att;
+    rpci.subpassCount = 1;
+    rpci.pSubpasses = &sub;
+    rpci.dependencyCount = 2;
+    rpci.pDependencies = deps;
+    if (vkCreateRenderPass(ctx.device, &rpci, nullptr, &skyTaaRenderPass) != VK_SUCCESS)
+        throw std::runtime_error("SatelliteSim: failed to create sky TAA render pass");
+    VkImageView fbViews[2] = {skyTaaColorView, skyTaaDepthView};
+    VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fci.renderPass = skyTaaRenderPass;
+    fci.attachmentCount = 2;
+    fci.pAttachments = fbViews;
+    fci.width = W;
+    fci.height = H;
+    fci.layers = 1;
+    if (vkCreateFramebuffer(ctx.device, &fci, nullptr, &skyTaaFramebuffer) != VK_SUCCESS)
+        throw std::runtime_error("SatelliteSim: failed to create sky TAA framebuffer");
+
+    // ── Common fixed-function state ─────────────────────────────────────────────────────────────
+    VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkViewport vp{0, 0, (float)W, (float)H, 0, 1};
+    VkRect2D sc{{0, 0}, ctx.swapExtent};
+    VkPipelineViewportStateCreateInfo vps{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    vps.viewportCount = 1;
+    vps.pViewports = &vp;
+    vps.scissorCount = 1;
+    vps.pScissors = &sc;
+    VkPipelineRasterizationStateCreateInfo rast{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rast.polygonMode = VK_POLYGON_MODE_FILL;
+    rast.cullMode = VK_CULL_MODE_NONE;
+    rast.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rast.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    // ── The sky pass (SKY_TAA variant) ──────────────────────────────────────────────────────────
+    {
+        VkShaderModule vert = ctx.loadShader("shaders/sat_sky.vert.spv");
+        VkShaderModule frag = ctx.loadShader("shaders/sat_sky_taa.frag.spv");
+        VkPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main", nullptr};
+        VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        VkPipelineColorBlendAttachmentState cba[2] = {};
+        for (auto &c : cba)
+            c.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        cb.attachmentCount = 2;
+        cb.pAttachments = cba;
+        VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        ci.stageCount = 2;
+        ci.pStages = stages;
+        ci.pVertexInputState = &vi;
+        ci.pInputAssemblyState = &ia;
+        ci.pViewportState = &vps;
+        ci.pRasterizationState = &rast;
+        ci.pMultisampleState = &ms;
+        ci.pDepthStencilState = &ds;
+        ci.pColorBlendState = &cb;
+        ci.layout = skyBgPipeLayout;
+        ci.renderPass = skyTaaRenderPass;
+        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &skyTaaPipeline) != VK_SUCCESS)
+        {
+            Log::line("sky TAA: pipeline creation failed; TAA off");
+            skyTaaPipeline = VK_NULL_HANDLE;
+        }
+        vkDestroyShaderModule(ctx.device, vert, nullptr);
+        vkDestroyShaderModule(ctx.device, frag, nullptr);
+    }
+
+    // ── Samplers ────────────────────────────────────────────────────────────────────────────────
+    {
+        VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+        si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.maxLod = 0.0f;
+        vkCreateSampler(ctx.device, &si, nullptr, &skyTaaLinearSampler);
+        si.magFilter = si.minFilter = VK_FILTER_NEAREST;
+        vkCreateSampler(ctx.device, &si, nullptr, &skyTaaNearestSampler);
+    }
+
+    // ── Descriptors: the resolve's two ping-pong sets and the depth restore's set ─────────────────
+    {
+        VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4}};
+        VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pci.maxSets = 3;
+        pci.poolSizeCount = 2;
+        pci.pPoolSizes = sizes;
+        vkCreateDescriptorPool(ctx.device, &pci, nullptr, &skyTaaPool);
+
+        VkDescriptorSetLayoutBinding b[6] = {};
+        for (int i = 0; i < 6; ++i)
+        {
+            b[i].binding = (uint32_t)i;
+            b[i].descriptorType = i < 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            b[i].descriptorCount = 1;
+            b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo lci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        lci.bindingCount = 6;
+        lci.pBindings = b;
+        vkCreateDescriptorSetLayout(ctx.device, &lci, nullptr, &skyTaaResolveLayout);
+
+        VkDescriptorSetLayoutBinding rb{};
+        rb.binding = 0;
+        rb.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        rb.descriptorCount = 1;
+        rb.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        lci.bindingCount = 1;
+        lci.pBindings = &rb;
+        vkCreateDescriptorSetLayout(ctx.device, &lci, nullptr, &skyTaaRestoreLayout);
+
+        VkDescriptorSetLayout layouts[3] = {skyTaaResolveLayout, skyTaaResolveLayout, skyTaaRestoreLayout};
+        VkDescriptorSet sets[3];
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool = skyTaaPool;
+        ai.descriptorSetCount = 3;
+        ai.pSetLayouts = layouts;
+        vkAllocateDescriptorSets(ctx.device, &ai, sets);
+        skyTaaResolveSet[0] = sets[0];
+        skyTaaResolveSet[1] = sets[1];
+        skyTaaRestoreSet = sets[2];
+
+        for (int k = 0; k < 2; ++k)
+        {
+            VkDescriptorImageInfo ii[6] = {
+                {skyTaaNearestSampler, skyTaaColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                {skyTaaNearestSampler, skyTaaDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                {skyTaaLinearSampler, skyTaaHistColorView[k], VK_IMAGE_LAYOUT_GENERAL},
+                {skyTaaNearestSampler, skyTaaHistDepthView[k], VK_IMAGE_LAYOUT_GENERAL},
+                {VK_NULL_HANDLE, skyTaaHistColorView[1 - k], VK_IMAGE_LAYOUT_GENERAL},
+                {VK_NULL_HANDLE, skyTaaHistDepthView[1 - k], VK_IMAGE_LAYOUT_GENERAL}};
+            VkWriteDescriptorSet w[6] = {};
+            for (int i = 0; i < 6; ++i)
+            {
+                w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w[i].dstSet = skyTaaResolveSet[k];
+                w[i].dstBinding = (uint32_t)i;
+                w[i].descriptorCount = 1;
+                w[i].descriptorType = i < 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                w[i].pImageInfo = &ii[i];
+            }
+            vkUpdateDescriptorSets(ctx.device, 6, w, 0, nullptr);
+        }
+        VkDescriptorImageInfo di{skyTaaNearestSampler, skyTaaDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstSet = skyTaaRestoreSet;
+        w.dstBinding = 0;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.pImageInfo = &di;
+        vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+    }
+
+    // ── The resolve (compute) ───────────────────────────────────────────────────────────────────
+    {
+        VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SkyTaaPC)};
+        VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        plci.setLayoutCount = 1;
+        plci.pSetLayouts = &skyTaaResolveLayout;
+        plci.pushConstantRangeCount = 1;
+        plci.pPushConstantRanges = &pr;
+        vkCreatePipelineLayout(ctx.device, &plci, nullptr, &skyTaaResolvePipeLayout);
+        VkShaderModule cm = ctx.loadShader("shaders/sky_taa.comp.spv");
+        VkComputePipelineCreateInfo cci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        cci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, cm, "main", nullptr};
+        cci.layout = skyTaaResolvePipeLayout;
+        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &cci, nullptr, &skyTaaResolvePipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create sky TAA resolve pipeline");
+        vkDestroyShaderModule(ctx.device, cm, nullptr);
+    }
+
+    // ── The depth restore (first draw of the main pass; colour writes off) ──────────────────────
+    {
+        VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        plci.setLayoutCount = 1;
+        plci.pSetLayouts = &skyTaaRestoreLayout;
+        vkCreatePipelineLayout(ctx.device, &plci, nullptr, &skyTaaRestorePipeLayout);
+        VkShaderModule vert = ctx.loadShader("shaders/taa_fullscreen.vert.spv");
+        VkShaderModule frag = ctx.loadShader("shaders/taa_depth_restore.frag.spv");
+        VkPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main", nullptr};
+        VkPipelineDepthStencilStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        ds.depthTestEnable = VK_TRUE;
+        ds.depthWriteEnable = VK_TRUE;
+        ds.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.colorWriteMask = 0;
+        VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        cb.attachmentCount = 1;
+        cb.pAttachments = &cba;
+        VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        ci.stageCount = 2;
+        ci.pStages = stages;
+        ci.pVertexInputState = &vi;
+        ci.pInputAssemblyState = &ia;
+        ci.pViewportState = &vps;
+        ci.pRasterizationState = &rast;
+        ci.pMultisampleState = &ms;
+        ci.pDepthStencilState = &ds;
+        ci.pColorBlendState = &cb;
+        ci.layout = skyTaaRestorePipeLayout;
+        ci.renderPass = ctx.renderPass; // compatible with renderPassLoad (same formats)
+        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &skyTaaRestorePipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create sky TAA depth restore pipeline");
+        vkDestroyShaderModule(ctx.device, vert, nullptr);
+        vkDestroyShaderModule(ctx.device, frag, nullptr);
+    }
+    skyTaaHistValid = false;
+}
+
+void SatelliteSim::destroySkyTaaResources(VkDevice device)
+{
+    auto dp = [&](VkPipeline &p) { if (p) vkDestroyPipeline(device, p, nullptr); p = VK_NULL_HANDLE; };
+    auto dl = [&](VkPipelineLayout &p) { if (p) vkDestroyPipelineLayout(device, p, nullptr); p = VK_NULL_HANDLE; };
+    auto dsl = [&](VkDescriptorSetLayout &p) { if (p) vkDestroyDescriptorSetLayout(device, p, nullptr); p = VK_NULL_HANDLE; };
+    auto di = [&](VkImage &img, VkDeviceMemory &mem, VkImageView &v) {
+        if (v) vkDestroyImageView(device, v, nullptr);
+        if (img) vkDestroyImage(device, img, nullptr);
+        if (mem) vkFreeMemory(device, mem, nullptr);
+        v = VK_NULL_HANDLE; img = VK_NULL_HANDLE; mem = VK_NULL_HANDLE;
+    };
+    dp(skyTaaPipeline);
+    dp(skyTaaResolvePipeline);
+    dp(skyTaaRestorePipeline);
+    dl(skyTaaResolvePipeLayout);
+    dl(skyTaaRestorePipeLayout);
+    if (skyTaaPool) vkDestroyDescriptorPool(device, skyTaaPool, nullptr);
+    skyTaaPool = VK_NULL_HANDLE;
+    dsl(skyTaaResolveLayout);
+    dsl(skyTaaRestoreLayout);
+    if (skyTaaLinearSampler) vkDestroySampler(device, skyTaaLinearSampler, nullptr);
+    if (skyTaaNearestSampler) vkDestroySampler(device, skyTaaNearestSampler, nullptr);
+    skyTaaLinearSampler = skyTaaNearestSampler = VK_NULL_HANDLE;
+    if (skyTaaFramebuffer) vkDestroyFramebuffer(device, skyTaaFramebuffer, nullptr);
+    skyTaaFramebuffer = VK_NULL_HANDLE;
+    if (skyTaaRenderPass) vkDestroyRenderPass(device, skyTaaRenderPass, nullptr);
+    skyTaaRenderPass = VK_NULL_HANDLE;
+    di(skyTaaColorImg, skyTaaColorMem, skyTaaColorView);
+    di(skyTaaDepthImg, skyTaaDepthMem, skyTaaDepthView);
+    for (int k = 0; k < 2; ++k)
+    {
+        di(skyTaaHistColorImg[k], skyTaaHistColorMem[k], skyTaaHistColorView[k]);
+        di(skyTaaHistDepthImg[k], skyTaaHistDepthMem[k], skyTaaHistDepthView[k]);
+    }
+    skyTaaHistValid = false;
+}
+
+// The TAA path of recordPrePass: render, resolve, blit. Returns false when it does not apply.
+bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_t imgIdx)
+{
+    skyTaaUsedThisFrame = false;
+    if (!skyTaaWanted() || dbgEnv("SATLIGHTSIM_SKIP_SKYBG"))
+    {
+        skyTaaHistValid = false;
+        return false;
+    }
+    SatDrawPC pc = buildSkyDrawPC(ctx);
+    VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    rbi.renderPass = skyTaaRenderPass;
+    rbi.framebuffer = skyTaaFramebuffer;
+    rbi.renderArea = {{0, 0}, ctx.swapExtent};
+    vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyTaaPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyBgPipeLayout, 0, 1, &skyDescSet, 0, nullptr);
+    vkCmdPushConstants(cmd, skyBgPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cmd);
+    ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 6);
+
+    // ── Reprojection inputs (this frame's ENU; double on the CPU) ─────────────────────────────
+    const glm::mat3 view3(pc.skyView);
+    const float tanHF = std::tan(pc.fovYRad * 0.5f);
+    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    auto enuOf = [](const glm::dvec3 &u, glm::dvec3 &e, glm::dvec3 &n) {
+        e = glm::cross(glm::dvec3(0.0, 0.0, 1.0), u);
+        e = glm::length(e) > 1e-9 ? glm::normalize(e) : glm::dvec3(1.0, 0.0, 0.0);
+        n = glm::cross(u, e);
+    };
+    glm::dvec3 eC, nC, eP, nP;
+    enuOf(up, eC, nC);
+    enuOf(skyTaaPrevObsDir, eP, nP);
+    const double eyeR = followActive ? followRadiusM : (double)obsEyeRadiusM();
+    const glm::dvec3 dE = up * eyeR - skyTaaPrevObsDir * skyTaaPrevEyeR;           // ECEF, m
+    const glm::dvec3 dEnu(glm::dot(dE, eC), glm::dot(dE, nC), glm::dot(dE, up));
+    // This frame's ENU -> ECEF -> last frame's ENU.
+    glm::mat3 R;
+    const glm::dvec3 bc[3] = {eC, nC, up}, bp[3] = {eP, nP, skyTaaPrevObsDir};
+    for (int c = 0; c < 3; ++c)
+        for (int r = 0; r < 3; ++r)
+            R[c][r] = (float)glm::dot(bp[r], bc[c]);
+    const glm::mat3 e2p = glm::mat3(skyTaaPrevView) * R;
+    const bool valid = skyTaaHistValid && std::abs(tanHF - skyTaaPrevTanHF) < 1e-4f * tanHF &&
+                       std::abs(pc.aspect - skyTaaPrevAspect) < 1e-4f && glm::length(dEnu) < 20000.0;
+    SkyTaaPC tp{};
+    for (int i = 0; i < 3; ++i)
+    {
+        tp.c2e[i] = glm::vec4(view3[i], 0.0f);          // camera -> ENU rows = the view's columns
+        tp.e2p[i] = glm::vec4(e2p[0][i], e2p[1][i], e2p[2][i], 0.0f);   // row i
+    }
+    tp.eyeDelta = glm::vec4(glm::vec3(dEnu), valid ? 1.0f : 0.0f);
+    tp.cam = glm::vec4(tanHF, pc.aspect, skyTaaWeightStill, skyTaaWeightMoving);
+
+    const int k = skyTaaHist;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, skyTaaResolvePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, skyTaaResolvePipeLayout, 0, 1, &skyTaaResolveSet[k], 0, nullptr);
+    vkCmdPushConstants(cmd, skyTaaResolvePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(tp), &tp);
+    vkCmdDispatch(cmd, (ctx.swapExtent.width + 15) / 16, (ctx.swapExtent.height + 15) / 16, 1);
+
+    // The resolved colour -> the swapchain.
+    ctx.imageBarrier(cmd, skyTaaHistColorImg[1 - k], VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                     VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    ctx.imageBarrier(cmd, ctx.swapImages[imgIdx], 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkImageBlit blit{};
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[1] = {(int32_t)ctx.swapExtent.width, (int32_t)ctx.swapExtent.height, 1};
+    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.dstOffsets[1] = blit.srcOffsets[1];
+    vkCmdBlitImage(cmd, skyTaaHistColorImg[1 - k], VK_IMAGE_LAYOUT_GENERAL,
+                   ctx.swapImages[imgIdx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    // Next frame reads what this one wrote; the history for it is the other image.
+    ctx.imageBarrier(cmd, skyTaaHistColorImg[1 - k], VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+                     VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    skyTaaHist = 1 - k;
+    skyTaaPrevView = pc.skyView;
+    skyTaaPrevObsDir = up;
+    skyTaaPrevEyeR = eyeR;
+    skyTaaPrevTanHF = tanHF;
+    skyTaaPrevAspect = pc.aspect;
+    skyTaaHistValid = true;
+    skyTaaUsedThisFrame = true;
+    return true;
 }
 
 // ─── createDrawPipeline ───────────────────────────────────────────────────────

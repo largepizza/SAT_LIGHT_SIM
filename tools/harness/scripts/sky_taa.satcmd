@@ -1,0 +1,34 @@
+# 2026-09-30 sky TAA: silhouettes / detail on vs off, stars behind terrain, motion (ghosting), cost
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds_v2.dust_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+observer lat=46.60 lon=7.90 agl=30
+time sun 30 setting
+camera az=170 el=8 fov=45
+set display.sky_taa false
+wait settle
+capture t_off
+capture t_off_z crop=500,200,400,250 scale=3
+perf frames=60 name=alps_off
+path clear
+path key 0 az=160 el=8
+path key 1 az=180 el=8
+path play fps=30 record=pan_off
+set display.sky_taa true
+camera az=170 el=8 fov=45
+wait settle
+capture t_on
+capture t_on_z crop=500,200,400,250 scale=3
+perf frames=60 name=alps_on
+path play fps=30 record=pan_on
+time sun -18
+camera az=170 el=8 fov=45
+wait settle
+capture t_night_on
+set display.sky_taa false
+wait settle
+capture t_night_off
+quit

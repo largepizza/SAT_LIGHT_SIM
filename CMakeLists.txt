@@ -303,6 +303,18 @@ add_custom_command(
 )
 list(APPEND SPV_FILES ${SKY_REFL_SPV})
 
+# And -DSKY_TAA: the full sky rendered offscreen with a sub-pixel jitter and its depth as a second colour
+# output, for the background's temporal anti-aliasing (sky_taa.comp; SatelliteSim::recordPrePass).
+set(SKY_TAA_SPV "${SHADER_OUT_DIR}/sat_sky_taa.frag.spv")
+add_custom_command(
+    OUTPUT ${SKY_TAA_SPV}
+    COMMAND ${GLSLC} -I "${SHADER_INC_DIR}" -DSKY_TAA "${SHADER_SRC_DIR}/sat_sky.frag" -o ${SKY_TAA_SPV}
+    DEPENDS "${SHADER_SRC_DIR}/sat_sky.frag" ${SHADER_HEADERS}
+    COMMENT "Compiling shader: sat_sky.frag (SKY_TAA variant)"
+    VERBATIM
+)
+list(APPEND SPV_FILES ${SKY_TAA_SPV})
+
 # Two more compiles of sat_mesh.frag for the scene pass's depth pre-pass (SatMeshRenderer): a
 # depth-only variant (just the open-lattice cut-outs) and a shading variant with forced early
 # fragment tests and no discard, drawn with depth EQUAL — so each covered pixel is shaded ONCE. The

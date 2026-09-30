@@ -65,6 +65,7 @@ struct VulkanContext {
     // VK_IMAGE_USAGE_TRANSFER_SRC_BIT to ci.imageUsage when this would be true, since requesting
     // an unsupported usage bit is invalid and would fail swapchain creation outright. Simulations
     // must gate screenshot capture on this rather than assuming the copy will always succeed.
+    bool                     swapTransferDstSupported = false; // the swapchain accepts blits (background prepasses)
     bool                     screenshotSupported = false;
     // VK_KHR_pipeline_executable_properties, when the device offers it: the driver's own statistics
     // for a compiled pipeline (registers, spills, ...). Pipelines created with
