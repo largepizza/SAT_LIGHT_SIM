@@ -513,7 +513,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   of drops and flakes) between. Only the eye's precipitation changes type — the distant rain curtains
   are still rain. The `rain` ambience driver takes the liquid share (`cv2EyeTempC`). Rate in ~6 s bursts
   (`rainBurst`); `cloud_v2_march.comp` writes the rate into `terrainFrame.w` (scene_depth.comp writes only
-  .xyz); the host reads it for the `rain` ambience driver (synth `rain`, layer `rain`).
+  .xyz); the host reads it for the `rain` ambience driver (synth `rain`, layer `rain`). **Glints (review 4):**
+  an ice crystal (a flake) is a plate tilted up to ~12 deg, fluttering, that flashes the Sun where its face
+  mirrors it into the eye (a narrow lobe about the half vector); raindrops sparkle when backlit; with no
+  rain, ICE FOG at the eye in sunshine draws DIAMOND DUST: the same lattice, crystals too small to see,
+  tumbling in every orientation, only their glints (rate = the ice fog's density / 5e-5). The eye's Sun
+  transmittance (a 24-step march) and ice fog density are computed once per frame by
+  cloud_v2_lightning.comp (thread 1) into the flash buffer's header (`cv2EyeSunT`, `cv2EyeIceS`: the old
+  pads). Cost ~0.3 ms in diamond dust, a few ops per drop otherwise.
 - **Per-layer scales (pass 10):** the shape period ("Shape period (m) - low cloud") no longer sets the
   cirrus fibres (`cv2CirrusPeriodM`, "Cirrus period") or the altocumulus (`anchorMid`, "Mid layer
   period"); the mid layer has its own density (`atmo.z`) and the anvils only "Anvils" (neither reads
@@ -675,6 +682,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   loss, the march goes back to 1 pixel in 4 even above `full_rate_above_km`; the history converges on
   the same image. Measured at 1920x1009 overlooking anvils: 16 ms still vs 44 ms full rate; a settings
   change takes ~4x longer to reconverge (grain for a few seconds at history weight 0.05).
+- **Storm cells (review 4, 2026-09-29, `cv2CbRole`):** towers come in CLUSTERS: the lattice is grouped
+  in 3x3 blocks, a block holds a storm cell with probability "Cb fill" (`column3.w`, now per block): one
+  DOMINANT tower (the only one reaching the anvil: flared head, overshoot, the anvil's hang, lightning)
+  and a flanking line of 0-2 towers stepping down beside it (height x0.7 / x0.5, radius x0.8-0.9, never
+  anvil-reaching). cloud_v2_lightning.comp flashes dominant towers only. A tower's outline BULGES
+  (turrets: 3rd and 5th angular orders, turning with height, within ~23% so the lattice search still
+  covers it), and a non-anvil tower's top rounds off over up to 3 km (flat boxes at 1.5 km). Defaults:
+  waist 1.0 (none), flare 1.3, anvil hang 0.6 km — the waist, flare and hang around EVERY tower made an
+  even forest of mushroom-capped smokestacks (user snapshot 7, review 3). The lattice moved again (the
+  flare sets the cell). Open: the dominant tower's walls up close are still near-vertical.
 - **Pass 20 (2026-09-29):** "Storm cumulus top" reaches the cloud AROUND a storm: the weather map
   types only a storm's core as Cb (which the towers cover) and the cloud around it as stratocumulus,
   so keyed on the Cb class the slider changed 0.2% of a storm view. Low cloud now takes it by storm
@@ -762,7 +779,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   clouds are built from (the Earth-fixed direction turned by the layer's drift into the cube's frame, one
   mip coarser than the equirect's). The mesh shaders' `earth_env.glsl` fallback keeps the 2D map.
 - **User feedback round (2026-09-29, after the sprint):**
-  **Lightning** toned down (glow x2, bolts x60 in `lightningCS`; were x5 / x150). **Red sprites** (easter
+  **Lightning** toned down (glow x2, bolts x60 in `lightningCS`; were x5 / x150). **Bolts (review 4):** a
+  FRACTAL tree built in one sequential pass per pixel (the main channel's random walk carried along, not
+  re-summed per vertex): a branch from ~60% of the main vertices (6 segments, angling down and out,
+  shrinking with height lost) and twigs off ~55% of branch vertices (4 segments); each segment
+  (`boltSeg`) draws a core whose PEAK is capped (so an overexposed stroke keeps a pixel-ish width instead
+  of swelling into round-capped tubes whose radius jumped along the channel) plus a faint halo, dimmed
+  SMOOTHLY where it passes behind the cloud; a bounding test skips rays far from the tree. Default glow
+  0.088 (the user's: at 1 the flash's cloud glow drowned the bolt). Cost ~0. **Red sprites** (easter
   egg, "Lightning sprites (chance)" `lightning_sprites` 0.05, slot 191, `misc2.x`): a ground stroke may
   set off a sprite ~75 km up (flash list kind 2, `spriteCS` in cloud_march.comp: a deep-red head,
   8-13 tendrils to ~40-50 km, each forking twice as it falls and spreading out (`spriteSeg`), the tips
@@ -917,6 +941,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
+- **Settings layout (review 4, 2026-09-29):** the tabs are Constellations .. Photometry, then Clouds,
+  **Weather** (storms, lightning, rain & snow, weather evolution, fog/dust/ice fog, god rays), **Atmosphere**
+  (was "Aurora": scattering + the sky march's samples, airglow & zodiacal light, aurora), Terrain (relief;
+  surface & lighting), **Night lights** (city lights, roads, sprites, city light on clouds, night sky light),
+  Ocean, Beams (+ the beam light in clouds), Attributions. A tab's INDEX is persisted (`display.active_tab`)
+  and indexes `hovTab[]`, so new tabs are APPENDED to `kSettingsTabNames` (Weather 12, Night lights 13) and
+  the strip draws `kSettingsTabOrder`; `settingsTabIsAdvanced()` is the one "behind Show advanced settings"
+  test (UI, toggle, harness). `settingsTabIndexByName("aurora")` still finds Atmosphere. Collapsible
+  sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
+  (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
+  between tabs changes nothing else: its slot and settings key stay.
 - The Clouds tab's slider slots: `kCloudSliderSlots` (207) sizes all four per-slider arrays and
   `cloudBufs` (207 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
   moving, ice fog x2, sprite start); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted

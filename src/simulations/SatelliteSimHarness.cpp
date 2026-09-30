@@ -1525,7 +1525,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 if (t < 0)
                     fail("ui open: unknown settings tab '" + c.str("tab") + "'");
                 settingsActiveTab = t;
-                if (t >= 6 && t <= 10) // Clouds..Beams are "advanced" (buildSettingsTabbedBody)
+                if (settingsTabIsAdvanced(t)) // (buildSettingsTabbedBody)
                     showAdvancedSettings = true;
             }
             uiVisible = true;

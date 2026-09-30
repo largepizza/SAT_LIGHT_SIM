@@ -134,12 +134,21 @@ bool debugToggleAt(int i, uint32_t &bit, const char *&label, const char *&jsonKe
 // consequence is that a settings.json saved with active_tab == 10 reopens on Beams rather than
 // Attributions once — appending at 11 instead would have avoided that but put the tab button
 // underneath Attributions in the strip, which reads as an afterthought.
-static constexpr const char *kSettingsTabNames[12] = {
+// A tab's INDEX is persisted (display.active_tab) and indexes hovTab[] — new tabs are appended, and the
+// strip shows them in kSettingsTabOrder (review 4 reorganisation: Weather and Night lights split out of
+// Clouds and Terrain; "Aurora" became "Atmosphere", with the scattering and the airglow).
+static constexpr int kSettingsTabCount = 14;
+static constexpr const char *kSettingsTabNames[kSettingsTabCount] = {
     "Constellations", "Sound", "Controls", "Camera",
-    "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Aurora", "Beams", "Attributions"};
+    "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Atmosphere", "Beams", "Attributions",
+    "Weather", "Night lights"};
+static constexpr int kSettingsTabOrder[kSettingsTabCount] = {0, 1, 2, 3, 4, 5, 6, 12, 9, 8, 13, 7, 10, 11};
+bool settingsTabIsAdvanced(int i) { return (i >= 6 && i <= 10) || i == 12 || i == 13; }
 int settingsTabIndexByName(const std::string &name)
 {
-    for (int i = 0; i < 12; ++i)
+    if (name.size() == 6 && tolower((unsigned char)name[0]) == 'a' && tolower((unsigned char)name[1]) == 'u')
+        return 9;   // "Aurora": the tab's old name
+    for (int i = 0; i < kSettingsTabCount; ++i)
     {
         const char *t = kSettingsTabNames[i];
         size_t n = strlen(t);
@@ -153,7 +162,7 @@ int settingsTabIndexByName(const std::string &name)
     }
     return -1;
 }
-const char *settingsTabName(int i) { return (i >= 0 && i < 12) ? kSettingsTabNames[i] : ""; }
+const char *settingsTabName(int i) { return (i >= 0 && i < kSettingsTabCount) ? kSettingsTabNames[i] : ""; }
 
 // Helper: short display name for a GLFW key code (used in settings window + tooltips).
 static const char *keyDisplayName(int key)
@@ -2578,9 +2587,10 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
         // is the preset selector, not a wall of tuning knobs. hovTab[]/settingsActiveTab still
         // index by the tab's real (unchanged) id even while its button is skipped here, so
         // nothing about the other tabs' state needs remapping.
-        for (int ti = 0; ti < 12; ++ti)
+        for (int oi = 0; oi < kSettingsTabCount; ++oi)
         {
-            bool isAdvancedTab = (ti >= 6 && ti <= 10);
+            const int ti = kSettingsTabOrder[oi];
+            bool isAdvancedTab = settingsTabIsAdvanced(ti);
             if (isAdvancedTab && !showAdvancedSettings)
                 continue;
             bool active = settingsActiveTab == ti;
@@ -2651,6 +2661,12 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
             break;
         case 11:
             buildSettingsAttributionsTab(inp, ui);
+            break;
+        case 12:
+            buildSettingsWeatherTab(inp, ui);
+            break;
+        case 13:
+            buildSettingsNightLightsTab(inp, ui);
             break;
         }
     }
@@ -3777,7 +3793,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                 showAdvancedSettings = !showAdvancedSettings;
                 // A hidden tab can't be clicked back to, so bounce off it now rather than leave
                 // its stale content showing behind a tab bar that no longer has a button for it.
-                if (!showAdvancedSettings && settingsActiveTab >= 6 && settingsActiveTab <= 10)
+                if (!showAdvancedSettings && settingsTabIsAdvanced(settingsActiveTab))
                     settingsActiveTab = 4; // Display
             }
             CLAY_TEXT(showAdvancedSettings ? CLAY_STRING("On") : CLAY_STRING("Off"),
@@ -4584,12 +4600,13 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
 // Collapse state is deliberately NOT persisted to settings.json — it is transient view state, not
 // a preference, and every section starts collapsed so the tab opens as a short list of categories.
 void SatelliteSim::buildCloudSliderSections(const UIInput &inp, UIRenderer &ui,
-                                            CloudSliderSection *sections, int count)
+                                            CloudSliderSection *sections, int count, int base)
 {
     static char sectCountBufs[kCloudSectionSlots][8];
-    for (int si = 0; si < count && si < kCloudSectionSlots; ++si)
+    for (int ci = 0; ci < count && base + ci < kCloudSectionSlots; ++ci)
     {
-        CloudSliderSection &sec = sections[si];
+        const int si = base + ci;
+        CloudSliderSection &sec = sections[ci];
         bool open = cloudSectionOpen[si];
         snprintf(sectCountBufs[si], sizeof(sectCountBufs[si]), "%d", sec.count);
         Clay_String cntStr{false, (int32_t)strlen(sectCountBufs[si]), sectCountBufs[si]};
@@ -4639,14 +4656,9 @@ void SatelliteSim::buildCloudSliderSections(const UIInput &inp, UIRenderer &ui,
 // clouds too dark at sunset" should find every relevant knob in one place.
 void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
 {
-    // The volumetric clouds (clouds v2, .plans/CLOUDS_V2_PLAN.md — the only volumetric cloud
-    // renderer since 2026-09-27; v1's cloudMarchCS and its sliders were deleted). Every slider here
-    // is also a settings.json key under "clouds_v2", so the harness can sweep it: set clouds_v2.<key>.
-    //
-    // Slot ids: the v2 sliders use 112-151 (kCloudSliderSlots); the ids v1's deleted sliders held
-    // (2, 7-9, 16, 17, 34, 50, 61, 71-77) are free again.
-
-    // How much cloud there is, and where: the real map, remapped, and how it moves.
+    // Review 4 reorganisation: storms, lightning, rain/snow, weather evolution, fog/dust and god rays
+    // moved to the Weather tab; the scattering to Atmosphere; the city light on clouds to Night lights;
+    // the beam light in clouds to Beams. Slot ids and settings keys unchanged.
     CloudSlider secCoverage[] = {
         {"Map coverage gain", &cv2Coverage, 0.0f, 2.0f, 0.05f, "%.2f", 112},
         {"Map clear below", &cv2CoverClear, 0.0f, 0.6f, 0.01f, "%.2f", 113},
@@ -4656,18 +4668,12 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Flow warp (curved systems)", &cv2FlowWarp, 0.0f, 0.1f, 0.005f, "%.3f", 50},
         {"Flow scale (km)", &cv2FlowPeriodKm, 400.0f, 8000.0f, 100.0f, "%.0f", 61},
         {"Layer spread (mid/high)", &cv2LayerSpread, 0.0f, 1.0f, 0.05f, "%.2f", 71},
-        {"Top-heavy (cumulus)", &cv2TopHeavy, 0.0f, 2.0f, 0.05f, "%.2f", 72},
-        {"Tower top (0 = old cones)", &cv2TowerTop, 0.0f, 0.95f, 0.01f, "%.2f", 73},
-        {"Base flatness (cumulus)", &cv2BaseFlatness, 0.0f, 1.0f, 0.05f, "%.2f", 76},
         {"Mid layer (Ac/As)", &cv2MidAmount, 0.0f, 2.0f, 0.05f, "%.2f", 146},
         {"Mid layer density", &cv2MidDensity, 0.0f, 4.0f, 0.05f, "%.2f", 8},
-        {"Rain", &cv2RainAmount, 0.0f, 3.0f, 0.05f, "%.2f", 155},
-        {"Rain streaks", &cv2RainStreaks, 0.0f, 3.0f, 0.05f, "%.2f", 157},
         {"Map drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
         {"Wind (m/s)", &cv2WindMps, 0.0f, 40.0f, 0.5f, "%.1f", 117},
     };
 
-    // What one cloud looks like: its column, its surface, its lumps.
     CloudSlider secShape[] = {
         {"Erosion detail", &cv2Detail, 0.0f, 2.0f, 0.05f, "%.2f", 118},
         {"Edge sharpness", &cv2EdgeSharpness, 1.0f, 8.0f, 0.1f, "%.1f", 119},
@@ -4676,34 +4682,9 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Surface hardness", &cv2ColumnEdge, 0.5f, 16.0f, 0.25f, "%.2f", 122},
         {"Interior erosion", &cv2InteriorErosion, 0.0f, 1.0f, 0.05f, "%.2f", 123},
         {"Base roughness", &cv2BaseRoughness, 0.0f, 3.0f, 0.05f, "%.2f", 150},
-        {"Storm feature size", &cv2StormScale, 0.5f, 12.0f, 0.1f, "%.2f", 147},
-        {"Storm erosion", &cv2StormDetail, 0.0f, 1.5f, 0.05f, "%.2f", 148},
-        {"Anvils", &cv2Anvil, 0.0f, 2.0f, 0.05f, "%.2f", 149},
-        {"Cb columns (0 = old cores)", &cv2CbColumns, 0.0f, 2.0f, 0.05f, "%.2f", 164},
-        {"Cb spacing (km)", &cv2CbSpacingKm, 8.0f, 120.0f, 1.0f, "%.0f", 165},
-        {"Cb tower radius (km)", &cv2CbRadiusKm, 1.0f, 20.0f, 0.25f, "%.2f", 166},
-        {"Storm cumulus top (km)", &cv2CbCumulusTopKm, 2.0f, 12.0f, 0.25f, "%.2f", 167},
-        {"Cb waist (x radius)", &cv2CbWaist, 0.2f, 1.5f, 0.05f, "%.2f", 168},
-        {"Cb head flare (x radius)", &cv2CbFlare, 0.5f, 3.0f, 0.05f, "%.2f", 169},
-        {"Cb head drift (km)", &cv2CbHeadDriftKm, 0.0f, 30.0f, 0.5f, "%.1f", 170},
-        {"Cb lobes", &cv2CbLobes, 0.0f, 1.5f, 0.05f, "%.2f", 171},
-        {"Cb sparsity", &cv2CbSparsity, 0.0f, 1.0f, 0.05f, "%.2f", 172},
-        {"Cb fill (share of cells)", &cv2CbFill, 0.05f, 1.0f, 0.05f, "%.2f", 189},
-        {"Storm cumulus variation", &cv2CbCumulusVar, 0.0f, 0.8f, 0.05f, "%.2f", 190},
-        {"Cb overshoot (km)", &cv2CbOvershootKm, 0.0f, 3.0f, 0.05f, "%.2f", 173},
-        {"Storm cumulus reach (km)", &cv2CbCumulusReachKm, 5.0f, 160.0f, 1.0f, "%.0f", 177},
-        {"Lightning (flashes/min/tower)", &cv2LightningRate, 0.0f, 30.0f, 0.5f, "%.1f", 179},
-        {"Lightning glow", &cv2LightningGlow, 0.0f, 5.0f, 0.05f, "%.2f", 180},
-        {"Lightning bolts", &cv2LightningBolt, 0.0f, 5.0f, 0.05f, "%.2f", 181},
-        {"Lightning sprites (chance)", &cv2LightningSprites, 0.0f, 1.0f, 0.02f, "%.2f", 191},
-        {"God rays", &cv2Godrays, 0.0f, 3.0f, 0.05f, "%.2f", 187},
-        {"God ray range (km)", &cv2GodrayRangeKm, 50.0f, 1500.0f, 10.0f, "%.0f", 188},
-        {"Weather evolution wind (m/s)", &cv2EvoWindMps, 0.0f, 40.0f, 0.5f, "%.1f", 182},
-        {"Weather growth / decay", &cv2EvoGrowth, 0.0f, 0.5f, 0.01f, "%.2f", 183},
-        {"Weather evolution window (h)", &cv2EvoWindowH, 0.25f, 24.0f, 0.25f, "%.2f", 184},
-        {"Afternoon land convection", &cv2EvoDiurnal, 0.0f, 1.5f, 0.05f, "%.2f", 185},
-        {"Anvil thickness (km)", &cv2AnvilThickKm, 0.3f, 6.0f, 0.1f, "%.1f", 174},
-        {"Anvil hang (km)", &cv2AnvilHangKm, 0.0f, 6.0f, 0.1f, "%.1f", 175},
+        {"Top-heavy (cumulus)", &cv2TopHeavy, 0.0f, 2.0f, 0.05f, "%.2f", 72},
+        {"Tower top (0 = old cones)", &cv2TowerTop, 0.0f, 0.95f, 0.01f, "%.2f", 73},
+        {"Base flatness (cumulus)", &cv2BaseFlatness, 0.0f, 1.0f, 0.05f, "%.2f", 76},
     };
 
     CloudSlider secLighting[] = {
@@ -4712,17 +4693,12 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Highlight roll-off", &cv2HighlightRolloff, 0.0f, 1.0f, 0.05f, "%.2f", 159},
         {"Auto exposure (day)", &cv2AutoExposure, 0.0f, 1.0f, 0.05f, "%.2f", 163},
         {"White balance", &cv2WhiteBalance, 0.0f, 1.0f, 0.05f, "%.2f", 160},
-        {"Beam shafts (0 = drawn line)", &cv2BeamShafts, 0.0f, 4.0f, 0.05f, "%.2f", 161},
-        {"Beam haze / dust", &cv2BeamHaze, 0.0f, 10.0f, 0.1f, "%.1f", 162},
-        {"Beam light on cloud", &cv2BeamLight, 0.0f, 300.0f, 1.0f, "%.0f", 17},
-        {"Beam lines (per beam)", &cv2BeamLines, 0.0f, 2.0f, 0.05f, "%.2f", 34},
         {"Cloud sunlight Rayleigh", &cv2CloudSunRayleigh, 0.0f, 3.0f, 0.05f, "%.2f", 9},
         {"Twilight sky light", &cv2TwilightSky, 0.0f, 8.0f, 0.1f, "%.1f", 16},
         {"Sun gain", &cv2SunGain, 0.0f, 4.0f, 0.05f, "%.2f", 124},
         {"Moon gain", &cv2MoonGain, 0.0f, 8.0f, 0.1f, "%.2f", 125},
         {"Sky ambient", &cv2AmbientGain, 0.0f, 8.0f, 0.05f, "%.2f", 126},
         {"Ground bounce", &cv2BounceGain, 0.0f, 4.0f, 0.05f, "%.2f", 127},
-        {"City up-light", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
         {"Powder", &cv2Powder, 0.0f, 1.0f, 0.05f, "%.2f", 128},
         {"Multi-scatter reach", &cv2MsExtinction, 0.05f, 0.9f, 0.01f, "%.2f", 129},
         {"Multi-scatter strength", &cv2MsStrength, 0.0f, 1.0f, 0.01f, "%.2f", 130},
@@ -4733,16 +4709,16 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Light LOD footprint (m)", &cv2LightLodFootprintM, 0.0f, 200.0f, 5.0f, "%.0f", 178},
     };
 
-    // The shadow clouds cast on the ground, and how city lights diffuse through cloud.
-    CloudSlider secShadow[] = {
-        // A correct opacity value still looks wrong if what leaks through a hazy/thin cloud is a
-        // pixel-sharp copy of the raw city-lights texture — real light diffuses through cloud
-        // droplets. Blends earthNightTex/cityNightDetailTex toward this mip LOD as local cloud
-        // opacity rises (0 = no blur, higher = softer glow). See sat_sky.frag's terrain branch.
-        {"City light blur LOD", &cityLightBlurLod, 0.0f, 20.0f, 0.5f, "%.1f", 62},
+    CloudSlider secHigh[] = {
+        {"High layer amount (Ci/Cs/Cc)", &cv2HighAmount, 0.0f, 2.0f, 0.05f, "%.2f", 151},
+        {"High layer density", &cv2HighDensity, 0.0f, 4.0f, 0.05f, "%.2f", 152},
+        {"Cirrus field size (km)", &cv2CirrusFieldKm, 100.0f, 5000.0f, 50.0f, "%.0f", 74},
+        {"Cirrus flow (x low flow)", &cv2CirrusFlow, 0.0f, 4.0f, 0.05f, "%.2f", 75},
+        {"Cirrus stretch", &cv2CirrusStretch, 1.0f, 30.0f, 0.5f, "%.1f", 153},
+        {"Cirrus wind (m/s)", &cv2CirrusWindMps, 0.0f, 80.0f, 1.0f, "%.0f", 154},
+        {"Cirrus fibre period (m)", &cv2CirrusPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 2},
     };
 
-    // The march's sample budget: the knobs that trade image quality against GPU cost.
     CloudSlider secQuality[] = {
         {"Step at eye (m)", &cv2StepBaseM, 10.0f, 400.0f, 5.0f, "%.0f", 134},
         {"Step growth", &cv2StepGrowth, 0.002f, 0.05f, 0.001f, "%.3f", 135},
@@ -4764,7 +4740,6 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Adaptive parallax (px)", &cv2AdaptiveParallaxPx, 0.1f, 8.0f, 0.1f, "%.1f", 193},
     };
 
-    // Tiling periods of the noise volumes (no rebake: they are read at these scales).
     CloudSlider secNoise[] = {
         {"Shape period (m) - low cloud", &cv2ShapePeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 141},
         {"Mid layer period (m)", &cv2MidPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 7},
@@ -4773,19 +4748,18 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Cluster period (m)", &cv2ClusterPeriodM, 32000.0f, 1024000.0f, 8000.0f, "%.0f", 144},
     };
 
-    // Cirrus: the v2 high layer (cv2HighSigma) — what is drawn.
-    CloudSlider secHigh[] = {
-        {"High layer amount (Ci/Cs/Cc)", &cv2HighAmount, 0.0f, 2.0f, 0.05f, "%.2f", 151},
-        {"High layer density", &cv2HighDensity, 0.0f, 4.0f, 0.05f, "%.2f", 152},
-        {"Cirrus field size (km)", &cv2CirrusFieldKm, 100.0f, 5000.0f, 50.0f, "%.0f", 74},
-        {"Cirrus flow (x low flow)", &cv2CirrusFlow, 0.0f, 4.0f, 0.05f, "%.2f", 75},
-        {"Cirrus stretch", &cv2CirrusStretch, 1.0f, 30.0f, 0.5f, "%.1f", 153},
-        {"Cirrus wind (m/s)", &cv2CirrusWindMps, 0.0f, 80.0f, 1.0f, "%.0f", 154},
-        {"Cirrus fibre period (m)", &cv2CirrusPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 2},
+    CloudSlider secFlat[] = {
+        {"Flat coverage scale", &flatCoverageScale, 0.1f, 2.0f, 0.01f, "%.2f", 51},
+        {"Flat sun gain scale", &flatSunGainScale, 0.1f, 10.0f, 0.05f, "%.2f", 52},
+        {"Flat density scale", &flatDensityScale, 0.1f, 8.0f, 0.1f, "%.2f", 78},
+        {"Flat sun elev band", &sunGainElevBand, 0.02f, 1.0f, 0.01f, "%.2f", 47},
+        {"Flat Rayleigh gain", &flatRayleighGain, 0.0f, 4.0f, 0.05f, "%.2f", 79},
+        {"Twilight ambient", &cloudTwilightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
+        {"Flat twilight ambient", &flatTwilightAmbientGain, 0.0f, 4.0f, 0.05f, "%.2f", 80},
+        {"Twilight band hi", &twilightBandHi, -0.1f, 0.8f, 0.01f, "%.2f", 48},
+        {"Twilight band lo", &twilightBandLo, -0.9f, 0.0f, 0.01f, "%.2f", 49},
     };
 
-    // The v1 cirrus (cirrusMarchCS, cloud_march.comp): drawn ONLY when the volumetric march is knocked
-    // out (Planetarium / Potato); the v2 high layer above replaces it otherwise.
     CloudSlider secCirrus[] = {
         {"Cirrus coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
         {"Cirrus density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
@@ -4807,23 +4781,66 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Cirrus 3D fade start (m)", &cloudDistFadeStartM, 5000.0f, 800000.0f, 5000.0f, "%.0f", 53},
         {"Cirrus 3D fade end (m)", &cloudDistFadeEndM, 10000.0f, 2000000.0f, 10000.0f, "%.0f", 54},
     };
+#define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
+    CloudSliderSection sections[] = {
+        CLOUD_SEC("Coverage & layers", secCoverage),
+        CLOUD_SEC("Shape", secShape),
+        CLOUD_SEC("Lighting", secLighting),
+        CLOUD_SEC("Cirrus (high layer)", secHigh),
+        CLOUD_SEC("Quality / performance", secQuality),
+        CLOUD_SEC("Noise scales", secNoise),
+        CLOUD_SEC("Flat layers", secFlat),
+        CLOUD_SEC("Legacy cirrus (march knocked out only)", secCirrus),
+    };
+#undef CLOUD_SEC
+    buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 0);
+}
 
-    // The flat 2D layers: cirrus's far field, the high layers, and the low deck's stand-in when the
-    // volumetric march is knocked out (Planetarium / Potato).
-    CloudSlider secFlat[] = {
-        {"Flat coverage scale", &flatCoverageScale, 0.1f, 2.0f, 0.01f, "%.2f", 51},
-        {"Flat sun gain scale", &flatSunGainScale, 0.1f, 10.0f, 0.05f, "%.2f", 52},
-        {"Flat density scale", &flatDensityScale, 0.1f, 8.0f, 0.1f, "%.2f", 78},
-        {"Flat sun elev band", &sunGainElevBand, 0.02f, 1.0f, 0.01f, "%.2f", 47},
-        {"Flat Rayleigh gain", &flatRayleighGain, 0.0f, 4.0f, 0.05f, "%.2f", 79},
-        {"Twilight ambient", &cloudTwilightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
-        {"Flat twilight ambient", &flatTwilightAmbientGain, 0.0f, 4.0f, 0.05f, "%.2f", 80},
-        {"Twilight band hi", &twilightBandHi, -0.1f, 0.8f, 0.01f, "%.2f", 48},
-        {"Twilight band lo", &twilightBandLo, -0.9f, 0.0f, 0.01f, "%.2f", 49},
+// ─── buildSettingsWeatherTab ─────────────────────────────────────────────────
+// What the weather does (review 4 reorganisation, out of the Clouds tab): storms, lightning, rain and
+// snow, the weather map's evolution, fog / dust / ice fog, and the experimental god rays.
+void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
+{
+    CloudSlider secStorms[] = {
+        {"Cb fill (share of cells)", &cv2CbFill, 0.05f, 1.0f, 0.05f, "%.2f", 189},
+        {"Cb columns (0 = old cores)", &cv2CbColumns, 0.0f, 2.0f, 0.05f, "%.2f", 164},
+        {"Cb spacing (km)", &cv2CbSpacingKm, 8.0f, 120.0f, 1.0f, "%.0f", 165},
+        {"Cb tower radius (km)", &cv2CbRadiusKm, 1.0f, 20.0f, 0.25f, "%.2f", 166},
+        {"Cb waist (x radius)", &cv2CbWaist, 0.2f, 1.5f, 0.05f, "%.2f", 168},
+        {"Cb head flare (x radius)", &cv2CbFlare, 0.5f, 3.0f, 0.05f, "%.2f", 169},
+        {"Cb head drift (km)", &cv2CbHeadDriftKm, 0.0f, 30.0f, 0.5f, "%.1f", 170},
+        {"Cb lobes", &cv2CbLobes, 0.0f, 1.5f, 0.05f, "%.2f", 171},
+        {"Cb sparsity", &cv2CbSparsity, 0.0f, 1.0f, 0.05f, "%.2f", 172},
+        {"Cb overshoot (km)", &cv2CbOvershootKm, 0.0f, 3.0f, 0.05f, "%.2f", 173},
+        {"Storm cumulus top (km)", &cv2CbCumulusTopKm, 2.0f, 12.0f, 0.25f, "%.2f", 167},
+        {"Storm cumulus variation", &cv2CbCumulusVar, 0.0f, 0.8f, 0.05f, "%.2f", 190},
+        {"Storm cumulus reach (km)", &cv2CbCumulusReachKm, 5.0f, 160.0f, 1.0f, "%.0f", 177},
+        {"Storm feature size", &cv2StormScale, 0.5f, 12.0f, 0.1f, "%.2f", 147},
+        {"Storm erosion", &cv2StormDetail, 0.0f, 1.5f, 0.05f, "%.2f", 148},
+        {"Anvils", &cv2Anvil, 0.0f, 2.0f, 0.05f, "%.2f", 149},
+        {"Anvil thickness (km)", &cv2AnvilThickKm, 0.3f, 6.0f, 0.1f, "%.1f", 174},
+        {"Anvil hang (km)", &cv2AnvilHangKm, 0.0f, 6.0f, 0.1f, "%.1f", 175},
     };
 
-    // Fog + dust: layers of the v2 field (cv2FogDust, clouds_v2.glsl), driven by the weather cube.
-    // (v1's ground fog shell, fogMarchCS, was retired 2026-09-29.)
+    CloudSlider secLightning[] = {
+        {"Lightning (flashes/min/tower)", &cv2LightningRate, 0.0f, 30.0f, 0.5f, "%.1f", 179},
+        {"Lightning glow", &cv2LightningGlow, 0.0f, 5.0f, 0.05f, "%.2f", 180},
+        {"Lightning bolts", &cv2LightningBolt, 0.0f, 5.0f, 0.05f, "%.2f", 181},
+        {"Lightning sprites (chance)", &cv2LightningSprites, 0.0f, 1.0f, 0.02f, "%.2f", 191},
+    };
+
+    CloudSlider secRain[] = {
+        {"Rain", &cv2RainAmount, 0.0f, 3.0f, 0.05f, "%.2f", 155},
+        {"Drops at the eye (rain/snow)", &cv2RainStreaks, 0.0f, 3.0f, 0.05f, "%.2f", 157},
+    };
+
+    CloudSlider secEvo[] = {
+        {"Weather evolution wind (m/s)", &cv2EvoWindMps, 0.0f, 40.0f, 0.5f, "%.1f", 182},
+        {"Weather growth / decay", &cv2EvoGrowth, 0.0f, 0.5f, 0.01f, "%.2f", 183},
+        {"Weather evolution window (h)", &cv2EvoWindowH, 0.25f, 24.0f, 0.25f, "%.2f", 184},
+        {"Afternoon land convection", &cv2EvoDiurnal, 0.0f, 1.5f, 0.05f, "%.2f", 185},
+    };
+
     CloudSlider secFog[] = {
         {"Fog amount", &cv2FogAmount, 0.0f, 2.0f, 0.05f, "%.2f", 194},
         {"Fog depth (m)", &cv2FogDepthM, 20.0f, 1500.0f, 10.0f, "%.0f", 195},
@@ -4836,36 +4853,21 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Ice fog density (1/m)", &cv2IceFogDensity, 0.0f, 0.003f, 0.00001f, "%.5f", 205},
     };
 
-    // Atmospheric scattering strength — scales the physical Rayleigh/Mie coefficients shared
-    // by the sky atmosphere, clouds, cirrus, fog, terrain ambient, ocean reflection, and moon/
-    // sun attenuation (see common.glsl's BETA_R_BASE/BETA_M_BASE and cloud_params.glsl's
-    // atmosRayleighGain/atmosMieGain). 1.0 = original hardcoded behavior. Not cloud-specific,
-    // but it lives here because it is tuned against the cloud/sunset look more than anything else.
-    CloudSlider secAtmos[] = {
-        {"Rayleigh gain", &atmosRayleighGain, 0.0f, 3.0f, 0.05f, "%.2f", 63},
-        {"Mie/haze gain", &atmosMieGain, 0.0f, 3.0f, 0.05f, "%.2f", 64},
-        // Orbital terminator gate — artistic suppression of scattered sunlight past the
-        // terminator, inert below 40 km observer altitude. See cloud_params.glsl.
-        {"Terminator cut", &atmosTermStrength, 0.0f, 1.0f, 0.05f, "%.2f", 81},
-        {"Terminator width", &atmosTermWidth, 0.01f, 0.40f, 0.005f, "%.3f", 82},
+    CloudSlider secGod[] = {
+        {"God rays", &cv2Godrays, 0.0f, 3.0f, 0.05f, "%.2f", 187},
+        {"God ray range (km)", &cv2GodrayRangeKm, 50.0f, 1500.0f, 10.0f, "%.0f", 188},
     };
-
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
-        CLOUD_SEC("Coverage & weather", secCoverage),
-        CLOUD_SEC("Shape", secShape),
-        CLOUD_SEC("Lighting", secLighting),
-        CLOUD_SEC("Shadows & city light", secShadow),
-        CLOUD_SEC("Quality / performance", secQuality),
-        CLOUD_SEC("Noise scales", secNoise),
-        CLOUD_SEC("Cirrus (high layer)", secHigh),
-        CLOUD_SEC("Legacy cirrus (march knocked out only)", secCirrus),
-        CLOUD_SEC("Flat layers", secFlat),
-        CLOUD_SEC("Fog & dust", secFog),
-        CLOUD_SEC("Atmospheric scattering", secAtmos),
+        CLOUD_SEC("Storms (cumulonimbus)", secStorms),
+        CLOUD_SEC("Lightning", secLightning),
+        CLOUD_SEC("Rain & snow", secRain),
+        CLOUD_SEC("Weather evolution", secEvo),
+        CLOUD_SEC("Fog, dust & ice fog", secFog),
+        CLOUD_SEC("God rays (experimental)", secGod),
     };
 #undef CLOUD_SEC
-    buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])));
+    buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 12);
 }
 
 // ─── buildSettingsOceanTab ───────────────────────────────────────────────────
@@ -4903,43 +4905,66 @@ void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
 // terrain/ground-level view is where this quality-vs-perf tradeoff matters most directly.
 void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
 {
-    CloudSlider sliders[] = {
-        {"View samples (min)", &viewSamplesMin, 2.0f, 32.0f, 1.0f, "%.0f", 18},
-        {"View samples (max)", &viewSamplesMax, 32.0f, 256.0f, 4.0f, "%.0f", 19},
-        {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 20},
-        {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
-        {"Cloud shadow range (m)", &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
-        // S4 (RELEASE_v1_1_PLAN.md): terrain-relief march distance fade — see cloud_params.glsl.
-        {"Terrain fade start (m)", &terrainDistFadeStartM, 50000.0f, 1000000.0f, 10000.0f, "%.0f", 59},
-        {"Terrain fade end (m)", &terrainDistFadeEndM, 100000.0f, 4000000.0f, 25000.0f, "%.0f", 60},
+    // (The city lights moved to the Night lights tab, the atmosphere samples to Atmosphere: review 4.)
+    CloudSlider secRelief[] = {
         // Procedural terrain detail (terrain_detail.glsl, 2026-09-25). Strength 0 = the plain DEM.
         {"Terrain detail", &terrainDetailStrength, 0.0f, 2.0f, 0.05f, "%.2f", 91},
         {"Detail height (m)", &terrainDetailAmpM, 0.0f, 800.0f, 10.0f, "%.0f", 92},
         {"Detail roughness", &terrainDetailGain, 0.3f, 0.7f, 0.01f, "%.2f", 93},
         {"Detail erosion", &terrainDetailErode, 0.0f, 6.0f, 0.1f, "%.1f", 94},
-        {"Terrain shadows", &terrainShadowStrength, 0.0f, 1.0f, 0.05f, "%.2f", 95},
-        {"Terrain materials", &terrainMaterialStrength, 0.0f, 1.0f, 0.05f, "%.2f", 96},
         // Erosion octaves (tdErosion): gullies that run downhill and branch.
         {"Erosion strength", &terrainErosionStrength, 0.0f, 1.5f, 0.05f, "%.2f", 97},
         {"Erosion branching", &terrainErosionBranch, 0.0f, 3.0f, 0.1f, "%.1f", 98},
-        // Terrain v2 P1 lighting: the sky dome's light on the ground (x the zenith integral's 0.4) and
-        // the moonless night sky's (a fraction of the full Moon overhead) on the day albedo.
-        {"Terrain sky light", &terrainSkyLight, 0.0f, 4.0f, 0.05f, "%.2f", 55},
-        {"Night sky light", &terrainNightSkyLight, 0.0f, 0.5f, 0.005f, "%.3f", 56},
+        // S4 (RELEASE_v1_1_PLAN.md): terrain-relief march distance fade — see cloud_params.glsl.
+        {"Terrain fade start (m)", &terrainDistFadeStartM, 50000.0f, 1000000.0f, 10000.0f, "%.0f", 59},
+        {"Terrain fade end (m)", &terrainDistFadeEndM, 100000.0f, 4000000.0f, 25000.0f, "%.0f", 60},
+    };
+
+    CloudSlider secSurface[] = {
+        {"Terrain materials", &terrainMaterialStrength, 0.0f, 1.0f, 0.05f, "%.2f", 96},
         // Terrain v2 P3: close-up material textures (grass, forest floor, rock, snow, sand, dirt) within
         // a few metres per pixel. 0 = the procedural mottle alone.
         {"Close-up textures", &terrainTextureStrength, 0.0f, 1.0f, 0.05f, "%.2f", 57},
+        {"Terrain shadows", &terrainShadowStrength, 0.0f, 1.0f, 0.05f, "%.2f", 95},
+        // Terrain v2 P1 lighting: the sky dome's light on the ground (x the zenith integral's 0.4) and
+        // the moonless night sky's (a fraction of the full Moon overhead) on the day albedo.
+        {"Terrain sky light", &terrainSkyLight, 0.0f, 4.0f, 0.05f, "%.2f", 55},
+        {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
+        {"Cloud shadow range (m)", &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
+    };
+#define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
+    CloudSliderSection sections[] = {
+        CLOUD_SEC("Relief", secRelief),
+        CLOUD_SEC("Surface & lighting", secSurface),
+    };
+#undef CLOUD_SEC
+    buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 30);
+}
+
+// ─── buildSettingsNightLightsTab ─────────────────────────────────────────────
+// The lights of the night side (review 4 reorganisation): the procedural city lights, the roads, the
+// city light sprites, and the city's light on clouds; the moonless night sky on the ground.
+void SatelliteSim::buildSettingsNightLightsTab(const UIInput &inp, UIRenderer &ui)
+{
+    CloudSlider sliders[] = {
         // Procedural city lights (.plans/CITIES_PLAN.md): street grids generated where the night map
         // has lights, and the major roads. 0 = the old tiled night detail texture.
         {"City street lights", &cityLightsStrength, 0.0f, 1.0f, 0.05f, "%.2f", 58},
         {"Major road lights", &cityRoadsStrength, 0.0f, 2.0f, 0.05f, "%.2f", 77},
         // City lights as satellite point sprites (city_sprites.comp): twinkling, blooming points.
         {"City light sprites", &citySpriteGain, 0.0f, 4.0f, 0.05f, "%.2f", 200},
+        // Sprites only past the range where a pixel spans this much ground: lower = nearer.
+        {"City sprites from (m/px)", &citySpriteStartFootM, 2.0f, 200.0f, 1.0f, "%.0f", 206},
         // Where the sprites carry the far lights, the share of the ground's own glitter kept under them.
         {"Ground glitter under sprites", &citySpriteGround, 0.0f, 1.0f, 0.05f, "%.2f", 202},
         {"City light twinkle rate", &cityTwinkleRate, 0.0f, 4.0f, 0.05f, "%.2f", 201},
-        // Sprites only past the range where a pixel spans this much ground: lower = nearer.
-        {"City sprites from (m/px)", &citySpriteStartFootM, 2.0f, 200.0f, 1.0f, "%.0f", 206},
+        {"City light on clouds", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
+        // A correct opacity value still looks wrong if what leaks through a hazy/thin cloud is a
+        // pixel-sharp copy of the raw city-lights texture — real light diffuses through cloud
+        // droplets. Blends earthNightTex/cityNightDetailTex toward this mip LOD as local cloud
+        // opacity rises (0 = no blur, higher = softer glow). See sat_sky.frag's terrain branch.
+        {"City light blur LOD", &cityLightBlurLod, 0.0f, 20.0f, 0.5f, "%.1f", 62},
+        {"Night sky light", &terrainNightSkyLight, 0.0f, 0.5f, 0.005f, "%.3f", 56},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -4988,6 +5013,11 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
         // TrackedBeamLight in SatelliteSim.h.
         {"Beam light fade in (s)", &beamClusterFadeInS, 0.0f, 3.0f, 0.05f, "%.2f", 86},
         {"Beam light fade out (s)", &beamClusterFadeOutS, 0.0f, 6.0f, 0.05f, "%.2f", 87},
+        // Beams in clouds (from the Clouds tab, review 4).
+        {"Beam shafts (0 = drawn line)", &cv2BeamShafts, 0.0f, 4.0f, 0.05f, "%.2f", 161},
+        {"Beam haze / dust", &cv2BeamHaze, 0.0f, 10.0f, 0.1f, "%.1f", 162},
+        {"Beam light on cloud", &cv2BeamLight, 0.0f, 300.0f, 1.0f, "%.0f", 17},
+        {"Beam lines (per beam)", &cv2BeamLines, 0.0f, 2.0f, 0.05f, "%.2f", 34},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 
@@ -5133,7 +5163,21 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
 // Airglow + aurora share this tab — both are emissive nightglow phenomena tuned together.
 void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
 {
-    CloudSlider sliders[] = {
+    // The "Atmosphere" tab (was "Aurora"; review 4): the scattering, the sky march's samples, airglow and
+    // zodiacal light, and the aurora.
+    CloudSlider secScatter[] = {
+        {"Rayleigh gain", &atmosRayleighGain, 0.0f, 3.0f, 0.05f, "%.2f", 63},
+        {"Mie/haze gain", &atmosMieGain, 0.0f, 3.0f, 0.05f, "%.2f", 64},
+        // Orbital terminator gate — artistic suppression of scattered sunlight past the
+        // terminator, inert below 40 km observer altitude. See cloud_params.glsl.
+        {"Terminator cut", &atmosTermStrength, 0.0f, 1.0f, 0.05f, "%.2f", 81},
+        {"Terminator width", &atmosTermWidth, 0.01f, 0.40f, 0.005f, "%.3f", 82},
+        {"View samples (min)", &viewSamplesMin, 2.0f, 32.0f, 1.0f, "%.0f", 18},
+        {"View samples (max)", &viewSamplesMax, 32.0f, 256.0f, 4.0f, "%.0f", 19},
+        {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 20},
+    };
+
+    CloudSlider secGlow[] = {
         {"Airglow gain", &airglowGain, 0.0f, 5.0f, 0.1f, "%.2f", 12},
         {"Airglow green", &airglowGreenGain, 0.0f, 3.0f, 0.1f, "%.2f", 13},
         {"Airglow red", &airglowRedGain, 0.0f, 3.0f, 0.1f, "%.2f", 14},
@@ -5147,6 +5191,9 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
         // hovCloudMinus/hovCloudPlus/draggingCloud/cloudBufs in lockstep, and those four have
         // drifted apart before.
         {"Ocean MW refl", &oceanMwReflGain, 0.0f, 8.0f, 0.1f, "%.2f", 90},
+    };
+
+    CloudSlider secAurora[] = {
         {"Storm strength", &stormStrength, 0.0f, 1.0f, 0.05f, "%.2f", 25},
         {"Aurora gain", &auroraGain, 0.0f, 0.1f, 0.001f, "%.3f", 26},
         {"Aurora ground gain", &auroraGroundGain, 0.0f, 0.1f, 0.001f, "%.3f", 27},
@@ -5155,7 +5202,14 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
         {"Coverage drift", &auroraCoverageDriftRate, 0.0f, 0.002f, 0.00002f, "%.1e", 31},
         {"Fold shimmer rate", &auroraShimmerRate, 0.0f, 0.2f, 0.002f, "%.3f", 32},
     };
-    buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
+#define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
+    CloudSliderSection sections[] = {
+        CLOUD_SEC("Scattering", secScatter),
+        CLOUD_SEC("Airglow & zodiacal light", secGlow),
+        CLOUD_SEC("Aurora", secAurora),
+    };
+#undef CLOUD_SEC
+    buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 24);
 }
 
 // ─── buildSettingsAttributionsTab ───────────────────────────────────────────
@@ -6129,7 +6183,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         settingsChrome.y = d.value("win_y", settingsChrome.y);
         settingsChrome.w = d.value("win_w", settingsChrome.w);
         settingsChrome.h = d.value("win_h", settingsChrome.h);
-        settingsActiveTab = std::clamp(d.value("active_tab", settingsActiveTab), 0, 11);
+        settingsActiveTab = std::clamp(d.value("active_tab", settingsActiveTab), 0, kSettingsTabCount - 1);
         int unitVal = d.value("unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0);
         unitSystem = unitVal == 1 ? UnitSystem::Imperial : UnitSystem::Metric;
         // Feature preference, not a graphics-tuning value — unconditional, not gated behind

@@ -44,6 +44,7 @@ int debugToggleTableSize();
 bool debugToggleAt(int i, uint32_t &bit, const char *&label, const char *&jsonKey);
 int settingsTabIndexByName(const std::string &name); // -1 if none (case-insensitive)
 const char *settingsTabName(int i);
+bool settingsTabIsAdvanced(int i);   // behind Display > "Show advanced settings"
 
 #include <string>
 #include <vector>
@@ -4316,7 +4317,7 @@ private:
     bool hovOpenControlsWindow = false; // Controls tab's "Open Controls Reference" button
     bool hovInvertMouseX = false, hovInvertMouseY = false; // Controls tab look-invert toggles
     bool hovInvertPadX = false, hovInvertPadY = false;
-    bool hovTab[12] = {}; // one per settings-window tab (kSettingsTabNames)
+    bool hovTab[14] = {}; // one per settings-window tab (kSettingsTabNames)
     bool hovScaleMinus = false;
     bool hovScalePlus = false;
     bool hovRenderScaleMinus = false;
@@ -4377,7 +4378,7 @@ private:
     // section's position in its tab's own section array, NOT by slider idx — sections are a pure
     // presentation grouping and own no slider state. Sized 24 (capacity) so adding a category
     // needs no array edit; kCloudSectionSlots is asserted against in buildCloudSliderSections.
-    static constexpr int kCloudSectionSlots = 24;
+    static constexpr int kCloudSectionSlots = 48;   // Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35
     bool cloudSectionOpen[kCloudSectionSlots] = {}; // all collapsed on open — the point of the grouping
     bool hovCloudSection[kCloudSectionSlots] = {};
 
@@ -4624,7 +4625,9 @@ private:
     void buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui);
-    void buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui);   // the "Atmosphere" tab
+    void buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsNightLightsTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &ui);
     // Shared slider-row struct/renderer for the Clouds/Ocean/Terrain/Aurora tabs (split from one
@@ -4655,7 +4658,9 @@ private:
         CloudSlider *sliders;
         int count;
     };
-    void buildCloudSliderSections(const UIInput &inp, UIRenderer &ui, CloudSliderSection *sections, int count);
+    // base: this tab's first section slot (each tab owns its own range of open/hover states).
+    void buildCloudSliderSections(const UIInput &inp, UIRenderer &ui, CloudSliderSection *sections, int count,
+                                  int base = 0);
     void buildViewControlsWindow(const UIInput &inp, UIRenderer &ui);
     void buildViewControlsBody(const UIInput &inp, UIRenderer &ui);
     void buildIntroOverlay(const UIInput &inp, UIRenderer &ui);
