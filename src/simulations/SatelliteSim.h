@@ -2894,17 +2894,17 @@ private:
     float cv2CbSpacingKm = 30.0f;      // lattice cell: about one tower per cell where storms are strong
     float cv2CbRadiusKm = 5.0f;        // a tower's base radius (waist ~0.7x, head ~1.6x)
     float cv2CbCumulusTopKm = 5.5f;    // the low (cumulus/congestus) field's top in storm regions
-    float cv2CbWaist = 0.7f;           // a tower's waist, x its base radius
-    float cv2CbFlare = 1.6f;           // its head under the anvil, x its base radius
+    float cv2CbWaist = 1.0f;           // a tower's waist, x its base radius (1 = none: <1 read as smokestacks)
+    float cv2CbFlare = 1.3f;           // its head under the anvil, x its base radius
     float cv2CbHeadDriftKm = 6.0f;     // how far downwind the head is blown
     float cv2CbLobes = 0.55f;          // cauliflower lobes on the tower (fraction of its radius)
     float cv2CbSparsity = 0.35f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
-    float cv2CbFill = 0.5f;            // share of lattice cells holding a tower at all (1 = every cell: a grid)
+    float cv2CbFill = 0.5f;            // share of 3x3 lattice blocks holding a storm cell (a dominant tower + a flanking line)
     float cv2CbCumulusVar = 0.3f;      // the storm cumulus top's regional variation (+- fraction of it)
     float cv2CbCumulusReachKm = 10.0f;  // how far from a storm the low cloud takes the storm cumulus top
     float cv2CbOvershootKm = 0.8f;     // a tower's overshooting dome above the anvil lid (every tower meets it)
     float cv2AnvilThickKm = 2.2f;      // the anvil shield's thickness over the storm's core
-    float cv2AnvilHangKm = 1.2f;       // how much lower it hangs around a tower's head (the mushroom)
+    float cv2AnvilHangKm = 0.6f;       // how much lower it hangs around a tower's head (the mushroom)
     float cv2DetailLodStartM = 13000.0f; // detail erosion fades from here to 4x
     float cv2ShapePeriodM = 1900.0f;   // tiling periods of the noise volumes
     float cv2DetailPeriodM = 1800.0f;

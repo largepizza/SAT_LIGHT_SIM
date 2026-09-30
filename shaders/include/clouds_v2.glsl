@@ -954,6 +954,31 @@ uvec3 cv2Pcg3(uvec3 v)
     return v;
 }
 
+// Storm CELLS (review 4): towers come in clusters, not one per lattice cell. The lattice is grouped in
+// 3x3 blocks; a block holds a storm cell with probability "Cb fill" (column3.w): ONE dominant tower —
+// the only one reaching the anvil, with the flared head and the anvil's hang around it — and a flanking
+// line of 0-2 towers stepping down beside it, inside the block. A tower in every filled cell stood as an
+// even forest of mushroom-capped smokestacks (user snapshot 7, review 3). Returns the tower's height
+// multiplier (1 dominant, 0.7 / 0.5 the flanking line, 0 = none). Shared with cloud_v2_lightning.comp.
+float cv2CbRole(ivec2 ci, uint faceId)
+{
+    ivec2 bl = ivec2(floor(vec2(ci) / 3.0));
+    ivec2 lc = ci - bl * 3;
+    uvec3 hb = cv2Pcg3(uvec3(uvec2(bl + 8192), faceId ^ 0x5BD1E995u));
+    if (float(hb.z >> 16u) / 65535.0 > cv2.column3.w) return 0.0;
+    ivec2 dc = ivec2(int(hb.x % 3u), int((hb.x / 3u) % 3u));
+    if (lc == dc) return 1.0;
+    ivec2 fd = ivec2(int(hb.y % 3u) - 1, int((hb.y / 3u) % 3u) - 1);
+    if (fd == ivec2(0)) fd = ivec2(1 - 2 * (dc.x >> 1), 0);          // toward the block's inside
+    int   nF = int((hb.y >> 16u) % 3u);
+    ivec2 f1 = dc + fd, f2 = dc + 2 * fd;
+    bool  in1 = all(greaterThanEqual(f1, ivec2(0))) && all(lessThanEqual(f1, ivec2(2)));
+    bool  in2 = in1 && all(greaterThanEqual(f2, ivec2(0))) && all(lessThanEqual(f2, ivec2(2)));
+    if (nF >= 1 && in1 && lc == f1) return 0.7;
+    if (nF >= 2 && in2 && lc == f2) return 0.5;
+    return 0.0;
+}
+
 struct CV2Col {
     float sigma;   // extinction of the column (1/m)
     float hf;      // height fraction within the column
@@ -1049,7 +1074,8 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         uvec3 hv = cv2Pcg3(uvec3(uvec2(ci + 8192), faceId));
         // Only "Cb fill" of the cells hold a tower (the rest are the storm's cumulus): with a tower in
         // every cell a storm was peppered with an even grid of columns (user, 2026-09-29).
-        if (float(hv.z >> 16u) / 65535.0 > cv2.column3.w) continue;
+        float role = cv2CbRole(ci, faceId);                // storm cells: a dominant tower + a flanking line
+        if (role <= 0.0) continue;
         // The centre, jittered over 0.15..0.85 of its cell (0.25..0.75 read as a grid): the 2x2 search is
         // exact to 0.65 of a cell and the 3x3 to 1.15, hence limM's 0.62 / 1.12 and the cell >= reach/1.12.
         vec2  ca = (vec2(ci) + 0.15 + 0.7 * vec2(hv.xy & 0xFFFFu) / 65535.0) * cellA;   // the centre's angles
@@ -1071,11 +1097,11 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // short, wide mounds. Floored at 0.7 of its radius at full height it vanished at the cutoff (a
         // flat crescent wall, pass 18); shrunk in radius instead it stood as a thin straw (user, pass 19).
         // Only the ones reaching the anvil get the waist, the flared head and the dome.
-        float hK   = smoothstep(0.02, 0.6, str);
+        float hK   = smoothstep(0.02, 0.6, str) * role;     // the flanking line steps down, below the anvil
         float topC = base + (lid - 300.0 - base) * hK;   // this tower's top
         float full = smoothstep(0.8, 1.0, hK);
         if (q.h > ((full > 0.0) ? lid + osM + 200.0 : topC + 200.0)) continue;
-        float Rc   = Rb * mix(0.7, 1.3, hS) * mix(0.8, 1.0, smoothstep(0.1, 0.6, str));
+        float Rc   = Rb * mix(0.7, 1.3, hS) * mix(0.8, 1.0, smoothstep(0.1, 0.6, str)) * mix(0.75, 1.0, role);
         float fl   = smoothstep(0.1, 0.35, str) * full;  // only anvil-reaching towers flare
         float zeta = hb / max(topC - base, 300.0);
         // Lean downwind with height, and the head blown further downwind under the lid.
@@ -1095,7 +1121,8 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // lit as a deck, shows from above. A head closing over 500 m at the lid stood proud of it as a
         // flat plate tens of km wide: contour rings from the march steps, a moat around it, and dark
         // from orbit (a grazing Sun's light-march ray skims through a plate; user snaps 1, 3 and 4).
-        float rnd  = min(1500.0, 0.6 * max(topC - base, 1.0));   // the top rounds off over this
+        // (Up to 3 km, half the tower: over 1.5 km a flanking tower's top read as a flat box, review 4.)
+        float rnd  = min(full > 0.5 ? 1500.0 : 3000.0, 0.5 * max(topC - base, 1.0));   // the top rounds off over this
         float zh   = (q.h - (topC - rnd)) / rnd;
         r *= sqrt(max(1.0 - cv2SqC(max(zh, 0.0)), 0.0));
         // Only the stronger cores overshoot (about a third), each to its own height: with every tower
@@ -1110,6 +1137,14 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         float rOs  = 0.35 * Rc * sqrt(max(1.0 - zo * zo, 0.0)) * step(0.0, zo) * full;
         r = max(r, rOs);
         r *= 0.9 + 0.1 * smoothstep(0.0, 0.04, zeta);       // the base's rim curls up
+        // Not a cylinder (review 4: "smokestacks"): the outline bulges into a few turrets whose places
+        // turn with height, so the tower reads as a heaped cumulus mass. Low angular orders only, and
+        // within ~23% so the lattice search still covers every tower.
+        {
+            vec3  nW  = cross(wd, eastW);
+            float ang = atan(dot(dhz, nW), dot(dhz, eastW));
+            r *= 1.0 + 0.15 * sin(3.0 * ang + 6.2832 * hS + 2.5 * zeta) + 0.08 * sin(5.0 * ang + 6.2832 * hO - 4.0 * zeta);
+        }
         float cap  = smoothstep(0.0, 1.0, zo);
         float mC   = (r - d) / Rc;
         // ITS top over THIS point (the dome's surface here, else the head's): with the apex, every

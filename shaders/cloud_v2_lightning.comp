@@ -82,7 +82,8 @@ void main()
         for (int idx = int(li); idx < side * side; idx += 256) {
             ivec2 ci = c0 + ivec2(idx % side - K, idx / side - K);
             uvec3 hv = cv2Pcg3(uvec3(uvec2(ci + 8192), faceId));
-            if (float(hv.z >> 16u) / 65535.0 > cv2.column3.w) continue;   // no tower in this cell (Cb fill)
+            float role = cv2CbRole(ci, faceId);                           // storm cells (cv2ColumnSigma)
+            if (role < 1.0) continue;                                     // only the dominant tower reaches the anvil
             vec2  ca = (vec2(ci) + 0.15 + 0.7 * vec2(hv.xy & 0xFFFFu) / 65535.0) * cellA;
             float edgeM = (0.7853982 - max(abs(ca.x), abs(ca.y))) * R_EARTH;
             if (edgeM < limE) continue;
