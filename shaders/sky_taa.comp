@@ -118,6 +118,10 @@ void main() {
             // Motion (in pixels) raises the new sample's weight: a moving view keeps its detail.
             float mv = length((uvP - (vec2(p) + 0.5) / size) * size);
             float w  = mix(pc.cam.z, pc.cam.w, smoothstep(0.5, 4.0, mv));
+            // A flash (lightning, a sprite, a glint): when the whole NEIGHBOURHOOD brightens past the history,
+            // take the new frame at once — at weight 0.1 a flash lasting a few frames came out ~10x dimmer.
+            // Jitter alternating across an edge leaves the 3x3 mean where it was, so edges still accumulate.
+            w = max(w, smoothstep(0.3, 1.2, (m1.x - h.x) / max(h.x, 0.02)));
             res = fromYCoCg(mix(h, toYCoCg(cur), w));
         }
     }
