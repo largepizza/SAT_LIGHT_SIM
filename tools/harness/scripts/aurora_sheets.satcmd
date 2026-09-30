@@ -1,0 +1,45 @@
+# 2026-09-30 aurora sheets (cloud_march.comp auroraSheetsAdd): off vs on, ground and orbit, cost
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds.storm_strength 1
+time set 2036-12-21T12:00:00Z
+time pause
+observer lat=64.84 lon=-147.72 agl=2
+time sun midnight
+camera az=0 el=25 fov=90
+set clouds.aurora_sheets 0
+wait settle
+capture a_ground_off
+perf frames=60 name=ground_off
+set clouds.aurora_sheets 1
+wait settle
+capture a_ground_on
+perf frames=60 name=ground_on
+camera az=0 el=80 fov=100
+wait settle
+capture a_zenith_on
+set clouds.aurora_sheet_crisp 1
+wait settle
+capture a_zenith_crisp
+set clouds.aurora_sheet_crisp 0
+wait settle
+capture a_zenith_fuzzy
+set clouds.aurora_sheet_crisp 0.5
+camera az=20 el=15 fov=40
+wait settle
+capture a_tele_on
+set clouds.aurora_sheets 0
+wait settle
+capture a_tele_off
+set clouds.aurora_sheets 1
+observer lat=60 lon=-150 alt=400000
+camera az=0 el=-30 fov=70
+wait settle
+capture a_orbit_on
+perf frames=60 name=orbit_on
+set clouds.aurora_sheets 0
+wait settle
+capture a_orbit_off
+perf frames=60 name=orbit_off
+quit

@@ -431,4 +431,8 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // wrap is seamless); z = "Sea state from weather" (0 = the old fixed sea, 1 = waves follow the weather
     // cube and a regional wind); w = "Whitecaps" (foam gain).
     vec4  oceanState;
+    // -- Aurora sheets (752 -> 768, 2026-09-30): thin emissive curtains over the diffuse volume (cloud_march.comp
+    // auroraSheetsAdd): x strength (0 = off, the volume alone), y spacing between sheets (degrees of colatitude),
+    // z share of crisp sheets (0 all fuzzy .. 1 all crisp), w fold amount (curls and spirals; 0 = straight arcs).
+    vec4  auroraSheets;
 } cloud;

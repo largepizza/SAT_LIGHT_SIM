@@ -5217,6 +5217,11 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
         {"Coverage az freq", &auroraCoverageAzFreq, 0.0f, 6.0f, 0.1f, "%.1f", 30},
         {"Coverage drift", &auroraCoverageDriftRate, 0.0f, 0.002f, 0.00002f, "%.1e", 31},
         {"Fold shimmer rate", &auroraShimmerRate, 0.0f, 0.2f, 0.002f, "%.3f", 32},
+        // 2026-09-30: thin sheets over the diffuse volume (crisp folded curtains, edge-on ribbons).
+        {"Curtain sheets", &auroraSheetGain, 0.0f, 4.0f, 0.05f, "%.2f", 215},
+        {"Sheet spacing (deg)", &auroraSheetSpacingDeg, 0.05f, 1.5f, 0.01f, "%.2f", 216},
+        {"Crisp sheets (share)", &auroraSheetCrisp, 0.0f, 1.0f, 0.05f, "%.2f", 217},
+        {"Sheet folds", &auroraSheetFold, 0.0f, 2.0f, 0.05f, "%.2f", 218},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
@@ -6517,6 +6522,10 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         // airglow/zodiacal/ocean-MW block below.
         oceanGlintGain = c.value("ocean_glint_gain", oceanGlintGain);
         oceanSeaStateGain = c.value("ocean_sea_state", oceanSeaStateGain);
+        auroraSheetGain = c.value("aurora_sheets", auroraSheetGain);
+        auroraSheetSpacingDeg = c.value("aurora_sheet_spacing_deg", auroraSheetSpacingDeg);
+        auroraSheetCrisp = c.value("aurora_sheet_crisp", auroraSheetCrisp);
+        auroraSheetFold = c.value("aurora_sheet_fold", auroraSheetFold);
         oceanWhitecapGain = c.value("ocean_whitecaps", oceanWhitecapGain);
         oceanGlintMinFlux = c.value("ocean_glint_min_flux", oceanGlintMinFlux);
         cloudCirrusWindDeg = c.value("cirrus_wind_deg", cloudCirrusWindDeg);
@@ -6768,6 +6777,10 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ocean_mw_refl_gain", oceanMwReflGain},
         {"ocean_glint_gain", oceanGlintGain},
         {"ocean_sea_state", oceanSeaStateGain},
+        {"aurora_sheets", auroraSheetGain},
+        {"aurora_sheet_spacing_deg", auroraSheetSpacingDeg},
+        {"aurora_sheet_crisp", auroraSheetCrisp},
+        {"aurora_sheet_fold", auroraSheetFold},
         {"ocean_whitecaps", oceanWhitecapGain},
         {"ocean_glint_min_flux", oceanGlintMinFlux},
         {"zodiacal_width_deg", zodiacalWidthDeg},

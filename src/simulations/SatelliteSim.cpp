@@ -2316,6 +2316,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                       (float)(cityOffsetNorthM - kSeaPeriodYM * std::floor(cityOffsetNorthM / kSeaPeriodYM)),
                                       oceanSeaStateGain, oceanWhitecapGain);
         }
+        cp.auroraSheets = glm::vec4(auroraSheetGain, auroraSheetSpacingDeg, auroraSheetCrisp, auroraSheetFold);
         cp.cloudTwilightAmbientGain = cloudTwilightAmbientGain;
         cp.cloudBaseVariance = cloudBaseVariance;
         cp.cloudErosionEdge = cloudErosionEdge;

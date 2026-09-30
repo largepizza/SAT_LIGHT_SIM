@@ -601,17 +601,25 @@ float auroraCurtainNoise(float colat, float az, float altM, float t, float storm
 // Per-sample curtain color/intensity — near-verbatim port of sat_sky.frag's auroraSampleAt, minus
 // the (unused here) enuX/enuY/enuZ basis-rebuild since the caller already works in ECEF-relative
 // terms consistent with the rest of this file.
+// Outputs for the sheets (auroraSheetsAdd): the point's frame (colat, az), altitude, and the oval mask x
+// night side (0 where this sample returned early).
+float gAurColat = 0.0, gAurAz = 0.0, gAurAlt = 0.0, gAurOvalN = 0.0;
 vec3 auroraCurtainSample(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirECEF, float t, float storm) {
+    gAurOvalN = 0.0;
     vec3 pDirECEF = normalize(rp.x * enuX + rp.y * enuY + rp.z * enuZ);
-    float dayness = clamp((dot(pDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
-    float night   = 1.0 - dayness;
-    if (night <= 0.001) return vec3(0.0);
+    float altM = length(rp) - R_EARTH;
+    gAurAlt = altM;
+    // The frame first (the sheets carry their index across every sample, masked or not).
     vec3 poleDir  = (dot(pDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
     float colat, az; vec3 radialT, tangentT;
     auroraFrame(pDirECEF, poleDir, colat, az, radialT, tangentT);
+    gAurColat = colat; gAurAz = az;
+    float dayness = clamp((dot(pDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
+    float night   = 1.0 - dayness;
+    if (night <= 0.001) return vec3(0.0);
     float oval = auroraOvalMask(colat, az, t, storm);
+    gAurOvalN = oval * night;
     if (oval <= 0.001) return vec3(0.0);
-    float altM = length(rp) - R_EARTH;
     const float kAuroraInnerFalloffM = 7500.0;
     const float kAuroraOuterFalloffM = 15000.0;
     float innerVert = 1.0 / (1.0 + exp(-(altM - kAuroraShellInnerM) / kAuroraInnerFalloffM));
@@ -647,6 +655,58 @@ vec3 auroraCurtainSample(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirEC
 // contribution — i.e. already multiplied by its own step length. Factored out of auroraMarchCS so
 // the "ray dips below the inner shell and re-emerges on the far side" case (see that function's
 // comment) can march both legs with the same step-density logic instead of duplicating the loop.
+// ── Aurora SHEETS (2026-09-30, the user: sharp folded curtains in some displays, large fuzzy ones in
+// others, at the same cost) ──────────────────────────────────────────────────────────────────────────
+// A real curtain is a thin sheet (hundreds of metres thick) of emission hanging along the oval, folded
+// into curls and spirals; it is bright where the eye sees it edge-on. The volume above (a noise field
+// sampled every ~15 km) cannot be sharper than its steps. Here the sheets are the level sets S = n of an
+// index field S(colat, az, t) = (colat - the oval's centre) / spacing + W, W a sum of travelling waves;
+// where W's gradient across the oval passes 1 the level sets fold over (S-curls, spirals).
+// Each crossing of the ray through a sheet is integrated EXACTLY: a Gaussian sheet of width sigma (in S
+// units) contributes emission x sigma sqrt(2 pi) / |dS/dt| — the path length through it — so an edge-on
+// sheet is a crisp bright ribbon at any resolution, with no sampling noise (clouds v2's lesson: analytic
+// geometry and exact per-ray integrals, not step luck). Crossings are found between the volume march's
+// own samples (a few sines each), so the cost is almost nothing.
+// Hash of a sheet index (a float integer): three values in [-1, 1].
+vec3 tdRandCM(float n) { return tdRand3(ivec3(int(n), 7121, 3343)); }
+float auroraSheetIndex(float colat, float az, float t) {
+    float sp = max(cloud.auroraSheets.y, 0.02);
+    float y  = (degrees(colat) - kAuroraOvalColatDeg - 8.0 * cloud.stormStrength) / sp;
+    float T  = t * (0.02 + 0.5 * cloud.auroraShimmerRate);
+    float fo = cloud.auroraSheets.w;
+    float W  = 0.9  * sin(3.0 * az + 0.25 * y + 0.05 * T)
+             + 0.5  * sin(11.0 * az - 1.3 * y + 0.11 * T + 1.7) * fo
+             + 0.45 * sin(29.0 * az + 2.1 * y - 0.23 * T + 0.4) * fo
+             + 0.08 * sin(71.0 * az + 0.6 * y + 0.5 * T + 2.9);   // not x fo: finer folds than the steps alias
+    return y + W;
+}
+// The light of sheet n at a crossing (altitude h, az), per unit path length, x the oval/night mask.
+vec3 auroraSheetLight(float n, float h, float az, float t, float ovalN) {
+    vec3  hs = tdRandCM(n);
+    // A sharp lower border (the green line's bottom, ~100 km, bumpy along the sheet), then a decay with
+    // height; the top reddens (630 nm) past ~180 km. A thin pink edge under strong storms (N2).
+    float hb  = 100000.0 + 8000.0 * hs.x + 6000.0 * sin(az * 23.0 + n * 1.7);
+    float up  = h - hb;
+    float prof = (up < 0.0) ? exp(up / 2500.0) : exp(-up / mix(35000.0, 70000.0, hs.y * 0.5 + 0.5));
+    // Rays: vertical striations along the sheet (~2-5 km apart), drifting; brighter sheets more rayed.
+    float rz  = az * (170.0 + 90.0 * hs.z) + 2.5 * sin(az * 37.0 + t * 0.07 + n);
+    float ray = 0.35 + 0.65 * pow(0.5 + 0.5 * sin(rz), 3.0);
+    vec3  col = mix(vec3(0.9, 0.25, 0.55), kAuroraGroundColor, smoothstep(-1500.0, 3000.0, up));
+    col = mix(col, kAirglowRedColor * 1.4, smoothstep(80000.0, 150000.0, up));
+    float bright = 0.25 + 1.5 * (0.5 + 0.5 * hs.x) * (0.5 + 0.5 * hs.x);
+    return col * (prof * ray * bright * ovalN);
+}
+
+// The sheet index at a point (ray-relative position rp), with its altitude and azimuth.
+float auroraSheetIndexAt(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, out float altM, out float az) {
+    vec3 pD = normalize(rp.x * enuX + rp.y * enuY + rp.z * enuZ);
+    altM = length(rp) - R_EARTH;
+    vec3 pole = (dot(pD, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
+    float colat; vec3 rT, tT;
+    auroraFrame(pD, pole, colat, az, rT, tT);
+    return auroraSheetIndex(colat, az, pc.waveTime);
+}
+
 vec3 auroraMarchSegment(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
                          vec3 sunDirECEF, float segEnter, float segExit) {
     const float kAuroraMaxStepM = 15000.0;
@@ -656,11 +716,59 @@ vec3 auroraMarchSegment(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
     int   N      = clamp(int(segLen / kAuroraMaxStepM), kAuroraStepsMin, kAuroraStepsMax);
     float step   = segLen / float(N);
     vec3  accum  = vec3(0.0);
+    vec3  sheets = vec3(0.0);
+    bool  wantS  = cloud.auroraSheets.x > 0.0;
+    float sPrev = 0.0, azPrev = 0.0, hPrev = 0.0, oPrev = 0.0;
+    bool  havePrev = false;
     for (int i = 0; i < N; ++i) {
         vec3 ap = obsPos + dir * (segEnter + (float(i) + 0.5) * step);
         accum += auroraCurtainSample(ap, enuX, enuY, enuZ, sunDirECEF, pc.waveTime, cloud.stormStrength);
+        if (!wantS) continue;
+        // The index is carried across every sample (dropping it where the mask is 0 cut the sheets in
+        // whole-step chunks along the oval's edge: a staircase); the mask fades linearly across a crossing.
+        float S = auroraSheetIndex(gAurColat, gAurAz, pc.waveTime);
+        if (havePrev && max(oPrev, gAurOvalN) > 0.001) {
+            float dS  = S - sPrev;
+            float rate = abs(dS) / step;                           // S per metre along the ray
+            float lo = min(sPrev, S), hi = max(sPrev, S);
+            float n0 = ceil(lo);
+            float dAz = gAurAz - azPrev;
+            dAz -= 6.2831853 * floor(dAz / 6.2831853 + 0.5);
+            // Up to 4 crossings in one step (a far, oblique ray); more is a haze of sheets, counted as such.
+            int   nc = int(clamp(floor(hi) - n0 + 1.0, 0.0, 4.0));
+            float extra = max(floor(hi) - n0 + 1.0 - 4.0, 0.0);
+            for (int k = 0; k < nc; ++k) {
+                float n  = n0 + float(k);
+                float f  = (abs(dS) > 1e-6) ? (n - sPrev) / dS : 0.5;
+                float h  = mix(hPrev, gAurAlt, f);
+                float az = azPrev + dAz * f;
+                // Two regula-falsi steps on the exact index: linear interpolation over a 15-km step drew each
+                // sheet's lower border as a chain of straight segments (a staircase along the edge).
+                {
+                    float fa = 0.0, fb = 1.0, ga = sPrev - n, gb = S - n;
+                    float tPrevS = segEnter + (float(i) - 0.5) * step;
+                    for (int it = 0; it < 2; ++it) {
+                        float Si = auroraSheetIndexAt(obsPos + dir * (tPrevS + f * step), enuX, enuY, enuZ, h, az);
+                        float gi = Si - n;
+                        if ((gi < 0.0) == (ga < 0.0)) { fa = f; ga = gi; } else { fb = f; gb = gi; }
+                        f = (abs(gb - ga) > 1e-6) ? fa - ga * (fb - fa) / (gb - ga) : 0.5 * (fa + fb);
+                    }
+                    auroraSheetIndexAt(obsPos + dir * (tPrevS + f * step), enuX, enuY, enuZ, h, az);
+                }
+                float oN = mix(oPrev, gAurOvalN, f);
+                // The sheet's width: crisp or fuzzy per sheet and per ~500-km stretch of the oval.
+                vec3  hs = tdRandCM(n);
+                float crispF = smoothstep(-0.3, 0.3, sin(az * 5.0 + hs.y * 3.0 + 0.3 * n) + 2.0 * cloud.auroraSheets.z - 1.0);
+                float sig = mix(0.28, 0.03, crispF);
+                // Path length through the sheet, capped at two steps (a ray running along a sheet).
+                float Lp = min(sig * 2.5066 / max(rate, 1e-9), 2.0 * step);
+                sheets += auroraSheetLight(n, h, az, pc.waveTime, oN) * Lp * (1.0 + extra / 4.0);
+            }
+        }
+        sPrev = S; azPrev = gAurAz; hPrev = gAurAlt; oPrev = gAurOvalN;
+        havePrev = true;
     }
-    return accum * step;
+    return accum * step + sheets * (3.0 * cloud.auroraSheets.x);
 }
 
 // Full sky curtain march: whole-ray bounding pre-check + adaptive-step march + light-pollution/

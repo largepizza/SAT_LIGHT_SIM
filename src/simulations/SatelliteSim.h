@@ -1526,8 +1526,9 @@ struct GpuCloudParams
     float whiteBalance;      // cv2WhiteBalance (sat_sky.frag, before the tonemap)
     glm::vec4 cityParams;    // x twinkle rate, y ground glitter share under the sprites, z sprite reach (m), w sprite start (ground m per pixel)
     glm::vec4 oceanState;    // xy world offset wrapped into the wave period (m), z sea state from weather, w whitecaps (736 -> 752)
+    glm::vec4 auroraSheets;  // x strength, y spacing (deg), z crisp share, w folds (752 -> 768)
 };
-static_assert(sizeof(GpuCloudParams) == 752, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 768, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -3882,6 +3883,10 @@ private:
     float lightSamples = 2.4f;               // N_LIGHT: optDepth sun-side sub-march count
     float oceanSeaOctaves = 3.0f;            // seaMap() octave count (height-trace geometry)
     float oceanDetailOctaves = 5.0f;         // seaMapDetail() octave count (wave normal)
+    float auroraSheetGain = 1.0f;           // aurora sheets (Atmosphere tab, slots 215-218): strength, 0 = off
+    float auroraSheetSpacingDeg = 0.3f;     // colatitude between sheets
+    float auroraSheetCrisp = 0.5f;          // share of crisp (thin) sheets
+    float auroraSheetFold = 1.0f;           // curls / spirals
     float oceanSeaStateGain = 1.0f;          // waves follow the weather (Ocean tab, slot 213; 0 = fixed sea)
     float oceanWhitecapGain = 1.0f;          // whitecap foam gain (Ocean tab, slot 214)
     float oceanReflSamples = 6.0f;           // ocean sky-reflection loop sample count (N_REFL)
@@ -4382,7 +4387,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 215;
+    static constexpr int kCloudSliderSlots = 219;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),
