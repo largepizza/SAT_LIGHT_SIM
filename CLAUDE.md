@@ -722,7 +722,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   proximity (weather type at mip 4, float-bilinear, 0.3-0.6), fully for cells, half for
   stratocumulus: 26% of the view moves between 2 and 7 km. The mid layer gives way wherever towers can
   stand (`col.storm` 0-0.15): a mid-layer sheet cut a weak storm-edge tower as a horizontal belt.
-  "Storm cumulus reach (km)" (`cb_cumulus_reach_km`, 10, slot 177, `column3.x` = the weather mip whose texels
+  "Storm cumulus reach (km)" (`cb_cumulus_reach_km`, 10, slot 177, `column3.x` (since review 5: metres from a tower's edge) = the weather mip whose texels
   are that wide) sets how far; the storm threshold falls with the mip (0.62 - 0.06 x mip), since a fine mip sees
   the core undiluted and at 0.3 it caught plain cumulus everywhere. Head drift applies to anvil-reaching towers only. The lumpy "fields" beside towers seen from altitude
   were the mid layer (debug view 7 green), not cumulus.
