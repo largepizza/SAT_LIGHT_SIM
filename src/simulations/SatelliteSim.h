@@ -1261,7 +1261,7 @@ struct GpuCloudParams
     float airglowGreenGain;   // C15: green (557.7nm) band gain
     float airglowRedGain;     // C15: red (630.0nm) band gain
     float airglowSodiumGain;  // C15: sodium (589.3nm) band gain — keep dim relative to green
-    float shadowMaxDistM;     // cloudMarch's sun self-shadow cone fades out beyond this distance (m)
+    float groundPatternFootM; // review 8: farm/ground pattern range, a pixel footprint (m) (was v1's unread shadowMaxDistM)
     float maxRenderDistM;     // cloudMarch's tExit distance cap (was a hardcoded 80km)
     float viewSamplesMin;     // perf (session 24 round 2): N_VIEW floor for short rays (was pad2)
     float lightSamples;       // perf (session 24): N_LIGHT optDepth sub-march count (was pad3)
@@ -2798,7 +2798,7 @@ private:
     float cv2MsExtinction = 0.12f;     // multiple scattering: extinction ratio per octave ...
     float cv2MsStrength = 0.43f;        // ... and contribution ratio per octave
     float cv2PhaseG = 0.57f;            // forward-scattering lobe (silver lining)
-    float cv2HistoryWeightMoving = 0.7f; // the same weight once the view moves (parallax past ~2 half-res px)
+    float cv2HistoryWeightMoving = 0.4f; // the same weight once the view moves (parallax past ~2 half-res px)
     float cv2HistoryWeight = 0.05f;     // weight of a new sample over its reprojected history (still view;
                                        // the resolve raises it toward 0.35 with motion)
     float cv2LightLenM = 2500.0f;      // light-march length
@@ -3694,6 +3694,7 @@ private:
     float terrainShadowStrength = 1.0f;
     float terrainMaterialStrength = 1.0f;
     float terrainErosionStrength = 0.6f; // erosion octaves (tdErosion): fraction of the detail amplitude
+    float groundPatternRangeM = 800.0f;  // review 8: farm fields stop past this pixel footprint (m); was a fixed 400
     float terrainErosionSize = 1.0f;     // ... x their cell size (512/256 m); powers of two: 0.5, 1, 2, 4
     float terrainErosionBranch = 1.0f;   // how much each erosion octave follows the gullies before it
     float terrainSkyLight = 1.0f;        // x the terrain's sky ambient (zenith integral x 0.4) — terrain v2 P1
@@ -4377,7 +4378,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 212;
+    static constexpr int kCloudSliderSlots = 213;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

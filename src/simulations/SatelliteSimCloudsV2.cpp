@@ -971,7 +971,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                                       std::cos(-cv2PrevDrift), std::sin(-cv2PrevDrift));
     p.obsDelta = glm::vec4(glm::vec3(rotD(eye, cDD, sDD) - cv2PrevEye + windShift), cv2PrevAspect);
     // What is left unreprojected: the volumes' relative slide (detail 1.6, cluster 0.6 of the wind).
-    p.motion = glm::vec4((float)std::abs((double)cv2WindMps * 0.7 * dSimT), cv2HistoryWeightMoving,
+    p.motion = glm::vec4((float)std::abs((double)cv2WindMps * 0.7 * dSimT), std::clamp(cv2HistoryWeightMoving, 0.05f, 0.5f),
                          std::clamp(cv2CbHeadLobes, 0.0f, 1.5f), 0.0f);
 
     // Noise anchors: the observer's SEA-LEVEL point (what the shaders measure from), turned into

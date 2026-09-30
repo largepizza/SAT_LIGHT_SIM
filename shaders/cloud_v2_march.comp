@@ -517,10 +517,12 @@ void main()
     // steps lined up into bands across every cloud top (corduroy, "clouds lose their form"). Blue noise
     // (a 64x64 void-and-cluster tile, a golden-ratio step per frame) leaves only fine grain, at the high
     // frequencies the resolve's 3x3 motion filter removes; white noise left clumps.
-    if (cv2.misc2.z > 0.5) {
+    // Review 8: blue noise always, the golden step per VISIT (as IGN's): in a still view the history's
+    // residual of IGN (weight 0.15, ~13 visits) is its regular structure, a fine crosshatch over every cloud.
+    {
         uint  bi = uint(pix.x & 63) + 64u * uint(pix.y & 63);
         float bn = (float((cv2BlueNoise[bi >> 2u] >> (8u * (bi & 3u))) & 0xFFu) + 0.5) / 256.0;
-        jitter = fract(bn + 0.6180340 * cv2.frame.x);
+        jitter = fract(bn + 0.6180340 * (cv2.misc2.z > 0.5 ? cv2.frame.x : visit));
     }
     // Angular size of one half-res pixel: a sample at distance t stands for t * pixAng metres.
     float pixAng = 2.0 * tanHalfFov / float(halfSize.y);
@@ -996,6 +998,9 @@ void main()
         // fraction of the haze the sky pass puts on the ground beside it, and at twilight it read
         // as its own dark blue ambient under a golden haze. (1 - T): the sky behind already
         // carries its own air, scaled by T.
+        // Review 8: past 40-150 km the sky pass supplies the air in front of the cloud (sat_sky.frag
+        // airFront, from its own atmosphere loop), so a far cloud gets the same haze as the clear horizon.
+        air *= 1.0 - smoothstep(40000.0, 150000.0, meanT);
         outRgb = attn * L + air * (1.0 - T);
     }
     // ── Godrays: the air in the clouds' shadows loses its sunlight (the light volume). The share of

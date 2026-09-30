@@ -48,7 +48,7 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     float airglowGreenGain;
     float airglowRedGain;
     float airglowSodiumGain;
-    float shadowMaxDistM;
+    float groundPatternFootM;   // review 8: "Ground pattern range (m/px)" (was v1's unread shadowMaxDistM)
     float maxRenderDistM;
     float viewSamplesMin;
     float lightSamples;

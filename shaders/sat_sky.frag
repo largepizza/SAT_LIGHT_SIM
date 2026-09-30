@@ -1045,7 +1045,56 @@ vec3 farmCropMean(float green) {
          + 0.10 * vec3(0.130, 0.100, 0.070);
 }
 
-vec3 farmDayAlbedo(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lonDeg, float green, float dry, float foot) {
+// Review 8 (the user: "most places farm in grids or rows, not Voronoi"): fields are RECTANGLES from a
+// recursive split of a block. Each level cuts the current rectangle across one axis at 30-70%, the
+// longer axis with probability pLong (high: strips), stopping with probability pStop or below minM. A
+// pure function of the block and the node's path, so it is world-fixed. Out: the leaf's hash, size (m),
+// position in it (0..1) and distance to its nearest edge (m).
+void farmRects(vec2 u, vec2 blockM, float pLong, float pStop, float minM, int salt, ivec2 seed,
+               out vec3 leafH, out vec2 leafSz, out vec2 lf, out float edge) {
+    vec2 bi = floor(u / blockM);
+    vec2 lo = bi * blockM, sz = blockM;
+    int  id = 1;
+    for (int k = 0; k < 5; ++k) {
+        vec3 h = tdRand3(ivec3(ivec2(bi) + seed, salt + id)) * 0.5 + 0.5;
+        if (k > 0 && h.z < pStop) break;
+        bool splitX = (sz.x > sz.y) == (h.x < pLong);
+        if ((splitX ? sz.x : sz.y) < 2.0 * minM) splitX = !splitX;
+        float sd = splitX ? sz.x : sz.y;
+        if (sd < 2.0 * minM) break;
+        float cut = sd * mix(0.3, 0.7, h.y);
+        bool  sec = (splitX ? u.x - lo.x : u.y - lo.y) >= cut;
+        if (splitX) { if (sec) { lo.x += cut; sz.x -= cut; } else sz.x = cut; }
+        else        { if (sec) { lo.y += cut; sz.y -= cut; } else sz.y = cut; }
+        id = id * 2 + (sec ? 1 : 0);
+    }
+    leafH  = tdRand3(ivec3(ivec2(bi) + seed, salt + 7919 + id)) * 0.5 + 0.5;
+    leafSz = sz;
+    lf     = (u - lo) / sz;
+    vec2 dE = min(u - lo, lo + sz - u);
+    edge   = min(dE.x, dE.y);
+}
+
+// Crop rows along a field's long axis (pitch in metres), mean 1, averaged away past a few metres a pixel.
+float farmRows(vec2 lf, vec2 sz, float pitch, float foot) {
+    float x = (sz.x > sz.y ? lf.y * sz.y : lf.x * sz.x) / pitch;
+    float r = 1.0 - 0.18 * cityBoxCover(fract(x) - 0.5, 0.45, foot / pitch);
+    return r / (1.0 - 0.18 * 0.45);
+}
+
+// Farmland day albedo (a RATIO to its own expected mean x the day map, like the city albedo) and, out,
+// how much of the pixel is open water (flooded paddies: the caller adds a sky reflection and sun glint).
+// Styles, chosen per ~130-km area from the region:
+//   GRID (the Americas, Australia, some of the steppe): mile sections split into quarters / halves,
+//     gravel section roads, centre pivots where it is dry, crop rows;
+//   STRIPS (Europe, Africa, the Middle East, dry Asia): blocks of 300-700 m split into long strips and
+//     smaller plots, the orientation changing every ~2 km with a track along each change;
+//   PADDIES (monsoon Asia where the map is green): 120-260-m blocks of small bunded plots, a share of them
+//     flooded (the share varies by region: planting season).
+// It replaced a stretched Voronoi patchwork, which from the air read as pentagons, not fields.
+vec3 farmDayAlbedo(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lonDeg, float latDeg, float green, float dry,
+                   float foot, out float wet) {
+    wet = 0.0;
     vec2  p2;
     ivec2 dAnc;
     int   f;
@@ -1053,75 +1102,86 @@ vec3 farmDayAlbedo(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lonDeg, float 
     cityFrame(q, enuX, enuY, enuZ, p2, dAnc, f, rel, aup);
     ivec2 big  = dAnc >> 5;                                           // ~130-km areas share a style
     vec3  rA   = tdRand3(ivec3(big, 7101 + f));
-    bool  gridStyle = (lonDeg < -30.0) ? (rA.z > -0.6) : (rA.z > 0.7);
+    float hs   = rA.z * 0.5 + 0.5;
+    float amer = (lonDeg < -30.0) ? 1.0 : 0.0;
+    float aus  = (lonDeg > 110.0 && lonDeg < 156.0 && latDeg < -10.0) ? 1.0 : 0.0;
+    float stp  = (latDeg > 44.0 && lonDeg > 25.0 && lonDeg < 90.0) ? 1.0 : 0.0;
+    float pGrid = max(max(0.85 * amer, 0.75 * aus), max(0.35 * stp, 0.04));
+    float mons  = smoothstep(66.0, 70.0, lonDeg) * (1.0 - smoothstep(122.0, 126.0, lonDeg))
+                * smoothstep(-12.0, -8.0, latDeg) * (1.0 - smoothstep(30.0, 34.0, latDeg));
+    float pPad  = mons * smoothstep(0.15, 0.6, green);
+    int   style = hs < pGrid ? 0 : ((hs - pGrid) / max(1.0 - pGrid, 1e-3) < pPad ? 2 : 1);
+    vec2  dpA   = p2 - vec2(big * 32 - dAnc) * 4096.0;                // metres from the area's fixed origin
     const vec3 kGravel = vec3(0.20, 0.18, 0.15), kHedge = vec3(0.03, 0.055, 0.025);
     vec3  meanC = farmCropMean(green);
-    vec3  alb;
-    vec3  mean;
-    if (gridStyle) {
-        float ang = rA.x * 0.35;                                      // nearly the same over the area
+    vec3  alb, mean;
+    vec3  lh;
+    vec2  lsz, lf;
+    float edge;
+    if (style == 0) {
+        float ang = rA.x * 0.3;
         vec2  cs  = vec2(cos(ang), sin(ang));
-        vec2  dp  = p2 - vec2(big * 32 - dAnc) * 4096.0;
-        vec2  u   = vec2(dot(dp, cs), dot(dp, vec2(-cs.y, cs.x))) / 1024.0;   // sections
-        vec2  si  = floor(u), sf = u - si;
-        vec3  sh  = tdRand3(ivec3(ivec2(si) + big * 256, 7103 + f)) * 0.5 + 0.5;
-        vec2  nF  = vec2(sh.x < 0.35 ? 1.0 : 2.0, sh.y < 0.35 ? 1.0 : 2.0);
-        vec2  fi  = floor(sf * nF), ff = sf * nF - fi;
-        vec3  fh  = tdRand3(ivec3(ivec2(si * 2.0 + fi) + big * 512, 7105 + f)) * 0.5 + 0.5;
-        vec3  crop = farmCrop(fh.x, green);
-        float Fu  = foot / 1024.0;
-        // Centre pivots in dry regions: a green circle in the field, bare corners.
-        if (dry > 0.0 && fh.y < 0.7 * dry * dry) {
-            vec2  fsz = 1.0 / nF;
-            float r   = 0.47 * min(fsz.x, fsz.y);
-            float d   = length((ff - 0.5) * fsz);
-            float inC = clamp((r - d) / max(Fu, 1e-4) + 0.5, 0.0, 1.0);
-            crop = mix(vec3(0.15, 0.12, 0.085), vec3(0.055, 0.10, 0.035), inC);
+        vec2  u   = vec2(dot(dpA, cs), dot(dpA, vec2(-cs.y, cs.x))) + 2.0e5;
+        const float kSec = 1609.34;
+        farmRects(u, vec2(kSec), 0.5, 0.3, 380.0, 7111, big * 64, lh, lsz, lf, edge);
+        vec3  crop = farmCrop(lh.x, green) * farmRows(lf, lsz, 7.0, foot);
+        // Centre pivots on square fields where it is dry: a green disc, the corners fallow.
+        float sq = min(lsz.x, lsz.y) / max(lsz.x, lsz.y);
+        if (sq > 0.8 && lh.y < 0.15 + 0.7 * dry * dry) {
+            float r   = 0.48 * min(lsz.x, lsz.y);
+            float d   = length((lf - 0.5) * lsz);
+            float inC = clamp((r - d) / max(foot, 0.3) + 0.5, 0.0, 1.0);
+            crop = mix(vec3(0.15, 0.12, 0.085), farmCrop(lh.z, max(green, 0.6)), inC);
         }
-        // Gravel roads on the section lines (10 m).
-        float w    = 10.0 / 1024.0;
-        float road = max(cityBoxCover(sf.x - 0.5 * w, w, Fu) + cityBoxCover(sf.x - 1.0 + 0.5 * w, w, Fu),
-                         cityBoxCover(sf.y - 0.5 * w, w, Fu) + cityBoxCover(sf.y - 1.0 + 0.5 * w, w, Fu));
-        float tF   = smoothstep(0.15, 0.4, Fu * max(nF.x, nF.y));    // fields unresolved -> mean
-        alb  = mix(mix(crop, meanC, tF), kGravel, road * (1.0 - tF));
-        mean = mix(meanC, kGravel, 2.0 * w * (1.0 - tF));
+        vec2  sf   = fract(u / kSec);
+        vec2  eS   = min(sf, 1.0 - sf) * kSec;
+        float road = max(cityBoxCover(eS.x, 20.0, foot), cityBoxCover(eS.y, 20.0, foot));   // 10 m each side of the line
+        float tF   = smoothstep(0.35, 0.9, foot / min(lsz.x, lsz.y));
+        float bnd  = cityBoxCover(edge, 4.0, foot) * (1.0 - tF);
+        alb  = mix(mix(mix(crop, meanC, tF), kGravel * 0.8, 0.5 * bnd), kGravel, road);
+        mean = mix(meanC, kGravel, 2.0 * 10.0 / kSec);
     } else {
-        // Patchwork: Voronoi fields on a 256-m lattice, stretched ~2.2:1 along an area's own direction
-        // (European fields are strips, not the pentagons an isotropic Voronoi draws), warped, hedgerows
-        // (3 m) where it is green. The stretch is a linear map of the anchored coordinate: still exact.
-        float ang = rA.x * 3.1416;
-        vec2  cs  = vec2(cos(ang), sin(ang));
-        // Measured from the ~130-km area's origin (fixed as the observer moves: a rotated lattice anchored
-        // at the district origin would jump whenever the district anchor changes).
-        vec2  dpA = p2 - vec2(big * 32 - dAnc) * 4096.0;
-        vec2  pr  = vec2(dot(dpA, cs), dot(dpA, vec2(-cs.y, cs.x)));
-        vec2  c  = pr / vec2(420.0, 190.0);
-        c += 0.25 * vec2(sin(c.y * 0.9 + rA.x * 5.0), sin(c.x * 0.8 + rA.y * 5.0));
-        vec2  ci = floor(c);
-        float d1 = 1e9, d2 = 1e9;
-        vec2  c1 = vec2(0.0), c2 = vec2(0.0);
-        vec3  h1 = vec3(0.0);
-        for (int k = 0; k < 9; ++k) {
-            ivec2 o = ivec2(k % 3 - 1, k / 3 - 1);
-            vec3  r = tdRand3(ivec3(ivec2(ci) + o + big * 4096, 7107 + f));
-            vec2  cc = ci + vec2(o) + 0.5 + 0.42 * r.xy;
-            float d  = dot(c - cc, c - cc);
-            if (d < d1) { d2 = d1; c2 = c1; d1 = d; c1 = cc; h1 = r; }
-            else if (d < d2) { d2 = d; c2 = cc; }
+        bool  pad  = style == 2;
+        float mC   = pad ? 1024.0 : 2048.0;                            // orientation cells (divide 4096)
+        vec2  mi   = floor(dpA / mC);
+        vec3  hm   = tdRand3(ivec3(ivec2(mi) + big * 128, 7121 + f)) * 0.5 + 0.5;
+        float ang  = hm.x * 3.1416;
+        vec2  cs   = vec2(cos(ang), sin(ang));
+        vec2  dl   = dpA - (mi + 0.5) * mC;
+        vec2  u    = vec2(dot(dl, cs), dot(dl, vec2(-cs.y, cs.x))) + 1.0e4;
+        vec2  mf   = fract(dpA / mC);
+        float eM   = min(min(mf.x, 1.0 - mf.x), min(mf.y, 1.0 - mf.y)) * mC;   // to the orientation cell's edge
+        ivec2 seed = ivec2(mi) * 97 + big * 131;
+        if (!pad) {
+            vec2 blk = vec2(mix(300.0, 700.0, hm.y), mix(250.0, 600.0, hm.z));
+            farmRects(u, blk, 0.75, 0.12, 35.0, 7131, seed, lh, lsz, lf, edge);
+            vec3  crop = farmCrop(lh.x, green) * farmRows(lf, lsz, 5.0, foot);
+            float tF   = smoothstep(0.35, 0.9, foot / min(lsz.x, lsz.y));
+            float hw   = mix(1.5, 3.5, green);                          // hedge / baulk width (m)
+            vec3  bndC = mix(kGravel, kHedge, green);
+            float bnd  = cityBoxCover(edge, 2.0 * hw, foot) * (1.0 - tF);
+            float trk  = cityBoxCover(eM, 8.0, foot);
+            alb  = mix(mix(mix(crop, meanC, tF), bndC, bnd), kGravel, trk);
+            mean = mix(meanC, bndC, 2.0 * hw / 120.0);
+        } else {
+            // Paddies: small plots behind earth bunds; flooded in part of the region (planting season), the
+            // rest young rice (bright green) or ripening (yellow-green).
+            vec2 blk = vec2(mix(150.0, 260.0, hm.y), mix(120.0, 220.0, hm.z));
+            farmRects(u, blk, 0.55, 0.05, 14.0, 7141, seed, lh, lsz, lf, edge);
+            float flood = clamp(0.8 * cityValue2(p2, dAnc, 4096.0, 7151 + f) + 0.45, 0.0, 0.9);
+            vec3  water = vec3(0.030, 0.042, 0.040), young = vec3(0.050, 0.115, 0.030), ripe = vec3(0.12, 0.13, 0.05);
+            bool  isWet = lh.y < flood;
+            vec3  rice  = mix(young, ripe, smoothstep(0.6, 0.9, lh.z)) * mix(0.85, 1.15, lh.x);
+            vec3  plot  = isWet ? mix(water, young, 0.25 * lh.z) : rice * farmRows(lf, lsz, 0.6, foot);
+            vec3  pMean = mix(0.7 * young + 0.3 * ripe, water + 0.1 * young, flood);
+            float tF    = smoothstep(0.35, 0.9, foot / min(lsz.x, lsz.y));
+            vec3  bund  = vec3(0.11, 0.095, 0.065);
+            float bnd   = cityBoxCover(edge, 2.4, foot) * (1.0 - tF);
+            float trk   = cityBoxCover(eM, 5.0, foot);
+            alb  = mix(mix(mix(plot, pMean, tF), bund, bnd), kGravel, trk);
+            mean = mix(pMean, bund, 2.4 / 45.0);
+            wet  = mix(isWet ? 0.9 : 0.0, 0.9 * flood, tF) * (1.0 - bnd) * (1.0 - trk);
         }
-        // Metres to the boundary: the bisector is a line in both spaces; its metric normal is the stretched
-        // direction's, mapped.
-        vec2  nS   = normalize(c2 - c1);
-        vec2  tM   = normalize(vec2(-nS.y, nS.x) * vec2(420.0, 190.0));
-        float edge = abs(dot((c - 0.5 * (c1 + c2)) * vec2(420.0, 190.0), vec2(-tM.y, tM.x)));
-        vec3  crop = farmCrop(h1.z * 0.5 + 0.5, green);
-        float Fu   = foot / 190.0;
-        float tF   = smoothstep(0.15, 0.4, Fu);
-        float hw   = mix(1.0, 3.0, green);                             // hedge / track width (m)
-        vec3  bnd  = mix(kGravel, kHedge, green);
-        float hcov = clamp((0.5 * hw - edge) / max(foot, 0.3) + 0.5, 0.0, 1.0) * (1.0 - tF);
-        alb  = mix(mix(crop, meanC, tF), bnd, hcov);
-        mean = mix(meanC, bnd, (hw / 280.0) * 2.2 * (1.0 - tF));
     }
     return alb / max(mean, vec3(1e-3));
 }
@@ -2910,6 +2970,13 @@ void main() {
     }
 #endif
     vec3  accumAirglow = vec3(0.0); // green + sodium bands (C15) — ride these same samples
+    // Review 8: the sunlit (and sky-lit, below) air IN FRONT of the clouds, like accumCityFront: the
+    // composite keeps it out of the cloud's attenuation for distant clouds, and the march drops its own
+    // airlight for them, so a far cloud and the clear horizon beside it get the SAME air. The march's
+    // 8-step airlight read far darker than this loop's at a grazing Sun: the clouds along the horizon
+    // were dark silhouettes 100-600 km out with no haze on them (user, review 8).
+    vec3  accumRF = vec3(0.0), shRF = vec3(0.0);
+    float accumMF = 0.0, shMF = 0.0;
     vec3  shR = vec3(0.0);          // review 7: the in-shadow air, attenuated to the eye (Rayleigh, Mie,
     float shM = 0.0, shT = 0.0, shD = 0.0; //   and its density-weighted distance)
     float odR_cam = 0.0;
@@ -3040,6 +3107,8 @@ void main() {
             // Review 7: shadowed air, lit by the twilight sky below (see shadowSky after the loop).
             vec3 aC = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             shR += aC * densR; shM += dot(aC, vec3(1.0 / 3.0)) * densM;
+            float fwS = 1.0 - smoothstep(0.9 * tCloudFrontM, 1.1 * tCloudFrontM, tStart + (float(i) + 0.5) * segLen);
+            shRF += aC * densR * fwS; shMF += dot(aC, vec3(1.0 / 3.0)) * densM * fwS;
             shT += densR * (tStart + (float(i) + 0.5) * segLen);
             shD += densR;
             continue;
@@ -3081,6 +3150,9 @@ void main() {
         // the exact opposite of what they exist to do.
         accumR += attn * densR * atmTermW8;                  // Rayleigh: wavelength-dependent (blue sky)
         accumM += dot(attn, vec3(1.0 / 3.0)) * densM * atmTermW8; // Mie: wavelength-neutral (white haze/corona)
+        float fwC = 1.0 - smoothstep(0.9 * tCloudFrontM, 1.1 * tCloudFrontM, tStart + (float(i) + 0.5) * segLen);
+        accumRF += attn * densR * atmTermW8 * fwC;
+        accumMF += dot(attn, vec3(1.0 / 3.0)) * densM * atmTermW8 * fwC;
     }
 
     vec3 color = SUN_INTENSITY * (pR * BETA_R * accumR + vec3(pM * BETA_M * accumM));
@@ -3090,6 +3162,7 @@ void main() {
     // dark), from the zenith sky over the shadowed stretch's mean point, faded like the clouds' sky ambient
     // over the first ~5 deg of the Sun's depression there. cloud_v2_march.comp adds the same to the air in
     // front of a cloud. Ground and aircraft only: from orbit the terminator gate owns the twilight air.
+    vec3 skyShadowF = vec3(0.0);
     if (shD > 0.0 && atmTermSpace < 1.0) {
         vec3  pm  = obsPos + dir * (shT / shD);
         float rm  = max(length(pm), R_EARTH);
@@ -3098,7 +3171,12 @@ void main() {
         float su  = dot(pm / rm, sunDir);
         vec3  sky = skyZenithSky(pm, sunDir, BETA_R, BETA_M) * smoothstep(hS - 0.09, hS + 0.04, su);
         color += (1.0 - atmTermSpace) * 0.5 * sky * (BETA_R * shR + vec3(BETA_M * shM));
+        skyShadowF = (1.0 - atmTermSpace) * 0.5 * sky * (BETA_R * shRF + vec3(BETA_M * shMF));
     }
+    // The air in front of the clouds, for DISTANT clouds only (the march keeps its own airlight for near
+    // ones, with the same 40-150 km crossover on its mean cloud depth).
+    vec3 airFront = (SUN_INTENSITY * (pR * BETA_R * accumRF + vec3(pM * BETA_M * accumMF)) + skyShadowF)
+                  * smoothstep(40000.0, 150000.0, tCloudFrontM);
 
     // City light-pollution glow dome, composited once here (see accumCity comment in the loop
     // above). nightFactor fades it out through the day — cheap local gate rather than reusing
@@ -3556,11 +3634,14 @@ void main() {
             }
         }
 
+        float farmWet = 0.0;   // flooded paddies' open water (review 8): a sky reflection + sun glint below
         // ── Farmland (rural, where the day map is cultivated: not forest, desert, snow, steep, city) ──
         if (cityLand && cloud.cityLightsStrength > 0.0 && tdEnabled()) {
             float fT    = tHit > 0.0 ? tHit : tSeaLvl;
             float fFoot = pixAngle * fT / max(abs(dot(dir, shadingN)), 0.2);
-            if (fFoot < 400.0) {
+            // Review 8: the range is a setting ("Ground pattern range (m/px)", groundPatternFootM, 400 as before).
+            float gpR = max(cloud.groundPatternFootM, 100.0);
+            if (fFoot < gpR) {
                 vec3  dm    = textureLod(earthDayTex, uvSurf, 1.0).rgb;
                 float lumD  = dot(dm, vec3(0.2126, 0.7152, 0.0722));
                 float vegD  = (dm.g - dm.r) / (dm.g + dm.r + 1e-3);
@@ -3588,9 +3669,13 @@ void main() {
                     vec3  fQ    = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
                     float green = smoothstep(-0.02, 0.12, vegD);
                     float dry   = smoothstep(0.1, 0.25, lumD) * (1.0 - green);
-                    vec3  fr = farmDayAlbedo(fQ, enuX, enuY, enuZ, uvSurf.x * 360.0 - 180.0, green, dry, fFoot);
-                    float tFade = 1.0 - smoothstep(200.0, 350.0, fFoot);    // unchanged past 350 m (orbit)
-                    dayColor *= mix(vec3(1.0), clamp(fr, vec3(0.0), vec3(4.0)), farm * tFade * cloud.cityLightsStrength);
+                    float fWet;
+                    vec3  fr = farmDayAlbedo(fQ, enuX, enuY, enuZ, uvSurf.x * 360.0 - 180.0, 90.0 - uvSurf.y * 180.0,
+                                             green, dry, fFoot, fWet);
+                    float tFade = 1.0 - smoothstep(0.55 * gpR, 0.9 * gpR, fFoot);
+                    float fW    = farm * tFade * cloud.cityLightsStrength;
+                    dayColor *= mix(vec3(1.0), clamp(fr, vec3(0.0), vec3(4.0)), fW);
+                    farmWet = fWet * fW;
                 }
             }
         }
@@ -3884,6 +3969,15 @@ void main() {
                         + tNight
                         + moonContribTerrain
                         + auroraContribTerrain;
+        // Flooded paddies (review 8): open water between the rice reflects the sky (Schlick, n = 1.33) and
+        // glints the Sun, like the sea's sky reflection and glint, on the ground's own up vector.
+        if (farmWet > 0.001) {
+            float cV   = max(dot(-dir, hitUp), 0.0);
+            float fres = 0.02 + 0.98 * pow(1.0 - cV, 5.0);
+            float gl   = pow(max(dot(reflect(dir, hitUp), sunDir), 0.0), 300.0) * 38.5;
+            surfColor += farmWet * (fres * skyAmbientTerrain * 0.4 * cloud.terrainErosion.w * twilightFrac
+                                  + fres * gl * sunSpecTint * cloudShadowT * dayFrac * sunDiscVis * terrainShadow);
+        }
 
         // Terrain debug views (harness `debugview`, cloud.terrainDebugView) — override the pixel.
         if (cloud.terrainDebugView > 0.5 && tHit > 0.0) {
@@ -4441,7 +4535,7 @@ void main() {
     // auroraMarchCS, with its own cloud-suppression already applied there using the local cloud
     // opacity. No separate aurora term needed here; it is terrain-occluded at march time along
     // with everything else in the composite.
-    color = color * cloudB.rgb + cloudA.rgb + cityGlowFront * (vec3(1.0) - cloudB.rgb);
+    color = color * cloudB.rgb + cloudA.rgb + (cityGlowFront + airFront) * (vec3(1.0) - cloudB.rgb);
 #ifdef SKY_ENV
     // From orbit the curtains are in front of every cloud deck: added on top.
     color += envAurora(obsPos, dir, tSurface, enuX, enuY, enuZ, sunDirECEF);

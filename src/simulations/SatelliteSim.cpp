@@ -2296,7 +2296,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.eclipticPoleENU = glm::vec4(eclipticPoleENU, zodiacalGain); // .w = zodiacalGain
         // w: "Erosion size" as log2 of its factor (terrain_detail.glsl tdErosionK: powers of two only).
         cp.envMainObsDir = glm::vec4(glm::normalize(obsDir), std::round(std::log2(std::clamp(terrainErosionSize, 0.5f, 4.0f)))); // SKY_ENV: the frame of the two bases
-        cp.shadowMaxDistM = cloudShadowMaxDistM;
+        cp.groundPatternFootM = groundPatternRangeM;
         cp.maxRenderDistM = cloudMaxRenderDistM;
         cp.viewSamplesMin = viewSamplesMin;
         cp.viewSamplesMax = viewSamplesMax;

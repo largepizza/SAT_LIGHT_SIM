@@ -4739,7 +4739,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"History weight", &cv2HistoryWeight, 0.02f, 0.15f, 0.01f, "%.2f", 140},
         // The new-sample weight once the view moves (parallax): high, so small clouds don't ghost; the
         // still weight above stays low, so a still view has no checkerboard flicker.
-        {"History weight moving", &cv2HistoryWeightMoving, 0.05f, 1.0f, 0.01f, "%.2f", 203},
+        {"History weight moving", &cv2HistoryWeightMoving, 0.05f, 0.5f, 0.01f, "%.2f", 203},
         {"Full rate above (km)", &cv2FullRateAboveKm, 0.0f, 400.0f, 1.0f, "%.0f", 145},
         {"Sparse when still (0/1)", &cv2SparseWhenStill, 0.0f, 1.0f, 1.0f, "%.0f", 176},
         {"Half rate while moving (0/1)", &cv2HalfRateMoving, 0.0f, 1.0f, 1.0f, "%.0f", 186},
@@ -4929,6 +4929,8 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         // S4 (RELEASE_v1_1_PLAN.md): terrain-relief march distance fade — see cloud_params.glsl.
         {"Terrain fade start (m)", &terrainDistFadeStartM, 50000.0f, 1000000.0f, 10000.0f, "%.0f", 59},
         {"Terrain fade end (m)", &terrainDistFadeEndM, 100000.0f, 4000000.0f, 25000.0f, "%.0f", 60},
+        // Review 8: where the procedural fields stop (a pixel footprint): past it the plain day map.
+        {"Ground pattern range (m/px)", &groundPatternRangeM, 100.0f, 3000.0f, 25.0f, "%.0f", 212},
     };
 
     CloudSlider secSurface[] = {
@@ -6358,7 +6360,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2BounceGain = c.value("bounce_gain", cv2BounceGain);
         cv2Powder = c.value("powder", cv2Powder);
         cv2HistoryWeight = std::clamp(c.value("history_weight", cv2HistoryWeight), 0.02f, 0.15f);
-        cv2HistoryWeightMoving = c.value("history_weight_moving", cv2HistoryWeightMoving);
+        // Capped at 0.5 (review 8): at 1.0 a moving view showed this frame's quarter-grid rays raw (2x2 blocks,
+        // "wood grain"); at most half of this frame keeps a temporal smear the clamp box bounds.
+        cv2HistoryWeightMoving = std::clamp(c.value("history_weight_moving", cv2HistoryWeightMoving), 0.05f, 0.5f);
         cv2LightLenM = c.value("light_len_m", cv2LightLenM);
         cv2LightSteps = c.value("light_steps", cv2LightSteps);
         cv2LightLodFootprintM = c.value("light_lod_footprint_m", cv2LightLodFootprintM);
@@ -6492,6 +6496,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         terrainMaterialStrength = c.value("terrain_material_strength", terrainMaterialStrength);
         terrainErosionStrength = c.value("terrain_erosion_strength", terrainErosionStrength);
         terrainErosionSize = c.value("terrain_erosion_size", terrainErosionSize);
+        groundPatternRangeM = c.value("ground_pattern_range_m", groundPatternRangeM);
         terrainErosionBranch = c.value("terrain_erosion_branch", terrainErosionBranch);
         terrainSkyLight = c.value("terrain_sky_light", terrainSkyLight);
         terrainNightSkyLight = c.value("terrain_night_sky_light", terrainNightSkyLight);
@@ -6733,6 +6738,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"terrain_material_strength", terrainMaterialStrength},
         {"terrain_erosion_strength", terrainErosionStrength},
         {"terrain_erosion_size", terrainErosionSize},
+        {"ground_pattern_range_m", groundPatternRangeM},
         {"terrain_erosion_branch", terrainErosionBranch},
         {"terrain_sky_light", terrainSkyLight},
         {"terrain_night_sky_light", terrainNightSkyLight},

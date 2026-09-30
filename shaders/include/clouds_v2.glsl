@@ -352,6 +352,11 @@ vec3 cv2FlowWeatherDirAt(CV2Pos q)
 // finer than a pixel averages instead of aliasing (from orbit a 2 km cumulus cell is one pixel).
 // stormProx: 0..1, how close the nearest Cb tower is (cv2ColumnSigma's CV2Col.prox): the storm cumulus
 // rises around the towers only. 0 where the caller has no tower search (the eye's rain).
+// Review 8: the ground shadow sets this: it reads at its step's coarse footprint (it must, or a low Sun's
+// long path aliases), where the field would swap its cells for the far field's km-scale blobs, and the
+// shadow was those blobs (stair-stepped) under the small puffs the view draws. It takes the cells'
+// sub-pixel average instead. Never written by the view march, so it folds away there.
+bool gCv2NoFar = false;
 CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
 {
     CV2Field f;
@@ -502,9 +507,14 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // orbit are still there on the way down instead of the two looks morphing into each other.
     vec4  cl4    = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 4.0
                               + vec3(0.37, 0.61, 0.13), cv2Lod(fpM, cv2.anchorCluster.w * 4.0));
-    float fz     = ((cl.a - 0.5) * 0.6 + (cl4.a - 0.5) * 0.4) / 0.041;
+    // Review 8: + a 16-km-period octave, so from orbit the edges and holes reach down toward the pixel
+    // (the user: the far field read as the 2D map's blobs, missing the small clouds). Weights 0.5/0.3/0.2
+    // of the baked fBm (sd 0.057 each): sd 0.035.
+    vec4  cl16   = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 16.0
+                              + vec3(0.71, 0.23, 0.47), cv2Lod(fpM, cv2.anchorCluster.w * 16.0));
+    float fz     = ((cl.a - 0.5) * 0.5 + (cl4.a - 0.5) * 0.3 + (cl16.a - 0.5) * 0.2) / 0.035;
     float zThr   = 2.6 * (0.5 - cov);
-    float farK   = smoothstep(0.5, 2.5, cv2Lod(fpM, cv2.anchorCell.w));
+    float farK   = gCv2NoFar ? 0.0 : smoothstep(0.5, 2.5, cv2Lod(fpM, cv2.anchorCell.w));
     field = mix(field + 0.08 * clamp(fz, -2.5, 2.5), (1.0 - cov) + 0.385 * (fz - zThr), farK);
     // How far into the cloud this column is: 0 at the edge, 1 well inside. Not normalised by the
     // coverage, so sparse fair-weather cells stay small and low; only a dense field builds towers.
