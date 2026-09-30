@@ -481,11 +481,13 @@ void main()
     vec3  phRainMoon = vec3(0.3 * cv2HG(cosMoon, 0.97) + 0.55 * cv2HG(cosMoon, 0.35))
                      + og * 0.5 * cv2RainOptics(dir, moonDir);
     // SNOW shafts (review 5: "snow produces rainbows"): a bow needs liquid drops. Where the shafts'
-    // air (~500 m up; the eye's temperature, 6.5 C/km) is below freezing they are snow, and a snow shower
+    // air (~500 m above the ground; the eye's temperature, 6.5 C/km) is below freezing they are snow, and a snow shower
     // in sunshine shows no bow: its big aggregates scatter broadly, and the few plate crystals falling
     // with it give faint sundogs, a weak 22 degree halo and a pillar under a low Sun. Per ray (one
     // temperature for the view): the eye's rain lattice uses the same model (cv2.precip.x).
-    float liqR = smoothstep(-1.0, 3.0, cv2.precip.x + 0.0065 * (eyeH - 500.0));
+    // The shafts' air: 500 m over the GROUND under the eye (terrainFrame.y), not over sea level: on
+    // the 3 km Antarctic plateau that was 2.5 km too low, warm enough for a rainbow (review 6).
+    float liqR = smoothstep(-1.0, 3.0, cv2.precip.x + 0.0065 * (eyeH - terrainFrame.y - 500.0));
     if (liqR < 1.0) {
         vec4 habSnow = vec4(0.2, 0.35, 0.0, 0.0);
         [[dont_unroll]] for (int li = 0; li < 2; ++li) {

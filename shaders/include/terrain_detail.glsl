@@ -328,7 +328,22 @@ TdState tdBegin(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float h0, float hMip3) 
 //    1.7x near the corners but not the direction: the stripes vary across the PROJECTED slope, and
 //    the plane projection is a linear bijection on the tangent plane, so grooves run exactly downhill.
 const int   kTdErosionOctaves = 2;
-const int   kTdErosionFirstK  = 2;       // first cell 2048 / 2^2 = 512 m
+const int   kTdErosionFirstK  = 2;       // first cell 2048 / 2^2 = 512 m (x "Erosion size")
+
+// "Erosion size" (review 6): the octaves' cells x 2^s, s = cloud.envMainObsDir.w in -1..2 (256-m to
+// 2048-m first cell). Powers of two keep the lattice exactly world-fixed on the 2048-m anchor cells.
+int tdErosionK() { return kTdErosionFirstK - int(clamp(floor(cloud.envMainObsDir.w + 0.5), -1.0, 2.0)); }
+
+// The anchor's 2048-m cell in units of an octave's cell (2048 / 2^k): its integer part `off` and, for
+// cells larger than 2048 m (k < 0), the remainder, in cells.
+ivec2 tdEroAnchor(ivec2 anc2, int k, out vec2 rem) {
+    rem = vec2(0.0);
+    if (k >= 0) return anc2 << k;
+    int   d = 1 << (-k);
+    ivec2 q = ivec2(floor(vec2(anc2) / float(d)));
+    rem = vec2(anc2 - q * d) / float(d);
+    return q;
+}
 const float kTdErosionSum     = 0.75;    // 0.5 + 0.25: |sum| of the octave weights
 
 // Upper bound on the erosion's height (|stripe average| <= 1, slope factor <= 1).
@@ -393,7 +408,8 @@ vec4 tdErosionFace(vec3 rel, int f, vec3 g, float amp, float lodM) {
     vec2  g2     = vec2(g[ax.x], g[ax.y]);
     float h = 0.0, a = 0.5;
     vec2  dh = vec2(0.0);                // per metre, face coordinates
-    float cell = kTdBaseCellM / float(1 << kTdErosionFirstK);
+    int   k0   = tdErosionK();
+    float cell = kTdBaseCellM * exp2(-float(k0));
     [[dont_unroll]] for (int o = 0; o < kTdErosionOctaves; ++o) {
         // Twice the value noise's margin: a stripe period is one cell, so a cell of 2 LODs is a
         // stripe pattern at the resolution limit — the ripples above.
@@ -401,7 +417,9 @@ vec4 tdErosionFace(vec3 rel, int f, vec3 g, float amp, float lodM) {
         if (fade <= 0.0) break;
         vec2 gs  = g2 + cloud.terrainErosion.y * amp * dh;   // slope + the gullies so far
         vec2 dir = vec2(-gs.y, gs.x) / max(length(gs), 1e-6);
-        vec3 e   = tdErosionCell(rel2 / cell, anc2 << (kTdErosionFirstK + o), 4099 + 17 * f + o, dir);
+        vec2  rem;
+        ivec2 offA = tdEroAnchor(anc2, k0 + o, rem);
+        vec3 e   = tdErosionCell(rel2 / cell + rem, offA, 4099 + 17 * f + o, dir);
         h  += a * fade * e.x;
         dh += (a * fade / cell) * e.yz;
         a *= 0.5;
@@ -439,7 +457,7 @@ void tdErosion(sampler2D elevTex, inout TdState s, float lodM) {
     s.ero = true;
     float strength = cloud.terrainErosion.x;
     if (strength <= 0.0 || s.amp0 <= 0.0) return;
-    if (kTdBaseCellM / float(1 << kTdErosionFirstK) <= 2.0 * lodM) return;
+    if (kTdBaseCellM * exp2(-float(tdErosionK())) <= 2.0 * lodM) return;
     vec3  g   = tdDemGrad(elevTex, s.up) + s.grad;
     g -= s.up * dot(g, s.up);
     // Gullies need a slope to run down: none on flats, valley floors and crests (where the slope's

@@ -1099,7 +1099,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // world-fixed: walking moves through them), the eye's position in it in double, wrapped to 1024 m
         // (every lattice cell divides it); and the air temperature at the eye — sea-level climate by
         // latitude (-18 + 45 cos^1.5, ~27 C at the equator, ~9 at 45, ~-12 at 75), a season swing of
-        // 0.35 x |lat| following the Sun's declination in that hemisphere, 6.5 C per km of altitude.
+        // 0.25 x |lat| (at most 15 C) following the Sun's declination in that hemisphere, 6.5 C per km of altitude.
         const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
         const double lat = std::asin(std::clamp(up.z, -1.0, 1.0)), lon = std::atan2(up.y, up.x);
         const double q = glm::radians(0.25);
@@ -1117,7 +1117,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const double latD = glm::degrees(lat);
         const double sunDec = std::asin(std::clamp((double)glm::normalize(sunDirECI).z, -1.0, 1.0));
         const double season = (sunDec / glm::radians(23.44)) * (latD >= 0.0 ? 1.0 : -1.0);   // +1 local midsummer
-        const double tC = -18.0 + 45.0 * std::pow(std::cos(lat), 1.5) + 0.35 * std::abs(latD) * season - 0.0065 * eyeAsl;
+        // The season swing is 0.25 x |lat|, at most 15 C: 0.35 x |lat| (+-27 C at 77 deg) made the
+        // Antarctic coast +13 C in its summer, rain under snow clouds and a rainbow (review 6).
+        const double tC = -18.0 + 45.0 * std::pow(std::cos(lat), 1.5) + std::min(0.25 * std::abs(latD), 15.0) * season
+                        - 0.0065 * eyeAsl;
         // y: sim time wrapped to 600 s in double (the drops' fall; a float time of day steps every 8 ms).
         // z "Snow wind" (x the flakes' drift: blizzards), w "Drop distance" (m: the lattice's last layer).
         p.precip = glm::vec4((float)tC, (float)std::fmod(simSecInDay, 600.0), std::clamp(cv2SnowWind, 0.0f, 8.0f),

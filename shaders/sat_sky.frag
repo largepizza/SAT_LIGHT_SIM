@@ -2829,7 +2829,19 @@ void main() {
     // night every cloud erased the glowing air between it and the eye — the clouds along the horizon
     // were a black band in front of the glow, darker than the ground under them (snapshot 6).
     float accumCityFront = 0.0;
+    // The NEAREST cloud of the four half-res texels around the pixel: the filtered alpha blended a
+    // cloud's distance with the no-cloud value (-60000 km) at every cloud edge, a distance that changed
+    // every frame with the march's jitter — a black flicker along cloud edges at night (review 6).
     float tCloudFrontM   = abs(cloudA.a) * 1000.0;
+#ifndef SKY_ENV
+    {
+        vec4 ga = textureGather(cloudTargetA, cloudUV, 3);
+        vec4 da = abs(ga);
+        float dn = 1e9;
+        for (int k = 0; k < 4; ++k) if (da[k] < 50000.0) dn = min(dn, da[k]);
+        if (dn < 1e8) tCloudFrontM = dn * 1000.0;
+    }
+#endif
     vec3  accumAirglow = vec3(0.0); // green + sodium bands (C15) — ride these same samples
     float odR_cam = 0.0;
     float odM_cam = 0.0;
@@ -3002,7 +3014,10 @@ void main() {
     // any later-computed day/night variable, since none exists yet at this point in main().
     float nightFactor = 1.0 - smoothstep(-0.05, 0.1, sunDirENU.w);
     color += accumCity * vec3(1.0, 0.72, 0.42) * nightFactor * kNightGlowScale;
-    vec3 cityGlowFront = accumCityFront * vec3(1.0, 0.72, 0.42) * nightFactor * kNightGlowScale;
+    // Only for DISTANT clouds (the horizon band it is for): a near cloud seen from above has most of
+    // the glow below it, and its noisy distance moved the split through the dense low air every frame.
+    vec3 cityGlowFront = accumCityFront * vec3(1.0, 0.72, 0.42) * nightFactor * kNightGlowScale
+                       * smoothstep(40000.0, 150000.0, tCloudFrontM);
 
     // C12 follow-up #41: replaced the directional (azimuth-sector-dome-based) wash from #39/#40
     // with a simple non-directional "sky is brighter near an active beam" term. The directional
@@ -3155,7 +3170,16 @@ void main() {
             float gElev  = smoothstep(-0.08, 0.02, fd.z);
             float intens = clamp(log2(max(flux, 1.0)) / 4.0, 0.0, 1.5);
             float atmosW = 1.0 - exp(-odR_cam / 5000.0);
-            color += hClip * gElev * glow * intens * 0.06 * vec3(1.0, 0.96, 0.88) * flareAttn * atmosW;
+            // ...and by the air between the eye and the SATELLITE (review 6): the glow is its light
+            // scattered forward by that air. Weighted by the pixel's ray alone, from 40+ km up every ray
+            // grazing the limb crossed a huge air column, so each glaring satellite lit the whole
+            // horizon, with almost no air between the eye and it. Sea-level-equivalent column along the
+            // bin's direction: from the eye's height, or the tangent height of a path dipping below
+            // the local horizontal (Chapman airmass ~35 at the horizon for 8 km).
+            float hT     = (fd.z < 0.0) ? max((R_EARTH + obsEffH) * sqrt(1.0 - fd.z * fd.z) - R_EARTH, 0.0) : obsEffH;
+            float amS    = (fd.z < 0.0) ? 71.0 : min(1.0 / max(fd.z, 1e-3), 35.5);
+            float satW   = 1.0 - exp(-H_R * exp(-hT / H_R) * amS / 5000.0);
+            color += hClip * gElev * glow * intens * 0.06 * vec3(1.0, 0.96, 0.88) * flareAttn * min(atmosW, satW);
         }
     }
 #endif

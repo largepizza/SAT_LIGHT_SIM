@@ -1447,9 +1447,12 @@ vec3 rainDrops(vec3 dirE, float rate, float wind, float tScene, float pixAng, ve
         float c  = 0.14 * r;
         // The layer's motion: rain ~8 m/s (snow ~1), the ground wind ~40% of the wind aloft, gusting.
         float v  = dust ? 0.3 : mix(8.0 - 0.5 * float(min(k, 4)), 1.1, snowP);
-        float wg = 0.4 * wind * snowW * (1.0 + 0.35 * sin(t * 0.21 + float(k) * 1.7));
+        float w0 = 0.4 * wind * snowW;
+        float wg = w0 * (1.0 + 0.35 * sin(t * 0.21 + float(k) * 1.7));
         vec3  F  = normalize(vec3(wg, 0.0, -v));
-        float sV = v * t / c, sW = wg * t / c;
+        // The drift is the INTEGRAL of the gusting wind. It was wg(t) x t, whose rate of change carries
+        // t x dwg/dt — up to ~140 m/s at t ~ 600 s: the rain stopped, went back up and fell again (review 6).
+        float sV = v * t / c, sW = w0 * (t - (0.35 / 0.21) * cos(t * 0.21 + float(k) * 1.7)) / c;
         vec3  qf = vec3(-fract(sW), 0.0, fract(sV));
         ivec3 qi = ivec3(-int(floor(sW)), 0, int(floor(sV)));
         vec3  q  = (eyeR + dR * r) / c + qf;

@@ -511,7 +511,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (`SatelliteSimCloudsV2.cpp`: -18 + 45 cos(lat)^1.5 at sea level, + 0.35 x |lat| x the season from the
   Sun's declination in that hemisphere, - 6.5 C/km); snow below ~-1 C, rain above ~2.5 C, sleet (a mix
   of drops and flakes) between. Only the eye's precipitation changes type — the distant rain curtains
-  are still rain. The `rain` ambience driver takes the liquid share (`cv2EyeTempC`). Rate in ~6 s bursts
+  are still rain. The `rain` ambience driver takes the liquid share (`cv2EyeTempC`). The wind drift of each layer is the INTEGRAL of its gusting wind (it was
+  wind(t) x t, whose speed carried t x d(wind)/dt, up to ~140 m/s near t = 600 s: the rain stopped,
+  rose and fell again — review 6). Rate in ~6 s bursts
   (`rainBurst`); `cloud_v2_march.comp` writes the rate into `terrainFrame.w` (scene_depth.comp writes only
   .xyz); the host reads it for the `rain` ambience driver (synth `rain`, layer `rain`). **Glints (review 4):**
   an ice crystal (a flake) is a plate tilted up to ~12 deg, fluttering, that flashes the Sun where its face
@@ -527,7 +529,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   has ~r^3 more per deeper layer, so a far lattice drop stands for a clump. "Snow wind (blizzard)"
   (`snow_wind` 1, slot 209, `precip.z`): x the flakes' drift (by snow share), more flutter (capped so a
   flake stays in the tested cells), and a flake over 4 m/s draws out into a short streak. **Snow shafts
-  show no rainbow** (cloud_v2_march.comp, per ray): below freezing ~500 m up (the eye's temperature,
+  show no rainbow** (review 6: the shafts' air is 500 m above the GROUND under the eye, and the season
+  swing is 0.25 x |lat|, at most 15 C — 0.35 x |lat| made the Antarctic plateau rain in November) (cloud_v2_march.comp, per ray): below freezing ~500 m up (the eye's temperature,
   6.5 C/km), the rain phase's bows give way to faint ice optics (sundogs, a weak 22 degree halo, a pillar
   under a low Sun) — a snow shower's big aggregates scatter broadly; only its few plates make optics.
 - **Per-layer scales (pass 10):** the shape period ("Shape period (m) - low cloud") no longer sets the
@@ -967,7 +970,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the cloud's attenuation: `color * A + B + cityGlowFront * (1 - A)`. The composite multiplied the whole
   night sky by the cloud's transmittance, and the march's airlight has no city glow, so the clouds along a
   night horizon were a black, stair-edged band darker than the ground under them (snapshot 6: band 24 ->
-  38, ground 37).
+  38, ground 37). **Review 6:** the split distance is the NEAREST cloud of the four half-res texels
+  (`textureGather` of the alpha: the filtered alpha blended a cloud's distance with the no-cloud -60000 km
+  and changed every frame — a black flicker on night cloud edges), and the term fades in over 40-150 km
+  of cloud distance (a near cloud's resolved distance is noisy and moved the split through the dense low
+  air; from above most of the glow is below it anyway). Still-frame flicker 1.2% -> 0.27% of pixels
+  (0.19% without the term).
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -983,9 +991,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
-- The Clouds tab's slider slots: `kCloudSliderSlots` (210) sizes all four per-slider arrays and
-  `cloudBufs` (210 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
-  moving, ice fog x2, sprite start; 207-209 Cb head lobes, drop distance, snow wind); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
+- The Clouds tab's slider slots: `kCloudSliderSlots` (212) sizes all four per-slider arrays and
+  `cloudBufs` (212 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
+  moving, ice fog x2, sprite start; 207-209 Cb head lobes, drop distance, snow wind; 210 move speed (Controls tab), 211 erosion size); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
   parallax, fog x3, dust x3.) Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
   shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.
@@ -1318,6 +1326,11 @@ Location- and context-aware ambience on its own bus under the music (Settings �
 ## Subsystem: Controls / Keybinding Pipeline
 
 **All interactive keys go through the `keybindings` vector.** The settings window and rebind UI are driven entirely from this vector — no extra wiring needed.
+
+**Movement speed near the ground (review 6):** WASD's arc rate is capped at `moveSpeedPerHeight`
+("Move speed (x height per s)", Controls tab, slot 210, `camera.move_speed_per_height`, default 1) x the
+height above the ground per second, never below 3 m/s and never above the old 0.08 rad/s (~510 km/s, so
+orbit is unchanged); boost and fine scale it the same way. A fixed 510 km/s crossed a cloud in a frame.
 
 ### `KeyBinding` struct
 ```cpp
@@ -2986,6 +2999,11 @@ to feed `sat_flare.comp`'s duplicate horizon cull.
 
 ## Subsystem: Sky Glow SSBO
 
+**Air toward the satellite (review 6):** `sat_sky.frag`'s glow loop weights each bin by the smaller of
+the air along the pixel's ray and the air between the eye and the bin's direction (from the eye's height,
+or the tangent height of a path below the local horizontal; Chapman airmass capped at ~35). From 40+ km
+the pixel-ray weight alone lit the whole limb around every glaring satellite. Unchanged from the ground.
+
 `sat_flare.comp` writes a spatial histogram + per-satellite flare list each frame → `sat_sky.frag` reads them.
 
 ### GpuGlowBuf layout (std430)
@@ -3790,6 +3808,12 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   - **Measured** (RTX 3070 Ti, 1600x900, High, harness perf): +2.5-3 ms on the ground in mountains
     with clouds off (v1 13.0, v4 13.7 ms), ~0 from 10 km up; Grand Canyon rim with clouds at High
     15.8 ms (p90 16.4) vs 13.0 without, at Medium 12.8 vs 10.7.
+- **"Erosion size" (review 6, `clouds.terrain_erosion_size`, slot 211):** the erosion octaves' cells
+  x 0.5 / 1 / 2 / 4 (256-m .. 2048-m first cell), powers of two only so the lattice stays exact on the
+  2048-m anchor cells (`tdErosionK`, `tdEroAnchor`: cells past 2048 m take the anchor's remainder into
+  the lattice coordinate). Carried in `envMainObsDir.w` (log2 of the factor; the w was unused). On
+  Fuji (a smooth cone in the DEM) the lumps are mostly the erosion, the rest the value octaves: erosion
+  0 leaves soft bumps, "Detail height" 0 the clean cone.
 - **Empty-space skipping was tried and removed**: a CPU-built max-mip chain of the DEM, tested in
   the depth pass where the ray cleared the local max + the detail bound. It made the depth pass
   SLOWER at every altitude (v4 3.3 -> 4.5 ms): the rays that cost are the ones just above the

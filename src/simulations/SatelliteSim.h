@@ -2843,6 +2843,8 @@ private:
     float cv2RainAmount = 1.0f;        // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
     float cv2RainStreaks = 1.0f;       // falling-rain streaks when the observer stands in rain
+    float moveSpeedPerHeight = 1.0f;   // WASD: this many times the height above the ground per second (capped
+                                       // at the old fixed 0.08 rad/s, ~510 km/s): slow near the surface
     float cv2DropDistM = 128.0f;       // ... drawn out to this distance (m; each doubling is one more lattice layer)
     float cv2SnowWind = 1.0f;          // snow's drift x this (blizzards: flakes driven sideways, streaking)
     float cv2ExposureEV = 0.0f;        // exposure compensation (stops) on the sky's auto exposure
@@ -3685,6 +3687,7 @@ private:
     float terrainShadowStrength = 1.0f;
     float terrainMaterialStrength = 1.0f;
     float terrainErosionStrength = 0.6f; // erosion octaves (tdErosion): fraction of the detail amplitude
+    float terrainErosionSize = 1.0f;     // ... x their cell size (512/256 m); powers of two: 0.5, 1, 2, 4
     float terrainErosionBranch = 1.0f;   // how much each erosion octave follows the gullies before it
     float terrainSkyLight = 1.0f;        // x the terrain's sky ambient (zenith integral x 0.4) — terrain v2 P1
     float terrainTextureStrength = 1.0f; // close-up material textures (terrain v2 P3)
@@ -4367,7 +4370,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 210;
+    static constexpr int kCloudSliderSlots = 212;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

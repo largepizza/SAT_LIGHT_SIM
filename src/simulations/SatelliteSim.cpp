@@ -1270,6 +1270,16 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         bool fine = fineMoveToggled; // latched by KB_MOVE_FINE (dispatchKeyAction), not held
         float speed = boost ? 0.5f : fine ? 0.005f
                                           : 0.08f; // boost = fast, fine = slow, default = normal
+        // Near the ground the speed follows the height above it (review 6): "Move speed" x height per
+        // second, capped at the orbital speed above. A fixed ~510 km/s crossed a cloud in a frame —
+        // nothing small could be approached, and the clouds' history was useless in motion (every
+        // frame a new view). Boost and fine scale it the same way.
+        {
+            const float ground = (terrainFrameMapped && (debugDisableMask & 1024u) == 0) ? terrainFrameMapped[1] : obsTerrainH;
+            const float agl = std::max(obsHeightOffset - ground, 2.0f);
+            const float nearRad = std::max(moveSpeedPerHeight, 0.01f) * agl / 6371000.0f;   // rad/s
+            speed *= std::min(1.0f, std::max(nearRad, 3.0f / 6371000.0f) / 0.08f);
+        }
 
         float fwd = (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS ? 1.0f : 0.0f) - (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS ? 1.0f : 0.0f);
         float right = (glfwGetKey(win, GLFW_KEY_D) == GLFW_PRESS ? 1.0f : 0.0f) - (glfwGetKey(win, GLFW_KEY_A) == GLFW_PRESS ? 1.0f : 0.0f);
@@ -2266,7 +2276,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.zodiacalWidthDeg = zodiacalWidthDeg;
         cp.zodiacalOuterFadeDeg = zodiacalOuterFadeDeg;
         cp.eclipticPoleENU = glm::vec4(eclipticPoleENU, zodiacalGain); // .w = zodiacalGain
-        cp.envMainObsDir = glm::vec4(glm::normalize(obsDir), 0.0f); // SKY_ENV: the frame of the two bases
+        // w: "Erosion size" as log2 of its factor (terrain_detail.glsl tdErosionK: powers of two only).
+        cp.envMainObsDir = glm::vec4(glm::normalize(obsDir), std::round(std::log2(std::clamp(terrainErosionSize, 0.5f, 4.0f)))); // SKY_ENV: the frame of the two bases
         cp.shadowMaxDistM = cloudShadowMaxDistM;
         cp.maxRenderDistM = cloudMaxRenderDistM;
         cp.viewSamplesMin = viewSamplesMin;

@@ -3145,6 +3145,13 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
                       CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
         }
     }
+    {   // Movement speed near the ground (review 6): WASD speed is this many times the height above
+        // the ground per second, up to the orbital speed. Clouds and small things can be explored.
+        CloudSlider mv[] = {
+            {"Move speed (x height per s)", &moveSpeedPerHeight, 0.05f, 5.0f, 0.05f, "%.2f", 210},
+        };
+        buildCloudSliderRows(inp, ui, mv, 1, false);
+    }
     CLAY(CLAY_ID("ControlsTabDiv"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
                                                 .padding = {0, 0, 4, 8}},
                                      .backgroundColor = {40, 40, 44, 255}}) {}
@@ -4917,6 +4924,7 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Detail erosion", &terrainDetailErode, 0.0f, 6.0f, 0.1f, "%.1f", 94},
         // Erosion octaves (tdErosion): gullies that run downhill and branch.
         {"Erosion strength", &terrainErosionStrength, 0.0f, 1.5f, 0.05f, "%.2f", 97},
+        {"Erosion size (x, 0.5/1/2/4)", &terrainErosionSize, 0.5f, 4.0f, 0.5f, "%.1f", 211},
         {"Erosion branching", &terrainErosionBranch, 0.0f, 3.0f, 0.1f, "%.1f", 98},
         // S4 (RELEASE_v1_1_PLAN.md): terrain-relief march distance fade — see cloud_params.glsl.
         {"Terrain fade start (m)", &terrainDistFadeStartM, 50000.0f, 1000000.0f, 10000.0f, "%.0f", 59},
@@ -6244,6 +6252,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         camera.azDeg = c.value("az_deg", camera.azDeg);
         camera.elDeg = c.value("el_deg", camera.elDeg);
         camera.fovYDeg = c.value("fov_y_deg", camera.fovYDeg);
+        moveSpeedPerHeight = c.value("move_speed_per_height", moveSpeedPerHeight);
     }
 
     if (j.contains("observer"))
@@ -6482,6 +6491,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         terrainShadowStrength = c.value("terrain_shadow_strength", terrainShadowStrength);
         terrainMaterialStrength = c.value("terrain_material_strength", terrainMaterialStrength);
         terrainErosionStrength = c.value("terrain_erosion_strength", terrainErosionStrength);
+        terrainErosionSize = c.value("terrain_erosion_size", terrainErosionSize);
         terrainErosionBranch = c.value("terrain_erosion_branch", terrainErosionBranch);
         terrainSkyLight = c.value("terrain_sky_light", terrainSkyLight);
         terrainNightSkyLight = c.value("terrain_night_sky_light", terrainNightSkyLight);
@@ -6689,7 +6699,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     j["camera"] = {
         {"az_deg", camera.azDeg},
         {"el_deg", followActive ? followSavedEl : camera.elDeg},
-        {"fov_y_deg", followActive ? followSavedFov : camera.fovYDeg}};
+        {"fov_y_deg", followActive ? followSavedFov : camera.fovYDeg},
+        {"move_speed_per_height", moveSpeedPerHeight}};
 
     j["observer"] = {{"lat_deg", glm::degrees(asinf(glm::clamp(saveObsDir.z, -1.0f, 1.0f)))},
                      {"lon_deg", glm::degrees(atan2f(saveObsDir.y, saveObsDir.x))}};
@@ -6721,6 +6732,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"terrain_shadow_strength", terrainShadowStrength},
         {"terrain_material_strength", terrainMaterialStrength},
         {"terrain_erosion_strength", terrainErosionStrength},
+        {"terrain_erosion_size", terrainErosionSize},
         {"terrain_erosion_branch", terrainErosionBranch},
         {"terrain_sky_light", terrainSkyLight},
         {"terrain_night_sky_light", terrainNightSkyLight},
