@@ -2798,7 +2798,7 @@ private:
     float cv2LightLodFootprintM = 40.0f;  // past this pixel footprint (m) a 2-step light march; 0 = off
     float cv2EyeTempC = 15.0f;            // the air temperature at the eye (deg C; rain / sleet / snow), per frame
     float cv2LightningRate = 0.53f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
-    float cv2LightningGlow = 1.0f;        // the flash's light in the cloud
+    float cv2LightningGlow = 0.088f;      // the flash's light in the cloud
     float cv2LightningBolt = 1.0f;        // the cloud-to-ground channels
     float cv2LightningSprites = 0.05f;    // chance a ground stroke sets off a red sprite 50-90 km up (0 = never)
     float cv2EvoWindMps = 8.0f;           // the weather map's evolution: its advecting wind (m/s); 0 = static

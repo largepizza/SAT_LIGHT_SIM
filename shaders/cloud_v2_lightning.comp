@@ -179,4 +179,30 @@ void main()
     }
     barrier();
     if (li == 0u) cv2FlashCount = min(sFlashN, kCv2FlashMax);
+    // For the drops and crystals at the eye (review 4): the Sun's transmittance from the eye through the
+    // clouds (24 steps, crowded near the eye), and the ice fog's extinction at the eye.
+    if (li == 1u) {
+        vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+        vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+        vec3  enuY = cross(enuZ, enuX);
+        mat3  enuToEcef = mat3(enuX, enuY, enuZ);
+        float eyeH = terrainFrame.x + 2.0;
+        vec3  sunENU = transpose(enuToEcef) * cv2.sunE.xyz;
+        float sunT = 0.0;
+        if (sunENU.z > -0.02) {
+            float L  = min(max(cv2.shell.y - eyeH, 0.0) / max(sunENU.z, 0.05), 200000.0);
+            float od = 0.0;
+            for (int i = 0; i < 24 && od < 8.0; ++i) {
+                float u0 = float(i) / 24.0, u1 = float(i + 1) / 24.0;
+                float t  = L * (0.5 * (u0 + u1)) * (0.5 * (u0 + u1));
+                float dt = L * (u1 * u1 - u0 * u0);
+                od += cv2Field(cv2Pos(sunENU * t, eyeH, enuToEcef), 0.0, max(30.0, dt * 0.5)).sigma * dt;
+            }
+            sunT = exp(-od) * smoothstep(-0.02, 0.03, sunENU.z);
+        }
+        float dS, fT, fH, dA, iceS = 0.0;
+        cv2FogDust(cv2Pos(vec3(0.0), eyeH, enuToEcef), 1.0, dS, fT, fH, dA, iceS);
+        cv2EyeSunT = floatBitsToUint(sunT);
+        cv2EyeIceS = floatBitsToUint(iceS);
+    }
 }
