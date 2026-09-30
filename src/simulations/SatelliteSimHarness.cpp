@@ -1904,9 +1904,15 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         for (int i = 0; i < viewCount; ++i)
             if (v == kViews[i])
                 idx = i;
+        // Ocean views (sat_sky.frag, 2026-09-30) sit at 40..45.
+        static const char *kOceanViews[] = {"oceanrefl", "oceanfresnel", "oceanstate", "oceansurf", "oceannormal", "oceanshore",
+                                            "cloudairsplit", "cloudtrans", "cloudrad", "cloudalpha"};
+        for (int i = 0; i < 10; ++i)
+            if (v == kOceanViews[i])
+                idx = 40 + i;
         if (idx < 0 && !v.empty() && isdigit((unsigned char)v[0]))
             idx = (int)parseNum(v, "debugview");
-        if (idx < 0 || idx >= viewCount)
+        if (idx < 0 || (idx >= viewCount && (idx < 40 || idx > 49)))
             fail("debugview: off | normals | detail | steps | albedo | shadow | rough | elevzebra | distzebra | erosion | "
                  "terms | direct | skyamb | night | moon | aurora | gates | factors | skyambraw | suntint | aofactors | "
                  "day | nightmap | geodot | sunvis | nightsky | citylights "
@@ -1916,7 +1922,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                  "sunvis: R = the Sun's disc clears this point's own horizon (0 = no direct sun reaches it), "
                  "G = its margin over that horizon, B = the horizon dip at this altitude)");
         terrainDebugView = idx;
-        r["message"] = std::string("terrain debug view ") + kViews[idx];
+        r["message"] = std::string("debug view ") + (idx < viewCount ? kViews[idx] : kOceanViews[idx - 40]);
         return Status::Done;
     }
 

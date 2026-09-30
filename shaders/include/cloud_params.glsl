@@ -426,4 +426,9 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // sprites carry the light (city_sprites.comp; 1 = no hand-off), z the sprites' reach (m, 0 = off),
     // w the sprites' start: the ground footprint (m per pixel) past which they draw.
     vec4  cityParams;
+    // -- Ocean (736 -> 752, 2026-09-30): xy = the observer's world offset (cityOffsetEast/NorthM) wrapped in
+    // double into the wave field's period (sat_sky.frag kSeaPeriodX/Y — the field is exactly periodic, so the
+    // wrap is seamless); z = "Sea state from weather" (0 = the old fixed sea, 1 = waves follow the weather
+    // cube and a regional wind); w = "Whitecaps" (foam gain).
+    vec4  oceanState;
 } cloud;

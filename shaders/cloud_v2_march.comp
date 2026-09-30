@@ -177,7 +177,10 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
         // between cells into haze and shadow everything.
         CV2Field lf = cv2Field(cv2Pos(rel + off, eyeH, enuToEcef), k < 2 ? detailAmt : 0.0, fp);
         if (k < nL) {
-            od += lf.sigma * (1.0 - 0.45 * lf.thin) * lSeg;   // ice delta-scaled (see the march)
+            // Ice delta-scaled, and harder for the SHADOW (2026-09-30): what reaches a cloud below through a
+            // cirrus veil includes the light its ice scatters within a few degrees (g ~0.8), so the direct
+            // beam loses ~tau (1 - g), not tau (1 - 0.45). Real cirrus barely dims the clouds under it.
+            od += lf.sigma * (1.0 - 0.8 * lf.thin) * lSeg;
             s += lSeg; lSeg = (lod && k == 0) ? cv2.light.x - lSeg : lSeg * kLightRatio;
         } else if (k == nL) {
             od += lf.sigma * cv2.light.x * 0.8;

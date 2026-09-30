@@ -1,0 +1,182 @@
+# 2026-09-30 ocean: periodic waves + wrapped offset, sea state, whitecaps, shore, aurora ground glow removed
+preset High
+set clouds_v2.fog_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+observer lat=0 lon=-150.0 alt=3000
+wait 2
+observer lat=0 lon=-148.5 alt=3000
+wait 2
+observer lat=0 lon=-147.0 alt=3000
+wait 2
+observer lat=0 lon=-145.5 alt=3000
+wait 2
+observer lat=0 lon=-144.0 alt=3000
+wait 2
+observer lat=0 lon=-142.5 alt=3000
+wait 2
+observer lat=0 lon=-141.0 alt=3000
+wait 2
+observer lat=0 lon=-139.5 alt=3000
+wait 2
+observer lat=0 lon=-138.0 alt=3000
+wait 2
+observer lat=0 lon=-136.5 alt=3000
+wait 2
+observer lat=0 lon=-135.0 alt=3000
+wait 2
+observer lat=0 lon=-133.5 alt=3000
+wait 2
+observer lat=0 lon=-132.0 alt=3000
+wait 2
+observer lat=0 lon=-130.5 alt=3000
+wait 2
+observer lat=0 lon=-129.0 alt=3000
+wait 2
+observer lat=0 lon=-127.5 alt=3000
+wait 2
+observer lat=0 lon=-126.0 alt=3000
+wait 2
+observer lat=0 lon=-124.5 alt=3000
+wait 2
+observer lat=0 lon=-123.0 alt=3000
+wait 2
+observer lat=0 lon=-121.5 alt=3000
+wait 2
+observer lat=0 lon=-120.0 alt=3000
+wait 2
+observer lat=0 lon=-118.5 alt=3000
+wait 2
+observer lat=0 lon=-117.0 alt=3000
+wait 2
+observer lat=0 lon=-115.5 alt=3000
+wait 2
+observer lat=0 lon=-114.0 alt=3000
+wait 2
+observer lat=0 lon=-112.5 alt=3000
+wait 2
+observer lat=0 lon=-111.0 alt=3000
+wait 2
+observer lat=0 lon=-109.5 alt=3000
+wait 2
+observer lat=0 lon=-108.0 alt=3000
+wait 2
+observer lat=0 lon=-106.5 alt=3000
+wait 2
+observer lat=0 lon=-105.0 alt=3000
+wait 2
+observer lat=0 lon=-103.5 alt=3000
+wait 2
+observer lat=0 lon=-102.0 alt=3000
+wait 2
+observer lat=0 lon=-100.5 alt=3000
+wait 2
+observer lat=0 lon=-99.0 alt=3000
+wait 2
+observer lat=0 lon=-97.5 alt=3000
+wait 2
+observer lat=0 lon=-96.0 alt=3000
+wait 2
+observer lat=0 lon=-94.5 alt=3000
+wait 2
+observer lat=0 lon=-93.0 alt=3000
+wait 2
+observer lat=0 lon=-91.5 alt=3000
+wait 2
+observer lat=0 lon=-90.0 alt=3000
+wait 2
+observer lat=0 lon=-88.5 alt=3000
+wait 2
+observer lat=0 lon=-87.0 alt=3000
+wait 2
+observer lat=0 lon=-85.5 alt=3000
+wait 2
+observer lat=0 lon=-84.0 alt=3000
+wait 2
+observer lat=0 lon=-82.5 alt=3000
+wait 2
+observer lat=0 lon=-81.0 alt=3000
+wait 2
+observer lat=0 lon=-79.5 alt=3000
+wait 2
+observer lat=0 lon=-78.0 alt=3000
+wait 2
+observer lat=0 lon=-76.5 alt=3000
+wait 2
+observer lat=0 lon=-75.0 alt=3000
+wait 2
+observer lat=0 lon=-73.5 alt=3000
+wait 2
+observer lat=0 lon=-72.0 alt=3000
+wait 2
+observer lat=0 lon=-70.5 alt=3000
+wait 2
+observer lat=0 lon=-69.0 alt=3000
+wait 2
+observer lat=0 lon=-67.5 alt=3000
+wait 2
+observer lat=0 lon=-66.0 alt=3000
+wait 2
+observer lat=0 lon=-64.5 alt=3000
+wait 2
+observer lat=0 lon=-63.0 alt=3000
+wait 2
+observer lat=0 lon=-61.5 alt=3000
+wait 2
+observer lat=0 lon=-60.0 alt=3000
+wait 2
+state travelled
+observer lat=36.20 lon=-121.95 agl=3
+time sun 25 setting
+camera az=250 el=-8 fov=60
+wait settle
+capture o1_pacific_after_travel
+capture o1_zoom crop=640,500,640,400 scale=2
+observer lat=34.00 lon=-118.505 agl=2
+time sun 20 setting
+camera az=60 el=-1 fov=50
+wait settle
+capture o2_beach_m118_505
+observer lat=34.00 lon=-118.515 agl=2
+time sun 20 setting
+camera az=60 el=-1 fov=50
+wait settle
+capture o2_beach_m118_515
+observer lat=34.00 lon=-118.50 agl=40
+camera az=70 el=-10 fov=50
+wait settle
+capture o2_beach_above
+observer lat=-52 lon=150 agl=15
+time sun 30 rising
+camera az=0 el=-6 fov=60
+set clouds.ocean_sea_state 0
+wait settle
+capture o3_south_state0
+set clouds.ocean_sea_state 1
+wait settle
+capture o3_south_state1
+set clouds.ocean_sea_state 2
+wait settle
+capture o3_south_state2
+set clouds.ocean_sea_state 1
+observer lat=-52 lon=150 alt=3000
+camera az=0 el=-25 fov=60
+wait settle
+capture o4_south_3km
+observer lat=-52 lon=150 alt=400000
+camera az=0 el=-60 fov=60
+wait settle
+capture o5_south_orbit
+perf frames=90 name=orbit_ocean
+observer lat=36.20 lon=-121.95 agl=3
+time sun 25 setting
+camera az=250 el=-8 fov=60
+wait settle
+perf frames=90 name=pacific_near
+observer lat=65 lon=-148 agl=30
+time sun -25
+set clouds.storm_strength 1
+camera az=0 el=10 fov=80
+wait settle
+capture o6_aurora_ground
+quit

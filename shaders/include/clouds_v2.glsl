@@ -928,6 +928,13 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     ci = mix(ci, regime * bundle * bundle * 0.45, far);
     cs *= mix(1.0, mix(0.35, 1.0, bundle), far);
     cu = mix(cu, regime * 0.25 * bundle, far);
+    // Seen from INSIDE the layer (2026-09-30): within a few km of the eye (a view footprint of 4-20 m) the
+    // fibres and cloudlets, metres across and thresholded, drew puffy patches with hard gaps all around
+    // the eye; an observer in cirrus sees a soft haze. The footprint is the VIEW's (the light march passes
+    // it too), so this is near the eye only.
+    float nearK = 1.0 - smoothstep(4.0, 20.0, fpM);
+    ci = mix(ci, regime * 0.4 * mix(0.6, 1.0, bundle), nearK);
+    cu = mix(cu, regime * 0.25, nearK);
     float prof = smoothstep(0.0, 0.25, z) * (1.0 - smoothstep(0.55, 1.0, z));
     float d    = prof * mix(mix(ci, cs, strat), cu, ccK);
     hfH  = z;

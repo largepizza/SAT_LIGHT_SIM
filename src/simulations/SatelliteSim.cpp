@@ -2308,6 +2308,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.moonGain = moonGain;
         cp.pad1 = (float)cityOffsetEastM;  // repurposed: city-detail world-fixed east offset (m)
         cp.pad2 = (float)cityOffsetNorthM; // repurposed: city-detail world-fixed north offset (m)
+        {
+            // The wave field is exactly periodic over (kSeaPeriodX, kSeaPeriodY) — sat_sky.frag — so the
+            // offset is wrapped here in double: seamless, and small enough for float at any distance flown.
+            constexpr double kSeaPeriodYM = 1200.0 / 0.056, kSeaPeriodXM = 1200.0 / (0.75 * 0.056);
+            cp.oceanState = glm::vec4((float)(cityOffsetEastM - kSeaPeriodXM * std::floor(cityOffsetEastM / kSeaPeriodXM)),
+                                      (float)(cityOffsetNorthM - kSeaPeriodYM * std::floor(cityOffsetNorthM / kSeaPeriodYM)),
+                                      oceanSeaStateGain, oceanWhitecapGain);
+        }
         cp.cloudTwilightAmbientGain = cloudTwilightAmbientGain;
         cp.cloudBaseVariance = cloudBaseVariance;
         cp.cloudErosionEdge = cloudErosionEdge;

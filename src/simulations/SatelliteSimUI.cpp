@@ -4903,6 +4903,10 @@ void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
         // next to "Ocean MW refl" in the Aurora tab: renumbering a slider table means renumbering
         // hovCloudMinus/hovCloudPlus/draggingCloud/cloudBufs in lockstep, and those four have drifted
         // apart before. See [[feedback_cloud_slider_arrays]].
+        // 2026-09-30: waves follow the weather (sat_sky.frag oceanSeaState: the weather cube's storms, a regional
+        // wind with the westerly belts) and break into whitecaps as the sea rises. 0 = the old fixed sea.
+        {"Sea state from weather", &oceanSeaStateGain, 0.0f, 2.0f, 0.05f, "%.2f", 213},
+        {"Whitecaps", &oceanWhitecapGain, 0.0f, 3.0f, 0.05f, "%.2f", 214},
         {"Ocean flare refl", &oceanGlintGain, 0.0f, 4.0f, 0.05f, "%.2f", 110},
         {"Flare refl floor", &oceanGlintMinFlux, 0.0f, 64.0f, 0.5f, "%.1f", 111},
     };
@@ -5209,7 +5213,6 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
     CloudSlider secAurora[] = {
         {"Storm strength", &stormStrength, 0.0f, 1.0f, 0.05f, "%.2f", 25},
         {"Aurora gain", &auroraGain, 0.0f, 0.1f, 0.001f, "%.3f", 26},
-        {"Aurora ground gain", &auroraGroundGain, 0.0f, 0.1f, 0.001f, "%.3f", 27},
         {"Coverage freq", &auroraCoverageFreq, 0.05f, 2.0f, 0.05f, "%.2f", 29},
         {"Coverage az freq", &auroraCoverageAzFreq, 0.0f, 6.0f, 0.1f, "%.1f", 30},
         {"Coverage drift", &auroraCoverageDriftRate, 0.0f, 0.002f, 0.00002f, "%.1e", 31},
@@ -6513,6 +6516,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         // 2026-09-26). Stored under "clouds" because they are GpuCloudParams fields, same as the
         // airglow/zodiacal/ocean-MW block below.
         oceanGlintGain = c.value("ocean_glint_gain", oceanGlintGain);
+        oceanSeaStateGain = c.value("ocean_sea_state", oceanSeaStateGain);
+        oceanWhitecapGain = c.value("ocean_whitecaps", oceanWhitecapGain);
         oceanGlintMinFlux = c.value("ocean_glint_min_flux", oceanGlintMinFlux);
         cloudCirrusWindDeg = c.value("cirrus_wind_deg", cloudCirrusWindDeg);
         cloudCirrusStretch = c.value("cirrus_stretch", cloudCirrusStretch);
@@ -6762,6 +6767,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"zodiacal_gain", zodiacalGain},
         {"ocean_mw_refl_gain", oceanMwReflGain},
         {"ocean_glint_gain", oceanGlintGain},
+        {"ocean_sea_state", oceanSeaStateGain},
+        {"ocean_whitecaps", oceanWhitecapGain},
         {"ocean_glint_min_flux", oceanGlintMinFlux},
         {"zodiacal_width_deg", zodiacalWidthDeg},
         {"view_samples_min", viewSamplesMin},

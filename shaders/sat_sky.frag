@@ -988,10 +988,9 @@ vec3 cityDayAlbedo(CityLayout L, float foot) {
 // coast. The shoreline is the height function's own (the water map filtered by hand near the observer
 // as tdDemAt does, plus the coves of tdShoreOffset), so the sand meets the water exactly. h = the ground
 // height (DEM part), nUp = its up-facing. out dLand = metres inland from the waterline.
-float beachAt(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, float h, float nUp, out float dLand) {
-    dLand = 1e9;
-    if (!tdEnabled()) return 0.0;
-    vec2 wm;
+// Signed distance to the height function's own shoreline (m, > 0 in water), 1e9 = not near a baked shore.
+// The water map filtered by hand near the observer (as tdDemAt does) plus tdShoreOffset's coves.
+float shoreSignedDist(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, out vec2 wm) {
     if (dot(q.xy, q.xy) < kTdExactDemM * kTdExactDemM) {
         ivec2 wsz = textureSize(earthSpecTex, 0);
         vec2  tw  = uv * vec2(wsz) - 0.5;
@@ -1003,10 +1002,18 @@ float beachAt(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, float h, float n
     } else {
         wm = textureLod(earthSpecTex, uv, 0.0).rg;
     }
-    if (wm.g < 14.5 / 255.0) return 0.0;
+    if (wm.g < 14.5 / 255.0) return 1e9;
     float d = (wm.r - 0.5) * 2.0 * kShoreSdfMaxM;
-    if (d < -1500.0 || d > 1500.0) return 0.0;
-    d += tdShoreOffset(q, enuX, enuY, enuZ, wm);
+    if (d < -1500.0 || d > 1500.0) return 1e9;
+    return d + tdShoreOffset(q, enuX, enuY, enuZ, wm);
+}
+
+float beachAt(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, float h, float nUp, out float dLand) {
+    dLand = 1e9;
+    if (!tdEnabled()) return 0.0;
+    vec2  wm;
+    float d = shoreSignedDist(q, enuX, enuY, enuZ, uv, wm);
+    if (d > 1e8) return 0.0;
     if (d > 0.0) return 0.0;
     dLand = -d;
     float level = max(0.0, wm.g * kElevRange - kElevOffset);
@@ -1944,29 +1951,41 @@ vec3 lensFlare(vec2 uv, vec2 pos, float intens, float bokehMult) {
 
 // ── Ocean wave functions (adapted from "Seascape" by Alexander Alekseev aka TDM, 2014)
 // License: CC-BY-NC-SA 3.0 — tdmaav@gmail.com
-// posM = ENU East/North metres + geographic phase offset (observer-relative, ~Earth-fixed);
-// pHeight = metres above R_EARTH; seaTime = 1.0 + pc.waveTime * kSeaSpeed.
-
-const mat2  kOctaveM       = mat2(1.6, 1.2, -1.2, 1.6);
+// posM = ENU East/North metres + the world offset (cloud.oceanState.xy, wrapped on the CPU in double);
+// pHeight = metres above the water level; seaTime = 1.0 + pc.waveTime * kSeaSpeed.
+//
+// 2026-09-30: the field is EXACTLY PERIODIC over (kSeaPeriodX, kSeaPeriodY) metres, so the CPU can wrap the
+// observer's cumulative world offset into one period with no jump. Review 9 fed the waves the unbounded
+// offset (a float of the observer's whole travel): after a long flight the octave arguments (up to ~12 x
+// the offset) lost every fractional digit and the texture broke up. Periodicity: the noise lattice is
+// hashed mod kSeaCells, the ridges run at 6 cells (kSeaCells is a multiple), the octave matrix is INTEGER
+// ([2 1; -1 2], x2.24 and a 26.6 deg turn, where the original [1.6 1.2; -1.2 1.6] was x2 at 36.9 deg) and
+// each octave's extra scale is an integer (kSeaOctA), so every octave's argument moves by a whole number of
+// kSeaCells when the world point moves by one period. Arguments are reduced mod kSeaCells per octave.
 const float kSeaFreq       = 0.056;
 const float kSeaHeight     = 2;
 const float kSeaChoppy     = 3.0;   // 4.0 → 2.0: rounder crests, less plateau cliffs
 const float kSeaSpeed      = 1.5;
 const vec3  kSeaBase = vec3(0.01, 0.04, 0.08);   // dark, desaturated blue
 const vec3  kSeaWaterColor = vec3(0.2, 0.50, 0.85) * 0.1;
+const float kSeaCells      = 1200.0;                        // noise period, in octave-0 cells
+const float kSeaPeriodY    = kSeaCells / kSeaFreq;          // 21428.6 m (C++: kSeaPeriodYM)
+const float kSeaPeriodX    = kSeaCells / (0.75 * kSeaFreq); // 28571.4 m (x is stretched 0.75)
+const float kSeaOctA[8]    = float[8](1.0, 2.0, 3.0, 5.0, 8.0, 14.0, 24.0, 41.0);
+// Sea state (set per pixel before the wave calls): amplitude and choppiness scale from the weather.
+float gSeaAmp    = 1.0;
+float gSeaChoppy = 0.0;
 
-// Hash without Sine (Dave Hoskins, MIT): stable for all float input magnitudes.
-// The original fract(sin(dot(p, large_vec))*large_num) loses GPU sin() precision
-// once the dot product exceeds ~10^4 (happens at 4th-5th octave where kOctaveM
-// doubles UV scale each iteration), producing the angular banding artifact.
+// Hash without Sine (Dave Hoskins, MIT) on the lattice cell reduced mod kSeaCells.
 float seaHash(vec2 p) {
-    vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973) * 0.1); //vec3(0.1031, 0.1030, 0.0973)
+    p = mod(p, kSeaCells);
+    vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973) * 0.1);
     q += dot(q, q.yzx + 33.33);
     return fract((q.x + q.y) * q.z);
 }
 float seaNoise(vec2 p) {
     vec2 i = floor(p);
-    vec2 f = fract(p);
+    vec2 f = p - i;
     vec2 u = f * f * (3.0 - 2.0 * f);
     return -1.0 + 2.0 * mix(
         mix(seaHash(i + vec2(0.0, 0.0)), seaHash(i + vec2(1.0, 0.0)), u.x),
@@ -1976,45 +1995,61 @@ float seaNoise(vec2 p) {
 
 float seaOctave(vec2 uv, float choppy) {
     uv += seaNoise(uv);
-    vec2 wv  = 1.0 - abs(sin(mod(uv, vec2(2.0 * PI, 2.0 * PI))));
-    vec2 swv = abs(cos(mod(uv, vec2(2.0 * PI, 2.0 * PI))));
+    const float kW = 2.0 * PI / 6.0;     // ridge period 6 cells (the original 2 pi, made commensurate)
+    vec2 a   = mod(uv, 6.0) * kW;
+    vec2 wv  = 1.0 - abs(sin(a));
+    vec2 swv = abs(cos(a));
     wv = mix(wv, swv, wv);
     return pow(1.0 - pow(wv.x * wv.y, 0.65), choppy);
+}
+
+float seaHeight(vec2 posM, float seaTime, int nOct) {
+    // Octave 0's argument, reduced into one period (posM is small: |hitPt.xy| + one wrapped period).
+    vec2  v   = mod(vec2(posM.x * 0.75, posM.y) * kSeaFreq, kSeaCells);
+    float amp = kSeaHeight * gSeaAmp, choppy = kSeaChoppy + gSeaChoppy, tf = 1.0;
+    float h   = 0.0;
+    [[dont_unroll]] for (int i = 0; i < nOct; i++) {
+        vec2  arg = mod(v * kSeaOctA[i], kSeaCells);
+        float ts  = mod(seaTime * tf, kSeaCells);
+        float d   = seaOctave(arg + ts, choppy);
+              d  += seaOctave(arg - ts, choppy);
+        h  += d * amp;
+        v   = mod(vec2(2.0 * v.x + v.y, 2.0 * v.y - v.x), kSeaCells);   // integer [2 1; -1 2]
+        tf *= 1.9; amp *= 0.22;
+        choppy = mix(choppy, 1.0, 0.2);
+    }
+    return h;
 }
 
 // Geometry pass (3 octaves default): used in height-map trace. Octave count is UBO-tunable
 // (cloud.oceanSeaOctaves, perf session 24) — this is called up to 10x per ocean pixel by
 // heightMapTracing's secant refinement, so it's a direct multiplicative cost lever.
 float seaMap(vec2 posM, float pHeight, float seaTime) {
-    float freq = kSeaFreq, amp = kSeaHeight, choppy = kSeaChoppy;
-    vec2  uv   = posM; uv.x *= 0.75;
-    float h    = 0.0;
-    int   nOct = int(max(1.0, cloud.oceanSeaOctaves));
-    for (int i = 0; i < nOct; i++) {
-        float d  = seaOctave((uv + seaTime) * freq, choppy);
-              d += seaOctave((uv - seaTime) * freq, choppy);
-        h  += d * amp;
-        uv *= kOctaveM; freq *= 1.9; amp *= 0.22;
-        choppy = mix(choppy, 1.0, 0.2);
-    }
-    return pHeight - h;
+    return pHeight - seaHeight(posM, seaTime, clamp(int(cloud.oceanSeaOctaves), 1, 8));
 }
 
 // Fragment pass (5 octaves default): used for high-quality normal computation. Octave count is
 // UBO-tunable (cloud.oceanDetailOctaves, perf session 24).
 float seaMapDetail(vec2 posM, float pHeight, float seaTime) {
-    float freq = kSeaFreq, amp = kSeaHeight, choppy = kSeaChoppy;
-    vec2  uv   = posM; uv.x *= 0.75;
-    float h    = 0.0;
-    int   nOct = int(max(1.0, cloud.oceanDetailOctaves));
-    for (int i = 0; i < nOct; i++) {
-        float d  = seaOctave((uv + seaTime) * freq, choppy);
-              d += seaOctave((uv - seaTime) * freq, choppy);
-        h  += d * amp;
-        uv *= kOctaveM; freq *= 1.9; amp *= 0.22;
-        choppy = mix(choppy, 1.0, 0.2);
-    }
-    return pHeight - h;
+    return pHeight - seaHeight(posM, seaTime, clamp(int(cloud.oceanDetailOctaves), 1, 8));
+}
+
+// Sea state (2026-09-30): the wave amplitude as a multiple of the old fixed sea (~1 on an average day), from
+// the weather cube over ~40 km (storms: cover x convective type, and rain), the westerly belts (the roaring
+// forties/fifties) and a slow regional wind. dE = the point's ECEF direction. Scaled by "Sea state from
+// weather" (cloud.oceanState.z: 0 = always 1).
+float oceanSeaState(vec3 dE) {
+    float g = cloud.oceanState.z;
+    if (g <= 0.0) return 1.0;
+    float dph  = cloud.cloudPhase * cloud.layers[0].driftMult;
+    vec3  dMap = vec3(dE.x * cos(dph) - dE.y * sin(dph), dE.x * sin(dph) + dE.y * cos(dph), dE.z);
+    vec4  w    = textureLod(earthCloudsCube, dMap, 3.0);
+    float storm = smoothstep(0.45, 0.85, w.r) * (0.35 + 0.65 * smoothstep(0.35, 0.8, w.g)) + 0.6 * w.b;
+    float latA  = abs(dE.z);                                   // sin |lat|
+    float belt  = smoothstep(0.5, 0.71, latA) * (1.0 - smoothstep(0.87, 0.94, latA));   // ~30-45 .. 60-70 deg
+    float wind  = 0.5 + 0.28 * sin(3.1 * dE.x + 5.0 * dE.y + 1.3) + 0.22 * sin(4.7 * dE.z - 2.3 * dE.x + 0.4);
+    float s     = (0.3 + 0.35 * wind + 0.35 * belt + 0.9 * storm) / 0.65;
+    return max(0.25, 1.0 + (s - 1.0) * g);
 }
 
 // ── Thin-shell cloud layer evaluator ─────────────────────────────────────────
@@ -2991,6 +3026,21 @@ void main() {
         // no air in front, a dark 2x2 speck along every cloud edge over the sea (user snapshot).
         tAirFrontM = (ws > 1e-6) ? dot(wq, da) / ws * 1000.0 : ((dn < 1e8) ? dn * 1000.0 : 1e12);
     }
+    // Cloud composite debug views (harness `debugview 46..48`): 46 the air split distance (/100 km, red past
+    // it), 47 the cloud transmittance, 48 the cloud radiance x20, 49 the raw alpha (r opaque tHalf, g
+    // translucent mean distance, /100 km).
+    {
+        int dvc = int(cloud.terrainDebugView + 0.5);
+        if (dvc >= 46 && dvc <= 49) {
+            vec3 dbg;
+            if      (dvc == 46) dbg = (tAirFrontM > 1e11) ? vec3(0.0, 0.0, 0.3) : vec3(tAirFrontM / 1e5, min(tAirFrontM / 1e5, 1.0), min(tAirFrontM / 1e5, 1.0));
+            else if (dvc == 47) dbg = cloudB.rgb;
+            else if (dvc == 48) dbg = cloudA.rgb * 20.0;
+            else                dbg = vec3(max(cloudA.a, 0.0) / 100.0, max(-cloudA.a, 0.0) / 100.0, 0.0);
+            terrainDebugColor  = dbg;
+            terrainDebugActive = true;
+        }
+    }
 #endif
     vec3  accumAirglow = vec3(0.0); // green + sodium bands (C15) — ride these same samples
     // Review 8: the sunlit (and sky-lit, below) air IN FRONT of the clouds, like accumCityFront: the
@@ -3717,6 +3767,9 @@ void main() {
                                    dot(shadingN, normalize(hitPt)), dLand);
                 if (bw > 0.0) {
                     vec3 sand = mix(vec3(0.21, 0.18, 0.13), vec3(0.43, 0.37, 0.26), smoothstep(4.0, 25.0, dLand));
+                    // Waterline coverage (2026-09-30): the other half of the ocean side's blend — the pixel the
+                    // line crosses is partly water (a dark albedo stands in for it).
+                    sand = mix(sand, vec3(0.02, 0.045, 0.07), 0.5 * (1.0 - smoothstep(0.0, bFoot, dLand)));
                     dayColor = mix(dayColor, sand, bw * cloud.terrainMaterialStrength * (1.0 - smoothstep(200.0, 350.0, bFoot)));
                 }
             }
@@ -3854,35 +3907,10 @@ void main() {
         float moonLitTerrain   = max(0.0, moonDot) * moonHorizonGate * moonDirENU.w;
         vec3  moonContribTerrain = dayColor * vec3(0.92, 0.95, 1.0) * moonLitTerrain * cloud.moonGain;
 
-        // Aurora ground-glow: soft ambient wash from the curtain overhead, evaluated LOCALLY at
-        // this hit point (auroraGlowAt — same oval mask + fold noise the sky curtain itself uses)
-        // rather than a single observer-position proxy, so lighting is properly local like
-        // moonlight: only ground actually under an active curtain lights up. Modulated by how much
-        // the surface faces "up" (toward the glow), same spirit as skyAmbientTerrain's fill above.
-        //
-        // auroraGlowAt needs a TRUE ECEF direction (it compares against the fixed geomagnetic-pole
-        // ECEF constant) — hitPt itself is in the observer-local ENU-ish frame (same convention
-        // rp/obsPos/dir all use), so it must go through the enuX/enuY/enuZ basis first, same as
-        // every other geographic lookup in this file (e.g. the terrain-hit lat/lon UV above). A
-        // first version passed normalize(hitPt) directly, which is a fine "local up" vector for the
-        // Lambertian dot product just below (shadingN is in the SAME local frame, so that part was
-        // already correct) but wrong for auroraGlowAt specifically — it made the computed
-        // "geographic" position track the OBSERVER's own frame instead of the terrain point's true
-        // location, so the noise pattern appeared to follow the observer instead of the ground.
-#ifdef SKY_LITE
-        vec3  auroraContribTerrain = vec3(0.0);   // Planetarium-tier: aurora surface glow cut (auroraGlowAt's fold-noise fetch + oval mask)
-#else
-        vec3  hitDirECEF           = normalize(hitPt.x * enuX + hitPt.y * enuY + hitPt.z * enuZ);
-        vec3  auroraGlowTerrain    = auroraGlowAt(hitDirECEF, sunDirECEF, pc.waveTime, cloud.stormStrength);
-        // Same cloud-awareness gap as the ocean reflection fix (see that block's comment) — this
-        // is a plain ambient wash, so the simplest gate is reusing cloudB, already sampled for
-        // THIS pixel's own camera ray up top: an overcast view of this ground point dims its
-        // aurora glow along with everything else, no new march or texture read needed.
-        float auroraGroundCloudOccl = dot(cloudB.rgb, vec3(1.0 / 3.0));
-        vec3  auroraContribTerrain = dayColor * auroraGlowTerrain
-                                    * max(dot(shadingN, normalize(hitPt)), 0.0)
-                                    * cloud.auroraGroundGain * auroraGroundCloudOccl;
-#endif
+        // Aurora ground glow removed 2026-09-30 (the user: "looks green and bad"). A real aurora's light on the
+        // ground is ~a full Moon at most and colourless to the eye; the sky's own light already reaches the ground
+        // through the sky ambient. Kept as a zero term so the debug view (15) and the sum below stay valid.
+        vec3  auroraContribTerrain = vec3(0.0);
 
         // cloudShadowT gates only the direct-sun term (real cloud shadows block the sun, not the
         // diffuse skylight) — skyAmbientTerrain stays outside it, same split the ocean branch
@@ -4006,7 +4034,7 @@ void main() {
         }
 
         // Terrain debug views (harness `debugview`, cloud.terrainDebugView) — override the pixel.
-        if (cloud.terrainDebugView > 0.5 && tHit > 0.0) {
+        if (cloud.terrainDebugView > 0.5 && cloud.terrainDebugView < 39.5 && tHit > 0.0) {
             int dv = int(cloud.terrainDebugView + 0.5);
             vec3 dbg = vec3(0.0);
             if (dv == 1) dbg = terrainNorm * 0.5 + 0.5;
@@ -4089,15 +4117,31 @@ void main() {
             // CPU double from obsDir) — the same translation every nearby surface gets. The old phase (the
             // observer's float lat/lon x R, wrapped to the FIRST octave's period only) left the other octaves
             // sliding against the terrain as the observer moved, and stepped ~1 m with float precision.
-            vec2 obsPhase = vec2(cloud.pad1, cloud.pad2);
+            // 2026-09-30: wrapped in double on the CPU into the field's period (the field is exactly periodic):
+            // the unbounded float offset lost its precision after a long flight and broke the texture up.
+            vec2 obsPhase = cloud.oceanState.xy;
             vec2 posM = hitPt.xy + obsPhase;
+            // Sea state from the weather (waves, choppiness, whitecaps), at this point of the sea.
+            float seaState = oceanSeaState(normalize(hitPt.x * enuX + hitPt.y * enuY + hitPt.z * enuZ));
+            gSeaAmp    = seaState;
+            gSeaChoppy = clamp((seaState - 1.0) * 1.2, -1.2, 2.0);
+            // Shore (2026-09-30): the distance to the height function's waterline, near a shore and near the
+            // observer. The waves shoal (damped over the last ~200 m: at full chop their crests stood metres
+            // above a beach that rises 0.25 m/m, a hard seam seen from the water), surf lines roll in, and the
+            // waterline is anti-aliased against wet sand over a pixel footprint (land does the other half).
+            float dShore = 1e9;
+            if (tdEnabled() && dist < 20000.0) {
+                vec2 wmS;
+                dShore = shoreSignedDist(vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir, enuX, enuY, enuZ, uvSurf, wmS);
+                if (dShore < 1e8) gSeaAmp *= mix(0.4, 1.0, smoothstep(0.0, 150.0, dShore));
+            }
 
             // ── heightMapTracing (low altitude only) ──────────────────────────
             // Bracket: ±2.5 m vertical around the sea-sphere intersection.
             // hm > 0 at the near end (above waves), hx < 0 at the far end (inside).
             if (altFade > 0.01 && dist < 5000.0) {
                 float cosEl  = max(0.05, abs(dot(dir, surfUp)));
-                float traceR = min(60.0, 2.5 / cosEl);
+                float traceR = min(60.0, 2.5 * max(1.0, seaState) / cosEl);
                 float tm     = tSeaLvl - traceR;
                 float tx     = tSeaLvl + traceR;
 
@@ -4110,7 +4154,19 @@ void main() {
                 float hx  = seaMap(phi.xy + obsPhase, obsEffH + 2.0 - waterLevelM + tx * dir.z, seaTime);
 
                 if (hx < 0.0) {
-                    for (int i = 0; i < 8; i++) {
+                    // 2026-09-30: step to the FIRST crossing before refining. A grazing ray crosses several
+                    // crests inside the bracket, and the secant alone converged on whichever it liked — often
+                    // the back face of a wave the crest in front hides, drawn as flat patches reflecting the
+                    // horizon. Five coarse steps (cheaper octaves), then the secant inside that step.
+                    float tA = tm, hA = hm;
+                    for (int k = 1; k <= 5; ++k) {
+                        float tk = mix(tm, tx, float(k) / 5.0);
+                        float hk = (k == 5) ? hx : seaMap((obsPos + tk * dir).xy + obsPhase,
+                                                          obsEffH + 2.0 - waterLevelM + tk * dir.z, seaTime);
+                        if (hk < 0.0) { tm = tA; hm = hA; tx = tk; hx = hk; break; }
+                        tA = tk; hA = hk;
+                    }
+                    for (int i = 0; i < 6; i++) {
                         float tmid = mix(tm, tx, hm / (hm - hx));
                         vec3  pm   = obsPos + tmid * dir;
                         float hmid = seaMap(pm.xy + obsPhase, obsEffH + 2.0 - waterLevelM + tmid * dir.z, seaTime);
@@ -4143,16 +4199,23 @@ void main() {
             // distance fade. Bitwise-identical result for blend<0.99; below that threshold the
             // discarded detail was already imperceptible (>99% blended to flat).
             vec3 waveN = surfUp;
+            float waveCrest = -1.0;        // the wave height here / its maximum (whitecaps), -1 = unresolved
+            float waveBlend = 1.0;
             if (altFade > 0.01) {
                 float distFade = smoothstep(3000.0, 8000.0, dist);
                 float blend    = max(distFade, 1.0 - altFade);  // 0 = full detail, 1 = flat
+                waveBlend = blend;
                 if (blend < 0.99) {
                     float eps = max(0.5, dist * 0.0008);
                     float n0  = seaMapDetail(posM,                    pHeight, seaTime);
+                    waveCrest = (pHeight - n0) / (kSeaHeight * gSeaAmp * 2.56);
                     float nX  = seaMapDetail(posM + vec2(eps, 0.0),  pHeight, seaTime) - n0;
                     float nY  = seaMapDetail(posM + vec2(0.0,  eps), pHeight, seaTime) - n0;
                     waveN = normalize(vec3(nX, nY, 0.0) + eps * surfUp);
                     waveN = normalize(mix(waveN, surfUp, blend));
+                    // The finer detail octaves can still turn a facet slightly away from the eye: lean it back.
+                    float nv = dot(waveN, -dir);
+                    if (nv < 0.05) waveN = normalize(waveN + (0.05 - nv) * (-dir));
                 }
             }
 
@@ -4162,6 +4225,19 @@ void main() {
 
             // Sky reflection — 6-sample atmosphere, distance-gated
             vec3 reflDir   = reflect(dir, waveN);
+            // A facet turned away from the eye (grazing views of steep waves) reflects INTO the sea: the sky
+            // march below was skipped and the constant fallback drew flat light-blue patches with yellow rims
+            // (2026-09-30). Bend such reflections to just above the horizon instead.
+            // In reality such a facet mirrors the next wave's water, not the sky: reflWaterK darkens the reflection
+            // toward that (the horizon's light off another wave) as the reflection dips below the horizon.
+            float reflWaterK = 1.0;
+            {
+                float rUp = dot(reflDir, surfUp);
+                if (rUp < 0.02) {
+                    reflWaterK = mix(1.0, 0.2, smoothstep(0.0, 0.12, -rUp));
+                    reflDir = normalize(reflDir + (0.02 - rUp) * surfUp);
+                }
+            }
             vec3 reflColor = vec3(0.12, 0.28, 0.50) * dayFrac;
             float reflStr  = fresnel * exp(-dist / 40000.0);
 
@@ -4188,11 +4264,18 @@ void main() {
                     vec3  rAccR  = vec3(0.0);
                     float rAccM  = 0.0;
                     float rodR   = 0.0, rodM = 0.0;
+                    // 2026-09-30: u^2 spacing, dense by the water. Uniform steps over a grazing path (~1000 km to
+                    // the top of the air) let each of the 6 samples stand for ~170 km of sea-level air: the extinction
+                    // was far too high and the reflected horizon came out tan (streaks on every steep wave face).
+                    float rLen = tAR.y - rStart;
                     for (int ri = 0; ri < N_REFL; ++ri) {
-                        vec3  rp   = hitPt + reflDir * (rStart + (float(ri) + 0.5) * rSeg);
+                        float u0   = float(ri) / float(N_REFL), u1 = float(ri + 1) / float(N_REFL);
+                        float um   = 0.5 * (u0 + u1);
+                        float rSegI = rLen * (u1 * u1 - u0 * u0);
+                        vec3  rp   = hitPt + reflDir * (rStart + rLen * um * um);
                         float rh   = max(0.0, length(rp) - R_EARTH);
-                        float rdR  = exp(-rh / H_R) * rSeg;
-                        float rdM  = exp(-rh / H_M) * rSeg;
+                        float rdR  = exp(-rh / H_R) * rSegI;
+                        float rdM  = exp(-rh / H_M) * rSegI;
                         rodR += rdR; rodM += rdM;
                         vec2 tSE  = raySphere(rp, sunDir, R_EARTH);
                         if (tSE.x > 0.0 && tSE.y > 0.0) continue;
@@ -4225,7 +4308,15 @@ void main() {
                     float tanHFRefl    = tan(pc.fovYRad * 0.5);
                     vec2  reflUV       = vec2(reflCam.x, -reflCam.y) / (-reflCam.z * tanHFRefl * 2.0);
                     vec2  reflScreenUV = vec2(reflUV.x / pc.aspect + 0.5, reflUV.y + 0.5);
-                    reflCloudOccl   = dot(texture(cloudTargetB, reflScreenUV).rgb, vec3(1.0 / 3.0));
+                    vec3 reflCloudT = texture(cloudTargetB, reflScreenUV).rgb;
+                    reflCloudOccl   = dot(reflCloudT, vec3(1.0 / 3.0));
+                    // The clouds in the reflection (2026-09-30): the march above is clear sky, so under an overcast
+                    // the sea mirrored a sunlit clear horizon. The composite's own (A, B) at the mirrored direction.
+                    // The target holds the clouds without the air in front of them (the sky pass adds that as
+                    // airFront): a far cloud is mostly that air, so it leans back to the clear march by its distance.
+                    vec4  rCA  = texture(cloudTargetA, reflScreenUV);
+                    float rKf  = 1.0 - exp(-abs(rCA.a) / 40.0);            // alpha: signed distance, km
+                    reflColor  = reflColor * mix(reflCloudT, vec3(1.0), rKf) + rCA.rgb * (1.0 - rKf);
                     reflTerrainOccl = (texture(sceneDepthTex, reflScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
                 }
 #endif
@@ -4319,6 +4410,8 @@ void main() {
 #endif
             }
 
+            reflColor *= reflWaterK;
+
             // Refracted subsurface color (SEA_BASE + diffuse * SEA_WATER_COLOR)
             // directSun replaces dayFrac for all sun-driven contributions so clouds shadow the ocean.
             float diff    = pow(max(0.0, dot(waveN, sunDir)) * 0.4 + 0.6, 80.0) * directSun;
@@ -4336,6 +4429,62 @@ void main() {
             float nrm     = (specPow + 8.0) / (PI * 8.0);
             surfColor    += pow(max(0.0, dot(reflect(dir, waveN), sunDir)), specPow) * nrm * directSun;
 
+            // Surf and the waterline (2026-09-30, see dShore above).
+            if (dShore < 400.0) {
+                float footS = pixAngle * dist / max(abs(dot(dir, surfUp)), 0.03);
+                vec3  sunLitS = vec3(directSun * max(dot(surfUp, sunDir), 0.0));
+                // Breakers: lines parallel to the shore rolling in, bunched by a slow noise along the coast.
+                float along = seaNoise(posM * 0.02) * 6.0;
+                float wave  = 0.5 + 0.5 * sin(dShore * 0.3 - seaTime * 0.9 + along);
+                float surf  = pow(wave, 8.0) * (1.0 - smoothstep(10.0, 90.0, dShore)) * smoothstep(0.0, 3.0, dShore);
+                surf = max(surf, 1.0 - smoothstep(0.0, 4.0, dShore));                 // the swash
+                surf *= clamp(0.4 + 0.6 * seaState, 0.0, 1.5) * (1.0 - smoothstep(4.0, 30.0, footS));
+                surfColor = mix(surfColor, 0.7 * (sunLitS + 0.35 * reflColor), clamp(surf * 0.8, 0.0, 1.0));
+                // Waterline coverage: half the pixel is wet sand where the line crosses it.
+                float cov = 0.5 * (1.0 - smoothstep(0.0, footS, dShore));
+                vec3  wetSand = vec3(0.21, 0.18, 0.13) * (sunLitS + 0.3 * reflColor);
+                surfColor = mix(surfColor, wetSand, cov);
+            }
+
+            // Whitecaps (2026-09-30): breaking crests once the sea is up. Near: foam on the highest part of each
+            // resolved wave, broken up by a finer noise, spreading as the sea state rises; far (unresolved): the
+            // mean foam fraction (~Monahan: a few % in a gale, ~10% in a storm) as a brighter albedo, so a stormy
+            // sea reads lighter from altitude. Lit by the Sun on its facet and the reflected sky.
+            if (cloud.oceanState.w > 0.0) {
+                float fs     = smoothstep(1.05, 2.3, seaState);
+                float fMean  = 0.12 * fs * fs * cloud.oceanState.w;
+                float fNear  = 0.0;
+                if (waveCrest >= 0.0 && fs > 0.0) {
+                    float thr   = mix(0.76, 0.6, fs);   // the crest values run ~0.35-0.8 (top 5% ~0.7)
+                    float brk   = 0.5 + 0.5 * seaNoise(posM * 0.35 + vec2(seaTime * 0.3, 0.0));
+                    fNear = smoothstep(thr, thr + 0.1, waveCrest + 0.12 * (brk - 0.5)) * smoothstep(0.1, 0.6, brk)
+                          * fs * cloud.oceanState.w;
+                }
+                float foam = clamp(mix(fNear, fMean, waveBlend), 0.0, 1.0);
+                // Foam is a white diffuser: the Sun on its facet plus the sky over the whole hemisphere (the sky
+                // reflection stands in for it; a mirror-like sea shows ~fresnel x it, foam ~0.8 x it).
+                vec3  foamL = 0.8 * (directSun * max(dot(waveN, sunDir), 0.0) + 0.9 * reflColor);
+                surfColor = mix(surfColor, foamL, foam);
+            }
+
+            // Ocean debug views (harness `debugview 40..45`): 40 the sky reflection (x fresnel off), 41 fresnel /
+            // reflWaterK / reflStr, 42 sea state (/2) / crest / blend, 43 the whole surface before the moon and glints,
+            // 44 the wave normal, 45 the shore distance (r < 0 land side .. g water, /100 m).
+            {
+                int dvo = int(cloud.terrainDebugView + 0.5);
+                if (dvo >= 40 && dvo <= 45) {
+                    vec3 dbg = vec3(0.0);
+                    if      (dvo == 40) dbg = reflColor * 0.05;
+                    else if (dvo == 41) dbg = vec3(fresnel * 2.0, reflWaterK, reflStr * 2.0);
+                    else if (dvo == 42) dbg = vec3(seaState * 0.5, max(waveCrest, 0.0), waveBlend);
+                    else if (dvo == 43) dbg = surfColor;
+                    else if (dvo == 44) dbg = waveN * 0.5 + 0.5;
+                    else                dbg = vec3(clamp(-dShore / 100.0, 0.0, 1.0), clamp(dShore / 100.0, 0.0, 1.0), 0.0);
+                    terrainDebugColor  = dbg;
+                    terrainDebugActive = true;
+                }
+            }
+
             // Moon glint on ocean — nighttime only, dims with phase (new moon = brightest Earth).
             if (moonDirENU.z > limbZ && moonDirENU.w > 0.01) {
                 vec3  moonDir3o = normalize(moonDirENU.xyz);
@@ -4346,29 +4495,18 @@ void main() {
                            * 0.006 * (1.0 - dayFrac);
             }
 
-            // Aurora ground-glow: soft ambient tint from the curtain overhead, evaluated LOCALLY at
-            // this ocean point (auroraGlowAt — same function terrain uses) rather than a single
-            // observer-position proxy, distance-attenuated by the same `atten` the wave-crest
-            // shading above uses so it doesn't glow uniformly out to the horizon.
-            //
-            // surfUp is the observer-local "up" (same frame as hitPt/obsPos/dir) — auroraGlowAt
-            // needs a TRUE ECEF direction instead (see the terrain block's own comment on this same
-            // bug), so it goes through enuX/enuY/enuZ first rather than being passed straight in.
-#ifndef SKY_LITE   // Planetarium-tier: aurora glow on the ocean surface cut (matches the terrain-hit cut above)
-            vec3 surfUpECEF = normalize(surfUp.x * enuX + surfUp.y * enuY + surfUp.z * enuZ);
-            // Same cloud gate as the terrain ground-glow and the aurora reflection above — this
-            // is why the water kept turning aurora-green straight through an overcast sky.
-            float auroraGroundCloudOcclOcean = dot(cloudB.rgb, vec3(1.0 / 3.0));
-            surfColor += auroraGlowAt(surfUpECEF, sunDirECEF, pc.waveTime, cloud.stormStrength)
-                       * cloud.auroraGroundGain * 0.5 * atten * auroraGroundCloudOcclOcean;
-#endif
+            // (Aurora ground glow on the sea removed 2026-09-30 at the user's request: it read as a green wash.)
             // Mirror satellite flare glints — own small independent capped atomic-append list
             // (flare architecture overhaul), decoupled from the deleted per-pixel corona system.
             // Now also occlusion-aware (previously had NONE at all): sampled at each entry's own
             // screen position, the same technique already proven this session for the corona loop.
 #ifndef SKY_ENV
             {
-                uint fCount = min(oceanGlintBuf.oceanGlintCount, kOceanGlintMax);
+                // 2026-09-30: skipped outright where its result is multiplied by zero (day, or above ~8 km where
+                // altFade is 0): the list is up to 512 entries and each paid two texture fetches per ocean pixel
+                // (6 ms of the sky pass looking down on the sea from orbit). The specular test comes first too.
+                float gW = (1.0 - dayFrac) * altFade * cloud.oceanGlintGain;
+                uint fCount = (gW > 1e-5) ? min(oceanGlintBuf.oceanGlintCount, kOceanGlintMax) : 0u;
                 float tanHFg = tan(pc.fovYRad * 0.5);
                 for (uint fi = 0u; fi < fCount; ++fi) {
                     float flux = oceanGlintBuf.oceanGlintEntries[fi].w;
@@ -4381,6 +4519,7 @@ void main() {
                     if (flux < cloud.oceanGlintMinFlux) continue;
                     vec3 fe = normalize(oceanGlintBuf.oceanGlintEntries[fi].xyz);
                     if (fe.z < limbZ - 0.02) continue;
+                    if (dot(reflect(dir, waveN), fe) < 0.9) continue;   // pow(., 80) < 2e-4: nothing to draw
                     vec3 feCam = mat3(pc.skyView) * fe;
                     if (feCam.z >= -0.01) continue;
                     vec2 feUV = vec2(feCam.x, -feCam.y) / (-feCam.z * tanHFg * 2.0);
