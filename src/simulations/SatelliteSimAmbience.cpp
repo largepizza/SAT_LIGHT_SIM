@@ -464,7 +464,9 @@ void SatelliteSim::computeAmbienceContext(float dt)
     // cloud_v2_march.comp into terrainFrame.w and read back a frame later. The same value drives the
     // streaks, so what you hear is what falls on screen. ──
     {
-        const float raw = terrainFrameMapped ? std::clamp(terrainFrameMapped[3], 0.0f, 1.0f) : 0.0f;
+        // Snow falls silently: the rain sound only for the liquid share (as the streaks' temperature).
+        const float liquid = glm::smoothstep(-1.0f, 3.0f, cv2EyeTempC);
+        const float raw = terrainFrameMapped ? std::clamp(terrainFrameMapped[3], 0.0f, 1.0f) * liquid : 0.0f;
         ambRainEased += (raw - ambRainEased) * (dt > 0.0f ? 1.0f - expf(-dt / 2.0f) : 1.0f);
         a.set(ambD_.rain, ambRainEased);
     }

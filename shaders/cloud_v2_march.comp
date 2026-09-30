@@ -565,7 +565,16 @@ void main()
                 // Back two steps and on to a JITTERED fine lattice: the start jitter covers only the
                 // first (shortest) step, so without this every fine sample sat on the coarse grid and
                 // a flat, sharp deck top drew contour rings around the nadir.
-                if (f.sigma > 0.0) { fine = true; empty = 0; t = max(seg[si].x, t - (2.0 - jitter) * stepF); continue; }
+                // Backing up past the segment start restarts it jittered: clamped to the start itself,
+                // every ray from INSIDE a cloud or rain (the first sample already dense) stepped the same
+                // lattice from the eye — contour rings of the cloud base looking up through rain (review 3,
+                // snapshot 5).
+                if (f.sigma > 0.0) {
+                    fine = true; empty = 0;
+                    float tb = t - (2.0 - jitter) * stepF;
+                    t = tb > seg[si].x ? tb : seg[si].x + jitter * cv2.march.x;
+                    continue;
+                }
                 t += 2.0 * stepF;
                 pathLen += 2.0 * stepF;
                 continue;

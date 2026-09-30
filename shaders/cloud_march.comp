@@ -128,56 +128,77 @@ layout(set = 0, binding = 20) uniform sampler2D cv2ResolvedDepthTex;  // x mean 
 // The lightning over this ray: the cloud lit from inside around each flash (at the resolved cloud's
 // mean depth, by its opacity) and the channels of cloud-to-ground strokes (hidden by terrain, and by
 // the cloud when behind it). Radiance in the composite's units (B, as the resolved cloud's).
-// A red sprite (cloud_v2_lightning.comp, kind 2): a diffuse red head at ~75-85 km and tendrils hanging
-// to ~50 km, red at the top shading to violet, each a few hundred metres across (its energy spread over
-// the pixel's footprint beyond that). Hidden by terrain, dimmed by the cloud in front of it.
+// A red sprite (cloud_v2_lightning.comp, kind 2): a diffuse deep-red head at ~75-85 km and tendrils
+// hanging to ~40-50 km that fork as they fall and spread outward (a jellyfish of roots, not a comb),
+// each a few hundred metres across (its energy spread over the pixel's footprint beyond that); the
+// lowest tips lean violet. Hidden by terrain, dimmed by the cloud in front of it.
+// One segment's glow on the ray: g at the closest point, f = where along the tendril (0 top, 1 tip).
+float spriteSeg(vec3 q0, vec3 q1, vec3 dir, float pixAng, float f0, float f1, out float f)
+{
+    vec3  u  = q1 - q0;
+    float a  = dot(u, u), b = dot(u, dir), d0 = dot(u, q0), e = dot(dir, q0);
+    float sg = clamp((b * e - d0) / max(a - b * b, 1e-3), 0.0, 1.0);
+    float tR = max(dot(q0 + u * sg, dir), 0.0);
+    sg = clamp(dot(dir * tR - q0, u) / max(a, 1e-3), 0.0, 1.0);
+    float dd = length(q0 + u * sg - dir * tR);
+    f = mix(f0, f1, sg);
+    float wT = mix(420.0, 150.0, f);                 // tapering
+    float w  = max(tR * pixAng * 0.6, wT);
+    return exp(-(dd * dd) / (w * w)) * (wT / w) * (1.0 - 0.75 * f) * smoothstep(0.0, 0.05, f + 0.01);
+}
+
+uint spriteHash(uint h) { h *= 0x85EBCA6Bu; h ^= h >> 13u; h *= 0xC2B2AE35u; h ^= h >> 16u; return h; }
+vec2 spriteH2(uint h) { return vec2(float(h & 0xFFu), float((h >> 8u) & 0xFFu)) / 255.0 - 0.5; }
+
 vec3 spriteCS(CV2Flash fl, vec3 obsPos, vec3 dir, float tCloud, float cloudT, float tScene, float pixAng)
 {
     vec3  C  = fl.a.xyz - obsPos;
     vec3  up = normalize(fl.a.xyz);
     float tC = dot(C, dir);
     if (tC <= 0.0 || tC > tScene) return vec3(0.0);
+    // Nowhere near it (the whole sprite is within ~45 km of its centre): nothing to evaluate.
+    if (length(C - dir * tC) > 45000.0 + tC * pixAng * 2.0) return vec3(0.0);
     vec3  t1 = normalize(cross(up, abs(up.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
     vec3  t2 = cross(up, t1);
     uint  seed = floatBitsToUint(fl.c.y);
+    const vec3 kRed = vec3(0.55, 0.008, 0.02), kTip = vec3(0.32, 0.01, 0.22);
     vec3  L = vec3(0.0);
     // The head: a flattened glow ~12 km across just above the centre.
     vec3  H  = C + up * 6000.0;
     vec3  hp = H - dir * dot(H, dir);
     float hv = dot(hp, up);
     float hh = length(hp - up * hv);
-    L += vec3(1.0, 0.18, 0.22) * 0.25 * exp(-(hh * hh) / 3.6e7 - (hv * hv) / 9.0e6);
-    // The tendrils: 5-8 streamers from under the head, splaying out and bending as they fall (two
-    // segments each, kinked sideways), of varied length: a jellyfish, not a comb.
-    int nT = 5 + int(seed % 4u);
-    for (int k = 0; k < 8; ++k) {
+    L += kRed * 0.3 * exp(-(hh * hh) / 3.6e7 - (hv * hv) / 9.0e6);
+    // The tendrils: 8-13 roots from under the head, splaying out and bending as they fall, each forking
+    // at its middle (a branch veering further out) and again lower down (review 3: "more diverging").
+    int nT = 8 + int(seed % 6u);
+    for (int k = 0; k < 13; ++k) {
         if (k >= nT) break;
-        uint  h  = (seed ^ uint(k + 1) * 0x9E3779B9u) * 0x85EBCA6Bu;
-        h ^= h >> 13u; h *= 0xC2B2AE35u; h ^= h >> 16u;
-        uint  h2 = h * 0x27D4EB2Du; h2 ^= h2 >> 15u;
-        vec2  o  = vec2(float(h & 0xFFu), float((h >> 8u) & 0xFFu)) / 255.0 - 0.5;
-        vec2  kk = vec2(float(h2 & 0xFFu), float((h2 >> 8u) & 0xFFu)) / 255.0 - 0.5;
-        float ln = 9000.0 + 23000.0 * float((h >> 16u) & 0xFFu) / 255.0;
+        uint  h  = spriteHash(seed ^ uint(k + 1) * 0x9E3779B9u);
+        uint  h2 = spriteHash(h ^ 0x27D4EB2Du);
+        uint  h3 = spriteHash(h2 ^ 0x165667B1u);
+        vec2  o  = spriteH2(h);
+        vec2  kk = spriteH2(h2);
+        vec2  br = spriteH2(h3);
+        float ln = 9000.0 + 25000.0 * float((h >> 16u) & 0xFFu) / 255.0;
+        vec2  dO = o * 1.8 + kk * 0.6;                               // the tendril's own drift outward
         vec3  pA = C + up * 5000.0 + (t1 * o.x + t2 * o.y) * 5000.0;
-        vec3  pB = C + up * (5000.0 - 0.5 * ln) + (t1 * (o.x * 1.8 + kk.x * 0.6) + t2 * (o.y * 1.8 + kk.y * 0.6)) * 8000.0;
+        vec3  pB = C + up * (5000.0 - 0.45 * ln) + (t1 * dO.x + t2 * dO.y) * 8000.0;
         vec3  pC = C + up * (5000.0 - ln) + (t1 * (o.x * 3.0 + kk.x) + t2 * (o.y * 3.0 + kk.y)) * 8000.0;
-        for (int sgi = 0; sgi < 2; ++sgi) {
-            vec3  q0 = (sgi == 0) ? pA : pB, q1 = (sgi == 0) ? pB : pC;
-            vec3  u  = q1 - q0;
-            float a  = dot(u, u), b = dot(u, dir), d0 = dot(u, q0), e = dot(dir, q0);
-            float sg = clamp((b * e - d0) / max(a - b * b, 1e-3), 0.0, 1.0);
-            float tR = max(dot(q0 + u * sg, dir), 0.0);
-            sg = clamp(dot(dir * tR - q0, u) / max(a, 1e-3), 0.0, 1.0);
-            float dd = length(q0 + u * sg - dir * tR);
-            float f  = 0.5 * (float(sgi) + sg);          // 0 under the head .. 1 at the tip
-            float wT = mix(450.0, 200.0, f);             // tapering
-            float w  = max(tR * pixAng * 0.6, wT);
-            float g  = exp(-(dd * dd) / (w * w)) * (wT / w) * (1.0 - 0.8 * f) * smoothstep(0.0, 0.05, f + 0.01);
-            L += mix(vec3(1.0, 0.12, 0.2), vec3(0.55, 0.25, 1.0), f * f) * g * 0.5;
-        }
+        // Fork 1 from pB, veering off the tendril's line; fork 2 from the lower half, the other way.
+        vec2  v1 = normalize(dO + br * 1.2 + vec2(1e-3));
+        vec3  pD = pB - up * (0.4 * ln) + (t1 * v1.x + t2 * v1.y) * (4000.0 + 5000.0 * abs(br.x));
+        vec3  pM = mix(pB, pC, 0.45);
+        vec2  v2 = normalize(dO - br.yx * 1.4 + vec2(1e-3));
+        vec3  pE = pM - up * (0.28 * ln) + (t1 * v2.x + t2 * v2.y) * (2500.0 + 3500.0 * abs(br.y));
+        float f, g;
+        g = spriteSeg(pA, pB, dir, pixAng, 0.0, 0.45, f); L += mix(kRed, kTip, f * f * f) * g * 0.5;
+        g = spriteSeg(pB, pC, dir, pixAng, 0.45, 1.0, f); L += mix(kRed, kTip, f * f * f) * g * 0.5;
+        g = spriteSeg(pB, pD, dir, pixAng, 0.45, 0.9, f); L += mix(kRed, kTip, f * f * f) * g * 0.4;
+        g = spriteSeg(pM, pE, dir, pixAng, 0.7, 1.0, f);  L += mix(kRed, kTip, f * f * f) * g * 0.3;
     }
     float occ = (tCloud < tC) ? cloudT : 1.0;
-    return L * (fl.a.w * cv2.misc2.y * occ * exp(-tC / 800000.0));
+    return L * (0.5 * fl.a.w * cv2.misc2.y * occ * exp(-tC / 800000.0));   // dim: a deep red (review 3)
 }
 
 vec3 lightningCS(vec3 obsPos, vec3 dir, float tCloud, float cloudT, float tScene, float pixAng)
@@ -247,16 +268,26 @@ float cloudGroundShadowV2(vec3 groundENU, vec3 sunDir, vec3 obsPos, mat3 enuToEc
     // nadir (user snapshot from 7.7 km, pass 13).
     groundENU += normalize(groundENU) * 10.0;
     if (cv2ShellSegments(groundENU, sunDir, s0, s1) == 0) return 1.0;
-    const int kSteps = 24;
-    float len = s0.y - s0.x, ds = len / float(kSteps), od = 0.0;
+    // Two stretches (review 3): 20 steps through the lowest 3.5 km above the ground, where decks and
+    // stratus live, then 12 through the rest of the shell. 24 even steps over the whole shell were
+    // ~600 m apart with a high Sun, so a 300-m deck was hit or missed by each pixel's jitter: the
+    // shadow under a thin overcast was a grain of full shadow and none (user snapshot 6).
     float eyeH = obsPos.z - R_EARTH;
-    // Read at a footprint of the step, jittered: at a low Sun the path through the shell is 100+ km,
-    // and 24 fixed midpoints reading 2 km cells at a 60 m footprint aliased into concentric rings of
-    // shadow on the sea around the nadir (user snapshot from 7.7 km at sunset, pass 13). At the step's
-    // footprint the cells average into their coverage (the field's sub-pixel haze), as the view does.
-    float fpS = max(60.0, ds * 0.5);
-    for (int i = 0; i < kSteps; ++i) {
-        vec3 rel = groundENU + sunDir * (s0.x + (float(i) + jitter) * ds) - obsPos;
+    float sunUp = max(dot(normalize(groundENU), sunDir), 0.05);
+    float tSplit = clamp(s0.x + 3500.0 / sunUp, s0.x, s0.y);
+    float od = 0.0;
+    for (int i = 0; i < 32; ++i) {
+        bool  low = i < 20;
+        float a0  = low ? s0.x : tSplit, a1 = low ? tSplit : s0.y;
+        float ds  = (a1 - a0) / (low ? 20.0 : 12.0);
+        if (ds <= 0.0) continue;
+        float fi  = low ? float(i) : float(i - 20);
+        // Read at a footprint of the step, jittered: at a low Sun the path through the shell is 100+ km,
+        // and fixed midpoints reading 2 km cells at a 60 m footprint aliased into concentric rings of
+        // shadow on the sea around the nadir (user snapshot from 7.7 km at sunset, pass 13). At the step's
+        // footprint the cells average into their coverage (the field's sub-pixel haze), as the view does.
+        float fpS = max(60.0, ds * 0.5);
+        vec3  rel = groundENU + sunDir * (a0 + (fi + jitter) * ds) - obsPos;
         od += cv2Field(cv2Pos(rel, eyeH, enuToEcef), 0.0, fpS).sigma * ds;
         if (od > 8.0) break;
     }
@@ -1318,15 +1349,7 @@ void cullBeamsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos) {
     barrier();
 }
 
-// Falling rain around the eye, as streaks in direction space: columns in azimuth (slanted by the
-// wind), segments sliding down in elevation, three depth layers (near: few, wide, fast; far: many,
-// thin, slow). Composited after the resolve, so it animates instead of smearing through history.
-// Falling rain at the eye, in direction space: three depths of drops. Each (column, fall cycle) is
-// its OWN drop — its lateral place in the column, length, brightness and whether it exists at all are
-// hashed from both — so no two drops share a track. (The first cut fixed each column's drop at one
-// place: every drop retraced the same straight line, and the lines were plain to see.) Their direction
-// is the wind's (see the geometry note below); density and brightness follow the rain rate, in bursts.
-// wind: m/s toward east (the clouds' stand-in wind); rate: 0..1.
+// The rain's own variability (rainBurst) and the drops at the eye (rainDrops, below).
 float rainHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
 // The rain's own variability: showers come in bursts (a value noise over ~6 s, on top of the rain
@@ -1337,47 +1360,60 @@ float rainBurst(float t)
     return mix(0.35, 1.0, mix(rainHash(vec2(i, 7.1)), rainHash(vec2(i + 1.0, 7.1)), f * f * (3.0 - 2.0 * f)));
 }
 
-// GEOMETRY (2026-09-28): every drop of a depth layer falls along the same world direction F (down at
-// its fall speed, blown by the wind), so seen from the eye each drop's path is a great circle through
-// F's vanishing point - and a great circle projects to a STRAIGHT line on screen. The streaks live in
-// (phi around F, theta from F): columns of constant phi, drops sliding toward theta = 0. The first
-// cut laid columns out in azimuth/elevation with a slant that depended on the azimuth: the streaks
-// curved across the view, and bent the wrong way where the slant flipped sign.
-float rainStreaks(vec3 d, float t, float wind, float rate)
+// Rain / sleet / snow at the eye as DROPS IN THE WORLD (review 3): five depth layers (2..32 m) of a 3D
+// lattice fixed in the rain frame (cv2.rainE/N/U: world-fixed, the eye's position from double), falling
+// and drifting with the wind; a cell holds a drop with a probability that is the rain RATE (light rain =
+// a few drops, heavy = many — it used to set their brightness), each a short motion-blurred segment
+// (a flake: a slow, wobbling dot) with its energy spread over the pixel footprint. The 2x2x2 cells nearest
+// the ray's point at each layer's depth are tested, so a drop is never cut at a cell edge. It replaced
+// streaks in DIRECTION space, which travelled with the eye (walking never moved through the rain).
+// dirE: the ray (ECEF); rate 0..1; wind m/s toward east aloft; tScene: the surface (drops behind it hide).
+// Returns the drop light (x the caller's lit colour) in .x, and the snow's share of it in .y.
+vec2 rainDrops(vec3 dirE, float rate, float wind, float tScene, float pixAng)
 {
-    float m = 0.0;
-    for (int k = 0; k < 3; ++k) {
-        float fk    = float(k);
-        float vFall = 9.0 - 2.5 * fk;                         // big near drops fall fastest
-        // Gusts: slow (tens of seconds), so the whole pattern leans and straightens without jumping.
-        // The clouds' wind is the wind aloft; at the ground ~40% of it.
-        vec2  W  = 0.4 * vec2(wind * (1.0 + 0.35 * sin(t * 0.21 + fk * 1.7) + 0.15 * sin(t * 0.53 + fk)),
-                              wind * 0.25 * sin(t * 0.13 + fk * 2.1));
-        vec3  F  = normalize(vec3(W, -vFall));
-        vec3  e1 = normalize(cross(vec3(1.0, 0.0, 0.0), F));
-        vec3  e2 = cross(F, e1);
-        float cth = clamp(dot(d, F), -1.0, 1.0);
-        float sth = sqrt(max(1.0 - cth * cth, 0.0));
-        float th  = acos(cth);                                // 0 at the vanishing point below
-        float ph  = atan(dot(d, e2), dot(d, e1));
-        float cols  = 190.0 * pow(2.1, fk);
-        float x     = (ph + fk * 0.37) * (cols / (2.0 * PI));
-        float ci    = floor(x);
-        float hc    = rainHash(vec2(ci, fk));
-        float y     = th * (5.0 + 5.0 * fk) + t * (10.0 - 2.8 * fk) * (0.8 + 0.4 * hc) + hc * 10.0;
-        float cyc   = floor(y);
-        float seg   = fract(y);
-        vec3  hd    = vec3(rainHash(vec2(ci, cyc + fk * 57.0)), rainHash(vec2(cyc, ci + 3.1)),
-                           rainHash(vec2(ci + cyc, fk + 9.7)));
-        if (hd.x > mix(0.04, 0.75, rate)) continue;          // no drop in this column this cycle
-        float len    = (0.12 + 0.18 * hd.z) * (1.0 - 0.2 * fk);
-        float streak = smoothstep(0.0, 0.04, seg) * (1.0 - smoothstep(len, len + 0.04, seg));
-        // Columns converge toward the vanishing points (sin theta): keep their width in pixels.
-        float wHalf  = 0.08 / max(sth, 0.15);
-        float width  = 1.0 - smoothstep(0.3 * wHalf, wHalf, abs(fract(x) - (0.2 + 0.6 * hd.y)));
-        m += streak * width * (0.6 + 0.4 * hd.z) * (1.0 - 0.3 * fk) * smoothstep(0.1, 0.35, sth);
+    vec3  dR   = vec3(dot(dirE, cv2.rainE.xyz), dot(dirE, cv2.rainN.xyz), dot(dirE, cv2.rainU.xyz));
+    vec3  eyeR = vec3(cv2.rainE.w, cv2.rainN.w, cv2.rainU.w);
+    float t    = cv2.precip.y;
+    float snowP = 1.0 - smoothstep(-1.0, 2.5, cv2.precip.x);        // sleet between: some drops, some flakes
+    float prob  = 0.85 * pow(clamp(rate, 0.0, 1.0), 0.8);
+    float Lr = 0.0, Ls = 0.0;
+    for (int k = 0; k < 5; ++k) {
+        float r  = 2.0 * float(1 << k);
+        if (r > tScene) break;
+        float c  = 0.14 * r;
+        // The layer's motion: rain ~8 m/s (snow ~1), the ground wind ~40% of the wind aloft, gusting.
+        float v  = mix(8.0 - 0.5 * float(k), 1.1, snowP);
+        float wg = 0.4 * wind * (1.0 + 0.35 * sin(t * 0.21 + float(k) * 1.7));
+        vec3  F  = normalize(vec3(wg, 0.0, -v));
+        float sV = v * t / c, sW = wg * t / c;
+        vec3  qf = vec3(-fract(sW), 0.0, fract(sV));
+        ivec3 qi = ivec3(-int(floor(sW)), 0, int(floor(sV)));
+        vec3  q  = (eyeR + dR * r) / c + qf;
+        ivec3 b  = ivec3(floor(q - 0.5));
+        for (int n = 0; n < 8; ++n) {
+            ivec3 cl = b + ivec3(n & 1, (n >> 1) & 1, n >> 2);
+            vec3  h  = tdRand3(cl + qi + ivec3(0, 0, 7919 * k)) * 0.5 + 0.5;
+            if (h.x > prob) continue;
+            vec3  h2 = tdRand3(cl + qi + ivec3(131, 7, 7919 * k + 3)) * 0.5 + 0.5;
+            bool  flake = h2.z < snowP;
+            vec3  ctr = (vec3(cl) + 0.2 + 0.6 * vec3(h.yz, h2.x) - qf) * c - eyeR;
+            float len = flake ? 0.01 : min(v / 25.0, 0.6 * c);
+            if (flake)                                                 // flakes flutter as they fall
+                ctr.xy += 0.25 * c * vec2(sin(t * (1.1 + h2.y) + 6.28 * h.y), cos(t * (0.9 + h.z) + 6.28 * h2.x));
+            vec3  q0 = ctr - F * (0.5 * len), u = F * len;
+            float a  = dot(u, u), bb = dot(u, dR), d0 = dot(u, q0), e = dot(dR, q0);
+            float sg = clamp((bb * e - d0) / max(a - bb * bb, 1e-9), 0.0, 1.0);
+            float tR = dot(q0 + u * sg, dR);
+            if (tR <= 0.1 || tR > tScene) continue;
+            sg = clamp(dot(dR * tR - q0, u) / max(a, 1e-9), 0.0, 1.0);
+            float dd = length(q0 + u * sg - dR * tR);
+            float rad = flake ? 0.004 : 0.0012;
+            float w  = max(tR * pixAng * 0.7, rad);
+            float g  = exp(-(dd * dd) / (w * w)) * sqrt(rad / w) * (0.6 + 0.4 * h2.y);
+            if (flake) Ls += g; else Lr += g;
+        }
     }
-    return m * mix(0.45, 1.0, rate);
+    return vec2(Lr + 1.6 * Ls, 1.6 * Ls);
 }
 
 void main() {
@@ -1451,14 +1487,17 @@ void main() {
         CV2Field fe = cv2FieldLow(cv2Pos(vec3(0.0), obsEffH, mat3(enuX, enuY, enuZ)), -1.0, 1.0);
         // The rain rate (fe.sigma is rate x curtain x 0.0012: a light shower ~0.2, a Cb core ~1) in
         // bursts. It used to saturate at half that, so every shower looked the same.
-        float rainEye = fe.rain * clamp(fe.sigma / 0.0012, 0.0, 1.0) * rainBurst(pc.waveTime);
+        float rainEye = fe.rain * clamp(fe.sigma / 0.0012, 0.0, 1.0) * rainBurst(cv2.precip.y);
+        vec2  drops   = vec2(0.0);
         if (rainEye > 0.0) {
+            vec3 dirE = dir.x * enuX + dir.y * enuY + dir.z * enuZ;
+            drops = rainDrops(dirE, rainEye, cv2.rain.w, tScene, 2.0 * tanHalfFov / float(size.y));
             vec3 lit = rc.rgb / max(1.0 - rc.a, 0.25) + vec3(0.003);
-            B_total += lit * rainStreaks(dir, pc.waveTime, cv2.rain.w, rainEye) * rainEye * cv2.rain.z * 0.9;
+            B_total += lit * drops.x * cv2.rain.z * 0.6;
         }
-        // Debug view 6: red = rain at the eye, green = the streak mask.
+        // Debug view 6: red = rain at the eye, green = the drop mask, blue = its snow share.
         if (int(cv2.shell.z + 0.5) == 6)
-            B_total = vec3(rainEye, rainStreaks(dir, pc.waveTime, cv2.rain.w, rainEye), 0.0) * 0.05;
+            B_total = vec3(rainEye, drops.x, drops.y) * 0.05;
     }
 
 

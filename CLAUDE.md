@@ -497,14 +497,23 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   350 ms frames over Anchorage (the user's profile; 3-4 ms after). Harness framing: `beams` / `beams go`
   (the site where beams converge NOW — a guessed time and site framed none three times), coverage forced to
   0 / up for clear / cloudy nights (harness_runs/cloud_v2_p10b.satcmd).
-- **Rain streaks** (cloud_march.comp `rainStreaks`): each (column, fall cycle) is its own drop (position,
-  length, presence hashed from both). A layer's drops all fall along one world direction F (fall speed +
-  0.4 x the wind, gusting slowly), so the streaks are laid out around F's vanishing point (columns of
-  constant angle about F): great circles, which project to straight lines. The first cut used azimuth
-  columns with an azimuth-dependent slant — streaks curved across the view. Density and brightness follow
-  the rain rate (`fe.sigma / 0.0012`, it used to saturate at half that) in ~6 s bursts (`rainBurst`).
-  `cloud_v2_march.comp` writes the same rate into `terrainFrame.w` (scene_depth.comp writes only .xyz);
-  the host reads it for the `rain` ambience driver (synth `rain`, layer `rain`).
+- **Rain / sleet / snow at the eye** (cloud_march.comp `rainDrops`, review 3, 2026-09-29): DROPS IN THE
+  WORLD — five depth layers (2..32 m) of a 3D lattice (cell 0.14 x the layer's depth) in a frame fixed to
+  the nearest 0.25-degree point (`cv2.rainE/N/U`: axes in ECEF, w = the eye's position in that frame from
+  double, wrapped to 1024 m; every cell divides it), falling (rain ~8 m/s, snow ~1.1) and drifting with the
+  ground wind (0.4 x the wind aloft, gusting); the 2x2x2 cells nearest the ray's point at each depth are
+  tested, so a drop is never cut at a cell edge. The rain RATE sets the probability that a cell holds a
+  drop (light rain = a few, heavy = many) — it used to scale their brightness. Each drop is a segment
+  v/25 s long (a flake: a fluttering dot), its energy spread over the pixel footprint. The fall time is
+  `cv2.precip.y` = sim time mod 600 s from double (a float time of day steps every 8 ms). It replaced
+  streaks in DIRECTION space (the old `rainStreaks`, around the fall direction's vanishing point), which
+  travelled with the eye. **Precipitation type**: `cv2.precip.x` = the air temperature at the eye
+  (`SatelliteSimCloudsV2.cpp`: -18 + 45 cos(lat)^1.5 at sea level, + 0.35 x |lat| x the season from the
+  Sun's declination in that hemisphere, - 6.5 C/km); snow below ~-1 C, rain above ~2.5 C, sleet (a mix
+  of drops and flakes) between. Only the eye's precipitation changes type — the distant rain curtains
+  are still rain. The `rain` ambience driver takes the liquid share (`cv2EyeTempC`). Rate in ~6 s bursts
+  (`rainBurst`); `cloud_v2_march.comp` writes the rate into `terrainFrame.w` (scene_depth.comp writes only
+  .xyz); the host reads it for the `rain` ambience driver (synth `rain`, layer `rain`).
 - **Per-layer scales (pass 10):** the shape period ("Shape period (m) - low cloud") no longer sets the
   cirrus fibres (`cv2CirrusPeriodM`, "Cirrus period") or the altocumulus (`anchorMid`, "Mid layer
   period"); the mid layer has its own density (`atmo.z`) and the anvils only "Anvils" (neither reads
@@ -582,7 +591,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   stretches every field read through it by its shear); "Flow warp" capped at 0.1. **Ground shadow**
   (`cloudGroundShadowV2`): starts 10 m up (on the sea the start point straddled the 0 m shell floor in
   float rounding: rings and lines of shadow around the nadir), reads the field at the step's footprint,
-  jittered. **Sun-colour cache** in the march refreshes on 800 m of altitude too (from inside the anvil
+  jittered; 20 steps through the lowest 3.5 km above the ground, then 12 through the rest (review 3: 24
+  even steps over the whole shell were ~600 m apart under a high Sun, so each pixel's jitter hit or
+  missed a 300-m deck — the shadow of a thin overcast was a grain of full shadow and none; +~0.8 ms). **Sun-colour cache** in the march refreshes on 800 m of altitude too (from inside the anvil
   a ray lit the cumulus 10 km below with the 12 km sunlight: clouds flipped gold to white with 1 km of
   eye altitude). **Night side**: the cloud's sky ambient fades over the Sun's first ~5 deg below the
   sample's horizon (`skyDusk`; skyZenithAt's six midpoints over-counted twilight). **Beam spots**: a
@@ -753,8 +764,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - **User feedback round (2026-09-29, after the sprint):**
   **Lightning** toned down (glow x2, bolts x60 in `lightningCS`; were x5 / x150). **Red sprites** (easter
   egg, "Lightning sprites (chance)" `lightning_sprites` 0.05, slot 191, `misc2.x`): a ground stroke may
-  set off a sprite ~75 km up (flash list kind 2, `spriteCS` in cloud_march.comp: a red head, 5-8
-  splayed, kinked tendrils to ~50 km shading to violet, ~0.1 s); thunder and the harness skip/label it.
+  set off a sprite ~75 km up (flash list kind 2, `spriteCS` in cloud_march.comp: a deep-red head,
+  8-13 tendrils to ~40-50 km, each forking twice as it falls and spreading out (`spriteSeg`), the tips
+  leaning violet, ~0.1 s; review 3 made it darker and branched — 5-8 unforked tendrils read as a comb); thunder and the harness skip/label it.
   **Cb columns**: "Cb fill" (`cb_fill` 0.5, slot 189, `column3.w`) — the share of lattice cells holding a
   tower at all (the user's sparsity ~0 put one in every cell: an even grid of columns); centres jitter
   over 0.15-0.85 of a cell (was 0.25-0.75), so the 2x2 search is exact to 0.65 cell and the 3x3 to 1.15
@@ -893,7 +905,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   clusters of offsets and its own bias — far clouds (long steps) showed 2x2 squares.
 - **The march**: steps grow with distance FROM THE SHELL ENTRY (and the max distance is measured from
   there — from orbit the Earth is further than the limit); the switch from coarse to fine steps lands
-  on a jittered lattice (without it a flat deck top drew contour rings around the nadir). A ray that runs out of budget (`misc.x`,
+  on a jittered lattice (without it a flat deck top drew contour rings around the nadir). When the back-up
+  to the fine lattice passes the segment start it restarts JITTERED there: clamped to the start itself,
+  every ray from inside a cloud or rain stepped one lattice from the eye (contour rings of the cloud base
+  looking up through rain, review 3). A ray that runs out of budget (`misc.x`,
   presets 160-640) is FILLED with the path's mean extinction and the cloud's mean colour, not left
   transparent (that was the horizon "seeing through" the clouds).
 - **Key light**: the Sun, or at night the Moon through the same light march (`misc.y` x `moonGain`);

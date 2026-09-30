@@ -107,6 +107,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  fog2;           // x dust scale height (m), y dust extinction (1/m), z debug view 11 (the resolve's
                           // adaptive-tile overlay; the march then sees view 0), w free
     vec4  sunE;           // xyz the Sun's direction, Earth-fixed (fog's burn-off), w free
+    vec4  rainE, rainN, rainU;  // the rain lattice's frame: xyz its axes (ECEF), w the eye in it (m, mod 1024)
+    vec4  precip;         // x the air temperature at the eye (deg C): rain / sleet / snow; y sim time mod 600 s
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

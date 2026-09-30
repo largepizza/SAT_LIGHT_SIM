@@ -1094,6 +1094,33 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                                                                -si.x * std::sin(g) + si.y * std::cos(g), si.z))),
                            std::max(cv2IceFogDensity, 0.0f));   // w: the ice fog's extinction
     }
+    {   // Rain / snow at the eye: a local frame fixed to the nearest 0.25-degree point (so the drops are
+        // world-fixed: walking moves through them), the eye's position in it in double, wrapped to 1024 m
+        // (every lattice cell divides it); and the air temperature at the eye — sea-level climate by
+        // latitude (-18 + 45 cos^1.5, ~27 C at the equator, ~9 at 45, ~-12 at 75), a season swing of
+        // 0.35 x |lat| following the Sun's declination in that hemisphere, 6.5 C per km of altitude.
+        const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+        const double lat = std::asin(std::clamp(up.z, -1.0, 1.0)), lon = std::atan2(up.y, up.x);
+        const double q = glm::radians(0.25);
+        const double latR = std::round(lat / q) * q, lonR = std::round(lon / q) * q;
+        const glm::dvec3 U0(std::cos(latR) * std::cos(lonR), std::cos(latR) * std::sin(lonR), std::sin(latR));
+        const glm::dvec3 E0 = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), U0));
+        const glm::dvec3 N0 = glm::cross(U0, E0);
+        const float ground = (terrainFrameMapped && (debugDisableMask & 1024u) == 0) ? terrainFrameMapped[1] : obsTerrainH;
+        const double eyeAsl = std::max((double)ground + 2.0, (double)obsHeightOffset);
+        const glm::dvec3 eye = up * (6371000.0 + eyeAsl);
+        auto wrap = [](double v) { v = std::fmod(v, 1024.0); return (float)(v < 0.0 ? v + 1024.0 : v); };
+        p.rainE = glm::vec4(glm::vec3(E0), wrap(glm::dot(eye, E0)));
+        p.rainN = glm::vec4(glm::vec3(N0), wrap(glm::dot(eye, N0)));
+        p.rainU = glm::vec4(glm::vec3(U0), wrap(glm::dot(eye, U0)));
+        const double latD = glm::degrees(lat);
+        const double sunDec = std::asin(std::clamp((double)glm::normalize(sunDirECI).z, -1.0, 1.0));
+        const double season = (sunDec / glm::radians(23.44)) * (latD >= 0.0 ? 1.0 : -1.0);   // +1 local midsummer
+        const double tC = -18.0 + 45.0 * std::pow(std::cos(lat), 1.5) + 0.35 * std::abs(latD) * season - 0.0065 * eyeAsl;
+        // y: sim time wrapped to 600 s in double (the drops' fall; a float time of day steps every 8 ms).
+        p.precip = glm::vec4((float)tC, (float)std::fmod(simSecInDay, 600.0), 0.0f, 0.0f);
+        cv2EyeTempC = (float)tC;
+    }
     const bool lowFloor = cv2RainAmount > 0.0f || p.fog.x > 0.0f || p.fog.w > 0.0f || p.fog2.w > 0.0f;   // they reach the ground
     p.shell = glm::vec4(lowFloor ? 0.0f : std::max(lo, 0.0f), hi, cv2DebugView == 11 ? 0.0f : (float)cv2DebugView,
                         cv2DetailLodStartM);

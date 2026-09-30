@@ -646,6 +646,11 @@ struct GpuCloudV2Params
     glm::vec4 fog;           // x fog amount, y fog depth (m), z fog extinction (1/m), w dust amount
     glm::vec4 fog2;          // x dust scale height (m), y dust extinction (1/m), zw free
     glm::vec4 sunE;          // xyz the Sun, Earth-fixed
+    // Rain / snow at the eye (review 3): a world-fixed drop lattice. rainE/N/U xyz = the axes of a local
+    // frame fixed to a 0.25-degree reference point (ECEF), w = the eye's position in it (m, wrapped to
+    // 1024, from double); precip x = the air temperature at the eye (deg C), y sim time mod 600 s, zw free.
+    glm::vec4 rainE, rainN, rainU;
+    glm::vec4 precip;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -653,7 +658,8 @@ static_assert(offsetof(GpuCloudV2Params, shell) == 256, "GpuCloudV2Params layout
 static_assert(offsetof(GpuCloudV2Params, types) == 288, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, cover) == 288 + 48 * kCloudV2Types, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, anchorMid) == 288 + 48 * kCloudV2Types + 176, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 416, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, rainE) == 288 + 48 * kCloudV2Types + 416, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 480, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -2790,7 +2796,8 @@ private:
     float cv2LightLenM = 2500.0f;      // light-march length
     float cv2LightSteps = 6.0f;
     float cv2LightLodFootprintM = 40.0f;  // past this pixel footprint (m) a 2-step light march; 0 = off
-    float cv2LightningRate = 3.0f;        // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
+    float cv2EyeTempC = 15.0f;            // the air temperature at the eye (deg C; rain / sleet / snow), per frame
+    float cv2LightningRate = 0.53f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
     float cv2LightningGlow = 1.0f;        // the flash's light in the cloud
     float cv2LightningBolt = 1.0f;        // the cloud-to-ground channels
     float cv2LightningSprites = 0.05f;    // chance a ground stroke sets off a red sprite 50-90 km up (0 = never)
@@ -2798,9 +2805,9 @@ private:
     float cv2EvoGrowth = 0.12f;           // ... and how much its coverage grows and decays (0 = none)
     float cv2EvoWindowH = 3.0f;           // ... each advected copy's window (h): the displacement's bound
     float cv2EvoDiurnal = 0.6f;           // afternoon convection over land (0 = none)
-    float cv2FogAmount = 0.6f;            // fog (cv2FogDust): how readily it forms (0 = none)
-    float cv2FogDepthM = 250.0f;          // ... its depth over the smoothed ground (valleys fill deeper)
-    float cv2FogDensity = 0.012f;         // ... its extinction (1/m; ~300 m visibility)
+    float cv2FogAmount = 0.26f;           // fog (cv2FogDust): how readily it forms (0 = none)
+    float cv2FogDepthM = 200.0f;          // ... its depth over the smoothed ground (valleys fill deeper)
+    float cv2FogDensity = 0.0013f;        // ... its extinction (1/m; ~2.3 km visibility)
     float cv2DustAmount = 0.5f;           // dust over dry land (0 = none)
     float cv2DustHeightM = 1500.0f;       // ... its scale height (m)
     float cv2IceFogAmount = 1.0f;         // ice fog / diamond dust over the ice sheets (0 = none), with ice optics
@@ -3677,11 +3684,11 @@ private:
     float terrainSkyLight = 1.0f;        // x the terrain's sky ambient (zenith integral x 0.4) — terrain v2 P1
     float terrainTextureStrength = 1.0f; // close-up material textures (terrain v2 P3)
     float cityLightsStrength = 1.0f;     // procedural city street lights (.plans/CITIES_PLAN.md)
-    float cityRoadsStrength = 1.0f;      // the major roads' share of them
-    float citySpriteGain = 1.0f;         // city lights as satellite point sprites (0 = off)
-    float citySpriteGround = 0.6f;       // the ground glitter's share kept where the sprites carry the light
-    float cityTwinkleRate = 1.0f;        // glitter + sprite scintillation rate (1 = 0.5-1.2 rad/s)
-    float citySpriteStartFootM = 25.0f;  // sprites begin where a pixel spans this much ground (m): far only
+    float cityRoadsStrength = 2.0f;      // the major roads' share of them
+    float citySpriteGain = 2.6f;         // city lights as satellite point sprites (0 = off)
+    float citySpriteGround = 0.083f;     // the ground glitter's share kept where the sprites carry the light
+    float cityTwinkleRate = 4.0f;        // glitter + sprite scintillation rate (1 = 0.5-1.2 rad/s)
+    float citySpriteStartFootM = 18.0f;  // sprites begin where a pixel spans this much ground (m): far only
     // The city light sprites take over where a pixel spans citySpriteStartFootM of ground (the ground's
     // own footprint, stretched at grazing angles — where its glitter points smear into blobs); nearer
     // lights are the ground's glitter alone: up close a point sprite read as a floating lantern (user
@@ -3701,7 +3708,7 @@ private:
         return citySpriteGain * cityLightsStrength
              * (1.0f - glm::smoothstep(100000.0f, 150000.0f, (float)obsHeightOffset));
     }
-    float terrainNightSkyLight = 0.25f;  // moonless night sky on the day albedo, fraction of the full Moon overhead
+    float terrainNightSkyLight = 0.2f;   // moonless night sky on the day albedo, fraction of the full Moon overhead
     int terrainDebugView = 0; // harness `debugview` only; not persisted
     // Cloud opacity scale (see GpuCloudParams::cloudOpacityScale) — multiplies the volumetric
     // cloud march's extinction-per-metre constant directly (and, since this same value also
