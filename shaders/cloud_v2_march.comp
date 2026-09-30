@@ -717,6 +717,9 @@ void main()
                     pSSv = mix(pSSv, moonIsKey ? phRainMoon : phRainSun, f.rain);
                 }
                 keyS = keyCol * powder * (pSSv * exp(-od) + pMS * msOctaves(od) * f.msBright);
+                // A solar eclipse: the Sun the observer sees past the Moon (uniform: the cloud in view is
+                // within the Moon's shadow's scale of the eye; 2026-09-30).
+                if (!moonIsKey && cloud.moonMisc.y > 0.5) keyS *= max(cloud.moonMisc.x, 0.02);
             }
 
             // ── Sky light from above, through the cloud above the sample, plus light from below. ──

@@ -1527,9 +1527,11 @@ struct GpuCloudParams
     glm::vec4 cityParams;    // x twinkle rate, y ground glitter share under the sprites, z sprite reach (m), w sprite start (ground m per pixel)
     glm::vec4 oceanState;    // xy world offset wrapped into the wave period (m), z sea state from weather, w whitecaps (736 -> 752)
     glm::vec4 auroraSheets;  // x strength, y spacing (deg), z crisp share, w folds (752 -> 768)
-    glm::vec4 taaJitter;     // xy sky TAA jitter (pixels), zw unused (768 -> 784)
+    glm::vec4 taaJitter;     // xy sky TAA jitter (pixels), z orbit grade weight, w unused (768 -> 784)
+    glm::vec4 moonCenter;    // xyz the Moon's centre from the Earth's, observer ENU (km); w its angular radius (rad)
+    glm::vec4 moonMisc;      // x Sun fraction the observer sees past the Moon, y solar / z lunar eclipse possible, w distance (km) (784 -> 816)
 };
-static_assert(sizeof(GpuCloudParams) == 784, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 816, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -3929,7 +3931,16 @@ private:
     float lightSamples = 2.4f;               // N_LIGHT: optDepth sun-side sub-march count
     float oceanSeaOctaves = 3.0f;            // seaMap() octave count (height-trace geometry)
     float oceanDetailOctaves = 5.0f;         // seaMapDetail() octave count (wave normal)
-    float orbitGrade = 1.0f;                // orbit colour grade (Atmosphere tab, slot 219; the Artemis II photos)
+    float orbitGrade = 1.0f;
+    // The Moon as a body (updatePositions): true topocentric position and size, eclipses.
+    float moonSizeScale = 1.0f;             // "Moon size (x real)" (Atmosphere tab, slot 220; the old disc was 3x)
+    double moonDistM = 3.844e8;
+    float moonAngR = 0.004578f;
+    glm::vec3 moonCenterENUkm{0.0f};
+    float moonEclipseSolarObs = 1.0f;
+    bool moonEclipseSolarPossible = false, moonEclipseLunarPossible = false;
+    glm::dvec3 moonGeoEciM(double t) const;
+    double findEclipse(bool solar, double t0) const;                // orbit colour grade (Atmosphere tab, slot 219; the Artemis II photos)
     float auroraSheetGain = 1.0f;           // aurora sheets (Atmosphere tab, slots 215-218): strength, 0 = off
     float auroraSheetSpacingDeg = 0.3f;     // colatitude between sheets
     float auroraSheetCrisp = 0.5f;          // share of crisp (thin) sheets
@@ -4434,7 +4445,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 220;
+    static constexpr int kCloudSliderSlots = 221;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

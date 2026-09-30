@@ -2674,6 +2674,27 @@ vec3 envMainEnuDir(vec3 d, vec3 enuX, vec3 enuY, vec3 enuZ)
 }
 #endif
 
+// ── The Moon as a body (2026-09-30) ───────────────────────────────────────────────────────────────
+// Fraction of a disc of angular radius a covered by one of radius b at separation d (radians).
+float discOverlapFrac(float a, float b, float d) {
+    if (d >= a + b) return 0.0;
+    if (d <= abs(b - a)) return b >= a ? 1.0 : (b * b) / (a * a);
+    float c1 = clamp((d * d + a * a - b * b) / (2.0 * d * a), -1.0, 1.0);
+    float c2 = clamp((d * d + b * b - a * a) / (2.0 * d * b), -1.0, 1.0);
+    float k  = max((-d + a + b) * (d + a - b) * (d - a + b) * (d + a + b), 0.0);
+    return (a * a * acos(c1) + b * b * acos(c2) - 0.5 * sqrt(k)) / (PI * a * a);
+}
+const float kSunAngR  = 0.0046542;
+const float kMoonRkm  = 1737.4;
+// The fraction of the Sun a point sees past the Moon (a solar eclipse): p = Earth-centred ENU, metres.
+float moonSunVisible(vec3 p, vec3 sunD) {
+    if (cloud.moonMisc.y < 0.5) return 1.0;
+    vec3  v  = cloud.moonCenter.xyz - p * 1e-3;                 // km
+    float dv = length(v);
+    float d  = acos(clamp(dot(v / dv, sunD), -1.0, 1.0));
+    return 1.0 - discOverlapFrac(kSunAngR, asin(min(kMoonRkm / dv, 1.0)), d);
+}
+
 void main() {
     // Runtime-tunable scattering strength — shadows the physical base constants (common.glsl)
     // with the user-facing "Rayleigh gain"/"Mie/haze gain" sliders, visible to every use of
@@ -3431,6 +3452,9 @@ void main() {
     }
 
     vec3 color = SUN_INTENSITY * (pR * BETA_R * accumR + vec3(pM * BETA_M * accumM));
+    // A solar eclipse dims the sky with the share of the Sun the observer sees (the air lit from outside the
+    // Moon's shadow keeps a floor: the horizon glow of totality).
+    if (cloud.moonMisc.y > 0.5) color *= max(cloud.moonMisc.x, 0.03);
     // Review 7: air in the Earth's shadow is lit by the twilight sky (the blue-grey of the Earth's shadow);
     // single scattering left it black, so at a low Sun the horizon on the side away from it was a dark band
     // (user snapshot 2). Isotropic in-scatter of half the zenith sky's radiance (the lower half-sphere is
@@ -3512,7 +3536,8 @@ void main() {
     // north pole with the physical lunar north pole as seen from the observer.
     // Tune this until the terminator's shadow boundary matches the image poles.
     const float kMoonTexRotDeg = 180.0;
-    const float kMoonAngR      = 0.004578 * 3.0;
+    // Its true topocentric angular radius (x "Moon size"; the CPU's ephemeris) — it was a fixed 3x disc.
+    float kMoonAngR = max(cloud.moonCenter.w, 1e-5);
     const float kMoonBright    = 0.54;
     // Set below on an actual ray-disc hit; used later to block the Milky Way skybox (and
     // nothing else — stars are culled per-vertex in star_point.vert) from showing through the
@@ -3543,13 +3568,14 @@ void main() {
             // Earthshine inversely follows moon phase: new moon (full Earth) = maximum.
             float earthshine = 0.0008 * mu * (1.0 - moonDirENU.w);
 
-            // Build the moon's local face frame: moonZ points toward the observer
-            // (tidally locked near side), moonX/moonY span the visible face plane.
+            // Build the moon's local face frame: moonZ points toward the EARTH'S CENTRE (tidally locked near
+            // side; 2026-09-30 — it pointed at the observer, so the face never turned: from deep space or behind
+            // the Moon the same disc image faced the camera). moonX/moonY span the near-side face plane.
             // refUp = celestial north pole in ENU: converts ECEF (0,0,1) to observer ENU
             // by dotting with the ENU basis vectors (enuX/Y/Z are in ECEF-space).
             // This correctly rotates the texture with parallactic angle as the observer
             // moves across Earth, instead of always aligning north with local zenith.
-            vec3 moonZ = -moonDir3;
+            vec3 moonZ = normalize(-cloud.moonCenter.xyz);
             vec3 northCelENU = vec3(enuX.z, enuY.z, enuZ.z);
             vec3 refUp = (abs(dot(northCelENU, moonZ)) < 0.99) ? northCelENU : vec3(1.0, 0.0, 0.0);
             vec3 moonX = normalize(cross(refUp, moonZ));
@@ -3568,6 +3594,25 @@ void main() {
                           sinR * uvc.x + cosR * uvc.y) + 0.5;
 
             vec3 texColor = texture(moonTex, moonUV).rgb;
+            // The far side (seen only from space): the texture is the near side's; mirrored through the face
+            // plane it would show the familiar maria, which the far side lacks — flattened toward its mean.
+            if (dot(n, moonZ) < 0.0)
+                texColor = mix(texColor, vec3(dot(texColor, vec3(0.2126, 0.7152, 0.0722))) * 1.15, 0.7);
+            // Lunar eclipse: the Earth's disc against the Sun's, seen from this point of the Moon (penumbra to
+            // umbra), and in the umbra the red light the Earth's atmosphere bends into its shadow.
+            float lunarLit = 1.0;
+            vec3  lunarRed = vec3(0.0);
+            if (cloud.moonMisc.z > 0.5) {
+                vec3  pM  = cloud.moonCenter.xyz + n * kMoonRkm;          // km, Earth-centred ENU
+                vec3  toE = -pM;
+                float dE  = length(toE);
+                vec3  sM  = normalize(sunDir * 1.496e8 - pM);            // the Sun from the Moon (0.15 deg of parallax)
+                float aE  = asin(min(6371.0 / dE, 1.0));
+                float th  = acos(clamp(dot(toE / dE, sM), -1.0, 1.0));
+                lunarLit  = 1.0 - discOverlapFrac(kSunAngR, aE, th);
+                float umb = smoothstep(aE - kSunAngR, 0.3 * aE, aE - th);
+                lunarRed  = vec3(1.0, 0.33, 0.12) * 0.025 * (1.0 - lunarLit) * mix(1.0, 0.45, umb);
+            }
 
             // Occluded by terrain OR by opaque cloud (tCloudOcclude, ≥90% opaque along this ray —
             // same threshold satellite/star depth occlusion uses below). Without the cloud term
@@ -3575,7 +3620,7 @@ void main() {
             // visibly intact even under a thick deck — the composite dims it but doesn't blank
             // the fine albedo detail the way a genuinely opaque cloud should.
             float discFade = (tSurface > 0.0 || tCloudOcclude >= 0.0) ? 0.0 : 1.0;
-            vec3 moonColor = texColor * (diffuse + earthshine) * limbDark * kMoonBright;
+            vec3 moonColor = texColor * (diffuse * lunarLit + earthshine + lunarRed * max(0.0, dot(n, sunDir) + 0.3)) * limbDark * kMoonBright;
             vec3 moonAttn  = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             color += discFade * moonColor * moonAttn;
         }
@@ -3670,6 +3715,7 @@ void main() {
         float dayFrac     = horizonGate;
         // directSun combines day/night blend for all sun-driven contributions.
         float directSun   = dayFrac;
+        directSun *= moonSunVisible(hitPt, sunDir);   // the Moon's shadow in a solar eclipse (2026-09-30)
         // ── Surface twilight gate ──────────────────────────────────────────────────────────────
         // Civil twilight runs until the Sun is 6 degrees below the horizon (sin = -0.105): the
         // ground is still visibly lit by the sky the whole way down, and the sky is at its most
@@ -5293,7 +5339,7 @@ void main() {
     // ── Sun disc + atmospheric corona ─────────────────────────────────────────
     if (sunDirENU.w > limbZ - 0.1) {
         float angle      = acos(clamp(cosA, -1.0, 1.0));
-        const float kSunAngR = 0.00466; // solar angular radius (~0.267°)
+        // (kSunAngR: the solar angular radius, ~0.267 deg — declared with the Moon helpers above main.)
         // Geometric fade: smooth transition as sun centre crosses the geometric limb.
         float geomFade   = smoothstep(limbZ - kSunAngR, limbZ + kSunAngR, sunDirENU.w);
         // Hard gate: terrain/ocean OR genuinely-opaque (>=90%) cloud on THIS fragment's own view
@@ -5305,8 +5351,15 @@ void main() {
         // attenuation either term got was `cloudBlock` (A_total's soft luminance dimming) below,
         // which fades but never reaches zero for real cloud, so it read as "doesn't occlude."
         float sunGate    = (tSurface > 0.0 || tCloudOcclude >= 0.0) ? 0.0 : 1.0;
+        // Solar eclipse (2026-09-30): near the Moon the disc takes its TRUE radius (it is drawn ~2x large for
+        // the glare) and is hidden where the Moon is; the glare and corona dim with the share of the Sun the
+        // observer still sees, and at totality the solar corona shows round the Moon's black disc.
+        float sepSM      = acos(clamp(dot(normalize(moonDirENU.xyz), sunDir), -1.0, 1.0));
+        float ek         = 1.0 - smoothstep(0.02, 0.035, sepSM);
+        float obsSunF    = mix(1.0, cloud.moonMisc.x, ek);
+        float r0 = mix(0.007, kSunAngR * 0.97, ek), r1 = mix(0.010, kSunAngR * 1.03, ek);
         // Disc pixel: hard-clipped by terrain/ocean/opaque-cloud hit for this fragment direction.
-        float discVis    = (1.0 - smoothstep(0.007, 0.010, angle)) * sunGate;
+        float discVis    = (1.0 - smoothstep(r0, r1, angle)) * sunGate * (moonDiscHit ? 0.0 : 1.0);
         // Sunset shift: redden and widen corona as sun approaches the limb.
         float sunsetT    = clamp(1.0 - (sunDirENU.w - limbZ) / 0.15, 0.0, 1.0);
         vec3  sunCol     = mix(vec3(1.5, 1.3, 1.0), vec3(1.8, 0.7, 0.2), sunsetT * 0.7);
@@ -5323,9 +5376,13 @@ void main() {
         // Remaining soft dimming (cloudBlock, A_total's luminance) still applies on top for thin/
         // translucent cloud the hard gate above doesn't trip on — a hazy, dimmed disc through mist
         // is correct; sunGate only handles the "actually opaque" case that dimming alone can't.
+        float tot = pow(1.0 - obsSunF, 6.0);                   // totality
+        float rays = 0.6 + 0.4 * sin(atan(dot(dir, cross(sunDir, vec3(0.0, 0.0, 1.0))), dot(dir, vec3(0.0, 0.0, 1.0))) * 7.0);
+        float solarCorona = tot * exp(-max(angle - kSunAngR, 0.0) / (0.5 * kSunAngR * rays)) * (moonDiscHit ? 0.0 : 1.0) * sunGate;
         color += (discVis * geomFade * sunCol
-                  + glare  * geomFade * sunCol
-                  + corona * geomFade * sunCol * 0.12) * cloudBlock;
+                  + glare  * geomFade * sunCol * obsSunF
+                  + corona * geomFade * sunCol * 0.12 * obsSunF
+                  + solarCorona * geomFade * vec3(0.9, 0.95, 1.0) * 0.03) * cloudBlock;
     }
 
     // ── Camera lens flares (post-tonemap) ─────────────────────────────────────
@@ -5407,6 +5464,9 @@ void main() {
     float tOcclude = (tHit >= 0.0) ? tHit : tSeaLvl;
     if (tOcclude < 0.0 && tCloudOcclude >= 0.0) tOcclude = tCloudOcclude;
     if (meshHit) tOcclude = (tOcclude >= 0.0) ? min(tOcclude, tMesh) : tMesh;
+    // The Moon at its distance (2026-09-30): stars and planets behind it are depth-occluded, satellites
+    // (nearer) draw in front.
+    if (tOcclude < 0.0 && moonDiscHit) tOcclude = cloud.moonMisc.w * 1000.0;
     gl_FragDepth = (tOcclude >= 0.0) ? sceneDepthFromDistance(tOcclude) : 1.0;
 #ifdef SKY_TAA
     outDepthCopy = (tOcclude >= 0.0) ? sceneDepthFromDistance(tOcclude) : 1.0;

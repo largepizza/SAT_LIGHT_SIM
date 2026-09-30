@@ -5253,6 +5253,8 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
         {"Sheet folds", &auroraSheetFold, 0.0f, 2.0f, 0.05f, "%.2f", 218},
         // 2026-09-30: the look of the Earth from space, fitted to the Artemis II photographs.
         {"Orbit colour grade", &orbitGrade, 0.0f, 1.0f, 0.05f, "%.2f", 219},
+        // 2026-09-30: the Moon is a body at its true distance; 1 = its real size (the old disc was 3x).
+        {"Moon size (x real)", &moonSizeScale, 0.25f, 4.0f, 0.05f, "%.2f", 220},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
@@ -6558,6 +6560,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         oceanSeaStateGain = c.value("ocean_sea_state", oceanSeaStateGain);
         auroraSheetGain = c.value("aurora_sheets", auroraSheetGain);
         orbitGrade = c.value("orbit_grade", orbitGrade);
+        moonSizeScale = c.value("moon_size", moonSizeScale);
         auroraSheetSpacingDeg = c.value("aurora_sheet_spacing_deg", auroraSheetSpacingDeg);
         auroraSheetCrisp = c.value("aurora_sheet_crisp", auroraSheetCrisp);
         auroraSheetFold = c.value("aurora_sheet_fold", auroraSheetFold);
@@ -6817,6 +6820,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ocean_sea_state", oceanSeaStateGain},
         {"aurora_sheets", auroraSheetGain},
         {"orbit_grade", orbitGrade},
+        {"moon_size", moonSizeScale},
         {"aurora_sheet_spacing_deg", auroraSheetSpacingDeg},
         {"aurora_sheet_crisp", auroraSheetCrisp},
         {"aurora_sheet_fold", auroraSheetFold},

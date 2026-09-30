@@ -1,0 +1,42 @@
+# 2026-09-30 the Moon as a body: true size and parallax, orientation, solar + lunar eclipses
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+eclipse lunar
+camera look moon
+camera fov=3
+wait settle
+capture l_mid
+time add -2700
+camera look moon
+wait settle
+capture l_partial
+time add -1500
+camera look moon
+wait settle
+capture l_penumbra
+time add -86400
+camera look moon
+wait settle
+capture l_fullmoon_day_before
+observer lat=0 lon=0 alt=350000000
+camera look moon
+camera fov=6
+wait settle
+capture moon_from_space
+eclipse solar
+camera look sun
+camera fov=3
+wait settle
+capture s_centre
+camera fov=70 el=10
+wait settle
+capture s_landscape
+time add -2400
+camera look sun
+camera fov=3
+wait settle
+capture s_partial
+quit

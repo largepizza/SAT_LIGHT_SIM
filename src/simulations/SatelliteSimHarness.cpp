@@ -967,6 +967,51 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
 
     // ── camera ──────────────────────────────────────────────────────────────────
+    // ── eclipse solar|lunar: the sim's next eclipse — time, the observer under the Moon, aimed at it ──
+    if (n == "eclipse")
+    {
+        const std::string kind = lower(pos(0));
+        if (kind != "solar" && kind != "lunar")
+            fail("eclipse: solar | lunar");
+        const bool solar = kind == "solar";
+        const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const double t = findEclipse(solar, now + 3600.0);
+        if (t < 0.0)
+            fail("eclipse: none found within 3 years");
+        const double days = std::floor(t / 86400.0);
+        simDayJ2000 = (int64_t)days;
+        simSecInDay = t - days * 86400.0;
+        trailClearPending = true;
+        // Lunar: the sub-lunar point. Solar: where the Sun -> Moon axis meets the Earth (the centre of the
+        // shadow), else the sub-lunar point. ECI -> ECEF: the sim's Earth rotation angle is kOmegaEarth t.
+        glm::dvec3 m = glm::normalize(moonGeoEciM(t));
+        if (solar)
+        {
+            const glm::dvec3 M = moonGeoEciM(t), d = -glm::normalize(sunDirEciAt(t));
+            const double R = 6371000.0, b = glm::dot(M, d), c = glm::dot(M, M) - R * R, disc = b * b - c;
+            if (disc > 0.0)
+                m = glm::normalize(M + d * (-b - std::sqrt(disc)));
+        }
+        const double th = satphot::kOmegaEarth * t, c = std::cos(th), s = std::sin(th);
+        const glm::dvec3 e(c * m.x + s * m.y, -s * m.x + c * m.y, m.z);
+        obsDir = glm::vec3(glm::normalize(e));
+        obsLatDeg = glm::degrees(std::asin((float)obsDir.z));
+        obsLonDeg = glm::degrees(std::atan2(obsDir.y, obsDir.x));
+        obsHeightOffset = 2.0f;
+        updatePositions(t, 0.0f);
+        const glm::vec3 tgt = glm::vec3(moonDirENU);
+        aimCameraAzEl(glm::degrees(std::atan2(tgt.x, tgt.y)), glm::degrees(std::asin(std::clamp(tgt.z, -1.0f, 1.0f))));
+        r["t_j2000"] = t;
+        r["lat_deg"] = obsLatDeg;
+        r["lon_deg"] = obsLonDeg;
+        r["sun_seen_fraction"] = moonEclipseSolarObs;
+        char buf[160];
+        snprintf(buf, sizeof(buf), "%s eclipse at j2000 %.0f s, observer %.2f, %.2f (Sun seen %.3f)", kind.c_str(), t,
+                 obsLatDeg, obsLonDeg, moonEclipseSolarObs);
+        r["message"] = buf;
+        return Status::Done;
+    }
+
     if (n == "camera")
     {
         const std::string sub = lower(pos(0));

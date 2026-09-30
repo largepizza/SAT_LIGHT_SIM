@@ -318,6 +318,23 @@ static constexpr KeplerElements kMoonElements{
 // Solves Kepler's equation and returns position in the J2000 mean-ecliptic frame, AU (heliocentric
 // for kEarthElements/kPlanetElements, geocentric for kMoonElements — the math doesn't care which,
 // only the caller's interpretation of the origin does). T = Julian centuries since J2000 TT.
+// Ecliptic (J2000 mean) -> equatorial ECI, the same obliquity rotation the Sun and planets use.
+static glm::dvec3 moonDirEclGeoToEci(const glm::dvec3 &v, double epsR)
+{
+    return {v.x, v.y * cos(epsR) - v.z * sin(epsR), v.y * sin(epsR) + v.z * cos(epsR)};
+}
+// Fraction of a disc of angular radius a covered by a disc of radius b at separation d (radians).
+static double discOverlapFrac(double a, double b, double d)
+{
+    if (d >= a + b) return 0.0;
+    if (d <= std::abs(b - a)) return b >= a ? 1.0 : (b * b) / (a * a);
+    const double pi = 3.14159265358979;
+    const double c1 = std::clamp((d * d + a * a - b * b) / (2.0 * d * a), -1.0, 1.0);
+    const double c2 = std::clamp((d * d + b * b - a * a) / (2.0 * d * b), -1.0, 1.0);
+    const double k = std::max((-d + a + b) * (d + a - b) * (d - a + b) * (d + a + b), 0.0);
+    return (a * a * std::acos(c1) + b * b * std::acos(c2) - 0.5 * std::sqrt(k)) / (pi * a * a);
+}
+
 static glm::dvec3 keplerEclipticPos(const KeplerElements &el, double T)
 {
     double a = el.a0 + el.aDot * T;
@@ -2320,6 +2337,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                       oceanSeaStateGain, oceanWhitecapGain);
         }
         cp.auroraSheets = glm::vec4(auroraSheetGain, auroraSheetSpacingDeg, auroraSheetCrisp, auroraSheetFold);
+        cp.moonCenter = glm::vec4(moonCenterENUkm, moonAngR);
+        cp.moonMisc = glm::vec4(moonEclipseSolarObs, moonEclipseSolarPossible ? 1.0f : 0.0f,
+                                moonEclipseLunarPossible ? 1.0f : 0.0f, (float)(moonDistM * 1e-3));
         {
             // Sky TAA jitter: Halton (2, 3), 8 samples, in pixels about the centre. Only the -DSKY_TAA
             // variant reads it; decided with the same test recordPrePass uses this frame.
@@ -5474,7 +5494,7 @@ PointDrawPC SatelliteSim::buildPointDrawPC(VulkanContext &ctx)
     pc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
     pc.waveTime = simSecInDay * 1.0f;
     pc.noTwinkle = 0.0f;
-    pc.moonDirENU = moonDirENU;
+    pc.moonDirENU = glm::vec4(glm::vec3(moonDirENU), moonAngR);   // w: the Moon's angular radius (star cull)
     pc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
     pc.screenSizePx = glm::vec2((float)ctx.swapExtent.width, (float)ctx.swapExtent.height);
     pc.debugDisableMask = debugDisableMask;
@@ -10924,6 +10944,48 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
     return true;
 }
 
+// ─── Eclipses (harness `eclipse`; 2026-09-30) ──────────────────────────────────────────────────────
+// The Moon's geocentric ECI position (m) at sim time t (s since J2000), the same ellipse updatePositions uses.
+glm::dvec3 SatelliteSim::moonGeoEciM(double t) const
+{
+    const double dJ = t / 86400.0;
+    const double epsR = (23.439 - 0.0000004 * dJ) * (glm::pi<double>() / 180.0);
+    return moonDirEclGeoToEci(keplerEclipticPos(kMoonElements, dJ / 36525.0), epsR) * 1.495978707e11;
+}
+// The next time after t0 (within ~3 years) when the Moon passes closest to the Sun (solar) or to the
+// antisolar point (lunar), if that pass is close enough for an eclipse; -1 if none. This ephemeris is a
+// two-body Moon (a few degrees off the real one), so these are the SIM's eclipses, not the real dates.
+double SatelliteSim::findEclipse(bool solar, double t0) const
+{
+    auto sep = [&](double t) {
+        const glm::dvec3 m = glm::normalize(moonGeoEciM(t));
+        glm::dvec3 s = glm::normalize(sunDirEciAt(t));
+        if (!solar) s = -s;
+        return std::acos(std::clamp(glm::dot(m, s), -1.0, 1.0));
+    };
+    const double lim = glm::radians(solar ? 0.55 : 0.6);
+    double prev2 = sep(t0), prev = sep(t0 + 3600.0);
+    for (double t = t0 + 7200.0; t < t0 + 3.0 * 365.25 * 86400.0; t += 3600.0)
+    {
+        const double cur = sep(t);
+        if (prev < prev2 && prev < cur && prev < glm::radians(3.0))
+        {
+            double lo = t - 7200.0, hi = t;                    // refine the minimum (golden section)
+            for (int i = 0; i < 40; ++i)
+            {
+                const double a = lo + 0.382 * (hi - lo), b = lo + 0.618 * (hi - lo);
+                if (sep(a) < sep(b)) hi = b; else lo = a;
+            }
+            const double tm = 0.5 * (lo + hi);
+            if (sep(tm) < lim)
+                return tm;
+        }
+        prev2 = prev;
+        prev = cur;
+    }
+    return -1.0;
+}
+
 // ─── createDrawPipeline ───────────────────────────────────────────────────────
 void SatelliteSim::createDrawPipeline(VulkanContext &ctx)
 {
@@ -13802,15 +13864,34 @@ void SatelliteSim::updatePositions(double t, float dt)
         moonDirEcl.y * sin(epsR) + moonDirEcl.z * cos(epsR)};
     moonDirECI = glm::normalize(glm::vec3(moonDirEciD));
 
-    // Moon in ENU
-    glm::vec3 moonENU_local{
-        glm::dot(moonDirECI, east),
-        glm::dot(moonDirECI, north),
-        glm::dot(moonDirECI, up)};
     // Illuminated fraction = (1 − dot(sunDir, moonDir)) / 2
     // Full moon when moon is opposite the sun; new moon when aligned.
     float moonIllum = (1.0f - glm::dot(sunDirECI, moonDirECI)) * 0.5f;
-    moonDirENU = glm::vec4(moonENU_local, moonIllum);
+    // ── The Moon as a body (2026-09-30, the user: "make the moon real ... an actual 3D object") ──
+    // Its true geocentric position (the ellipse above, in metres) seen from the OBSERVER: topocentric
+    // direction (up to ~1 degree of parallax from the ground, far more from deep space), true angular
+    // radius (x "Moon size"; it was a fixed 3x-enlarged disc at infinity), and the Earth-centred position in
+    // the observer's ENU (km) for the shader's tidally locked orientation and both kinds of eclipse.
+    {
+        constexpr double kAU = 1.495978707e11, kMoonR = 1737400.0, kSunAngR = 0.0046542;
+        const glm::dvec3 mE = moonDirEclGeoToEci(moonGeoEcl, epsR) * kAU;       // geocentric ECI, m
+        const glm::dvec3 topo = mE - glm::dvec3(obsECI);
+        const double dM = glm::length(topo);
+        const glm::dvec3 tDir = topo / dM;
+        const glm::dvec3 e(east), n(north), u(up);
+        moonDirENU = glm::vec4((float)glm::dot(tDir, e), (float)glm::dot(tDir, n), (float)glm::dot(tDir, u), moonIllum);
+        moonDistM = dM;
+        moonAngR = (float)(std::asin(std::min(kMoonR / dM, 1.0)) * std::clamp((double)moonSizeScale, 0.25, 6.0));
+        moonCenterENUkm = glm::vec3((float)(glm::dot(mE, e) * 1e-3), (float)(glm::dot(mE, n) * 1e-3), (float)(glm::dot(mE, u) * 1e-3));
+        // Eclipses: the fraction of the Sun's disc the observer sees past the Moon (solar), and whether
+        // either kind is possible at all this frame (the shader skips the per-pixel work otherwise).
+        const glm::dvec3 sE = glm::normalize(glm::dvec3(sunDirECI));
+        const double sep = std::acos(std::clamp(glm::dot(tDir, sE), -1.0, 1.0));
+        moonEclipseSolarObs = (float)(1.0 - discOverlapFrac(kSunAngR, std::asin(std::min(kMoonR / dM, 1.0)), sep));
+        const double sepGeo = std::acos(std::clamp(glm::dot(glm::normalize(mE), sE), -1.0, 1.0));
+        moonEclipseSolarPossible = sepGeo < glm::radians(2.0);                 // the Moon near the Sun
+        moonEclipseLunarPossible = sepGeo > glm::radians(177.5);               // near the antisolar point
+    }
 
     // ── Planets (Mercury..Uranus): heliocentric Keplerian ephemeris ──────────────────────────
     // Same Tcent, same epsR obliquity rotation the Moon/Sun above use. See kPlanetElements'

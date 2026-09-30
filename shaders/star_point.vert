@@ -48,7 +48,8 @@ void main() {
     vec3 cam = (pc.skyView * vec4(sat.skyDir, 0.0)).xyz;
 
     // Cull stars that fall within the Moon's angular disc — see kMoonAngR comment above.
-    bool behindMoon = dot(sat.skyDir, normalize(pc.moonDirENU.xyz)) > cos(kMoonAngR);
+    // The Moon's real angular radius rides in moonDirENU.w (2026-09-30: a body at its true distance).
+    bool behindMoon = dot(sat.skyDir, normalize(pc.moonDirENU.xyz)) > cos(max(pc.moonDirENU.w, 1e-5));
 
     if (sat.flareIntensity <= 0.0 || cam.z >= -0.001 || behindMoon) {
         gl_Position  = vec4(0.0, 0.0, 2.0, 1.0);
