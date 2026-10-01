@@ -4135,7 +4135,7 @@ private:
     float  cineSavedFullRateKm_ = 0.0f, cineSavedSparse_ = 0.0f;
     float  cineSavedPointSigma_ = 0.0f, cineSavedPointMax_ = 0.0f, cineSavedGlare_ = 0.0f;
     std::string cineOutDir_, cineStatus_;
-    float  cineScrub_ = 0.0f, cineExportFps_ = 30.0f, cineSimRateUi_ = 1.0f;
+    float  cineScrub_ = 0.0f, cineExportFps_ = 30.0f, cineSimRateUi_ = 1.0f, cineEaseUi_ = 0.5f;
     bool   cineHqSettingsSaved_ = false;
     WindowChrome cineChrome;
     bool   hovCineClose = false, hovCineBtn[40] = {}, hovTimeCine = false, hovCineKey[24][5] = {}, hovCineFile[8] = {};

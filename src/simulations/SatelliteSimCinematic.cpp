@@ -143,7 +143,21 @@ void SatelliteSim::cineApplyAt(double t, bool force)
         skyTaaHistValid = false;
         cv2HistoryValid = false;
     }
-    CineKey k = cineEval(shot.keys, local);
+    // Ease in / out over the shot (its time remapped, so the camera starts and stops gently; sim time follows
+    // the shot's real time, not the eased one).
+    const double t0 = shot.keys.front().t, dur = shot.duration();
+    double camLocal = local;
+    if (dur > 0.0 && shot.ease > 0.0)
+    {
+        const double u = std::clamp((local - t0) / dur, 0.0, 1.0);
+        camLocal = t0 + dur * (u + shot.ease * (u * u * (3.0 - 2.0 * u) - u));
+    }
+    CineKey k = cineEval(shot.keys, camLocal);
+    {
+        const CineKey ks = cineEval(shot.keys, local);   // sim time on the un-eased clock
+        k.hasSim = ks.hasSim;
+        k.simT = ks.simT;
+    }
     if (!k.hasSim)
     {
         k.hasSim = true;

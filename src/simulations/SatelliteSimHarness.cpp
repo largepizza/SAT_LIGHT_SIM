@@ -2015,6 +2015,11 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 if (cine_.shots[cineShot_].followSat >= 0 && !followActive)
                     fail("cine shot follow: that satellite has no geometry model");
             }
+            else if (what == "ease")
+            {
+                cineKeys();
+                cine_.shots[cineShot_].ease = std::clamp(parseNum(pos(2), "cine shot ease"), 0.0, 1.0);
+            }
             else if (what == "simnow")
             {
                 cineKeys();
@@ -2024,7 +2029,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             else if (!what.empty() && isdigit((unsigned char)what[0]))
                 cineShot_ = std::clamp((int)parseNum(what, "cine shot") - 1, 0, std::max(0, (int)cine_.shots.size() - 1));
             else
-                fail("cine shot: add [name] | del | <n> (1-based) | look [clear] | simrate <x> | simnow | follow <sel|off|index>");
+                fail("cine shot: add [name] | del | <n> (1-based) | look [clear] | simrate <x> | simnow | follow <sel|off|index> | ease <0-1>");
             cineKeys();
             r["shot"] = cineShot_ + 1;
             r["shots"] = shotJson();

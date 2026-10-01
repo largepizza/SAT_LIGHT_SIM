@@ -195,6 +195,7 @@ button in the time bar): a cinematic is a list of SHOTS, each a spline through k
 | `cine shot add [name]` / `del` / `<n>` | add a shot (made current; its sim time starts now) / delete / select (1-based) |
 | `cine shot look [clear]` | store the current look with the shot (clouds, clouds_v2, photometry, constellations, planets, render settings) — applied at its cut |
 | `cine shot follow <sel\|index\|off>` | the shot rides with a satellite (follow mode, aimed at it): its keys are the camera's OFFSET in the satellite's frame — frame each with `follow offset=along,cross,radial` then `cine key` |
+| `cine shot ease <0-1>` | ease in/out over the shot (0.5 default: the camera starts and stops gently; sim time is not eased) |
 | `cine shot simrate <x>`, `cine shot simnow` | sim time rate along the shot (0 = frozen) / its start = now |
 | `cine key [t=]` | the current view as a key (2 s after the last by default) |
 | `cine play [shot]` | real-time playback (the whole cinematic, or the current shot) |

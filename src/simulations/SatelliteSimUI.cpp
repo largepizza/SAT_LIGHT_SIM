@@ -6120,6 +6120,9 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                 cineSimRateUi_ = (float)S.simRate;
                 if (slider(0, "Sim time rate (x)", cineSimRateUi_, 0.0f, 600.0f, 1.0f, "%.0f"))
                     S.simRate = cineSimRateUi_;
+                cineEaseUi_ = (float)S.ease;
+                if (slider(5, "Ease in / out", cineEaseUi_, 0.0f, 1.0f, 0.05f, "%.2f"))
+                    S.ease = cineEaseUi_;
 
                 // Transport
                 const float shotDur = (float)S.duration();

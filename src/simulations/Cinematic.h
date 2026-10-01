@@ -27,6 +27,8 @@ struct CineShot
     bool simStartValid = false;
     double simStart = 0.0;
     double simRate = 1.0;
+    double ease = 0.5;                                          // 0 = constant speed through the ends, 1 = the shot
+                                                                // eases in and out (smoothstep of its time)
     nlohmann::json settings;                                    // null = leave the settings alone
     // The cloud map's drift (session state, like a snapshot's view): with the look, so a shot reloaded in another
     // session shows the same clouds. Stored with "Store look" / `cine shot look`.

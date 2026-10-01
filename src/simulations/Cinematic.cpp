@@ -99,6 +99,7 @@ nlohmann::json cineToJson(const Cinematic &c)
         nlohmann::json js;
         js["name"] = s.name;
         js["sim_rate"] = s.simRate;
+        js["ease"] = s.ease;
         if (s.simStartValid)
             js["sim_start_j2000_s"] = s.simStart;
         if (!s.settings.is_null())
@@ -135,6 +136,7 @@ bool cineFromJson(const nlohmann::json &j, Cinematic &c, std::string &err)
             CineShot s;
             s.name = js.value("name", std::string());
             s.simRate = js.value("sim_rate", 1.0);
+            s.ease = std::clamp(js.value("ease", 0.0), 0.0, 1.0);
             if (js.contains("sim_start_j2000_s"))
             {
                 s.simStartValid = true;
