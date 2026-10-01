@@ -1013,7 +1013,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.rain = glm::vec4(cv2RainAmount, cv2OpticsGain, cv2RainStreaks, cv2WindMps); // w: the streaks' wind
     // w: a beam's intensity (sat_orbit.comp: 1361 x area x F x cos x beamGain) back to its reflecting
     // area, so the shaders can light with the physical irradiance (area / the spot's area, in Suns).
-    p.beam = glm::vec4(std::max(cv2BeamShafts, 0.0f), std::max(cv2BeamHaze, 0.0f), std::max(cv2BeamLight, 0.0f),
+    p.beam = glm::vec4(std::max(cv2BeamShafts, 0.0f), std::max(cv2BeamHaze, 0.0f), std::max(cv2BeamLight, 0.0f) * (exposurePhysical() ? 1.0f / 32.0f : 1.0f),   // 32 = its tuned x-physical (review 11)
                        beamGain > 0.0f ? 1.0f / (1361.0f * beamGain) : 0.0f);
     p.anchorMid = anchor(std::clamp((double)cv2MidPeriodM, 500.0, 60000.0), 1.0);
     p.atmo = glm::vec4(std::max(cv2CloudSunRayleigh, 0.0f), std::max(cv2TwilightSky, 0.0f),

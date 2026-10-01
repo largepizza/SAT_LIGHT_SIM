@@ -952,8 +952,10 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
     float moonBrightAurora = tmAurora * tmAurora * moonDirENU.w;
     const float kAuroraMoonMaxDim = 0.85;
 
-    float auroraVisSuppress = darkSkyVis(auroraObjMag, auroraSkyBgMag)
-                             * (1.0 - moonBrightAurora * kAuroraMoonMaxDim);
+    // Real brightness (review 11): no visibility gate in the physical modes — skyglow and moonlight hide a faint
+    // aurora by contrast (the eye mode's threshold where the eye would lose it).
+    float auroraVisSuppress = cloud.expoPhys.y > 0.5 ? 1.0
+                            : darkSkyVis(auroraObjMag, auroraSkyBgMag) * (1.0 - moonBrightAurora * kAuroraMoonMaxDim);
 
     // Atmospheric extinction along THIS ray (atmosphere.glsl), to infinity — the aurora sits above
     // the air. From orbit a horizon-grazing ray still crosses a long real column; from the ground
@@ -1751,6 +1753,7 @@ void main() {
             rc = mix(rc, tent * (1.0 / 16.0), kE);
         }
     }
+    rc.rgb *= 1.0 / kCloudRadPre;   // the v2 targets hold radiance x kCloudRadPre (common.glsl); sim units here
     // Review 10 (2026-09-30): a texel with cloud but NO distance (the resolve blended history's cloud into a
     // texel whose own sample found none: rd.x = 0) takes its neighbours' opacity-weighted cloud distance.
     // The sky pass skipped it and split the air at the gap texels' distance beside it (the thin cirrus, a
@@ -1776,7 +1779,7 @@ void main() {
 
     vec3  A_total = A_cirrus * A_cloud;
     vec3  B_total = B_cirrus * A_cloud + B_cloud;
-    B_total += lightningCS(obsPos, dir, tCloudMeanT, rc.a, tScene, 2.0 * tanHalfFov / float(size.y));
+    B_total += lightningCS(obsPos, dir, tCloudMeanT, rc.a, tScene, 2.0 * tanHalfFov / float(size.y)) * cloud.expoPhys.x;
 
     // Rain at the eye: the same field at the observer (cv2FieldLow's rain branch). Streaks lit like
     // the cloud they fall from (its own radiance), over whatever the ray shows.
@@ -2159,6 +2162,6 @@ void main() {
     // their occlusion is unchanged.
     float occKm = (tCloudOcclude >= 0.0) ? max(tCloudOcclude, (tCloudMeanT < kNoSurfaceT) ? tCloudMeanT : 0.0) * 0.001
                 : -((tCloudMeanT < kNoSurfaceT) ? tCloudMeanT * 0.001 : 60000.0);
-    imageStore(targetA, coord, vec4(B_total, occKm));
+    imageStore(targetA, coord, vec4(B_total * kCloudRadPre, occKm));
     imageStore(targetB, coord, vec4(A_total, terrainSunT));
 }

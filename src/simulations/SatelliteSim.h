@@ -488,7 +488,7 @@ struct SatFlarePC
                            // why that moved to the lightDomeBuf SSBO instead of push-constant space)
     float moonSuppression; // sky background suppression ratio from moonlight (mirrors daySuppression's
                            // role, much smaller in practice — moon is ~14 magnitudes dimmer than the sun)
-    float pad0;            // reserved — pads moonDirECI to 16-byte (vec3) alignment
+    float fluxScale;       // review 11: > 0 = real brightness (SatelliteSim::pointFluxScale); 0 = legacy
     glm::vec3 moonDirECI;  // unit vector from Earth toward Moon in ECI
     float sunRefIntensity; // was pad1 — S3 (RELEASE_v1_1_PLAN.md): soft ceiling reference so no
                            // satellite's effectFlare can render brighter than the sun; mirrors
@@ -1530,8 +1530,9 @@ struct GpuCloudParams
     glm::vec4 taaJitter;     // xy sky TAA jitter (pixels), z orbit grade weight, w unused (768 -> 784)
     glm::vec4 moonCenter;    // xyz the Moon's centre from the Earth's, observer ENU (km); w its angular radius (rad)
     glm::vec4 moonMisc;      // x Sun fraction the observer sees past the Moon, y solar / z lunar eclipse possible, w distance (km) (784 -> 816)
+    glm::vec4 expoPhys;      // x night sources' scale, y physical (1) / legacy (0), z kCdPerSimUnit, w pointFluxScale (816 -> 832)
 };
-static_assert(sizeof(GpuCloudParams) == 816, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 832, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -2919,8 +2920,109 @@ private:
     // Milky Way / zodiacal light scale with it. Auto exposure only DARKENS, and only by day: the night
     // exposures were tuned by hand and stay put.
     float autoExposureEV = 0.0f;       // runtime: the metered offset (<= 0), eased
+    // ── Exposure (review 11, SatelliteSimExposure.cpp): real brightness and metering ──
+    // One exposure for the whole frame, E = the multiplier from scene radiance (the sky's units: pi x radiance
+    // per unit solar irradiance, kCdPerSimUnit cd/m2 each) to the tone curve's input, set from an EV100:
+    // E = 1.6 x kCdPerSimUnit / 2^EV100 (the metered average lands at ~0.18 display-linear). Modes:
+    //   Manual   - the user's EV100 (+/- buttons in the status bar, 1/3 stop)
+    //   Auto     - the HDR histogram meter (sky_tonemap.comp) + a key compensation that keeps night dark
+    //   HDR full - auto + local adaptation (everything readable; where artistic visibility lives)
+    //   HDR eye  - auto within an eye's adaptation range and speed, + local adaptation
+    //   Legacy   - the old EXPOSURE_NIGHT/DAY ramp on the Sun's elevation (harness A/B only)
+    // Auto / HDR take the status bar's +/- as an exposure shift (cv2ExposureEV, stops brighter).
+    enum ExposureMode : int { ExpManual = 0, ExpAuto = 1, ExpHdrFull = 2, ExpHdrEye = 3, ExpLegacy = 4 };
+    static constexpr float kCdPerSimUnit = 40744.0f;   // the TOA Sun's 128 klx / pi: a white Lambertian face at 1
+    int exposureMode = ExpAuto;
+    float exposureManualEV100 = 15.0f;
+    float exposureEV100 = 15.0f;         // runtime: this frame's EV100 (eased in the metered modes)
+    float exposureMeterEV100 = 15.0f;    // runtime: the scene's metered EV100 (before key and shift)
+    bool  exposureMeterValid = false;
+    float exposureE = 1.8f;              // runtime: this frame's multiplier (UBO exposureScale)
+    float exposurePrevE = 1.8f;          // last frame's (the sky TAA rescales its history by the ratio)
+    float exposureLegacyE() const;       // the old day/night ramp x 2^cv2ExposureEV
+    static float exposureEFromEV100(float ev) { return 1.6f * kCdPerSimUnit / exp2f(ev); }
+    static float exposureEV100FromE(float e) { return log2f(1.6f * kCdPerSimUnit / std::max(e, 1e-30f)); }
+    void updateExposure(float dt);       // start of frame: mode -> exposureEV100 / exposureE
+    // Real brightness: every mode but Legacy renders the night sources at their real radiance. They were all
+    // tuned ~2400x bright for the old fixed night exposure (the Moon: moonGain 0.0053 vs its physical 2.2e-6
+    // of the Sun; measured the same on moonlit ground, city light, city sky glow and aurora — review 11).
+    static constexpr float kPhysNightScale = 1.0f / 2400.0f;
+    bool exposurePhysical() const { return exposureMode != ExpLegacy; }
+    float physNightScale() const { return exposurePhysical() ? kPhysNightScale : 1.0f; }
+    // The point sources' flux relative to the exposure their style (pointRefMag 1.5) was tuned at: a physical
+    // night at E ~ 35000 (refMag 1.5 is where a Gaussian of pointSigmaPx peaks at 1 for a 60-deg, 1600-px view).
+    static constexpr float kPointRefE = 35000.0f;
+    float pointFluxScale() const { return exposurePhysical() ? exposureE / kPointRefE : 1.0f; }
+    static const char *exposureModeKey(int m)
+    {
+        static const char *k[] = {"manual", "auto", "hdr", "eye", "legacy"};
+        return k[std::clamp(m, 0, 4)];
+    }
+    static const char *exposureModeLabel(int m)
+    {
+        static const char *k[] = {"MAN", "AUTO", "HDR", "EYE", "OLD"};
+        return k[std::clamp(m, 0, 4)];
+    }
+    // The meter's histogram (sky_tonemap.comp): 128 bins of 0.5 EV of log2(scene luminance, sim units).
+    static constexpr int kExpHistBins = 128;
+    static constexpr float kExpHistMinLog2 = -44.0f, kExpHistBinsPerEV = 2.0f;
+    uint32_t expHist[kExpHistBins] = {};
+    bool expHistFresh = false;           // a histogram arrived this frame (HDR path or the display fallback)
+    float expMeterLoEV = 0.0f, expMeterHiEV = 0.0f;   // last reading's window (harness `state`)
+    bool meterFromHdr = false;           // the last histogram came from the HDR path
+    // Status bar exposure controls (SatelliteSimUI.cpp buildHUD): mode cycle, -, value, +.
+    bool hovExpMode = false, hovExpMinus = false, hovExpPlus = false;
+    char expValueStr[24] = {};
+    void cycleExposureMode();
+    void stepExposure(int dir);          // +1 = a third of a stop brighter
+    float meterLastE = 1.8f;             // the exposure the display-readback fallback's frame was rendered with
+    void readExposureHistogram();        // after the fence: the HDR path's histogram, if one was recorded
+    bool meterEV100FromHistogram(float &ev) const;
+    // The tone pass (sky_tonemap.comp), part of the sky TAA resources (swapchain-sized).
+    VkImage skyLdrImg = VK_NULL_HANDLE;
+    VkDeviceMemory skyLdrMem = VK_NULL_HANDLE;
+    VkImageView skyLdrView = VK_NULL_HANDLE;
+    VkBuffer expHistBuf = VK_NULL_HANDLE, expHistReadBuf = VK_NULL_HANDLE;
+    VkDeviceMemory expHistMem = VK_NULL_HANDLE, expHistReadMem = VK_NULL_HANDLE;
+    void *expHistMapped = nullptr;
+    bool expHistPending = false;
+    // The meter + local adaptation pass (sky_lum.comp): one R32F texel per 16x16 cell, and its blur.
+    VkImage lumCellImg = VK_NULL_HANDLE, lumBlurImg = VK_NULL_HANDLE;
+    VkDeviceMemory lumCellMem = VK_NULL_HANDLE, lumBlurMem = VK_NULL_HANDLE;
+    VkImageView lumCellView = VK_NULL_HANDLE, lumBlurView = VK_NULL_HANDLE;
+    uint32_t lumCellW = 0, lumCellH = 0;
+    VkSampler lumLinearSampler = VK_NULL_HANDLE;
+    VkDescriptorSetLayout skyLumLayout = VK_NULL_HANDLE;
+    VkDescriptorSet skyLumSet[2] = {};
+    VkPipelineLayout skyLumPipeLayout = VK_NULL_HANDLE;
+    VkPipeline skyLumPipeline = VK_NULL_HANDLE;
+    // The HDR modes (sky_tonemap.comp): local adaptation strength (0..1) and its limit in stops; the eye's
+    // night vision (rod desaturation) share. Settings display.exposure_hdr_strength / _eye_strength / _eye_night.
+    float hdrLocalStrength = 0.6f, hdrLocalMaxStops = 5.0f;
+    float eyeLocalStrength = 0.35f, eyeLocalMaxStops = 2.5f, eyeNightVision = 1.0f;
+    VkDescriptorSetLayout skyToneLayout = VK_NULL_HANDLE;
+    VkDescriptorPool skyTonePool = VK_NULL_HANDLE;
+    VkDescriptorSet skyToneSet[2] = {};
+    VkPipelineLayout skyTonePipeLayout = VK_NULL_HANDLE;
+    VkPipeline skyTonePipeline = VK_NULL_HANDLE;
+    void createSkyToneResources(VulkanContext &ctx);
+    void destroySkyToneResources(VkDevice device);
+    void recordSkyTone(VkCommandBuffer cmd, VulkanContext &ctx, int histIdx);
+    // Harness `radiance x y [size]`: the resolved HDR frame's mean over a square, read back next frame.
+    VkBuffer radianceReadBuf = VK_NULL_HANDLE;
+    VkDeviceMemory radianceReadMem = VK_NULL_HANDLE;
+    int radianceReq[3] = {-1, -1, 0};    // x, y, size of a pending request (x < 0: none)
+    bool radiancePending = false;
+    int radiancePendingSize = 0;
+    float radianceReqE = 1.0f;           // the exposure the probed frame was rendered with
+    float radianceResult[4] = {};        // mean rgb (sim units, before exposure), luminance
+    float radianceResultMax = 0.0f;
+    bool radianceResultValid = false;
     float globalExposureEV() const { return cv2ExposureEV + autoExposureEV; }
-    float exposureGainMag() const { return 2.5f * 0.30103f * globalExposureEV(); }
+    // The point sources' magnitudes follow the frame's exposure relative to the old ramp they were tuned at.
+    // Legacy: the old shift of the point style by the exposure slider. Physical modes scale each point's FLUX
+    // by pointFluxScale() instead (sat_flare.comp, city_sprites.comp, updateStars/Planets).
+    float exposureGainMag() const { return exposurePhysical() ? 0.0f : 2.5f * 0.30103f * cv2ExposureEV; }
     // The meter: the frame's central 60%, blitted to 64x36 (linear RGBA8), copied to the host and read
     // after the next fence (finalizeScreenshot).
     static constexpr uint32_t kMeterW = 64, kMeterH = 36;
@@ -3866,7 +3968,8 @@ private:
     float airglowGain = 0.066f;        // C15: master airglow brightness multiplier
     float airglowGreenGain = 0.053f;   // C15: green (557.7nm) band gain
     float airglowRedGain = 0.013f;     // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
-    float airglowSodiumGain = 0.08f;   // C15: sodium (589.3nm) band gain — kept dim relative to green
+    float airglowSodiumGain = 0.03f;   // C15: sodium (589.3nm) band gain — kept dim relative to green (0.08 until
+                                       // review 11: at real brightness the moonless sky read brown; green dominates)
     float airglowCoverageGain = 0.32f; // patchy-coverage strength for all 3 airglow bands, [0,1]
     float airglowPolarGain = 2.4f;     // red band only: extra boost toward the geomagnetic pole
     float zodiacalGain = 0.01f;        // master brightness multiplier for the zodiacal light cone

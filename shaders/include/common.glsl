@@ -155,6 +155,10 @@ vec3 cloudWarpNoiseSample(sampler3D warpTex, vec3 uvw) {
 // everything-is-occluded bug. Consumers that genuinely need "is there a surface at all" test
 // `tScene < kSceneDepthValid`.
 const float kNoSurfaceT      = 1e30;
+// Review 11 (real brightness): cloud radiance is stored x this in the half-float cloud targets (the v2 march,
+// its resolve and history, cloud_march.comp's target A) — a moonlit cloud is ~5e-7 in these units, down in
+// fp16's subnormals (3 bits); x 4096 it is a normal number and sunlit cloud (<~10) stays well under 65504.
+const float kCloudRadPre     = 4096.0;
 const float kSceneDepthValid = 1e29;
 
 // ── Ray-sphere intersection ───────────────────────────────────────────────────

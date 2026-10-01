@@ -193,7 +193,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
+    "state [name]; probe <x> <y>; radiance <x> <y> [size]; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -401,8 +401,10 @@ json SatelliteSim::harnessStateJson()
     j["sun"] = {{"az_deg", azDegOf(sun)}, {"el_deg", elDegOf(sun)}};
     // The global exposure (SatelliteSim.h): the user's EV, the metered auto offset and the meter's
     // last reading of the displayed frame (linear mean, fraction clipped white).
-    j["exposure"] = {{"ev", cv2ExposureEV}, {"auto_ev", autoExposureEV}, {"global_ev", globalExposureEV()},
-                     {"meter_mean", meterMeanLum}, {"meter_clip", meterClipFrac}};
+    j["exposure"] = {{"mode", exposureModeKey(exposureMode)}, {"ev100", exposureEV100}, {"e", exposureE},
+                     {"meter_ev100", exposureMeterEV100}, {"meter_valid", exposureMeterValid},
+                     {"meter_from_hdr", meterFromHdr}, {"shift_ev", cv2ExposureEV}, {"legacy_e", exposureLegacyE()},
+                     {"hdr_path", skyTaaUsedThisFrame}, {"point_gain_mag", exposureGainMag()}};
     j["moon"] = {{"az_deg", azDegOf(moon)}, {"el_deg", elDegOf(moon)}, {"illum", moonDirENU.w}};
 
     json ko = json::array();
@@ -1843,6 +1845,39 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
 
     // ── probe ───────────────────────────────────────────────────────────────────
+    if (n == "radiance")
+    {
+        // Review 11: the scene radiance (before the exposure) of the resolved HDR frame, the mean over a square
+        // of `size` px (default 5, max 64) at x y (full-resolution pixels, top-left origin): sim units, cd/m2
+        // (x kCdPerSimUnit) and the luminance's max. Needs the HDR path (render scale 1, the full sky).
+        if (a.frame == 0)
+        {
+            if (!skyTaaWanted())
+                fail("radiance: the HDR path is not running (render scale < 1 or a Lite/Potato sky)");
+            radianceReq[0] = (int)parseNum(pos(0), "radiance x");
+            radianceReq[1] = (int)parseNum(pos(1), "radiance y");
+            radianceReq[2] = pos(2).empty() ? 5 : (int)parseNum(pos(2), "radiance size");
+            radianceResultValid = false;
+            return Status::Pending;
+        }
+        if (!radianceResultValid)
+        {
+            if (a.frame > 20)
+                fail("radiance: no readback arrived");
+            return Status::Pending;
+        }
+        const float K = kCdPerSimUnit;
+        r["rgb_sim"] = {radianceResult[0], radianceResult[1], radianceResult[2]};
+        r["lum_sim"] = radianceResult[3];
+        r["lum_cd_m2"] = radianceResult[3] * K;
+        r["max_lum_cd_m2"] = radianceResultMax * K;
+        r["exposure_e"] = radianceReqE;
+        char buf[160];
+        snprintf(buf, sizeof(buf), "L = %.4g cd/m2 (%.4g sim; max %.4g cd/m2), %.2f log10",
+                 radianceResult[3] * K, radianceResult[3], radianceResultMax * K, log10f(std::max(radianceResult[3] * K, 1e-30f)));
+        r["message"] = buf;
+        return Status::Done;
+    }
     if (n == "probe")
     {
         // What the terrain algorithm computes for one pixel's ray (terrain_probe.comp): the seed

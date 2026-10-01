@@ -10,7 +10,9 @@
 //   - rejected where last frame's depth at the reprojected point disagrees (a surface uncovered)
 //   - clamped to the 3x3 neighbourhood of this frame's samples in YCoCg (variance clip), so anything that
 //     moves on its own — waves, clouds, beams, twinkling lights — cannot ghost
-// The resolved frame is blitted into the swapchain; the main pass restores the depth from the R32F copy
+// The colour is PRE-EXPOSED radiance (review 11): the history is rescaled by the exposure's change (c2e0.w),
+// and alpha (the orbit grade's weight, -1 for a debug view) is this frame's, passed on to sky_tonemap.comp.
+// The resolved frame is tone-mapped (sky_tonemap.comp) and blitted into the swapchain; the main pass restores the depth from the R32F copy
 // (taa_depth_restore.frag), so stars, planets and satellites are drawn over it sharp and occluded.
 layout(local_size_x = 16, local_size_y = 16) in;
 
@@ -22,7 +24,7 @@ layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D outColor;
 layout(set = 0, binding = 5, r32f)    uniform writeonly image2D outDepth;
 
 layout(push_constant) uniform PC {
-    vec4 c2e0, c2e1, c2e2;   // camera -> ENU (this frame), rows
+    vec4 c2e0, c2e1, c2e2;   // camera -> ENU (this frame), rows; c2e0.w = this frame's exposure / last frame's
     vec4 e2p0, e2p1, e2p2;   // this frame's ENU -> last frame's camera, rows
     vec4 eyeDelta;           // xyz: this eye - last eye, in this frame's ENU (m); w: 1 = history valid
     vec4 cam;                // x tan(fovY/2), y aspect, z new-sample weight when still, w weight in motion
@@ -59,7 +61,7 @@ vec3 sampleHistory(vec2 uv, vec2 size) {
     r += textureLod(histColor, vec2(tp0.x,  tp3.y),  0.0).rgb * w0.x  * w3.y;
     r += textureLod(histColor, vec2(tp12.x, tp3.y),  0.0).rgb * w12.x * w3.y;
     r += textureLod(histColor, vec2(tp3.x,  tp3.y),  0.0).rgb * w3.x  * w3.y;
-    return max(r, vec3(0.0));
+    return max(r, vec3(0.0)) * pc.c2e0.w;
 }
 
 void main() {
@@ -67,7 +69,8 @@ void main() {
     ivec2 p  = ivec2(gl_GlobalInvocationID.xy);
     if (p.x >= sz.x || p.y >= sz.y) return;
     vec2  size = vec2(sz);
-    vec3  cur  = texelFetch(curColor, p, 0).rgb;
+    vec4  cur4 = texelFetch(curColor, p, 0);
+    vec3  cur  = cur4.rgb;
     float d    = texelFetch(curDepth, p, 0).r;
 
     // The neighbourhood of this frame's samples (YCoCg mean and deviation).
@@ -125,6 +128,6 @@ void main() {
             res = fromYCoCg(mix(h, toYCoCg(cur), w));
         }
     }
-    imageStore(outColor, p, vec4(max(res, vec3(0.0)), 1.0));
+    imageStore(outColor, p, vec4(max(res, vec3(0.0)), cur4.a));
     imageStore(outDepth, p, vec4(d, 0.0, 0.0, 0.0));
 }

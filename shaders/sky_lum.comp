@@ -1,0 +1,67 @@
+#version 450
+// The exposure meter and the HDR modes' local adaptation map (review 11). Two modes (push constant):
+//   0: one 16x16 workgroup per cell of the resolved HDR frame (pre-exposed radiance): the cell's mean
+//      log2(luminance) into lumCell, and the meter's centre-weighted histogram of log2(SCENE luminance)
+//      (128 bins of 0.5 EV from 2^-44; bin 0 also holds true black), read by the CPU after the fence.
+//   1: one thread per cell: a 13x13 Gaussian (sigma 4 cells, ~5% of the screen) of lumCell into lumBlur,
+//      the local adaptation sky_tonemap.comp reads (edge-aware) in the HDR modes.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D hdrTex;
+layout(set = 0, binding = 1, r32f) uniform image2D lumCell;
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D lumBlur;
+layout(set = 0, binding = 3, std430) buffer Hist { uint bins[128]; } hist;
+
+layout(push_constant) uniform PC {
+    vec4 expo;   // x the frame's exposure, y unused, z log2 of bin 0's floor, w bins per EV
+    vec4 mode;   // x pass (0 cells + histogram, 1 blur)
+} pc;
+
+shared uint  sHist[128];
+shared float sSum[256];
+
+void main() {
+    uint li = gl_LocalInvocationIndex;
+    if (pc.mode.x < 0.5) {               // uniform (a push constant): the barriers below are in uniform flow
+        if (li < 128u) sHist[li] = 0u;
+        barrier();
+        ivec2 sz = textureSize(hdrTex, 0);
+        ivec2 p  = ivec2(gl_GlobalInvocationID.xy);
+        // The cell's mean log of the PRE-EXPOSED luminance, floored at display black (1e-4): a black pixel
+        // must not drag a cell's adaptation to -30 EV and blow out the one light in it.
+        float lpre = log2(1e-4);
+        if (p.x < sz.x && p.y < sz.y) {
+            vec4 h = texelFetch(hdrTex, p, 0);
+            if (h.a > -0.5) {
+                float Lp = dot(max(h.rgb, vec3(0.0)), vec3(0.2126, 0.7152, 0.0722));
+                lpre = log2(max(Lp, 1e-4));
+                float lg2 = log2(max(Lp / max(pc.expo.x, 1e-30), 1e-30));
+                int   b   = int(clamp(floor((lg2 - pc.expo.z) * pc.expo.w), 0.0, 127.0));
+                vec2  c   = (vec2(p) + 0.5) / vec2(sz) * 2.0 - 1.0;
+                uint  w   = 1u + uint(3.0 * clamp(1.0 - dot(c, c) * 0.7, 0.0, 1.0));
+                atomicAdd(sHist[b], w);
+            }
+        }
+        sSum[li] = lpre;
+        barrier();
+        for (uint s = 128u; s > 0u; s >>= 1) {
+            if (li < s) sSum[li] += sSum[li + s];
+            barrier();
+        }
+        if (li == 0u) imageStore(lumCell, ivec2(gl_WorkGroupID.xy), vec4(sSum[0] / 256.0));
+        if (li < 128u && sHist[li] != 0u) atomicAdd(hist.bins[li], sHist[li]);
+    } else {
+        ivec2 csz = imageSize(lumCell);
+        ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+        if (q.x >= csz.x || q.y >= csz.y) return;
+        float s = 0.0, w = 0.0;
+        for (int dy = -6; dy <= 6; ++dy)
+            for (int dx = -6; dx <= 6; ++dx) {
+                ivec2 r = clamp(q + ivec2(dx, dy), ivec2(0), csz - 1);
+                float g = exp(-float(dx * dx + dy * dy) / 32.0);
+                s += g * imageLoad(lumCell, r).r;
+                w += g;
+            }
+        imageStore(lumBlur, q, vec4(s / w));
+    }
+}

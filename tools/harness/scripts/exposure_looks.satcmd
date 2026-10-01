@@ -1,0 +1,171 @@
+# Review 11: every scene in auto / hdr / eye (real brightness).
+preset High
+set clouds_v2.fog_amount 0
+time pause
+observer lat=46.60 lon=7.90 agl=30
+time set 2036-06-21T00:00:00Z
+time sun 30 setting
+camera az=170 el=5 fov=60
+set display.exposure_mode auto
+wait settle
+wait 30
+capture L1_day_auto
+state L1_day_auto
+set display.exposure_mode hdr
+wait settle
+wait 30
+capture L1_day_hdr
+state L1_day_hdr
+set display.exposure_mode eye
+wait settle
+wait 30
+capture L1_day_eye
+state L1_day_eye
+time sun 2 setting
+camera az=300 el=5 fov=70
+set display.exposure_mode auto
+wait settle
+wait 30
+capture L2_sunset_auto
+state L2_sunset_auto
+set display.exposure_mode hdr
+wait settle
+wait 30
+capture L2_sunset_hdr
+state L2_sunset_hdr
+set display.exposure_mode eye
+wait settle
+wait 30
+capture L2_sunset_eye
+state L2_sunset_eye
+time sun -8 setting
+set display.exposure_mode auto
+wait settle
+wait 30
+capture L3_dusk_auto
+state L3_dusk_auto
+set display.exposure_mode hdr
+wait settle
+wait 30
+capture L3_dusk_hdr
+state L3_dusk_hdr
+set display.exposure_mode eye
+wait settle
+wait 30
+capture L3_dusk_eye
+state L3_dusk_eye
+observer lat=-24.6 lon=-70.4 agl=2
+time set 2036-07-06T00:00:00Z
+time sun midnight
+camera az=0 el=20 fov=80
+set display.exposure_mode auto
+wait settle
+wait 30
+capture L4_fullmoon_auto
+state L4_fullmoon_auto
+set display.exposure_mode hdr
+wait settle
+wait 30
+capture L4_fullmoon_hdr
+state L4_fullmoon_hdr
+set display.exposure_mode eye
+wait settle
+wait 30
+capture L4_fullmoon_eye
+state L4_fullmoon_eye
+time set 2036-06-21T00:00:00Z
+time sun midnight
+camera az=180 el=45 fov=100
+set display.exposure_mode auto
+wait settle
+wait 30
+capture L5_milkyway_auto
+state L5_milkyway_auto
+set display.exposure_mode hdr
+wait settle
+wait 30
+capture L5_milkyway_hdr
+state L5_milkyway_hdr
+set display.exposure_mode eye
+wait settle
+wait 30
+capture L5_milkyway_eye
+state L5_milkyway_eye
+observer lat=34.05 lon=-118.30 alt=2000
+time sun midnight
+camera az=90 el=-10 fov=70
+set display.exposure_mode auto
+wait settle
+wait 30
+capture L6_la_auto
+state L6_la_auto
+set display.exposure_mode hdr
+wait settle
+wait 30
+capture L6_la_hdr
+state L6_la_hdr
+set display.exposure_mode eye
+wait settle
+wait 30
+capture L6_la_eye
+state L6_la_eye
+observer lat=48 lon=6 alt=400000
+time sun midnight
+camera az=0 el=-55 fov=80
+set display.exposure_mode auto
+wait settle
+wait 30
+capture L7_orbitnight_auto
+state L7_orbitnight_auto
+set display.exposure_mode hdr
+wait settle
+wait 30
+capture L7_orbitnight_hdr
+state L7_orbitnight_hdr
+set display.exposure_mode eye
+wait settle
+wait 30
+capture L7_orbitnight_eye
+state L7_orbitnight_eye
+time sun 40 rising
+set display.exposure_mode auto
+wait settle
+wait 30
+capture L8_orbitday_auto
+state L8_orbitday_auto
+set display.exposure_mode hdr
+wait settle
+wait 30
+capture L8_orbitday_hdr
+state L8_orbitday_hdr
+set display.exposure_mode eye
+wait settle
+wait 30
+capture L8_orbitday_eye
+state L8_orbitday_eye
+set clouds_v2.coverage 0
+set clouds.storm_strength 1
+time set 2036-12-21T12:00:00Z
+observer lat=67.25 lon=-150.18 agl=2
+time sun midnight
+camera az=0 el=20 fov=80
+set display.exposure_mode auto
+wait settle
+wait 30
+capture L9_aurora_auto
+state L9_aurora_auto
+set display.exposure_mode hdr
+wait settle
+wait 30
+capture L9_aurora_hdr
+state L9_aurora_hdr
+set display.exposure_mode eye
+wait settle
+wait 30
+capture L9_aurora_eye
+state L9_aurora_eye
+ui show
+wait 5
+capture bar ui=on crop=900,840,700,60 scale=2
+ui dump statusbar
+quit

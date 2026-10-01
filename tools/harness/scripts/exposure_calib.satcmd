@@ -1,0 +1,51 @@
+# Review 11: real brightness. Legacy parity (the HDR path vs the old inline tonemap) + radiance probes + auto.
+preset High
+set clouds_v2.fog_amount 0
+time set 2036-06-21T00:00:00Z
+time pause
+# 1. day, Alps, ground
+observer lat=46.60 lon=7.90 agl=30
+time sun 30 setting
+camera az=170 el=8 fov=60
+wait settle
+capture c_day_legacy
+state day
+radiance 800 150 32
+radiance 800 800 32
+radiance 800 470 16
+set display.exposure_mode auto
+wait settle
+capture c_day_auto
+state day_auto
+set display.exposure_mode legacy
+# 2. night, LA from 10 km
+observer lat=34.05 lon=-118.30 alt=10000
+time sun -25
+camera az=90 el=-20 fov=60
+wait settle
+capture c_night_legacy
+state night
+radiance 800 700 32
+radiance 800 100 32
+set display.exposure_mode auto
+wait settle
+capture c_night_auto
+state night_auto
+set display.exposure_mode legacy
+# 3. orbit day
+observer lat=-15 lon=150 alt=400000
+time sun 40 rising
+camera az=0 el=-50 fov=60
+wait settle
+wait 60
+capture c_orbit_legacy
+radiance 800 600 32
+set display.exposure_mode auto
+wait settle
+capture c_orbit_auto
+state orbit_auto
+set display.exposure_mode legacy
+set display.sky_taa false
+wait settle
+capture c_orbit_notaa
+quit

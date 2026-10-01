@@ -1,0 +1,85 @@
+#version 450
+// The display transform of the HDR background (review 11, "real brightness and metering"). sat_sky.frag
+// -DSKY_TAA writes PRE-EXPOSED radiance (scene radiance x the frame's exposure, SatelliteSim::skyExposure())
+// and sky_taa.comp resolves it; sky_lum.comp has metered it (histogram) and built the local adaptation map.
+// This pass, per exposure mode:
+//   - HDR full / HDR eye: LOCAL adaptation — each pixel's exposure leans toward its neighbourhood's mean log
+//     luminance (lumBlur, ~5% of the screen, read edge-aware: the 3x3 cells around it weighted by how close
+//     their level is to the pixel's own, so a dark ridge against a bright sky takes the ridge side's level
+//     and not a halo), by a strength alpha and at most maxStops either way; it is how a scene with a lit
+//     city under a dark sky, or the Moon over moonlit ground, keeps both readable.
+//   - HDR eye: below ~0.03 cd/m2 the eye's rods take over: colour fades toward a slightly blue grey.
+//   - the tone curve: Legacy keeps the old 1 - exp(-x) / long-shoulder blend; the physical modes a filmic
+//     curve (the ACES fit, input x 0.6: the metered average 0.2 lands at 0.16 display-linear, ~+3.5 EV white);
+//   - the orbit colour grade by the weight sat_sky.frag left in alpha (-1 = a debug view, passed through).
+// Display-linear RGBA16F out, blitted into the swapchain.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D hdrTex;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D outLdr;
+layout(set = 0, binding = 2) uniform sampler2D lumBlur;   // R32F, one texel per 16x16 cell: mean log2 pre-exposed lum
+
+layout(push_constant) uniform PC {
+    vec4 expo;   // x the frame's exposure, y highlight roll-off (Legacy), z local strength alpha, w max stops
+    vec4 mode;   // x exposure mode (0 manual, 1 auto, 2 HDR full, 3 HDR eye, 4 legacy), y cd/m2 per unit, z eye night vision, w unused
+} pc;
+
+vec3 acesFit(vec3 x) {
+    x *= 0.6;
+    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+void main() {
+    ivec2 sz = imageSize(outLdr);
+    ivec2 p  = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= sz.x || p.y >= sz.y) return;
+    vec4 h = texelFetch(hdrTex, p, 0);
+    vec3 o;
+    if (h.a < -0.5) {
+        o = h.rgb;                                           // a debug view: already display values
+    } else {
+        vec3  x    = max(h.rgb, vec3(0.0));
+        int   mode = int(pc.mode.x + 0.5);
+        float Lp   = dot(x, vec3(0.2126, 0.7152, 0.0722));
+        if ((mode == 2 || mode == 3) && pc.expo.z > 0.0) {
+            // Edge-aware local adaptation (see the header).
+            float lp  = log2(max(Lp, 1e-4));
+            ivec2 csz = textureSize(lumBlur, 0);
+            vec2  cf  = (vec2(p) + 0.5) / 16.0 - 0.5;
+            ivec2 c0  = ivec2(floor(cf));
+            vec2  fr  = cf - vec2(c0);
+            float sw = 0.0, sl = 0.0;
+            for (int j = -1; j <= 2; ++j)
+                for (int i = -1; i <= 2; ++i) {
+                    ivec2 c  = clamp(c0 + ivec2(i, j), ivec2(0), csz - 1);
+                    float lb = texelFetch(lumBlur, c, 0).r;
+                    vec2  d  = vec2(i, j) - fr;
+                    float w  = exp(-dot(d, d) * 0.7) * exp(-(lp - lb) * (lp - lb) / (2.0 * 1.5 * 1.5)) + 1e-6;
+                    sw += w;
+                    sl += w * lb;
+                }
+            float local = sl / sw;
+            float comp  = clamp(-pc.expo.z * (local - log2(0.2)), -pc.expo.w, pc.expo.w);
+            x  *= exp2(comp);
+            Lp *= exp2(comp);
+        }
+        if (mode == 3 && pc.mode.z > 0.0) {
+            // Night vision: the scene luminance (cd/m2) before the exposure; mesopic below ~0.03, scotopic by 1e-3.
+            float Lcd = Lp / max(pc.expo.x, 1e-30) * pc.mode.y;
+            float s   = 1.0 - smoothstep(-3.0, -1.5, log2(max(Lcd, 1e-12)) * 0.30103);
+            x = mix(x, vec3(Lp) * vec3(0.82, 0.94, 1.18), 0.85 * s * pc.mode.z);
+        }
+        if (mode == 4)
+            o = mix(vec3(1.0) - exp(-x), vec3(1.0) - 1.0 / (vec3(1.0) + x + 0.5 * x * x), pc.expo.y);
+        else
+            o = acesFit(x);
+        if (h.a > 0.0) {
+            // The orbit colour grade (fitted to the Artemis II photographs), weighted per pixel.
+            vec3  g  = min(1.16 * pow(max(o, vec3(0.0)), vec3(2.2)), vec3(1.0));
+            float lg = dot(g, vec3(0.2126, 0.7152, 0.0722));
+            g = mix(vec3(lg), g, 0.7);
+            o = mix(o, g, h.a);
+        }
+    }
+    imageStore(outLdr, p, vec4(max(o, vec3(0.0)), 1.0));
+}

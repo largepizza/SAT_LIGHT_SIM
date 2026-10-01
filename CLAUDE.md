@@ -45,7 +45,7 @@ constants) · *TargetedReflector / Mirror Ground Targets* · *Reflect-Orbital Be
 *GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22).
 
 **Rendering** — *UIRenderer / Clay* (icon atlas, the fixed-bitmap font, manual hit-testing) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
-*Photometry / Shader Constants* (lobe model, bloom and glare) · *Light Pollution Dome* · *Atmospheric
+*Exposure — real brightness* (one exposure, four modes, the HDR meter) · *Photometry / Shader Constants* (lobe model, bloom and glare) · *Light Pollution Dome* · *Atmospheric
 Extinction* · *Sky Glow SSBO* · *Planets* · *Cloud Shadows* · *Resolution Scaling* · *Weak-Hardware
 Sky Tiers (Potato / SKY_LITE)*. The mesh renderer, model viewer and environment probes are
 subsections of *Satellite Types* (Phases 4b–4f).
@@ -923,7 +923,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sample): a 22 deg halo in ~1/3 of cirrus, sundogs less, the CZA/parhelic circle rarely, 46 deg very rarely.
   The sun path to every cloud sample is the Chapman column (`sunTransmit`, include/atmosphere.glsl) plus
   ozone: a 12-step midpoint rule along a grazing path misses the tangent point's dense air.
-- **Tonemap controls** (Clouds tab, lighting section; `clouds_v2.exposure_ev / highlight_rolloff /
+- **Tonemap controls** (superseded by *Exposure — real brightness*, review 11; Clouds tab, lighting section; `clouds_v2.exposure_ev / highlight_rolloff /
   white_balance / auto_exposure`, UBO `exposureScale / highlightRolloff / whiteBalance`, the old cloudsV2
   pads): **one GLOBAL exposure** (`globalExposureEV()` = Exposure (EV) + the metered auto offset) scales the
   sky's radiance, the point sources (the point style's ref/limit magnitudes shift by `exposureGainMag()`,
@@ -2831,6 +2831,65 @@ tests keep their slot with `weight = 0` rather than being skipped, so top-K memb
 function of intensity alone and doesn't churn frame to frame.
 
 ---
+
+## Subsystem: Exposure — real brightness (review 11, 2026-09-30, `SatelliteSimExposure.cpp`)
+
+The user's decision: real brightness and metering, four modes, pitch black stays black, artistic visibility
+lives in the HDR mode. Design log: `.plans/EXPOSURE_UNIFICATION.md`.
+- **Units.** Scene radiance stays in the sky's units (pi x radiance per unit solar irradiance); one unit is
+  `kCdPerSimUnit` = 40744 cd/m2 (the TOA Sun's 128 klx / pi). Measured with harness `radiance`: an Alpine sky
+  ~9000 cd/m2, sunlit snow ~1e4, full-Moon ground 0.014, the Moon's disc 2480, moonless sky 2-7e-4, LA's sky
+  glow 0.013, LA from 10 km 0.19, a storm aurora 0.03-0.05 — all within ~2-3x of real.
+- **The night sources were ~2400x their real radiance** (tuned for the old fixed night exposure): the Moon
+  (`moonGain` 0.0053 vs 2.2e-6), city light (terrain emission, sky glow, cloud and fog upwelling), airglow,
+  aurora, lightning, the sky-glow bins, satellite ocean glints. In every mode but Legacy they take
+  `cloud.expoPhys.x` = `kPhysNightScale` (1/2400; `physNightScale()`), with extra real-world fits: airglow
+  x0.35, the Moon's halo x0.2, "Night sky light" x0.04 (1/125 of the full Moon), the satellite sky-glow bins
+  x0.003, beam light on cloud /32 (its tuned x-physical). The Milky Way and zodiacal light are RADIANCE from
+  their surface-brightness mapping (`darkSkySurfMag` -> 10.8e4 x 10^(-0.4 mag) cd/m2), the Moon's disc
+  ~2500 cd/m2 (`kMoonBright` 0.118), the Sun's disc 1.6e9 cd/m2 through the Chapman column with glare/corona
+  2.4e-5 of it; the night floor is gone, and the Milky Way / zodiacal / aurora / star / satellite visibility
+  gates (night factor, Moon, pollution, day suppression) are Legacy only — contrast does their job.
+- **One exposure** E = 1.6 x kCdPerSimUnit / 2^EV100 (the metered average lands at ~0.2 tone-curve input),
+  `cloud.exposureScale`, `skyExposure()`. `updateExposure()` (start of `recordCompute`) per mode:
+  **Manual** (`exposureManualEV100`), **Auto** (meter + key: (9 - EV) x 0.3 stops darker, up to 3, so night
+  reads as night; EV100 -6..21), **HDR** (key x0.2, EV100 -10..21, + local adaptation), **Eye** (key x0.4,
+  EV100 -3.5..21 — the dark-adapted eye's limit, so a moonless landscape stays near black — slower to
+  brighten, + gentler local adaptation and night vision), **Legacy** (the old EXPOSURE_NIGHT/DAY ramp with
+  the old source gains; harness A/B only). Auto/HDR/Eye take `cv2ExposureEV` (clouds_v2.exposure_ev) as the
+  shift. Settings: `display.exposure_mode` ("manual" | "auto" | "hdr" | "eye" | "legacy"),
+  `exposure_manual_ev100`, `exposure_hdr_strength` (0.6), `exposure_eye_strength` (0.35),
+  `exposure_eye_night` (1). **Status bar**: mode button (cycles MAN/AUTO/HDR/EYE; entering Manual keeps the
+  current EV), -, value (scrollable), + — thirds of a stop.
+- **The HDR frame** is the sky TAA path (`skyTaaWanted()` no longer needs TAA on; with it off the jitter is 0
+  and the resolve takes the new frame): `sat_sky.frag -DSKY_TAA` writes PRE-EXPOSED radiance (fp16-safe) with
+  alpha = the orbit grade weight (-1 = a debug view); the radiance-valued terms after the tone point
+  accumulate in `hdrAdd`, camera artifacts (lens flare) in `color`. `sky_taa.comp` rescales its history by
+  E_now/E_prev (`c2e0.w`). `sky_lum.comp` (pass 0: per 16x16 cell mean log luminance + the meter's
+  centre-weighted 128-bin histogram of log2 scene luminance; pass 1: a 13x13 blur) and `sky_tonemap.comp`
+  (local adaptation in HDR/Eye: the blurred map read edge-aware, a 4x4 of cells weighted by level
+  similarity, strength alpha, +- max stops; Eye's rod vision below ~0.03 cd/m2; the ACES-fit curve for the
+  physical modes, the old curve for Legacy; the orbit grade) then write skyLdrImg, blitted to the swapchain.
+  Inline variants (render scale < 1, SKY_LITE) apply the same curve in sat_sky.frag and meter from the
+  displayed frame's 64x36 readback, un-tone-mapped (`readExposureMeter`); an all-black readback meters as
+  very dark so a night drawn at a day exposure opens up instead of sticking. Cost ~0.4 ms.
+- **The meter** (`meterEV100FromHistogram`): pixels > 16 EV below the brightest 2% ignored (black space), then
+  the 10-90% band's log mean; EV100 = log2(L x 8) (K = 12.5). Measured: a sunny day 15.5, full-Moon
+  landscape -3.2, moonless Milky Way -7.7 — photographic values.
+- **fp16**: cloud radiance in the half-float cloud targets is stored x `kCloudRadPre` (4096, common.glsl) —
+  moonlit cloud (~5e-7) was subnormal; cloud_march.comp divides on read, multiplies on write, sat_sky.frag
+  divides wherever it reads target A.
+- **Points**: stars, planets, satellites (`SatFlarePC::fluxScale`) and city sprites take
+  `pointFluxScale()` = E / 35000 (the point style's refMag 1.5 is where a mag-1.5 star peaks at 1 under a
+  physical night exposure ~35000); daySuppression/moonSuppression are 0 and the pollution/beam dims skipped.
+  `exposureGainMag()` is Legacy's only.
+- **Fixed with it**: the sky loop's samples are jittered per pixel and frame (`jA`; the Earth's shadow edge
+  drew concentric rings across the dusk sky once it was exposed); sodium airglow 0.08 -> 0.03 (the moonless
+  sky read brown). Open: the Planetarium (Lite) night ground is a flat olive (the raw night map, no city
+  pattern) at real exposure; the Milky Way band's panorama background is warm; SKY_ENV probes and the model
+  viewer still use the old ramp exposure for their display-space terms.
+- Harness: `radiance x y [size]`, `state`'s `exposure` block (mode, ev100, e, meter_ev100, hdr_path),
+  `scripts/exposure_sources.satcmd` (per-source radiance), `exposure_looks.satcmd` (nine scenes x three modes).
 
 ## Subsystem: Photometry / Shader Constants
 

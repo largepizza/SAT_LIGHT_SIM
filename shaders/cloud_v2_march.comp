@@ -788,7 +788,7 @@ void main()
                     vec3  cr  = textureLod(earthNightTex, uv, 3.0).rgb;
                     float lum = dot(cr, vec3(0.2126, 0.7152, 0.0722));
                     nightS += (cr / max(lum, 0.001)) * cityBrightness(lum) * smoothstep(0.45, 0.0, f.hf)
-                            * (1.0 - dayness) * kCityUpwellStrength * cloud.ambientGain;
+                            * (1.0 - dayness) * kCityUpwellStrength * cloud.ambientGain * cloud.expoPhys.x;
                 }
                 if (wantB) nightS += beamFinish(pW, p.h, dir, f, dayness, og, habRay, bE, bDir, bPh, odB);
             }
@@ -928,7 +928,7 @@ void main()
                     // town, so any fog patch near a city glowed at full strength — from altitude a bright tan
                     // slab over Denver read as a dust storm (user review 2, snapshot 2).
                     float cb  = clamp(max(lum - kNightFloor, 0.0) / 0.2, 0.0, 1.0);
-                    S += (cr / max(lum, 0.001)) * cb * nightF * fs * kCityUpwellStrength * cloud.ambientGain;
+                    S += (cr / max(lum, 0.001)) * cb * nightF * fs * kCityUpwellStrength * cloud.ambientGain * cloud.expoPhys.x;
                 }
                 S *= alb;
                 float Ts = exp(-sg * dt);
@@ -1047,14 +1047,14 @@ void main()
     vec4 oD = vec4(meanT, (T < 0.1 && tHalf > 0.0) ? tHalf : -1.0, 0.0, 0.0);
     if (passB) {
         // The full targets, and this tile's sparse-grid samples (the quarter grid stays complete).
-        imageStore(outFullColor, pix, vec4(outRgb, Tout));
+        imageStore(outFullColor, pix, vec4(outRgb * kCloudRadPre, Tout));
         imageStore(outFullDepth, pix, oD);
         if (all(equal(pix & 1, ivec2(cv2.frame.zw)))) {
-            imageStore(outColor, pix >> 1, vec4(outRgb, Tout));
+            imageStore(outColor, pix >> 1, vec4(outRgb * kCloudRadPre, Tout));
             imageStore(outDepth, pix >> 1, oD);
         }
     } else {
-        imageStore(outColor, outPix, vec4(outRgb, Tout));
+        imageStore(outColor, outPix, vec4(outRgb * kCloudRadPre, Tout));
         imageStore(outDepth, outPix, oD);
     }
 }

@@ -152,7 +152,8 @@ layout(push_constant) uniform PC {
     float highlightFlare;  // fixed flare for census highlight mode — offset 96
     float extinctionCoeff; // atmospheric extinction, magnitudes per airmass — offset 100
     float moonSuppression; // sky background suppression ratio from moonlight — offset 104
-    float pad0;            // reserved — offset 108
+    float fluxScale;       // offset 108 — review 11: > 0 = real brightness: the exposure relative to the
+                           // point style's (SatelliteSim::pointFluxScale); no sky/moon/pollution dims
     vec3  moonDirECI;      // unit vector from Earth toward Moon in ECI — offset 112
     float sunRefIntensity; // was pad1 — S3: soft brightness ceiling relative to the sun — offset 124
 } pc;
@@ -282,6 +283,10 @@ void main() {
     vec3  losECI = skyDir.x * pc.enuX.xyz + skyDir.y * pc.enuY.xyz + skyDir.z * pc.enuZ.xyz;
     float extinctMag = atmExtinctionMag(pc.obsECI, losECI, range, pc.extinctionCoeff);
     effectFlare *= pow(10.0, -0.4 * extinctMag);
+    // Real brightness (review 11): the exposure scales every point's flux; a bright sky hides a satellite by
+    // contrast, so the day/moon suppression (0 from the CPU) and the pollution dims below do not apply.
+    bool physical = pc.fluxScale > 0.0;
+    if (physical) effectFlare *= pc.fluxScale;
 
     // Light pollution: dims (scales down) rather than culls — matches the observation that
     // scaling brightness reads as more convincing than pushing satellites past visThresh.
@@ -314,7 +319,7 @@ void main() {
     // kSatPollutionMaxDim caps how dark it can go so the brightest flares/mirrors still peek
     // through even in a maximally lit city.
     const float kSatPollutionMaxDim = 0.85;
-    effectFlare *= 1.0 - domeVal * kSatPollutionMaxDim;
+    if (!physical) effectFlare *= 1.0 - domeVal * kSatPollutionMaxDim;
 
     // C12 follow-up #31: same suppression shape, second independent source — a nearby
     // Reflect-Orbital beam should wash out this satellite the same way real light pollution does.
@@ -324,7 +329,7 @@ void main() {
     float beamDomeAz = mix(uintBitsToFloat(beamGlowDome[sec0w]), uintBitsToFloat(beamGlowDome[sec1w]), secFrac);
     float beamDomeVal = clamp(beamDomeAz * elevFalloff, 0.0, 1.0);
     const float kBeamPollutionMaxDim = 0.85;
-    effectFlare *= 1.0 - beamDomeVal * kBeamPollutionMaxDim;
+    if (!physical) effectFlare *= 1.0 - beamDomeVal * kBeamPollutionMaxDim;
 
     // ── Soft brightness ceiling relative to the sun (S3, RELEASE_v1_1_PLAN.md) ───────────────
     // Root cause of "reflector out-shines the sun": the flare-source pass (flare_source.vert)

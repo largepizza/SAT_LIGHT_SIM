@@ -1,0 +1,99 @@
+# Review 11: each night source's scene radiance (harness `radiance`), to rescale them to real values.
+# Zenith probes: camera el=89 fov 30, the centre 64 px. Ground probes: el=-35, the centre.
+preset High
+set clouds_v2.fog_amount 0
+set clouds_v2.coverage 0
+set clouds.storm_strength 0
+set display.exposure_mode auto
+time pause
+# A. Atacama, full Moon high
+observer lat=-24.6 lon=-70.4 agl=2
+time set 2036-07-06T00:00:00Z
+time sun midnight
+state A_moon
+camera az=0 el=89 fov=30
+wait settle
+radiance 800 450 64
+capture sA_zen
+camera az=0 el=-35 fov=40
+wait settle
+radiance 800 450 64
+capture sA_gnd
+camera look moon
+camera fov=2
+wait settle
+radiance 800 450 8
+capture sA_moon
+# B. Atacama, new Moon
+time set 2036-06-21T00:00:00Z
+time sun midnight
+state B_moon
+camera az=0 el=89 fov=30
+wait settle
+radiance 800 450 64
+capture sB_zen
+camera az=0 el=-35 fov=40
+wait settle
+radiance 800 450 64
+# B2. twilight zenith: Sun -6 / -12 / -18
+time sun -6 setting
+camera az=0 el=89 fov=30
+wait settle
+radiance 800 450 64
+time sun -12 setting
+wait settle
+radiance 800 450 64
+time sun -18 setting
+wait settle
+radiance 800 450 64
+time sun 30 setting
+wait settle
+radiance 800 450 64
+# C. Los Angeles, new Moon: zenith from the ground, the city from 10 km
+observer lat=34.05 lon=-118.30 agl=2
+time sun midnight
+state C_moon
+camera az=0 el=89 fov=30
+wait settle
+radiance 800 450 64
+capture sC_zen
+observer lat=34.05 lon=-118.30 alt=10000
+camera az=0 el=-89 fov=30
+wait settle
+radiance 800 450 64
+capture sC_down
+# D. Aurora storm, Coldfoot
+set clouds.storm_strength 1
+observer lat=67.25 lon=-150.18 agl=2
+time set 2036-12-21T12:00:00Z
+time sun midnight
+state D_moon
+camera az=0 el=20 fov=80
+wait settle
+capture sD_aur
+radiance 400 150 16
+radiance 800 300 16
+radiance 1200 200 16
+radiance 200 300 16
+set clouds.storm_strength 0
+# E. Milky Way core, Atacama, new Moon, core high (~18h RA: a June midnight)
+observer lat=-24.6 lon=-70.4 agl=2
+time set 2036-06-21T00:00:00Z
+time sun midnight
+camera az=0 el=89 fov=90
+wait settle
+capture sE_mw
+radiance 800 450 16
+radiance 400 450 16
+radiance 1200 450 16
+radiance 800 150 16
+radiance 800 750 16
+# F. Europe's night side from 400 km
+observer lat=48 lon=6 alt=400000
+time sun midnight
+camera az=0 el=-89 fov=40
+wait settle
+wait 60
+capture sF_orbit
+radiance 800 450 64
+quit

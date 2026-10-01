@@ -2248,12 +2248,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cityPrevObsDir = d;
     }
 
+    // The frame's exposure (review 11): the mode, the meter's last histogram, the adaptation.
+    updateExposure(dt);
     if (cloudParamsMapped)
     {
         GpuCloudParams cp{};
         cp.coverage = cloudCoverage;
         cp.cloudsV2 = 1.0f; // unused since v1's march was deleted (2026-09-27); a UBO slot to reuse
-        cp.exposureScale = exp2f(globalExposureEV());
+        cp.exposureScale = exposureE;   // updateExposure (SatelliteSimExposure.cpp): the whole multiplier
         cp.highlightRolloff = std::clamp(cv2HighlightRolloff, 0.0f, 1.0f);
         cp.whiteBalance = std::clamp(cv2WhiteBalance, 0.0f, 1.0f);
         cp.density = cloudDensity;
@@ -2267,7 +2269,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.extinctionCoeff = extinctionCoeff;
         cp.cirrusWindAngle = glm::radians(cloudCirrusWindDeg);
         cp.cirrusStretch = cloudCirrusStretch;
-        cp.airglowGain = airglowGain;
+        // x 0.35 in the physical modes: at the night scale alone the moonless zenith read 5.5e-4 cd/m2 without
+        // the Milky Way; the natural sky is ~2e-4 (21.8 mag/arcsec2), airglow ~1.5e-4 of it (review 11).
+        cp.airglowGain = airglowGain * physNightScale() * (exposurePhysical() ? 0.35f : 1.0f);
         cp.airglowGreenGain = airglowGreenGain;
         cp.airglowRedGain = airglowRedGain;
         cp.airglowSodiumGain = airglowSodiumGain;
@@ -2291,7 +2295,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.oceanMwReflGain = oceanMwReflGain;
         // Satellite ocean glints (OceanGlintBuf, written by sat_flare.comp, composited by
         // sat_sky.frag). The two pads are pure std140 rounding — see GpuCloudParams' tail comment.
-        cp.oceanGlintGain = oceanGlintGain;
+        cp.oceanGlintGain = oceanGlintGain * physNightScale();   // tuned at the old night exposure
         cp.oceanGlintMinFlux = oceanGlintMinFlux;
         cp.cityLightsStrength = cityLightsStrength;
         cp.cityRoadsStrength = cityRoadsStrength;
@@ -2325,7 +2329,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.oceanSeaOctaves = oceanSeaOctaves;
         cp.oceanDetailOctaves = oceanDetailOctaves;
         cp.oceanReflSamples = oceanReflSamples;
-        cp.moonGain = moonGain;
+        cp.moonGain = moonGain * physNightScale();
         cp.pad1 = (float)cityOffsetEastM;  // repurposed: city-detail world-fixed east offset (m)
         cp.pad2 = (float)cityOffsetNorthM; // repurposed: city-detail world-fixed north offset (m)
         {
@@ -2338,6 +2342,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
         cp.auroraSheets = glm::vec4(auroraSheetGain, auroraSheetSpacingDeg, auroraSheetCrisp, auroraSheetFold);
         cp.moonCenter = glm::vec4(moonCenterENUkm, moonAngR);
+        cp.expoPhys = glm::vec4(physNightScale(), exposurePhysical() ? 1.0f : 0.0f, kCdPerSimUnit, pointFluxScale());
         cp.moonMisc = glm::vec4(moonEclipseSolarObs, moonEclipseSolarPossible ? 1.0f : 0.0f,
                                 moonEclipseLunarPossible ? 1.0f : 0.0f, (float)(moonDistM * 1e-3));
         {
@@ -2349,7 +2354,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 return r;
             };
             const uint32_t hi = (skyTaaFrame++ % 8u) + 1u;
-            cp.taaJitter = skyTaaWanted() ? glm::vec4(halton(hi, 2) - 0.5f, halton(hi, 3) - 0.5f, 0.0f, 0.0f) : glm::vec4(0.0f);
+            cp.taaJitter = (skyTaaWanted() && skyTaaEnabled) ? glm::vec4(halton(hi, 2) - 0.5f, halton(hi, 3) - 0.5f, 0.0f, 0.0f) : glm::vec4(0.0f);
             const double altG = followActive ? followRadiusM - 6371000.0 : (double)obsHeightOffset;
             cp.taaJitter.z = orbitGrade * glm::smoothstep(30000.0f, 300000.0f, (float)altG);
         }
@@ -2399,7 +2404,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cp.terrainMaterialStrength = terrainMaterialStrength;
             cp.terrainTextureStrength = terrainTextureStrength;
             cp.terrainDebugView = (float)terrainDebugView;
-            cp.terrainErosion = glm::vec4(terrainErosionStrength, terrainErosionBranch, terrainNightSkyLight, terrainSkyLight);
+            // "Night sky light" is a fraction of the full Moon overhead; x 0.04 in the physical modes (the slider's 0.2 ->
+            // 1/125: starlight + airglow light the ground ~1e-4 cd/m2 against the full Moon's ~0.013; it read 2.5e-3).
+            cp.terrainErosion = glm::vec4(terrainErosionStrength, terrainErosionBranch,
+                                          terrainNightSkyLight * (exposurePhysical() ? 0.04f : 1.0f), terrainSkyLight);
         }
         cp.cloudOpacityScale = cloudOpacityScale;
         cp.cityLightBlurLod = cityLightBlurLod;
@@ -2424,7 +2432,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.atmosRayleighGain = atmosRayleighGain;
         cp.atmosMieGain = atmosMieGain;
         cp.stormStrength = stormStrength;
-        cp.auroraGain = auroraGain;
+        cp.auroraGain = auroraGain * physNightScale();
         cp.auroraCloudGain = auroraCloudGain;
         cp.auroraGroundGain = auroraGroundGain;
         cp.auroraCoverageFreq = auroraCoverageFreq;
@@ -2979,10 +2987,11 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pc.sunDirECI = sunDirECI;
     pc.satCount = activeSatCount;
     pc.obsECI = obsECI;
-    pc.daySuppression = daySuppression;
+    pc.daySuppression = exposurePhysical() ? 0.0f : daySuppression;   // real brightness: contrast does it
     pc.visThresh = visThresh;
     pc.highlightFlare = highlightFlare;
-    pc.moonSuppression = moonSuppression;
+    pc.moonSuppression = exposurePhysical() ? 0.0f : moonSuppression;
+    pc.fluxScale = exposurePhysical() ? pointFluxScale() : 0.0f;
     pc.moonDirECI = moonDirECI; // computed in updatePositions(), called earlier this frame
     pc.extinctionCoeff = extinctionCoeff;
     pc.sunRefIntensity = sunFlareRefIntensity; // S3: soft ceiling reference, see struct comment
@@ -3022,7 +3031,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cpc.simTime = (float)std::fmod(simSecInDay, 3600.0);
         // Points for the FAR lights, seen from the ground, aircraft and the stratosphere: gone by 150 km up
         // (from orbit the ground's own glitter carries the cities).
-        cpc.gain = citySpriteGainAt();
+        cpc.gain = citySpriteGainAt() * pointFluxScale();   // tuned at the old night; the exposure scales it
         cpc.nightF = 1.0f - glm::smoothstep(-0.105f, 0.02f, sunDirENU.w);
         cpc.capacity = std::max<uint32_t>(activeSatCount, 1u) + kCitySpriteMax;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, citySpritePipeline);
@@ -3907,7 +3916,8 @@ void SatelliteSim::updateSelectedSkyDir()
 float SatelliteSim::skyExposure() const
 {
     const float dayness = glm::clamp((sunDirENU.w + 0.2f) / 1.2f, 0.0f, 1.0f);
-    return glm::mix(10.0f, 1.8f, powf(dayness, 0.4f)) * exp2f(globalExposureEV());
+    (void)dayness;
+    return exposureE;   // review 11: the frame's one exposure (updateExposure)
 }
 
 void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)
@@ -6421,6 +6431,9 @@ void SatelliteSim::cleanup(VkDevice device)
 
     if (meterImg) { vkDestroyImage(device, meterImg, nullptr); vkFreeMemory(device, meterImgMem, nullptr); }
     if (meterBuf) { vkDestroyBuffer(device, meterBuf, nullptr); vkFreeMemory(device, meterBufMem, nullptr); }
+    if (expHistBuf) { vkDestroyBuffer(device, expHistBuf, nullptr); vkFreeMemory(device, expHistMem, nullptr); expHistBuf = VK_NULL_HANDLE; }
+    if (expHistReadBuf) { vkDestroyBuffer(device, expHistReadBuf, nullptr); vkFreeMemory(device, expHistReadMem, nullptr); expHistReadBuf = VK_NULL_HANDLE; expHistMapped = nullptr; }
+    if (radianceReadBuf) { vkDestroyBuffer(device, radianceReadBuf, nullptr); vkFreeMemory(device, radianceReadMem, nullptr); radianceReadBuf = VK_NULL_HANDLE; }
     meterImg = VK_NULL_HANDLE; meterBuf = VK_NULL_HANDLE;
 
     // UC6: screenshot staging buffer, if a capture happened this run (recreated per-capture, so
@@ -6646,7 +6659,7 @@ void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx,
     // ── The exposure meter (every frame): the frame as displayed, its central 60% (most HUD panels
     // sit outside it), blitted down to 64x36 into a linear RGBA8 image (the blit decodes sRGB) and
     // copied to the host; readExposureMeter() reads it after the next fence. ──
-    if (ctx.screenshotSupported && cv2AutoExposure > 0.0f)
+    if (ctx.screenshotSupported && !skyTaaUsedThisFrame && exposureMode >= ExpAuto && exposureMode <= ExpHdrEye)
     {
         if (!meterImg)
         {
@@ -6740,68 +6753,46 @@ void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx,
 // hand-tuned exposure (<= 0) and only by day; at night it eases back to 0.
 void SatelliteSim::readExposureMeter()
 {
-    const double now = glfwGetTime();
-    const float dt = (float)std::clamp(now - meterLastT, 0.0, 0.25);
-    meterLastT = now;
+    // Review 11: the FALLBACK meter, for frames the HDR path did not draw (render scale < 1, the Lite and
+    // Potato skies): the displayed frame's central 60% at 64x36, un-tone-mapped with the exposure it was
+    // drawn at into the same histogram sky_tonemap.comp builds. Clipped pixels read as ~4x white.
+    autoExposureEV = 0.0f;
     if (!meterPending || !meterBufMem || !ctx_)
-    {
-        if (cv2AutoExposure <= 0.0f)
-            autoExposureEV = 0.0f;
         return;
-    }
     meterPending = false;
     void *mapped = nullptr;
     if (vkMapMemory(ctx_->device, meterBufMem, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS || !mapped)
         return;
     const uint8_t *px = (const uint8_t *)mapped;
-    double sum = 0.0, sumLit = 0.0;
-    int clipped = 0, lit = 0;
+    double sum = 0.0;
+    int clipped = 0;
     const int n = (int)(kMeterW * kMeterH);
+    std::memset(expHist, 0, sizeof(expHist));
+    const float e = std::max(exposureE, 1e-30f);
     for (int i = 0; i < n; ++i)
     {
-        const float r = px[i * 4] / 255.0f, g = px[i * 4 + 1] / 255.0f, b = px[i * 4 + 2] / 255.0f;
-        const float l = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+        float x[3];
+        for (int k = 0; k < 3; ++k)
+            x[k] = -logf(1.0f - std::min(px[i * 4 + k] / 255.0f, 0.985f));
+        const float l = 0.2126f * px[i * 4] / 255.0f + 0.7152f * px[i * 4 + 1] / 255.0f + 0.0722f * px[i * 4 + 2] / 255.0f;
         sum += l;
-        if (l > 0.08f) { sumLit += l; ++lit; }
-        if (std::max(r, std::max(g, b)) > 0.96f)
+        if (std::max(px[i * 4], std::max(px[i * 4 + 1], px[i * 4 + 2])) > 245)
             ++clipped;
+        const float L = (0.2126f * x[0] + 0.7152f * x[1] + 0.0722f * x[2]) / e;
+        const int b = (int)std::clamp(std::floor((log2f(std::max(L, 1e-30f)) - kExpHistMinLog2) * kExpHistBinsPerEV), 0.0f,
+                                      (float)(kExpHistBins - 1));
+        expHist[b] += 1;
     }
     vkUnmapMemory(ctx_->device, meterBufMem);
     meterMeanLum = (float)(sum / n);
     meterClipFrac = (float)clipped / (float)n;
-
-    // Daylight at the observer (the sky's own dayness ramp): full control above ~6 deg of Sun.
-    float day = glm::smoothstep(-0.03f, 0.1f, sunDirENU.w);
-    constexpr float kTarget = 0.32f;   // linear mean of the displayed frame (~0.6 in sRGB)
-    float err = log2f(kTarget / std::max(meterMeanLum, 1e-3f)) - 4.0f * std::max(meterClipFrac - 0.04f, 0.0f);
-    float lo = -3.0f * std::clamp(cv2AutoExposure, 0.0f, 1.0f);
-    // From space (2026-09-30, the Artemis II photos): a SPOT meter on the lit Earth. The whole-frame mean
-    // counted black space, so a small bright Earth never darkened: the clouds sat in the tonemap's
-    // shoulder and the dark navy sea read sky-cyan (cloud : ocean 2:1 on screen, 10:1 in the photos).
-    // Above ~100 km the mean is taken over the lit pixels only, toward the photos' 0.42 (their lit-Earth
-    // mean in these units), clipping counted against them, and the gate is lit Earth in view — the Sun at
-    // the observer's own nadir says nothing about a crescent seen from 70,000 km.
-    {
-        const double altM = followActive ? followRadiusM - 6371000.0 : (double)obsHeightOffset;
-        const float sw = glm::smoothstep(100000.0f, 1500000.0f, (float)altM);
-        if (sw > 0.0f && lit > n / 200)
-        {
-            const float litMean = (float)(sumLit / lit);
-            const float litClip = (float)clipped / (float)lit;
-            const float errS = log2f(0.42f / std::max(litMean, 1e-3f)) - 4.0f * std::max(litClip - 0.02f, 0.0f);
-            err = err + (errS - err) * sw;
-            lo = lo + (-5.0f * std::clamp(cv2AutoExposure, 0.0f, 1.0f) - lo) * sw;
-            day = day + (1.0f - day) * sw;
-        }
-    }
-    float want = std::clamp(autoExposureEV + err, lo, 0.0f) * day;
-    // ~1 s to adapt (darkening, like an eye stepping into daylight), a little slower back.
-    const float tau = want < autoExposureEV ? 0.8f : 1.6f;
-    autoExposureEV += (want - autoExposureEV) * (1.0f - expf(-dt / tau));
+    expHistFresh = true;
+    meterFromHdr = false;
 }
 
 void SatelliteSim::finalizeScreenshot()
 {
+    readExposureHistogram();
     readExposureMeter();
     if (!screenshotCopyPending)
         return;
@@ -10517,7 +10508,9 @@ void SatelliteSim::destroySkyLowResResources(VkDevice device)
 // renderScale 1 with the full sky shader (skyTaaWanted); otherwise the inline draw as before.
 bool SatelliteSim::skyTaaWanted() const
 {
-    return skyTaaEnabled && renderScale >= 0.999f && skyTaaPipeline != VK_NULL_HANDLE &&
+    // Review 11: this is the HDR path (the exposure meter and the tone pass live on it), so it runs whether
+    // or not TAA is on; with TAA off the jitter is 0 and the resolve takes the new frame whole.
+    return renderScale >= 0.999f && skyTaaPipeline != VK_NULL_HANDLE && skyTonePipeline != VK_NULL_HANDLE &&
            ctx_ && ctx_->swapTransferDstSupported &&
            (debugDisableMask & (262144u | 524288u)) == 0u;
 }
@@ -10813,11 +10806,13 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
         vkDestroyShaderModule(ctx.device, vert, nullptr);
         vkDestroyShaderModule(ctx.device, frag, nullptr);
     }
+    createSkyToneResources(ctx);
     skyTaaHistValid = false;
 }
 
 void SatelliteSim::destroySkyTaaResources(VkDevice device)
 {
+    destroySkyToneResources(device);
     auto dp = [&](VkPipeline &p) { if (p) vkDestroyPipeline(device, p, nullptr); p = VK_NULL_HANDLE; };
     auto dl = [&](VkPipelineLayout &p) { if (p) vkDestroyPipelineLayout(device, p, nullptr); p = VK_NULL_HANDLE; };
     auto dsl = [&](VkDescriptorSetLayout &p) { if (p) vkDestroyDescriptorSetLayout(device, p, nullptr); p = VK_NULL_HANDLE; };
@@ -10897,12 +10892,13 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
         for (int r = 0; r < 3; ++r)
             R[c][r] = (float)glm::dot(bp[r], bc[c]);
     const glm::mat3 e2p = glm::mat3(skyTaaPrevView) * R;
-    const bool valid = skyTaaHistValid && std::abs(tanHF - skyTaaPrevTanHF) < 1e-4f * tanHF &&
+    const bool valid = skyTaaEnabled && skyTaaHistValid && std::abs(tanHF - skyTaaPrevTanHF) < 1e-4f * tanHF &&
                        std::abs(pc.aspect - skyTaaPrevAspect) < 1e-4f && glm::length(dEnu) < 20000.0;
     SkyTaaPC tp{};
     for (int i = 0; i < 3; ++i)
     {
         tp.c2e[i] = glm::vec4(view3[i], 0.0f);          // camera -> ENU rows = the view's columns
+    tp.c2e[0].w = exposureE / std::max(exposurePrevE, 1e-30f);   // the history is pre-exposed at last frame's
         tp.e2p[i] = glm::vec4(e2p[0][i], e2p[1][i], e2p[2][i], 0.0f);   // row i
     }
     tp.eyeDelta = glm::vec4(glm::vec3(dEnu), valid ? 1.0f : 0.0f);
@@ -10914,10 +10910,8 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
     vkCmdPushConstants(cmd, skyTaaResolvePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(tp), &tp);
     vkCmdDispatch(cmd, (ctx.swapExtent.width + 15) / 16, (ctx.swapExtent.height + 15) / 16, 1);
 
-    // The resolved colour -> the swapchain.
-    ctx.imageBarrier(cmd, skyTaaHistColorImg[1 - k], VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-                     VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
-                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    // The resolved HDR frame -> the tone pass (+ the exposure meter) -> the swapchain.
+    recordSkyTone(cmd, ctx, k);
     ctx.imageBarrier(cmd, ctx.swapImages[imgIdx], 0, VK_ACCESS_TRANSFER_WRITE_BIT,
                      VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -10926,10 +10920,9 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
     blit.srcOffsets[1] = {(int32_t)ctx.swapExtent.width, (int32_t)ctx.swapExtent.height, 1};
     blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.dstOffsets[1] = blit.srcOffsets[1];
-    vkCmdBlitImage(cmd, skyTaaHistColorImg[1 - k], VK_IMAGE_LAYOUT_GENERAL,
+    vkCmdBlitImage(cmd, skyLdrImg, VK_IMAGE_LAYOUT_GENERAL,
                    ctx.swapImages[imgIdx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
-    // Next frame reads what this one wrote; the history for it is the other image.
-    ctx.imageBarrier(cmd, skyTaaHistColorImg[1 - k], VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+    ctx.imageBarrier(cmd, skyLdrImg, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                      VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
@@ -12676,9 +12669,11 @@ void SatelliteSim::updateStars()
         float extinction = powf(10.0f, -0.4f * extinctMag);
 
         // Above the Earth limb: visible. Below: culled.
-        float intensity = (enu.z >= limbSin)
-                              ? rec.rawIntensity * nightFactorEff * extinction * (1.0f - domeVal * kStarPollutionMaxDim) * (1.0f - beamDomeVal * kStarBeamPollutionMaxDim) * (1.0f - moonBrightStar * kStarMoonMaxDim)
-                              : 0.0f;
+        // Real brightness (review 11): the star's flux x the exposure (pointFluxScale); the day, Moon and
+        // pollution gates are Legacy only — a bright sky hides a star by contrast.
+        float intensity = (enu.z < limbSin) ? 0.0f
+                        : exposurePhysical() ? rec.rawIntensity * extinction * pointFluxScale()
+                        : rec.rawIntensity * nightFactorEff * extinction * (1.0f - domeVal * kStarPollutionMaxDim) * (1.0f - beamDomeVal * kStarBeamPollutionMaxDim) * (1.0f - moonBrightStar * kStarMoonMaxDim);
 
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;
@@ -12774,9 +12769,9 @@ void SatelliteSim::updatePlanets()
                                                    (double)ps.distanceAU * kAuM, extinctionCoeff);
         float extinction = powf(10.0f, -0.4f * extinctMag);
 
-        float intensity = (enu.z >= limbSin)
-                              ? rawIntensity * nightFactorEff * extinction * (1.0f - domeVal * kPlanetPollutionMaxDim) * (1.0f - beamDomeVal * kPlanetBeamPollutionMaxDim) * (1.0f - moonBrightP * kPlanetMoonMaxDim)
-                              : 0.0f;
+        float intensity = (enu.z < limbSin) ? 0.0f
+                        : exposurePhysical() ? rawIntensity * extinction * pointFluxScale()
+                        : rawIntensity * nightFactorEff * extinction * (1.0f - domeVal * kPlanetPollutionMaxDim) * (1.0f - beamDomeVal * kPlanetBeamPollutionMaxDim) * (1.0f - moonBrightP * kPlanetMoonMaxDim);
 
         // The shared point-source model (point_style.glsl), as for stars and satellites — a planet
         // reads at the same visual weight as an equally bright star.

@@ -445,4 +445,10 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // Sun), z 1 = a lunar eclipse is possible (near the antisolar point), w the Moon's distance (km).
     vec4  moonCenter;
     vec4  moonMisc;
+    // -- Real brightness (816 -> 832, review 11): x the night sources' scale (1/2400 in the physical exposure
+    // modes: the Moon, city light, airglow, aurora, lightning were all tuned ~2400x their real radiance for the
+    // old fixed night exposure; 1 in Legacy), y 1 = physical (the Milky Way, zodiacal light, Moon, Sun disc as
+    // radiance; no visibility gates or night floor), z kCdPerSimUnit, w the point sources' flux scale (the exposure
+    // relative to the point style's, SatelliteSim::pointFluxScale).
+    vec4  expoPhys;
 } cloud;

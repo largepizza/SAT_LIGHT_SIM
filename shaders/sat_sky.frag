@@ -3093,6 +3093,7 @@ void main() {
 #else
     vec2  cloudUV        = gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH);
     vec4  cloudACenter   = texture(cloudTargetA, cloudUV);
+    cloudACenter.rgb *= 1.0 / kCloudRadPre;   // stored x kCloudRadPre (common.glsl)
     vec4  cloudBCenter   = texture(cloudTargetB, cloudUV);
     // 3x3 box-blurred over cloudTargetA/B's own half-res texels — same idiom as the
     // cloudGroundShadow 5x5 blur further down. A cloud edge is a single evaluation per half-res
@@ -3147,7 +3148,7 @@ void main() {
             float sw = 0.0;
             for (int k = 0; k < 4; ++k) {
                 float w = bw[k] * exp(-abs(lD[k] - lF) * 6.0) + 1e-5;
-                sa += w * texelFetch(cloudTargetA, tp[k], 0).rgb;
+                sa += w * texelFetch(cloudTargetA, tp[k], 0).rgb * (1.0 / kCloudRadPre);
                 sb += w * texelFetch(cloudTargetB, tp[k], 0).rgb;
                 sw += w;
             }
@@ -3301,8 +3302,17 @@ void main() {
     //   - Per-step sun optical depth (sunOD): optical depth from THIS STEP to the SUN,
     //     computed by calling optDepth along the sun direction.
     //   - Phase functions pR/pM: angular weighting of how much scatter points toward the camera.
+    // Review 11: the sample's place in each step is jittered per pixel and frame (IGN + the TAA's Halton phase):
+    // at the midpoints, the Earth's shadow edge in the twilight air stepped from sample to sample and drew
+    // concentric rings across the dusk sky (hidden under the old dark night exposure; the TAA averages it now).
+#if defined(SKY_ENV)
+    const float jA = 0.5;
+#else
+    float jA = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))
+                     + 1.6180340 * (cloud.taaJitter.x + 0.5) + 2.4142136 * (cloud.taaJitter.y + 0.5));
+#endif
     for (int i = 0; i < N_VIEW; ++i) {
-        vec3  sp  = obsPos + dir * (tStart + (float(i) + 0.5) * segLen);  // midpoint of this atmosphere step
+        vec3  sp  = obsPos + dir * (tStart + (float(i) + jA) * segLen);  // a jittered point of this atmosphere step
         float len = length(sp);
         if (len < R_EARTH) sp *= R_EARTH / len;  // clamp underground samples to Earth surface
         float h = max(0.0, length(sp) - R_EARTH);  // altitude above sea level (metres)
@@ -3348,7 +3358,7 @@ void main() {
             vec3  attnCam   = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             accumCity += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0));
             accumCityFront += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0))
-                            * (1.0 - smoothstep(0.9 * tCloudFrontM, 1.1 * tCloudFrontM, tStart + (float(i) + 0.5) * segLen));
+                            * (1.0 - smoothstep(0.9 * tCloudFrontM, 1.1 * tCloudFrontM, tStart + (float(i) + jA) * segLen));
         }
 #else
         {
@@ -3362,7 +3372,7 @@ void main() {
             vec3  attnCam   = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             accumCity += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0));
             accumCityFront += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0))
-                            * (1.0 - smoothstep(0.9 * tCloudFrontM, 1.1 * tCloudFrontM, tStart + (float(i) + 0.5) * segLen));
+                            * (1.0 - smoothstep(0.9 * tCloudFrontM, 1.1 * tCloudFrontM, tStart + (float(i) + jA) * segLen));
 
             // Airglow (C15): green (96km) + sodium (90km) bands both fall inside this loop's
             // own altitude range (h spans 0..~100km along an open-sky ray), so they ride these
@@ -3405,7 +3415,7 @@ void main() {
             shR += aC * densR; shM += dot(aC, vec3(1.0 / 3.0)) * densM;
             float fwS = clamp((tAirFrontM - tStart - float(i) * segLen) / segLen, 0.0, 1.0);   // share of the step in front
             shRF += aC * densR * fwS; shMF += dot(aC, vec3(1.0 / 3.0)) * densM * fwS;
-            shT += densR * (tStart + (float(i) + 0.5) * segLen);
+            shT += densR * (tStart + (float(i) + jA) * segLen);
             shD += densR;
             continue;
         }
@@ -3479,10 +3489,10 @@ void main() {
     // above). nightFactor fades it out through the day — cheap local gate rather than reusing
     // any later-computed day/night variable, since none exists yet at this point in main().
     float nightFactor = 1.0 - smoothstep(-0.05, 0.1, sunDirENU.w);
-    color += accumCity * vec3(1.0, 0.72, 0.42) * nightFactor * kNightGlowScale;
+    color += accumCity * vec3(1.0, 0.72, 0.42) * nightFactor * kNightGlowScale * cloud.expoPhys.x;
     // Only for DISTANT clouds (the horizon band it is for): a near cloud seen from above has most of
     // the glow below it, and its noisy distance moved the split through the dense low air every frame.
-    vec3 cityGlowFront = accumCityFront * vec3(1.0, 0.72, 0.42) * nightFactor * kNightGlowScale
+    vec3 cityGlowFront = accumCityFront * vec3(1.0, 0.72, 0.42) * nightFactor * kNightGlowScale * cloud.expoPhys.x
                        * smoothstep(40000.0, 150000.0, tCloudFrontM);
 
     // C12 follow-up #41: replaced the directional (azimuth-sector-dome-based) wash from #39/#40
@@ -3505,7 +3515,7 @@ void main() {
     // doesn't separately check the OBSERVER's own day/night).
 #ifndef SKY_ENV
     color += vec3(1.0, 0.95, 0.9) * cloud.beamProximityGlow * cloud.beamGlowBleedGain * kBeamSkyGlowScale
-           * nightFactor;
+           * nightFactor * cloud.expoPhys.x;
 #endif
 
     // ── Airglow (C15) ─────────────────────────────────────────────────────────
@@ -3538,7 +3548,8 @@ void main() {
     const float kMoonTexRotDeg = 180.0;
     // Its true topocentric angular radius (x "Moon size"; the CPU's ephemeris) — it was a fixed 3x disc.
     float kMoonAngR = max(cloud.moonCenter.w, 1e-5);
-    const float kMoonBright    = 0.54;
+    // Real brightness (review 11): the full Moon's disc averages ~2500 cd/m2 (0.061 here); 0.54 drew ~11400.
+    float kMoonBright = mix(0.54, 0.118, cloud.expoPhys.y);
     // Set below on an actual ray-disc hit; used later to block the Milky Way skybox (and
     // nothing else — stars are culled per-vertex in star_point.vert) from showing through the
     // Moon's opaque disc on a clear-sky ray. Terrain/cloud occluding the Moon itself already
@@ -3645,6 +3656,9 @@ void main() {
             uint fluxBits = glowBuf.bins[gi];
             if (fluxBits == 0u) continue;
             float flux   = uintBitsToFloat(fluxBits);
+            // Real brightness (review 11): the bins hold effectFlare x the exposure's point scale (expoPhys.w);
+            // the glow itself was tuned at the old night exposure (x the night scale below).
+            if (cloud.expoPhys.y > 0.5) flux /= max(cloud.expoPhys.w, 1e-12);
             // Derive bin-centre ENU direction from bin index.
             // azBin=0 is North, increasing toward East (matches atan(x,y) convention).
             float az     = (float(gi / 8) + 0.5) * (TWO_PI / 8.0);
@@ -3666,7 +3680,8 @@ void main() {
             float hT     = (fd.z < 0.0) ? max((R_EARTH + obsEffH) * sqrt(1.0 - fd.z * fd.z) - R_EARTH, 0.0) : obsEffH;
             float amS    = (fd.z < 0.0) ? 71.0 : min(1.0 / max(fd.z, 1e-3), 35.5);
             float satW   = 1.0 - exp(-H_R * exp(-hT / H_R) * amS / 5000.0);
-            color += hClip * gElev * glow * intens * 0.06 * vec3(1.0, 0.96, 0.88) * flareAttn * min(atmosW, satW);
+            color += hClip * gElev * glow * intens * 0.06 * vec3(1.0, 0.96, 0.88) * flareAttn * min(atmosW, satW)
+                   * cloud.expoPhys.x * (cloud.expoPhys.y > 0.5 ? 0.003 : 1.0);   // real: ~1e-5 cd/m2, a tenth of the natural sky
         }
     }
 #endif
@@ -4267,7 +4282,7 @@ void main() {
         // the lamps', and the map's green made whole suburbs glow green at night (user snapshot 10).
         vec3  poolAlb  = vec3(clamp(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)) / 0.12, 0.0, 4.0));
         float poolLamb = pow(clamp(dot(shadingN, normalize(hitPt)), 0.0, 1.0), 1.5);
-        vec3 tNight     = (cityLights + cityPool * poolAlb * poolLamb * terrainAO) * (0.12 * (1.0 - twilightFrac));
+        vec3 tNight     = (cityLights + cityPool * poolAlb * poolLamb * terrainAO) * (0.12 * cloud.expoPhys.x * (1.0 - twilightFrac));
         // Night light ON the albedo (terrain v2 P1): the moonlit sky (moonlight scattered by the air —
         // ~0.15 of the direct Moon on a flat face, like the Sun's diffuse share) and the moonless
         // night sky (starlight + airglow), "Night sky light" (cloud.terrainErosion.z) as a fraction of
@@ -4570,6 +4585,7 @@ void main() {
                     // The target holds the clouds without the air in front of them (the sky pass adds that as
                     // airFront): a far cloud is mostly that air, so it leans back to the clear march by its distance.
                     vec4  rCA  = texture(cloudTargetA, reflScreenUV);
+                    rCA.rgb *= 1.0 / kCloudRadPre;
                     float rKf  = 1.0 - exp(-abs(rCA.a) / 40.0);            // alpha: signed distance, km
                     reflColor  = reflColor * mix(reflCloudT, vec3(1.0), rKf) + rCA.rgb * (1.0 - rKf);
                     reflTerrainOccl = (texture(sceneDepthTex, reflScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
@@ -4658,9 +4674,13 @@ void main() {
                     float extinctionMwRefl =
                         pow(10.0, -0.4 * atmExtinctionMag(hitPt, reflDir, 0.0, cloud.extinctionCoeff));
 
-                    reflColor += rMwColor * darkSkyVis(rMwObjMag, rMwSkyBgMag)
-                               * extinctionMwRefl * reflCloudOccl * reflTerrainOccl
-                               * cloud.oceanMwReflGain * featureReflFade;
+                    if (cloud.expoPhys.y > 0.5)   // real brightness (review 11): its radiance, no visibility gate
+                        reflColor += rMwColor / max(rMwLum, 1e-6) * (108000.0 * pow(10.0, -0.4 * rMwObjMag) / cloud.expoPhys.z)
+                                   * extinctionMwRefl * reflCloudOccl * reflTerrainOccl * featureReflFade;
+                    else
+                        reflColor += rMwColor * darkSkyVis(rMwObjMag, rMwSkyBgMag)
+                                   * extinctionMwRefl * reflCloudOccl * reflTerrainOccl
+                                   * cloud.oceanMwReflGain * featureReflFade;
                 }
 #endif
             }
@@ -4958,11 +4978,16 @@ void main() {
     color += envAurora(obsPos, dir, tSurface, enuX, enuY, enuZ, sunDirECEF);
 #endif
 
-    // ── Auto-exposure tone mapping ─────────────────────────────────────────────
+    // ── Exposure + tone mapping ─────────────────────────────────────────────────
+    // The exposure is the CPU's (review 11, "real brightness and metering"): cloud.exposureScale is the whole
+    // multiplier from scene radiance to the tone curve's input, chosen by the exposure mode (manual EV100,
+    // auto = the HDR histogram meter, HDR full / human eye) — SatelliteSim::skyExposure() is the same number.
+    // The old EXPOSURE_NIGHT/DAY ramp on the Sun at the observer lives on only as the "legacy" mode.
     float dayness  = clamp((sunDirENU.w + 0.2) / 1.2, 0.0, 1.0);
+#ifdef SKY_ENV
     float exposure = mix(EXPOSURE_NIGHT, EXPOSURE_DAY, pow(dayness, 0.4));
-#ifndef SKY_ENV
-    exposure *= cloud.exposureScale;              // "Exposure (EV)"; SatelliteSim::skyExposure() mirrors it
+#else
+    float exposure = cloud.exposureScale;
 #endif
 #ifdef SKY_ENV
     // HDR out: keep the radiance; the display-space terms below accumulate separately and are
@@ -4993,11 +5018,13 @@ void main() {
         color /= mix(vec3(1.0), clamp(wb, vec3(0.4), vec3(2.5)), k);
     }
 #endif
-    {
-        vec3 xe = exposure * color;
-        color = mix(vec3(1.0) - exp(-xe), vec3(1.0) - 1.0 / (vec3(1.0) + xe + 0.5 * xe * xe),
-                    cloud.highlightRolloff);
-    }
+    // Review 11: the tone curve runs ONCE, at the end of main(). Here the radiance so far is kept pre-exposed;
+    // the terms below add either RADIANCE (hdrAdd: the Milky Way, zodiacal light, the Moon's glow, the Sun's
+    // disc and glare — real brightness in the physical modes) or display-space camera artifacts (`color`: the
+    // lens flare; in Legacy the old display-space terms too). The HDR variant (the offscreen path: TAA, then
+    // sky_tonemap.comp) writes hdrPre + hdrAdd x exposure + color; the inline variants tone-map that here.
+    vec3 hdrPre = color * exposure;
+    color = vec3(0.0);
     // ── Orbit colour grade (2026-09-30, against the Artemis II photographs) ───────────────────────
     // Seen from space, a camera's filmic response is far steeper than this tonemap (tuned by eye for the
     // ground): in the Artemis II frames sunlit cloud is ~10x the open sea in linear light, here ~2.5x, so
@@ -5007,19 +5034,23 @@ void main() {
     // Review 11: only where the ground (or the limb, for a ray that misses it) is SUNLIT. The curve was fitted
     // to the day side; applied at night its x^2.2 crushed city light, moonlit cloud, airglow and aurora ~10x
     // (the night side from orbit read nearly black; the user's report). Faded over -6 .. +3 deg of Sun there.
+    float gradeW = 0.0;
     if (cloud.taaJitter.z > 0.0) {
         vec3  pG   = obsPos + dir * ((tSurface > 0.0) ? tSurface : max(-dot(obsPos, dir), 0.0));
         float dayG = smoothstep(-0.10, 0.05, dot(normalize(pG), sunDir));
-        vec3  g  = min(1.16 * pow(max(color, vec3(0.0)), vec3(2.2)), vec3(1.0));
-        float lg = dot(g, vec3(0.2126, 0.7152, 0.0722));
-        g = mix(vec3(lg), g, 0.7);
-        color = mix(color, g, cloud.taaJitter.z * dayG);
+        gradeW = cloud.taaJitter.z * dayG;       // applied after the curve (end of main / sky_tonemap.comp)
     }
 
     // ── Night ambient floor ────────────────────────────────────────────────────
+    // Legacy only. Real brightness (review 11): pitch black is pitch black; the night sky's own light is the
+    // airglow, starlight and the Milky Way.
     float nightAmt = 1.0 - clamp(dayness * 5.0, 0.0, 1.0);
-    color += vec3(0.0008, 0.001, 0.002) * nightAmt;
+    if (cloud.expoPhys.y < 0.5)
+        color += vec3(0.0008, 0.001, 0.002) * nightAmt;
 #endif
+    vec3 hdrAdd = vec3(0.0);                      // radiance added after the tone point (see above)
+    // Radiance of a surface brightness in mag/arcsec^2, in these units (10.8e4 cd/m2 at mag 0).
+    const float kMagArcsec0 = 108000.0;
 
     // ── Milky Way skybox ───────────────────────────────────────────────────────
     // Diffuse galactic-plane glow behind the discrete star catalog (star_point.vert/frag).
@@ -5158,11 +5189,21 @@ void main() {
                           * (tSurface > 0.0 ? 0.0 : 1.0) // blocked by terrain/ocean
                           * (moonDiscHit ? 0.0 : 1.0)    // blocked by the Moon's own opaque disc
                           * pow(clamp(cloudBlock, 0.0, 1.0), kMWCloudSuppressPower);
+        if (cloud.expoPhys.y > 0.5) {
+            // Real brightness (review 11): the panorama's surface brightness (the tuned texel -> mag/arcsec^2
+            // mapping above, which undoes the photograph's stretch) as radiance, dimmed only by what is in the
+            // way. The night/moon/pollution/glare gates are gone: a bright sky hides it by contrast, the eye
+            // mode's threshold (sky_tonemap.comp) where the eye would lose it.
+            float visPhys = extinctionMW * (tSurface > 0.0 ? 0.0 : 1.0) * (moonDiscHit ? 0.0 : 1.0)
+                          * clamp(cloudBlock, 0.0, 1.0);
+            hdrAdd += mwColor / max(mwLum, 1e-6) * (kMagArcsec0 * pow(10.0, -0.4 * mwObjMag) / cloud.expoPhys.z) * visPhys;
+        } else {
 #ifndef SKY_ENV
-        color += mwColor * visibility * cloud.exposureScale;   // the global exposure (SatelliteSim.h)
+            color += mwColor * visibility * cloud.exposureScale;   // the global exposure (SatelliteSim.h)
 #else
-        color += mwColor * visibility;
+            color += mwColor * visibility;
 #endif
+        }
 #ifdef SKY_ENV
         // The stars, under the same gates as the Milky Way bar the dark-sky one (the main view's stars
         // are the point model's alone). A reflection's pixels are the screen's; elsewhere this
@@ -5304,7 +5345,13 @@ void main() {
                              * pow(clamp(cloudBlock, 0.0, 1.0), kZodCloudSuppressPower)
                              * darkSkyVis(zodObjMag, zodSkyBgMag);
 
-        color += zodCol * zodShape * cloud.eclipticPoleENU.w * visibilityZod * cloud.exposureScale;
+        if (cloud.expoPhys.y > 0.5) {
+            float visPhysZ = extinctionZ * (tSurface > 0.0 ? 0.0 : 1.0) * (moonDiscHit ? 0.0 : 1.0) * clamp(cloudBlock, 0.0, 1.0);
+            hdrAdd += zodCol / max(dot(zodCol, vec3(0.2126, 0.7152, 0.0722)), 1e-6)
+                    * (kMagArcsec0 * pow(10.0, -0.4 * zodObjMag) / cloud.expoPhys.z) * visPhysZ;
+        } else {
+            color += zodCol * zodShape * cloud.eclipticPoleENU.w * visibilityZod * cloud.exposureScale;
+        }
     }
 #endif
 
@@ -5313,7 +5360,10 @@ void main() {
     float moonIllum = moonDirENU.w;
     // Atmosphere weight: glow and ambient fade to zero above the atmosphere.
     float atmosWeight = 1.0 - exp(-odR_cam / 5000.0);
-    color += vec3(0.0025, 0.003, 0.004) * moonIllum * moonEl * nightAmt * atmosWeight;
+    // Physical modes: these display-space terms were tuned at the old night exposure (10): / 10 is their
+    // radiance in the old units, x the night scale their real one (the full Moon's sky, ~3e-3 cd/m2).
+    float moonToHdr = cloud.expoPhys.y > 0.5 ? cloud.expoPhys.x / 10.0 : 0.0;
+    vec3  moonGlowD = vec3(0.0025, 0.003, 0.004) * moonIllum * moonEl * (cloud.expoPhys.y > 0.5 ? 1.0 : nightAmt) * atmosWeight;
 
     // ── Moon glow: tight corona + wide diffuse halo (atmosphere-only) ─────────
     if (moonDirENU.z > limbZ - 0.05) {
@@ -5322,19 +5372,22 @@ void main() {
         float moonFade  = smoothstep(limbZ - 0.006, limbZ + 0.002, moonDirENU.z);
 
         // Tight inner corona — peaks at disc edge, falls off quickly.
-        float corona = exp(-moonAngle * moonAngle / (2.0 * 0.012 * 0.012)) * nightAmt;
-        color += hClip * moonFade * corona * vec3(0.92, 0.94, 1.00) * moonIllum * 0.04 * atmosWeight;
+        float corona = exp(-moonAngle * moonAngle / (2.0 * 0.012 * 0.012)) * (cloud.expoPhys.y > 0.5 ? 1.0 : nightAmt);
+        moonGlowD += hClip * moonFade * corona * vec3(0.92, 0.94, 1.00) * moonIllum * 0.04 * atmosWeight;
 
         // Wide diffuse halo — scattered moonlight glow, atmosphere-only.
         float scale = 100.0;
         float halo  = exp(-moonAngle * moonAngle / (2.0 * 0.018 * 0.018 * scale * scale));
-        color += hClip * moonFade * halo * vec3(0.88, 0.90, 1.00) * moonIllum * 0.012 * atmosWeight;
+        // x 0.2 in the physical modes: the full Moon's zenith sky read 0.018 cd/m2 against ~3e-3 (review 11).
+        moonGlowD += hClip * moonFade * halo * vec3(0.88, 0.90, 1.00) * moonIllum * 0.012 * atmosWeight
+                   * (cloud.expoPhys.y > 0.5 ? 0.2 : 1.0);
     }
+    if (cloud.expoPhys.y > 0.5) hdrAdd += moonGlowD * moonToHdr; else color += moonGlowD;
 
 #ifdef SKY_ENV
     // No sun disc or lens flare (the mesh's GGX sun lobe is the glint) and no depth attachment. The
     // display-space terms go back to radiance through the VIEWER's exposure (header note).
-    vec3 envOut = max(envHdr + color / envViewExposure, vec3(0.0));
+    vec3 envOut = max(envHdr + hdrAdd + color / envViewExposure, vec3(0.0));
 #ifdef SKY_REFL
     outColor = vec4(envOut * reflWeight, 1.0);
 #else
@@ -5384,10 +5437,25 @@ void main() {
         float tot = pow(1.0 - obsSunF, 6.0);                   // totality
         float rays = 0.6 + 0.4 * sin(atan(dot(dir, cross(sunDir, vec3(0.0, 0.0, 1.0))), dot(dir, vec3(0.0, 0.0, 1.0))) * 7.0);
         float solarCorona = tot * exp(-max(angle - kSunAngR, 0.0) / (0.5 * kSunAngR * rays)) * (moonDiscHit ? 0.0 : 1.0) * sunGate;
-        color += (discVis * geomFade * sunCol
-                  + glare  * geomFade * sunCol * obsSunF
-                  + corona * geomFade * sunCol * 0.12 * obsSunF
-                  + solarCorona * geomFade * vec3(0.9, 0.95, 1.0) * 0.03) * cloudBlock;
+        if (cloud.expoPhys.y > 0.5) {
+            // Real brightness (review 11): the disc at the Sun's radiance (1.6e9 cd/m2) through the air to the
+            // eye (the Chapman column, as the white balance reads it); the glare and corona are the camera's
+            // scatter around it, 2.4e-5 of the disc (the old display-space look at a daylight exposure); the
+            // eclipse corona ~1e-6 of the disc (~the full Moon's brightness).
+            float rS = R_EARTH + max(obsEffH, 0.0);
+            vec3  sunT = exp(-(BETA_R * (atmColumnInf(rS, sunDirENU.z, H_R) * H_R)
+                              + BETA_M * 1.1 * (atmColumnInf(rS, sunDirENU.z, H_M) * H_M)));
+            vec3  discRad = sunT * (1.6e9 / cloud.expoPhys.z);
+            hdrAdd += (discVis * geomFade * discRad
+                       + glare  * geomFade * discRad * 2.4e-5 * obsSunF
+                       + corona * geomFade * discRad * (2.4e-5 * 0.12) * obsSunF
+                       + solarCorona * geomFade * vec3(0.9, 0.95, 1.0) * (1.6e3 / cloud.expoPhys.z)) * cloudBlock;
+        } else {
+            color += (discVis * geomFade * sunCol
+                      + glare  * geomFade * sunCol * obsSunF
+                      + corona * geomFade * sunCol * 0.12 * obsSunF
+                      + solarCorona * geomFade * vec3(0.9, 0.95, 1.0) * 0.03) * cloudBlock;
+        }
     }
 
     // ── Camera lens flares (post-tonemap) ─────────────────────────────────────
@@ -5427,6 +5495,16 @@ void main() {
         if (pc.sunDirENU.w > limbZ - 0.05) {
             float above        = pc.sunDirENU.w - limbZ;
             float sunIntensity = 10.0 * clamp(above / 0.5, 0.0, 1.0);
+#ifndef SKY_ENV
+            if (cloud.expoPhys.y > 0.5) {
+                // A camera's ghosts scale with the Sun's EXPOSED brightness: 10 at a daylight exposure (E ~2,
+                // the disc ~3.9e4 here), through the air's transmittance; capped.
+                float rS = R_EARTH + max(obsEffH, 0.0);
+                float sT = exp(-dot(BETA_R * (atmColumnInf(rS, pc.sunDirENU.z, H_R) * H_R)
+                                   + BETA_M * 1.1 * (atmColumnInf(rS, pc.sunDirENU.z, H_M) * H_M), vec3(0.2126, 0.7152, 0.0722)));
+                sunIntensity = min(exposure * sT * (1.6e9 / cloud.expoPhys.z) * 1.27e-4, 20.0) * clamp(above / 0.05, 0.0, 1.0);
+            }
+#endif
             vec3 sunCam = mat3(pc.skyView) * normalize(pc.sunDirENU.xyz);
             if (sunCam.z < -0.01) {
                 vec2 sunUV    = vec2(sunCam.x, -sunCam.y) / (-sunCam.z * tanHF * 2.0);
@@ -5458,8 +5536,30 @@ void main() {
         color += flareAccum;
     }
 
-    outColor = vec4(color, 1.0);
+    vec3 xExp = hdrPre + hdrAdd * exposure;       // the tone curve's input
+#ifdef SKY_TAA
+    // Pre-exposed radiance + the display-space terms (fp16-safe); alpha = the orbit grade's weight, or -1 for a
+    // debug view (sky_tonemap.comp passes it through untouched).
+    outColor = vec4(min(xExp + color, vec3(60000.0)), gradeW);
+    if (terrainDebugActive) outColor = vec4(terrainDebugColor, -1.0);
+#else
+    // The inline variants (render scale < 1, the Lite sky): the same curve and grade as sky_tonemap.comp.
+    vec3 tm;
+    if (cloud.expoPhys.y > 0.5) {               // the physical modes' filmic curve (sky_tonemap.comp's acesFit)
+        vec3 xa = xExp * 0.6;
+        tm = clamp((xa * (2.51 * xa + 0.03)) / (xa * (2.43 * xa + 0.59) + 0.14), 0.0, 1.0);
+    } else
+        tm = mix(vec3(1.0) - exp(-xExp), vec3(1.0) - 1.0 / (vec3(1.0) + xExp + 0.5 * xExp * xExp),
+                 cloud.highlightRolloff);
+    if (gradeW > 0.0) {
+        vec3  g  = min(1.16 * pow(max(tm, vec3(0.0)), vec3(2.2)), vec3(1.0));
+        float lg = dot(g, vec3(0.2126, 0.7152, 0.0722));
+        g = mix(vec3(lg), g, 0.7);
+        tm = mix(tm, g, gradeW);
+    }
+    outColor = vec4(tm + color, 1.0);
     if (terrainDebugActive) outColor = vec4(terrainDebugColor, 1.0);
+#endif
 
     // Unified scene depth (include/depth.glsl) for the passes that follow: the TRUE distance to the
     // first opaque surface — terrain, else ocean (tSeaLvl covers ocean pixels with no terrain

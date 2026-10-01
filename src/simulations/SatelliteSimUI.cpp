@@ -1102,6 +1102,65 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
         CLAY(CLAY_ID("SBDiv4"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
                                  .backgroundColor = Pal::divider}) {}
 
+        // ── Exposure (review 11): mode, -, value, + ───────────────────────
+        {
+            if (exposureMode == ExpManual)
+                snprintf(expValueStr, sizeof(expValueStr), "EV %.1f", exposureManualEV100);
+            else if (std::fabs(cv2ExposureEV) < 0.05f)
+                snprintf(expValueStr, sizeof(expValueStr), "+0.0 EV");
+            else
+                snprintf(expValueStr, sizeof(expValueStr), "%+.1f EV", cv2ExposureEV);
+            Clay_String expModeStr{false, (int32_t)strlen(exposureModeLabel(exposureMode)), exposureModeLabel(exposureMode)};
+            Clay_String expValStr{false, (int32_t)strlen(expValueStr), expValueStr};
+            static const char *kModeTips[] = {
+                "Exposure: Manual - a fixed EV100 (+/- in thirds of a stop). Click to change mode",
+                "Exposure: Auto - metered like a camera; night stays darker than day. Click to change mode",
+                "Exposure: HDR - metered, with local adaptation: bright and dark areas both readable. Click to change mode",
+                "Exposure: Human eye - metered within an eye's adaptation, local adaptation, night vision. Click to change mode",
+                "Exposure: Legacy - the old fixed day/night exposure (testing). Click to change mode"};
+            auto smallBtn = [&](Clay_ElementId id, bool &hov, Clay_String label, const char *tip, int w, auto onClick) {
+                CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED((float)w), CLAY_SIZING_FIXED(20)},
+                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                          .backgroundColor = hov ? Pal::btnHover : Pal::btnIdle,
+                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
+                {
+                    bool n = Clay_Hovered();
+                    sndRollover(n, hov);
+                    sndClick(n, inp.lmbPressed);
+                    if (n && inp.lmbPressed)
+                        onClick();
+                    hov = n;
+                    ui.tooltip(inp, n, tip, fs(11));
+                    CLAY_TEXT(label, CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(10),
+                                                       .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                }
+            };
+            smallBtn(CLAY_ID("SBExpMode"), hovExpMode, expModeStr, kModeTips[std::clamp(exposureMode, 0, 4)], 40,
+                     [&] { cycleExposureMode(); });
+            smallBtn(CLAY_ID("SBExpMinus"), hovExpMinus, CLAY_STRING("-"),
+                     exposureMode == ExpManual ? "Darker: EV100 + 1/3" : "Darker: exposure shift - 1/3 stop", 20,
+                     [&] { stepExposure(-1); });
+            CLAY(CLAY_ID("SBExpValue"), {.layout = {.sizing = {CLAY_SIZING_FIXED(56), CLAY_SIZING_FIT(0)},
+                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+            {
+                bool n = Clay_Hovered();
+                if (n && inp.scrollY != 0.0f)
+                    stepExposure(inp.scrollY > 0.0f ? 1 : -1);
+                static char expTip[96];
+                snprintf(expTip, sizeof(expTip), "%s (now EV100 %.1f). Scroll to adjust",
+                         exposureMode == ExpManual ? "Manual EV100" : "Exposure shift", exposureEV100);
+                ui.tooltip(inp, n, expTip, fs(11));
+                CLAY_TEXT(expValStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12),
+                                                       .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            }
+            smallBtn(CLAY_ID("SBExpPlus"), hovExpPlus, CLAY_STRING("+"),
+                     exposureMode == ExpManual ? "Brighter: EV100 - 1/3" : "Brighter: exposure shift + 1/3 stop", 20,
+                     [&] { stepExposure(1); });
+        }
+
+        CLAY(CLAY_ID("SBDivExp"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
+                                   .backgroundColor = Pal::divider}) {}
+
         // ── FPS ───────────────────────────────────────────────────────────
         CLAY(CLAY_ID("SBFps"), {.layout = {
                                     .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIT(0)},
@@ -6222,6 +6281,24 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             skyTaaEnabled = d.value("sky_taa", skyTaaEnabled);
             skyTaaWeightStill = std::clamp(d.value("sky_taa_weight", skyTaaWeightStill), 0.02f, 1.0f);
             skyTaaWeightMoving = std::clamp(d.value("sky_taa_weight_moving", skyTaaWeightMoving), 0.02f, 1.0f);
+            // Exposure (review 11): the mode by name ("manual", "auto", "hdr", "eye", "legacy") or index.
+            if (d.contains("exposure_mode"))
+            {
+                const auto &m = d["exposure_mode"];
+                if (m.is_number())
+                    exposureMode = std::clamp(m.get<int>(), 0, (int)ExpLegacy);
+                else if (m.is_string())
+                {
+                    const std::string v = m.get<std::string>();
+                    for (int i = 0; i <= (int)ExpLegacy; ++i)
+                        if (v == exposureModeKey(i))
+                            exposureMode = i;
+                }
+            }
+            exposureManualEV100 = std::clamp(d.value("exposure_manual_ev100", exposureManualEV100), -12.0f, 24.0f);
+            hdrLocalStrength = std::clamp(d.value("exposure_hdr_strength", hdrLocalStrength), 0.0f, 1.0f);
+            eyeLocalStrength = std::clamp(d.value("exposure_eye_strength", eyeLocalStrength), 0.0f, 1.0f);
+            eyeNightVision = std::clamp(d.value("exposure_eye_night", eyeNightVision), 0.0f, 1.0f);
             int fpsCapVal = d.value("fps_cap_mode", (int)fpsCapMode);
             fpsCapMode = (fpsCapVal >= 0 && fpsCapVal <= 4) ? (FpsCapMode)fpsCapVal : FpsCapMode::VSync;
             // UC1: default to Custom (NOT a device-seeded preset) when the key is simply absent —
@@ -6717,6 +6794,11 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sky_taa", skyTaaEnabled},
         {"sky_taa_weight", skyTaaWeightStill},
         {"sky_taa_weight_moving", skyTaaWeightMoving},
+        {"exposure_mode", exposureModeKey(exposureMode)},
+        {"exposure_manual_ev100", exposureManualEV100},
+        {"exposure_hdr_strength", hdrLocalStrength},
+        {"exposure_eye_strength", eyeLocalStrength},
+        {"exposure_eye_night", eyeNightVision},
         {"fps_cap_mode", (int)fpsCapMode},
         {"graphics_preset", (int)graphicsPreset},
         {"show_advanced_settings", showAdvancedSettings},
