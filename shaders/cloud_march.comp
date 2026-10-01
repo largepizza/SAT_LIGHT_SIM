@@ -954,12 +954,24 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
 
     float auroraVisSuppress = darkSkyVis(auroraObjMag, auroraSkyBgMag)
                              * (1.0 - moonBrightAurora * kAuroraMoonMaxDim);
+    // Review 12: the gate judges the aurora against the GROUND observer's sky along the ray; from above
+    // the atmosphere the background behind it is the dark Earth or space. Faded out over 40-100 km of eye
+    // altitude (looking down, the ray's "sky" was below the horizon and the gate hid the aurora over land).
+    auroraVisSuppress = mix(auroraVisSuppress, 1.0, smoothstep(40000.0, 100000.0, obsEffH));
 
     // Atmospheric extinction along THIS ray (atmosphere.glsl), to infinity — the aurora sits above
     // the air. From orbit a horizon-grazing ray still crosses a long real column; from the ground
     // or an aircraft the column above the observer is what counts. Same function as the stars,
     // satellites and Milky Way.
-    float extinctionAurora = pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, 0.0, cloud.extinctionCoeff));
+    // Review 12: only the air IN FRONT of the aurora. From above the shell that is the stretch to its lower
+    // edge (95 km: almost no air); "to infinity" ran a downward ray through the whole atmosphere into the
+    // ground, and the aurora over land from orbit was extinguished by air behind it.
+    float extL = 0.0;
+    if (obsEffH > kAuroraShellInnerM) {
+        vec2 tIx = raySphere(obsPos, dir, R_EARTH + kAuroraShellInnerM);
+        extL = (tIx.x > 0.0) ? tIx.x : 0.0;
+    }
+    float extinctionAurora = pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, extL, cloud.extinctionCoeff));
 
     // accumAurora is already integrated (each auroraMarchSegment call scales by its own step
     // length) — do not multiply by a step length again here. auroraScaled is that same

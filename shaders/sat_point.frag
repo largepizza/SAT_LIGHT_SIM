@@ -85,7 +85,7 @@ void main() {
         // satellites join the same existing visual language instead of a new one.
         // Both only for cloud NEARER than the satellite (include/cloud_occlusion.glsl).
         const float kSatCloudSuppressPower = 2.0;
-        cloudVis = cloudPointVisibility(cloudA.a, cloudBlock, fragRangeM, kSatCloudSuppressPower);
+        cloudVis = cloudPointVisibilityAt(cloudTargetA, cloudTargetB, cloudUV, fragRangeM, kSatCloudSuppressPower);
     }
 
     // ── Terrain occlusion ─────────────────────────────────────────────────────

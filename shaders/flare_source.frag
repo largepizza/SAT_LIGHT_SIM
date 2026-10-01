@@ -46,7 +46,7 @@ void main() {
     float cloudBlockV   = dot(cloudB.rgb, vec3(1.0 / 3.0));
     // Opaque cloud / terrain hide the source only when NEARER than it (the unified-depth rule,
     // include/depth.glsl) — from orbit, a satellite in front of the Earth keeps its glow.
-    float cloudVis = cloudPointVisibility(cloudA.a, cloudBlockV, fragRangeM, 1.0);
+    float cloudVis = cloudPointVisibilityAt(cloudTargetA, cloudTargetB, uv, fragRangeM, 1.0);
 
     float terrainVis = (texture(sceneDepthTex, uv).r < fragRangeM) ? 0.0 : 1.0;
 

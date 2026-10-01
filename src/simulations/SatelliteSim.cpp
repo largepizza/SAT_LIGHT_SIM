@@ -1347,9 +1347,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 rate *= 10.0f;
             if (fine)
                 rate *= 0.1f;
+            // The offset is a height above SEA level and the eye sits at max(ground, offset): an
+            // offset left under the ground (0 after the intro, or walking uphill) had to be climbed
+            // out of invisibly before Q moved the eye at all. Start every vertical move from the
+            // ground, and never go below it.
+            const float floorH = std::max(0.0f, moveGround);
+            obsHeightOffset = std::max(obsHeightOffset, floorH);
             obsHeightOffset += (raiseAmt - lowerAmt) * rate * dt;
-            // Clamp so observer never sinks below the terrain surface (only reset via Z)
-            obsHeightOffset = std::max(0.0f, obsHeightOffset);
+            obsHeightOffset = std::max(floorH, obsHeightOffset);
         }
 
         // Zoom in/out (held): narrows/widens FOV at a fixed rate. Independent of boost/fine —

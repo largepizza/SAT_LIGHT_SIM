@@ -18,4 +18,20 @@ float cloudPointVisibility(float aKm, float cloudT, float rangeM, float power)
     return mix(1.0, pow(clamp(cloudT, 0.0, 1.0), power), behind);
 }
 
+// Review 12: per TEXEL, then blended. The filtered alpha at a cloud edge blends a real distance with the
+// no-cloud -60000 km into something near 0 km, which reads as an opaque cloud in front of everything: from
+// 8500 km the AI ring's satellites (in front of the clouds) went dark along every cloud outline, and the
+// outline flickered with the cloud march's sampling. Each of the four texels decides with its own distance
+// and transmittance (green), and the four visibilities take the bilinear weights.
+float cloudPointVisibilityAt(sampler2D texA, sampler2D texB, vec2 uv, float rangeM, float power)
+{
+    vec4  ga = textureGather(texA, uv, 3);
+    vec4  gt = textureGather(texB, uv, 1);
+    vec2  f  = fract(uv * vec2(textureSize(texA, 0)) - 0.5);
+    vec4  w  = vec4((1.0 - f.x) * f.y, f.x * f.y, f.x * (1.0 - f.y), (1.0 - f.x) * (1.0 - f.y));
+    float v  = 0.0;
+    for (int k = 0; k < 4; ++k) v += w[k] * cloudPointVisibility(ga[k], gt[k], rangeM, power);
+    return v;
+}
+
 #endif

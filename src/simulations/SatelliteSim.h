@@ -4781,8 +4781,8 @@ static constexpr int kNumTimeScales = 9;
 // obsDir/obsLatDeg/obsLonDeg/camera.azDeg/elDeg/fovYDeg once, at the start of every intro playback
 // (see updateIntroCinematic's one-time init block) — including a Display-tab replay — so the
 // cinematic is reproducible no matter where the player has since wandered off to.
-static constexpr float kIntroObserverLatDeg = 35.871456f;
-static constexpr float kIntroObserverLonDeg = -121.400291f;
+static constexpr float kIntroObserverLatDeg = 35.869096f; // 300 m SSW of the original (review 12: the eroded ridge filled the right of frame)
+static constexpr float kIntroObserverLonDeg = -121.401905f;
 static constexpr float kIntroStartAzDeg = -61.32f;
 static constexpr float kIntroStartElDeg = 20.8f;
 static constexpr float kIntroStartFovDeg = 70.0f;

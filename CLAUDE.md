@@ -1039,6 +1039,19 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   debug views 46-49 (harness `debugview cloudairsplit|cloudtrans|cloudrad|cloudalpha`) show where the air
   split steps. Tried and reverted: w^2-weighted mean distance, a dark-outlier despeckle in cloud_march.comp
   (both global, neither measurably helped here).
+- **Review 12 (2026-09-30):** **the resolved DEPTH has history** (`cloud_v2_resolve.comp`, binding 5 is
+  read back: a still view, motionPx < 0.5, blends 0.1 of the new distance): a sparse block took its one
+  sample's distance, so the sky pass's air split (`tAirFrontM`) moved on the 4-frame cycle and the air in
+  front of the clouds flickered — from orbit, near the limb, while still (std > 5: 2.6% -> 0.13% of pixels).
+  The resolve's motion also has an EYE-PARALLAX floor (the eye's move across the ray at the pixel's depth,
+  capped at 50 km): moving up/down, a near beam shaft in front of far cloud ghosted. Point sources test
+  cloud per TEXEL (`cloudPointVisibilityAt`, four gathered texels weighted bilinearly): the filtered alpha
+  mixed a cloud distance with the no-cloud sentinel and dimmed the AI ring's satellites at cloud outlines.
+  Aurora from orbit: the dark-sky gate opens over 40-100 km of eye altitude and the extinction starts at the
+  shell's inner sphere (looking down, the path to infinity ran into the ground). City night: arterials
+  continue to a 150-m footprint (was 10) with their share fading 4-150 m (the street lines stopped in a ring).
+  Intro: vantage 300 m SSW (the eroded ridge filled the right of frame); Q/E starts from the ground
+  (an offset left below it, 0 after the intro, had to be climbed out of invisibly).
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

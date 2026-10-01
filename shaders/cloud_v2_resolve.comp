@@ -36,7 +36,7 @@ layout(set = 0, binding = 1) uniform sampler2D newColorTex;    // quarter grid, 
 layout(set = 0, binding = 2) uniform sampler2D newDepthTex;    // quarter grid (texelFetch)
 layout(set = 0, binding = 3) uniform sampler2D histColorTex;   // half grid, last frame's result
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D outColor;
-layout(set = 0, binding = 5, rg32f)   uniform writeonly image2D outDepth;
+layout(set = 0, binding = 5, rg32f)   uniform image2D outDepth;   // read back at this texel: the distance history (review 12)
 // Adaptive rate (misc.z = 3): tiles of 32x32 half-res pixels listed by the march's pass A were marched
 // at full rate into these (pass B); the rest are the sparse grid, which pass B also kept complete.
 layout(set = 0, binding = 6) uniform sampler2D fullColorTex;
@@ -184,6 +184,7 @@ void main()
     enuOf(pc.obsECEFDir.xyz, mNow);
     enuOf(cv2.prevObs.xyz, mPrev);
     vec3 vE = mNow * dirENU;
+    vec3 vE0 = vE;   // the view direction, kept (vE becomes the reprojected point below)
     // The same ray as a direction at infinity: a rotation of the view moves it exactly as it moves
     // the cloud, so only the difference between the two (PARALLAX, from the eye's translation) and the
     // clouds' own evolution make history unreliable.
@@ -204,6 +205,7 @@ void main()
     valid = valid && all(greaterThanEqual(uvPrev, vec2(0.0))) && all(lessThanEqual(uvPrev, vec2(1.0)));
 
     vec4 outC;
+    float motionPx = 1e9;
     if (valid) {
         vec4 hist = textureLod(histColorTex, uvPrev, 0.0);
         // New-sample weight: look2.w for a still view (low: an exponential blend at weight a keeps
@@ -214,11 +216,20 @@ void main()
         // single noisy samples — a knitted texture over every cloud (cloud_v2_z, z_pan).
         vec2  uvInf    = vec2(camInf.x / (-camInf.z) / (cv2.prevObs.w * cv2.obsDelta.w),
                               -camInf.y / (-camInf.z) / cv2.prevObs.w) * 0.5 + 0.5;
-        float motionPx = (camInf.z < 0.0) ? length((uvPrev - uvInf) * vec2(halfSize)) : 8.0;
+        motionPx = (camInf.z < 0.0) ? length((uvPrev - uvInf) * vec2(halfSize)) : 8.0;
         // Plus the evolution the reprojection cannot follow (the noise volumes sliding against each
         // other — km per second under time warp), in pixels at this cloud's distance.
         if (nd.x > 0.0)
             motionPx = max(motionPx, cv2.motion.x / (nd.x * 2.0 * tanHalf / float(halfSize.y)));
+        // Review 12: while the EYE moves, at least the parallax of a point 50 km away. A pixel's distance is
+        // the opacity-weighted mean of what it shows; a near beam shaft (or haze) in front of a far deck
+        // reprojected at the deck's distance kept the still view's weight and wide box, and the shaft left
+        // ghost copies behind it climbing or descending (user, a 10-25 km strafe up and down).
+        {
+            vec3  od    = cv2.obsDelta.xyz;
+            float perp  = length(od - vE0 * dot(od, vE0));
+            motionPx = max(motionPx, perp / (min(nd.x > 0.0 ? nd.x : 1e9, 50000.0) * 2.0 * tanHalf / float(halfSize.y)));
+        }
         // Still: look2.w ("History weight", low: the history averages the quarter grid's noise away —
         // at 1 each pixel alternated between its own ray and its neighbours' estimate, a checkerboard
         // flicker). Moving: motion.y ("History weight moving"), reached from a quarter pixel of parallax:
@@ -262,5 +273,17 @@ void main()
     if (cv2.fog2.z > 0.5 && tFull)          // debug view 11 (fog2.z): the adaptive rate's full-rate tiles
         outC.rgb = outC.rgb * vec3(1.3, 0.7, 0.7) + vec3(0.05, 0.0, 0.0);
     imageStore(outColor, c, outC);
+    // Review 12: the DISTANCE gets a history too, in a still view: it was this frame's sample's (a sparse
+    // block takes its one sample's distance, and the sample moves through the block every frame), and the sky
+    // pass splits the air in front of the cloud at it — from orbit, where that air is a large share near the
+    // limb, the clouds flickered on the 4-frame sparse cycle while their colour history was perfectly still.
+    // Read back at THIS texel only (no other invocation writes it), so only while the view is still.
+    if (motionPx < 0.5) {
+        vec2  hd = imageLoad(outDepth, c).xy;
+        float wD = 0.1;
+        if (hd.x > 0.0 && nd.x > 0.0) nd.x = mix(hd.x, nd.x, wD);
+        else if (hd.x > 0.0 && outC.a < 0.999) nd.x = hd.x;
+        if (hd.y > 0.0 && nd.y > 0.0) nd.y = mix(hd.y, nd.y, wD);
+    }
     imageStore(outDepth, c, vec4(nd, 0.0, 0.0));
 }

@@ -25,7 +25,7 @@ void main()
 
     vec4  cA = textureLod(cloudTargetA, gSrc.xy, 0.0);
     vec4  cB = textureLod(cloudTargetB, gSrc.xy, 0.0);
-    float vis = cloudPointVisibility(cA.a, dot(cB.rgb, vec3(1.0 / 3.0)), gSrc.z, 1.0);
+    float vis = cloudPointVisibilityAt(cloudTargetA, cloudTargetB, gSrc.xy, gSrc.z, 1.0);
     if (textureLod(sceneDepthTex, gSrc.xy, 0.0).r < gSrc.z) vis = 0.0;
     if (vis <= 0.001) discard;
 

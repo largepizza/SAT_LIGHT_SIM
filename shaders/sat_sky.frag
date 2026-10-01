@@ -868,7 +868,7 @@ vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp, out vec3 poo
     // Street posts only close up; from ~10 m a pixel, the arterials alone (faint streaks). One grid —
     // the night no longer cross-fades two at a border (it doubled its cost there, and with the streets
     // this faint the borders do not read).
-    bool  artOnly = foot > 10.0;
+    bool  artOnly = foot > 150.0;   // review 12: all streets to 150 m a pixel (was 10: a ring where the grid stopped)
     float strip;
     vec3  pS;
     vec3  eS = cityNightGrid(L.g, L, foot, ledP, meanC, artOnly, strip, pS);
@@ -876,10 +876,12 @@ vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp, out vec3 poo
     // Close: posts 55% (heads here, their pools lit onto the ground below), glitter (porch lights, windows,
     // lots) 45%. Far: arterials 15%, glitter 85%.
     float near = 1.0 - smoothstep(4.0, 10.0, foot);
-    // The arterials' share fades out past ~40 m a pixel: there their posts are a uniform glow, which
-    // drew a milky veil over the glitter (user snapshot 5, a zoomed view from orbit).
-    float artS = 0.15 * (1.0 - smoothstep(40.0, 150.0, foot));
-    vec3  eCityC = mix(artS * eS + (1.0 - artS) * eG, 0.7 * eS + 0.3 * eG, near);
+    // Review 12: the streets' share falls GRADUALLY — 0.7 at 4 m a pixel, 0.15 by 60 m, 0 by 150 m — and every
+    // street stays in the grid until then. It was posts 70% -> arterials only 15% over 4-10 m: the street grid
+    // stopped on a ring around the observer (user snapshot). Past ~40 m their posts merge into lines, then a
+    // glow, faded out by 150 m (a milky veil over the glitter from orbit, user snapshot 5).
+    float artS = mix(0.7, 0.15, smoothstep(4.0, 60.0, foot)) * (1.0 - smoothstep(60.0, 150.0, foot));
+    vec3  eCityC = artS * eS + (1.0 - artS) * eG;
     poolM = 0.7 * pS * near;
     // No farmstead lights (user review 2): a scatter of lit farms read as everyone running floodlights
     // at once; the countryside is dark, and the glitter thins out by itself at a town's fringe.
