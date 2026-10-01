@@ -128,6 +128,7 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `ui show\|hide`, `ui scale <0.75-2>` | HUD visibility and UI scale |
 | `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|console>`, `ui close <name\|all>` | windows (`info`/`viewer`/`trace` need a selected satellite). An advanced tab turns on "show advanced settings" |
 | `ui hint` | show the post-intro "click a satellite to select it" hint (it hides on a selection or after 30 s) |
+| `ui open cine` | the Cinematics window (see "Cinematics") |
 | `ui dump [name]` | every drawn rect/text/image with its box and element id, plus checks: text cut by its scissor, text off the window, and overlapping text under the same scissor |
 | `window <W>x<H>` | resize the window and wait for the new swapchain |
 | `path clear`, `path key <t> [lat= lon= alt= az= el= fov= sim=<ISO>\|simadd=<s>]` | camera-path keyframes at path time `t` (seconds). Channels you leave out inherit from the previous key (from the current view for the first). See "Camera paths" |
@@ -181,6 +182,28 @@ then `python tools/harness/frames2video.py harness_runs/<run>/captures/alps -o a
   `finalizeScreenshot` joins the previous encode on the main thread (a stall, not a frame).
 - The observer's altitude channel is the same `alt` as `observer alt=` (above sea level, floored
   at the ground). A path in follow mode is not supported: `path play` ends follow mode.
+
+## Cinematics (review 17)
+
+The camera paths are one object shared by the harness and the in-app **Cinematics** window (the film
+button in the time bar): a cinematic is a list of SHOTS, each a spline through keys (`Cinematic.h`).
+`path key` / `path clear` / `path play` edit and play the CURRENT shot; `cine` manages the rest:
+
+| Command | |
+|---|---|
+| `cine new [name]`, `cine name <n>` | start a cinematic / rename it (the save file and export folder names) |
+| `cine shot add [name]` / `del` / `<n>` | add a shot (made current; its sim time starts now) / delete / select (1-based) |
+| `cine shot look [clear]` | store the current look with the shot (clouds, clouds_v2, photometry, constellations, planets, render settings) — applied at its cut |
+| `cine shot simrate <x>`, `cine shot simnow` | sim time rate along the shot (0 = frozen) / its start = now |
+| `cine key [t=]` | the current view as a key (2 s after the last by default) |
+| `cine play [shot]` | real-time playback (the whole cinematic, or the current shot) |
+| `cine export preview\|hq [fps=] [scale=] [frames=] [shot]` | frames to `captures/cine_<name>[_hq]/frame_NNNNN.png` (in-app: `screenshots/cinematics/<name>_<stamp>/`) + `cinematic.json` + a README with the frames2video command. **preview** = rendered in motion at a fixed 1/fps; **hq** = every frame a settled HQ photo (`scale` x the window, `frames` settle frames per frame) |
+| `cine save [file]`, `cine load <file>` | JSON in `<user data>/cinematics/` (`sat-light-sim-cinematic/1`) |
+| `cine state`, `cine stop` | the cinematic as JSON (shots, keys) / stop playback or an export |
+
+Between keys the camera follows a Catmull-Rom spline per channel (log altitude and FOV); sim time is the
+shot's start + its rate x the shot time unless keys set `sim=`. While a cinematic plays or exports it owns
+the camera and the clock (WASD and look are off). Video: `python tools/harness/frames2video.py <dir>/frame -o out.mp4 --fps 30`.
 
 ## Temporal stability (`tools/harness/tstab.py`)
 

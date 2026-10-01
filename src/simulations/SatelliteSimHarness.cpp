@@ -193,7 +193,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|hint; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|hint; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -224,6 +224,8 @@ void SatelliteSim::harnessInit()
 
 float SatelliteSim::frameDt(float realDt)
 {
+    if (cineFixedDt_ > 0.0f)
+        return cineFixedDt_;   // a cinematic export owns the clock (review 17)
     if (!harnessRunner_)
         return realDt;
     if (harnessFixedDtOverride_ > 0.0f)
@@ -292,59 +294,8 @@ bool SatelliteSim::harnessLookDir(int track, int planet, glm::vec3 &d)
 // ─── Camera paths ─────────────────────────────────────────────────────────────────────────────────
 SatelliteSim::HarnessCamKey SatelliteSim::harnessEvalPath(double t) const
 {
-    const auto &K = harnessPath_;
-    if (K.empty())
-        return HarnessCamKey{};
-    if (t <= K.front().t)
-        return K.front();
-    if (t >= K.back().t)
-        return K.back();
-    size_t i = 0;
-    while (i + 1 < K.size() && K[i + 1].t < t)
-        ++i;
-    const HarnessCamKey &a = K[i], &b = K[i + 1];
-    const double h = b.t - a.t, s = (t - a.t) / h;
-    const double h00 = 2 * s * s * s - 3 * s * s + 1, h10 = s * s * s - 2 * s * s + s;
-    const double h01 = -2 * s * s * s + 3 * s * s, h11 = s * s * s - s * s;
-    // Catmull-Rom tangent of channel f at key j (one-sided at the ends), per path second.
-    auto tangent = [&](size_t j, double (*f)(const HarnessCamKey &)) -> double
-    {
-        const size_t j0 = j > 0 ? j - 1 : j, j1 = j + 1 < K.size() ? j + 1 : j;
-        const double dt = K[j1].t - K[j0].t;
-        return dt > 0.0 ? (f(K[j1]) - f(K[j0])) / dt : 0.0;
-    };
-    auto herm = [&](double (*f)(const HarnessCamKey &))
-    { return h00 * f(a) + h10 * h * tangent(i, f) + h01 * f(b) + h11 * h * tangent(i + 1, f); };
-    HarnessCamKey r;
-    r.t = t;
-    r.lat = herm([](const HarnessCamKey &k) { return k.lat; });
-    r.lon = herm([](const HarnessCamKey &k) { return k.lon; });
-    r.alt = std::exp(herm([](const HarnessCamKey &k) { return std::log(std::max(k.alt, 0.0) + 10.0); })) - 10.0;
-    r.az = herm([](const HarnessCamKey &k) { return k.az; });
-    r.el = herm([](const HarnessCamKey &k) { return k.el; });
-    r.fov = std::exp(herm([](const HarnessCamKey &k) { return std::log(k.fov); }));
-    // Sim time: linear between the keys that set it (hold outside them).
-    const HarnessCamKey *sa = nullptr, *sb = nullptr;
-    for (const auto &k : K)
-    {
-        if (!k.hasSim)
-            continue;
-        if (k.t <= t)
-            sa = &k;
-        if (k.t >= t && !sb)
-            sb = &k;
-    }
-    if (sa || sb)
-    {
-        r.hasSim = true;
-        if (sa && sb && sb->t > sa->t)
-            r.simT = sa->simT + (sb->simT - sa->simT) * (t - sa->t) / (sb->t - sa->t);
-        else
-            r.simT = sa ? sa->simT : sb->simT;
-    }
-    return r;
+    return cineEval(const_cast<SatelliteSim *>(this)->cineKeys(), t);
 }
-
 void SatelliteSim::harnessApplyCam(const HarnessCamKey &k)
 {
     if (followActive)
@@ -1459,6 +1410,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 return &infoChrome;
             if (l == "viewer" || l == "view")
                 return &viewerChrome;
+            if (l == "cine" || l == "cinematics")
+                return &cineChrome;
             return nullptr;
         };
         if (sub == "hint")
@@ -1632,7 +1585,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         const std::string sub = lower(pos(0));
         if (sub == "clear")
         {
-            harnessPath_.clear();
+            cineKeys().clear();
             r["message"] = "path cleared";
             return Status::Done;
         }
@@ -1640,8 +1593,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         {
             // Unspecified channels inherit from the previous key (the current view for the first).
             HarnessCamKey k;
-            if (!harnessPath_.empty())
-                k = harnessPath_.back();
+            if (!cineKeys().empty())
+                k = cineKeys().back();
             else
             {
                 k.lat = obsLatDeg;
@@ -1652,7 +1605,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 k.fov = camera.fovYDeg;
             }
             k.t = parseNum(pos(1), "path key <t>");
-            if (!harnessPath_.empty() && k.t <= harnessPath_.back().t)
+            if (!cineKeys().empty() && k.t <= cineKeys().back().t)
                 fail("path key: times must increase");
             k.hasSim = false;
             if (c.has("lat"))
@@ -1661,11 +1614,11 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             {
                 // Unwrap against the previous key so a path crossing the antimeridian goes the short way.
                 double lon = c.num("lon", 0.0);
-                if (!harnessPath_.empty())
-                    while (lon - harnessPath_.back().lon > 180.0)
+                if (!cineKeys().empty())
+                    while (lon - cineKeys().back().lon > 180.0)
                         lon -= 360.0;
-                if (!harnessPath_.empty())
-                    while (lon - harnessPath_.back().lon < -180.0)
+                if (!cineKeys().empty())
+                    while (lon - cineKeys().back().lon < -180.0)
                         lon += 360.0;
                 k.lon = lon;
             }
@@ -1674,7 +1627,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             if (c.has("az"))
             {
                 double az = c.num("az", 0.0);
-                const double prev = harnessPath_.empty() ? camera.azDeg : harnessPath_.back().az;
+                const double prev = cineKeys().empty() ? camera.azDeg : cineKeys().back().az;
                 while (az - prev > 180.0)
                     az -= 360.0;
                 while (az - prev < -180.0)
@@ -1696,9 +1649,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 k.hasSim = true;
                 k.simT = (double)simDayJ2000 * 86400.0 + simSecInDay + c.num("simadd", 0.0);
             }
-            harnessPath_.push_back(k);
-            r["keys"] = harnessPath_.size();
-            r["message"] = "key " + std::to_string(harnessPath_.size()) + " at t=" + pos(1);
+            cineKeys().push_back(k);
+            r["keys"] = cineKeys().size();
+            r["message"] = "key " + std::to_string(cineKeys().size()) + " at t=" + pos(1);
             return Status::Done;
         }
         if (sub == "goto")
@@ -1716,14 +1669,14 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // sim keys, the time scale) rather than from however many frames the encode waited.
             if (a.frame == 0)
             {
-                if (harnessPath_.size() < 2)
+                if (cineKeys().size() < 2)
                     fail("path play: add at least two keys (path key <t> ...)");
                 const double fps = c.num("fps", 30.0);
                 if (fps < 1.0 || fps > 240.0)
                     fail("path play: fps in [1, 240]");
                 a.scratch["fps"] = fps;
                 a.scratch["i"] = 0;
-                a.scratch["n"] = (int)std::floor((harnessPath_.back().t - harnessPath_.front().t) * fps + 1e-6) + 1;
+                a.scratch["n"] = (int)std::floor((cineKeys().back().t - cineKeys().front().t) * fps + 1e-6) + 1;
                 a.scratch["record"] = c.str("record");
                 a.scratch["simStart"] = (double)simDayJ2000 * 86400.0 + simSecInDay;
                 a.scratch["simRate"] = timePaused ? 0.0 : (double)kTimeScales[timeScaleIdx] * timeDir;
@@ -1769,12 +1722,12 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 a.scratch["nT"] = a.scratch["nT"].get<int>() + 1;
             }
             const double fps = a.scratch["fps"];
-            const double tp = harnessPath_.front().t + i / fps;
+            const double tp = cineKeys().front().t + i / fps;
             HarnessCamKey k = harnessEvalPath(tp);
             if (!k.hasSim)
             {
                 k.hasSim = true;
-                k.simT = a.scratch["simStart"].get<double>() + a.scratch["simRate"].get<double>() * (tp - harnessPath_.front().t);
+                k.simT = a.scratch["simStart"].get<double>() + a.scratch["simRate"].get<double>() * (tp - cineKeys().front().t);
             }
             harnessApplyCam(k);
             obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
@@ -1989,6 +1942,162 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
 
     // ── photo: the HQ photo (requestPhoto), saved as a capture ──────────────────
+    // ── cine: the cinematic (review 17, Cinematic.h; `path key` edits the current shot's keys) ──────────
+    if (n == "cine")
+    {
+        const std::string sub = lower(pos(0));
+        auto shotJson = [&]()
+        {
+            json js = json::array();
+            for (int i = 0; i < (int)cine_.shots.size(); ++i)
+                js.push_back({{"index", i}, {"name", cine_.shots[i].name}, {"keys", cine_.shots[i].keys.size()},
+                              {"duration_s", cine_.shots[i].duration()}, {"sim_rate", cine_.shots[i].simRate},
+                              {"has_look", !cine_.shots[i].settings.is_null()}});
+            return js;
+        };
+        if (sub == "new")
+        {
+            cineStop("new");
+            cine_ = Cinematic{};
+            if (!pos(1).empty())
+                cine_.name = safeName(pos(1));
+            cineShot_ = 0;
+            cineKeys();
+            r["message"] = "new cinematic " + cine_.name;
+            return Status::Done;
+        }
+        if (sub == "name")
+        {
+            cine_.name = safeName(pos(1));
+            r["message"] = "named " + cine_.name;
+            return Status::Done;
+        }
+        if (sub == "shot")
+        {
+            const std::string what = lower(pos(1));
+            if (what == "add")
+            {
+                CineShot ns;
+                ns.name = pos(2).empty() ? "shot " + std::to_string(cine_.shots.size() + 1) : pos(2);
+                ns.simStartValid = true;
+                ns.simStart = (double)simDayJ2000 * 86400.0 + simSecInDay;
+                cine_.shots.push_back(ns);
+                cineShot_ = (int)cine_.shots.size() - 1;
+            }
+            else if (what == "del")
+            {
+                if (!cine_.shots.empty())
+                    cine_.shots.erase(cine_.shots.begin() + std::clamp(cineShot_, 0, (int)cine_.shots.size() - 1));
+                cineShot_ = std::max(0, cineShot_ - 1);
+                cineKeys();
+            }
+            else if (what == "look")
+            {
+                cineKeys();
+                cine_.shots[cineShot_].settings = lower(pos(2)) == "clear" ? json() : cineLookSettings();
+            }
+            else if (what == "simrate")
+            {
+                cineKeys();
+                cine_.shots[cineShot_].simRate = parseNum(pos(2), "cine shot simrate");
+            }
+            else if (what == "simnow")
+            {
+                cineKeys();
+                cine_.shots[cineShot_].simStartValid = true;
+                cine_.shots[cineShot_].simStart = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            }
+            else if (!what.empty() && isdigit((unsigned char)what[0]))
+                cineShot_ = std::clamp((int)parseNum(what, "cine shot") - 1, 0, std::max(0, (int)cine_.shots.size() - 1));
+            else
+                fail("cine shot: add [name] | del | <n> (1-based) | look [clear] | simrate <x> | simnow");
+            cineKeys();
+            r["shot"] = cineShot_ + 1;
+            r["shots"] = shotJson();
+            r["message"] = "shot " + std::to_string(cineShot_ + 1) + " of " + std::to_string(cine_.shots.size());
+            return Status::Done;
+        }
+        if (sub == "key")
+        {
+            // The current view as a key (`path key` sets channels explicitly): at t= or 2 s after the last.
+            std::vector<CineKey> &K = cineKeys();
+            CineKey k = cineCurrentPose();
+            k.t = c.has("t") ? c.num("t", 0.0) : (K.empty() ? 0.0 : K.back().t + 2.0);
+            if (!K.empty() && k.t <= K.back().t)
+                fail("cine key: times must increase");
+            if (K.empty() && !cine_.shots[cineShot_].simStartValid)
+            {
+                cine_.shots[cineShot_].simStartValid = true;
+                cine_.shots[cineShot_].simStart = k.simT;
+            }
+            K.push_back(k);
+            r["keys"] = K.size();
+            r["message"] = "key " + std::to_string(K.size()) + " at t=" + std::to_string(k.t);
+            return Status::Done;
+        }
+        if (sub == "save" || sub == "load")
+        {
+            std::string err;
+            if (sub == "save" ? !cineSave(pos(1), err) : !cineLoad(pos(1), err))
+                fail("cine " + sub + ": " + err);
+            r["shots"] = shotJson();
+            r["message"] = cineStatus_;
+            return Status::Done;
+        }
+        if (sub == "state")
+        {
+            r["name"] = cine_.name;
+            r["shot"] = cineShot_ + 1;
+            r["shots"] = shotJson();
+            r["duration_s"] = cine_.duration();
+            r["json"] = cineToJson(cine_);
+            r["message"] = cine_.name + ": " + std::to_string(cine_.shots.size()) + " shots, " + std::to_string(cine_.duration()) + " s";
+            return Status::Done;
+        }
+        if (sub == "play" || sub == "export")
+        {
+            // Pending until the playback / export ends. play [shot]; export preview|hq [fps=] [scale=] [frames=] [shot].
+            if (a.frame == 0)
+            {
+                const std::string mode = lower(pos(1));
+                const bool oneShot = c.flag("shot", false) || mode == "shot" || lower(pos(2)) == "shot";
+                if (c.has("fps"))
+                    cineExportFps_ = (float)std::clamp(c.num("fps", 30.0), 1.0, 240.0);
+                if (c.has("scale"))
+                    photoScaleSetting = std::clamp((float)c.num("scale", 2.0), 1.0f, 4.0f);
+                if (c.has("frames"))
+                    photoSettleFrames = std::clamp((float)c.num("frames", 48.0), 4.0f, 240.0f);
+                if (sub == "play")
+                    cineStart(CineRun::Play, oneShot);
+                else if (mode == "hq")
+                    cineStart(CineRun::ExportHQ, oneShot);
+                else if (mode == "preview")
+                    cineStart(CineRun::ExportPreview, oneShot);
+                else
+                    fail("cine export: preview | hq [fps=] [scale=] [frames=] [shot]");
+                if (!cineActive())
+                    fail("cine " + sub + ": " + cineStatus_);
+                a.scratch["t0"] = harness::nowS();
+                return Status::Pending;
+            }
+            if (cineActive() || screenshotRequested || screenshotCopyPending || screenshotEncoding.load())
+                return Status::Pending;
+            r["frames"] = cineFrame_;
+            r["dir"] = cineOutDir_;
+            r["wall_s"] = harness::nowS() - a.scratch["t0"].get<double>();
+            r["message"] = cineStatus_;
+            return Status::Done;
+        }
+        if (sub == "stop")
+        {
+            cineStop("Stopped");
+            r["message"] = "stopped";
+            return Status::Done;
+        }
+        fail("cine: new [name] | name <n> | shot add|del|<n>|look [clear]|simrate <x>|simnow | key [t=] | play [shot] | "
+             "export preview|hq [fps=] [scale=] [frames=] [shot] | save [file] | load <file> | state | stop");
+    }
+
     if (n == "photo")
     {
         const bool busy = photoState != 0 || screenshotRequested || screenshotCopyPending || screenshotEncoding.load();

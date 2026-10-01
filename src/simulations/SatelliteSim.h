@@ -1,6 +1,7 @@
 #pragma once
 #define GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_NONE // see VulkanContext.h — must be repeated at every raw glfw3.h include site
+#include "Cinematic.h"
 #include <GLFW/glfw3.h>
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -4098,15 +4099,46 @@ private:
     // `path key` / `path play` (docs/HARNESS.md "Camera paths"): keyframes in path seconds, cubic
     // Hermite (Catmull-Rom tangents) per channel; angles unwrapped against the previous key, altitude
     // interpolated in log space (2 m to LEO is five orders of magnitude).
-    struct HarnessCamKey
-    {
-        double t = 0.0;
-        double lat = 0.0, lon = 0.0, alt = 0.0, az = 0.0, el = 0.0, fov = 60.0;
-        bool hasSim = false;
-        double simT = 0.0; // seconds since J2000
-    };
-    std::vector<HarnessCamKey> harnessPath_;
+    // The harness's camera path IS the cinematic's current shot (review 17, Cinematic.h): `path key` edits
+    // the keys the Cinematics window shows, and either can play or export them.
+    using HarnessCamKey = CineKey;
     float harnessFixedDtOverride_ = 0.0f; // > 0 while a path plays: 1 / fps
+
+    // ── Cinematics (review 17, SatelliteSimCinematic.cpp) ──────────────────────────────────────────────
+    Cinematic cine_;
+    int cineShot_ = 0;                    // the shot being edited
+    std::vector<CineKey> &cineKeys();     // its keys (a shot is created if there is none)
+    CineKey cineCurrentPose() const;      // the current observer, camera and sim time as a key
+    enum class CineRun { Idle, Play, ExportPreview, ExportHQ };
+    CineRun cineRun_ = CineRun::Idle;
+    bool   cineLoop_ = false;
+    bool   cinePlayOneShot_ = false;      // play / export only the current shot
+    double cineT_ = 0.0;                  // global time into the cinematic (or the shot)
+    int    cineFrame_ = 0, cineFrames_ = 0, cineSettle_ = 0, cineLastShot_ = -1;
+    double cineShotSim_ = 0.0;            // the shot's sim time at its start (when no key sets it)
+    float  cineFixedDt_ = 0.0f;           // > 0 while exporting: 1 / fps (frameDt)
+    bool   cineSavedPaused_ = false;
+    float  cineSavedFullRateKm_ = 0.0f, cineSavedSparse_ = 0.0f;
+    float  cineSavedPointSigma_ = 0.0f, cineSavedPointMax_ = 0.0f, cineSavedGlare_ = 0.0f;
+    std::string cineOutDir_, cineStatus_;
+    float  cineScrub_ = 0.0f, cineExportFps_ = 30.0f, cineSimRateUi_ = 1.0f;
+    bool   cineHqSettingsSaved_ = false;
+    WindowChrome cineChrome;
+    bool   hovCineClose = false, hovCineBtn[40] = {}, hovTimeCine = false, hovCineKey[24][5] = {}, hovCineFile[8] = {};
+    int    cineDragSlider_ = -1;
+    std::vector<std::string> cineFiles_;  // <user data>/cinematics/*.json, refreshed when the window opens
+    char   cineInfoBuf_[256] = {}, cineKeyBuf_[24][128] = {};
+    bool cineActive() const { return cineRun_ != CineRun::Idle; }
+    void cineStart(CineRun mode, bool oneShot);
+    void cineStop(const char *why);
+    void cineTick(float dt);              // buildUI, right after harnessTick: plays / exports
+    void cineApplyAt(double t, bool force);
+    bool cineSave(const std::string &file, std::string &err);
+    bool cineLoad(const std::string &file, std::string &err);
+    std::string cineDir() const;
+    void cineRefreshFiles();
+    void buildCinematicWindow(const UIInput &inp, UIRenderer &ui);
+    nlohmann::json cineLookSettings();    // the settings a shot stores: clouds, photometry, rosters, render
     HarnessCamKey harnessEvalPath(double t) const;
     void harnessApplyCam(const HarnessCamKey &k);
     // `overlay`: screen text and labels that follow a sky target, drawn even with the HUD hidden (so
@@ -4481,7 +4513,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 229;
+    static constexpr int kCloudSliderSlots = 234;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

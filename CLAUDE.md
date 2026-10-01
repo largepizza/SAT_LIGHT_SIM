@@ -1180,6 +1180,21 @@ footprint-based LOD (terrain, city lights) follows the finer pixels, so a photo 
 window, not just more pixels. The bloom's radius is in its own texels and is NOT scaled (a tighter glow).
 ~2.4 s at 3200x1800 (1600x900 window, 48 frames). Harness: `photo <name> [scale=] [frames=]`.
 
+## Cinematics (review 17, 2026-10-01)
+
+`Cinematic.h/.cpp` (data: shots of `CineKey`s, `cineEval` — the Catmull-Rom path the harness used — JSON
+`sat-light-sim-cinematic/1`), `SatelliteSimCinematic.cpp` (play / export / save / load), `buildCinematicWindow`
+(SatelliteSimUI.cpp; the film button `TimeCineBtn` in the time bar, `pixel--film.png`), harness `cine` + `path`
+(docs/HARNESS.md "Cinematics"). **The harness's camera path IS the current shot** (`HarnessCamKey` = `CineKey`,
+`cineKeys()`), so a path authored by a script shows in the window and the reverse. `cineTick` runs right after
+`harnessTick` in buildUI; while `cineActive()` WASD/Q-E and mouse look are off and `timePaused` is held (sim time
+set per frame from the shot). A cut applies the shot's stored look (`cineLookSettings`: clouds, clouds_v2,
+photometry, constellations, planets, render settings — never observer/camera/time/window/keys/audio). Export
+preview: `cineFixedDt_` = 1/fps (`frameDt`), one capture per frame, waiting for the COPY only. Export HQ: the photo
+target stays up for the whole export (`photoScaleActive`, saved/restored like `requestPhoto`), each pose settled
+"HQ photo settle frames" before its copy. The window's sliders hit-test their own laid-out track (the settings
+slider helper is tied to the settings window's position).
+
 ## Loading screen (2026-09-26)
 
 `App::run()` creates the UI before `sim->init()`, with its pipeline built against

@@ -202,7 +202,28 @@ def build_photo():
     ]
 
 
+def build_film():
+    """Cinematics: a film-strip frame (outline with sprocket holes down both edges) holding a play
+    triangle — the camera-path editor's button in the time bar (review 17)."""
+    def strip(px, py):
+        inside = 6.0 <= px <= 42.0 and 8.0 <= py <= 40.0
+        inner = 13.0 <= px <= 35.0 and 11.0 <= py <= 37.0
+        if not inside or inner:
+            return False
+        # sprocket holes punched in the two side bands
+        if (7.5 <= px <= 11.5 or 36.5 <= px <= 40.5):
+            for cy in (13.0, 20.0, 27.0, 34.0):
+                if abs(py - cy) <= 1.6:
+                    return False
+        return True
+    def play(px, py):
+        # triangle pointing right, centred in the frame
+        return 19.0 <= px <= 30.0 and abs(py - 24.0) <= (30.0 - px) * 0.62
+    return [strip, play]
+
+
 ICONS = {
+    "film": build_film,
     "photo": build_photo,
     "maximize": build_maximize,
     "observer": build_observer,

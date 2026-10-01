@@ -1281,7 +1281,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // while the keys visibly did nothing. updateIntroCinematic stops forcing the camera from that
     // beat onward (its camera-live check above), so this can run unopposed; !showIntro covers the
     // normal post-intro case the same way the old "else" branch did.
-    if ((!showIntro || introCaptionIndex >= kIntroControlsIndex) && win && !consoleOpen_)
+    if ((!showIntro || introCaptionIndex >= kIntroControlsIndex) && win && !consoleOpen_ && !cineActive())
     {
         bool boost = (win && glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS) || gpHeld(KB_MOVE_BOOST);
         // Sprinting cancels fine/slow mode outright (untoggles it, so it stays off after boost is

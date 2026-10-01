@@ -41,7 +41,8 @@ static constexpr int kIconObserver = 13;  // pixel--observer.png — the view fr
 static constexpr int kIconStudio = 14;    // pixel--studio.png — studio lighting (vs the live sky)
 static constexpr int kIconMaximize = 15;  // pixel--maximize.png — pop the 3D view out / restore
 static constexpr int kIconTrack = 16;     // pixel--track.png — "Track": lock the camera onto the satellite
-static constexpr int kIconPhoto = 17;     // pixel--photo.png — HQ photo (supersampled screenshot)
+static constexpr int kIconPhoto = 17;
+static constexpr int kIconFilm = 18;      // pixel--film.png — the Cinematics window (review 17)     // pixel--photo.png — HQ photo (supersampled screenshot)
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
 // are ICON-ONLY: the button's name is the tooltip, never a sentence. `kSelIconBtnMin` matches the view
@@ -464,6 +465,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // camera/observer/settings they change. A no-op outside a harness run.
     harnessUi_ = &ui;
     harnessTick();
+    cineTick(dt);   // review 17: a playing / exporting cinematic owns the camera and the clock
     if (snapshotKeyPending) {       // KB_SAVE_SNAPSHOT (default F9)
         snapshotKeyPending = false;
         savePerfSnapshot(ui.input().dt);
@@ -491,7 +493,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // stopped forcing the camera (see its controlsLive check), so mouse-look — and this block's
     // own camera.azDeg-from-obsFacing derivation just below, which movement now depends on too —
     // can safely run alongside the (by then static) cinematic hold.
-    if (win && (!showIntro || introCaptionIndex >= kIntroControlsIndex))
+    if (win && (!showIntro || introCaptionIndex >= kIntroControlsIndex) && !cineActive())
     {
         // Track lock: the aim above owns the camera's direction this frame, so every look input —
         // mouse deltas, their cinematic-drift velocities, the gamepad stick — is dropped rather than
@@ -642,6 +644,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             "assets/icons/ui/pixel--maximize.png",
             "assets/icons/ui/pixel--track.png",
             "assets/icons/ui/pixel--photo.png",
+            "assets/icons/ui/pixel--film.png",
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -713,6 +716,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildSettingsWindow(inp, ui);
     buildViewControlsWindow(inp, ui);
     buildTraceWindow(inp, ui);
+    buildCinematicWindow(inp, ui);
     updateViewerView(inp, ui); // the satellite windows' shared prologue (target, drag, readouts)
     buildInfoWindow(inp, ui);
     buildViewPopoutWindow(inp, ui);
@@ -973,6 +977,30 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 CLAY(CLAY_ID("TimePhotoIcon"), {.layout = {
                                                     .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
                                                 .image = {.imageData = (void *)(intptr_t)(kIconPhoto + 1)}}) {}
+            }
+
+            // ── Cinematics (review 17) ───────────────────────────────────────────
+            Clay_Color cineBg = cineActive() ? Pal::pauseActive : (cineChrome.open ? Pal::btnAccent : (hovTimeCine ? Pal::btnHover : Pal::btnIdle));
+            CLAY(CLAY_ID("TimeCineBtn"), {.layout = {
+                                              .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                          .backgroundColor = cineBg,
+                                          .cornerRadius = CLAY_CORNER_RADIUS(4)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovTimeCine);
+                sndClick(n, inp.lmbPressed);
+                if (n && inp.lmbPressed)
+                {
+                    cineChrome.open = !cineChrome.open;
+                    if (cineChrome.open)
+                        cineRefreshFiles();
+                }
+                hovTimeCine = n;
+                ui.tooltip(inp, n, "Cinematics", fs(11));
+                CLAY(CLAY_ID("TimeCineIcon"), {.layout = {
+                                                   .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
+                                               .image = {.imageData = (void *)(intptr_t)(kIconFilm + 1)}}) {}
             }
 
             // ── Star Trails ───────────────────────────────────────────────────────
@@ -5833,6 +5861,325 @@ void SatelliteSim::buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRende
     {
         CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
     }
+}
+
+// ─── buildCinematicWindow (review 17) ────────────────────────────────────────
+// The camera-path editor: shots of keyframes (Cinematic.h), played in real time or exported frame by frame
+// (preview: as rendered in motion; HQ: each frame a settled HQ photo). The harness's `path` / `cine` commands
+// edit the same shot (docs/HARNESS.md "Cinematics").
+void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
+{
+    if (!cineChrome.open)
+        return;
+    if (cineChrome.w <= 0.0f)
+    {
+        cineChrome.w = 470.0f;
+        cineChrome.h = std::min(640.0f, std::max(420.0f, inp.screenH * 0.7f));
+    }
+    std::vector<CineKey> &keys = cineKeys();
+    CineShot &shot = cine_.shots[cineShot_];
+    auto text = [&](const char *str, Clay_Color c, float size) {
+        Clay_String cs{false, (int32_t)strlen(str), str};
+        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
+    };
+    auto btnH = [&](Clay_ElementId id, const char *label, bool &hov, const char *tip, bool on = false) {
+        bool clicked = false;
+        CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(20))},
+                             .padding = {8, 8, 0, 0},
+                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                  .backgroundColor = on ? (hov ? Pal::btnAccentHv : Pal::btnAccent) : (hov ? Pal::btnHover : Pal::btnIdle),
+                  .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hov);
+            sndClick(n, inp.lmbPressed);
+            hov = n;
+            clicked = n && inp.lmbPressed;
+            if (tip)
+                ui.tooltip(inp, n, tip, fs(11));
+            text(label, Pal::btnLabel, 11);
+        }
+        return clicked;
+    };
+    auto btn = [&](int id, const char *label, const char *tip, bool on = false) {
+        return btnH(CLAY_IDI("CineBtn", id), label, hovCineBtn[id], tip, on);
+    };
+    auto row = [&](int id, const std::function<void()> &f) {
+        CLAY(CLAY_IDI("CineRow", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                  .childGap = 4,
+                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                  .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            f();
+        }
+    };
+    // A slider hit-tested on its own track's laid-out box (last frame's layout).
+    static char sliderLab[8][64], sliderVal[8][32];
+    auto slider = [&](int id, const char *label, float &v, float vmin, float vmax, float step, const char *fmt) {
+        bool changed = false;
+        const Clay_ElementId tid = CLAY_IDI("CineSliderTrack", id);
+        const Clay_ElementData td = Clay_GetElementData(tid);
+        if (td.found)
+        {
+            const Clay_BoundingBox bb = td.boundingBox;
+            const bool over = inp.mouseX >= bb.x && inp.mouseX <= bb.x + bb.width && inp.mouseY >= bb.y - 3 &&
+                              inp.mouseY <= bb.y + bb.height + 3;
+            if (inp.lmbPressed && over)
+                cineDragSlider_ = id;
+            if (cineDragSlider_ == id && inp.lmbDown && bb.width > 1.0f)
+            {
+                float nv = vmin + std::clamp((inp.mouseX - bb.x) / bb.width, 0.0f, 1.0f) * (vmax - vmin);
+                if (step > 0.0f)
+                    nv = std::round(nv / step) * step;
+                nv = std::clamp(nv, vmin, vmax);
+                changed = nv != v;
+                v = nv;
+            }
+        }
+        if (!inp.lmbDown && cineDragSlider_ == id)
+            cineDragSlider_ = -1;
+        snprintf(sliderLab[id], sizeof(sliderLab[id]), "%s", label);
+        snprintf(sliderVal[id], sizeof(sliderVal[id]), fmt, v);
+        CLAY(CLAY_IDI("CineSliderRow", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                        .childGap = 6,
+                                                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY(CLAY_IDI("CineSliderLab", id), {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(120)), CLAY_SIZING_FIT(0)}}})
+            {
+                text(sliderLab[id], Pal::textDim, 11);
+            }
+            CLAY(tid, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED((float)fs(10))}},
+                       .backgroundColor = {30, 30, 33, 230},
+                       .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                const float f = vmax > vmin ? std::clamp((v - vmin) / (vmax - vmin), 0.0f, 1.0f) : 0.0f;
+                CLAY(CLAY_IDI("CineSliderFill", id), {.layout = {.sizing = {CLAY_SIZING_PERCENT(f), CLAY_SIZING_GROW(0)}},
+                                                      .backgroundColor = {150, 40, 40, 220},
+                                                      .cornerRadius = CLAY_CORNER_RADIUS(3)}) {}
+            }
+            CLAY(CLAY_IDI("CineSliderVal", id), {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(52)), CLAY_SIZING_FIT(0)}}})
+            {
+                text(sliderVal[id], Pal::textPrimary, 11);
+            }
+        }
+        return changed;
+    };
+
+    static char titleBuf[96];
+    snprintf(titleBuf, sizeof(titleBuf), "Cinematics: %s", cine_.name.c_str());
+    buildResizableWindow(
+        inp, ui, cineChrome, 5, titleBuf, true, hovCineClose, 12.0f, 140.0f, 400.0f, 360.0f, 1200.0f, 1400.0f,
+        [&]()
+        {
+            CLAY(CLAY_ID("CineBody"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                                  .padding = {12, 12, 8, 10},
+                                                  .childGap = 6,
+                                                  .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                       .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
+            {
+                snprintf(cineInfoBuf_, sizeof(cineInfoBuf_), "Shot %d / %d  \"%s\"  %d keys  %.1f s   |   all %.1f s%s",
+                         cineShot_ + 1, (int)cine_.shots.size(), shot.name.c_str(), (int)keys.size(), shot.duration(),
+                         cine_.duration(), shot.settings.is_null() ? "" : "   [look stored]");
+                text(cineInfoBuf_, Pal::textPrimary, 12);
+                if (!cineStatus_.empty())
+                    text(cineStatus_.c_str(), {230, 190, 120, 255}, 11);
+
+                row(0, [&]() {
+                    if (btn(0, "< Shot", "Previous shot") && cineShot_ > 0)
+                    {
+                        --cineShot_;
+                        cineScrub_ = 0.0f;
+                    }
+                    if (btn(1, "Shot >", "Next shot") && cineShot_ + 1 < (int)cine_.shots.size())
+                    {
+                        ++cineShot_;
+                        cineScrub_ = 0.0f;
+                    }
+                    if (btn(2, "+ Shot", "Add a shot after this one, starting at the current view"))
+                    {
+                        CineShot ns;
+                        ns.name = "shot " + std::to_string(cine_.shots.size() + 1);
+                        ns.keys.push_back(cineCurrentPose());
+                        ns.keys.back().t = 0.0;
+                        ns.simStartValid = true;
+                        ns.simStart = ns.keys.back().simT;
+                        cine_.shots.insert(cine_.shots.begin() + cineShot_ + 1, ns);
+                        ++cineShot_;
+                    }
+                    if (btn(3, "Del shot", "Delete this shot") && !cine_.shots.empty())
+                    {
+                        cine_.shots.erase(cine_.shots.begin() + cineShot_);
+                        cineShot_ = std::max(0, cineShot_ - 1);
+                    }
+                });
+                // cineKeys() recreates a shot if the last was deleted: re-take the references.
+                std::vector<CineKey> &K = cineKeys();
+                CineShot &S = cine_.shots[cineShot_];
+                row(5, [&]() {
+                    if (btn(4, S.settings.is_null() ? "Store look" : "Clear look",
+                            S.settings.is_null() ? "Store the current clouds, lighting, constellations and render settings with this shot (applied at its cut)"
+                                                 : "Forget this shot's stored settings",
+                            !S.settings.is_null()))
+                        S.settings = S.settings.is_null() ? cineLookSettings() : nlohmann::json();
+                    if (btn(6, "Sim from now", "The shot's sim time starts at the current sim time"))
+                    {
+                        S.simStartValid = true;
+                        S.simStart = (double)simDayJ2000 * 86400.0 + simSecInDay;
+                    }
+                });
+
+                // Keys
+                CLAY(CLAY_ID("CineKeys"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                      .padding = {4, 4, 4, 4},
+                                                      .childGap = 3,
+                                                      .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                           .backgroundColor = {14, 14, 16, 200},
+                                           .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                {
+                    if (K.empty())
+                        text("No keys: frame a view and press + Key at view", Pal::textDim, 11);
+                    int del = -1;
+                    for (int i = 0; i < (int)K.size() && i < 24; ++i)
+                    {
+                        const CineKey k = K[i];
+                        const double altKm = k.alt / 1000.0;
+                        snprintf(cineKeyBuf_[i], sizeof(cineKeyBuf_[i]), "%2d %5.1fs %6.2f %7.2f %7.1f km az %.0f el %.0f fov %.0f",
+                                 i + 1, k.t, k.lat, k.lon, altKm, k.az, k.el, k.fov);
+                        CLAY(CLAY_IDI("CineKeyRow", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                    .childGap = 3,
+                                                                    .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                        {
+                            CLAY(CLAY_IDI("CineKeyText", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}},
+                                                              .clip = {.horizontal = true}})
+                            {
+                                Clay_String cs{false, (int32_t)strlen(cineKeyBuf_[i]), cineKeyBuf_[i]};
+                                CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                            }
+                            if (btnH(CLAY_IDI("CineKeyGo", i), "Go", hovCineKey[i][0], "Jump to this key's view"))
+                            {
+                                const bool one = cinePlayOneShot_;
+                                cinePlayOneShot_ = true;
+                                cineScrub_ = (float)(k.t - K.front().t);
+                                cineApplyAt(cineScrub_, true);
+                                cinePlayOneShot_ = one;
+                            }
+                            if (btnH(CLAY_IDI("CineKeySet", i), "Set", hovCineKey[i][1], "Replace this key's view with the current one"))
+                            {
+                                CineKey n = cineCurrentPose();
+                                n.t = k.t;
+                                n.hasSim = k.hasSim;
+                                if (k.hasSim)
+                                    n.simT = k.simT;
+                                K[i] = n;
+                            }
+                            if (btnH(CLAY_IDI("CineKeyM", i), "-", hovCineKey[i][2], "0.5 s earlier (and every later key)") && i > 0 &&
+                                k.t - 0.5 > K[i - 1].t + 1e-6)
+                                for (int j = i; j < (int)K.size(); ++j)
+                                    K[j].t -= 0.5;
+                            if (btnH(CLAY_IDI("CineKeyP", i), "+", hovCineKey[i][3], "0.5 s later (and every later key)") && i > 0)
+                                for (int j = i; j < (int)K.size(); ++j)
+                                    K[j].t += 0.5;
+                            if (btnH(CLAY_IDI("CineKeyDel", i), "x", hovCineKey[i][4], "Delete this key"))
+                                del = i;
+                        }
+                    }
+                    if (del >= 0)
+                        K.erase(K.begin() + del);
+                }
+                row(1, [&]() {
+                    if (btn(5, "+ Key at view", "Add the current view as a key, 2 s after the last"))
+                    {
+                        CineKey n = cineCurrentPose();
+                        n.t = K.empty() ? 0.0 : K.back().t + 2.0;
+                        if (K.empty())
+                        {
+                            S.simStartValid = true;   // the first key fixes the shot's sim time
+                            S.simStart = n.simT;
+                        }
+                        K.push_back(n);
+                    }
+                });
+                cineSimRateUi_ = (float)S.simRate;
+                if (slider(0, "Sim time rate (x)", cineSimRateUi_, 0.0f, 600.0f, 1.0f, "%.0f"))
+                    S.simRate = cineSimRateUi_;
+
+                // Transport
+                const float shotDur = (float)S.duration();
+                if (slider(1, "Scrub shot (s)", cineScrub_, 0.0f, std::max(shotDur, 0.01f), 0.0f, "%.2f") && !cineActive() &&
+                    K.size() >= 2)
+                {
+                    const bool one = cinePlayOneShot_;
+                    cinePlayOneShot_ = true;
+                    cineApplyAt(cineScrub_, true);
+                    cinePlayOneShot_ = one;
+                }
+                row(2, [&]() {
+                    if (btn(7, "Play all", "Play every shot in order", cineRun_ == CineRun::Play && !cinePlayOneShot_))
+                        cineStart(CineRun::Play, false);
+                    if (btn(8, "Play shot", "Play this shot", cineRun_ == CineRun::Play && cinePlayOneShot_))
+                        cineStart(CineRun::Play, true);
+                    if (btn(9, "Stop", "Stop playback or the export"))
+                        cineStop("Stopped");
+                    if (btn(10, cineLoop_ ? "Loop on" : "Loop off", "Loop playback", cineLoop_))
+                        cineLoop_ = !cineLoop_;
+                });
+
+                // Export
+                text("EXPORT  (frames to screenshots/cinematics/)", Pal::textSection, 11);
+                slider(2, "Frames per second", cineExportFps_, 12.0f, 60.0f, 6.0f, "%.0f");
+                slider(3, "HQ resolution (x)", photoScaleSetting, 1.0f, 4.0f, 1.0f, "%.0f");
+                slider(4, "HQ settle frames", photoSettleFrames, 4.0f, 240.0f, 4.0f, "%.0f");
+                row(3, [&]() {
+                    if (btn(11, "Export preview", "Every frame as rendered in motion, at the fps above"))
+                        cineStart(CineRun::ExportPreview, false);
+                    if (btn(12, "Export HQ", "Every frame a settled HQ photo (slow: the settle frames per frame)"))
+                        cineStart(CineRun::ExportHQ, false);
+                });
+
+                // Files
+                text("FILES  (user data/cinematics)", Pal::textSection, 11);
+                row(4, [&]() {
+                    if (btn(13, "New", "Start a new cinematic"))
+                    {
+                        cineStop("New");
+                        cine_ = Cinematic{};
+                        char nm[48];
+                        const time_t now = time(nullptr);
+                        struct tm lt;
+#ifdef _WIN32
+                        localtime_s(&lt, &now);
+#else
+                        localtime_r(&now, &lt);
+#endif
+                        strftime(nm, sizeof(nm), "cine_%Y%m%d_%H%M%S", &lt);
+                        cine_.name = nm;
+                        cineShot_ = 0;
+                    }
+                    if (btn(14, "Save", "Save to user data/cinematics/<name>.json"))
+                    {
+                        std::string err;
+                        if (!cineSave("", err))
+                            cineStatus_ = err;
+                    }
+                    if (btn(15, "Refresh", "List the saved cinematics again"))
+                        cineRefreshFiles();
+                });
+                static char fileLab[8][128];
+                for (int f = 0; f < (int)cineFiles_.size() && f < 8; ++f)
+                {
+                    snprintf(fileLab[f], sizeof(fileLab[f]), "Load %s", std::filesystem::path(cineFiles_[f]).stem().string().c_str());
+                    if (btnH(CLAY_IDI("CineFile", f), fileLab[f], hovCineFile[f], nullptr))
+                    {
+                        std::string err;
+                        if (!cineLoad(cineFiles_[f], err))
+                            cineStatus_ = err;
+                    }
+                }
+            }
+            ui.scrollbar(CLAY_ID("CineBody"));
+        });
 }
 
 // ─── buildSelectHint ─────────────────────────────────────────────────────────
