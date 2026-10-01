@@ -851,6 +851,13 @@ void main()
         float tb   = min(tbS.y, tScene);
         // At most 150 km of it: from the eye inside the band, the far end beyond; from above, the part
         // nearest the ground (the dense end).
+        // With no surface in the scene depth, tb was the band's exit on the far side of the Earth: end at
+        // the sea-level sphere instead (review 14).
+        bool fogNoSurf = tScene >= 0.5 * kNoSurfaceT;
+        if (fogNoSurf) {
+            vec2 tg = raySphere(eye, dir, R_EARTH);
+            if (tg.x > 0.0) tb = min(tb, tg.x);
+        }
         if (tbS.x > 0.0) ta = max(ta, tb - 150000.0);
         else             tb = min(tb, ta + 150000.0);
         if (tb > ta) {
@@ -898,6 +905,12 @@ void main()
                 CV2Pos pp = cv2Pos(dir * tS, eyeH, enuToEcef);
                 float ds, ftH, fhf, dAgl, si;
                 float sf = cv2FogDust(pp, tS * pixAng, ds, ftH, fhf, dAgl, si);
+                // Review 14: no dust or ice fog under the ground. Their height terms come back clamped at 0
+                // (dAgl), so a sample below the surface read the densest, ground-level value — and where the
+                // scene depth lands below the real surface (past the detailed terrain march's range, ~550 km
+                // out from 180 km over the Ronne ice shelf) the ice fog whitened everything beyond a hard ring
+                // (user snapshot 3). Not the radiation fog: it pools in valleys below the smoothed ground.
+                if (pp.h < cv2Ground(pp.dirE) - 30.0) { ds = 0.0; si = 0.0; }
                 if (ds > 0.0 || si > 0.0) {
                     // The dust's exponential height profile integrated exactly over the step (the rest of
                     // its field is smooth over a step): a sample at one height per step drew the step

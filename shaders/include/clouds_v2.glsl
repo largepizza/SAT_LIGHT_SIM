@@ -1403,7 +1403,12 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
     }
     if (cv2.fog2.w > 0.0) {
         float latD = degrees(asin(clamp(q.dirE.z, -1.0, 1.0)));
-        float ice  = max((1.0 - smoothstep(-72.0, -63.0, latD)) * (1.0 - sea),                   // Antarctica (not the sea)
+        // Antarctica: the ice shelves read ~0 m in the DEM, so "not the sea" cut the ice fog at every grounding
+        // line (a hard arc from 180 km over the Ronne shelf, review 14). South of ~78 S everything is ice; north
+        // of it the land test uses the regional (~80 km) ground, so a coast is a gradient, not an edge.
+        float seaR = 1.0 - smoothstep(5.0, 120.0, textureLod(cv2WeatherTex, q.dirE, 4.0).a * 8000.0);
+        float antL = max(1.0 - seaR, 1.0 - smoothstep(-80.0, -72.0, latD));
+        float ice  = max((1.0 - smoothstep(-72.0, -63.0, latD)) * antL,                          // Antarctica + shelves
                      max(smoothstep(62.0, 70.0, latD) * smoothstep(800.0, 1600.0, gF),          // Greenland
                          smoothstep(70.0, 78.0, latD) * (1.0 - sea)));                            // high Arctic land
         if (ice > 0.0) {

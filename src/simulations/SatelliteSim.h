@@ -3772,17 +3772,17 @@ private:
     float terrainTextureStrength = 1.0f; // close-up material textures (terrain v2 P3)
     float cityLightsStrength = 1.0f;     // procedural city street lights (.plans/CITIES_PLAN.md)
     float cityRoadsStrength = 2.0f;      // the major roads' share of them
-    float citySpriteGain = 2.6f;         // city lights as satellite point sprites (0 = off)
-    float citySpriteGround = 0.083f;     // the ground glitter's share kept where the sprites carry the light
+    float citySpriteGain = 4.0f;         // city lights as satellite point sprites (0 = off)
+    float citySpriteGround = 1.0f;      // the ground glitter's share kept where the sprites carry the light
     float cityTwinkleRate = 4.0f;        // glitter + sprite scintillation rate (1 = 0.5-1.2 rad/s)
     float citySpriteStartFootM = 18.0f;  // sprites begin where a pixel spans this much ground (m): far only
     // City light LOD (review 13, Night lights tab): the ground footprint (m per pixel) where each layer ends.
-    float cityPostsFootM = 10.0f;        // lamp posts and their pools
-    float cityGridFootM = 150.0f;        // the street grid (past it: the glitter alone)
-    float cityRoadsFootM = 350.0f;       // the real major roads
-    float cityLayoutFootM = 400.0f;      // the street layout (past it: the far glitter only)
-    float cityStreetShareNear = 0.7f;    // the streets' share of the light close up
-    float cityStreetShareFar = 0.15f;    // ... and as they start to fade out
+    float cityPostsFootM = 27.0f;        // lamp posts and their pools
+    float cityGridFootM = 380.0f;        // the street grid (past it: the glitter alone)
+    float cityRoadsFootM = 1300.0f;       // the real major roads
+    float cityLayoutFootM = 2000.0f;      // the street layout (past it: the far glitter only)
+    float cityStreetShareNear = 0.0f;    // the streets' share of the light close up
+    float cityStreetShareFar = 0.13f;    // ... and as they start to fade out
     // The city light sprites take over where a pixel spans citySpriteStartFootM of ground (the ground's
     // own footprint, stretched at grazing angles — where its glitter points smear into blobs); nearer
     // lights are the ground's glitter alone: up close a point sprite read as a floating lantern (user

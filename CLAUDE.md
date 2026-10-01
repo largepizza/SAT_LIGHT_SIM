@@ -1060,6 +1060,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   transmittance and radiance were smooth). The mean is the transmittance-weighted origin of the cloud's
   light, i.e. the right split. Also: the march's ray moves within its texel each visit (an R2 sequence,
   not in fast flight) so the history integrates the texel's footprint.
+- **Review 14 (2026-09-30):** **no dust or ice fog under the ground** in the fog march (`pp.h < cv2Ground - 30`;
+  their height terms come back clamped at 0, so a sample below the surface read the densest value). Past the
+  detailed terrain march's range the scene depth lands below the real surface, and from 180 km over the Ronne
+  ice shelf the ice fog whitened everything beyond a hard ring ~550 km out (user snapshot 3; the radiation fog
+  is exempt — it pools below the smoothed ground in valleys). With no surface at all the march ends at the
+  sea-level sphere (it ran to the band's exit on the far side of the Earth). The Antarctic ice fog's land gate
+  counts everything south of ~78 S as ice and tests the regional (~80 km) ground elsewhere (the shelves read
+  ~0 m and were "sea").
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -4228,6 +4236,12 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   layout to" `city_layout_footprint_m` 400 (past it `cityLightFar`; the macro and mean ramps scale with it, so the
   pattern's mean still reaches the map's there) — each fading in from ~0.4x its value, and the streets' share of
   the light near / as they fade (`city_street_share_near` 0.7, `_far` 0.15). Defaults reproduce review 12.
+- **City light through cloud (review 14):** the cloud blur (`cityLightBlurLod`, by the cloud's opacity in front)
+  applies to the FINISHED light (`nightBlurK`, before `tNight`), not to the map the pattern reads: the blurred map
+  spread a city's light over the desert beside it and the pattern drew street grids there whenever a cloud was in
+  front (west of Phoenix, the grid "turned on" with the eye inside the cloud). The user's tuned LOD values are the
+  defaults (posts 27, grid 380, roads 1300, layout 2000 m/px, street share 0 near / 0.13 far, sprite gain 4,
+  ground glitter under sprites 1).
 - **Regional city styles (2026-09-30, sat_sky.frag `cityStyleWeights`, `kCs*` tables).** Nine styles by
   soft continental boxes with wobbled borders: 0 North America + Oceania, 1 Latin America, 2 Mediterranean
   Europe, 3 Northern Europe, 4 Middle East / N Africa / Central Asia, 5 Sub-Saharan Africa, 6 South + SE Asia,
@@ -4342,6 +4356,13 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
   texture fetches per ocean pixel cost 6 ms of the sky pass from orbit (the `water_map` knockout "saved" it only
   because it turns the sea into cheaper terrain).
 - Debug views 40-45 (harness `debugview oceanrefl|oceanfresnel|oceanstate|oceansurf|oceannormal|oceanshore`).
+- **Wave normals are filtered to the pixel footprint ALONG the view** (review 14, `gSeaFootM`, seaHeight's `lodW`:
+  an octave fades as its cell nears 2 footprints, octave 0 included). A rough sea under a low Sun aliased into
+  glittering pixel noise that crawled with any camera motion (the 80th-power diffuse term and the below-horizon
+  reflection test amplify any normal noise); the far band's frame-to-frame change at 860 m/s fell from ~11-26 to
+  ~0-5 levels. The removed slope roughens the reflection instead (`seaRough`: the reflected ray tilts up, half of
+  it the next wave's water, the reflected clouds blur) or the filtered far sea was a mirror. The reflected clouds'
+  weight is taken per texel by opacity (the filtered alpha mixed in the no-cloud marker: hard blocks).
 - **Water map from Natural Earth 10 m** (`tools/make_water_map.py`, 2026-09-30): land + lakes rasterised at 16K
   between 60 S and 72 N, the distance field averaged down to the 8K texels (sub-texel zero crossing; ~1 km vs
   the 5-km mask's ~2.5 km). Outside the band the 8K mask (ice shelves). Reads the .r8 copies, never the PNGs.

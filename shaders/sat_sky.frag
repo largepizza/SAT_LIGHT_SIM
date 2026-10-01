@@ -2176,6 +2176,10 @@ const float kSeaOctA[8]    = float[8](1.0, 2.0, 3.0, 5.0, 8.0, 14.0, 24.0, 41.0)
 // Sea state (set per pixel before the wave calls): amplitude and choppiness scale from the weather.
 float gSeaAmp    = 1.0;
 float gSeaChoppy = 0.0;
+// Review 14: the pixel footprint (m) the wave NORMAL is filtered to (0 = none). Octaves whose cells fall
+// below ~2 footprints fade out: grazing views of a rough sea under a low Sun aliased into glittering pixel
+// noise that crawled whenever the camera moved (user snapshot 4, the South Atlantic at 630 m).
+float gSeaFootM  = 0.0;
 
 // Hash without Sine (Dave Hoskins, MIT) on the lattice cell reduced mod kSeaCells.
 float seaHash(vec2 p) {
@@ -2212,9 +2216,13 @@ float seaHeight(vec2 posM, float seaTime, int nOct) {
     [[dont_unroll]] for (int i = 0; i < nOct; i++) {
         vec2  arg = mod(v * kSeaOctA[i], kSeaCells);
         float ts  = mod(seaTime * tf, kSeaCells);
+        // The octave's cell: 1/kSeaFreq shrunk by |[2 1; -1 2]|^i = sqrt(5)^i and its integer scale.
+        float lodW = (gSeaFootM > 0.0)
+                   ? clamp((1.0 / kSeaFreq) / (pow(2.2360680, float(i)) * kSeaOctA[i]) / gSeaFootM - 1.0, 0.0, 1.0) : 1.0;
+        if (lodW <= 0.0) break;   // finer octaves are smaller still
         float d   = seaOctave(arg + ts, choppy);
               d  += seaOctave(arg - ts, choppy);
-        h  += d * amp;
+        h  += d * amp * lodW;
         v   = mod(vec2(2.0 * v.x + v.y, 2.0 * v.y - v.x), kSeaCells);   // integer [2 1; -1 2]
         tf *= 1.9; amp *= 0.22;
         choppy = mix(choppy, 1.0, 0.2);
@@ -3791,9 +3799,19 @@ void main() {
         // OPACITY itself is physically reasonable. Skipped below the horizon (dayFrac path has no
         // night lights anyway) is unnecessary — nightColor is cheap and already computed for the
         // dayFrac mix regardless of whether it's actually night at this point.
+        // Review 14: with the procedural lights on, the blur is applied to the FINISHED light (below, before
+        // tNight), not to the map the pattern reads: the blurred map spread a city's light over the desert
+        // beside it and the pattern drew street grids there whenever a cloud was in front (user snapshots
+        // 1-2, west of Phoenix: the grid "turned on" with the eye inside the cloud).
+        vec3  nightBlurLights = vec3(0.0);
+        float nightBlurK      = 0.0;
         if (cloud.cityLightBlurLod > 0.01 && localCloudOpacity > 0.001) {
             vec3 nightColorBlur = textureLod(earthNightTex, uvSurf, cloud.cityLightBlurLod).rgb;
-            nightColor = mix(nightColor, nightColorBlur, localCloudOpacity);
+            if (cloud.cityLightsStrength > 0.0) {
+                nightBlurK      = localCloudOpacity;
+                nightBlurLights = max(nightColorBlur - vec3(0.006, 0.006, 0.0132), vec3(0.0));
+            } else
+                nightColor = mix(nightColor, nightColorBlur, localCloudOpacity);
         }
 
         // ── City detail texture blend ───────────────────────────────────────────
@@ -4271,6 +4289,10 @@ void main() {
         // the lamps', and the map's green made whole suburbs glow green at night (user snapshot 10).
         vec3  poolAlb  = vec3(clamp(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)) / 0.12, 0.0, 4.0));
         float poolLamb = pow(clamp(dot(shadingN, normalize(hitPt)), 0.0, 1.0), 1.5);
+        if (nightBlurK > 0.0) {   // seen through cloud: the diffuse glow of the map, not the pattern's points
+            cityLights = mix(cityLights, vec3(dot(nightBlurLights, vec3(0.2126, 0.7152, 0.0722))), nightBlurK);
+            cityPool  *= 1.0 - nightBlurK;
+        }
         vec3 tNight     = (cityLights + cityPool * poolAlb * poolLamb * terrainAO) * (0.12 * (1.0 - twilightFrac));
         // Night light ON the albedo (terrain v2 P1): the moonlit sky (moonlight scattered by the air —
         // ~0.15 of the direct Moon on a flat face, like the Sun's diffuse share) and the moonless
@@ -4458,6 +4480,9 @@ void main() {
             // distance fade. Bitwise-identical result for blend<0.99; below that threshold the
             // discarded detail was already imperceptible (>99% blended to flat).
             vec3 waveN = surfUp;
+            // How much of the wave slope the footprint filter removed (0 near, 1 where only the 18-m swell is left
+            // or less): the reflection is roughened by it instead (review 14), or the filtered far sea was a mirror.
+            float seaRough = 0.0;
             float waveCrest = -1.0;        // the wave height here / its maximum (whitecaps), -1 = unresolved
             float waveBlend = 1.0;
             if (altFade > 0.01) {
@@ -4465,11 +4490,16 @@ void main() {
                 float blend    = max(distFade, 1.0 - altFade);  // 0 = full detail, 1 = flat
                 waveBlend = blend;
                 if (blend < 0.99) {
-                    float eps = max(0.5, dist * 0.0008);
+                    // The footprint: a pixel's length ALONG the view at this distance (stretched by the grazing angle,
+                    // which is where the aliasing is: crests and troughs alternate along the line of sight).
+                    gSeaFootM = pixAngle * dist / max(abs(dot(dir, surfUp)), 0.02);
+                    float eps = max(max(0.5, dist * 0.0008), 0.5 * gSeaFootM);
                     float n0  = seaMapDetail(posM,                    pHeight, seaTime);
                     waveCrest = (pHeight - n0) / (kSeaHeight * gSeaAmp * 2.56);
                     float nX  = seaMapDetail(posM + vec2(eps, 0.0),  pHeight, seaTime) - n0;
                     float nY  = seaMapDetail(posM + vec2(0.0,  eps), pHeight, seaTime) - n0;
+                    seaRough  = clamp(log2(gSeaFootM / 2.0) / 3.0, 0.0, 1.0) * clamp(seaState, 0.25, 2.0) / 2.0;
+                    gSeaFootM = 0.0;
                     waveN = normalize(vec3(nX, nY, 0.0) + eps * surfUp);
                     waveN = normalize(mix(waveN, surfUp, blend));
                     // The finer detail octaves can still turn a facet slightly away from the eye: lean it back.
@@ -4490,10 +4520,14 @@ void main() {
             // In reality such a facet mirrors the next wave's water, not the sky: reflWaterK darkens the reflection
             // toward that (the horizon's light off another wave) as the reflection dips below the horizon.
             float reflWaterK = 1.0;
+            // A rough sea seen at a grazing angle reflects the sky well above the mirror direction (the facets that
+            // face the eye are tilted toward it), and half of it the next wave's water.
+            reflDir = normalize(reflDir + surfUp * (0.12 * seaRough));
+            reflWaterK = 1.0 - 0.45 * seaRough;
             {
                 float rUp = dot(reflDir, surfUp);
                 if (rUp < 0.02) {
-                    reflWaterK = mix(1.0, 0.2, smoothstep(0.0, 0.12, -rUp));
+                    reflWaterK *= mix(1.0, 0.2, smoothstep(0.0, 0.12, -rUp));
                     reflDir = normalize(reflDir + (0.02 - rUp) * surfUp);
                 }
             }
@@ -4574,7 +4608,19 @@ void main() {
                     // The target holds the clouds without the air in front of them (the sky pass adds that as
                     // airFront): a far cloud is mostly that air, so it leans back to the clear march by its distance.
                     vec4  rCA  = texture(cloudTargetA, reflScreenUV);
-                    float rKf  = 1.0 - exp(-abs(rCA.a) / 40.0);            // alpha: signed distance, km
+                    // Per texel, weighted by opacity (review 14): the filtered alpha blends a cloud's distance with the
+                    // no-cloud marker (-60000 km) at every edge, and the reflected clouds came out in hard blocks.
+                    float rKf;
+                    {
+                        vec4  ga = abs(textureGather(cloudTargetA, reflScreenUV, 3));
+                        vec4  gT = textureGather(cloudTargetB, reflScreenUV, 1);
+                        vec2  fq = fract(reflScreenUV * vec2(textureSize(cloudTargetA, 0)) - 0.5);
+                        vec4  wq = vec4((1.0 - fq.x) * fq.y, fq.x * fq.y, fq.x * (1.0 - fq.y), (1.0 - fq.x) * (1.0 - fq.y))
+                                 * clamp(1.0 - gT, 0.0, 1.0) * vec4(lessThan(ga, vec4(50000.0)));
+                        float ws = wq.x + wq.y + wq.z + wq.w;
+                        rKf = (ws > 1e-6) ? dot(wq, vec4(1.0) - exp(-ga / 40.0)) / ws : 1.0;   // alpha: signed distance, km
+                    }
+                    rKf = mix(rKf, 1.0, 0.6 * seaRough);   // a rough sea blurs the clouds in it away
                     reflColor  = reflColor * mix(reflCloudT, vec3(1.0), rKf) + rCA.rgb * (1.0 - rKf);
                     reflTerrainOccl = (texture(sceneDepthTex, reflScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
                 }
