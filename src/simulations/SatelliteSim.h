@@ -3045,8 +3045,9 @@ private:
         glm::vec4 evo0;        // the two advected copies' ages (s) and weights
         glm::vec4 evo1;        // x wind (m/s), y growth, z sim time (s, wrapped), w unused
         glm::vec4 evo2;        // xyz the Sun three hours ago (map frame), w afternoon land convection
+        glm::vec4 remap;       // x Coverage, y clear, z full (coarse levels store the true mean coverage), w mip
     };
-    static_assert(sizeof(GpuWeatherPC) == 64, "GpuWeatherPC == cloud_v2_weather.comp's PC");
+    static_assert(sizeof(GpuWeatherPC) == 80, "GpuWeatherPC == cloud_v2_weather.comp's PC");
     GpuWeatherPC weatherEvoPC(int face, uint32_t mip) const;
     void recordWeatherEvolution(VkCommandBuffer cmd);
     VkDescriptorSetLayout cv2WxSetLayout = VK_NULL_HANDLE;
@@ -3071,6 +3072,13 @@ private:
     float cv2MorphOrbit = 0.8f;        // "Morphology (orbit)": its share of the far field's presence
     float cv2MorphNear = 0.5f;         // "Morphology (near)": its weight in the near field's clustering
     float cv2MorphPeriodKm = 320.0f;   // "Morphology period (km)": one tile of the texture
+    // "Morphology from (m/px)" (review 18): the pixel footprint from which the morphology (the far field) sets
+    // the cloud outlines in full; it fades in from a quarter of it. Below, the near field's cells and the map.
+    float cv2MorphFarFootM = 1400.0f;
+    // "Morphology breakup" (review 18): the far field's cloud fraction is pulled toward 1/2 by this share, so
+    // overcast opens along the morphology's rims and clear air holds its scattered cloud — the map's coverage
+    // saturates (0 or 1) over most of a broken region, and the texture showed only along its edges.
+    float cv2MorphBreakup = 0.0f;
     VkSampler cv2RepeatSampler = VK_NULL_HANDLE; // trilinear REPEAT (noise) — also the weather cube
     VkSampler cv2ClampSampler = VK_NULL_HANDLE;  // bilinear CLAMP (screen targets)
     VkBuffer cv2ParamsBuf = VK_NULL_HANDLE;
@@ -4532,7 +4540,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 237;
+    static constexpr int kCloudSliderSlots = 239;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

@@ -35,7 +35,9 @@ layout(set = 0, binding = 3) uniform sampler2D earthElevTex;     // equirect R8 
 // from itself (a displacement of at most wind x the window), and its coverage grows and decays under a
 // smooth field (evo1.y, sim time evo1.z). SatelliteSim re-bakes one face per frame as sim time moves.
 // evo2: xyz the Sun's direction three hours ago in the map's frame, w "Afternoon land convection".
-layout(push_constant) uniform PC { int faceSize; float srcLod; int face; float pad; vec4 evo0; vec4 evo1; vec4 evo2; } pc;
+// remap (review 18): x "Coverage" (the map brightness multiplier, look.x), y the clear and z the full threshold
+// (cover.xy), w this level's mip.
+layout(push_constant) uniform PC { int faceSize; float srcLod; int face; float pad; vec4 evo0; vec4 evo1; vec4 evo2; vec4 remap; } pc;
 
 const float PI = 3.14159265359;
 const float R_EARTH_W = 6371000.0;
@@ -166,6 +168,37 @@ void main()
 
     float precip = clamp(deep * smoothstep(0.55, 0.9, t) + deep * (1.0 - conv) * 0.35, 0.0, 1.0);
 
+    // Review 18: the COARSE levels hold the brightness whose coverage is the true mean coverage of the fine
+    // texels under them. Every consumer reads coverage as clamp((r x Coverage - clear) / (full - clear)), and a
+    // coarse level used to hold the MEAN brightness, so its coverage was that of the mean: inflated wherever a
+    // field is broken (half the texels clear, half at 0.6 read as 0.3 brightness, i.e. ~40% cover instead
+    // of 50%... and a clear-threshold-straddling field read as overcast or clear as a whole). The far field
+    // takes its cloud fraction from mip 2 (clouds_v2.glsl), so it must be a fraction. Mip 0 is untouched; the
+    // types and the precipitation above keep the mean brightness.
+    float covStore = cov;
+    if (pc.remap.w > 0.5 && pc.remap.x > 0.0) {
+        int   N    = clamp(2 << int(pc.remap.w), 2, 8);
+        float lodT = max(pc.srcLod - log2(float(N) * 0.5), 0.0);
+        float add  = (pc.evo1.y > 0.0 ? pc.evo1.y * evoGrowth(d) : 0.0) + 0.2 * aft;
+        float span = max(pc.remap.z - pc.remap.y, 1e-3);
+        float frac = 0.0;
+        for (int c = 0; c < 2; ++c) {
+            float wc = (c == 0) ? pc.evo0.z : pc.evo0.w;
+            if (wc < 1e-3) continue;
+            vec3  dc  = normalize(d - wv * ((c == 0) ? pc.evo0.x : pc.evo0.y));
+            float acc = 0.0;
+            for (int j = 0; j < N; ++j)
+                for (int i = 0; i < N; ++i) {
+                    vec2  o = ((vec2(i, j) + 0.5) / float(N) - 0.5) * texel;
+                    float b = textureLod(earthCloudsTex, equirectUV(normalize(dc + tx * o.x + ty * o.y)), lodT).r;
+                    acc += clamp(((b + add) * pc.remap.x - pc.remap.y) / span, 0.0, 1.0);
+                }
+            frac += wc * acc / float(N * N);
+        }
+        covStore = frac > 0.0 ? (pc.remap.y + frac * span) / pc.remap.x
+                              : min(cov, pc.remap.y / pc.remap.x);
+    }
+
     // Ground height (terrain.glsl's encoding: 15/255 is sea level, 255/255 ~8.5 km above it), a 2x2
     // supersample at this mip's scale (the DEM's 2.7 km texels, ~2 mips finer than the source map's).
     float gnd = 0.0;
@@ -176,5 +209,5 @@ void main()
     }
     gnd *= 0.25;
 
-    imageStore(outWeather, id, vec4(cov, t, precip, clamp(gnd / 8000.0, 0.0, 1.0)));
+    imageStore(outWeather, id, vec4(covStore, t, precip, clamp(gnd / 8000.0, 0.0, 1.0)));
 }

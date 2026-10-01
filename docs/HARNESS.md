@@ -236,6 +236,16 @@ python tools/harness/tstab.py compare run1 run2
 - **Yaw-only pans hide row-aligned errors** (the horizon's structure is horizontal): the pitch
   scenario is what found review 15's depth-history bug (mean 5.4 -> 1.3).
 
+## Still-view flicker (`tools/harness/flicker.py`)
+
+Per-pixel temporal statistics of a recorded sequence with the camera still (review 18, the MEO cloud flicker):
+`python tools/harness/flicker.py <run>/captures/<name>_0 [--skip 10] [--crop x,y,w,h] [--heat out.png]` prints
+the mean per-pixel std of luminance, the mean frame-to-frame change, the p99 std and the share of pixels whose
+std passes 8 levels (visible flicker); `--heat` writes the std map x8. Record with two identical path keys
+(`path key 0; path key 1.5; path play fps=30 record=x`), time running or paused (paused = the march's own
+sampling noise). Crop to the Earth from orbit: the AI disk's million satellites are a noisy ring in space.
+`harness_runs/meo/flick.satcmd` is the 2000 / 8000 / 20000 km set.
+
 ## Determinism
 
 What makes two runs identical, and what breaks it:

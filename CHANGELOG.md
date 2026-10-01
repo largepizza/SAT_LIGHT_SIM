@@ -16,7 +16,10 @@
   application tour built with it.
 - **HQ photo** (F8, or the sparkle-camera button): a supersampled, settled screenshot at up to 4x the window.
 - **Cloud morphology.** Closed and open convective cells, cloud streets and clustered cumulus shape the clouds
-  seen from orbit and the mid-level cloud, from textures generated for the project (`tools/make_cloud_morph.py`).
+  seen from orbit and the mid-level cloud, from four real MODIS scenes (NASA GIBS), made tileable
+  (`tools/make_cloud_morph.py`). From orbit the clouds take their fraction from the map over ~20 km and their
+  shape and thickness from the imagery: broken edges, translucent thin cloud. "Morphology from (m/px)" sets
+  where that takes over.
 - **Ambient sound.** A location- and context-aware ambience bus under the music (Settings → Sound →
   "Ambience"): wind for plains, deserts, mountains and ice sheets; surf and gulls at the coast, the
   open sea offshore; crickets at night (silent inside a Reflect Orbital beam), forest birds and a
@@ -142,6 +145,8 @@
   scrollable instead of just ending at the window edge.
 
 ### Fixed
+- Flickering scattered clouds seen from medium orbit (the far field is filtered to twice the pixel footprint,
+  and the history weight of a still view falls with altitude).
 - **The jungle day bed is a different recording.** "jungle forest 02" (rucisko) carried people talking
   under the insects; `jungle_day` is now an Amazon rainforest morning by felix.blume, and the night side
   gained its own `jungle_night` species chorus (night frogs and toads at a caiman pond, French Guiana) —

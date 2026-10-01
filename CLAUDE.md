@@ -1122,6 +1122,32 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   `coverage_frac`, unmerged) changed nothing either. The remaining gap is 1-5 km structure, which the half-res march
   cannot resolve from orbit (the morphology's fine term is filtered to its mean there). The mid layer's sub-pixel haze
   takes the closed cells at its regime's area fraction (`uMid`).
+- **Review 18 (2026-10-01): MEO flicker, imagery morphology, true coarse coverage.** (1) **Flicker** of scattered
+  puffs from medium orbit: each visit's ray lands at another point of its 5-20 km texel (the R2 sub-texel jitter),
+  and the far field's 2D reads were filtered to the footprint itself, so a puff near the threshold was hit or missed
+  per visit. The far field reads at twice the footprint (`fpF`), stretched by 1/|dir.up| at grazing views
+  (`gCv2Stretch`, set by the view march only), and the still history weight falls to 40% from 300 to 3000 km
+  (CPU, `look2.w`). 8000 km: pixels with std > 8 levels 1.0% -> 0.31% (`tools/harness/flicker.py`,
+  harness_runs/meo). The sparse vs full rate and the step size made no difference (sub-texel sampling, not steps).
+  (2) **`cloud_morph.rgba8` is real imagery** (`tools/make_cloud_morph.py`; the procedural set is
+  `make_cloud_morph_procedural.py`): four MODIS scenes from NASA GIBS (closed cells off Peru, open cells in the
+  North Atlantic, streets off Japan, popcorn cumulus over the Amazon), cloud = the darkest linear channel minus
+  the clear background (a local opening for the land scene), clear pixels ordered by blurred distance to cloud,
+  Moisan's periodic component (seamless), locally standardised over ~30 km, clear stretches filled from another
+  scene, rank-equalised. Credited in THIRD_PARTY_NOTICES.txt and the Attributions tab. (3) **The weather cube's
+  coarse mips hold the brightness whose coverage is the TRUE mean coverage** of the fine texels
+  (`cloud_v2_weather.comp`, N x N taps, `remap` push constants; mip 0, the types and precipitation unchanged;
+  Coverage / clear / full are in the bake's settings hash). (4) **Far field:** the fraction 85% from mip 2
+  (`wCoarse`, was 25%), the 5-km map's zero contour no longer drops a far-field sample (`cov <= 0` early-out
+  only when the 20-km fraction is 0 too), and the strength sets the optical THICKNESS (`d *= 0.02 + 0.98 e^2`,
+  thin parts translucent). "Morphology from (m/px)" (`morph_far_footprint_m` 1400, slot 237, `morph.z` = log2) =
+  where the far field is full (in from a quarter of it), "Morphology breakup" (`morph_breakup` 0, slot 238,
+  `morph.w`, pulls the far fraction toward 1/2: measured little; left at 0). Cost +0.4 ms at 420 km, +0.65 ms at
+  8000 km (cloud march, 1920x1009). **What the morphology can show is bounded by the map:** from 420 km the far
+  field is already full (the half-res pixel is ~1 km at fov 60), and over most of a broken region the map's
+  coverage, even averaged over 20-40 km, is near 0 or 1, so the imagery only shapes the edges and the inside
+  thickness; its 1-3 km structure (rims, puffs) is below the half-res pixel. The limb from 20000 km shows
+  alternating half-res columns in cloud (open; not the far-field reads, the march settings, the TAA or the rate).
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

@@ -489,7 +489,14 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // Coverage is the map's brightness remapped: thin cloud is grey in the imagery, an overcast
     // deck is not pure white, and the raw value used as a fraction never let anywhere close over.
     float cov  = clamp((w.r * cv2.look.x - cv2.cover.x) / covSpan, 0.0, 1.0);
-    if (cov <= 0.0) return f;
+    // Review 18: in the far field the cloud FRACTION over ~20 km (the weather cube's mip 2, which holds the true
+    // mean coverage of its fine texels) and the morphology place the clouds; the 5-km map's own zero contour no
+    // longer cuts them off (it was every outline seen from orbit: blobs following the map).
+    // From "Morphology from (m/px)" (morph.z = its log2) in full, fading in over the two octaves below.
+    float farK  = gCv2NoFar ? 0.0 : smoothstep(cv2.morph.z - 2.0, cv2.morph.z, log2(max(fpM, 1.0)));
+    float covF  = clamp((wCoarse - cv2.cover.x) / covSpan, 0.0, 1.0);
+    float farM  = farK * cv2.morph.x;
+    if (cov <= 0.0 && farM * covF <= 0.0) return f;
 
     CV2Type ty     = cv2TypeAt(w.g);
     float   strat  = 1.0 - ty.look.z;                  // 1 = the stratiform field, 0 = the cells
@@ -584,7 +591,6 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // point of its texel each visit, and a field read at the footprint's own mip changes by a texel's worth
     // inside it, so a small cloud near the threshold was hit or missed per visit (flicker on scattered puffs
     // from MEO). One mip coarser, any point of the texel reads about the same value.
-    float farK   = gCv2NoFar ? 0.0 : smoothstep(0.5, 2.5, cv2Lod(fpM, cv2.anchorCell.w));
     float fpF    = fpM * (1.0 + farK) * mix(1.0, gCv2Stretch, farK);
     vec4  cl4    = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 4.0
                               + vec3(0.37, 0.61, 0.13), cv2Lod(fpF, cv2.anchorCluster.w * 4.0));
@@ -607,11 +613,12 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
         float zM   = cv2MorphZ(wd, mpF, fpF, strat, seaM, cl.r);
         fzFar = mix(fz, zM, cv2.morph.x);
         nearM = cv2.morph.y * 0.15 * clamp(zM, -2.5, 2.5);
-        if (farK * cv2.morph.x > 0.0) {
-            float covF = clamp((wCoarse - cv2.cover.x) / covSpan, 0.0, 1.0);
-            // The fraction over ~20 km, halfway to the 5-km texels' (the coarse mip of a broken field reads
-            // higher), and a deck below full cover so its closed cells' rims open (they show from space).
-            covE = mix(cov, min(mix(cov, max(covF, 0.02), 0.25), mix(1.0, 0.85, strat)), farK * cv2.morph.x);
+        if (farM > 0.0) {
+            // The fraction over ~20 km (review 18: the true mean coverage, mostly; review 17 took a quarter of
+            // it, since the coarse mip then held an inflated one), and a deck below full cover so its closed
+            // cells' rims open (they show from space).
+            covE = mix(cov, min(mix(cov, max(covF, 0.02), 0.85), mix(1.0, 0.85, strat)), farM);
+            covE = mix(covE, 0.5, cv2.morph.w * farM);   // "Morphology breakup"
             zThr = 2.6 * (0.5 - covE);
         }
     }
@@ -855,6 +862,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
 
     // Denser upward (cloud water grows with height); precipitation loads the base.
     d *= mix(0.6, 1.0, smoothstep(0.0, 0.4, hf)) * (1.0 + w.b * ty.look.w * (1.0 - hf));
+    // Review 18: in the far field the strength (the imagery's reflectance, thresholded) sets the optical
+    // THICKNESS too: a satellite image's thin edges and broken patches are translucent grey, its cores white.
+    // Every cloud from orbit was one flat, opaque white (an optical depth of tens) to its outline.
+    d *= mix(1.0, 0.02 + 0.98 * e * e, farM);
     f.sigma    = d * ty.shape.x * cv2.look.y;
     f.hf       = hf;
     f.msBright = ty.look.x;

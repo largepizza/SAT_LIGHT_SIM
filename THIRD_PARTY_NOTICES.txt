@@ -213,6 +213,17 @@ License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0
          free software, consistent with the NonCommercial term.
 
 --------------------------------------------------------------------
+Cloud morphology textures (clouds seen from orbit)
+--------------------------------------------------------------------
+File:    cloud_morph.rgba8 (baked by tools/make_cloud_morph.py)
+Source:  Four MODIS true-colour scenes (Terra/Aqua Corrected Reflectance),
+         2021-2023, served by NASA's Global Imagery Browse Services (GIBS).
+         "We acknowledge the use of imagery provided by services from
+         NASA's Global Imagery Browse Services (GIBS), part of NASA's Earth
+         Science Data and Information System (ESDIS)."
+License: NASA imagery, no copyright (NASA open data policy); credit as above
+
+--------------------------------------------------------------------
 Terrain material textures (close-up ground)
 --------------------------------------------------------------------
 File:    terrain_materials.rgba8 (baked by tools/make_terrain_materials.py)

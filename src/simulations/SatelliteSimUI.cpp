@@ -4847,6 +4847,8 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Morphology (orbit)", &cv2MorphOrbit, 0.0f, 1.0f, 0.05f, "%.2f", 234},
         {"Morphology (near)", &cv2MorphNear, 0.0f, 2.0f, 0.05f, "%.2f", 235},
         {"Morphology period (km)", &cv2MorphPeriodKm, 80.0f, 1000.0f, 10.0f, "%.0f", 236},
+        {"Morphology from (m/px)", &cv2MorphFarFootM, 50.0f, 4000.0f, 10.0f, "%.0f", 237},
+        {"Morphology breakup", &cv2MorphBreakup, 0.0f, 0.6f, 0.01f, "%.2f", 238},
     };
 
     CloudSlider secFlat[] = {
@@ -5462,6 +5464,22 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
                   CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
         CLAY_TEXT(CLAY_STRING("CC BY-NC-SA 4.0 — Sat Light Sim is distributed as free software"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
+    }
+
+    CLAY(CLAY_ID("AttrDiv4b"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                           .padding = {0, 0, 2, 2}},
+                                .backgroundColor = {30, 30, 32, 255}}) {}
+
+    CLAY(CLAY_ID("Attr4b"), {.layout = {
+                                 .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                 .padding = {6, 6, 5, 5},
+                                 .childGap = 4,
+                                 .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    {
+        CLAY_TEXT(CLAY_STRING("Cloud morphology textures"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+        CLAY_TEXT(CLAY_STRING("MODIS imagery from NASA's Global Imagery Browse Services (GIBS), part of NASA's ESDIS"),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
     }
 
     CLAY(CLAY_ID("AttrDiv4"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
@@ -6898,6 +6916,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2MorphOrbit = c.value("morph_orbit", cv2MorphOrbit);
         cv2MorphNear = c.value("morph_near", cv2MorphNear);
         cv2MorphPeriodKm = c.value("morph_period_km", cv2MorphPeriodKm);
+        cv2MorphFarFootM = c.value("morph_far_footprint_m", cv2MorphFarFootM);
+        cv2MorphBreakup = c.value("morph_breakup", cv2MorphBreakup);
         cv2WindMps = c.value("wind_mps", cv2WindMps);
         cv2EdgeSharpness = c.value("edge_sharpness", cv2EdgeSharpness);
         cv2WeatherWarpKm = c.value("weather_warp_km", cv2WeatherWarpKm);
@@ -7385,6 +7405,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"morph_orbit", cv2MorphOrbit},
         {"morph_near", cv2MorphNear},
         {"morph_period_km", cv2MorphPeriodKm},
+        {"morph_far_footprint_m", cv2MorphFarFootM},
+        {"morph_breakup", cv2MorphBreakup},
         {"wind_mps", cv2WindMps},
         {"edge_sharpness", cv2EdgeSharpness},
         {"weather_warp_km", cv2WeatherWarpKm},

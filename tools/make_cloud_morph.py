@@ -1,186 +1,169 @@
 #!/usr/bin/env python3
-"""Cloud MORPHOLOGY textures for clouds v2 (review 17): what cloud fields look like at 3-100 km — the
-organisation a weather map's 5-km coverage and a Perlin field cannot give (seen from orbit, Perlin
-thresholded to the coverage reads as blotches).
+"""Cloud MORPHOLOGY textures for clouds v2 from REAL satellite imagery (review 18; the procedural set of
+review 17 is tools/make_cloud_morph_procedural.py).
 
-    python tools/make_cloud_morph.py [--size 1024] [--preview out.png]
+    python tools/make_cloud_morph.py [--size 1024] [--preview out.png] [--cache build/cloud_imagery]
 
-Writes assets/textures/cloud_morph.rgba8: raw RGBA8, SIZE x SIZE, row-major, tiling seamlessly (every
-field is periodic: FFT-filtered noise, Voronoi on a wrapped lattice). One period of the texture is
-CV2 "Morphology period" (default 320 km), so a texel is ~310 m. Channels, each rank-equalised to a
-UNIFORM distribution so that thresholding it at (1 - coverage) covers exactly that fraction (the
-shader turns it into the far field's normal deviate):
+Writes assets/textures/cloud_morph.rgba8: raw RGBA8, SIZE x SIZE, row-major, tiling seamlessly. One period of
+the texture is CV2 "Morphology period" (default 320 km). Each channel is one MODIS true-colour scene, ~330 km
+square (NASA GIBS, public domain; credit in THIRD_PARTY_NOTICES.txt), chosen for its cloud type:
 
-  R  closed cells — stratocumulus decks over cool oceans: polygons 20-40 km across, bright lumpy
-     interiors, thin dark rims where the cells subside (the classic "honeycomb" of the eastern
-     subtropical oceans and the Southern Ocean).
-  G  open cells — cold-air outbreaks behind fronts: clear centres 30-60 km across ringed by
-     cumulus walls, broken into clumps.
-  B  cloud streets — horizontal convective rolls: rows ~5 km apart along the wind, meandering,
-     breaking into puffs and merging.
-  A  clustered cumulus — fair-weather fields: puffs of 1-4 km gathered into clumps and bands
-     with clear lanes between them (popcorn cumulus), and the fractal edges of broken fields.
+  R  closed cells    stratocumulus deck off Peru         Aqua  2021-09-15  15 S  80 W
+  G  open cells      cold-air outbreak, North Atlantic   Aqua  2022-02-05  58 N  20 W
+  B  cloud streets   cold-air outbreak, Sea of Japan     Terra 2023-01-10  41 N 138.6 E
+  A  clustered cu    popcorn cumulus over the Amazon     Aqua  2023-09-01   8 S  63 W (local background)
 
-Everything here is generated from scratch; no imagery is copied. The forms follow published
-descriptions of mesoscale cellular convection (Agee 1984; Wood & Hartmann 2006) and roll
-convection (Etling & Brown 1993).
+Per scene:
+ 1. the cloud signal: the DARKEST of the three linear channels (cloud is white; the sea is dark blue, forest
+    dark green, rivers brown), minus the scene's clear background (its 5th percentile);
+ 2. + blurred copies (1.5 and 6 km) at a smaller weight: they order the CLEAR pixels by their distance from
+    cloud, so a coverage above the scene's own grows the clouds outward instead of speckling the sea;
+ 3. scales past ~60 km are taken out (the weather map sets those) — and with them the scene's swath and
+    sun-glint gradients;
+ 4. tiling: the periodic component of the periodic-plus-smooth decomposition (Moisan 2011, "Periodic plus
+    smooth image decomposition"): every detail kept, no seam where the texture wraps;
+ 5. its clear stretches (no cloud within ~3 km) take a share of another scene's field, so they fill with real
+    structure as the coverage rises, not featureless blobs;
+ 6. resampled to SIZE and rank-equalised to a UNIFORM distribution, so a threshold at 1 - coverage covers
+    exactly that fraction (the shader turns it into the far field's normal deviate).
 """
 import argparse
+import math
 import os
 import sys
+import urllib.request
 
 import numpy as np
+from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+URL = ("https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap"
+       "&LAYERS={layer}&CRS=EPSG:4326&BBOX={s},{w},{n},{e}&WIDTH={px}&HEIGHT={px}&FORMAT=image/jpeg&TIME={date}")
+LAYERS = {"T": "MODIS_Terra_CorrectedReflectance_TrueColor", "A": "MODIS_Aqua_CorrectedReflectance_TrueColor"}
+SCENE_KM = 330.0
+SCENES = [  # (channel, lat, lon, date, satellite, local background km: 0 = the scene's 5th percentile)
+    ("closed cells", -15.0, -80.0, "2021-09-15", "A", 0.0),
+    ("open cells", 58.0, -20.0, "2022-02-05", "A", 0.0),
+    ("cloud streets", 41.0, 138.6, "2023-01-10", "T", 0.0),
+    ("clustered cumulus", -8.0, -63.0, "2023-09-01", "A", 6.0),
+]
 
 
-def fbm(n, rng, beta=2.0, lo=1.0, hi=None):
-    """Periodic fractal noise: white noise filtered by k^-beta/2 between wavenumbers lo..hi (cycles per
-    tile). Zero mean, unit standard deviation."""
-    kx = np.fft.fftfreq(n) * n
-    ky = np.fft.rfftfreq(n) * n
-    k = np.sqrt(kx[:, None] ** 2 + ky[None, :] ** 2)
-    amp = np.where(k >= lo, np.power(np.maximum(k, 1e-6), -beta / 2.0), 0.0)
-    if hi is not None:
-        amp *= np.exp(-(k / hi) ** 2)
-    spec = (rng.standard_normal(k.shape) + 1j * rng.standard_normal(k.shape)) * amp
-    f = np.fft.irfft2(spec, s=(n, n))
-    return (f - f.mean()) / (f.std() + 1e-12)
+def fetch(lat, lon, date, sat, px, cache):
+    os.makedirs(cache, exist_ok=True)
+    out = os.path.join(cache, f"gibs_{sat}_{lat}_{lon}_{date}_{px}.jpg")
+    if not os.path.exists(out):
+        dlat = SCENE_KM / 111.2
+        dlon = dlat / math.cos(math.radians(lat))   # a square on the ground, not in degrees
+        u = URL.format(layer=LAYERS[sat], s=lat - dlat / 2, n=lat + dlat / 2, w=lon - dlon / 2, e=lon + dlon / 2,
+                       px=px, date=date)
+        print(f"fetching {out}", file=sys.stderr)
+        urllib.request.urlretrieve(u, out)
+    return np.asarray(Image.open(out).convert("RGB")).astype(np.float64) / 255.0
 
 
-def warp(field, dx, dy):
-    """Sample a periodic field at (x + dx, y + dy) (texels), bilinear, wrapping."""
-    n = field.shape[0]
-    y, x = np.mgrid[0:n, 0:n].astype(np.float64)
-    xs, ys = (x + dx) % n, (y + dy) % n
-    x0, y0 = np.floor(xs).astype(int), np.floor(ys).astype(int)
-    fx, fy = xs - x0, ys - y0
-    x1, y1 = (x0 + 1) % n, (y0 + 1) % n
-    return (field[y0, x0] * (1 - fx) * (1 - fy) + field[y0, x1] * fx * (1 - fy)
-            + field[y1, x0] * (1 - fx) * fy + field[y1, x1] * fx * fy)
+def blur(f, sigma_px, periodic=False):
+    """Gaussian blur by FFT; reflect-padded unless periodic."""
+    if sigma_px <= 0:
+        return f
+    if not periodic:
+        p = int(min(3 * sigma_px, f.shape[0] - 1))
+        g = np.pad(f, p, mode="reflect")
+    else:
+        g, p = f, 0
+    ky = np.fft.fftfreq(g.shape[0])[:, None]
+    kx = np.fft.rfftfreq(g.shape[1])[None, :]
+    h = np.exp(-2.0 * (np.pi * sigma_px) ** 2 * (kx ** 2 + ky ** 2))
+    r = np.fft.irfft2(np.fft.rfft2(g) * h, s=g.shape)
+    return r[p:p + f.shape[0], p:p + f.shape[1]] if p else r
 
 
-def voronoi(n, cells, rng, jitter=0.9, dx=None, dy=None):
-    """F1, F2 distances (texels) to a jittered lattice of cells x cells points on the torus, optionally at
-    warped sample positions. Returns (f1, f2, id of the nearest point)."""
-    c = n / cells
-    pts = (np.stack(np.meshgrid(np.arange(cells), np.arange(cells), indexing="xy"), -1).reshape(-1, 2) + 0.5
-           + (rng.random((cells * cells, 2)) - 0.5) * jitter) * c
-    y, x = np.mgrid[0:n, 0:n].astype(np.float64)
-    if dx is not None:
-        x, y = (x + dx) % n, (y + dy) % n
-    gx, gy = np.floor(x / c).astype(int), np.floor(y / c).astype(int)
-    f1 = np.full((n, n), 1e9)
-    f2 = np.full((n, n), 1e9)
-    idx = np.zeros((n, n), dtype=np.int64)
-    for oy in (-1, 0, 1):
-        for ox in (-1, 0, 1):
-            cx, cy = (gx + ox) % cells, (gy + oy) % cells
-            pid = cy * cells + cx
-            px, py = pts[pid, 0], pts[pid, 1]
-            ddx = x - px
-            ddy = y - py
-            ddx -= np.round(ddx / n) * n
-            ddy -= np.round(ddy / n) * n
-            d = np.sqrt(ddx * ddx + ddy * ddy)
-            closer = d < f1
-            f2 = np.where(closer, f1, np.minimum(f2, d))
-            idx = np.where(closer, pid, idx)
-            f1 = np.where(closer, d, f1)
-    return f1, f2, idx
+def periodic_component(u):
+    """Moisan's periodic + smooth decomposition: returns the periodic part of u."""
+    M, N = u.shape
+    v = np.zeros_like(u)
+    v[0, :] += u[-1, :] - u[0, :]
+    v[-1, :] += u[0, :] - u[-1, :]
+    v[:, 0] += u[:, -1] - u[:, 0]
+    v[:, -1] += u[:, 0] - u[:, -1]
+    q = np.arange(M)[:, None]
+    r = np.arange(N)[None, :]
+    den = 2.0 * np.cos(2 * np.pi * q / M) + 2.0 * np.cos(2 * np.pi * r / N) - 4.0
+    den[0, 0] = 1.0
+    s = np.fft.fft2(v) / den
+    s[0, 0] = 0.0
+    return u - np.real(np.fft.ifft2(s))
 
 
 def equalise(f):
-    """Rank transform to a uniform distribution on [0, 1]."""
     r = np.argsort(np.argsort(f.ravel(), kind="stable"), kind="stable").reshape(f.shape)
     return (r + 0.5) / f.size
 
 
-def smooth(f, sigma):
-    """Periodic Gaussian blur (FFT)."""
-    n = f.shape[0]
-    kx = np.fft.fftfreq(n)
-    ky = np.fft.rfftfreq(n)
-    g = np.exp(-2.0 * (np.pi * sigma) ** 2 * (kx[:, None] ** 2 + ky[None, :] ** 2))
-    return np.fft.irfft2(np.fft.rfft2(f) * g, s=f.shape)
-
-
-def closed_cells(n, rng):
-    # Two scales of cells (big ~35 km, some split into ~20 km), warped so the polygons are not straight.
-    wx, wy = fbm(n, rng, 2.6, 2, 40) * 6.0, fbm(n, rng, 2.6, 2, 40) * 6.0
-    f1, f2, idx = voronoi(n, 9, rng, 0.95, wx, wy)          # ~36 km cells at 320 km
-    g1, g2, _ = voronoi(n, 16, rng, 0.95, wx * 0.7, wy * 0.7)  # ~20 km
-    split = (np.random.default_rng(idx.ravel() * 7 + 3).random(idx.size).reshape(idx.shape) < 0.35)
-    edge = np.where(split, np.minimum(f2 - f1, (g2 - g1) * 1.3), f2 - f1)
-    rim = 1.0 - np.exp(-(edge / 9.0) ** 2)                 # dark subsiding rims, ~3-5 km
-    interior = fbm(n, rng, 2.2, 8, 400)                     # lumps inside the cells
-    cellBright = np.random.default_rng(idx.ravel() * 13 + 1).random(idx.size).reshape(idx.shape)
-    v = rim * (0.75 + 0.25 * cellBright) + 0.18 * interior + 0.10 * fbm(n, rng, 1.6, 1, 20)
-    return smooth(v, 0.8)
-
-
-def open_cells(n, rng):
-    wx, wy = fbm(n, rng, 2.6, 2, 30) * 9.0, fbm(n, rng, 2.6, 2, 30) * 9.0
-    f1, f2, idx = voronoi(n, 7, rng, 0.95, wx, wy)          # ~46 km cells
-    edge = f2 - f1
-    size = np.random.default_rng(idx.ravel() * 5 + 11).random(idx.size).reshape(idx.shape)
-    wall = np.exp(-(edge / (7.0 + 6.0 * size)) ** 2)        # cumulus walls on the cell boundaries
-    clumps = smooth(np.maximum(fbm(n, rng, 1.4, 20, 400), -0.5), 1.0)
-    v = wall * (0.55 + 0.45 * np.clip(clumps * 0.7 + 0.6, 0.0, 1.0)) + 0.015 * fbm(n, rng, 2.0, 2, 60)
-    return smooth(v, 0.7)
-
-
-def streets(n, rng):
-    rows = 64                                               # ~5 km apart at 320 km
-    y, x = np.mgrid[0:n, 0:n].astype(np.float64)
-    meander = fbm(n, rng, 3.0, 1, 12) * 5.0 + fbm(n, rng, 2.4, 6, 40) * 1.5
-    phase = (y + meander) / n * rows * 2.0 * np.pi
-    roll = np.cos(phase) * 0.5 + 0.5
-    roll = roll ** 3                                        # narrow cloud lines, wide clear lanes
-    # Along the rows: puffs (stretched noise) and breaks; some rolls fade out regionally.
-    puffs = fbm(n, rng, 1.2, 30, 500)
-    puffs = smooth(np.maximum(puffs, -0.8), 0.6)
-    along = warp(puffs, 0.0, 0.0)
-    region = fbm(n, rng, 2.8, 1, 10)
-    v = roll * (0.6 + 0.4 * np.clip(along * 0.6 + 0.5, 0.0, 1.0)) * (0.55 + 0.45 * np.clip(region * 0.6 + 0.6, 0.0, 1.0))
-    return v + 0.04 * fbm(n, rng, 2.0, 2, 80)
-
-
-def cumulus_field(n, rng):
-    # Puffs (inverted Worley, ~2.5 km) gathered by a clumping field into patches and bands.
-    f1, f2, idx = voronoi(n, 128, rng, 0.9)
-    puff = np.exp(-(f1 / 3.2) ** 2)                         # each cell a round puff
-    size = np.random.default_rng(idx.ravel() * 17 + 5).random(idx.size).reshape(idx.shape)
-    puff *= 0.5 + 0.5 * size
-    clump = fbm(n, rng, 2.4, 2, 120)
-    bands = fbm(n, rng, 3.2, 1, 8)
-    gate = 1.0 / (1.0 + np.exp(-(clump * 1.6 + bands * 0.8)))
-    v = puff * gate + 0.25 * gate
-    return smooth(v, 0.5)
+def scene_field(rgb, size, bg_km=0.0):
+    lin = np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+    c = lin.min(-1)
+    kmpx = SCENE_KM / c.shape[0]
+    if bg_km > 0.0:
+        # A LOCAL background (a grey opening: min then max over bg_km, smoothed): the haze and smoke over land
+        # and the forest's own texture go, only compact clouds stay. Not for decks (a deck is "background").
+        from scipy import ndimage
+        k = max(3, int(round(bg_km / kmpx)) | 1)
+        b = ndimage.maximum_filter(ndimage.minimum_filter(c, size=k, mode="reflect"), size=k, mode="reflect")
+        c = np.maximum(c - blur(b, k / 3.0), 0.0)
+    else:
+        c = np.maximum(c - np.percentile(c, 5), 0.0)
+    # Clear ground is exactly 0 (half the Otsu threshold off the signal): what is left of the sea's glint, the
+    # forest's texture and smoke plumes otherwise ordered the clear pixels instead of the distance to cloud.
+    h, e = np.histogram(c, bins=256)
+    m = (e[:-1] + e[1:]) / 2
+    w0 = np.cumsum(h); w1 = w0[-1] - w0
+    m0 = np.cumsum(h * m) / np.maximum(w0, 1); m1 = ((h * m).sum() - np.cumsum(h * m)) / np.maximum(w1, 1)
+    c = np.maximum(c - 0.5 * m[np.argmax(w0 * w1 * (m0 - m1) ** 2)], 0.0)
+    v = c + 0.5 * blur(c, 1.5 / kmpx) + 0.3 * blur(c, 6.0 / kmpx)
+    v = periodic_component(v)
+    # Locally standardised over ~30 km (the mean and spread about each point, the spread floored): a scene's
+    # own density varies over ~100 km, and globally ranked those regions filled in whole as the coverage
+    # rose (blocks of solid cloud). The weather map sets coverage at those scales; this texture only says how
+    # the cloud is arranged inside them. On the torus (after the decomposition), so the tiling holds.
+    sg = 30.0 / kmpx
+    mu = blur(v, sg, periodic=True)
+    sd = np.sqrt(np.maximum(blur((v - mu) ** 2, sg, periodic=True), 0.0))
+    v = (v - mu) / np.maximum(sd, 0.6 * sd.mean())
+    # Where the scene has no cloud within a few km (its clear stretches), the field is the smooth distance
+    # term alone, and as the coverage rose those stretches filled as featureless blobs: the share of another
+    # scene's imagery mixed in there (main) gives them real cloud structure instead.
+    near = periodic_component(blur((c > 0).astype(np.float64), 3.0 / kmpx))
+    rs = lambda f: np.asarray(Image.fromarray(f.astype(np.float32), mode="F").resize((size, size), Image.LANCZOS),
+                              dtype=np.float64)
+    return rs(v), np.clip(1.0 - rs(near) / 0.3, 0.0, 1.0)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--size", type=int, default=1024)
-    ap.add_argument("--seed", type=int, default=20261001)
-    ap.add_argument("--preview", help="also write a PNG preview (the four channels side by side)")
+    ap.add_argument("--fetch-px", type=int, default=1280, help="pixels per scene side fetched (~260 m)")
+    ap.add_argument("--cache", default=os.path.join(ROOT, "build", "cloud_imagery"))
+    ap.add_argument("--preview", help="also write a PNG preview (the four channels side by side, tiled 2x2)")
     a = ap.parse_args()
-    n = a.size
-    rng = np.random.default_rng(a.seed)
-    chans = []
-    for name, fn in (("closed cells", closed_cells), ("open cells", open_cells), ("streets", streets),
-                     ("cumulus field", cumulus_field)):
-        f = fn(n, rng)
-        u = equalise(f)
-        chans.append(np.clip(np.round(u * 255.0), 0, 255).astype(np.uint8))
+    fields = []
+    for name, lat, lon, date, sat, bg in SCENES:
+        fields.append(scene_field(fetch(lat, lon, date, sat, a.fetch_px, a.cache), a.size, bg))
         print(f"{name}: done", file=sys.stderr)
+    chans = []
+    for i, (v, clear) in enumerate(fields):
+        # The clear stretches take the clustered cumulus (the cumulus channel the closed cells), rolled half a
+        # period so the two never line up.
+        fill = np.roll(fields[0 if i == 3 else 3][0], (a.size // 2, a.size // 2), (0, 1))
+        u = equalise(v + 0.8 * clear * fill)
+        chans.append(np.clip(np.round(u * 255.0), 0, 255).astype(np.uint8))
     out = np.stack(chans, -1)
     path = os.path.join(ROOT, "assets", "textures", "cloud_morph.rgba8")
     out.tofile(path)
-    print(f"wrote {path} ({n}x{n} RGBA8, {out.nbytes} bytes)")
+    print(f"wrote {path} ({a.size}x{a.size} RGBA8, {out.nbytes} bytes)")
     if a.preview:
-        from PIL import Image
-        Image.fromarray(np.concatenate([chans[i] for i in range(4)], axis=1)).save(a.preview)
+        tiles = [np.tile(c, (2, 2))[:: 2, :: 2] for c in chans]
+        Image.fromarray(np.concatenate(tiles, axis=1)).save(a.preview)
         print(f"preview {a.preview}")
 
 

@@ -446,7 +446,9 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         for (double &b : cv2WxBakedT)
             b = t0;
         cv2WxHash = std::hash<float>{}(cv2EvoWindMps) ^ (std::hash<float>{}(cv2EvoGrowth) * 31u)
-                  ^ (std::hash<float>{}(cv2EvoWindowH) * 131u) ^ (std::hash<float>{}(cv2EvoDiurnal) * 1031u);
+                  ^ (std::hash<float>{}(cv2EvoWindowH) * 131u) ^ (std::hash<float>{}(cv2EvoDiurnal) * 1031u)
+                     ^ (std::hash<float>{}(cv2Coverage) * 10007u) ^ (std::hash<float>{}(cv2CoverClear) * 100003u)
+                     ^ (std::hash<float>{}(cv2CoverFull) * 1000003u);   // the coarse levels' coverage (review 18)
     }
 
     // ── UBO ──
@@ -993,7 +995,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.anchorDetail = anchor(cv2DetailPeriodM, 1.6);
     p.anchorCluster = anchor(cv2ClusterPeriodM, 0.6);
     p.anchorMorph = anchor((double)std::clamp(cv2MorphPeriodKm, 40.0f, 2000.0f) * 1000.0, 0.6);   // review 17
-    p.morph = glm::vec4(std::clamp(cv2MorphOrbit, 0.0f, 1.0f), std::clamp(cv2MorphNear, 0.0f, 2.0f), 0.0f, 0.0f);
+    p.morph = glm::vec4(std::clamp(cv2MorphOrbit, 0.0f, 1.0f), std::clamp(cv2MorphNear, 0.0f, 2.0f),
+                        std::log2(std::clamp(cv2MorphFarFootM, 50.0f, 4000.0f)),
+                        std::clamp(cv2MorphBreakup, 0.0f, 0.6f));
     p.anchorCell = anchor(cv2CellPeriodM, 0.85);
     const double stormScale = std::clamp((double)cv2StormScale, 0.25, 16.0);
     p.anchorStorm = anchor(cv2ShapePeriodM * stormScale, 1.0);
@@ -1231,6 +1235,7 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
     const double dr = cloudDriftPhase();
     const glm::dvec3 sm(se.x * std::cos(dr) - se.y * std::sin(dr), se.x * std::sin(dr) + se.y * std::cos(dr), se.z);
     pc.evo2 = glm::vec4(glm::vec3(glm::normalize(sm)), std::max(cv2EvoDiurnal, 0.0f));
+    pc.remap = glm::vec4(cv2Coverage, cv2CoverClear, std::max(cv2CoverFull, cv2CoverClear + 0.01f), (float)mip);
     return pc;
 }
 
@@ -1243,7 +1248,9 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const uint64_t h = std::hash<float>{}(cv2EvoWindMps) ^ (std::hash<float>{}(cv2EvoGrowth) * 31u)
-                     ^ (std::hash<float>{}(cv2EvoWindowH) * 131u) ^ (std::hash<float>{}(cv2EvoDiurnal) * 1031u);
+                     ^ (std::hash<float>{}(cv2EvoWindowH) * 131u) ^ (std::hash<float>{}(cv2EvoDiurnal) * 1031u)
+                     ^ (std::hash<float>{}(cv2Coverage) * 10007u) ^ (std::hash<float>{}(cv2CoverClear) * 100003u)
+                     ^ (std::hash<float>{}(cv2CoverFull) * 1000003u);   // the coarse levels' coverage (review 18)
     const bool evolving = cv2EvoWindMps > 0.0f || cv2EvoGrowth > 0.0f || cv2EvoDiurnal > 0.0f;
     if (h != cv2WxHash)
     {
