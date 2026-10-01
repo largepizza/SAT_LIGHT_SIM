@@ -194,12 +194,16 @@ button in the time bar): a cinematic is a list of SHOTS, each a spline through k
 | `cine new [name]`, `cine name <n>` | start a cinematic / rename it (the save file and export folder names) |
 | `cine shot add [name]` / `del` / `<n>` | add a shot (made current; its sim time starts now) / delete / select (1-based) |
 | `cine shot look [clear]` | store the current look with the shot (clouds, clouds_v2, photometry, constellations, planets, render settings) — applied at its cut |
+| `cine shot follow <sel\|index\|off>` | the shot rides with a satellite (follow mode, aimed at it): its keys are the camera's OFFSET in the satellite's frame — frame each with `follow offset=along,cross,radial` then `cine key` |
 | `cine shot simrate <x>`, `cine shot simnow` | sim time rate along the shot (0 = frozen) / its start = now |
 | `cine key [t=]` | the current view as a key (2 s after the last by default) |
 | `cine play [shot]` | real-time playback (the whole cinematic, or the current shot) |
 | `cine export preview\|hq [fps=] [scale=] [frames=] [shot]` | frames to `captures/cine_<name>[_hq]/frame_NNNNN.png` (in-app: `screenshots/cinematics/<name>_<stamp>/`) + `cinematic.json` + a README with the frames2video command. **preview** = rendered in motion at a fixed 1/fps; **hq** = every frame a settled HQ photo (`scale` x the window, `frames` settle frames per frame) |
 | `cine save [file]`, `cine load <file>` | JSON in `<user data>/cinematics/` (`sat-light-sim-cinematic/1`) |
 | `cine state`, `cine stop` | the cinematic as JSON (shots, keys) / stop playback or an export |
+
+A cut (the next shot) resets the sky TAA and the clouds' history, so nothing of the last shot smears into the
+first frames. The worked example, the application tour, is `tools/harness/scripts/tour.satcmd`.
 
 Between keys the camera follows a Catmull-Rom spline per channel (log altitude and FOV); sim time is the
 shot's start + its rate x the shot time unless keys set `sim=`. While a cinematic plays or exports it owns

@@ -38,6 +38,12 @@ CineKey SatelliteSim::cineCurrentPose() const
     k.fov = camera.fovYDeg;
     k.hasSim = false;
     k.simT = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    if (followActive)
+    {
+        k.ox = followOffset.x;
+        k.oy = followOffset.y;
+        k.oz = followOffset.z;
+    }
     return k;
 }
 
@@ -58,8 +64,11 @@ void SatelliteSim::cineRefreshFiles()
 
 bool SatelliteSim::cineSave(const std::string &file, std::string &err)
 {
+    // A bare name goes to <user data>/cinematics/<name>.json; a path is used as given.
     std::filesystem::path p = file.empty() ? std::filesystem::path(cineDir()) / (cine_.name + ".json")
                                            : std::filesystem::path(file);
+    if (!file.empty() && !p.has_parent_path())
+        p = std::filesystem::path(cineDir()) / (p.extension() == ".json" ? p : std::filesystem::path(file + ".json"));
     std::error_code ec;
     std::filesystem::create_directories(p.parent_path(), ec);
     std::ofstream out(p);
@@ -122,15 +131,41 @@ void SatelliteSim::cineApplyAt(double t, bool force)
             applySettingsJson(shot.settings, true);
             timePaused = true;   // the cinematic keeps the clock whatever the patch says
         }
+        if (shot.hasDrift && si != cineLastShot_)
+        {
+            cloudDriftPhaseOffset = shot.driftOffset;
+            cloudDriftRate = (float)shot.driftRate;
+        }
         cineShotSim_ = shot.simStartValid ? shot.simStart : (double)simDayJ2000 * 86400.0 + simSecInDay;
         cineLastShot_ = si;
         trailClearPending = true;
+        // A cut: nothing temporal may carry the last shot into this one (sky TAA, the clouds' history).
+        skyTaaHistValid = false;
+        cv2HistoryValid = false;
     }
     CineKey k = cineEval(shot.keys, local);
     if (!k.hasSim)
     {
         k.hasSim = true;
         k.simT = cineShotSim_ + shot.simRate * (local - shot.keys.front().t);
+    }
+    if (shot.followSat >= 0 && shot.followSat < (int)satOrbits.size())
+    {
+        // A follow shot: the camera rides with the satellite (follow mode, aimed at it), at the key's offset.
+        const double days = std::floor(k.simT / 86400.0);
+        simDayJ2000 = (int64_t)days;
+        simSecInDay = k.simT - days * 86400.0;
+        if (!followActive || followSatIndex != shot.followSat)
+            startFollow(shot.followSat);
+        if (followActive)
+        {
+            followAimLock = true;
+            followOffset = glm::dvec3(k.ox, k.oy, k.oz);
+            camera.fovYDeg = (float)k.fov;
+            updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, 0.0f);
+            updateFollow(0.0f);
+            return;
+        }
     }
     harnessApplyCam(k);
     obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
@@ -151,13 +186,12 @@ void SatelliteSim::cineStart(CineRun mode, bool oneShot)
     }
     cineSavedPaused_ = timePaused;
     timePaused = true; // the cinematic owns the clock
-    if (followActive)
-        stopFollow();
     cineRun_ = mode;
     cineT_ = 0.0;
     cineFrame_ = 0;
     cineSettle_ = 0;
     cineLastShot_ = -1;
+    cinePrerollShot_ = -1;
     const double fps = std::clamp((double)cineExportFps_, 1.0, 240.0);
     cine_.fps = fps;
     cineFrames_ = (int)std::floor(dur * fps + 1e-6) + 1;
@@ -278,6 +312,11 @@ void SatelliteSim::cineTick(float dt)
     cineScrub_ = (float)t;
     if (cineRun_ == CineRun::ExportHQ && ++cineSettle_ < std::max(1, (int)std::lround(photoSettleFrames)))
         return; // settle at this pose (its sim time held: timePaused)
+    // Preview: a shot's first frame has no history (the cut reset it) — pre-roll 16 frames at that pose so
+    // it is not a grain of single samples.
+    if (cineRun_ == CineRun::ExportPreview && cineLastShot_ != cinePrerollShot_ && ++cineSettle_ < 16)
+        return;
+    cinePrerollShot_ = cineLastShot_;
     cineSettle_ = 0;
     char nm[32];
     snprintf(nm, sizeof(nm), "frame_%05d.png", cineFrame_);

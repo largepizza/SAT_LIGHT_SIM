@@ -1206,7 +1206,12 @@ photometry, constellations, planets, render settings — never observer/camera/t
 preview: `cineFixedDt_` = 1/fps (`frameDt`), one capture per frame, waiting for the COPY only. Export HQ: the photo
 target stays up for the whole export (`photoScaleActive`, saved/restored like `requestPhoto`), each pose settled
 "HQ photo settle frames" before its copy. The window's sliders hit-test their own laid-out track (the settings
-slider helper is tied to the settings window's position).
+slider helper is tied to the settings window's position). A FOLLOW shot (`CineShot::followSat`) rides with a satellite: its keys
+interpolate `ox/oy/oz` (the camera's offset in the satellite's along/cross/radial frame) with follow mode's aim lock
+(`harnessApplyCam` would end follow mode, so cineApplyAt sets the sim time and `followOffset` itself). A cut resets
+`skyTaaHistValid` and `cv2HistoryValid`, and a preview export pre-rolls 16 frames at each shot's first pose. "Store
+look" also stores the cloud map's DRIFT (`cloudDriftPhaseOffset`/`cloudDriftRate`, session state like a snapshot's
+view): without it a reloaded storm shot framed clear sky. The application tour: `tools/harness/scripts/tour.satcmd`.
 
 ## Loading screen (2026-09-26)
 

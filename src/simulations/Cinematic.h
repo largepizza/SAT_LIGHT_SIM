@@ -14,6 +14,8 @@ struct CineKey
     double lat = 0.0, lon = 0.0, alt = 0.0, az = 0.0, el = 0.0, fov = 60.0;   // alt: m above sea level
     bool hasSim = false;
     double simT = 0.0;                                          // sim time, seconds since J2000
+    double ox = 0.0, oy = 0.0, oz = 0.0;                        // a FOLLOW shot's camera offset from the satellite
+                                                                // (m: along-track, cross-track, radial; aimed at it)
 };
 
 struct CineShot
@@ -26,6 +28,12 @@ struct CineShot
     double simStart = 0.0;
     double simRate = 1.0;
     nlohmann::json settings;                                    // null = leave the settings alone
+    // The cloud map's drift (session state, like a snapshot's view): with the look, so a shot reloaded in another
+    // session shows the same clouds. Stored with "Store look" / `cine shot look`.
+    bool hasDrift = false;
+    double driftOffset = 0.0, driftRate = 0.0;
+    int followSat = -1;                                         // >= 0: ride with this satellite (roster index):
+                                                                // keys move the camera in its frame (ox/oy/oz)
     double duration() const { return keys.empty() ? 0.0 : keys.back().t - keys.front().t; }
 };
 

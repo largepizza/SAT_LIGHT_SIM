@@ -6024,7 +6024,20 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                             S.settings.is_null() ? "Store the current clouds, lighting, constellations and render settings with this shot (applied at its cut)"
                                                  : "Forget this shot's stored settings",
                             !S.settings.is_null()))
+                    {
                         S.settings = S.settings.is_null() ? cineLookSettings() : nlohmann::json();
+                        S.hasDrift = !S.settings.is_null();
+                        S.driftOffset = cloudDriftPhaseOffset;
+                        S.driftRate = cloudDriftRate;
+                    }
+                    if (btn(16, S.followSat >= 0 ? "Follow: on" : "Follow sel", S.followSat >= 0 ? "Stop riding with the satellite in this shot"
+                                                                                       : "This shot rides with the selected satellite (keys = the camera's offset from it; use Go to / follow to frame it)",
+                            S.followSat >= 0))
+                    {
+                        S.followSat = S.followSat >= 0 ? -1 : selectedSatIndex;
+                        if (S.followSat >= 0)
+                            startFollow(S.followSat);
+                    }
                     if (btn(6, "Sim from now", "The shot's sim time starts at the current sim time"))
                     {
                         S.simStartValid = true;

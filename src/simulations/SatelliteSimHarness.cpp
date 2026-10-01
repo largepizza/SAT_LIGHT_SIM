@@ -1995,11 +1995,25 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             {
                 cineKeys();
                 cine_.shots[cineShot_].settings = lower(pos(2)) == "clear" ? json() : cineLookSettings();
+                cine_.shots[cineShot_].hasDrift = lower(pos(2)) != "clear";
+                cine_.shots[cineShot_].driftOffset = cloudDriftPhaseOffset;
+                cine_.shots[cineShot_].driftRate = cloudDriftRate;
             }
             else if (what == "simrate")
             {
                 cineKeys();
                 cine_.shots[cineShot_].simRate = parseNum(pos(2), "cine shot simrate");
+            }
+            else if (what == "follow")
+            {
+                // The current shot rides with a satellite: `sel` = the selection, `off`, or a roster index.
+                cineKeys();
+                const std::string v = lower(pos(2));
+                cine_.shots[cineShot_].followSat = v == "off" ? -1 : v == "sel" ? selectedSatIndex : (int)parseNum(v, "cine shot follow");
+                if (cine_.shots[cineShot_].followSat >= 0)
+                    startFollow(cine_.shots[cineShot_].followSat);
+                if (cine_.shots[cineShot_].followSat >= 0 && !followActive)
+                    fail("cine shot follow: that satellite has no geometry model");
             }
             else if (what == "simnow")
             {
@@ -2010,7 +2024,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             else if (!what.empty() && isdigit((unsigned char)what[0]))
                 cineShot_ = std::clamp((int)parseNum(what, "cine shot") - 1, 0, std::max(0, (int)cine_.shots.size() - 1));
             else
-                fail("cine shot: add [name] | del | <n> (1-based) | look [clear] | simrate <x> | simnow");
+                fail("cine shot: add [name] | del | <n> (1-based) | look [clear] | simrate <x> | simnow | follow <sel|off|index>");
             cineKeys();
             r["shot"] = cineShot_ + 1;
             r["shots"] = shotJson();

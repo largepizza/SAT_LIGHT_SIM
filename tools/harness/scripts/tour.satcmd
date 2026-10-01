@@ -1,0 +1,138 @@
+# Application tour (review 17): a multi-shot cinematic built with the harness `cine` commands, saved as
+# <run>/cinematics/tour.json (copy it to <user data>/cinematics/ to open it in the Cinematics window), then
+# exported as preview frames (captures/cine_tour/). Run:
+#   python tools/harness/run.py tools/harness/scripts/tour.satcmd --window 1920x1080 --out harness_runs/tour --timeout 3600
+#   python tools/harness/frames2video.py harness_runs/tour/captures/cine_tour/frame -o tour.mp4 --fps 30
+# Locations: the intro ridge (AI satellites flaring at twilight), the ISS (sunlit, then over the aurora),
+# under a storm's anvil at sunset, a rainbow over the South Atlantic, the aurora at Coldfoot (Alaska), Los
+# Angeles at night from 10 km, the limb from orbit. The storm, rainbow and orbit shots start from three of the
+# user's snapshots, copied into tour_snaps.jsonl (paths are relative to the exe's folder, build/Release).
+preset High
+set display.render_scale 1
+set clouds_v2.auto_exposure 0
+set clouds_v2.light_steps 8
+time pause
+cine new tour
+
+# 1. Satellites at twilight from the intro ridge: a slow pan along the flaring arc.
+time set 2036-11-21T20:51:21Z
+observer lat=35.869 lon=-121.402 agl=2
+camera az=-75 el=16 fov=70
+wait settle 60
+cine shot simnow
+cine shot look
+cine key t=0
+camera az=-48 el=22 fov=62
+cine key t=6
+
+# 2. The ISS in sunlight, the camera swinging around it.
+cine shot add iss
+time set 2036-11-21T22:06:21Z
+cine shot simnow
+select const "International Space Station"
+follow
+cine shot follow sel
+cine shot look
+follow offset=-230,40,70
+cine key t=0
+follow offset=-60,-210,50
+cine key t=3
+follow offset=150,-160,90
+cine key t=6
+
+# 3. The ISS over the aurora at night.
+cine shot add iss_aurora
+time set 2036-11-21T21:41:21Z
+cine shot simnow
+cine shot follow sel
+cine shot look
+follow offset=-260,0,40
+cine key t=0
+follow offset=-200,90,25
+cine key t=5
+follow off
+
+# 4. Under a storm's anvil at sunset, looking out.
+snapshot ../../tools/harness/scripts/tour_snaps.jsonl index=0
+set display.render_scale 1
+set clouds_v2.auto_exposure 0
+set clouds_v2.light_steps 8
+observer alt=9000
+camera az=-10 el=-1 fov=75
+wait settle 60
+cine shot add anvil
+cine shot simnow
+cine shot simrate 0
+cine shot look
+cine key t=0
+camera az=50 el=2 fov=70
+cine key t=6
+
+# 5. A rainbow over the South Atlantic.
+snapshot ../../tools/harness/scripts/tour_snaps.jsonl index=1
+set display.render_scale 1
+set clouds_v2.auto_exposure 0
+set clouds_v2.light_steps 8
+wait settle 60
+cine shot add rainbow
+cine shot simnow
+cine shot simrate 0
+cine shot look
+camera az=115 el=8 fov=72
+cine key t=0
+camera az=135 el=6 fov=66
+cine key t=5
+
+# 6. The aurora over the Brooks Range (Coldfoot, December midnight).
+preset High
+set display.render_scale 1
+set clouds_v2.auto_exposure 0
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds.storm_strength 1
+time set 2036-12-21T12:00:00Z
+observer lat=67.25 lon=-150.18 agl=2
+time sun midnight
+wait settle 60
+cine shot add aurora
+cine shot simnow
+cine shot simrate 20
+cine shot look
+camera az=-35 el=18 fov=90
+cine key t=0
+camera az=25 el=30 fov=90
+cine key t=6
+
+# 7. Los Angeles at night from 10 km, flying east.
+set clouds_v2.coverage 0.3
+set clouds.storm_strength 0.5
+time set 2036-06-21T12:00:00Z
+observer lat=33.95 lon=-118.45 alt=10000
+time sun midnight
+wait settle 60
+cine shot add los_angeles
+cine shot simnow
+cine shot look
+camera az=60 el=-25 fov=60
+cine key t=0
+path key 6 lat=34.02 lon=-118.20 alt=9000 az=70 el=-22 fov=55
+
+# 8. The limb from orbit over the Southern Ocean, aurora on the night side.
+snapshot ../../tools/harness/scripts/tour_snaps.jsonl index=2
+set display.render_scale 1
+set clouds_v2.auto_exposure 0
+wait settle 60
+cine shot add orbit
+cine shot simnow
+cine shot simrate 0
+cine shot look
+camera el=-35 fov=80
+cine key t=0
+camera az=-90 el=-18 fov=75
+cine key t=7
+
+cine shot 1
+cine save tour
+cine state
+cine export preview fps=30
+quit

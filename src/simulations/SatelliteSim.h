@@ -4128,7 +4128,7 @@ private:
     bool   cineLoop_ = false;
     bool   cinePlayOneShot_ = false;      // play / export only the current shot
     double cineT_ = 0.0;                  // global time into the cinematic (or the shot)
-    int    cineFrame_ = 0, cineFrames_ = 0, cineSettle_ = 0, cineLastShot_ = -1;
+    int    cineFrame_ = 0, cineFrames_ = 0, cineSettle_ = 0, cineLastShot_ = -1, cinePrerollShot_ = -1;
     double cineShotSim_ = 0.0;            // the shot's sim time at its start (when no key sets it)
     float  cineFixedDt_ = 0.0f;           // > 0 while exporting: 1 / fps (frameDt)
     bool   cineSavedPaused_ = false;

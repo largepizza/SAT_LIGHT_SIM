@@ -62,6 +62,9 @@ CineKey cineEval(const std::vector<CineKey> &K, double t)
     r.az = herm([](const CineKey &k) { return k.az; });
     r.el = herm([](const CineKey &k) { return k.el; });
     r.fov = std::exp(herm([](const CineKey &k) { return std::log(k.fov); }));
+    r.ox = herm([](const CineKey &k) { return k.ox; });
+    r.oy = herm([](const CineKey &k) { return k.oy; });
+    r.oz = herm([](const CineKey &k) { return k.oz; });
     // Sim time: linear between the keys that set it (hold outside them).
     const CineKey *sa = nullptr, *sb = nullptr;
     for (const auto &k : K)
@@ -100,6 +103,10 @@ nlohmann::json cineToJson(const Cinematic &c)
             js["sim_start_j2000_s"] = s.simStart;
         if (!s.settings.is_null())
             js["settings"] = s.settings;
+        if (s.followSat >= 0)
+            js["follow_sat"] = s.followSat;
+        if (s.hasDrift)
+            js["cloud_drift"] = {{"phase_offset", s.driftOffset}, {"rate", s.driftRate}};
         js["keys"] = nlohmann::json::array();
         for (const auto &k : s.keys)
         {
@@ -107,6 +114,8 @@ nlohmann::json cineToJson(const Cinematic &c)
                                  {"az", k.az}, {"el", k.el}, {"fov", k.fov}};
             if (k.hasSim)
                 jk["sim_j2000_s"] = k.simT;
+            if (s.followSat >= 0)
+                jk["offset_m"] = {k.ox, k.oy, k.oz};
             js["keys"].push_back(jk);
         }
         j["shots"].push_back(js);
@@ -133,6 +142,13 @@ bool cineFromJson(const nlohmann::json &j, Cinematic &c, std::string &err)
             }
             if (js.contains("settings"))
                 s.settings = js["settings"];
+            s.followSat = js.value("follow_sat", -1);
+            if (js.contains("cloud_drift"))
+            {
+                s.hasDrift = true;
+                s.driftOffset = js["cloud_drift"].value("phase_offset", 0.0);
+                s.driftRate = js["cloud_drift"].value("rate", 0.0);
+            }
             for (const auto &jk : js.at("keys"))
             {
                 CineKey k;
@@ -147,6 +163,12 @@ bool cineFromJson(const nlohmann::json &j, Cinematic &c, std::string &err)
                 {
                     k.hasSim = true;
                     k.simT = jk["sim_j2000_s"].get<double>();
+                }
+                if (jk.contains("offset_m") && jk["offset_m"].size() == 3)
+                {
+                    k.ox = jk["offset_m"][0].get<double>();
+                    k.oy = jk["offset_m"][1].get<double>();
+                    k.oz = jk["offset_m"][2].get<double>();
                 }
                 s.keys.push_back(k);
             }
