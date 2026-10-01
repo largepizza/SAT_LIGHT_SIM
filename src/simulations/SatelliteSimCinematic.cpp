@@ -198,6 +198,11 @@ void SatelliteSim::cineStart(CineRun mode, bool oneShot)
         cineStatus_ = "Nothing to play: a shot needs two keys";
         return;
     }
+    if (mode != CineRun::Play && (!ctx_ || !ctx_->screenshotSupported || photoState != 0))
+    {
+        cineStatus_ = photoState != 0 ? "An HQ photo is being taken" : "Export needs screenshot support (GPU/driver)";
+        return;
+    }
     cineSavedPaused_ = timePaused;
     timePaused = true; // the cinematic owns the clock
     cineRun_ = mode;
@@ -314,7 +319,7 @@ void SatelliteSim::cineTick(float dt)
     // Export: one frame per path frame; the copy of the last one must be done before the next pose.
     if (screenshotRequested || screenshotCopyPending)
         return;
-    if (cineRun_ == CineRun::ExportHQ && !ctx_->photoActive)
+    if (cineRun_ == CineRun::ExportHQ && (!ctx_ || !ctx_->photoActive))
         return; // the photo target is not up yet (App switches it after the frame)
     if (cineFrame_ >= cineFrames_)
     {

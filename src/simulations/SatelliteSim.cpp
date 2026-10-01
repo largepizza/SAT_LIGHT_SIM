@@ -6969,8 +6969,8 @@ void SatelliteSim::requestScreenshot()
 // ─── HQ photo (review 13) ─────────────────────────────────────────────────────
 void SatelliteSim::requestPhoto()
 {
-    if (photoState != 0 || screenshotEncoding.load() || screenshotCopyPending || screenshotRequested)
-        return;
+    if (photoState != 0 || screenshotEncoding.load() || screenshotCopyPending || screenshotRequested || cineActive())
+        return;   // (a cinematic export owns the photo target)
     if (!ctx_ || !ctx_->screenshotSupported)
     {
         snprintf(screenshotToastText, sizeof(screenshotToastText), "HQ photo not supported on this GPU/driver.");
