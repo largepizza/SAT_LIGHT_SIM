@@ -174,6 +174,10 @@ void main()
         vec2 posQ = clamp((vec2(c) - vec2(off)) * 0.5 + 0.5, vec2(0.5), vec2(qs) - 0.5);
         spatial = textureLod(newColorTex, posQ / vec2(textureSize(newColorTex, 0)), 0.0);
     }
+    // On the sparse grid what fast motion leans on is the smooth estimate, not the block's one sample: blur
+    // was nc there, so past ~16 px of parallax every 2x2 block went flat (4x4-pixel squares all over a
+    // fast flight — the "blocky" clouds and horizon, review 15).
+    if (!(full || tFull)) blur = spatial;
 
     // Reproject.
     float tanHalf = tan(pc.fovYRad * 0.5);
@@ -206,6 +210,8 @@ void main()
 
     vec4 outC;
     float motionPx = 1e9;
+    // The texel's whole move since last frame, rotation included (motionPx below is PARALLAX only).
+    float shiftPx = valid ? length((uvPrev - (vec2(c) + 0.5) / vec2(halfSize)) * vec2(halfSize)) : 1e9;
     if (valid) {
         vec4 hist = textureLod(histColorTex, uvPrev, 0.0);
         // New-sample weight: look2.w for a still view (low: an exponential blend at weight a keeps
@@ -277,8 +283,12 @@ void main()
     // block takes its one sample's distance, and the sample moves through the block every frame), and the sky
     // pass splits the air in front of the cloud at it — from orbit, where that air is a large share near the
     // limb, the clouds flickered on the 4-frame sparse cycle while their colour history was perfectly still.
-    // Read back at THIS texel only (no other invocation writes it), so only while the view is still.
-    if (motionPx < 0.5) {
+    // Read back at THIS texel only (no other invocation writes it), so only while the view is still — still
+    // as in NOT TURNING too (review 15): it was gated on the parallax alone, which a pure rotation leaves at
+    // 0, so while the camera pitched each texel took 90% of the distance of the texel that had been there,
+    // a different direction (sky above the horizon, a cloud 300 km out below it), and the sky pass split the
+    // air at it: horizontal streaks and dark shapes along the horizon whenever the view tilted.
+    if (motionPx < 0.5 && shiftPx < 0.5) {
         vec2  hd = imageLoad(outDepth, c).xy;
         float wD = 0.1;
         if (hd.x > 0.0 && nd.x > 0.0) nd.x = mix(hd.x, nd.x, wD);

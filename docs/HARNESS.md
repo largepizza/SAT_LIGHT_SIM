@@ -171,8 +171,40 @@ then `python tools/harness/frames2video.py harness_runs/<run>/captures/alps -o a
 - Playback is offline: every frame is exactly 1/fps of path time and of frame time, whatever the
   real frame rate. With `record`, a frame is captured before the next one is shown, so slow PNG
   encoding never drops or repeats a frame (a 1600x900 frame takes ~0.1 s in Release).
+- **A recording renders exactly one app frame per path frame** (the result's `frames` field is the
+  app frames the command took: path frames + 1). Until review 15 (2026-09-30) it waited for each
+  PNG's ENCODE while the app kept rendering at the held pose — ~12 app frames per recorded frame —
+  so the clouds' history and the sky TAA converged between recorded frames, and every motion test
+  showed far less ghosting than a player sees. It now waits for the copy only; the next frame's
+  `finalizeScreenshot` joins the previous encode on the main thread (a stall, not a frame).
 - The observer's altitude channel is the same `alt` as `observer alt=` (above sea level, floored
   at the ground). A path in follow mode is not supported: `path play` ends follow mode.
+
+## Temporal stability (`tools/harness/tstab.py`)
+
+How far the image seen WHILE MOVING is from the image the same view settles to: ghosting, smears,
+blocks and grain are all that distance. Built in review 15 from the user's snapshot.
+
+```
+python tools/harness/tstab.py gen <profile_log.jsonl> [--index -1] -o harness_runs/tstab/t.satcmd        [--live-time] [--only walk,pitch,...] [--variant "tag:key value;key value"]...
+python tools/harness/run.py harness_runs/tstab/t.satcmd --window 1920x1009 --out harness_runs/tstab/run1
+python tools/harness/tstab.py score harness_runs/tstab/run1 [--sheet]
+python tools/harness/tstab.py compare run1 run2
+```
+
+- Scenarios run at the PLAYER's speeds from the snapshot's height above the ground: `walk` (WASD,
+  1 x AGL per second), `boost` (Shift, 6.25x), `strafe`, `pan90` / `pan240` (deg/s yaw), `walkpan`,
+  `rise` (Q), `boostrise`, `pitch` (+-25 deg sweeps), `boostpan`, `flick` (720 deg/s turn, hold,
+  turn back), `chaos` (boost + yaw + pitch + climb). 60 fps, 2.5 s each.
+- Each path is recorded every frame, then 5 sampled poses are revisited (`path goto`) and settled
+  160 frames for the reference. `--live-time` runs sim time at 1x along the path (the reference holds
+  that instant), as a player sees it. `floor` = two settles of one view (the noise floor, ~0.4).
+- `score`: mean / p95 / p99 |luminance diff| (0-255) and the share > 16 levels, per scenario and per
+  horizontal band (top..bottom); `--sheet` writes moving | settled | |diff| x4 rows. Variants share a
+  launch (their scenarios are prefixed `tag-`); `path play`'s `gpu_ms_mean` in results.jsonl is the
+  cost while moving.
+- **Yaw-only pans hide row-aligned errors** (the horizon's structure is horizontal): the pitch
+  scenario is what found review 15's depth-history bug (mean 5.4 -> 1.3).
 
 ## Determinism
 

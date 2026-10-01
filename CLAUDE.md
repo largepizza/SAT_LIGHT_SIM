@@ -60,7 +60,7 @@ Development: Earth / Terrain Rendering* (read **Elevation texture encoding** bef
 code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
-`imgtools.py`, `selftest.py`, `gc.py` — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
+`imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
 validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
@@ -1068,6 +1068,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sea-level sphere (it ran to the band's exit on the far side of the Earth). The Antarctic ice fog's land gate
   counts everything south of ~78 S as ice and tests the regional (~80 km) ground elsewhere (the shelves read
   ~0 m and were "sea").
+- **Review 15 (2026-09-30, temporal stability):** **the resolved DEPTH's history is gated on the texel's whole
+  shift, rotation included** (`shiftPx`): review 12 gated it on the parallax alone, which a pure turn leaves at 0, so
+  while the camera PITCHED each texel took 90% of the distance of another direction (sky above the horizon, a cloud
+  300 km out below it) and the sky pass split the air there — horizontal streaks and dark shapes along the horizon
+  (user screenshot; yaw pans hid it, the horizon's structure being horizontal). On the sparse grid fast motion leans
+  on the bilinear estimate, not the block's one sample (`blur` was `nc`: 4x4-pixel squares). Measured with
+  `tools/harness/tstab.py` (docs/HARNESS.md "Temporal stability": player-speed paths vs settled references; pitch
+  mean |diff| 5.4 -> 1.3, > 16 levels 10.9% -> 0.2%); the harness's `path play record=` had rendered ~12 frames per
+  recorded frame (it waited on the PNG encode), which is why no earlier motion test saw the ghosting. Lowering
+  "History weight moving" changed nothing measurable; the adaptive rate below 30 km (full_rate_above_km 0) cut the
+  boost error 1.5 -> 1.0 at ~3x the cloud cost (8 -> 24 ms): not adopted.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

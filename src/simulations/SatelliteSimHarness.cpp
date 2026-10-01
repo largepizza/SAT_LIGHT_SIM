@@ -1730,8 +1730,14 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 harnessTrack_ = 0;
             }
             const std::string rec = a.scratch["record"];
-            if (!rec.empty() && (screenshotRequested || screenshotCopyPending || screenshotEncoding.load()))
-                return Status::Pending; // last frame still encoding
+            // Wait for the last frame's COPY only, never its encode: every frame rendered while waiting runs
+            // the temporal passes (clouds' history, sky TAA) at a still pose, so a recording took ~6 settle
+            // frames between its frames and showed far less ghosting than a player sees (review 15). The
+            // copy is read back at the start of the next frame (App::drawFrame, before buildUI); there
+            // finalizeScreenshot joins the previous encode on the main thread, so the wait stalls the app
+            // instead of rendering.
+            if (!rec.empty() && (screenshotRequested || screenshotCopyPending))
+                return Status::Pending;
             const int i = a.scratch["i"], nF = a.scratch["n"];
             if (i >= nF)
             {
