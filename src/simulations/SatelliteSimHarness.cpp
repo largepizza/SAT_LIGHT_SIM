@@ -1388,6 +1388,10 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 debugDisableMask |= bitOf(tok);
         }
         graphicsPreset = GraphicsPreset::Custom; // what the Display tab does when a box is ticked
+        // A knockout changes what is drawn: no temporal history carries the other mask's image (the clouds' history
+        // kept cloud drawn into sky that the restored terrain covers: the knockout selftest's ridge outlines).
+        skyTaaHistValid = false;
+        cv2HistoryValid = false;
         r = harnessStateJson()["render"];
         r["message"] = "mask " + std::to_string(debugDisableMask);
         return Status::Done;

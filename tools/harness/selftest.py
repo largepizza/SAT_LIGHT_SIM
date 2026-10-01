@@ -61,6 +61,45 @@ def png_pixels_crc(p):
     return zlib.crc32(zlib.decompress(idat))
 
 
+def png_pixels(path):
+    """(width, height, channels, bytes) of an 8-bit RGB/RGBA PNG, its filters undone (stdlib only; slow, so keep the
+    images small)."""
+    data = open(path, "rb").read()
+    i, idat, w = 8, b"", 0
+    while i < len(data):
+        n = int.from_bytes(data[i:i + 4], "big")
+        typ = data[i + 4:i + 8]
+        if typ == b"IHDR":
+            w, h = int.from_bytes(data[i + 8:i + 12], "big"), int.from_bytes(data[i + 12:i + 16], "big")
+            ch = {2: 3, 6: 4}[data[i + 17]]
+        elif typ == b"IDAT":
+            idat += data[i + 8:i + 8 + n]
+        i += 12 + n
+    raw = zlib.decompress(idat)
+    stride = w * ch
+    out = bytearray(h * stride)
+    prev = bytearray(stride)
+    for y in range(h):
+        f = raw[y * (stride + 1)]
+        line = bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for x in range(stride):
+            a = line[x - ch] if x >= ch else 0
+            b = prev[x]
+            c = prev[x - ch] if x >= ch else 0
+            if f == 1:
+                line[x] = (line[x] + a) & 255
+            elif f == 2:
+                line[x] = (line[x] + b) & 255
+            elif f == 3:
+                line[x] = (line[x] + ((a + b) >> 1)) & 255
+            elif f == 4:
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                line[x] = (line[x] + (a if pa <= pb and pa <= pc else (b if pb <= pc else c))) & 255
+        out[y * stride:(y + 1) * stride] = line
+        prev = line
+    return w, h, ch, bytes(out)
+
+
 def result(res, cmd_prefix):
     for r in res:
         if r["cmd"].startswith(cmd_prefix):
@@ -70,6 +109,7 @@ def result(res, cmd_prefix):
 
 SCENE = """
 preset Medium
+set clouds_v2.auto_exposure 0
 observer lat=46.55 lon=7.98 agl=50
 time sun 12 rising
 time pause
@@ -113,19 +153,29 @@ def determinism():
 
 @test
 def knockout_changes_image():
+    # Review 17: compared within a tolerance, not bit for bit. A knockout resets the temporal histories, and the
+    # clouds' and the sky TAA's jitter follow the global frame count, so two settles of one view differ by ~0.1
+    # level on average even without one (the bit-exact test failed since the jittered resolve).
     out, res, _ = run("knockout", SCENE + """
-capture base
+knockout none
+wait settle 40
+capture base scale=0.25
 knockout +terrain_march
 wait settle 5
-capture noterrain
+capture noterrain scale=0.25
 knockout none
-wait settle 20
-capture back
+wait settle 40
+capture back scale=0.25
 """)
     cap = os.path.join(out, "captures")
-    base, nt, back = (png_pixels_crc(os.path.join(cap, n + ".png")) for n in ("base", "noterrain", "back"))
-    assert base != nt, "terrain knockout changed nothing"
-    assert base == back, "clearing the knockout did not restore the image"
+    base, nt, back = (png_pixels(os.path.join(cap, n + ".png"))[3] for n in ("base", "noterrain", "back"))
+    def diff(p, q):
+        d = [abs(x - y) for x, y in zip(p, q)]
+        return sum(d) / len(d), sum(1 for v in d if v > 16) / len(d)
+    m_nt, _ = diff(base, nt)
+    m_back, f_back = diff(base, back)
+    assert m_nt > 2.0, f"terrain knockout changed nothing (mean {m_nt:.2f})"
+    assert m_back < 1.0 and f_back < 0.01, f"clearing the knockout did not restore the image (mean {m_back:.2f}, {f_back:.2%} > 16)"
     assert result(res, "knockout +terrain")["result"]["knockout_mask"] == 1
 
 
