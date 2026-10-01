@@ -282,6 +282,11 @@ float cv2MesoSmoothAtG(vec3 uvw, float lodI)
 // sunset (they read as blocky reflections). A coarser, C1 read gives them the soft outlines a grazing
 // shadow (a penumbra tens of km wide) really has.
 float gCv2WxLod = 0.0;
+// Review 18: how much a view sample's ground footprint is stretched by a grazing view (1 / |dir . up|, capped;
+// the view march sets it, every other consumer leaves 1). The far field's 2D reads are filtered by the
+// stretched footprint: near the limb from MEO an isotropic footprint under-filtered them along the view's
+// ground direction, and the history drew the aliasing as alternating half-res columns.
+float gCv2Stretch = 1.0;
 vec4 cv2WeatherSmoothAt(vec3 d, int lod);
 vec4 cv2WeatherSmooth(vec3 d)
 {
@@ -575,16 +580,21 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // noise thresholded to the map's coverage (area fraction ~ cov: z = 2.6 (0.5 - cov) approximates
     // the normal quantile), and a little of it clusters the near field too, so the holes seen from
     // orbit are still there on the way down instead of the two looks morphing into each other.
+    // Review 18: the far field is PREFILTERED to twice the footprint (fpF): the march's ray lands at another
+    // point of its texel each visit, and a field read at the footprint's own mip changes by a texel's worth
+    // inside it, so a small cloud near the threshold was hit or missed per visit (flicker on scattered puffs
+    // from MEO). One mip coarser, any point of the texel reads about the same value.
+    float farK   = gCv2NoFar ? 0.0 : smoothstep(0.5, 2.5, cv2Lod(fpM, cv2.anchorCell.w));
+    float fpF    = fpM * (1.0 + farK) * mix(1.0, gCv2Stretch, farK);
     vec4  cl4    = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 4.0
-                              + vec3(0.37, 0.61, 0.13), cv2Lod(fpM, cv2.anchorCluster.w * 4.0));
+                              + vec3(0.37, 0.61, 0.13), cv2Lod(fpF, cv2.anchorCluster.w * 4.0));
     // Review 8: + a 16-km-period octave, so from orbit the edges and holes reach down toward the pixel
     // (the user: the far field read as the 2D map's blobs, missing the small clouds). Weights 0.5/0.3/0.2
     // of the baked fBm (sd 0.057 each): sd 0.035.
     vec4  cl16   = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 16.0
-                              + vec3(0.71, 0.23, 0.47), cv2Lod(fpM, cv2.anchorCluster.w * 16.0));
+                              + vec3(0.71, 0.23, 0.47), cv2Lod(fpF, cv2.anchorCluster.w * 16.0));
     float fz     = ((cl.a - 0.5) * 0.5 + (cl4.a - 0.5) * 0.3 + (cl16.a - 0.5) * 0.2) / 0.035;
     float zThr   = 2.6 * (0.5 - cov);
-    float farK   = gCv2NoFar ? 0.0 : smoothstep(0.5, 2.5, cv2Lod(fpM, cv2.anchorCell.w));
     float fzFar  = fz, nearM = 0.0, covE = cov;
 #ifdef CV2_MORPH_BINDING
     // Review 17: the far field (orbit) takes the cloud morphology instead of Perlin blotches; the near field
@@ -594,7 +604,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // texel or two) it moved only 3.5% of the pixels from orbit.
     if (cv2.morph.x + cv2.morph.y > 0.0) {
         float seaM = 1.0 - smoothstep(5.0, 120.0, w.a * 8000.0);
-        float zM   = cv2MorphZ(wd, mpF, fpM, strat, seaM, cl.r);
+        float zM   = cv2MorphZ(wd, mpF, fpF, strat, seaM, cl.r);
         fzFar = mix(fz, zM, cv2.morph.x);
         nearM = cv2.morph.y * 0.15 * clamp(zM, -2.5, 2.5);
         if (farK * cv2.morph.x > 0.0) {

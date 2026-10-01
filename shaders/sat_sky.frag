@@ -3272,7 +3272,7 @@ void main() {
             vec3 dbg;
             if      (dvc == 46) dbg = (tAirFrontM > 1e11) ? vec3(0.0, 0.0, 0.3) : vec3(tAirFrontM / 1e5, min(tAirFrontM / 1e5, 1.0), min(tAirFrontM / 1e5, 1.0));
             else if (dvc == 47) dbg = cloudB.rgb;
-            else if (dvc == 48) dbg = cloudA.rgb * 20.0;
+            else if (dvc == 48) dbg = cloudA.rgb * 20.0 / (1.0 + cloudA.rgb * 20.0);   // Reinhard: day clouds saturated at x20
             else                dbg = vec3(max(cloudA.a, 0.0) / 100.0, max(-cloudA.a, 0.0) / 100.0, 0.0);
             terrainDebugColor  = dbg;
             terrainDebugActive = true;

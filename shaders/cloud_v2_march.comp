@@ -589,6 +589,7 @@ void main()
             float detailAmt = 1.0 - smoothstep(cv2.shell.w, cv2.shell.w * 4.0, t);
             // One call for the coarse (no erosion, the upper bound) and the fine sample.
             gCv2DbgWant = dbgLayers && fine;
+            gCv2Stretch = 1.0 / max(dz, 0.25);
             CV2Field f = cv2Field(p, fine ? detailAmt : -1.0, fp);
             gCv2DbgWant = false;
             // Thin ice alone (the cirrus veil, lit without a light march): shaded at the coarse step

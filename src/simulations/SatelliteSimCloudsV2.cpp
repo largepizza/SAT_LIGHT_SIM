@@ -1078,7 +1078,12 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.light = glm::vec4(cv2LightLenM, std::round(std::clamp(cv2LightSteps, 1.0f, 12.0f)), cv2MsExtinction,
                         cv2MsStrength);
     p.look = glm::vec4(cv2Coverage, cv2Density, cv2Detail, cv2AmbientGain);
-    p.look2 = glm::vec4(cv2BounceGain, cv2SunGain, cv2Powder, cv2HistoryWeight);
+    // Review 18: from high orbit the still weight falls to 40% (from 300 km to 3000 km of altitude). A
+    // still orbital view changes slowly, and each visit's ray lands at another point of a 5-20 km texel
+    // whose small clouds it hits or misses: at 0.05 the history kept that as flicker on the scattered
+    // puffs (MEO, the user's report).
+    const float hwAlt = 1.0f - 0.6f * (float)std::clamp((std::log10(std::max(eyeH, 1.0)) - 5.477) / 1.0, 0.0, 1.0);
+    p.look2 = glm::vec4(cv2BounceGain, cv2SunGain, cv2Powder, cv2HistoryWeight * hwAlt);
     p.phase = glm::vec4(cv2PhaseG, 0.6f, -0.25f, 0.4f);
 
     float lo = 1e9f, hi = 0.0f;
