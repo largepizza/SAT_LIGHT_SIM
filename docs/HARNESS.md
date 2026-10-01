@@ -126,6 +126,7 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `sweep` | the automated knockout sweep (≈15 s); returns the whole record |
 | `ui show\|hide`, `ui scale <0.75-2>` | HUD visibility and UI scale |
 | `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|console>`, `ui close <name\|all>` | windows (`info`/`viewer`/`trace` need a selected satellite). An advanced tab turns on "show advanced settings" |
+| `ui hint` | show the post-intro "click a satellite to select it" hint (it hides on a selection or after 30 s) |
 | `ui dump [name]` | every drawn rect/text/image with its box and element id, plus checks: text cut by its scissor, text off the window, and overlapping text under the same scissor |
 | `window <W>x<H>` | resize the window and wait for the new swapchain |
 | `path clear`, `path key <t> [lat= lon= alt= az= el= fov= sim=<ISO>\|simadd=<s>]` | camera-path keyframes at path time `t` (seconds). Channels you leave out inherit from the previous key (from the current view for the first). See "Camera paths" |

@@ -6587,6 +6587,7 @@ void SatelliteSim::finishIntro(bool wasSkipped)
 {
     showIntro = false;
     introSkipped = wasSkipped;
+    selectHintTimer = 30.0f;   // review 17: tell the player satellites are clickable (buildSelectHint)
 
     // UC1 mechanisms 2+3: only decide anything when the intro played to completion (a skip
     // means no representative frame-time average was collected) and never during crash recovery

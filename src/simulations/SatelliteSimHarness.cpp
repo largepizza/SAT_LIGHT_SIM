@@ -193,7 +193,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|hint; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -1461,6 +1461,13 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 return &viewerChrome;
             return nullptr;
         };
+        if (sub == "hint")
+        {
+            // The post-intro "click a satellite" hint (review 17), armed as finishIntro arms it.
+            selectHintTimer = 30.0f;
+            r["message"] = "select hint shown";
+            return Status::Done;
+        }
         if (sub == "dump")
         {
             // Every drawn rect/text/image with its box, id and text, plus three automatic checks:
@@ -1592,7 +1599,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 fail("ui close: settings, viewcontrols, trace, info, viewer, all");
         }
         else
-            fail("ui: show | hide | scale <x> | open <window> [tab=<name>] | close <window|all> | dump [name]");
+            fail("ui: show | hide | scale <x> | open <window> [tab=<name>] | close <window|all> | hint | dump [name]");
         r["message"] = "ui " + sub + (pos(1).empty() ? "" : " " + pos(1));
         return Status::Done;
     }

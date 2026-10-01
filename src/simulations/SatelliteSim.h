@@ -1803,6 +1803,9 @@ private:
     VkBuffer pickedVisibleBuf = VK_NULL_HANDLE;
     VkDeviceMemory pickedVisibleMem = VK_NULL_HANDLE;
     void *pickedVisibleMapped = nullptr;
+    // Review 17: after the intro, a hint that satellites can be clicked (playtesters never found out alone).
+    // Shown until something is selected or the timer runs out (buildSelectHint).
+    float selectHintTimer = 0.0f;
     int selectedSatIndex = -1;        // index into satOrbits[]/satVisibleBuf; -1 = no selection
     glm::vec3 lastPickedSkyDir{0.0f}; // previous frame's ENU sky direction for the selection
     float lastPickedFlare = 0.0f;     // previous frame's flareIntensity for the selection (>0 = on screen)
@@ -4781,6 +4784,7 @@ private:
     void buildIntroOverlay(const UIInput &inp, UIRenderer &ui);
     void buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRenderer &ui); // NEW-3
     void buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRenderer &ui);  // UC1 mechanism 3
+    void buildSelectHint(float dt, const UIInput &inp, UIRenderer &ui);
     void buildScreenshotToast(float dt, const UIInput &inp, UIRenderer &ui);     // UC6 confirmation toast
     // UC3: advances introElapsed and drives obsHeightOffset/camera.elDeg/fovYDeg/obsFacing from
     // kIntroKeyframes; called from recordCompute() in place of the normal WASD/zoom block while

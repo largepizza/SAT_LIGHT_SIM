@@ -741,6 +741,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildCrashRecoveryNotice(dt, inp, ui);
     buildGraphicsAutoNotice(dt, inp, ui);
     buildScreenshotToast(dt, inp, ui);
+    buildSelectHint(dt, inp, ui);
 
     // UC4: draw the virtual cursor itself — inp.mouseX/Y IS vCursorX/Y here (App overrode the
     // real mouse position before this frame's ui.beginFrame()), so no separate position plumbing
@@ -5773,6 +5774,8 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
                               CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(19)}));
                     Clay_String txtStr{false, (int32_t)strlen(text), text};
                     CLAY_TEXT(txtStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(19)}));
+                    CLAY_TEXT(CLAY_STRING("Click a satellite to select it"),
+                              CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(19)}));
                 }
                 else
                 {
@@ -5829,6 +5832,39 @@ void SatelliteSim::buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRende
                                          .floating = {.offset = {0, 16}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
         CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
+    }
+}
+
+// ─── buildSelectHint ─────────────────────────────────────────────────────────
+// Review 17: playtesters did not find out that satellites can be clicked until told. After the intro
+// (finishIntro arms the timer) a hint sits above the time bar until a satellite or planet is selected or
+// 30 s pass; it fades over its last 2 s.
+void SatelliteSim::buildSelectHint(float dt, const UIInput &inp, UIRenderer &ui)
+{
+    (void)inp;
+    if (selectHintTimer <= 0.0f)
+        return;
+    if (selectedSatIndex >= 0 || selectedPlanetIndex >= 0)
+    {
+        selectHintTimer = 0.0f;
+        return;
+    }
+    selectHintTimer -= dt;
+    const float a = std::clamp(selectHintTimer / 2.0f, 0.0f, 1.0f);
+    CLAY(CLAY_ID("SelectHint"), {.layout = {
+                                     .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                     .padding = {16, 16, 9, 9},
+                                     .childGap = 2,
+                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER},
+                                     .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                 .backgroundColor = {10, 14, 24, 200.0f * a},
+                                 .cornerRadius = CLAY_CORNER_RADIUS(6),
+                                 .floating = {.offset = {0, -(float)fs(70)}, .zIndex = 24, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_BOTTOM, .parent = CLAY_ATTACH_POINT_CENTER_BOTTOM}, .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH, .attachTo = CLAY_ATTACH_TO_ROOT}})
+    {
+        CLAY_TEXT(CLAY_STRING("Click any satellite - a point of light - to select it"),
+                  CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255.0f * a}, .fontSize = fs(14)}));
+        CLAY_TEXT(CLAY_STRING("then see its model, follow it, trace its pass or track it"),
+                  CLAY_TEXT_CONFIG({.textColor = {190, 200, 215, 255.0f * a}, .fontSize = fs(12)}));
     }
 }
 
