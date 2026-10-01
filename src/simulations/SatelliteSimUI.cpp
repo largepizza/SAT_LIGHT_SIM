@@ -5876,7 +5876,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
         return;
     if (cineChrome.w <= 0.0f)
     {
-        cineChrome.w = 470.0f;
+        cineChrome.w = 540.0f;
         cineChrome.h = std::min(640.0f, std::max(420.0f, inp.screenH * 0.7f));
     }
     std::vector<CineKey> &keys = cineKeys();
@@ -6060,8 +6060,12 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     {
                         const CineKey k = K[i];
                         const double altKm = k.alt / 1000.0;
-                        snprintf(cineKeyBuf_[i], sizeof(cineKeyBuf_[i]), "%2d %5.1fs %6.2f %7.2f %7.1f km az %.0f el %.0f fov %.0f",
-                                 i + 1, k.t, k.lat, k.lon, altKm, k.az, k.el, k.fov);
+                        if (S.followSat >= 0)   // a follow shot's keys are offsets from the satellite (m)
+                            snprintf(cineKeyBuf_[i], sizeof(cineKeyBuf_[i]), "%2d %5.1fs  offset %.0f, %.0f, %.0f m  fov %.0f",
+                                     i + 1, k.t, k.ox, k.oy, k.oz, k.fov);
+                        else
+                            snprintf(cineKeyBuf_[i], sizeof(cineKeyBuf_[i]), "%2d %5.1fs %.2f %.2f %.1f km az %.0f el %.0f fov %.0f",
+                                     i + 1, k.t, k.lat, k.lon, altKm, k.az, k.el, k.fov);
                         CLAY(CLAY_IDI("CineKeyRow", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                                     .childGap = 3,
                                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
