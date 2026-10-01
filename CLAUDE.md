@@ -1087,6 +1087,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   4.5 at 8, 0.8 with the towers off; the light LOD and lightning are not involved): each long light step lands in the
   lit skin under the top or above it. Medium's light steps are 6 (were 4). Tried: lighting heads by the path to their
   top — no effect at a grazing Sun, reverted.
+- **Review 17 (2026-10-01): the "blocky far reflections" at sunset were the CLOUD SHADOW on the sea** (debug view 50,
+  `oceanshadow`; knockout 256 removed them): (1) `cloudGroundShadowV2`'s dense stretch ended at 3.5 km / max(sun up,
+  0.05), ignoring the Earth's curvature — ~70 km out and ~400 m up near sunset — so a deck at 1-2 km fell to the upper
+  stretch's ~30 km steps and was hit or missed per texel offset (rows of unshadowed texels: a stair-stepped bright band);
+  now the curved-ray distance to 3.5 km. (2) A low Sun's ~100-km shadow path made any coverage over the clear threshold
+  full shadow, i.e. a binary map of the source JPEG's 8x8 blocks: the shadow reads the weather map coarser as the Sun
+  drops (`gCv2WxLod`, up to mip 3, C1; written only by the shadow, so the march folds it away — 128 registers).
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

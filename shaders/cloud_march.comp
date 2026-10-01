@@ -335,9 +335,17 @@ float cloudGroundShadowV2(vec3 groundENU, vec3 sunDir, vec3 obsPos, mat3 enuToEc
     // shadow under a thin overcast was a grain of full shadow and none (user snapshot 6).
     float eyeH = obsPos.z - R_EARTH;
     float sunUp = max(dot(normalize(groundENU), sunDir), 0.05);
-    float tSplit = clamp(s0.x + 3500.0 / sunUp, s0.x, s0.y);
+    // Review 17: where the ray is 3.5 km up, along the CURVED Earth: h(t) = t su + t^2 / 2R. It was
+    // 3.5 km / max(su, 0.05), so near sunset the dense stretch ended ~70 km out at ~400 m up, and a deck at
+    // 1-2 km fell to the upper stretch's ~30 km steps, hit or missed by each texel's offset — rows of
+    // unshadowed texels, a stair-stepped bright band on the far sea under an overcast (the "blocky
+    // reflections").
+    float su0 = dot(normalize(groundENU), sunDir);
+    float t35 = R_EARTH * (sqrt(su0 * su0 + 2.0 * 3500.0 / R_EARTH) - su0);
+    float tSplit = clamp(s0.x + t35, s0.x, s0.y);
     float od = 0.0;
     gCv2NoFar = true;              // the cells' average, not the far field (review 8, clouds_v2.glsl)
+    gCv2WxLod = 3.0 * (1.0 - smoothstep(0.03, 0.3, sunUp));   // review 17: a low Sun's long path reads the map blurred
     for (int i = 0; i < 32; ++i) {
         bool  low = i < 20;
         float a0  = low ? s0.x : tSplit, a1 = low ? tSplit : s0.y;
@@ -361,6 +369,7 @@ float cloudGroundShadowV2(vec3 groundENU, vec3 sunDir, vec3 obsPos, mat3 enuToEc
         if (od > 8.0) break;
     }
     gCv2NoFar = false;
+    gCv2WxLod = 0.0;
     return exp(-od);
 }
 

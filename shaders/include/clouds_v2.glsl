@@ -227,10 +227,26 @@ float cv2MesoSmoothAtG(vec3 uvw, float lodI)
 // filtered, made the coverage a patchwork of flat bilinear facets with straight creases (and the
 // JPEG's block edges), and a storm column extruded them 10 km up into planar walls and fins
 // (user snaps 7-10, pass 13).
+// Review 17: the weather mip the GROUND SHADOW reads (cloud_march.comp sets it; 0 everywhere else, and the
+// march never writes it, so its code folds away there). A low Sun's shadow ray runs ~100 km through the shell:
+// any coverage over the clear threshold anywhere along it is full shadow, so the shadow became a binary map
+// of the source JPEG's 8x8 blocks (~40 km) on the 5-km mip — stair-stepped, blocky shadows on the far sea at
+// sunset (they read as blocky reflections). A coarser, C1 read gives them the soft outlines a grazing
+// shadow (a penumbra tens of km wide) really has.
+float gCv2WxLod = 0.0;
+vec4 cv2WeatherSmoothAt(vec3 d, int lod);
 vec4 cv2WeatherSmooth(vec3 d)
 {
+    if (gCv2WxLod > 0.0) {
+        float l0 = floor(gCv2WxLod);
+        return mix(cv2WeatherSmoothAt(d, int(l0)), cv2WeatherSmoothAt(d, int(l0) + 1), gCv2WxLod - l0);
+    }
+    return cv2WeatherSmoothAt(d, 0);
+}
+vec4 cv2WeatherSmoothAt(vec3 d, int lod)
+{
     vec3  a  = abs(d);
-    float sz = float(textureSize(cv2WeatherTex, 0).x);
+    float sz = float(textureSize(cv2WeatherTex, lod).x);
     // The face's two in-plane coordinates in [-1, 1], and the major axis.
     vec2 uv; vec3 axis;
     if (a.x >= a.y && a.x >= a.z)      { uv = d.yz / a.x; axis = vec3(sign(d.x), 0.0, 0.0); }
@@ -243,7 +259,7 @@ vec4 cv2WeatherSmooth(vec3 d)
     vec3 ds = (axis.x != 0.0) ? vec3(axis.x, uv.x, uv.y)
             : (axis.y != 0.0) ? vec3(uv.x, axis.y, uv.y)
                               : vec3(uv.x, uv.y, axis.z);
-    return textureLod(cv2WeatherTex, ds, 0.0);
+    return textureLod(cv2WeatherTex, ds, float(lod));
 }
 
 // The shape volume at an integer mip, C1-smooth (the same remap as cv2WeatherSmooth, one fetch). At
@@ -784,7 +800,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     float gl  = cv2Ground(q.dirE) * 0.8;                                  // follows the terrain
     if (q.h < 2800.0 + gl || q.h > 7200.0 + gl) return 0.0;
     vec3  wF  = cv2FlowWeatherDirAt(q);                                 // the low cloud's (flowed) map
-    vec4  w   = textureLod(cv2WeatherTex, wF, 1.0);                     // mid decks are broad
+    vec4  w   = textureLod(cv2WeatherTex, wF, max(1.0, gCv2WxLod));                     // mid decks are broad
     float cov = clamp((w.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
     // (The spread below can place mid cloud where the local low coverage is 0, so no early out on cov
     // alone when it is on.)
@@ -855,7 +871,7 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     // The high layer's own frame: the low flow x "Cirrus flow" (the jet bends the upper cloud more;
     // until pass 13 cirrus ignored the flow entirely).
     vec3  wdH    = normalize(wd + flowL * (cv2.high2.z / R_EARTH));
-    vec4  wc     = textureLod(cv2WeatherTex, wF, 2.0);
+    vec4  wc     = textureLod(cv2WeatherTex, wF, max(2.0, gCv2WxLod));
     // Cirrus lives with the weather systems: in the jet ahead of fronts and in the outflow of deep
     // convection; the subtropical highs are mostly free of it. The regime therefore follows the map's
     // coverage over the surrounding ~150 km (mip 4) as much as its own noise. On the noise alone the
@@ -1266,7 +1282,7 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     [[dont_unroll]] for (int k = 0; k < 4; ++k) {
         float off  = (k == 0) ? 0.0 : (k == 1) ? 12000.0 : (k == 2) ? 25000.0 : 40000.0;
         float fall = (k == 0) ? 1.0 : (k == 1) ? 0.95 : (k == 2) ? 0.85 : 0.65;
-        vec4  wk   = textureLod(cv2WeatherTex, wF - eastW * (off / R_EARTH), 1.0);
+        vec4  wk   = textureLod(cv2WeatherTex, wF - eastW * (off / R_EARTH), max(1.0, gCv2WxLod));
         float ck   = clamp((wk.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
         stormA = max(stormA, smoothstep(0.72, 0.9, wk.g) * smoothstep(0.3, 0.7, ck) * fall);
     }
@@ -1356,7 +1372,7 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
                        (cv2.fog2.w > 0.0) ? 6.0 * kIceFogH : 0.0);
     if (agl > topMax) return 0.0;
     vec3  wF   = cv2FlowWeatherDirAt(q);
-    vec4  w1   = textureLod(cv2WeatherTex, wF, 1.0);
+    vec4  w1   = textureLod(cv2WeatherTex, wF, max(1.0, gCv2WxLod));
     vec4  w4   = textureLod(cv2WeatherTex, wF, 4.0);
     float span = max(cv2.cover.y - cv2.cover.x, 1e-3);
     float cov1 = clamp((w1.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);

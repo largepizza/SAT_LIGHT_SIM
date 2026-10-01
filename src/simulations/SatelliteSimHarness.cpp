@@ -1968,13 +1968,13 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 idx = i;
         // Ocean views (sat_sky.frag, 2026-09-30) sit at 40..45.
         static const char *kOceanViews[] = {"oceanrefl", "oceanfresnel", "oceanstate", "oceansurf", "oceannormal", "oceanshore",
-                                            "cloudairsplit", "cloudtrans", "cloudrad", "cloudalpha"};
-        for (int i = 0; i < 10; ++i)
+                                            "cloudairsplit", "cloudtrans", "cloudrad", "cloudalpha", "oceanshadow"};
+        for (int i = 0; i < 11; ++i)
             if (v == kOceanViews[i])
                 idx = 40 + i;
         if (idx < 0 && !v.empty() && isdigit((unsigned char)v[0]))
             idx = (int)parseNum(v, "debugview");
-        if (idx < 0 || (idx >= viewCount && (idx < 40 || idx > 49)))
+        if (idx < 0 || (idx >= viewCount && (idx < 40 || idx > 50)))
             fail("debugview: off | normals | detail | steps | albedo | shadow | rough | elevzebra | distzebra | erosion | "
                  "terms | direct | skyamb | night | moon | aurora | gates | factors | skyambraw | suntint | aofactors | "
                  "day | nightmap | geodot | sunvis | nightsky | citylights "

@@ -4556,6 +4556,7 @@ void main() {
             // on any surface roughness, and are deliberately NOT gated by this.
             float featureReflFade = altFade * (1.0 - smoothstep(3000.0, 8000.0, dist));
 
+            vec3 dbgReflUV = vec3(0.0);   // debug view 50 (oceanshadow): r the cloud shadow on the sea, g the reflected clouds weight
             if (!dbgSkipOceanRefl() && dot(reflDir, surfUp) > 0.0 && reflStr > 0.005) {
                 vec2 tAR = raySphere(hitPt, reflDir, R_ATMOS);
                 if (tAR.y > 0.0) {
@@ -4632,6 +4633,7 @@ void main() {
                         rKf = (ws > 1e-6) ? dot(wq, vec4(1.0) - exp(-ga / 40.0)) / ws : 1.0;   // alpha: signed distance, km
                     }
                     rKf = mix(rKf, 1.0, 0.7 * seaRough);   // a rough sea blurs the clouds in it away
+                    dbgReflUV = vec3(fract(reflScreenUV * vec2(textureSize(cloudTargetA, 0))), rKf);
                     reflColor  = reflColor * mix(reflCloudT, vec3(1.0), rKf) + rCA.rgb * (1.0 - rKf);
                     reflTerrainOccl = (texture(sceneDepthTex, reflScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
                 }
@@ -4789,13 +4791,14 @@ void main() {
             // 44 the wave normal, 45 the shore distance (r < 0 land side .. g water, /100 m).
             {
                 int dvo = int(cloud.terrainDebugView + 0.5);
-                if (dvo >= 40 && dvo <= 45) {
+                if ((dvo >= 40 && dvo <= 45) || dvo == 50) {
                     vec3 dbg = vec3(0.0);
                     if      (dvo == 40) dbg = reflColor * 0.05;
                     else if (dvo == 41) dbg = vec3(fresnel * 2.0, reflWaterK, reflStr * 2.0);
                     else if (dvo == 42) dbg = vec3(seaState * 0.5, max(waveCrest, 0.0), waveBlend);
                     else if (dvo == 43) dbg = surfColor;
                     else if (dvo == 44) dbg = waveN * 0.5 + 0.5;
+                    else if (dvo == 50) dbg = vec3(cloudBCenter.a, dbgReflUV.z, 0.0);
                     else                dbg = vec3(clamp(-dShore / 100.0, 0.0, 1.0), clamp(dShore / 100.0, 0.0, 1.0), 0.0);
                     terrainDebugColor  = dbg;
                     terrainDebugActive = true;
