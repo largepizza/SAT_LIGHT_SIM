@@ -1100,7 +1100,7 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
             if (n && inp.scrollY != 0.0f)
             {
                 float step = std::max(10.0f, obsHeightOffset * 0.05f) * scrollMult;
-                obsHeightOffset = std::max(0.0f, obsHeightOffset + inp.scrollY * step);
+                obsHeightOffset = std::clamp(obsHeightOffset + inp.scrollY * step, 0.0f, kMaxObsHeightM);
             }
             ui.tooltip(inp, n, geoTip, fs(11));
             CLAY_TEXT(altStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
@@ -6079,8 +6079,10 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // reflection samples are maxed out here (matching High/Ultra) rather than scaled down
         // with everything else — measured cost of those three sliders is negligible, so there is
         // no real budget to save by tightening them at this tier.
+        // Review 16: light steps 4 -> 6. With 4 over 2.5 km a Cb head lit at a grazing Sun never settled (mean
+        // |diff| between two settles 7.4 levels; 6: 5.3), for +0.14 ms in that storm view.
         v = {0u,
-             0.85f, 1.0f, 300.0f, 4.0f, 0.015f, 6.0f, 96.0f, 2.0f, 3.0f, 5.0f, 6.0f, 50000.0f, 600000.0f, 80000.0f, 200000.0f};
+             0.85f, 1.0f, 300.0f, 6.0f, 0.015f, 6.0f, 96.0f, 2.0f, 3.0f, 5.0f, 6.0f, 50000.0f, 600000.0f, 80000.0f, 200000.0f};
         break;
     case GraphicsPreset::High:
         // The compiled-in class member defaults, verbatim — "today's tuned values." Re-synced

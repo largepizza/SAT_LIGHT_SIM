@@ -3960,8 +3960,12 @@ private:
     float oceanDetailOctaves = 5.0f;         // seaMapDetail() octave count (wave normal)
     float orbitGrade = 1.0f;
     // The Moon as a body (updatePositions): true topocentric position and size, eclipses.
-    float moonSizeScale = 1.0f;             // "Moon size (x real)" (Atmosphere tab, slot 220; the old disc was 3x)
+    float moonSizeScale = 2.5f;             // "Moon size (x real)" (Atmosphere tab, slot 220; the old disc was 3x). Review 16: 2.5 by default — the true 0.5 deg is a few pixels at a wide FOV
+    // The farthest the player's eye may climb above sea level (review 16: Q/E boost reached the Moon). Past GEO
+    // and the full-disc views the high-orbit ambience is built for, a quarter of the way to the Moon.
+    static constexpr float kMaxObsHeightM = 1.0e8f;
     double moonDistM = 3.844e8;
+    float moonIllumFrac = 0.5f;             // the Moon's lit fraction (moonDirENU.w is its light vs full, review 16)
     float moonAngR = 0.004578f;
     glm::vec3 moonCenterENUkm{0.0f};
     float moonEclipseSolarObs = 1.0f;

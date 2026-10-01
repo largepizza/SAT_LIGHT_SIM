@@ -1356,7 +1356,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             const float floorH = std::max(0.0f, moveGround);
             obsHeightOffset = std::max(obsHeightOffset, floorH);
             obsHeightOffset += (raiseAmt - lowerAmt) * rate * dt;
-            obsHeightOffset = std::max(floorH, obsHeightOffset);
+            obsHeightOffset = std::clamp(obsHeightOffset, floorH, kMaxObsHeightM);
         }
 
         // Zoom in/out (held): narrows/widens FOV at a fixed rate. Independent of boost/fine —
@@ -4606,6 +4606,9 @@ void SatelliteSim::updateFollow(float dt)
             const glm::dvec3 rt = glm::normalize(glm::cross(f, u));
             const glm::dvec3 d = speed * (double)dt * ((double)fwd * f + (double)right * rt + (double)up * u);
             followOffset += glm::dvec3(glm::dot(d, Th), glm::dot(d, Nh), glm::dot(d, Rh));
+            const double offLen = glm::length(followOffset);   // the same reach as kMaxObsHeightM (review 16)
+            if (offLen > (double)kMaxObsHeightM)
+                followOffset *= (double)kMaxObsHeightM / offLen;
         }
     }
 
@@ -13944,7 +13947,14 @@ void SatelliteSim::updatePositions(double t, float dt)
 
     // Illuminated fraction = (1 − dot(sunDir, moonDir)) / 2
     // Full moon when moon is opposite the sun; new moon when aligned.
-    float moonIllum = (1.0f - glm::dot(sunDirECI, moonDirECI)) * 0.5f;
+    // moonDirENU.w is the Moon's LIGHT relative to full (review 16), not the lit fraction: every consumer
+    // (the clouds' and the ground's moonlight, the sky's, the halo, star and satellite dimming) scaled
+    // linearly with the fraction, so a 32% crescent gave a third of full moonlight; the surface's opposition
+    // surge makes it ~1/20. Allen's phase law, V(a) = V(0) + 0.026|a| + 4e-9 a^4 (a in degrees, the phase
+    // angle ~ 180 - elongation). The disc's own shading recomputes the fraction (sat_sky.frag).
+    moonIllumFrac = (1.0f - glm::dot(sunDirECI, moonDirECI)) * 0.5f;
+    const float moonPhaseDeg = glm::degrees(std::acos(std::clamp(-glm::dot(sunDirECI, moonDirECI), -1.0f, 1.0f)));
+    float moonIllum = std::pow(10.0f, -0.4f * (0.026f * moonPhaseDeg + 4.0e-9f * std::pow(moonPhaseDeg, 4.0f)));
     // ── The Moon as a body (2026-09-30, the user: "make the moon real ... an actual 3D object") ──
     // Its true geocentric position (the ellipse above, in metres) seen from the OBSERVER: topocentric
     // direction (up to ~1 degree of parallax from the ground, far more from deep space), true angular

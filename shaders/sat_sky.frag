@@ -2166,7 +2166,9 @@ vec3 lensFlare(vec2 uv, vec2 pos, float intens, float bokehMult) {
 const float kSeaFreq       = 0.056;
 const float kSeaHeight     = 2;
 const float kSeaChoppy     = 3.0;   // 4.0 → 2.0: rounder crests, less plateau cliffs
-const float kSeaSpeed      = 1.5;
+// Review 16: 0.75 (was 1.5). The longest ridges are 6 cells of 17.9 m, ~107 m: a real 107-m wave runs at
+// sqrt(g L / 2 pi) ~ 13 m/s; 1.5 moved it at ~27 m/s ("the waves move a tad fast").
+const float kSeaSpeed      = 0.75;
 const vec3  kSeaBase = vec3(0.01, 0.04, 0.08);   // dark, desaturated blue
 const vec3  kSeaWaterColor = vec3(0.2, 0.50, 0.85) * 0.1;
 const float kSeaCells      = 1200.0;                        // noise period, in octave-0 cells
@@ -3574,11 +3576,14 @@ void main() {
             moonDiscHit = true;
             vec3  hp = tm * dir;
             vec3  n  = normalize(hp - moonDir3);
-            float diffuse  = max(0.0, dot(n, sunDir)) * moonDirENU.w;
+            // The disc keeps the lit FRACTION (moonDirENU.w is the Moon's light vs full since review 16, for
+            // everything the Moon lights; the disc's look is unchanged).
+            float mFrac    = 0.5 * (1.0 - dot(sunDir, moonDir3));
+            float diffuse  = max(0.0, dot(n, sunDir)) * mFrac;
             float mu       = max(0.0, dot(n, -moonDir3));
             float limbDark = 0.35 + 0.65 * sqrt(mu);
             // Earthshine inversely follows moon phase: new moon (full Earth) = maximum.
-            float earthshine = 0.0008 * mu * (1.0 - moonDirENU.w);
+            float earthshine = 0.0008 * mu * (1.0 - mFrac);
 
             // Build the moon's local face frame: moonZ points toward the EARTH'S CENTRE (tidally locked near
             // side; 2026-09-30 — it pointed at the observer, so the face never turned: from deep space or behind
@@ -4522,6 +4527,12 @@ void main() {
             float reflWaterK = 1.0;
             // A rough sea seen at a grazing angle reflects the sky well above the mirror direction (the facets that
             // face the eye are tilted toward it), and half of it the next wave's water.
+            // Review 16: and the slope the waves never model — wind ripples, centimetres to a metre (Cox & Munk:
+            // a slope sd of ~8-12 deg even in light wind) — roughen every reflection, most at a grazing angle,
+            // where a real sea smears the sky into vertical streaks. Only the footprint's lost slope did, so a calm
+            // sea within ~8 km mirrored clouds and the Milky Way crisply right up to the horizon (user snapshot 4).
+            seaRough = max(seaRough, (0.3 + 0.2 * clamp(seaState, 0.0, 2.0))
+                                     * (1.0 - smoothstep(0.03, 0.4, abs(dot(dir, surfUp)))));
             reflDir = normalize(reflDir + surfUp * (0.12 * seaRough));
             reflWaterK = 1.0 - 0.45 * seaRough;
             {
@@ -4620,7 +4631,7 @@ void main() {
                         float ws = wq.x + wq.y + wq.z + wq.w;
                         rKf = (ws > 1e-6) ? dot(wq, vec4(1.0) - exp(-ga / 40.0)) / ws : 1.0;   // alpha: signed distance, km
                     }
-                    rKf = mix(rKf, 1.0, 0.6 * seaRough);   // a rough sea blurs the clouds in it away
+                    rKf = mix(rKf, 1.0, 0.7 * seaRough);   // a rough sea blurs the clouds in it away
                     reflColor  = reflColor * mix(reflCloudT, vec3(1.0), rKf) + rCA.rgb * (1.0 - rKf);
                     reflTerrainOccl = (texture(sceneDepthTex, reflScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
                 }
@@ -4683,13 +4694,14 @@ void main() {
                     // blurred image, which is why the ocean already blurs city lights through
                     // cloud.cityLightBlurLod.
                     const float kOceanMwReflLod = 3.0;
+                    float mwReflLod = kOceanMwReflLod + 4.0 * seaRough;   // a rough sea blurs the band (review 16)
                     vec3 rDirGal = vec3(dot(reflDir, cloud.mwBasisRow0.xyz),
                                         dot(reflDir, cloud.mwBasisRow1.xyz),
                                         dot(reflDir, cloud.mwBasisRow2.xyz));
                     float rLonGal = atan(rDirGal.y, rDirGal.x);
                     float rLatGal = asin(clamp(rDirGal.z, -1.0, 1.0));
                     vec2  rMwUV   = vec2(0.5 + rLonGal / (2.0 * PI), 0.5 + rLatGal / PI);
-                    vec3  rMwColor = textureLod(milkyWayTex, rMwUV, kOceanMwReflLod).rgb
+                    vec3  rMwColor = textureLod(milkyWayTex, rMwUV, mwReflLod).rgb
                                    * cloud.mwBasisRow0.w;
 
                     // Exposure gate against reflDir's OWN sky background — the reflection shows
@@ -4710,7 +4722,7 @@ void main() {
 
                     reflColor += rMwColor * darkSkyVis(rMwObjMag, rMwSkyBgMag)
                                * extinctionMwRefl * reflCloudOccl * reflTerrainOccl
-                               * cloud.oceanMwReflGain * featureReflFade;
+                               * cloud.oceanMwReflGain * featureReflFade * (1.0 - 0.5 * seaRough);
                 }
 #endif
             }

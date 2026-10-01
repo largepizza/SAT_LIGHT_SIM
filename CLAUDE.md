@@ -1079,6 +1079,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   recorded frame (it waited on the PNG encode), which is why no earlier motion test saw the ghosting. Lowering
   "History weight moving" changed nothing measurable; the adaptive rate below 30 km (full_rate_above_km 0) cut the
   boost error 1.5 -> 1.0 at ~3x the cloud cost (8 -> 24 ms): not adopted.
+- **Review 16 (2026-09-30):** **the light march has its own jitter** (another cell of the blue-noise tile, its own
+  golden step): it took the VIEW march's, so a sample's depth inside a flat cloud top and its light steps' positions
+  moved together and their product never averaged out — contour rings round the nadir on the Cb heads' lids from
+  16 km (4 light steps over 2.5 km; light steps 8 hid them, the view step's size moved them, the storm noise did not).
+  The heads still SHIMMER at a grazing Sun (two settles of one view differ by 7.4 levels at 4 light steps, 5.3 at 6,
+  4.5 at 8, 0.8 with the towers off; the light LOD and lightning are not involved): each long light step lands in the
+  lit skin under the top or above it. Medium's light steps are 6 (were 4). Tried: lighting heads by the path to their
+  top — no effect at a grazing Sun, reverted.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -3163,6 +3171,14 @@ more in deep space), the true angular radius x "Moon size (x real)" (`moonSizeSc
 (km) and the eclipse state — all into `cloud.moonCenter` / `cloud.moonMisc` (UBO 784 -> 816).
 - **Tidally locked**: the texture frame's z axis points at the EARTH'S CENTRE (it pointed at the observer, so
   the face never turned); the far side (from space) is the near-side image flattened toward its mean.
+- **Its light follows the PHASE LAW (review 16):** `moonDirENU.w` is the Moon's light relative to full (Allen:
+  V = V0 + 0.026 a + 4e-9 a^4, a = the phase angle; quarter 0.09, a 32% crescent 0.04), read by every moonlit term
+  (clouds, ground, sky, halo, star/satellite dimming). It was the lit FRACTION, linear: a crescent lit the clouds and
+  the sky at a third of full. The disc's own shading recomputes the fraction; harness `state` gives both (`illum`,
+  `brightness_vs_full`). "Moon size (x real)" defaults to 2.5 (the true 0.5 deg is a few pixels at a wide FOV);
+  eclipses are drawn with that disc.
+- **The eye stops at 100,000 km** above sea level (`kMaxObsHeightM`: Q/E, the altitude scroll, the follow offset;
+  review 16 — boost reached the Moon).
 - **Lunar eclipses** per surface point: the Earth's disc against the Sun's (seen from that point, with the
   Sun's 0.15-deg parallax from the Moon), penumbra -> umbra, and the umbra's red refracted light.
 - **Solar eclipses**: near the Moon the Sun disc takes its TRUE radius (it is drawn ~2x large for the glare
@@ -4377,6 +4393,11 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
 - **Water map from Natural Earth 10 m** (`tools/make_water_map.py`, 2026-09-30): land + lakes rasterised at 16K
   between 60 S and 72 N, the distance field averaged down to the 8K texels (sub-texel zero crossing; ~1 km vs
   the 5-km mask's ~2.5 km). Outside the band the 8K mask (ice shelves). Reads the .r8 copies, never the PNGs.
+- **Review 16:** waves at `kSeaSpeed` 0.75 (the ~107-m ridges ran at ~27 m/s; a real 107-m wave at ~13), and a base
+  ROUGHNESS from the sea state that grows toward grazing views (the unmodelled wind ripples, Cox & Munk), whatever the
+  footprint: within ~8 km a calm sea mirrored clouds and the Milky Way crisply up to the horizon. It drives the same
+  terms as the footprint's lost slope (reflected ray tilted up, darker, clouds blurred) and the Milky Way reflection's
+  mip (3 + 4 x roughness).
 - `scripts/ocean_v2.satcmd` (long travel + beach + sea state + aurora ground).
 
 ### Satellite ocean-glint gain / floor (2026-09-26) — `sat_sky.frag`, `OceanGlintBuf`

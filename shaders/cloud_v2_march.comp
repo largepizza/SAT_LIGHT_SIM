@@ -707,9 +707,20 @@ void main()
             // light march over the same length, its first step kept (the surface's self-shadowing):
             // ~10% of the march (perf sprint 2026-09-29).
             bool lodL = cv2.column3.y > 0.0 && nL > 2 && (T < 0.5 || fp > cv2.column3.y);
+            // The light march's own jitter (review 16): it took the VIEW march's, so a sample's depth inside a
+            // flat cloud top and its light steps' positions moved together, and their product did not average
+            // out over the visits — contour rings round the nadir on the Cb heads' lids, at the view step's
+            // period (4 light steps over 2.5 km). Another cell of the blue-noise tile, its own golden step.
+            float jL;
+            {
+                uint  bj = uint((pix.x + 32) & 63) + 64u * uint((pix.y + 21) & 63);
+                float vL = full ? cv2.frame.x : floor(cv2.frame.x * (halfR ? 0.5 : 0.25));
+                jL = fract((float((cv2BlueNoise[bj >> 2u] >> (8u * (bj & 3u))) & 0xFFu) + 0.5) / 256.0
+                           + 0.7548777 * (cv2.misc2.z > 0.5 ? cv2.frame.x : vL));
+            }
             if (!thin)
                 lightAmbOD(rel, keyDir, up, eyeH, enuToEcef, nL, lSeg0,
-                           jitter, detailAmt, fp, wantL, odL, sigUp, wantB, bDir, odB, lodL);
+                           jL, detailAmt, fp, wantL, odL, sigUp, wantB, bDir, odB, lodL);
             if (wantL) {
                 float od = thin ? f.sigma * 400.0 : odL;
                 // A deck lit at a grazing angle is shadowed by the rest of the deck, tens of km

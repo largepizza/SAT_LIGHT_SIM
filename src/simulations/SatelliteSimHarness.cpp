@@ -403,7 +403,7 @@ json SatelliteSim::harnessStateJson()
     // last reading of the displayed frame (linear mean, fraction clipped white).
     j["exposure"] = {{"ev", cv2ExposureEV}, {"auto_ev", autoExposureEV}, {"global_ev", globalExposureEV()},
                      {"meter_mean", meterMeanLum}, {"meter_clip", meterClipFrac}};
-    j["moon"] = {{"az_deg", azDegOf(moon)}, {"el_deg", elDegOf(moon)}, {"illum", moonDirENU.w}};
+    j["moon"] = {{"az_deg", azDegOf(moon)}, {"el_deg", elDegOf(moon)}, {"illum", moonIllumFrac}, {"brightness_vs_full", moonDirENU.w}};
 
     json ko = json::array();
     for (int i = 0; i < debugToggleTableSize(); ++i)
