@@ -653,6 +653,11 @@ struct GpuCloudV2Params
     // 1024, from double); precip x = the air temperature at the eye (deg C), y sim time mod 600 s, zw free.
     glm::vec4 rainE, rainN, rainU;
     glm::vec4 precip;
+    // Review 17: the cloud MORPHOLOGY texture (tools/make_cloud_morph.py, march binding 20): anchorMorph as the
+    // other anchors (xyz frac(anchor / period), w 1 / period); morph x its share of the far field (orbit), y its
+    // weight in the near field's clustering.
+    glm::vec4 anchorMorph;
+    glm::vec4 morph;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -661,7 +666,8 @@ static_assert(offsetof(GpuCloudV2Params, types) == 288, "GpuCloudV2Params layout
 static_assert(offsetof(GpuCloudV2Params, cover) == 288 + 48 * kCloudV2Types, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, anchorMid) == 288 + 48 * kCloudV2Types + 176, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, rainE) == 288 + 48 * kCloudV2Types + 416, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 480, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, anchorMorph) == 288 + 48 * kCloudV2Types + 480, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 512, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -3057,6 +3063,14 @@ private:
     VkImage cv2ShapeImg = VK_NULL_HANDLE, cv2DetailImg = VK_NULL_HANDLE, cv2MesoImg = VK_NULL_HANDLE;
     VkDeviceMemory cv2ShapeMem = VK_NULL_HANDLE, cv2DetailMem = VK_NULL_HANDLE, cv2MesoMem = VK_NULL_HANDLE;
     VkImageView cv2ShapeView = VK_NULL_HANDLE, cv2DetailView = VK_NULL_HANDLE, cv2MesoView = VK_NULL_HANDLE;
+    // Review 17: cloud morphology (closed / open cells, streets, cumulus fields), assets/textures/cloud_morph.rgba8.
+    VkImage cv2MorphImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2MorphMem = VK_NULL_HANDLE;
+    VkImageView cv2MorphView = VK_NULL_HANDLE;
+    void createCloudMorph(VulkanContext &ctx);
+    float cv2MorphOrbit = 0.8f;        // "Morphology (orbit)": its share of the far field's presence
+    float cv2MorphNear = 0.5f;         // "Morphology (near)": its weight in the near field's clustering
+    float cv2MorphPeriodKm = 320.0f;   // "Morphology period (km)": one tile of the texture
     VkSampler cv2RepeatSampler = VK_NULL_HANDLE; // trilinear REPEAT (noise) — also the weather cube
     VkSampler cv2ClampSampler = VK_NULL_HANDLE;  // bilinear CLAMP (screen targets)
     VkBuffer cv2ParamsBuf = VK_NULL_HANDLE;
@@ -4513,7 +4527,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 234;
+    static constexpr int kCloudSliderSlots = 237;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

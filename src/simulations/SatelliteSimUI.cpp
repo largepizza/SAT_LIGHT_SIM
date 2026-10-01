@@ -4844,6 +4844,9 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Detail period (m)", &cv2DetailPeriodM, 200.0f, 8000.0f, 50.0f, "%.0f", 142},
         {"Cell period (m)", &cv2CellPeriodM, 4000.0f, 128000.0f, 1000.0f, "%.0f", 143},
         {"Cluster period (m)", &cv2ClusterPeriodM, 32000.0f, 1024000.0f, 8000.0f, "%.0f", 144},
+        {"Morphology (orbit)", &cv2MorphOrbit, 0.0f, 1.0f, 0.05f, "%.2f", 234},
+        {"Morphology (near)", &cv2MorphNear, 0.0f, 2.0f, 0.05f, "%.2f", 235},
+        {"Morphology period (km)", &cv2MorphPeriodKm, 80.0f, 1000.0f, 10.0f, "%.0f", 236},
     };
 
     CloudSlider secFlat[] = {
@@ -6871,6 +6874,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2DetailPeriodM = c.value("detail_period_m", cv2DetailPeriodM);
         cv2CellPeriodM = c.value("cell_period_m", cv2CellPeriodM);
         cv2ClusterPeriodM = c.value("cluster_period_m", cv2ClusterPeriodM);
+        cv2MorphOrbit = c.value("morph_orbit", cv2MorphOrbit);
+        cv2MorphNear = c.value("morph_near", cv2MorphNear);
+        cv2MorphPeriodKm = c.value("morph_period_km", cv2MorphPeriodKm);
         cv2WindMps = c.value("wind_mps", cv2WindMps);
         cv2EdgeSharpness = c.value("edge_sharpness", cv2EdgeSharpness);
         cv2WeatherWarpKm = c.value("weather_warp_km", cv2WeatherWarpKm);
@@ -7355,6 +7361,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"detail_period_m", cv2DetailPeriodM},
         {"cell_period_m", cv2CellPeriodM},
         {"cluster_period_m", cv2ClusterPeriodM},
+        {"morph_orbit", cv2MorphOrbit},
+        {"morph_near", cv2MorphNear},
+        {"morph_period_km", cv2MorphPeriodKm},
         {"wind_mps", cv2WindMps},
         {"edge_sharpness", cv2EdgeSharpness},
         {"weather_warp_km", cv2WeatherWarpKm},

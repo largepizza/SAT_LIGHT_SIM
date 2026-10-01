@@ -109,6 +109,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  sunE;           // xyz the Sun's direction, Earth-fixed (fog's burn-off), w free
     vec4  rainE, rainN, rainU;  // the rain lattice's frame: xyz its axes (ECEF), w the eye in it (m, mod 1024)
     vec4  precip;         // x the air temperature at the eye (deg C): rain / sleet / snow; y sim time mod 600 s
+    vec4  anchorMorph;    // review 17: the morphology texture's anchor (xyz frac(anchor / period), w 1 / period)
+    vec4  morph;          // x its share of the far field (orbit), y its weight in the near field's clustering
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -117,6 +119,9 @@ layout(set = 0, binding = CV2_SHAPE_BINDING)   uniform sampler3D   cv2ShapeTex;
 layout(set = 0, binding = CV2_MESO_BINDING)    uniform sampler3D   cv2MesoTex;
 #ifdef CV2_DETAIL_BINDING
 layout(set = 0, binding = CV2_DETAIL_BINDING)  uniform sampler3D   cv2DetailTex;
+#endif
+#ifdef CV2_MORPH_BINDING
+layout(set = 0, binding = CV2_MORPH_BINDING)   uniform sampler2D   cv2MorphTex;
 #endif
 
 // A point, in the forms the field needs.
@@ -209,6 +214,38 @@ void cv2Add(inout CV2Field f, float s, float hf, float topH, float deck)
 
 // Mip level of a noise volume for a footprint of fpM metres (128 texels per period, w = 1/period).
 float cv2Lod(float fpM, float invPeriod) { return max(0.0, log2(max(fpM * invPeriod * 128.0, 1e-6))); }
+
+#ifdef CV2_MORPH_BINDING
+// Review 17: cloud MORPHOLOGY — how cloud fields organise at 3-100 km (tools/make_cloud_morph.py): R closed
+// cells (stratocumulus decks), G open cells (cold-air outbreaks over the sea), B streets (convective rolls),
+// A clustered cumulus. Each channel is uniform on [0, 1], so 2.6 (u - 0.5) has the far field's quantile
+// scale (zThr = 2.6 (0.5 - cov)): thresholded it covers the coverage the map asks for. Read on the drifted
+// sphere through the cube projection, blended near face edges (triplanar, weights ^8). The types pick the
+// morphology: decks the closed cells; convective cloud over the sea poleward of ~30 deg the open cells;
+// elsewhere streets in some regions (the cluster field), clustered cumulus in the rest. Weighted normal
+// deviates are renormalised by sqrt(sum w^2), so a blend keeps unit spread.
+float cv2MorphZ(vec3 wd, vec3 mpF, float fpM, float strat, float sea, float region)
+{
+    vec3  a  = cv2.anchorMorph.xyz + mpF * cv2.anchorMorph.w;
+    vec3  nw = abs(wd) / max(length(wd), 1e-6);
+    nw *= nw; nw *= nw; nw *= nw;
+    nw /= (nw.x + nw.y + nw.z);
+    float lod = cv2Lod(fpM, cv2.anchorMorph.w) + 3.0;   // 1024 texels a period, not 128
+    vec4  m = vec4(0.0);
+    float ws = 0.0;
+    if (nw.x > 0.02) { m += nw.x * textureLod(cv2MorphTex, a.yz, lod);               ws += nw.x; }
+    if (nw.y > 0.02) { m += nw.y * textureLod(cv2MorphTex, a.xz + vec2(0.37), lod);  ws += nw.y; }
+    if (nw.z > 0.02) { m += nw.z * textureLod(cv2MorphTex, a.xy + vec2(0.71), lod);  ws += nw.z; }
+    vec4  z    = (m / max(ws, 1e-3) - 0.5) * 2.6;
+    float conv = 1.0 - strat;
+    float latA = abs(wd.z) / max(length(wd), 1e-6);              // sin(latitude): the drift turns about z
+    float wC   = strat;
+    float wO   = conv * sea * smoothstep(0.42, 0.7, latA);       // ~25-45 deg
+    float wS   = conv * (1.0 - wO) * smoothstep(0.48, 0.58, region) * (1.0 - 0.5 * sea);
+    float wP   = max(conv - wO - wS, 0.0);
+    return (wC * z.r + wO * z.g + wS * z.b + wP * z.a) / sqrt(max(wC * wC + wO * wO + wS * wS + wP * wP, 1e-4));
+}
+#endif
 
 // The mesoscale volume's G (the cells) at a COARSE mip, C1-smooth: the fractional texel coordinate is
 // smoothstep-remapped before one hardware fetch, so the field has no creases along the texel grid.
@@ -407,7 +444,8 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // (Pass 11 tested the UNflowed position at mip 4 while the lookup moved up to ~200 km: every
     // cloud displaced past an 80 km texel was cut off along that texel's straight edge — the
     // "discontinuities cutting the clouds up" at any flow setting.)
-    if (textureLod(cv2WeatherTex, wdF, 2.0).r * cv2.look.x < cv2.cover.x * 0.25) return f;
+    float wCoarse = textureLod(cv2WeatherTex, wdF, 2.0).r * cv2.look.x;   // also the far field's fraction (review 17)
+    if (wCoarse < cv2.cover.x * 0.25) return f;
 
     // Towers lean downwind with height: the mesoscale fields are read that far upwind (east is the
     // stand-in wind until the weather evolves, phase 5).
@@ -536,10 +574,31 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     float fz     = ((cl.a - 0.5) * 0.5 + (cl4.a - 0.5) * 0.3 + (cl16.a - 0.5) * 0.2) / 0.035;
     float zThr   = 2.6 * (0.5 - cov);
     float farK   = gCv2NoFar ? 0.0 : smoothstep(0.5, 2.5, cv2Lod(fpM, cv2.anchorCell.w));
-    field = mix(field + 0.08 * clamp(fz, -2.5, 2.5), (1.0 - cov) + 0.385 * (fz - zThr), farK);
+    float fzFar  = fz, nearM = 0.0, covE = cov;
+#ifdef CV2_MORPH_BINDING
+    // Review 17: the far field (orbit) takes the cloud morphology instead of Perlin blotches; the near field
+    // is clustered by it a little, so the cells and streets seen from orbit are there on the way down. In the
+    // far field the map sets the cloud FRACTION over ~20 km (its mip 2) and the morphology where inside it the
+    // cloud is: thresholded against the 5-km texels themselves (which go from clear to overcast within a
+    // texel or two) it moved only 3.5% of the pixels from orbit.
+    if (cv2.morph.x + cv2.morph.y > 0.0) {
+        float seaM = 1.0 - smoothstep(5.0, 120.0, w.a * 8000.0);
+        float zM   = cv2MorphZ(wd, mpF, fpM, strat, seaM, cl.r);
+        fzFar = mix(fz, zM, cv2.morph.x);
+        nearM = cv2.morph.y * 0.15 * clamp(zM, -2.5, 2.5);
+        if (farK * cv2.morph.x > 0.0) {
+            float covF = clamp((wCoarse - cv2.cover.x) / covSpan, 0.0, 1.0);
+            // The fraction over ~20 km, halfway to the 5-km texels' (the coarse mip of a broken field reads
+            // higher), and a deck below full cover so its closed cells' rims open (they show from space).
+            covE = mix(cov, min(0.5 * (cov + max(covF, 0.02)), mix(1.0, 0.9, strat)), farK * cv2.morph.x);
+            zThr = 2.6 * (0.5 - covE);
+        }
+    }
+#endif
+    field = mix(field + 0.08 * clamp(fz, -2.5, 2.5) + nearM, (1.0 - covE) + 0.385 * (fzFar - zThr), farK);
     // How far into the cloud this column is: 0 at the edge, 1 well inside. Not normalised by the
     // coverage, so sparse fair-weather cells stay small and low; only a dense field builds towers.
-    float e          = clamp((field - (1.0 - cov)) / 0.55, 0.0, 1.0);
+    float e          = clamp((field - (1.0 - covE)) / 0.55, 0.0, 1.0);
     // The same strength at the CELL scale (the cells two mips coarser: a cell's neighbourhood mean;
     // four for deep types, whose cells are already the coarse ones). It sets each cell's height and
     // its peak, so every column of a cell shares one profile (see THE CONVECTIVE PROFILE below).
@@ -816,7 +875,20 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     float covW   = clamp((textureLod(cv2WeatherTex, wF, 4.0).r * cv2.look.x - cv2.cover.x)
                          / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
     float covM   = mix(cov, max(cov, covW * 0.85), cv2.flow.y);
-    float regime = smoothstep(0.5, 0.68, cl.a + 0.15 * (covM - 0.5)) * cv2.misc.w * smoothstep(0.0, 0.35, covM)
+    float clA    = cl.a;
+#ifdef CV2_MORPH_BINDING
+    // Review 17: altocumulus organises in cells too — the closed-cell morphology (one read, the cube face the
+    // point is on) blended into the regime field at the Perlin's spread (0.057 sd), weighted by "Morphology
+    // (orbit)": from orbit the mid layer was the cluster Perlin's blotches.
+    if (cv2.morph.x > 0.0) {
+        vec3  wdM = cv2Drift(q.dirE), aw = abs(wdM);
+        vec3  aM  = cv2.anchorMorph.xyz + cv2Drift(q.seaProjE) * cv2.anchorMorph.w;
+        vec2  uvM = (aw.x >= aw.y && aw.x >= aw.z) ? aM.yz : (aw.y >= aw.z ? aM.xz + vec2(0.37) : aM.xy + vec2(0.71));
+        float uM  = textureLod(cv2MorphTex, uvM * 1.7, cv2Lod(fpM, cv2.anchorMorph.w * 1.7) + 3.0).r;
+        clA = mix(cl.a, 0.5 + 0.057 * 2.6 * (uM - 0.5) * 1.2, cv2.morph.x * 0.75);
+    }
+#endif
+    float regime = smoothstep(0.5, 0.68, clA + 0.15 * (covM - 0.5)) * cv2.misc.w * smoothstep(0.0, 0.35, covM)
                  * mix(1.0, 0.55, cv2.flow.y * smoothstep(0.75, 1.0, cov));
     if (regime <= 0.0) return 0.0;
     // The baked Perlin is 0.50 +- 0.057: read raw, the base spanned ~300 m, and the layer was one flat

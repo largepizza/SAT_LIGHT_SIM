@@ -268,6 +268,8 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         vkCreateSampler(dev, &sci, nullptr, &cv2ClampSampler);
     }
 
+    createCloudMorph(ctx);
+
     // ── Noise bakes (cloud_v2_noise.comp, modes 0/1/2) ──
     {
         VkImage *imgs[3] = {&cv2ShapeImg, &cv2DetailImg, &cv2MesoImg};
@@ -525,13 +527,14 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // bake, cloud_v2_lightvol.comp), 14 the light volume (sampled: the march's godrays), 15 the blue-noise
     // tile (the ray jitter in fast flight); the adaptive rate: 16 last frame's resolved depth, 17/18 pass B's full-rate
     // targets, 19 the tile list
+    // 20 the cloud morphology texture (review 17)
     cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX, SSBO,
-                                             TEX, IMG, IMG, SSBO});
+                                             TEX, IMG, IMG, SSBO, TEX});
     // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth,
     // 6/7 the full-rate tiles' color/depth, 8 the tile list
     cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO});
     {
-        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 13}, {SSBO, 6}, {IMG, 7}};
+        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 14}, {SSBO, 6}, {IMG, 7}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = 2;
         pi.poolSizeCount = 4;
@@ -575,6 +578,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         VkDescriptorImageInfo shape{cv2RepeatSampler, cv2ShapeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo detail{cv2RepeatSampler, cv2DetailView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo meso{cv2RepeatSampler, cv2MesoView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo morph{cv2RepeatSampler, cv2MorphView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo night{earthNightSampler ? earthNightSampler : noiseSampler,
                                     earthNightView ? earthNightView : noiseTexView,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -597,6 +601,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             imageWrite(cv2MarchDescSet, 3, TEX, &shape),
             imageWrite(cv2MarchDescSet, 4, TEX, &detail),
             imageWrite(cv2MarchDescSet, 5, TEX, &meso),
+            imageWrite(cv2MarchDescSet, 20, TEX, &morph),
             imageWrite(cv2MarchDescSet, 7, TEX, &night),
             bufferWrite(cv2MarchDescSet, 8, SSBO, &terr),
             bufferWrite(cv2MarchDescSet, 9, SSBO, &beams),
@@ -844,10 +849,10 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2ParamsBuf = VK_NULL_HANDLE;
     cv2ParamsMem = VK_NULL_HANDLE;
     cv2ParamsMapped = nullptr;
-    VkImageView *views[] = {&cv2WeatherView, &cv2ShapeView, &cv2DetailView, &cv2MesoView};
-    VkImage *imgs[] = {&cv2WeatherImg, &cv2ShapeImg, &cv2DetailImg, &cv2MesoImg};
-    VkDeviceMemory *mems[] = {&cv2WeatherMem, &cv2ShapeMem, &cv2DetailMem, &cv2MesoMem};
-    for (int i = 0; i < 4; ++i)
+    VkImageView *views[] = {&cv2WeatherView, &cv2ShapeView, &cv2DetailView, &cv2MesoView, &cv2MorphView};
+    VkImage *imgs[] = {&cv2WeatherImg, &cv2ShapeImg, &cv2DetailImg, &cv2MesoImg, &cv2MorphImg};
+    VkDeviceMemory *mems[] = {&cv2WeatherMem, &cv2ShapeMem, &cv2DetailMem, &cv2MesoMem, &cv2MorphMem};
+    for (int i = 0; i < 5; ++i)
     {
         if (*views[i]) vkDestroyImageView(device, *views[i], nullptr);
         if (*imgs[i]) vkDestroyImage(device, *imgs[i], nullptr);
@@ -987,6 +992,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.anchorShape = anchor(cv2ShapePeriodM, 1.0);
     p.anchorDetail = anchor(cv2DetailPeriodM, 1.6);
     p.anchorCluster = anchor(cv2ClusterPeriodM, 0.6);
+    p.anchorMorph = anchor((double)std::clamp(cv2MorphPeriodKm, 40.0f, 2000.0f) * 1000.0, 0.6);   // review 17
+    p.morph = glm::vec4(std::clamp(cv2MorphOrbit, 0.0f, 1.0f), std::clamp(cv2MorphNear, 0.0f, 2.0f), 0.0f, 0.0f);
     p.anchorCell = anchor(cv2CellPeriodM, 0.85);
     const double stormScale = std::clamp((double)cv2StormScale, 0.25, 16.0);
     p.anchorStorm = anchor(cv2ShapePeriodM * stormScale, 1.0);
@@ -1361,4 +1368,101 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     vkCmdCopyImage(cmd, cv2ResolvedImg, VK_IMAGE_LAYOUT_GENERAL, cv2HistoryImg, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
     memoryBarrier(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+}
+
+// ─── Cloud morphology (review 17) ─────────────────────────────────────────────────────────────────
+// assets/textures/cloud_morph.rgba8 (tools/make_cloud_morph.py): raw square RGBA8, its size from the file's
+// length (no decoding at launch, docs/FREEZES.md); mips box-filtered here. Without the file a 1x1 mid-grey
+// texel: every morphology is then 0 (no structure), so the far field falls back to the Perlin's share.
+void SatelliteSim::createCloudMorph(VulkanContext &ctx)
+{
+    uint32_t n = 1;
+    std::vector<unsigned char> data(4, 128);
+    {
+        const char *path = "assets/textures/cloud_morph.rgba8";
+        Log::line(std::string("init: texture: ") + path);
+        if (FILE *f = std::fopen(path, "rb"))
+        {
+            std::fseek(f, 0, SEEK_END);
+            const long bytes = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            const uint32_t side = (uint32_t)std::lround(std::sqrt((double)std::max(bytes, 0L) / 4.0));
+            if (side >= 16 && side <= 8192 && (long)side * side * 4 == bytes)
+            {
+                std::vector<unsigned char> d((size_t)bytes);
+                if (std::fread(d.data(), 1, d.size(), f) == d.size())
+                {
+                    data.swap(d);
+                    n = side;
+                }
+            }
+            std::fclose(f);
+        }
+        if (n == 1)
+            Log::line("init: cloud morphology missing (tools/make_cloud_morph.py): neutral texel");
+    }
+    uint32_t mips = 1;
+    while ((n >> mips) > 0)
+        ++mips;
+    std::vector<std::vector<unsigned char>> levels(mips);
+    levels[0] = std::move(data);
+    for (uint32_t m = 1; m < mips; ++m)
+    {
+        const uint32_t pn = n >> (m - 1), cn = std::max(1u, n >> m);
+        levels[m].resize((size_t)cn * cn * 4);
+        const unsigned char *src = levels[m - 1].data();
+        for (uint32_t y = 0; y < cn; ++y)
+            for (uint32_t x = 0; x < cn; ++x)
+                for (uint32_t c = 0; c < 4; ++c)
+                {
+                    const uint32_t x0 = 2 * x, y0 = 2 * y, x1 = std::min(x0 + 1, pn - 1), y1 = std::min(y0 + 1, pn - 1);
+                    const uint32_t s = src[(y0 * pn + x0) * 4 + c] + src[(y0 * pn + x1) * 4 + c] +
+                                       src[(y1 * pn + x0) * 4 + c] + src[(y1 * pn + x1) * 4 + c];
+                    levels[m][(y * cn + x) * 4 + c] = (unsigned char)((s + 2) / 4);
+                }
+    }
+    VkDeviceSize total = 0;
+    for (auto &lv : levels)
+        total += lv.size();
+    VkBuffer stageBuf;
+    VkDeviceMemory stageMem;
+    ctx.createBuffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stageBuf, stageMem);
+    std::vector<VkBufferImageCopy> regions(mips);
+    {
+        void *mapped;
+        vkMapMemory(ctx.device, stageMem, 0, total, 0, &mapped);
+        VkDeviceSize off = 0;
+        for (uint32_t m = 0; m < mips; ++m)
+        {
+            std::memcpy((unsigned char *)mapped + off, levels[m].data(), levels[m].size());
+            regions[m] = {};
+            regions[m].bufferOffset = off;
+            regions[m].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, 1};
+            regions[m].imageExtent = {std::max(1u, n >> m), std::max(1u, n >> m), 1};
+            off += levels[m].size();
+        }
+        vkUnmapMemory(ctx.device, stageMem);
+    }
+    ctx.createImage(n, n, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    cv2MorphImg, cv2MorphMem, mips);
+    VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = cv2MorphImg;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1};
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    vkCmdCopyBufferToImage(cmd, stageBuf, cv2MorphImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mips, regions.data());
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    ctx.endOneTimeCommands(cmd);
+    vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+    vkFreeMemory(ctx.device, stageMem, nullptr);
+    cv2MorphView = makeView(ctx.device, cv2MorphImg, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, 0, mips, 1);
 }

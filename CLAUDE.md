@@ -1094,6 +1094,19 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   now the curved-ray distance to 3.5 km. (2) A low Sun's ~100-km shadow path made any coverage over the clear threshold
   full shadow, i.e. a binary map of the source JPEG's 8x8 blocks: the shadow reads the weather map coarser as the Sun
   drops (`gCv2WxLod`, up to mip 3, C1; written only by the shadow, so the march folds it away — 128 registers).
+- **Cloud morphology (review 17, 2026-10-01; `tools/make_cloud_morph.py` -> `assets/textures/cloud_morph.rgba8`,
+  march binding 20, `CV2_MORPH_BINDING`, UBO `anchorMorph`/`morph`, sliders "Morphology (orbit)" 0.8 / "(near)" 0.5 /
+  "period (km)" 320, slots 234-236):** four tiling channels made from scratch (FFT noise, Voronoi on a torus),
+  rank-equalised to uniform so a threshold at 1 - cov covers cov: R closed cells, G open cells, B streets, A clustered
+  cumulus. `cv2MorphZ` picks them by type (decks closed; convective over the sea poleward of ~30 deg open; streets in
+  some regions; cumulus fields elsewhere) through a triplanar cube projection. Far field: the morphology replaces the
+  Perlin share and the map sets the cloud FRACTION over ~20 km (the early-out's mip-2 read `wCoarse`, half with the
+  5-km cov; decks capped at 0.9 so cell rims open) — thresholded on the 5-km texels it moved 3.5% of an orbit view's
+  pixels. The mid layer's regime takes the closed cells too (one read). Only the view march binds it (the shadow,
+  beams, lightning, light volume keep the Perlin). **A second weather read for the fraction flipped the march to 228
+  registers** — reuse `wCoarse`. From orbit much of what shows is the mid and high layers stacked over the low: the
+  low layer's cells show (faint honeycomb, `mid_amount 0 high_amount 0`); the map's own hole shapes still dominate.
+  Open: the high layer (cirrus regime) is still Perlin; the morphology is not wind-aligned (streets follow the cube face).
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

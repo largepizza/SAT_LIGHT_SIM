@@ -42,6 +42,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #include "common.glsl"
 
 #define CV2_PARAMS_BINDING  1
+#define CV2_MORPH_BINDING   20   // review 17: the cloud morphology texture
 #define CV2_WEATHER_BINDING 2
 #define CV2_SHAPE_BINDING   3
 #define CV2_DETAIL_BINDING  4
