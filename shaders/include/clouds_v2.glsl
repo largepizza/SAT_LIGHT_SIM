@@ -237,13 +237,24 @@ float cv2MorphZ(vec3 wd, vec3 mpF, float fpM, float strat, float sea, float regi
     if (nw.y > 0.02) { m += nw.y * textureLod(cv2MorphTex, a.xz + vec2(0.37), lod);  ws += nw.y; }
     if (nw.z > 0.02) { m += nw.z * textureLod(cv2MorphTex, a.xy + vec2(0.71), lod);  ws += nw.z; }
     vec4  z    = (m / max(ws, 1e-3) - 0.5) * 2.6;
+    // The granular field below ~10 km (review 17, measured against MODIS imagery: the far field's spectrum fell
+    // as k^-3.1 where real cloud fields fall as k^-1.4..-2.3, and its outlines were too smooth): the clustered-
+    // cumulus channel again at a quarter of the period (~1.3 km puffs in 5-80 km clumps), on the dominant face.
+    float zFine;
+    {
+        vec3  aw = abs(wd);
+        vec2  uvF = (aw.x >= aw.y && aw.x >= aw.z) ? a.yz : (aw.y >= aw.z ? a.xz + vec2(0.37) : a.xy + vec2(0.71));
+        zFine = (textureLod(cv2MorphTex, uvF * 4.0 + vec2(0.13, 0.57), lod + 2.0).a - 0.5) * 2.6;
+    }
     float conv = 1.0 - strat;
     float latA = abs(wd.z) / max(length(wd), 1e-6);              // sin(latitude): the drift turns about z
     float wC   = strat;
     float wO   = conv * sea * smoothstep(0.42, 0.7, latA);       // ~25-45 deg
     float wS   = conv * (1.0 - wO) * smoothstep(0.48, 0.58, region) * (1.0 - 0.5 * sea);
     float wP   = max(conv - wO - wS, 0.0);
-    return (wC * z.r + wO * z.g + wS * z.b + wP * z.a) / sqrt(max(wC * wC + wO * wO + wS * wS + wP * wP, 1e-4));
+    float wF   = mix(0.5, 0.8, conv);
+    return (wC * z.r + wO * z.g + wS * z.b + wP * z.a + wF * zFine)
+         / sqrt(max(wC * wC + wO * wO + wS * wS + wP * wP + wF * wF, 1e-4));
 }
 #endif
 
@@ -590,7 +601,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
             float covF = clamp((wCoarse - cv2.cover.x) / covSpan, 0.0, 1.0);
             // The fraction over ~20 km, halfway to the 5-km texels' (the coarse mip of a broken field reads
             // higher), and a deck below full cover so its closed cells' rims open (they show from space).
-            covE = mix(cov, min(0.5 * (cov + max(covF, 0.02)), mix(1.0, 0.9, strat)), farK * cv2.morph.x);
+            covE = mix(cov, min(mix(cov, max(covF, 0.02), 0.25), mix(1.0, 0.85, strat)), farK * cv2.morph.x);
             zThr = 2.6 * (0.5 - covE);
         }
     }

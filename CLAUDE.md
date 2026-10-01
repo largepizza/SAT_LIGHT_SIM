@@ -1107,6 +1107,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   registers** — reuse `wCoarse`. From orbit much of what shows is the mid and high layers stacked over the low: the
   low layer's cells show (faint honeycomb, `mid_amount 0 high_amount 0`); the map's own hole shapes still dominate.
   Open: the high layer (cirrus regime) is still Perlin; the morphology is not wind-aligned (streets follow the cube face).
+  **Benchmark** (`tools/cloud_stats.py`: cloud mask by brightness - saturation, Otsu; perimeter-area dimension D, object
+  size exponent b, the MASK's spectral slope, holes per 1000 km^2). Eight public-domain MODIS scenes (Wikimedia Commons:
+  open/closed cells, streets, popcorn cumulus, a frontal band; harness_runs/cloudref, not committed): D 1.48-1.72, mask
+  slope 1.5-2.3, 3-16 holes / 1000 km^2, thousands of objects. Ours, nadir from 420 km at five broken-cloud places
+  (harness_runs/fb24/nadir.satcmd): D 1.31-1.36, slope 2.5-2.7, 0.5-1.4 holes — the outlines are the 5-km map's
+  coverage thresholded; the morphology moves every number the right way but little (holes +20-50%, objects +25-40%).
+  Tried: the ~20-km fraction alone (inflated the coverage: fewer holes), a flatter threshold (x0.55: 231 registers
+  for +15% holes). The orbit look needs coverage that is synthesised at < 20 km, not inherited from the map's edges.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
