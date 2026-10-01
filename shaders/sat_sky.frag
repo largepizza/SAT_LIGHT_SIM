@@ -307,6 +307,10 @@ void tmSample(int m, vec3 p, vec3 n, float lod, out vec4 alb, out vec4 nrm) {
 // filtered analytically to the pixel footprint (lamps merge into lines, lines into a uniform glow):
 // no aliasing, and no cost once it is uniform.
 layout(std430, set = 0, binding = 28) readonly buffer CityRoadsBuf { uint roadWords[]; };
+#ifndef SKY_ENV
+// Review 18: the far cloud layer (cloud_v2_far.comp, full swap resolution): rgb radiance, a transmittance.
+layout(set = 0, binding = 29, rgba16f) uniform readonly image2D cloudFarImg;
+#endif
 
 const float kCityDistrictM = 2048.0;   // the anchor cell (world-fixed, exact); districts are two of them
 // Street lighting is lamp posts, not glowing streets (the user, 2026-09-29): each post lights a pool on
@@ -3172,6 +3176,20 @@ void main() {
 #endif
     vec4  cloudA         = vec4(cloudARgb, cloudACenter.a);
     vec4  cloudB         = vec4(cloudBRgb, cloudBCenter.a);
+    // Review 18: the FAR CLOUD LAYER (cloud_v2_far.comp), behind everything the half-res composite carries
+    // (its clouds are faded out by the same share in cloud_march.comp; aurora, airglow and beam light stay
+    // in front): color' = (color T_f + B_f) T + A.
+    float farOpq = 0.0, tFarL = 1e12;
+    if (cloud.farBlend > 0.0) {
+        ivec2 fsz = imageSize(cloudFarImg);
+        ivec2 fpx = clamp(ivec2(gl_FragCoord.xy * vec2(fsz) / vec2(cloud.skyScreenW, cloud.skyScreenH)), ivec2(0), fsz - 1);
+        vec4  fl  = imageLoad(cloudFarImg, fpx);
+        float Tf  = mix(1.0, fl.a, cloud.farBlend);
+        cloudA.rgb += cloud.farBlend * fl.rgb * cloudB.rgb;
+        farOpq      = (1.0 - Tf) * dot(cloudB.rgb, vec3(1.0 / 3.0));
+        cloudB.rgb *= Tf;
+        if (farOpq > 0.0) tFarL = raySphere(obsPos, dir, R_EARTH + 1500.0).x;
+    }
 #endif
     // Target A's alpha is a signed distance in km (include/cloud_occlusion.glsl): >= 0 opaque.
     float tCloudOcclude  = (cloudA.a >= 0.0) ? cloudA.a * 1000.0 : -1.0;
@@ -3262,6 +3280,12 @@ void main() {
         // alpha, which at an edge blends a cloud's distance with the no-cloud marker and can land near 0 km:
         // no air in front, a dark 2x2 speck along every cloud edge over the sea (user snapshot).
         tAirFrontM = (ws > 1e-6) ? dot(wq, da) / ws * 1000.0 : ((dn < 1e8) ? dn * 1000.0 : 1e12);
+        // The far layer's share of the opacity splits the air at its own distance (review 18).
+        if (farOpq > 0.0 && tFarL > 0.0) {
+            float om = max(1.0 - dot(cloudB.rgb, vec3(1.0 / 3.0)) - farOpq, 0.0);
+            tAirFrontM = (tAirFrontM < 1e11 && om > 1e-4) ? (om * tAirFrontM + farOpq * tFarL) / (om + farOpq) : tFarL;
+            tCloudFrontM = min(tCloudFrontM, tFarL);
+        }
     }
     // Cloud composite debug views (harness `debugview 46..48`): 46 the air split distance (/100 km, red past
     // it), 47 the cloud transmittance, 48 the cloud radiance x20, 49 the raw alpha (r opaque tHalf, g

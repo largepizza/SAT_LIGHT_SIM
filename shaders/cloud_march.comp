@@ -1790,6 +1790,12 @@ void main() {
         }
         if (wS > 1e-4) rd.x = dS / wS;
     }
+    // Review 18: the far cloud layer (cloud_v2_far.comp, composited by sat_sky.frag) takes over the volumetric
+    // clouds by its share (CloudParams.farBlend); at 1 the march is not even dispatched (stale image).
+    rc.rgb *= 1.0 - cloud.farBlend;
+    rc.a    = mix(rc.a, 1.0, cloud.farBlend);
+    if (cloud.farBlend >= 0.999) rd = vec2(0.0, -1.0);
+    else if (rc.a >= 0.1) rd.y = -1.0;   // no longer opaque (the march writes y only where T < 0.1)
     vec3  A_cloud       = vec3(rc.a);
     vec3  B_cloud       = rc.rgb;
     float tCloudOcclude = rd.y;

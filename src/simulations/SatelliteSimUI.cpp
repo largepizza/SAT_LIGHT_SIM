@@ -4848,7 +4848,11 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Morphology (near)", &cv2MorphNear, 0.0f, 2.0f, 0.05f, "%.2f", 235},
         {"Morphology period (km)", &cv2MorphPeriodKm, 80.0f, 1000.0f, 10.0f, "%.0f", 236},
         {"Morphology from (m/px)", &cv2MorphFarFootM, 50.0f, 4000.0f, 10.0f, "%.0f", 237},
-        {"Morphology breakup", &cv2MorphBreakup, 0.0f, 0.6f, 0.01f, "%.2f", 238},
+        {"Far-field sharpness", &cv2MorphBreakup, 0.0f, 3.0f, 0.1f, "%.1f", 238},
+        {"Far cloud layer from (km)", &cv2FarLayerFromKm, 50.0f, 100000.0f, 50.0f, "%.0f", 239},
+        {"Far cloud layer full at (km)", &cv2FarLayerFullKm, 100.0f, 100000.0f, 50.0f, "%.0f", 240},
+        {"Far cloud layer sunlight", &cv2FarKeyGain, 0.0f, 4.0f, 0.05f, "%.2f", 241},
+        {"Far cloud layer sky light", &cv2FarSkyGain, 0.0f, 4.0f, 0.05f, "%.2f", 242},
     };
 
     CloudSlider secFlat[] = {
@@ -6917,7 +6921,11 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2MorphNear = c.value("morph_near", cv2MorphNear);
         cv2MorphPeriodKm = c.value("morph_period_km", cv2MorphPeriodKm);
         cv2MorphFarFootM = c.value("morph_far_footprint_m", cv2MorphFarFootM);
-        cv2MorphBreakup = c.value("morph_breakup", cv2MorphBreakup);
+        cv2MorphBreakup = c.value("far_sharpness", cv2MorphBreakup);
+        cv2FarLayerFromKm = c.value("far_layer_from_km", cv2FarLayerFromKm);
+        cv2FarLayerFullKm = c.value("far_layer_full_km", cv2FarLayerFullKm);
+        cv2FarKeyGain = c.value("far_layer_sun_gain", cv2FarKeyGain);
+        cv2FarSkyGain = c.value("far_layer_sky_gain", cv2FarSkyGain);
         cv2WindMps = c.value("wind_mps", cv2WindMps);
         cv2EdgeSharpness = c.value("edge_sharpness", cv2EdgeSharpness);
         cv2WeatherWarpKm = c.value("weather_warp_km", cv2WeatherWarpKm);
@@ -7406,7 +7414,11 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"morph_near", cv2MorphNear},
         {"morph_period_km", cv2MorphPeriodKm},
         {"morph_far_footprint_m", cv2MorphFarFootM},
-        {"morph_breakup", cv2MorphBreakup},
+        {"far_sharpness", cv2MorphBreakup},
+        {"far_layer_from_km", cv2FarLayerFromKm},
+        {"far_layer_full_km", cv2FarLayerFullKm},
+        {"far_layer_sun_gain", cv2FarKeyGain},
+        {"far_layer_sky_gain", cv2FarSkyGain},
         {"wind_mps", cv2WindMps},
         {"edge_sharpness", cv2EdgeSharpness},
         {"weather_warp_km", cv2WeatherWarpKm},

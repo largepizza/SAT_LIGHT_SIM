@@ -1148,6 +1148,31 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   coverage, even averaged over 20-40 km, is near 0 or 1, so the imagery only shapes the edges and the inside
   thickness; its 1-3 km structure (rims, puffs) is below the half-res pixel. The limb from 20000 km shows
   alternating half-res columns in cloud (open; not the far-field reads, the march settings, the TAA or the rate).
+  (5) **The FAR CLOUD LAYER** (`cloud_v2_far.comp`, the user's design: "from afar switch to the detail textures
+  instead of running the march"). What resolution buys was measured first: an HQ photo at 2x (the march at window
+  resolution), downsampled, read D 1.51 / slope 2.03 / 19 holes per 1000 km^2 against 1.31 / 2.58 / 1.7 — MODIS is
+  1.47-1.73 / 1.5-2.35 / 1.9-9.8. Sharper far-field reads in the half-res march gave only 1.38 ("Far-field sharpness",
+  `far_sharpness`, slot 238, `morph.w` = 2^-it; left at 0). The layer: per FULL-RES pixel, the ray meets a sphere
+  1.5 km up; `cv2FarColumn` (clouds_v2.glsl, a hand-kept copy of cv2FieldLow's far branch: same flowed and warped
+  weather, the 20-km fraction, the morphology) gives the strength e; the optical depth is the type's extinction x a
+  thickness from e (presence ramps in from e = -0.15: the march's lobes put cloud a little outside e = 0) and it is
+  lit as a two-stream slab (R = a tau / (1 + a tau), a = 0.75 (1 - g), g 0.85) by the march's own `sunColorAt` /
+  `skyZenithAt` (copied), with relief from e's gradient (two more columns a footprint away), the Moon and city light
+  by night; the mid and high layers are sampled inside their lenses (3 heights each, placed from their own cluster
+  reads) and added over it by the ADDING method (a plain attenuator drew grey camouflage over the decks). Output: full-res
+  RGBA16F (`cv2FarImg`), march set binding 21, sky set binding 29 (imageLoad; the sky set's storage images 3 of 4).
+  `CloudParams.farBlend` (was v1's unread hgG; `SatelliteSim::cloudFarBlend()`, smoothstep of the eye's altitude between
+  "Far cloud layer from (km)" 600 and "... full at (km)" 1500, slots 239-240): cloud_march.comp fades the march's
+  clouds out by it (and drops their occlusion distance once not opaque), sat_sky.frag composites the layer behind the
+  half-res composite (`cloudA += farBlend L T_march; cloudB *= mix(1, T_far, farBlend)`; the air in front splits at the
+  layer's distance for its share), and at 1 the v2 march and resolve are not dispatched. "Far cloud layer sunlight" 3
+  (matched to the march's brightness from 8000 km, p97 232 vs 234) / "sky light" 1 (slots 241-242, `cv2.farLight`).
+  Measured: 8000 km cloud bucket 9.3 -> 1.4 ms, 2000 km 11.9 -> 3.1-4.0 ms; still-view flicker at 8000 km 1.0% (start
+  of review 18) -> 0.04% of pixels past 8 levels, 20000 km 1.4% -> 0.27%. **Not in the layer:** Cb towers and the
+  map-fed anvil shield (storms from far orbit are the low layer's deep types), cloud shadows on the ground, rain.
+  **No scene-depth test:** the half-res depth read per full-res pixel alternated over land from orbit (a dot grid
+  through the layer). The march's scattered small puffs at ~2000 km (low layer, independent of the morphology: the
+  margin's lobes) are not reproduced; the cross-fade band (600-1500 km) matches.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

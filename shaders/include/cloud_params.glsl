@@ -37,7 +37,7 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     float driftRate;
     float sunGain;
     float ambientGain;
-    float hgG;
+    float farBlend;           // review 18: the far cloud layer's share (cloud_v2_far.comp; was v1's unread hgG)
     float marchSteps;
     float lightSteps;
     float cloudPhase;

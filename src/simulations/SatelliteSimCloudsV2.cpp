@@ -529,14 +529,14 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // bake, cloud_v2_lightvol.comp), 14 the light volume (sampled: the march's godrays), 15 the blue-noise
     // tile (the ray jitter in fast flight); the adaptive rate: 16 last frame's resolved depth, 17/18 pass B's full-rate
     // targets, 19 the tile list
-    // 20 the cloud morphology texture (review 17)
+    // 20 the cloud morphology texture (review 17), 21 the far cloud layer (review 18, cloud_v2_far.comp)
     cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX, SSBO,
-                                             TEX, IMG, IMG, SSBO, TEX});
+                                             TEX, IMG, IMG, SSBO, TEX, IMG});
     // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth,
     // 6/7 the full-rate tiles' color/depth, 8 the tile list
     cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO});
     {
-        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 14}, {SSBO, 6}, {IMG, 7}};
+        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 14}, {SSBO, 6}, {IMG, 8}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = 2;
         pi.poolSizeCount = 4;
@@ -571,6 +571,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     cv2ResolvePipeline = makeComputePipeline(ctx, "shaders/cloud_v2_resolve.comp.spv", cv2ResolvePipeLayout);
     cv2LightningPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout);
     cv2LightVolPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightvol.comp.spv", cv2MarchPipeLayout);
+    cv2FarPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout);
 
     // Static descriptors of the march set (the screen-sized ones are written by the targets).
     {
@@ -644,9 +645,11 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
          cv2HistoryImg, cv2HistoryMem, cv2HistoryView);
     make(cv2HalfW, cv2HalfH, VK_FORMAT_R16G16B16A16_SFLOAT, 0, cv2FullImg, cv2FullMem, cv2FullView);
     make(cv2HalfW, cv2HalfH, VK_FORMAT_R32G32_SFLOAT, 0, cv2FullDepthImg, cv2FullDepthMem, cv2FullDepthView);
+    make(ctx.swapExtent.width, ctx.swapExtent.height, VK_FORMAT_R16G16B16A16_SFLOAT, 0, cv2FarImg, cv2FarMem, cv2FarView);
 
     VkCommandBuffer cmd = ctx.beginOneTimeCommands();
-    for (VkImage img : {cv2NewImg, cv2NewDepthImg, cv2ResolvedImg, cv2ResolvedDepthImg, cv2HistoryImg, cv2FullImg, cv2FullDepthImg})
+    for (VkImage img : {cv2NewImg, cv2NewDepthImg, cv2ResolvedImg, cv2ResolvedDepthImg, cv2HistoryImg, cv2FullImg, cv2FullDepthImg,
+                        cv2FarImg})
         ctx.imageBarrier(cmd, img, 0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
                          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -673,6 +676,7 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
     VkDescriptorImageInfo fullDepthOut{VK_NULL_HANDLE, cv2FullDepthView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo fullIn{cv2ClampSampler, cv2FullView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo fullDepthIn{cv2ClampSampler, cv2FullDepthView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo farOut{VK_NULL_HANDLE, cv2FarView, VK_IMAGE_LAYOUT_GENERAL};
     const VkDescriptorType TEX = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, IMG = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     VkWriteDescriptorSet w[] = {
         imageWrite(cv2MarchDescSet, 6, TEX, &depthInfo),
@@ -687,7 +691,8 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
         imageWrite(cv2MarchDescSet, 17, IMG, &fullOut),
         imageWrite(cv2MarchDescSet, 18, IMG, &fullDepthOut),
         imageWrite(cv2ResolveDescSet, 6, TEX, &fullIn),
-        imageWrite(cv2ResolveDescSet, 7, TEX, &fullDepthIn)};
+        imageWrite(cv2ResolveDescSet, 7, TEX, &fullDepthIn),
+        imageWrite(cv2MarchDescSet, 21, IMG, &farOut)};
     vkUpdateDescriptorSets(dev, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
     cv2HistoryValid = false;
 }
@@ -695,12 +700,12 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
 void SatelliteSim::destroyCloudsV2Targets(VkDevice device)
 {
     VkImageView *views[] = {&cv2NewView, &cv2NewDepthView, &cv2ResolvedView, &cv2ResolvedDepthView, &cv2HistoryView,
-                            &cv2FullView, &cv2FullDepthView};
+                            &cv2FullView, &cv2FullDepthView, &cv2FarView};
     VkImage *imgs[] = {&cv2NewImg, &cv2NewDepthImg, &cv2ResolvedImg, &cv2ResolvedDepthImg, &cv2HistoryImg,
-                       &cv2FullImg, &cv2FullDepthImg};
+                       &cv2FullImg, &cv2FullDepthImg, &cv2FarImg};
     VkDeviceMemory *mems[] = {&cv2NewMem, &cv2NewDepthMem, &cv2ResolvedMem, &cv2ResolvedDepthMem, &cv2HistoryMem,
-                              &cv2FullMem, &cv2FullDepthMem};
-    for (int i = 0; i < 7; ++i)
+                              &cv2FullMem, &cv2FullDepthMem, &cv2FarMem};
+    for (int i = 0; i < 8; ++i)
     {
         if (*views[i]) vkDestroyImageView(device, *views[i], nullptr);
         if (*imgs[i]) vkDestroyImage(device, *imgs[i], nullptr);
@@ -794,6 +799,7 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     swap(cv2TilesPipeline, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cv2LightningPipeline, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cv2LightVolPipeline, "shaders/cloud_v2_lightvol.comp.spv", cv2MarchPipeLayout, nullptr);
+    swap(cv2FarPipeline, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cloudMarchPipeline, "shaders/cloud_march.comp.spv", cloudMarchPipeLayout, nullptr);   // the composite
     cv2HistoryValid = false;
     stats = pipelineStatsLine(ctx, cv2MarchPipeline);
@@ -815,6 +821,8 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2TileBuf = VK_NULL_HANDLE; cv2TileMem = VK_NULL_HANDLE;
     if (cv2LightVolPipeline) vkDestroyPipeline(device, cv2LightVolPipeline, nullptr);
     cv2LightVolPipeline = VK_NULL_HANDLE;
+    if (cv2FarPipeline) vkDestroyPipeline(device, cv2FarPipeline, nullptr);
+    cv2FarPipeline = VK_NULL_HANDLE;
     if (cv2LightVolView) vkDestroyImageView(device, cv2LightVolView, nullptr);
     if (cv2LightVolImg) vkDestroyImage(device, cv2LightVolImg, nullptr);
     if (cv2LightVolMem) vkFreeMemory(device, cv2LightVolMem, nullptr);
@@ -883,8 +891,10 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
     // The sky set's binding 7 (sat_sky.frag's flat layers, its SKY_ENV / SKY_LITE variants and Potato):
     // the weather cube, so every flat stand-in shows the same evolving map as the volumetric clouds.
     VkDescriptorImageInfo weatherCube{cv2RepeatSampler, cv2WeatherView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo farLayer{VK_NULL_HANDLE, cv2FarView, VK_IMAGE_LAYOUT_GENERAL};   // review 18
     VkWriteDescriptorSet w[] = {
         imageWrite(skyDescSet, 7, TEX, &weatherCube),
+        imageWrite(skyDescSet, 29, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &farLayer),
         bufferWrite(cloudMarchDescSet, 21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &flashes),
         bufferWrite(cloudMarchDescSet, 15, UBO, &v2Info),
         imageWrite(cloudMarchDescSet, 16, TEX, &weather),
@@ -997,7 +1007,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.anchorMorph = anchor((double)std::clamp(cv2MorphPeriodKm, 40.0f, 2000.0f) * 1000.0, 0.6);   // review 17
     p.morph = glm::vec4(std::clamp(cv2MorphOrbit, 0.0f, 1.0f), std::clamp(cv2MorphNear, 0.0f, 2.0f),
                         std::log2(std::clamp(cv2MorphFarFootM, 50.0f, 4000.0f)),
-                        std::clamp(cv2MorphBreakup, 0.0f, 0.6f));
+                        std::exp2(-std::clamp(cv2MorphBreakup, 0.0f, 3.0f)));
+    p.farLight = glm::vec4(cv2FarKeyGain, cv2FarSkyGain, 0.0f, 0.0f);
     p.anchorCell = anchor(cv2CellPeriodM, 0.85);
     const double stormScale = std::clamp((double)cv2StormScale, 0.25, 16.0);
     p.anchorStorm = anchor(cv2ShapePeriodM * stormScale, 1.0);
@@ -1319,6 +1330,25 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
 
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeLayout, 0, 1, &cv2MarchDescSet, 0, nullptr);
     vkCmdPushConstants(cmd, cv2MarchPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
+    // The far cloud layer (review 18): full resolution, read by sat_sky.frag (imageLoad) this frame, after
+    // the previous frame's fragment reads of it.
+    const float farBlend = cloudFarBlend();
+    if (cv2FarPipeline && farBlend > 0.0f)
+    {
+        memoryBarrier(cmd, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2FarPipeline);
+        vkCmdDispatch(cmd, (ctx.swapExtent.width + 15) / 16, (ctx.swapExtent.height + 15) / 16, 1);
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    }
+    // At full blend the layer is the clouds: no march, no resolve (cloud_march.comp fades their output out by
+    // farBlend, so the stale resolved image is never seen). The history restarts on the way back down.
+    if (farBlend >= 0.999f)
+    {
+        cv2HistoryValid = false;
+        return;
+    }
     // This frame's lightning flashes (one workgroup): cloud_march.comp draws them after the resolve.
     if (cv2LightningPipeline)
     {

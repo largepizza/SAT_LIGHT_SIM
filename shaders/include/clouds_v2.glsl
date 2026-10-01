@@ -111,6 +111,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  precip;         // x the air temperature at the eye (deg C): rain / sleet / snow; y sim time mod 600 s
     vec4  anchorMorph;    // review 17: the morphology texture's anchor (xyz frac(anchor / period), w 1 / period)
     vec4  morph;          // x its share of the far field (orbit), y its weight in the near field's clustering
+    vec4  farLight;       // review 18: the far cloud layer's key-light and sky-light gains (cloud_v2_far.comp)
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -591,7 +592,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // point of its texel each visit, and a field read at the footprint's own mip changes by a texel's worth
     // inside it, so a small cloud near the threshold was hit or missed per visit (flicker on scattered puffs
     // from MEO). One mip coarser, any point of the texel reads about the same value.
-    float fpF    = fpM * (1.0 + farK) * mix(1.0, gCv2Stretch, farK);
+    float fpF    = fpM * (1.0 + farK * (2.0 * cv2.morph.w - 1.0)) * mix(1.0, gCv2Stretch, farK);   // morph.w = 2^-"Far-field sharpness"
     vec4  cl4    = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 4.0
                               + vec3(0.37, 0.61, 0.13), cv2Lod(fpF, cv2.anchorCluster.w * 4.0));
     // Review 8: + a 16-km-period octave, so from orbit the edges and holes reach down toward the pixel
@@ -618,7 +619,6 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
             // it, since the coarse mip then held an inflated one), and a deck below full cover so its closed
             // cells' rims open (they show from space).
             covE = mix(cov, min(mix(cov, max(covF, 0.02), 0.85), mix(1.0, 0.85, strat)), farM);
-            covE = mix(covE, 0.5, cv2.morph.w * farM);   // "Morphology breakup"
             zThr = 2.6 * (0.5 - covE);
         }
     }
@@ -876,6 +876,62 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     f.topH     = base + mix(legacy ? T : T * 1.1, zTop, ty.alt.z) * (topMax - base);
     return f;
 }
+
+#ifdef CV2_MORPH_BINDING
+// ── Review 18: the FAR CLOUD LAYER's column (cloud_v2_far.comp) ──────────────────────────────────────
+// The low layer as the march's far field sees it (cv2FieldLow with farK = 1), as a 2D column: its strength
+// e (0 at the edge .. 1 well inside), the type's extinction, the column's base and top, the coverage. Kept
+// in step with cv2FieldLow's far branch BY HAND: the same weather (flowed, warped), the same 20-km fraction
+// (85%), the same morphology and Perlin share, so the layer and the march agree where they cross-fade.
+struct CV2Far { float e; float eRaw; float sigma; float base; float top; float msBright; float strat; float deep; float covE; };
+CV2Far cv2FarColumn(CV2Pos q, float fpM)
+{
+    CV2Far r;
+    r.e = 0.0; r.eRaw = -1.0; r.sigma = 0.0; r.base = 0.0; r.top = 0.0; r.msBright = 1.0; r.strat = 0.0; r.deep = 0.0; r.covE = 0.0;
+    vec3  wd    = cv2Drift(q.dirE);
+    vec3  sP    = cv2Drift(q.seaProjE);
+    vec3  flowD = cv2FlowDisp(wd, vec3(0.0));   // as cv2Field evaluates it for every layer (gCv2FlowD)
+    vec3  wdF   = cv2FlowWeatherDir(wd, flowD);
+    float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
+    float wCoarse = textureLod(cv2WeatherTex, wdF, 2.0).r * cv2.look.x;
+    if (wCoarse < cv2.cover.x * 0.25) return r;
+    vec3  mp  = sP;
+    vec3  mpF = mp + flowD;
+    vec4  cl  = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w, cv2Lod(fpM, cv2.anchorCluster.w));
+    vec4  ce  = textureLod(cv2MesoTex, cv2.anchorCell.xyz + mp * cv2.anchorCell.w, cv2Lod(fpM, cv2.anchorCell.w));
+    vec3  warp = (vec3(ce.a, cl.a, 0.5 * (ce.a + cl.a)) - 0.5) * cv2.extra.y;
+    vec4  w    = cv2WeatherSmooth(wdF + warp);
+    float cov  = clamp((w.r * cv2.look.x - cv2.cover.x) / covSpan, 0.0, 1.0);
+    float covF = clamp((wCoarse - cv2.cover.x) / covSpan, 0.0, 1.0);
+    if (cov <= 0.0 && covF <= 0.0) return r;
+    CV2Type ty = cv2TypeAt(w.g);
+    float strat = 1.0 - ty.look.z;
+    float fpF   = fpM * 2.0 * cv2.morph.w;   // the march's far-field filter (2^-"Far-field sharpness" x 2)
+    vec4  cl4   = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 4.0
+                             + vec3(0.37, 0.61, 0.13), cv2Lod(fpF, cv2.anchorCluster.w * 4.0));
+    vec4  cl16  = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 16.0
+                             + vec3(0.71, 0.23, 0.47), cv2Lod(fpF, cv2.anchorCluster.w * 16.0));
+    float fz    = ((cl.a - 0.5) * 0.5 + (cl4.a - 0.5) * 0.3 + (cl16.a - 0.5) * 0.2) / 0.035;
+    float seaM  = 1.0 - smoothstep(5.0, 120.0, w.a * 8000.0);
+    float zM    = cv2MorphZ(wd, mpF, fpF, strat, seaM, cl.r);
+    float fzFar = mix(fz, zM, cv2.morph.x);
+    float covE  = min(mix(cov, max(covF, 0.02), 0.85), mix(1.0, 0.85, strat));
+    float zThr  = 2.6 * (0.5 - covE);
+    r.eRaw  = 0.385 * (fzFar - zThr) / 0.55;
+    r.e     = clamp(r.eRaw, 0.0, 1.0);
+    r.covE  = covE;
+    float tropo  = cv2Tropo(wd);
+    float lift   = cv2Ground(q.dirE) * mix(0.6, 0.9, ty.look.z);
+    float topMax = ty.alt.x + (ty.alt.y - ty.alt.x) * tropo + w.b * strat * 3500.0;
+    r.base  = ty.alt.x + lift;
+    r.top   = topMax + lift;
+    r.sigma = ty.shape.x * cv2.look.y;
+    r.msBright = ty.look.x;
+    r.strat = strat;
+    r.deep  = smoothstep(0.45, 0.85, w.g);
+    return r;
+}
+#endif
 
 // ── The mid-level layer: altocumulus / altostratus (2.8-7 km) ────────────────────────────────────
 // A second, independent field above the low system, so clouds overlap in altitude and cover: the

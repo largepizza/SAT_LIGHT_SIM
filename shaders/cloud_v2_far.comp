@@ -1,0 +1,252 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// ── The FAR CLOUD LAYER (review 18) ───────────────────────────────────────────────────────────────────
+// From afar the low clouds are drawn as a FULL-RESOLUTION 2D layer instead of the half-res volumetric march
+// (cloud_v2_march.comp): per screen pixel, the ray meets a sphere 1.5 km above sea level, the column there is
+// the march's own far field (cv2FarColumn: the weather map's ~20-km fraction placed by the real-imagery
+// morphology), and it is shaded as a slab (two-stream reflection of its optical depth, relief from the
+// strength's gradient, sky light, the Moon and city light at night). The march cannot resolve the 1-5 km
+// structure of real cloud fields from orbit (measured: an HQ photo at 2x had D 1.51 against 1.31, 19 holes /
+// 1000 km^2 against 1.7) and costs ~9 ms there; this costs a few field reads per pixel. The share
+// (CloudParams.farBlend, SatelliteSim::cloudFarBlend: "Far cloud layer from / full at (km)") cross-fades with
+// the march: cloud_march.comp fades the march's clouds out by it, sat_sky.frag composites this in by it, and
+// at 1 the march is not dispatched. Same descriptor set and push constants as the march; binding 21 out.
+// Only the LOW layer (the mid/high layers, anvils and towers are the march's): seen from far orbit the
+// low layer is the weather systems' body.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.comp)
+    mat4  skyView;
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;
+} pc;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_BINDING  1
+#define CV2_MORPH_BINDING   20
+#define CV2_WEATHER_BINDING 2
+#define CV2_SHAPE_BINDING   3
+#define CV2_DETAIL_BINDING  4
+#define CV2_MESO_BINDING    5
+#include "clouds_v2.glsl"
+#include "atmosphere.glsl"
+
+layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // half-res, metres (kNoSurfaceT = sky)
+layout(set = 0, binding = 7) uniform sampler2D earthNightTex;
+layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
+layout(set = 0, binding = 21, rgba16f) uniform writeonly image2D outFar;   // rgb radiance, a transmittance
+
+const vec3  kMoonColor          = vec3(0.92, 0.95, 1.0);   // == cloud_v2_march.comp
+const float kCityUpwellStrength = 0.004;
+const float kNightFloor         = 0.002;
+const float kCityCompressK      = 0.08;
+float cityBrightness(float lum) { float raw = max(0.0, lum - kNightFloor); return raw / (raw + kCityCompressK); }
+
+// sunTransmit / sunColorAt / skyZenithAt: copies of cloud_v2_march.comp's (keep in step), so the layer is lit
+// by the same sunlight and sky as the march it replaces.
+vec3 sunTransmit(vec3 p, vec3 d, vec3 BETA_R, float BETA_M) {
+    float r = length(p), c = dot(p, d) / r;
+    float odR = atmColumnInf(r, c, H_R) * H_R;
+    float odM = atmColumnInf(r, c, H_M) * H_M;
+    const float rO = R_EARTH + 25000.0;
+    float sin2 = (r / rO) * (r / rO) * (1.0 - c * c);
+    float sec  = inversesqrt(max(1.0 - sin2, 1e-3));
+    float nX   = (r <= rO) ? 1.0 : ((c < 0.0 && sin2 < 1.0) ? 2.0 : 0.0);
+    vec3  odO  = vec3(0.019, 0.027, 0.0016) * min(sec, 30.0) * nX;
+    return exp(-(BETA_R * odR + BETA_M * 1.1 * odM + odO));
+}
+vec3 sunColorAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
+    vec2 tSE = raySphere(p, sunDir, R_EARTH);
+    if (tSE.x > 0.0 && tSE.y > 0.0) return vec3(0.0);
+    return SUN_INTENSITY * sunTransmit(p, sunDir, BETA_R, BETA_M);
+}
+vec3 skyZenithAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
+    vec3 zen = normalize(p);
+    vec2 tSA = raySphere(p, zen, R_ATMOS);
+    if (tSA.y <= 0.0) return vec3(0.0);
+    const int N_Z = 6;
+    float seg = tSA.y / float(N_Z);
+    float cosUp = dot(zen, sunDir);
+    float odR = 0.0, odM = 0.0, accM = 0.0;
+    vec3  accR = vec3(0.0);
+    [[dont_unroll]] for (int i = 0; i < N_Z; ++i) {
+        vec3  sp = p + zen * ((float(i) + 0.5) * seg);
+        float h  = max(0.0, length(sp) - R_EARTH);
+        float dR = exp(-h / H_R) * seg, dM = exp(-h / H_M) * seg;
+        odR += dR; odM += dM;
+        vec2 tSE = raySphere(sp, sunDir, R_EARTH);
+        if (tSE.x > 0.0 && tSE.y > 0.0) continue;
+        vec3 att  = exp(-(BETA_R * odR + BETA_M * 1.1 * odM)) * sunTransmit(sp, sunDir, BETA_R, BETA_M);
+        accR += att * dR;
+        accM += dot(att, vec3(1.0 / 3.0)) * dM;
+    }
+    return SUN_INTENSITY * (phaseR(cosUp) * BETA_R * accR + vec3(phaseM(cosUp) * BETA_M * accM));
+}
+
+// The column's optical depth: its thickness (convective cells are domes of their strength, decks most of
+// their span) times the type's extinction and the march's far-field density scale (0.02 + 0.98 e^2:
+// thin edges translucent).
+// The march's cloud is where e + lobes > the height profile: its 3D lobes (~+-0.15 in e) put cloud where e is a
+// little below 0 as well, so the presence ramps in from e = -0.15 (the layer otherwise covered ~25% less).
+float farTau(CV2Far c)
+{
+    float eP = clamp((c.eRaw + 0.15) / 1.15, 0.0, 1.0);
+    if (eP <= 0.0) return 0.0;
+    float span  = max(c.top - c.base, 200.0);
+    float thick = span * mix(max(0.25, pow(eP, 0.83)), mix(0.5, 1.0, eP), c.strat);
+    return c.sigma * thick * (0.02 + 0.98 * smoothstep(0.0, 0.3, eP)) * 0.6;
+}
+
+// The light a slab of reflectance R (and relief factor) sends up at a point of the layer: the key light (the Sun,
+// or by night the Moon), the sky, and by night the city light under it. Shared by the low, mid and high layers.
+vec3 farLit(vec3 up, float hTop, float R, float relief, float msB, vec3 sunDir, vec3 moonDir, vec3 dirE)
+{
+    vec3  pT     = up * (R_EARTH + hTop);
+    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+    float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
+    float sunUp  = dot(up, sunDir);
+    vec3  sunCol = sunColorAt(pT, sunDir, BETA_R_BASE * cv2.atmo.x, BETA_M) * cv2.look2.y;
+    float rP     = R_EARTH + hTop;
+    float horizS = -sqrt(max(1.0 - (R_EARTH / rP) * (R_EARTH / rP), 0.0));
+    float dayness = clamp((sunUp + 0.2) / 0.5, 0.0, 1.0);
+    float nightK  = 1.0 - min(dayness * 3.0, 1.0);
+    vec3  keyCol = sunCol * smoothstep(horizS - 0.004, horizS + 0.004, sunUp);
+    vec3  keyDir = sunDir;
+    if (dot(keyCol, keyCol) <= 0.0 && nightK > 0.0) {
+        keyCol = kMoonColor * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y * nightK
+               * smoothstep(-0.05, 0.1, dot(up, moonDir));
+        keyDir = moonDir;
+    }
+    float muK  = max(dot(up, keyDir), 0.0);
+    vec3  keyL = keyCol * muK * R * relief * msB * (1.0 / PI) * cv2.farLight.x;
+    float twi  = smoothstep(horizS - 0.12, horizS, sunUp) * (1.0 - smoothstep(horizS + 0.05, horizS + 0.25, sunUp));
+    float skyDusk = smoothstep(horizS - 0.09, horizS + 0.04, sunUp);
+    vec3  skyZ = skyZenithAt(pT, sunDir, BETA_R, BETA_M) * skyDusk * cv2.look.w * (1.0 + cv2.atmo.y * twi)
+               + kMoonColor * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z);
+    vec3  L = keyL + skyZ * R * cv2.farLight.y;
+    if (dayness < 0.9) {
+        vec2  uv = vec2((atan(dirE.y, dirE.x) + PI) / (2.0 * PI), (0.5 * PI - asin(clamp(dirE.z, -1.0, 1.0))) / PI);
+        vec3  cr = textureLod(earthNightTex, uv, 3.0).rgb;
+        float lum = dot(cr, vec3(0.2126, 0.7152, 0.0722));
+        L += (cr / max(lum, 0.001)) * cityBrightness(lum) * (1.0 - dayness) * kCityUpwellStrength
+           * cloud.ambientGain * (1.0 - R) * R;
+    }
+    if (cloud.moonMisc.y > 0.5) L *= max(cloud.moonMisc.x, 0.02);
+    return L;
+}
+
+// Two-stream reflection of a conservative-scattering slab (g ~0.85) of vertical optical depth tau.
+float slabR(float tau) { float a = 0.75 * (1.0 - 0.85); return a * tau / (1.0 + a * tau); }
+
+void main()
+{
+    ivec2 size = imageSize(outFar);
+    ivec2 pix  = ivec2(gl_GlobalInvocationID.xy);
+    if (pix.x >= size.x || pix.y >= size.y) return;
+
+    float tanHalfFov = tan(pc.fovYRad * 0.5);
+    mat3  camToENU   = mat3(transpose(pc.skyView));
+    vec2  ndc = ((vec2(pix) + 0.5) / vec2(size)) * 2.0 - 1.0;
+    vec3  dir = normalize(camToENU * vec3(ndc.x * tanHalfFov * pc.aspect, -ndc.y * tanHalfFov, -1.0));
+    vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+    vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+    vec3  enuY = cross(enuZ, enuX);
+    mat3  enuToEcef = mat3(enuX, enuY, enuZ);
+    float eyeH = terrainFrame.x + 2.0;
+    vec3  eye  = vec3(0.0, 0.0, R_EARTH + eyeH);
+    vec3  sunDir  = normalize(pc.sunDirENU.xyz);
+    vec3  moonDir = normalize(pc.moonDirENU.xyz);
+    float pixAng  = 2.0 * tanHalfFov / float(size.y);
+
+    vec3  Lout = vec3(0.0);
+    float Tout = 1.0;
+    const float hL = 1500.0;
+    float t = raySphere(eye, dir, R_EARTH + hL).x;
+    // A layer below the eye, seen from above (from inside the shell the march is the clouds). No test against
+    // the half-res scene depth: from orbit it alternated per pixel over land (a dot grid through the layer),
+    // and the bases already ride on the ground (cv2FarColumn's lift).
+    if (eyeH > 16000.0 && t > 0.0 && cloud.farBlend > 0.0 && (cloud.dbgDisableMask & 32768u) == 0u && cv2.look.x > 0.0) {
+        vec3  rel = dir * t;
+        vec3  up  = normalize(eye + rel);
+        float mu  = max(-dot(dir, up), 0.02);
+        float fp  = t * pixAng / max(mu, 0.15);   // the ground footprint, stretched along a grazing view
+        CV2Pos p  = cv2Pos(rel, eyeH, enuToEcef);
+
+        // The upper layers (altocumulus / altostratus, cirrus): thin, sampled inside their own lenses along the
+        // ray (each lens placed from its own cluster field, as cv2MidSigma / cv2HighSigma place it), integrated,
+        // and lit as a thin slab over the low layer. Without them the far layer lost much of the scattered cloud
+        // seen from orbit (the mid layer).
+        float tauU = 0.0, mB = 4500.0, mT = 800.0;
+        {
+            float gl  = cv2Ground(p.dirE) * 0.8;
+            vec3  sPd = cv2Drift(p.seaProjE);
+            vec4  clm = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + sPd * cv2.anchorCluster.w,
+                                   cv2Lod(fp, cv2.anchorCluster.w));
+            float cr  = clamp(0.5 + (clm.r - 0.5) * 4.4, 0.0, 1.0);
+            mB = 3000.0 + gl + 2600.0 * cr;
+            mT = mix(1200.0, 450.0, cr);
+            vec3  wd  = cv2Drift(p.dirE);
+            float tropTop = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(wd);
+            vec4  clh = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + sPd * cv2.anchorCluster.w
+                                   + vec3(0.41, 0.17, 0.69), cv2Lod(fp, cv2.anchorCluster.w));
+            float hB  = 0.74 * tropTop + (clh.r - 0.5) * 1200.0;
+            const float hT = 1100.0;
+            [[dont_unroll]] for (int k = 0; k < 6; ++k) {
+                bool  mid = k < 3;
+                float fk  = (float(k % 3) + 0.5) / 3.0;
+                float h   = mid ? mB + mT * fk : hB + hT * fk;
+                float tk  = raySphere(eye, dir, R_EARTH + h).x;
+                if (tk <= 0.0) continue;
+                CV2Pos pk = cv2Pos(dir * tk, eyeH, enuToEcef);
+                float o1, o2, o3;
+                float sg = mid ? cv2MidSigma(pk, fp, o1, o2, o3) : cv2HighSigma(pk, fp, o1, o2);
+                tauU += sg * ((mid ? mT : hT) / 3.0) / mu;
+            }
+        }
+
+        // The low layer.
+        CV2Far c  = cv2FarColumn(p, fp);
+        float tau = farTau(c);
+        float Rlow = 0.0;
+        if (tau > 1e-3) {
+            // Relief: the top's slope from the strength's gradient (two more columns, a footprint away in the
+            // tangent plane): a cumulus field from orbit is lit on its Sun side and shaded on the far side,
+            // which is much of the texture a satellite image of cloud has.
+            vec3  tx  = normalize(cross(up, abs(up.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
+            vec3  ty2 = cross(up, tx);
+            float dl  = max(fp, 400.0);
+            CV2Far cx = cv2FarColumn(cv2Pos(rel + tx * dl, eyeH, enuToEcef), fp);
+            CV2Far cy = cv2FarColumn(cv2Pos(rel + ty2 * dl, eyeH, enuToEcef), fp);
+            float span = max(c.top - c.base, 200.0);
+            vec2  slope = vec2(cx.e - c.e, cy.e - c.e) * span * 0.6 / dl;
+            vec3  n   = normalize(up - tx * slope.x - ty2 * slope.y);
+            float hTop = c.base + span * mix(max(0.25, pow(c.e, 0.83)), mix(0.5, 1.0, c.e), c.strat);
+            float muS  = dot(up, sunDir);
+            // The slope's cosine relative to the flat top's; the shaded side keeps some (multiple scattering
+            // through the turret): a top tilted from the light reads darker, not black.
+            float relief = muS > 1e-3 ? clamp(mix(1.0, dot(n, sunDir) / muS, 0.5 * smoothstep(0.1, 0.5, c.e)), 0.4, 1.5) : 1.0;
+            Rlow = slabR(tau);
+            Lout = farLit(up, hTop, Rlow, relief, c.msBright, sunDir, moonDir, p.dirE);
+            // Seen through it: the direct transmission of the delta-scaled depth (the forward peak, ~70% of the
+            // scattering at g 0.85, carries on).
+            Tout = exp(-0.3 * tau / mu);
+        }
+        if (tauU > 1e-3) {
+            float RU = slabR(tauU * mu);
+            float TU = exp(-0.3 * tauU);
+            // The adding method (conservative scattering: diffuse transmission 1 - R): a thin layer over a bright
+            // deck barely changes it; as a plain attenuator it drew grey camouflage blotches over every deck.
+            Lout = farLit(up, mB + mT, RU, 1.0, 1.0, sunDir, moonDir, p.dirE)
+                 + Lout * (1.0 - RU) * (1.0 - RU) / max(1.0 - RU * Rlow, 0.05);
+            Tout *= TU;
+        }
+    }
+    imageStore(outFar, pix, vec4(Lout, Tout));
+}

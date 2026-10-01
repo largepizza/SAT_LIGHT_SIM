@@ -658,6 +658,7 @@ struct GpuCloudV2Params
     // weight in the near field's clustering.
     glm::vec4 anchorMorph;
     glm::vec4 morph;
+    glm::vec4 farLight;    // review 18: the far cloud layer's key-light (x) and sky-light (y) gains
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -667,7 +668,8 @@ static_assert(offsetof(GpuCloudV2Params, cover) == 288 + 48 * kCloudV2Types, "Gp
 static_assert(offsetof(GpuCloudV2Params, anchorMid) == 288 + 48 * kCloudV2Types + 176, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, rainE) == 288 + 48 * kCloudV2Types + 416, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, anchorMorph) == 288 + 48 * kCloudV2Types + 480, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 512, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, farLight) == 288 + 48 * kCloudV2Types + 512, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 528, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -1254,7 +1256,7 @@ struct GpuCloudParams
     float driftRate;          // base longitude drift rate (rad/s sim-time)
     float sunGain;            // global sun brightness multiplier
     float ambientGain;        // night-side ambient (for future use in volumetrics)
-    float hgG;                // Henyey-Greenstein g (C7+ volumetric march)
+    float farBlend;           // review 18: the far cloud layer's share, 0..1 (cloudFarBlend(); was v1's unread hgG)
     float marchSteps;         // volumetric march step count (C7+)
     float lightSteps;         // volumetric light-cone step count (C7+)
     float cloudPhase;         // CPU: fmod(driftRate * simTime, 2π) — uploaded each frame
@@ -3075,10 +3077,25 @@ private:
     // "Morphology from (m/px)" (review 18): the pixel footprint from which the morphology (the far field) sets
     // the cloud outlines in full; it fades in from a quarter of it. Below, the near field's cells and the map.
     float cv2MorphFarFootM = 1400.0f;
-    // "Morphology breakup" (review 18): the far field's cloud fraction is pulled toward 1/2 by this share, so
-    // overcast opens along the morphology's rims and clear air holds its scattered cloud — the map's coverage
-    // saturates (0 or 1) over most of a broken region, and the texture showed only along its edges.
+    // "Far-field sharpness" (review 18, octaves): the far field's 2D reads are filtered to the footprint x
+    // 2^(1 - this). 0 = twice the footprint (each visit's ray then reads about the same value: no flicker);
+    // higher = sharper, the history's sub-texel jitter supersampling the finer structure, at some grain.
     float cv2MorphBreakup = 0.0f;
+    // The FAR CLOUD LAYER (review 18, cloud_v2_far.comp): from afar the low clouds are a full-resolution 2D
+    // layer evaluated from the same field as the march's far field (the map's fraction + the imagery
+    // morphology), shaded as a slab, instead of the half-res volumetric march — the march cannot resolve
+    // the 1-5 km structure from orbit, and costs more. Fades in from "Far cloud layer from (km)" of eye
+    // altitude, full (and the march skipped) at "... full at (km)".
+    float cv2FarLayerFromKm = 600.0f;
+    float cv2FarKeyGain = 3.0f, cv2FarSkyGain = 1.0f;   // "Far cloud layer sunlight / sky light" (3: matched to the march from 8000 km)
+    float cv2FarLayerFullKm = 1500.0f;
+    float cloudFarBlend() const
+    {
+        const double h = (double)obsEyeRadiusM() - satphot::kEarthRadiusM;
+        const double a = (double)cv2FarLayerFromKm * 1000.0, b = std::max((double)cv2FarLayerFullKm * 1000.0, a + 1000.0);
+        const double x = std::clamp((h - a) / (b - a), 0.0, 1.0);
+        return (float)(x * x * (3.0 - 2.0 * x));
+    }
     VkSampler cv2RepeatSampler = VK_NULL_HANDLE; // trilinear REPEAT (noise) — also the weather cube
     VkSampler cv2ClampSampler = VK_NULL_HANDLE;  // bilinear CLAMP (screen targets)
     VkBuffer cv2ParamsBuf = VK_NULL_HANDLE;
@@ -3106,6 +3123,12 @@ private:
     VkImage cv2FullImg = VK_NULL_HANDLE, cv2FullDepthImg = VK_NULL_HANDLE;
     VkDeviceMemory cv2FullMem = VK_NULL_HANDLE, cv2FullDepthMem = VK_NULL_HANDLE;
     VkImageView cv2FullView = VK_NULL_HANDLE, cv2FullDepthView = VK_NULL_HANDLE;
+    // The far cloud layer (review 18, cloud_v2_far.comp): full swap resolution, rgb radiance + a transmittance,
+    // march set binding 21, sky set binding 29 (imageLoad), GENERAL layout.
+    VkImage cv2FarImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2FarMem = VK_NULL_HANDLE;
+    VkImageView cv2FarView = VK_NULL_HANDLE;
+    VkPipeline cv2FarPipeline = VK_NULL_HANDLE;
     // Lightning (include/cloud_lightning.glsl): cloud_v2_lightning.comp writes this frame's flashes
     // into cv2FlashBuf (host-visible: the host reads them back next frame for thunder), bound as
     // binding 12 of the march set and 21 of cloud_march's.
@@ -4540,7 +4563,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 239;
+    static constexpr int kCloudSliderSlots = 243;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

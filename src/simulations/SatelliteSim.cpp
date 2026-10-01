@@ -2268,7 +2268,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.sunGain = cloudSunGain;
         cp.sunGainZenith = cloudSunGainZenith;
         cp.ambientGain = cloudAmbientGain;
-        cp.hgG = cloudHgG;
+        cp.farBlend = cloudFarBlend();
         cp.marchSteps = cloudMarchSteps;
         cp.lightSteps = cloudLightSteps;
         cp.extinctionCoeff = extinctionCoeff;
@@ -10120,7 +10120,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     }
 
     // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=beamGlowDomeBuf, 19=sceneDepthTex, 20=oceanGlintBuf, 21=groundBeamsBuf
-    VkDescriptorSetLayoutBinding bindings[29] = {};
+    VkDescriptorSetLayoutBinding bindings[30] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -10172,8 +10172,10 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     bindings[27] = {27, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     // 28: the major roads for the procedural city lights (createCityRoads, .plans/CITIES_PLAN.md).
     bindings[28] = {28, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // 29: the far cloud layer (review 18, cloud_v2_far.comp; written by writeCloudsV2ConsumerDescriptors).
+    bindings[29] = {29, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 29;
+    li.bindingCount = 30;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
@@ -10181,7 +10183,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4},
     };
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 4;
