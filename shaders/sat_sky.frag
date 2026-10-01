@@ -868,19 +868,20 @@ vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp, out vec3 poo
     // Street posts only close up; from ~10 m a pixel, the arterials alone (faint streaks). One grid —
     // the night no longer cross-fades two at a border (it doubled its cost there, and with the streets
     // this faint the borders do not read).
-    bool  artOnly = foot > 150.0;   // review 12: all streets to 150 m a pixel (was 10: a ring where the grid stopped)
+    bool  artOnly = foot > cloud.cityLod.y;   // review 12: all streets to 150 m a pixel (was 10: a ring where the grid stopped)
     float strip;
     vec3  pS;
     vec3  eS = cityNightGrid(L.g, L, foot, ledP, meanC, artOnly, strip, pS);
     vec3  eG = cityGlitter(L.p2, L.dAnc, L.f, foot, ledP, L.lum / 0.25);
     // Close: posts 55% (heads here, their pools lit onto the ground below), glitter (porch lights, windows,
     // lots) 45%. Far: arterials 15%, glitter 85%.
-    float near = 1.0 - smoothstep(4.0, 10.0, foot);
+    float near = 1.0 - smoothstep(0.4 * cloud.cityLod.x, cloud.cityLod.x, foot);
     // Review 12: the streets' share falls GRADUALLY — 0.7 at 4 m a pixel, 0.15 by 60 m, 0 by 150 m — and every
     // street stays in the grid until then. It was posts 70% -> arterials only 15% over 4-10 m: the street grid
     // stopped on a ring around the observer (user snapshot). Past ~40 m their posts merge into lines, then a
     // glow, faded out by 150 m (a milky veil over the glitter from orbit, user snapshot 5).
-    float artS = mix(0.7, 0.15, smoothstep(4.0, 60.0, foot)) * (1.0 - smoothstep(60.0, 150.0, foot));
+    float artS = mix(cloud.cityLod2.x, cloud.cityLod2.y, smoothstep(0.4 * cloud.cityLod.x, 0.4 * cloud.cityLod.y, foot))
+               * (1.0 - smoothstep(0.4 * cloud.cityLod.y, cloud.cityLod.y, foot));
     vec3  eCityC = artS * eS + (1.0 - artS) * eG;
     poolM = 0.7 * pS * near;
     // No farmstead lights (user review 2): a scatter of lit farms read as everyone running floodlights
@@ -890,19 +891,20 @@ vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp, out vec3 poo
     float sgA  = sqrt(25.0 + fh);
     float eArt = mix(1860.0 * cityG1(L.dSeam, sgA), 1.0, smoothstep(300.0, 700.0, sgA));
     vec3  eC   = mix(eCityC, vec3(eArt) * meanC, 0.015);
-    if (cloud.cityRoadsStrength > 0.0 && foot < 350.0)
-        eC += cloud.cityRoadsStrength * cityRoadLight(uv, L.rel, foot) * (1.0 - smoothstep(150.0, 350.0, foot)) * kLampLedW;
+    float roadsEnd = min(cloud.cityLod.z, cloud.cityLod.w);   // the layout ends them in any case
+    if (cloud.cityRoadsStrength > 0.0 && foot < roadsEnd)
+        eC += cloud.cityRoadsStrength * cityRoadLight(uv, L.rel, foot) * (1.0 - smoothstep(0.43 * roadsEnd, roadsEnd, foot)) * kLampLedW;
     // Steep ground carries almost no lights: the night map's 5-km blur spreads a city's light over the
     // mountains beside it (the Sandias glowed like a suburb).
     float e = mix(0.04, 1.0, smoothstep(0.86, 0.96, nUp));
     // Macro: commercial strips along the arterials, dark voids, a mild 2-km variation.
     float lit   = mix(0.12, 1.0, smoothstep(-0.65, -0.25, L.voidN));
     float macro = (0.25 + 2.6 * strip) / 1.55 * lit / 0.88 * exp(0.7 * cityValue2(L.p2, L.dAnc, 2048.0, 5557 + L.f)) / 1.1;
-    e *= mix(macro, 1.0, smoothstep(250.0, 380.0, foot));
+    e *= mix(macro, 1.0, smoothstep(0.625 * cloud.cityLod.w, 0.95 * cloud.cityLod.w, foot));
     // Close up a city is mostly dark between its lights (the old detail texture averaged ~0.1 of the map
     // in cores); the mean ramps to 1 by the footprint the caller stops at (400 m: complete below a LEO
     // pixel, ~470 m, or orbit views changed).
-    e *= mix(0.12, 1.0, smoothstep(40.0, 350.0, foot));
+    e *= mix(0.12, 1.0, smoothstep(0.1 * cloud.cityLod.w, 0.875 * cloud.cityLod.w, foot));
     // No fade to the map any more: the glitter continues at every distance (cityLightFar past 400 m).
     poolM *= e;
     return e * eC;
@@ -1172,7 +1174,7 @@ vec3 cityDayAlbedo(CityLayout L, float foot, float grey) {
     // Where two different grids meet, a road runs along the border (surfaces cannot cross-fade: an
     // 80-m blend of two street grids read as a ghosted double exposure; the night's lights can).
     if (L.differ) {
-        float road = cityBoxCover(L.db, 14.0, foot) * (1.0 - smoothstep(60.0, 150.0, foot));
+        float road = cityBoxCover(L.db, 14.0, foot) * (1.0 - smoothstep(0.4 * cloud.cityLod.y, cloud.cityLod.y, foot));
         a1 = mix(a1, vec3(0.065, 0.065, 0.07), road);
     }
     // grey: the share of the caller's base that was turned to the map's brightness. There the pattern keeps
@@ -3944,15 +3946,15 @@ void main() {
             float cT = tHit > 0.0 ? tHit : tSeaLvl;
             cQ    = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
             cFoot = pixAngle * cT / max(abs(dot(dir, shadingN)), 0.2);
-            cityFar = cFoot >= 400.0;
-            if (cFoot < 400.0) {   // past it both patterns are uniform: orbit sees the maps as before
-                cityL   = cityLayout(cQ, enuX, enuY, enuZ, cityLum, cFoot < 150.0);
+            cityFar = cFoot >= cloud.cityLod.w;
+            if (cFoot < cloud.cityLod.w) {   // past it both patterns are uniform: orbit sees the maps as before
+                cityL   = cityLayout(cQ, enuX, enuY, enuZ, cityLum, cFoot < cloud.cityLod.y);
                 cityLOk = true;
                 float presence = smoothstep(0.002, 0.03, cityLum) * cloud.cityLightsStrength;
                 // The city's base is the map's BRIGHTNESS, not its hue: its 5-km texels take the sea's blue
                 // along a coast and the fields' green inland, and every roof and street inherited it (user
                 // snapshot 6, a blue Tokyo). Faded with the pattern, so the unresolved hue is unchanged.
-                float cFade = 1.0 - smoothstep(200.0, 380.0, cFoot);
+                float cFade = 1.0 - smoothstep(0.5 * cloud.cityLod.w, 0.95 * cloud.cityLod.w, cFoot);
                 float dLum  = dot(dayColor, vec3(0.2126, 0.7152, 0.0722));
                 dayColor = mix(dayColor, dLum * vec3(1.03, 1.0, 0.95), 0.85 * presence * cFade);
                 dayColor *= mix(vec3(1.0), clamp(cityDayAlbedo(cityL, cFoot, 0.85 * cFade), vec3(0.0), vec3(4.0)), presence);

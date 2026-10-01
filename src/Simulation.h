@@ -142,6 +142,11 @@ public:
     // finishes any screenshot whose copy was recorded last frame: maps the staging buffer,
     // encodes, writes the file, clears pending state. Default: no-op.
     virtual void finalizeScreenshot() {}
+    // HQ photo (review 13): while this returns a factor > 0, App renders into an offscreen target of
+    // that many times the window's size (VulkanContext::beginPhotoTarget, then onResize), without
+    // acquiring, presenting or drawing the UI. Polled once per frame right after finalizeScreenshot;
+    // returning 0 again restores the swapchain (endPhotoTarget, onResize).
+    virtual uint32_t photoScaleRequest() const { return 0; }
 
     // ── Automation harness (docs/HARNESS.md) ───────────────────────────────────
     // The frame time App hands to this frame's buildUI/recordCompute/recordDraw. A harness run

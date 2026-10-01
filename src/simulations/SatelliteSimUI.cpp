@@ -41,6 +41,7 @@ static constexpr int kIconObserver = 13;  // pixel--observer.png — the view fr
 static constexpr int kIconStudio = 14;    // pixel--studio.png — studio lighting (vs the live sky)
 static constexpr int kIconMaximize = 15;  // pixel--maximize.png — pop the 3D view out / restore
 static constexpr int kIconTrack = 16;     // pixel--track.png — "Track": lock the camera onto the satellite
+static constexpr int kIconPhoto = 17;     // pixel--photo.png — HQ photo (supersampled screenshot)
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
 // are ICON-ONLY: the button's name is the tooltip, never a sentence. `kSelIconBtnMin` matches the view
@@ -640,6 +641,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             "assets/icons/ui/pixel--studio.png",
             "assets/icons/ui/pixel--maximize.png",
             "assets/icons/ui/pixel--track.png",
+            "assets/icons/ui/pixel--photo.png",
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -948,6 +950,28 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 CLAY(CLAY_ID("TimeScreenshotIcon"), {.layout = {
                                                          .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
                                                      .image = {.imageData = (void *)(intptr_t)(kIconCamera + 1)}}) {}
+            }
+
+            // ── HQ photo (review 13) ─────────────────────────────────────────────
+            Clay_Color photoBg = photoState != 0 ? Pal::pauseActive : (hovPhoto ? Pal::btnHover : Pal::btnIdle);
+            CLAY(CLAY_ID("TimePhotoBtn"), {.layout = {
+                                               .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                               .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                           .backgroundColor = photoBg,
+                                           .cornerRadius = CLAY_CORNER_RADIUS(4)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovPhoto);
+                sndClick(n, inp.lmbPressed);
+                if (n && inp.lmbPressed)
+                    requestPhoto();
+                hovPhoto = n;
+                static char tip[48];
+                snprintf(tip, sizeof(tip), "HQ photo (%s)", keyDisplayName(keybindings[KB_PHOTO].key));
+                ui.tooltip(inp, n, tip, fs(11));
+                CLAY(CLAY_ID("TimePhotoIcon"), {.layout = {
+                                                    .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
+                                                .image = {.imageData = (void *)(intptr_t)(kIconPhoto + 1)}}) {}
             }
 
             // ── Star Trails ───────────────────────────────────────────────────────
@@ -3421,6 +3445,15 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         }
     }
 
+    {   // HQ photo (review 13, requestPhoto): the resolution in window sizes, and how many frames the
+        // clouds and the sky TAA accumulate first (the window freezes for that long).
+        CloudSlider ph[] = {
+            {"HQ photo resolution (x window)", &photoScaleSetting, 1.0f, 4.0f, 1.0f, "%.0f", 227},
+            {"HQ photo settle frames", &photoSettleFrames, 4.0f, 240.0f, 4.0f, "%.0f", 228},
+        };
+        buildCloudSliderRows(inp, ui, ph, 2, false);
+    }
+
     // ── Replay Intro (UC3) ───────────────────────────────────────────────────
     CLAY(CLAY_ID("ReplayIntroRow"), {.layout = {
                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
@@ -5004,6 +5037,14 @@ void SatelliteSim::buildSettingsNightLightsTab(const UIInput &inp, UIRenderer &u
         // Where the sprites carry the far lights, the share of the ground's own glitter kept under them.
         {"Ground glitter under sprites", &citySpriteGround, 0.0f, 1.0f, 0.05f, "%.2f", 202},
         {"City light twinkle rate", &cityTwinkleRate, 0.0f, 4.0f, 0.05f, "%.2f", 201},
+        // LOD (review 13): where each layer of the procedural lights ends, as the ground a pixel spans
+        // (m). Each fades in from ~0.4x its value; lower = they stop nearer the observer.
+        {"Lamp posts to (m/px)", &cityPostsFootM, 1.0f, 100.0f, 0.5f, "%.1f", 221},
+        {"Street grid to (m/px)", &cityGridFootM, 10.0f, 1000.0f, 5.0f, "%.0f", 222},
+        {"Major roads to (m/px)", &cityRoadsFootM, 10.0f, 2000.0f, 5.0f, "%.0f", 223},
+        {"Street layout to (m/px)", &cityLayoutFootM, 50.0f, 2000.0f, 10.0f, "%.0f", 224},
+        {"Street light share (near)", &cityStreetShareNear, 0.0f, 1.0f, 0.01f, "%.2f", 225},
+        {"Street light share (far)", &cityStreetShareFar, 0.0f, 1.0f, 0.01f, "%.2f", 226},
         {"City light on clouds", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
         // A correct opacity value still looks wrong if what leaks through a hazy/thin cloud is a
         // pixel-sharp copy of the raw city-lights texture — real light diffuses through cloud
@@ -5546,6 +5587,7 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         {keybindings[KB_REVERSE].action, KB_REVERSE},
         {keybindings[KB_TOGGLE_UI].action, KB_TOGGLE_UI},
         {keybindings[KB_SCREENSHOT].action, KB_SCREENSHOT},
+        {keybindings[KB_PHOTO].action, KB_PHOTO},
         {keybindings[KB_SAVE_SNAPSHOT].action, KB_SAVE_SNAPSHOT},
         {keybindings[KB_TOGGLE_CURSOR].action, KB_TOGGLE_CURSOR},
     };
@@ -6247,6 +6289,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         // schemaMatches. trailClearPending stays true regardless (its own compiled-in default),
         // so a trail-enabled load always starts from a blank buffer.
         trailEnabled = d.value("trail_enabled", trailEnabled);
+        photoScaleSetting = std::clamp(d.value("photo_scale", photoScaleSetting), 1.0f, 4.0f);
+        photoSettleFrames = std::clamp(d.value("photo_frames", photoSettleFrames), 4.0f, 240.0f);
         // UC3 follow-up: back to real persisted behavior now that the cinematic itself is settled
         // (the always-on-every-launch testing override is gone). "play_intro_on_startup" absent
         // (upgrading from a build that predates this key) defaults to false, not the compiled-in
@@ -6551,6 +6595,12 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         citySpriteGround = c.value("city_sprite_ground", citySpriteGround);
         cityTwinkleRate = c.value("city_twinkle_rate", cityTwinkleRate);
         citySpriteStartFootM = c.value("city_sprite_start_footprint_m", citySpriteStartFootM);
+        cityPostsFootM = c.value("city_posts_footprint_m", cityPostsFootM);
+        cityGridFootM = c.value("city_grid_footprint_m", cityGridFootM);
+        cityRoadsFootM = c.value("city_roads_footprint_m", cityRoadsFootM);
+        cityLayoutFootM = c.value("city_layout_footprint_m", cityLayoutFootM);
+        cityStreetShareNear = c.value("city_street_share_near", cityStreetShareNear);
+        cityStreetShareFar = c.value("city_street_share_far", cityStreetShareFar);
         cloudErosionEdge = c.value("cloud_erosion_edge", cloudErosionEdge);
         cloudErosionCore = c.value("cloud_erosion_core", cloudErosionCore);
         // Satellite ocean-glint gain/floor (Ocean tab's "Ocean flare refl"/"Flare refl floor",
@@ -6724,6 +6774,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"active_tab", settingsActiveTab},
         {"unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0},
         {"play_intro_on_startup", playIntroOnStartup},
+        {"photo_scale", photoScaleSetting},
+        {"photo_frames", photoSettleFrames},
         {"trail_enabled", trailEnabled}};
     if (settingsChrome.x >= 0.0f)
     {
@@ -6804,6 +6856,12 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"city_sprite_ground", citySpriteGround},
         {"city_twinkle_rate", cityTwinkleRate},
         {"city_sprite_start_footprint_m", citySpriteStartFootM},
+        {"city_posts_footprint_m", cityPostsFootM},
+        {"city_grid_footprint_m", cityGridFootM},
+        {"city_roads_footprint_m", cityRoadsFootM},
+        {"city_layout_footprint_m", cityLayoutFootM},
+        {"city_street_share_near", cityStreetShareNear},
+        {"city_street_share_far", cityStreetShareFar},
         {"cloud_erosion_edge", cloudErosionEdge},
         {"cloud_erosion_core", cloudErosionCore},
         {"cirrus_wind_deg", cloudCirrusWindDeg},

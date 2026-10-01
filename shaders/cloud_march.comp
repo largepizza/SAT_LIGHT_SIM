@@ -2169,7 +2169,7 @@ void main() {
     // through a cirrus veil the half point landed IN the veil (~20 km) in front of a cumulus at ~55 km, and the
     // sky pass split the air there: a dark speck in every such texel. Every point source is 100+ km away, so
     // their occlusion is unchanged.
-    float occKm = (tCloudOcclude >= 0.0) ? max(tCloudOcclude, (tCloudMeanT < kNoSurfaceT) ? tCloudMeanT : 0.0) * 0.001
+    float occKm = (tCloudOcclude >= 0.0) ? ((tCloudMeanT < kNoSurfaceT && tCloudMeanT > 0.0) ? tCloudMeanT : tCloudOcclude) * 0.001
                 : -((tCloudMeanT < kNoSurfaceT) ? tCloudMeanT * 0.001 : 60000.0);
     imageStore(targetA, coord, vec4(B_total, occKm));
     imageStore(targetB, coord, vec4(A_total, terrainSunT));

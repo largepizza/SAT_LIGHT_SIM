@@ -466,8 +466,9 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Toggle Cursor", GLFW_KEY_C, GLFW_GAMEPAD_BUTTON_START, false, false},              // KB_TOGGLE_CURSOR (event) — UC5: gamepad virtual-cursor mode; no meaningful effect for KBM (mouse is always a free cursor), kept rebindable/listed for consistency
         {"Star Trails", GLFW_KEY_F, GLFW_GAMEPAD_BUTTON_X, false, false},                    // KB_TOGGLE_TRAILS (event) — long-exposure trail on/off
         {"Save Snapshot", GLFW_KEY_F9, -1, false, false},                                    // KB_SAVE_SNAPSHOT (event) — how the user hands over a location
+        {"HQ Photo", GLFW_KEY_F8, -1, false, false},                                         // KB_PHOTO (event) — supersampled screenshot (requestPhoto)
     };
-    static_assert(KB_COUNT == 19, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 20, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -1242,6 +1243,7 @@ struct TopK
 void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
 {
     updateGpuTimingStats(ctx);
+    updatePhoto(ctx);
     // Immediately after, so the sweep accumulates THIS frame's freshly-resolved gpuMsRaw[] and any
     // mask change it makes takes effect in the push constants filled later in this same call.
     updateKnockoutSweep(dt);
@@ -2308,6 +2310,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             const float reach = sprOn > 0.0f ? 64.0f * float(1 << (kCitySpriteLevels - 1)) * 250.0f : 0.0f;
             cp.cityParams = glm::vec4(cityTwinkleRate, glm::mix(1.0f, citySpriteGround, std::min(sprOn, 1.0f)), reach,
                                       citySpriteStartFootM);
+            cp.cityLod  = glm::vec4(cityPostsFootM, cityGridFootM, cityRoadsFootM, cityLayoutFootM);
+            cp.cityLod2 = glm::vec4(cityStreetShareNear, cityStreetShareFar, 0.0f, 0.0f);
         }
         cp.cloudShadowRangeM = cloudShadowRangeM;
         // sat_sky.frag's render target: the low-res prepass extent when renderScale<1 (recordPrePass
@@ -6958,6 +6962,72 @@ void SatelliteSim::requestScreenshot()
     screenshotRequested = true;
 }
 
+// ─── HQ photo (review 13) ─────────────────────────────────────────────────────
+void SatelliteSim::requestPhoto()
+{
+    if (photoState != 0 || screenshotEncoding.load() || screenshotCopyPending || screenshotRequested)
+        return;
+    if (!ctx_ || !ctx_->screenshotSupported)
+    {
+        snprintf(screenshotToastText, sizeof(screenshotToastText), "HQ photo not supported on this GPU/driver.");
+        screenshotToastTimer = 4.0f;
+        return;
+    }
+    const float s = std::clamp(std::round(photoScaleSetting), 1.0f, 4.0f);
+    photoSavedPaused = timePaused;
+    photoSavedFullRateKm = cv2FullRateAboveKm;
+    photoSavedSparse = cv2SparseWhenStill;
+    photoSavedPointSigma = pointSigmaPx;
+    photoSavedPointMax = pointSigmaMaxPx;
+    photoSavedGlareSize = glareSizePx;
+    timePaused = true;              // one instant, so the clouds' history and the sky TAA converge on it
+    cv2FullRateAboveKm = 0.0f;      // every half-res cloud pixel marched every frame
+    cv2SparseWhenStill = 0.0f;
+    pointSigmaPx *= s;              // the same on-screen look at s x the pixels
+    pointSigmaMaxPx *= s;
+    glareSizePx *= s;
+    photoScaleActive = (uint32_t)s;
+    photoState = 1;
+    photoFrame = 0;
+}
+
+void SatelliteSim::updatePhoto(VulkanContext &ctx)
+{
+    if (photoState == 1 && ctx.photoActive)
+    {
+        if (++photoFrame >= std::max(1, (int)std::lround(photoSettleFrames)))
+        {
+            requestScreenshot();    // this frame is copied (recordScreenshotCopy, on the photo image)
+            if (screenshotRequested)
+            {
+                const std::string::size_type k = screenshotPath.rfind("satlight_");
+                if (!photoPathOverride.empty())
+                    screenshotPath = photoPathOverride;
+                else if (k != std::string::npos)
+                    screenshotPath.insert(k + 9, "hq_");
+                photoPathOverride.clear();
+                photoState = 2;
+            }
+            else
+                endPhoto();
+        }
+    }
+    else if (photoState == 2 && !screenshotRequested && !screenshotCopyPending)
+        endPhoto();                 // the pixels are read back (finalizeScreenshot): the target can go
+}
+
+void SatelliteSim::endPhoto()
+{
+    timePaused = photoSavedPaused;
+    cv2FullRateAboveKm = photoSavedFullRateKm;
+    cv2SparseWhenStill = photoSavedSparse;
+    pointSigmaPx = photoSavedPointSigma;
+    pointSigmaMaxPx = photoSavedPointMax;
+    glareSizePx = photoSavedGlareSize;
+    photoScaleActive = 0;
+    photoState = 0;
+}
+
 // ─── onKey ────────────────────────────────────────────────────────────────────
 // Shared event-action dispatch — see declaration in SatelliteSim.h for why this is split
 // out of onKey (used by both the keyboard callback and pollGamepad's button edge-detect).
@@ -7033,6 +7103,9 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
     }
     case KB_SCREENSHOT:
         requestScreenshot();
+        break;
+    case KB_PHOTO:
+        requestPhoto();
         break;
     case KB_SAVE_SNAPSHOT:
         snapshotKeyPending = true;

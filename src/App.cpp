@@ -386,9 +386,24 @@ void App::drawFrame() {
         sim->finalizeScreenshot();
     }
 
-    uint32_t imgIdx;
-    VkResult res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain, UINT64_MAX,
-                                          ctx.semImageAvailable, VK_NULL_HANDLE, &imgIdx);
+    // HQ photo (review 13): switch to / from the offscreen photo target between frames.
+    {
+        const uint32_t ps = sim->photoScaleRequest();
+        if (ps > 0 && !ctx.photoActive) {
+            ctx.beginPhotoTarget(ctx.swapExtent.width * ps, ctx.swapExtent.height * ps);
+            sim->onResize(ctx);
+        } else if (ps == 0 && ctx.photoActive) {
+            ctx.endPhotoTarget();
+            sim->onResize(ctx);
+        }
+    }
+    const bool photo = ctx.photoActive;
+
+    uint32_t imgIdx = ctx.photoIndex;
+    VkResult res = VK_SUCCESS;
+    if (!photo)
+        res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain, UINT64_MAX,
+                                    ctx.semImageAvailable, VK_NULL_HANDLE, &imgIdx);
     ftMark("acquire");
     if (res == VK_ERROR_OUT_OF_DATE_KHR) {
         ctx.recreateSwapchain(window);
@@ -499,7 +514,7 @@ void App::drawFrame() {
 
     // 4. UI draws on top of the simulation — UC6 clean-shot mode skips this for a captured frame
     // (nobody shares a screenshot with a settings panel in it).
-    if (!sim->wantsCleanScreenshot())
+    if (!sim->wantsCleanScreenshot() && !photo)
         ui.record(ctx.commandBuffer, ctx);
     ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 8);
 
@@ -521,17 +536,22 @@ void App::drawFrame() {
     // image, the same guarantee the render pass itself already got from this semaphore.
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    si.waitSemaphoreCount   = 1;
+    si.waitSemaphoreCount   = photo ? 0 : 1;
     si.pWaitSemaphores      = &ctx.semImageAvailable;
     si.pWaitDstStageMask    = &waitStage;
     si.commandBufferCount   = 1;
     si.pCommandBuffers      = &ctx.commandBuffer;
-    si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores    = &ctx.semRenderDone[imgIdx];
+    si.signalSemaphoreCount = photo ? 0 : 1;
+    si.pSignalSemaphores    = photo ? nullptr : &ctx.semRenderDone[imgIdx];
     if (vkQueueSubmit(ctx.graphicsQueue, 1, &si, ctx.fenceFrame) != VK_SUCCESS)
         throw std::runtime_error("vkQueueSubmit failed.");
     submittedOnce = true;
     ftMark("queueSubmit");
+    // A photo frame is not presented; a resize waits for the photo to end (resized stays set).
+    if (photo) {
+        if (ft) ++ftFrame;
+        return;
+    }
 
     // Present
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};

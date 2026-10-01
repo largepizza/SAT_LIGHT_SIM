@@ -1530,8 +1530,10 @@ struct GpuCloudParams
     glm::vec4 taaJitter;     // xy sky TAA jitter (pixels), z orbit grade weight, w unused (768 -> 784)
     glm::vec4 moonCenter;    // xyz the Moon's centre from the Earth's, observer ENU (km); w its angular radius (rad)
     glm::vec4 moonMisc;      // x Sun fraction the observer sees past the Moon, y solar / z lunar eclipse possible, w distance (km) (784 -> 816)
+    glm::vec4 cityLod;       // footprint (m/px) where x posts, y the street grid, z major roads, w the street layout end (816 -> 832)
+    glm::vec4 cityLod2;      // x streets' share close up, y their share as they fade; zw unused (832 -> 848)
 };
-static_assert(sizeof(GpuCloudParams) == 816, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 848, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -1737,6 +1739,24 @@ public:
     // builds screenshotPath and sets screenshotRequested, or no-ops if a capture is already in
     // flight (copy pending or still encoding).
     void requestScreenshot();
+    // HQ photo (review 13): render photoScaleSetting x the window's resolution offscreen (App switches to
+    // VulkanContext's photo target while photoScaleRequest() > 0), the clouds at full rate and time
+    // paused, let photoSettleFrames frames accumulate (cloud history, sky TAA), then save that frame
+    // as screenshots/satlight_hq_<time>.png and restore everything. Point and glare sizes are scaled by
+    // the factor so stars and satellites keep their on-screen look; the bloom's radius is not.
+    void requestPhoto();
+    void updatePhoto(VulkanContext &ctx);
+    void endPhoto();
+    uint32_t photoScaleRequest() const override { return photoScaleActive; }
+    float photoScaleSetting = 2.0f;   // display.photo_scale: the photo's resolution in window sizes (1-4)
+    float photoSettleFrames = 48.0f;  // display.photo_frames: frames accumulated before the capture
+    uint32_t photoScaleActive = 0;
+    int   photoState = 0;             // 0 idle, 1 settling, 2 captured (restoring once read back)
+    int   photoFrame = 0;
+    std::string photoPathOverride;    // harness `photo`: the capture path instead of screenshots/
+    bool  photoSavedPaused = false;
+    float photoSavedFullRateKm = 0.0f, photoSavedSparse = 0.0f;
+    float photoSavedPointSigma = 0.0f, photoSavedPointMax = 0.0f, photoSavedGlareSize = 0.0f;
     void cleanup(VkDevice device) override;
     void onKey(GLFWwindow *w, int key, int action) override;
     void onCursorPos(GLFWwindow *w, double x, double y) override;
@@ -3756,6 +3776,13 @@ private:
     float citySpriteGround = 0.083f;     // the ground glitter's share kept where the sprites carry the light
     float cityTwinkleRate = 4.0f;        // glitter + sprite scintillation rate (1 = 0.5-1.2 rad/s)
     float citySpriteStartFootM = 18.0f;  // sprites begin where a pixel spans this much ground (m): far only
+    // City light LOD (review 13, Night lights tab): the ground footprint (m per pixel) where each layer ends.
+    float cityPostsFootM = 10.0f;        // lamp posts and their pools
+    float cityGridFootM = 150.0f;        // the street grid (past it: the glitter alone)
+    float cityRoadsFootM = 350.0f;       // the real major roads
+    float cityLayoutFootM = 400.0f;      // the street layout (past it: the far glitter only)
+    float cityStreetShareNear = 0.7f;    // the streets' share of the light close up
+    float cityStreetShareFar = 0.15f;    // ... and as they start to fade out
     // The city light sprites take over where a pixel spans citySpriteStartFootM of ground (the ground's
     // own footprint, stretched at grazing angles — where its glitter points smear into blobs); nearer
     // lights are the ground's glitter alone: up close a point sprite read as a floating lantern (user
@@ -4176,7 +4203,8 @@ private:
         KB_TOGGLE_TRAILS = 17, // event — long-exposure trail on/off (default: F; Select Satellite
                                // moved off F to T to free this up — see keybindings init)
         KB_SAVE_SNAPSHOT = 18, // event — Settings -> Display "Save Snapshot" (perf_profiles/profile_log.jsonl)
-        KB_COUNT = 19,
+        KB_PHOTO = 19,         // event — HQ photo: a supersampled, settled screenshot (requestPhoto)
+        KB_COUNT = 20,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
@@ -4390,6 +4418,7 @@ private:
     bool hovTimeFaster = false;
     bool hovTimeReverse = false;
     bool hovScreenshot = false; // UC6: left HUD panel camera button
+    bool hovPhoto = false;      // HQ photo button beside it
     bool hovSettings = false;
     bool hovSettingsClose = false;
     bool hovAltModeToggle = false;
@@ -4445,7 +4474,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 221;
+    static constexpr int kCloudSliderSlots = 229;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

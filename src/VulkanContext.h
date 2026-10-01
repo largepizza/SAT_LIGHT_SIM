@@ -93,6 +93,13 @@ struct VulkanContext {
     VkImageView    depthView   = VK_NULL_HANDLE;
     VkFormat       depthFormat = VK_FORMAT_D32_SFLOAT;
 
+    // The photo target's own images (beginPhotoTarget).
+    VkImage        photoImage = VK_NULL_HANDLE, photoDepthImage = VK_NULL_HANDLE;
+    VkDeviceMemory photoMem = VK_NULL_HANDLE, photoDepthMem = VK_NULL_HANDLE;
+    VkImageView    photoView = VK_NULL_HANDLE, photoDepthView = VK_NULL_HANDLE;
+    VkFramebuffer  photoFramebuffer = VK_NULL_HANDLE;
+    VkExtent2D     photoSavedExtent{};
+
     // ── Commands & sync ────────────────────────────────────────────────────
     VkCommandPool            commandPool        = VK_NULL_HANDLE;
     VkCommandBuffer          commandBuffer      = VK_NULL_HANDLE;
@@ -145,6 +152,18 @@ struct VulkanContext {
     // ── Lifecycle ──────────────────────────────────────────────────────────
     void init(GLFWwindow* window);
     void recreateSwapchain(GLFWwindow* window);
+
+    // ── HQ photo target (review 13) ────────────────────────────────────────
+    // An offscreen colour + depth image standing in for the swapchain while a simulation renders a
+    // high-resolution photo: beginPhotoTarget() sets swapExtent to (w, h) (clamped to the device's
+    // limits) and APPENDS the image, its view and a framebuffer to swapImages / swapViews /
+    // framebuffers, so every swapImages[imgIdx] / framebuffers[imgIdx] user works unchanged with
+    // imgIdx = photoIndex. App neither acquires nor presents while it is active, and defers window
+    // resizes until endPhotoTarget() has removed it again (cleanupSwapchain would destroy its view).
+    bool        photoActive = false;
+    uint32_t    photoIndex  = 0;
+    bool beginPhotoTarget(uint32_t w, uint32_t h);
+    void endPhotoTarget();
     void cleanup();
 
     // ── Helpers exposed to simulations ─────────────────────────────────────

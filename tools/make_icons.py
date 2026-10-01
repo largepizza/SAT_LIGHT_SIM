@@ -187,7 +187,23 @@ def build_track():
     return shapes
 
 
+def build_photo():
+    """HQ photo: a camera body (outline, lens ring) with a sparkle at its top right — the "quality"
+    mark that keeps it apart from the plain screenshot camera (camera-solid.png) beside it."""
+    def body(px, py):
+        inside = 6.0 <= px <= 36.0 and 16.0 <= py <= 38.0
+        inner = 9.0 <= px <= 33.0 and 19.0 <= py <= 35.0
+        return inside and not inner
+    return [
+        body,
+        rect(13.0, 11.5, 22.0, 16.5),          # viewfinder hump
+        ring(21.0, 27.0, 5.0, 2.0),            # lens
+        sparkle(39.5, 11.0, 7.5),              # the "HQ" sparkle
+    ]
+
+
 ICONS = {
+    "photo": build_photo,
     "maximize": build_maximize,
     "observer": build_observer,
     "spin": build_spin,

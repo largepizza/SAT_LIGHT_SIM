@@ -72,8 +72,85 @@ void VulkanContext::recreateSwapchain(GLFWwindow *window)
         vkCreateSemaphore(device, &si, nullptr, &sem);
 }
 
+bool VulkanContext::beginPhotoTarget(uint32_t w, uint32_t h)
+{
+    if (photoActive)
+        return true;
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(physicalDevice, &props);
+    const uint32_t maxW = std::min(props.limits.maxImageDimension2D, props.limits.maxFramebufferWidth);
+    const uint32_t maxH = std::min(props.limits.maxImageDimension2D, props.limits.maxFramebufferHeight);
+    if (w > maxW || h > maxH)
+    {
+        const double s = std::min((double)maxW / w, (double)maxH / h);
+        w = (uint32_t)(w * s);
+        h = (uint32_t)(h * s);
+    }
+    vkDeviceWaitIdle(device);
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    createImage(w, h, swapFormat, usage, photoImage, photoMem);
+    createImage(w, h, depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, photoDepthImage, photoDepthMem);
+    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.image = photoImage;
+    vci.format = swapFormat;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(device, &vci, nullptr, &photoView) != VK_SUCCESS)
+        throw std::runtime_error("vkCreateImageView (photo) failed.");
+    vci.image = photoDepthImage;
+    vci.format = depthFormat;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(device, &vci, nullptr, &photoDepthView) != VK_SUCCESS)
+        throw std::runtime_error("vkCreateImageView (photo depth) failed.");
+    VkImageView attachments[] = {photoView, photoDepthView};
+    VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fci.renderPass = renderPass;
+    fci.attachmentCount = 2;
+    fci.pAttachments = attachments;
+    fci.width = w;
+    fci.height = h;
+    fci.layers = 1;
+    if (vkCreateFramebuffer(device, &fci, nullptr, &photoFramebuffer) != VK_SUCCESS)
+        throw std::runtime_error("vkCreateFramebuffer (photo) failed.");
+    photoSavedExtent = swapExtent;
+    swapExtent = {w, h};
+    swapImages.push_back(photoImage);
+    swapViews.push_back(photoView);
+    framebuffers.push_back(photoFramebuffer);
+    photoIndex = (uint32_t)swapImages.size() - 1;
+    photoActive = true;
+    std::ostringstream oss;
+    oss << "Photo target " << w << "x" << h;
+    Log::line(oss.str());
+    return true;
+}
+
+void VulkanContext::endPhotoTarget()
+{
+    if (!photoActive)
+        return;
+    vkDeviceWaitIdle(device);
+    swapImages.pop_back();
+    swapViews.pop_back();
+    framebuffers.pop_back();
+    vkDestroyFramebuffer(device, photoFramebuffer, nullptr);
+    vkDestroyImageView(device, photoView, nullptr);
+    vkDestroyImageView(device, photoDepthView, nullptr);
+    vkDestroyImage(device, photoImage, nullptr);
+    vkDestroyImage(device, photoDepthImage, nullptr);
+    vkFreeMemory(device, photoMem, nullptr);
+    vkFreeMemory(device, photoDepthMem, nullptr);
+    photoFramebuffer = VK_NULL_HANDLE;
+    photoView = photoDepthView = VK_NULL_HANDLE;
+    photoImage = photoDepthImage = VK_NULL_HANDLE;
+    photoMem = photoDepthMem = VK_NULL_HANDLE;
+    swapExtent = photoSavedExtent;
+    photoActive = false;
+}
+
 void VulkanContext::cleanup()
 {
+    endPhotoTarget();
     cleanupSwapchain();
     if (queryPool != VK_NULL_HANDLE)
         vkDestroyQueryPool(device, queryPool, nullptr);

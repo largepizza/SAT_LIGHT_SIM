@@ -1052,6 +1052,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   continue to a 150-m footprint (was 10) with their share fading 4-150 m (the street lines stopped in a ring).
   Intro: vantage 300 m SSW (the eroded ridge filled the right of frame); Q/E starts from the ground
   (an offset left below it, 0 after the intro, had to be climbed out of invisibly).
+- **Review 13 (2026-09-30):** **opaque cloud texels store the MEAN distance** (cloud_march.comp `occKm`; the
+  half-opacity point only when there is no mean). The sky pass splits the air at that distance, and opaque
+  texels used max(tHalf, mean) while translucent ones used the mean: tens of km apart along a grazing
+  horizon, so the bright air in front of far clouds stepped wherever a texel's opaque/translucent class
+  flipped — hard 2-4 texel blocks at any resolution (debug views cloudairsplit / cloudalpha showed it;
+  transmittance and radiance were smooth). The mean is the transmittance-weighted origin of the cloud's
+  light, i.e. the right split. Also: the march's ray moves within its texel each visit (an R2 sequence,
+  not in fast flight) so the history integrates the texel's footprint.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -1122,6 +1130,21 @@ User guide and command reference: **docs/HARNESS.md** (keep its table in step wi
   (`blackbox.py`, `crashes.py`, `overnight.py`) are opt-in: `run.py --forensics`.
 - **The loading screen runs in harness launches too** (its frames precede the script).
   `run.py --boot-capture` writes them to `captures/boot_NN.png`; see *Loading screen* below.
+
+## HQ photo (review 13, 2026-09-30)
+
+F8 (`KB_PHOTO`) or the sparkle-camera button beside the screenshot button in the bottom-left time bar:
+`SatelliteSim::requestPhoto` pauses time, puts the clouds at full rate, scales the point and glare sizes by
+the factor, and asks App for an offscreen target of "HQ photo resolution" (x window, `display.photo_scale`,
+1-4, default 2) via `Simulation::photoScaleRequest()`. App then calls `VulkanContext::beginPhotoTarget` (an
+image + depth + framebuffer APPENDED to swapImages / swapViews / framebuffers, swapExtent set to the photo
+size — so every `swapImages[imgIdx]` user works with `imgIdx = photoIndex`) and `sim->onResize`, renders
+"HQ photo settle frames" (`display.photo_frames`, 48) without acquiring, presenting or drawing the UI, and
+the last one goes through the normal screenshot copy as `screenshots/satlight_hq_<time>.png`. Once it is read
+back, `endPhoto` restores the settings and App the swapchain (a window resize waits for it). Every
+footprint-based LOD (terrain, city lights) follows the finer pixels, so a photo shows more detail than the
+window, not just more pixels. The bloom's radius is in its own texels and is NOT scaled (a tighter glow).
+~2.4 s at 3200x1800 (1600x900 window, 48 frames). Harness: `photo <name> [scale=] [frames=]`.
 
 ## Loading screen (2026-09-26)
 
@@ -4199,6 +4222,12 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   Fresnel sky reflection and sun glint in the terrain lighting). Replaced a stretched Voronoi patchwork.
   "Ground pattern range (m/px)" (`clouds.ground_pattern_range_m` 800, slot 212, UBO `groundPatternFootM`
   = v1's unread shadowMaxDistM renamed): the farms fade over 0.55-0.9 of it (was a fixed 400).
+- **City light LOD settings (review 13, Night lights tab, UBO `cityLod` / `cityLod2`, slots 221-226):** the ground
+  footprints (m per pixel) where each layer ends — "Lamp posts to" `clouds.city_posts_footprint_m` 10, "Street grid
+  to" `city_grid_footprint_m` 150, "Major roads to" `city_roads_footprint_m` 350 (capped by the layout), "Street
+  layout to" `city_layout_footprint_m` 400 (past it `cityLightFar`; the macro and mean ramps scale with it, so the
+  pattern's mean still reaches the map's there) — each fading in from ~0.4x its value, and the streets' share of
+  the light near / as they fade (`city_street_share_near` 0.7, `_far` 0.15). Defaults reproduce review 12.
 - **Regional city styles (2026-09-30, sat_sky.frag `cityStyleWeights`, `kCs*` tables).** Nine styles by
   soft continental boxes with wobbled borders: 0 North America + Oceania, 1 Latin America, 2 Mediterranean
   Europe, 3 Northern Europe, 4 Middle East / N Africa / Central Asia, 5 Sub-Saharan Africa, 6 South + SE Asia,

@@ -192,7 +192,7 @@ const char *kHelp =
     "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [drift=intro|default]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
-    "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; "
+    "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
     "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
@@ -1972,6 +1972,39 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                  "G = its margin over that horizon, B = the horizon dip at this altitude)");
         terrainDebugView = idx;
         r["message"] = std::string("debug view ") + (idx < viewCount ? kViews[idx] : kOceanViews[idx - 40]);
+        return Status::Done;
+    }
+
+    // ── photo: the HQ photo (requestPhoto), saved as a capture ──────────────────
+    if (n == "photo")
+    {
+        const bool busy = photoState != 0 || screenshotRequested || screenshotCopyPending || screenshotEncoding.load();
+        if (!a.scratch.contains("requested"))
+        {
+            if (busy)
+                return Status::Pending;
+            const std::string name = safeName(pos(0));
+            if (c.has("scale"))
+                photoScaleSetting = std::clamp((float)c.num("scale", 2.0), 1.0f, 4.0f);
+            if (c.has("frames"))
+                photoSettleFrames = std::clamp((float)c.num("frames", 48.0), 4.0f, 240.0f);
+            photoPathOverride = harnessRunner_->capturePath(name, ".png");
+            requestPhoto();
+            if (photoState == 0)
+                fail("photo: could not start (screenshots unsupported?)");
+            a.scratch["requested"] = true;
+            a.scratch["name"] = name;
+            return Status::Pending;
+        }
+        if (busy)
+            return Status::Pending;
+        const std::string png = harnessRunner_->capturePath(a.scratch["name"], ".png");
+        uint32_t w = 0, h = 0;
+        if (!fs::exists(png) || !pngSize(png, w, h))
+            fail("photo: no image was written");
+        r["path"] = png;
+        r["width"] = w;
+        r["height"] = h;
         return Status::Done;
     }
 

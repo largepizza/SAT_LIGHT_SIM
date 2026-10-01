@@ -445,4 +445,11 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // Sun), z 1 = a lunar eclipse is possible (near the antisolar point), w the Moon's distance (km).
     vec4  moonCenter;
     vec4  moonMisc;
+    // -- City light LOD (816 -> 848, 2026-09-30, review 13; Night lights tab): the ground footprints (m per
+    // pixel) where each layer of the procedural city lights ends. x lamp posts + their pools, y the street
+    // grid (every street; past it the glitter alone), z the major roads, w the street LAYOUT (past it only
+    // cityLightFar's glitter; the pattern's mean reaches the map's by then). cityLod2: x the streets' share
+    // of the light close up, y their share where they start fading out; zw unused.
+    vec4  cityLod;
+    vec4  cityLod2;
 } cloud;

@@ -440,7 +440,17 @@ void main()
     }
     if (q.x >= qSize.x || q.y >= qSize.y) return;
 
-    vec3  dir    = rayDirAt(vec2(pix) + 0.5, halfSize, tanHalfFov, camToENU);
+    // Review 13: the ray goes through a different point of its texel each visit (an R2 sequence,
+    // offset per pixel), so the history integrates the texel's footprint: a ray fixed at the centre
+    // drew far, thin clouds at the horizon as hard 2-3 texel stairs that no history could smooth.
+    // Fast flight (no history) keeps the centre.
+    vec2  subPx = vec2(0.5);
+    if (cv2.misc2.z <= 0.5) {
+        float vj = full ? cv2.frame.x : floor(cv2.frame.x * (halfR ? 0.5 : 0.25));
+        vec2  h  = fract(vec2(ign(vec2(pix)), ign(vec2(pix) + vec2(47.0, 17.0))) + vj * vec2(0.7548777, 0.5698403));
+        subPx = h;
+    }
+    vec3  dir    = rayDirAt(vec2(pix) + subPx, halfSize, tanHalfFov, camToENU);
     float tScene = texelFetch(sceneDepthTex, pix, 0).r;
 
     vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
