@@ -40,11 +40,14 @@ def otsu(v):
     return c[np.argmax(w0 * w1 * (m0 - m1) ** 2)]
 
 
-def stats(path, kmpx, crop=None, maskout=None):
+def stats(path, kmpx, crop=None, maskout=None, scale=1.0):
     im = Image.open(path).convert("RGB")
     if crop:
         x, y, w, h = crop
         im = im.crop((x, y, x + w, y + h))
+    if scale != 1.0:   # compare at one ground resolution: renders' clouds are half-res, MODIS thumbnails sharp
+        im = im.resize((max(1, int(im.width * scale)), max(1, int(im.height * scale))), Image.BOX)
+        kmpx /= scale
     a = np.asarray(im).astype(np.float64) / 255.0
     mx, mn = a.max(-1), a.min(-1)
     bright = 0.2126 * a[..., 0] + 0.7152 * a[..., 1] + 0.0722 * a[..., 2]
@@ -99,9 +102,10 @@ def main():
     ap.add_argument("--crop", help="x,y,w,h")
     ap.add_argument("--mask", help="write the first image's cloud mask here")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--scale", type=float, default=1.0, help="box-resample first (match ground resolutions)")
     a = ap.parse_args()
     crop = tuple(int(v) for v in a.crop.split(",")) if a.crop else None
-    rows = [stats(p, a.km_per_px, crop, a.mask if i == 0 else None) for i, p in enumerate(a.images)]
+    rows = [stats(p, a.km_per_px, crop, a.mask if i == 0 else None, a.scale) for i, p in enumerate(a.images)]
     if a.json:
         print(json.dumps(rows, indent=1))
         return

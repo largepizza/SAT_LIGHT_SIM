@@ -886,7 +886,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     float covW   = clamp((textureLod(cv2WeatherTex, wF, 4.0).r * cv2.look.x - cv2.cover.x)
                          / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
     float covM   = mix(cov, max(cov, covW * 0.85), cv2.flow.y);
-    float clA    = cl.a;
+    float clA    = cl.a, uMid = -1.0;
 #ifdef CV2_MORPH_BINDING
     // Review 17: altocumulus organises in cells too — the closed-cell morphology (one read, the cube face the
     // point is on) blended into the regime field at the Perlin's spread (0.057 sd), weighted by "Morphology
@@ -897,6 +897,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
         vec2  uvM = (aw.x >= aw.y && aw.x >= aw.z) ? aM.yz : (aw.y >= aw.z ? aM.xz + vec2(0.37) : aM.xy + vec2(0.71));
         float uM  = textureLod(cv2MorphTex, uvM * 1.7, cv2Lod(fpM, cv2.anchorMorph.w * 1.7) + 3.0).r;
         clA = mix(cl.a, 0.5 + 0.057 * 2.6 * (uM - 0.5) * 1.2, cv2.morph.x * 0.75);
+        uMid = uM;
     }
 #endif
     float regime = smoothstep(0.5, 0.68, clA + 0.15 * (covM - 0.5)) * cv2.misc.w * smoothstep(0.0, 0.35, covM)
@@ -920,7 +921,13 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     float lens  = smoothstep(0.0, 0.3, zm + (sh.a - 0.5) * 0.4) * (1.0 - smoothstep(0.55, 1.0, zm + (sh.b - 0.45) * 0.5));
     float ac    = clamp((sh.b * 0.7 + sh.g * 0.3 - (1.0 - regime * 0.8)) * 5.0, 0.0, 1.0);
     // Cloudlets far below a pixel become the haze of their coverage (as the low cells do).
-    ac          = mix(ac, regime * 0.45, smoothstep(400.0, 3000.0, fpM));
+    // Review 17: from orbit the cloudlets' haze is the closed cells at the regime's area fraction, not a flat sheet
+    // (the mid layer over the whole low field was what flattened orbit views: low layer alone D 1.42 / slope 2.3,
+    // with the mid layer 1.33 / 2.5, MODIS 1.5-1.7 / 1.5-2.3 — tools/cloud_stats.py).
+    float haze  = regime * 0.45;
+    if (uMid >= 0.0)
+        haze = mix(haze, 0.55 * smoothstep(0.88 - regime, 1.12 - regime, uMid), cv2.morph.x);
+    ac          = mix(ac, haze, smoothstep(400.0, 3000.0, fpM));
     float as_   = clamp(regime * 1.3, 0.0, 1.0) * mix(0.7, 1.0, sh.a);
     hfMid       = zm;
     topMid      = base + thick;

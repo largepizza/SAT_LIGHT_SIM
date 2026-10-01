@@ -1114,7 +1114,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (harness_runs/fb24/nadir.satcmd): D 1.31-1.36, slope 2.5-2.7, 0.5-1.4 holes — the outlines are the 5-km map's
   coverage thresholded; the morphology moves every number the right way but little (holes +20-50%, objects +25-40%).
   Tried: the ~20-km fraction alone (inflated the coverage: fewer holes), a flatter threshold (x0.55: 231 registers
-  for +15% holes). The orbit look needs coverage that is synthesised at < 20 km, not inherited from the map's edges.
+  for +15% holes). **Compare at one ground resolution** (`--scale`: the renders' clouds are half-res, the MODIS thumbnails
+  sharp; at full res every render reads D ~1.33 whatever the layers): at ~1 km/px real D 1.47-1.73, slope 1.5-2.35,
+  holes 1.9-9.8; ours (morph on) 1.37-1.42, 2.27-2.41, 0.6-1.3. Isolating layers changed nothing (low only = all);
+  baking the coverage FRACTION into the weather cube and taking the far field's fraction from ~20 km alone (local branch
+  `coverage_frac`, unmerged) changed nothing either. The remaining gap is 1-5 km structure, which the half-res march
+  cannot resolve from orbit (the morphology's fine term is filtered to its mean there). The mid layer's sub-pixel haze
+  takes the closed cells at its regime's area fraction (`uMid`).
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
