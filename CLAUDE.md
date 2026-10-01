@@ -1086,7 +1086,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   The heads still SHIMMER at a grazing Sun (two settles of one view differ by 7.4 levels at 4 light steps, 5.3 at 6,
   4.5 at 8, 0.8 with the towers off; the light LOD and lightning are not involved): each long light step lands in the
   lit skin under the top or above it. Medium's light steps are 6 (were 4). Tried: lighting heads by the path to their
-  top — no effect at a grazing Sun, reverted.
+  top — no effect at a grazing Sun, reverted. A variance-adaptive still history weight (x0.4 / x0.25 where the 3x3
+  new samples are noisy) measured within run-to-run noise (4.85 / 5.29 vs 5.3): reverted.
 - **Review 17 (2026-10-01): the "blocky far reflections" at sunset were the CLOUD SHADOW on the sea** (debug view 50,
   `oceanshadow`; knockout 256 removed them): (1) `cloudGroundShadowV2`'s dense stretch ended at 3.5 km / max(sun up,
   0.05), ignoring the Earth's curvature — ~70 km out and ~400 m up near sunset — so a deck at 1-2 km fell to the upper
