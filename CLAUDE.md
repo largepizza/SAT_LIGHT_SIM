@@ -1225,7 +1225,10 @@ interpolate `ox/oy/oz` (the camera's offset in the satellite's along/cross/radia
 (`harnessApplyCam` would end follow mode, so cineApplyAt sets the sim time and `followOffset` itself). A cut resets
 `skyTaaHistValid` and `cv2HistoryValid`, and a preview export pre-rolls 16 frames at each shot's first pose. "Store
 look" also stores the cloud map's DRIFT (`cloudDriftPhaseOffset`/`cloudDriftRate`, session state like a snapshot's
-view): without it a reloaded storm shot framed clear sky. The application tour: `tools/harness/scripts/tour.satcmd`.
+view): without it a reloaded storm shot framed clear sky. The application tour: `tools/harness/scripts/tour.satcmd`. **Motion blur** ("Motion blur (subframes)", harness `blur=N`): each
+exported frame is N subframes over a 180-degree shutter (frameDt 1/(fps N); HQ subframes share the settle budget,
+>= 4 each), summed in LINEAR light in `finalizeScreenshot` (`cineAccum_`; only the last subframe reaches the
+encode). The settled temporal passes cannot blur (they reproject the camera's motion away), hence screen space.
 
 ## Loading screen (2026-09-26)
 

@@ -8,6 +8,15 @@
 > `data/benchmarks/KNOWN_RESIDUALS.md`.
 
 ### Added
+- **Cinematics.** A camera-path editor (the film button in the time bar): shots of keyframes played as smooth
+  splines, eased in and out, with their own sim-time rate, stored look (clouds, lighting, constellations, render
+  settings) and an optional ride-along with a satellite; play them, scrub them, save and load them, and export
+  them frame by frame — a quick preview, or every frame a settled, supersampled HQ photo with optional motion
+  blur. The automation harness drives the same paths (`cine`, `path`); `tools/harness/scripts/tour.satcmd` is an
+  application tour built with it.
+- **HQ photo** (F8, or the sparkle-camera button): a supersampled, settled screenshot at up to 4x the window.
+- **Cloud morphology.** Closed and open convective cells, cloud streets and clustered cumulus shape the clouds
+  seen from orbit and the mid-level cloud, from textures generated for the project (`tools/make_cloud_morph.py`).
 - **Ambient sound.** A location- and context-aware ambience bus under the music (Settings → Sound →
   "Ambience"): wind for plains, deserts, mountains and ice sheets; surf and gulls at the coast, the
   open sea offshore; crickets at night (silent inside a Reflect Orbital beam), forest birds and a

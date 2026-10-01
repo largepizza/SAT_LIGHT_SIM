@@ -211,6 +211,10 @@ void SatelliteSim::cineStart(CineRun mode, bool oneShot)
     cineSettle_ = 0;
     cineLastShot_ = -1;
     cinePrerollShot_ = -1;
+    cineSub_ = 0;
+    cineAccumSubs_ = mode == CineRun::Play ? 0 : std::clamp((int)std::lround(cineBlurSubs_), 1, 32);
+    cineAccumCount_ = 0;
+    cineAccum_.clear();
     const double fps = std::clamp((double)cineExportFps_, 1.0, 240.0);
     cine_.fps = fps;
     cineFrames_ = (int)std::floor(dur * fps + 1e-6) + 1;
@@ -234,7 +238,7 @@ void SatelliteSim::cineStart(CineRun mode, bool oneShot)
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
         cineOutDir_ = dir.string();
-        cineFixedDt_ = (float)(1.0 / fps);
+        cineFixedDt_ = (float)(1.0 / (fps * std::max(cineAccumSubs_, 1)));   // a subframe's step with motion blur
         {
             std::ofstream note(dir / "README.txt");
             note << "Frames of the cinematic '" << cine_.name << "' at " << fps << " fps ("
@@ -283,6 +287,8 @@ void SatelliteSim::cineStop(const char *why)
     }
     const bool exported = cineRun_ == CineRun::ExportPreview || cineRun_ == CineRun::ExportHQ;
     cineRun_ = CineRun::Idle;
+    cineAccumSubs_ = 0;   // finalizeScreenshot back to plain screenshots
+    cineAccum_.clear();
     cineFixedDt_ = 0.0f;
     timePaused = cineSavedPaused_;
     if (exported)
@@ -326,11 +332,14 @@ void SatelliteSim::cineTick(float dt)
         cineStop("Exported");
         return;
     }
-    const double t = cineFrame_ / cine_.fps;
-    cineApplyAt(std::min(t, dur), false);
+    // Motion blur: subframe s of N sits at (s + 0.5) / N of a 180-degree shutter centred on the frame's time.
+    const int subs = std::max(cineAccumSubs_, 1);
+    const double t = (cineFrame_ + (subs > 1 ? 0.5 * ((cineSub_ + 0.5) / subs - 0.5) : 0.0)) / cine_.fps;
+    cineApplyAt(std::clamp(t, 0.0, dur), false);
     cineScrub_ = (float)t;
-    if (cineRun_ == CineRun::ExportHQ && ++cineSettle_ < std::max(1, (int)std::lround(photoSettleFrames)))
-        return; // settle at this pose (its sim time held: timePaused)
+    if (cineRun_ == CineRun::ExportHQ &&
+        ++cineSettle_ < std::max(subs > 1 ? 4 : 1, (int)std::lround(photoSettleFrames / (float)subs)))
+        return; // settle at this pose (its sim time held: timePaused); the subframes share the settle budget
     // Preview: a shot's first frame has no history (the cut reset it) — pre-roll 16 frames at that pose so
     // it is not a grain of single samples.
     if (cineRun_ == CineRun::ExportPreview && cineLastShot_ != cinePrerollShot_ && ++cineSettle_ < 16)
@@ -342,6 +351,9 @@ void SatelliteSim::cineTick(float dt)
     screenshotPath = (std::filesystem::path(cineOutDir_) / nm).string();
     screenshotIncludeUI = false;
     screenshotRequested = true;
+    if (++cineSub_ < subs)
+        return;   // the next subframe of this frame
+    cineSub_ = 0;
     ++cineFrame_;
     char buf[96];
     snprintf(buf, sizeof(buf), "Exporting %d / %d", cineFrame_, cineFrames_);

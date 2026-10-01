@@ -6895,6 +6895,45 @@ void SatelliteSim::finalizeScreenshot()
         outW = nw;
         outH = nh;
     }
+    // A cinematic export with motion blur (review 17): subframes are summed in linear light, and only the last
+    // one of a frame goes on to the encode, as their mean.
+    if (cineAccumSubs_ > 1)
+    {
+        static float lut[256];
+        static bool lutInit = false;
+        if (!lutInit)
+        {
+            for (int i = 0; i < 256; ++i)
+            {
+                const float c = i / 255.0f;
+                lut[i] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+            }
+            lutInit = true;
+        }
+        if (cineAccum_.size() != pixels.size())
+        {
+            cineAccum_.assign(pixels.size(), 0.0f);
+            cineAccumCount_ = 0;
+        }
+        for (size_t i = 0; i < pixels.size(); ++i)
+            cineAccum_[i] += lut[pixels[i]];
+        if (++cineAccumCount_ < cineAccumSubs_)
+        {
+            screenshotCrop[0] = screenshotCrop[1] = screenshotCrop[2] = screenshotCrop[3] = 0;
+            screenshotScale = 1.0f;
+            screenshotIncludeUI = false;
+            return;
+        }
+        const float inv = 1.0f / (float)cineAccumCount_;
+        for (size_t i = 0; i < pixels.size(); ++i)
+        {
+            const float v = std::clamp(cineAccum_[i] * inv, 0.0f, 1.0f);
+            const float c = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+            pixels[i] = (uint8_t)std::lround(std::clamp(c, 0.0f, 1.0f) * 255.0f);
+        }
+        std::fill(cineAccum_.begin(), cineAccum_.end(), 0.0f);
+        cineAccumCount_ = 0;
+    }
     screenshotCrop[0] = screenshotCrop[1] = screenshotCrop[2] = screenshotCrop[3] = 0;
     screenshotScale = 1.0f;
     screenshotIncludeUI = false;

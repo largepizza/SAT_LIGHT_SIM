@@ -2086,6 +2086,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     photoScaleSetting = std::clamp((float)c.num("scale", 2.0), 1.0f, 4.0f);
                 if (c.has("frames"))
                     photoSettleFrames = std::clamp((float)c.num("frames", 48.0), 4.0f, 240.0f);
+                if (c.has("blur"))
+                    cineBlurSubs_ = (float)std::clamp(c.num("blur", 1.0), 1.0, 32.0);
                 if (sub == "play")
                     cineStart(CineRun::Play, oneShot);
                 else if (mode == "hq")
@@ -2093,7 +2095,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 else if (mode == "preview")
                     cineStart(CineRun::ExportPreview, oneShot);
                 else
-                    fail("cine export: preview | hq [fps=] [scale=] [frames=] [shot]");
+                    fail("cine export: preview | hq [fps=] [scale=] [frames=] [blur=] [shot]");
                 if (!cineActive())
                     fail("cine " + sub + ": " + cineStatus_);
                 a.scratch["t0"] = harness::nowS();
@@ -2114,7 +2116,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             return Status::Done;
         }
         fail("cine: new [name] | name <n> | shot add|del|<n>|look [clear]|simrate <x>|simnow | key [t=] | play [shot] | "
-             "export preview|hq [fps=] [scale=] [frames=] [shot] | save [file] | load <file> | state | stop");
+             "export preview|hq [fps=] [scale=] [frames=] [blur=] [shot] | save [file] | load <file> | state | stop");
     }
 
     if (n == "photo")

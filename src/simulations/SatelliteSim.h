@@ -4136,6 +4136,11 @@ private:
     float  cineSavedPointSigma_ = 0.0f, cineSavedPointMax_ = 0.0f, cineSavedGlare_ = 0.0f;
     std::string cineOutDir_, cineStatus_;
     float  cineScrub_ = 0.0f, cineExportFps_ = 30.0f, cineSimRateUi_ = 1.0f, cineEaseUi_ = 0.5f;
+    // Motion blur (review 17): each exported frame is the mean of cineBlurSubs_ subframes spread over a 180-degree
+    // shutter (half a frame), accumulated in LINEAR light in finalizeScreenshot (cineAccum_) before the encode.
+    float  cineBlurSubs_ = 1.0f;
+    int    cineSub_ = 0, cineAccumSubs_ = 0, cineAccumCount_ = 0;
+    std::vector<float> cineAccum_;
     bool   cineHqSettingsSaved_ = false;
     WindowChrome cineChrome;
     bool   hovCineClose = false, hovCineBtn[40] = {}, hovTimeCine = false, hovCineKey[24][5] = {}, hovCineFile[8] = {};

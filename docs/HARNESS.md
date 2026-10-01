@@ -199,7 +199,7 @@ button in the time bar): a cinematic is a list of SHOTS, each a spline through k
 | `cine shot simrate <x>`, `cine shot simnow` | sim time rate along the shot (0 = frozen) / its start = now |
 | `cine key [t=]` | the current view as a key (2 s after the last by default) |
 | `cine play [shot]` | real-time playback (the whole cinematic, or the current shot) |
-| `cine export preview\|hq [fps=] [scale=] [frames=] [shot]` | frames to `captures/cine_<name>[_hq]/frame_NNNNN.png` (in-app: `screenshots/cinematics/<name>_<stamp>/`) + `cinematic.json` + a README with the frames2video command. **preview** = rendered in motion at a fixed 1/fps; **hq** = every frame a settled HQ photo (`scale` x the window, `frames` settle frames per frame) |
+| `cine export preview\|hq [fps=] [scale=] [frames=] [blur=] [shot]` | frames to `captures/cine_<name>[_hq]/frame_NNNNN.png` (in-app: `screenshots/cinematics/<name>_<stamp>/`) + `cinematic.json` + a README with the frames2video command. **preview** = rendered in motion at a fixed 1/fps; **hq** = every frame a settled HQ photo (`scale` x the window, `frames` settle frames per frame). `blur=N`: motion blur, each frame the linear-light mean of N subframes over a 180-degree shutter (HQ: the subframes share the settle budget, at least 4 each) |
 | `cine save [file]`, `cine load <file>` | JSON in `<user data>/cinematics/` (`sat-light-sim-cinematic/1`) |
 | `cine state`, `cine stop` | the cinematic as JSON (shots, keys) / stop playback or an export |
 

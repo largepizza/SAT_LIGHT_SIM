@@ -6154,6 +6154,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                 slider(2, "Frames per second", cineExportFps_, 12.0f, 60.0f, 6.0f, "%.0f");
                 slider(3, "HQ resolution (x)", photoScaleSetting, 1.0f, 4.0f, 1.0f, "%.0f");
                 slider(4, "HQ settle frames", photoSettleFrames, 4.0f, 240.0f, 4.0f, "%.0f");
+                slider(6, "Motion blur (subframes)", cineBlurSubs_, 1.0f, 16.0f, 1.0f, "%.0f");
                 row(3, [&]() {
                     if (btn(11, "Export preview", "Every frame as rendered in motion, at the fps above"))
                         cineStart(CineRun::ExportPreview, false);
