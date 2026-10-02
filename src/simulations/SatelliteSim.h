@@ -3154,7 +3154,9 @@ private:
     VkBuffer cv2BlueNoiseBuf = VK_NULL_HANDLE;   // 64x64 blue-noise tile (march binding 15)
     VkDeviceMemory cv2BlueNoiseMem = VK_NULL_HANDLE;
     static constexpr uint32_t kCv2FlashMax = 32;             // == kCv2FlashMax in cloud_lightning.glsl
-    static constexpr VkDeviceSize kCv2FlashBufBytes = 16 + kCv2FlashMax * 48;
+    // + review 22's rain map (cloud_lightning.glsl): 4 workgroup maxima and 32 x 32 rain rates after the flashes.
+    static constexpr VkDeviceSize kCv2RainMapOffset = 16 + kCv2FlashMax * 48 + 16;
+    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2RainMapOffset + 1024 * 4;
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;

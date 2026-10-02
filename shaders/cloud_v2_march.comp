@@ -430,16 +430,8 @@ void main()
         // seen above ~15 km was culled away in whole tiles.
         cullCloudLightsForTile(ax, acos(clamp(ch, -1.0, 1.0)), eye, R_EARTH + max(cv2.shell.y, 60000.0));
     }
-    // The rain rate at the eye, for the host (the rain ambience): the same field and scale
-    // cloud_march.comp's streaks use.
-    if (!passB && gl_GlobalInvocationID.x == 0u && gl_GlobalInvocationID.y == 0u) {
-        float rr = 0.0;
-        if (cv2.rain.x > 0.0 && eyeH < 6000.0) {
-            CV2Field fe = cv2FieldLow(cv2Pos(vec3(0.0), eyeH, enuToEcef), -1.0, 1.0, 0.0);
-            rr = fe.rain * clamp(fe.sigma / 0.0012, 0.0, 1.0);
-        }
-        terrainFrame.w = rr;
-    }
+    // (The rain rate at the eye for the host's rain ambience was written here into terrainFrame.w until review 22:
+    // the host now reads the rain map around the eye, cloud_v2_lightning.comp, from the flash buffer.)
     if (q.x >= qSize.x || q.y >= qSize.y) return;
 
     // Review 13: the ray goes through a different point of its texel each visit (an R2 sequence,
@@ -685,7 +677,12 @@ void main()
             float pSS = phSS, pMS = phMS, cosK = cosSun;
             bool  moonIsKey = false;
             if (sunVis > 0.0 && dot(sunCol, sunCol) > 0.0) {
-                keyCol = sunCol * sunVis * cv2.look2.y;
+                // Review 22: rain near the eye sees the Sun along about the eye's own path to it: x the eye's Sun
+                // transmittance through the clouds (cloud.sunCloudT, 400 km), fading out by ~40 km. The light
+                // march (2 steps for rain) misses a storm blocking a low Sun beyond its reach, and the rain's sharp
+                // forward lobe drew the Sun's disc in the shafts under the storm (user snap 2).
+                keyCol = sunCol * sunVis * cv2.look2.y
+                       * mix(1.0, cloud.sunCloudT, f.rain * exp(-t / 40000.0));
             } else if (nightK > 0.0) {
                 float moonUp = dot(up, moonDir);
                 keyCol = moonKey * nightK * smoothstep(-0.05, 0.1, moonUp);

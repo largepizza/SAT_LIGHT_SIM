@@ -1616,6 +1616,24 @@ float rainBurst(float t)
 // crystals themselves are too small to see, only their glints (rate = the ice fog's density).
 // Returns .x the drop light (x the caller's lit colour), .y the snow's share of it, .z the glint light
 // (x the Sun's colour).
+// Review 22: the rain map around the eye (cloud_lightning.glsl, from cloud_v2_lightning.comp), bilinear, 0 off it.
+// en: metres east / north of the eye.
+float rainMapAt(vec2 en)
+{
+    vec2  g  = en / kCv2RainCellM + 0.5 * float(kCv2RainMapN) - 0.5;
+    vec2  g0 = floor(g), f = g - g0;
+    float s  = 0.0;
+    for (int k = 0; k < 4; ++k) {
+        ivec2 c = ivec2(g0) + ivec2(k & 1, k >> 1);
+        if (c.x < 0 || c.y < 0 || c.x >= kCv2RainMapN || c.y >= kCv2RainMapN) continue;
+        s += cv2RainMap[c.y * kCv2RainMapN + c.x] * ((k & 1) != 0 ? f.x : 1.0 - f.x) * ((k >> 1) != 0 ? f.y : 1.0 - f.y);
+    }
+    return s;
+}
+
+// rate: for rain, the bursts' factor — each depth layer takes the rain RATE at its own point from the rain map
+// (review 22: the drops follow the rain volume; they came from the rate at the eye alone, so a shaft's drops
+// appeared all at once on stepping into it); for diamond dust, the rate itself.
 vec3 rainDrops(vec3 dirE, float rate, float wind, float tScene, float pixAng, vec3 sunE, float sunT, bool dust)
 {
     vec3  sR   = vec3(dot(sunE, cv2.rainE.xyz), dot(sunE, cv2.rainN.xyz), dot(sunE, cv2.rainU.xyz));
@@ -1624,7 +1642,6 @@ vec3 rainDrops(vec3 dirE, float rate, float wind, float tScene, float pixAng, ve
     vec3  eyeR = vec3(cv2.rainE.w, cv2.rainN.w, cv2.rainU.w);
     float t    = cv2.precip.y;
     float snowP = dust ? 1.0 : 1.0 - smoothstep(-1.0, 2.5, cv2.precip.x);   // sleet between: some drops, some flakes
-    float prob  = 0.85 * pow(clamp(rate, 0.0, 1.0), 0.8);
     float Lr = 0.0, Ls = 0.0;
     // Layers out to "Drop distance" (precip.w; review 5: five layers ended at 32 m, and past a few metres
     // the rain had no depth). Each layer's cells grow with its depth, so every layer puts about the same
@@ -1634,6 +1651,9 @@ vec3 rainDrops(vec3 dirE, float rate, float wind, float tScene, float pixAng, ve
     for (int k = 0; k < nLay; ++k) {
         float r  = 2.0 * float(1 << k);
         if (r > tScene) break;
+        float rateK = dust ? rate : rainMapAt(dR.xy * r) * rate;   // dR.xy: east / north in the rain frame
+        if (rateK <= 0.0) continue;
+        float prob  = 0.85 * pow(clamp(rateK, 0.0, 1.0), 0.8);
         float c  = 0.14 * r;
         // The layer's motion: rain ~10 m/s (snow ~1), the ground wind ~40% of the wind aloft, gusting.
         // (Review 22: was 8, the user wanted it a little faster. It cannot follow the rain RATE: the
@@ -1818,15 +1838,16 @@ void main() {
     // Rain at the eye: the same field at the observer (cv2FieldLow's rain branch). Streaks lit like
     // the cloud they fall from (its own radiance), over whatever the ray shows.
     if (cv2.rain.z > 0.0 && cv2.rain.x > 0.0 && obsEffH < 6000.0) {
-        CV2Field fe = cv2FieldLow(cv2Pos(vec3(0.0), obsEffH, mat3(enuX, enuY, enuZ)), -1.0, 1.0, 0.0);
-        // The rain rate (fe.sigma is rate x curtain x 0.0012: a light shower ~0.2, a Cb core ~1) in
-        // bursts. It used to saturate at half that, so every shower looked the same.
-        float rainEye = fe.rain * clamp(fe.sigma / 0.0012, 0.0, 1.0) * rainBurst(cv2.precip.y);
+        // The rain rate (a light shower ~0.2, a Cb core ~1) in bursts, from the rain map around the eye (review 22;
+        // it was one cv2FieldLow at the eye per pixel). rainNear: any rain within the map (+-640 m).
+        float burst    = rainBurst(cv2.precip.y);
+        float rainEye  = rainMapAt(vec2(0.0)) * burst;
+        float rainNear = max(max(cv2RainWgMax[0], cv2RainWgMax[1]), max(cv2RainWgMax[2], cv2RainWgMax[3]));
         vec3  drops   = vec3(0.0);
         vec3  dirE    = dir.x * enuX + dir.y * enuY + dir.z * enuZ;
         float eyeSunT = uintBitsToFloat(cv2EyeSunT);
-        if (rainEye > 0.0) {
-            drops = rainDrops(dirE, rainEye, cv2.rain.w, tScene, 2.0 * tanHalfFov / float(size.y), sunDirECEF,
+        if (rainNear > 0.0) {
+            drops = rainDrops(dirE, burst, cv2.rain.w, tScene, 2.0 * tanHalfFov / float(size.y), sunDirECEF,
                               eyeSunT, false);
             vec3 lit = rc.rgb / max(1.0 - rc.a, 0.25) + vec3(0.003);
             B_total += lit * drops.x * cv2.rain.z * 0.6 + vec3(1.0, 0.97, 0.9) * drops.z * cv2.rain.z;

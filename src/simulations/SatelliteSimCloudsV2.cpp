@@ -1366,7 +1366,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     if (cv2LightningPipeline)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightningPipeline);
-        vkCmdDispatch(cmd, 1, 1, 1);
+        vkCmdDispatch(cmd, 5, 1, 1);   // + 4 workgroups for the rain map around the eye (review 22)
     }
     // Four levels of the light volume (the godrays read it in the march, after this barrier).
     if (cv2LightVolPipeline && cv2Godrays > 0.0f)

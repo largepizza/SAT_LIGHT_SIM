@@ -36,6 +36,7 @@ layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #include "cloud_lightning.glsl"
 
 shared uint sFlashN;
+shared float sRainMax[256];
 
 vec3 cv2UndriftL(vec3 v)
 {
@@ -45,6 +46,35 @@ vec3 cv2UndriftL(vec3 v)
 void main()
 {
     uint li = gl_LocalInvocationIndex;
+    // Review 22: workgroups 1-4 fill the rain map around the eye (cloud_lightning.glsl): the rain rate at each
+    // cell, from the same field and the same formula as the march's rate at the eye, so the drops in each depth
+    // layer (cloud_march.comp rainDrops) follow the rain volume — walking toward a shaft, its drops appear in
+    // the far layers first. They used to come from the rate at the eye alone: none until inside, then all.
+    if (gl_WorkGroupID.x > 0u) {
+        uint  cell = (gl_WorkGroupID.x - 1u) * 256u + li;
+        float rr = 0.0;
+        if (cv2.rain.x > 0.0 && cell < uint(kCv2RainMapN * kCv2RainMapN)) {
+            vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+            vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+            vec3  enuY = cross(enuZ, enuX);
+            float eyeH = terrainFrame.x + 2.0;
+            if (eyeH < 6000.0) {
+                vec2 en = (vec2(float(cell % uint(kCv2RainMapN)), float(cell / uint(kCv2RainMapN)))
+                           - 0.5 * float(kCv2RainMapN) + 0.5) * kCv2RainCellM;
+                CV2Field fe = cv2Field(cv2Pos(vec3(en, 0.0), eyeH, mat3(enuX, enuY, enuZ)), -1.0, kCv2RainCellM);
+                rr = fe.rain * clamp(fe.sigma / 0.0012, 0.0, 1.0);
+            }
+        }
+        if (cell < 1024u) cv2RainMap[cell] = rr;
+        sRainMax[li] = rr;
+        barrier();
+        for (uint s = 128u; s > 0u; s >>= 1u) {
+            if (li < s) sRainMax[li] = max(sRainMax[li], sRainMax[li + s]);
+            barrier();
+        }
+        if (li == 0u && gl_WorkGroupID.x <= 4u) cv2RainWgMax[gl_WorkGroupID.x - 1u] = sRainMax[0];
+        return;
+    }
     if (li == 0u) sFlashN = 0u;
     barrier();
 

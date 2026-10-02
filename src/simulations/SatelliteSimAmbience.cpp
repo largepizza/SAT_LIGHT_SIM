@@ -460,13 +460,22 @@ void SatelliteSim::computeAmbienceContext(float dt)
         a.set(ambD_.cloud, std::clamp(ambCloudEased, 0.0f, 1.0f));
     }
 
-    // ── Rain: the cloud field's rain rate at the eye (0 drizzle-free .. 1 a Cb core), written by
-    // cloud_v2_march.comp into terrainFrame.w and read back a frame later. The same value drives the
-    // streaks, so what you hear is what falls on screen. ──
+    // ── Rain: the cloud field's rain rate around the eye (0 drizzle-free .. 1 a Cb core): the mean of the rain map's
+    // central 6x6 cells (+-120 m; cloud_v2_lightning.comp, the flash buffer, read back a frame later) — the map the
+    // drops are drawn from, so what you hear is what falls on screen, and a shaft is heard as it comes near. ──
     {
         // Snow falls silently: the rain sound only for the liquid share (as the streaks' temperature).
         const float liquid = glm::smoothstep(-1.0f, 3.0f, cv2EyeTempC);
-        const float raw = terrainFrameMapped ? std::clamp(terrainFrameMapped[3], 0.0f, 1.0f) * liquid : 0.0f;
+        float raw = 0.0f;
+        if (cv2FlashMapped)
+        {
+            const float *map = (const float *)((const char *)cv2FlashMapped + kCv2RainMapOffset);
+            float sum = 0.0f;
+            for (int j = 13; j < 19; ++j)
+                for (int i = 13; i < 19; ++i)
+                    sum += map[j * 32 + i];
+            raw = std::isfinite(sum) ? std::clamp(sum / 36.0f, 0.0f, 1.0f) * liquid : 0.0f;
+        }
         ambRainEased += (raw - ambRainEased) * (dt > 0.0f ? 1.0f - expf(-dt / 2.0f) : 1.0f);
         a.set(ambD_.rain, ambRainEased);
     }

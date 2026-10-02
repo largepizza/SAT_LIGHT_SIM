@@ -28,7 +28,14 @@ buffer CV2FlashBuf {
     // Sun DISC's transmittance from the eye (not gated by the horizon), read back by the host.
     uint     cv2EyeSunT, cv2EyeIceS, cv2FlashPad2;
     CV2Flash cv2Flashes[kCv2FlashMax];
+    // Review 22: the rain rate (0..1, as at the eye) on a kCv2RainMapN^2 grid of kCv2RainCellM cells about the eye,
+    // at its height (ENU east x north, cell (i, j) centred at ((i, j) - N/2 + 0.5) x the cell), filled by the
+    // lightning pass's extra workgroups; and each of those workgroups' maximum (0 = no rain near the eye).
+    float    cv2RainWgMax[4];
+    float    cv2RainMap[1024];
 };
+const int   kCv2RainMapN  = 32;
+const float kCv2RainCellM = 40.0;
 
 // The cloud's glow around a flash, per unit intensity, at distance r (m) from it. Inside a storm the
 // light diffuses (multiple scattering over a mean free path of tens of metres): a flash in a tower

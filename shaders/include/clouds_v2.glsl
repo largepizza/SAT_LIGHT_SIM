@@ -428,6 +428,10 @@ vec3 cv2FlowWeatherDirAt(CV2Pos q)
 // shadow was those blobs (stair-stepped) under the small puffs the view draws. It takes the cells'
 // sub-pixel average instead. Never written by the view march, so it folds away there.
 bool gCv2NoFar = false;
+// Review 22: the heavy rain under a storm cell's dominant (anvil-reaching) tower, 0..1, set by cv2ColumnSigma for
+// cv2FieldLow's rain shafts (cv2Field calls them in that order): a core under the tower's base, drawn out downwind
+// under the anvil. The map's precipitation alone put the heaviest rain anywhere its regions said, in stripes.
+float gCv2RainCore = 0.0;
 CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
 {
     CV2Field f;
@@ -565,7 +569,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // coverage rains too.
     // Full overcast rains lightly whatever its type (a thick tropical deck read as stratiform).
     float rainAmt = max(w.b, smoothstep(0.75, 1.0, cov) * (0.3 + 0.7 * smoothstep(0.55, 0.9, w.g))) * cv2.rain.x;
-    if (below && rainAmt < 0.02) return f;
+    if (below && rainAmt < 0.02 && gCv2RainCore <= 0.0) return f;
     float z = max(q.h - base, 0.0) / max(topMax - base, 1.0);   // height through the type's full span
 
     // The cells (1-2 km Worley blobs; deep types two mips coarser, so neighbours merge into towers
@@ -629,15 +633,21 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // heavy shower. Lit through the cloud above by the light march: dark under a Cb, bright at its
     // sunlit edge — which is where rainbows show (the march's rain phase). ──
     if (below) {
-        float rate = rainAmt * smoothstep(0.3, 0.8, e) * mix(0.4, 1.0, ty.look.z);
+        // Review 22: the map's rain is the light, intermittent background; the heavy rain is under the dominant
+        // towers' cores (gCv2RainCore), denser (to ~2x) and more uniform there.
+        float core = gCv2RainCore * cv2.rain.x;
+        float rate = max(rainAmt * smoothstep(0.3, 0.8, e) * mix(0.4, 1.0, ty.look.z), core);
         if (rate <= 0.0) return f;
         vec3  rr = rS + eastW * ((base - q.h) * 0.25);
         rr -= wd * (dot(rr, wd) * 0.85);
+        // The curtains read 1.5 mips coarser with a softer threshold (review 22): at the shape period's finest
+        // octaves and x4 they were a striped on/off pattern a still observer saw repeat ("perliny").
         vec4  sr = textureLod(cv2ShapeTex, cv2.anchorShape.xyz + rr * cv2.anchorShape.w,
-                              cv2Lod(fpM, cv2.anchorShape.w));
-        float shaft = clamp((sr.g * 0.6 + sr.a * 0.4 - 0.42) * 4.0 + 0.3, 0.0, 1.0);
+                              cv2Lod(fpM, cv2.anchorShape.w) + 1.5);
+        float shaft = clamp((sr.g * 0.6 + sr.a * 0.4 - 0.42) * 2.2 + 0.42, 0.0, 1.0);
+        shaft = mix(shaft, max(shaft, 0.75), core);
         shaft = mix(shaft, 0.45, smoothstep(300.0, 2000.0, fpM));   // sub-pixel curtains: their mean
-        f.sigma    = rate * shaft * 0.0012;
+        f.sigma    = rate * shaft * 0.0012 * (1.0 + core);
         f.msBright = 0.6;
         f.ambient  = 0.8;
         f.rain     = 1.0;
@@ -1185,7 +1195,9 @@ struct CV2Col {
 CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
 {
     CV2Col o; o.sigma = 0.0; o.hf = 0.0; o.topH = 0.0; o.near = 0.0; o.storm = 0.0; o.prox = 0.0;
-    if (cv2.column.x <= 0.0 || q.h < 400.0) return o;
+    gCv2RainCore = 0.0;
+    // (Down to the ground while it rains: the rain core and the storm-cumulus proximity are wanted under the base.)
+    if (cv2.column.x <= 0.0 || q.h < (cv2.rain.x > 0.0 ? -100.0 : 400.0)) return o;
     vec3  wd    = cv2Drift(q.dirE);
     float tropo = cv2Tropo(wd);
     float top   = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo;
@@ -1294,6 +1306,13 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // The storm cumulus around it (review 5), tapered to zero before the search's limit.
         prox = max(prox, smoothstep(0.05, 0.3, str) * (1.0 - smoothstep(1.1 * Rc, 1.1 * Rc + cuReach, dhL))
                          * (1.0 - smoothstep(0.7 * limM, limM, dhL)));
+        // The rain core (review 22): under the dominant tower, an ellipse 2.5x longer downwind (the anvil's side).
+        if (cv2.rain.x > 0.0 && hb < 0.0) {
+            float dom = smoothstep(0.8, 1.0, smoothstep(0.02, 0.6, str) * role) * smoothstep(0.1, 0.5, str);
+            float al  = dot(dh, eastW);
+            float dR  = length(vec2(length(dh - eastW * al), al > 0.0 ? al * 0.4 : al));
+            gCv2RainCore = max(gCv2RainCore, dom * (1.0 - smoothstep(0.25 * Rc, 1.1 * Rc, dR)));
+        }
         if (!colH) continue;
         // A weaker tower is SHORTER, not thinner: its top sinks from under the anvil (full strength)
         // to its base (at the 0.02 cutoff), so at a storm's edge towers settle into the cumulus as
