@@ -531,6 +531,14 @@ void main()
         float bn = (float((cv2BlueNoise[bi >> 2u] >> (8u * (bi & 3u))) & 0xFFu) + 0.5) / 256.0;
         jitter = fract(bn + 0.6180340 * (cv2.misc2.z > 0.5 ? cv2.frame.x : visit));
     }
+    // Review 22: the fine lattice's own jitter, decorrelated from the coarse one (fract(1.618 jitter + 0.5)). The fine
+    // lattice restarts a fraction of a step behind where the coarse lattice found cloud, and the coarse lattice is
+    // offset by `jitter` x the BASE step only: with the same `jitter` for both, the fine samples' phase within a
+    // (grown) step covered part of the step twice and the rest once, so the converged cloud kept a bias that
+    // depended on the lattice — concentric rings carved into the clouds round the nadir, moving with the eye's
+    // height (user snap 8; changing "Step base" by 30% moved +-16-level bands across every cloud).
+    // (A function of `jitter`, computed where it is used: a second blue-noise read kept live across the loop
+    // flipped the march to ~222 registers.)
     // Angular size of one half-res pixel: a sample at distance t stands for t * pixAng metres.
     float pixAng = 2.0 * tanHalfFov / float(halfSize.y);
 
@@ -560,7 +568,11 @@ void main()
         if (iters >= kMaxIters) { remLen += tEnd - t; continue; }
         bool fine = false;
         int  empty = 0;
-        t += (cv2.march.x + cv2.march.y * (t - seg[0].x)) * jitter;
+        // Review 22: over the whole COARSE interval (two steps). Over one step the coarse lattice, two steps apart
+        // (up to 400 m of altitude), took only half its phases: a thin deck seen from above was skipped at some
+        // and found at others — concentric rings in the clouds round the nadir that moved with the eye's height
+        // (user snap 8). Steps grow linearly with distance, so the offset keeps its share of the spacing.
+        t += 2.0 * (cv2.march.x + cv2.march.y * (t - seg[0].x)) * jitter;
         while (t < tEnd && iters < kMaxIters && T > 0.01) {
             ++iters;
             // Steps grow with distance (the noise is read at the pixel footprint there anyway, so
@@ -602,7 +614,7 @@ void main()
                 // snapshot 5).
                 if (f.sigma > 0.0) {
                     fine = true; empty = 0;
-                    float tb = t - (2.0 - jitter) * stepF;
+                    float tb = t - (2.0 - fract(jitter * 1.6180340 + 0.5)) * stepF;
                     t = tb > seg[si].x ? tb : seg[si].x + jitter * cv2.march.x;
                     continue;
                 }
