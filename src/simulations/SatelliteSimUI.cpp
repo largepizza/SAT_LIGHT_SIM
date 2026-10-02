@@ -4841,7 +4841,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Full rate above (km)", &cv2FullRateAboveKm, 0.0f, 400.0f, 1.0f, "%.0f", 145},
         {"Sparse when still (0/1)", &cv2SparseWhenStill, 0.0f, 1.0f, 1.0f, "%.0f", 176},
         {"Half rate while moving (0/1)", &cv2HalfRateMoving, 0.0f, 1.0f, 1.0f, "%.0f", 186},
-        {"Fast-flight cloud LOD (0/1)", &cv2FastFlightLod, 0.0f, 1.0f, 1.0f, "%.0f", 246},
+        {"Fast-flight cloud LOD (0/1/2)", &cv2FastFlightLod, 0.0f, 2.0f, 1.0f, "%.0f", 246},
         {"Foveated full rate (radius)", &cv2FoveaRadius, 0.0f, 2.0f, 0.05f, "%.2f", 247},
         {"Adaptive rate while moving (0/1)", &cv2AdaptiveRate, 0.0f, 1.0f, 1.0f, "%.0f", 192},
         {"Adaptive parallax (px)", &cv2AdaptiveParallaxPx, 0.1f, 8.0f, 0.1f, "%.1f", 193},

@@ -1276,8 +1276,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     position or a second blue-noise read flipped the march to 222 registers.
   - **"Fast-flight cloud LOD"** (slot 246, `fast_flight_lod`, default on; state `clouds_v2.fast_lod`): boost held
     and moving, or > 150 m a frame: <= 2 light steps, 60% of the iteration budget, a 1.5x base step. Only -0.5 ms
-    climbing through the storm in the harness (fixed-step paths are not GPU-heavy there): the user's boost frame
-    drops may have another cause.
+    climbing through the storm in the harness. Value 2 = whenever the eye moves (> 2 m a frame), boost or not (the
+    harness holds no keys): boosting at record 10 (109 m, ~11 m a frame) cloud march 11.5 -> 9.8 ms but tstab boost
+    1.80 -> 2.35 and the worst frame unchanged (~26 ms; `path play`'s `gpu_worst_frame_ms`: the spikes are the
+    cloud march, 18-22 ms against a ~12 ms mean).
   - **"Foveated full rate (radius)"** (slot 247, `fovea_radius`, morph.z, default 0): an experiment — centre tiles
     at full rate while moving made strafing WORSE (tstab 1.60 -> 2.10) at the same cost. Left off.
   - **Far cloud layer**: the key light's reflectance is the two-stream slab's at the beam's incidence (`slabRmu`).

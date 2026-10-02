@@ -1692,6 +1692,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 a.scratch["cmSum"] = 0.0;
                 a.scratch["totSum"] = 0.0;
                 a.scratch["nT"] = 0;
+                a.scratch["tots"] = json::array();   // review 22: per-frame GPU totals (spikes, not just the mean)
                 harnessFixedDtOverride_ = (float)(1.0 / fps);
                 timePaused = true; // the path owns the clock
                 harnessTrack_ = 0;
@@ -1716,6 +1717,15 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 if (a.scratch["nT"].get<int>() > 0)
                     r["gpu_ms_mean"] = {{"cloud_march", a.scratch["cmSum"].get<double>() / a.scratch["nT"].get<int>()},
                                         {"total", a.scratch["totSum"].get<double>() / a.scratch["nT"].get<int>()}};
+                if (!a.scratch["tots"].empty())
+                {
+                    std::vector<double> t = a.scratch["tots"].get<std::vector<double>>();
+                    std::sort(t.begin(), t.end());
+                    r["gpu_total_ms_p90"] = t[std::min(t.size() - 1, (size_t)(0.9 * (double)t.size()))];
+                    r["gpu_total_ms_max"] = t.back();
+                    if (a.scratch.contains("worstFrame"))
+                        r["gpu_worst_frame_ms"] = a.scratch["worstFrame"];
+                }
                 if (!rec.empty())
                     r["pattern"] = harnessRunner_->capturePath(rec + "_%05d", ".png");
                 r["message"] = "played " + std::to_string(nF) + " frames" +
@@ -1726,6 +1736,18 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             {
                 a.scratch["cmSum"] = a.scratch["cmSum"].get<double>() + gpuMsRaw[3];
                 a.scratch["totSum"] = a.scratch["totSum"].get<double>() + gpuMsRawTotal;
+                a.scratch["tots"].push_back(gpuMsRawTotal);
+                if (gpuMsRawTotal > a.scratch.value("worst", 0.0))
+                {
+                    static const char *kB[8] = {"scene_depth", "beam_cloud_block", "orbit_compute", "cloud_march",
+                                                "flare_compute", "sky_background_draw", "satellite_star_draw", "ui_overlay"};
+                    json w;
+                    for (int b = 0; b < 8; ++b)
+                        w[kB[b]] = gpuMsRaw[b];
+                    w["frame"] = i;
+                    a.scratch["worst"] = (double)gpuMsRawTotal;
+                    a.scratch["worstFrame"] = w;
+                }
                 a.scratch["nT"] = a.scratch["nT"].get<int>() + 1;
             }
             const double fps = a.scratch["fps"];

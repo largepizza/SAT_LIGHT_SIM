@@ -1205,7 +1205,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.misc2.w = std::max(cv2AdaptiveParallaxPx, 0.05f);
     {
         const double move = glm::length(eye - cv2PrevEye);
-        cv2FastLodNow = cv2FastFlightLod > 0.5f && valid && ((boostHeldNow && move > 2.0) || move > 150.0);
+        // 2 = whenever the eye moves (> 2 m a frame), boost or not (and how the harness, which holds no keys, tests it).
+        cv2FastLodNow = cv2FastFlightLod > 0.5f && valid &&
+                        (((boostHeldNow || cv2FastFlightLod > 1.5f) && move > 2.0) || move > 150.0);
         if (cv2FastLodNow)
         {
             p.light.y = std::min(p.light.y, 2.0f);

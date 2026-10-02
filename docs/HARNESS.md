@@ -133,7 +133,7 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `window <W>x<H>` | resize the window and wait for the new swapchain |
 | `path clear`, `path key <t> [lat= lon= alt= az= el= fov= sim=<ISO>\|simadd=<s>]` | camera-path keyframes at path time `t` (seconds). Channels you leave out inherit from the previous key (from the current view for the first). See "Camera paths" |
 | `path goto <t>` | jump to the path's pose at `t` |
-| `path play [fps=30] [record=<name>] [ui=on] [scale=s]` | play the path at a fixed frame rate; with `record` every frame is captured as `captures/<name>_00000.png` ...; the result carries `gpu_ms_mean` (cloud_march and total, the GPU cost while moving — `perf` measures a still view) |
+| `path play [fps=30] [record=<name>] [ui=on] [scale=s]` | play the path at a fixed frame rate; with `record` every frame is captured as `captures/<name>_00000.png` ...; the result carries `gpu_ms_mean` (cloud_march and total, the GPU cost while moving — `perf` measures a still view), and (review 22) `gpu_total_ms_p90` / `gpu_total_ms_max` and `gpu_worst_frame_ms` (the worst frame's buckets): spikes hide in a mean |
 | `overlay text <id> "<text>" [x=0.5 y=0.1 size=28 align=center\|left color=RRGGBB]` | screen text at fractional coordinates, drawn even with the HUD hidden |
 | `overlay label <id> "<text>" target=<sel\|sun\|moon\|planet> [size= dx= dy=]` | a label that follows a sky target |
 | `overlay clear [id]` | |
