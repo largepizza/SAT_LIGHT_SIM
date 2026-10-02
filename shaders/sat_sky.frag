@@ -4515,13 +4515,17 @@ void main() {
             float waveCrest = -1.0;        // the wave height here / its maximum (whitecaps), -1 = unresolved
             float waveBlend = 1.0;
             if (altFade > 0.01) {
-                float distFade = smoothstep(3000.0, 8000.0, dist);
+                // Review 21: out to "Sea wave range (km)" (was a fixed 3-8 km: the sea went to a mirror close in; the
+                // footprint filter below is what removes the octaves a pixel cannot resolve).
+                float distFade = smoothstep(0.6 * cloud.oceanWaveRangeM, cloud.oceanWaveRangeM, dist);
                 float blend    = max(distFade, 1.0 - altFade);  // 0 = full detail, 1 = flat
                 waveBlend = blend;
                 if (blend < 0.99) {
                     // The footprint: a pixel's length ALONG the view at this distance (stretched by the grazing angle,
                     // which is where the aliasing is: crests and troughs alternate along the line of sight).
-                    gSeaFootM = pixAngle * dist / max(abs(dot(dir, surfUp)), 0.02);
+                    // x "Sea wave sharpness" (review 21; 1 = review 14's filter): an octave fades as its cell nears two of
+                    // these footprints — at 1 the waves went flat a few km out; the sky TAA averages what is kept.
+                    gSeaFootM = pixAngle * dist / max(abs(dot(dir, surfUp)), 0.02) * cloud.oceanWaveFootK;
                     float eps = max(max(0.5, dist * 0.0008), 0.5 * gSeaFootM);
                     float n0  = seaMapDetail(posM,                    pHeight, seaTime);
                     waveCrest = (pHeight - n0) / (kSeaHeight * gSeaAmp * 2.56);
@@ -4567,7 +4571,10 @@ void main() {
                 }
             }
             vec3 reflColor = vec3(0.12, 0.28, 0.50) * dayFrac;
-            float reflStr  = fresnel * exp(-dist / 40000.0);
+            // Review 21: no decay with distance (it was exp(-dist / 40 km), from the first waves): the grazing far sea,
+            // ~45 km out from 150 m and the brightest reflection there is, lost most of it — a sharp dark line along
+            // the sea horizon under the bright sky. The air in front of the sea is the aerial perspective's.
+            float reflStr  = fresnel;
 
             // Feature-reflection fade. Clouds, aurora and the Milky Way only reflect believably
             // off resolved 3D wave facets — the close-up detail waveN carries. As the surface
@@ -4578,7 +4585,7 @@ void main() {
             // distance is the smooth scattered-sky reflection (reflColor's atmosphere march) plus
             // the sun and moon glints below — those are broad specular lobes, physically correct
             // on any surface roughness, and are deliberately NOT gated by this.
-            float featureReflFade = altFade * (1.0 - smoothstep(3000.0, 8000.0, dist));
+            float featureReflFade = altFade * (1.0 - smoothstep(0.6 * cloud.oceanWaveRangeM, cloud.oceanWaveRangeM, dist));
 
             vec3 dbgReflUV = vec3(0.0);   // debug view 50 (oceanshadow): r the cloud shadow on the sea, g the reflected clouds weight
             // Review 19: not gated on reflStr. Looking down (Fresnel ~0 within ~34 deg of the nadir) the march was
@@ -4644,8 +4651,12 @@ void main() {
                     // the edges. Off screen the lookup clamped to an edge texel: looking down from 8 km the sea's
                     // reflection took whatever cloud lay along the frame's edge, except inside a disc around the nadir
                     // where the test above failed — a hard blue disc on the sea (user snapshot, review 19).
+                    // Review 21: the fade lies just OUTSIDE the frame (the lookup clamped to the edge until then). Inside it,
+                    // looking at the horizon the mirrored direction shares the pixel's own column, so the last 8% of every
+                    // row lost its reflected clouds: bright vertical bands at both edges of the sea (user snapshot).
                     vec2  eM = min(reflScreenUV, 1.0 - reflScreenUV);
-                    float onS = smoothstep(0.0, 0.08, min(eM.x, eM.y));
+                    float onS = smoothstep(-0.08, 0.0, min(eM.x, eM.y));
+                    reflScreenUV = clamp(reflScreenUV, vec2(0.001), vec2(0.999));
                     vec3 reflCloudT = mix(vec3(1.0), texture(cloudTargetB, reflScreenUV).rgb, onS);
                     reflCloudOccl   = dot(reflCloudT, vec3(1.0 / 3.0));
                     // The clouds in the reflection (2026-09-30): the march above is clear sky, so under an overcast

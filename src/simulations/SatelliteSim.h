@@ -1257,8 +1257,8 @@ struct GpuCloudParams
     float sunGain;            // global sun brightness multiplier
     float ambientGain;        // night-side ambient (for future use in volumetrics)
     float farBlend;           // review 18: the far cloud layer's share, 0..1 (cloudFarBlend(); was v1's unread hgG)
-    float marchSteps;         // volumetric march step count (C7+)
-    float lightSteps;         // volumetric light-cone step count (C7+)
+    float oceanWaveRangeM;    // review 21: "Sea wave range (km)" x 1000 (was v1's unread marchSteps)
+    float oceanWaveFootK;     // review 21: "Sea wave sharpness" (was v1's unread lightSteps)
     float cloudPhase;         // CPU: fmod(driftRate * simTime, 2π) — uploaded each frame
     float extinctionCoeff;    // was pad0 (freed session 23 when cloudShadowFactor was removed); now
                               // carries the same atmospheric-extinction coefficient sat_flare.comp
@@ -3087,7 +3087,7 @@ private:
     // the 1-5 km structure from orbit, and costs more. Fades in from "Far cloud layer from (km)" of eye
     // altitude, full (and the march skipped) at "... full at (km)".
     float cv2FarLayerFromKm = 600.0f;
-    float cv2FarKeyGain = 3.0f, cv2FarSkyGain = 1.0f;   // "Far cloud layer sunlight / sky light" (3: matched to the march from 8000 km)
+    float cv2FarKeyGain = 10.0f, cv2FarSkyGain = 0.3f;   // "Far cloud layer sunlight / sky light" (review 21: matched to the march's cloud radiance at 1460 km and its image at 3000-8000 km)
     float cv2FarLayerFullKm = 1500.0f;
     float cloudFarBlend() const
     {
@@ -3935,8 +3935,6 @@ private:
     // field's fog + dust, cv2Fog*/cv2Dust*; its GpuCloudParams fields are unread.)
     float cloudErosionCore = 1.0f;    // cloudDensity() erosion strength at the dense core
     float cloudHgG = 0.99f;
-    float cloudMarchSteps = 220.0f;
-    float cloudLightSteps = 13.0f;
     float cloudCirrusWindDeg = 40.0f;  // C13: cirrus streak wind azimuth (degrees, converted to radians for the UBO)
     float cloudCirrusStretch = 2.4f;   // C13: cirrus noise anisotropic elongation factor (1 = no stretch)
     float airglowGain = 0.066f;        // C15: master airglow brightness multiplier
@@ -4027,6 +4025,8 @@ private:
     float auroraSheetFold = 1.0f;           // curls / spirals
     float oceanSeaStateGain = 1.0f;          // waves follow the weather (Ocean tab, slot 213; 0 = fixed sea)
     float oceanWhitecapGain = 1.0f;          // whitecap foam gain (Ocean tab, slot 214)
+    float oceanWaveRangeKm = 100.0f;         // review 21: waves fade to flat from 0.6x this (was a fixed 3-8 km; slot 237)
+    float oceanWaveSharpness = 0.5f;         // review 21: x the footprint the wave octaves are filtered at (1 = review 14; slot 243)
     float oceanReflSamples = 6.0f;           // ocean sky-reflection loop sample count (N_REFL)
     float moonGain = 0.0053f;                // shared moonlight brightness: terrain direct term + cloud
                                              // moonContrib (default matches the prior hardcoded cloud value)
@@ -4563,7 +4563,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 243;
+    static constexpr int kCloudSliderSlots = 244;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

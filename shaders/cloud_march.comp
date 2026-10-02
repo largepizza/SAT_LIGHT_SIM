@@ -347,12 +347,19 @@ float cloudGroundShadowV2(vec3 groundENU, vec3 sunDir, vec3 obsPos, mat3 enuToEc
     float od = 0.0;
     gCv2NoFar = true;              // the cells' average, not the far field (review 8, clouds_v2.glsl)
     gCv2WxLod = 3.0 * (1.0 - smoothstep(0.03, 0.3, sunUp));   // review 17: a low Sun's long path reads the map blurred
-    for (int i = 0; i < 32; ++i) {
-        bool  low = i < 20;
+    // Review 21: the low stretch takes up to 60 steps as the Sun drops (20 while they are <= 2.5 km). Near sunset ~200 km
+    // long, and at 20 steps of ~10 km one small cumulus — whose height band the ray stays in for ~190 km at a 0.3 deg
+    // Sun — was hit once per step position: a chain of separate disc shadows, one every 10 km, where a real one is
+    // a single long streak ("segmented, unaligned", user snapshot from 8 km at sunset). With ~3 km steps read at about
+    // their own length the hits overlap into the streak. (Per-frame jitter would need the sky TAA, which is off below
+    // render scale 1; a footprint of the whole ~10 km step averaged the scattered cumulus away entirely.)
+    int nLow = int(clamp(ceil((tSplit - s0.x) / 2500.0), 20.0, 60.0));   // steps of <= 2.5 km: the 3 km reads overlap
+    [[dont_unroll]] for (int i = 0; i < nLow + 12; ++i) {
+        bool  low = i < nLow;
         float a0  = low ? s0.x : tSplit, a1 = low ? tSplit : s0.y;
-        float ds  = (a1 - a0) / (low ? 20.0 : 12.0);
+        float ds  = (a1 - a0) / (low ? float(nLow) : 12.0);
         if (ds <= 0.0) continue;
-        float fi  = low ? float(i) : float(i - 20);
+        float fi  = low ? float(i) : float(i - nLow);
         // Read at a footprint of the step, jittered: at a low Sun the path through the shell is 100+ km,
         // and fixed midpoints reading 2 km cells at a 60 m footprint aliased into concentric rings of
         // shadow on the sea around the nadir (user snapshot from 7.7 km at sunset, pass 13). At the step's
@@ -360,7 +367,7 @@ float cloudGroundShadowV2(vec3 groundENU, vec3 sunDir, vec3 obsPos, mat3 enuToEc
         // At most 3 km (review 8b): near the terminator the upper 12 steps are tens of km long, and at half
         // that footprint the weather map is a mip whose texels are squares hundreds of km across — shadows
         // with straight, perpendicular edges over the sea at sunset (user snapshot).
-        float fpS = clamp(ds * 0.5, 60.0, 3000.0);
+        float fpS = clamp(ds * (low ? 1.2 : 0.5), 60.0, 3000.0);
         vec3  rel = groundENU + sunDir * (a0 + (fi + jitter) * ds) - obsPos;
         // Rain curtains at 15% (review 8): at this footprint they are their mean (0.45) over the map's whole
         // rain area, and a low Sun's path runs tens of km through them under the cloud bases — from 180 km

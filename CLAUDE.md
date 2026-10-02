@@ -1218,6 +1218,26 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   `path play record=` shows it — transmittance and radiance were smooth). Still, the same noise left a thin dark
   stair-stepped line there and blocks in the horizon band (snapshot 1). Still-view flicker (420 km limb, 2000 km
   nadir) identical; review 15's set 1.21 -> 1.18.
+- **Review 21 (2026-10-01):** **Sunset ground shadows** (`cloudGroundShadowV2`): the low stretch takes as many steps as
+  keep them <= 2.5 km (20-60, read at 1.2x the step, <= 3 km). At a 0.3 deg Sun the stretch is ~200 km and a 1-km cloud's
+  height band holds the ray for ~190 km: at 20 steps of ~10 km each step that landed on a small cumulus drew its own disc,
+  one cloud's shadow a chain of separate ellipses (user snapshot, 8 km at sunset). Now one long streak (a faint ladder
+  remains on thin ones). +2.3 ms of cloud march in that view, nothing above ~17 deg of Sun. Tried: the step's whole length
+  as the footprint (the scattered cumulus averaged away: no shadows) and per-frame jitter (needs the sky TAA, which is OFF
+  below render scale 1 — the user runs 0.85). **The far cloud layer's light** ("Far cloud layer sunlight" 10, was 3;
+  "sky light" 0.3, was 1): from orbit most of a cloud pixel is the haze in front of it, and at 3 the layer's own light was
+  a third of the march's and its blue sky term dominated (debugview cloudrad, cloud cores: far R/B 0.76 vs march 1.43) —
+  bluish clouds from ~1500 km. The orbit grade is not involved. At 10 / 0.3 its radiance matches the march at 1460 km and
+  its image at 3000-8000 km (review 18's "3" was matched on p97 at 8000 km, where few pixels are cloud). Saved settings
+  keep the old values. Also: partial cover is an area mix in the layer (share x full-depth light), not one thinner cloud
+  (no visible change here). **Sea:** waves out to "Sea wave range (km)" (`ocean_wave_range_km` 100, slot 237, UBO
+  `oceanWaveRangeM` = v1's unread marchSteps; was a fixed 3-8 km) and "Sea wave sharpness" (`ocean_wave_sharpness` 0.5,
+  slot 243, `oceanWaveFootK` = v1's unread lightSteps: x the footprint the octaves are filtered at; 1 = review 14); +0.1 ms.
+  The reflection no longer decays with distance (exp(-d / 40 km), from the first waves). The reflected clouds' screen fade
+  lies just OUTSIDE the frame (review 19's fade inside it took every row's last 8% off the clouds at a horizon view:
+  bright bands at both edges). Open: the dark line where an overcast's far underside meets the sea horizon (not the sea
+  shading: oceansurf is uniform there). Note: a harness `set clouds_v2.dust_amount` changed the whole scene there (clouds
+  and Sun gone) and `knockout +fog_layer` nothing — not understood.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

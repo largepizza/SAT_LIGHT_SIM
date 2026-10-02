@@ -2269,8 +2269,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.sunGainZenith = cloudSunGainZenith;
         cp.ambientGain = cloudAmbientGain;
         cp.farBlend = cloudFarBlend();
-        cp.marchSteps = cloudMarchSteps;
-        cp.lightSteps = cloudLightSteps;
+        cp.oceanWaveRangeM = oceanWaveRangeKm * 1000.0f;
+        cp.oceanWaveFootK = oceanWaveSharpness;
         cp.extinctionCoeff = extinctionCoeff;
         cp.cirrusWindAngle = glm::radians(cloudCirrusWindDeg);
         cp.cirrusStretch = cloudCirrusStretch;

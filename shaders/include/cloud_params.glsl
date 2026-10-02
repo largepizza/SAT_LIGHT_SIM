@@ -38,8 +38,8 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     float sunGain;
     float ambientGain;
     float farBlend;           // review 18: the far cloud layer's share (cloud_v2_far.comp; was v1's unread hgG)
-    float marchSteps;
-    float lightSteps;
+    float oceanWaveRangeM;    // review 21: "Sea wave range (km)" x 1000 (was v1's unread marchSteps)
+    float oceanWaveFootK;     // review 21: "Sea wave sharpness" (was v1's unread lightSteps)
     float cloudPhase;
     float extinctionCoeff;
     float cirrusWindAngle;

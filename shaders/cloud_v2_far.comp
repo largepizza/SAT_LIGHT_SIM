@@ -97,11 +97,11 @@ vec3 skyZenithAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
 // little below 0 as well, so the presence ramps in from e = -0.15 (the layer otherwise covered ~25% less).
 float farTau(CV2Far c)
 {
-    // Review 19: the covered share of the pixel (cv2FieldLow's presFar) x the column's thickness.
+    // The covered part's depth; the covered SHARE of the pixel (c.frac, cv2FieldLow's presFar) mixes by area in main.
     if (c.frac <= 0.0) return 0.0;
     float span  = max(c.top - c.base, 200.0);
     float thick = span * mix(max(0.3, pow(c.e, 0.83)), mix(0.5, 1.0, c.e), c.strat);
-    return c.sigma * thick * c.frac * 0.6;
+    return c.sigma * thick * 0.6;
 }
 
 // The light a slab of reflectance R (and relief factor) sends up at a point of the layer: the key light (the Sun,
@@ -232,11 +232,16 @@ void main()
             // The slope's cosine relative to the flat top's; the shaded side keeps some (multiple scattering
             // through the turret): a top tilted from the light reads darker, not black.
             float relief = muS > 1e-3 ? clamp(mix(1.0, dot(n, sunDir) / muS, 0.5 * smoothstep(0.1, 0.5, c.e)), 0.4, 1.5) : 1.0;
-            Rlow = slabR(tau);
-            Lout = farLit(up, hTop, Rlow, relief, c.msBright, sunDir, moonDir, p.dirE);
+            // Review 21: a partly covered pixel is that share of full-depth cloud and the rest clear (an AREA mix). It
+            // was one cloud of the share x the depth: reflectance is concave in depth (half of a tau-20 cloud reflects
+            // ~0.4 of its pixel, a tau-10 one ~0.2), so broken cloud from orbit was a uniform translucent grey that the
+            // haze in front turned blue — bluer and dimmer than the march's resolved white cells (user, 1460 km).
+            float fr = clamp(c.frac, 0.0, 1.0);
+            Rlow = fr * slabR(tau);
+            Lout = fr * farLit(up, hTop, slabR(tau), relief, c.msBright, sunDir, moonDir, p.dirE);
             // Seen through it: the direct transmission of the delta-scaled depth (the forward peak, ~70% of the
-            // scattering at g 0.85, carries on).
-            Tout = exp(-0.3 * tau / mu);
+            // scattering at g 0.85, carries on), over the covered share.
+            Tout = 1.0 - fr * (1.0 - exp(-0.3 * tau / mu));
         }
         if (tauU > 1e-3) {
             float RU = slabR(tauU * mu);

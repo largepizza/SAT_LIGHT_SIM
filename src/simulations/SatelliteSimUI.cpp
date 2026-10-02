@@ -4850,7 +4850,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Far-field sharpness", &cv2MorphBreakup, 0.0f, 3.0f, 0.1f, "%.1f", 238},
         {"Far cloud layer from (km)", &cv2FarLayerFromKm, 50.0f, 100000.0f, 50.0f, "%.0f", 239},
         {"Far cloud layer full at (km)", &cv2FarLayerFullKm, 100.0f, 100000.0f, 50.0f, "%.0f", 240},
-        {"Far cloud layer sunlight", &cv2FarKeyGain, 0.0f, 4.0f, 0.05f, "%.2f", 241},
+        {"Far cloud layer sunlight", &cv2FarKeyGain, 0.0f, 20.0f, 0.1f, "%.1f", 241},
         {"Far cloud layer sky light", &cv2FarSkyGain, 0.0f, 4.0f, 0.05f, "%.2f", 242},
     };
 
@@ -5006,6 +5006,10 @@ void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
         // wind with the westerly belts) and break into whitecaps as the sea rises. 0 = the old fixed sea.
         {"Sea state from weather", &oceanSeaStateGain, 0.0f, 2.0f, 0.05f, "%.2f", 213},
         {"Whitecaps", &oceanWhitecapGain, 0.0f, 3.0f, 0.05f, "%.2f", 214},
+        // Review 21: the waves reached only 3-8 km (a fixed fade) and their octaves dropped out at 2 pixel footprints:
+        // the sea went to a mirror close in. The range and the filter's sharpness (lower = finer octaves kept longer).
+        {"Sea wave range (km)", &oceanWaveRangeKm, 5.0f, 200.0f, 1.0f, "%.0f", 237},
+        {"Sea wave sharpness", &oceanWaveSharpness, 0.1f, 1.0f, 0.05f, "%.2f", 243},
         {"Ocean flare refl", &oceanGlintGain, 0.0f, 4.0f, 0.05f, "%.2f", 110},
         {"Flare refl floor", &oceanGlintMinFlux, 0.0f, 64.0f, 0.5f, "%.1f", 111},
     };
@@ -7053,6 +7057,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         auroraSheetCrisp = c.value("aurora_sheet_crisp", auroraSheetCrisp);
         auroraSheetFold = c.value("aurora_sheet_fold", auroraSheetFold);
         oceanWhitecapGain = c.value("ocean_whitecaps", oceanWhitecapGain);
+        oceanWaveRangeKm = std::clamp(c.value("ocean_wave_range_km", oceanWaveRangeKm), 5.0f, 200.0f);
+        oceanWaveSharpness = std::clamp(c.value("ocean_wave_sharpness", oceanWaveSharpness), 0.1f, 1.0f);
         oceanGlintMinFlux = c.value("ocean_glint_min_flux", oceanGlintMinFlux);
         cloudCirrusWindDeg = c.value("cirrus_wind_deg", cloudCirrusWindDeg);
         cloudCirrusStretch = c.value("cirrus_stretch", cloudCirrusStretch);
@@ -7321,6 +7327,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"aurora_sheet_crisp", auroraSheetCrisp},
         {"aurora_sheet_fold", auroraSheetFold},
         {"ocean_whitecaps", oceanWhitecapGain},
+        {"ocean_wave_range_km", oceanWaveRangeKm},
+        {"ocean_wave_sharpness", oceanWaveSharpness},
         {"ocean_glint_min_flux", oceanGlintMinFlux},
         {"zodiacal_width_deg", zodiacalWidthDeg},
         {"view_samples_min", viewSamplesMin},

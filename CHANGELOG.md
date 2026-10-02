@@ -17,6 +17,11 @@
 - **HQ photo** (F8, or the sparkle-camera button): a supersampled, settled screenshot at up to 4x the window.
 - **Night horizon.** Dust is lit by city light and the night sky: from low altitude at night a near-black band no
   longer runs along the horizon, and distant clouds no longer show through it as pale blocks.
+- **Sunset cloud shadows** are long streaks toward the Sun instead of chains of separate discs.
+- **Clouds from high orbit** are white like the detailed clouds below them, not bluish ("Far cloud layer sunlight" 10,
+  "sky light" 0.3 — a saved settings file keeps its old values).
+- **The sea keeps its waves much further out** ("Sea wave range (km)", "Sea wave sharpness"), the far sea is no longer
+  dimmed with distance, and the bright bands at the left and right edges of the sea at the horizon are gone.
 - **No more blocky cloud edges in motion**: bright blue-white blocks along cloud edges inside the Reflect beams, and
   dark blocks along distant cloud edges at night, are gone; the distant horizon cloud band is smooth.
 - **Clouds while climbing or descending slowly** keep their shape instead of softening and smearing vertically.
