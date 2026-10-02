@@ -342,7 +342,7 @@ json SatelliteSim::harnessStateJson()
                      {"ground_source", gpuGround ? "gpu" : "cpu"},
                      {"terrain_cpu_m", obsTerrainH},
                      {"height_offset_m", obsHeightOffset},
-                     {"following", followActive}};
+                     {"following", followActive}, {"follow_flight", followFlight}};
     if (followActive)
         j["observer"]["follow"] = {{"sat", followSatIndex},
                                    {"offset_m", {followOffset.x, followOffset.y, followOffset.z}}};
@@ -1094,17 +1094,19 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
     if (n == "follow")
     {
+        // fly=on (review 22): the UI's Go to / Exit flight instead of the jump; `wait seconds` / frames to watch it.
+        const bool fly = c.has("fly") && lower(c.str("fly")) == "on";
         if (lower(pos(0)) == "off")
         {
-            stopFollow();
-            r["message"] = "follow off";
+            stopFollow(fly);
+            r["message"] = fly ? "follow off (flying home)" : "follow off";
             return Status::Done;
         }
         const int idx = c.has("sat") ? (int)c.num("sat", -1) : selectedSatIndex;
         if (idx < 0 || idx >= (int)satOrbits.size())
             fail("follow: select a satellite first (or sat=<i>)");
         if (!followActive || followSatIndex != idx)
-            startFollow(idx);
+            startFollow(idx, fly);
         if (!followActive)
             fail("follow: this satellite's type has no geometry model");
         if (c.has("offset"))

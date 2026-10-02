@@ -2012,11 +2012,11 @@ void SatelliteSim::buildViewTitleIcons(const UIInput &inp, UIRenderer &ui, bool 
     if (icon(1, kIconEye, isFollowed, "Go to"))
     {
         if (isFollowed)
-            stopFollow();
+            stopFollow(true);
         else
         {
             selectSatellite(viewerSatIndex);
-            startFollow(viewerSatIndex);
+            startFollow(viewerSatIndex, true);
         }
     }
 }
@@ -2397,9 +2397,9 @@ void SatelliteSim::buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx
     if (buildSelActionButton(inp, ui, idx * 4 + 1, "Go to", kIconEye, on, hovSelFollowBtn))
     {
         if (on)
-            stopFollow();
+            stopFollow(true);
         else
-            startFollow(selectedSatIndex);
+            startFollow(selectedSatIndex, true);
     }
 }
 
@@ -2453,7 +2453,7 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
                        "(looking unlocks it)"))
             followAimLock = !followAimLock;
         if (chipButton("FollowExitBtn", "Exit", hovFollowExit, "Return to the ground where you were"))
-            stopFollow();
+            stopFollow(true);
     }
     captureLaidOut(ui, CLAY_ID("FollowHud"), inp.screenW * 0.5f - 200.0f, 12.0f, 400.0f, 34.0f);
 }

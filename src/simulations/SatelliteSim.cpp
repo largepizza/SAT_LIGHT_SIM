@@ -4533,7 +4533,24 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
 }
 
 // ─── Phase 4e: follow mode ───────────────────────────────────────────────────
-void SatelliteSim::startFollow(int satIndex)
+glm::dvec3 SatelliteSim::followFlightPos(const glm::dvec3 &from, const glm::dvec3 &to, double u) const
+{
+    const double R = (double)kEarthRadius;
+    const glm::dvec3 dA = glm::normalize(from), dB = glm::normalize(to);
+    const double ang = std::acos(std::clamp(glm::dot(dA, dB), -1.0, 1.0));
+    const double hA = std::max(glm::length(from) - R, 2.0), hB = std::max(glm::length(to) - R, 2.0);
+    const double hPk = std::max(std::max(hA, hB), 0.35 * ang * R);   // long arcs go up and over
+    const double lA = std::log(hA), lB = std::log(hB), lP = std::log(hPk);
+    const double l = (1.0 - u) * (1.0 - u) * lA + 2.0 * u * (1.0 - u) * lP + u * u * lB;
+    // The arc moves mostly while high (slow over the ground at either end).
+    const double a = glm::smoothstep(0.1, 0.9, u);
+    glm::dvec3 dir = dB;
+    if (ang > 1e-9)
+        dir = (std::sin((1.0 - a) * ang) * dA + std::sin(a * ang) * dB) / std::sin(ang);
+    return glm::normalize(dir) * (R + std::exp(l));
+}
+
+void SatelliteSim::startFollow(int satIndex, bool fly)
 {
     if (satIndex < 0 || satIndex >= (int)satOrbits.size())
         return;
@@ -4541,8 +4558,13 @@ void SatelliteSim::startFollow(int satIndex)
     const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(ti);
     if (!tm)
         return;
-    if (!followActive)
+    // From the current eye (the ground, or wherever a flight home had got to).
+    const glm::dvec3 fromEye = followActive ? followObsEcef : glm::dvec3(obsDir) * (double)obsEyeRadiusM();
+    if (followActive && followFlight == 2)
+        followFlight = 0;   // turned round on the way home: keep the saved ground spot
+    else if (!followActive)
     {
+        followSavedGround = obsTerrainH;
         followSavedObsDir = obsDir;
         followSavedFacing = obsFacing;
         followSavedHeight = obsHeightOffset;
@@ -4559,15 +4581,38 @@ void SatelliteSim::startFollow(int satIndex)
     // Start behind and a little above it, ~4 model radii out.
     const double r = std::max(1.0, (double)tm->boundsRadius);
     followOffset = glm::dvec3(-4.0 * r, 0.0, 1.5 * r);
+    followFlightFov0 = camera.fovYDeg;   // a flight eases the FOV to 50 (review 22)
     camera.fovYDeg = 50.0f;
     snprintf(followLabel, sizeof(followLabel), "Following %s #%d", satTypes[ti].name.c_str(), satIndex);
+    followFlight = 0;
+    if (fly)
+    {
+        followFlight = 1;
+        followFlightT = 0.0;
+        followFlightFrom = fromEye;
+        followFlightDur = 0.0;   // set on the first update, from the distance to the target
+    }
     updateFollow(0.0f);
 }
 
-void SatelliteSim::stopFollow()
+void SatelliteSim::stopFollow(bool fly)
 {
     if (!followActive)
         return;
+    if (fly && followFlight != 2)
+    {
+        // Fly home: updateFollow ends follow mode (this function, fly = false) on arrival.
+        followFlight = 2;
+        followFlightT = 0.0;
+        followFlightFrom = followObsEcef;
+        const glm::dvec3 home = glm::dvec3(followSavedObsDir) *
+                                ((double)kEarthRadius + std::max((double)followSavedGround, (double)followSavedHeight) + 2.0);
+        followFlightDur = std::clamp(2.0 + 1.5 * std::log10(1.0 + glm::length(home - followFlightFrom) / 1000.0), 2.0, 8.0);
+        followFlightFacing0 = obsFacing;
+        followFlightEl0 = camera.elDeg;
+        return;
+    }
+    followFlight = 0;
     followActive = false;
     obsDir = followSavedObsDir;
     obsFacing = followSavedFacing;
@@ -4596,9 +4641,20 @@ void SatelliteSim::updateFollow(float dt)
     const glm::dvec3 Nh = glm::normalize(glm::cross(Rh, Th));
     Th = glm::cross(Nh, Rh);
 
+    // A flight in progress: any move key ends it at its destination.
+    if (followFlight != 0 && win && dt > 0.0f)
+    {
+        const int keys[] = {GLFW_KEY_W, GLFW_KEY_A, GLFW_KEY_S, GLFW_KEY_D, keybindings[KB_RAISE_ELEV].key, keybindings[KB_LOWER_ELEV].key};
+        bool any = std::abs(gpMoveFwd) > 0.2f || std::abs(gpMoveRight) > 0.2f;
+        for (int k : keys)
+            any = any || glfwGetKey(win, k) == GLFW_PRESS;
+        if (any)
+            followFlightT = 1e9;
+    }
+
     // WASD / Q-E, in the observer's own horizontal frame (as on the ground), converted to the
     // satellite's frame. Speed scales with the distance, so 10 km → 10 m is a few seconds' travel.
-    if (win && dt > 0.0f)
+    if (win && dt > 0.0f && followFlight == 0)
     {
         const bool boost = glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS || gpHeld(KB_MOVE_BOOST);
         const bool fine = fineMoveToggled && !boost;
@@ -4627,6 +4683,34 @@ void SatelliteSim::updateFollow(float dt)
     }
 
     followObsEcef = P + followOffset.x * Th + followOffset.y * Nh + followOffset.z * Rh;
+    bool homeLook = false;
+    if (followFlight != 0)
+    {
+        const glm::dvec3 to = followFlight == 1 ? followObsEcef
+                            : glm::dvec3(followSavedObsDir) * ((double)kEarthRadius +
+                                  std::max((double)followSavedGround, (double)followSavedHeight) + 2.0);
+        if (followFlightDur <= 0.0)
+            followFlightDur = std::clamp(2.0 + 1.5 * std::log10(1.0 + glm::length(to - followFlightFrom) / 1000.0), 2.0, 8.0);
+        followFlightT += (double)std::max(dt, 0.0f);
+        const double x = std::min(followFlightT / followFlightDur, 1.0);
+        const double u = x * x * (3.0 - 2.0 * x);
+        followObsEcef = followFlightPos(followFlightFrom, to, u);
+        if (followFlight == 2)
+        {
+            homeLook = true;
+            if (x >= 1.0)
+            {
+                stopFollow(false);   // restores the saved observer, facing, elevation and FOV exactly
+                return;
+            }
+        }
+        else
+        {
+            camera.fovYDeg = glm::mix(followFlightFov0, 50.0f, (float)u);
+            if (x >= 1.0)
+                followFlight = 0;
+        }
+    }
     followRadiusM = glm::length(followObsEcef);
     obsDir = glm::vec3(followObsEcef / followRadiusM);
     // The sky shaders take max(ground, obsHeightOffset) as the observer's height above sea level,
@@ -4642,7 +4726,17 @@ void SatelliteSim::updateFollow(float dt)
     const glm::vec3 upF = obsDir;
     // A zero offset puts the camera AT the satellite: there is no direction to aim along, and
     // normalize(0) made the elevation NaN — a NaN camera, and every pass drew black.
-    if (followAimLock && glm::length(P - followObsEcef) > 0.01)
+    if (homeLook)
+    {
+        // Flying home: turn from the satellite toward the saved view.
+        const float k = (float)glm::smoothstep(0.0, 1.0, std::min(followFlightT / followFlightDur, 1.0));
+        glm::vec3 f = glm::mix(followFlightFacing0, followSavedFacing, k);
+        if (glm::length(f) > 1e-6f)
+            obsFacing = glm::normalize(f);
+        camera.elDeg = glm::mix(followFlightEl0, followSavedEl, k);
+        camera.fovYDeg = glm::mix(50.0f, followSavedFov, k);
+    }
+    else if (followAimLock && glm::length(P - followObsEcef) > 0.01)
     {
         const glm::dvec3 toSat = glm::normalize(P - followObsEcef);
         const glm::vec3 d = glm::vec3(toSat);

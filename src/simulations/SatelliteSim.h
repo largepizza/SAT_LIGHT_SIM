@@ -2195,9 +2195,20 @@ private:
     float followSavedHeight = 0.0f, followSavedEl = 0.0f, followSavedFov = 70.0f;
     bool hovSelFollowBtn = false, hovFollowAim = false, hovFollowExit = false;
     char followLabel[128] = {};
-    void startFollow(int satIndex);
-    void stopFollow();
+    // Review 22: "Go to" and "Exit" FLY (fly = true: the UI's buttons): from the eye to the follow point (re-evaluated
+    // every frame as the satellite moves) and back to the saved ground spot, the arc slerped and the altitude
+    // interpolated in log space with a rise for long arcs (slow near the ground, fast high up), 2-8 s by the log of
+    // the distance. Any move key ends it at its destination. The harness, cinematics and the settings save keep the
+    // instant jump (fly = false). followFlight: 0 none, 1 to the satellite, 2 home.
+    int        followFlight = 0;
+    double     followFlightT = 0.0, followFlightDur = 0.0;
+    glm::dvec3 followFlightFrom{0.0};
+    float      followSavedGround = 0.0f, followFlightEl0 = 0.0f, followFlightFov0 = 50.0f;
+    glm::vec3  followFlightFacing0{0.0f};
+    void startFollow(int satIndex, bool fly = false);
+    void stopFollow(bool fly = false);
     void updateFollow(float dt);
+    glm::dvec3 followFlightPos(const glm::dvec3 &from, const glm::dvec3 &to, double u) const;
     void buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx);
     void buildFollowHud(const UIInput &inp, UIRenderer &ui);
 
