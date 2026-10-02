@@ -133,6 +133,8 @@ void main()
     vec4 mn = vec4(1e30), mx = vec4(-1e30), m1 = vec4(0.0), m2 = vec4(0.0), ax = vec4(0.0);
     float nBox = 0.0;
     float dNear = 1e30;   // the nearest cloud distance among the new samples (review 19, below)
+    vec3  rMn = vec3(1e30), rMx = vec3(-1e30);   // the same box in plain radiance (review 20b, below)
+    float dW = 0.0, dWs = 0.0;                    // the box's opacity-weighted mean distance (review 20c, below)
     for (int dy = -1; dy <= 1; ++dy)
     for (int dx = -1; dx <= 1; ++dx) {
         ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
@@ -140,8 +142,9 @@ void main()
         vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
         float dq = tFull ? texelFetch(fullDepthTex, clamp(c + ivec2(dx, dy), ivec2(0), gHalf - 1), 0).x
                          : texelFetch(newDepthTex, pq, 0).x;
-        if (dq > 0.0) dNear = min(dNear, dq);
+        if (dq > 0.0) { dNear = min(dNear, dq); float op = 1.0 - s.a; dW += op * dq; dWs += op; }
         if ((dx == 0) != (dy == 0)) ax += s;   // the four axial neighbours (the sparse grid's smoothing)
+        rMn = min(rMn, s.rgb); rMx = max(rMx, s.rgb);
         s = cv2ToMean(s);
         mn = min(mn, s); mx = max(mx, s);
         m1 += s; m2 += s * s; nBox += 1.0;
@@ -290,6 +293,13 @@ void main()
         vec4  bLo = mix(mn - slack, max(mn, m1 - 1.25 * sdBox), mv);
         vec4  bHi = mix(mx + slack, min(mx, m1 + 1.25 * sdBox + vec4(1e-4)), mv);
         vec4 hc = cv2FromMean(clamp(cv2ToMean(hist), bLo, bHi));
+        // Review 20b: and never brighter (or darker) than the new samples' own RADIANCE box. The mean colour divides
+        // by the opacity (floor 0.02): a near-clear pixel carrying light of its own — a beam shaft's air, seen from
+        // inside the Reflect beams — is x50 there, and a cloud-edge history texel clamped up to it and multiplied back
+        // by its own opacity came out as bright blue-white 2x2 blocks along every cloud edge in motion (user snapshot,
+        // 5 km over the Anchorage beam site: "chunkiness" and "bluish effects").
+        vec3 rSl = (rMx - rMn) * mix(1.0, 0.1, smoothstep(0.05, 1.0, motionPx)) + vec3(1e-4);
+        hc.rgb = clamp(hc.rgb, rMn - rSl, rMx + rSl);
         // The other three pixels of the block also take a share of the interpolated new samples.
         // Without it the one pixel refreshed each frame stood out from the three that were not,
         // and noisy (shaded, grazing) surfaces showed a 2x2 dot grid. In motion the shares
@@ -326,6 +336,12 @@ void main()
     // 0, so while the camera pitched each texel took 90% of the distance of the texel that had been there,
     // a different direction (sky above the horizon, a cloud 300 km out below it), and the sky pass split the
     // air at it: horizontal streaks and dark shapes along the horizon whenever the view tilted.
+    // Review 20c: the opacity-weighted mean of the 3x3 new samples' distances instead of this block's one
+    // sample. A translucent haze's mean distance is a noisy per-ray estimate (where along a long thin path its few
+    // samples fell); still, the history above averages it, but in motion each 2x2 block took one sample, the sky
+    // pass split the air in front of the haze tens of km too near, and along distant cloud edges dark 2x2 blocks
+    // came and went (user snapshot 2, walking at 11 km). This frame's samples: nothing to reproject (review 15).
+    if (nd.x > 0.0 && dWs > 1e-3) nd.x = dW / dWs;   // and into the still history below: the same noise, slower
     if (motionPx < 0.5 && shiftPx < 0.5) {
         vec2  hd = imageLoad(outDepth, c).xy;
         float wD = 0.1;

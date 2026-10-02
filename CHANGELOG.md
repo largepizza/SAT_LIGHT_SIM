@@ -17,6 +17,8 @@
 - **HQ photo** (F8, or the sparkle-camera button): a supersampled, settled screenshot at up to 4x the window.
 - **Night horizon.** Dust is lit by city light and the night sky: from low altitude at night a near-black band no
   longer runs along the horizon, and distant clouds no longer show through it as pale blocks.
+- **No more blocky cloud edges in motion**: bright blue-white blocks along cloud edges inside the Reflect beams, and
+  dark blocks along distant cloud edges at night, are gone; the distant horizon cloud band is smooth.
 - **Clouds while climbing or descending slowly** keep their shape instead of softening and smearing vertically.
 - **Far cloud layer.** From high orbit (fading in from 600 km, full at 1500 km) the low clouds are a full-resolution
   layer shaded from the same cloud field and the satellite-imagery morphology, with the mid and high layers over it,

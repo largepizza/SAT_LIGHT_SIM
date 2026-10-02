@@ -1206,9 +1206,18 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   horizon clouds 30-100 km out move ~0.1 px a frame and kept the still weight and wide box, so depth errors built up
   into a soft vertical smear (snapshot 4, beside the Reflect beams — not the shafts: shafts off changed nothing):
   tstab rise 0.87 -> 0.65 (full rate 0.51 at +5.8 ms), review 15's scenarios 1.21 -> 1.18, still floor unchanged.
-  The adaptive rate's parallax threshold is not the lever there (0.2-1 px identical: nothing passes it). Open: dark
-  2x2-texel blocks along far translucent cloud edges in motion (snapshot 2, 11 km): the sky pass's air split takes the
-  NEAREST of four texels' distances, and in motion each sparse block's distance is one sample.
+  The adaptive rate's parallax threshold is not the lever there (0.2-1 px identical: nothing passes it).
+  **Review 20b — the "chunkiness":** (1) **the resolve also clamps history in plain RADIANCE** (the new samples' rgb
+  box, same slack): the mean-colour space divides by opacity (floor 0.02), and inside the Reflect beams every clear
+  pixel carries shaft light at ~0 opacity, i.e. x50 there — a cloud-edge history texel clamped up to it came out as
+  bright blue-white 2x2 blocks along every cloud edge in motion (user snapshot, 5.4 km over the Anchorage site; rise
+  >16 levels 1.0% -> 0.1%). (2) **The resolved distance is the 3x3 new samples' opacity-weighted mean** (`dW/dWs`),
+  in motion and into the still history: a translucent haze's mean distance is a noisy per-ray estimate, in motion a
+  sparse block took its one sample (the depth history is still-only, review 15), the sky pass split the air tens of km
+  too near, and dark 2x2 blocks flickered along distant cloud edges (snapshot 2, 11 km; debugview cloudairsplit in a
+  `path play record=` shows it — transmittance and radiance were smooth). Still, the same noise left a thin dark
+  stair-stepped line there and blocks in the horizon band (snapshot 1). Still-view flicker (420 km limb, 2000 km
+  nadir) identical; review 15's set 1.21 -> 1.18.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
