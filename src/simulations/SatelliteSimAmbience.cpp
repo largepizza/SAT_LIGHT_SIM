@@ -467,7 +467,9 @@ void SatelliteSim::computeAmbienceContext(float dt)
         // Snow falls silently: the rain sound only for the liquid share (as the streaks' temperature).
         const float liquid = glm::smoothstep(-1.0f, 3.0f, cv2EyeTempC);
         float raw = 0.0f;
-        if (cv2FlashMapped)
+        // (Only below 6 km: the map is refreshed by the lightning pass, which is not dispatched once the far
+        // cloud layer takes over from orbit — a jump there would otherwise keep the last rain audible.)
+        if (cv2FlashMapped && (double)obsEyeRadiusM() - satphot::kEarthRadiusM < 6000.0)
         {
             const float *map = (const float *)((const char *)cv2FlashMapped + kCv2RainMapOffset);
             float sum = 0.0f;

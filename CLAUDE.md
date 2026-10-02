@@ -1263,8 +1263,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     pass's thread 1 marches 400 km toward the Sun from the eye (below the shell top; 1 above it) into
     `cv2FlashPad2`; the host eases it (0.15 s, `sunCloudTEased`) into the UBO. It multiplies the Sun disc, glare,
     corona and lens flare (min with the pixel's cloudBlock), the Sun's bloom seed (`sunRefIntensity`), the direct
-    in-scatter of air within ~50 km below 8-14 km (sat_sky.frag), and the key light of RAIN samples within ~40 km
-    (the rain phase's sharp forward lobe drew the Sun's disc in the shafts). A dimmer glow from far cloud remains.
+    in-scatter of air within ~50 km below 8-14 km AND within ~3 km of the eye's line to the Sun (sat_sky.frag; over
+    the whole sky one cumulus in front of the Sun would darken everything), and the key light of RAIN samples within
+    ~100 km (the rain phase's sharp forward lobe drew the Sun's disc in the shafts; with rain_amount 0 the glow is
+    gone). A dim, soft glow remains.
     Bounding the key light of ALL cloud samples near the Sun's direction was tried and reverted: it punched a dark
     hole where the cloud toward the Sun is thin. Harness `state` -> `clouds_v2.sun_cloud_t`.
   - **No concentric rings round the nadir** (snap 8): the ray's start jitter now spans the COARSE interval (two
@@ -1281,7 +1283,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   - **Far cloud layer**: the key light's reflectance is the two-stream slab's at the beam's incidence (`slabRmu`).
   - Looked at, not changed: snap 4 (record 12, 14 km) is the anvil lid's own horizon with the high layer seen past
     it and a taller storm beyond (debug view 7); snap 7 (record 15) shows no visible flicker in the harness (0.04%
-    of pixels past 8 levels, on lit cloud bottoms under a 2-deg Sun); snap 6 descending (record 14, tstab `fall`
+    of pixels past 8 levels, on lit cloud bottoms under a 2-deg Sun); review 21's `set clouds_v2.dust_amount` "blanking"
+    is the cloud history's reset (one noisy frame, then recovers; the settings hash includes it); snap 6 descending (record 14, tstab `fall`
     3.8 vs `rise` 1.8): history lag as the deck expands toward the eye, and the sky TAA's band as the eye's height
     changes.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.

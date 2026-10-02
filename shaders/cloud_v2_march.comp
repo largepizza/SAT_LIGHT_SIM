@@ -690,11 +690,11 @@ void main()
             bool  moonIsKey = false;
             if (sunVis > 0.0 && dot(sunCol, sunCol) > 0.0) {
                 // Review 22: rain near the eye sees the Sun along about the eye's own path to it: x the eye's Sun
-                // transmittance through the clouds (cloud.sunCloudT, 400 km), fading out by ~40 km. The light
+                // transmittance through the clouds (cloud.sunCloudT, 400 km), fading out by ~100 km. The light
                 // march (2 steps for rain) misses a storm blocking a low Sun beyond its reach, and the rain's sharp
                 // forward lobe drew the Sun's disc in the shafts under the storm (user snap 2).
                 keyCol = sunCol * sunVis * cv2.look2.y
-                       * mix(1.0, cloud.sunCloudT, f.rain * exp(-t / 40000.0));
+                       * mix(1.0, cloud.sunCloudT, f.rain * exp(-t / 100000.0));
             } else if (nightK > 0.0) {
                 float moonUp = dot(up, moonDir);
                 keyCol = moonKey * nightK * smoothstep(-0.05, 0.1, moonUp);

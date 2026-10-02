@@ -3476,12 +3476,17 @@ void main() {
         // daylight cost: samples over daylit ground never enter the rolloff at all, so the day
         // side is untouched to six decimal places while SZA 92 drops ~23x at width 0.08.
         float atmTermW8 = mix(1.0, smoothstep(-atmTermW, atmTermW, sampleSunDotGeo), atmTermSpace);
-        // Review 22: the air near the eye and under the cloud tops is in the shade of the clouds the Sun is behind:
-        // x the eye's Sun transmittance (cloud.sunCloudT, 400 km toward the Sun), fading out by ~50 km and above
-        // 8-14 km. Under a storm the haze's forward peak drew a bright Sun-shaped glow where the disc was hidden
-        // (user snap 2). 1 in clear sky and from above the shell.
-        atmTermW8 *= mix(1.0, cloud.sunCloudT, (1.0 - smoothstep(8000.0, 14000.0, h))
-                                              * exp(-(tStart + (float(i) + 0.5) * segLen) / 50000.0));
+        // Review 22: the air near the eye's line to the Sun and under the cloud tops is in the shade of the clouds the
+        // Sun is behind: x the eye's Sun transmittance (cloud.sunCloudT, 400 km toward the Sun), fading with the
+        // sample's distance from that line (~3 km: a cloud's size — one cumulus over the Sun must not darken the
+        // whole sky), out by ~50 km along the ray and above 8-14 km. Under a storm the haze's forward peak drew a
+        // bright Sun-shaped glow where the disc was hidden (user snap 2). 1 in clear sky and from above the shell.
+        {
+            float tS = tStart + (float(i) + 0.5) * segLen;
+            float dPerp = tS * sqrt(max(1.0 - cosA * cosA, 0.0)) + (cosA < 0.0 ? tS : 0.0);
+            atmTermW8 *= mix(1.0, cloud.sunCloudT, (1.0 - smoothstep(8000.0, 14000.0, h))
+                                                  * exp(-tS / 50000.0 - dPerp / 3000.0));
+        }
 
         // Accumulate in-scattered radiance for each particle type.
         // Multiplying by density (densR/densM) weights by how many particles are at this altitude.
