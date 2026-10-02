@@ -597,7 +597,9 @@ void main()
             // itself, as one sample of two steps, instead of dropping into fine steps. The high layer
             // spans the sky and its fine steps were a large share of the march from altitude (perf
             // sprint 2026-09-29). Its density has no erosion, so the coarse read is its fine one.
-            bool coarseThin = !fine && f.sigma > 0.0 && f.thin > 0.9;
+            // Review 22: rain alone (the shafts below a base) likewise: a near-uniform medium with weak structure.
+            // Its fine steps were ~70% of the march standing under a storm (record 10: 22 -> 6.5 ms without rain).
+            bool coarseThin = !fine && f.sigma > 0.0 && (f.thin > 0.9 || f.rain > 0.9);
             if (!fine && !coarseThin) {
                 // Back two steps and on to a JITTERED fine lattice: the start jitter covers only the
                 // first (shortest) step, so without this every fine sample sat on the coarse grid and
@@ -709,7 +711,7 @@ void main()
             // through little of (T < 0.5), or whose pixel footprint is past the setting, gets a 2-step
             // light march over the same length, its first step kept (the surface's self-shadowing):
             // ~10% of the march (perf sprint 2026-09-29).
-            bool lodL = cv2.column3.y > 0.0 && nL > 2 && (T < 0.5 || fp > cv2.column3.y);
+            bool lodL = cv2.column3.y > 0.0 && nL > 2 && (T < 0.5 || fp > cv2.column3.y || f.rain > 0.9);
             // The light march's own jitter (review 16): it took the VIEW march's, so a sample's depth inside a
             // flat cloud top and its light steps' positions moved together, and their product did not average
             // out over the visits — contour rings round the nadir on the Cb heads' lids, at the view step's
@@ -822,7 +824,7 @@ void main()
             // perf win is from altitude). Near the eye, inside or just above the layer (review 9: 9 km at
             // 62 N), two-step samples caught its fibres on some frames and missed them on others: crisp
             // flickering specks over the low clouds' edges.
-            float stepW = (f.thin > 0.9 && fp > 60.0) ? 2.0 * stepF : stepF;
+            float stepW = ((f.thin > 0.9 && fp > 60.0) || (f.rain > 0.9 && !fine)) ? 2.0 * stepF : stepF;
             float Tstep = exp(-f.sigma * stepW);
             float w     = T * (1.0 - Tstep);
             L    += w * S;
