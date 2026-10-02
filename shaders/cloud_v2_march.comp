@@ -86,6 +86,7 @@ vec2 optDepth(vec3 p, vec3 d, float segTotal) {
 
 const float kCityUpwellStrength = 0.004;
 const float kNightFloor         = 0.002;
+const float kDustCityK          = 1.0;     // dust's share of the fog's city glow (review 20)
 const float kCityCompressK      = 0.08;
 float cityBrightness(float lum) { float raw = max(0.0, lum - kNightFloor); return raw / (raw + kCityCompressK); }
 
@@ -955,16 +956,23 @@ void main()
                                                           + phMS * msOctaves(od) * fs + 0.9 * fd + 0.3 * fi)
                            + moonF * ((vec3(phMoonSS * (1.0 - fi)) + fi * phIM) * exp(-od) + phMoonMS * 0.5 * fs)
                            + skyF * mix(0.9, 0.5, covA);
-                if (nightF > 0.0 && fs > 0.0) {                    // city light glowing in the fog
+                if (nightF > 0.0) {
+                    // City light glowing in the fog and the dust. Review 20: the dust had only the Moon by
+                    // night, so from inside its band (a long horizontal path) it hid the city-lit sky behind it
+                    // and gave nothing back: a near-black band along every night horizon, gone once the eye
+                    // climbed out of the band (user snapshot 3), and where a cloud's half-res silhouette hid the
+                    // dust behind it, a pale blocky band (snapshot 1). Dust is lit by the cities over a wider
+                    // area (it is km thick; the map at ~80 km), and like everything at night by the moonless sky.
                     vec3  dE  = pp.dirE;
                     vec2  uv  = vec2((atan(dE.y, dE.x) + PI) / (2.0 * PI), (0.5 * PI - asin(clamp(dE.z, -1.0, 1.0))) / PI);
-                    vec3  cr  = textureLod(earthNightTex, uv, 3.0).rgb;
+                    vec3  cr  = textureLod(earthNightTex, uv, mix(3.0, 4.0, fd)).rgb;
                     float lum = dot(cr, vec3(0.2126, 0.7152, 0.0722));
                     // In proportion to the lights (a full core at ~0.2): cityBrightness saturates by a small
                     // town, so any fog patch near a city glowed at full strength — from altitude a bright tan
                     // slab over Denver read as a dust storm (user review 2, snapshot 2).
                     float cb  = clamp(max(lum - kNightFloor, 0.0) / 0.2, 0.0, 1.0);
-                    S += (cr / max(lum, 0.001)) * cb * nightF * fs * kCityUpwellStrength * cloud.ambientGain;
+                    S += (cr / max(lum, 0.001)) * cb * nightF * (fs + kDustCityK * fd) * kCityUpwellStrength * cloud.ambientGain
+                       + kMoonColor * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z) * nightF * (fd + fi);
                 }
                 S *= alb;
                 float Ts = exp(-sg * dt);

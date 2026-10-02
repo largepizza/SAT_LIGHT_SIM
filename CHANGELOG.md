@@ -15,6 +15,9 @@
   blur. The automation harness drives the same paths (`cine`, `path`); `tools/harness/scripts/tour.satcmd` is an
   application tour built with it.
 - **HQ photo** (F8, or the sparkle-camera button): a supersampled, settled screenshot at up to 4x the window.
+- **Night horizon.** Dust is lit by city light and the night sky: from low altitude at night a near-black band no
+  longer runs along the horizon, and distant clouds no longer show through it as pale blocks.
+- **Clouds while climbing or descending slowly** keep their shape instead of softening and smearing vertically.
 - **Far cloud layer.** From high orbit (fading in from 600 km, full at 1500 km) the low clouds are a full-resolution
   layer shaded from the same cloud field and the satellite-imagery morphology, with the mid and high layers over it,
   instead of the half-resolution volumetric march: real-imagery detail down to the pixel, no temporal flicker, and

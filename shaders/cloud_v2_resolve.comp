@@ -45,6 +45,33 @@ layout(std430, set = 0, binding = 8) readonly buffer TileBuf { uint tPad, tDispX
 
 ivec2 gHalf, gQs;
 bool  gAdaptive = false;
+// Review 20: the history is read Catmull-Rom (9 bilinear taps, sky_taa.comp's form), not bilinear. Rising or
+// sliding slowly, far clouds move a fraction of a pixel a frame and keep the still weight (95% history), and a
+// bilinear read at a fractional offset is a small blur that compounds every frame: horizon clouds went soft and
+// smeared vertically while climbing (user snapshot 4, beside the Reflect beams), sharp again once still.
+vec4 sampleHistory(vec2 uv, vec2 size)
+{
+    vec2 sp  = uv * size;
+    vec2 tp1 = floor(sp - 0.5) + 0.5;
+    vec2 f   = sp - tp1;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 tp0 = (tp1 - 1.0) / size, tp3 = (tp1 + 2.0) / size, tp12 = (tp1 + w2 / w12) / size;
+    vec4 r = textureLod(histColorTex, vec2(tp0.x,  tp0.y),  0.0) * (w0.x  * w0.y)
+           + textureLod(histColorTex, vec2(tp12.x, tp0.y),  0.0) * (w12.x * w0.y)
+           + textureLod(histColorTex, vec2(tp3.x,  tp0.y),  0.0) * (w3.x  * w0.y)
+           + textureLod(histColorTex, vec2(tp0.x,  tp12.y), 0.0) * (w0.x  * w12.y)
+           + textureLod(histColorTex, vec2(tp12.x, tp12.y), 0.0) * (w12.x * w12.y)
+           + textureLod(histColorTex, vec2(tp3.x,  tp12.y), 0.0) * (w3.x  * w12.y)
+           + textureLod(histColorTex, vec2(tp0.x,  tp3.y),  0.0) * (w0.x  * w3.y)
+           + textureLod(histColorTex, vec2(tp12.x, tp3.y),  0.0) * (w12.x * w3.y)
+           + textureLod(histColorTex, vec2(tp3.x,  tp3.y),  0.0) * (w3.x  * w3.y);
+    return vec4(max(r.rgb, vec3(0.0)), clamp(r.a, 0.0, 1.0));
+}
+
 bool tileFull(ivec2 p)
 {
     if (!gAdaptive) return false;
@@ -224,7 +251,7 @@ void main()
     // The texel's whole move since last frame, rotation included (motionPx below is PARALLAX only).
     float shiftPx = valid ? length((uvPrev - (vec2(c) + 0.5) / vec2(halfSize)) * vec2(halfSize)) : 1e9;
     if (valid) {
-        vec4 hist = textureLod(histColorTex, uvPrev, 0.0);
+        vec4 hist = sampleHistory(uvPrev, vec2(halfSize));
         // New-sample weight: look2.w for a still view (low: an exponential blend at weight a keeps
         // sqrt(a / (2 - a)) of the per-sample noise — 38% at 0.25, which showed as grain on
         // sharp-edged surfaces), rising with the reprojection's motion so a moving view doesn't smear.
@@ -251,15 +278,15 @@ void main()
         // at 1 each pixel alternated between its own ray and its neighbours' estimate, a checkerboard
         // flicker). Moving: motion.y ("History weight moving"), reached from a quarter pixel of parallax:
         // a fixed 0.35 from 0.5-4 px left small clouds ghosting behind themselves (user snapshot 4).
-        float wNew     = mix(cv2.look2.w, max(cv2.look2.w, cv2.motion.y), smoothstep(0.25, 2.0, motionPx));
+        float wNew     = mix(cv2.look2.w, max(cv2.look2.w, cv2.motion.y), smoothstep(0.05, 1.0, motionPx));
         // A little slack on the box: the clamp is against samples up to two pixels away.
         // A still view has nothing to reject, and the box (from the quarter-grid samples around
         // this pixel, not its own rays) pulled every far pixel toward its neighbours: blocky 2x2
         // squares. So the box widens when the reprojection barely moves, and is tight in motion.
-        vec4 slack = (mx - mn) * mix(1.0, 0.1, smoothstep(0.3, 2.0, motionPx)) + vec4(1e-4);
+        vec4 slack = (mx - mn) * mix(1.0, 0.1, smoothstep(0.05, 1.0, motionPx)) + vec4(1e-4);
         // In motion the box is the neighbourhood's mean +- 1.25 sd (variance clipping), inside min/max:
         // a small cloud next to clear sky made a min/max box spanning both, so its ghost passed.
-        float mv  = smoothstep(0.5, 3.0, motionPx);
+        float mv  = smoothstep(0.1, 1.5, motionPx);
         vec4  bLo = mix(mn - slack, max(mn, m1 - 1.25 * sdBox), mv);
         vec4  bHi = mix(mx + slack, min(mx, m1 + 1.25 * sdBox + vec4(1e-4)), mv);
         vec4 hc = cv2FromMean(clamp(cv2ToMean(hist), bLo, bHi));

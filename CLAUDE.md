@@ -1195,6 +1195,20 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   **The sea:** the sky reflection's march was gated on reflStr (Fresnel ~0 within ~34 deg of the nadir) and the foam and
   surf take reflColor as sky light, so at dusk a hard light-blue disc sat under the observer; the open ocean's water level
   decoded to 2e-5 m (a "lake"); reflected clouds come only from on-screen texels.
+- **Review 20 (2026-10-01, the user's night snapshots over SoCal):** **dust is lit by city light and the moonless sky
+  at night** (cloud_v2_march.comp fog/dust march; the fog had city light, the dust only the Moon): from inside its band
+  (eye under ~1.5 km) a long horizontal path through it hid the city-lit sky and gave nothing back — a near-black band
+  along every night horizon that vanished on climbing (horizon 7 -> 42 levels; dust off reads ~60), and where a far
+  cloud's half-res silhouette hid the dust behind it, a pale blocky band (snapshot 1: lower contrast now, its blocks
+  remain). The dust reads the night map at ~80 km (`mix(3, 4, fd)`), `kDustCityK` 1. **The resolve reads its history
+  Catmull-Rom** (sky_taa.comp's 9-tap form) and **"still" is stricter**: the moving weight, the tight box and variance
+  clipping ramp in from 0.05 / 0.05 / 0.1 px of parallax (were 0.25 / 0.3 / 0.5). Climbing at the player's Q speed,
+  horizon clouds 30-100 km out move ~0.1 px a frame and kept the still weight and wide box, so depth errors built up
+  into a soft vertical smear (snapshot 4, beside the Reflect beams — not the shafts: shafts off changed nothing):
+  tstab rise 0.87 -> 0.65 (full rate 0.51 at +5.8 ms), review 15's scenarios 1.21 -> 1.18, still floor unchanged.
+  The adaptive rate's parallax threshold is not the lever there (0.2-1 px identical: nothing passes it). Open: dark
+  2x2-texel blocks along far translucent cloud edges in motion (snapshot 2, 11 km): the sky pass's air split takes the
+  NEAREST of four texels' distances, and in motion each sparse block's distance is one sample.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
