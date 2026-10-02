@@ -42,7 +42,7 @@ static constexpr int kIconStudio = 14;    // pixel--studio.png — studio lighti
 static constexpr int kIconMaximize = 15;  // pixel--maximize.png — pop the 3D view out / restore
 static constexpr int kIconTrack = 16;     // pixel--track.png — "Track": lock the camera onto the satellite
 static constexpr int kIconPhoto = 17;
-static constexpr int kIconFilm = 18;      // pixel--film.png — the Cinematics window (review 17)     // pixel--photo.png — HQ photo (supersampled screenshot)
+static constexpr int kIconFilm = 18; // pixel--film.png — the Cinematics window (review 17)     // pixel--photo.png — HQ photo (supersampled screenshot)
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
 // are ICON-ONLY: the button's name is the tooltip, never a sentence. `kSelIconBtnMin` matches the view
@@ -149,7 +149,7 @@ bool settingsTabIsAdvanced(int i) { return (i >= 6 && i <= 10) || i == 12 || i =
 int settingsTabIndexByName(const std::string &name)
 {
     if (name.size() == 6 && tolower((unsigned char)name[0]) == 'a' && tolower((unsigned char)name[1]) == 'u')
-        return 9;   // "Aurora": the tab's old name
+        return 9; // "Aurora": the tab's old name
     for (int i = 0; i < kSettingsTabCount; ++i)
     {
         const char *t = kSettingsTabNames[i];
@@ -370,7 +370,7 @@ namespace Pal
     // or the Earth's limb is invisible.
     constexpr Clay_Color chipIdle = {0, 0, 0, 84};
     constexpr Clay_Color chipHover = {0, 0, 0, 150};
-    constexpr Clay_Color chipOn = {150, 20, 20, 150};      // the accent, translucent
+    constexpr Clay_Color chipOn = {150, 20, 20, 150}; // the accent, translucent
     constexpr Clay_Color chipOnHover = {150, 20, 20, 205};
 }
 
@@ -465,8 +465,9 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // camera/observer/settings they change. A no-op outside a harness run.
     harnessUi_ = &ui;
     harnessTick();
-    cineTick(dt);   // review 17: a playing / exporting cinematic owns the camera and the clock
-    if (snapshotKeyPending) {       // KB_SAVE_SNAPSHOT (default F9)
+    cineTick(dt); // review 17: a playing / exporting cinematic owns the camera and the clock
+    if (snapshotKeyPending)
+    { // KB_SAVE_SNAPSHOT (default F9)
         snapshotKeyPending = false;
         savePerfSnapshot(ui.input().dt);
         snprintf(screenshotToastText, sizeof(screenshotToastText), "Snapshot saved (perf_profiles/profile_log.jsonl)");
@@ -1343,8 +1344,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                  {.layout = {.sizing = {CLAY_SIZING_FIXED(vertical ? kTickW : kTickLen),
                                         CLAY_SIZING_FIXED(vertical ? kTickLen : kTickW)}},
                   .backgroundColor = Pal::reticule,
-                  .floating = {.offset = {sx + ticks[i].ox, sy + ticks[i].oy}, .zIndex = 4,
-                               .attachTo = CLAY_ATTACH_TO_ROOT}}) {}
+                  .floating = {.offset = {sx + ticks[i].ox, sy + ticks[i].oy}, .zIndex = 4, .attachTo = CLAY_ATTACH_TO_ROOT}}) {}
         }
     }
 
@@ -1387,8 +1387,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
             if (selPhotLine[0][0])
             {
                 Clay_String lineStr{false, (int32_t)strlen(selPhotLine[0]), selPhotLine[0]};
-                CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12),
-                                                      .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
             }
             CLAY(CLAY_ID("SelSatButtons"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                        .childGap = 6,
@@ -1432,8 +1431,7 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
         traceChrome.h = std::min(380.0f, std::max(300.0f, inp.screenH * 0.5f));
     }
     // Live mode: retrace at up to kTraceLiveHz, only when the result would change.
-    if (traceLive && std::chrono::steady_clock::now() - traceLastRetrace >=
-                         std::chrono::duration<double>(1.0 / kTraceLiveHz) &&
+    if (traceLive && std::chrono::steady_clock::now() - traceLastRetrace >= std::chrono::duration<double>(1.0 / kTraceLiveHz) &&
         traceStale())
         computeSelectedTrace();
     // ── Per frame: the "now" marker, and the traced satellite's magnitude at the current time,
@@ -1484,11 +1482,13 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
 
     static char titleBuf[128];
     snprintf(titleBuf, sizeof(titleBuf), "Magnitude trace: %s", traceTitle);
-    auto text = [&](const char *s, Clay_Color c, float size) {
+    auto text = [&](const char *s, Clay_Color c, float size)
+    {
         Clay_String str{false, (int32_t)strlen(s), s};
         CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
     };
-    auto button = [&](int id, const char *label, bool &hov, const char *tip) {
+    auto button = [&](int id, const char *label, bool &hov, const char *tip)
+    {
         bool clicked = false;
         CLAY(CLAY_IDI("TraceBtn", id), {.layout = {
                                             .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(24)},
@@ -1507,7 +1507,8 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
         }
         return clicked;
     };
-    auto legend = [&](int id, Clay_Color c, const char *label) {
+    auto legend = [&](int id, Clay_Color c, const char *label)
+    {
         CLAY(CLAY_IDI("TraceLegendSwatch", id), {.layout = {.sizing = {CLAY_SIZING_FIXED(14), CLAY_SIZING_FIXED(3)}},
                                                  .backgroundColor = c}) {}
         text(label, Pal::textDim, 11);
@@ -1520,7 +1521,8 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
     const float plotH = plotData.found ? plotData.boundingBox.height : 0.0f;
     const Clay_Color kPhaseCol = {255, 173, 77, 220};
     auto tick = [&](Clay_String prefix, int i, const char *label, Clay_Color c, Clay_FloatingAttachPointType elemPt,
-                    Clay_FloatingAttachPointType parentPt, float ox, float oy) {
+                    Clay_FloatingAttachPointType parentPt, float ox, float oy)
+    {
         Clay_String str{false, (int32_t)strlen(label), label};
         CLAY(CLAY_SIDI(prefix, (uint32_t)i),
              {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}},
@@ -1609,17 +1611,17 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                         for (int i = 0; i < traceMagTickCount; ++i)
                             if (i % magEvery == 0)
                                 tick(CLAY_STRING("TraceMagTick"), i, traceMagTickBuf[i], Pal::textDim, CLAY_ATTACH_POINT_RIGHT_CENTER,
-                                 CLAY_ATTACH_POINT_LEFT_TOP, -6.0f, (1.0f - traceMagTickFrac[i]) * plotH);
+                                     CLAY_ATTACH_POINT_LEFT_TOP, -6.0f, (1.0f - traceMagTickFrac[i]) * plotH);
                         for (int i = 0; i < kTracePhaseTicks; ++i)
                             if (i % phaseEvery == 0)
                                 tick(CLAY_STRING("TracePhaseTick"), i, kPhaseTicks[i], kPhaseCol, CLAY_ATTACH_POINT_LEFT_CENTER,
-                                 CLAY_ATTACH_POINT_RIGHT_TOP, 6.0f, plotH * i / (kTracePhaseTicks - 1));
+                                     CLAY_ATTACH_POINT_RIGHT_TOP, 6.0f, plotH * i / (kTracePhaseTicks - 1));
                         for (int i = 0; i < kTraceTimeTicks; ++i)
                             if (i % timeEvery == 0)
                                 tick(CLAY_STRING("TraceTimeTick"), i, traceTimeTickBuf[i], Pal::textDim,
-                                 i == 0 ? CLAY_ATTACH_POINT_LEFT_TOP
-                                        : (i == kTraceTimeTicks - 1 ? CLAY_ATTACH_POINT_RIGHT_TOP : CLAY_ATTACH_POINT_CENTER_TOP),
-                                 CLAY_ATTACH_POINT_LEFT_BOTTOM, plotW * i / (kTraceTimeTicks - 1), 4.0f);
+                                     i == 0 ? CLAY_ATTACH_POINT_LEFT_TOP
+                                            : (i == kTraceTimeTicks - 1 ? CLAY_ATTACH_POINT_RIGHT_TOP : CLAY_ATTACH_POINT_CENTER_TOP),
+                                     CLAY_ATTACH_POINT_LEFT_BOTTOM, plotW * i / (kTraceTimeTicks - 1), 4.0f);
                     }
                 }
                 if (traceStatus[0])
@@ -1780,7 +1782,8 @@ void SatelliteSim::updateViewerView(const UIInput &inp, UIRenderer &ui)
     // Hit-tested against the two image elements' laid-out boxes (the PREVIOUS frame's, the established
     // idiom) and gated on the preset chips' hover flags: without that gate a click on a chip would also
     // grab the camera and orbit the model under the pointer.
-    auto overBox = [&](const Clay_ElementData &d) {
+    auto overBox = [&](const Clay_ElementData &d)
+    {
         return d.found && inp.mouseX >= d.boundingBox.x && inp.mouseX < d.boundingBox.x + d.boundingBox.width &&
                inp.mouseY >= d.boundingBox.y && inp.mouseY < d.boundingBox.y + d.boundingBox.height;
     };
@@ -1978,7 +1981,8 @@ void SatelliteSim::buildViewTitleIcons(const UIInput &inp, UIRenderer &ui, bool 
     const bool isFollowed = followActive && followSatIndex == viewerSatIndex;
     bool *hov = popout ? hovViewerTitleBtn : hovInfoTitleBtn;
     const int idBase = popout ? 0 : 2; // unique Clay ids across the two windows
-    auto icon = [&](int k, int iconIdx, bool on, const char *name) {
+    auto icon = [&](int k, int iconIdx, bool on, const char *name)
+    {
         bool clicked = false;
         const float sz = std::max(24.0f, (float)fs(12) + 12.0f);
         CLAY(CLAY_SIDI(CLAY_STRING("ViewTitleBtn"), idBase + k),
@@ -2034,20 +2038,21 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
         "SATELLITE", "ORBIT", "PHOTOMETRY", "OBSERVER", "CAMERA", "RENDER", "CHECK"};
     static const char *kOrbitLabels[kViewerOrbitRows] = {"Altitude", "Inclination", "RAAN", "Period", "Power"};
 
-    auto text = [&](const char *s, Clay_Color c, float size) {
+    auto text = [&](const char *s, Clay_Color c, float size)
+    {
         Clay_String str{false, (int32_t)strlen(s), s};
         CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
     };
     // A full-width button of a section; `on` shows an active state.
-    auto button = [&](int id, const char *label, const char *tip, bool on = false) {
+    auto button = [&](int id, const char *label, const char *tip, bool on = false)
+    {
         bool clicked = false;
         bool &hov = hovViewerBtn[id];
         CLAY(CLAY_IDI("ViewerBtn", id), {.layout = {
                                              .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED((float)fs(11) + 12.0f)},
                                              .padding = {8, 8, 0, 0},
                                              .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}},
-                                         .backgroundColor = hov ? (on ? Pal::btnAccentHv : Pal::btnHover)
-                                                                : (on ? Pal::btnAccent : Pal::btnIdle),
+                                         .backgroundColor = hov ? (on ? Pal::btnAccentHv : Pal::btnHover) : (on ? Pal::btnAccent : Pal::btnIdle),
                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
         {
             bool n = Clay_Hovered();
@@ -2057,15 +2062,15 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
             clicked = n && inp.lmbPressed;
             ui.tooltip(inp, n, tip, fs(11));
             Clay_String ls{false, (int32_t)strlen(label), label};
-            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11),
-                                            .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
         }
         return clicked;
     };
     // A collapsible section: header + body, the Clouds tab's form (buildCloudSliderSections). "+"/"-"
     // rather than a chevron glyph — the font atlas bakes ASCII 32-126 only — and the open state is
     // session-only, not a preference.
-    auto infoSection = [&](int si, const std::function<void()> &body) {
+    auto infoSection = [&](int si, const std::function<void()> &body)
+    {
         bool open = infoSectionOpen[si];
         CLAY(CLAY_IDI("InfoSectHdr", si), {.layout = {
                                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
@@ -2120,8 +2125,8 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                 // The black backing is on the PARENT: Clay emits an element's CUSTOM command before the
                 // RECTANGLE for its own backgroundColor, which would cover the image (see UIImage).
                 CLAY(CLAY_ID("ViewerImageFrameMini"), {.layout = {
-                                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(viewerBandH)}},
-                                                      .backgroundColor = {0, 0, 0, 255}})
+                                                           .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(viewerBandH)}},
+                                                       .backgroundColor = {0, 0, 0, 255}})
                 {
                     CLAY(CLAY_ID("ViewerImageMini"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
                                                       .custom = {.customData = meshRenderer.viewerRendered()
@@ -2159,8 +2164,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                     else if (isSelected)
                                         text("Selected in the sky", Pal::textDim, 11);
                                     if (tracked && followActive && followSatIndex == viewerSatIndex)
-                                        text("Following it (Go to)", Pal::textDim, 11);
-                                });
+                                        text("Following it (Go to)", Pal::textDim, 11); });
                     // ── ORBIT: the rows the selection panel used to carry ───────────────────────
                     infoSection(1, [&]()
                                 {
@@ -2186,8 +2190,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                                                             .fontSize = fs(11),
                                                                             .wrapMode = CLAY_TEXT_WRAP_NONE}));
                                         }
-                                    }
-                                });
+                                    } });
                     // ── PHOTOMETRY: the CPU evaluator on the viewed satellite + the pass trace ──
                     infoSection(2, [&]()
                                 {
@@ -2198,8 +2201,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                     {
                                         selectSatellite(viewerSatIndex);
                                         computeSelectedTrace();
-                                    }
-                                });
+                                    } });
                     // ── OBSERVER: where it is in the parked observer's sky ─────────────────────
                     infoSection(3, [&]()
                                 {
@@ -2208,8 +2210,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                             text(line, Pal::textDim, 11);
                                     if (button(9, viewerMarkers ? "Markers: on" : "Markers: off", "Markers",
                                                viewerMarkers))
-                                        viewerMarkers = !viewerMarkers;
-                                });
+                                        viewerMarkers = !viewerMarkers; });
                     // ── CAMERA: the presets' long tail (the chips carry the quick ones) ────────
                     infoSection(4, [&]()
                                 {
@@ -2225,8 +2226,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                         viewerYawDeg = 35.0f;
                                         viewerPitchDeg = 18.0f;
                                         viewerAim = 0;
-                                    }
-                                });
+                                    } });
 
                     // ── RENDER ─────────────────────────────────────────────────────────────────
                     infoSection(5, [&]()
@@ -2249,8 +2249,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                     // Glare on the glints that make the flare you see (recordViewerGlare):
                                     // Live light and a tracked satellite only.
                                     if (button(11, viewerGlare ? "Glare: on" : "Glare: off", "Glare", viewerGlare))
-                                        viewerGlare = !viewerGlare;
-                                });
+                                        viewerGlare = !viewerGlare; });
 
                     // ── CHECK: the render-vs-lobes cross-check ─────────────────────────────────
                     infoSection(6, [&]()
@@ -2258,15 +2257,15 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                     if (button(6, "Photometric check", "Photometric check"))
                                         viewerCheckRequested = true;
                                     if (viewerCheckLine[0])
-                                        text(viewerCheckLine, Pal::textDim, 11);
-                                });
+                                        text(viewerCheckLine, Pal::textDim, 11); });
                 }
                 // A visible thumb on the section list: without it nothing says the list continues
                 // below the window's edge (the tab bodies are long and only the summary is in view).
                 ui.scrollbar(CLAY_ID("InfoSections"));
             }
         },
-        [&]() { buildViewTitleIcons(inp, ui, false); }, isSelected);
+        [&]()
+        { buildViewTitleIcons(inp, ui, false); }, isSelected);
 }
 
 // ─── buildViewPopoutWindow (the maximized 3D view) ───────────────────────────
@@ -2316,7 +2315,8 @@ void SatelliteSim::buildViewPopoutWindow(const UIInput &inp, UIRenderer &ui)
                 buildViewerMarkerLabels(1);
             }
         },
-        [&]() { buildViewTitleIcons(inp, ui, true); }, isSelected);
+        [&]()
+        { buildViewTitleIcons(inp, ui, true); }, isSelected);
 }
 
 // ─── viewTitleIconsHovered ───────────────────────────────────────────────────
@@ -2326,9 +2326,12 @@ bool SatelliteSim::viewTitleIconsHovered(int winId) const
 {
     switch (winId)
     {
-    case 3: return hovViewerTitleBtn[0] || hovViewerTitleBtn[1];
-    case 4: return hovInfoTitleBtn[0] || hovInfoTitleBtn[1];
-    default: return false;
+    case 3:
+        return hovViewerTitleBtn[0] || hovViewerTitleBtn[1];
+    case 4:
+        return hovInfoTitleBtn[0] || hovInfoTitleBtn[1];
+    default:
+        return false;
     }
 }
 
@@ -2411,7 +2414,8 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
         snprintf(distBuf, sizeof(distBuf), "%.1f m away", d);
     else
         snprintf(distBuf, sizeof(distBuf), "%.2f km away", d / 1000.0);
-    auto chipButton = [&](const char *id, const char *label, bool &hov, const char *tip) {
+    auto chipButton = [&](const char *id, const char *label, bool &hov, const char *tip)
+    {
         bool clicked = false;
         Clay_String ids{false, (int32_t)strlen(id), id};
         CLAY(CLAY_SID(ids), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(11) + 11.0f)},
@@ -2438,9 +2442,7 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
                                            .layoutDirection = CLAY_LEFT_TO_RIGHT},
                                 .backgroundColor = Pal::panelBgFade,
                                 .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
-                                .floating = {.offset = {0.0f, 12.0f}, .zIndex = 6,
-                                             .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP},
-                                             .attachTo = CLAY_ATTACH_TO_ROOT}})
+                                .floating = {.offset = {0.0f, 12.0f}, .zIndex = 6, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
         Clay_String ls{false, (int32_t)strlen(followLabel), followLabel};
         CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
@@ -2553,7 +2555,8 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
                                                       .clip = {.horizontal = true}})
             {
                 CLAY_TEXT(titleStr, CLAY_TEXT_CONFIG({.textColor = titleHighlight ? Pal::reticule : Pal::textPrimary,
-                                                      .fontSize = fs(16), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                                                      .fontSize = fs(16),
+                                                      .wrapMode = CLAY_TEXT_WRAP_NONE}));
             }
 
             if (titleExtras)
@@ -2802,8 +2805,7 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                 CLAY(CLAY_IDI("ConstViewBtn", ci), {.layout = {
                                                         .sizing = {CLAY_SIZING_FIXED(38), CLAY_SIZING_FIXED(18)},
                                                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                                    .backgroundColor = hasMesh ? (hovView ? Pal::btnHover : Pal::btnIdle)
-                                                                               : Pal::rowDisabled,
+                                                    .backgroundColor = hasMesh ? (hovView ? Pal::btnHover : Pal::btnIdle) : Pal::rowDisabled,
                                                     .cornerRadius = CLAY_CORNER_RADIUS(3)})
                 {
                     bool n = Clay_Hovered();
@@ -2823,9 +2825,10 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                     hovViewConst[ci] = n;
                     ui.tooltip(inp, n, hasMesh ? "Select one of this constellation's satellites (the one highest in your sky) "
                                                  "and view it in 3D where it is now - a quick way to find a station"
-                                               : "No 3D model: this type uses the legacy two-surface model", fs(11));
+                                               : "No 3D model: this type uses the legacy two-surface model",
+                               fs(11));
                     CLAY_TEXT(CLAY_STRING("VIEW"), CLAY_TEXT_CONFIG({.textColor = hasMesh ? Pal::textPrimary : Pal::textHint,
-                                                                   .fontSize = fs(10)}));
+                                                                     .fontSize = fs(10)}));
                 }
             }
             CLAY(CLAY_IDI("ConstName", ci), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
@@ -3198,7 +3201,7 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
                       CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
         }
     }
-    {   // Movement speed near the ground (review 6): WASD speed is this many times the height above
+    { // Movement speed near the ground (review 6): WASD speed is this many times the height above
         // the ground per second, up to the orbital speed. Clouds and small things can be explored.
         CloudSlider mv[] = {
             {"Move speed (x height per s)", &moveSpeedPerHeight, 0.05f, 5.0f, 0.05f, "%.2f", 210},
@@ -3474,7 +3477,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         }
     }
 
-    {   // HQ photo (review 13, requestPhoto): the resolution in window sizes, and how many frames the
+    { // HQ photo (review 13, requestPhoto): the resolution in window sizes, and how many frames the
         // clouds and the sky TAA accumulate first (the window freezes for that long).
         CloudSlider ph[] = {
             {"HQ photo resolution (x window)", &photoScaleSetting, 1.0f, 4.0f, 1.0f, "%.0f", 227},
@@ -4505,12 +4508,14 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
     if (running)
         snprintf(bulkProgressBuf, sizeof(bulkProgressBuf), "Cancel (%.0f%%)", 100.0f * bulkProgress.load());
 
-    auto label = [&](const char *s, Clay_Color c, float size) {
+    auto label = [&](const char *s, Clay_Color c, float size)
+    {
         Clay_String str{false, (int32_t)strlen(s), s};
         CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
     };
     // One labelled row with a button; returns true when the button was clicked.
-    auto row = [&](int id, const char *name, const char *value, bool &hov, const char *tip) {
+    auto row = [&](int id, const char *name, const char *value, bool &hov, const char *tip)
+    {
         bool clicked = false;
         CLAY(CLAY_IDI("BulkRow", id), {.layout = {
                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
@@ -5906,11 +5911,13 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
     }
     std::vector<CineKey> &keys = cineKeys();
     CineShot &shot = cine_.shots[cineShot_];
-    auto text = [&](const char *str, Clay_Color c, float size) {
+    auto text = [&](const char *str, Clay_Color c, float size)
+    {
         Clay_String cs{false, (int32_t)strlen(str), str};
         CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
     };
-    auto btnH = [&](Clay_ElementId id, const char *label, bool &hov, const char *tip, bool on = false) {
+    auto btnH = [&](Clay_ElementId id, const char *label, bool &hov, const char *tip, bool on = false)
+    {
         bool clicked = false;
         CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(20))},
                              .padding = {8, 8, 0, 0},
@@ -5929,10 +5936,12 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
         }
         return clicked;
     };
-    auto btn = [&](int id, const char *label, const char *tip, bool on = false) {
+    auto btn = [&](int id, const char *label, const char *tip, bool on = false)
+    {
         return btnH(CLAY_IDI("CineBtn", id), label, hovCineBtn[id], tip, on);
     };
-    auto row = [&](int id, const std::function<void()> &f) {
+    auto row = [&](int id, const std::function<void()> &f)
+    {
         CLAY(CLAY_IDI("CineRow", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                   .childGap = 4,
                                                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
@@ -5943,7 +5952,8 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
     };
     // A slider hit-tested on its own track's laid-out box (last frame's layout).
     static char sliderLab[8][64], sliderVal[8][32];
-    auto slider = [&](int id, const char *label, float &v, float vmin, float vmax, float step, const char *fmt) {
+    auto slider = [&](int id, const char *label, float &v, float vmin, float vmax, float step, const char *fmt)
+    {
         bool changed = false;
         const Clay_ElementId tid = CLAY_IDI("CineSliderTrack", id);
         const Clay_ElementData td = Clay_GetElementData(tid);
@@ -6013,7 +6023,8 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                 if (!cineStatus_.empty())
                     text(cineStatus_.c_str(), {230, 190, 120, 255}, 11);
 
-                row(0, [&]() {
+                row(0, [&]()
+                    {
                     if (btn(0, "< Shot", "Previous shot") && cineShot_ > 0)
                     {
                         --cineShot_;
@@ -6039,12 +6050,12 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     {
                         cine_.shots.erase(cine_.shots.begin() + cineShot_);
                         cineShot_ = std::max(0, cineShot_ - 1);
-                    }
-                });
+                    } });
                 // cineKeys() recreates a shot if the last was deleted: re-take the references.
                 std::vector<CineKey> &K = cineKeys();
                 CineShot &S = cine_.shots[cineShot_];
-                row(5, [&]() {
+                row(5, [&]()
+                    {
                     if (btn(4, S.settings.is_null() ? "Store look" : "Clear look",
                             S.settings.is_null() ? "Store the current clouds, lighting, constellations and render settings with this shot (applied at its cut)"
                                                  : "Forget this shot's stored settings",
@@ -6067,8 +6078,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     {
                         S.simStartValid = true;
                         S.simStart = (double)simDayJ2000 * 86400.0 + simSecInDay;
-                    }
-                });
+                    } });
 
                 // Keys
                 CLAY(CLAY_ID("CineKeys"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
@@ -6085,7 +6095,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     {
                         const CineKey k = K[i];
                         const double altKm = k.alt / 1000.0;
-                        if (S.followSat >= 0)   // a follow shot's keys are offsets from the satellite (m)
+                        if (S.followSat >= 0) // a follow shot's keys are offsets from the satellite (m)
                             snprintf(cineKeyBuf_[i], sizeof(cineKeyBuf_[i]), "%2d %5.1fs  offset %.0f, %.0f, %.0f m  fov %.0f",
                                      i + 1, k.t, k.ox, k.oy, k.oz, k.fov);
                         else
@@ -6133,7 +6143,8 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     if (del >= 0)
                         K.erase(K.begin() + del);
                 }
-                row(1, [&]() {
+                row(1, [&]()
+                    {
                     if (btn(5, "+ Key at view", "Add the current view as a key, 2 s after the last"))
                     {
                         CineKey n = cineCurrentPose();
@@ -6144,8 +6155,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                             S.simStart = n.simT;
                         }
                         K.push_back(n);
-                    }
-                });
+                    } });
                 cineSimRateUi_ = (float)S.simRate;
                 if (slider(0, "Sim time rate (x)", cineSimRateUi_, 0.0f, 600.0f, 1.0f, "%.0f"))
                     S.simRate = cineSimRateUi_;
@@ -6163,7 +6173,8 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     cineApplyAt(cineScrub_, true);
                     cinePlayOneShot_ = one;
                 }
-                row(2, [&]() {
+                row(2, [&]()
+                    {
                     if (btn(7, "Play all", "Play every shot in order", cineRun_ == CineRun::Play && !cinePlayOneShot_))
                         cineStart(CineRun::Play, false);
                     if (btn(8, "Play shot", "Play this shot", cineRun_ == CineRun::Play && cinePlayOneShot_))
@@ -6171,8 +6182,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     if (btn(9, "Stop", "Stop playback or the export"))
                         cineStop("Stopped");
                     if (btn(10, cineLoop_ ? "Loop on" : "Loop off", "Loop playback", cineLoop_))
-                        cineLoop_ = !cineLoop_;
-                });
+                        cineLoop_ = !cineLoop_; });
 
                 // Export
                 text("EXPORT  (frames to screenshots/cinematics/)", Pal::textSection, 11);
@@ -6180,16 +6190,17 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                 slider(3, "HQ resolution (x)", photoScaleSetting, 1.0f, 4.0f, 1.0f, "%.0f");
                 slider(4, "HQ settle frames", photoSettleFrames, 4.0f, 240.0f, 4.0f, "%.0f");
                 slider(6, "Motion blur (subframes)", cineBlurSubs_, 1.0f, 16.0f, 1.0f, "%.0f");
-                row(3, [&]() {
+                row(3, [&]()
+                    {
                     if (btn(11, "Export preview", "Every frame as rendered in motion, at the fps above"))
                         cineStart(CineRun::ExportPreview, false);
                     if (btn(12, "Export HQ", "Every frame a settled HQ photo (slow: the settle frames per frame)"))
-                        cineStart(CineRun::ExportHQ, false);
-                });
+                        cineStart(CineRun::ExportHQ, false); });
 
                 // Files
                 text("FILES  (user data/cinematics)", Pal::textSection, 11);
-                row(4, [&]() {
+                row(4, [&]()
+                    {
                     if (btn(13, "New", "Start a new cinematic"))
                     {
                         cineStop("New");
@@ -6213,8 +6224,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                             cineStatus_ = err;
                     }
                     if (btn(15, "Refresh", "List the saved cinematics again"))
-                        cineRefreshFiles();
-                });
+                        cineRefreshFiles(); });
                 static char fileLab[8][128];
                 for (int f = 0; f < (int)cineFiles_.size() && f < 8; ++f)
                 {
@@ -6257,10 +6267,8 @@ void SatelliteSim::buildSelectHint(float dt, const UIInput &inp, UIRenderer &ui)
                                  .cornerRadius = CLAY_CORNER_RADIUS(6),
                                  .floating = {.offset = {0, -(float)fs(70)}, .zIndex = 24, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_BOTTOM, .parent = CLAY_ATTACH_POINT_CENTER_BOTTOM}, .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
-        CLAY_TEXT(CLAY_STRING("Click any satellite - a point of light - to select it"),
+        CLAY_TEXT(CLAY_STRING("Click to select any satellite"),
                   CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255.0f * a}, .fontSize = fs(14)}));
-        CLAY_TEXT(CLAY_STRING("then see its model, follow it, trace its pass or track it"),
-                  CLAY_TEXT_CONFIG({.textColor = {190, 200, 215, 255.0f * a}, .fontSize = fs(12)}));
     }
 }
 
@@ -6310,13 +6318,13 @@ void SatelliteSim::buildHarnessConsole(const UIInput &inp, UIRenderer &ui)
     const float h = inp.screenH * 0.40f;
     ui.addMouseCaptureRect(0.0f, 0.0f, inp.screenW, h);
     CLAY(CLAY_ID("HarnessConsole"), {.layout = {.sizing = {CLAY_SIZING_FIXED(inp.screenW), CLAY_SIZING_FIXED(h)},
-                                               .padding = {12, 12, 8, 8},
-                                               .childGap = 4,
-                                               .childAlignment = {.y = CLAY_ALIGN_Y_BOTTOM},
-                                               .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                    .backgroundColor = {6, 8, 10, 225},
-                                    .floating = {.offset = {0, 0}, .zIndex = 60, .attachTo = CLAY_ATTACH_TO_ROOT},
-                                    .clip = {.vertical = true}})
+                                                .padding = {12, 12, 8, 8},
+                                                .childGap = 4,
+                                                .childAlignment = {.y = CLAY_ALIGN_Y_BOTTOM},
+                                                .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                     .backgroundColor = {6, 8, 10, 225},
+                                     .floating = {.offset = {0, 0}, .zIndex = 60, .attachTo = CLAY_ATTACH_TO_ROOT},
+                                     .clip = {.vertical = true}})
     {
         for (size_t i = 0; i < consoleView_.size(); ++i)
         {
@@ -6324,8 +6332,8 @@ void SatelliteSim::buildHarnessConsole(const UIInput &inp, UIRenderer &ui)
             const bool input = i + 1 == consoleView_.size();
             const bool err = l.rfind("  ERROR", 0) == 0;
             const bool echo = l.rfind("> ", 0) == 0;
-            Clay_Color col = input ? Clay_Color{255, 255, 255, 255}
-                             : err ? Clay_Color{255, 110, 100, 255}
+            Clay_Color col = input  ? Clay_Color{255, 255, 255, 255}
+                             : err  ? Clay_Color{255, 110, 100, 255}
                              : echo ? Clay_Color{150, 200, 255, 255}
                                     : Clay_Color{200, 200, 200, 255};
             Clay_String s{false, (int32_t)l.size(), l.c_str()};
@@ -6561,7 +6569,7 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         terrainDetailStrength = detail ? 1.0f : 0.0f;
         terrainShadowStrength = detail ? 1.0f : 0.0f;
         terrainMaterialStrength = detail ? 1.0f : 0.0f;
-        terrainTextureStrength = detail ? 1.0f : 0.0f;   // terrain v2 P3 close-up textures
+        terrainTextureStrength = detail ? 1.0f : 0.0f; // terrain v2 P3 close-up textures
     }
     graphicsPreset = p;
 
