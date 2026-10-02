@@ -876,7 +876,7 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2RepeatSampler = cv2ClampSampler = VK_NULL_HANDLE;
 }
 
-// cloud_march.comp bindings 15-20 and beam_self_march.comp bindings 5-8. Called once both sets
+// cloud_march.comp bindings 15-20 + 22 and beam_self_march.comp bindings 5-9. Called once both sets
 // exist (init) and again after a resize (19/20 point at the recreated resolved images).
 void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
 {
@@ -885,6 +885,7 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo weather{cv2RepeatSampler, cv2WeatherView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo shape{cv2RepeatSampler, cv2ShapeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo meso{cv2RepeatSampler, cv2MesoView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo morph{cv2RepeatSampler, cv2MorphView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo res{cv2ClampSampler, cv2ResolvedView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo resDepth{cv2ClampSampler, cv2ResolvedDepthView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorBufferInfo flashes{cv2FlashBuf, 0, VK_WHOLE_SIZE};
@@ -902,10 +903,12 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
         imageWrite(cloudMarchDescSet, 18, TEX, &meso),
         imageWrite(cloudMarchDescSet, 19, TEX, &res),
         imageWrite(cloudMarchDescSet, 20, TEX, &resDepth),
+        imageWrite(cloudMarchDescSet, 22, TEX, &morph),
         bufferWrite(beamSelfMarchDescSet, 5, UBO, &v2Info),
         imageWrite(beamSelfMarchDescSet, 6, TEX, &weather),
         imageWrite(beamSelfMarchDescSet, 7, TEX, &shape),
-        imageWrite(beamSelfMarchDescSet, 8, TEX, &meso)};
+        imageWrite(beamSelfMarchDescSet, 8, TEX, &meso),
+        imageWrite(beamSelfMarchDescSet, 9, TEX, &morph)};
     vkUpdateDescriptorSets(ctx.device, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
 }
 
@@ -1005,8 +1008,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.anchorDetail = anchor(cv2DetailPeriodM, 1.6);
     p.anchorCluster = anchor(cv2ClusterPeriodM, 0.6);
     p.anchorMorph = anchor((double)std::clamp(cv2MorphPeriodKm, 40.0f, 2000.0f) * 1000.0, 0.6);   // review 17
-    p.morph = glm::vec4(std::clamp(cv2MorphOrbit, 0.0f, 1.0f), std::clamp(cv2MorphNear, 0.0f, 2.0f),
-                        std::log2(std::clamp(cv2MorphFarFootM, 50.0f, 4000.0f)),
+    p.morph = glm::vec4(std::clamp(cv2MorphOrbit, 0.0f, 1.0f), std::clamp(cv2ImageryShare, 0.0f, 1.0f),
+                        0.0f,   // was "Morphology from (m/px)" (review 18's near/far switch; review 19: one placement)
                         std::exp2(-std::clamp(cv2MorphBreakup, 0.0f, 3.0f)));
     p.farLight = glm::vec4(cv2FarKeyGain, cv2FarSkyGain, 0.0f, 0.0f);
     p.anchorCell = anchor(cv2CellPeriodM, 0.85);

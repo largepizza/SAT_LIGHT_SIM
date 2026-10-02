@@ -203,7 +203,7 @@ void main()
     // Review 19: a pixel with NO cloud of its own (clear sea between small puffs) reprojects at the nearest
     // cloud distance of its 3x3 neighbourhood (closest-depth dilation), not at infinity. At infinity, in a
     // moving view low over the clouds, its history came from where a puff had been, and the parallax floor
-    // below took it as 50 km away: nearly still, so the still weight and the wide box kept that ghost — every
+    // below took it as 50 km away: nearly still, so the still weight and the wide box kept that ghost â€” every
     // small puff smeared into a streak behind itself and faded (the user's snapshot 2, 7.5 km over trade
     // cumulus: "small clouds get filtered out when moving or changing altitude").
     float ndR = nd.x > 0.0 ? nd.x : (dNear < 1e29 ? dNear : 0.0);

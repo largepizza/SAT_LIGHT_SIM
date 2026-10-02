@@ -118,6 +118,7 @@ layout(set = 0, binding = 13) uniform sampler2D sceneDepthTex;
 #define CV2_WEATHER_BINDING 16
 #define CV2_SHAPE_BINDING   17
 #define CV2_MESO_BINDING    18
+#define CV2_MORPH_BINDING   22   // review 19: the ground shadow places clouds as the view march does
 #include "clouds_v2.glsl"
 layout(set = 0, binding = 19) uniform sampler2D cv2ResolvedTex;       // rgb radiance, a transmittance
 layout(set = 0, binding = 20) uniform sampler2D cv2ResolvedDepthTex;  // x mean distance, y occlusion distance

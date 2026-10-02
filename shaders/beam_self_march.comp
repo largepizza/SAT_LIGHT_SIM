@@ -79,6 +79,7 @@ layout(set = 0, binding = 3) uniform sampler3D cloudWarpNoiseTex;
 #define CV2_WEATHER_BINDING 6
 #define CV2_SHAPE_BINDING   7
 #define CV2_MESO_BINDING    8
+#define CV2_MORPH_BINDING   9
 #include "clouds_v2.glsl"
 
 layout(push_constant) uniform PC {

@@ -4845,9 +4845,8 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Cell period (m)", &cv2CellPeriodM, 4000.0f, 128000.0f, 1000.0f, "%.0f", 143},
         {"Cluster period (m)", &cv2ClusterPeriodM, 32000.0f, 1024000.0f, 8000.0f, "%.0f", 144},
         {"Morphology (orbit)", &cv2MorphOrbit, 0.0f, 1.0f, 0.05f, "%.2f", 234},
-        {"Morphology (near)", &cv2MorphNear, 0.0f, 2.0f, 0.05f, "%.2f", 235},
+        {"Imagery share", &cv2ImageryShare, 0.0f, 1.0f, 0.05f, "%.2f", 235},
         {"Morphology period (km)", &cv2MorphPeriodKm, 80.0f, 1000.0f, 10.0f, "%.0f", 236},
-        {"Morphology from (m/px)", &cv2MorphFarFootM, 50.0f, 4000.0f, 10.0f, "%.0f", 237},
         {"Far-field sharpness", &cv2MorphBreakup, 0.0f, 3.0f, 0.1f, "%.1f", 238},
         {"Far cloud layer from (km)", &cv2FarLayerFromKm, 50.0f, 100000.0f, 50.0f, "%.0f", 239},
         {"Far cloud layer full at (km)", &cv2FarLayerFullKm, 100.0f, 100000.0f, 50.0f, "%.0f", 240},
@@ -6918,9 +6917,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CellPeriodM = c.value("cell_period_m", cv2CellPeriodM);
         cv2ClusterPeriodM = c.value("cluster_period_m", cv2ClusterPeriodM);
         cv2MorphOrbit = c.value("morph_orbit", cv2MorphOrbit);
-        cv2MorphNear = c.value("morph_near", cv2MorphNear);
+        cv2ImageryShare = std::clamp(c.value("imagery_share", cv2ImageryShare), 0.0f, 1.0f);
         cv2MorphPeriodKm = c.value("morph_period_km", cv2MorphPeriodKm);
-        cv2MorphFarFootM = c.value("morph_far_footprint_m", cv2MorphFarFootM);
         cv2MorphBreakup = c.value("far_sharpness", cv2MorphBreakup);
         cv2FarLayerFromKm = c.value("far_layer_from_km", cv2FarLayerFromKm);
         cv2FarLayerFullKm = c.value("far_layer_full_km", cv2FarLayerFullKm);
@@ -7411,9 +7409,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cell_period_m", cv2CellPeriodM},
         {"cluster_period_m", cv2ClusterPeriodM},
         {"morph_orbit", cv2MorphOrbit},
-        {"morph_near", cv2MorphNear},
+        {"imagery_share", cv2ImageryShare},
         {"morph_period_km", cv2MorphPeriodKm},
-        {"morph_far_footprint_m", cv2MorphFarFootM},
         {"far_sharpness", cv2MorphBreakup},
         {"far_layer_from_km", cv2FarLayerFromKm},
         {"far_layer_full_km", cv2FarLayerFullKm},

@@ -29,6 +29,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 #define CV2_WEATHER_BINDING 2
 #define CV2_SHAPE_BINDING   3
 #define CV2_MESO_BINDING    5
+#define CV2_MORPH_BINDING   20   // the march set's (review 19: every consumer places clouds alike)
 #include "clouds_v2.glsl"
 layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 layout(r16f, set = 0, binding = 13) uniform writeonly image3D lightVolOut;

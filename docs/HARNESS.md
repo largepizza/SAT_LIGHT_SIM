@@ -246,6 +246,27 @@ std passes 8 levels (visible flicker); `--heat` writes the std map x8. Record wi
 sampling noise). Crop to the Earth from orbit: the AI disk's million satellites are a noisy ring in space.
 `harness_runs/meo/flick.satcmd` is the 2000 / 8000 / 20000 km set.
 
+## Climb consistency (`tools/harness/climb.py`)
+
+Are the clouds the SAME clouds as the eye climbs (review 19)? Every level of detail must be a filtered version of the
+one below it, never a different placement.
+
+```
+python tools/harness/climb.py gen <profile_log.jsonl> [--index -1] [--fov 40] -o harness_runs/climb/c.satcmd [--variant "tag:key value;key value"]...
+python tools/harness/run.py harness_runs/climb/c.satcmd --window 1600x900 --out harness_runs/climb/run1
+python tools/harness/climb.py score harness_runs/climb/run1 [--sheet] [--ref 8 --ref 40 --ref 200]
+python tools/harness/climb.py match run1 tagA tagB      # two variants at the same altitudes (march vs far layer)
+python tools/harness/climb.py compare runA runB
+```
+
+- `gen` restores the snapshot, pauses time and climbs straight up (camera el -89.9) through 15 altitudes, 8 to 2500 km.
+- `score` reprojects each frame onto the next (exact nadir geometry on a sphere 1.5 km up), filters it to that frame's
+  footprint and correlates the CLOUD detail (red channel above its local background: cloud shadows on the sea are real
+  at 40 km and sub-pixel from orbit, so they are not counted). Per step: r, the masks' IoU, the cloud fractions; then r
+  against fixed references (`--ref`), where drift that each step hides adds up. A reference far below a frame covers
+  only a few dozen of its pixels: trust the 40 / 200 km references and the steps over the 8 km one.
+- Use fov 40: a wide FOV mixes footprints in one frame. Variants share a launch.
+
 ## Determinism
 
 What makes two runs identical, and what breaks it:

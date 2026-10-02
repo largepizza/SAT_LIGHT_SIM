@@ -8381,7 +8381,7 @@ void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
 // textures) — see init() ordering.
 void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[22] = {};
+    VkDescriptorSetLayoutBinding bindings[23] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -8408,14 +8408,16 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
         bindings[b] = {b, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     // 21: the lightning flash list (cloud_v2_lightning.comp), also written by writeCloudsV2ConsumerDescriptors.
     bindings[21] = {21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    // 22: the cloud morphology (review 19: the ground shadow places the clouds as the view march does).
+    bindings[22] = {22, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 22;
+    li.bindingCount = 23;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &cloudMarchDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 14},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 15},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4}};
@@ -8779,7 +8781,7 @@ void SatelliteSim::createSceneDepthPipeline(VulkanContext &ctx)
 // set — see that shader's header, still applicable, for why this isn't built on any shared grid).
 void SatelliteSim::createBeamSelfMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[9] = {};
+    VkDescriptorSetLayoutBinding bindings[10] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -8791,15 +8793,16 @@ void SatelliteSim::createBeamSelfMarchDescriptors(VulkanContext &ctx)
     bindings[6] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[7] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[8] = {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[9] = {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};   // morphology (review 19)
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 9;
+    li.bindingCount = 10;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &beamSelfMarchDescLayout);
 
     VkDescriptorPoolSize ps[3] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 3;

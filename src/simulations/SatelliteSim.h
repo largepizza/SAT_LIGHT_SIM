@@ -3072,11 +3072,11 @@ private:
     VkImageView cv2MorphView = VK_NULL_HANDLE;
     void createCloudMorph(VulkanContext &ctx);
     float cv2MorphOrbit = 0.8f;        // "Morphology (orbit)": its share of the far field's presence
-    float cv2MorphNear = 0.5f;         // "Morphology (near)": its weight in the near field's clustering
+    // "Imagery share" (review 19): the morphology's fixed weight in the low cloud's placement, added to the
+    // cells thresholded by the map (0.3 x it in field units). The same at every distance, so the clouds stay
+    // put with altitude; higher, the imagery's 5-50 km structure shows more up close and from orbit alike.
+    float cv2ImageryShare = 0.5f;
     float cv2MorphPeriodKm = 320.0f;   // "Morphology period (km)": one tile of the texture
-    // "Morphology from (m/px)" (review 18): the pixel footprint from which the morphology (the far field) sets
-    // the cloud outlines in full; it fades in from a quarter of it. Below, the near field's cells and the map.
-    float cv2MorphFarFootM = 1400.0f;
     // "Far-field sharpness" (review 18, octaves): the far field's 2D reads are filtered to the footprint x
     // 2^(1 - this). 0 = twice the footprint (each visit's ray then reads about the same value: no flicker);
     // higher = sharper, the history's sub-texel jitter supersampling the finer structure, at some grain.

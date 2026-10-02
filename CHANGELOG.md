@@ -149,6 +149,12 @@
   scrollable instead of just ending at the window edge.
 
 ### Fixed
+- **Clouds stay the same clouds as you climb.** Up close and from orbit the low clouds are placed by one rule (the cells
+  and the weather map, with the satellite imagery at a fixed share, "Imagery share"); review 18 switched to a different
+  placement as the pixels grew, and climbing over one spot the clouds were replaced between ~35 and 450 km. Cloud
+  shadows, beam occlusion and lightning use the same placement.
+- Small clouds no longer smear into streaks and fade while moving low over them.
+- A light-blue disc on the sea under the observer at dusk (seen looking down).
 - Flickering scattered clouds seen from medium orbit (the far field is filtered to twice the pixel footprint,
   and the history weight of a still view falls with altitude).
 - **The jungle day bed is a different recording.** "jungle forest 02" (rucisko) carried people talking

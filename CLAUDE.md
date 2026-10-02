@@ -1173,6 +1173,28 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   **No scene-depth test:** the half-res depth read per full-res pixel alternated over land from orbit (a dot grid
   through the layer). The march's scattered small puffs at ~2000 km (low layer, independent of the morphology: the
   margin's lobes) are not reproduced; the cross-fade band (600-1500 km) matches.
+- **Review 19 (2026-10-01): ONE cloud placement at every distance.** Climbing straight up over one place, review 18's
+  clouds were REPLACED between ~35 and 450 km: the near field (the cells thresholded by the 5-km map) and the far field
+  (the imagery thresholded to the ~20 km fraction) were two placements switched by the pixel footprint (`farK`). Measured
+  with `tools/harness/climb.py` (docs/HARNESS.md "Climb consistency"): detail seen from 40 km correlated ~0 with any view
+  from 450 km up. Now `cv2FieldLow`'s placement is the near field PLUS the imagery at a fixed share ("Imagery share",
+  `imagery_share` 0.5, slot 235, `morph.y`: 0.3 x it x clamp(zMs) in field units, zMs = the Perlin / morphology mix of
+  "Morphology (orbit)"), thresholded at 1 - max(cov, 0.5 x the ~20 km fraction), the same at every footprint; a wider
+  footprint only filters it. Cells too small for the pixel become PARTIAL COVER (`presFar` = 0.5 + (field - thr) /
+  (2.5 sigU), sigU the cell variance the mip averaged away), the sub-pixel haze's opacity — never a second placement.
+  `farK`, the far thinning (`d *= 0.02 + 0.98 e^2`) and "Morphology from (m/px)" are gone (`morph.z` unused).
+  `cv2FarColumn` computes the same field and fraction (`CV2Far.frac`, the far layer's optical depth x it). EVERY consumer
+  binds the morphology now — `cloud_march.comp` 22 (the ground shadow: shadows fell under the old placement), beam
+  occlusion 9, lightning / light volume 20 — or its clouds sit elsewhere. Climb (user snapshot, fov 40): r vs 40 km at
+  1500 km -0.06 -> 0.72, vs 200 km at 2500 km 0.25 -> 0.57, worst step 0.49 -> 0.70; close-ups match review 18's;
+  cost unchanged. Tried first and dropped: the imagery ALONE everywhere (consistent, but the map-driven cumulus masses
+  became scattered puffs and stratocumulus decks flat pancakes — the near look the user liked). **Resolve:** a pixel
+  with no cloud of its own reprojects at the nearest cloud distance of its 3x3 new samples (`dNear`): at infinity, in
+  motion low over small puffs, its history came from where a puff had been and the parallax floor (50 km) called it
+  still — every small cloud smeared into a streak and faded (snapshot 2: walk |diff| vs settled 5.2 -> 3.1).
+  **The sea:** the sky reflection's march was gated on reflStr (Fresnel ~0 within ~34 deg of the nadir) and the foam and
+  surf take reflColor as sky light, so at dusk a hard light-blue disc sat under the observer; the open ocean's water level
+  decoded to 2e-5 m (a "lake"); reflected clouds come only from on-screen texels.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

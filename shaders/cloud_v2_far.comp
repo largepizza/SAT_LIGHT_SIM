@@ -97,11 +97,11 @@ vec3 skyZenithAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
 // little below 0 as well, so the presence ramps in from e = -0.15 (the layer otherwise covered ~25% less).
 float farTau(CV2Far c)
 {
-    float eP = clamp((c.eRaw + 0.15) / 1.15, 0.0, 1.0);
-    if (eP <= 0.0) return 0.0;
+    // Review 19: the covered share of the pixel (cv2FieldLow's presFar) x the column's thickness.
+    if (c.frac <= 0.0) return 0.0;
     float span  = max(c.top - c.base, 200.0);
-    float thick = span * mix(max(0.25, pow(eP, 0.83)), mix(0.5, 1.0, eP), c.strat);
-    return c.sigma * thick * (0.02 + 0.98 * smoothstep(0.0, 0.3, eP)) * 0.6;
+    float thick = span * mix(max(0.3, pow(c.e, 0.83)), mix(0.5, 1.0, c.e), c.strat);
+    return c.sigma * thick * c.frac * 0.6;
 }
 
 // The light a slab of reflectance R (and relief factor) sends up at a point of the layer: the key light (the Sun,

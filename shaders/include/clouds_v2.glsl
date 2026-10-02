@@ -110,7 +110,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  rainE, rainN, rainU;  // the rain lattice's frame: xyz its axes (ECEF), w the eye in it (m, mod 1024)
     vec4  precip;         // x the air temperature at the eye (deg C): rain / sleet / snow; y sim time mod 600 s
     vec4  anchorMorph;    // review 17: the morphology texture's anchor (xyz frac(anchor / period), w 1 / period)
-    vec4  morph;          // x its share of the far field (orbit), y its weight in the near field's clustering
+    vec4  morph;          // x its share of the placement (vs the cluster Perlin), y "Imagery share" (review 19), z unused, w 2^-"Far-field sharpness"
     vec4  farLight;       // review 18: the far cloud layer's key-light and sky-light gains (cloud_v2_far.comp)
 } cv2;
 
@@ -494,13 +494,20 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // mean coverage of its fine texels) and the morphology place the clouds; the 5-km map's own zero contour no
     // longer cuts them off (it was every outline seen from orbit: blobs following the map).
     // From "Morphology from (m/px)" (morph.z = its log2) in full, fading in over the two octaves below.
-    float farK  = gCv2NoFar ? 0.0 : smoothstep(cv2.morph.z - 2.0, cv2.morph.z, log2(max(fpM, 1.0)));
+    // Review 19: ONE placement at every distance (tools/harness/climb.py). Review 18 switched, as the footprint
+    // grew, from the near field (the cells thresholded by the 5-km map) to a far field (the imagery thresholded
+    // to the ~20 km fraction); the two put clouds in different places, and climbing over one spot the clouds
+    // were replaced between ~35 and 150 km. Now the placement is the near field PLUS the imagery at a fixed
+    // share ("Imagery share", morph.y) everywhere; a wider footprint only filters it, and the cells it can no
+    // longer resolve become partial cover (presSub below), not a different placement.
     float covF  = clamp((wCoarse - cv2.cover.x) / covSpan, 0.0, 1.0);
-    float farM  = farK * cv2.morph.x;
-    if (cov <= 0.0 && farM * covF <= 0.0) return f;
+    if (cov <= 0.0 && covF <= 0.0) return f;
 
     CV2Type ty     = cv2TypeAt(w.g);
     float   strat  = 1.0 - ty.look.z;                  // 1 = the stratiform field, 0 = the cells
+    // The threshold's coverage: the 5-km map's, and in its clear texels half the ~20 km fraction, so the
+    // imagery can place scattered cloud there and a broken region's outline is not the 5-km texels'.
+    float   covT   = max(cov, 0.5 * covF);
     float   tropo  = cv2Tropo(wd);
     float   topMax = ty.alt.x + (ty.alt.y - ty.alt.x) * tropo;
     // Nimbostratus: a stratiform deck where the map says it rains thickens by up to 3.5 km (its
@@ -560,15 +567,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     if (below && rainAmt < 0.02) return f;
     float z = max(q.h - base, 0.0) / max(topMax - base, 1.0);   // height through the type's full span
 
-    // Where cloud may be, in 2D: a field thresholded by the coverage. Convective types use the
-    // cumulus cells (clustered); stratiform types a high baseline broken along closed-cell rims.
-    // The convective field has a floor, so at full coverage the gaps between cells close into a
-    // low deck (cumulus merging into stratocumulus) instead of staying clear.
-    // Deep types (congestus, Cb) read the cells two mips coarser as well: neighbouring cells merge
-    // into one tower several km wide, with the fine cells as turrets on it. On the 1-2 km cells
-    // alone a 7 km tower was a 3:1 spire.
-    // No fine 2D noise term here: anything 2D at the km scale is extruded up the column's side
-    // into vertical flutes. The 3D lobes below do that job.
+    // The cells (1-2 km Worley blobs; deep types two mips coarser, so neighbours merge into towers
+    // several km wide) shape each cloud: its top (eB below) and the turret over each cell (capS). Until
+    // review 19 they also placed the near field's clouds (a convective field of cells, a stratiform
+    // baseline broken along the closed-cell rims, thresholded by the 5-km coverage).
     float deep       = smoothstep(0.45, 0.85, w.g);   // cumulus (0.5) ~0, congestus (0.75) ~0.8
     // At a FIXED coarse mip (or the footprint's, once coarser): these set a cell's width and height,
     // and at footprint + 2 (+ 4 below) they changed with the viewing distance, so every storm was
@@ -578,55 +580,36 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // Deep types: the coarse cells only. The fine cells' 2 km edges, extruded up a 10 km column, were
     // vertical grooves on every storm wall (user snaps 7-10, pass 13): the 3D lobes shape a tower.
     float cells      = mix(ce.g, min(cellsC * 1.8, 1.0), deep);
+    // The cells' field (convective: cells clustered; stratiform: a high baseline broken along closed-cell rims;
+    // with a floor, so at full coverage the gaps between cells close into a low deck).
     float fieldConv  = 0.15 + 0.85 * sqrt(cells) * mix(0.6, 1.0, cl.r);
     float fieldStrat = 0.5 + rimAmt * (cl.b - 0.5) + 0.125 + 0.3 * (ce.a - 0.5) + 0.2 * ce.g;
     float field      = mix(fieldStrat, fieldConv, ty.look.z);
-    // ── Mesoscale structure, 3-90 km: the cluster Perlin at 1x and 4x, normalised (~N(0,1)). From
-    // orbit the cells are far below a pixel and average away, and the decks' rims fade out, so the
-    // presence was the map's own 5-10 km blobs, warped: the "blobby" clouds from space. Real imagery
-    // there shows broken fields, holes and fractal edges at 3-100 km. The far field below is this
-    // noise thresholded to the map's coverage (area fraction ~ cov: z = 2.6 (0.5 - cov) approximates
-    // the normal quantile), and a little of it clusters the near field too, so the holes seen from
-    // orbit are still there on the way down instead of the two looks morphing into each other.
-    // Review 18: the far field is PREFILTERED to twice the footprint (fpF): the march's ray lands at another
-    // point of its texel each visit, and a field read at the footprint's own mip changes by a texel's worth
-    // inside it, so a small cloud near the threshold was hit or missed per visit (flicker on scattered puffs
-    // from MEO). One mip coarser, any point of the texel reads about the same value.
-    float fpF    = fpM * (1.0 + farK * (2.0 * cv2.morph.w - 1.0)) * mix(1.0, gCv2Stretch, farK);   // morph.w = 2^-"Far-field sharpness"
+    // ── Mesoscale structure, 3-90 km: the cluster Perlin at 1x, 4x and 16x, normalised (~N(0,1)), and the
+    // cloud MORPHOLOGY (real imagery, cv2MorphZ) mixed in by "Morphology" (morph.x). Read at twice the
+    // footprint (fpF, review 18): the march's ray lands at another point of its texel each visit, and a field
+    // read at the footprint's own mip changed inside it (flicker on scattered puffs from MEO).
+    float fpF    = fpM * 2.0 * cv2.morph.w * gCv2Stretch;   // morph.w = 2^-"Far-field sharpness"
     vec4  cl4    = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 4.0
                               + vec3(0.37, 0.61, 0.13), cv2Lod(fpF, cv2.anchorCluster.w * 4.0));
-    // Review 8: + a 16-km-period octave, so from orbit the edges and holes reach down toward the pixel
-    // (the user: the far field read as the 2D map's blobs, missing the small clouds). Weights 0.5/0.3/0.2
-    // of the baked fBm (sd 0.057 each): sd 0.035.
     vec4  cl16   = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 16.0
                               + vec3(0.71, 0.23, 0.47), cv2Lod(fpF, cv2.anchorCluster.w * 16.0));
     float fz     = ((cl.a - 0.5) * 0.5 + (cl4.a - 0.5) * 0.3 + (cl16.a - 0.5) * 0.2) / 0.035;
-    float zThr   = 2.6 * (0.5 - cov);
-    float fzFar  = fz, nearM = 0.0, covE = cov;
+    float zMs    = fz;
 #ifdef CV2_MORPH_BINDING
-    // Review 17: the far field (orbit) takes the cloud morphology instead of Perlin blotches; the near field
-    // is clustered by it a little, so the cells and streets seen from orbit are there on the way down. In the
-    // far field the map sets the cloud FRACTION over ~20 km (its mip 2) and the morphology where inside it the
-    // cloud is: thresholded against the 5-km texels themselves (which go from clear to overcast within a
-    // texel or two) it moved only 3.5% of the pixels from orbit.
-    if (cv2.morph.x + cv2.morph.y > 0.0) {
+    if (cv2.morph.x > 0.0) {
         float seaM = 1.0 - smoothstep(5.0, 120.0, w.a * 8000.0);
-        float zM   = cv2MorphZ(wd, mpF, fpF, strat, seaM, cl.r);
-        fzFar = mix(fz, zM, cv2.morph.x);
-        nearM = cv2.morph.y * 0.15 * clamp(zM, -2.5, 2.5);
-        if (farM > 0.0) {
-            // The fraction over ~20 km (review 18: the true mean coverage, mostly; review 17 took a quarter of
-            // it, since the coarse mip then held an inflated one), and a deck below full cover so its closed
-            // cells' rims open (they show from space).
-            covE = mix(cov, min(mix(cov, max(covF, 0.02), 0.85), mix(1.0, 0.85, strat)), farM);
-            zThr = 2.6 * (0.5 - covE);
-        }
+        zMs = mix(fz, cv2MorphZ(wd, mpF, fpF, strat, seaM, cl.r), cv2.morph.x);
     }
 #endif
-    field = mix(field + 0.08 * clamp(fz, -2.5, 2.5) + nearM, (1.0 - covE) + 0.385 * (fzFar - zThr), farK);
+    // The blend: the imagery's share is fixed (0.3 x morph.y in field units, ~0.1 sd at the default), the same
+    // at every footprint, so the cells' masses and puffs up close and the imagery's structure from orbit are
+    // one placement. (Review 17's near clustering was 0.075.)
+    field += 0.3 * cv2.morph.y * clamp(zMs, -2.5, 2.5);
+    float thr        = 1.0 - covT;
     // How far into the cloud this column is: 0 at the edge, 1 well inside. Not normalised by the
     // coverage, so sparse fair-weather cells stay small and low; only a dense field builds towers.
-    float e          = clamp((field - (1.0 - covE)) / 0.55, 0.0, 1.0);
+    float e          = clamp((field - thr) / 0.55, 0.0, 1.0);
     // The same strength at the CELL scale (the cells two mips coarser: a cell's neighbourhood mean;
     // four for deep types, whose cells are already the coarse ones). It sets each cell's height and
     // its peak, so every column of a cell shares one profile (see THE CONVECTIVE PROFILE below).
@@ -635,7 +618,9 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
                      : cellsC;
     float fieldB     = 0.15 + 0.85 * sqrt(min(cellsB * 1.8, 1.0)) * mix(0.6, 1.0, cl.r)
                      + 0.08 * clamp(fz, -2.5, 2.5);
-    float eB         = clamp((fieldB - (1.0 - cov)) / 0.55, 0.0, 1.0);
+    // Its HEIGHT keys on the 5-km map's own coverage (a cloudy texel builds tall cells, a clear one only
+    // low puffs), not on the placement's fraction: that flattened the big cumulus masses (review 19).
+    float eB         = clamp((fieldB - thr) / 0.55, 0.0, 1.0);
 
     // ── Rain shafts: under the column's cloud, heavier under convective cores than under a
     // nimbostratus deck. Curtains = the shape volume compressed along the vertical (streaks that
@@ -801,8 +786,12 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     float m     = m0 + A * lobes * 2.0 - gBase * gBase / 0.3;
     float Ph    = clamp(m * cv2.form.w, 0.0, 1.0) * smoothstep(0.0, 60.0, hbE);
     // The sub-pixel cells' haze, in the mesoscale presence's patches (their mean is still ~cov).
-    float presFar = smoothstep(-0.3, 0.3, fz - zThr);
-    float PhSub = presFar * 0.8 * clamp((mix(0.2 + 0.4 * cov, 1.0, ty.alt.z) - z) * cv2.form.w, 0.0, 1.0)
+    // Review 19: the share of the pixel the unresolved cells cover — the field (its cells now at their mip:
+    // ~their mean) against the threshold, spread by the variance the mip averaged away (~0.2 of field units
+    // for fully sub-pixel cells). It replaced a Perlin/morphology presence of its own (a second placement).
+    float sigU    = 0.03 + 0.2 * smoothstep(0.0, 3.0, lodCell);
+    float presFar = clamp(0.5 + (field - thr) / (2.5 * sigU), 0.0, 1.0);
+    float PhSub = presFar * 0.8 * clamp((mix(0.2 + 0.4 * covT, 1.0, ty.alt.z) - z) * cv2.form.w, 0.0, 1.0)
                 * smoothstep(0.0, 150.0, hb);
     Ph = mix(Ph, PhSub, subPix);
     if (Ph <= 0.0) return f;
@@ -862,10 +851,6 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
 
     // Denser upward (cloud water grows with height); precipitation loads the base.
     d *= mix(0.6, 1.0, smoothstep(0.0, 0.4, hf)) * (1.0 + w.b * ty.look.w * (1.0 - hf));
-    // Review 18: in the far field the strength (the imagery's reflectance, thresholded) sets the optical
-    // THICKNESS too: a satellite image's thin edges and broken patches are translucent grey, its cores white.
-    // Every cloud from orbit was one flat, opaque white (an optical depth of tens) to its outline.
-    d *= mix(1.0, 0.02 + 0.98 * e * e, farM);
     f.sigma    = d * ty.shape.x * cv2.look.y;
     f.hf       = hf;
     f.msBright = ty.look.x;
@@ -879,15 +864,14 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
 
 #ifdef CV2_MORPH_BINDING
 // ── Review 18: the FAR CLOUD LAYER's column (cloud_v2_far.comp) ──────────────────────────────────────
-// The low layer as the march's far field sees it (cv2FieldLow with farK = 1), as a 2D column: its strength
-// e (0 at the edge .. 1 well inside), the type's extinction, the column's base and top, the coverage. Kept
-// in step with cv2FieldLow's far branch BY HAND: the same weather (flowed, warped), the same 20-km fraction
-// (85%), the same morphology and Perlin share, so the layer and the march agree where they cross-fade.
-struct CV2Far { float e; float eRaw; float sigma; float base; float top; float msBright; float strat; float deep; float covE; };
+// The low layer as cv2FieldLow places it, as a 2D column (review 19: the same blend of the cells and the imagery,
+// at this footprint; kept in step BY HAND): its strength e (0 at the edge .. 1 well inside), the share of the
+// pixel the unresolved cells cover (frac, cv2FieldLow's presFar), the type's extinction, base and top.
+struct CV2Far { float e; float eRaw; float frac; float sigma; float base; float top; float msBright; float strat; float deep; float covE; };
 CV2Far cv2FarColumn(CV2Pos q, float fpM)
 {
     CV2Far r;
-    r.e = 0.0; r.eRaw = -1.0; r.sigma = 0.0; r.base = 0.0; r.top = 0.0; r.msBright = 1.0; r.strat = 0.0; r.deep = 0.0; r.covE = 0.0;
+    r.e = 0.0; r.eRaw = -1.0; r.frac = 0.0; r.sigma = 0.0; r.base = 0.0; r.top = 0.0; r.msBright = 1.0; r.strat = 0.0; r.deep = 0.0; r.covE = 0.0;
     vec3  wd    = cv2Drift(q.dirE);
     vec3  sP    = cv2Drift(q.seaProjE);
     vec3  flowD = cv2FlowDisp(wd, vec3(0.0));   // as cv2Field evaluates it for every layer (gCv2FlowD)
@@ -906,20 +890,26 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     if (cov <= 0.0 && covF <= 0.0) return r;
     CV2Type ty = cv2TypeAt(w.g);
     float strat = 1.0 - ty.look.z;
-    float fpF   = fpM * 2.0 * cv2.morph.w;   // the march's far-field filter (2^-"Far-field sharpness" x 2)
+    float covT  = max(cov, 0.5 * covF);
+    float lodCell = cv2Lod(fpM, cv2.anchorCell.w);
+    float rimAmt  = 0.25 * (1.0 - smoothstep(0.5, 2.5, lodCell));
+    float field = mix(0.5 + rimAmt * (cl.b - 0.5) + 0.125 + 0.3 * (ce.a - 0.5) + 0.2 * ce.g,
+                      0.15 + 0.85 * sqrt(ce.g) * mix(0.6, 1.0, cl.r), ty.look.z);
+    float fpF   = fpM * 2.0 * cv2.morph.w;   // the march's placement filter (2^-"Far-field sharpness" x 2)
     vec4  cl4   = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 4.0
                              + vec3(0.37, 0.61, 0.13), cv2Lod(fpF, cv2.anchorCluster.w * 4.0));
     vec4  cl16  = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 16.0
                              + vec3(0.71, 0.23, 0.47), cv2Lod(fpF, cv2.anchorCluster.w * 16.0));
     float fz    = ((cl.a - 0.5) * 0.5 + (cl4.a - 0.5) * 0.3 + (cl16.a - 0.5) * 0.2) / 0.035;
     float seaM  = 1.0 - smoothstep(5.0, 120.0, w.a * 8000.0);
-    float zM    = cv2MorphZ(wd, mpF, fpF, strat, seaM, cl.r);
-    float fzFar = mix(fz, zM, cv2.morph.x);
-    float covE  = min(mix(cov, max(covF, 0.02), 0.85), mix(1.0, 0.85, strat));
-    float zThr  = 2.6 * (0.5 - covE);
-    r.eRaw  = 0.385 * (fzFar - zThr) / 0.55;
+    float zMs   = mix(fz, cv2MorphZ(wd, mpF, fpF, strat, seaM, cl.r), cv2.morph.x);
+    field += 0.3 * cv2.morph.y * clamp(zMs, -2.5, 2.5);
+    float thr   = 1.0 - covT;
+    r.eRaw  = (field - thr) / 0.55;
     r.e     = clamp(r.eRaw, 0.0, 1.0);
-    r.covE  = covE;
+    float sigU = mix(0.03, 0.03 + 0.2 * smoothstep(0.0, 3.0, lodCell), ty.look.z);
+    r.frac  = clamp(0.5 + (field - thr) / (2.5 * sigU), 0.0, 1.0);
+    r.covE  = covT;
     float tropo  = cv2Tropo(wd);
     float lift   = cv2Ground(q.dirE) * mix(0.6, 0.9, ty.look.z);
     float topMax = ty.alt.x + (ty.alt.y - ty.alt.x) * tropo + w.b * strat * 3500.0;

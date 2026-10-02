@@ -163,7 +163,9 @@ def score_pair(lo, hi):
         g = np.zeros((Hh, Wh), np.float32)
         g.ravel()[ok] = v
         return v - (gaussian_filter(g, sg) / den).ravel()[ok]
-    a, b = hp(a), hp(b)
+    # Only what is BRIGHTER than its background: cloud. Cloud shadows on the sea are real at 40 km and sub-pixel
+    # from orbit; counted, they read as an inconsistency of the clouds.
+    a, b = np.maximum(hp(a), 0.0), np.maximum(hp(b), 0.0)
     r = float(np.corrcoef(a, b)[0, 1]) if a.std() > 1e-6 and b.std() > 1e-6 else float("nan")
     thr = 0.06
     ma, mb = a > thr, b > thr
@@ -238,6 +240,18 @@ def compare(a):
                   f"   frac {ra['frac_lo']:.2f}/{ra['frac_hi']:.2f} -> {rb['frac_lo']:.2f}/{rb['frac_hi']:.2f}")
 
 
+def match(a):
+    """Two variants at the SAME altitudes (e.g. the march alone vs the far cloud layer alone)."""
+    by = frames(a.run)
+    A, B = dict((h, x) for h, *_ in by[a.tagA] for x in [(h,) + tuple(_)]), dict((h, x) for h, *_ in by[a.tagB] for x in [(h,) + tuple(_)])
+    print(f"{'km':>8} {'r':>6} {'iou':>6} {'frac ' + a.tagA:>12} {'frac ' + a.tagB:>12} {'|d|':>6}")
+    for h in sorted(set(A) & set(B)):
+        lo, hi = A[h], B[h]
+        s = score_pair((lo[0] - 1, lo[1], lo[2]), hi)   # same altitude: a ratio of ~1
+        if s:
+            print(f"{h / 1000:8.0f} {s['r']:6.3f} {s['iou']:6.3f} {s['frac_lo']:12.3f} {s['frac_hi']:12.3f} {s['mean_abs']:6.1f}")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = p.add_subparsers(dest="cmd", required=True)
@@ -254,8 +268,12 @@ def main():
     c = sp.add_parser("compare")
     c.add_argument("runA")
     c.add_argument("runB")
+    m = sp.add_parser("match")
+    m.add_argument("run")
+    m.add_argument("tagA")
+    m.add_argument("tagB")
     a = p.parse_args()
-    {"gen": gen, "score": score, "compare": compare}[a.cmd](a)
+    {"gen": gen, "score": score, "compare": compare, "match": match}[a.cmd](a)
 
 
 if __name__ == "__main__":
