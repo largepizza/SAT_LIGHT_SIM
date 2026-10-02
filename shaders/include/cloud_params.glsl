@@ -413,9 +413,10 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     float cityLightsStrength; // procedural street lights, 0 = the old city night detail texture
     float cityRoadsStrength;  // the major roads (sky binding 28), x their share of the lights
     // -- Clouds v2 switch (704 -> 720), .plans/CLOUDS_V2_PLAN.md ------------------------------------
-    // 1 = v2 draws the low/mid clouds (cloud_march.comp reads the v2 resolve instead of cloudMarchCS,
-    // sat_sky.frag skips flat layer 0, the beam march and ground shadow use the v2 field).
-    float cloudsV2;
+    // Review 22 (was cloudsV2, unread since v1's deletion): the Sun disc's cloud transmittance from the eye,
+    // marched toward the Sun out to 400 km (cloud_v2_lightning.comp), one frame late and eased on the host.
+    // Dims the disc, its glare and corona and the lens flare, which each pixel's own clouds missed at the horizon.
+    float sunCloudT;
     float exposureScale;     // 2^(Exposure EV): multiplies the sky's auto exposure (1 = unchanged)
     float highlightRolloff;  // 0 = the tonemap 1 - exp(-x); 1 = 1 - 1/(1 + x + x^2/2): the same
                              // toe and midtones, a far longer shoulder (sunlit cloud keeps its shading)

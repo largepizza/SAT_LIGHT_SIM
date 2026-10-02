@@ -111,7 +111,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  precip;         // x the air temperature at the eye (deg C): rain / sleet / snow; y sim time mod 600 s
     vec4  anchorMorph;    // review 17: the morphology texture's anchor (xyz frac(anchor / period), w 1 / period)
     vec4  morph;          // x its share of the placement (vs the cluster Perlin), y "Imagery share" (review 19), z unused, w 2^-"Far-field sharpness"
-    vec4  farLight;       // review 18: the far cloud layer's key-light and sky-light gains (cloud_v2_far.comp)
+    vec4  farLight;       // review 18: the far cloud layer's key-light and sky-light gains (cloud_v2_far.comp);
+                          // zw review 22: "Cumulus lobes (bottom / top)", replacing form.x on convective types
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -743,8 +744,12 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // Convective lobes are 2.5x stronger with the profile: the reference's shapes come from its 3D
     // noise thresholded by a soft coverage, and here the 2D field's steep edge dominated — the lobes
     // moved a cell's side by ~100 m, so every cloud was its 2D outline extruded (flat faces).
-    float lobeK  = cv2.form.x * mix(0.5, 1.0, ty.look.z) * fpFade
-                 * (legacy ? 1.0 : mix(1.0, 2.5, ty.look.z * (1.0 - ty.alt.z)));
+    // Review 22: on convective types the lobes TAPER up the cell, "Cumulus lobes (bottom)" to "(top)"
+    // (form.x units): strong bulges low, a smoother head. Until then they grew 0.8 -> 1.25x upward.
+    float convW  = legacy ? 0.0 : ty.look.z * (1.0 - ty.alt.z);
+    float lobeH  = mix(cv2.farLight.z, cv2.farLight.w, smoothstep(0.2, 0.9, zeta));
+    float lobeK  = mix(cv2.form.x, lobeH, convW) * mix(0.5, 1.0, ty.look.z) * fpFade
+                 * (legacy ? 1.0 : mix(1.0, 2.5, convW));
     // Sub-pixel cells: thresholding the mip-averaged field would erase them (the average sits
     // below the threshold), so where a cell is smaller than the footprint the presence becomes the
     // fraction of area covered — a haze of the right opacity instead of nothing, or aliasing dots.
@@ -781,8 +786,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // "Base flatness" (high2.w): how little of the lobes survives at the base (0.3 of them at 0; at
     // the default 0.8, 0.1 — the lobes are 2.5x on convection, and the bases read as mammatus).
     float A     = lobeK * mix(legacy ? 0.3 : mix(0.3, 0.05, cv2.high2.w), 1.0, smoothstep(0.0, legacy ? 500.0 : 700.0, hbE))
-                * (legacy ? 1.0 : mix(mix(0.4, 1.0, smoothstep(0.0, 0.25, e)), 1.0, ty.alt.z))
-                * (legacy ? 1.0 : mix(mix(0.8, 1.25, smoothstep(0.2, 0.75, zeta)), 1.0, ty.alt.z));
+                * (legacy ? 1.0 : mix(mix(0.4, 1.0, smoothstep(0.0, 0.25, e)), 1.0, ty.alt.z));
     float m     = m0 + A * lobes * 2.0 - gBase * gBase / 0.3;
     float Ph    = clamp(m * cv2.form.w, 0.0, 1.0) * smoothstep(0.0, 60.0, hbE);
     // The sub-pixel cells' haze, in the mesoscale presence's patches (their mean is still ~cov).

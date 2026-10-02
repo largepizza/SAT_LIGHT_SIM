@@ -24,7 +24,8 @@ buffer CV2FlashBuf {
     uint     cv2FlashCount;
     // Written by the same pass for the drops at the eye (cloud_march.comp rainDrops, review 4): the Sun's
     // transmittance through the clouds from the eye (float bits), and the ice fog's extinction at the eye
-    // (1/m, float bits: diamond dust sparkles when it is > 0 and the Sun is out).
+    // (1/m, float bits: diamond dust sparkles when it is > 0 and the Sun is out). cv2FlashPad2 (review 22): the
+    // Sun DISC's transmittance from the eye (not gated by the horizon), read back by the host.
     uint     cv2EyeSunT, cv2EyeIceS, cv2FlashPad2;
     CV2Flash cv2Flashes[kCv2FlashMax];
 };

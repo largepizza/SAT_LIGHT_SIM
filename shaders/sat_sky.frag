@@ -3476,6 +3476,12 @@ void main() {
         // daylight cost: samples over daylit ground never enter the rolloff at all, so the day
         // side is untouched to six decimal places while SZA 92 drops ~23x at width 0.08.
         float atmTermW8 = mix(1.0, smoothstep(-atmTermW, atmTermW, sampleSunDotGeo), atmTermSpace);
+        // Review 22: the air near the eye and under the cloud tops is in the shade of the clouds the Sun is behind:
+        // x the eye's Sun transmittance (cloud.sunCloudT, 400 km toward the Sun), fading out by ~50 km and above
+        // 8-14 km. Under a storm the haze's forward peak drew a bright Sun-shaped glow where the disc was hidden
+        // (user snap 2). 1 in clear sky and from above the shell.
+        atmTermW8 *= mix(1.0, cloud.sunCloudT, (1.0 - smoothstep(8000.0, 14000.0, h))
+                                              * exp(-(tStart + (float(i) + 0.5) * segLen) / 50000.0));
 
         // Accumulate in-scattered radiance for each particle type.
         // Multiplying by density (densR/densM) weights by how many particles are at this altitude.
@@ -4151,6 +4157,7 @@ void main() {
         float sunDiscVis = smoothstep(-dipSin - 0.0046, -dipSin + 0.0046, geoSunDot);
         vec3  sunDirLocal = (geoSunDot > -dipSin) ? sunDir : normalize(sunDir - hitUp * geoSunDot);
         vec3 sunSpecTint = vec3(1.0);
+        float sunTransMax = 1.0;   // review 22: the normalisation sunSpecTint dropped (the Sun glint needs the real light)
         {
             vec2 tSAT = raySphere(hitPt, sunDirLocal, R_ATMOS);
             if (tSAT.y > 0.0) {
@@ -4158,6 +4165,7 @@ void main() {
                 vec3 attnT   = exp(-(BETA_R * sODT.x + BETA_M * 1.1 * sODT.y));
                 float maxAttn = max(max(attnT.r, attnT.g), max(attnT.b, 0.001));
                 sunSpecTint  = attnT / maxAttn;  // hue-normalized: max channel → 1.0
+                sunTransMax  = maxAttn;
             }
         }
 
@@ -4559,6 +4567,7 @@ void main() {
             // a slope sd of ~8-12 deg even in light wind) — roughen every reflection, most at a grazing angle,
             // where a real sea smears the sky into vertical streaks. Only the footprint's lost slope did, so a calm
             // sea within ~8 km mirrored clouds and the Milky Way crisply right up to the horizon (user snapshot 4).
+            float seaRoughFoot = seaRough;   // the footprint filter's share alone (the Sun glint's lost slope variance)
             seaRough = max(seaRough, (0.3 + 0.2 * clamp(seaState, 0.0, 2.0))
                                      * (1.0 - smoothstep(0.03, 0.4, abs(dot(dir, surfUp)))));
             reflDir = normalize(reflDir + surfUp * (0.12 * seaRough));
@@ -4641,6 +4650,14 @@ void main() {
                 // of this technique here, not introduced by the hoist.
                 float reflCloudOccl   = 1.0;
                 float reflTerrainOccl = 1.0;
+                // Review 22: the clear march stands for the air IN FRONT of the reflected clouds and for any reflected
+                // sky off screen, but under an overcast that air and that sky are the deck's shadowed underside: the
+                // sea under a storm mirrored half a sunlit clear sky and was brighter than the sky over it (user snap 5:
+                // debug view 50 read full cloud shadow and a 0.48 clear-march weight). Where the sea is in cloud shadow
+                // (cloudBCenter.a, the shadow at this point) that share drops toward the light under a deck (~25%).
+                float ovcK = mix(0.35, 1.0, clamp(cloudBCenter.a, 0.0, 1.0));
+                vec3  clearRefl = reflColor;
+                reflColor *= ovcK;   // off screen / behind the camera: the deck's underside, not the clear sky
 #ifndef SKY_ENV
                 vec3  reflCam = mat3(pc.skyView) * reflDir;
                 if (reflCam.z < -0.01) {
@@ -4655,7 +4672,9 @@ void main() {
                     // looking at the horizon the mirrored direction shares the pixel's own column, so the last 8% of every
                     // row lost its reflected clouds: bright vertical bands at both edges of the sea (user snapshot).
                     vec2  eM = min(reflScreenUV, 1.0 - reflScreenUV);
-                    float onS = smoothstep(-0.08, 0.0, min(eM.x, eM.y));
+                    // (Review 22: over 30% of the frame past the edge, not 8%: with the shadowed fallback below, the switch
+                    // to off screen drew dark wedges in the sea's lower corners under a sunset-lit deck.)
+                    float onS = smoothstep(-0.3, 0.0, min(eM.x, eM.y));
                     reflScreenUV = clamp(reflScreenUV, vec2(0.001), vec2(0.999));
                     vec3 reflCloudT = mix(vec3(1.0), texture(cloudTargetB, reflScreenUV).rgb, onS);
                     reflCloudOccl   = dot(reflCloudT, vec3(1.0 / 3.0));
@@ -4666,7 +4685,7 @@ void main() {
                     vec4  rCA  = texture(cloudTargetA, reflScreenUV);
                     // Per texel, weighted by opacity (review 14): the filtered alpha blends a cloud's distance with the
                     // no-cloud marker (-60000 km) at every edge, and the reflected clouds came out in hard blocks.
-                    float rKf;
+                    float rKf, rHasCloud = 0.0;
                     {
                         vec4  ga = abs(textureGather(cloudTargetA, reflScreenUV, 3));
                         vec4  gT = textureGather(cloudTargetB, reflScreenUV, 1);
@@ -4675,11 +4694,15 @@ void main() {
                                  * clamp(1.0 - gT, 0.0, 1.0) * vec4(lessThan(ga, vec4(50000.0)));
                         float ws = wq.x + wq.y + wq.z + wq.w;
                         rKf = (ws > 1e-6) ? dot(wq, vec4(1.0) - exp(-ga / 40.0)) / ws : 1.0;   // alpha: signed distance, km
+                        rHasCloud = clamp(ws * 3.0, 0.0, 1.0);
                     }
                     rKf = mix(rKf, 1.0, 0.7 * seaRough);   // a rough sea blurs the clouds in it away
                     rKf = mix(1.0, rKf, onS);
                     dbgReflUV = vec3(fract(reflScreenUV * vec2(textureSize(cloudTargetA, 0))), rKf);
-                    reflColor  = reflColor * mix(reflCloudT, vec3(1.0), rKf) + rCA.rgb * (1.0 - rKf);
+                    // The air in front is dimmed where there is cloud in the reflection or it is off screen; a clear
+                    // on-screen reflection keeps the clear march (the sky there is known to be clear).
+                    float frontK = mix(1.0, ovcK, max(1.0 - onS, rHasCloud));
+                    reflColor  = clearRefl * (frontK * rKf + (1.0 - rKf) * reflCloudT) + rCA.rgb * (1.0 - rKf);
                     reflTerrainOccl = mix(1.0, (texture(sceneDepthTex, reflScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0, onS);
                 }
 #endif
@@ -4788,25 +4811,49 @@ void main() {
             float atten = max(1.0 - dist * dist * 1e-5, 0.0);
             surfColor += kSeaWaterColor * max(pHeight - kSeaHeight, 0.0) * 0.18 * atten * directSun;
 
-            // Specular: shininess narrows close-up, broadens with distance
-            float specPow = clamp(600.0 / max(1.0, sqrt(dist)), 8.0, 600.0);
-            float nrm     = (specPow + 8.0) / (PI * 8.0);
-            surfColor    += pow(max(0.0, dot(reflect(dir, waveN), sunDir)), specPow) * nrm * directSun;
+            // The Sun glint (review 22): a Beckmann microfacet lobe about the (resolved) wave normal, in this pass's units
+            // (pi L / E: a sunlit white Lambertian face = 1), so its brightness is physical — a low Sun's glitter path is
+            // tens of times a white surface. Slope variance: Cox & Munk's (0.003 + 0.00512 W, the wind ~7 m/s x the sea
+            // state) for the ripples no octave models, plus the slope the footprint filter removed from waveN (far, the
+            // whole glitter path is that variance), plus the Sun's own disc. It was a Phong lobe of peak ~0.6 of a white
+            // surface whose width shrank as the waves were filtered flat: a sub-pixel disc or nothing (user snap 9).
+            {
+                vec3  hv   = normalize(sunDir - dir);
+                float nh   = max(dot(waveN, hv), 1e-3);
+                float nv   = max(dot(waveN, -dir), 1e-3);
+                float nl   = dot(waveN, sunDir);
+                float wind = 7.0 * clamp(seaState, 0.2, 2.5);
+                float s2   = 0.003 + 0.00512 * wind + 0.06 * seaRoughFoot + 2e-5;
+                float c2   = nh * nh;
+                float D    = exp(-(1.0 - c2) / (c2 * s2)) / (PI * s2 * c2 * c2);
+                float F    = 0.02 + 0.98 * pow(1.0 - max(dot(hv, -dir), 0.0), 5.0);
+                // Smith shadowing-masking (Beckmann, Walter's rational fit): at a grazing view most facets that would
+                // glint are hidden behind the waves in front of them.
+                float sq   = sqrt(s2);
+                float aV   = nv / (sq * sqrt(max(1.0 - nv * nv, 1e-6)));
+                float aL   = max(nl, 1e-3) / (sq * sqrt(max(1.0 - nl * nl, 1e-6)));
+                float gV   = aV < 1.6 ? (3.535 * aV + 2.181 * aV * aV) / (1.0 + 2.276 * aV + 2.577 * aV * aV) : 1.0;
+                float gL   = aL < 1.6 ? (3.535 * aL + 2.181 * aL * aL) / (1.0 + 2.276 * aL + 2.577 * aL * aL) : 1.0;
+                float glint = nl > 0.0 ? PI * F * D * gV * gL / (4.0 * nv) : 0.0;
+                surfColor += sunSpecTint * sunTransMax * min(glint, 400.0) * directSun;
+            }
 
             // Surf and the waterline (2026-09-30, see dShore above).
             if (dShore < 400.0) {
                 float footS = pixAngle * dist / max(abs(dot(dir, surfUp)), 0.03);
-                vec3  sunLitS = vec3(directSun * max(dot(surfUp, sunDir), 0.0));
+                // Diffuse surfaces (surf, sand) take the sky's irradiance, not the mirrored sky (review 22).
+                vec3  sunLitS = sunSpecTint * directSun * max(dot(surfUp, sunDir), 0.0)
+                              + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * twilightFrac;
                 // Breakers: lines parallel to the shore rolling in, bunched by a slow noise along the coast.
                 float along = seaNoise(posM * 0.02) * 6.0;
                 float wave  = 0.5 + 0.5 * sin(dShore * 0.3 - seaTime * 0.9 + along);
                 float surf  = pow(wave, 8.0) * (1.0 - smoothstep(10.0, 90.0, dShore)) * smoothstep(0.0, 3.0, dShore);
                 surf = max(surf, 1.0 - smoothstep(0.0, 4.0, dShore));                 // the swash
                 surf *= clamp(0.4 + 0.6 * seaState, 0.0, 1.5) * (1.0 - smoothstep(4.0, 30.0, footS));
-                surfColor = mix(surfColor, 0.7 * (sunLitS + 0.35 * reflColor), clamp(surf * 0.8, 0.0, 1.0));
+                surfColor = mix(surfColor, 0.7 * sunLitS, clamp(surf * 0.8, 0.0, 1.0));
                 // Waterline coverage: half the pixel is wet sand where the line crosses it.
                 float cov = 0.5 * (1.0 - smoothstep(0.0, footS, dShore));
-                vec3  wetSand = vec3(0.21, 0.18, 0.13) * (sunLitS + 0.3 * reflColor);
+                vec3  wetSand = vec3(0.21, 0.18, 0.13) * sunLitS;
                 surfColor = mix(surfColor, wetSand, cov);
             }
 
@@ -4825,9 +4872,15 @@ void main() {
                           * fs * cloud.oceanState.w;
                 }
                 float foam = clamp(mix(fNear, fMean, waveBlend), 0.0, 1.0);
-                // Foam is a white diffuser: the Sun on its facet plus the sky over the whole hemisphere (the sky
-                // reflection stands in for it; a mirror-like sea shows ~fresnel x it, foam ~0.8 x it).
-                vec3  foamL = 0.8 * (directSun * max(dot(waveN, sunDir), 0.0) + 0.9 * reflColor);
+                // Foam is a white DIFFUSER, lit like snow on the terrain: the Sun on its facet (in the Sun's colour),
+                // the sky's hemispherical irradiance (the terrain's zenith integral x "Terrain sky light") and the
+                // Moon. Review 22: it took 0.9 x reflColor as its sky light — the MIRRORED sky along the specular
+                // direction, clouds and all — so whitewater showed a sharp reflected image ("mercury").
+                vec3  moonDirF = normalize(moonDirENU.xyz);
+                vec3  foamL = 0.8 * (sunSpecTint * directSun * max(dot(waveN, sunDir), 0.0)
+                                     + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * twilightFrac
+                                     + vec3(0.92, 0.95, 1.0) * max(dot(waveN, moonDirF), 0.0)
+                                       * smoothstep(-0.03, 0.02, dot(surfUp, moonDirF)) * moonDirENU.w * cloud.moonGain);
                 surfColor = mix(surfColor, foamL, foam);
             }
 
@@ -5497,7 +5550,9 @@ void main() {
         color += (discVis * geomFade * sunCol
                   + glare  * geomFade * sunCol * obsSunF
                   + corona * geomFade * sunCol * 0.12 * obsSunF
-                  + solarCorona * geomFade * vec3(0.9, 0.95, 1.0) * 0.03) * cloudBlock;
+                  + solarCorona * geomFade * vec3(0.9, 0.95, 1.0) * 0.03) * min(cloudBlock, cloud.sunCloudT);
+        // (Review 22: x the Sun's own cloud transmittance from the eye, 400 km toward it: a horizon Sun's pixels
+        // see past the march's clouds, so cloudBlock alone let it shine through a storm's overcast.)
     }
 
     // ── Camera lens flares (post-tonemap) ─────────────────────────────────────
@@ -5552,7 +5607,7 @@ void main() {
                 // Earth-curvature horizon test above) now correctly hides its flare too.
                 float sunTerrainOccl = (texture(sceneDepthTex, sunScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
                 flareAccum += lensFlare(fragUV, sunUV, sunIntensity, 2.0) * sunTint * sunFade * 0.45
-                            * sunCloudOccl * sunTerrainOccl;
+                            * min(sunCloudOccl, cloud.sunCloudT) * sunTerrainOccl;
             }
         }
 

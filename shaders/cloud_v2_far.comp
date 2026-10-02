@@ -106,7 +106,16 @@ float farTau(CV2Far c)
 
 // The light a slab of reflectance R (and relief factor) sends up at a point of the layer: the key light (the Sun,
 // or by night the Moon), the sky, and by night the city light under it. Shared by the low, mid and high layers.
-vec3 farLit(vec3 up, float hTop, float R, float relief, float msB, vec3 sunDir, vec3 moonDir, vec3 dirE)
+// Review 22: a slab's reflectance for a beam at incidence mu0 (two-stream, conservative, g 0.85; Joseph et al.):
+// [(1-g) tau + (2/3 - mu0)(1 - e^(-tau/mu0))] / [4/3 + (1-g) tau] — slabR at mu0 = 2/3, and HIGHER toward a grazing
+// beam (it skims the top). The key light used slabR at every incidence, so from orbit the far layer's clouds
+// darkened far before the terminator, where the march's stay lit (snap 1, 904 km).
+float slabRmu(float tau, float mu0) {
+    float m = max(mu0, 0.02);
+    return clamp(((1.0 - 0.85) * tau + (2.0 / 3.0 - m) * (1.0 - exp(-tau / m))) / (4.0 / 3.0 + (1.0 - 0.85) * tau), 0.0, 1.0);
+}
+
+vec3 farLit(vec3 up, float hTop, float R, float tau, float relief, float msB, vec3 sunDir, vec3 moonDir, vec3 dirE)
 {
     vec3  pT     = up * (R_EARTH + hTop);
     vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
@@ -125,7 +134,7 @@ vec3 farLit(vec3 up, float hTop, float R, float relief, float msB, vec3 sunDir, 
         keyDir = moonDir;
     }
     float muK  = max(dot(up, keyDir), 0.0);
-    vec3  keyL = keyCol * muK * R * relief * msB * (1.0 / PI) * cv2.farLight.x;
+    vec3  keyL = keyCol * muK * slabRmu(tau, muK * relief) * relief * msB * (1.0 / PI) * cv2.farLight.x;
     float twi  = smoothstep(horizS - 0.12, horizS, sunUp) * (1.0 - smoothstep(horizS + 0.05, horizS + 0.25, sunUp));
     float skyDusk = smoothstep(horizS - 0.09, horizS + 0.04, sunUp);
     vec3  skyZ = skyZenithAt(pT, sunDir, BETA_R, BETA_M) * skyDusk * cv2.look.w * (1.0 + cv2.atmo.y * twi)
@@ -238,7 +247,7 @@ void main()
             // haze in front turned blue — bluer and dimmer than the march's resolved white cells (user, 1460 km).
             float fr = clamp(c.frac, 0.0, 1.0);
             Rlow = fr * slabR(tau);
-            Lout = fr * farLit(up, hTop, slabR(tau), relief, c.msBright, sunDir, moonDir, p.dirE);
+            Lout = fr * farLit(up, hTop, slabR(tau), tau, relief, c.msBright, sunDir, moonDir, p.dirE);
             // Seen through it: the direct transmission of the delta-scaled depth (the forward peak, ~70% of the
             // scattering at g 0.85, carries on), over the covered share.
             Tout = 1.0 - fr * (1.0 - exp(-0.3 * tau / mu));
@@ -248,7 +257,7 @@ void main()
             float TU = exp(-0.3 * tauU);
             // The adding method (conservative scattering: diffuse transmission 1 - R): a thin layer over a bright
             // deck barely changes it; as a plain attenuator it drew grey camouflage blotches over every deck.
-            Lout = farLit(up, mB + mT, RU, 1.0, 1.0, sunDir, moonDir, p.dirE)
+            Lout = farLit(up, mB + mT, RU, tauU * mu, 1.0, 1.0, sunDir, moonDir, p.dirE)
                  + Lout * (1.0 - RU) * (1.0 - RU) / max(1.0 - RU * Rlow, 0.05);
             Tout *= TU;
         }

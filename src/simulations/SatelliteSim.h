@@ -1529,7 +1529,7 @@ struct GpuCloudParams
     // 1 = v2 draws the low/mid clouds: cloud_march.comp reads cloud_v2_resolve.comp's result instead
     // of running cloudMarchCS, sat_sky.frag skips flat layer 0, beam_self_march.comp and the ground
     // shadow use the v2 field. The pads are std140's rounding, load-bearing like the ones above.
-    float cloudsV2;
+    float sunCloudT;   // review 22 (was cloudsV2): the Sun disc's cloud transmittance from the eye
     float exposureScale;     // 2^(cv2ExposureEV)
     float highlightRolloff;  // cv2HighlightRolloff (sat_sky.frag's tonemap shoulder)
     float whiteBalance;      // cv2WhiteBalance (sat_sky.frag, before the tonemap)
@@ -2984,6 +2984,9 @@ private:
     float cv2TopHeavy = 1.0f;          // how much narrower the base is than the body (0 = straight sides)
     float cv2TowerTop = 0.85f;         // the tallest cell's top, as a fraction of its type's span (headroom)
     float cv2BaseFlatness = 0.8f;      // cumulus bases: how flat (the 3D lobes damped near the base)
+    // Review 22: convective lobes taper up the cloud ("Lobes (3D)" units; replace it on cumulus types).
+    float cv2CuLobesBottom = 0.2f, cv2CuLobesTop = 0.07f;   // slots 244 / 245, UBO farLight.zw
+    float sunCloudTEased = 1.0f;       // review 22: the Sun disc's cloud transmittance (CloudParams::sunCloudT)
     // Cumulonimbus as three layers (pass 15): the cumulus field capped at cv2CbCumulusTopKm, discrete
     // concave towers on a lattice (cv2ColumnSigma), and the anvil hanging lower around their heads.
     float cv2CbColumns = 1.5f;         // Cb column density (0 = the pass-14 deep cores in the low layer)
@@ -4563,7 +4566,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 244;
+    static constexpr int kCloudSliderSlots = 246;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

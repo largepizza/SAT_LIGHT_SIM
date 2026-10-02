@@ -4788,6 +4788,8 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Top-heavy (cumulus)", &cv2TopHeavy, 0.0f, 2.0f, 0.05f, "%.2f", 72},
         {"Tower top (0 = old cones)", &cv2TowerTop, 0.0f, 0.95f, 0.01f, "%.2f", 73},
         {"Base flatness (cumulus)", &cv2BaseFlatness, 0.0f, 1.0f, 0.05f, "%.2f", 76},
+        {"Cumulus lobes (bottom)", &cv2CuLobesBottom, 0.0f, 1.0f, 0.01f, "%.2f", 244},
+        {"Cumulus lobes (top)", &cv2CuLobesTop, 0.0f, 1.0f, 0.01f, "%.2f", 245},
     };
 
     CloudSlider secLighting[] = {
@@ -6987,6 +6989,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CirrusFieldKm = c.value("cirrus_field_km", cv2CirrusFieldKm);
         cv2CirrusFlow = c.value("cirrus_flow", cv2CirrusFlow);
         cv2BaseFlatness = c.value("base_flatness", cv2BaseFlatness);
+        cv2CuLobesBottom = c.value("cumulus_lobes_bottom", cv2CuLobesBottom);
+        cv2CuLobesTop = c.value("cumulus_lobes_top", cv2CuLobesTop);
         cv2CbColumns = c.value("cb_columns", cv2CbColumns);
         cv2CbSpacingKm = c.value("cb_spacing_km", cv2CbSpacingKm);
         cv2CbRadiusKm = c.value("cb_radius_km", cv2CbRadiusKm);
@@ -7483,6 +7487,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cirrus_field_km", cv2CirrusFieldKm},
         {"cirrus_flow", cv2CirrusFlow},
         {"base_flatness", cv2BaseFlatness},
+        {"cumulus_lobes_bottom", cv2CuLobesBottom},
+        {"cumulus_lobes_top", cv2CuLobesTop},
         {"cb_columns", cv2CbColumns},
         {"cb_spacing_km", cv2CbSpacingKm},
         {"cb_radius_km", cv2CbRadiusKm},

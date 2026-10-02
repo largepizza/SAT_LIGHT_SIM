@@ -1635,8 +1635,10 @@ vec3 rainDrops(vec3 dirE, float rate, float wind, float tScene, float pixAng, ve
         float r  = 2.0 * float(1 << k);
         if (r > tScene) break;
         float c  = 0.14 * r;
-        // The layer's motion: rain ~8 m/s (snow ~1), the ground wind ~40% of the wind aloft, gusting.
-        float v  = dust ? 0.3 : mix(8.0 - 0.5 * float(min(k, 4)), 1.1, snowP);
+        // The layer's motion: rain ~10 m/s (snow ~1), the ground wind ~40% of the wind aloft, gusting.
+        // (Review 22: was 8, the user wanted it a little faster. It cannot follow the rain RATE: the
+        // offset is v x t with t up to 600 s, so any change of v moves every drop at once.)
+        float v  = dust ? 0.3 : mix(10.0 - 0.4 * float(min(k, 4)), 1.1, snowP);
         float w0 = 0.4 * wind * snowW;
         float wg = w0 * (1.0 + 0.35 * sin(t * 0.21 + float(k) * 1.7));
         vec3  F  = normalize(vec3(wg, 0.0, -v));

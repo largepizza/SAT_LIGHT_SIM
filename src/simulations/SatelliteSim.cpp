@@ -2259,7 +2259,19 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
         GpuCloudParams cp{};
         cp.coverage = cloudCoverage;
-        cp.cloudsV2 = 1.0f; // unused since v1's march was deleted (2026-09-27); a UBO slot to reuse
+        // Review 22: the Sun disc's cloud transmittance (cloud_v2_lightning.comp, last frame's, flash header
+        // word 3), eased over ~0.15 s. 1 when the march is not running (the far layer at full blend).
+        {
+            float target = 1.0f;
+            if (cv2FlashMapped && cloudFarBlend() < 0.999f && (debugDisableMask & 32768u) == 0u)
+            {
+                float v;
+                std::memcpy(&v, (const char *)cv2FlashMapped + 12, 4);
+                if (std::isfinite(v)) target = std::clamp(v, 0.0f, 1.0f);
+            }
+            sunCloudTEased += (target - sunCloudTEased) * (1.0f - std::exp(-std::max(dt, 0.0f) / 0.15f));
+        }
+        cp.sunCloudT = sunCloudTEased;
         cp.exposureScale = exp2f(globalExposureEV());
         cp.highlightRolloff = std::clamp(cv2HighlightRolloff, 0.0f, 1.0f);
         cp.whiteBalance = std::clamp(cv2WhiteBalance, 0.0f, 1.0f);
@@ -2994,7 +3006,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pc.moonSuppression = moonSuppression;
     pc.moonDirECI = moonDirECI; // computed in updatePositions(), called earlier this frame
     pc.extinctionCoeff = extinctionCoeff;
-    pc.sunRefIntensity = sunFlareRefIntensity; // S3: soft ceiling reference, see struct comment
+    pc.sunRefIntensity = sunFlareRefIntensity * sunCloudTEased; // S3: soft ceiling reference; review 22: x the Sun's cloud transmittance
     pc.selectedSatIdx = (selectedSatIndex >= 0) ? (uint32_t)selectedSatIndex : UINT32_MAX;
     pc.meshSatIdx = -1.0f; // Phase 4d: sprite weights come through MeshKeepBuf (binding 12) now
     pc.meshSpriteKeep = 1.0f;
@@ -3116,7 +3128,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         fpc.fovYRad = glm::radians(camera.fovYDeg);
         fpc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
         fpc.satCount = activeSatCount; // unused since Phase 1b (indirect draw) — see flare_source.vert
-        fpc.sunRefIntensity = sunFlareRefIntensity;
+        fpc.sunRefIntensity = sunFlareRefIntensity * sunCloudTEased;
         fpc.sunDirENU = sunDirENU;
         fpc.screenSizePx = glm::vec2((float)flareExtent.width, (float)flareExtent.height);
         fpc.resScale = (float)flareExtent.width / (float)ctx.swapExtent.width;
