@@ -1203,7 +1203,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             cv2FullRateNow = false;
     }
     p.misc2.w = std::max(cv2AdaptiveParallaxPx, 0.05f);
-    p.misc = glm::vec4(std::round(std::clamp(cv2MaxIters, 32.0f, 1024.0f)), cv2MoonGain,
+    {
+        const double move = glm::length(eye - cv2PrevEye);
+        cv2FastLodNow = cv2FastFlightLod > 0.5f && valid && ((boostHeldNow && move > 2.0) || move > 150.0);
+        if (cv2FastLodNow)
+        {
+            p.light.y = std::min(p.light.y, 2.0f);
+            p.march.x *= 1.5f;
+        }
+    }
+    p.misc = glm::vec4(std::round(std::clamp(cv2MaxIters * (cv2FastLodNow ? 0.6f : 1.0f), 32.0f, 1024.0f)), cv2MoonGain,
                        cv2AdaptiveNow ? 3.0f : cv2HalfRateNow ? 2.0f : (cv2FullRateNow ? 1.0f : 0.0f), cv2MidAmount);
     std::memcpy(cv2ParamsMapped, &p, sizeof(p));
 

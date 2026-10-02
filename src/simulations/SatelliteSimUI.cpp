@@ -4841,6 +4841,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Full rate above (km)", &cv2FullRateAboveKm, 0.0f, 400.0f, 1.0f, "%.0f", 145},
         {"Sparse when still (0/1)", &cv2SparseWhenStill, 0.0f, 1.0f, 1.0f, "%.0f", 176},
         {"Half rate while moving (0/1)", &cv2HalfRateMoving, 0.0f, 1.0f, 1.0f, "%.0f", 186},
+        {"Fast-flight cloud LOD (0/1)", &cv2FastFlightLod, 0.0f, 1.0f, 1.0f, "%.0f", 246},
         {"Adaptive rate while moving (0/1)", &cv2AdaptiveRate, 0.0f, 1.0f, 1.0f, "%.0f", 192},
         {"Adaptive parallax (px)", &cv2AdaptiveParallaxPx, 0.1f, 8.0f, 0.1f, "%.1f", 193},
     };
@@ -6991,6 +6992,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2BaseFlatness = c.value("base_flatness", cv2BaseFlatness);
         cv2CuLobesBottom = c.value("cumulus_lobes_bottom", cv2CuLobesBottom);
         cv2CuLobesTop = c.value("cumulus_lobes_top", cv2CuLobesTop);
+        cv2FastFlightLod = c.value("fast_flight_lod", cv2FastFlightLod);
         cv2CbColumns = c.value("cb_columns", cv2CbColumns);
         cv2CbSpacingKm = c.value("cb_spacing_km", cv2CbSpacingKm);
         cv2CbRadiusKm = c.value("cb_radius_km", cv2CbRadiusKm);
@@ -7489,6 +7491,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"base_flatness", cv2BaseFlatness},
         {"cumulus_lobes_bottom", cv2CuLobesBottom},
         {"cumulus_lobes_top", cv2CuLobesTop},
+        {"fast_flight_lod", cv2FastFlightLod},
         {"cb_columns", cv2CbColumns},
         {"cb_spacing_km", cv2CbSpacingKm},
         {"cb_radius_km", cv2CbRadiusKm},
