@@ -4688,6 +4688,24 @@ void main() {
                     // The target holds the clouds without the air in front of them (the sky pass adds that as
                     // airFront): a far cloud is mostly that air, so it leans back to the clear march by its distance.
                     vec4  rCA  = texture(cloudTargetA, reflScreenUV);
+                    // Review 22b: the far sea is no mirror — its slopes spread each reflected cloud along the view into a
+                    // vertical smear (a sun glitter path's shape). The reflected clouds are averaged over +-2 taps along
+                    // the screen's vertical, spread by distance and roughness; they read as a mirror finish out to the
+                    // horizon (user).
+                    {
+                        float spr = (0.006 + 0.04 * seaRough) * smoothstep(1500.0, 25000.0, dist);
+                        if (spr > 1e-4) {
+                            vec3 sA = rCA.rgb, sT = reflCloudT;
+                            for (int k = -2; k <= 2; ++k) {
+                                if (k == 0) continue;
+                                vec2 uvk = clamp(reflScreenUV + vec2(0.0, float(k) * spr), vec2(0.001), vec2(0.999));
+                                sA += texture(cloudTargetA, uvk).rgb;
+                                sT += mix(vec3(1.0), texture(cloudTargetB, uvk).rgb, onS);
+                            }
+                            rCA.rgb = sA * 0.2;
+                            reflCloudT = sT * 0.2;
+                        }
+                    }
                     // Per texel, weighted by opacity (review 14): the filtered alpha blends a cloud's distance with the
                     // no-cloud marker (-60000 km) at every edge, and the reflected clouds came out in hard blocks.
                     float rKf, rHasCloud = 0.0;
@@ -4702,6 +4720,7 @@ void main() {
                         rHasCloud = clamp(ws * 3.0, 0.0, 1.0);
                     }
                     rKf = mix(rKf, 1.0, 0.7 * seaRough);   // a rough sea blurs the clouds in it away
+                    rKf = mix(rKf, 1.0, 0.3 * smoothstep(3000.0, 30000.0, dist));   // review 22b: and far out, more of it
                     rKf = mix(1.0, rKf, onS);
                     dbgReflUV = vec3(fract(reflScreenUV * vec2(textureSize(cloudTargetA, 0))), rKf);
                     // The air in front is dimmed where there is cloud in the reflection or it is off screen; a clear
@@ -5120,6 +5139,16 @@ void main() {
     // auroraMarchCS, with its own cloud-suppression already applied there using the local cloud
     // opacity. No separate aurora term needed here; it is terrain-occluded at march time along
     // with everything else in the composite.
+    // Review 22b: a satellite mesh nearer than the cloud is in FRONT of it. The march clamps to the half-res scene
+    // depth, which misses a mesh's thin parts (panels, truss), and the far cloud layer has no depth test, so clouds
+    // were composited over the model (user: "clouds visible through sat 3d models"). The cloud's distance is its
+    // signed alpha (km; the no-cloud marker is far past any mesh).
+#ifndef SKY_ENV
+    if (meshHit && abs(cloudA.a) * 1000.0 > tMesh) {
+        cloudB.rgb = vec3(1.0);
+        cloudA.rgb = vec3(0.0);
+    }
+#endif
     color = color * cloudB.rgb + cloudA.rgb + (cityGlowFront + airFront) * (vec3(1.0) - cloudB.rgb);
 #ifdef SKY_ENV
     // From orbit the curtains are in front of every cloud deck: added on top.

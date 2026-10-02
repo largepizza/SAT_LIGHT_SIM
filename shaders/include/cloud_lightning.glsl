@@ -32,6 +32,9 @@ buffer CV2FlashBuf {
     // at its height (ENU east x north, cell (i, j) centred at ((i, j) - N/2 + 0.5) x the cell), filled by the
     // lightning pass's extra workgroups; and each of those workgroups' maximum (0 = no rain near the eye).
     float    cv2RainWgMax[4];
+    // Review 22b: the eye's march toward the Sun as a PROFILE: [0] its length L (0 = none), [1 + k] the optical depth
+    // from the eye to L x (k / 16)^2, k = 0..16 (the march's own quadratic steps); [18..19] pad.
+    float    cv2SunProf[20];
     float    cv2RainMap[1024];
 };
 const int   kCv2RainMapN  = 32;

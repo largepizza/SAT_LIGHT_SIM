@@ -57,6 +57,9 @@ layout(set = 0, binding = 7) uniform sampler2D earthNightTex;
 layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define BEAM_CLOUD_LIGHTS_BINDING 9
 #include "beam_cloud_lights.glsl"
+// Review 22b: the eye's Sun-path profile (cv2SunProf), written by cloud_v2_lightning.comp before this pass.
+#define CV2_FLASH_BINDING 12
+#include "cloud_lightning.glsl"
 layout(set = 0, binding = 10, rgba16f) uniform writeonly image2D outColor;
 // Adaptive rate (misc.z = 3): pass A (this shader, kPassB = 0) marches the sparse grid, skipping the
 // 32x32 tiles cloud_v2_tiles.comp listed in TileBuf (parallax past misc2.w px a frame, or history from off
@@ -695,6 +698,21 @@ void main()
                 // forward lobe drew the Sun's disc in the shafts under the storm (user snap 2).
                 keyCol = sunCol * sunVis * cv2.look2.y
                        * mix(1.0, cloud.sunCloudT, f.rain * exp(-t / 100000.0));
+                // Review 22b: near the eye's line to the Sun a sample's sunlight crosses what the eye's own 400-km march
+                // toward it found BEYOND the sample (cv2SunProf: optical depth from the eye along that line), faded by
+                // the sample's distance from the line (~2 km). The light march (a few km) cannot see a storm between
+                // a low Sun and the clouds in front of it: their forward lobe glowed like the Sun through miles of
+                // cloud (user). Clouds beyond the blocker keep their light (sunset silver linings).
+                if (cv2SunProf[0] > 0.0 && cloud.sunCloudT < 0.98 && cosSun > 0.0) {
+                    float dP = t * sqrt(max(1.0 - cosSun * cosSun, 0.0)) / 2000.0;
+                    float w  = exp(-dP * dP);   // (8 km darkened a sunset-lit deck 3 km above the eye's line)
+                    if (w > 0.01) {
+                        float uu = sqrt(clamp(t * cosSun / cv2SunProf[0], 0.0, 1.0)) * 16.0;
+                        int   k0 = min(int(uu), 15);
+                        float odB = mix(cv2SunProf[1 + k0], cv2SunProf[2 + k0], uu - float(k0));
+                        keyCol *= mix(1.0, exp(-max(cv2SunProf[17] - odB, 0.0)), w);
+                    }
+                }
             } else if (nightK > 0.0) {
                 float moonUp = dot(up, moonDir);
                 keyCol = moonKey * nightK * smoothstep(-0.05, 0.1, moonUp);

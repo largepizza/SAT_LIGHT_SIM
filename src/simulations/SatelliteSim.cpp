@@ -4533,6 +4533,12 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
 }
 
 // ─── Phase 4e: follow mode ───────────────────────────────────────────────────
+// Review 22b: 0.8-2.5 s by the log of the distance (it was 2-8 s; the user: "a lot faster").
+double SatelliteSim::followFlightDuration(double distM) const
+{
+    return std::clamp(0.8 + 0.5 * std::log10(1.0 + distM / 1000.0), 0.8, 2.5);
+}
+
 glm::dvec3 SatelliteSim::followFlightPos(const glm::dvec3 &from, const glm::dvec3 &to, double u) const
 {
     const double R = (double)kEarthRadius;
@@ -4582,6 +4588,16 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
     const double r = std::max(1.0, (double)tm->boundsRadius);
     followOffset = glm::dvec3(-4.0 * r, 0.0, 1.5 * r);
     followFlightFov0 = camera.fovYDeg;   // a flight eases the FOV to 50 (review 22)
+    // Review 22b: the view direction the flight starts from (ECEF), eased toward the satellite over its first third,
+    // and the arrival point put on the line from the satellite back to where the flight came from, so the view
+    // settles in the facing it approached with (the default offset behind the satellite swung it round at the end).
+    {
+        const glm::vec3 up0 = obsDir;
+        const float el0 = glm::radians(camera.elDeg);
+        followFlightView0 = glm::normalize(std::cos(el0) * obsFacing + std::sin(el0) * up0);
+        followFlightAlign = fly;
+        followDefaultDist = glm::length(followOffset);
+    }
     camera.fovYDeg = 50.0f;
     snprintf(followLabel, sizeof(followLabel), "Following %s #%d", satTypes[ti].name.c_str(), satIndex);
     followFlight = 0;
@@ -4607,7 +4623,7 @@ void SatelliteSim::stopFollow(bool fly)
         followFlightFrom = followObsEcef;
         const glm::dvec3 home = glm::dvec3(followSavedObsDir) *
                                 ((double)kEarthRadius + std::max((double)followSavedGround, (double)followSavedHeight) + 2.0);
-        followFlightDur = std::clamp(2.0 + 1.5 * std::log10(1.0 + glm::length(home - followFlightFrom) / 1000.0), 2.0, 8.0);
+        followFlightDur = followFlightDuration(glm::length(home - followFlightFrom));
         followFlightFacing0 = obsFacing;
         followFlightEl0 = camera.elDeg;
         return;
@@ -4682,6 +4698,16 @@ void SatelliteSim::updateFollow(float dt)
         }
     }
 
+    if (followFlightAlign)
+    {
+        const glm::dvec3 back = followFlightFrom - P;
+        if (glm::length(back) > 1.0)
+        {
+            const glm::dvec3 d = glm::normalize(back) * followDefaultDist;
+            followOffset = glm::dvec3(glm::dot(d, Th), glm::dot(d, Nh), glm::dot(d, Rh));
+        }
+        followFlightAlign = false;
+    }
     followObsEcef = P + followOffset.x * Th + followOffset.y * Nh + followOffset.z * Rh;
     bool homeLook = false;
     if (followFlight != 0)
@@ -4690,7 +4716,7 @@ void SatelliteSim::updateFollow(float dt)
                             : glm::dvec3(followSavedObsDir) * ((double)kEarthRadius +
                                   std::max((double)followSavedGround, (double)followSavedHeight) + 2.0);
         if (followFlightDur <= 0.0)
-            followFlightDur = std::clamp(2.0 + 1.5 * std::log10(1.0 + glm::length(to - followFlightFrom) / 1000.0), 2.0, 8.0);
+            followFlightDur = followFlightDuration(glm::length(to - followFlightFrom));
         followFlightT += (double)std::max(dt, 0.0f);
         const double x = std::min(followFlightT / followFlightDur, 1.0);
         const double u = x * x * (3.0 - 2.0 * x);
@@ -4739,7 +4765,16 @@ void SatelliteSim::updateFollow(float dt)
     else if (followAimLock && glm::length(P - followObsEcef) > 0.01)
     {
         const glm::dvec3 toSat = glm::normalize(P - followObsEcef);
-        const glm::vec3 d = glm::vec3(toSat);
+        glm::vec3 d = glm::vec3(toSat);
+        // Review 22b: on the way out the view turns from where it was looking to the satellite over the first third
+        // (it snapped to the satellite on the flight's first frame).
+        if (followFlight == 1)
+        {
+            const float k = (float)glm::smoothstep(0.0, 0.35, std::min(followFlightT / std::max(followFlightDur, 1e-3), 1.0));
+            const glm::vec3 m = glm::mix(followFlightView0, d, k);
+            if (glm::length(m) > 1e-4f)
+                d = glm::normalize(m);
+        }
         glm::vec3 h = d - glm::dot(d, upF) * upF;
         if (glm::length(h) > 1e-6f)
             obsFacing = glm::normalize(h);

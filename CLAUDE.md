@@ -1289,6 +1289,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     is the cloud history's reset (one noisy frame, then recovers; the settings hash includes it); snap 6 descending (record 14, tstab `fall`
     3.8 vs `rise` 1.8): history lag as the deck expands toward the eye, and the sky TAA's band as the eye's height
     changes.
+- **Review 22b (2026-10-02, the user's follow-up):** **the Sun hidden by a storm, and the clouds in front of it
+  dark:** at record 10 the composite's cloud transmittance toward the Sun was ~0.005 — the glow was the clouds' OWN
+  forward-scattered light, the light march (a few km) not seeing the storm between them and a low Sun. The lightning
+  pass's Sun march now writes a PROFILE (`cv2SunProf` in the flash buffer: its length + the optical depth from the eye
+  at L (k/16)^2, k 0..16; the march includes cloud_lightning.glsl at binding 12): a cloud sample near the eye's line to
+  the Sun takes exp(-(depth beyond its point)) on its key light, faded by its distance from the line (Gaussian, 2 km;
+  8 km darkened a sunset-lit deck 3 km above the line). Clouds beyond the blocker keep their light (silver linings).
+  The first cut overwrote the profile's last value with 8 after a full march (every cloud near the Sun line went
+  dark): fill only after an early out. 128 registers. **Clouds through satellite meshes:** sat_sky.frag skips the cloud
+  composite on a mesh pixel when the cloud's distance (|alpha|, km) is beyond the mesh — the march clamps only to the
+  half-res depth (thin panels and truss missed) and the far layer has no depth test. **Go to:** 0.8-2.5 s
+  (`followFlightDuration`), the view eases from where it looked to the satellite over the first third, and the arrival
+  point is on the line from the satellite back to where the flight came from (`followFlightAlign`), so it settles in
+  the facing it approached with. **Far sea:** the reflected clouds are averaged over 5 taps along the screen's vertical
+  (spread by distance and roughness) and lean 30% more to the sky's own reflection past 3-30 km: a mirror finish to the
+  horizon.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

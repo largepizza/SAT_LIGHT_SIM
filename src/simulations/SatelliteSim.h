@@ -2205,6 +2205,10 @@ private:
     glm::dvec3 followFlightFrom{0.0};
     float      followSavedGround = 0.0f, followFlightEl0 = 0.0f, followFlightFov0 = 50.0f;
     glm::vec3  followFlightFacing0{0.0f};
+    glm::vec3  followFlightView0{0.0f};     // review 22b: the view direction (ECEF) a flight to a satellite starts from
+    bool       followFlightAlign = false;   // put the arrival on the approach line (next updateFollow)
+    double     followDefaultDist = 0.0;
+    double followFlightDuration(double distM) const;
     void startFollow(int satIndex, bool fly = false);
     void stopFollow(bool fly = false);
     void updateFollow(float dt);
@@ -3170,7 +3174,7 @@ private:
     VkDeviceMemory cv2BlueNoiseMem = VK_NULL_HANDLE;
     static constexpr uint32_t kCv2FlashMax = 32;             // == kCv2FlashMax in cloud_lightning.glsl
     // + review 22's rain map (cloud_lightning.glsl): 4 workgroup maxima and 32 x 32 rain rates after the flashes.
-    static constexpr VkDeviceSize kCv2RainMapOffset = 16 + kCv2FlashMax * 48 + 16;
+    static constexpr VkDeviceSize kCv2RainMapOffset = 16 + kCv2FlashMax * 48 + 16 + 80;   // + review 22b's Sun profile
     static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2RainMapOffset + 1024 * 4;
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
