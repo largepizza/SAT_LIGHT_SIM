@@ -3002,6 +3002,10 @@ private:
     // moves, or the eye moves > 150 m a frame, the march takes <= 2 light steps, 60% of its iteration budget and
     // a 1.5x base step (boosting up through cloud is the most expensive frame there is, and the history is useless).
     float cv2FastFlightLod = 1.0f;
+    // Review 22 (experiment): "Foveated full rate (radius)" (slot 247, clouds_v2.fovea_radius, 0 = off): while the
+    // adaptive rate runs (the view moves), tiles within this radius of the centre (x the half height) march at
+    // full rate whatever their parallax.
+    float cv2FoveaRadius = 0.0f;
     bool  boostHeldNow = false, cv2FastLodNow = false;
     // Cumulonimbus as three layers (pass 15): the cumulus field capped at cv2CbCumulusTopKm, discrete
     // concave towers on a lattice (cv2ColumnSigma), and the anvil hanging lower around their heads.
@@ -4584,7 +4588,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 247;
+    static constexpr int kCloudSliderSlots = 248;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

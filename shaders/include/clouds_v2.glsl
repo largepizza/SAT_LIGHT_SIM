@@ -110,7 +110,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  rainE, rainN, rainU;  // the rain lattice's frame: xyz its axes (ECEF), w the eye in it (m, mod 1024)
     vec4  precip;         // x the air temperature at the eye (deg C): rain / sleet / snow; y sim time mod 600 s
     vec4  anchorMorph;    // review 17: the morphology texture's anchor (xyz frac(anchor / period), w 1 / period)
-    vec4  morph;          // x its share of the placement (vs the cluster Perlin), y "Imagery share" (review 19), z unused, w 2^-"Far-field sharpness"
+    vec4  morph;          // x its share of the placement (vs the cluster Perlin), y "Imagery share" (review 19), z "Foveated full rate (radius)" (review 22, cloud_v2_tiles.comp), w 2^-"Far-field sharpness"
     vec4  farLight;       // review 18: the far cloud layer's key-light and sky-light gains (cloud_v2_far.comp);
                           // zw review 22: "Cumulus lobes (bottom / top)", replacing form.x on convective types
 } cv2;

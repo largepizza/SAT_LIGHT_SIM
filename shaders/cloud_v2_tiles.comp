@@ -60,6 +60,15 @@ void main()
         if (vote) atomicOr(sVote, 1u);
     }
     barrier();
+    // Review 22 (experiment, "Foveated full rate (radius)", cv2.morph.z, 0 = off): while the view moves (this pass
+    // runs only then), the tiles within that radius of the screen's centre (in units of the half height) are
+    // marched at full rate whatever their parallax.
+    if (gl_LocalInvocationIndex == 0u && cv2.morph.z > 0.0) {
+        ivec2 hs = textureSize(sceneDepthTex, 0);
+        vec2  tc = ((vec2(gl_WorkGroupID.xy) + 0.5) * 32.0 / vec2(hs)) * 2.0 - 1.0;
+        tc.x *= float(hs.x) / float(hs.y);
+        if (length(tc) < cv2.morph.z) sVote = 1u;
+    }
     if (gl_LocalInvocationIndex == 0u && sVote != 0u) {
         uint tileId = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x;
         uint i = atomicAdd(tDispX, 4u) >> 2u;

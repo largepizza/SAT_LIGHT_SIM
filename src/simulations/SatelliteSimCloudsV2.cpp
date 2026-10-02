@@ -1009,7 +1009,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.anchorCluster = anchor(cv2ClusterPeriodM, 0.6);
     p.anchorMorph = anchor((double)std::clamp(cv2MorphPeriodKm, 40.0f, 2000.0f) * 1000.0, 0.6);   // review 17
     p.morph = glm::vec4(std::clamp(cv2MorphOrbit, 0.0f, 1.0f), std::clamp(cv2ImageryShare, 0.0f, 1.0f),
-                        0.0f,   // was "Morphology from (m/px)" (review 18's near/far switch; review 19: one placement)
+                        std::clamp(cv2FoveaRadius, 0.0f, 2.0f),   // review 22 (was "Morphology from (m/px)")
                         std::exp2(-std::clamp(cv2MorphBreakup, 0.0f, 3.0f)));
     p.farLight = glm::vec4(cv2FarKeyGain, cv2FarSkyGain, std::clamp(cv2CuLobesBottom, 0.0f, 1.0f),
                            std::clamp(cv2CuLobesTop, 0.0f, 1.0f));   // zw: review 22's cumulus lobes
