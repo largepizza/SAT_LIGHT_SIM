@@ -105,11 +105,15 @@ void main()
     // others are two frames old).
     vec4 mn = vec4(1e30), mx = vec4(-1e30), m1 = vec4(0.0), m2 = vec4(0.0), ax = vec4(0.0);
     float nBox = 0.0;
+    float dNear = 1e30;   // the nearest cloud distance among the new samples (review 19, below)
     for (int dy = -1; dy <= 1; ++dy)
     for (int dx = -1; dx <= 1; ++dx) {
         ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
         if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
         vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
+        float dq = tFull ? texelFetch(fullDepthTex, clamp(c + ivec2(dx, dy), ivec2(0), gHalf - 1), 0).x
+                         : texelFetch(newDepthTex, pq, 0).x;
+        if (dq > 0.0) dNear = min(dNear, dq);
         if ((dx == 0) != (dy == 0)) ax += s;   // the four axial neighbours (the sparse grid's smoothing)
         s = cv2ToMean(s);
         mn = min(mn, s); mx = max(mx, s);
@@ -196,8 +200,15 @@ void main()
     // The point, from the previous eye, where the clouds were: they drift with the map, so the
     // point that shows this cloud now showed it at Rz(drift delta) p last frame (obsDelta already
     // holds Rz(delta) eye - prevEye). Without it, time warp tore far clouds into 2x2 squares.
-    if (nd.x > 0.0) {
-        vec3 v = vE * nd.x;
+    // Review 19: a pixel with NO cloud of its own (clear sea between small puffs) reprojects at the nearest
+    // cloud distance of its 3x3 neighbourhood (closest-depth dilation), not at infinity. At infinity, in a
+    // moving view low over the clouds, its history came from where a puff had been, and the parallax floor
+    // below took it as 50 km away: nearly still, so the still weight and the wide box kept that ghost � every
+    // small puff smeared into a streak behind itself and faded (the user's snapshot 2, 7.5 km over trade
+    // cumulus: "small clouds get filtered out when moving or changing altitude").
+    float ndR = nd.x > 0.0 ? nd.x : (dNear < 1e29 ? dNear : 0.0);
+    if (ndR > 0.0) {
+        vec3 v = vE * ndR;
         vE = vec3(v.x * cv2.extra.z - v.y * cv2.extra.w, v.x * cv2.extra.w + v.y * cv2.extra.z, v.z)
            + cv2.obsDelta.xyz;
     }
@@ -225,8 +236,8 @@ void main()
         motionPx = (camInf.z < 0.0) ? length((uvPrev - uvInf) * vec2(halfSize)) : 8.0;
         // Plus the evolution the reprojection cannot follow (the noise volumes sliding against each
         // other — km per second under time warp), in pixels at this cloud's distance.
-        if (nd.x > 0.0)
-            motionPx = max(motionPx, cv2.motion.x / (nd.x * 2.0 * tanHalf / float(halfSize.y)));
+        if (ndR > 0.0)
+            motionPx = max(motionPx, cv2.motion.x / (ndR * 2.0 * tanHalf / float(halfSize.y)));
         // Review 12: while the EYE moves, at least the parallax of a point 50 km away. A pixel's distance is
         // the opacity-weighted mean of what it shows; a near beam shaft (or haze) in front of a far deck
         // reprojected at the deck's distance kept the still view's weight and wide box, and the shaft left
@@ -234,7 +245,7 @@ void main()
         {
             vec3  od    = cv2.obsDelta.xyz;
             float perp  = length(od - vE0 * dot(od, vE0));
-            motionPx = max(motionPx, perp / (min(nd.x > 0.0 ? nd.x : 1e9, 50000.0) * 2.0 * tanHalf / float(halfSize.y)));
+            motionPx = max(motionPx, perp / (min(ndR > 0.0 ? ndR : 1e9, 50000.0) * 2.0 * tanHalf / float(halfSize.y)));
         }
         // Still: look2.w ("History weight", low: the history averages the quarter grid's noise away —
         // at 1 each pixel alternated between its own ray and its neighbours' estimate, a checkerboard
