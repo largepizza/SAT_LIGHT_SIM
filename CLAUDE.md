@@ -500,7 +500,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - **Rain / sleet / snow at the eye** (cloud_march.comp `rainDrops`, review 3, 2026-09-29): DROPS IN THE
   WORLD — five depth layers (2..32 m) of a 3D lattice (cell 0.14 x the layer's depth) in a frame fixed to
   the nearest 0.25-degree point (`cv2.rainE/N/U`: axes in ECEF, w = the eye's position in that frame from
-  double, wrapped to 1024 m; every cell divides it), falling (rain ~8 m/s, snow ~1.1) and drifting with the
+  double, wrapped to 1024 m; every cell divides it), falling (rain ~10 m/s since review 22, snow ~1.1) and drifting with the
   ground wind (0.4 x the wind aloft, gusting); the 2x2x2 cells nearest the ray's point at each depth are
   tested, so a drop is never cut at a cell edge. The rain RATE sets the probability that a cell holds a
   drop (light rain = a few, heavy = many) — it used to scale their brightness. Each drop is a segment
@@ -514,7 +514,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   are still rain. The `rain` ambience driver takes the liquid share (`cv2EyeTempC`). The wind drift of each layer is the INTEGRAL of its gusting wind (it was
   wind(t) x t, whose speed carried t x d(wind)/dt, up to ~140 m/s near t = 600 s: the rain stopped,
   rose and fell again — review 6). Rate in ~6 s bursts
-  (`rainBurst`); `cloud_v2_march.comp` writes the rate into `terrainFrame.w` (scene_depth.comp writes only
+  (`rainBurst`); [review 22: from the rain map, see "Review 22"; until then] `cloud_v2_march.comp` wrote the rate into `terrainFrame.w` (scene_depth.comp writes only
   .xyz); the host reads it for the `rain` ambience driver (synth `rain`, layer `rain`). **Glints (review 4):**
   an ice crystal (a flake) is a plate tilted up to ~12 deg, fluttering, that flashes the Sun where its face
   mirrors it into the eye (a narrow lobe about the half vector); raindrops sparkle when backlit; with no
@@ -1238,6 +1238,52 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   bright bands at both edges). Open: the dark line where an overcast's far underside meets the sea horizon (not the sea
   shading: oceansurf is uniform there). Note: a harness `set clouds_v2.dust_amount` changed the whole scene there (clouds
   and Sun gone) and `knockout +fog_layer` nothing — not understood.
+- **Review 22 (2026-10-02, the user's notes + snapshots 1-9 = profile_log records 9-17, record N = snap N - 8;
+  plan in `.plans/REVIEW_22_PLAN.md`):**
+  - **Cumulus lobes taper with height** ("Cumulus lobes (bottom)" 0.2 / "(top)" 0.07, slots 244/245, keys
+    `cumulus_lobes_bottom/_top`, UBO `farLight.zw`): on convective types they replace "Lobes (3D)" (form.x, same
+    units) over smoothstep(0.2, 0.9, zeta) of the cell; the old 0.8 -> 1.25 rise with height is gone. The old look
+    is ~0.26 / 0.40. Tops are now smooth domes over lumpy bases.
+  - **Rain falls ~10 m/s** near (8.4 in far layers; was 8). It cannot follow the rain rate: a drop's offset is v x t
+    with t up to 600 s, so any change of v moves every drop at once.
+  - **Rain-only samples take the thin-ice path** (one sample per two coarse steps, no fine steps, light LOD): under
+    the record-10 storm the cloud march was 22 ms, ~15.5 of it the shafts' fine steps; 31.3 -> 20.2 ms GPU total.
+  - **Drops follow the rain volume**: cloud_v2_lightning.comp's workgroups 1-4 fill a 32 x 32 rain-rate map (40 m
+    cells, +-640 m about the eye at its height, `cv2RainMap` + `cv2RainWgMax` after the flashes in the flash
+    buffer; host offset `kCv2RainMapOffset`); each drop layer reads it at its own point (`rainMapAt`), so a shaft's
+    drops appear in the far layers first. It replaced a cv2FieldLow at the eye PER PIXEL in cloud_march.comp
+    (cloud bucket ~20 -> ~12 ms in the storm). The rain ambience reads the map's centre +-120 m on the host;
+    `terrainFrame.w` is no longer written.
+  - **Heavy rain under the dominant towers**: `gCv2RainCore` (set by cv2ColumnSigma, read by cv2FieldLow's rain
+    branch; cv2Field calls them in that order — any other caller of cv2FieldLow sees 0) is a core under each
+    anvil-reaching tower's base, 2.5x longer downwind; the shafts take max(map rate, core) at up to 2x density.
+    The tower search now runs down to the ground while it rains (it stopped at 400 m). The curtains read 1.5 mips
+    coarser with a softer threshold (the striped on/off pattern).
+  - **The Sun behind the clouds toward it** (`CloudParams::sunCloudT`, was the unread `cloudsV2`): the lightning
+    pass's thread 1 marches 400 km toward the Sun from the eye (below the shell top; 1 above it) into
+    `cv2FlashPad2`; the host eases it (0.15 s, `sunCloudTEased`) into the UBO. It multiplies the Sun disc, glare,
+    corona and lens flare (min with the pixel's cloudBlock), the Sun's bloom seed (`sunRefIntensity`), the direct
+    in-scatter of air within ~50 km below 8-14 km (sat_sky.frag), and the key light of RAIN samples within ~40 km
+    (the rain phase's sharp forward lobe drew the Sun's disc in the shafts). A dimmer glow from far cloud remains.
+    Bounding the key light of ALL cloud samples near the Sun's direction was tried and reverted: it punched a dark
+    hole where the cloud toward the Sun is thin. Harness `state` -> `clouds_v2.sun_cloud_t`.
+  - **No concentric rings round the nadir** (snap 8): the ray's start jitter now spans the COARSE interval (two
+    steps); over one step the coarse lattice took half its phases and a thin deck seen from above was skipped at
+    some, found at others. Test: a 30% change of "Step base" moved +-16-level bands before, 2 levels after
+    (`harness_runs/r22_ringdiff*.png`). The fine restart's jitter is fract(1.618 j + 0.5). A per-interval sample
+    position or a second blue-noise read flipped the march to 222 registers.
+  - **"Fast-flight cloud LOD"** (slot 246, `fast_flight_lod`, default on; state `clouds_v2.fast_lod`): boost held
+    and moving, or > 150 m a frame: <= 2 light steps, 60% of the iteration budget, a 1.5x base step. Only -0.5 ms
+    climbing through the storm in the harness (fixed-step paths are not GPU-heavy there): the user's boost frame
+    drops may have another cause.
+  - **"Foveated full rate (radius)"** (slot 247, `fovea_radius`, morph.z, default 0): an experiment — centre tiles
+    at full rate while moving made strafing WORSE (tstab 1.60 -> 2.10) at the same cost. Left off.
+  - **Far cloud layer**: the key light's reflectance is the two-stream slab's at the beam's incidence (`slabRmu`).
+  - Looked at, not changed: snap 4 (record 12, 14 km) is the anvil lid's own horizon with the high layer seen past
+    it and a taller storm beyond (debug view 7); snap 7 (record 15) shows no visible flicker in the harness (0.04%
+    of pixels past 8 levels, on lit cloud bottoms under a 2-deg Sun); snap 6 descending (record 14, tstab `fall`
+    3.8 vs `rise` 1.8): history lag as the deck expands toward the eye, and the sky TAA's band as the eye's height
+    changes.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -1253,7 +1299,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
-- The Clouds tab's slider slots: `kCloudSliderSlots` (221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
+- The Clouds tab's slider slots: `kCloudSliderSlots` (248 since review 22: 244-245 cumulus lobes, 246 fast-flight LOD, 247 fovea radius; 221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
   `cloudBufs` (212 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
   moving, ice fog x2, sprite start; 207-209 Cb head lobes, drop distance, snow wind; 210 move speed (Controls tab), 211 erosion size); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
@@ -4573,6 +4619,17 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
   terms as the footprint's lost slope (reflected ray tilted up, darker, clouds blurred) and the Milky Way reflection's
   mip (3 + 4 x roughness).
 - `scripts/ocean_v2.satcmd` (long travel + beach + sea state + aurora ground).
+- **Review 22:** **the Sun glint is a Beckmann microfacet lobe** in this pass's units (pi L / E): slope variance
+  = Cox & Munk (0.003 + 0.00512 W, W = 7 m/s x the sea state) + 0.06 x the footprint filter's lost slope
+  (`seaRoughFoot`) + the Sun's disc; Schlick F (F0 0.02), Smith (Walter's rational fit); x the Sun's REAL
+  transmittance (`sunTransMax`: sunSpecTint is hue-normalised). The Phong lobe it replaced peaked at ~0.6 of a white
+  surface and narrowed as the waves were filtered flat — no glitter path (snap 9). **Foam, surf and wet sand are
+  diffusers**: the Sun on the facet + the terrain's sky irradiance (`skyAmbientTerrain` x 0.4 x "Terrain sky light")
+  + the Moon; they took the MIRRORED sky (reflColor) — whitewater showed a reflected image ("mercury").
+  **Under an overcast** the reflection's clear-march share (the air in front of reflected clouds, and the sky off
+  screen) is x `ovcK` = mix(0.35, 1, the sea point's cloud shadow) where the reflection has cloud or is off screen;
+  the on/off-screen fade spans 30% past the edge (8% drew dark wedges in the sea's lower corners under a sunset-lit
+  deck). Snap 5's sea had been brighter than the overcast over it (debug view 50: full shadow, 0.48 clear march).
 
 ### Satellite ocean-glint gain / floor (2026-09-26) — `sat_sky.frag`, `OceanGlintBuf`
 
