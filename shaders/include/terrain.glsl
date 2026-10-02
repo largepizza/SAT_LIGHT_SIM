@@ -90,6 +90,10 @@ float waterAdjustHeight(float hDem, vec2 wm, float dOff, out bool water) {
         return water ? 0.0 : hDem;
     }
     float level = max(0.0, wm.g * kElevRange - kElevOffset);
+    // Review 19: the sea's level (15/255) decodes to ~2e-5 m in float, not 0, so the open ocean was a "lake"
+    // 23 microns above the sea sphere — taken as one wherever the march resolved it (a hard disc around the
+    // nadir from 8 km, drawn without the sea's reflections). Levels come in DEM steps of ~35 m.
+    level = level < 1.0 ? 0.0 : level;
     float d     = (wm.r - 0.5) * 2.0 * kShoreSdfMaxM + dOff;   // metres, > 0 in water
     water = d > 0.0;
     if (water) return level;

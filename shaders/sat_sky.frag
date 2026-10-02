@@ -4581,7 +4581,10 @@ void main() {
             float featureReflFade = altFade * (1.0 - smoothstep(3000.0, 8000.0, dist));
 
             vec3 dbgReflUV = vec3(0.0);   // debug view 50 (oceanshadow): r the cloud shadow on the sea, g the reflected clouds weight
-            if (!dbgSkipOceanRefl() && dot(reflDir, surfUp) > 0.0 && reflStr > 0.005) {
+            // Review 19: not gated on reflStr. Looking down (Fresnel ~0 within ~34 deg of the nadir) the march was
+            // skipped and reflColor kept the constant fallback above — and the foam and surf take reflColor as their
+            // sky light whatever the Fresnel: at dusk a hard light-blue disc on the sea under the observer.
+            if (!dbgSkipOceanRefl() && dot(reflDir, surfUp) > 0.0) {
                 vec2 tAR = raySphere(hitPt, reflDir, R_ATMOS);
                 if (tAR.y > 0.0) {
                     int   N_REFL = int(max(1.0, cloud.oceanReflSamples)); // perf session 24, was const 6
@@ -4637,7 +4640,13 @@ void main() {
                     float tanHFRefl    = tan(pc.fovYRad * 0.5);
                     vec2  reflUV       = vec2(reflCam.x, -reflCam.y) / (-reflCam.z * tanHFRefl * 2.0);
                     vec2  reflScreenUV = vec2(reflUV.x / pc.aspect + 0.5, reflUV.y + 0.5);
-                    vec3 reflCloudT = texture(cloudTargetB, reflScreenUV).rgb;
+                    // Review 19: only where the mirrored direction is ON SCREEN, faded out over the last 8% toward
+                    // the edges. Off screen the lookup clamped to an edge texel: looking down from 8 km the sea's
+                    // reflection took whatever cloud lay along the frame's edge, except inside a disc around the nadir
+                    // where the test above failed — a hard blue disc on the sea (user snapshot, review 19).
+                    vec2  eM = min(reflScreenUV, 1.0 - reflScreenUV);
+                    float onS = smoothstep(0.0, 0.08, min(eM.x, eM.y));
+                    vec3 reflCloudT = mix(vec3(1.0), texture(cloudTargetB, reflScreenUV).rgb, onS);
                     reflCloudOccl   = dot(reflCloudT, vec3(1.0 / 3.0));
                     // The clouds in the reflection (2026-09-30): the march above is clear sky, so under an overcast
                     // the sea mirrored a sunlit clear horizon. The composite's own (A, B) at the mirrored direction.
@@ -4657,9 +4666,10 @@ void main() {
                         rKf = (ws > 1e-6) ? dot(wq, vec4(1.0) - exp(-ga / 40.0)) / ws : 1.0;   // alpha: signed distance, km
                     }
                     rKf = mix(rKf, 1.0, 0.7 * seaRough);   // a rough sea blurs the clouds in it away
+                    rKf = mix(1.0, rKf, onS);
                     dbgReflUV = vec3(fract(reflScreenUV * vec2(textureSize(cloudTargetA, 0))), rKf);
                     reflColor  = reflColor * mix(reflCloudT, vec3(1.0), rKf) + rCA.rgb * (1.0 - rKf);
-                    reflTerrainOccl = (texture(sceneDepthTex, reflScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
+                    reflTerrainOccl = mix(1.0, (texture(sceneDepthTex, reflScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0, onS);
                 }
 #endif
 
