@@ -1560,7 +1560,7 @@ struct GpuCloudParams
     glm::vec4 cityParams;    // x twinkle rate, y ground glitter share under the sprites, z sprite reach (m), w sprite start (ground m per pixel)
     glm::vec4 oceanState;    // xy world offset wrapped into the wave period (m), z sea state from weather, w whitecaps (736 -> 752)
     glm::vec4 auroraSheets;  // x strength, y spacing (deg), z crisp share, w folds (752 -> 768)
-    glm::vec4 taaJitter;     // xy sky TAA jitter (pixels), z orbit grade weight, w unused (768 -> 784)
+    glm::vec4 taaJitter;     // xy sky TAA jitter (pixels), z orbit grade weight, w the Sun's true angular radius (rad) (768 -> 784)
     glm::vec4 moonCenter;    // xyz the Moon's centre from the Earth's, observer ENU (km); w its angular radius (rad)
     glm::vec4 moonMisc;      // x Sun fraction the observer sees past the Moon, y solar / z lunar eclipse possible, w distance (km) (784 -> 816)
     glm::vec4 cityLod;       // footprint (m/px) where x posts, y the street grid, z major roads, w the street layout end (816 -> 832)
@@ -3834,9 +3834,14 @@ private:
     float cloudTopAltM = 15000.0f; // layer 1 shell altitude (high cirrus)
     float cloudDriftRate = 6.5e-06f;
     // The map's drift phase = rate x (t - kCloudDriftEpochS) + this offset (session state, never
-    // saved). The default puts the default rate's map exactly where rate x (t - J2000) did.
+    // saved). The default puts the default rate's map exactly where rate x (t - J2000 - kGmstShiftS) did,
+    // i.e. where it was before the Earth rotation gained its GMST term (an old time + kGmstShiftS shows the
+    // same ground, Sun and clouds it used to).
     static constexpr double kCloudDriftEpochS = 1150891200.0;   // 2036-06-21 00:00 UTC, the start epoch
-    static constexpr double kCloudDriftPhaseDefault = 3.8022001485; // fmod(float(6.5e-6) x 1150891200, 2pi)
+    static constexpr double kCloudDriftPhaseDefault = 3.6793436499; // fmod(float(6.5e-6) x (1150891200 - kGmstShiftS), 2pi)
+    // 2026-10-03: the Earth rotation angle gained GMST at J2000 (280.46 deg). This shift, added to a time,
+    // turns the Earth to where the old angle put it at that time; the start time moved by it.
+    static constexpr double kGmstShiftS = 18901.0;
     double cloudDriftPhaseOffset = kCloudDriftPhaseDefault;
     double cloudDriftPhase() const;
     float cloudSunGain = 1.1f;       // near-horizon/sunset sun-gain endpoint — blended toward
@@ -4086,8 +4091,10 @@ private:
     double moonDistM = 3.844e8;
     float moonIllumFrac = 0.5f;             // the Moon's lit fraction (moonDirENU.w is its light vs full, review 16)
     float moonAngR = 0.004578f;
+    float sunAngRTrue = 0.0046542f; // the Sun's true angular radius (rad) this frame, from its distance
     glm::vec3 moonCenterENUkm{0.0f};
     float moonEclipseSolarObs = 1.0f;
+    float moonEclipseSkyObs = 1.0f;   // the sky light's share at the observer in a solar eclipse (eclipse.glsl's blurred visibility)
     bool moonEclipseSolarPossible = false, moonEclipseLunarPossible = false;
     glm::dvec3 moonGeoEciM(double t) const;
     double findEclipse(bool solar, double t0) const;                // orbit colour grade (Atmosphere tab, slot 219; the Artemis II photos)

@@ -29,7 +29,8 @@ namespace satphot
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kEarthRadiusM = 6371000.0;
 constexpr double kGM = 3.986004418e14;          // m³/s²
-constexpr double kOmegaEarth = 7.2921150e-5;    // rad/s, sidereal
+constexpr double kOmegaEarth = 7.29211585531e-5; // rad/s: GMST's 360.98564736629 deg per day
+constexpr double kGmstJ2000Rad = 280.46061837 * kPi / 180.0; // GMST at J2000.0 (2000-01-01 12:00 UT)
 constexpr double kYearSec = 365.25 * 86400.0;
 constexpr double kSSOPrecRate = 2.0 * kPi / kYearSec; // rad/s
 constexpr double kSunRadiusM = 6.96e8;
@@ -84,14 +85,19 @@ double atmExtinctionMag(glm::dvec3 p, glm::dvec3 d, double L, double k);
 // ── Time and frame helpers (shared with SatelliteSim::updatePositions) ────────────────────────
 // Time is seconds since J2000 (the sim's simDayJ2000·86400 + simSecInDay).
 //
-// NOTE — the sim's Earth rotation angle is kOmegaEarth·t, with NO Greenwich sidereal angle at J2000
-// (≈ 280.46°). Everything in the sim uses the same angle, so it is self-consistent, but it means sim
-// clock time and real UTC differ by a fixed rotation (the Sun's local hour angle is off by ≈ 5.3 h).
-// Statistical benchmarks sample by Sun geometry and are unaffected; replaying real timestamped
-// observations must correct for it. Recorded as an open question on the design page.
+// The Earth rotation angle is Greenwich mean sidereal time: kGmstJ2000Rad + kOmegaEarth·t (IAU 1982,
+// linear part), so sim time is UTC (UT1, within the ~1 s this ignores). Until 2026-10-03 it was
+// kOmegaEarth·t alone: self-consistent, but every place on Earth saw the sky ~5.3 h off its real UTC
+// (the Jan 31 / Jul 13 2037 eclipses over Australia happened over the Atlantic / southern Africa).
 double earthRotationAngle(double tJ2000);
+// The Moon's geocentric position in ECI (m): Meeus ch. 47's main periodic terms (14 in longitude, 7 in
+// latitude, 10 in distance; ~0.05 deg, a few minutes in eclipse timing), mean ecliptic and equinox of date
+// like sunDirEciAt. It was a two-body ellipse (no evection or variation: up to ~2 deg and hours off).
+glm::dvec3 moonGeoEciAt(double tJ2000);
 // Low-accuracy almanac Sun direction in ECI (the formula updatePositions() has always used).
 glm::dvec3 sunDirEciAt(double tJ2000);
+// The Sun's distance (AU), the same almanac's series.
+double sunDistAuAt(double tJ2000);
 // Observer position in ECI (m) for an Earth-fixed unit direction and distance from Earth's centre.
 glm::dvec3 observerEciAt(glm::dvec3 obsDirEcef, double radiusM, double tJ2000);
 

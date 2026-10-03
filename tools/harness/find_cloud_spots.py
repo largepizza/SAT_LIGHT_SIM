@@ -1,8 +1,7 @@
 # python tools/harness/find_cloud_spots.py [ISO time] [drift rate, rad/s — default 6.5e-6]
 # Cloudy benchmark spots for a fixed sim time: samples the 8K cloud map with the same longitude
 # drift the shaders use (cloudPhase = fmod(cloudDriftRate * simT, 2pi), map lon = lon + phase).
-# Local solar hour uses the sim's clock offset (no GMST term: ~UTC + 5.3 h at lon 0, checked
-# against the user's sunrise at 75W, 06:26 UTC).
+# Local solar hour = UTC + lon / 15 (the sim's Earth rotation angle is GMST since 2026-10-03).
 import math, datetime, os, statistics, sys
 from PIL import Image
 
@@ -15,7 +14,7 @@ assert abs((datetime.datetime(2036, 6, 21) - j2000).total_seconds() - 1150891200
 # SatelliteSim::cloudDriftPhase(): rate x (t - 2036-06-21) + the default offset, which puts the
 # default rate's map where rate x (t - J2000) put it. Pass the settings file's clouds.drift_rate.
 RATE = float(sys.argv[2]) if len(sys.argv) > 2 else 6.5e-6
-phase = math.fmod(RATE * (simT - 1150891200) + 3.8022001485, 2 * math.pi)
+phase = math.fmod(RATE * (simT - 1150891200) + 3.6793436499, 2 * math.pi)
 print(f'simT {simT:.0f}  phase {math.degrees(phase):.1f} deg')
 
 W, H = 1440, 720
@@ -35,7 +34,7 @@ def stats(lat, lon, r=1.0):
     return statistics.mean(vals), statistics.pstdev(vals)
 
 def solar_hour(lon):
-    return (t.hour + t.minute / 60 + 5.3 + lon / 15.0) % 24.0
+    return (t.hour + t.minute / 60 + lon / 15.0) % 24.0
 
 cats = {'overcast_day': [], 'broken_day': [], 'overcast_sunrise': [], 'broken_sunrise': [],
         'broken_night': [], 'tropical_towers_day': []}

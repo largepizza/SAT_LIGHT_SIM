@@ -7,7 +7,8 @@ nobody re-discovers them as bugs, and so a future change that moves one can be j
 it started. This is a satellite-lighting simulator, not a model optimizer: each item below is small
 next to the features built on top of it.
 
-Numbers come from the gate's configuration (5000 samples, seed 1) unless noted. They are identical
+Numbers come from the gate's configuration (5000 samples, seed 1) unless noted, re-run 2026-10-03 after the Earth
+rotation angle became GMST (sites now see their real twilight instants; every mean moved by ≤ 0.02 mag). They are identical
 on MSVC and GCC to the printed precision. The full history is on the "Satellite Brightness
 Benchmarking" design page (Results log).
 
@@ -15,14 +16,14 @@ Benchmarking" design page (Results log).
 
 | Item | Model | Published | Gap | Why / notes |
 |---|---|---|---|---|
-| VisorSat mean m1000 (Mallama 2021) | 6.993 | 7.218 | −0.224 (tol 0.3) | Plain mean samples our random geometry; the observers' geometry selection is unpublished. Phase-matched mean 7.263 (+0.045) is the like-for-like comparison. Was 6.967 / 7.220 until 2026-09-24, when occlusion started sampling each component of a merged lobe (the visor was fitted under the old sampling). |
-| VisorSat median m1000 | 7.095 | 7.365 | −0.270 (tol 0.3) | Narrowest gated margin (0.030; 0.004 before 2026-09-24). Same cause as the mean. |
-| VisorSat 110–120° phase bin | 7.084 | 7.433 (25 obs) | −0.349 | Model too bright at high phase. The only scored bin outside 0.3; curve RMS 0.159 passes (0.134 before 2026-09-24). Bins 120°+ have ≤ 5 observations (unscored). |
+| VisorSat mean m1000 (Mallama 2021) | 7.011 | 7.218 | −0.206 (tol 0.3) | Plain mean samples our random geometry; the observers' geometry selection is unpublished. Phase-matched mean 7.260 (+0.043) is the like-for-like comparison. Was 6.967 / 7.220 until 2026-09-24, when occlusion started sampling each component of a merged lobe (the visor was fitted under the old sampling). |
+| VisorSat median m1000 | 7.092 | 7.365 | −0.273 (tol 0.3) | Narrowest gated margin (0.027; 0.030 before the 2026-10-03 GMST rotation re-drew the twilight samples, 0.004 before 2026-09-24). Same cause as the mean. |
+| VisorSat 110–120° phase bin | 7.042 | 7.433 (25 obs) | −0.392 | Model too bright at high phase. The only scored bin outside 0.3; curve RMS 0.158 passes (0.134 before 2026-09-24). Bins 120°+ have ≤ 5 observations (unscored). |
 | VisorSat 40–60° / 60–100° bins | — | — | −0.11 / +0.10..0.21 | Mild S-shaped residual around the observed curve. |
-| VisorSat scatter (sd m1000) | 0.740 | 0.854 | −0.11 | Attitude is fixed; real satellites jitter and fly varying roll. No attitude-noise model yet. |
+| VisorSat scatter (sd m1000) | 0.713 | 0.854 | −0.14 | Attitude is fixed; real satellites jitter and fly varying roll. No attitude-noise model yet. |
 | VisorSat phase slope | 0.004 mag/deg | 0.005 | −0.001 | Informational. |
-| VisorSat − V1.0 differential | +1.069 | +1.29 | −0.221 (tol 0.3) | The visor's real shape is unpublished (derived from Cole's 23° full-shade constraint). |
-| V1.0 mean m1000 (Mallama 2020a) | 5.924 | 5.93 | −0.006 | Held out of all fitting. sd 0.763 vs 0.67 published (informational). |
+| VisorSat − V1.0 differential | +1.086 | +1.29 | −0.204 (tol 0.3) | The visor's real shape is unpublished (derived from Cole's 23° full-shade constraint). |
+| V1.0 mean m1000 (Mallama 2020a) | 5.925 | 5.93 | −0.005 | Held out of all fitting. sd 0.755 vs 0.67 published (informational). |
 | V1.0 app bulk export (32.7°S, sim 2036-11-21) | 5.934 | 5.93 | +0.004 | Out-of-sample site and season; not a paper's sampling. |
 | ISS (2023-2026 configuration) | mean m1000 −0.59 (≈ −2.5 overhead at 415 km) | −2 to −4 on favourable passes (satobs.org) | — | **No benchmark yet.** Dimensions sourced, layout derived, every surface material an estimate (`iss.json` sources). The m1000 values in this and the next rows are a V1.0-campaign copy (twilight, ≥ 20°, fully sunlit, 3000 samples, seed 1) on the model's own shell - a sanity check, not a comparison. |
 | Tiangong | mean m1000 0.73 (≈ −1.3 overhead at 386 km) | — | — | No benchmark. Attitude and materials estimates. |
@@ -30,12 +31,12 @@ Benchmarking" design page (Results log).
 | SpaceX AI satellite (Starmind AI1) | mean m1000 3.60, sd 1.5 (1000 km, 99.5 deg shell) | — | — | Round 2 (2026-09-24), the project owner's layout: nadir-pointing, the flat 10 x 3 x 0.6 m bus's 3 x 0.6 m end toward the Sun, the two 10 x 9.65 m radiators standing up and hanging down (edge-on to the Sun; 193 m² a face - the sheet's 110 m² would be a 2.75 m strip), each wing on one truss, tracking the Sun about its span. 1 mag brighter than round 1 (4.62 / 2.9, same run): the bus's 30 m² aluminium face now looks at the Earth and glints sunlight down whenever the Sun is just below the satellite's horizon (phase 80-140 deg: m1000 ~5.0, was ~7). No benchmark. |
 | Reflect Orbital mirror | — | — | — | No benchmark; the operational mirror size is the legacy type's 2376 m² in Earendil-1's square shape. |
 | V2 Mini app bulk export | 5.81 (median 5.31, sd 1.57) | 7.87 mitigated; ~5.2 unmitigated (Mallama et al. 2023) | — | **Uncalibrated model**, flown without SpaceX's brightness-mitigation attitude. Next benchmark candidate. |
-| V2 Mini, mitigated (Mallama et al. 2023) | 7.90 | 7.87 | +0.03 | Film distribution chosen with this benchmark in view (Beckmann; GGX read 7.43). Phase-curve shape: ~1 mag fainter than the paper's fit below 40 deg and 0.5-0.9 fainter at 80-140 deg; sd 1.3 vs 0.79. A second dataset (Jul-Dec 2024, 550 km, arXiv:2502.03651) gives 7.22 for the same satellites. |
-| V2 Mini DTC, mitigated (Mallama et al. 2025) | 6.42 | 6.47 | −0.05 | HELD OUT (no fitting): corroborates the V2 Mini materials. sd 1.02 vs 1.32. |
-| Starlink V1.5 (arXiv:2507.00107 Table 1) | 6.06 | 6.34 | −0.28 (tol 0.3) | Narrow margin. Backsheet transmission (0.03) fitted to Mallama & Respler 2022's Post-VisorSat phase function; its low-phase bins stay 0.6-0.8 too bright (weighted RMS 0.63 vs the fit). Observers/period assumed. |
-| OneWeb (Mallama 2020b) | 6.96 | 7.18 | −0.22 | The bus MLI (albedo 0.1, F0 0.25) was FITTED to this mean (gold-foil MLI read 6.49). sd 1.1 vs 0.68. |
-| Amazon Leo, operational (Mallama et al. 2026) | 6.60 | 6.81 | −0.21 | Held out; layout from the authors' interpretation of Amazon imagery. sd 0.94 vs 0.64. |
-| Guowang, orbit-raising (arXiv:2507.00107) | 5.78 | 4.21 | **+1.57, NOT GATED** | Unpublished hardware and attitude during orbit raising; the estimated 10 m-span model is far too faint. The benchmark file is `"gated": false`. |
+| V2 Mini, mitigated (Mallama et al. 2023) | 7.88 | 7.87 | +0.01 | Film distribution chosen with this benchmark in view (Beckmann; GGX read 7.43). Phase-curve shape: ~1 mag fainter than the paper's fit below 40 deg and 0.5-0.9 fainter at 80-140 deg; sd 1.3 vs 0.79. A second dataset (Jul-Dec 2024, 550 km, arXiv:2502.03651) gives 7.22 for the same satellites. |
+| V2 Mini DTC, mitigated (Mallama et al. 2025) | 6.43 | 6.47 | −0.04 | HELD OUT (no fitting): corroborates the V2 Mini materials. sd 1.02 vs 1.32. |
+| Starlink V1.5 (arXiv:2507.00107 Table 1) | 6.055 | 6.34 | −0.285 (tol 0.3) | Narrow margin. Backsheet transmission (0.03) fitted to Mallama & Respler 2022's Post-VisorSat phase function; its low-phase bins stay 0.6-0.8 too bright (weighted RMS 0.63 vs the fit). Observers/period assumed. |
+| OneWeb (Mallama 2020b) | 6.97 | 7.18 | −0.21 | The bus MLI (albedo 0.1, F0 0.25) was FITTED to this mean (gold-foil MLI read 6.49). sd 1.1 vs 0.68. |
+| Amazon Leo, operational (Mallama et al. 2026) | 6.59 | 6.81 | −0.22 | Held out; layout from the authors' interpretation of Amazon imagery. sd 0.94 vs 0.64. |
+| Guowang, orbit-raising (arXiv:2507.00107) | 5.80 | 4.21 | **+1.59, NOT GATED** | Unpublished hardware and attitude during orbit raising; the estimated 10 m-span model is far too faint. The benchmark file is `"gated": false`. |
 | Starlink V3, V2 Mini DTC dims, stations, debris | — | — | — | No benchmarks. Stations are render-level estimates. |
 
 ## Fitted, estimated or stood-in values

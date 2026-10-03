@@ -2,7 +2,7 @@
 log "smoke test start"
 state start
 preset High
-time set 2036-06-21T03:30:00Z
+time set 2036-06-21T08:45:01Z
 time pause
 observer lat=37.77 lon=-122.42 agl=2
 camera az=250 el=8 fov=70

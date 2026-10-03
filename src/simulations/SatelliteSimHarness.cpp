@@ -77,8 +77,8 @@ void civilFromDays(int64_t z, int64_t &y, unsigned &m, unsigned &d)
     y += m <= 2;
 }
 
-// The sim's clock is seconds since J2000 = 2000-01-01T12:00:00 (see SatelliteSim::init; the sim
-// treats that as UTC, and its Earth rotation has no GMST offset — CLAUDE.md "sim clock != real UTC").
+// The sim's clock is seconds since J2000 = 2000-01-01T12:00:00 UTC, and its Earth rotation angle is GMST
+// (satphot::earthRotationAngle), so a `time set` UTC is the real one.
 constexpr int64_t kJ2000Unix = 946728000;
 
 double j2000FromIso(const std::string &iso)
@@ -354,7 +354,12 @@ json SatelliteSim::harnessStateJson()
     // last reading of the displayed frame (linear mean, fraction clipped white).
     j["exposure"] = {{"ev", cv2ExposureEV}, {"auto_ev", autoExposureEV}, {"global_ev", globalExposureEV()},
                      {"meter_mean", meterMeanLum}, {"meter_clip", meterClipFrac}};
-    j["moon"] = {{"az_deg", azDegOf(moon)}, {"el_deg", elDegOf(moon)}, {"illum", moonIllumFrac}, {"brightness_vs_full", moonDirENU.w}};
+    j["moon"] = {{"az_deg", azDegOf(moon)}, {"el_deg", elDegOf(moon)}, {"illum", moonIllumFrac}, {"brightness_vs_full", moonDirENU.w},
+                 {"dist_km", moonDistM * 1e-3},
+                 {"sep_from_sun_deg", glm::degrees(std::acos(std::clamp(glm::dot(glm::normalize(moon), glm::normalize(sun)), -1.0f, 1.0f)))},
+                 {"drawn_radius_deg", glm::degrees(moonAngR)}, {"sun_radius_deg", glm::degrees(sunAngRTrue)},
+                 {"sun_seen_frac", moonEclipseSolarObs}, {"sky_light_frac", moonEclipseSkyObs}, {"sky_exposure", skyExposure()}, {"solar_possible", moonEclipseSolarPossible},
+                 {"lunar_possible", moonEclipseLunarPossible}};
 
     json ko = json::array();
     for (int i = 0; i < debugToggleTableSize(); ++i)
@@ -548,8 +553,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             setAbs(now + parseNum(pos(1), "time add"));
         else if (sub == "sun")
         {
-            // The sim clock is not real UTC (no GMST offset), so a UTC hour does not give a local
-            // time of day. This finds one: the time nearest the current one (within +-12 h) at which
+            // A UTC hour gives a local time of day only through the observer's longitude and the
+            // equation of time. This finds the moment directly: the time nearest the current one (within +-12 h) at which
             // the Sun stands at the requested elevation for THIS observer, from the same Sun and
             // observer formulas updatePositions uses.
             const glm::dvec3 od = glm::dvec3(obsDir);
@@ -939,7 +944,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         simSecInDay = t - days * 86400.0;
         trailClearPending = true;
         // Lunar: the sub-lunar point. Solar: where the Sun -> Moon axis meets the Earth (the centre of the
-        // shadow), else the sub-lunar point. ECI -> ECEF: the sim's Earth rotation angle is kOmegaEarth t.
+        // shadow), else under the axis' nearest point. ECI -> ECEF by the Earth rotation angle (GMST).
         glm::dvec3 m = glm::normalize(moonGeoEciM(t));
         if (solar)
         {
@@ -947,8 +952,10 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const double R = 6371000.0, b = glm::dot(M, d), c = glm::dot(M, M) - R * R, disc = b * b - c;
             if (disc > 0.0)
                 m = glm::normalize(M + d * (-b - std::sqrt(disc)));
+            else    // a partial eclipse only: under the point of the shadow axis nearest the Earth
+                m = glm::normalize(M - d * b);
         }
-        const double th = satphot::kOmegaEarth * t, c = std::cos(th), s = std::sin(th);
+        const double th = earthRotationAngle(t), c = std::cos(th), s = std::sin(th);
         const glm::dvec3 e(c * m.x + s * m.y, -s * m.x + c * m.y, m.z);
         obsDir = glm::vec3(glm::normalize(e));
         obsLatDeg = glm::degrees(std::asin((float)obsDir.z));

@@ -8,6 +8,18 @@
 > `data/benchmarks/KNOWN_RESIDUALS.md`.
 
 ### Added
+- **Real eclipses, at their real times.** The Moon's position now follows the standard lunar series (it was a
+  plain ellipse, off by up to a couple of degrees and hours), and the Earth turns by real sidereal time, so the
+  sim's clock is real UTC: the total lunar eclipse of 31 January 2037 and the total solar eclipse of 13 July 2037
+  happen over Australia when they really do. Near the Sun the Moon is drawn at its true size, the Sun's size
+  follows its distance (total vs annular), and at totality the land, sky light, dust and the Sun's bloom and
+  lens flare all go dark, leaving the horizon glow. Saved times show a different local time of day than before
+  (5 h 15 min earlier); the start time moved so the intro is unchanged.
+- **Totality looks like totality.** The Moon's shadow now falls on everything from its real geometry, point by point:
+  the air, the ground, every cloud and the dust. Inside the umbra the sky turns deep blue with a ring of orange all
+  around the horizon, clouds go dark, and your eyes adapt as at twilight (stars and planets come out). From space the
+  shadow is a sharp black core in a wide soft penumbra, on the clouds as well as the land. The corona is fibrous,
+  following the Sun's magnetic field lines out into streamers, with pink prominences at the limb.
 - **Solar parks on the ground.** Reflector targets now say what they are for (`"kind"`: solar, agriculture,
   daylight). Solar sites are drawn as PV parks sized by their capacity: plots of panel blocks and service
   roads, rows of single-axis trackers (the Americas, India, Australia) or fixed-tilt tables facing the

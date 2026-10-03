@@ -1,0 +1,59 @@
+# The 2037 eclipses over Australia at their real UTC times (2026-10-03: GMST Earth rotation + Meeus Moon).
+#   Total lunar eclipse 2037-01-31, greatest ~14:01 UTC; total solar eclipse 2037-07-13, greatest ~02:40 UTC.
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+time pause
+# ── Lunar, from Alice Springs ──
+observer lat=-23.70 lon=133.88 agl=0
+time set 2037-01-31T12:45:00Z
+camera look moon
+camera fov=3
+wait settle
+state l_partial_1245
+capture l_partial_1245
+time set 2037-01-31T14:01:00Z
+camera look moon
+wait settle
+state l_max_1401
+capture l_max_1401
+camera fov=70 el=20
+wait settle
+capture l_max_sky
+# The search, from a few days before (sets the time, puts the observer under the Moon)
+time set 2037-01-28T00:00:00Z
+eclipse lunar
+state l_search
+# ── Solar ──
+time set 2037-07-10T00:00:00Z
+eclipse solar
+state s_search
+camera look sun
+camera fov=3
+wait settle
+capture s_search_centre
+# Charleville QLD near the centre line, Alice Springs, Sydney (partial)
+observer lat=-26.40 lon=146.25 agl=0
+time set 2037-07-13T03:07:00Z
+camera look sun
+camera fov=3
+wait settle
+state s_charleville
+capture s_charleville
+camera fov=70 el=15
+wait settle
+capture s_charleville_sky
+observer lat=-23.70 lon=133.88 agl=0
+time set 2037-07-13T02:30:00Z
+camera look sun
+camera fov=3
+wait settle
+state s_alice
+capture s_alice
+observer lat=-33.87 lon=151.21 agl=0
+time set 2037-07-13T03:18:00Z
+camera look sun
+wait settle
+state s_sydney
+capture s_sydney
+quit

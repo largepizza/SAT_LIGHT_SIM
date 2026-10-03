@@ -184,7 +184,7 @@ static void resolveAttitude(SatelliteType &t)
 
 // ── Earth + observer constants ─────────────────────────────────────────────────
 static constexpr float kEarthRadius = 6'371'000.0f; // mean Earth radius (m)
-static constexpr double kOmegaEarth = 7.2921150e-5; // sidereal rotation rate (rad/s)
+static constexpr double kOmegaEarth = satphot::kOmegaEarth; // sidereal rotation rate (rad/s); the angle is earthRotationAngle()
 static constexpr float kObsLatDefault = 37.0f;      // default observer latitude (°N, ~Bay Area)
 
 // ── Orbital mechanics ─────────────────────────────────────────────────────────
@@ -241,11 +241,8 @@ static inline float computeSSOInclination(float altM)
 // rates) are JPL/Standish "Keplerian Elements for Approximate Positions of the Major Planets",
 // valid 1800-2050 AD (https://ssd.jpl.nasa.gov/planets/approx_pos.html) — comfortably covers the
 // sim's fixed 2036-06-21 epoch. Earth uses the table's EM Bary row (standard for this purpose).
-// The Moon uses a two-body Keplerian ellipse fit to the linear terms of its ELP2000-82B mean
-// elements (Meeus, "Astronomical Algorithms" ch. 47) — a real, if approximate (no evection/
-// variation/other periodic perturbations — "Kepler approximation is fine" per the plan this
-// implements), improvement over the previous circular-equatorial orbit with a phase constant
-// hand-calibrated for a single epoch (2026-03-30) that drifted for any other date.
+// The Moon is satphot::moonGeoEciAt (Meeus ch. 47's main periodic terms; a two-body ellipse until
+// 2026-10-03, which put eclipses hours late).
 struct KeplerElements
 {
     double a0, aDot;       // semi-major axis (AU), per Julian century
@@ -303,25 +300,21 @@ static constexpr KeplerElements kPlanetElements[kPlanetCount] = {
      313.23810451, 428.48202785, 170.95427630, 0.40805281, 74.01692503, 0.04240589},
 };
 
-// Moon: geocentric two-body fit. a/e/i held constant (negligible drift at this precision); L and
-// mean anomaly M' linear terms are ELP2000-82B's (Meeus ch.47); peri = L - M' (both linear in T,
-// so peri is too) recovers the "longitude of perihelion" shape kEarthElements/kPlanetElements use,
-// letting keplerEclipticPos() serve the Moon with no special-casing.
-static constexpr double kMoonL0 = 218.3164477, kMoonLDot = 481267.88123421;
-static constexpr double kMoonM0 = 134.9633964, kMoonMDot = 477198.8675055;
-static constexpr KeplerElements kMoonElements{
-    0.00256955, 0.0, 0.0549, 0.0, 5.145, 0.0,
-    kMoonL0, kMoonLDot,
-    kMoonL0 - kMoonM0, kMoonLDot - kMoonMDot,
-    125.0445479, -1934.1362891};
-
-// Solves Kepler's equation and returns position in the J2000 mean-ecliptic frame, AU (heliocentric
-// for kEarthElements/kPlanetElements, geocentric for kMoonElements — the math doesn't care which,
-// only the caller's interpretation of the origin does). T = Julian centuries since J2000 TT.
-// Ecliptic (J2000 mean) -> equatorial ECI, the same obliquity rotation the Sun and planets use.
-static glm::dvec3 moonDirEclGeoToEci(const glm::dvec3 &v, double epsR)
+// The CPU mirror of shaders/include/eclipse.glsl eclipseSunVis: the share of the Sun seen from p past the Moon (both
+// Earth-centred, km), averaged over ~blurKm around p (0 = the point itself). Keep the two in step.
+static double eclipseSunVisCpu(const glm::dvec3 &pKm, const glm::dvec3 &moonKm, const glm::dvec3 &sunD, double sunAngR,
+                               double blurKm)
 {
-    return {v.x, v.y * cos(epsR) - v.z * sin(epsR), v.y * sin(epsR) + v.z * cos(epsR)};
+    const glm::dvec3 v = moonKm - pKm;
+    const double dv = glm::length(v);
+    if (glm::dot(v, sunD) <= 0.0) return 1.0;
+    const double d = glm::length(glm::cross(v, sunD)) / dv;
+    const double am = 1737.4 / dv, b = blurKm / dv;
+    const double lo = std::abs(am - sunAngR) - b, hi = am + sunAngR + b;
+    const double u = std::clamp((d - lo) / (hi - lo), 0.0, 1.0);
+    const double covered = (2.0 / 3.14159265358979) * (std::acos(u) - u * std::sqrt(std::max(1.0 - u * u, 0.0)));
+    const double vMin = sunAngR > am ? 1.0 - (am * am) / (sunAngR * sunAngR) : 0.0;
+    return 1.0 - (1.0 - vMin) * covered;
 }
 // Fraction of a disc of angular radius a covered by a disc of radius b at separation d (radians).
 static double discOverlapFrac(double a, double b, double d)
@@ -335,6 +328,9 @@ static double discOverlapFrac(double a, double b, double d)
     return (a * a * std::acos(c1) + b * b * std::acos(c2) - 0.5 * std::sqrt(k)) / (pi * a * a);
 }
 
+// Solves Kepler's equation and returns heliocentric position in the J2000 mean-ecliptic frame, AU
+// (kEarthElements/kPlanetElements; the Moon has its own series, satphot::moonGeoEciAt).
+// T = Julian centuries since J2000 TT.
 static glm::dvec3 keplerEclipticPos(const KeplerElements &el, double T)
 {
     double a = el.a0 + el.aDot * T;
@@ -427,14 +423,14 @@ void SatelliteSim::init(VulkanContext &ctx)
         std::ofstream sentinelOut(crashSentinelPath, std::ios::trunc);
     }
 
-    // Fixed start time: 2036-11-21 20:51:21 UTC
+    // Fixed start time: 2036-11-22 02:06:22 UTC (the intro's California twilight)
     // J2000.0 = 2000-01-01 12:00:00 UTC = Unix 946728000
     // 2036-06-21 00:00:00 UTC = Unix 2097619200 = 1150891200 s from J2000
-    // 2036-11-21 20:51:21 UTC = 2036-06-21 00:00:00 UTC + 153 days + 20:51:21
-    // Stored split so float deltaT stays small regardless of time-warp distance.
-    constexpr int64_t kInitWholeSec = 1150891200LL + 153 * 24 * 60 * 60 + 20 * 60 * 60 + 51 * 60 + 21;
-    simDayJ2000 = kInitWholeSec / 86400LL;           // 13474
-    simSecInDay = (double)(kInitWholeSec % 86400LL); // 31881.0
+    // It was 2036-11-21 20:51:21 under the old Earth rotation angle (no GMST term); + kGmstShiftS turns the
+    // Earth back to that view. Stored split so float deltaT stays small regardless of time-warp distance.
+    constexpr int64_t kInitWholeSec = 1150891200LL + 153 * 24 * 60 * 60 + 20 * 60 * 60 + 51 * 60 + 21 + (int64_t)kGmstShiftS;
+    simDayJ2000 = kInitWholeSec / 86400LL;
+    simSecInDay = (double)(kInitWholeSec % 86400LL);
     simInitDayJ2000 = simDayJ2000;
     simInitSecInDay = simSecInDay;
 
@@ -2400,6 +2396,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cp.taaJitter = skyTaaWanted() ? glm::vec4(halton(hi, 2) - 0.5f, halton(hi, 3) - 0.5f, 0.0f, 0.0f) : glm::vec4(0.0f);
             const double altG = followActive ? followRadiusM - 6371000.0 : (double)obsHeightOffset;
             cp.taaJitter.z = orbitGrade * glm::smoothstep(30000.0f, 300000.0f, (float)altG);
+            cp.taaJitter.w = sunAngRTrue; // the Sun's true angular radius (rad), the eclipse geometry's
         }
         cp.cloudTwilightAmbientGain = cloudTwilightAmbientGain;
         cp.cloudBaseVariance = cloudBaseVariance;
@@ -2571,7 +2568,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // block and CLAUDE.md for the full design.
     {
         double simTimeAbs = (double)simDayJ2000 * 86400.0 + simSecInDay;
-        orbitPc.gmstNow = (float)fmod(kOmegaEarth * simTimeAbs, glm::two_pi<double>());
+        orbitPc.gmstNow = (float)earthRotationAngle(simTimeAbs);
         double windowS = std::max(1.0f, reflectorLockWindowS);
         double windowRatio = simTimeAbs / windowS;
         orbitPc.windowFrac = (float)(windowRatio - floor(windowRatio));
@@ -3155,7 +3152,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         fpc.fovYRad = glm::radians(camera.fovYDeg);
         fpc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
         fpc.satCount = activeSatCount; // unused since Phase 1b (indirect draw) — see flare_source.vert
-        fpc.sunRefIntensity = sunFlareRefIntensity * sunCloudTEased;
+        // x the share of the Sun the observer sees past the Moon: the Sun's bloom stayed on at totality.
+        // (Not sat_flare.comp's copy: there it is every satellite's soft ceiling, and 0 would zero them.)
+        fpc.sunRefIntensity = sunFlareRefIntensity * sunCloudTEased * moonEclipseSolarObs;
         fpc.sunDirENU = sunDirENU;
         fpc.screenSizePx = glm::vec2((float)flareExtent.width, (float)flareExtent.height);
         fpc.resScale = (float)flareExtent.width / (float)ctx.swapExtent.width;
@@ -3954,7 +3953,11 @@ void SatelliteSim::updateSelectedSkyDir()
 // threshold for mesh glints.
 float SatelliteSim::skyExposure() const
 {
-    const float dayness = glm::clamp((sunDirENU.w + 0.2f) / 1.2f, 0.0f, 1.0f);
+    float dayness = glm::clamp((sunDirENU.w + 0.2f) / 1.2f, 0.0f, 1.0f);
+    // A solar eclipse: the eye adapts to the light that is left, as at twilight (2026-10-03). Under the day exposure
+    // totality was black, its horizon glow invisible. Linear: about twilight's exposure at the umbra's few % of sky light.
+    if (moonEclipseSolarPossible)
+        dayness *= glm::clamp(moonEclipseSkyObs, 0.0f, 1.0f);
     return glm::mix(10.0f, 1.8f, powf(dayness, 0.4f)) * exp2f(globalExposureEV());
 }
 
@@ -4009,7 +4012,7 @@ SatDrawPC SatelliteSim::envSkyPC(const glm::dvec3 &posEcef, const glm::dmat3 &ca
     pc.skyView = glm::mat4(glm::mat3(glm::transpose(camToEcef) * enuToEcef)); // ENU → camera
     pc.fovYRad = fovYRad;
     pc.aspect = aspect;
-    pc.gmst = (float)std::fmod(kOmegaEarth * tNow, glm::two_pi<double>());
+    pc.gmst = (float)earthRotationAngle(tNow);
     pc.waveTime = (float)simSecInDay;
     const glm::dvec3 sun = toEnu(glm::normalize(eciToEcef(glm::dvec3(sunDirECI))));
     // w: the exposure and sun-glare gate of whoever views the result (sat_sky.frag's SKY_ENV note); the
@@ -5282,8 +5285,7 @@ SatOrbitElems SatelliteSim::orbitElemsOf(const SatOrbit &orb) const
 }
 
 // ─── Magnitude trace (benchmarking M9) ───────────────────────────────────────
-// Sim clock → "HH:MM:SS" (the same UTC-style clock the time panel shows; see SatTrace.h on why it
-// is not real UTC).
+// Sim clock → "HH:MM:SS" UTC (the clock the time panel shows).
 static void formatSimClock(double tJ2000, char *buf, size_t n, bool withDate)
 {
     time_t unixSim = (time_t)std::floor(tJ2000) + 946728000;
@@ -5619,7 +5621,7 @@ void SatelliteSim::startBulkExport()
                    {"extinction_k", fmt(sp.extinctionK)},
                    {"app_version", APP_VERSION},
                    {"git_commit", APP_GIT_COMMIT},
-                   {"note", "t_j2000 is sim time; the sim's Earth rotation omits GMST at J2000, so it is not real UTC. "
+                   {"note", "t_j2000 is seconds since J2000 (UTC; the Earth rotation angle is GMST). "
                             "Rows: every instant at the cadence with the Sun in the window and the satellite above the "
                             "elevation limit and fully sunlit; `pass` numbers consecutive runs of such instants."}};
     std::string safe;
@@ -5792,7 +5794,7 @@ SatDrawPC SatelliteSim::buildSkyDrawPC(VulkanContext &ctx)
     pc.skyView = camera.viewMatrix();
     pc.fovYRad = glm::radians(camera.fovYDeg);
     pc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
-    pc.gmst = (float)fmod(kOmegaEarth * (simDayJ2000 * 86400.0 + simSecInDay), glm::two_pi<double>());
+    pc.gmst = (float)earthRotationAngle(simDayJ2000 * 86400.0 + simSecInDay);
     // Wave time relative to sim epoch: pauses when paused, scales with time warp.
     // Sim sec works great as it resets before any crazy floating point issues happen. Great for any animations that need a time variable.
     // There is probably a looping artifact when it rolls over but who cares it's a tiny blip that most won't notice
@@ -6802,7 +6804,7 @@ void SatelliteSim::updateIntroCinematic(float dt)
         // this session's phase offset, and the map keeps drifting at the player's rate from there.
         {
             const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-            cloudDriftPhaseOffset = std::fmod((double)kIntroCloudDriftRate * t
+            cloudDriftPhaseOffset = std::fmod((double)kIntroCloudDriftRate * (t - kGmstShiftS)
                                               - (double)cloudDriftRate * (t - kCloudDriftEpochS),
                                               glm::two_pi<double>());
         }
@@ -11389,13 +11391,14 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
 // The Moon's geocentric ECI position (m) at sim time t (s since J2000), the same ellipse updatePositions uses.
 glm::dvec3 SatelliteSim::moonGeoEciM(double t) const
 {
-    const double dJ = t / 86400.0;
-    const double epsR = (23.439 - 0.0000004 * dJ) * (glm::pi<double>() / 180.0);
-    return moonDirEclGeoToEci(keplerEclipticPos(kMoonElements, dJ / 36525.0), epsR) * 1.495978707e11;
+    return moonGeoEciAt(t);
 }
 // The next time after t0 (within ~3 years) when the Moon passes closest to the Sun (solar) or to the
-// antisolar point (lunar), if that pass is close enough for an eclipse; -1 if none. This ephemeris is a
-// two-body Moon (a few degrees off the real one), so these are the SIM's eclipses, not the real dates.
+// antisolar point (lunar), if that pass makes an eclipse somewhere: solar, a partial seen from some point on
+// Earth (separation < the Moon's horizontal parallax + both radii - the Sun's parallax); lunar, an umbral
+// (partial or total) one (< the umbra's radius, Danjon's +1/85, + the Moon's radius); -1 if none. Penumbral
+// eclipses are skipped. Until 2026-10-03 the limits were 0.55 / 0.6 deg and the Moon a two-body ellipse: the
+// real total solar eclipse of 2037-07-13 (0.68 deg at greatest) was never found.
 double SatelliteSim::findEclipse(bool solar, double t0) const
 {
     auto sep = [&](double t) {
@@ -11404,7 +11407,12 @@ double SatelliteSim::findEclipse(bool solar, double t0) const
         if (!solar) s = -s;
         return std::acos(std::clamp(glm::dot(m, s), -1.0, 1.0));
     };
-    const double lim = glm::radians(solar ? 0.55 : 0.6);
+    auto limit = [&](double t) {
+        const double dM = glm::length(moonGeoEciM(t)), dS = sunDistAuAt(t) * 1.495978707e11;
+        const double piM = std::asin(6378137.0 / dM), piS = 6378137.0 / dS;
+        const double sS = std::asin(satphot::kSunRadiusM / dS), sM = std::asin(1737400.0 / dM);
+        return solar ? piM + sS + sM - piS : 1.0118 * (piM + piS - sS) + sM;
+    };
     double prev2 = sep(t0), prev = sep(t0 + 3600.0);
     for (double t = t0 + 7200.0; t < t0 + 3.0 * 365.25 * 86400.0; t += 3600.0)
     {
@@ -11418,7 +11426,7 @@ double SatelliteSim::findEclipse(bool solar, double t0) const
                 if (sep(a) < sep(b)) hi = b; else lo = a;
             }
             const double tm = 0.5 * (lo + hi);
-            if (sep(tm) < lim)
+            if (sep(tm) < limit(tm))
                 return tm;
         }
         prev2 = prev;
@@ -14362,14 +14370,14 @@ void SatelliteSim::updatePositions(double t, float dt)
     // ── Observer ECI position (rotates with Earth) ────────────────────────────
     // fmod keeps the angle small so float trig precision is maintained at large t.
     // Add the Earth-fixed longitude offset to the GMST angle.
-    // kOmegaEarth * t  = Greenwich Meridian Sidereal Time (Earth's rotation since epoch).
+    // earthRotationAngle(t) = Greenwich mean sidereal time (satphot).
     // obsLonRad        = observer's geodetic longitude in the Earth-fixed frame.
     // Together: the observer sits at geodetic (obsLatDeg, obsLonDeg) rotating with Earth.
     // Derive lat/lon from obsDir (canonical state) — stable at all latitudes.
     float sinLat = obsDir.z;
     float cosLat = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);
     float obsLonRad = atan2f(obsDir.y, obsDir.x); // safe: cosLat >= 0 always
-    float theta = (float)fmod(kOmegaEarth * t + (double)obsLonRad, glm::two_pi<double>());
+    float theta = (float)fmod(earthRotationAngle(t) + (double)obsLonRad, glm::two_pi<double>());
     // Refresh display caches each frame so UI stays in sync regardless of who moved obsDir.
     obsLatDeg = glm::degrees(asinf(glm::clamp(sinLat, -1.0f, 1.0f)));
     obsLonDeg = glm::degrees(obsLonRad);
@@ -14445,19 +14453,10 @@ void SatelliteSim::updatePositions(double t, float dt)
     eclipticPoleENU = glm::normalize(glm::vec3(
         glm::dot(eclPoleECI, east), glm::dot(eclPoleECI, north), glm::dot(eclPoleECI, up)));
 
-    // ── Moon direction in ECI (Keplerian two-body ellipse — see kMoonElements) ───────────────
-    // Was a circular equatorial orbit with a phase constant hand-calibrated for one epoch
-    // (2026-03-30) that drifted for any other date (see kMoonElements' comment) — replaced as
-    // part of the planets feature (RELEASE_v1_1_PLAN follow-up, session 30), same T this frame's
-    // sun calc already computed.
-    double Tcent = dJ2000 / 36525.0; // Julian centuries since J2000 — shared by Moon + all planets
-    glm::dvec3 moonGeoEcl = keplerEclipticPos(kMoonElements, Tcent);
-    glm::dvec3 moonDirEcl = glm::normalize(moonGeoEcl);
-    glm::dvec3 moonDirEciD{
-        moonDirEcl.x,
-        moonDirEcl.y * cos(epsR) - moonDirEcl.z * sin(epsR),
-        moonDirEcl.y * sin(epsR) + moonDirEcl.z * cos(epsR)};
-    moonDirECI = glm::normalize(glm::vec3(moonDirEciD));
+    // ── The Moon's geocentric position (satphot::moonGeoEciAt: Meeus ch. 47's main terms) ─────────
+    double Tcent = dJ2000 / 36525.0; // Julian centuries since J2000 — shared by all planets
+    const glm::dvec3 moonGeoEciMeters = moonGeoEciAt(t);
+    moonDirECI = glm::normalize(glm::vec3(glm::normalize(moonGeoEciMeters)));
 
     // Illuminated fraction = (1 − dot(sunDir, moonDir)) / 2
     // Full moon when moon is opposite the sun; new moon when aligned.
@@ -14470,26 +14469,37 @@ void SatelliteSim::updatePositions(double t, float dt)
     const float moonPhaseDeg = glm::degrees(std::acos(std::clamp(-glm::dot(sunDirECI, moonDirECI), -1.0f, 1.0f)));
     float moonIllum = std::pow(10.0f, -0.4f * (0.026f * moonPhaseDeg + 4.0e-9f * std::pow(moonPhaseDeg, 4.0f)));
     // ── The Moon as a body (2026-09-30, the user: "make the moon real ... an actual 3D object") ──
-    // Its true geocentric position (the ellipse above, in metres) seen from the OBSERVER: topocentric
+    // Its true geocentric position (above, in metres) seen from the OBSERVER: topocentric
     // direction (up to ~1 degree of parallax from the ground, far more from deep space), true angular
     // radius (x "Moon size"; it was a fixed 3x-enlarged disc at infinity), and the Earth-centred position in
     // the observer's ENU (km) for the shader's tidally locked orientation and both kinds of eclipse.
     {
-        constexpr double kAU = 1.495978707e11, kMoonR = 1737400.0, kSunAngR = 0.0046542;
-        const glm::dvec3 mE = moonDirEclGeoToEci(moonGeoEcl, epsR) * kAU;       // geocentric ECI, m
+        constexpr double kMoonR = 1737400.0;
+        const double kSunAngR = std::asin(satphot::kSunRadiusM / (sunDistAuAt(t) * 1.495978707e11));
+        sunAngRTrue = (float)kSunAngR;
+        const glm::dvec3 mE = moonGeoEciMeters;                                 // geocentric ECI, m
         const glm::dvec3 topo = mE - glm::dvec3(obsECI);
         const double dM = glm::length(topo);
         const glm::dvec3 tDir = topo / dM;
         const glm::dvec3 e(east), n(north), u(up);
         moonDirENU = glm::vec4((float)glm::dot(tDir, e), (float)glm::dot(tDir, n), (float)glm::dot(tDir, u), moonIllum);
         moonDistM = dM;
-        moonAngR = (float)(std::asin(std::min(kMoonR / dM, 1.0)) * std::clamp((double)moonSizeScale, 0.25, 6.0));
+        // Drawn at "Moon size" (x real) away from the Sun, but at its TRUE size within a few degrees of it,
+        // so a solar eclipse's contacts, totality and annularity are the real ones.
+        {
+            const double sepTopo = std::acos(std::clamp(glm::dot(tDir, glm::normalize(glm::dvec3(sunDirECI))), -1.0, 1.0));
+            const double drawScale = glm::mix(1.0, std::clamp((double)moonSizeScale, 0.25, 6.0),
+                                              glm::smoothstep(glm::radians(1.5), glm::radians(4.0), sepTopo));
+            moonAngR = (float)(std::asin(std::min(kMoonR / dM, 1.0)) * drawScale);
+        }
         moonCenterENUkm = glm::vec3((float)(glm::dot(mE, e) * 1e-3), (float)(glm::dot(mE, n) * 1e-3), (float)(glm::dot(mE, u) * 1e-3));
         // Eclipses: the fraction of the Sun's disc the observer sees past the Moon (solar), and whether
         // either kind is possible at all this frame (the shader skips the per-pixel work otherwise).
         const glm::dvec3 sE = glm::normalize(glm::dvec3(sunDirECI));
         const double sep = std::acos(std::clamp(glm::dot(tDir, sE), -1.0, 1.0));
         moonEclipseSolarObs = (float)(1.0 - discOverlapFrac(kSunAngR, std::asin(std::min(kMoonR / dM, 1.0)), sep));
+        // The sky light at the observer (eclipse.glsl's kEclipseSkyBlurKm): what the eye adapts to (skyExposure).
+        moonEclipseSkyObs = (float)eclipseSunVisCpu(glm::dvec3(obsECI) * 1e-3, mE * 1e-3, sE, kSunAngR, 180.0);
         const double sepGeo = std::acos(std::clamp(glm::dot(glm::normalize(mE), sE), -1.0, 1.0));
         moonEclipseSolarPossible = sepGeo < glm::radians(2.0);                 // the Moon near the Sun
         moonEclipseLunarPossible = sepGeo > glm::radians(177.5);               // near the antisolar point

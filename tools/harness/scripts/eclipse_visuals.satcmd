@@ -1,0 +1,49 @@
+# 2026-10-03 solar eclipse visuals: corona, the Moon's shadow on the air / clouds / ground, from the ground and space.
+# The 2037-07-13 total eclipse over central Australia (found by the search).
+preset High
+set clouds_v2.fog_amount 0
+time pause
+time set 2037-07-10T00:00:00Z
+eclipse solar
+set clouds_v2.coverage 0
+camera look sun
+camera fov=3
+wait settle
+capture corona_3deg
+camera fov=10
+wait settle
+capture corona_10deg
+camera fov=90 el=20
+wait settle
+capture tot_clear_sunward
+camera az=183 el=10 fov=90
+wait settle
+capture tot_clear_away
+set clouds_v2.coverage 2.5
+wait settle
+wait 30
+capture tot_cloud_away
+camera look sun
+camera fov=90 el=20
+wait settle
+wait 30
+capture tot_cloud_sunward
+time add -600
+camera fov=90 el=20
+wait settle
+wait 30
+capture partial_10min_cloud
+time add 600
+set clouds_v2.coverage 1
+observer lat=-21.75 lon=138.31 alt=400000
+camera az=0 el=-55 fov=90
+wait settle
+wait 90
+capture space_400km
+observer lat=-21.75 lon=138.31 alt=3000000
+camera az=0 el=-90 fov=60
+wait settle
+wait 90
+capture space_3000km
+shaders reload
+quit

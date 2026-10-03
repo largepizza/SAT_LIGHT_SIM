@@ -49,6 +49,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_MESO_BINDING    5
 #include "clouds_v2.glsl"
 #include "atmosphere.glsl"
+#include "eclipse.glsl"
 
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // half-res, metres (kNoSurfaceT = sky)
 layout(set = 0, binding = 7) uniform sampler2D earthNightTex;
@@ -668,6 +669,8 @@ void main()
                     vec3 pL  = upW * (R_EARTH + hLvl * 800.0 + float(lv) * 800.0);
                     vec3 sc  = sunColorAt(pL, sunDir, BETA_R_BASE * cv2.atmo.x, BETA_M);
                     vec3 sz  = skyZenithAt(pL, sunDir, BETA_R, BETA_M);
+                    // A solar eclipse: the sky light here, from the sunlit air around the point (eclipse.glsl).
+                    if (cloud.moonMisc.y > 0.5) sz *= eclipseSkyLight(pL * 1e-3, sunDir, length(pL) - R_EARTH);
                     if (lv == 0) { sunColA = sc; skyZenA = sz; } else { sunColB = sc; skyZenB = sz; }
                 }
                 cacheT = t; cacheLvl = hLvl;
@@ -698,6 +701,9 @@ void main()
                 // forward lobe drew the Sun's disc in the shafts under the storm (user snap 2).
                 keyCol = sunCol * sunVis * cv2.look2.y
                        * mix(1.0, cloud.sunCloudT, f.rain * exp(-t / 100000.0));
+                // A solar eclipse: the Moon's shadow on THIS sample's sunlight (eclipse.glsl; 2026-10-03). It was the
+                // Sun the eye saw, on every cloud in view: no lit clouds beyond the umbra, no orange horizon.
+                if (cloud.moonMisc.y > 0.5) keyCol *= eclipseSunVis((eye + rel) * 1e-3, sunDir, 0.0);
                 // Review 22b: near the eye's line to the Sun a sample's sunlight crosses what the eye's own 400-km march
                 // toward it found BEYOND the sample (cv2SunProf: optical depth from the eye along that line), faded by
                 // the sample's distance from the line (~2 km). The light march (a few km) cannot see a storm between
@@ -774,9 +780,6 @@ void main()
                     pSSv = mix(pSSv, moonIsKey ? phRainMoon : phRainSun, f.rain);
                 }
                 keyS = keyCol * powder * (pSSv * exp(-od) + pMS * msOctaves(od) * f.msBright);
-                // A solar eclipse: the Sun the observer sees past the Moon (uniform: the cloud in view is
-                // within the Moon's shadow's scale of the eye; 2026-09-30).
-                if (!moonIsKey && cloud.moonMisc.y > 0.5) keyS *= max(cloud.moonMisc.x, 0.02);
             }
 
             // ── Sky light from above, through the cloud above the sample, plus light from below. ──
@@ -917,6 +920,12 @@ void main()
                        * smoothstep(hzF - 0.004, hzF + 0.004, sUpF);
             vec3  skyF = skyZenithAt(pm, sunDir, BETA_R, BETA_M) * cv2.look.w
                        * smoothstep(hzF - 0.09, hzF + 0.04, sUpF);
+            // A solar eclipse: the fog and dust see the Sun and sky the eye does (2026-10-03: the desert dust
+            // stayed sunlit at totality, a bright tan sky over central Australia).
+            if (cloud.moonMisc.y > 0.5) {
+                sunF *= eclipseSunVis(pm * 1e-3, sunDir, 0.0);
+                skyF *= eclipseSkyLight(pm * 1e-3, sunDir, rPm - R_EARTH);
+            }
             float nightF = 1.0 - smoothstep(-0.1, 0.05, sUpF);
             vec3  moonF  = moonKey * nightF * smoothstep(-0.05, 0.1, dot(normalize(pm), moonDir));
             float phD  = 0.85 * cv2HG(cosSun, 0.65) + 0.15 * cv2HG(cosSun, -0.2);

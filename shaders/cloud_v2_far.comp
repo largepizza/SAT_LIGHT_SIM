@@ -37,6 +37,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 #define CV2_MESO_BINDING    5
 #include "clouds_v2.glsl"
 #include "atmosphere.glsl"
+#include "eclipse.glsl"
 
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // half-res, metres (kNoSurfaceT = sky)
 layout(set = 0, binding = 7) uniform sampler2D earthNightTex;
@@ -143,6 +144,11 @@ vec3 farLit(vec3 up, float hTop, float R, float tau, float relief, float msB, ve
     float skyDusk = smoothstep(horizS - 0.09, horizS + 0.04, sunUp);
     vec3  skyZ = skyZenithAt(pT, sunDir, BETA_R, BETA_M) * skyDusk * cv2.look.w * (1.0 + cv2.atmo.y * twi)
                + kMoonColor * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z);
+    // A solar eclipse: the Moon's shadow at this point of the layer, its sunlight and its sky light (eclipse.glsl).
+    if (cloud.moonMisc.y > 0.5) {
+        keyL *= eclipseSunVis(pT * 1e-3, sunDir, 0.0);
+        skyZ *= eclipseSkyLight(pT * 1e-3, sunDir, hTop);
+    }
     vec3  L = keyL + skyZ * R * cv2.farLight.y;
     if (dayness < 0.9) {
         vec2  uv = vec2((atan(dirE.y, dirE.x) + PI) / (2.0 * PI), (0.5 * PI - asin(clamp(dirE.z, -1.0, 1.0))) / PI);
@@ -151,7 +157,6 @@ vec3 farLit(vec3 up, float hTop, float R, float tau, float relief, float msB, ve
         L += (cr / max(lum, 0.001)) * cityBrightness(lum) * (1.0 - dayness) * kCityUpwellStrength
            * cloud.ambientGain * (1.0 - R) * R;
     }
-    if (cloud.moonMisc.y > 0.5) L *= max(cloud.moonMisc.x, 0.02);
     return L;
 }
 

@@ -4,7 +4,7 @@
 preset High
 set clouds_v2.auto_exposure 0
 set clouds_v2.fog_amount 0
-time set 2036-06-21T12:00:00Z
+time set 2036-06-21T17:15:01Z
 time pause
 observer lat=-1.0 lon=-72.0 agl=600
 camera az=90 el=-40 fov=60

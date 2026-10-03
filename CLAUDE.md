@@ -1942,9 +1942,13 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   solstice/equinox, orbit radius/velocity/inclination, zero off-specular/phase in constructed
   geometry, magnitude conventions) + posed lobes vs posed per-triangle brute force (must agree to
   < 1e-3 mag; configurations fainter than mag 20 are ignored as float noise).
-  **The sim's Earth rotation angle is `kOmegaEarth·t` with no GMST-at-J2000 term (≈280.46°)** —
-  self-consistent everywhere, but sim clock ≠ real UTC by a fixed rotation (Sun hour angle off
-  ≈5.3 h). Irrelevant to statistical benchmarks; a replay of real timestamped passes must correct it.
+  **The Earth rotation angle is GMST** (`earthRotationAngle()` = 280.46061837° + 360.98564736629°/day
+  since J2000, the IAU 1982 linear part; 2026-10-03), so sim time is real UTC to ~1 s. Until then it
+  was `kOmegaEarth·t` alone: self-consistent, but every place saw its sky ~5.3 h off real UTC. **Every
+  ECI <-> ECEF rotation goes through that one function** (pc.gmst, gmstNow, the observer, the weather
+  bake's Earth-fixed Sun, the harness) — never write `kOmegaEarth * t` again. `SatelliteSim::kGmstShiftS`
+  (18901 s) added to an old time gives the old view; the start time and the cloud map's default phase
+  moved by it, so the intro is unchanged.
 - **Benchmark data** (`data/benchmarks/*.json`, format `sat-light-sim-benchmark/1`, loader
   `SatBenchmark.h/.cpp`, milestone M3): one published photometry dataset per file — citation,
   the paper's printed statistics each with a section/table `locator`, the `sampling` spec (shell,
@@ -3516,7 +3520,8 @@ struct GpuGlowBuf {
 
 ## Subsystem: The Moon as a body (2026-09-30)
 
-`updatePositions` computes the Moon's geocentric ECI position (the Keplerian two-body ellipse, AU -> m) and
+`updatePositions` computes the Moon's geocentric ECI position (`satphot::moonGeoEciAt`: Meeus ch. 47's main
+periodic terms — 14 in longitude, 7 in latitude, 10 in distance; ~0.05 deg, eclipse times within minutes) and
 from it, per frame: the TOPOCENTRIC direction (`moonDirENU`, up to ~1 deg of parallax from the ground, far
 more in deep space), the true angular radius x "Moon size (x real)" (`moonSizeScale`, slot 220, key
 `clouds.moon_size`; the old disc was a fixed 3x at infinity), the Earth-centred position in the observer's ENU
@@ -3528,22 +3533,57 @@ more in deep space), the true angular radius x "Moon size (x real)" (`moonSizeSc
   (clouds, ground, sky, halo, star/satellite dimming). It was the lit FRACTION, linear: a crescent lit the clouds and
   the sky at a third of full. The disc's own shading recomputes the fraction; harness `state` gives both (`illum`,
   `brightness_vs_full`). "Moon size (x real)" defaults to 2.5 (the true 0.5 deg is a few pixels at a wide FOV);
-  eclipses are drawn with that disc.
+  within 1.5-4 deg of the Sun the drawn disc eases back to its TRUE size (`moonAngR`), so a solar eclipse's
+  contacts, totality and annularity are the real ones (at 2.5x the Moon swallowed the Sun long before contact).
 - **The eye stops at 100,000 km** above sea level (`kMaxObsHeightM`: Q/E, the altitude scroll, the follow offset;
   review 16 — boost reached the Moon).
-- **Lunar eclipses** per surface point: the Earth's disc against the Sun's (seen from that point, with the
-  Sun's 0.15-deg parallax from the Moon), penumbra -> umbra, and the umbra's red refracted light.
+- **Lunar eclipses** per surface point: the Earth's disc (enlarged 1/85 for the atmosphere, Danjon) against the
+  Sun's (seen from that point, with the Sun's 0.15-deg parallax from the Moon), penumbra -> umbra, and the
+  umbra's red refracted light.
+- **The Sun's angular radius is its TRUE one** (`sunAngRTrue` from `satphot::sunDistAuAt`, 0.2624 deg in July ..
+  0.2711 in January; `cloud.taaJitter.w`, `kSunAngR` in sat_sky.frag): it decides total vs annular. It was a
+  fixed 0.2667 deg.
 - **Solar eclipses**: near the Moon the Sun disc takes its TRUE radius (it is drawn ~2x large for the glare
   otherwise) and is hidden where the Moon is; glare, halo and the sky dim with the Sun the observer sees
   (`moonMisc.x`, CPU `discOverlapFrac`); a corona at totality; the Moon's shadow on the ground per pixel
-  (`moonSunVisible` on directSun) and uniformly on the clouds' key light (per-sample would risk the v2 march's
-  register cliff). An annular eclipse falls out of the geometry.
+  (`moonSunVisible` on `sunDiscVis` for land, `directSun` for the sea) and uniformly on the clouds' key light
+  (per-sample would risk the v2 march's register cliff). **Everything sunlit must take the eclipse factor**
+  (2026-10-03, found at the real 2037-07-13 totality, where the sky stayed bright): the land's direct sun (it
+  reached only the sea), the terrain's sky light (`skyAmbientTerrain`), the clouds' sky light (the march's zenith
+  cache), the fog/dust march's `sunF`/`skyF` (the desert dust stayed sunlit), the Sun's bloom seed
+  (`FlareSourcePC::sunRefIntensity` only — `SatFlarePC`'s is every satellite's soft ceiling, 0 would zero them)
+  and the Sun's lens flare. An annular eclipse falls out of the geometry.
+- **The Moon's shadow per point (2026-10-03, `include/eclipse.glsl`):** `eclipseSunVis(pKm, sunD, blurKm)` = the
+  Sun's visible share from any point (equal-disc lens area between the umbra edge and first contact; CPU mirror
+  `eclipseSunVisCpu`), and `eclipseSkyLight` = that blurred over `kEclipseSkyBlurKm` (180) x the colour of light that
+  crossed `kEclipseSideKm` (80) of air sideways at the point's height + the ozone shell at a grazing secant (~20): the
+  sky light inside the shadow, deep orange low, blue high. Used by: the sky loop per sample (direct + second scattering,
+  `kEclipseMultiScatter` 2 in sat_sky.frag; also the sea's reflection march), land direct sun and sky light, the cloud
+  march's key light per sample and its zenith cache, the fog/dust march, the far cloud layer. Everything is gated on
+  `cloud.moonMisc.y` (uniform), so outside an eclipse it is a branch; the cloud march stays at 128 registers. The
+  orange horizon of totality comes out of this (lit air beyond the umbra seen through the low air, plus the reddened
+  sideways light) — no colour grading. `skyExposure()` adapts to the observer's sky light (`moonEclipseSkyObs`, dayness
+  x it), so totality is shown at about twilight's exposure (stars come out). Harness `state` moon block:
+  `sky_light_frac`, `sky_exposure`. `scripts/eclipse_visuals.satcmd`.
+- **The corona** (`solarCoronaAt`, sat_sky.frag, only near totality within `kCoronaMaxR` 9 R of the Sun): fibres along
+  dipole field lines to a source surface at 2.5 R (radial beyond), each point mapped to its line's footpoint and the
+  legacy cirrus volume (`cloudNoiseTex`) read on that circle — fine across the lines, stretched along them; footpoints
+  mirrored about the solar equator (taken per hemisphere they jumped there: a seam), where a streamer stalk is drawn;
+  coarse reads for streamers; Baumbach's radial profile; H-alpha pink chromosphere and prominences at the limb. The
+  solar axis is the ecliptic pole. `kCoronaGain` 0.4.
 - **The Moon writes its distance into the unified depth**, so stars and planets behind it are depth-occluded
   and satellites (nearer) draw in front; star_point.vert's cull takes the real radius from
   `PointDrawPC::moonDirENU.w`.
-- The ephemeris has no evection/variation (a few degrees off the real Moon), so eclipses are the SIM's, not the
-  real dates: harness `eclipse solar|lunar` finds the next one (`SatelliteSim::findEclipse`, hourly scan +
-  golden section) and places the observer. `scripts/moon.satcmd`. SKY_ENV probes use the main observer's
+- **Real eclipses at their real UTC times** (2026-10-03): the 2037-01-31 total lunar eclipse greatest at 13:59:48
+  (real ~14:01), the 2037-07-13 total solar eclipse greatest at 02:42:56 at 21.75 S 138.31 E (Moon/Sun 1.043; real
+  magnitude ~1.04). Harness `eclipse solar|lunar` finds the next one after the current time
+  (`SatelliteSim::findEclipse`, hourly scan + golden section): solar when a partial is seen anywhere on Earth
+  (separation < the Moon's parallax + both radii - the Sun's parallax), lunar when umbral; it used to need 0.55 /
+  0.6 deg and skipped the July 2037 eclipse (0.68 deg). It places the observer under the Moon (lunar) or where the
+  shadow axis meets the Earth (solar; under its nearest point for a partial-only one). `state` reports the moon's
+  `sep_from_sun_deg`, `sun_seen_frac`, `drawn_radius_deg`, `sun_radius_deg`, `dist_km`.
+  `scripts/eclipses_2037.satcmd` (the two 2037 eclipses from Alice Springs, Charleville, Sydney), `scripts/moon.satcmd`.
+  Sun and Moon are of date; stars, the Milky Way and the planets are J2000 (~0.5 deg of precession apart in 2037). SKY_ENV probes use the main observer's
   `moonCenter`, so the Moon's face in reflections is approximate.
 
 ## Subsystem: Planets
@@ -3572,15 +3612,9 @@ Results land in `planetStates[kPlanetCount]` (`PlanetState`: `eciDir`/`distanceA
 `phaseAngleDeg`), a plain ephemeris record — distinct from the render-ready `GpuSatVisible` entries
 `updatePlanets()` derives from it each frame.
 
-**The Moon's direction was also fixed in this session**, same block, same pattern: it was a circular
-equatorial orbit with a phase constant (`kMoonPhaseOffsetRad`) hand-calibrated for a single epoch
-(2026-03-30) that had already drifted stale for the sim's actual fixed epoch (2036-06-21) — see
-"Fixed Simulation State" above. Replaced with `kMoonElements`, a two-body Keplerian fit to the linear
-terms of the Moon's real ELP2000-82B mean elements (Meeus ch. 47) — real inclination (~5.145°) and
-eccentricity, still an approximation (no evection/variation/other periodic perturbations) but a real
-improvement, run through the exact same `keplerEclipticPos()` used for the planets (geocentric
-directly, no Earth-subtraction step). `moonIllum`'s formula is unchanged — only the direction's
-derivation changed, so `sat_sky.frag`'s Moon disc rendering needed zero changes.
+**The Moon** is not on this Keplerian path: since 2026-10-03 it is `satphot::moonGeoEciAt` (Meeus ch. 47's
+periodic series — see "The Moon as a body"). Its earlier two-body fit (and before that a circular orbit
+with a hand-calibrated phase) put eclipses hours late.
 
 **Brightness** (`updatePlanets()`, mirrors `updateStars()`): apparent magnitude via
 `planetApparentMagnitude()` — Paul Schlyter's standard formulas
@@ -3971,11 +4005,11 @@ those presets force `renderScale = 1.0`, so the prepass never runs for them.
 
 ## Fixed Simulation State
 
-**Start epoch**: UTC 2036-06-21 00:00:00 → J2000 seconds = 1,150,891,200 (stored split: day 13,320 + 43,200 s)
+**Start time**: UTC 2036-11-22 02:06:22 (`kInitWholeSec`; the cloud drift's reference epoch `kCloudDriftEpochS`
+is still 2036-06-21 00:00:00 = J2000 s 1,150,891,200). Sim time is real UTC (the Earth rotation angle is GMST).
 **Observer**: 67°S 67°W → ECEF `obsDir = {0.1527, -0.3596, -0.9205}`, facing north — this is only the
 compiled-in fallback used before `loadSettings()`/the intro cinematic override it; see below for
 where the observer actually starts in practice.
-**Moon phase offset**: `kMoonPhaseOffsetRad = 3.916 rad` → originally calibrated for 2026-03-30; moon phase at new epoch will differ
 
 ---
 

@@ -52,7 +52,7 @@ capture q_paris_night
 # sky-light candidates (clouds on, fixed time, auto exposure off): the cloud-shadow factor view
 set clouds_v2.coverage 0.84
 set clouds_v2.auto_exposure 0
-time set 2036-06-21T12:00:00Z
+time set 2036-06-21T17:15:01Z
 observer lat=10.0 lon=-84.0 agl=1500
 camera az=90 el=-35 fov=60
 wait settle

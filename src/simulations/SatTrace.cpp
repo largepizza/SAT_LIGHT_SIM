@@ -211,8 +211,7 @@ bool writeSatTraceCsv(const std::string &path, const SatTraceSetup &s, const std
         for (const glm::dvec4 &tg : s.groundAim.targetsEcef)
             f << "# ground_target: " << fmtG(tg.x) << " " << fmtG(tg.y) << " " << fmtG(tg.z) << " " << fmtG(tg.w) << "\n";
     }
-    f << "# note: t_j2000 is sim time (s since J2000); the sim's Earth rotation omits GMST at J2000, so it is "
-         "not real UTC. Empty magnitude fields = dark (Earth's shadow) or below the horizon.\n"
+    f << "# note: t_j2000 is sim time (s since J2000, UTC; the Earth rotation angle is GMST). Empty magnitude fields = dark (Earth's shadow) or below the horizon.\n"
       << kTraceColumns << "\n";
     for (const SatTraceRow &r : rows)
         f << fmtG(r.tJ2000) << "," << formatSatTraceRow(r) << "\n";

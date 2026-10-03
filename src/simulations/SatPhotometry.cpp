@@ -9,7 +9,10 @@ using namespace satphot;
 // ── Time and frame helpers ────────────────────────────────────────────────────────────────────
 double earthRotationAngle(double tJ2000)
 {
-    return std::fmod(kOmegaEarth * tJ2000, 2.0 * kPi);
+    // Split so the large product keeps its precision: whole days rotate by 360.98564736629 deg each.
+    const double days = std::floor(tJ2000 / 86400.0), sec = tJ2000 - days * 86400.0;
+    const double turns = std::fmod(days * (0.98564736629 / 360.0), 1.0);
+    return std::fmod(kGmstJ2000Rad + turns * 2.0 * kPi + kOmegaEarth * sec, 2.0 * kPi);
 }
 
 glm::dvec3 sunDirEciAt(double tJ2000)
@@ -23,6 +26,37 @@ glm::dvec3 sunDirEciAt(double tJ2000)
     double eps = (23.439 - 0.0000004 * d) * deg;
     return glm::normalize(glm::dvec3(std::cos(lambda), std::sin(lambda) * std::cos(eps),
                                      std::sin(lambda) * std::sin(eps)));
+}
+
+double sunDistAuAt(double tJ2000)
+{
+    const double g = std::fmod(357.528 + 0.9856003 * (tJ2000 / 86400.0), 360.0) * (kPi / 180.0);
+    return 1.00014 - 0.01671 * std::cos(g) - 0.00014 * std::cos(2.0 * g);
+}
+
+glm::dvec3 moonGeoEciAt(double tJ2000)
+{
+    const double deg = kPi / 180.0;
+    const double d = tJ2000 / 86400.0, T = d / 36525.0;
+    auto ang = [&](double a0, double rate) { return std::fmod(a0 + rate * T, 360.0) * deg; };
+    const double Lp = std::fmod(218.3164477 + 481267.88123421 * T, 360.0);
+    const double D = ang(297.8501921, 445267.1114034), M = ang(357.5291092, 35999.0502909);
+    const double Mp = ang(134.9633964, 477198.8675055), F = ang(93.2720950, 483202.0175233);
+    const double E = 1.0 - 0.002516 * T;
+    using std::sin;
+    using std::cos;
+    const double lon = Lp + 1e-6 * (6288774 * sin(Mp) + 1274027 * sin(2 * D - Mp) + 658314 * sin(2 * D)
+        + 213618 * sin(2 * Mp) - 185116 * E * sin(M) - 114332 * sin(2 * F) + 58793 * sin(2 * D - 2 * Mp)
+        + 57066 * E * sin(2 * D - M - Mp) + 53322 * sin(2 * D + Mp) + 45758 * E * sin(2 * D - M)
+        - 40923 * E * sin(M - Mp) - 34720 * sin(D) - 30383 * E * sin(M + Mp) + 15327 * sin(2 * D - 2 * F));
+    const double lat = 1e-6 * (5128122 * sin(F) + 280602 * sin(Mp + F) + 277693 * sin(Mp - F)
+        + 173237 * sin(2 * D - F) + 55413 * sin(2 * D - Mp + F) + 46271 * sin(2 * D - Mp - F) + 32573 * sin(2 * D + F));
+    const double rKm = 385000.56 + 1e-3 * (-20905355 * cos(Mp) - 3699111 * cos(2 * D - Mp) - 2955968 * cos(2 * D)
+        - 569925 * cos(2 * Mp) + 48888 * E * cos(M) - 3149 * cos(2 * F) + 246158 * cos(2 * D - 2 * Mp)
+        - 152138 * E * cos(2 * D - M - Mp) - 170733 * cos(2 * D + Mp) - 204586 * E * cos(2 * D - M));
+    const double l = lon * deg, b = lat * deg, eps = (23.439 - 0.0000004 * d) * deg;
+    const double x = cos(b) * cos(l), y = cos(b) * sin(l), z = sin(b);
+    return rKm * 1000.0 * glm::dvec3(x, y * cos(eps) - z * sin(eps), y * sin(eps) + z * cos(eps));
 }
 
 glm::dvec3 observerEciAt(glm::dvec3 obsDirEcef, double radiusM, double tJ2000)

@@ -15,7 +15,7 @@ time pause
 cine new tour
 
 # 1. Satellites at twilight from the intro ridge: a slow pan along the flaring arc.
-time set 2036-11-21T20:51:21Z
+time set 2036-11-22T02:06:22Z
 observer lat=35.869 lon=-121.402 agl=2
 camera az=-75 el=16 fov=70
 wait settle 60
@@ -27,7 +27,7 @@ cine key t=6
 
 # 2. The ISS in sunlight, the camera swinging around it.
 cine shot add iss
-time set 2036-11-21T22:06:21Z
+time set 2036-11-22T03:21:22Z
 cine shot simnow
 select const "International Space Station"
 follow
@@ -42,7 +42,7 @@ cine key t=6
 
 # 3. The ISS over the aurora at night.
 cine shot add iss_aurora
-time set 2036-11-21T21:41:21Z
+time set 2036-11-22T02:56:22Z
 cine shot simnow
 cine shot follow sel
 cine shot look

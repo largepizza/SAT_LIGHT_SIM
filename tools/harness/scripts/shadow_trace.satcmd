@@ -27,7 +27,7 @@ set clouds.coverage 0
 set clouds.fog_coverage 0
 observer lat=56.1 lon=-159.6 agl=450
 camera az=90 el=3 fov=60
-time set 2026-11-21T21:04:50Z
+time set 2026-11-22T02:19:51Z
 time pause
 wait settle
 capture sh_t00

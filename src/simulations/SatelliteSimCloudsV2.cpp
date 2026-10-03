@@ -1123,8 +1123,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                        std::max(cv2FogDensity, 0.0f), fogOff ? 0.0f : std::max(cv2DustAmount, 0.0f));
     p.fog2 = glm::vec4(std::max(cv2DustHeightM, 100.0f), std::max(cv2DustDensity, 0.0f), cv2DebugView == 11 ? 1.0f : 0.0f,
                        fogOff ? 0.0f : std::max(cv2IceFogAmount, 0.0f));
-    {   // The Sun, Earth-fixed (the sim's rotation angle kOmegaEarth t, as the weather bake uses).
-        const double g = std::fmod(satphot::kOmegaEarth * simT, 6.283185307179586);
+    {   // The Sun, Earth-fixed (the Earth rotation angle, as the weather bake uses).
+        const double g = earthRotationAngle(simT);
         const glm::dvec3 si = glm::dvec3(sunDirECI);
         p.sunE = glm::vec4(glm::vec3(glm::normalize(glm::dvec3(si.x * std::cos(g) + si.y * std::sin(g),
                                                                -si.x * std::sin(g) + si.y * std::cos(g), si.z))),
@@ -1256,9 +1256,9 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
         pc.evo0 = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);   // the static map
     pc.evo1 = glm::vec4(std::max(cv2EvoWindMps, 0.0f), std::max(cv2EvoGrowth, 0.0f),
                         (float)std::fmod(t, 1.0e6), 0.0f);
-    // The Sun three hours ago, Earth-fixed (the sim's rotation angle, no GMST offset: kOmegaEarth t;
+    // The Sun three hours ago, Earth-fixed (the Earth rotation angle;
     // 3 h back it stood 45 deg further east), then into the map's (drifted) frame as cv2Drift turns it.
-    const double g = std::fmod(satphot::kOmegaEarth * t, 6.283185307179586) - 3.0 * 3600.0 * satphot::kOmegaEarth;
+    const double g = earthRotationAngle(t) - 3.0 * 3600.0 * satphot::kOmegaEarth;
     const glm::dvec3 si = glm::dvec3(sunDirECI);
     const glm::dvec3 se(si.x * std::cos(g) + si.y * std::sin(g), -si.x * std::sin(g) + si.y * std::cos(g), si.z);
     const double dr = cloudDriftPhase();

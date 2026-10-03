@@ -438,7 +438,7 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     vec4  auroraSheets;
     // -- Sky TAA (768 -> 784, 2026-09-30): xy the sub-pixel jitter of this frame's sky pass (pixels), read
     // only by sat_sky.frag -DSKY_TAA; z the orbit colour grade's weight ("Orbit colour grade" x the
-    // observer's altitude ramp, sat_sky.frag after the tonemap); w unused.
+    // observer's altitude ramp, sat_sky.frag after the tonemap); w the Sun's true angular radius (rad).
     vec4  taaJitter;
     // -- The Moon as a body (784 -> 816, 2026-09-30): xyz its centre from the Earth's centre in the observer's
     // ENU (km), w its topocentric angular radius (rad, x "Moon size"); moonMisc x the fraction of the Sun's

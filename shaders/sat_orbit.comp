@@ -353,7 +353,7 @@ layout(push_constant) uniform PC {
 const float PI            = 3.14159265358979;
 const float TWO_PI        = 6.28318530717959;
 const float SSO_PREC_RATE = TWO_PI / (365.25 * 86400.0); // rad/s
-const float K_OMEGA_EARTH   = 7.2921150e-5; // rad/s, Earth sidereal rotation — matches CPU's kOmegaEarth
+const float K_OMEGA_EARTH   = 7.2921159e-5; // rad/s, Earth sidereal rotation — matches CPU's kOmegaEarth
 
 // Reflectance-model constants (moved from sat_flare.comp with the model itself — see that file's
 // history for the reasoning behind each).

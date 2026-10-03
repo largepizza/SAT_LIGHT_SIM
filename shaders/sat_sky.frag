@@ -269,7 +269,8 @@ layout(location = 1) out float outDepthCopy;
 #include "terrain_detail.glsl" // procedural 3D terrain detail + the shared march
 #include "atmosphere.glsl" // line-of-sight extinction (atmExtinctionMag)
 #include "darksky.glsl"   // dark-sky exposure gate (Milky Way / zodiacal)
-#include "depth.glsl"     // unified scene depth (gl_FragDepth)
+#include "depth.glsl"
+#include "eclipse.glsl"  // the Moon's shadow per point (solar eclipses)     // unified scene depth (gl_FragDepth)
 
 // ── Close-up terrain materials (terrain v2 P3, binding 27) ─────────────────────────────────────
 // tools/make_terrain_materials.py: two layers per material — 2m: albedo as a linear RATIO to the
@@ -2916,15 +2917,70 @@ float discOverlapFrac(float a, float b, float d) {
     float k  = max((-d + a + b) * (d + a - b) * (d - a + b) * (d + a + b), 0.0);
     return (a * a * acos(c1) + b * b * acos(c2) - 0.5 * sqrt(k)) / (PI * a * a);
 }
-const float kSunAngR  = 0.0046542;
+// The Sun's true angular radius (rad): from its distance, ~0.2624 deg in July .. 0.2711 in January, which
+// decides total vs annular (CPU sunAngRTrue).
+#define kSunAngR (cloud.taaJitter.w)
 const float kMoonRkm  = 1737.4;
 // The fraction of the Sun a point sees past the Moon (a solar eclipse): p = Earth-centred ENU, metres.
 float moonSunVisible(vec3 p, vec3 sunD) {
     if (cloud.moonMisc.y < 0.5) return 1.0;
-    vec3  v  = cloud.moonCenter.xyz - p * 1e-3;                 // km
-    float dv = length(v);
-    float d  = acos(clamp(dot(v / dv, sunD), -1.0, 1.0));
-    return 1.0 - discOverlapFrac(kSunAngR, asin(min(kMoonRkm / dv, 1.0)), d);
+    return eclipseSunVis(p * 1e-3, sunD, 0.0);                  // eclipse.glsl: the same shadow the clouds take
+}
+// Second-order light inside the Moon's shadow: the share of the sky light it keeps there, scattered in from the
+// sunlit air around it (the dark blue zenith of totality; single scattering alone left it black).
+const float kEclipseMultiScatter = 2.0;
+const float kCoronaGain = 0.4;   // the corona's radiance per unit of solarCoronaAt (relative to the drawn disc)
+
+
+// ── The solar corona at totality (2026-10-03) ──────────────────────────────────────────────────────────────────
+// Radiance relative to the drawn Sun disc's, around the Moon's black disc. Evaluated only near totality and within
+// kCoronaMaxR solar radii of the Sun (main's caller), so it costs nothing the rest of the time.
+//  - Fibres follow a DIPOLE's field lines (sin^2(theta)/r constant) out to the source surface (kCoronaRss, ~2.5 R),
+//    radial beyond: each point is mapped to its line's footpoint angle on the limb, and the fibres are the legacy
+//    cirrus noise volume (cloudNoiseTex) read on a circle of footpoints — fine across the lines, stretched ~20x along
+//    them. Polar plumes fan out, low-latitude lines arch toward the equator.
+//  - Streamers: the same volume, coarse, so a few broad bright bundles follow the same lines and taper into cusps.
+//  - Brightness: Baumbach's K-corona profile (r^-7, r^-17 inner, r^-2.5 outer), the outer term carried by streamers.
+//  - Prominences and the chromosphere: H-alpha pink at the limb, above the Moon's edge where it is narrower than the
+//    Sun's chromosphere (near second and third contact) or where a prominence stands taller.
+// The Sun's rotation axis is taken as the ecliptic pole (7 deg off), projected on the sky.
+const float kCoronaMaxR = 9.0;     // solar radii
+const float kCoronaRss  = 2.5;     // source surface: closed field below, radial above
+vec3 solarCoronaAt(vec3 dir, vec3 sunD)
+{
+    vec3  q  = dir - sunD * dot(dir, sunD);
+    float lq = length(q);
+    float rS = lq / kSunAngR;                                     // solar radii from the centre (sin: exact here)
+    if (rS < 1.0 || rS > kCoronaMaxR) return vec3(0.0);
+    vec3  pole = normalize(cloud.eclipticPoleENU.xyz - sunD * dot(cloud.eclipticPoleENU.xyz, sunD));
+    vec3  e2   = cross(sunD, pole);
+    float cP = dot(q, pole) / lq, sP = dot(q, e2) / lq;          // position angle from the pole (cos, sin)
+    // The footpoint of the field line through here: sin(theta0) = sin(theta) / sqrt(r), r held at the source surface.
+    float s0 = abs(sP) / sqrt(min(rS, kCoronaRss));
+    // Mirrored about the solar equator: the two hemispheres' lines meet there (the current sheet), and a footpoint taken
+    // from either side made the fibres jump along it — a straight seam out of the limb.
+    vec2  foot = vec2(sqrt(max(1.0 - s0 * s0, 0.0)), sign(sP) * s0);
+    float lr = log(rS);
+    float nF = texture(cloudNoiseTex, vec3(foot * 2.6, 0.37 + lr * 0.12)).r;            // fibres
+    float nE = texture(cloudNoiseTex, vec3(foot * 6.3, 0.11 + lr * 0.25)).g;            // finer filaments
+    float nS = texture(cloudNoiseTex, vec3(foot * 0.42 + 0.5, 0.71 + lr * 0.02)).r;     // streamers
+    float fib  = smoothstep(0.2, 0.85, 0.65 * nF + 0.35 * nE);
+    float strm = smoothstep(0.42, 0.72, nS);
+    float inner = 1.425 * pow(rS, -7.0) + 2.565 * pow(rS, -17.0);
+    float outer = 0.0532 * pow(rS, -2.2);
+    // The streamers' stalks: a narrow sheet along the solar equator past ~1.5 R, where the lines from both poles meet.
+    float stalk = exp(-(cP * cP) / (0.012 + 0.004 * rS)) * smoothstep(1.2, 2.2, rS) * (0.4 + 0.9 * strm);
+    float B = inner * (0.45 + 1.1 * fib) + outer * (0.4 + 6.0 * strm + 4.0 * stalk) * (0.35 + 1.3 * fib);
+    B *= 1.0 - smoothstep(0.55 * kCoronaMaxR, kCoronaMaxR, rS);         // no edge at the cut-off radius
+    // Pearl white, a touch warmer at the limb.
+    vec3  col = B * mix(vec3(0.86, 0.92, 1.0), vec3(1.0, 0.95, 0.86), exp(-(rS - 1.0) * 6.0));
+    // Prominences: a few arches/tufts on the limb, up to ~0.1 R; the chromosphere a thin rim (~0.015 R).
+    float nP   = texture(cloudNoiseTex, vec3(vec2(cP, sP) * 1.9 + 0.3, 0.83 + (rS - 1.0) * 0.9)).r;
+    float hP   = 0.14 * smoothstep(0.55, 0.8, nP);
+    float prom = smoothstep(0.0, 0.004, rS - 1.0) * (1.0 - smoothstep(0.6 * hP, hP + 1e-4, rS - 1.0));
+    float chrom = 1.0 - smoothstep(0.008, 0.02, rS - 1.0);
+    col += vec3(1.0, 0.16, 0.38) * (4.0 * prom * smoothstep(0.55, 0.7, nP) + 2.0 * chrom);
+    return col;
 }
 
 void main() {
@@ -3701,6 +3757,15 @@ void main() {
             atmTermW8 *= mix(1.0, cloud.sunCloudT, (1.0 - smoothstep(8000.0, 14000.0, h))
                                                   * exp(-tS / 50000.0 - dPerp / 3000.0));
         }
+        // A solar eclipse (2026-10-03): the Moon's shadow on THIS sample's sunlight, plus the light scattered in from
+        // the sunlit air around it. The whole sky used to be dimmed by the Sun the EYE saw: from inside the umbra the
+        // horizon was as dark as the zenith (no orange ring), and from space the air over the shadow stayed blue-lit,
+        // blurring the shadow on the ground.
+        if (cloud.moonMisc.y > 0.5) {
+            vec3  spK = sp * 1e-3;
+            float vD  = eclipseSunVis(spK, sunDir, 0.0);
+            attn *= vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(spK, sunDir, h);
+        }
 
         // Accumulate in-scattered radiance for each particle type.
         // Multiplying by density (densR/densM) weights by how many particles are at this altitude.
@@ -3715,9 +3780,7 @@ void main() {
     }
 
     vec3 color = SUN_INTENSITY * (pR * BETA_R * accumR + vec3(pM * BETA_M * accumM));
-    // A solar eclipse dims the sky with the share of the Sun the observer sees (the air lit from outside the
-    // Moon's shadow keeps a floor: the horizon glow of totality).
-    if (cloud.moonMisc.y > 0.5) color *= max(cloud.moonMisc.x, 0.03);
+    // (A solar eclipse is in the loop above, per sample: the Moon's shadow on the air.)
     // Review 7: air in the Earth's shadow is lit by the twilight sky (the blue-grey of the Earth's shadow);
     // single scattering left it black, so at a low Sun the horizon on the side away from it was a dark band
     // (user snapshot 2). Isotropic in-scatter of half the zenith sky's radiance (the lower half-sphere is
@@ -3873,7 +3936,7 @@ void main() {
                 vec3  toE = -pM;
                 float dE  = length(toE);
                 vec3  sM  = normalize(sunDir * 1.496e8 - pM);            // the Sun from the Moon (0.15 deg of parallax)
-                float aE  = asin(min(6371.0 / dE, 1.0));
+                float aE  = asin(min(6446.0 / dE, 1.0));               // + 1/85 for the atmosphere (Danjon)
                 float th  = acos(clamp(dot(toE / dE, sM), -1.0, 1.0));
                 lunarLit  = 1.0 - discOverlapFrac(kSunAngR, aE, th);
                 float umb = smoothstep(aE - kSunAngR, 0.3 * aE, aE - th);
@@ -4437,6 +4500,9 @@ void main() {
         float dipCos   = R_EARTH / length(hitPt);
         float dipSin   = sqrt(max(0.0, 1.0 - dipCos * dipCos)); // sin of the horizon dip at this altitude
         float sunDiscVis = smoothstep(-dipSin - 0.0046, -dipSin + 0.0046, geoSunDot);
+        // The Moon's shadow in a solar eclipse (2026-10-03): it reached only the sea (directSun), so the land
+        // stayed in full sunlight at totality.
+        sunDiscVis *= moonSunVisible(hitPt, sunDir);
         vec3  sunDirLocal = (geoSunDot > -dipSin) ? sunDir : normalize(sunDir - hitUp * geoSunDot);
         vec3 sunSpecTint = vec3(1.0);
         float sunTransMax = 1.0;   // review 22: the normalisation sunSpecTint dropped (the Sun glint needs the real light)
@@ -4487,6 +4553,8 @@ void main() {
                 }
                 skyAmbientTerrain = SUN_INTENSITY * (pR_upT * BETA_R * skyAmbientTerrain
                                                    + vec3(pM_upT * BETA_M * skyAmbTM));
+                // A solar eclipse: the sky light over THIS point, from the sunlit air around it (2026-10-03).
+                if (cloud.moonMisc.y > 0.5) skyAmbientTerrain *= eclipseSkyLight(hitPt * 1e-3, sunDir, length(hitPt) - R_EARTH);
             }
         }
 
@@ -4971,6 +5039,10 @@ void main() {
                         vec2 sOD  = (tSun.y > 0.0) ? optDepth(rp, sunDir, tSun.y) : vec2(0.0);
                         vec3 rtau  = BETA_R * (rodR + sOD.x) + BETA_M * 1.1 * (rodM + sOD.y);
                         vec3 rattn = exp(-rtau);
+                        if (cloud.moonMisc.y > 0.5) {                // a solar eclipse, as in the sky loop
+                            float vD = eclipseSunVis(rp * 1e-3, sunDir, 0.0);
+                            rattn *= vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(rp * 1e-3, sunDir, rh);
+                        }
                         rAccR += rattn * rdR;
                         rAccM += dot(rattn, vec3(1.0 / 3.0)) * rdM;
                     }
@@ -5926,12 +5998,13 @@ void main() {
         // translucent cloud the hard gate above doesn't trip on — a hazy, dimmed disc through mist
         // is correct; sunGate only handles the "actually opaque" case that dimming alone can't.
         float tot = pow(1.0 - obsSunF, 6.0);                   // totality
-        float rays = 0.6 + 0.4 * sin(atan(dot(dir, cross(sunDir, vec3(0.0, 0.0, 1.0))), dot(dir, vec3(0.0, 0.0, 1.0))) * 7.0);
-        float solarCorona = tot * exp(-max(angle - kSunAngR, 0.0) / (0.5 * kSunAngR * rays)) * (moonDiscHit ? 0.0 : 1.0) * sunGate;
+        vec3  solarCorona = vec3(0.0);
+        if (tot > 0.001 && angle < kCoronaMaxR * kSunAngR && !moonDiscHit)
+            solarCorona = solarCoronaAt(dir, sunDir) * (tot * sunGate * kCoronaGain);
         color += (discVis * geomFade * sunCol
                   + glare  * geomFade * sunCol * obsSunF
                   + corona * geomFade * sunCol * 0.12 * obsSunF
-                  + solarCorona * geomFade * vec3(0.9, 0.95, 1.0) * 0.03) * min(cloudBlock, cloud.sunCloudT);
+                  + solarCorona * geomFade) * min(cloudBlock, cloud.sunCloudT);
         // (Review 22: x the Sun's own cloud transmittance from the eye, 400 km toward it: a horizon Sun's pixels
         // see past the march's clouds, so cloudBlock alone let it shine through a storm's overcast.)
     }
@@ -5988,7 +6061,8 @@ void main() {
                 // Earth-curvature horizon test above) now correctly hides its flare too.
                 float sunTerrainOccl = (texture(sceneDepthTex, sunScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0;
                 flareAccum += lensFlare(fragUV, sunUV, sunIntensity, 2.0) * sunTint * sunFade * 0.45
-                            * min(sunCloudOccl, cloud.sunCloudT) * sunTerrainOccl;
+                            * min(sunCloudOccl, cloud.sunCloudT) * sunTerrainOccl
+                            * (cloud.moonMisc.y > 0.5 ? cloud.moonMisc.x : 1.0);   // the Sun seen past the Moon
             }
         }
 
