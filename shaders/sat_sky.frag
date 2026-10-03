@@ -4455,6 +4455,11 @@ void main() {
 
             // Altitude fade: full 3D waves at low altitude, smooth specular from orbit.
             float altFade = 1.0 - smoothstep(3000.0, 8000.0, obsEffH - waterLevelM);
+            // Review 24b: the WAVES (normal, ripple) fade with altitude far higher up; the footprint filter (review 14)
+            // already drops what a pixel cannot resolve from any height. Faded over 3-8 km they popped in descending
+            // through ~7 km (user snaps, 7.9 -> 6.5 km): a smooth sea, then the wave texture and glitter path at once.
+            // altFade keeps gating the mirrored features (aurora, Milky Way) and the near wave trace.
+            float altFadeW = 1.0 - smoothstep(20000.0, 60000.0, obsEffH - waterLevelM);
 
             // Wave UV strategy:
             //   posM = hitPt.xy (ENU East/North metres from observer nadir) — always small,
@@ -4553,11 +4558,11 @@ void main() {
             float seaRough = 0.0;
             float waveCrest = -1.0;        // the wave height here / its maximum (whitecaps), -1 = unresolved
             float waveBlend = 1.0;
-            if (altFade > 0.01) {
+            if (altFadeW > 0.01) {
                 // Review 21: out to "Sea wave range (km)" (was a fixed 3-8 km: the sea went to a mirror close in; the
                 // footprint filter below is what removes the octaves a pixel cannot resolve).
                 float distFade = smoothstep(0.6 * cloud.oceanWaveRangeM, cloud.oceanWaveRangeM, dist);
-                float blend    = max(distFade, 1.0 - altFade);  // 0 = full detail, 1 = flat
+                float blend    = max(distFade, 1.0 - altFadeW);  // 0 = full detail, 1 = flat
                 waveBlend = blend;
                 if (blend < 0.99) {
                     // The footprint: a pixel's length ALONG the view at this distance (stretched by the grazing angle,
@@ -4587,10 +4592,10 @@ void main() {
             // whose cells are ~3 pixel footprints ALONG the view (resolvable, so it cannot alias; across the view the
             // footprint is far smaller, so on screen each band is long and thin), tilted mostly along the view.
             // Its lattice is the waves' (octave-0 cells, periods that divide kSeaCells: exactly periodic).
-            if (cloud.seaTune.x > 0.0 && altFade > 0.01) {
+            if (cloud.seaTune.x > 0.0 && altFadeW > 0.01) {
                 float cosG  = max(abs(dot(dir, surfUp)), 0.02);
                 float footA = pixAngle * dist / cosG;
-                float rip   = max(smoothstep(3.0, 12.0, footA * cloud.oceanWaveFootK), waveBlend) * altFade;
+                float rip   = max(smoothstep(3.0, 12.0, footA * cloud.oceanWaveFootK), waveBlend) * altFadeW;
                 float want  = log2(max(3.0 * footA * kSeaFreq, 1.0));   // the cell, in octave-0 cells (log2)
                 rip *= 1.0 - smoothstep(9.5, 10.5, want);              // past the field's period: nothing resolvable
                 vec3 hView = dir - dot(dir, surfUp) * surfUp;

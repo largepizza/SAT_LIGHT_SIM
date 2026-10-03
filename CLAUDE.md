@@ -1332,6 +1332,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   0.3-0.66 -> 0.92-1.23). The "Flat layers" sliders are v1's 2D layers: drawn only in reflections / probes, SKY_LITE
   and Potato, not the main view while the march runs. **Exposure from orbit**: the lit gate 0.08 -> 0.04 (review
   23's darker sea fell under it) and the lit target 0.42 -> 0.47 (snap 4: -1.37 -> -1.09 EV).
+- **Review 24b (2026-10-02, records 8-9):** the far layer's defaults are the user's tuning (full at 8900 km, slant 0.91,
+  bias 0.12, density 1.2, low-Sun 0.38, sunlight 4.1, sky 0.6). **Go to on moving satellites** (benchmarked at 1x,
+  view-to-satellite angle per frame, harness_runs/r24b_goto2): the arrival takes the offset where the flight ends (the
+  line rotated during the flight: a 1.4 deg jump on landing), and the way home stays on the satellite to the end and
+  lands looking at it (turning back to the start's view swung the camera up to 55 deg while zooming out); 0.0 deg
+  both ways. **The sea's waves fade with altitude over 20-60 km** (`altFadeW`; was 3-8 km, a pop of the wave texture
+  and glitter path descending through ~7 km); the footprint filter does the rest. Mirrored features keep 3-8 km.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

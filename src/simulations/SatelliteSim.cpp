@@ -4783,6 +4783,18 @@ void SatelliteSim::updateFollow(float dt)
             homeLook = true;
             if (x >= 1.0)
             {
+                // Review 24b: along the line the flight lands LOOKING AT the satellite (the view stayed on it all the
+                // way, flare and all); turning back to the view saved at the start swung the camera up to ~55 deg
+                // during the zoom out. The arc keeps the saved view.
+                if (followFlightLine)
+                {
+                    const glm::dvec3 upH = glm::normalize(home);
+                    const glm::dvec3 dS  = glm::normalize(P - home);
+                    const glm::dvec3 hS  = dS - glm::dot(dS, upH) * upH;
+                    if (glm::length(hS) > 1e-6)
+                        followSavedFacing = glm::vec3(glm::normalize(hS));
+                    followSavedEl = (float)glm::degrees(std::asin(std::clamp(glm::dot(dS, upH), -1.0, 1.0)));
+                }
                 stopFollow(false);   // restores the saved observer, facing, elevation and FOV exactly
                 return;
             }
@@ -4794,6 +4806,11 @@ void SatelliteSim::updateFollow(float dt)
             {
                 followFlight = 0;
                 followAimLock = false;   // review 23: free aim on arrival
+                // Review 24b: hold the arrival where the flight put it (on the observer's line NOW). The offset was set on
+                // the line as it was at the start, and the satellite moves ~10 km during a flight: the camera jumped
+                // ~1.4 deg on the last frame.
+                const glm::dvec3 d = followObsEcef - P;
+                followOffset = glm::dvec3(glm::dot(d, Th), glm::dot(d, Nh), glm::dot(d, Rh));
             }
         }
     }
@@ -4836,17 +4853,17 @@ void SatelliteSim::updateFollow(float dt)
         float     el0 = followFlightEl0;
         if (followFlightLine && glm::length(P - followObsEcef) > 0.01)
         {
-            const glm::vec3 dS = glm::vec3(glm::normalize(P - followObsEcef));
-            const glm::vec3 hS = dS - glm::dot(dS, upF) * upF;
-            if (glm::length(hS) > 1e-4f)
-                f0 = glm::normalize(hS);
-            el0 = glm::degrees(asinf(glm::clamp(glm::dot(dS, upF), -1.0f, 1.0f)));
-            k = glm::smoothstep(0.6f, 1.0f, xh);
+            // Review 24b: on the satellite the whole way (it lands looking at it, above).
+            setView(glm::vec3(glm::normalize(P - followObsEcef)));
+            k = glm::smoothstep(0.0f, 1.0f, xh);
         }
-        glm::vec3 f = glm::mix(f0, followSavedFacing, k);
-        if (glm::length(f) > 1e-6f)
-            obsFacing = glm::normalize(f);
-        camera.elDeg = glm::mix(el0, followSavedEl, k);
+        else
+        {
+            glm::vec3 f = glm::mix(f0, followSavedFacing, k);
+            if (glm::length(f) > 1e-6f)
+                obsFacing = glm::normalize(f);
+            camera.elDeg = glm::mix(el0, followSavedEl, k);
+        }
         camera.fovYDeg = glm::mix(50.0f, followSavedFov, k);
     }
     else if (followAimLock && glm::length(P - followObsEcef) > 0.01)
