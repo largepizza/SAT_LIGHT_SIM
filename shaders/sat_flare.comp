@@ -380,6 +380,16 @@ void main() {
                 // up to the model's radius (< 1% of the range while any sprite is left at 10 px) — draw
                 // it at 98% of the range so the depth test keeps it in front of its own model.
                 range *= 0.98;
+                // Review 28: on its glint (the Sun's image in its dominant lobe, clamped to the lobe; CPU, double),
+                // where its mesh's own glints will glare once resolved: at the centre the flare jumped across a
+                // mirror at the hand-off.
+                uint gd = keepEntries[k].w;
+                if (gd != 0u) {
+                    vec2 oc = unpackSnorm2x16(gd);
+                    vec3 v  = vec3(oc, 1.0 - abs(oc.x) - abs(oc.y));
+                    if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * vec2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0);
+                    skyDir = normalize(v);
+                }
                 break;
             }
     }

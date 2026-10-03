@@ -1132,6 +1132,14 @@ double evalSatLobes(const std::vector<GpuSatLobe> &lobes, const std::vector<Atti
     return sum;
 }
 
+glm::dvec3 satLobeNormalPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
+                              const std::vector<GroupPose> &poses, int li)
+{
+    const GpuSatLobe &L = lobes[li];
+    const glm::dvec3 nBody = bodyTriad(groups[attRootOf(groups, (int)L.group)]) * glm::dvec3(L.normalT);
+    return glm::normalize(poses[L.group].R * nBody);
+}
+
 double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                          const std::vector<GroupPose> &poses, glm::dvec3 s, glm::dvec3 o, double sourceAlpha2,
                          int *dominant, const SatOcclusion *occ, bool occludeSource)

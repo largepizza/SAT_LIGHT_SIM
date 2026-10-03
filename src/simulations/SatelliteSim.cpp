@@ -2327,7 +2327,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cp.cityParams = glm::vec4(cityTwinkleRate, glm::mix(1.0f, citySpriteGround, std::min(sprOn, 1.0f)), reach,
                                       citySpriteStartFootM);
             cp.cityLod  = glm::vec4(cityPostsFootM, cityGridFootM, cityRoadsFootM, cityLayoutFootM);
-            cp.cityLod2 = glm::vec4(cityStreetShareNear, cityStreetShareFar, 0.0f, 0.0f);
+            cp.cityLod2 = glm::vec4(cityStreetShareNear, cityStreetShareFar, std::clamp(oceanWaveRangeFade, 0.05f, 1.0f), 0.0f);
         }
         cp.cloudShadowRangeM = cloudShadowRangeM;
         // sat_sky.frag's render target: the low-res prepass extent when renderScale<1 (recordPrePass
@@ -4270,6 +4270,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         int type = -1;
         glm::dvec3 satEcef{0.0};
         float fade = 0.0f, keep = 1.0f, glareKeep = 1.0f;
+        uint32_t glintDir = 0u; // review 28: the sprite's direction (octahedral snorm2x16, ENU), 0 = its centre
         float rangeM = 0.0f; // its range from the observer, for the glare's proximity size
         MeshDrawn drawn{};
     };
@@ -4361,6 +4362,44 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         // flux, flared.
         const float glarePoint = 1.0f - (float)glm::smoothstep((double)kGlarePointPx, 3.0 * kGlarePointPx, px);
         inst.glarePoint = glarePoint;
+        // Review 28: the sprite (point, bloom, glare) sits on the satellite's GLINT, not its centre. A flat lobe shows
+        // the Sun at one point: where the camera's ray along the Sun's mirror image (d = s - 2 (s.n) n) meets it,
+        // clamped to the lobe's extent (off it, the brightest part of the lobe's tail is its nearest edge), weighted by
+        // the lobe's specular share of the flux. At the centre, the flare jumped across the mirror when the mesh's
+        // own glints took the glare over (12-36 px): Reflect Orbital #2700 from Fairbanks, 1.26 deg off the beam axis.
+        if (r.dominantLobe >= 0 && r.dominantLobe < (int)type.lobes.size() && r.intensitySun > 0.0)
+        {
+            const GpuSatLobe &L = type.lobes[r.dominantLobe];
+            const glm::dvec3 n = satLobeNormalPosed(type.lobes, type.groups, poses, r.dominantLobe);
+            const glm::dvec3 s = geo.sun;
+            const glm::dvec3 o = -rel / range;
+            const double spec = satLobeIntensity(n, L.area, L.diffArea, 0.0, L.f0,
+                                                 L.alpha2Mat + (double)kSunAlpha * kSunAlpha, L.distribution != 0, s, o, 0.0);
+            const double w = glm::clamp(spec / r.intensitySun, 0.0, 1.0);
+            const double sn = glm::dot(s, n);
+            if (w > 0.01 && sn > 0.0)
+            {
+                const glm::dvec3 d = s - 2.0 * sn * n;   // from the camera toward the Sun's image
+                const glm::dvec3 Q = satEcef + poses[L.group].t;
+                const glm::dvec3 X = obsEcef + d * glm::dot(Q - obsEcef, d);
+                glm::dvec3 off = X - Q;
+                off -= glm::dot(off, n) * n;
+                const double rl = 0.5 * std::sqrt(std::max((double)L.area, 0.0));
+                const double ol = glm::length(off);
+                if (ol > rl)
+                    off *= rl / ol;
+                const glm::dvec3 G = satEcef + w * (Q + off - satEcef);
+                const glm::vec3 dirEnu = glm::normalize(ecefToEnu * glm::vec3(G - obsEcef));
+                // Octahedral encoding (16 bits per axis: ~0.003 deg).
+                glm::vec2 oc = glm::vec2(dirEnu) / (std::abs(dirEnu.x) + std::abs(dirEnu.y) + std::abs(dirEnu.z));
+                if (dirEnu.z < 0.0f)
+                    oc = (1.0f - glm::abs(glm::vec2(oc.y, oc.x))) *
+                         glm::vec2(oc.x >= 0.0f ? 1.0f : -1.0f, oc.y >= 0.0f ? 1.0f : -1.0f);
+                out.glintDir = glm::packSnorm2x16(oc);
+                if (out.glintDir == 0u)
+                    out.glintDir = 1u;   // 0 means "at the centre"
+            }
+        }
         inst.probeSlot = kNoProbe; // assigned below, once every instance is known
         out.ok = true;
         out.type = ti;
@@ -4383,6 +4422,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     {
         uint32_t sat;
         float keep, glareKeep;
+        uint32_t glintDir;
     };
     std::vector<KeepEntry> keepEntries;
     meshDrawn.clear();
@@ -4396,7 +4436,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         types.push_back(r.type);
         instEcef.push_back(r.satEcef);
         instSat.push_back(jobs[i].sat);
-        keepEntries.push_back({(uint32_t)jobs[i].sat, r.keep, r.glareKeep});
+        keepEntries.push_back({(uint32_t)jobs[i].sat, r.keep, r.glareKeep, r.glintDir});
         meshDrawn.push_back(r.drawn);
         // The nearest drawn mesh, for the glare's proximity size: glare_find.comp's glint records have
         // no room for a range each (see meshGlareRangeM in the header), and a mesh on screen at all
@@ -4449,7 +4489,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
             uint32_t bits, gbits;
             memcpy(&bits, &keepEntries[i].keep, sizeof(bits));
             memcpy(&gbits, &keepEntries[i].glareKeep, sizeof(gbits));
-            kl->entries[i] = glm::uvec4(keepEntries[i].sat, bits, gbits, 0u);
+            kl->entries[i] = glm::uvec4(keepEntries[i].sat, bits, gbits, keepEntries[i].glintDir);
         }
     }
 

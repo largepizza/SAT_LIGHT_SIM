@@ -488,6 +488,9 @@ double evalSatLobes(const std::vector<GpuSatLobe> &lobes, const std::vector<Atti
 // Same, with every group POSED (evalGroupPoses): `s` and `o` are in the poses' world frame. This is
 // the lobe loop of sat_orbit.comp's modelIntensity() — lobe normal = R_group · B_root · normalT. When
 // `dominant` is given it receives the index of the brightest lobe (-1 if none is lit).
+// Lobe `li`'s normal in the world frame the poses are in.
+glm::dvec3 satLobeNormalPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
+                              const std::vector<GroupPose> &poses, int li);
 double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                          const std::vector<GroupPose> &poses, glm::dvec3 s, glm::dvec3 o, double sourceAlpha2,
                          int *dominant = nullptr, const SatOcclusion *occ = nullptr, bool occludeSource = true);

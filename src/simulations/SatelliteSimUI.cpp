@@ -5024,6 +5024,8 @@ void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
         // Review 21: the waves reached only 3-8 km (a fixed fade) and their octaves dropped out at 2 pixel footprints:
         // the sea went to a mirror close in. The range and the filter's sharpness (lower = finer octaves kept longer).
         {"Sea wave range (km)", &oceanWaveRangeKm, 5.0f, 200.0f, 1.0f, "%.0f", 237},
+        // Review 28: how much of the range the waves fade out over (1 = from the observer out; 0.4 = the last 40%).
+        {"Sea wave range fade", &oceanWaveRangeFade, 0.05f, 1.0f, 0.05f, "%.2f", 257},
         {"Sea wave sharpness", &oceanWaveSharpness, 0.1f, 1.0f, 0.05f, "%.2f", 243},
         // Review 24: the far sea's resolvable ripple (columns of light instead of a mirror past the waves) and the
         // wave field's warp (higher = the ridges meander more, and stretch in places).
@@ -7094,6 +7096,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         oceanWaveSharpness = std::clamp(c.value("ocean_wave_sharpness", oceanWaveSharpness), 0.1f, 1.0f);
         oceanFarRipple = c.value("ocean_far_ripple", oceanFarRipple);
         oceanFarRippleSize = c.value("ocean_far_ripple_size", oceanFarRippleSize);
+        oceanWaveRangeFade = std::clamp(c.value("ocean_wave_range_fade", oceanWaveRangeFade), 0.05f, 1.0f);
         oceanWarp = c.value("ocean_warp", oceanWarp);
         oceanWarpDetail = c.value("ocean_warp_detail", oceanWarpDetail);
         oceanGlintMinFlux = c.value("ocean_glint_min_flux", oceanGlintMinFlux);
@@ -7368,6 +7371,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ocean_wave_sharpness", oceanWaveSharpness},
         {"ocean_far_ripple", oceanFarRipple},
         {"ocean_far_ripple_size", oceanFarRippleSize},
+        {"ocean_wave_range_fade", oceanWaveRangeFade},
         {"ocean_warp", oceanWarp},
         {"ocean_warp_detail", oceanWarpDetail},
         {"ocean_glint_min_flux", oceanGlintMinFlux},

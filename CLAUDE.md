@@ -1349,6 +1349,19 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   took a different offset as the incoming and the outgoing one (`seaRippleLevel(k)` is now one function of k), and the
   mix of two independent levels dipped to 0.71 contrast mid-way (renormalised). "Far sea ripple size (px)" (slot 256,
   `seaTune.w`, default 5): the cell in along-view footprints; lower = finer ripples, more shimmer.
+- **Review 28 (record 15):** **the sea's hard line at the wave range** was the reflection's lost-slope roughness
+  (`seaRough`), set only inside the range (blend < 0.99): past it the roughness fell from ~seaState / 2 to 0 in a pixel,
+  wherever the range was. It is computed from the footprint everywhere now; "Sea wave range fade" (slot 257,
+  `ocean_wave_range_fade` 0.4, UBO `cityLod2.z`) is the share of the range the waves fade over. **Mesh flares sit on
+  their glint:** a meshed satellite's sprite (point, bloom, the point-like glare) is placed at the Sun's image in its
+  dominant lobe (d = s - 2 (s.n) n from the camera, clamped to the lobe's half-side, weighted by its specular share;
+  CPU double, `GpuMeshKeepList` entry w, octahedral), not its centre, so the flare no longer jumps when the mesh's own
+  glints take the glare (12-36 px). Benchmark: Reflect Orbital #2700 from Fairbanks — the observer is 1.26 deg off its
+  beam axis (it sees the mirror lobe's GGX tail), so up close the Sun's image is a FIXED point in the sky 1.26 deg from
+  the satellite and the mirror grows past it (the "drift" is the optics; with time running it moves as the mirror
+  tracks its site). The environment probes are not involved (the Sun glint is analytic; sharp reflections are per
+  frame). The GPU-parity log's mismatches at ~170 m are the GPU's float satellite position (0.5 m = 0.17 deg there);
+  0.02 mag at 6 km.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -1364,7 +1377,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
-- The Clouds tab's slider slots: `kCloudSliderSlots` (257 since review 27: 256 far sea ripple size; 256 since review 24: 248-250 far sea ripple, sea warp x2, 251-255 far cloud layer tunables; 248 since review 22: 244-245 cumulus lobes, 246 fast-flight LOD, 247 fovea radius; 221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
+- The Clouds tab's slider slots: `kCloudSliderSlots` (258 since review 28: 257 sea wave range fade; 257 since review 27: 256 far sea ripple size; 256 since review 24: 248-250 far sea ripple, sea warp x2, 251-255 far cloud layer tunables; 248 since review 22: 244-245 cumulus lobes, 246 fast-flight LOD, 247 fovea radius; 221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
   `cloudBufs` (212 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
   moving, ice fog x2, sprite start; 207-209 Cb head lobes, drop distance, snow wind; 210 move speed (Controls tab), 211 erosion size); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive

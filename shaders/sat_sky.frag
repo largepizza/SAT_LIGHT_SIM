@@ -4572,10 +4572,16 @@ void main() {
             float seaRough = 0.0;
             float waveCrest = -1.0;        // the wave height here / its maximum (whitecaps), -1 = unresolved
             float waveBlend = 1.0;
+            // Review 28: the footprint's lost-slope roughness is computed whatever the wave range. It was set only inside
+            // the range (blend < 0.99), so past it the reflection's roughness fell from ~seaState / 2 to 0 in one pixel:
+            // a sharp line on the sea at the wave range, wherever the range was set.
+            float seaFootW = pixAngle * dist / max(abs(dot(dir, surfUp)), 0.02) * cloud.oceanWaveFootK;
+            seaRough = clamp(log2(seaFootW / 2.0) / 3.0, 0.0, 1.0) * clamp(seaState, 0.25, 2.0) / 2.0 * altFadeW;
             if (altFadeW > 0.01) {
                 // Review 21: out to "Sea wave range (km)" (was a fixed 3-8 km: the sea went to a mirror close in; the
                 // footprint filter below is what removes the octaves a pixel cannot resolve).
-                float distFade = smoothstep(0.6 * cloud.oceanWaveRangeM, cloud.oceanWaveRangeM, dist);
+                // Review 28: the fade spans the last "Sea wave range fade" of the range (cityLod2.z, default 0.4 = 0.6x).
+                float distFade = smoothstep((1.0 - cloud.cityLod2.z) * cloud.oceanWaveRangeM, cloud.oceanWaveRangeM, dist);
                 float blend    = max(distFade, 1.0 - altFadeW);  // 0 = full detail, 1 = flat
                 waveBlend = blend;
                 if (blend < 0.99) {
@@ -4583,13 +4589,12 @@ void main() {
                     // which is where the aliasing is: crests and troughs alternate along the line of sight).
                     // x "Sea wave sharpness" (review 21; 1 = review 14's filter): an octave fades as its cell nears two of
                     // these footprints — at 1 the waves went flat a few km out; the sky TAA averages what is kept.
-                    gSeaFootM = pixAngle * dist / max(abs(dot(dir, surfUp)), 0.02) * cloud.oceanWaveFootK;
+                    gSeaFootM = seaFootW;
                     float eps = max(max(0.5, dist * 0.0008), 0.5 * gSeaFootM);
                     float n0  = seaMapDetail(posM,                    pHeight, seaTime);
                     waveCrest = (pHeight - n0) / (kSeaHeight * gSeaAmp * 2.56);
                     float nX  = seaMapDetail(posM + vec2(eps, 0.0),  pHeight, seaTime) - n0;
                     float nY  = seaMapDetail(posM + vec2(0.0,  eps), pHeight, seaTime) - n0;
-                    seaRough  = clamp(log2(gSeaFootM / 2.0) / 3.0, 0.0, 1.0) * clamp(seaState, 0.25, 2.0) / 2.0;
                     gSeaFootM = 0.0;
                     waveN = normalize(vec3(nX, nY, 0.0) + eps * surfUp);
                     waveN = normalize(mix(waveN, surfUp, blend));
@@ -4680,7 +4685,8 @@ void main() {
             // distance is the smooth scattered-sky reflection (reflColor's atmosphere march) plus
             // the sun and moon glints below — those are broad specular lobes, physically correct
             // on any surface roughness, and are deliberately NOT gated by this.
-            float featureReflFade = altFade * (1.0 - smoothstep(0.6 * cloud.oceanWaveRangeM, cloud.oceanWaveRangeM, dist));
+            float featureReflFade = altFade * (1.0 - smoothstep((1.0 - cloud.cityLod2.z) * cloud.oceanWaveRangeM,
+                                                                cloud.oceanWaveRangeM, dist));
 
             vec3 dbgReflUV = vec3(0.0);   // debug view 50 (oceanshadow): r the cloud shadow on the sea, g the reflected clouds weight
             // Review 19: not gated on reflStr. Looking down (Fresnel ~0 within ~34 deg of the nadir) the march was
