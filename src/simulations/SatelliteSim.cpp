@@ -1585,6 +1585,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         glm::vec3 obsPosLocalForLights(0.0f, 0.0f, followActive ? (float)followRadiusM : obsEyeRadiusM());
 
         TopK groundTopK;
+        std::vector<SolarBeamHit> solarBeamHits; // landing points for the solar trackers (fillSolarSites)
 
         // 2026-08-09 (in-app finding: beams/ground spots visibly drag behind the observer while
         // moving): satENU/targetENU/reflectDirENU in reflectBeamsBuf are true East/North/Up
@@ -1860,6 +1861,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
             float intensity = beamsIn[s].intensity;
             float targetDistM = glm::length(tE);
+            // The ground the beam lands on: its target's terrain radius (2026-10-02), not the sea-level
+            // sphere — a beam arriving at 20 deg on a site 1.7 km up (Villanueva) landed ~5 km past it.
+            // The target radius carries a 75-m "above ground" margin (computeReflectorTargetElevationRadius).
+            const uint32_t tIdx = beamsIn[s].targetIdx;
+            const float groundR = (tIdx < (uint32_t)reflectorTargetCount)
+                                      ? std::max(reflectorTargetsRadiusM[tIdx] - 75.0f, kEarthRadius)
+                                      : kEarthRadius;
             glm::vec3 rDir = rebase(beamsIn[s].reflectDirENU);
 
             // Beam-site hum (ambience): this beam's share of the concentration around the listener.
@@ -1931,7 +1939,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                     glm::vec3 satPosLocalGB = obsPosLocalForLights + sE;
                     float bGB = glm::dot(satPosLocalGB, rDir);
                     float roLenGB = glm::length(satPosLocalGB);
-                    float cGB = (roLenGB - kEarthRadius) * (roLenGB + kEarthRadius);
+                    float cGB = (roLenGB - groundR) * (roLenGB + groundR);
                     float discGB = bGB * bGB - cGB;
                     float tHitGB = (discGB >= 0.0f) ? (-bGB - std::sqrt(discGB)) : -1.0f;
 
@@ -1947,6 +1955,20 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                         // The spot is a disk now (sat_sky.frag): nothing past its soft edge.
                         gb.cutoffSq = (footprintR * 1.15f) * (footprintR * 1.15f);
                         gb.weight = intensity * rangeFade * elevFade * shadowAtten;
+                        // Ground -> satellite (the beam's light comes FROM there), octahedral in two
+                        // snorm16s: the solar panels' specular lobe needs it (sat_sky.frag).
+                        glm::vec3 toSat = -rDir;
+                        glm::vec2 oct = glm::vec2(toSat.x, toSat.y) /
+                                        (std::fabs(toSat.x) + std::fabs(toSat.y) + std::fabs(toSat.z));
+                        if (toSat.z < 0.0f)
+                            oct = (1.0f - glm::abs(glm::vec2(oct.y, oct.x))) *
+                                  glm::vec2(oct.x >= 0.0f ? 1.0f : -1.0f, oct.y >= 0.0f ? 1.0f : -1.0f);
+                        auto snorm16 = [](float v)
+                        { return (uint32_t)(uint16_t)(int16_t)std::lround(glm::clamp(v, -1.0f, 1.0f) * 32767.0f); };
+                        gb.dirOct = snorm16(oct.x) | (snorm16(oct.y) << 16);
+                        if (gb.weight > 0.0f)
+                            solarBeamHits.push_back({hitENU + glm::vec3(0.0f, 0.0f, obsPosLocalForLights.z - kEarthRadius),
+                                                     toSat, gb.weight});
                     }
                     // else: weight/cutoffSq stay 0, so the shader's own reject drops it. This is
                     // the same outcome as the shader's old `continue` on those conditions —
@@ -1962,7 +1984,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 glm::vec3 satPosLocal = obsPosLocalForLights + sE;
                 float b = glm::dot(satPosLocal, rDir);
                 float roLen = glm::length(satPosLocal);
-                float c = (roLen - kEarthRadius) * (roLen + kEarthRadius);
+                float c = (roLen - groundR) * (roLen + groundR);
                 float disc = b * b - c;
                 if (disc >= 0.0f)
                 {
@@ -2153,6 +2175,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         lastClusterLightCount = easeAndEmit(trackedClusters, kMaxClusterCloudLights);
         lastIndividualLightCount = easeAndEmit(trackedIndividuals, kMaxIndividualCloudLights);
 
+        fillSolarSites(groundBeams, solarBeamHits, dt);
         std::memcpy(groundBeamsMapped, &groundBeams, sizeof(GpuGroundBeams));
         std::memcpy(beamCloudLightMapped, &cloudLights, sizeof(GpuBeamCloudLights));
 
@@ -14142,6 +14165,45 @@ void SatelliteSim::loadReflectorTargets()
         float cosLat = cosf(latRad);
         reflectorTargetsECEF[count] = glm::vec3(cosLat * cosf(lonRad), cosLat * sinf(lonRad), sinf(latRad));
         computeReflectorTargetElevationRadius(count);
+        reflectorLatDeg[count] = jt.value("lat", 0.0);
+        reflectorLonDeg[count] = jt.value("lon", 0.0);
+        // What the site is for (2026-10-02). Files without "kind" (older or modded) are inferred from
+        // the name and capacity, the way the shipped list was labelled before the field existed.
+        {
+            const std::string name = jt.value("name", std::string());
+            const float capMw = jt.value("capacity_mw", 0.0f);
+            std::string kind = jt.value("kind", std::string());
+            if (kind.empty())
+            {
+                if (jt.value("observer_spawn", false)) kind = "none";
+                else if (name.find("polar illumination") != std::string::npos) kind = "daylight";
+                else if (name.find("agrivoltaic") != std::string::npos) kind = "agriculture";
+                else kind = capMw > 0.0f ? "solar" : "none";
+            }
+            ReflectorKind k = ReflectorKind::None;
+            if (kind == "solar") k = ReflectorKind::Solar;
+            else if (kind == "agriculture") k = ReflectorKind::Agriculture;
+            else if (kind == "daylight") k = ReflectorKind::Daylight;
+            else if (kind != "none")
+                fprintf(stderr, "[SatelliteSim] reflector target '%s': unknown kind '%s' (solar, agriculture, "
+                                "daylight, none) - treated as none.\n", name.c_str(), kind.c_str());
+            reflectorKind[count] = k;
+            // A PV park: ~2.2 ha per MW (utility trackers and fixed tilt alike; Bhadla's 2245 MW is ~56 km2),
+            // at least 1 km2 so a solar site with no capacity still shows.
+            reflectorSolarAreaM2[count] = jt.contains("area_km2")
+                                              ? jt.value("area_km2", 1.0f) * 1e6f
+                                              : std::max(capMw * 2.2e4f, 1e6f);
+            // Single-axis trackers dominate utility PV in the Americas, India and Australia; fixed tilt
+            // facing the equator elsewhere (the Gulf, China, Europe, Africa). "mount" overrides.
+            const double lon = reflectorLonDeg[count], lat = reflectorLatDeg[count];
+            bool tracker = lon < -30.0 || (lon > 68.0 && lon < 90.0 && lat < 30.0) ||
+                           (lon > 110.0 && lat < -10.0);
+            const std::string mount = jt.value("mount", std::string());
+            if (mount == "tracker") tracker = true;
+            else if (mount == "fixed") tracker = false;
+            reflectorSolarTracker[count] = tracker;
+            reflectorTrackerAngle[count] = 0.0f;
+        }
         if (jt.value("observer_spawn", false) && reflectorObserverSpawnIdx < 0)
             reflectorObserverSpawnIdx = count;
         ++count;
@@ -14159,6 +14221,121 @@ void SatelliteSim::loadReflectorTargets()
     fprintf(stderr, "[SatelliteSim] Loaded %d reflector targets from reflector_targets.json%s.\n",
             reflectorTargetCount,
             reflectorObserverSpawnIdx >= 0 ? " (observer-spawn pin found)" : " (no observer-spawn pin!)");
+}
+
+// ─── fillSolarSites ───────────────────────────────────────────────────────────
+// The solar reflector targets nearest the observer, drawn by sat_sky.frag as PV arrays (GpuSolarSite).
+// Everything is solved here in double and handed over in the main observer's ENU frame, relative to its
+// SEA-LEVEL point, so the shader's difference to a terrain hit (terrainQ, the same frame) is small and
+// float-exact: the panel rows are world-fixed to a few mm at any distance.
+//
+// Trackers turn about their N-S row axis toward the light: the Sun while it is up at the site, else the
+// strongest beam landing on the park, else they stow flat. The angle eases (~8 s) so a beam swap or
+// sunrise turns the rows rather than snapping them; fixed-tilt rows face the equator at ~0.8 x latitude.
+void SatelliteSim::fillSolarSites(GpuGroundBeams &gb, const std::vector<SolarBeamHit> &hits, float dt)
+{
+    gb.solarCount = 0;
+    if (!solarArraysEnabled || reflectorTargetCount <= 0)
+        return;
+
+    // The observer's ENU basis exactly as sat_sky.frag builds it (enuX = normalize(cross(+Z, up))).
+    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    const glm::dvec3 ex = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), up));
+    const glm::dvec3 ey = glm::cross(up, ex);
+    auto toEnu = [&](const glm::dvec3 &v)
+    { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, up)); };
+    const double R = (double)kEarthRadius;
+    const glm::dvec3 sunEnu = glm::dvec3(glm::vec3(sunDirENU));
+
+    // Nearest solar sites within reach (a park is a few km: past ~2500 km it is below a pixel anyway).
+    struct Cand { int ti; double d2; };
+    Cand best[kMaxSolarSites];
+    int nBest = 0;
+    for (int ti = 0; ti < reflectorTargetCount; ++ti)
+    {
+        if (reflectorKind[ti] != ReflectorKind::Solar)
+            continue;
+        const double la = glm::radians(reflectorLatDeg[ti]), lo = glm::radians(reflectorLonDeg[ti]);
+        const glm::dvec3 sd(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la));
+        const double d2 = glm::dot(sd - up, sd - up) * R * R;
+        if (d2 > 2500e3 * 2500e3)
+            continue;
+        int at;
+        if (nBest < kMaxSolarSites)
+            at = nBest++;
+        else if (d2 < best[kMaxSolarSites - 1].d2)
+            at = kMaxSolarSites - 1;
+        else
+            continue;
+        best[at] = {ti, d2};
+        for (int k = at; k > 0 && best[k].d2 < best[k - 1].d2; --k)
+            std::swap(best[k], best[k - 1]);
+    }
+
+    const float ease = 1.0f - std::exp(-std::max(dt, 0.0f) / 8.0f);
+    for (int k = 0; k < nBest; ++k)
+    {
+        const int ti = best[k].ti;
+        const double la = glm::radians(reflectorLatDeg[ti]), lo = glm::radians(reflectorLonDeg[ti]);
+        const glm::dvec3 sd(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la));
+        const glm::dvec3 sE = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), sd)); // site east (ECEF)
+        const glm::dvec3 sN = glm::cross(sd, sE);
+        const glm::dvec3 uE = toEnu(sE), uN = toEnu(sN), uU = toEnu(sd);
+        const glm::dvec3 c = toEnu(sd) * R - glm::dvec3(0.0, 0.0, R); // from the observer's sea-level point
+
+        const double area = std::max((double)reflectorSolarAreaM2[ti], 1e5);
+        const double fill = 0.62;                       // blocks occupied inside the outline (roads, gaps)
+        const double rad = std::sqrt(area / (glm::pi<double>() * fill)) * 1.1;
+        const bool tracker = reflectorSolarTracker[ti];
+
+        glm::dvec3 n;
+        if (tracker)
+        {
+            // The light to follow, in the site frame (east, up): the Sun, else the strongest beam on the park.
+            double lx = 0.0, lz = 1.0;
+            const double sunUp = glm::dot(sunEnu, uU);
+            if (sunUp > 0.03)
+            {
+                lx = glm::dot(sunEnu, uE);
+                lz = sunUp;
+            }
+            else
+            {
+                float bw = 0.0f;
+                for (const SolarBeamHit &h : hits)
+                {
+                    const glm::dvec3 d = glm::dvec3(h.hitQ) - c;
+                    if (glm::dot(d, d) > (1.3 * rad) * (1.3 * rad) || h.weight <= bw)
+                        continue;
+                    bw = h.weight;
+                    lx = glm::dot(glm::dvec3(h.dirToSat), uE);
+                    lz = glm::dot(glm::dvec3(h.dirToSat), uU);
+                }
+            }
+            const float target = (float)glm::clamp(std::atan2(lx, std::max(lz, 1e-3)), -0.96, 0.96); // +-55 deg
+            float &ang = reflectorTrackerAngle[ti];
+            ang += (target - ang) * ease;
+            n = uE * (double)std::sin(ang) + uU * (double)std::cos(ang);
+        }
+        else
+        {
+            // Fixed tilt toward the equator (south in the north), ~0.8 x latitude, 10-35 deg.
+            const double tilt = glm::radians(glm::clamp(std::fabs(reflectorLatDeg[ti]) * 0.8, 10.0, 35.0));
+            const double eq = reflectorLatDeg[ti] >= 0.0 ? -1.0 : 1.0;
+            n = uN * (eq * std::sin(tilt)) + uU * std::cos(tilt);
+        }
+
+        GpuSolarSite &o = gb.solar[gb.solarCount++];
+        const double pitch = tracker ? 5.8 : 8.0;        // row spacing (m): ground cover ratio ~0.4 / 0.5
+        const double width = tracker ? 2.4 : 4.0;        // panel width across the row (m): 1P tracker / 2P table
+        const glm::dvec3 across = tracker ? uE : uN, along = tracker ? uN : uE;
+        o.centerQ = glm::vec4(glm::vec3(c), (float)rad);
+        o.across = glm::vec4(glm::vec3(across), (float)((ti * 2654435761u) & 0xFFFFu));
+        o.along = glm::vec4(glm::vec3(along), (float)pitch);
+        o.normal = glm::vec4(glm::vec3(n), (float)width);
+        o.params = glm::vec4((float)fill, tracker ? 1.0f : 0.0f,
+                             (float)(width * glm::dot(n, uU)), tracker ? 92.0f : 32.0f);
+    }
 }
 
 // ─── updatePositions ──────────────────────────────────────────────────────────

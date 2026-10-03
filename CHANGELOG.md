@@ -8,6 +8,11 @@
 > `data/benchmarks/KNOWN_RESIDUALS.md`.
 
 ### Added
+- **Solar parks on the ground.** Reflector targets now say what they are for (`"kind"`: solar, agriculture,
+  daylight). Solar sites are drawn as PV parks sized by their capacity: plots of panel blocks and service
+  roads, rows of single-axis trackers (the Americas, India, Australia) or fixed-tilt tables facing the
+  equator, dark from orbit. The glass reflects the sky, glints the Sun, and at night mirrors the Reflect
+  beams: trackers turn toward the beams, and from the right angle the park shows a glitter band.
 - **Cinematics.** A camera-path editor (the film button in the time bar): shots of keyframes played as smooth
   splines, eased in and out, with their own sim-time rate, stored look (clouds, lighting, constellations, render
   settings) and an optional ride-along with a satellite; play them, scrub them, save and load them, and export
@@ -159,6 +164,8 @@
   scrollable instead of just ending at the window edge.
 
 ### Fixed
+- Reflect beams on high ground light the site itself: the ground spot was traced to sea level and landed
+  kilometres past a mountain-top or plateau site.
 - **Clouds stay the same clouds as you climb.** Up close and from orbit the low clouds are placed by one rule (the cells
   and the weather map, with the satellite imagery at a fixed share, "Imagery share"); review 18 switched to a different
   placement as the pixels grew, and climbing over one spot the clouds were replaced between ~35 and 450 km. Cloud

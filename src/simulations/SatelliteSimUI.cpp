@@ -7066,6 +7066,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         terrainSkyLight = c.value("terrain_sky_light", terrainSkyLight);
         terrainNightSkyLight = c.value("terrain_night_sky_light", terrainNightSkyLight);
         terrainTextureStrength = c.value("terrain_texture_strength", terrainTextureStrength);
+        solarArraysEnabled = c.value("solar_arrays", solarArraysEnabled);
         cityLightsStrength = c.value("city_lights_strength", cityLightsStrength);
         cityRoadsStrength = c.value("city_roads_strength", cityRoadsStrength);
         citySpriteGain = c.value("city_sprite_gain", citySpriteGain);
@@ -7334,6 +7335,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"terrain_sky_light", terrainSkyLight},
         {"terrain_night_sky_light", terrainNightSkyLight},
         {"terrain_texture_strength", terrainTextureStrength},
+        {"solar_arrays", solarArraysEnabled},
         {"city_lights_strength", cityLightsStrength},
         {"city_roads_strength", cityRoadsStrength},
         {"city_sprite_gain", citySpriteGain},

@@ -1943,7 +1943,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                                        "terms", "direct", "skyamb", "night", "moon", "aurora", "gates", "factors",
                                        "skyambraw", "suntint", "aofactors", "day", "nightmap", "geodot", "sunvis",
                                        // terrain v2: the night sky + moonlit sky on the albedo; the night map with its base removed
-                                       "nightsky", "citylights"};
+                                       "nightsky", "citylights",
+                                       // solar parks (R panel coverage, G graded ground, B panel normal east)
+                                       "solar"};
         const int viewCount = (int)(sizeof(kViews) / sizeof(kViews[0]));
         const std::string v = lower(pos(0) == "terrain" ? pos(1) : pos(0));
         int idx = -1;
@@ -1961,7 +1963,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (idx < 0 || (idx >= viewCount && (idx < 40 || idx > 50)))
             fail("debugview: off | normals | detail | steps | albedo | shadow | rough | elevzebra | distzebra | erosion | "
                  "terms | direct | skyamb | night | moon | aurora | gates | factors | skyambraw | suntint | aofactors | "
-                 "day | nightmap | geodot | sunvis | nightsky | citylights "
+                 "day | nightmap | geodot | sunvis | nightsky | citylights | solar "
                  "(steps: blue = few march steps .. red = the budget; rough: R roughness, G rock, B snow; "
                  "zebras: stripes every 25 m of elevation / 100 m of distance; terms/direct/skyamb/night/moon/aurora: "
                  "the terrain light term by term as linear radiance x100, so a capture pixel reads the number; "

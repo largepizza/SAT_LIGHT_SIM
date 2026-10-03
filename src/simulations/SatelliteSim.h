@@ -1208,16 +1208,36 @@ struct GpuGroundBeam
                                   // by the shader. Kept so eviction ranks on exactly the same
                                   // quantity it did before this rework (see the top-K comment at
                                   // the insertion site for why ranking stability matters).
-    float pad0;
+    uint32_t dirOct;              // ground -> satellite unit direction (observer ENU), octahedral,
+                                  // packSnorm2x16 — the solar arrays' specular lobe (was a pad)
 };
 static_assert(sizeof(GpuGroundBeam) == 32, "GpuGroundBeam layout mismatch");
+// Solar PV parks drawn on the terrain (2026-10-02): the reflector targets of kind "solar" nearest the
+// observer, appended to the ground-beam buffer (sat_sky.frag is at its sampled-image floor and carries
+// many SSBOs already, so no new binding). Everything is in the MAIN observer's ENU frame, solved on the
+// CPU in double: `centerQ` is the site centre relative to the observer's SEA-LEVEL point (the frame of
+// sat_sky.frag's terrainQ, so the difference is small and float-exact), the axes are the site's own
+// tangent axes. Hand-mirrored as SolarSite in sat_sky.frag.
+static constexpr int kMaxSolarSites = 8;
+struct GpuSolarSite
+{
+    glm::vec4 centerQ;  // xyz site centre (observer ENU, from the observer's sea-level point), w = outer radius (m)
+    glm::vec4 across;   // xyz the row-spacing axis (east for trackers, north for fixed tilt), w = seed
+    glm::vec4 along;    // xyz the row axis, w = row pitch (m)
+    glm::vec4 normal;   // xyz panel normal (observer ENU, this frame's tracker angle), w = panel width (m)
+    glm::vec4 params;   // x = block fill (area / disk), y = 1 tracker / 0 fixed, z = projected panel width (m), w = segment length (m)
+};
+static_assert(sizeof(GpuSolarSite) == 80, "GpuSolarSite layout mismatch");
 struct GpuGroundBeams
 {
     uint32_t count;
-    uint32_t pad0, pad1, pad2;
+    uint32_t solarCount;  // GpuSolarSite entries in `solar` (was pad0)
+    uint32_t pad1, pad2;
     GpuGroundBeam entries[kMaxGroundBeams];
+    GpuSolarSite solar[kMaxSolarSites];
 };
-static_assert(sizeof(GpuGroundBeams) == 16 + kMaxGroundBeams * 32, "GpuGroundBeams layout mismatch");
+static_assert(sizeof(GpuGroundBeams) == 16 + kMaxGroundBeams * 32 + kMaxSolarSites * 80, "GpuGroundBeams layout mismatch");
+static_assert(offsetof(GpuGroundBeams, solar) == 16 + kMaxGroundBeams * 32, "GpuGroundBeams layout mismatch");
 
 // ── Per-layer cloud shell descriptor (std140: 32 bytes, 2 × vec4) ─────────────
 // Each layer is an infinitely thin sphere-shell sample of earthCloudsTex.
@@ -4439,6 +4459,15 @@ private:
     glm::vec3 reflectorSiteEnuX[kNumReflectorTargets]{};
     glm::vec3 reflectorSiteEnuY[kNumReflectorTargets]{};
     glm::vec3 reflectorSiteEnuZ[kNumReflectorTargets]{};
+    // What each target is FOR (2026-10-02, reflector_targets.json "kind"): only Solar is drawn on the
+    // terrain (a PV array, see GpuSolarSite); Agriculture and Daylight (polar towns) are plain ground.
+    enum class ReflectorKind : uint8_t { None, Solar, Agriculture, Daylight };
+    ReflectorKind reflectorKind[kNumReflectorTargets]{};
+    double reflectorLatDeg[kNumReflectorTargets]{}, reflectorLonDeg[kNumReflectorTargets]{};
+    float  reflectorSolarAreaM2[kNumReflectorTargets]{};   // panel-park area (capacity x 2.2 ha/MW, or area_km2)
+    bool   reflectorSolarTracker[kNumReflectorTargets]{};  // single-axis N-S trackers, else fixed tilt
+    float  reflectorTrackerAngle[kNumReflectorTargets]{};  // eased tracker angle (rad, + = toward east)
+    bool   solarArraysEnabled = true;                      // settings: terrain.solar_arrays
 
     // Mirror slew rate for TargetedReflector: maximum degrees the mirror normal
     // may rotate per real second.  Prevents instant snapping when the nearest
@@ -4803,6 +4832,11 @@ private:
     // inline code it replaced (needs earthElevCpu, populated by createGlowResources() earlier in
     // init()). Sets reflectorTargetCount and reflectorObserverSpawnIdx.
     void loadReflectorTargets();
+    // Fills groundBeams.solar from the solar targets nearest the observer and eases each one's tracker
+    // angle toward the Sun, or at night the strongest beam landing on it (dirs: ground -> satellite,
+    // observer ENU; hits: landing points relative to the observer's sea-level point; w: weights).
+    struct SolarBeamHit { glm::vec3 hitQ, dirToSat; float weight; };
+    void fillSolarSites(GpuGroundBeams &gb, const std::vector<SolarBeamHit> &hits, float dt);
     // Fallback used only when reflector_targets.json is absent/unusable: kNumReflectorTargets-1
     // uniformly-random lat/lon points, plus a REAL fixed entry at index 0 for the observer spawn
     // point (67S 67W) — fixes the same "index 0 left as a degenerate zero-vector" bug the JSON

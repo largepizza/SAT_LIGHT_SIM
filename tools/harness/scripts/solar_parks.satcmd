@@ -1,0 +1,86 @@
+# Solar PV parks on the terrain (reflector targets of kind "solar", 2026-10-02): Topaz by day close up,
+# from aircraft height and from orbit; the debug view; cost A/B (clouds.solar_arrays); then a night view
+# with Reflect beams landing on a park (beams go) for the panels' glint.
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds_v2.dust_amount 0
+time set 2036-06-21T12:00:00Z
+time pause
+# Topaz from 3 km south, 800 m up, morning Sun behind-left
+observer lat=35.353 lon=-120.05 agl=800
+time sun 35 rising
+camera az=0 el=-14 fov=50
+wait settle
+capture s_topaz_800
+debugview solar
+wait 2
+capture s_topaz_800_dbg
+debugview off
+perf frames=60 name=solar_on
+set clouds.solar_arrays false
+wait settle
+capture s_topaz_800_off
+perf frames=60 name=solar_off
+set clouds.solar_arrays true
+# Close: rows resolved, 60 m up at the park's edge
+observer lat=35.362 lon=-120.05 agl=60
+camera az=0 el=-12 fov=50
+wait settle
+capture s_topaz_60
+# Low Sun toward the camera: the glass's sun glint / sky reflection
+time sun 8 setting
+camera az=270 el=-6 fov=50
+wait settle
+capture s_topaz_60_glint
+# Aircraft and orbit
+observer lat=35.25 lon=-120.05 agl=12000
+time sun 40 rising
+camera az=0 el=-35 fov=40
+wait settle
+capture s_topaz_12km
+observer lat=35.38 lon=-120.05 alt=420000
+camera az=0 el=-90 fov=8
+wait settle
+wait 30
+capture s_topaz_orbit
+debugview solar
+wait 2
+capture s_topaz_orbit_dbg
+debugview off
+# Bhadla (fixed tilt? no: India = trackers), 50 km2, from 6 km
+observer lat=27.45 lon=71.915 agl=6000
+time sun 40 rising
+camera az=0 el=-30 fov=50
+wait settle
+capture s_bhadla_6km
+# Night: beams converge on sites near the dusk/dawn terminator (from altitude the list covers a wide
+# area). At 2036-06-21 dawn the busiest is Villanueva (Mexico, 1.7 km up): its trackers stow toward the
+# beams, and the glass mirrors the ring of beam satellites into a glitter band seen from about az 67,
+# el 56 off the park (the beam comes from az ~103, el ~11).
+observer lat=35.38 lon=-120.05 alt=600000
+time sun -10 rising
+wait settle
+beams list
+beams go rank=1 dist_km=12 bearing=200 agl=3000 look=site
+wait settle
+capture s_night_spot
+beams go rank=1 dist_km=3 bearing=67 agl=4500 look=site
+camera fov=60
+wait settle
+capture s_night_glint
+debugview solar
+wait 2
+capture s_night_glint_dbg
+debugview off
+# Rooftop PV: Roadrunner's outline over Odessa, TX (the user's 2026-10-03 snapshot): no ground rows in
+# the city, panels on the city pattern's roofs.
+observer lat=31.835 lon=-102.36 agl=400
+time sun 35 rising
+camera az=20 el=-35 fov=50
+wait settle
+capture s_roof400
+observer lat=31.845 lon=-102.352 agl=120
+camera az=20 el=-45 fov=50
+wait settle
+capture s_roof120

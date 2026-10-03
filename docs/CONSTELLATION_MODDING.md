@@ -24,7 +24,7 @@ schema is authoritative about what is allowed.**
 | `constellations.json` | next to the executable | source: `data/constellations.json`, copied by the build |
 | `constellations.schema.json` | next to the executable | source: `data/`, autocomplete + validation for the file above |
 | `satellite_models/<id>.json` | `<exe>/satellite_models/` | source: `data/satellite_models/`; loaded by a type's `"model": "<id>"` |
-| `reflector_targets.json` | next to the executable | ground sites that a `sun_reflect_ground_site` mirror may aim at |
+| `reflector_targets.json` | next to the executable | ground sites that a `sun_reflect_ground_site` mirror may aim at. Each has a `"kind"`: `solar` (drawn on the terrain as a PV park: area from `capacity_mw`, or `"area_km2"`; `"mount": "tracker"\|"fixed"` overrides the regional default), `agriculture`, `daylight` or `none` |
 | `satellite_types_resolved.json` | **user data folder** | written on every launch: each loaded type in explicit form |
 | `data/custom/*.json` | source tree only | worked examples and stress rosters; not shipped |
 

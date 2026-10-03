@@ -2848,6 +2848,51 @@ radius are uploaded ONCE, at generation time, into `reflectorTargetsECEFBuf` (ho
 search. There is no per-frame CPU rotation step any more; `sat_orbit.comp` rotates ECEF→ECI itself,
 on demand, for whichever instant it needs (see below).
 
+### Target kinds and solar PV parks (2026-10-02)
+
+Every target carries a `"kind"`: `solar` (58 PV parks, Casa Grande included), `agriculture` (the two
+agrivoltaics points), `daylight` (the seven "polar illumination" towns) or `none` (the spawn pin);
+`reflectorKind[]`. A file without it is inferred from the name and `capacity_mw`, so old and modded
+lists still load. Only `solar` changes anything so far: the park is drawn on the terrain.
+- **Data:** area = `capacity_mw` x 2.2 ha/MW (or `"area_km2"`), mount = single-axis N-S trackers in the
+  Americas, India and Australia, fixed tilt facing the equator elsewhere (or `"mount"`). Ivanpah, Noor
+  Ouarzazate and Cerro Dominador carry `"tech": "csp"` and are still drawn as PV.
+- **CPU (`fillSolarSites`, end of the beam readback):** the 8 nearest solar sites within 2500 km, in
+  double, as `GpuSolarSite` (80 B) appended to `GpuGroundBeams` (`solarCount` = the old pad0) — no new
+  binding (`sat_sky.frag` is at its sampled-image floor and has many SSBOs). The centre is relative to
+  the observer's SEA-LEVEL point, the frame of `terrainQ`, so the shader's difference is float-exact and
+  the rows are world-fixed. Trackers turn toward the Sun while it is up at the site, else toward the
+  strongest beam landing on the park, else stow flat, eased over ~8 s, clamped +-55 deg.
+- **Shader (`solarSiteAt`, before the farm block, which gives way inside a park's plots):** plots of
+  4 x 4 blocks in or out of a wobbly outline, blocks of whole rows with 6-m roads, rows and segments as
+  exactly box-filtered pulse trains (`solarPulseCover`: no aliasing at any footprint, a dark patch from
+  orbit). Coverage is AS SEEN: a panel of width W tilted to n covers W |nz + nx dx/dz| of ground along the
+  view (viewed across the rows the panels hide the ground), and casts the same projection along the Sun
+  as shadow. Glass (`solarGlint`, Beckmann + Schlick F0 0.03 + Smith, the sea glint's form): sky
+  reflection and Sun glint in the terrain lighting; in the ground-spot loop each beam's light
+  (`GpuGroundBeam::dirOct`, the old pad0: ground -> satellite, octahedral snorm16) glints off the panels,
+  and the spot's diffuse light now follows the surface's brightness (`solarDiffK`; it was the same on
+  every surface). Seen from the mirror direction, each beam's glint lands on other rows, so the park
+  shows the ring of beam satellites as a glitter band. Per-row tilt jitter +-1.5 deg; unresolved, it
+  widens the lobe. Backs are a grey backsheet with no glass reflection. Debug view 27 (`debugview
+  solar`): R coverage, G park ground, B normal east. Setting `clouds.solar_arrays` (bool, no UI yet).
+  Cost within noise (harness `perf`, Topaz from 800 m). `scripts/solar_parks.satcmd`.
+- **Rooftop PV where a park overlaps a city (2026-10-03):** the site evaluation runs BEFORE the city
+  day pattern. With the city's presence `solarUrbanK` (cityLum, after the terrain limit), ground blocks
+  drop out block by block (a hash per block below urbanK) and the park's smooth radial density
+  (`radK`) x urbanK goes to the city pattern as `gCityPvK` (globals beside `gCityViewE`). `cityDayGrid`
+  then puts panels on its own roofs, per lot by hash: commercial / perimeter / slab roofs rows of tilted
+  panels at a 2.2-m pitch over most of the roof, houses one array on one slope, off-centre. It writes
+  `gCityPvCov` (footprint-filtered; expectation `kCityPvMean` x K once unresolved, so it holds to orbit)
+  plus a per-roof tilt jitter; after the farms the panels darken the albedo and join the park's glass
+  (normal ~15 deg toward the equator, +-8 deg per roof; a broad lobe when unresolved). Reference: the
+  user's Odessa snapshot (Roadrunner's coordinates sit on the city; the real plant is in Upton County).
+  Cost within noise there.
+- **Ground spots land on the target's ground (fixed the same day):** the CPU traced every beam to the
+  sea-level sphere, so a beam arriving at 11-20 deg on a site 1.7 km up (Villanueva) lit the ground ~5 km
+  past it. The ground spot and the cloud lights now intersect the sphere of the target's own radius
+  (`reflectorTargetsRadiusM` minus its 75-m margin). The sky shafts still end at R_EARTH.
+
 ### Per-satellite selection (GPU, sat_orbit.comp) — deterministic lock windows
 Target IDENTITY is chosen per fixed-width **sim-time window**
 (`SatOrbitPC::reflectorLockWindowS`, default 90s, settings-window "Target lock window (s)"), not by

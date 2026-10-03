@@ -138,12 +138,25 @@ struct GroundBeam {
     float cutoffSq;       // (footprintR * 1.1)^2 — the loop's first and cheapest reject (the spot is a disk)
     float weight;         // intensity * rangeFade * elevFade * shadowAtten
     float intensity;      // CPU-side top-K ranking only; deliberately unread here
-    float pad0;
+    uint  dirOct;         // ground -> satellite (observer ENU), octahedral snorm16 x2: the solar panels' glint
+};
+// Solar PV parks (2026-10-02, the reflector targets of kind "solar"): the nearest few, solved on the CPU
+// (SatelliteSim::fillSolarSites) in the observer's ENU frame from its SEA-LEVEL point, terrainQ's frame.
+// Must match GpuSolarSite in SatelliteSim.h exactly (hand-mirrored).
+#define SOLAR_SITE_MAX 8
+struct SolarSite {
+    vec4 centerQ;  // xyz site centre, w = outline radius (m)
+    vec4 across;   // xyz the row-spacing axis, w = seed
+    vec4 along;    // xyz the row axis, w = row pitch (m)
+    vec4 normal;   // xyz panel normal (this frame's tracker angle), w = panel width (m)
+    vec4 params;   // x = block fill, y = 1 tracker / 0 fixed, z = projected panel width (m), w = segment length (m)
 };
 layout(std430, set = 0, binding = 21) readonly buffer GroundBeamsBuf {
     uint        groundBeamCount;
-    uint        groundBeamPad0, groundBeamPad1, groundBeamPad2;
+    uint        solarSiteCount;
+    uint        groundBeamPad1, groundBeamPad2;
     GroundBeam  groundBeams[GROUND_BEAM_MAX];
+    SolarSite   solarSites[SOLAR_SITE_MAX];
 };
 
 // (binding 18 was cloudShadowTex, cloud_shadow.comp's 128x128 grid. That whole pass is gone —
@@ -758,6 +771,17 @@ const float kGlitP = 0.4;
 // screen at grazing angles — the "gigantic yellow blobs" of distant towns (user review 2, snapshot 3).
 vec3  gCityViewE  = vec3(0.0, 0.0, 1.0);
 float gCityFootX  = 1e9;
+// Rooftop PV (2026-10-03): where a solar park's outline overlaps a city, its panels go on the city's
+// roofs instead of in ground rows. The caller sets gCityPvK (the park's rooftop density at the pixel,
+// 0..1) before the day pattern; cityDayGrid writes the panels' share of the pixel (gCityPvCov, already
+// footprint-filtered: its expectation kCityPvMean x gCityPvK once the roofs are unresolved), a per-roof
+// tilt jitter (gCityPvJit, -1..1) and how resolved the roofs are (gCityPvRes).
+const float kCityPvMean = 0.12;   // panel share of the ground at full rooftop density (roofs ~0.35 x ~0.6 x ~0.55)
+float gCityPvK   = 0.0;
+float gCityPvCov = 0.0;
+vec2  gCityPvJit = vec2(0.0);
+float gCityPvRes = 0.0;
+float solarPulseCover(float x, float h, float P, float w);
 vec3 cityGlitterLevel(vec2 p2, ivec2 dAnc, int f, int k, float foot, float ledP, float twinkle, float pres) {
     float C   = 8.0 * float(1 << k);
     int   per = 512 >> k;
@@ -1142,6 +1166,34 @@ void cityDayGrid(CityGrid g, CityLayout L, float foot, float warm, out vec3 albO
     float tLot = smoothstep(0.25, 0.6, max(Fl.x, Fl.y));
     vec3  ground = mix(yard, crownC, canopy);
     vec3  lot  = mix(mix(ground, roofC, roofCov), lotMean, tLot);
+    // Rooftop PV (gCityPvK): commercial flat roofs mostly carry rows of tilted panels (~2.2-m pitch) over
+    // most of the roof; houses one array on part of the roof (one slope), off-centre. Per lot by hash, so
+    // the density shows as some roofs dark and some not; unresolved, its expectation (kCityPvMean x K).
+    if (gCityPvK > 0.0) {
+        vec3  ph   = tdRand3(ivec3(ivec2(bi * 4.0 + li), 7351 + L.f)) * 0.5 + 0.5;
+        float pLot = gCityPvK * (big || bMode != 0 ? 0.9 : 0.6);
+        float pv   = 0.0;
+        if (ph.x < pLot) {
+            vec2  lotM = vec2(g.sp) / nLot;                       // the lot's size (m)
+            vec2  rW   = 1.0 - 2.0 * mar;                         // the roof's size (lot units)
+            if (big || bMode != 0) {
+                float rows = solarPulseCover(lf.y * lotM.y, 0.5 * Fl.y * lotM.y, 2.2, 1.3);
+                pv = roofCov * rows * cityBoxCover(lf.x - 0.5 - off.x, 0.85 * rW.x, Fl.x)
+                               * cityBoxCover(lf.y - 0.5 - off.y, 0.85 * rW.y, Fl.y) / max(roofCov, 1e-3);
+                pv = min(pv, roofCov);
+            } else {
+                float side = ph.y < 0.5 ? -1.0 : 1.0;             // which slope of the roof
+                float w    = rW.y * (0.35 + 0.15 * ph.z);
+                pv = cityBoxCover(lf.x - 0.5 - off.x, 0.75 * rW.x, Fl.x)
+                   * cityBoxCover(lf.y - 0.5 - off.y - side * 0.25 * rW.y, w, Fl.y);
+                pv = min(pv, roofCov);
+            }
+            gCityPvJit = ph.yz * 2.0 - 1.0;
+        }
+        float pvMean = kCityPvMean * gCityPvK;
+        gCityPvRes = 1.0 - tLot;
+        gCityPvCov = mix(pv, pvMean, tLot);
+    }
     // Field blocks (low density): a crop, its own shade per block.
     float pField = cityFieldP(dens);
     vec3  fieldM = farmCropMean(0.5);
@@ -1166,6 +1218,10 @@ void cityDayGrid(CityGrid g, CityLayout L, float foot, float warm, out vec3 albO
     float tU = smoothstep(0.35 * coarse, 0.7 * coarse, Fu);
     albO  = mix(alb, mean, tU);
     meanO = mean;
+    if (gCityPvK > 0.0) {
+        gCityPvCov = mix(gCityPvCov * (1.0 - road), kCityPvMean * gCityPvK, tU);
+        gCityPvRes *= 1.0 - tU;
+    }
 }
 
 // The day albedo at the layout as a RATIO to the pattern's own mean (so it multiplies the day map and
@@ -1304,6 +1360,124 @@ float farmRows(vec2 lf, vec2 sz, float pitch, float foot) {
 //   PADDIES (monsoon Asia where the map is green): 120-260-m blocks of small bunded plots, a share of them
 //     flooded (the share varies by region: planting season).
 // It replaced a stretched Voronoi patchwork, which from the air read as pentagons, not fields.
+// ── Solar PV parks (2026-10-02) ─────────────────────────────────────────────────────────────────
+// The exact box-filtered coverage of a pulse train (pulses of width w centred on multiples of P) over
+// [x - h, x + h]: continuous at any footprint, so rows resolve close up and average to their ground
+// cover ratio from afar, with no aliasing in between.
+float solarPulseInt(float x, float P, float w) {
+    float k = floor(x / P + 0.5);
+    return k * w + clamp(x - k * P + 0.5 * w, 0.0, w);
+}
+float solarPulseCover(float x, float h, float P, float w) {
+    if (h < 1e-3) return abs(x - P * floor(x / P + 0.5)) < 0.5 * w ? 1.0 : 0.0;
+    return clamp((solarPulseInt(x + h, P, w) - solarPulseInt(x - h, P, w)) / (2.0 * h), 0.0, 1.0);
+}
+// The panels' glass: a Beckmann lobe (slope variance s2) in this pass's units (pi L / E: a white
+// Lambertian face lit at normal incidence = 1), Schlick F (anti-reflective glass, F0 ~0.03), Smith G.
+// The same form as the sea's Sun glint (review 22).
+float solarGlint(vec3 n, vec3 v, vec3 l, float s2) {
+    float nl = dot(n, l), nv = dot(n, v);
+    if (nl <= 0.0 || nv <= 0.0) return 0.0;
+    vec3  hv = normalize(l + v);
+    float nh = max(dot(n, hv), 1e-3);
+    float c2 = nh * nh;
+    float D  = exp(-(1.0 - c2) / (c2 * s2)) / (PI * s2 * c2 * c2);
+    float F  = 0.03 + 0.97 * pow(1.0 - max(dot(hv, v), 0.0), 5.0);
+    float sq = sqrt(s2);
+    float aV = nv / (sq * sqrt(max(1.0 - nv * nv, 1e-6)));
+    float aL = nl / (sq * sqrt(max(1.0 - nl * nl, 1e-6)));
+    float gV = aV < 1.6 ? (3.535 * aV + 2.181 * aV * aV) / (1.0 + 2.276 * aV + 2.577 * aV * aV) : 1.0;
+    float gL = aL < 1.6 ? (3.535 * aL + 2.181 * aL * aL) / (1.0 + 2.276 * aL + 2.577 * aL * aL) : 1.0;
+    return min(PI * F * D * gV * gL / (4.0 * nv), 400.0);
+}
+vec3 solarOctDecode(uint w) {
+    vec2  e = unpackSnorm2x16(w);
+    vec3  d = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+    if (d.z < 0.0) d.xy = (1.0 - abs(d.yx)) * vec2(d.x >= 0.0 ? 1.0 : -1.0, d.y >= 0.0 ? 1.0 : -1.0);
+    return normalize(d);
+}
+// One park at the terrain point q (observer ENU, from its sea-level point), viewed along dir (unit,
+// observer ENU) with a pixel of pixAngle at distance t over ground of up vector `up`, the Sun along sunD.
+// Returns the share of the pixel the panels cover AS SEEN (a tilted panel viewed across its row hides
+// the ground behind it); blockK = the park ground's share; shade = the share of the visible ground in the
+// panels' shadow; n = the (per-row jittered) panel normal; s2 = the glass's slope variance plus the
+// row-to-row tilt spread the pixel cannot resolve.
+// urbanK: the city's presence at the pixel; a block is dropped (to the rooftops) where its hash is below
+// it, so ground rows thin out block by block into a city. out radK: a smooth radial density for them.
+float solarSiteAt(SolarSite S, vec3 q, vec3 dir, vec3 up, vec3 sunD, float pixAngle, float t, float urbanK,
+                  out float blockK, out float parkK, out float radK, out float shade, out vec3 n, out float s2) {
+    blockK = 0.0; parkK = 0.0; radK = 0.0; shade = 0.0; n = S.normal.xyz; s2 = 1.5e-4;
+    vec3  d  = q - S.centerQ.xyz;
+    float u  = dot(d, S.across.xyz), v = dot(d, S.along.xyz);
+    float R0 = S.centerQ.w;
+    // Footprint along each axis: the pixel stretched along the horizontal view direction by 1/|dir.up|.
+    float dz  = dot(dir, up);
+    float du  = max(abs(dz), 0.04);
+    float fp  = pixAngle * t;
+    vec3  dh  = dir - up * dz;
+    float dh2 = max(dot(dh, dh), 1e-6);
+    float cu  = dot(dh, S.across.xyz), cv = dot(dh, S.along.xyz);
+    float hu  = 0.5 * fp * mix(1.0, 1.0 / du, cu * cu / dh2);
+    float hv  = 0.5 * fp * mix(1.0, 1.0 / du, cv * cv / dh2);
+    float rr  = length(vec2(u, v));
+    radK = 1.0 - smoothstep(0.55, 1.25, rr / max(R0, 1.0));
+    if (rr > 1.35 * R0 + 2.0 * max(hu, hv)) return 0.0;
+
+    float P = S.along.w, W = S.normal.w, L = S.params.w;
+    float seed = S.across.w;
+    // Plots of 4 x 4 blocks are what a park is assembled from: a plot is in or out of the wobbly outline as
+    // a whole (a chunky, rectilinear edge, like real parks' land parcels); inside, a few single blocks stay
+    // empty (substations, drainage). Blocks: whole rows x a few segments, 6-m service roads between.
+    float Bu = P * floor(170.0 / P), Bv = L * max(1.0, floor(190.0 / L));
+    vec2  bi = floor(vec2(u / Bu, v / Bv));
+    vec2  pi = floor(bi / 4.0);
+    vec2  pc = (pi + 0.5) * 4.0 * vec2(Bu, Bv);
+    float phi  = atan(pc.y, pc.x);
+    float Rphi = R0 * (0.9 + 0.12 * sin(3.0 * phi + seed) + 0.07 * sin(5.0 * phi + 1.7 * seed));
+    float hP   = tdRand3(ivec3(ivec2(pi), int(seed) + 9151)).x * 0.5 + 0.5;
+    float occP = hP < 1.0 - smoothstep(0.75, 1.1, length(pc) / max(Rphi, 1.0)) ? 1.0 : 0.0;
+    float hB   = tdRand3(ivec3(ivec2(bi), int(seed) + 9137)).x * 0.5 + 0.5;
+    float hU   = tdRand3(ivec3(ivec2(bi), int(seed) + 9161)).x * 0.5 + 0.5;
+    float occB = (hB < 0.95 && hU >= urbanK) ? 1.0 : 0.0;
+    vec2  lb   = vec2(u, v) - (bi + 0.5) * vec2(Bu, Bv);
+    float inB  = cityBoxCover(lb.x, Bu - 12.0, 2.0 * hu) * cityBoxCover(lb.y, Bv - 12.0, 2.0 * hv);
+    float meanIn = (Bu - 12.0) * (Bv - 12.0) / (Bu * Bv);
+    // Past ~half a block per pixel the blocks' expectation; past half a plot the outline's.
+    float fb   = 2.0 * max(hu, hv);
+    float kBlk = smoothstep(0.2 * Bu, 0.6 * Bu, fb);
+    float kPlt = smoothstep(0.8 * Bu, 2.4 * Bu, fb);
+    float plotMean = 1.0 - smoothstep(0.75, 1.1, rr / max(R0 * 0.9, 1.0));
+    parkK  = mix(occP, plotMean, kPlt);   // inside the park's plots (farms give way here)
+    blockK = parkK * mix(occB * inB, 0.95 * meanIn * (1.0 - urbanK), kBlk);
+    if (blockK <= 0.0) return 0.0;
+
+    // Rows across (with the view's parallax: a panel of width W tilted to normal n covers W |nz + nx dx/dz|
+    // of ground seen along dir, its centre 1.6 m up shifted by -1.6 dx/dz), segments along with their gaps.
+    float nx = dot(n, S.across.xyz), nz = dot(n, up);
+    float vr = clamp(dot(dir, S.across.xyz) / min(dz, -0.03), -30.0, 30.0);
+    float Wv = min(W * abs(nz + nx * vr), 0.98 * P);
+    float rowC = solarPulseCover(u + 1.6 * vr, hu, P, Wv);
+    float segC = solarPulseCover(v, hv, L, L - (S.params.y > 0.5 ? 2.0 : 1.0));
+    // Their shadows on the ground (the Sun's projection, the same form), on the ground left visible.
+    float sz = dot(sunD, up);
+    if (sz > 0.02) {
+        float sr = clamp(dot(sunD, S.across.xyz) / sz, -30.0, 30.0);
+        float Ws = min(W * abs(nz + nx * sr), 0.98 * P);
+        shade = solarPulseCover(u + 1.6 * sr, hu, P, Ws) * segC * smoothstep(0.02, 0.08, sz);
+    }
+    // Each row segment is tilted by its own +-1.5 degrees about the row axis (tracker tolerance, table
+    // build): resolved, a glint path breaks into separate rows; unresolved, it widens the lobe.
+    float rowK = floor((u + 1.6 * vr) / P + 0.5), segK = floor(v / L);
+    float jit  = tdRand3(ivec3(int(rowK), int(segK), int(seed) + 4241)).x * 0.026;
+    float resK = 1.0 - smoothstep(0.5 * P, 2.0 * P, 2.0 * hu);
+    vec3  perp = normalize(cross(S.along.xyz, n));
+    n  = normalize(n + perp * (jit * resK));
+    s2 = 1.5e-4 + 2.2e-4 * (1.0 - resK) + 2e-5;
+    float cov = rowC * segC;
+    shade *= 1.0 - cov;
+    return blockK * cov;
+}
+
 vec3 farmDayAlbedo(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lonDeg, float latDeg, float green, float dry,
                    float foot, out float wet) {
     wet = 0.0;
@@ -4035,6 +4209,38 @@ void main() {
         // 5-km texels (user snapshot 5, Tokyo from 527 km).
         bool  cityLand   = tHit > 0.0 || (tSeaLvl > 0.0 && (waterPx == 0
                          || (waterPx < 0 && textureLod(earthSpecTex, uvSurf, 0.0).r <= 0.5)));
+        // ── Solar PV parks (2026-10-02): the reflector targets of kind "solar" (fillSolarSites) ─────
+        // Rows of glass over graded ground, at every distance (a park is a dark patch from orbit too). The
+        // glass's specular lobe takes the Sun below and the Reflect beams in the ground-spot loop.
+        float solarCov = 0.0, solarS2 = 1.5e-4, solarBlockK = 0.0, solarDiffK = 1.0, solarShade = 0.0, solarParkK = 0.0;
+        vec3  solarN   = vec3(0.0, 0.0, 1.0);
+        bool  solarBack = false;
+        // A park's outline over a city (the city pattern's presence, cityLum after the terrain limit): its
+        // panels go on the roofs (gCityPvK -> cityDayGrid) instead of in ground rows, block by block.
+        float solarUrbanK = smoothstep(0.004, 0.02, cityLum) * (cloud.cityLightsStrength > 0.0 ? 1.0 : 0.0);
+        float solarRoofK  = 0.0;
+#ifndef SKY_ENV   // the site list is in the MAIN observer's ENU frame
+        if (cityLand && solarSiteCount > 0u) {
+            vec3  sQ  = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
+            float sT  = tHit > 0.0 ? tHit : tSeaLvl;
+            vec3  sUp = normalize(hitPt);
+            for (uint si = 0u; si < min(solarSiteCount, uint(SOLAR_SITE_MAX)); ++si) {
+                float bK, pK, rK, shK, s2i;
+                vec3  ni;
+                float c = solarSiteAt(solarSites[si], sQ, dir, sUp, sunDir, pixAngle, sT, solarUrbanK,
+                                      bK, pK, rK, shK, ni, s2i);
+                solarParkK = max(solarParkK, pK);
+                solarRoofK = max(solarRoofK, rK);
+                if (bK > solarBlockK) {
+                    solarCov = c; solarBlockK = bK; solarN = ni; solarS2 = s2i; solarShade = shK;
+                }
+            }
+            solarBack = dot(-dir, solarN) <= 0.0;
+            gCityPvK   = solarRoofK * solarUrbanK * 0.85;
+            gCityPvCov = kCityPvMean * gCityPvK;   // the expectation, unless the city's day pattern resolves roofs
+        }
+#endif
+
         CityLayout cityL;
         bool  cityLOk    = false;
         bool  cityFar    = false;
@@ -4106,11 +4312,42 @@ void main() {
                     vec3  fr = farmDayAlbedo(fQ, enuX, enuY, enuZ, uvSurf.x * 360.0 - 180.0, 90.0 - uvSurf.y * 180.0,
                                              green, dry, fFoot, fWet);
                     float tFade = 1.0 - smoothstep(0.55 * gpR, 0.9 * gpR, fFoot);
-                    float fW    = farm * tFade * cloud.cityLightsStrength;
+                    float fW    = farm * tFade * cloud.cityLightsStrength * (1.0 - solarParkK);
                     dayColor *= mix(vec3(1.0), clamp(fr, vec3(0.0), vec3(4.0)), fW);
                     farmWet = fWet * fW;
                 }
             }
+        }
+
+        // Rooftop PV (cityDayGrid wrote gCityPvCov): dark glass on the roofs, tilted ~15 deg toward the
+        // equator, each roof +-8 deg its own way (roofs face every way; unresolved, a broad lobe). It joins
+        // the park's glass for the sky reflection, the Sun's glint and the beams' glint.
+        if (gCityPvK > 0.0 && gCityPvCov > 1e-4) {
+            vec3  sUpR  = normalize(hitPt);
+            vec3  upE   = enuX * sUpR.x + enuY * sUpR.y + enuZ * sUpR.z;               // ECEF
+            vec3  nthE  = normalize(vec3(0.0, 0.0, 1.0) - upE * upE.z);
+            vec3  nth   = vec3(dot(nthE, enuX), dot(nthE, enuY), dot(nthE, enuZ));      // observer ENU
+            vec3  eqD   = upE.z >= 0.0 ? -nth : nth;
+            vec3  eastR = cross(nth, sUpR);
+            vec3  nR    = normalize(sUpR + 0.27 * eqD + 0.14 * gCityPvRes * (gCityPvJit.x * eastR + gCityPvJit.y * nth));
+            float covR  = gCityPvCov * (1.0 - solarBlockK);
+            float lum0  = max(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)), 0.01);
+            dayColor    = mix(dayColor, vec3(0.018, 0.022, 0.036), covR);
+            solarDiffK  = clamp(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)) / lum0, 0.0, 1.0);
+            if (covR > solarCov) {
+                solarN = nR; solarBack = dot(-dir, nR) <= 0.0;
+                solarS2 = 2e-4 + 0.03 * (1.0 - gCityPvRes);
+            }
+            solarCov = max(solarCov, covR);
+        }
+        // Solar PV parks (above, before the farms, which give way to them): dark glass over graded ground.
+        if (solarBlockK > 0.0) {
+            // Cells under AR glass from the front; from behind, the white backsheets, rails and frames.
+            vec3  kPanel = solarBack ? vec3(0.16, 0.16, 0.165) : vec3(0.018, 0.022, 0.036);
+            float lum0 = max(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)), 0.01);
+            dayColor   = mix(dayColor, dayColor * vec3(0.88, 0.87, 0.85) * (1.0 - 0.75 * solarShade), solarBlockK);
+            dayColor   = mix(dayColor, kPanel, solarCov);
+            solarDiffK *= clamp(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)) / lum0, 0.0, 1.0);
         }
 
         // ── Beaches: sand on low, gentle shores (beachAt) — dry sand, wet near the water ─────────
@@ -4396,6 +4633,16 @@ void main() {
                                   + fres * gl * sunSpecTint * cloudShadowT * dayFrac * sunDiscVis * terrainShadow);
         }
 
+        // Solar panels: the glass reflects the sky (Fresnel at the panel normal: from the ground a park
+        // seen at a grazing angle reads like water) and glints the Sun.
+        if (solarCov > 0.0 && !solarBack) {
+            float cV   = max(dot(-dir, solarN), 0.0);
+            float fres = 0.03 + 0.97 * pow(1.0 - cV, 5.0);
+            surfColor += solarCov * (fres * skyAmbientTerrain * 0.4 * cloud.terrainErosion.w * twilightFrac
+                                   + sunSpecTint * sunTransMax * solarGlint(solarN, -dir, sunDir, solarS2)
+                                     * cloudShadowT * dayFrac * sunDiscVis * terrainShadow);
+        }
+
         // Terrain debug views (harness `debugview`, cloud.terrainDebugView) — override the pixel.
         if (cloud.terrainDebugView > 0.5 && cloud.terrainDebugView < 39.5 && tHit > 0.0) {
             int dv = int(cloud.terrainDebugView + 0.5);
@@ -4443,6 +4690,7 @@ void main() {
             else if (dv == 22) dbg = nightColor * 20.0;          // the city-lights map itself here
             else if (dv == 25) dbg = tNightSky * 100.0;          // night sky + moonlit sky on the albedo
             else if (dv == 26) dbg = cityLights * 20.0;          // the night map with its base removed
+            else if (dv == 27) dbg = vec3(solarCov, solarBlockK, solarN.x * 0.5 + 0.5);   // solar parks
             else if (dv == 23) dbg = vec3(geoSunDot, sunDot, tHit / 4000.0);
             // 24: the Sun's shadow line at this hit point. R = sunDiscVis (0 = the Sun's disc is
             // below this point's own horizon, so no direct sun reaches it), G = geoSunDot + dipSin
@@ -5129,7 +5377,13 @@ void main() {
                 // disk read as huge, hard-edged spotlights.
                 float disk = (1.0 - smoothstep(0.25, 1.15, sqrt(rho2))) * 1.885;
 
-                surfColor += vec3(kBeamGroundScale * w * 2.0 * disk * skyGlowNorm);
+                // The spot's light on the ground's own brightness (it was the same for every surface; a
+                // solar park's dark glass takes its share), plus the panels' glass mirroring the satellite:
+                // the beam's light comes from one point, so the glint is a sharp path across the rows.
+                float bE = kBeamGroundScale * w * 2.0 * disk * skyGlowNorm;
+                surfColor += vec3(bE * solarDiffK);
+                if (solarCov > 0.0)
+                    surfColor += vec3(bE * solarCov * solarGlint(solarN, -dir, solarOctDecode(groundBeams[bi].dirOct), solarS2));
             }
         }
 #endif
