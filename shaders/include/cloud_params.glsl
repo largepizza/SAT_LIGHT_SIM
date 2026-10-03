@@ -455,6 +455,6 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     vec4  cityLod2;
     // -- The sea (848 -> 864, review 24, Ocean tab): x "Far sea ripple" (the resolvable ripple normal where the wave
     // octaves are filtered away, sat_sky.frag), y "Sea warp" and z "Sea warp detail" (the wave field's 2D warp, in
-    // octave-0 cells, at 24 and 8 cells), w unused.
+    // octave-0 cells, at 24 and 8 cells), w "Far sea ripple size (px)" (the ripple cell in along-view pixel footprints).
     vec4  seaTune;
 } cloud;

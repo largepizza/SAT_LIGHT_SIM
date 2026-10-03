@@ -2222,6 +2222,20 @@ vec2 seaNoise2P(vec2 p, float period) {
         u.y);
 }
 
+// Review 25/27: one level of the far-sea ripple (sat_sky.frag's ocean branch): cells of kRipT[k] octave-0 cells, on the
+// wave lattice and on it turned 45 deg (integer [1 1; -1 1]), so the blobs lose one lattice's axis-aligned edges. A
+// function of k alone: the blend between two levels must see the SAME pattern for a level on either side of it.
+const float kRipT[11] = float[11](1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 60.0, 120.0, 240.0, 600.0, 1200.0);
+vec2 seaRippleLevel(int k, vec2 v0, float dr)
+{
+    float t = kRipT[k], P = kSeaCells / t;
+    vec2  o = vec2(3.7, 1.9) * float(k);
+    vec2  n = seaNoise2P(v0 / t + vec2(mod(dr / t, P), 0.0) + o, P);
+    vec2  vR = mod(vec2(v0.x + v0.y, v0.y - v0.x), kSeaCells);
+    vec2  r = seaNoise2P(vR / t + vec2(0.0, mod(dr / t, P)) + o.yx + vec2(7.1, 2.3), P);
+    return 0.65 * n + 0.55 * r;
+}
+
 float seaOctave(vec2 uv, float choppy) {
     uv += seaNoise(uv);
     const float kW = 2.0 * PI / 6.0;     // ridge period 6 cells (the original 2 pi, made commensurate)
@@ -4598,25 +4612,20 @@ void main() {
                 float rip   = max(smoothstep(3.0, 12.0, footA * cloud.oceanWaveFootK), waveBlend) * altFadeW;
                 // Review 25: 5 footprints (3 drew each feature ~3 px tall: the value noise's square lattice showed as
                 // stair-stepped blocks, "pixelated", user snap 1).
-                float want  = log2(max(5.0 * footA * kSeaFreq, 1.0));   // the cell, in octave-0 cells (log2)
+                // Review 27: "Far sea ripple size (px)" (seaTune.w, default 5): smaller = finer ripples, more shimmer.
+                float want  = log2(max(cloud.seaTune.w * footA * kSeaFreq, 1.0));   // the cell, in octave-0 cells (log2)
                 rip *= 1.0 - smoothstep(9.5, 10.5, want);              // past the field's period: nothing resolvable
                 vec3 hView = dir - dot(dir, surfUp) * surfUp;
                 if (rip > 0.0 && dot(hView, hView) > 1e-6) {
-                    const float kRipT[11] = float[11](1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 60.0, 120.0, 240.0, 600.0, 1200.0);
                     int   i0 = clamp(int(want), 0, 9);
                     float fw = clamp(want - float(i0), 0.0, 1.0);
                     vec2  v0 = mod(vec2(posM.x * 0.75, posM.y) * kSeaFreq, kSeaCells);
-                    float tA = kRipT[i0], tB = kRipT[i0 + 1];
                     float dr = seaTime * 0.25;   // wave groups drift (~4.5 m/s)
-                    vec2  nA = seaNoise2P(v0 / tA + vec2(mod(dr / tA, kSeaCells / tA), 0.0), kSeaCells / tA);
-                    vec2  nB = seaNoise2P(v0 / tB + vec2(mod(dr / tB, kSeaCells / tB), 0.0) + vec2(3.7, 1.9), kSeaCells / tB);
-                    vec2  rn = mix(nA, nB, fw);
-                    // A second component on the lattice turned 45 deg (integer [1 1; -1 1]: still periodic), so the blobs
-                    // lose the axis-aligned edges of one value-noise lattice.
-                    vec2  vR = mod(vec2(v0.x + v0.y, v0.y - v0.x), kSeaCells);
-                    vec2  rA = seaNoise2P(vR / tA + vec2(0.0, mod(dr / tA, kSeaCells / tA)) + vec2(7.1, 2.3), kSeaCells / tA);
-                    vec2  rB = seaNoise2P(vR / tB + vec2(0.0, mod(dr / tB, kSeaCells / tB)) + vec2(1.3, 5.9), kSeaCells / tB);
-                    rn = 0.65 * rn + 0.55 * mix(rA, rB, fw);
+                    // Review 27: each level is ONE function of its index (it took a different offset as the incoming and
+                    // the outgoing level: the pattern jumped at every level boundary, rings round the observer), and the
+                    // blend of two independent levels is renormalised (its contrast dipped to 0.71 mid-way: fainter rings).
+                    vec2  rn = (seaRippleLevel(i0, v0, dr) * (1.0 - fw) + seaRippleLevel(i0 + 1, v0, dr) * fw)
+                             * inversesqrt(max((1.0 - fw) * (1.0 - fw) + fw * fw, 0.25));
                     hView = normalize(hView);
                     vec3  side = cross(surfUp, hView);
                     float a = 0.12 * cloud.seaTune.x * rip * clamp(seaState, 0.3, 2.0);

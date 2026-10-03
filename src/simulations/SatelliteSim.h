@@ -1544,7 +1544,7 @@ struct GpuCloudParams
     glm::vec4 moonMisc;      // x Sun fraction the observer sees past the Moon, y solar / z lunar eclipse possible, w distance (km) (784 -> 816)
     glm::vec4 cityLod;       // footprint (m/px) where x posts, y the street grid, z major roads, w the street layout end (816 -> 832)
     glm::vec4 cityLod2;      // x streets' share close up, y their share as they fade; zw unused (832 -> 848)
-    glm::vec4 seaTune;       // review 24: x far sea ripple, y sea warp, z sea warp detail, w unused (848 -> 864)
+    glm::vec4 seaTune;       // review 24: x far sea ripple, y sea warp, z sea warp detail, w ripple size (px) (848 -> 864)
 };
 static_assert(sizeof(GpuCloudParams) == 864, "GpuCloudParams layout mismatch");
 
@@ -4080,6 +4080,7 @@ private:
     // Review 24 (Ocean tab, slots 248-250): the resolvable ripple where the octaves are filtered away (0 = the mirror),
     // and the wave field's 2D warp at 24 / 8 cells (octave-0 cells, ~18 m).
     float oceanFarRipple = 1.5f, oceanWarp = 3.5f, oceanWarpDetail = 1.2f;
+    float oceanFarRippleSize = 5.0f;   // review 27 (slot 256): the far ripple's cell, in along-view pixel footprints
     float oceanWaveSharpness = 0.5f;         // review 21: x the footprint the wave octaves are filtered at (1 = review 14; slot 243)
     float oceanReflSamples = 6.0f;           // ocean sky-reflection loop sample count (N_REFL)
     float moonGain = 0.0053f;                // shared moonlight brightness: terrain direct term + cloud
@@ -4617,7 +4618,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 256;
+    static constexpr int kCloudSliderSlots = 257;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

@@ -5028,6 +5028,7 @@ void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
         // Review 24: the far sea's resolvable ripple (columns of light instead of a mirror past the waves) and the
         // wave field's warp (higher = the ridges meander more, and stretch in places).
         {"Far sea ripple", &oceanFarRipple, 0.0f, 15.0f, 0.05f, "%.2f", 248},
+        {"Far sea ripple size (px)", &oceanFarRippleSize, 1.5f, 16.0f, 0.25f, "%.2f", 256},
         {"Sea warp", &oceanWarp, 0.0f, 6.0f, 0.1f, "%.1f", 249},
         {"Sea warp detail", &oceanWarpDetail, 0.0f, 3.0f, 0.05f, "%.2f", 250},
         {"Ocean flare refl", &oceanGlintGain, 0.0f, 4.0f, 0.05f, "%.2f", 110},
@@ -7092,6 +7093,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         oceanWaveRangeKm = std::clamp(c.value("ocean_wave_range_km", oceanWaveRangeKm), 5.0f, 200.0f);
         oceanWaveSharpness = std::clamp(c.value("ocean_wave_sharpness", oceanWaveSharpness), 0.1f, 1.0f);
         oceanFarRipple = c.value("ocean_far_ripple", oceanFarRipple);
+        oceanFarRippleSize = c.value("ocean_far_ripple_size", oceanFarRippleSize);
         oceanWarp = c.value("ocean_warp", oceanWarp);
         oceanWarpDetail = c.value("ocean_warp_detail", oceanWarpDetail);
         oceanGlintMinFlux = c.value("ocean_glint_min_flux", oceanGlintMinFlux);
@@ -7365,6 +7367,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ocean_wave_range_km", oceanWaveRangeKm},
         {"ocean_wave_sharpness", oceanWaveSharpness},
         {"ocean_far_ripple", oceanFarRipple},
+        {"ocean_far_ripple_size", oceanFarRippleSize},
         {"ocean_warp", oceanWarp},
         {"ocean_warp_detail", oceanWarpDetail},
         {"ocean_glint_min_flux", oceanGlintMinFlux},

@@ -2285,8 +2285,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.farBlend = cloudFarBlend();
         cp.oceanWaveRangeM = oceanWaveRangeKm * 1000.0f;
         cp.oceanWaveFootK = oceanWaveSharpness;
-        cp.seaTune = glm::vec4(std::clamp(oceanFarRipple, 0.0f, 4.0f), std::clamp(oceanWarp, 0.0f, 6.0f),
-                               std::clamp(oceanWarpDetail, 0.0f, 3.0f), 0.0f);
+        cp.seaTune = glm::vec4(std::clamp(oceanFarRipple, 0.0f, 15.0f), std::clamp(oceanWarp, 0.0f, 6.0f),
+                               std::clamp(oceanWarpDetail, 0.0f, 3.0f), std::clamp(oceanFarRippleSize, 1.5f, 16.0f));
         cp.extinctionCoeff = extinctionCoeff;
         cp.cirrusWindAngle = glm::radians(cloudCirrusWindDeg);
         cp.cirrusStretch = cloudCirrusStretch;
