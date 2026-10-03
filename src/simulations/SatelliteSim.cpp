@@ -4608,7 +4608,11 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
         followFlightFrom = fromEye;
         followFlightDur = 0.0;   // set on the first update, from the distance to the target
     }
+    followBasisValid = false;
     updateFollow(0.0f);
+    // Review 23: the aim is FREE once there (as on the ground: the mouse looks, WASD moves); a flight aims until it lands.
+    if (!fly)
+        followAimLock = false;
 }
 
 void SatelliteSim::stopFollow(bool fly)
@@ -4656,6 +4660,18 @@ void SatelliteSim::updateFollow(float dt)
     glm::dvec3 Th = eciToEcef(s.velocity);
     const glm::dvec3 Nh = glm::normalize(glm::cross(Rh, Th));
     Th = glm::cross(Nh, Rh);
+
+    // Review 23: the free aim's view, in LAST frame's satellite frame (this frame's mouse look already applied to
+    // obsFacing / elevation), re-applied below in this frame's: the satellite stays where it was on screen. In the
+    // observer's local frame alone the view drifted off it at the orbital rate (and fast in time warp).
+    glm::dvec3 viewSat(0.0);
+    const bool freeView = !followAimLock && followFlight == 0 && followBasisValid;
+    if (freeView)
+    {
+        const double el = glm::radians((double)camera.elDeg);
+        const glm::dvec3 v = std::cos(el) * glm::dvec3(obsFacing) + std::sin(el) * glm::dvec3(obsDir);
+        viewSat = glm::dvec3(glm::dot(v, followBasisT), glm::dot(v, followBasisN), glm::dot(v, followBasisR));
+    }
 
     // A flight in progress: any move key ends it at its destination.
     if (followFlight != 0 && win && dt > 0.0f)
@@ -4716,11 +4732,32 @@ void SatelliteSim::updateFollow(float dt)
                             : glm::dvec3(followSavedObsDir) * ((double)kEarthRadius +
                                   std::max((double)followSavedGround, (double)followSavedHeight) + 2.0);
         if (followFlightDur <= 0.0)
+        {
             followFlightDur = followFlightDuration(glm::length(to - followFlightFrom));
+            // Review 23: straight along the line of sight when the Earth is not in the way. The arc's last stretch
+            // climbed vertically to a point beside the satellite: the camera looked straight up and the view spun.
+            const glm::dvec3 ab = to - followFlightFrom;
+            const double tc = std::clamp(-glm::dot(followFlightFrom, ab) / std::max(glm::dot(ab, ab), 1e-9), 0.0, 1.0);
+            followFlightLine = followFlight == 1 && glm::length(followFlightFrom + tc * ab) > (double)kEarthRadius;
+            followFlightTarget0 = to;
+        }
         followFlightT += (double)std::max(dt, 0.0f);
         const double x = std::min(followFlightT / followFlightDur, 1.0);
         const double u = x * x * (3.0 - 2.0 * x);
-        followObsEcef = followFlightPos(followFlightFrom, to, u);
+        if (followFlight == 1 && followFlightLine)
+        {
+            // The distance to the arrival point closes geometrically (the distance to the satellite, s + D, by a
+            // constant ratio per unit u), along the start's line; the line's anchor slides from where the arrival
+            // point was to where it is, so the camera leaves at rest and lands moving with the satellite.
+            const glm::dvec3 off0 = followFlightFrom - followFlightTarget0;
+            const double s0 = glm::length(off0);
+            const double D = std::max(glm::length(to - P), 1.0);
+            const double s = (s0 + D) * std::pow(D / (s0 + D), u) - D;
+            const glm::dvec3 anchor = followFlightTarget0 + (to - followFlightTarget0) * u;
+            followObsEcef = anchor + (s0 > 1e-6 ? off0 / s0 : glm::dvec3(0.0)) * std::max(s, 0.0);
+        }
+        else
+            followObsEcef = followFlightPos(followFlightFrom, to, u);
         if (followFlight == 2)
         {
             homeLook = true;
@@ -4734,7 +4771,10 @@ void SatelliteSim::updateFollow(float dt)
         {
             camera.fovYDeg = glm::mix(followFlightFov0, 50.0f, (float)u);
             if (x >= 1.0)
+            {
                 followFlight = 0;
+                followAimLock = false;   // review 23: free aim on arrival
+            }
         }
     }
     followRadiusM = glm::length(followObsEcef);
@@ -4750,6 +4790,20 @@ void SatelliteSim::updateFollow(float dt)
     if (camera.captured)
         followAimLock = false;
     const glm::vec3 upF = obsDir;
+    // Sets the view direction. The facing is the view's horizontal part, which near the zenith or nadir is a tiny
+    // vector of arbitrary direction: there the previous facing is kept (review 23, the "rapid flip").
+    auto setView = [&](glm::vec3 d) {
+        const glm::vec3 h = d - glm::dot(d, upF) * upF;
+        const float hl = glm::length(h);
+        glm::vec3 prev = obsFacing - glm::dot(obsFacing, upF) * upF;
+        if (hl > 1e-6f)
+        {
+            const glm::vec3 m = glm::length(prev) > 1e-6f ? glm::mix(glm::normalize(prev), h / hl, glm::smoothstep(0.02f, 0.2f, hl)) : h / hl;
+            if (glm::length(m) > 1e-6f)
+                obsFacing = glm::normalize(m);
+        }
+        camera.elDeg = glm::clamp(glm::degrees(asinf(glm::clamp(glm::dot(d, upF), -1.0f, 1.0f))), -89.0f, 89.0f);
+    };
     // A zero offset puts the camera AT the satellite: there is no direction to aim along, and
     // normalize(0) made the elevation NaN — a NaN camera, and every pass drew black.
     if (homeLook)
@@ -4775,11 +4829,14 @@ void SatelliteSim::updateFollow(float dt)
             if (glm::length(m) > 1e-4f)
                 d = glm::normalize(m);
         }
-        glm::vec3 h = d - glm::dot(d, upF) * upF;
-        if (glm::length(h) > 1e-6f)
-            obsFacing = glm::normalize(h);
-        camera.elDeg = glm::clamp(glm::degrees(asinf(glm::clamp(glm::dot(d, upF), -1.0f, 1.0f))), -89.0f, 89.0f);
+        setView(d);
     }
+    else if (freeView && glm::length(viewSat) > 1e-6)
+        setView(glm::vec3(glm::normalize(viewSat.x * Th + viewSat.y * Nh + viewSat.z * Rh)));
+    followBasisT = Th;
+    followBasisN = Nh;
+    followBasisR = Rh;
+    followBasisValid = true;
     obsFacing = glm::normalize(obsFacing - glm::dot(obsFacing, upF) * upF);
     // camera.azDeg from obsFacing, as buildUI derives it (it runs before this, one frame behind).
     {

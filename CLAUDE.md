@@ -1305,6 +1305,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the facing it approached with. **Far sea:** the reflected clouds are averaged over 5 taps along the screen's vertical
   (spread by distance and roughness) and lean 30% more to the sky's own reflection past 3-30 km: a mirror finish to the
   horizon.
+- **Review 23 (2026-10-02):** **Go to flies straight along the line of sight** when the Earth is not in the way
+  (`followFlightLine`): the distance to the satellite closes by a constant ratio, along the start's line, onto the arrival
+  point on that line; the arc (kept for a satellite behind the Earth) ended in a vertical climb to a point beside the
+  satellite, where the facing came from a near-zero horizontal view and spun. The follow aim's facing keeps the previous
+  one near the zenith / nadir (`setView`). **The aim is FREE on arrival**, held in the satellite's frame
+  (`followBasis*`), so the satellite stays put on screen without the lock. **The sea's body** (kSeaBase, the crest and
+  the subsurface term) is lit by the Sun + sky irradiance on the sea (`seaE`, as the foam), not by the cloud shadow alone:
+  it kept its noon brightness up to the terminator and read cyan at sunset. **Sea grid:** a periodic 2D warp of the whole
+  wave field (24 / 8 cells, `seaNoise2P`) and each octave's second component on a 45-degree lattice; the warp the
+  octaves had was a shift along the diagonal only, and the ridges read as a square grid.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

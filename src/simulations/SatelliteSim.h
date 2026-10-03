@@ -2208,6 +2208,13 @@ private:
     glm::vec3  followFlightView0{0.0f};     // review 22b: the view direction (ECEF) a flight to a satellite starts from
     bool       followFlightAlign = false;   // put the arrival on the approach line (next updateFollow)
     double     followDefaultDist = 0.0;
+    // Review 23: a flight with a clear line of sight flies straight along it (followFlightLine) toward the arrival point
+    // as it was at the start (followFlightTarget0); the free aim keeps its view fixed in the satellite's frame, which is
+    // last frame's (followBasis*).
+    bool       followFlightLine = false;
+    glm::dvec3 followFlightTarget0{0.0};
+    glm::dvec3 followBasisT{0.0}, followBasisN{0.0}, followBasisR{0.0};
+    bool       followBasisValid = false;
     double followFlightDuration(double distM) const;
     void startFollow(int satIndex, bool fly = false);
     void stopFollow(bool fly = false);

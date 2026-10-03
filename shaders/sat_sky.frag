@@ -2204,6 +2204,24 @@ float seaNoise(vec2 p) {
         u.y);
 }
 
+// Review 23: 2-component value noise whose lattice repeats every `period` cells (period divides kSeaCells x the caller's scale,
+// so the field stays periodic) — for the large-scale warp below.
+vec2 seaHash2P(vec2 p, float period) {
+    p = mod(p, period);
+    vec3 q = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973) * 0.1);
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.xx + q.yz) * q.zy);
+}
+vec2 seaNoise2P(vec2 p, float period) {
+    vec2 i = floor(p);
+    vec2 f = p - i;
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return -1.0 + 2.0 * mix(
+        mix(seaHash2P(i + vec2(0.0, 0.0), period), seaHash2P(i + vec2(1.0, 0.0), period), u.x),
+        mix(seaHash2P(i + vec2(0.0, 1.0), period), seaHash2P(i + vec2(1.0, 1.0), period), u.x),
+        u.y);
+}
+
 float seaOctave(vec2 uv, float choppy) {
     uv += seaNoise(uv);
     const float kW = 2.0 * PI / 6.0;     // ridge period 6 cells (the original 2 pi, made commensurate)
@@ -2217,6 +2235,12 @@ float seaOctave(vec2 uv, float choppy) {
 float seaHeight(vec2 posM, float seaTime, int nOct) {
     // Octave 0's argument, reduced into one period (posM is small: |hitPt.xy| + one wrapped period).
     vec2  v   = mod(vec2(posM.x * 0.75, posM.y) * kSeaFreq, kSeaCells);
+    // Review 23: a smooth 2D warp of the whole field over several ridge lengths (24 and 8 cells: ~430 / ~140 m), so the
+    // ridges meander. The octaves' own warp (seaOctave) adds ONE scalar to both axes, a shift along the diagonal only,
+    // and the ridge lattice read as a square grid (user snap 2). Its lattices repeat every 50 / 150 cells, i.e. once
+    // per kSeaCells, so the field stays exactly periodic; the integer octave matrix carries the warp to every octave
+    // (local shear ~0.6 < 1: no folds).
+    v += 4.5 * seaNoise2P(v / 24.0, 50.0) + 1.5 * seaNoise2P(v / 8.0 + vec2(5.0, 41.0), 150.0);
     float amp = kSeaHeight * gSeaAmp, choppy = kSeaChoppy + gSeaChoppy, tf = 1.0;
     float h   = 0.0;
     [[dont_unroll]] for (int i = 0; i < nOct; i++) {
@@ -2227,7 +2251,9 @@ float seaHeight(vec2 posM, float seaTime, int nOct) {
                    ? clamp((1.0 / kSeaFreq) / (pow(2.2360680, float(i)) * kSeaOctA[i]) / gSeaFootM - 1.0, 0.0, 1.0) : 1.0;
         if (lodW <= 0.0) break;   // finer octaves are smaller still
         float d   = seaOctave(arg + ts, choppy);
-              d  += seaOctave(arg - ts, choppy);
+        // Review 23: the second component on a lattice turned 45 degrees (the integer [1 1; -1 1], x1.41, so still
+        // periodic): on the same axes the two stacked into a square grid of ridges (user snap 2).
+              d  += seaOctave(mod(vec2(arg.x + arg.y, arg.y - arg.x), kSeaCells) - ts, choppy);
         h  += d * amp * lodW;
         v   = mod(vec2(2.0 * v.x + v.y, 2.0 * v.y - v.x), kSeaCells);   // integer [2 1; -1 2]
         tf *= 1.9; amp *= 0.22;
@@ -4826,14 +4852,20 @@ void main() {
             // Refracted subsurface color (SEA_BASE + diffuse * SEA_WATER_COLOR)
             // directSun replaces dayFrac for all sun-driven contributions so clouds shadow the ocean.
             float diff    = pow(max(0.0, dot(waveN, sunDir)) * 0.4 + 0.6, 80.0) * directSun;
-            vec3 refracted = kSeaBase * directSun + diff * kSeaWaterColor * 0.12;
+            // Review 23: the light entering the water is the Sun's and the sky's irradiance on the sea (as the foam's),
+            // normalised so a high Sun gives the old kSeaBase. It was kSeaBase x directSun (the cloud shadow alone):
+            // the water glowed at noon strength and colour up to the terminator, and with the twilight exposure the
+            // sea at sunset read cyan (user snap 1).
+            vec3 seaE = (sunSpecTint * sunTransMax * directSun * max(dot(surfUp, sunDir), 0.0)
+                       + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * twilightFrac) * (1.0 / 1.1);
+            vec3 refracted = kSeaBase * seaE + diff * kSeaWaterColor * 0.12 * seaE;
 
             // Fresnel blend (distance-attenuated to prevent orbit-scale glowing ring)
             surfColor = mix(refracted, reflColor, reflStr);
 
             // Wave-height crest shading: raised crests catch more water-color light
             float atten = max(1.0 - dist * dist * 1e-5, 0.0);
-            surfColor += kSeaWaterColor * max(pHeight - kSeaHeight, 0.0) * 0.18 * atten * directSun;
+            surfColor += kSeaWaterColor * max(pHeight - kSeaHeight, 0.0) * 0.18 * atten * seaE;
 
             // The Sun glint (review 22): a Beckmann microfacet lobe about the (resolved) wave normal, in this pass's units
             // (pi L / E: a sunlit white Lambertian face = 1), so its brightness is physical — a low Sun's glitter path is
