@@ -3509,7 +3509,7 @@ void main() {
         // bright Sun-shaped glow where the disc was hidden (user snap 2). 1 in clear sky and from above the shell.
         {
             float tS = tStart + (float(i) + 0.5) * segLen;
-            float dPerp = tS * sqrt(max(1.0 - cosA * cosA, 0.0)) + (cosA < 0.0 ? tS : 0.0);
+            float dPerp = cosA < 0.0 ? tS : tS * sqrt(max(1.0 - cosA * cosA, 0.0));   // review 25: continuous at 90 deg (it doubled there)
             atmTermW8 *= mix(1.0, cloud.sunCloudT, (1.0 - smoothstep(8000.0, 14000.0, h))
                                                   * exp(-tS / 50000.0 - dPerp / 3000.0));
         }
@@ -4596,7 +4596,9 @@ void main() {
                 float cosG  = max(abs(dot(dir, surfUp)), 0.02);
                 float footA = pixAngle * dist / cosG;
                 float rip   = max(smoothstep(3.0, 12.0, footA * cloud.oceanWaveFootK), waveBlend) * altFadeW;
-                float want  = log2(max(3.0 * footA * kSeaFreq, 1.0));   // the cell, in octave-0 cells (log2)
+                // Review 25: 5 footprints (3 drew each feature ~3 px tall: the value noise's square lattice showed as
+                // stair-stepped blocks, "pixelated", user snap 1).
+                float want  = log2(max(5.0 * footA * kSeaFreq, 1.0));   // the cell, in octave-0 cells (log2)
                 rip *= 1.0 - smoothstep(9.5, 10.5, want);              // past the field's period: nothing resolvable
                 vec3 hView = dir - dot(dir, surfUp) * surfUp;
                 if (rip > 0.0 && dot(hView, hView) > 1e-6) {
@@ -4609,6 +4611,12 @@ void main() {
                     vec2  nA = seaNoise2P(v0 / tA + vec2(mod(dr / tA, kSeaCells / tA), 0.0), kSeaCells / tA);
                     vec2  nB = seaNoise2P(v0 / tB + vec2(mod(dr / tB, kSeaCells / tB), 0.0) + vec2(3.7, 1.9), kSeaCells / tB);
                     vec2  rn = mix(nA, nB, fw);
+                    // A second component on the lattice turned 45 deg (integer [1 1; -1 1]: still periodic), so the blobs
+                    // lose the axis-aligned edges of one value-noise lattice.
+                    vec2  vR = mod(vec2(v0.x + v0.y, v0.y - v0.x), kSeaCells);
+                    vec2  rA = seaNoise2P(vR / tA + vec2(0.0, mod(dr / tA, kSeaCells / tA)) + vec2(7.1, 2.3), kSeaCells / tA);
+                    vec2  rB = seaNoise2P(vR / tB + vec2(0.0, mod(dr / tB, kSeaCells / tB)) + vec2(1.3, 5.9), kSeaCells / tB);
+                    rn = 0.65 * rn + 0.55 * mix(rA, rB, fw);
                     hView = normalize(hView);
                     vec3  side = cross(surfUp, hView);
                     float a = 0.12 * cloud.seaTune.x * rip * clamp(seaState, 0.3, 2.0);

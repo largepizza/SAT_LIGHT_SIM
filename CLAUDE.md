@@ -1339,6 +1339,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   lands looking at it (turning back to the start's view swung the camera up to 55 deg while zooming out); 0.0 deg
   both ways. **The sea's waves fade with altitude over 20-60 km** (`altFadeW`; was 3-8 km, a pop of the wave texture
   and glitter path descending through ~7 km); the footprint filter does the rest. Mirrored features keep 3-8 km.
+- **Review 25 (2026-10-02, records 10-12):** **a straight line across the sky in the clouds** (from under / inside a deck
+  at 65 S) was review 22b's Sun-path darkening, applied only for cosSun > 0: with samples within ~2 km it was full on one
+  side of the great circle 90 deg from the Sun and off on the other (debug view cloudrad stepped; transmittance and the
+  air split were smooth). Behind the eye the distance to the eye's Sun RAY is the distance to the eye (continuous at
+  90 deg); sat_sky.frag's near-air dimming doubled it there (also fixed). **Far-sea ripple cells are 5 along-view
+  footprints** (3 drew value-noise blocks ~3 px tall: "pixelated") plus a component on the 45-deg lattice.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

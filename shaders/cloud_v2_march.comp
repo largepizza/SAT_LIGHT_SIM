@@ -703,8 +703,12 @@ void main()
                 // the sample's distance from the line (~2 km). The light march (a few km) cannot see a storm between
                 // a low Sun and the clouds in front of it: their forward lobe glowed like the Sun through miles of
                 // cloud (user). Clouds beyond the blocker keep their light (sunset silver linings).
-                if (cv2SunProf[0] > 0.0 && cloud.sunCloudT < 0.98 && cosSun > 0.0) {
-                    float dP = t * sqrt(max(1.0 - cosSun * cosSun, 0.0)) / 2000.0;
+                // Review 25: the distance to the eye's Sun RAY: behind the eye (cosSun < 0) it is the distance to the eye,
+                // which meets the in-front value at 90 deg. Skipping cosSun <= 0 cut the darkening off along the great
+                // circle 90 deg from the Sun: from under or inside a cloud (samples within ~2 km) a straight line
+                // across the sky, dark clouds on one side and lit on the other (user snaps 2-3).
+                if (cv2SunProf[0] > 0.0 && cloud.sunCloudT < 0.98) {
+                    float dP = (cosSun > 0.0 ? t * sqrt(max(1.0 - cosSun * cosSun, 0.0)) : t) / 2000.0;
                     float w  = exp(-dP * dP);   // (8 km darkened a sunset-lit deck 3 km above the eye's line)
                     if (w > 0.01) {
                         float uu = sqrt(clamp(t * cosSun / cv2SunProf[0], 0.0, 1.0)) * 16.0;
