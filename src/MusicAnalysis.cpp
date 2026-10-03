@@ -665,7 +665,22 @@ void Library::run(std::vector<std::string> tracks, std::vector<std::string> dirs
         Analysis a;
         a.file = p.filename().string();
         a.fileSize = (uint64_t)fs::file_size(p, ec);
-        a.fileTime = ec ? 0 : (int64_t)fs::last_write_time(p, ec).time_since_epoch().count();
+        // The cache key is the file's CONTENT (FNV-1a 64 over its bytes, ~10 ms a track), not its write time: the
+        // build copies the music next to the exe, so the write time changed with every build and every launch after
+        // a rebuild re-analysed all the tracks (~10 s, on the startup's critical path for the music; 2026-10-02).
+        {
+            uint64_t h = 1469598103934665603ull;
+            std::ifstream in(p, std::ios::binary);
+            std::vector<char> buf(1 << 16);
+            while (in)
+            {
+                in.read(buf.data(), (std::streamsize)buf.size());
+                const std::streamsize got = in.gcount();
+                for (std::streamsize i = 0; i < got; ++i)
+                    h = (h ^ (uint8_t)buf[(size_t)i]) * 1099511628211ull;
+            }
+            a.fileTime = (int64_t)h;
+        }
         const std::string cacheName = p.stem().string() + ".analysis.json";
 
         bool cached = false;

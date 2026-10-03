@@ -319,7 +319,7 @@ void SatEnvProbes::init(VulkanContext &ctx, VkPipelineLayout skyLayout)
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, cs,
                     "main", nullptr};
         ci.layout = shLayout;
-        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &shPipe) != VK_SUCCESS)
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &shPipe) != VK_SUCCESS)
             throw std::runtime_error("SatEnvProbes: SH pipeline");
         vkDestroyShaderModule(ctx.device, cs, nullptr);
     }
@@ -370,7 +370,7 @@ void SatEnvProbes::init(VulkanContext &ctx, VkPipelineLayout skyLayout)
         ci.pDynamicState = &dys;
         ci.layout = skyLayout;
         ci.renderPass = probePass; // bgPass is compatible (same single RGBA16F attachment)
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &envPipe) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &envPipe) != VK_SUCCESS)
             throw std::runtime_error("SatEnvProbes: env sky pipeline");
         vkDestroyShaderModule(ctx.device, vs, nullptr);
         vkDestroyShaderModule(ctx.device, fs, nullptr);

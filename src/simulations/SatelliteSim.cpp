@@ -7862,7 +7862,7 @@ void SatelliteSim::createComputePipeline(VulkanContext &ctx)
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = stage;
     ci.layout = compPipeLayout;
-    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &compPipeline) != VK_SUCCESS)
+    if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &compPipeline) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create compute pipeline");
 
     vkDestroyShaderModule(ctx.device, mod, nullptr);
@@ -7982,7 +7982,7 @@ void SatelliteSim::createOrbitPipeline(VulkanContext &ctx)
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = stage;
     ci.layout = orbitPipeLayout;
-    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &orbitPipeline) != VK_SUCCESS)
+    if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &orbitPipeline) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create orbit compute pipeline");
 
     vkDestroyShaderModule(ctx.device, mod, nullptr);
@@ -8227,7 +8227,7 @@ void SatelliteSim::createCloudNoisePipeline(VulkanContext &ctx)
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = stage;
         ci.layout = bakePipeLayout;
-        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &bakePipeline) != VK_SUCCESS)
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &bakePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create cloud_noise bake pipeline");
         vkDestroyShaderModule(ctx.device, mod, nullptr);
     }
@@ -8370,7 +8370,7 @@ void SatelliteSim::createCloudWarpNoisePipeline(VulkanContext &ctx)
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = stage;
         ci.layout = bakePipeLayout;
-        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &bakePipeline) != VK_SUCCESS)
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &bakePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create cloud_warp_noise bake pipeline");
         vkDestroyShaderModule(ctx.device, mod, nullptr);
     }
@@ -8511,7 +8511,7 @@ void SatelliteSim::createAuroraNoisePipeline(VulkanContext &ctx)
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = stage;
         ci.layout = bakePipeLayout;
-        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &bakePipeline) != VK_SUCCESS)
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &bakePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create aurora_noise bake pipeline");
         vkDestroyShaderModule(ctx.device, mod, nullptr);
     }
@@ -8764,7 +8764,7 @@ void SatelliteSim::createCloudMarchPipeline(VulkanContext &ctx)
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = stage;
     ci.layout = cloudMarchPipeLayout;
-    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &cloudMarchPipeline) != VK_SUCCESS)
+    if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &cloudMarchPipeline) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create cloud_march compute pipeline");
 
     vkDestroyShaderModule(ctx.device, mod, nullptr);
@@ -9007,7 +9007,7 @@ void SatelliteSim::createSceneDepthPipeline(VulkanContext &ctx)
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = stage;
     ci.layout = sceneDepthPipeLayout;
-    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &sceneDepthPipeline) != VK_SUCCESS)
+    if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &sceneDepthPipeline) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create scene_depth compute pipeline");
 
     vkDestroyShaderModule(ctx.device, mod, nullptr);
@@ -9110,7 +9110,7 @@ void SatelliteSim::createBeamSelfMarchPipeline(VulkanContext &ctx)
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = stage;
     ci.layout = beamSelfMarchPipeLayout;
-    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &beamSelfMarchPipeline) != VK_SUCCESS)
+    if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &beamSelfMarchPipeline) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create beam_self_march compute pipeline");
 
     vkDestroyShaderModule(ctx.device, mod, nullptr);
@@ -9189,7 +9189,7 @@ void SatelliteSim::createCitySprites(VulkanContext &ctx)
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod,
                 "main", nullptr};
     ci.layout = citySpritePipeLayout;
-    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &citySpritePipeline) != VK_SUCCESS)
+    if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &citySpritePipeline) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create city sprite pipeline");
     vkDestroyShaderModule(ctx.device, mod, nullptr);
     Log::line("init: city sprites pipeline");
@@ -10710,7 +10710,7 @@ void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
     ci.renderPass = ctx.renderPass;
     ci.subpass = 0;
 
-    if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &skyBgPipeline) != VK_SUCCESS)
+    if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &skyBgPipeline) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create sky background pipeline");
 
     // Minimal variant — identical state, same layout/render pass, cheap fragment module. Used by
@@ -10723,7 +10723,7 @@ void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
         minStages[1].module = minFrag;
         VkGraphicsPipelineCreateInfo minCi = ci;
         minCi.pStages = minStages;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &minCi, nullptr, &skyBgMinimalPipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &minCi, nullptr, &skyBgMinimalPipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create minimal sky background pipeline");
         vkDestroyShaderModule(ctx.device, minFrag, nullptr);
 
@@ -10733,7 +10733,7 @@ void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
         liteStages[1].module = liteFrag;
         VkGraphicsPipelineCreateInfo liteCi = ci;
         liteCi.pStages = liteStages;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &liteCi, nullptr, &skyBgLitePipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &liteCi, nullptr, &skyBgLitePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create lite sky background pipeline");
         vkDestroyShaderModule(ctx.device, liteFrag, nullptr);
     }
@@ -10856,7 +10856,7 @@ void SatelliteSim::createSkyLowResResources(VulkanContext &ctx)
     ci.renderPass = skyLowResRenderPass;
     ci.subpass = 0;
 
-    if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &skyLowResPipeline) != VK_SUCCESS)
+    if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &skyLowResPipeline) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create skyLowRes pipeline");
 
     vkDestroyShaderModule(ctx.device, vert, nullptr);
@@ -11041,7 +11041,7 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
         ci.pColorBlendState = &cb;
         ci.layout = skyBgPipeLayout;
         ci.renderPass = skyTaaRenderPass;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &skyTaaPipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &skyTaaPipeline) != VK_SUCCESS)
         {
             Log::line("sky TAA: pipeline creation failed; TAA off");
             skyTaaPipeline = VK_NULL_HANDLE;
@@ -11149,7 +11149,7 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
         VkComputePipelineCreateInfo cci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         cci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, cm, "main", nullptr};
         cci.layout = skyTaaResolvePipeLayout;
-        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &cci, nullptr, &skyTaaResolvePipeline) != VK_SUCCESS)
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &cci, nullptr, &skyTaaResolvePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create sky TAA resolve pipeline");
         vkDestroyShaderModule(ctx.device, cm, nullptr);
     }
@@ -11186,7 +11186,7 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
         ci.pColorBlendState = &cb;
         ci.layout = skyTaaRestorePipeLayout;
         ci.renderPass = ctx.renderPass; // compatible with renderPassLoad (same formats)
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &skyTaaRestorePipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &skyTaaRestorePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create sky TAA depth restore pipeline");
         vkDestroyShaderModule(ctx.device, vert, nullptr);
         vkDestroyShaderModule(ctx.device, frag, nullptr);
@@ -11446,7 +11446,7 @@ void SatelliteSim::createDrawPipeline(VulkanContext &ctx)
     ci.renderPass = ctx.renderPass;
     ci.subpass = 0;
 
-    if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &drawPipeline) != VK_SUCCESS)
+    if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &drawPipeline) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create draw pipeline");
 
     vkDestroyShaderModule(ctx.device, vert, nullptr);
@@ -11721,7 +11721,7 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         ci.layout = flareSourcePipeLayout;
         ci.renderPass = flareSourceRenderPass;
         ci.subpass = 0;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &flareSourcePipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &flareSourcePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create flare source pipeline");
 
         vkDestroyShaderModule(ctx.device, vert, nullptr);
@@ -11749,7 +11749,7 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = stage;
         ci.layout = flareBlurPipeLayout;
-        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &flareBlurPipeline) != VK_SUCCESS)
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &flareBlurPipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create flare blur pipeline");
 
         vkDestroyShaderModule(ctx.device, mod, nullptr);
@@ -11816,7 +11816,7 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod,
                     "main", nullptr};
         ci.layout = glareFindPipeLayout;
-        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &glareFindPipeline) != VK_SUCCESS)
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &glareFindPipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create glare find pipeline");
         vkDestroyShaderModule(ctx.device, mod, nullptr);
     }
@@ -11899,7 +11899,7 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         ci.layout = flareCompositePipeLayout;
         ci.renderPass = ctx.renderPass;
         ci.subpass = 0;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &flareCompositePipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &flareCompositePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create flare composite pipeline");
 
         vkDestroyShaderModule(ctx.device, vert, nullptr);
@@ -11921,7 +11921,7 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         gci.pStages = gst;
         gci.pInputAssemblyState = &gia;
         gci.layout = flareSourcePipeLayout;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &gci, nullptr, &glarePipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &gci, nullptr, &glarePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create glare pipeline");
         vkDestroyShaderModule(ctx.device, gv, nullptr);
         vkDestroyShaderModule(ctx.device, gf, nullptr);
@@ -11932,7 +11932,7 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         gst[0].module = gv;
         gst[1].module = gf;
         gci.layout = glareMeshPipeLayout;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &gci, nullptr, &glareMeshPipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &gci, nullptr, &glareMeshPipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create mesh glare pipeline");
         vkDestroyShaderModule(ctx.device, gv, nullptr);
         vkDestroyShaderModule(ctx.device, gf, nullptr);
@@ -12124,7 +12124,7 @@ void SatelliteSim::createTrailPipelines(VulkanContext &ctx)
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = stage;
         ci.layout = trailFadePipeLayout;
-        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &trailFadePipeline) != VK_SUCCESS)
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &trailFadePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create trail fade pipeline");
 
         vkDestroyShaderModule(ctx.device, mod, nullptr);
@@ -12194,7 +12194,7 @@ void SatelliteSim::createTrailPipelines(VulkanContext &ctx)
         ci.layout = drawPipeLayout; // reused unchanged — same PointDrawPC push-constant range
         ci.renderPass = trailAccumRenderPass;
         ci.subpass = 0;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &trailSatPipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &trailSatPipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create trail satellite pipeline");
 
         vkDestroyShaderModule(ctx.device, vert, nullptr);
@@ -12260,7 +12260,7 @@ void SatelliteSim::createTrailPipelines(VulkanContext &ctx)
         ci.layout = starPipeLayout; // reused unchanged — also used for the planet trail draw
         ci.renderPass = trailAccumRenderPass;
         ci.subpass = 0;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &trailStarPipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &trailStarPipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create trail star pipeline");
 
         vkDestroyShaderModule(ctx.device, vert, nullptr);
@@ -12339,7 +12339,7 @@ void SatelliteSim::createTrailPipelines(VulkanContext &ctx)
         ci.layout = trailCompositePipeLayout;
         ci.renderPass = ctx.renderPass;
         ci.subpass = 0;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &trailCompositePipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &trailCompositePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create trail composite pipeline");
 
         vkDestroyShaderModule(ctx.device, vert, nullptr);
@@ -12727,7 +12727,7 @@ void SatelliteSim::createStarPipeline(VulkanContext &ctx)
     ci.renderPass = ctx.renderPass;
     ci.subpass = 0;
 
-    if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &starPipeline) != VK_SUCCESS)
+    if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &starPipeline) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create star pipeline");
 
     vkDestroyShaderModule(ctx.device, vert, nullptr);

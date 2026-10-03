@@ -378,7 +378,7 @@ void Scene3D::createMeshPipeline(VulkanContext& ctx) {
     pci.layout              = meshPipeLayout;
     pci.renderPass          = ctx.renderPass;
     pci.subpass             = 0;
-    vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &pci, nullptr, &meshPipeline);
+    vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &pci, nullptr, &meshPipeline);
 
     vkDestroyShaderModule(ctx.device, vert, nullptr);
     vkDestroyShaderModule(ctx.device, frag, nullptr);
@@ -442,7 +442,7 @@ void Scene3D::createSDFPipeline(VulkanContext& ctx) {
     pci.layout              = sdfPipeLayout;
     pci.renderPass          = ctx.renderPass;
     pci.subpass             = 0;
-    vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &pci, nullptr, &sdfPipeline);
+    vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &pci, nullptr, &sdfPipeline);
 
     vkDestroyShaderModule(ctx.device, vert, nullptr);
     vkDestroyShaderModule(ctx.device, frag, nullptr);

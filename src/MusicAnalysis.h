@@ -43,7 +43,7 @@
 
 namespace music
 {
-constexpr int kAnalysisVersion = 1;
+constexpr int kAnalysisVersion = 2;   // 2: the cache key is a content hash (fileTime)
 
 struct Chord
 {
@@ -58,7 +58,7 @@ struct Analysis
 {
     std::string file; // file name, no directory
     uint64_t fileSize = 0;
-    int64_t fileTime = 0; // last-write time in the filesystem clock's ticks (a cache key, nothing more)
+    int64_t fileTime = 0; // FNV-1a 64 of the file's bytes (a cache key, nothing more; was the write time until v2)
     float durationS = 0.0f;
 
     float tuningCents = 0.0f;      // against A440, the whole track

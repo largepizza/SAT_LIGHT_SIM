@@ -498,7 +498,7 @@ void UIRenderer::createPipeline(VulkanContext& ctx) {
     ci.renderPass          = (pipelinePass_ != VK_NULL_HANDLE) ? pipelinePass_ : ctx.renderPass;
     ci.subpass             = 0;
 
-    if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline) != VK_SUCCESS)
+    if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &pipeline) != VK_SUCCESS)
         throw std::runtime_error("UIRenderer: vkCreateGraphicsPipelines failed.");
 
     vkDestroyShaderModule(ctx.device, vert, nullptr);

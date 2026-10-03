@@ -71,6 +71,16 @@ struct VulkanContext {
     // for a compiled pipeline (registers, spills, ...). Pipelines created with
     // VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR can be queried (harness `shaders reload`).
     bool                     pipelineStatsSupported = false;
+    // Set only while the harness rebuilds shaders (`shaders reload`): the statistics capture keeps a pipeline out
+    // of the caches, so it is not requested at startup.
+    bool                     capturePipelineStats = false;
+    // The app's own pipeline cache (2026-10-02), persisted to pipeline_cache.bin next to the exe (or the user data
+    // folder). Every pipeline is created through it. The driver's own Vulkan cache is capped (~512 MB on NVIDIA,
+    // shared by every build): once full it stopped storing new pipelines, and every launch recompiled every shader
+    // changed since — 30-40 s of startup (pipelines 18 s, the clouds' bakes 4 s, the first frames 10-15 s).
+    VkPipelineCache          pipelineCache = VK_NULL_HANDLE;
+    std::string              pipelineCachePath;
+    void                     savePipelineCache();
 
     // ── Render pass & framebuffers ─────────────────────────────────────────
     VkRenderPass                renderPass = VK_NULL_HANDLE;

@@ -539,7 +539,7 @@ void SatMeshRenderer::createPipelines(VulkanContext &ctx)
         ci.pDynamicState = &dys;
         ci.layout = pipeLayout;
         ci.renderPass = pass;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &out) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &out) != VK_SUCCESS)
             throw std::runtime_error(std::string("SatMeshRenderer: pipeline ") + fs);
         vkDestroyShaderModule(ctx.device, v, nullptr);
         vkDestroyShaderModule(ctx.device, f, nullptr);
@@ -820,7 +820,7 @@ void SatMeshRenderer::createViewerGlare(VulkanContext &ctx)
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod,
                     "main", nullptr};
         ci.layout = glareFindPipeLayout;
-        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &glareFindPipe) != VK_SUCCESS)
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &glareFindPipe) != VK_SUCCESS)
             throw std::runtime_error("SatMeshRenderer: viewer glare find pipeline");
         vkDestroyShaderModule(ctx.device, mod, nullptr);
     }
@@ -880,7 +880,7 @@ void SatMeshRenderer::createViewerGlare(VulkanContext &ctx)
         ci.pDynamicState = &dys;
         ci.layout = glareDrawPipeLayout;
         ci.renderPass = glareOverPass;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &glareDrawPipe) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &glareDrawPipe) != VK_SUCCESS)
             throw std::runtime_error("SatMeshRenderer: viewer glare draw pipeline");
         vkDestroyShaderModule(ctx.device, v, nullptr);
         vkDestroyShaderModule(ctx.device, f, nullptr);
@@ -1416,7 +1416,7 @@ void SatMeshRenderer::createReflPipeline(VulkanContext &ctx, VkPipelineLayout sk
         ci.pDynamicState = &dys;
         ci.layout = skyLayout;
         ci.renderPass = reflPass;
-        if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &reflPipe) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &reflPipe) != VK_SUCCESS)
             throw std::runtime_error("SatMeshRenderer: sharp reflection pipeline");
         vkDestroyShaderModule(ctx.device, vs, nullptr);
         vkDestroyShaderModule(ctx.device, fs, nullptr);
@@ -1453,7 +1453,7 @@ void SatMeshRenderer::createReflPipeline(VulkanContext &ctx, VkPipelineLayout sk
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, cs,
                     "main", nullptr};
         ci.layout = reflAddPipeLayout;
-        if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &reflAddPipe) != VK_SUCCESS)
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &reflAddPipe) != VK_SUCCESS)
             throw std::runtime_error("SatMeshRenderer: reflection add pipeline");
         vkDestroyShaderModule(ctx.device, cs, nullptr);
     }
@@ -1616,7 +1616,7 @@ void SatMeshRenderer::createBloomPipeline(VulkanContext &ctx, VkRenderPass flare
     ci.pDynamicState = &dys;
     ci.layout = bloomPipeLayout;
     ci.renderPass = flareSourcePass; // later recreations of that pass stay compatible (same format)
-    if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &bloomPipe) != VK_SUCCESS)
+    if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &bloomPipe) != VK_SUCCESS)
         throw std::runtime_error("SatMeshRenderer: bloom pipeline");
     vkDestroyShaderModule(ctx.device, v, nullptr);
     vkDestroyShaderModule(ctx.device, f, nullptr);

@@ -151,6 +151,9 @@ void VulkanContext::endPhotoTarget()
 void VulkanContext::cleanup()
 {
     endPhotoTarget();
+    savePipelineCache();
+    if (pipelineCache != VK_NULL_HANDLE)
+        vkDestroyPipelineCache(device, pipelineCache, nullptr);
     cleanupSwapchain();
     if (queryPool != VK_NULL_HANDLE)
         vkDestroyQueryPool(device, queryPool, nullptr);
@@ -632,6 +635,76 @@ void VulkanContext::createDevice()
 
     vkGetDeviceQueue(device, graphicsFamily, 0, &graphicsQueue);
     vkGetDeviceQueue(device, computeFamily, 0, &computeQueue);
+
+    // The pipeline cache (see VulkanContext.h). Next to the exe, so harness runs (whose user data folder is a fresh
+    // run folder) share it too; the user data folder when the exe's folder is read-only. The driver validates the
+    // data's header (vendor, device, driver UUID) and ignores data that does not match.
+    {
+        std::vector<char> data;
+        const std::string candidates[2] = {Paths::exeDir() + "/pipeline_cache.bin", Paths::userDataDir() + "/pipeline_cache.bin"};
+        for (const std::string &p : candidates)
+        {
+            std::ofstream probe(p, std::ios::binary | std::ios::app);
+            if (!probe)
+                continue;
+            probe.close();
+            pipelineCachePath = p;
+            break;
+        }
+        if (!pipelineCachePath.empty())
+        {
+            std::ifstream f(pipelineCachePath, std::ios::binary | std::ios::ate);
+            const std::streamoff n = f ? (std::streamoff)f.tellg() : 0;
+            // Stale entries from earlier builds accumulate: start over past 256 MB (one slow launch).
+            if (n > 0 && n < (std::streamoff)256 * 1024 * 1024)
+            {
+                data.resize((size_t)n);
+                f.seekg(0);
+                f.read(data.data(), n);
+            }
+        }
+        VkPipelineCacheCreateInfo pc{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+        pc.initialDataSize = data.size();
+        pc.pInitialData = data.empty() ? nullptr : data.data();
+        if (vkCreatePipelineCache(device, &pc, nullptr, &pipelineCache) != VK_SUCCESS)
+        {
+            pc.initialDataSize = 0;
+            pc.pInitialData = nullptr;
+            if (vkCreatePipelineCache(device, &pc, nullptr, &pipelineCache) != VK_SUCCESS)
+                pipelineCache = VK_NULL_HANDLE;
+        }
+        Log::line("Pipeline cache: " + (pipelineCachePath.empty() ? std::string("(no writable location)") : pipelineCachePath) +
+                  ", " + std::to_string(data.size() / 1024) + " KB loaded.");
+    }
+}
+
+void VulkanContext::savePipelineCache()
+{
+    if (pipelineCache == VK_NULL_HANDLE || pipelineCachePath.empty())
+        return;
+    size_t n = 0;
+    if (vkGetPipelineCacheData(device, pipelineCache, &n, nullptr) != VK_SUCCESS || n == 0)
+        return;
+    std::vector<char> data(n);
+    if (vkGetPipelineCacheData(device, pipelineCache, &n, data.data()) != VK_SUCCESS)
+        return;
+    const std::string tmp = pipelineCachePath + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f)
+            return;
+        f.write(data.data(), (std::streamsize)n);
+        if (!f)
+            return;
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, pipelineCachePath, ec);
+    if (ec)
+    {
+        std::filesystem::remove(pipelineCachePath, ec);
+        std::filesystem::rename(tmp, pipelineCachePath, ec);
+    }
+    Log::line("Pipeline cache saved: " + std::to_string(n / 1024) + " KB.");
 }
 
 // ─── Swapchain ────────────────────────────────────────────────────────────────

@@ -1922,7 +1922,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         const std::string wg = c.str("wg");
         if (!wg.empty() && sscanf(wg.c_str(), "%ux%u", &wgX, &wgY) != 2)
             fail("shaders reload: wg=<X>x<Y>");
+        ctx_->capturePipelineStats = true;   // the statistics below need it; startup does not ask for it
         const std::string err = reloadCloudsV2Shaders(*ctx_, c.str("march"), stats, wgX, wgY);
+        ctx_->capturePipelineStats = false;
         if (!err.empty())
             fail("shaders reload: " + err);
         r["stats"] = stats;
@@ -2728,7 +2730,7 @@ void SatelliteSim::createTerrainProbe(VulkanContext &ctx)
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod, "main",
                 nullptr};
     ci.layout = probePipeLayout;
-    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &probePipeline) != VK_SUCCESS)
+    if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &probePipeline) != VK_SUCCESS)
         probePipeline = VK_NULL_HANDLE;
     vkDestroyShaderModule(ctx.device, mod, nullptr);
 }

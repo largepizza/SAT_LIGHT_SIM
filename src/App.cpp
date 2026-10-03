@@ -70,6 +70,7 @@ void App::run() {
 
     sim->init(ctx);
     sim->setBootStatus(nullptr);
+    ctx.savePipelineCache();   // now, not only at exit: a crash or a killed run keeps what init compiled
     simInited = true;
     if (bootResizeDuringInit) // the window changed size mid-init: rebuild what init sized
         sim->onResize(ctx);

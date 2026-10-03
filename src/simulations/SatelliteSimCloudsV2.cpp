@@ -90,10 +90,10 @@ VkPipeline makeComputePipeline(VulkanContext &ctx, const char *spv, VkPipelineLa
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = stage;
     ci.layout = layout;
-    if (ctx.pipelineStatsSupported)
+    if (ctx.pipelineStatsSupported && ctx.capturePipelineStats)
         ci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
     VkPipeline p = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &p) != VK_SUCCESS)
+    if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &p) != VK_SUCCESS)
         throw std::runtime_error(std::string("clouds v2: failed to create pipeline ") + spv);
     vkDestroyShaderModule(ctx.device, mod, nullptr);
     return p;

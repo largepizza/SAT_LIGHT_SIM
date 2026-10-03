@@ -503,7 +503,7 @@ void Particles::createComputePipeline(VulkanContext& ctx) {
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage  = stage;
     ci.layout = compPipeLayout;
-    if (vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &compPipeline) != VK_SUCCESS)
+    if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &compPipeline) != VK_SUCCESS)
         throw std::runtime_error("Failed to create particle compute pipeline.");
 
     vkDestroyShaderModule(ctx.device, mod, nullptr);
@@ -579,7 +579,7 @@ void Particles::createDrawPipeline(VulkanContext& ctx) {
     ci.renderPass          = ctx.renderPass;
     ci.subpass             = 0;
 
-    if (vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &ci, nullptr, &drawPipeline) != VK_SUCCESS)
+    if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &drawPipeline) != VK_SUCCESS)
         throw std::runtime_error("Failed to create particle draw pipeline.");
 
     vkDestroyShaderModule(ctx.device, vert, nullptr);

@@ -1473,6 +1473,15 @@ Invariants:
   swapchain, so linear alpha steps look far brighter than intended. Font sizes never scale below
   16 px (the baked bitmap font breaks up smaller).
 - `SATLIGHTSIM_BOOT_SCREEN=0` (`run.py --boot-screen off`) restores the old white-window launch.
+- **The app keeps its own pipeline cache** (`VulkanContext::pipelineCache`, `pipeline_cache.bin` next to the exe, else
+  the user data folder; loaded at device creation, saved after init and at exit, dropped past 256 MB; every
+  `vkCreate*Pipelines` passes `ctx.pipelineCache`). The driver's Vulkan cache is capped (~512 MB on NVIDIA, one file
+  shared by every build of the app): it filled on 2026-10-01 and stopped storing, and every launch recompiled every
+  shader changed since — 30-40 s to "Starting" (pipelines 18 s, the clouds' bakes 4 s, then a frozen first frame).
+  With it: 4.6 s on a warm cache. `VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR` is requested only during harness
+  `shaders reload` (`ctx.capturePipelineStats`). Look at the `boot:` lines of satlight_log.txt when startup slows.
+- **Music analysis cache key = a content hash** (kAnalysisVersion 2): the write time changed with every build's copy of
+  the music, so every launch after a rebuild re-analysed all tracks (~10 s).
 
 ---
 
