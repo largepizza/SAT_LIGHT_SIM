@@ -2285,6 +2285,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.farBlend = cloudFarBlend();
         cp.oceanWaveRangeM = oceanWaveRangeKm * 1000.0f;
         cp.oceanWaveFootK = oceanWaveSharpness;
+        cp.seaTune = glm::vec4(std::clamp(oceanFarRipple, 0.0f, 4.0f), std::clamp(oceanWarp, 0.0f, 6.0f),
+                               std::clamp(oceanWarpDetail, 0.0f, 3.0f), 0.0f);
         cp.extinctionCoeff = extinctionCoeff;
         cp.cirrusWindAngle = glm::radians(cloudCirrusWindDeg);
         cp.cirrusStretch = cloudCirrusStretch;
@@ -4601,6 +4603,7 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
     camera.fovYDeg = 50.0f;
     snprintf(followLabel, sizeof(followLabel), "Following %s #%d", satTypes[ti].name.c_str(), satIndex);
     followFlight = 0;
+    followFlightInit = false;
     if (fly)
     {
         followFlight = 1;
@@ -4630,6 +4633,7 @@ void SatelliteSim::stopFollow(bool fly)
         followFlightDur = followFlightDuration(glm::length(home - followFlightFrom));
         followFlightFacing0 = obsFacing;
         followFlightEl0 = camera.elDeg;
+        followFlightInit = false;
         return;
     }
     followFlight = 0;
@@ -4639,6 +4643,13 @@ void SatelliteSim::stopFollow(bool fly)
     obsHeightOffset = followSavedHeight;
     camera.elDeg = followSavedEl;
     camera.fovYDeg = followSavedFov;
+}
+
+// The parked ground observer's eye (where a flight home lands), ECEF.
+glm::dvec3 SatelliteSim::followHomeEcef() const
+{
+    return glm::dvec3(followSavedObsDir) *
+           ((double)kEarthRadius + std::max((double)followSavedGround, (double)followSavedHeight) + 2.0);
 }
 
 // Moves the observer with the followed satellite (this frame's sim time), applies WASD / Q-E to
@@ -4716,7 +4727,9 @@ void SatelliteSim::updateFollow(float dt)
 
     if (followFlightAlign)
     {
-        const glm::dvec3 back = followFlightFrom - P;
+        // Review 24: on the observer's line of sight (the ground observer to the satellite), so the arrival keeps the
+        // side of the satellite, and its flare, that the observer sees.
+        const glm::dvec3 back = followHomeEcef() - P;
         if (glm::length(back) > 1.0)
         {
             const glm::dvec3 d = glm::normalize(back) * followDefaultDist;
@@ -4728,33 +4741,40 @@ void SatelliteSim::updateFollow(float dt)
     bool homeLook = false;
     if (followFlight != 0)
     {
-        const glm::dvec3 to = followFlight == 1 ? followObsEcef
-                            : glm::dvec3(followSavedObsDir) * ((double)kEarthRadius +
-                                  std::max((double)followSavedGround, (double)followSavedHeight) + 2.0);
-        if (followFlightDur <= 0.0)
+        const glm::dvec3 home = followHomeEcef();
+        const glm::dvec3 to   = followFlight == 1 ? followObsEcef : home;
+        // Review 24: both ways along the OBSERVER'S line of sight to the satellite (home -> P, re-aimed every frame as
+        // the satellite moves), so the side of the satellite the observer sees, and a flare (which only shows along
+        // that line), stays in view the whole way in and out. Review 23's line was the start's view, fixed: it drifted
+        // off the observer's line as the satellite moved, and the way home was the arc. The arc is kept for a
+        // satellite below the observer's horizon (the line runs through the Earth).
+        const glm::dvec3 nO = glm::normalize(home - P);
+        const double     dO = glm::length(home - P);
+        if (!followFlightInit)
         {
-            followFlightDur = followFlightDuration(glm::length(to - followFlightFrom));
-            // Review 23: straight along the line of sight when the Earth is not in the way. The arc's last stretch
-            // climbed vertically to a point beside the satellite: the camera looked straight up and the view spun.
-            const glm::dvec3 ab = to - followFlightFrom;
-            const double tc = std::clamp(-glm::dot(followFlightFrom, ab) / std::max(glm::dot(ab, ab), 1e-9), 0.0, 1.0);
-            followFlightLine = followFlight == 1 && glm::length(followFlightFrom + tc * ab) > (double)kEarthRadius;
+            followFlightInit = true;
+            if (followFlightDur <= 0.0)
+                followFlightDur = followFlightDuration(glm::length(to - followFlightFrom));
+            const glm::dvec3 ab = P - home;
+            const double tc = std::clamp(-glm::dot(home, ab) / std::max(glm::dot(ab, ab), 1e-9), 0.0, 1.0);
+            followFlightLine = glm::length(home + tc * ab) > (double)kEarthRadius;
             followFlightTarget0 = to;
+            // Where the start lies along the line, and how far off it (0 from the ground observer; a start beside the
+            // satellite, or at another satellite, joins the line over the first ~40%).
+            followFlightS0 = std::max(glm::dot(followFlightFrom - P, nO), 1.0);
+            followFlightDelta0 = followFlightFrom - (P + nO * followFlightS0);
         }
         followFlightT += (double)std::max(dt, 0.0f);
         const double x = std::min(followFlightT / followFlightDur, 1.0);
         const double u = x * x * (3.0 - 2.0 * x);
-        if (followFlight == 1 && followFlightLine)
+        if (followFlightLine)
         {
-            // The distance to the arrival point closes geometrically (the distance to the satellite, s + D, by a
-            // constant ratio per unit u), along the start's line; the line's anchor slides from where the arrival
-            // point was to where it is, so the camera leaves at rest and lands moving with the satellite.
-            const glm::dvec3 off0 = followFlightFrom - followFlightTarget0;
-            const double s0 = glm::length(off0);
-            const double D = std::max(glm::length(to - P), 1.0);
-            const double s = (s0 + D) * std::pow(D / (s0 + D), u) - D;
-            const glm::dvec3 anchor = followFlightTarget0 + (to - followFlightTarget0) * u;
-            followObsEcef = anchor + (s0 > 1e-6 ? off0 / s0 : glm::dvec3(0.0)) * std::max(s, 0.0);
+            // The distance to the satellite changes geometrically (a constant ratio per unit u: the satellite grows on
+            // screen at a steady rate), from the start's to the arrival's (out: the follow distance; home: the
+            // observer's own, so u = 1 lands exactly on the observer).
+            const double sB = followFlight == 1 ? std::max(glm::length(to - P), 1.0) : dO;
+            const double s  = std::exp(glm::mix(std::log(followFlightS0), std::log(std::max(sB, 1.0)), u));
+            followObsEcef = P + nO * s + followFlightDelta0 * (1.0 - glm::smoothstep(0.0, 0.4, u));
         }
         else
             followObsEcef = followFlightPos(followFlightFrom, to, u);
@@ -4808,12 +4828,25 @@ void SatelliteSim::updateFollow(float dt)
     // normalize(0) made the elevation NaN — a NaN camera, and every pass drew black.
     if (homeLook)
     {
-        // Flying home: turn from the satellite toward the saved view.
-        const float k = (float)glm::smoothstep(0.0, 1.0, std::min(followFlightT / followFlightDur, 1.0));
-        glm::vec3 f = glm::mix(followFlightFacing0, followSavedFacing, k);
+        // Flying home: turn from the satellite toward the saved view. Review 24: along the observer's line, the view
+        // stays on the satellite (its flare) for the first ~60% and turns to the saved view over the rest.
+        const float xh = (float)std::min(followFlightT / followFlightDur, 1.0);
+        float k = glm::smoothstep(0.0f, 1.0f, xh);
+        glm::vec3 f0 = followFlightFacing0;
+        float     el0 = followFlightEl0;
+        if (followFlightLine && glm::length(P - followObsEcef) > 0.01)
+        {
+            const glm::vec3 dS = glm::vec3(glm::normalize(P - followObsEcef));
+            const glm::vec3 hS = dS - glm::dot(dS, upF) * upF;
+            if (glm::length(hS) > 1e-4f)
+                f0 = glm::normalize(hS);
+            el0 = glm::degrees(asinf(glm::clamp(glm::dot(dS, upF), -1.0f, 1.0f)));
+            k = glm::smoothstep(0.6f, 1.0f, xh);
+        }
+        glm::vec3 f = glm::mix(f0, followSavedFacing, k);
         if (glm::length(f) > 1e-6f)
             obsFacing = glm::normalize(f);
-        camera.elDeg = glm::mix(followFlightEl0, followSavedEl, k);
+        camera.elDeg = glm::mix(el0, followSavedEl, k);
         camera.fovYDeg = glm::mix(50.0f, followSavedFov, k);
     }
     else if (followAimLock && glm::length(P - followObsEcef) > 0.01)
@@ -6975,7 +7008,7 @@ void SatelliteSim::readExposureMeter()
         const float r = px[i * 4] / 255.0f, g = px[i * 4 + 1] / 255.0f, b = px[i * 4 + 2] / 255.0f;
         const float l = 0.2126f * r + 0.7152f * g + 0.0722f * b;
         sum += l;
-        if (l > 0.08f) { sumLit += l; ++lit; }
+        if (l > 0.04f) { sumLit += l; ++lit; }   // review 24: 0.08 left the (darker) open sea out of the lit mean
         if (std::max(r, std::max(g, b)) > 0.96f)
             ++clipped;
     }
@@ -7001,7 +7034,9 @@ void SatelliteSim::readExposureMeter()
         {
             const float litMean = (float)(sumLit / lit);
             const float litClip = (float)clipped / (float)lit;
-            const float errS = log2f(0.42f / std::max(litMean, 1e-3f)) - 4.0f * std::max(litClip - 0.02f, 0.0f);
+            // Review 24: 0.47 (was 0.42) with the gate at 0.04: once the sea was lit by its irradiance (review 23) it fell
+            // under the old gate, the lit mean became the clouds' and land's, and the Earth from orbit read darker.
+            const float errS = log2f(0.47f / std::max(litMean, 1e-3f)) - 4.0f * std::max(litClip - 0.02f, 0.0f);
             err = err + (errS - err) * sw;
             lo = lo + (-5.0f * std::clamp(cv2AutoExposure, 0.0f, 1.0f) - lo) * sw;
             day = day + (1.0f - day) * sw;

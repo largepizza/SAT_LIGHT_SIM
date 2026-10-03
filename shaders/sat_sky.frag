@@ -2240,7 +2240,7 @@ float seaHeight(vec2 posM, float seaTime, int nOct) {
     // and the ridge lattice read as a square grid (user snap 2). Its lattices repeat every 50 / 150 cells, i.e. once
     // per kSeaCells, so the field stays exactly periodic; the integer octave matrix carries the warp to every octave
     // (local shear ~0.6 < 1: no folds).
-    v += 4.5 * seaNoise2P(v / 24.0, 50.0) + 1.5 * seaNoise2P(v / 8.0 + vec2(5.0, 41.0), 150.0);
+    v += cloud.seaTune.y * seaNoise2P(v / 24.0, 50.0) + cloud.seaTune.z * seaNoise2P(v / 8.0 + vec2(5.0, 41.0), 150.0);   // "Sea warp" / "detail" (review 24)
     float amp = kSeaHeight * gSeaAmp, choppy = kSeaChoppy + gSeaChoppy, tf = 1.0;
     float h   = 0.0;
     [[dont_unroll]] for (int i = 0; i < nOct; i++) {
@@ -4577,6 +4577,39 @@ void main() {
                     // The finer detail octaves can still turn a facet slightly away from the eye: lean it back.
                     float nv = dot(waveN, -dir);
                     if (nv < 0.05) waveN = normalize(waveN + (0.05 - nv) * (-dir));
+                }
+            }
+
+            // Review 24: FAR-SEA RIPPLE. Where the footprint filter (or the wave range) has removed the wave octaves the
+            // normal was flat and the sea a mirror: reflections near the horizon were sharp copies of the clouds. A real far
+            // sea breaks them into columns of light — its facets tilt along the view, which moves the reflection up and
+            // down and changes the Fresnel — banded across the view by the waves it can still resolve. A ripple normal
+            // whose cells are ~3 pixel footprints ALONG the view (resolvable, so it cannot alias; across the view the
+            // footprint is far smaller, so on screen each band is long and thin), tilted mostly along the view.
+            // Its lattice is the waves' (octave-0 cells, periods that divide kSeaCells: exactly periodic).
+            if (cloud.seaTune.x > 0.0 && altFade > 0.01) {
+                float cosG  = max(abs(dot(dir, surfUp)), 0.02);
+                float footA = pixAngle * dist / cosG;
+                float rip   = max(smoothstep(3.0, 12.0, footA * cloud.oceanWaveFootK), waveBlend) * altFade;
+                float want  = log2(max(3.0 * footA * kSeaFreq, 1.0));   // the cell, in octave-0 cells (log2)
+                rip *= 1.0 - smoothstep(9.5, 10.5, want);              // past the field's period: nothing resolvable
+                vec3 hView = dir - dot(dir, surfUp) * surfUp;
+                if (rip > 0.0 && dot(hView, hView) > 1e-6) {
+                    const float kRipT[11] = float[11](1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 60.0, 120.0, 240.0, 600.0, 1200.0);
+                    int   i0 = clamp(int(want), 0, 9);
+                    float fw = clamp(want - float(i0), 0.0, 1.0);
+                    vec2  v0 = mod(vec2(posM.x * 0.75, posM.y) * kSeaFreq, kSeaCells);
+                    float tA = kRipT[i0], tB = kRipT[i0 + 1];
+                    float dr = seaTime * 0.25;   // wave groups drift (~4.5 m/s)
+                    vec2  nA = seaNoise2P(v0 / tA + vec2(mod(dr / tA, kSeaCells / tA), 0.0), kSeaCells / tA);
+                    vec2  nB = seaNoise2P(v0 / tB + vec2(mod(dr / tB, kSeaCells / tB), 0.0) + vec2(3.7, 1.9), kSeaCells / tB);
+                    vec2  rn = mix(nA, nB, fw);
+                    hView = normalize(hView);
+                    vec3  side = cross(surfUp, hView);
+                    float a = 0.12 * cloud.seaTune.x * rip * clamp(seaState, 0.3, 2.0);
+                    waveN = normalize(waveN + a * (rn.x * hView + 0.35 * rn.y * side));
+                    float nvR = dot(waveN, -dir);
+                    if (nvR < 0.05) waveN = normalize(waveN + (0.05 - nvR) * (-dir));
                 }
             }
 

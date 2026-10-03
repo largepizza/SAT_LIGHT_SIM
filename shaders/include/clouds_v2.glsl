@@ -113,6 +113,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  morph;          // x its share of the placement (vs the cluster Perlin), y "Imagery share" (review 19), z "Foveated full rate (radius)" (review 22, cloud_v2_tiles.comp), w 2^-"Far-field sharpness"
     vec4  farLight;       // review 18: the far cloud layer's key-light and sky-light gains (cloud_v2_far.comp);
                           // zw review 22: "Cumulus lobes (bottom / top)", replacing form.x on convective types
+    vec4  farTune;        // review 24: the far layer's x slant coverage, y coverage bias (field units), z density, w edge softness
+    vec4  farTune2;       // review 24: x the far layer's low-Sun light (0 = a flat slab's mu0), yzw unused
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -918,10 +920,10 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     float seaM  = 1.0 - smoothstep(5.0, 120.0, w.a * 8000.0);
     float zMs   = mix(fz, cv2MorphZ(wd, mpF, fpF, strat, seaM, cl.r), cv2.morph.x);
     field += 0.3 * cv2.morph.y * clamp(zMs, -2.5, 2.5);
-    float thr   = 1.0 - covT;
+    float thr   = 1.0 - covT - cv2.farTune.y;   // review 24: "Far cloud layer coverage bias"
     r.eRaw  = (field - thr) / 0.55;
     r.e     = clamp(r.eRaw, 0.0, 1.0);
-    float sigU = mix(0.03, 0.03 + 0.2 * smoothstep(0.0, 3.0, lodCell), ty.look.z);
+    float sigU = mix(0.03, 0.03 + 0.2 * smoothstep(0.0, 3.0, lodCell), ty.look.z) * max(cv2.farTune.w, 0.05);
     r.frac  = clamp(0.5 + (field - thr) / (2.5 * sigU), 0.0, 1.0);
     r.covE  = covT;
     float tropo  = cv2Tropo(wd);

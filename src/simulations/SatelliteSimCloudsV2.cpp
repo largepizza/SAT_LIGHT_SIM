@@ -1013,6 +1013,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                         std::exp2(-std::clamp(cv2MorphBreakup, 0.0f, 3.0f)));
     p.farLight = glm::vec4(cv2FarKeyGain, cv2FarSkyGain, std::clamp(cv2CuLobesBottom, 0.0f, 1.0f),
                            std::clamp(cv2CuLobesTop, 0.0f, 1.0f));   // zw: review 22's cumulus lobes
+    p.farTune = glm::vec4(std::clamp(cv2FarSlant, 0.0f, 4.0f), std::clamp(cv2FarCoverBias, -0.5f, 0.5f),
+                          std::clamp(cv2FarDensity, 0.0f, 8.0f), std::clamp(cv2FarSoftness, 0.1f, 8.0f));
+    p.farTune2 = glm::vec4(std::clamp(cv2FarLowSun, 0.0f, 4.0f), 0.0f, 0.0f, 0.0f);
     p.anchorCell = anchor(cv2CellPeriodM, 0.85);
     const double stormScale = std::clamp((double)cv2StormScale, 0.25, 16.0);
     p.anchorStorm = anchor(cv2ShapePeriodM * stormScale, 1.0);

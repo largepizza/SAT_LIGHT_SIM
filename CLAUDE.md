@@ -1315,6 +1315,23 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   it kept its noon brightness up to the terminator and read cyan at sunset. **Sea grid:** a periodic 2D warp of the whole
   wave field (24 / 8 cells, `seaNoise2P`) and each octave's second component on a 45-degree lattice; the warp the
   octaves had was a shift along the diagonal only, and the ridges read as a square grid.
+- **Review 24 (2026-10-02, the user's snapshots = profile_log records 2-7, harness_runs/r24_snaps.jsonl):** **Go to
+  rides the OBSERVER'S line of sight both ways** (the parked ground observer to the satellite, re-aimed every frame;
+  `followHomeEcef`, `followFlightS0/Delta0`): the distance changes geometrically, the arrival offset is on that line,
+  and the way home keeps the satellite in view for ~60% before turning to the saved view, so a flare the observer
+  sees stays in view in and out (benchmark: snap 3, Starlink Gen3 Direct-to-Cell n=7350). **Far-sea ripple**
+  ("Far sea ripple", slot 248, `seaTune.x`): where the footprint filter has removed the wave octaves, a ripple normal
+  tilted along the view, its cells ~3 along-view footprints (resolvable, so no aliasing; long thin bands on screen),
+  on the waves' lattice with periods dividing kSeaCells — the far band was a mirror. "Sea warp" / "detail" (249-250,
+  defaults 3.5 / 1.2: 4.5 stretched the ridges in places). **The far cloud layer was ~0.2 clearer than the march**
+  (mean transmittance 0.76 vs 0.58 at nadir from 900 km): the march's 3D lobes put cloud past the 2D field's edge.
+  "Far cloud layer coverage bias" (0.12, slot 252, `farTune.y`, field units) matches it (0.580 vs 0.576 nadir,
+  0.43 vs 0.41 oblique at 668 km); "slant coverage" (251, apparent cover 1 - (1 - f)^(1 + k tan z)), "density" (253),
+  "edge softness" (254). **Its key light went as mu0** (a flat slab) and went dark ~200 km before the terminator where
+  the march's 3D tops stay lit: mu0^(1 / (1 + "low-Sun light")) (255, 0.5; far/march by strip across the terminator
+  0.3-0.66 -> 0.92-1.23). The "Flat layers" sliders are v1's 2D layers: drawn only in reflections / probes, SKY_LITE
+  and Potato, not the main view while the march runs. **Exposure from orbit**: the lit gate 0.08 -> 0.04 (review
+  23's darker sea fell under it) and the lit target 0.42 -> 0.47 (snap 4: -1.37 -> -1.09 EV).
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -1330,7 +1347,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
-- The Clouds tab's slider slots: `kCloudSliderSlots` (248 since review 22: 244-245 cumulus lobes, 246 fast-flight LOD, 247 fovea radius; 221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
+- The Clouds tab's slider slots: `kCloudSliderSlots` (256 since review 24: 248-250 far sea ripple, sea warp x2, 251-255 far cloud layer tunables; 248 since review 22: 244-245 cumulus lobes, 246 fast-flight LOD, 247 fovea radius; 221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
   `cloudBufs` (212 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
   moving, ice fog x2, sprite start; 207-209 Cb head lobes, drop distance, snow wind; 210 move speed (Controls tab), 211 erosion size); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive

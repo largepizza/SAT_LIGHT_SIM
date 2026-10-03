@@ -4861,6 +4861,12 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Far cloud layer full at (km)", &cv2FarLayerFullKm, 100.0f, 100000.0f, 50.0f, "%.0f", 240},
         {"Far cloud layer sunlight", &cv2FarKeyGain, 0.0f, 20.0f, 0.1f, "%.1f", 241},
         {"Far cloud layer sky light", &cv2FarSkyGain, 0.0f, 4.0f, 0.05f, "%.2f", 242},
+        // Review 24: the far layer's coverage and depth, to match the march across the hand-off (600-1500 km).
+        {"Far cloud layer slant coverage", &cv2FarSlant, 0.0f, 3.0f, 0.05f, "%.2f", 251},
+        {"Far cloud layer coverage bias", &cv2FarCoverBias, -0.3f, 0.3f, 0.01f, "%.2f", 252},
+        {"Far cloud layer density", &cv2FarDensity, 0.0f, 4.0f, 0.05f, "%.2f", 253},
+        {"Far cloud layer edge softness", &cv2FarSoftness, 0.2f, 4.0f, 0.05f, "%.2f", 254},
+        {"Far cloud layer low-Sun light", &cv2FarLowSun, 0.0f, 3.0f, 0.05f, "%.2f", 255},
     };
 
     CloudSlider secFlat[] = {
@@ -5019,6 +5025,11 @@ void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
         // the sea went to a mirror close in. The range and the filter's sharpness (lower = finer octaves kept longer).
         {"Sea wave range (km)", &oceanWaveRangeKm, 5.0f, 200.0f, 1.0f, "%.0f", 237},
         {"Sea wave sharpness", &oceanWaveSharpness, 0.1f, 1.0f, 0.05f, "%.2f", 243},
+        // Review 24: the far sea's resolvable ripple (columns of light instead of a mirror past the waves) and the
+        // wave field's warp (higher = the ridges meander more, and stretch in places).
+        {"Far sea ripple", &oceanFarRipple, 0.0f, 3.0f, 0.05f, "%.2f", 248},
+        {"Sea warp", &oceanWarp, 0.0f, 6.0f, 0.1f, "%.1f", 249},
+        {"Sea warp detail", &oceanWarpDetail, 0.0f, 3.0f, 0.05f, "%.2f", 250},
         {"Ocean flare refl", &oceanGlintGain, 0.0f, 4.0f, 0.05f, "%.2f", 110},
         {"Flare refl floor", &oceanGlintMinFlux, 0.0f, 64.0f, 0.5f, "%.1f", 111},
     };
@@ -6940,6 +6951,11 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2FarLayerFullKm = c.value("far_layer_full_km", cv2FarLayerFullKm);
         cv2FarKeyGain = c.value("far_layer_sun_gain", cv2FarKeyGain);
         cv2FarSkyGain = c.value("far_layer_sky_gain", cv2FarSkyGain);
+        cv2FarSlant = c.value("far_layer_slant", cv2FarSlant);
+        cv2FarCoverBias = c.value("far_layer_cover_bias", cv2FarCoverBias);
+        cv2FarDensity = c.value("far_layer_density", cv2FarDensity);
+        cv2FarSoftness = c.value("far_layer_softness", cv2FarSoftness);
+        cv2FarLowSun = c.value("far_layer_low_sun", cv2FarLowSun);
         cv2WindMps = c.value("wind_mps", cv2WindMps);
         cv2EdgeSharpness = c.value("edge_sharpness", cv2EdgeSharpness);
         cv2WeatherWarpKm = c.value("weather_warp_km", cv2WeatherWarpKm);
@@ -7075,6 +7091,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         oceanWhitecapGain = c.value("ocean_whitecaps", oceanWhitecapGain);
         oceanWaveRangeKm = std::clamp(c.value("ocean_wave_range_km", oceanWaveRangeKm), 5.0f, 200.0f);
         oceanWaveSharpness = std::clamp(c.value("ocean_wave_sharpness", oceanWaveSharpness), 0.1f, 1.0f);
+        oceanFarRipple = c.value("ocean_far_ripple", oceanFarRipple);
+        oceanWarp = c.value("ocean_warp", oceanWarp);
+        oceanWarpDetail = c.value("ocean_warp_detail", oceanWarpDetail);
         oceanGlintMinFlux = c.value("ocean_glint_min_flux", oceanGlintMinFlux);
         cloudCirrusWindDeg = c.value("cirrus_wind_deg", cloudCirrusWindDeg);
         cloudCirrusStretch = c.value("cirrus_stretch", cloudCirrusStretch);
@@ -7345,6 +7364,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ocean_whitecaps", oceanWhitecapGain},
         {"ocean_wave_range_km", oceanWaveRangeKm},
         {"ocean_wave_sharpness", oceanWaveSharpness},
+        {"ocean_far_ripple", oceanFarRipple},
+        {"ocean_warp", oceanWarp},
+        {"ocean_warp_detail", oceanWarpDetail},
         {"ocean_glint_min_flux", oceanGlintMinFlux},
         {"zodiacal_width_deg", zodiacalWidthDeg},
         {"view_samples_min", viewSamplesMin},
@@ -7440,6 +7462,11 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"far_layer_full_km", cv2FarLayerFullKm},
         {"far_layer_sun_gain", cv2FarKeyGain},
         {"far_layer_sky_gain", cv2FarSkyGain},
+        {"far_layer_slant", cv2FarSlant},
+        {"far_layer_cover_bias", cv2FarCoverBias},
+        {"far_layer_density", cv2FarDensity},
+        {"far_layer_softness", cv2FarSoftness},
+        {"far_layer_low_sun", cv2FarLowSun},
         {"wind_mps", cv2WindMps},
         {"edge_sharpness", cv2EdgeSharpness},
         {"weather_warp_km", cv2WeatherWarpKm},

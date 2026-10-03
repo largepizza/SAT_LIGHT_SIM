@@ -659,6 +659,8 @@ struct GpuCloudV2Params
     glm::vec4 anchorMorph;
     glm::vec4 morph;
     glm::vec4 farLight;    // review 18: the far cloud layer's key-light (x) and sky-light (y) gains
+    glm::vec4 farTune;     // review 24: the far cloud layer's x slant coverage, y coverage bias, z density, w edge softness
+    glm::vec4 farTune2;    // review 24: x the far layer's low-Sun light, yzw unused
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -669,7 +671,8 @@ static_assert(offsetof(GpuCloudV2Params, anchorMid) == 288 + 48 * kCloudV2Types 
 static_assert(offsetof(GpuCloudV2Params, rainE) == 288 + 48 * kCloudV2Types + 416, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, anchorMorph) == 288 + 48 * kCloudV2Types + 480, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, farLight) == 288 + 48 * kCloudV2Types + 512, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 528, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, farTune) == 288 + 48 * kCloudV2Types + 528, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 560, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -1541,8 +1544,9 @@ struct GpuCloudParams
     glm::vec4 moonMisc;      // x Sun fraction the observer sees past the Moon, y solar / z lunar eclipse possible, w distance (km) (784 -> 816)
     glm::vec4 cityLod;       // footprint (m/px) where x posts, y the street grid, z major roads, w the street layout end (816 -> 832)
     glm::vec4 cityLod2;      // x streets' share close up, y their share as they fade; zw unused (832 -> 848)
+    glm::vec4 seaTune;       // review 24: x far sea ripple, y sea warp, z sea warp detail, w unused (848 -> 864)
 };
-static_assert(sizeof(GpuCloudParams) == 848, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 864, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -2213,6 +2217,13 @@ private:
     // last frame's (followBasis*).
     bool       followFlightLine = false;
     glm::dvec3 followFlightTarget0{0.0};
+    // Review 24: the line is the OBSERVER'S line of sight to the satellite (the parked ground observer to the satellite,
+    // re-aimed every frame), so a flare the observer sees stays in view all the way in and out. Set on a flight's
+    // first update (followFlightInit): the starting distance along it and the start's offset from it (faded out).
+    bool       followFlightInit = false;
+    double     followFlightS0 = 0.0;
+    glm::dvec3 followFlightDelta0{0.0};
+    glm::dvec3 followHomeEcef() const;
     glm::dvec3 followBasisT{0.0}, followBasisN{0.0}, followBasisR{0.0};
     bool       followBasisValid = false;
     double followFlightDuration(double distM) const;
@@ -3121,6 +3132,10 @@ private:
     // the 1-5 km structure from orbit, and costs more. Fades in from "Far cloud layer from (km)" of eye
     // altitude, full (and the march skipped) at "... full at (km)".
     float cv2FarLayerFromKm = 600.0f;
+    // Review 24 (slots 251-254): the far layer's apparent coverage at a slant (the cells' sides fill the gaps), a bias
+    // on its coverage (field units), its optical depth and the softness of its sub-pixel edges.
+    float cv2FarSlant = 0.7f, cv2FarCoverBias = 0.12f, cv2FarDensity = 1.0f, cv2FarSoftness = 1.0f;
+    float cv2FarLowSun = 0.5f;   // slot 255: the far layer's key light goes as mu0^(1 / (1 + this)) (0 = a flat slab)
     float cv2FarKeyGain = 10.0f, cv2FarSkyGain = 0.3f;   // "Far cloud layer sunlight / sky light" (review 21: matched to the march's cloud radiance at 1460 km and its image at 3000-8000 km)
     float cv2FarLayerFullKm = 1500.0f;
     float cloudFarBlend() const
@@ -4062,6 +4077,9 @@ private:
     float oceanSeaStateGain = 1.0f;          // waves follow the weather (Ocean tab, slot 213; 0 = fixed sea)
     float oceanWhitecapGain = 1.0f;          // whitecap foam gain (Ocean tab, slot 214)
     float oceanWaveRangeKm = 100.0f;         // review 21: waves fade to flat from 0.6x this (was a fixed 3-8 km; slot 237)
+    // Review 24 (Ocean tab, slots 248-250): the resolvable ripple where the octaves are filtered away (0 = the mirror),
+    // and the wave field's 2D warp at 24 / 8 cells (octave-0 cells, ~18 m).
+    float oceanFarRipple = 1.5f, oceanWarp = 3.5f, oceanWarpDetail = 1.2f;
     float oceanWaveSharpness = 0.5f;         // review 21: x the footprint the wave octaves are filtered at (1 = review 14; slot 243)
     float oceanReflSamples = 6.0f;           // ocean sky-reflection loop sample count (N_REFL)
     float moonGain = 0.0053f;                // shared moonlight brightness: terrain direct term + cloud
@@ -4599,7 +4617,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 248;
+    static constexpr int kCloudSliderSlots = 256;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

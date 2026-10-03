@@ -101,7 +101,7 @@ float farTau(CV2Far c)
     if (c.frac <= 0.0) return 0.0;
     float span  = max(c.top - c.base, 200.0);
     float thick = span * mix(max(0.3, pow(c.e, 0.83)), mix(0.5, 1.0, c.e), c.strat);
-    return c.sigma * thick * 0.6;
+    return c.sigma * thick * 0.6 * cv2.farTune.z;   // review 24: x "Far cloud layer density"
 }
 
 // The light a slab of reflectance R (and relief factor) sends up at a point of the layer: the key light (the Sun,
@@ -134,7 +134,11 @@ vec3 farLit(vec3 up, float hTop, float R, float tau, float relief, float msB, ve
         keyDir = moonDir;
     }
     float muK  = max(dot(up, keyDir), 0.0);
-    vec3  keyL = keyCol * muK * slabRmu(tau, muK * relief) * relief * msB * (1.0 / PI) * cv2.farLight.x;
+    // Review 24: the irradiance on a flat slab (mu0) fell to nothing toward the terminator, while the march's 3D tops
+    // catch a low Sun on their sides and stay lit (user snaps 5-6: dark grey-brown far layer beside gold cumulus).
+    // "Far cloud layer low-Sun light": mu0^(1 / (1 + it)); 1 = sqrt (x4.5 at 3 deg of Sun, unchanged overhead).
+    float muL  = pow(muK, 1.0 / (1.0 + cv2.farTune2.x));
+    vec3  keyL = keyCol * muL * slabRmu(tau, muK * relief) * relief * msB * (1.0 / PI) * cv2.farLight.x;
     float twi  = smoothstep(horizS - 0.12, horizS, sunUp) * (1.0 - smoothstep(horizS + 0.05, horizS + 0.25, sunUp));
     float skyDusk = smoothstep(horizS - 0.09, horizS + 0.04, sunUp);
     vec3  skyZ = skyZenithAt(pT, sunDir, BETA_R, BETA_M) * skyDusk * cv2.look.w * (1.0 + cv2.atmo.y * twi)
@@ -246,6 +250,12 @@ void main()
             // ~0.4 of its pixel, a tau-10 one ~0.2), so broken cloud from orbit was a uniform translucent grey that the
             // haze in front turned blue — bluer and dimmer than the march's resolved white cells (user, 1460 km).
             float fr = clamp(c.frac, 0.0, 1.0);
+            // Review 24: seen at a slant a broken field covers more of the view than its area (the cells' sides fill
+            // the gaps): 1 - (1 - f)^(1 + k tan(zenith)), k ~ the cells' height / width ("Far cloud layer slant
+            // coverage"). As an area share alone the layer was far clearer than the march at oblique views (mean
+            // transmittance 0.60 against 0.41 at 668 km, user snaps 5-6), whose sub-pixel cells are a haze along the path.
+            float tanZ = sqrt(max(1.0 - mu * mu, 0.0)) / mu;
+            fr = 1.0 - pow(1.0 - fr, 1.0 + min(cv2.farTune.x * tanZ, 12.0));
             Rlow = fr * slabR(tau);
             Lout = fr * farLit(up, hTop, slabR(tau), tau, relief, c.msBright, sunDir, moonDir, p.dirE);
             // Seen through it: the direct transmission of the delta-scaled depth (the forward peak, ~70% of the
